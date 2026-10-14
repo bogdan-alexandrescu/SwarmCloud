@@ -789,6 +789,7 @@ def ci_fix_continuation(
     step_input: Mapping[str, Any],
     metadata: Mapping[str, Any],
     context: str | None = None,
+    resource_class: str | None = None,
 ) -> WorkflowCreate:
     """One CI fix round: a one-step `direct-pr` workflow continuing `continues_task`.
 
@@ -800,6 +801,8 @@ def ci_fix_continuation(
     same for both. The excerpt is DATA between two nonce lines no line
     inside it can forge. `context`, when given, follows it: the issue run's
     TESTED CODE block, fenced by its own nonce (`reviewcontext.fix_block`).
+    `resource_class`, when given, is the class of the step whose branch the
+    round continues (lane SPEED-D2); None is the profile's own.
     """
     marker = f"=== FAILING CHECKS {secrets.token_hex(8)} ==="
     prompt = (
@@ -821,6 +824,7 @@ def ci_fix_continuation(
             "step_id": CI_FIX_STEP,
             "runner_profile": STEP_PROFILE,
             "input": {"prompt": prompt, **step_input},
+            **({"resource_class": resource_class} if resource_class else {}),
         }],
         "metadata": {
             # Never a merge inside a round: it would merge with no CI read and

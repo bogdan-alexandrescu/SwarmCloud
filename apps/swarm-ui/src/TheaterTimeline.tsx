@@ -119,7 +119,8 @@ const CAUSE_WORDS: Readonly<Record<string, string>> = {
   preempted: 'the task’s submitter took control',
   membership_lost: 'the person is no longer a member of the tenant',
   cancelled: 'the task was cancelled',
-  hold_expired: 'the hand-off’s time ran out',
+  // LB-RETURN: a hold that ran out PARKS the hand-off; I'm ready resumes it.
+  hold_expired: 'the hand-off parked (press I’m ready to resume)',
   attempt_ended: 'the attempt ended',
   page_closed: 'the page closed',
   // A device the gate did not apply.
@@ -275,7 +276,8 @@ function tally(calls: readonly LiveAction[]): { method: string; n: number }[] {
 /** How a hand-off ended (`handoff.py` `ResolveHandoff.outcome`). */
 const HANDOFF_OUTCOME: Readonly<Record<string, string>> = {
   returned: 'Hand-off resolved: control is back with the agent',
-  expired: 'Hand-off ended: nobody finished in time',
+  // LB-RETURN: not "ended" -- a park that one press of I'm ready resumes.
+  expired: 'Hand-off parked: nobody took control in time · press I’m ready to resume',
   cancelled: 'Hand-off ended: the task was cancelled',
   unavailable: 'Hand-off ended: the live browser was unavailable',
 }

@@ -100,7 +100,7 @@ from typing import Any, Callable, Sequence
 
 from swarm_common.states import CONCURRENCY_STATES, PENDING_STATES, TERMINAL_STATES, TaskState
 
-from . import render
+from . import keys, render
 from .client import SwarmClient, SwarmError, chosen_tenant, outputs_of
 from .follow import with_console
 from .invocation import help_command, terminal_command
@@ -122,6 +122,9 @@ from .render import Finding, Snapshot, Style
 EXIT_OK = 0
 EXIT_FAIL = 1
 EXIT_TROUBLE = 3
+#: The line itself was refused and nothing was sent -- argparse's own code for
+#: a usage error. `sc key set` uses it for a key typed on the command line.
+EXIT_USAGE = 2
 
 
 # --------------------------------------------------------------------------
@@ -720,9 +723,11 @@ WORKFLOW_PAGE_SIZE = 50
 
 #: Running workflows read in detail (one `GET /v1/workflows/{id}` each, for the
 #: label and the current steps). Beyond this many the list still names them,
-#: says they were not read, and costs nothing more; `/sc attach --all` follows
-#: at most 10 anyway.
-WORKFLOW_DETAIL_READS = 20
+#: says they were not read, and costs nothing more. 30 (20 before SC-ROWS):
+#: `/sc attach --all` follows up to `max_live_rows`, 30 unless set, and a
+#: workflow followed without its detail read is titled by its id instead of
+#: its name. A `max_live_rows` above 30 follows the rest titled that way.
+WORKFLOW_DETAIL_READS = 30
 
 #: How many workflows the session-start context names one by one.
 SESSION_START_NAMED = 10
@@ -741,10 +746,46 @@ def _label_of(envelope: dict[str, Any]) -> str | None:
     return None
 
 
-def _running_entry(workflow: dict[str, Any], now: datetime) -> dict[str, Any]:
+def pull_request_wait(workflow: dict[str, Any]) -> str | None:
+    """"waiting for PR #41 to merge", or why it will not start; None otherwise.
+
+    The API's sentence (`workflow.after_pull_requests.text`, SPEED-D3), read
+    only while the workflow waits for its `after` pull requests or after one
+    closed unmerged. A released wait says nothing: its steps say the rest.
+    """
+    wait = workflow.get("after_pull_requests")
+    if not isinstance(wait, dict) or wait.get("state") not in ("waiting", "closed"):
+        return None
+    text = wait.get("text")
+    return text if isinstance(text, str) and text else None
+
+
+def group_by_workspace(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`entries` (newest first) grouped by their `workspace`, STABLY: each
+    workspace's entries keep their newest-first order, and the workspaces come
+    in the order of their newest entry. So a list of 30 rows reads as one
+    block per workspace without a row moving within its block between two
+    reads (SC-ROWS, owner 2026-10-14: "stable order: newest first, grouped by
+    workspace"). plugin/workflows/run.js's `groupByWorkspace` is the same."""
+    order: list[Any] = []
+    groups: dict[Any, list[dict[str, Any]]] = {}
+    for entry in entries:
+        key = entry.get("workspace")
+        if key not in groups:
+            order.append(key)
+            groups[key] = []
+        groups[key].append(entry)
+    return [entry for key in order for entry in groups[key]]
+
+
+def _running_entry(workflow: dict[str, Any], now: datetime, tenant: Any = None) -> dict[str, Any]:
+    from . import workflows
+
     created = render.parse_time(workflow.get("created_at"))
     entry: dict[str, Any] = {
         "workflow_id": workflow.get("workflow_id"),
+        # The workspace it runs in, from its own document (SC-ROWS).
+        "workspace": workflows.workspace_of(workflow, fallback=tenant),
         "label": None,
         "title": None,
         "state": workflow.get("state"),
@@ -752,6 +793,7 @@ def _running_entry(workflow: dict[str, Any], now: datetime) -> dict[str, Any]:
         "age_seconds": max(0, int((now - created).total_seconds())) if created else None,
         "steps_total": len(workflow.get("steps") or []),
         "current_steps": None,
+        "waiting_for": pull_request_wait(workflow),
     }
     return with_console(entry, workflow)
 
@@ -768,6 +810,7 @@ def _read_detail(client: SwarmClient, entry: dict[str, Any]) -> dict[str, Any]:
     workflow = envelope["workflow"]
     if workflow.get("state"):
         entry["state"] = workflow["state"]
+    entry["waiting_for"] = pull_request_wait(workflow)
     entry["label"] = _label_of(envelope)
     # The spec's short name, when it gave one: what /sc attach --all titles
     # each workflow's run with (`workflows.title_name`).
@@ -837,7 +880,7 @@ def running_workflows(
         unfinished = 0
         for workflow in page["workflows"]:
             if isinstance(workflow, dict) and workflow.get("state") not in _TERMINAL_VALUES:
-                found.append(_running_entry(workflow, now))
+                found.append(_running_entry(workflow, now, page.get("tenant_id")))
                 unfinished += 1
         token = page.get("next_page_token") or None
         filtered = page.get("filter")
@@ -854,7 +897,7 @@ def running_workflows(
         entry["steps_unread_because"] = (
             f"only the newest {detail_reads} running workflows are read step by step"
         )
-    listed = [entry for entry in found if entry.get("state") not in _TERMINAL_VALUES]
+    listed = group_by_workspace([entry for entry in found if entry.get("state") not in _TERMINAL_VALUES])
     out: dict[str, Any] = {
         "tenant_id": tenant,
         "count": len(listed),
@@ -902,12 +945,15 @@ def _task_label(task: dict[str, Any]) -> str | None:
     return None
 
 
-def _single_task_entry(task: dict[str, Any], now: datetime) -> dict[str, Any]:
+def _single_task_entry(task: dict[str, Any], now: datetime, tenant: Any = None) -> dict[str, Any]:
+    from . import workflows
     from .client import task_id_of
 
     created = render.parse_time(task.get("created_at"))
     entry: dict[str, Any] = {
         "task_id": task_id_of(task),
+        # The workspace it runs in, from its own document (SC-ROWS).
+        "workspace": workflows.workspace_of(task, fallback=tenant),
         "label": _task_label(task),
         "state": task.get("state"),
         "runner_profile": task.get("runner_profile"),
@@ -970,7 +1016,7 @@ def running_tasks(
         if not complete:
             short.append(state)
         for task in tasks:
-            entry = _single_task_entry(task, now)
+            entry = _single_task_entry(task, now, page_tenant)
             task_id = entry["task_id"]
             if (
                 not task_id
@@ -983,6 +1029,7 @@ def running_tasks(
             seen.add(task_id)
             found.append(entry)
     found.sort(key=lambda entry: str(entry.get("created_at") or ""), reverse=True)
+    found = group_by_workspace(found)
     out: dict[str, Any] = {
         "tenant_id": tenant,
         "count": len(found),
@@ -1043,7 +1090,7 @@ def session_start_context(
         for entry in running[:SESSION_START_NAMED]:
             label = f' "{entry["label"]}"' if entry.get("label") else ""
             named.append(
-                f"{entry.get('workflow_id')}{label} ({entry.get('state')}; {_steps_text(entry)}; "
+                f"{_workspace_tag(entry)}{entry.get('workflow_id')}{label} ({entry.get('state')}; {_steps_text(entry)}; "
                 f"{_age_text(entry.get('age_seconds'))})"
             )
         if count > SESSION_START_NAMED:
@@ -1060,7 +1107,7 @@ def session_start_context(
         for entry in singles[:SESSION_START_TASKS_NAMED]:
             label = f' "{entry["label"]}"' if entry.get("label") else ""
             named.append(
-                f"{entry.get('task_id')}{label} ({entry.get('state')}; "
+                f"{_workspace_tag(entry)}{entry.get('task_id')}{label} ({entry.get('state')}; "
                 f"{_age_text(entry.get('age_seconds'))})"
             )
         if count > SESSION_START_TASKS_NAMED:
@@ -1069,14 +1116,26 @@ def session_start_context(
             f"{count} SwarmCloud {noun} running{tenant}, in no workflow, and not shown "
             "in this session: " + "; ".join(named) + "."
         )
+    from . import config
+
+    cap = config.max_live_rows()
     return (
         " ".join(parts)
         + " Before anything else, run `/sc attach --all` to show them as live "
         "[SwarmCloud] rows: it submits nothing, starts one slim row per unfinished "
-        "workflow step and one per single task, and follows at most 10 workflows "
-        "and 10 single tasks. (This notice comes from the sc plugin's SessionStart "
-        "hook; turn off its `auto_attach` option to stop it.)"
+        f"workflow step and one per single task, and follows at most {cap} workflows "
+        f"and {cap} single tasks (the plugin's `max_live_rows`). (This notice comes "
+        "from the sc plugin's SessionStart hook; turn off its `auto_attach` option "
+        "to stop it.)"
     )
+
+
+def _workspace_tag(entry: dict[str, Any]) -> str:
+    """`[<workspace>] ` for a listed workflow or task, "" when the API named
+    none (SC-ROWS: every line starts with the workspace it runs in)."""
+    from .workflows import workspace_tag
+
+    return workspace_tag(entry.get("workspace"))
 
 
 def _quietly(read: Callable[[], dict[str, Any]]) -> dict[str, Any] | None:
@@ -1115,10 +1174,19 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
             )
         return EXIT_OK
 
+    from .launch import named_workspaces
+    from .workflows import workspace_names
+
     listing, failure = _attempt(lambda: running_workflows(client))
     # The caller's running single tasks beside them (#830): `/sc attach --all`
     # gives each a row too, so the list names what it would follow.
     singles, singles_failure = _attempt(lambda: running_tasks(client))
+    # Each workspace by its display name where the API gives one (SC-ROWS).
+    names = workspace_names(client) if listing is not None or singles is not None else {}
+    if listing is not None:
+        named_workspaces(listing["workflows"], names)
+    if singles is not None:
+        named_workspaces(singles["tasks"], names)
     if args.json:
         payload = dict(listing) if listing is not None else {"error": str(failure)}
         if singles is not None:
@@ -1138,10 +1206,12 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
     for entry in running:
         label = f"  {entry['label']}" if entry.get("label") else ""
         lines.append(
-            f"  {entry.get('workflow_id')}{label}  {entry.get('state')}  "
+            f"  {_workspace_tag(entry)}{entry.get('workflow_id')}{label}  {entry.get('state')}  "
             f"{_age_text(entry.get('age_seconds'))}"
         )
         lines.append(f"    now: {_steps_text(entry)}")
+        if entry.get("waiting_for"):
+            lines.append(f"    {entry['waiting_for']}")
         if entry.get("console"):
             lines.append(f"    console: {entry['console']}")
         # Each unfinished step on its own line, with the link the API served
@@ -1167,7 +1237,7 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
             label = f"  {entry['label']}" if entry.get("label") else ""
             link = f"  console: {entry['console']}" if entry.get("console") else ""
             lines.append(
-                f"  {entry.get('task_id')}{label}  {entry.get('state')}  "
+                f"  {_workspace_tag(entry)}{entry.get('task_id')}{label}  {entry.get('state')}  "
                 f"{_age_text(entry.get('age_seconds'))}{link}"
             )
         if not singles.get("complete"):
@@ -2591,6 +2661,96 @@ def cmd_setup_token(client: SwarmClient, args, out) -> int:
     lines.append(f"Next: `{terminal_command('sc access repos ' + owner)}`, then "
                  f"`{terminal_command('sc access grant <owner/repo> --read')}` (or --write).")
     _emit([_without(line, value) for line in lines], out)
+    return EXIT_OK
+
+
+# -- provider keys (KEYS-PLUGIN, docs/provider-keys.md) ----------------------
+#
+# `sc key set typesafe [--tenant] [--stdin]` is the ONE place outside the
+# console a TypeSafe key is typed, and it is a person's terminal, never a
+# model's: no skill is granted it, and no MCP tool sets a key. The value is
+# read with getpass (no echo) at a terminal, or one line from stdin with
+# --stdin; it is never an argument -- argv is what shell history and `ps`
+# keep -- so a line that carries anything beyond the provider and the two
+# switches is refused BEFORE anything is sent, without repeating what it
+# carried (`key_set_refusal`, from `main`).
+
+#: What `sc key set` refuses with, whatever extra the line carried.
+KEY_ON_ARGV = (
+    "a key is never taken as a command-line argument: it would land in your shell history "
+    "and in `ps`. Nothing was sent. Run `{command}` and paste it at the hidden prompt, "
+    "or pipe it in with --stdin"
+)
+
+#: The KEYS-IAM bootstrap role is the owner's to apply; until then a deployed
+#: PUT answers 503 (docs/provider-keys.md §6), and it is said as exactly that.
+KEYS_NOT_SAVABLE = "keys can't be saved yet: {reason}"
+
+
+def key_set_refusal(extra: Sequence[str]) -> str | None:
+    """Why this `sc key set` line is refused before anything is read or sent,
+    or None. Never names what it refuses: a stray word on this line is most
+    likely the key itself."""
+    if extra:
+        return KEY_ON_ARGV.format(command=terminal_command("sc key set typesafe"))
+    return None
+
+
+def _unknown_provider(args) -> str | None:
+    """The same, for the provider word, which may be the key typed in its place."""
+    if getattr(args, "provider", None) not in keys.PROVIDERS:
+        return (f"sc key set takes a provider: one of {list(keys.PROVIDERS)}. What was "
+                "given is not repeated, in case it was the key -- a key is never an "
+                "argument, since it would land in your shell history. Nothing was sent")
+    return None
+
+
+def _read_key(stdin_flag: bool) -> str | None:
+    """The key, or None when there is no terminal to ask at and no --stdin."""
+    stdin = sys.stdin
+    if stdin_flag:
+        return (stdin.readline() if stdin is not None else "").strip()
+    if stdin is not None and getattr(stdin, "isatty", lambda: False)():
+        import getpass
+
+        return getpass.getpass("TypeSafe API key (input hidden): ").strip()
+    return None
+
+
+def cmd_key_set(client: SwarmClient, args, out) -> int:
+    """Exit 0 "stored: version N"; 3 the API refused (a 503 is "keys can't be
+    saved yet"); 2 the line or the input was refused and nothing was sent;
+    1 through `main` when the API could not be reached."""
+    refused = (key_set_refusal(getattr(args, "key_extra", None) or [])
+               or _unknown_provider(args))
+    if refused is not None:
+        print(f"sc: {refused}", file=sys.stderr)
+        return EXIT_USAGE
+    scope = "tenant" if args.tenant else "user"
+    value = _read_key(args.stdin)
+    if value is None:
+        print("sc: there is no terminal to read the key at without echo; pipe it in with "
+              f"`{terminal_command('sc key set typesafe --stdin')}`. Nothing was sent",
+              file=sys.stderr)
+        return EXIT_USAGE
+    if not value:
+        print("sc: no key was read; nothing was sent", file=sys.stderr)
+        return EXIT_USAGE
+    try:
+        version = keys.store_key(client, args.provider, scope, value)
+    except SwarmError as exc:
+        answered = exc.status is not None and not exc.edge and exc.status != 401
+        if not answered:
+            raise SwarmError(_without(str(exc), value), status=exc.status, edge=exc.edge,
+                             code=exc.code) from None
+        if exc.status == 503:
+            line = KEYS_NOT_SAVABLE.format(reason=api_message(exc))
+        else:
+            line = f"✕ {api_refusal(exc)}"
+        out.write(_without(line, value) + "\n")
+        out.write("Nothing was stored.\n")
+        return EXIT_TROUBLE
+    out.write(f"stored: version {version if version is not None else '?'}\n")
     return EXIT_OK
 
 
@@ -4085,6 +4245,30 @@ def build_parser() -> argparse.ArgumentParser:
     _common(stk, root=False)
     stk.set_defaults(func=cmd_setup_token)
 
+    # KEYS-PLUGIN. NO OPTION AND NO POSITIONAL TAKES THE KEY: anything past the
+    # provider and the switches is refused unsent by `main`, unrepeated.
+    key = sub.add_parser("key", help="provider keys you set: `key set typesafe`")
+    key_sub = key.add_subparsers(dest="key_command", required=True)
+    kset = key_sub.add_parser(
+        "set",
+        help="store your TypeSafe key, typed at a hidden prompt or piped with --stdin "
+             "(exit 0 stored, 3 refused, 2 nothing sent)",
+        description=(
+            "Stores YOUR TypeSafe key (it wins over the tenant's), or with --tenant the "
+            "selected tenant's (admins). The key is read with no echo at a terminal, or one "
+            "line from stdin with --stdin -- never from an argument -- sent once, and never "
+            "printed: the answer is `stored: version N`."
+        ),
+    )
+    kset.add_argument("provider", help=f"one of {', '.join(keys.PROVIDERS)}")
+    kset.add_argument("--tenant", action="store_true",
+                      help="the selected tenant's key, not your own (admins)")
+    kset.add_argument("--stdin", action="store_true",
+                      help="read one line from stdin instead of a hidden prompt")
+    kset.add_argument("--context", default=argparse.SUPPRESS,
+                      help="which configured deployment to use")
+    kset.set_defaults(func=cmd_key_set, key_set=True)
+
     acc = sub.add_parser(
         "access",
         help="the repositories SwarmCloud may use as you: list, grant, revoke, verify",
@@ -4303,7 +4487,18 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None, out=None) -> int:
     from . import config
 
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args, extra = parser.parse_known_args(argv)
+    if getattr(args, "key_set", False):
+        # BEFORE any client: a key typed on the line is refused unsent, and
+        # argparse's own "unrecognized arguments" would have repeated it.
+        args.key_extra = extra
+        refused = key_set_refusal(extra)
+        if refused is not None:
+            print(f"sc: {refused}", file=sys.stderr)
+            return EXIT_USAGE
+    elif extra:
+        parser.error(f"unrecognized arguments: {' '.join(extra)}")
     stream = out or sys.stdout
     # THE SESSION TARGET IS CHECKED AT START-UP (S8), as the MCP server checks
     # it: a config file or plugin setting naming no target stops here, with

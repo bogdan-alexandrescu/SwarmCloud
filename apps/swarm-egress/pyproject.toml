@@ -1,0 +1,33 @@
+# swarm-egress: the live browser's egress forwarder (docs/browser-egress.md
+# §2.2; lane EGRESS-SVC, part of #1030). A one-replica StatefulSet in
+# swarm-system on GKE that holds the vendor credential, checks each CONNECT's
+# attempt ticket and relays bytes to the vendor's proxy.
+#
+# asyncio and the standard library for the server. google-auth (with requests)
+# only to read its two secrets from Secret Manager over REST, as swarm-live
+# does; swarm-redaction for every log line; swarm-common for the logging setup.
+[project]
+name = "swarm-egress"
+version = "0.1.0"
+description = "Browser egress forwarder: attempt-ticketed CONNECT to the residential/ISP proxy vendor."
+requires-python = ">=3.11"
+dependencies = [
+    "swarm-common",
+    "swarm-redaction",
+    "google-auth>=2.29",
+    "requests>=2.32",
+]
+
+[project.scripts]
+swarm-egress = "swarm_egress.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["swarm_egress"]
+
+[tool.uv.sources]
+swarm-common = { path = "../common", editable = true }
+swarm-redaction = { path = "../redaction", editable = true }

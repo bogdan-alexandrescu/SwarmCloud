@@ -281,6 +281,82 @@ Puppeteer sends when it opens a page. So dev-browser cannot open a page
 through the gate yet. That policy change is a separate lane and is not part
 of this one.
 
+### 3.2.2 jev-browser: judgment backends
+
+jev-browser (pinned 0.2.0, patched to attach over CDP: JEV-IMAGE) is an MCP
+server where a model, "Jev", picks each step of a browsing task. It asks only
+two kinds of question: `noul` (a yes/no probability) and `choice` (one option
+of several). On 2026-10-14 the owner made the backend selectable: **Internal
+Jev** (the default), **Internal Laya** or **TypeSafe**. The network path and
+the setting belong to lanes JUDGE-NET and JUDGE-SELECT. This section is about
+the request shape (JUDGE-ADAPT).
+
+Upstream jev-browser speaks TypeSafe's API. Saga's internal decision API
+(`decision-api-staging` on the tailnet, `/jev` or `/laya` +
+`/v1/decide`) answers in the same shape (`choice`, `probabilities`,
+`confidence`, `noul`), but it is **not wire-compatible on the request side**.
+The operator measured it over Tailscale from the laptop on 2026-10-14:
+
+| check | `/jev` | `/laya` |
+|---|---|---|
+| `noul`, string `state` | 200, 0.3-0.4 s | 200, 1.7-5 s |
+| `state` as an object (what jev-browser sends) | 400 `state: Input should be a valid string` | 400 |
+| `choice` with criteria | 200, 0.34 s, TypeSafe's shape, correct pick, confidence 0.98 | 200, 2.9 s, same shape, confidence 0.04 on the same question |
+| `choice` without criteria (jev-browser's element and group picks) | 400 `criteria Field required` | same validator expected |
+| `score`, criteria as a dict | 400 `criteria Input should be a valid list` | 500 `predict failed` |
+
+The internal API ignores `model` and `Authorization`. jev-browser, however,
+refuses to make any call without a non-empty `TYPESAFE_API_KEY`.
+
+**The adapter.** The image's patch adds `src/internal-compat.mjs` to the
+package, plus two lines in `src/jev.mjs` that pass every request through it.
+That one function is where every request leaves, so this is the smallest
+change. Wrapping `fetch` from the MCP wrapper would mean preloading a module
+into node that rewrites every HTTP call the process makes. With
+`JEV_API_COMPAT` unset, the request is returned untouched, so TypeSafe sees
+exactly what upstream sends. With `JEV_API_COMPAT=internal`:
+
+* an object `state` is sent as JSON with sorted keys and no whitespace, so the
+  same page always makes the same request;
+* a `choice` option without a description is described from the page the
+  question names: `page.elements` by `i` as `"<role> <name>"`, cut at 80
+  characters, or `page.groups` by `g` as the group's summary. jev-browser's
+  picks send only the keys (`{"7": null}`). A described option keeps its
+  description. A keys-only choice that names neither (dropdown options,
+  keyboard keys) is described by its own key, which is the option's whole
+  text. A choice with no criteria at all that names neither, or an option that
+  is not on the page, **fails that call with its reason**. Nothing is guessed;
+* a `score` with dict criteria is refused, because the list's element shape
+  was never measured and jev-browser asks no `score`;
+* the key sent is the fixed, non-secret placeholder
+  `internal-backend-takes-no-key`. `TYPESAFE_API_KEY` is never sent to an
+  internal backend, even when it is set;
+* `answers` are passed through unchanged;
+* `internal` together with TypeSafe's URL is refused. The reshaped body and
+  the placeholder never go to TypeSafe.
+
+**Who sets it.** `JEV_API_COMPAT=internal` must be set by whatever sets
+`JEV_API_URL` to an internal backend: the dispatcher or runner, in lane
+JUDGE-SELECT. Until that lane lands, the wrapper (`bin/jev-browser-mcp`) still
+drops `JEV_API_URL` and passes `JEV_API_COMPAT` through. A stray
+`internal` then fails loudly instead of reaching TypeSafe.
+
+**Why Internal Jev is the default.** On one element-pick probe, Laya was 8x
+slower than Jev (2.9 s against 0.34 s) and far less confident (0.04 against
+0.98). That is one probe, not a benchmark, but it supports the owner's choice
+of Internal Jev as the default.
+
+**What proves it.** `tests/unit/worker/test_jev_internal_compat.py` takes the
+module out of the patch and runs each transform with node on the exact shapes
+the internal API refused. The image's self-test (`selftest.py` `jev_compat`,
+through `jev-browser/compat-probe.mjs`) runs the installed package's own
+`decide()` and `resolve()` over `jev-browser/fixtures/internal-decide.json`.
+That fixture holds the internal API's answers in the shape and with the values
+the measurement recorded. It is not a byte capture: the measurement kept shapes
+and values, not bodies. The self-test checks that a one-stage and a two-stage
+pick both come back as numeric element indexes, that the TypeSafe path is
+unchanged, and that `internal` with no key does not throw.
+
 ### 3.3 The path to the console: outbound only, through a relay
 
 No inbound port on the pod and no public endpoint: the gate **dials out**.
@@ -660,10 +736,29 @@ before (`agent_worker.handoff.HandoffPath._watch`).
   attempt's own deadline (`handoff.extended_deadline`), and never moves the
   deadline earlier. A tab left open on a walked-away desk costs half an hour,
   not an afternoon.
-* **Never revived.** A viewer who arrives after the deadline passed changes
-  nothing: the worker may already be parking, and racing it would leave a
-  hold with no pod behind it. That person presses "I'm ready" (below), which
-  is unchanged.
+* **Ended by the worker's resolve, not by the clock (LB-RETURN).** This bullet
+  said "never revived": a viewer who arrived after the deadline changed
+  nothing, so as not to race the worker's park. MEASURED: the live-browser
+  acceptance group parked on every run from 2026-10-14 00:24Z with its
+  viewer connected and the person in control, because the person came within
+  the worker's 10 s poll of the minute and the park went ahead under them. So
+  the race is decided in Firestore instead. A viewer or controller moves an
+  OPEN hold even past its deadline. The worker's expiry names the deadline
+  it judged (`seen_deadline`), and swarm-api answers it `{"resolved":
+  "revived"}`, writing nothing (`HandoffService.resolve`), when that deadline
+  has since moved into the future. The worker then keeps holding and tells the agent nothing
+  (`HandoffPath.confirm_expired`). Whichever transaction commits first
+  decides.
+* **A return is never lost to a park.** A person who returns control while the
+  attempt is still RUNNING leaves `metadata.human_returned` (attempt,
+  generation, who). The worker's park reads it in its own fenced transaction
+  and writes READY instead of PARKED, with the same checkpoint, refund and
+  lease release (`park_human_required`). A return that arrives after the park
+  committed is that person's "I'm ready" (`LiveService.return_control`,
+  `handoff.ready_writes`). Both count only for the attempt that parked, at its
+  generation, and a new request forgets an older return. Anyone else presses
+  "I'm ready" (below), which is unchanged; the console calls a parked
+  hand-off "parked -- press I'm ready to resume", not expired.
 
 Who is counted as watching is any member admitted to the view (section 5.2),
 not only someone who may take control: the submitter watching from a second
@@ -1093,6 +1188,29 @@ back to raw CDP. The gate now rewrites the path of an `allow` or
 `allowAndName` to `downloads/` before the command is held or forwarded
 (`cdppolicy.confine`), so Chromium still writes only where the worker reads,
 and the agent's path never reaches Chromium.
+
+**Puppeteer opens pages through the policy too** (DEVB-GATE, part of #1030).
+dev-browser v1 drives Chromium with puppeteer-core 25.8.0, and its `newPage()`
+fails outright when `Performance.enable` or `Audits.enable` errors
+(`CdpPage#initialize`, `FrameManager.initialize`; the sequence for connect,
+newPage, goto, evaluate and screenshot is pinned in
+`tests/unit/worker/fixtures/puppeteer-core-25.8.0-*.json`). So:
+
+* `Performance.enable`, `getMetrics` and `disable` are allowed: the domain
+  reports counters, a name and a number each, and nothing of a page's content;
+* `Audits.enable` and `Audits.disable` are **answered by the gate** with `{}`
+  and never reach Chromium, and no `Audits.*` event reaches the agent
+  whatever enabled it. `Audits.issueAdded`'s cookie details carry
+  `rawCookieLine`, which the protocol definition (devtools-protocol
+  0.0.1666840, checked 2026-10-14) describes as "the raw Set-Cookie header
+  string" when no valid cookie could be made from it -- a header with its
+  value, which would undo the cookie rule below (LB-7). The domain's other
+  methods stay refused: `getEncodedResponse` returns a response body;
+* `WebMCP.enable` and `Network.emulateNetworkConditionsByRule` stay refused,
+  but Puppeteer catches both and goes on, so recording them on every page was
+  noise (ANALYSIS issue 19). They are counted and logged at debug instead of
+  recorded as `cdp_method_refused`; the action log still shows them as
+  refused.
 
 The allowlist is the control and the denylist is its documentation: a method
 Chromium adds next year is refused because it is not on the list, not because

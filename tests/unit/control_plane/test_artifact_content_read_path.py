@@ -148,7 +148,7 @@ def test_the_owning_tenant_is_served_the_same_artifact(client, db, objects) -> N
         "../artifacts/synthesis.md",
         # A fully-qualified key, which is what a route that proxied paths would
         # have accepted.
-        f"tenants/eng/tasks/task_a/attempts/att_1/artifacts/synthesis.md",
+        "tenants/eng/tasks/task_a/attempts/att_1/artifacts/synthesis.md",
         f"gs://{BUCKET}/tenants/eng/tasks/task_a/attempts/att_1/artifacts/synthesis.md",
         "/etc/passwd",
         # The log objects, which this route must not become a second reader of.

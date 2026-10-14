@@ -32,7 +32,6 @@ known runners, so a third runner cannot be added without the same contract.
 
 from __future__ import annotations
 
-import inspect
 from pathlib import Path
 
 import pytest

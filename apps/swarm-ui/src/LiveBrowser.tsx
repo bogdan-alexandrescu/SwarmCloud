@@ -31,6 +31,7 @@ import {
   type LiveStatus,
 } from './api'
 import { SaveAsLoginOffer } from './BrowserLogins'
+import { BrowserBadges, browserStatusOf } from './BrowserBadges'
 import { Button } from './components'
 import { HandoffStrip } from './Handoff'
 import { LiveToolMenu } from './LiveToolMenu'
@@ -153,6 +154,26 @@ const PRESET_LABEL: Readonly<Record<string, string>> = {
   'ipad-7': 'iPad',
 }
 
+/**
+ * What the Browser tab says over a closed live session (LB-RETURN, part of #1030).
+ *
+ * A hand-off whose hold ran out closes its session with `hold_expired`, and this
+ * said "The live browser has closed (hold_expired)" over a task that one press of
+ * I'm ready resumes -- MEASURED by the live-browser acceptance group, 2026-10-14;
+ * the person read it as over. A park is not an end: it says so, and what to press.
+ */
+export function closedSessionNote(
+  cause: string | null,
+  task: { state: TaskState; park_reason?: string | null },
+): string {
+  if (cause === 'hold_expired') {
+    return task.state === 'PARKED' && task.park_reason === 'HUMAN_REQUIRED'
+      ? 'The hand-off is parked: nobody took control in time, so its browser closed and its capacity went back. Press I’m ready to resume — the agent starts again and asks for you.'
+      : 'The hand-off is parking: nobody took control in time. Once it has parked, press I’m ready to resume.'
+  }
+  return `The live browser has closed${cause ? ` (${cause})` : ''}. The recording is kept for seven days.`
+}
+
 export function presetLabel(name: string): string {
   return PRESET_LABEL[name] ?? name
 }
@@ -164,7 +185,17 @@ export function presetLabel(name: string): string {
 export type LiveState =
   | { status: 'idle' }
   | { status: 'loading' }
-  | { status: 'ok'; liveBrowser: boolean; session: LiveSession | null }
+  | {
+      status: 'ok'
+      liveBrowser: boolean
+      session: LiveSession | null
+      /**
+       * The read's `browser` object (BSTATUS-STRIP), unparsed: the tool,
+       * egress and Jev badges read it with `browserStatusOf`, here or on
+       * `session.browser`, and draw nothing when an older API serves none.
+       */
+      browser?: unknown
+    }
   | { status: 'error'; message: string }
 
 /**
@@ -175,6 +206,11 @@ export function liveReadOf(answer: unknown): LiveRead | null {
   if (typeof answer !== 'object' || answer === null) return null
   const a = answer as Partial<LiveRead>
   return typeof a.live_browser === 'boolean' && 'session' in a ? (a as LiveRead) : null
+}
+
+/** The read's top-level `browser` object, if it serves one (BSTATUS-STRIP). */
+function browserOfRead(read: LiveRead): unknown {
+  return (read as LiveRead & { browser?: unknown }).browser
 }
 
 /** Read the session again; given a control route's answer, draw it at once first. */
@@ -198,7 +234,7 @@ export function useLiveSession(taskId: string, inFlight: boolean): { live: LiveS
     (answer?: unknown) => {
       const read = liveReadOf(answer)
       if (read !== null) {
-        setGot({ taskId, state: { status: 'ok', liveBrowser: read.live_browser === true, session: read.session ?? null } })
+        setGot({ taskId, state: { status: 'ok', liveBrowser: read.live_browser === true, session: read.session ?? null, browser: browserOfRead(read) } })
       }
       setTick((n) => n + 1)
     },
@@ -212,7 +248,10 @@ export function useLiveSession(taskId: string, inFlight: boolean): { live: LiveS
     void loadLiveSession(taskId).then((r) => {
       if (gone) return
       if (r.status === 'ok' || r.status === 'stale') {
-        setGot({ taskId, state: { status: 'ok', liveBrowser: r.data.live_browser === true, session: r.data.session ?? null } })
+        setGot({
+          taskId,
+          state: { status: 'ok', liveBrowser: r.data.live_browser === true, session: r.data.session ?? null, browser: browserOfRead(r.data) },
+        })
       } else if (r.status === 'error') {
         // A failed re-read keeps the session it had: a blip must not tear the
         // canvas down under someone typing into it.
@@ -666,14 +705,17 @@ export function LiveBrowserPane({
     )
   }
   if (session.state === 'closed') {
-    return note(
-      `The live browser has closed${session.closed_reason ? ` (${session.closed_reason})` : ''}. The recording is kept for seven days.`,
-    )
+    return note(closedSessionNote(session.closed_reason ?? null, task))
   }
 
   const mine = isController(session)
   const verdict = stripVerdict(session)
   const o = session.origin
+  // The tool, egress and Jev badges (BSTATUS-STRIP): the API may serve the
+  // object on the session or beside it; either, and none from an older one.
+  const tools = browserStatusOf(
+    (session as LiveSession & { browser?: unknown }).browser ?? (live.status === 'ok' ? live.browser : undefined),
+  )
   const theater: TheaterSession = {
     taskId: task.id,
     tenantId: task.tenant_id,
@@ -705,6 +747,7 @@ export function LiveBrowserPane({
               ? 'You are in control.'
               : `${session.controller.email} is in control.`}
         </span>
+        <BrowserBadges status={tools} />
         {unused && <AgentUnused task={task} />}
       </div>
   )

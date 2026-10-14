@@ -157,6 +157,23 @@ class MergePullRequest(StrictModel):
     head_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
 
 
+#: The most pull requests one workflow's `after` may name (SPEED-D3). Ten: a
+#: lane waits for one or two; a longer list is a plan that should be split,
+#: and each costs one GitHub read per tick (`prgate.wake_tenant`).
+MAX_AFTER_PRS = 10
+
+
+class AfterPullRequest(StrictModel):
+    """One pull request a workflow waits for before its steps start (SPEED-D3).
+
+    A NUMBER, never a repository: the pull request is the workflow's own
+    repository's (`prgate.resolve_after`), so a spec cannot point the
+    tenant's token at another one.
+    """
+
+    pr: StrictInt = Field(ge=1, le=10**9)
+
+
 class WorkflowCreate(StrictModel):
     steps: list[WorkflowStepCreate] = Field(min_length=1)
     priority: int = Field(default=0, ge=-100, le=100)
@@ -167,6 +184,15 @@ class WorkflowCreate(StrictModel):
     #: `merge` ("on" | "off", `resolve_merge_choice`) and `merge_fix_rounds`
     #: (0-5, only beside a merge step, `resolve_merge_fix_rounds`).
     metadata: dict[str, Any] = Field(default_factory=dict)
+    #: How many fix rounds the merge step may spend on a pull request whose
+    #: required checks are red at its head (lane SPEED-D2): each a claude-code
+    #: continuation of the pull request's branch, handed only the failing
+    #: jobs and their log tails. 0 disables them; absent is 2 beside a merge
+    #: step (`validation.LANE_FIX_ROUNDS_DEFAULT`), and refused without one.
+    #: The same budget as `metadata.merge_fix_rounds`, which it is stored as
+    #: on the merge task (`validation.resolve_fix_rounds`). A conflicting pull
+    #: request's rounds keep their own cap of 2 (`mergewake`).
+    fix_rounds: StrictInt | None = Field(default=None, ge=0, le=5)
     #: Chosen once for the whole workflow, not per step: `integrate` produces
     #: ONE pull request, so "which repository" cannot be a per-step answer.
     #: Same accepted values and same defaults as `TaskCreate`.
@@ -194,6 +220,20 @@ class WorkflowCreate(StrictModel):
     #: step, `direct-pr`, the tenant's registered repository, open, not from
     #: a fork, at that head now -- are in `continuation.resolve_merge_pr`.
     merge_pr: MergePullRequest | None = None
+    #: The pull requests of this workflow's own repository that must MERGE
+    #: before any of its steps starts (lane SPEED-D3, `prgate`): one
+    #: `{"pr": N}` or a list of them, stored as the list. Until then every
+    #: root step is PARKED, holding nothing (invariant 1); one closed without
+    #: merging fails the workflow. Absent: the workflow starts as it always did.
+    after: list[AfterPullRequest] | None = Field(default=None, min_length=1,
+                                                 max_length=MAX_AFTER_PRS)
+
+    @field_validator("after", mode="before")
+    @classmethod
+    def _one_or_many(cls, value: Any) -> Any:
+        # One object is the common case ("after PR 41"), so it is accepted
+        # as itself rather than making every spec write a one-item list.
+        return [value] if isinstance(value, dict) else value
 
     @field_validator("repository_url")
     @classmethod

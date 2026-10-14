@@ -39,7 +39,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-import pytest
 
 from swarm_common.models import retries_exhausted
 from swarm_common.states import TaskState

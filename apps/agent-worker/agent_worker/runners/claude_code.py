@@ -25,7 +25,9 @@ and the agent had to export `SWARM_HANDOFF` itself (MEASURED 2026-10-13,
 task_1f28d5bfa5a14f618f83; LB-POLISH, part of #1030). On an attempt resumed
 after a hand-off park, the worker's summary of the earlier attempts'
 hand-offs, `$SWARM_HANDOFF/resumed.md`, follows the caller's prompt
-(`resume_summary`; RESUME-PROGRESS). Nothing else crosses. The credential is the tenant's secret, or a pool
+(`resume_summary`; RESUME-PROGRESS), and on an attempt whose proxied browser
+has no egress, `$SWARM_HANDOFF/egress.md` says so (`egress_notice`;
+EGRESS-GATE). Nothing else crosses. The credential is the tenant's secret, or a pool
 account's OAuth token when the attempt holds an account, and it is passed in
 exactly one variable: `ANTHROPIC_API_KEY` (metered API access) or
 `CLAUDE_CODE_OAUTH_TOKEN` (a Claude subscription token from
@@ -93,6 +95,13 @@ same expected-outputs check and the same publish credential scan
 (`agent_worker.publish_scan`) against the tree, and when either fails resumes
 the session for up to two repair turns, naming each missing file's path or
 each flagged `path:line rule` -- never the matched text (`repair_checks`).
+
+WHY A PRE-PUBLISH GATE (SPEED-D1, owner decision 2026-10-14). 0.52 red CI
+runs per pull request, and 128 of 150 needed an update from main. After the
+repair turns the runner rebases the lane onto the current base through the git
+tools (one conflict turn) and runs the repository's own checks on what the
+diff touches (one fix turn); what still fails is published with its output in
+the pull request body (`agent_worker.prepublish`, `prepublish`).
 
 WHY A BROWSER NOTE ON agent-runtime-browser (contract request 67, owner
 2026-10-11). `claude-code-browser` runs this runner on the browser image, so
@@ -171,7 +180,7 @@ from ..gitmcp.server import SERVER_NAME as GIT_MCP_SERVER_NAME
 from ..gitmcp.server import SPOOL_ENV as GIT_SPOOL_ENV
 from ..searchmcp.server import SERVER_NAME as SEARCH_MCP_SERVER_NAME
 from ..searchmcp.server import SPOOL_ENV as SEARCH_SPOOL_ENV
-from ..handoff import AGENT_PASSTHROUGH_ENV, HANDOFF_ENV, RESUME_NAME
+from ..handoff import AGENT_PASSTHROUGH_ENV, EGRESS_NOTICE_NAME, HANDOFF_ENV, RESUME_NAME
 from .base import RunnerContext, run_runner
 from .cliagent import CliAgentSpec, agent_working_directory, run_cli_agent
 
@@ -242,7 +251,11 @@ LIVE_BROWSER_NOTE = (
     "or a sign-in, do not try to get around it and do not switch to a "
     "different site than the one asked for: run `swarm-handoff request "
     "--reason \"<what the person should do>\" --expect <domain>`, then "
-    "`swarm-handoff wait`, and carry on once control comes back. Until then: "
+    "`swarm-handoff wait`, and carry on once control comes back -- reading the "
+    "page again from the tab the person left (in Python a fresh `live()` and "
+    "`swarm_browser.handoff_page(context)`; with the tools, browser_tabs to "
+    "select it, then browser_snapshot), never from a handle, snapshot or value "
+    "taken before the hand-off. Until then: "
     "wait, do not poll the browser -- run `swarm-handoff wait` "
     "in the foreground and nothing else (no `curl /json/version`, no "
     "snapshots in a loop); on exit 75 run it again, on exit 3 (nobody came) "
@@ -326,6 +339,26 @@ def _write_private(path: Path, text: str) -> None:
 #: The most of the worker's resume summary a prompt carries. The worker
 #: bounds what it writes well under this; a larger file is not its.
 MAX_RESUME_BYTES = 16 * 1024
+
+
+def _spool_text(spool: str, name: str) -> str | None:
+    if not spool:
+        return None
+    path = Path(spool) / name
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_RESUME_BYTES:
+            return None
+        text = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return text or None
+
+
+def egress_notice(spool: str) -> str | None:
+    """EGRESS-GATE: the worker's notice that this attempt's proxied browser has
+    no egress (`handoff.EGRESS_NOTICE_NAME`, written by `HandoffPath.prepare`
+    before this runner starts, and absent otherwise), or None."""
+    return _spool_text(spool, EGRESS_NOTICE_NAME)
 
 
 def resume_summary(spool: str) -> str | None:
@@ -517,6 +550,11 @@ SPEC = CliAgentSpec(
     # credential scan run against the tree, and a failure is resumed for up
     # to two repair turns naming what failed (#624; `cliagent.REPAIR_MAX_TURNS`).
     repair_checks=True,
+    # Then the pre-publish gate (SPEED-D1, owner decision 2026-10-14): a
+    # rebase onto the current base, with one conflict turn, and the
+    # repository's own checks on what the diff touches, with one fix turn
+    # (`agent_worker.prepublish`).
+    prepublish=True,
     # The CLI warns on EVERY headless run that it ignores the settings' allow
     # list because the workspace is untrusted ("Ignoring 23 permissions.allow
     # entries from .claude/settings.json: this workspace has not been trusted.
@@ -580,6 +618,12 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     resumed = resume_summary(env.get(HANDOFF_ENV, ""))
     if resumed and isinstance(prompt, str) and prompt.strip():
         prompt = f"{prompt.rstrip()}\n\n{resumed}"
+        ctx.payload = {**ctx.payload, "prompt": prompt}
+    # A proxied browser with no egress (EGRESS-GATE): the agent is told before
+    # it tries, rather than reading connection errors.
+    stopped = egress_notice(env.get(HANDOFF_ENV, ""))
+    if stopped and isinstance(prompt, str) and prompt.strip():
+        prompt = f"{prompt.rstrip()}\n\n{stopped}"
         ctx.payload = {**ctx.payload, "prompt": prompt}
     if browsers:
         spec = dataclasses.replace(SPEC, path_prefix=(VENV_BIN,))

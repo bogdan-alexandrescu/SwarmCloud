@@ -577,7 +577,8 @@ locals {
 
   # Every Secret Manager reference swarm-api's environment carries, merged
   # once so main.tf and tests/terraform/live.tftest.hcl read one value.
-  api_secret_env = merge(local.child_key_secret_env, local.live_key_secret_env)
+  # SWARM_EGRESS_KEY joins them once swarm-egress is deployed (egress.tf).
+  api_secret_env = merge(local.child_key_secret_env, local.live_key_secret_env, local.egress_key_secret_env)
 
   # The swarm-api refusal switches (swarm_api.refusals; docs/api-refusals.md).
   # A refusal added to swarm-api ships off; var.api_refusals turns one on.
@@ -590,7 +591,8 @@ locals {
   }
 
   service_env = {
-    "swarm-api" = merge(local.common_env, local.api_refusal_env, {
+    # local.api_browser_egress_env: the browser egress switch (egress.tf).
+    "swarm-api" = merge(local.common_env, local.api_refusal_env, local.api_browser_egress_env, {
       # DISPATCH_TOPIC, not WAKE_TOPIC. Both apps read `DISPATCH_TOPIC`
       # (swarm_api.settings, scheduler.settings); terraform set `WAKE_TOPIC`,
       # which nothing has ever read. swarm_api.deps falls back to NullWaker()
@@ -820,7 +822,10 @@ locals {
       # relay is off, which swarm_api.settings reads as "no relay".
       SWARM_LIVE_URL = local.live_relay_url
     })
-    "swarm-scheduler" = merge(local.common_env, local.spec_worker_env, {
+    "swarm-scheduler" = merge(local.common_env, local.spec_worker_env, local.scheduler_browser_egress_env, {
+      # local.scheduler_browser_egress_env: the browser egress switch the
+      # dispatcher labels and routes a live-browser pod by (egress.tf).
+      #
       # local.spec_worker_env, merged in above: the four step-spec settings
       # (contract request 34), which the scheduler passes VERBATIM onto every
       # Cloud Run Job it creates itself (#353, scheduler.dispatch.spec_job_env),

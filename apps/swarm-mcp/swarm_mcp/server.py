@@ -44,7 +44,7 @@ from urllib.parse import urlsplit
 
 from swarm_common.profiles import RESOURCE_CLASSES
 
-from . import checkout, compact, config, progress
+from . import checkout, compact, config, keys, progress
 from . import profiles as catalogue
 from . import workflows
 from .client import (
@@ -1106,10 +1106,11 @@ TOOLS: list[dict[str, Any]] = [
         "name": "swarm_workflow_launch",
         "description": (
             "Write the script a /sc:swarmcloud run is launched from, titled after "
-            "its SwarmCloud workflow: `SC · <name> · N steps`, at most 150 "
+            "its SwarmCloud workflow: `SC · [<workspace>] <name> · N steps`, at most 150 "
             "characters, where <name> is the spec's `title`, else its `label` cut at "
             "a word, else (attach) the title or label SwarmCloud stored, else the "
-            "workflow id. A workflow script's name is fixed when it is launched, so "
+            "workflow id, and <workspace> the tenant the API's document names "
+            "(never cut). A workflow script's name is fixed when it is launched, so "
             "this writes a copy of the plugin's run.js with that name and returns "
             "its `script_path`: launch it with the Workflow tool, "
             "{scriptPath: <script_path>, args: ...}. Submits NOTHING.\n"
@@ -1117,8 +1118,10 @@ TOOLS: list[dict[str, Any]] = [
             "Pass ONE of `spec` (the spec object), `spec_path` (its file) or "
             "`attach` (a workflow id, read once for its stored name and step "
             "count; or \"all\": every running workflow of your tenant, one copy "
-            "each, at most 10 -- one Claude Code run per SwarmCloud workflow, "
-            "each launched with the `args` its entry carries)."
+            "each, newest first and grouped by workspace, at most the sc plugin's "
+            "`max_live_rows` (30 unless set; 1-50) -- one Claude Code run per "
+            "SwarmCloud workflow, each launched with the `args` its entry carries; "
+            "the rest in `not_followed`)."
         ),
         "inputSchema": {
             "type": "object",
@@ -1169,7 +1172,8 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "The workflows of YOUR tenant that are still running in SwarmCloud: "
             "every one whose derived state is not SUCCEEDED, FAILED, CANCELLED or "
-            "DEAD_LETTERED, newest first, each with its workflow_id, its spec's "
+            "DEAD_LETTERED, newest first and grouped by workspace, each with its "
+            "workflow_id, the `workspace` it runs in, its spec's "
             "label, its state, its current (unfinished) steps and their states, "
             "its age and its console link. Read-only; it submits and attaches "
             "nothing. The API filters on the workflows' stored state in its "
@@ -1181,12 +1185,13 @@ TOOLS: list[dict[str, Any]] = [
             "may be missing. A workflow with `steps_unread_because` was listed "
             "but its steps were not read. To show them all as live rows, run "
             "`/sc attach --all` (the /sc:swarmcloud workflow with "
-            "{attach: \"all\"}), which follows at most 10.\n"
+            "{attach: \"all\"}), which follows at most the sc plugin's "
+            "`max_live_rows` (30 unless set).\n"
             "\n"
             "`single_tasks` lists YOUR running single tasks beside them: not "
             "finished, in no workflow, submitted by you (`swarm_dispatch`), each "
-            "with its task_id, label, state, age and console link. "
-            "`/sc attach --all` gives each one row too, at most 10. "
+            "with its task_id, workspace, label, state, age and console link. "
+            "`/sc attach --all` gives each one row too, at most `max_live_rows`. "
             "`single_tasks_error` means they could not be read."
         ),
         "inputSchema": {"type": "object", "properties": {}},
@@ -1739,6 +1744,55 @@ TOOLS: list[dict[str, Any]] = [
         ),
         "inputSchema": {"type": "object", "properties": {}},
     },
+    # -- provider keys (KEYS-PLUGIN, docs/provider-keys.md) -----------------
+    #
+    # THE KEY NEVER PASSES THROUGH CLAUDE (owner, 2026-10-14): not as a tool
+    # argument, not in a reply. So there is no tool that SETS a key -- only
+    # status and a one-time link to the console form, where the person pastes
+    # it. Both schemas are enums and `additionalProperties: false`: no field a
+    # key fits in, and an argument not in the schema is refused unsent
+    # (`_refuse_unknown_arguments`). tests/unit/mcp/test_provider_keys_bridge.py.
+    {
+        "name": "swarm_keys",
+        "description": (
+            "Whether a TypeSafe key is set for YOU and for your selected tenant, "
+            "and which one a task you submit there would use (your own key wins "
+            "over the tenant's). Status only -- set, version, who set it and when; "
+            "never a key, its length or any part of it. `text` is what to show. "
+            "Read-only. To set a key, call swarm_key_set_link; never ask the person "
+            "for the key itself."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "provider": {"type": "string", "enum": list(keys.PROVIDERS),
+                             "default": "typesafe"},
+            },
+        },
+    },
+    {
+        "name": "swarm_key_set_link",
+        "description": (
+            "A one-time console link where the person pastes their TypeSafe key "
+            "themselves: answers ONLY `url` and `expires_at` (ten minutes, one use, "
+            "valid only in their own console session). There is deliberately no "
+            "argument for the key: never ask for it, never accept it in chat. Give "
+            "the person the url and tell them to open it. scope `user` (default) is "
+            "their own key, which wins over the tenant's; `tenant` is the selected "
+            "tenant's key and needs an admin. In their own terminal, the sc CLI's "
+            "`key set` does the same at a hidden prompt; tell them, never run it."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "provider": {"type": "string", "enum": list(keys.PROVIDERS)},
+                "scope": {"type": "string", "enum": list(keys.SCOPES), "default": "user"},
+            },
+            "required": ["provider"],
+        },
+    },
     # -- cluster state -----------------------------------------------------
     #
     # These return the SAME text `sc` prints, at a fixed 80 columns with no
@@ -2166,6 +2220,10 @@ def _dispatch_rows(sent: list[tuple[str, str | None, dict[str, Any]]]) -> dict[s
     entries = []
     for task_id, label, task in sent:
         entry: dict[str, Any] = {"task_id": task_id, "label": label}
+        # The workspace the task runs in, from the API's own task (SC-ROWS).
+        workspace = workflows.workspace_of(task)
+        if workspace:
+            entry["workspace"] = workspace
         entries.append(with_console(entry, task))
     try:
         rows = launch.for_tasks(entries)
@@ -3579,8 +3637,20 @@ def _workflow_merge_pr(client: SwarmClient, args: dict[str, Any]) -> str:
 def _workflow_created(
     envelope: dict[str, Any], *, placed: dict[str, Any], repository: dict[str, Any],
     digest: str | None = None, expected_digest: Any = None,
+    given: list[str] | None = None,
 ) -> str:
-    """`swarm_workflow`'s answer to an accepted submission, spec or `merge_pr`."""
+    """`swarm_workflow`'s answer to an accepted submission, spec or `merge_pr`.
+
+    `given` is the step ids this bridge submitted. Each reply step then says
+    whether SwarmCloud ADDED it (`added`): swarm-api appends a re-review and a
+    merge the spec never named (`swarm_api.service._with_merge_step`), and
+    /sc:swarmcloud starts a row for every step the server marks so, instead of
+    predicting the server's merge rules and refusing the reply when the
+    prediction missed (SPEED-D5, measured 2026-10-14 on plugin sc 0.5.27: a
+    3-step spec came back with 5 and no row started). The comparison is made
+    here because this is the one place that holds both the spec submitted and
+    the reply; no relay retyped either.
+    """
     workflow = envelope["workflow"]
     workflow_id = workflow.get("workflow_id")
     if not workflow_id:
@@ -3599,6 +3669,7 @@ def _workflow_created(
                 "runner_profile": step.get("runner_profile"),
                 "depends_on": step.get("depends_on") or [],
                 "input_from": step.get("input_from") or {},
+                **({} if given is None else {"added": step.get("step_id") not in given}),
             },
             step,
         )
@@ -3606,6 +3677,9 @@ def _workflow_created(
     ]
     created: dict[str, Any] = with_console({"workflow_id": workflow_id}, workflow)
     created.update({
+        # The workspace it runs in, from the API's document (SC-ROWS): the
+        # label of every row /sc:swarmcloud starts for it.
+        "workspace": workflows.workspace_of(workflow, fallback=envelope.get("tenant_id")),
         "steps": steps,
         "dispatch": envelope.get("dispatch"),
         "repository": repository,
@@ -3852,8 +3926,11 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             task = client.task(t)
             # `console`: the API's link to this task, as served, in every
             # state -- a QUEUED task is the one a person opens it to watch.
+            # `workspace`: the tenant the task runs in, from its own document
+            # (SC-ROWS), which `/sc status` prints first on the task's line.
             rows.append(with_console(
-                {"task_id": t, "state": task.get("state"), "masked": masked_counts(task)}, task
+                {"task_id": t, "workspace": workflows.workspace_of(task), "state": task.get("state"),
+                 "masked": masked_counts(task)}, task
             ))
         return json.dumps(rows, indent=2)
 
@@ -3900,6 +3977,17 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         # the cluster cannot be reached, from the copy, labelled
         # `catalogue_source` -- see `catalogue.served_catalogue`.
         return json.dumps(catalogue.served_catalogue(client), indent=2)
+
+    if name == "swarm_keys":
+        view = keys.key_status(client, args.get("provider", "typesafe"))
+        return json.dumps({**view, "text": keys.status_text(view)}, indent=2)
+
+    if name == "swarm_key_set_link":
+        # The url and its expiry, nothing else: `keys.key_set_link` copies
+        # those two fields, so not even the API's `path` reaches a transcript.
+        return json.dumps(
+            keys.key_set_link(client, args.get("provider"), args.get("scope", "user")), indent=2
+        )
 
     if name == "swarm_tenants":
         # Two GETs. A `tenant` setting the caller is not a member of comes back
@@ -3951,7 +4039,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             if args.get("spec_path") is not None
             else args["spec"]
         )
-        return json.dumps(launch.for_spec(document), indent=2)
+        return json.dumps(launch.for_spec(document, client), indent=2)
 
     if name == "swarm_apply":
         repo = Path(args.get("repo") or ".").resolve()
@@ -4079,9 +4167,12 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             title=fields["title"],
             # Only a whole spec carries `merge`; the `steps` form never did.
             merge=fields.get("merge"),
+            # Nor `after` (SPEED-D3).
+            after=fields.get("after"),
         )
         reply = _workflow_created(envelope, placed=placed, repository=repository.as_dict(),
-                                  digest=digest, expected_digest=expected_digest)
+                                  digest=digest, expected_digest=expected_digest,
+                                  given=[str(step.get("step_id")) for step in fields["steps"]])
         if not territory and not checks:
             return reply
         created = json.loads(reply)
@@ -4129,7 +4220,11 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
     if name == "swarm_workflows":
         from .sc import running_tasks, running_workflows
 
+        from .launch import named_workspaces
+
         listing = running_workflows(client)
+        names = workflows.workspace_names(client)
+        named_workspaces(listing["workflows"], names)
         # The caller's running SINGLE tasks beside them (#830), so the LIST
         # row of `/sc attach --all` can give each a row. A failed read is said,
         # never an empty list.
@@ -4139,7 +4234,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             listing["single_tasks"] = []
             listing["single_tasks_error"] = str(exc)
         else:
-            listing["single_tasks"] = singles["tasks"]
+            listing["single_tasks"] = named_workspaces(singles["tasks"], names)
             listing["single_tasks_count"] = singles["count"]
             if not singles["complete"]:
                 listing["single_tasks_incomplete_because"] = singles.get("incomplete_because")

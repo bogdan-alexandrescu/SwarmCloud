@@ -70,6 +70,34 @@ plant, change or clear one (`Network.setCookie(s)`, `Storage.setCookies`,
 is the intended outcome. Not covered, as the design says: a cookie without
 `HttpOnly` is readable by page script through `Runtime.evaluate`.
 
+PUPPETEER OPENS PAGES TOO (DEVB-GATE; part of #1030). dev-browser v1 drives
+Chromium with puppeteer-core 25.8.0, whose `newPage()` fails outright when
+`Performance.enable` or `Audits.enable` errors (CdpPage#initialize,
+FrameManager.initialize; the sequence is pinned in
+tests/unit/worker/fixtures/puppeteer-core-25.8.0-*.json). So:
+
+* `Performance.enable` / `getMetrics` / `disable` are allowed. The domain
+  reports counters -- `Metric` is a name and a number, the `metrics` event a
+  list of those and a title -- and nothing of a page's content;
+* `Audits.enable` and `Audits.disable` are ANSWERED BY THE GATE with `{}`
+  (`LOCAL_REPLIES`) and never reach Chromium, so Chromium never enables the
+  domain on an agent session, and the proxy drops any `Audits.*` event
+  besides. CHECKED 2026-10-14 against the CDP protocol definition
+  (devtools-protocol 0.0.1666840, the one puppeteer-core 25.8.0 pins):
+  `Audits.issueAdded` carries `InspectorIssueDetails.cookieIssueDetails`,
+  whose `rawCookieLine` is, in the protocol's words, "the raw Set-Cookie header
+  string" when the cookie is malformed and no `AffectedCookie` could be made --
+  a header with the cookie's value. Forwarded, it would hand the agent cookies
+  the rule above keeps from it (LB-7). The domain's other methods stay off the
+  allowlist: `getEncodedResponse` returns a response body, `checkFormsIssues`
+  reads a page's forms;
+* `WebMCP.enable` and `Network.emulateNetworkConditionsByRule` stay refused
+  (the first is not on the list; the second would set network conditions
+  by URL pattern) but are `QUIET_REFUSALS`: Puppeteer sends them, catches the
+  error and goes on, so each page it opened recorded a refusal that meant
+  nothing (ANALYSIS issue 19, refusal noise). The proxy counts them and logs
+  them at debug instead of recording `cdp_method_refused`.
+
 A REFUSAL IS RECORDED BY METHOD NAME ONLY (`cdp_method_refused`), never with
 its parameters, which can carry page text.
 """
@@ -138,6 +166,7 @@ DENIED: Mapping[str, str] = {
     "Storage.setCookies": "writes the browser's cookies",
     "Storage.clearCookies": "writes the browser's cookies",
     "Storage.clearDataForOrigin": "writes the browser's cookies",
+    "Network.emulateNetworkConditionsByRule": "sets the network's conditions by URL pattern; Puppeteer survives the refusal",
 }
 
 # Methods refused only for one shape of their parameters; every other entry
@@ -296,6 +325,11 @@ ALLOWED_METHODS: frozenset[str] = frozenset(
         # Storage: the storage key only. Its cookie methods are the gate's
         # (section 5.5.1), refused above.
         "Storage.getStorageKeyForFrame",
+        # Performance: run-time counters only (`Metric` is a name and a
+        # number). Puppeteer's newPage() fails without Performance.enable.
+        "Performance.enable",
+        "Performance.disable",
+        "Performance.getMetrics",
         # Log and IO: console capture, and reading a PDF stream the agent made.
         "Log.enable",
         "Log.disable",
@@ -303,6 +337,21 @@ ALLOWED_METHODS: frozenset[str] = frozenset(
         "IO.close",
     }
 )
+
+# Methods the gate answers itself, with this result, without forwarding them
+# (module docstring): a client that needs the call to succeed gets its yes,
+# and Chromium never turns the domain on for an agent session.
+LOCAL_REPLIES: Mapping[str, Mapping[str, Any]] = {
+    "Audits.enable": {},
+    "Audits.disable": {},
+}
+
+# Events no agent session receives, by domain prefix, whatever enabled them.
+DROPPED_EVENT_DOMAINS: tuple[str, ...] = ("Audits.",)
+
+# Refused like any method off the allowlist, but known probes a client
+# survives: counted and logged at debug, never recorded (module docstring).
+QUIET_REFUSALS: frozenset[str] = frozenset({"WebMCP.enable", "Network.emulateNetworkConditionsByRule"})
 
 # A response carrying page content. One that completes while a person is in
 # control was sent before control and resolved during it -- an `awaitPromise`
@@ -389,6 +438,8 @@ def check(method: str, params: Mapping[str, Any] | None, paths: PolicyPaths) -> 
         return None
     if method in DENIED:
         return Refusal(method, DENIED[method])
+    if method in LOCAL_REPLIES:
+        return None
     if method not in ALLOWED_METHODS:
         return Refusal(method, "not on the allowlist")
     return None

@@ -44,7 +44,7 @@ from agent_worker.livegate import __main__ as gate_main
 from agent_worker.livegate.capture import Frame
 from agent_worker.livegate.device import DeviceController, captured
 from agent_worker.livegate.mask import MASK_RGB, MaskState, Outcome, observer_source
-from agent_worker.livegate.presets import MAX_DISPLAY_HEIGHT, MAX_DISPLAY_WIDTH, resolve
+from agent_worker.livegate.presets import MAX_DISPLAY_HEIGHT, MAX_DISPLAY_WIDTH
 
 #: (preset, orientation) -> emulated CSS width x height, the Xvfb display, the
 #: captured frame the viewer is sent, and the layout width Chromium gives a

@@ -48,9 +48,10 @@ def test_the_tool_schemas_and_instructions_are_under_two_thousand_tokens():
         f"{BYTES_PER_TOKEN} bytes a token")
 
 
-def test_there_are_at_most_six_tools_and_they_are_the_designs():
+def test_there_are_at_most_eight_tools_and_they_are_the_designs():
+    # KG4's six, and context-quality.md §4.4's two offline additions (CTXQ-T).
     assert tools.TOOL_NAMES == ("search", "context", "impact", "tests_for", "neighbours",
-                                "territory")
+                                "territory", "similar_changes", "rules_for")
     assert set(tools.HANDLERS) == set(tools.TOOL_NAMES)
 
 

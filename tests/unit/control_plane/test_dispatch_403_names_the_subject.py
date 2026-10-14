@@ -33,7 +33,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import google.auth._helpers as google_auth_helpers
-import google.auth.credentials
 import pytest
 
 from swarm_common.models import Lease, Task, Tenant
