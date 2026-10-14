@@ -306,13 +306,15 @@ def _mcp_tools(env: dict[str, str]) -> set[str]:
 
 def jev_browser(version: str) -> None:
     check(bool(version), "JEV_BROWSER_VERSION names the pinned version")
-    import playwright
+    from importlib.metadata import version as dist_version
+
+    pw_version = dist_version("playwright")  # playwright-python has no __version__
 
     with open(f"{JEV_PACKAGE}/package.json", encoding="utf-8") as fh:
         check(json.load(fh)["version"] == version, f"jev-browser is {version}")
     with open(f"{JEV_ROOT}/node_modules/playwright-core/package.json", encoding="utf-8") as fh:
         core = json.load(fh)["version"]
-    check(core == playwright.__version__, f"jev-browser's Playwright is the image's {playwright.__version__}: {core}")
+    check(core == pw_version, f"jev-browser's Playwright is the image's {pw_version}: {core}")
     check(not os.path.exists(f"{JEV_ROOT}/node_modules/jev-browser/node_modules/playwright-core"),
           "no second Playwright under jev-browser")
     check(os.access(JEV_WRAPPER, os.X_OK) and shutil.which("jev-browser-mcp") is None,
