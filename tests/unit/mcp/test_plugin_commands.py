@@ -466,6 +466,9 @@ _DEVELOPER_STATE = frozenset(
         # 2026-10-11: the audited purge of failed history DELETES workflows,
         # tasks and their artifacts. Typed at a terminal, never granted.
         "sc.cmd_admin_purge",
+        # KEYS-PLUGIN: storing a TypeSafe key reads it at a hidden prompt.
+        # The key never passes through a model, so no skill may run it.
+        "sc.cmd_key_set",
     }
 )
 

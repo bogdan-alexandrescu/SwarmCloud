@@ -61,7 +61,7 @@ from .agent_questions import unanswered
 from . import workspaces as ws
 from .forgeapp import CONNECTIONS, REFRESH_FAILED, connection_id_for, user_hash
 from .gittokens import COLLECTION as GIT_TOKENS
-from .issueruns import IssueRuns, RunState
+from .issueruns import IssueRuns
 from .people import LOAN_DECLINED
 from .redaction import redact_detail
 

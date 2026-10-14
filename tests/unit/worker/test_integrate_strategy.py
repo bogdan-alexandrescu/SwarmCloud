@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_worker.gitops import GitError, merge_branches
+from agent_worker.gitops import merge_branches
 
 
 # -- the dispatch block, read in full ---------------------------------------

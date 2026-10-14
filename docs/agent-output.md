@@ -440,8 +440,9 @@ the repair turns, while the session can still be continued
    image promote gate. `scripts/refresh-build-mirror.sh --check`: it needs
    gcloud and the mirror bucket, and the container has no cloud credential,
    so the gate runs the tests that hold the manifest equal to the Dockerfiles
-   instead. ruff is not configured in this repository, so here the two ruff
-   checks are skipped.
+   instead. ruff is configured here (lint only, [docs/ci.md](ci.md#ruff-lint-is-the-house-python-linter-and-formatting-is-not-adopted)),
+   and formatting excludes every file, so `ruff format --check` passes
+   whatever a lane touched and `ruff check` is the one that can fail.
 4. **One fix turn**, with each failing check's output, then the set runs
    again.
 5. **What still fails is published anyway.** No work is dropped. The runner

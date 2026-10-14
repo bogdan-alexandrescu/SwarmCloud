@@ -12,7 +12,6 @@ keys are `sk-ant-api...`.
 
 from __future__ import annotations
 
-import pytest
 
 from agent_worker.runners.cliagent import CliAgentSpec, _credential_env
 
