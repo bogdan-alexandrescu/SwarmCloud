@@ -618,7 +618,7 @@ export interface Task {
   forge_credential?: string | null
   /** `read` or `write`; null when the task names no GitHub credential. */
   forge_access?: 'read' | 'write' | null
-  /** "the submitter's GitHub credential", "tenant token, service submission", or null. */
+  /** "the submitter's GitHub credential", "tenant token, service submission", "owner's GitHub connection, service submission" (INDEX-CRED), or null. */
   forge_credential_source?: string | null
   cancel_requested: boolean
   repository_url: string | null

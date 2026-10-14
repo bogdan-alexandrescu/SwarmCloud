@@ -853,6 +853,18 @@ START_PROBLEM_METADATA_KEY = "start_problem"
 #: for it and an additive key changes no reader that does not want it.
 OWNER_ANSWERS_METADATA_KEY = "owner_answers"
 
+#: Whose slot a service submission's task runs with (INDEX-CRED, part of
+#: #1041): `tenant` (the tenant's `-git` token) or `owner` (a personal
+#: tenant's owner's GitHub connection, `forge.service_slot`). Written only by
+#: `SubmissionService._resolve_forge`, before the spec is signed, and read by
+#: `codec.forge_credential_source`: the slot name alone (`git-u-<hex>`) cannot
+#: tell the owner's connection run on the tenant's behalf from a person's
+#: own task, and a caller who set it would mislabel whose credential ran.
+#: Not signed (`swarm_common.specsign.SIGNED_METADATA_KEYS` is frozen): it is
+#: a label no worker acts on, and it says `owner` only beside a `git-u-`
+#: `forge_credential`, which IS signed.
+FORGE_SOURCE_METADATA_KEY = "forge_credential_source"
+
 #: Child tasks (contract request 14, docs/design/child-tasks.md §6.4). The
 #: agent's `request_id` on a child, written once by the children route and read
 #: by its dedupe; the awaits refunded so far on a parent, written by the
@@ -915,6 +927,7 @@ RESERVED_METADATA_KEYS = (
     HUMAN_HANDOFFS_METADATA_KEY,
     START_PROBLEM_METADATA_KEY,
     OWNER_ANSWERS_METADATA_KEY,
+    FORGE_SOURCE_METADATA_KEY,
 )
 
 #: Strategies and carriers that cannot work without somewhere to push to.
@@ -1607,6 +1620,11 @@ _RESERVED_BECAUSE = {
         f"metadata.{OWNER_ANSWERS_METADATA_KEY} is reserved: it holds the owner's "
         "answers to the agent's questions, written only by "
         "POST /v1/tasks/{task_id}/answers. Drop the key from metadata."
+    ),
+    FORGE_SOURCE_METADATA_KEY: (
+        f"metadata.{FORGE_SOURCE_METADATA_KEY} is reserved: it says whose GitHub "
+        "credential a service submission runs with, written only by submission. "
+        "Drop the key from metadata."
     ),
 }
 

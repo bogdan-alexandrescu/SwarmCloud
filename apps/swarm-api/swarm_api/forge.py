@@ -212,13 +212,21 @@ class FirestoreSlotIndex:
     def __init__(self, db: Any) -> None:
         self._db = db
 
-    def _usable(self, tenant_id: str, scope: str, key: str) -> bool:
-        from .gittokens import COLLECTION, UNUSABLE, TokenState, token_id_for
+    def _record(self, tenant_id: str, scope: str, key: str) -> "dict[str, Any] | None":
+        from .gittokens import COLLECTION, token_id_for
 
         snap = self._db.collection(COLLECTION).document(
             token_id_for(tenant_id, scope, key)).get()
         data = snap.to_dict() if snap.exists else None
         if not data or data.get("tenant_id") != tenant_id:
+            return None
+        return data
+
+    def _usable(self, tenant_id: str, scope: str, key: str) -> bool:
+        from .gittokens import UNUSABLE, TokenState
+
+        data = self._record(tenant_id, scope, key)
+        if data is None:
             return False
         try:
             state = TokenState(data.get("state") or TokenState.UNVERIFIED.value)
@@ -236,6 +244,20 @@ class FirestoreSlotIndex:
         from .gittokens import Scope
 
         return self._usable(tenant_id, Scope.TENANT.value, "")
+
+    def login(self, tenant_id: str, user: str | None) -> str | None:
+        """The GitHub login the slot's record says it acts as (`forge_login`,
+        written by the connection's exchange and the token probe): `user`'s
+        user slot, or the tenant's `-git` slot when `user` is None. A name,
+        never a value; None when no record says."""
+        from .gittokens import Scope, slot_key
+
+        if user:
+            data = self._record(tenant_id, Scope.USER.value, slot_key(Scope.USER, user=user))
+        else:
+            data = self._record(tenant_id, Scope.TENANT.value, "")
+        login = (data or {}).get("forge_login")
+        return login if isinstance(login, str) and login else None
 
 
 def resolve_forge_slot(tenant: Tenant, *, person: str | None = None,
@@ -265,6 +287,36 @@ def resolve_forge_slot(tenant: Tenant, *, person: str | None = None,
     if owner and index is not None and index.user_slot(tenant.tenant_id, owner):
         return ForgeSlot(provider_suffix(Scope.USER, user=owner), True, "owner")
     return ForgeSlot(GIT_PROVIDER, False, "tenant")
+
+
+def service_slot(tenant: Tenant, index: SlotIndex | None) -> ForgeSlot:
+    """The slot a SERVICE submission's task runs with -- an index run, the
+    repository poll's, a schedule's, an issue run's: everything submitted on
+    the tenant's behalf rather than a person's (INDEX-CRED, docs/git-tokens.md
+    §3.5). `resolve_forge_slot` with no person, so the tenant's `-git` slot
+    when it exists, else a personal tenant's owner's connection: the slot
+    the owner's own tasks and Try it use, so a repository that passes Try it
+    also indexes. `SubmissionService._resolve_forge` and every server-side
+    read share this one rule."""
+    return resolve_forge_slot(tenant, index=index)
+
+
+def service_credential_view(tenant: Tenant, index: SlotIndex | None) -> dict[str, Any]:
+    """Which credential the tenant's service runs (indexing among them) clone
+    with, as served to the console (INDEX-CRED): `source` is `tenant` (the
+    team token), `owner` (a personal tenant's owner's GitHub connection) or
+    `none` (no credential swarm-api knows of: a private repository is
+    refused before anything is queued). The slot's secret NAME and the
+    GitHub login its record names; never a value."""
+    slot = service_slot(tenant, index)
+    if not slot.known:
+        return {"source": "none", "secret_name": None, "login": None}
+    login = None
+    reader = getattr(index, "login", None)
+    if reader is not None:
+        login = reader(tenant.tenant_id, tenant.principal if slot.source == "owner" else None)
+    return {"source": slot.source, "secret_name": tenant.secret_name(slot.provider),
+            "login": login}
 
 
 def read_resolved(tokens: Any, tenant: Tenant, *,

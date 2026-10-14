@@ -358,6 +358,51 @@ Not resolved here: a person's per-owner fallback slot (D5, `owner_suffix`) —
 server-side reads use the person's base user slot — and repository slots
 (`git-r-`), which no Terraform yet lets swarm-api read (§2).
 
+**Service submissions clone with the same rule (INDEX-CRED).** A task
+submitted on the tenant's behalf rather than a person's — an index run
+(Index now and the repository poll both submit with `service_submission`),
+a `repo-index-refresh` schedule's, a service account's — runs on
+`forge.service_slot`, which is `resolve_forge_slot` with no person: steps 2–4
+above. `SubmissionService._resolve_forge` calls it; there is no second copy.
+Until INDEX-CRED that submission path hard-coded `git`, so on 2026-10-14
+u-bogdan's Try it passed for `sagaxyz/ai-studio` through the owner's
+connection slot while every index run of it cloned with a `-git` slot the
+workspace never had and failed "Repository not found". A person's own task
+keeps its own slot first (their grant, §3.1); a person's ungranted task while
+`REPOSITORY_GRANTS_ENFORCED` is off takes the service rule too, since "the
+tenant token" it used to fall back to does not exist in a personal
+workspace. Schedules and issue runs that submit *as their owner* are person
+submissions and run on that person's slot.
+
+* **Recorded truthfully.** The task's `metadata.forge_credential_source`
+  (reserved: no caller may send it) says `tenant` or `owner`, so the API's
+  `forge_credential_source` reads "tenant token, service submission" or
+  "owner's GitHub connection, service submission" — a bare `git-u-` slot
+  name cannot tell the owner's connection run for the tenant from a
+  person's own task.
+* **Refused up front when it cannot clone.** In a personal workspace with no
+  usable slot at all, a service task on a repository whose registration says
+  it is private (or internal) is refused 409 `no_forge_credential` with
+  `no_github_credential`'s sentence, and nothing is queued. Only a personal
+  workspace: its credentials are exactly the records its connection writes,
+  whereas a group tenant's `-git` secret can be stored by an operator with
+  nothing swarm-api reads listing it, so refusing there could stop a clone
+  that works. A public or unregistered repository is never refused here.
+* **The poll's back-off follows the slot.** INDEX-FAIL's back-off lifts when
+  the credential mark changes; the mark now also digests the slot an index
+  run would use when that is not `-git`. Every mark recorded before was taken
+  while index runs used `-git`, so a tenant still on it keeps its mark, and a
+  personal workspace that now resolves its owner's slot gets a new mark: its
+  backed-off repositories resume on their own after the release.
+* **The console says which.** `GET /v1/repositories` and
+  `GET /v1/repositories/{repo_id}` serve `index_credential`
+  (`forge.service_credential_view`: `source` `tenant` / `owner` / `none`,
+  the slot's secret name and the GitHub login its record names — never a
+  value). Each repository card says "Indexing uses …", and Try it on the
+  Git tokens page says the same beside the chosen repository's last index
+  result and its reason (`index.last_failure`), so a passing check and a
+  failing index never look alike without an explanation.
+
 ---
 
 ## 4. Registering a token

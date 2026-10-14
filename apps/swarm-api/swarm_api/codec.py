@@ -39,6 +39,7 @@ from .validation import (
     DEFAULT_CARRIER,
     DEFAULT_STRATEGY,
     DISPATCH_METADATA_KEY,
+    FORGE_SOURCE_METADATA_KEY,
     OWNER_ANSWERS_METADATA_KEY,
     START_PROBLEM_METADATA_KEY,
 )
@@ -243,20 +244,26 @@ def _forge_access(value: Any) -> str | None:
 
 
 #: What `task_to_api` says a task's `forge_credential` is, by its prefix.
-#: `git` is only ever a service submission's (`SubmissionService._resolve_forge`).
+#: `git` is only ever a service submission's (`SubmissionService._resolve_forge`);
+#: so, in a personal tenant with no `-git` slot, is its owner's `git-u-` slot,
+#: which `metadata.forge_credential_source` = `owner` tells apart (INDEX-CRED).
 _FORGE_SOURCES = (
     ("git-u-", "the submitter's GitHub credential"),
     ("git-r-", "the repository's token"),
 )
 
 
-def forge_credential_source(value: str | None) -> str | None:
+def forge_credential_source(value: str | None, source: Any = None) -> str | None:
     """The words for a task's forge credential, or None when it names none
-    (no repository, not GitHub, or submitted before #780)."""
+    (no repository, not GitHub, or submitted before #780). `source` is the
+    task's `metadata.forge_credential_source`: `owner` on a user slot is the
+    owner's connection run on the tenant's behalf, not the submitter's own."""
     if value is None:
         return None
     if value == "git":
         return "tenant token, service submission"
+    if source == "owner" and value.startswith("git-u-"):
+        return "owner's GitHub connection, service submission"
     for prefix, words in _FORGE_SOURCES:
         if value.startswith(prefix):
             return words
@@ -540,7 +547,8 @@ def task_to_api(
         # D4 for automation (2026-10-07): "the task says so".
         "forge_credential": task.forge_credential,
         "forge_access": task.forge_access,
-        "forge_credential_source": forge_credential_source(task.forge_credential),
+        "forge_credential_source": forge_credential_source(
+            task.forge_credential, (task.metadata or {}).get(FORGE_SOURCE_METADATA_KEY)),
         "cancel_requested": task.cancel_requested,
         "metadata": masked_metadata,
         "metadata_redaction_count": metadata_count,

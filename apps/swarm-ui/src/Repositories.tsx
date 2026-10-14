@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { loadRepositories, loadRepositoryIndex, runRepositoryIndex } from './api'
 import { Banner, Button, Card, Dash, EmptyState, NamedMark } from './components'
-import { HEAD_UNREAD, freshness, repoName, scheduleWords, shortSha, type RepoRecord } from './RepositoriesData'
+import { HEAD_UNREAD, freshness, indexCredentialWords, repoName, scheduleWords, shortSha, type RepoRecord } from './RepositoriesData'
 import { REGISTER, GT_PAGE, TestsMapped, UrConfirmIndex, UrFreshPill, UrLink, UrNavButton, UrRefresh, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
 import { RegisterRepository } from './RepositoriesRegister'
 import { RepositoryDetail } from './RepositoriesDetail'
@@ -251,6 +251,37 @@ function FailureLine({ r, go }: { r: RepoRecord; go: (to: string) => void }) {
   )
 }
 
+/**
+ * WHICH CREDENTIAL THIS REPOSITORY'S INDEX RUNS CLONE WITH (lane INDEX-CRED,
+ * owner report 2026-10-13: "it says all tests pass for /repositories/tokens
+ * but it can't index the repo in my personal workspace?"). Try it checks the
+ * access a person's own tasks use; an index run is the tenant's, so the card
+ * names the credential it uses -- the team token, the workspace owner's
+ * GitHub connection, or none -- beside the last result, and a passing check
+ * and a failing index never look alike without saying why.
+ */
+function IndexingUses({ r, go }: { r: RepoRecord; go: (to: string) => void }) {
+  const words = indexCredentialWords(r.index_credential)
+  if (words === null) return null
+  const none = r.index_credential?.source === 'none'
+  return (
+    <div className="ur-cmeta ur-cred" data-source={r.index_credential?.source} title={r.index_credential?.secret_name ?? undefined}>
+      <span>
+      Indexing uses <b className={none ? 'ur-bad' : undefined}>{words}</b>
+      {none && (
+        <>
+          {' '}
+          under{' '}
+          <UrLink to={GT_PAGE} go={go}>
+            Setup › Git tokens
+          </UrLink>
+        </>
+      )}
+      </span>
+    </div>
+  )
+}
+
 function RepoCard({
   r,
   go,
@@ -306,6 +337,7 @@ function RepoCard({
         {lastIndexed(r)}
         <span>Schedule {sched === null ? <Dash why="The schedule was not served" /> : <b>{sched}</b>}</span>
       </div>
+      <IndexingUses r={r} go={go} />
       <FailureLine r={r} go={go} />
       <div className="ur-cacts">
         <UrNavButton to={repoAddress(r.repo_id)} go={go} size="sm">

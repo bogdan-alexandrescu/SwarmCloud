@@ -251,6 +251,16 @@ def test_a_blocked_site_is_handed_to_a_person_not_swapped():
     assert "do not switch to a different site" in note
 
 
+def test_the_note_says_wait_and_do_not_poll_the_browser():
+    """HANDOFF-POLICY (part of #1030), task_2ac5d7e22a51460995a2: after
+    `swarm-handoff wait` the agent ran `curl /json/version` in a loop."""
+    from agent_worker.runners import claude_code
+
+    note = claude_code.LIVE_BROWSER_NOTE
+    assert "wait, do not poll the browser" in note
+    assert "exit 75" in note
+
+
 def test_the_agents_python_is_the_venv_with_playwright(monkeypatch, tmp_path):
     from agent_worker.runners import claude_code
 

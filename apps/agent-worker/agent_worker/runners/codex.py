@@ -4,15 +4,28 @@ Same shape as the Claude Code runner -- deliberately, because the two profiles
 must behave identically from the platform's point of view: the same workspace,
 the same artifact layout, the same rate-limit handling, the same park decision.
 Only the binary, the flags and the credential differ, and all three are data.
+
+THE GIT TOOLS (docs/runner-git-tools.md §1.3, lane G6). When the worker sets
+`SWARM_GIT` -- only for an attempt offered the runner git tools -- the
+`swarm-git` shim is named in codex's MCP configuration as `-c` overrides on
+`codex exec`, the same server claude-code gets in `--mcp-config`. Overrides,
+not `$HOME/.codex/config.toml`: HOME is `work/`, which a checkpoint restores,
+so a file written there would be the agent's to edit for the next attempt and
+would outlive an attempt that is not offered the tools.
 """
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import stat
 from pathlib import Path
 from typing import Any
 
+from ..children import git_shim_argv
+from ..gitmcp.server import SERVER_NAME as GIT_MCP_SERVER_NAME
+from ..gitmcp.server import SPOOL_ENV as GIT_SPOOL_ENV
 from .base import RunnerContext, run_runner
 from .cliagent import CliAgentSpec, run_cli_agent
 
@@ -76,8 +89,24 @@ SPEC = CliAgentSpec(
 )
 
 
+def git_tools_args(spool: str) -> list[str]:
+    """`-c` overrides registering the `swarm-git` shim as a stdio MCP server.
+
+    Each value is TOML; a JSON string and a JSON array of strings are both
+    valid TOML, so `json.dumps` quotes them.
+    """
+    command, *args = git_shim_argv(spool)
+    key = f"mcp_servers.{GIT_MCP_SERVER_NAME}"
+    return ["-c", f"{key}.command={json.dumps(command)}",
+            "-c", f"{key}.args={json.dumps(args)}"]
+
+
 def body(ctx: RunnerContext) -> dict[str, Any]:
-    return run_cli_agent(ctx, SPEC)
+    spool = os.environ.get(GIT_SPOOL_ENV, "").strip()
+    if not spool:
+        return run_cli_agent(ctx, SPEC)
+    return run_cli_agent(ctx, SPEC, extra_args=git_tools_args(spool),
+                         extra_env={GIT_SPOOL_ENV: spool})
 
 
 def main() -> int:

@@ -211,6 +211,14 @@ SWITCHES: dict[str, Switch] = {
         "and the broker's reason, instead of the broker's bare refusal. On once People shows "
         "the loan pane's error and the log shows the named members really are missing service accounts",
     ),
+    # Lane G9 (docs/runner-git-tools.md §6.3). Off, a workflow read under another
+    # tenant answers the bare 404 `workflow '<id>' not found`, as before.
+    "workflow_not_in_tenant": Switch(
+        code="workflow_not_in_tenant",
+        why="a workflow read under a tenant it is not in is answered 404 workflow_not_in_tenant "
+        "naming the tenant the call resolved to, instead of a bare not found. On once swarm-mcp "
+        "and the coordinator callers that re-read with the launch's tenant are deployed",
+    ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",
         why="a schedule pauses after N failed or refused firings in a row (§4.4, default "
