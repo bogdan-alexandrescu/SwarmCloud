@@ -113,7 +113,7 @@ WHY THE LIVE BROWSER IS THE ONLY ONE (BROWSER-ENFORCE, owner decision
 note above, launched its own headless Chromium, and the person watching the
 live browser saw none of its work. So when the live browser exists -- the
 dispatcher set `SWARM_CDP_ENDPOINT`, which it does only with the display
-sidecar -- three things change, and only then:
+sidecar -- four things change, and only then:
   * the agent's `PLAYWRIGHT_BROWSERS_PATH` is `AGENT_BROWSERS_PATH`, a
     directory the image fills with a stub (images/agent-runtime-browser/
     live-browser-only), so any `chromium.launch()` fails with a message
@@ -122,7 +122,10 @@ sidecar -- three things change, and only then:
   * the Playwright MCP server is registered with `--cdp-endpoint`
     (`write_mcp_config`), so the agent's browser_* tools drive the live
     browser and the tabs they open are the console's;
-  * the note says so, and names `swarm_browser.live()` for Python.
+  * the note says so, and names `swarm_browser.live()` for Python;
+  * dev-browser (DEVB-INSTALL) gets its state directory under `work/`
+    (`DEV_BROWSER_HOME`) and the stub as its Chrome, and the note gains one
+    paragraph naming it as an alternative to the browser_* tools.
 And on the browser image the CLI's PATH puts `VENV_BIN` first, so the agent's
 `python` is the one with Playwright and the helper. Without the endpoint the
 browser image behaves as before: the real browsers and the headless note.
@@ -134,6 +137,15 @@ only then: this runner names the `swarm-git` shim (`agent_worker.gitmcp`) in
 (`write_mcp_config`), because the CLI takes the servers of one `--mcp-config`
 and a second flag is a second reading of the same option. The shim holds
 nothing: no token, no key, no network. It writes requests the worker answers.
+
+THE SEARCH TOOL (docs/search-tool.md, lane SEARCH-TOOL, part of #1030). When
+the worker offers the attempt the search tool it sets `SWARM_SEARCH`, the
+spool, and only then -- swarm-api's SEARCH_TOOL_ENABLED on, a live-browser
+profile, a registered attempt key: this runner names the `swarm-search` shim
+(`agent_worker.searchmcp`) in the same `--mcp-config`, and the live-browser
+note gains `LIVE_BROWSER_SEARCH_NOTE`. With the flag off the note says nothing
+about a search tool, because an agent told to use a tool it does not have
+loses turns looking for it.
 
 WHY BASH STDIN IS /dev/null (#750, owner decision 2026-10-06). A Bash command
 that read stdin with nothing attached sat until the Bash timeout killed it:
@@ -154,9 +166,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from ..children import git_shim_argv
+from ..children import git_shim_argv, search_shim_argv
 from ..gitmcp.server import SERVER_NAME as GIT_MCP_SERVER_NAME
 from ..gitmcp.server import SPOOL_ENV as GIT_SPOOL_ENV
+from ..searchmcp.server import SERVER_NAME as SEARCH_MCP_SERVER_NAME
+from ..searchmcp.server import SPOOL_ENV as SEARCH_SPOOL_ENV
 from ..handoff import AGENT_PASSTHROUGH_ENV, HANDOFF_ENV, RESUME_NAME
 from .base import RunnerContext, run_runner
 from .cliagent import CliAgentSpec, agent_working_directory, run_cli_agent
@@ -237,6 +251,38 @@ LIVE_BROWSER_NOTE = (
     "5), say so in your answer and then use an alternative, naming it. Save "
     "screenshots and other captures under $SWARM_ARTIFACTS_DIR so "
     "they are uploaded."
+)
+
+#: dev-browser (DEVB-INSTALL, owner decision 2026-10-14, part of #1030): the
+#: browser image's opt-in CLI beside the Playwright MCP server, which stays
+#: registered and stays the default. Its state directory -- the daemon's
+#: socket and the named-page map -- goes under `work/`, so the pages an agent
+#: named survive with the workspace across a park; DEV_BROWSER_CHROME is the
+#: image's copy of the live-browser-only stub, so even the real binary, run by
+#: its path, cannot launch a hidden Chromium (images/agent-runtime-browser/
+#: Dockerfile). All three are set only when the live browser exists.
+DEV_BROWSER_HOME_ENV = "DEV_BROWSER_HOME"
+DEV_BROWSER_HOME_NAME = ".dev-browser"
+DEV_BROWSER_CHROME_ENV = "DEV_BROWSER_CHROME"
+DEV_BROWSER_CHROME = "/opt/swarm/dev-browser/live-browser-only"
+DEV_BROWSER_SKIP_DOWNLOAD_ENV = "DEV_BROWSER_SKIP_DOWNLOAD"
+
+#: Appended to `LIVE_BROWSER_NOTE` whenever the live browser exists.
+LIVE_BROWSER_DEV_BROWSER_NOTE = (
+    "dev-browser is also available, as an alternative to the browser_* tools "
+    "for scripted multi-step browsing (run `dev-browser --help`). It always "
+    "drives the same live browser the person watches. After every "
+    "`swarm-handoff wait` returns, run `dev-browser stop` before your next "
+    "script, so it re-attaches to the pages as the person left them."
+)
+
+#: Appended to `LIVE_BROWSER_NOTE` only when the search tool is offered
+#: (`SWARM_SEARCH` is set). Owner decision 2026-10-13, "Both: search tool +
+#: proxy": a query typed into a search engine's page is what Google answered
+#: 429 /sorry to (docs/browser-egress.md §0).
+LIVE_BROWSER_SEARCH_NOTE = (
+    "To search the web, use the search tool, then open the results in the live "
+    "browser: do not type queries into a search engine's page."
 )
 
 #: The PreToolUse hook. Standard library only, run by this runner's own
@@ -365,10 +411,15 @@ def write_headless_settings(directory: Path) -> Path:
 
 
 def write_mcp_config(
-    directory: Path, endpoint: str | None = None, *, git_spool: str | None = None
+    directory: Path,
+    endpoint: str | None = None,
+    *,
+    git_spool: str | None = None,
+    search_spool: str | None = None,
 ) -> Path:
     """Write the CLI's `--mcp-config` and return it: Playwright MCP on the live
-    browser when `endpoint` is given, the `swarm-git` shim when `git_spool` is.
+    browser when `endpoint` is given, the `swarm-git` shim when `git_spool` is,
+    the `swarm-search` shim when `search_spool` is.
 
     Beside the settings file, in `work/` (never the checkout), mode 0600 and
     replaced rather than followed, for the same reasons (`_write_private`).
@@ -388,6 +439,9 @@ def write_mcp_config(
     if git_spool:
         command, *args = git_shim_argv(git_spool)
         servers[GIT_MCP_SERVER_NAME] = {"type": "stdio", "command": command, "args": args}
+    if search_spool:
+        command, *args = search_shim_argv(search_spool)
+        servers[SEARCH_MCP_SERVER_NAME] = {"type": "stdio", "command": command, "args": args}
     config = {"mcpServers": servers}
     path = directory / MCP_CONFIG_NAME
     _write_private(path, json.dumps(config, indent=2) + "\n")
@@ -512,6 +566,10 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     git_spool = os.environ.get(GIT_SPOOL_ENV, "").strip()
     if git_spool:
         env[GIT_SPOOL_ENV] = git_spool
+    # The search tool's spool, likewise: set only for an attempt offered it.
+    search_spool = os.environ.get(SEARCH_SPOOL_ENV, "").strip()
+    if search_spool:
+        env[SEARCH_SPOOL_ENV] = search_spool
     live_endpoint = ""
     browsers = os.environ.get(BROWSERS_PATH_ENV, "").strip()
     endpoint = os.environ.get(CDP_ENDPOINT_ENV, "").strip()
@@ -530,17 +588,22 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
             # The live browser exists: the agent's own launch finds only the
             # stub, and its browser tools are the live browser's (docstring).
             env[BROWSERS_PATH_ENV] = AGENT_BROWSERS_PATH
+            env[DEV_BROWSER_HOME_ENV] = str(Path(ctx.work_dir) / DEV_BROWSER_HOME_NAME)
+            env[DEV_BROWSER_CHROME_ENV] = DEV_BROWSER_CHROME
+            env[DEV_BROWSER_SKIP_DOWNLOAD_ENV] = "1"
             live_endpoint = endpoint
-            note = LIVE_BROWSER_NOTE
+            note = f"{LIVE_BROWSER_NOTE} {LIVE_BROWSER_DEV_BROWSER_NOTE}"
+            if search_spool:
+                note = f"{note} {LIVE_BROWSER_SEARCH_NOTE}"
         else:
             env[BROWSERS_PATH_ENV] = browsers
         # A new dict on the same context: `run_runner` holds this object.
         if isinstance(prompt, str) and prompt.strip():
             ctx.payload = {**ctx.payload, "prompt": f"{prompt.rstrip()}\n\n{note}"}
     # ONE `--mcp-config` for every server this attempt has (module docstring).
-    if live_endpoint or git_spool:
+    if live_endpoint or git_spool or search_spool:
         mcp = write_mcp_config(Path(ctx.work_dir) / SETTINGS_DIR_NAME, live_endpoint or None,
-                               git_spool=git_spool or None)
+                               git_spool=git_spool or None, search_spool=search_spool or None)
         extra += ["--mcp-config", str(mcp)]
     return run_cli_agent(ctx, spec, extra_args=extra, extra_env=env)
 

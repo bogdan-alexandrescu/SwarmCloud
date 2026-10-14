@@ -800,6 +800,9 @@ def test_the_open_socket_is_re_checked_and_closed_when_membership_lapses(
         with pytest.raises(WebSocketDisconnect) as closed:
             while True:
                 ws.receive_json()
+        # Inside the session: the app writes `viewer_left` after the close, and
+        # leaving the `with` cancels it (see the viewer-socket hold test below).
+        assert wait_until(lambda: len(audit(ldb, "viewer_left")) == 1)
     assert closed.value.code == 4403
     assert wait_until(lambda: session_doc(ldb)["controller"] is None)
     ended = audit(ldb, "control_ended")
@@ -885,7 +888,9 @@ def test_every_key_event_of_an_episode_is_on_its_returned_event(
         with pytest.raises(WebSocketDisconnect):
             while True:
                 ws.receive_json()
-    assert wait_until(lambda: len(audit(ldb, "viewer_left")) == 1)
+        # Inside the session: the app writes `viewer_left` after the close, and
+        # leaving the `with` cancels it (see the viewer-socket hold test below).
+        assert wait_until(lambda: len(audit(ldb, "viewer_left")) == 1)
     assert returned_event()["detail"]["keys"] == 18
     (row,) = audit(ldb, "control_returned")
     assert row["detail"]["keys"] == 18
@@ -902,7 +907,10 @@ def test_no_route_takes_a_ticket_in_its_url(client):
     from swarm_api.routes import live as live_routes
 
     for route in live_routes.router.routes:
-        assert "ticket" not in route.path_format.replace("/live/ticket", "")
+        # Two routes MINT a ticket into their response body and are named for
+        # it; neither takes one in its URL (the parameter check below).
+        minted = route.path_format.replace("/live/ticket", "").replace("/egress-ticket", "")
+        assert "ticket" not in minted
         dependant = getattr(route, "dependant", None)
         if dependant is not None:
             for param in dependant.query_params + dependant.path_params:
@@ -1308,10 +1316,20 @@ def test_the_viewer_socket_extends_the_hold_while_it_is_open(
         clock.advance(30)
         assert wait_until(lambda: _deadline(ldb) == clock() + timedelta(seconds=60))
         # The server ends the socket (a retry's new generation), as the other
-        # socket tests do: a client-side close cancels the app mid-flush.
+        # socket tests do: a client-side close cancels the app mid-write, and
+        # the TestClient's portal then raises CancelledError on exit.
         ldb.docs[f"tasks/{TASK}"].update(
             {"current_lease_id": "lease_live_2", "current_generation": 2})
         with pytest.raises(WebSocketDisconnect):
             while True:
                 ws.receive_json()
-    assert wait_until(lambda: len(audit(ldb, "viewer_left")) == 1)
+        # INSIDE the session, not after it (flake fixed 2026-10-14; failed PRs
+        # 1267 and 1268 with CancelledError at this `with`). The close reaches
+        # the client before the app has finished: `_Proxy.run` still writes the
+        # `viewer_left` audit after closing the socket. Leaving the `with` makes
+        # the TestClient cancel the app's task, so a test that left as soon as
+        # it read the close cancelled that teardown mid-await -- surfacing as
+        # CancelledError from the portal, or as a missing audit. The app's
+        # last write is its `viewer_left` row: once it is there, nothing of the
+        # app is left to cancel.
+        assert wait_until(lambda: len(audit(ldb, "viewer_left")) == 1)

@@ -219,6 +219,34 @@ SWITCHES: dict[str, Switch] = {
         "naming the tenant the call resolved to, instead of a bare not found. On once swarm-mcp "
         "and the coordinator callers that re-read with the launch's tenant are deployed",
     ),
+    # Lane EGRESS-SVC (docs/browser-egress.md §2.2): the attempt egress ticket
+    # route. Off, each is answered with the same status and message under the
+    # established code (`conflict` 409 or `forbidden` 403); egress_unavailable
+    # is a 503 and not a refusal. Turn on with REFUSAL_<CODE>=on once
+    # BROWSER_EGRESS_ENABLED is on and the gate reads the codes.
+    "egress_off": Switch(
+        code="egress_off",
+        why="the egress-ticket route answers 409 egress_off naming disabled, tenant_off or "
+        "profile_off. Off, it answers 409 conflict with the same message. On once the "
+        "browser gate in the worker image reads the code to run direct",
+    ),
+    "egress_fenced": Switch(
+        code="egress_fenced",
+        why="the egress-ticket route answers 409 egress_fenced when the task is not RUNNING "
+        "under the attempt's live lease. Off, 409 conflict with the same message. On with "
+        "egress_off",
+    ),
+    "egress_unproven": Switch(
+        code="egress_unproven",
+        why="the egress-ticket route answers 403 egress_unproven when the attempt proof does "
+        "not verify. Off, 403 forbidden with the same message. On with egress_off",
+    ),
+    "egress_unauthenticated": Switch(
+        code="egress_unauthenticated",
+        why="the egress-ticket route answers 403 egress_unauthenticated for a caller that is "
+        "not the tenant's worker service account. Off, 403 forbidden with the same message. "
+        "On with egress_off",
+    ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",
         why="a schedule pauses after N failed or refused firings in a row (§4.4, default "

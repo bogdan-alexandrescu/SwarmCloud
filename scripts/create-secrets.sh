@@ -21,6 +21,7 @@
 #   scripts/create-secrets.sh --live-key
 #   scripts/create-secrets.sh --github-app client-secret --stdin
 #   scripts/create-secrets.sh --github-app private-key --stdin < app.private-key.pem
+#   scripts/create-secrets.sh --search-api-key --stdin
 #
 # The forge token (`--provider git`, stored as swarm-tenant-<tenant>-git) is
 # read by the tenant's workers AND by swarm-api, which writes an issue run's
@@ -66,6 +67,15 @@
 # both slots and their one reader, swarm-api (modules/secret_manager); this
 # never creates one, so a typo cannot make an unbound twin.
 #
+# --search-api-key adds a version to `swarm-search-api-key`, the PLATFORM key of
+# the web search provider swarm-api calls for the agents' `search` tool
+# (docs/search-tool.md; Brave Search API first). Read from stdin ONLY, for the
+# reasons --github-app gives. Its one reader is swarm-api: this creates the
+# secret if it is missing (replicated only to the region, like a tenant's) and
+# grants swarm-api, and nobody else, secretAccessor on it. Terraform holds no
+# copy of it, for the reason at the top of this file. swarm-api reads it only
+# while SEARCH_TOOL_ENABLED is on, so storing it changes nothing by itself.
+#
 # A tenant credential's NAME is never an input. It is always
 # swarm-tenant-<tenant>-<provider>, which is what swarm_common.models.Tenant's
 # secret_name() returns and what the worker asks Secret Manager for.
@@ -86,6 +96,7 @@ LIST=0
 CHILD_KEY=0
 LIVE_KEY=0
 GITHUB_APP_SLOT=""
+SEARCH_API_KEY=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -99,7 +110,8 @@ while [[ $# -gt 0 ]]; do
     --live-key)         LIVE_KEY=1; shift ;;
     --github-app)       [[ $# -ge 2 ]] || die "--github-app needs a slot: client-secret or private-key"
                         GITHUB_APP_SLOT="$2"; shift 2 ;;
-    -h|--help)          sed -n '2,71p' "$0"; exit 0 ;;
+    --search-api-key)   SEARCH_API_KEY=1; shift ;;
+    -h|--help)          sed -n '2,81p' "$0"; exit 0 ;;
     # There is deliberately no --name. The secret's name is
     # swarm_common.models.Tenant.secret_name() and nothing else: docs call that
     # spelling the first of three independent mechanisms keeping one tenant's key
@@ -284,6 +296,80 @@ if [[ -n "${GITHUB_APP_SLOT}" ]]; then
   ok "added version ${APP_VERSION##*/} of ${APP_SLOT_ID}; its value was never printed"
   dim "swarm-api is its one reader (terraform/modules/secret_manager github_app_accessor)"
   dim "delete any downloaded copy now; Secret Manager is the only place the value lives"
+  exit 0
+fi
+
+if [[ "${SEARCH_API_KEY}" -eq 1 ]]; then
+  # The secret's name is fixed: it is swarm-api's SEARCH_API_KEY_SECRET default
+  # (apps/swarm-api/swarm_api/settings.py), held equal by
+  # tests/unit/scripts/test_create_secrets_search_key.py.
+  SEARCH_SECRET="swarm-search-api-key"
+  SEARCH_READER="serviceAccount:swarm-api@${PROJECT_ID}.iam.gserviceaccount.com"
+  if [[ -n "${TENANT}${PROVIDER}${FROM_FILE}${GITHUB_APP_SLOT}" || "${SUBSCRIPTION}" -eq 1 || "${CHILD_KEY}" -eq 1 || "${LIVE_KEY}" -eq 1 || "${DISABLE_PREVIOUS}" -eq 1 ]]; then
+    die "--search-api-key takes only --stdin: the key is the platform's, not a tenant's, a file argument is a path to a plaintext copy, and an old version is disabled by hand once swarm-api reads the new one"
+  fi
+  [[ "${READ_STDIN}" -eq 1 ]] || die "--search-api-key reads the value from --stdin and nothing else"
+
+  step "Secret ${SEARCH_SECRET}"
+  SEARCH_ERR=""
+  if SEARCH_ERR="$(gcloud secrets describe "${SEARCH_SECRET}" --project "${PROJECT_ID}" \
+       --format='value(name)' 2>&1 >/dev/null)"; then
+    ok "secret exists; adding a new version"
+  else
+    die_if_auth_failure "${SEARCH_ERR}"
+    info "creating secret"
+    gcloud secrets create "${SEARCH_SECRET}" \
+      --project "${PROJECT_ID}" \
+      --replication-policy=user-managed \
+      --locations="${REGION}" \
+      --labels="managed-by=swarm-secrets,component=platform-search-key,environment=${ENVIRONMENT}" \
+      >/dev/null
+    ok "created ${SEARCH_SECRET} (replicated only to ${REGION})"
+  fi
+
+  SEARCH_TMP="$(mktemp -d "${TMPDIR:-/tmp}/swarm-secret.XXXXXX")"
+  chmod 0700 "${SEARCH_TMP}"
+  # shellcheck disable=SC2064  # expand now: the path is fixed for this run
+  trap "find '${SEARCH_TMP}' -type f -exec rm -f {} + 2>/dev/null || true; rmdir '${SEARCH_TMP}' 2>/dev/null || true" EXIT INT TERM
+  SEARCH_FILE="${SEARCH_TMP}/value"
+  ( umask 077; : >"${SEARCH_FILE}" )
+  if [[ -t 0 ]]; then
+    printf 'Paste the search API key (input hidden), then press Enter: ' >&2
+    read -rs SEARCH_VALUE
+    printf '\n' >&2
+    printf '%s' "${SEARCH_VALUE}" >"${SEARCH_FILE}"
+    unset SEARCH_VALUE
+  else
+    cat >"${SEARCH_FILE}"
+  fi
+  if [[ -s "${SEARCH_FILE}" ]]; then
+    printf '%s' "$(tr -d '[:space:]' <"${SEARCH_FILE}")" >"${SEARCH_FILE}.trimmed"
+    mv "${SEARCH_FILE}.trimmed" "${SEARCH_FILE}"
+    chmod 0600 "${SEARCH_FILE}"
+  fi
+  SEARCH_BYTES="$(wc -c <"${SEARCH_FILE}" | tr -d ' ')"
+  [[ "${SEARCH_BYTES}" -gt 0 ]] || die "refusing to store an empty secret"
+  [[ "${SEARCH_BYTES}" -lt 1024 ]] || die "value is ${SEARCH_BYTES} bytes; that is not a search API key. Nothing was stored"
+  info "stored value is ${SEARCH_BYTES} bytes"
+
+  SEARCH_VERSION="$(gcloud secrets versions add "${SEARCH_SECRET}" \
+    --project "${PROJECT_ID}" --data-file="${SEARCH_FILE}" --format='value(name)')"
+  ok "added version ${SEARCH_VERSION##*/} of ${SEARCH_SECRET}; its value was never printed"
+
+  step "Access"
+  search_iam_err="${SEARCH_TMP}/iam.err"
+  if gcloud secrets add-iam-policy-binding "${SEARCH_SECRET}" --project "${PROJECT_ID}" \
+       --member="${SEARCH_READER}" --role="roles/secretmanager.secretAccessor" \
+       >/dev/null 2>"${search_iam_err}"; then
+    ok "swarm-api may read ${SEARCH_SECRET}; nobody else was granted it"
+  else
+    die_if_auth_failure "$(cat "${search_iam_err}")"
+    err "could not grant swarm-api secretAccessor on ${SEARCH_SECRET}:"
+    redact <"${search_iam_err}" | head -n 3 | sed 's/^/     /' >&2
+    die "the key is stored but swarm-api cannot read it: every search answers search_unconfigured until the binding exists"
+  fi
+  dim "swarm-api reads it per call, and only while SEARCH_TOOL_ENABLED is on (docs/search-tool.md)"
+  dim "rotating: add the new key here, confirm a search succeeds, then disable the old version by hand"
   exit 0
 fi
 

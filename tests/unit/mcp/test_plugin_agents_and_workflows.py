@@ -762,7 +762,11 @@ _ANSWERS = {
 def test_run_js_submits_once_then_starts_one_step_row_per_step(tmp_path):
     got = _run(tmp_path, _SPEC, _ANSWERS)
     assert "error" not in got, got.get("error")
-    submit, *steps, status = got["calls"]
+    submit, *rest, status = got["calls"]
+    # The join row throws, so one status read is made for it between the rows
+    # (SPEED-D5): every other call is a step row.
+    steps = [c for c in rest if c["agentType"] == "sc:step"]
+    assert [c["label"] for c in rest if c["agentType"] != "sc:step"] == ["[SwarmCloud] scan · join · setup · status"]
 
     assert (submit["agentType"], submit["phase"], submit["label"]) == (
         "sc:workflow", "Submit", "[SwarmCloud] scan · 4 steps · setup · submit")
@@ -1125,23 +1129,26 @@ _STATUS_NAMING_JOIN = {
 
 def test_a_failed_relay_row_takes_its_state_from_the_workflow_status(tmp_path):
     """#285: the join row's relay failed to retype the answer into its
-    StructuredOutput five times, but the task SUCCEEDED. The workflow status
-    read after the rows names the step's state, so the row reports it -- with
-    the row's own error kept beside it and where the state came from."""
+    StructuredOutput five times, but the task SUCCEEDED. A workflow status read
+    made for the row at once names the step's state (SPEED-D5: before, the
+    read came after every row, and the row stayed an error row), so the row
+    reports it -- with the row's own failure kept beside it as a note, and
+    where the state came from."""
     got = _run(tmp_path, _SPEC, {**_ANSWERS, "STATUS": _STATUS_NAMING_JOIN})
 
     assert "error" not in got, got.get("error")
     rows = {row["step_id"]: row for row in got["result"]["steps"]}
     join = rows["join"]
     assert join["state"] == "SUCCEEDED"
-    assert "validation" in join["row_error"], "the row's own failure is kept beside the state"
+    assert "row_error" not in join, join
+    assert "validation" in join["row_note"], "the row's own failure is kept beside the state"
     assert "workflow status" in join["state_from"]
     # Only a recovered row carries the field: a row that answered keeps the
     # STEP_RESULT shape, and its own state, not the status's.
     assert "state_from" not in rows["scan-01"] and "state_from" not in rows["scan-02"]
     assert rows["scan-02"]["state"] == "FAILED"
     assert any(
-        line.startswith("join SUCCEEDED (from the workflow status; its row failed: ")
+        line.startswith("join SUCCEEDED (from the workflow status; its row could not answer: ")
         and "validation" in line
         for line in got["logs"]
     ), got["logs"]

@@ -58,6 +58,41 @@ substitutions:
   _DOCKERFILE: images/agent-runtime-browser/Dockerfile
 
 steps:
+  # 0. Stage the tool mirror (DEVB-INSTALL, part of #1030). The Dockerfile
+  #    reads the pinned dev-browser binary from build/tool-mirror, as
+  #    agent-runtime-base reads its release files (docs/runbooks/build-mirror.md).
+  #    A generated config gets this step from scripts/lib/build-mirror.sh's
+  #    tool_mirror_step_yaml; a checked-in one is submitted as it is, so the
+  #    step is here, and it reads the SAME manifest at build time rather than
+  #    restating a row of it. Every row is copied -- a few hundred MB inside
+  #    the region -- so a row added for this image cannot be missed by a
+  #    filter. The bucket is common.sh's default name for this project; the
+  #    Dockerfile checks the dev-browser file against its sha256 again, so a
+  #    wrong object fails the build either way. A missing object fails here,
+  #    named, and the fix is `scripts/refresh-build-mirror.sh`.
+  - id: tool-mirror
+    name: gcr.io/cloud-builders/gcloud
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        bucket='swarm-build-mirror-${PROJECT_ID}'
+        manifest=images/agent-runtime-base/tool-mirror.sha256
+        rm -rf build/tool-mirror
+        while read -r sha obj; do
+          [ -n "$${obj}" ] || continue
+          mkdir -p "build/tool-mirror/$$(dirname "$${obj}")"
+          gcloud storage cp "gs://$${bucket}/$${obj}" "build/tool-mirror/$${obj}" || {
+            echo "build mirror object gs://$${bucket}/$${obj} is missing or unreadable: run scripts/refresh-build-mirror.sh (docs/runbooks/build-mirror.md)" >&2
+            exit 1
+          }
+        done < "$${manifest}"
+        (cd build/tool-mirror && sha256sum -c --strict -) < "$${manifest}" || {
+          echo "a build mirror object does not match its sha256 in $${manifest}: run scripts/refresh-build-mirror.sh --force" >&2
+          exit 1
+        }
+
   # 1. Resolve the base image to a digest. Pulling first is deliberate: it turns
   #    "the base for this tag was never built" into a clear failure here rather
   #    than into a confusing `FROM` error inside the build.

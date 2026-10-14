@@ -214,6 +214,73 @@ What this does **not** stop: an agent that names a binary itself
 browser. The stub turns the default path, the one an agent reaches for, into
 an instruction; it is not a sandbox, and the pod remains the boundary.
 
+### 3.2.1 dev-browser (opt-in)
+
+Owner decision 2026-10-14 (DEVB-INSTALL, part of #1030): the browser image
+carries [dev-browser](https://github.com/SawyerHood/dev-browser) v1
+(`1.0.0-rc.3`, npm dist-tag `next`) as an **opt-in** CLI beside the
+Playwright MCP server, which stays registered and stays the default. It is for
+scripted multi-step browsing: a Puppeteer script per call, named pages that
+outlive the call. Whether it ever becomes the default is for a benchmark to
+decide, not this lane.
+
+**Attach only, never launch.** dev-browser's normal mode starts its own
+Chrome, found on PATH, in `~/.cache/ms-playwright`, in its own Chrome for
+Testing download (`dev-browser install`) or at `DEV_BROWSER_CHROME`, and it
+can start it headless. Any of those is the hidden browser
+task_7cda0d5335f049b4b442 used, which the person watching never saw. The
+stub directory above does not cover it: dev-browser never reads
+`PLAYWRIGHT_BROWSERS_PATH` (the string is not in the binary; checked
+2026-10-14). So it is used only in ATTACH mode, `--connect
+$SWARM_CDP_ENDPOINT`, which reaches the same browser the console shows,
+through the gate. Its own launch is closed off in two places:
+
+* `dev-browser` on PATH is a wrapper
+  (`images/agent-runtime-browser/dev-browser`). It passes `--connect
+  "$SWARM_CDP_ENDPOINT"` on every call. It refuses `install`, `chrome`,
+  `--headless` and any `--connect` other than the live browser's: a bare
+  `--connect` probes 127.0.0.1:9222-9229, which could reach Chromium's own
+  port behind the gate. It also refuses every call when the agent's
+  `PLAYWRIGHT_BROWSERS_PATH` is the stub directory but the endpoint is gone.
+  The real binary is at `/opt/swarm/dev-browser/dev-browser-bin`, off PATH.
+* `DEV_BROWSER_CHROME`, which dev-browser reads before any other lookup, is
+  a copy of the `live-browser-only` stub. The claude-code runner sets it for
+  the agent's whole environment, so even the real binary, run by its path,
+  fails a launch with the stub's message.
+
+**Why a wrapper, and what it is not.** The wrapper is guidance,
+not a sandbox. It turns the paths an agent reaches for into an instruction that
+names the live browser. An agent can still run the real binary with a
+`--connect` of its choosing. As this section already says of
+`executable_path=`, the pod is the boundary, not the wrapper.
+
+**The runner** (`runners/claude_code.py::body`), only when
+`SWARM_CDP_ENDPOINT` is set:
+
+* puts `DEV_BROWSER_HOME` at `work/.dev-browser`, so the daemon's socket and
+  the named-page map travel with the workspace across a park. The checkpoint
+  skips the socket and keeps the map;
+* adds one paragraph to the note: dev-browser is available, it drives the
+  same live browser, and after every `swarm-handoff wait` the agent runs
+  `dev-browser stop` before its next script. On an attached browser `stop`
+  only disconnects, and the next call re-attaches its named pages by target
+  id, as the person left them.
+
+**What it costs.** The binary is the upstream release's standalone Bun
+build, with puppeteer-core 25.8.0 inside. It needs libc only, so no Node is
+added. It is 96,442,496 bytes (92.0 MiB) uncompressed and 36,429,474 bytes
+(34.7 MiB) gzip-compressed, which is about what the new layer adds to a pull.
+That figure was measured on the file, not on a pushed image: CI's image-size
+report for this change is the number to trust. The build reads it from the
+tool mirror at its pinned sha256, like the base's release files
+(docs/runbooks/build-mirror.md).
+
+**Not yet working through the gate.** Until the gate's CDP policy lane
+lands, the gate refuses `Performance.enable` and `Audits.enable`, which
+Puppeteer sends when it opens a page. So dev-browser cannot open a page
+through the gate yet. That policy change is a separate lane and is not part
+of this one.
+
 ### 3.3 The path to the console: outbound only, through a relay
 
 No inbound port on the pod and no public endpoint: the gate **dials out**.
@@ -985,6 +1052,29 @@ back to raw CDP. The gate now rewrites the path of an `allow` or
 `allowAndName` to `downloads/` before the command is held or forwarded
 (`cdppolicy.confine`), so Chromium still writes only where the worker reads,
 and the agent's path never reaches Chromium.
+
+**Puppeteer opens pages through the policy too** (DEVB-GATE, part of #1030).
+dev-browser v1 drives Chromium with puppeteer-core 25.8.0, and its `newPage()`
+fails outright when `Performance.enable` or `Audits.enable` errors
+(`CdpPage#initialize`, `FrameManager.initialize`; the sequence for connect,
+newPage, goto, evaluate and screenshot is pinned in
+`tests/unit/worker/fixtures/puppeteer-core-25.8.0-*.json`). So:
+
+* `Performance.enable`, `getMetrics` and `disable` are allowed: the domain
+  reports counters, a name and a number each, and nothing of a page's content;
+* `Audits.enable` and `Audits.disable` are **answered by the gate** with `{}`
+  and never reach Chromium, and no `Audits.*` event reaches the agent
+  whatever enabled it. `Audits.issueAdded`'s cookie details carry
+  `rawCookieLine`, which the protocol definition (devtools-protocol
+  0.0.1666840, checked 2026-10-14) describes as "the raw Set-Cookie header
+  string" when no valid cookie could be made from it -- a header with its
+  value, which would undo the cookie rule below (LB-7). The domain's other
+  methods stay refused: `getEncodedResponse` returns a response body;
+* `WebMCP.enable` and `Network.emulateNetworkConditionsByRule` stay refused,
+  but Puppeteer catches both and goes on, so recording them on every page was
+  noise (ANALYSIS issue 19). They are counted and logged at debug instead of
+  recorded as `cdp_method_refused`; the action log still shows them as
+  refused.
 
 The allowlist is the control and the denylist is its documentation: a method
 Chromium adds next year is refused because it is not on the list, not because

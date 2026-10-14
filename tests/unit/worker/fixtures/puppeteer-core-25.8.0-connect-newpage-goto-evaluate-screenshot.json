@@ -1,0 +1,226 @@
+{
+  "client": "puppeteer-core",
+  "version": "25.8.0",
+  "devtools_protocol": "0.0.1666840",
+  "derived": "2026-10-14 from the published puppeteer-core@25.8.0 tarball's src/ (npm pack puppeteer-core@25.8.0), not from a run: the methods each call sends, with the parameters it sends them with",
+  "calls": "puppeteer.connect({browserWSEndpoint, defaultViewport: null}); browser.newPage(); page.goto('https://example.com/'); page.evaluate(() => document.title); page.screenshot()",
+  "sessions": "browser = the connection's own (no sessionId); tab = the tab target Chromium auto-attaches under browser; page = the page target auto-attached under tab",
+  "order": "commands sent inside one Promise.all are listed in source order; Puppeteer does not wait for one before sending the next",
+  "placeholders": {
+    "{frame}": "the page's main frame id (its targetId)",
+    "{main_context}": "the main world's executionContextId from Runtime.executionContextCreated"
+  },
+  "fatal": "true when an error reply rejects the Puppeteer call (connect, newPage, goto, evaluate or screenshot); false when Puppeteer catches it and goes on",
+  "sequence": [
+    {
+      "session": "browser",
+      "method": "Target.getBrowserContexts",
+      "params": {},
+      "fatal": true,
+      "source": "cdp/BrowserConnector.ts _connectToCdpBrowser: awaited, no catch"
+    },
+    {
+      "session": "browser",
+      "method": "Target.setDiscoverTargets",
+      "params": {
+        "discover": true,
+        "filter": [
+          {}
+        ]
+      },
+      "fatal": true,
+      "source": "cdp/TargetManager.ts initialize(): awaited, no catch"
+    },
+    {
+      "session": "browser",
+      "method": "Target.setAutoAttach",
+      "params": {
+        "waitForDebuggerOnStart": true,
+        "flatten": true,
+        "autoAttach": true,
+        "filter": [
+          {
+            "type": "page",
+            "exclude": true
+          },
+          {}
+        ]
+      },
+      "fatal": true,
+      "source": "cdp/TargetManager.ts initialize(): awaited, no catch; pages are excluded, so Chromium attaches TAB targets here"
+    },
+    {
+      "session": "browser",
+      "method": "Target.createTarget",
+      "params": {
+        "url": "about:blank"
+      },
+      "fatal": true,
+      "source": "cdp/Browser.ts _createPageInContext (browser.newPage()); undefined fields are dropped by JSON.stringify"
+    },
+    {
+      "session": "tab",
+      "method": "Target.setAutoAttach",
+      "params": {
+        "waitForDebuggerOnStart": true,
+        "flatten": true,
+        "autoAttach": true,
+        "filter": [
+          {}
+        ]
+      },
+      "fatal": false,
+      "source": "cdp/TargetManager.ts #onAttachedToTarget: Promise.all(...).catch(debug)"
+    },
+    {
+      "session": "tab",
+      "method": "Runtime.runIfWaitingForDebugger",
+      "params": {},
+      "fatal": false,
+      "source": "cdp/TargetManager.ts #onAttachedToTarget: Promise.all(...).catch(debug)"
+    },
+    {
+      "session": "page",
+      "method": "Target.setAutoAttach",
+      "params": {
+        "waitForDebuggerOnStart": true,
+        "flatten": true,
+        "autoAttach": true,
+        "filter": [
+          {}
+        ]
+      },
+      "fatal": false,
+      "source": "cdp/TargetManager.ts #onAttachedToTarget: Promise.all(...).catch(debug)"
+    },
+    {
+      "session": "page",
+      "method": "Runtime.runIfWaitingForDebugger",
+      "params": {},
+      "fatal": false,
+      "source": "cdp/TargetManager.ts #onAttachedToTarget: Promise.all(...).catch(debug)"
+    },
+    {
+      "session": "page",
+      "method": "Network.enable",
+      "params": {},
+      "fatal": true,
+      "source": "cdp/NetworkManager.ts addClient(): rethrown unless 'Not supported' / \"wasn't found\" / target closed"
+    },
+    {
+      "session": "page",
+      "method": "Page.enable",
+      "params": {},
+      "fatal": true,
+      "source": "cdp/FrameManager.ts initialize(): Promise.all, rethrown unless target closed"
+    },
+    {
+      "session": "page",
+      "method": "Page.getFrameTree",
+      "params": {},
+      "fatal": true,
+      "source": "cdp/FrameManager.ts initialize()"
+    },
+    {
+      "session": "page",
+      "method": "Page.setLifecycleEventsEnabled",
+      "params": {
+        "enabled": true
+      },
+      "fatal": true,
+      "source": "cdp/FrameManager.ts initialize()"
+    },
+    {
+      "session": "page",
+      "method": "Runtime.enable",
+      "params": {},
+      "fatal": true,
+      "source": "cdp/FrameManager.ts initialize()"
+    },
+    {
+      "session": "page",
+      "method": "Audits.enable",
+      "params": {},
+      "fatal": true,
+      "source": "cdp/FrameManager.ts initialize(): sent when browser.isIssuesEnabled(), true by default (cdp/BrowserConnector.ts issuesEnabled = true)"
+    },
+    {
+      "session": "page",
+      "method": "Performance.enable",
+      "params": {},
+      "fatal": true,
+      "source": "cdp/Page.ts #initialize(): Promise.all, rethrown unless target closed"
+    },
+    {
+      "session": "page",
+      "method": "Log.enable",
+      "params": {},
+      "fatal": true,
+      "source": "cdp/Page.ts #initialize()"
+    },
+    {
+      "session": "page",
+      "method": "WebMCP.enable",
+      "params": {},
+      "fatal": false,
+      "source": "cdp/WebMCP.ts initialize(): .catch(debug)"
+    },
+    {
+      "session": "page",
+      "method": "Page.addScriptToEvaluateOnNewDocument",
+      "params": {
+        "source": "//# sourceURL=pptr:internal",
+        "worldName": "__puppeteer_utility_world__25.8.0"
+      },
+      "fatal": true,
+      "source": "cdp/FrameManager.ts #createIsolatedWorld, chained on Runtime.enable inside initialize()'s Promise.all"
+    },
+    {
+      "session": "page",
+      "method": "Page.createIsolatedWorld",
+      "params": {
+        "frameId": "{frame}",
+        "worldName": "__puppeteer_utility_world__25.8.0",
+        "grantUniveralAccess": true
+      },
+      "fatal": false,
+      "source": "cdp/FrameManager.ts #createIsolatedWorld: per frame, .catch(debug)"
+    },
+    {
+      "session": "page",
+      "method": "Page.navigate",
+      "params": {
+        "url": "https://example.com/",
+        "frameId": "{frame}"
+      },
+      "fatal": true,
+      "source": "cdp/Frame.ts goto() navigate(): an error becomes the goto's rejection"
+    },
+    {
+      "session": "page",
+      "method": "Runtime.callFunctionOn",
+      "params": {
+        "functionDeclaration": "() => document.title\n//# sourceURL=pptr:internal\n",
+        "executionContextId": "{main_context}",
+        "arguments": [],
+        "returnByValue": true,
+        "awaitPromise": true,
+        "userGesture": true
+      },
+      "fatal": true,
+      "source": "cdp/ExecutionContext.ts #evaluate (page.evaluate with a function)"
+    },
+    {
+      "session": "page",
+      "method": "Page.captureScreenshot",
+      "params": {
+        "format": "png",
+        "optimizeForSpeed": false,
+        "fromSurface": true,
+        "captureBeyondViewport": true
+      },
+      "fatal": true,
+      "source": "cdp/Page.ts _screenshot, with api/Page.ts setDefaultScreenshotOptions"
+    }
+  ]
+}

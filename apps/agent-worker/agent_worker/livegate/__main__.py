@@ -143,6 +143,20 @@ MAX_QUEUED_ACTIONS = 1000
 #: every viewer's stream behind it -- the picture and the controller's input.
 CONTROL_GRANT_SECONDS = 15.0
 
+#: The gate's own control lease (CONTROL-LAPSE; part of #1030): control the
+#: gate hears no renewal of for this long is revoked here, and the agent gets
+#: its browser back. Every renewal the controller's console sends
+#: (swarm-ui `LIVE_RENEW_MS`, 20 s) reaches the gate through swarm-api and the
+#: relay as `CONTROL` naming the controller again. 50 s is 2.5 renewals: one
+#: lost request does not take control from someone mid-sign-in, two do, and
+#: it is under swarm-api's own 60 s (`live_control_renew_seconds`), so the
+#: gate never holds control longer than swarm-api would have. MEASURED
+#: 2026-10-13 (task e8cb...): with no lease, a gate swarm-api never told held
+#: control 54 minutes after it lapsed, and refused the agent 72 times.
+CONTROL_LEASE_SECONDS = 50.0
+#: The longest a revoke's cause is (the relay checks `[a-z_]{1,32}`).
+MAX_CONTROL_CAUSE = 32
+
 #: How long reading a page's URL and title may take when control ends.
 PAGE_INFO_SECONDS = 2.0
 
@@ -1074,6 +1088,18 @@ class _Episode:
     conn_id: str
 
 
+def _revoke_cause(payload: bytes) -> str:
+    """Why swarm-api revoked control, from a `CONTROL` frame with no
+    controller: its cause code, or `released` for a plain release."""
+    try:
+        cause = payload.decode("ascii")
+    except UnicodeDecodeError:
+        return "released"
+    if not cause or len(cause) > MAX_CONTROL_CAUSE or not all(c.islower() or c == "_" for c in cause):
+        return "released"
+    return cause
+
+
 class LiveGate:
     def __init__(self, cfg: GateConfig, deps: Deps | None = None, *,
                  record: Callable[[str, Mapping[str, Any]], None] = _record,
@@ -1081,7 +1107,8 @@ class LiveGate:
                  relaunch_limit: int = RELAUNCH_LIMIT,
                  relaunch_window: float = RELAUNCH_WINDOW_SECONDS,
                  relaunch_delays: tuple[float, ...] = RELAUNCH_DELAYS,
-                 clock: Callable[[], float] = time.monotonic) -> None:
+                 clock: Callable[[], float] = time.monotonic,
+                 control_lease_seconds: float = CONTROL_LEASE_SECONDS) -> None:
         self.cfg = cfg
         self.deps = deps or Deps()
         self.record = record
@@ -1136,6 +1163,10 @@ class LiveGate:
         self.viewers = 0
         self.last_episode: dict[str, Any] | None = None
         self._episode: _Episode | None = None
+        #: The control lease (`CONTROL_LEASE_SECONDS`): when, on `clock`,
+        #: control ends unless the relay renews it first. None with nobody in control.
+        self._lease_seconds = control_lease_seconds
+        self._lease_until: float | None = None
         self._had_control = False
         self._self_paused = False
         self._fresh_target: str | None = None
@@ -1254,6 +1285,8 @@ class LiveGate:
             on_agents=self._agents_changed,
             wall=self._wall,
         )
+        # A refused agent connection says when the gate takes control back.
+        self.proxy.control_lease_seconds = self._lease_seconds
         if held_by is not None and held_by.paused and not self._self_paused:
             # Decided here, as the proxy is made: a resume before it let the
             # old proxy go, a resume after it lets this one go.
@@ -1694,15 +1727,39 @@ class LiveGate:
 
     # -- control (§4.2) -------------------------------------------------------
 
-    async def _on_control(self, conn_id: str) -> None:
-        """The relay's CONTROL: swarm-api granted `conn_id` control, or none (empty)."""
+    async def _on_control(self, conn_id: str, payload: bytes = b"") -> None:
+        """The relay's CONTROL: swarm-api granted `conn_id` control, or none
+        (empty, with why in `payload` when swarm-api revoked it). The
+        controller named again is a renewal of the control lease."""
         if conn_id:
+            if self._episode is not None and self.control is not None and self.control.holds(conn_id):
+                self._renew_lease()
+                return
             try:
                 await asyncio.wait_for(self._grant(conn_id), CONTROL_GRANT_SECONDS)
             except asyncio.TimeoutError:
                 await self._refused("grant_timeout")
         else:
-            await self._release("released")
+            await self._release(_revoke_cause(payload))
+
+    def _renew_lease(self) -> None:
+        """Control goes on for another `CONTROL_LEASE_SECONDS`; the watch
+        that ends it when no renewal comes is started if it is not running."""
+        self._lease_until = self._clock() + self._lease_seconds
+        watch = self._tasks.get("lease")
+        if watch is None or watch.done():
+            self._tasks["lease"] = asyncio.create_task(self._watch_lease())
+
+    async def _watch_lease(self) -> None:
+        """End control the relay stopped renewing (`CONTROL_LEASE_SECONDS`):
+        `control_ended` with cause `lease_expired`, and the agent resumes."""
+        while self._episode is not None and self._lease_until is not None:
+            remaining = self._lease_until - self._clock()
+            if remaining <= 0:
+                self.record("control_lease_expired", {"lease_seconds": self._lease_seconds})
+                await self._release("lease_expired")
+                return
+            await asyncio.sleep(min(remaining, 1.0))
 
     # -- the controller's device (§6.1, Q13; LB-DEV-B) -------------------------
 
@@ -1797,6 +1854,7 @@ class LiveGate:
         else:
             self._episode.conn_id = conn_id
         self._had_control = True
+        self._renew_lease()
         await self._action({"kind": "control", "event": "granted"})
 
     async def _bring_to_front(self, target: str) -> None:
@@ -1825,6 +1883,7 @@ class LiveGate:
         controller is cleared either way; a lift that cannot be sent has
         nothing left to lift (`TouchInjector._lift`, `ControlState.revoke`).
         """
+        self._lease_until = None
         if self.control is not None:
             try:
                 await asyncio.wait_for(self.control.revoke(), PAGE_INFO_SECONDS)
@@ -1891,9 +1950,13 @@ class LiveGate:
     async def _resume_agent(self) -> None:
         assert self.proxy is not None
         try:
-            if self.browser_closed:
+            if self.browser_closed or self._stopping:
                 # Nothing answers on a closed pipe: bounded, and the proxy
-                # leaves its hold however `resume` ends (its `finally`).
+                # leaves its hold however `resume` ends (its `finally`). The
+                # same while stopping: the pipe's reader is cancelled with the
+                # gate's tasks, and a person still in control when the task
+                # ended (CONTROL-LAPSE) waited here forever, so the gate never
+                # finished stopping.
                 await asyncio.wait_for(self.proxy.resume(), PAGE_INFO_SECONDS)
             else:
                 await self.proxy.resume()

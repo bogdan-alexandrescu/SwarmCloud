@@ -199,7 +199,7 @@ def test_a_worker_registers_its_key_once_while_starting(child_client, db):
     response = register(child_client, db, attempt)
     assert response.status_code == 201, response.text
     body = response.json()
-    assert body == {"registered": "key", "attempt_id": ATTEMPT}
+    assert body == {"registered": "key", "attempt_id": ATTEMPT, "search_tool": False}
     # Nothing secret in the answer: not the nonce, not the attestation, not the id.
     text = response.text
     keys = ChildKeys(KEY)
@@ -251,7 +251,7 @@ def test_a_pod_slower_than_the_lease_timeout_still_registers_its_key(child_clien
     _slow_pod_lease(db)
     response = register(child_client, db, attempt)
     assert response.status_code == 201, response.text
-    assert response.json() == {"registered": "key", "attempt_id": ATTEMPT}
+    assert response.json() == {"registered": "key", "attempt_id": ATTEMPT, "search_tool": False}
     again = register(child_client, db, attempt)
     assert again.status_code == 409 and again.json()["code"] == "child_key_taken"
 
