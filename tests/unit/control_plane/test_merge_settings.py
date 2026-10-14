@@ -184,8 +184,8 @@ def test_the_change_and_its_audit_are_one_transaction(client, db, seeded, commit
     assert db.docs[f"repositories/{repo_id}"][mergesettings.REPO_FIELD] == "direct"
     writing = [paths for paths in commits if f"repositories/{repo_id}" in paths]
     assert len(writing) == 1
-    assert sorted({p.split("/")[0] for p in writing[0]}) == [
-        "admin_audit", mergesettings.COLLECTION, "repositories"]
+    assert sorted({p.split("/")[0] for p in writing[0]}) == sorted([
+        "admin_audit", mergesettings.COLLECTION, "repositories"])
 
 
 # --------------------------------------------------------------------------
