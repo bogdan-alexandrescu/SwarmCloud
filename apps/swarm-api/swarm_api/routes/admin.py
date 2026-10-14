@@ -44,6 +44,7 @@ from ..deps import AppContext, admin_auth, get_context, paged_limit
 from ..errors import Forbidden, NotFound, ValidationFailed
 from ..heartbeats import heartbeat_grace_seconds
 from ..mergewake import wake_tenant
+from ..mergetrain import tick_tenant as tick_merge_trains
 from ..purge import HistoryPurge, parse_query
 from ..verdictpublish import on_task_finished
 from ..waker import TASK_FINISHED
@@ -949,6 +950,14 @@ def wake_merges(
     # how its fix step ended (`cifix.postback_tenant`); it never moves a task.
     postback = postback_ci_fixes(ctx, tenant_id, limit=paged_limit(ctx, limit))
     ctx.metrics.admin_actions.labels(action="ci_fix_postback").inc()
+    # The merge train coordinator (TRAIN-WS, docs/merge-trains.md §4) rides
+    # this tick too, for the reason the post-back does: the same tenant, the
+    # same `-git` token and writer, the same minute. It composes, tests,
+    # lands and ejects the tenant's trains and marks each concluded step's
+    # park; it never moves a task. A tenant with no train entries reads two
+    # empty queries and nothing else.
+    trains = tick_merge_trains(ctx, tenant_id, limit=paged_limit(ctx, limit))
+    ctx.metrics.admin_actions.labels(action="merge_train").inc()
     return {
         "tenant_id": tenant_id,
         "report": report.to_api(),
@@ -957,6 +966,8 @@ def wake_merges(
         "failures": report.failures,
         "ci_fix": postback.to_api(),
         "ci_fix_failures": postback.failures,
+        "merge_train": trains.to_api(),
+        "merge_train_failures": trains.failures,
     }
 
 

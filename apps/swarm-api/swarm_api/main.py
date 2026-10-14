@@ -42,6 +42,7 @@ from .routes import (
     issues,
     leases,
     live,
+    merge_settings,
     notifications,
     onboarding,
     outcomes,
@@ -148,6 +149,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # each read from the records above, read-only, the caller's own tenant.
     app.include_router(onboarding.router)
     app.include_router(workspaces.router)
+    # A workspace's merge settings, direct or merge train (TRAIN-WS,
+    # docs/merge-trains.md §3): its owner or a platform admin, audited.
+    app.include_router(merge_settings.router)
     # Connect GitHub as yourself (docs/onboarding.md §3.2, lane OB3):
     # authorise, exchange, disconnect, and the refresh sweep the
     # swarm-forge-refresh job calls. No route returns a token.

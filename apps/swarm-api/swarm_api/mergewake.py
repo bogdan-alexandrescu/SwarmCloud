@@ -225,6 +225,12 @@ MERGE_QUEUED = "merge_queued"
 #: CI_READ_SECONDS. The holder's release marks it when the slot is handed to
 #: it, and the worker's fallback instant covers a lost mark; the tick skips it.
 MERGE_SLOT_WAIT = "merge_slot_wait"
+#: The park code of a merge step waiting on its repository's merge train
+#: (`agent_worker.mergetrain.TRAIN_WAITING`, TRAIN-WS; held equal by
+#: test_merge_train_rules.py). Its checks were green when it registered; the
+#: train coordinator (`mergetrain.tick_tenant`, on this same tick) marks it
+#: when its entry lands, is ejected or is returned. The tick skips it.
+MERGE_TRAIN_WAITING = "merge_train_waiting"
 #: The wake reason of a queued pull request that left the queue unmerged.
 DEQUEUED = "dequeued"
 
@@ -1080,8 +1086,9 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
             if wait.get(WAKE_MARKER):
                 # Marked already: the scheduler wakes it. Nothing to read.
                 continue
-            if wait.get("code") == MERGE_SLOT_WAIT:
-                # Waiting for the merge slot, not for CI: the release wakes it.
+            if wait.get("code") in (MERGE_SLOT_WAIT, MERGE_TRAIN_WAITING):
+                # Waiting for the merge slot or the merge train, not for CI:
+                # the release, or the train coordinator, wakes it.
                 report.skipped += 1
                 continue
             if not _due(wait, now):

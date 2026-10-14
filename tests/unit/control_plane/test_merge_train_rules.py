@@ -4,8 +4,9 @@ docs/merge-trains.md §4. Ported from the repository-level train's rules
 (PR 1294, `scripts/merge-train.sh` select/judge/plan): a train is up to N ready
 pull requests, oldest first; a green train lands every one in order; a red
 train of one ejects that one; a red train of more is bisected by halves -- the
-first half rides next, the rest go back to the queue in their old places -- so
-a single culprit is found in log2(N) trains and only it is ejected.
+first half rides next, then the rest, each half split again if it is red,
+while every rider keeps its place in the queue -- so a single culprit is found
+in about log2(N) trains and only it is ejected.
 
 Pure functions, no I/O: the coordinator (`mergetrain.tick_tenant`) is tested
 over a fake forge in test_merge_train_coordinator.py.
@@ -105,6 +106,7 @@ def test_a_red_train_of_several_ejects_nobody_and_sends_its_first_half_next():
     plan = mergetrain.on_failure(_riders(1, 2, 3, 4))
     assert plan.eject == []
     assert plan.next_batch == ["e1", "e2"]
+    assert plan.later == ["e3", "e4"]
     assert plan.requeue == ["e1", "e2", "e3", "e4"]
 
 
@@ -114,22 +116,26 @@ def _drive(numbers: list[int], culprits: set[int], *, size: int) -> tuple[list[l
     A train is red exactly when it carries a culprit -- what CI on the
     composed head would say."""
     queue = _riders(*numbers)
-    next_batch: list[str] = []
+    # The lane's untested halves, the top last: a red train pushes its rest,
+    # then its first half, which rides next.
+    halves: list[list[str]] = []
     trains: list[list[int]] = []
     landed: list[int] = []
     ejected: list[int] = []
     for _ in range(50):
-        batch = mergetrain.select(queue, size=size, next_batch=next_batch)
+        batch = mergetrain.select(queue, size=size, next_batch=halves[-1] if halves else [])
+        if halves:
+            halves.pop()
         if not batch:
             break
         trains.append([r.number for r in batch])
         if any(r.number in culprits for r in batch):
             plan = mergetrain.on_failure(batch)
-            next_batch = plan.next_batch
+            if plan.next_batch:
+                halves += [plan.later, plan.next_batch]
             ejected += [r.number for r in batch if r.entry_id in plan.eject]
             queue = [r for r in queue if r.entry_id not in plan.eject]
         else:
-            next_batch = []
             landed += [r.number for r in batch]
             queue = [r for r in queue if r not in batch]
     return trains, landed, ejected
@@ -149,7 +155,7 @@ def test_a_single_culprit_is_found_by_halves_and_alone_is_ejected():
 
 def test_a_culprit_first_in_the_train():
     trains, landed, ejected = _drive([1, 2, 3, 4], {1}, size=4)
-    assert trains == [[1, 2, 3, 4], [1, 2], [1], [2, 3, 4]]
+    assert trains == [[1, 2, 3, 4], [1, 2], [1], [2], [3, 4]]
     assert landed == [2, 3, 4] and ejected == [1]
 
 
@@ -157,7 +163,11 @@ def test_two_culprits_are_both_ejected_and_everything_else_lands():
     trains, landed, ejected = _drive([1, 2, 3, 4, 5, 6, 7, 8], {2, 7}, size=8)
     assert sorted(ejected) == [2, 7]
     assert sorted(landed) == [1, 3, 4, 5, 6, 8]
-    assert len(trains) <= 12
+    # Bisection never retests what a red train's halves already split: 11
+    # trains, where re-forming from the queue after each ejection took 16 --
+    # more than landing the 8 one at a time.
+    assert trains == [[1, 2, 3, 4, 5, 6, 7, 8], [1, 2, 3, 4], [1, 2], [1], [2], [3, 4],
+                      [5, 6, 7, 8], [5, 6], [7, 8], [7], [8]]
 
 
 def test_bisection_never_reorders_what_lands():
