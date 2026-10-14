@@ -130,7 +130,7 @@ def test_a_healthy_platform_passes_and_reaches_nothing_real(tmp_path):
     headings = [line for line in run.transcript.splitlines() if line.startswith("[")]
     assert len(headings) == 11, (
         "scripts/e2e-test.sh no longer has 11 checks. Every one of them needs a "
-        f"mutation in this file:\n" + "\n".join(headings)
+        "mutation in this file:\n" + "\n".join(headings)
     )
 
 

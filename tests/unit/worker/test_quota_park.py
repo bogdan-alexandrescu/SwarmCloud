@@ -9,7 +9,6 @@ parked task that kept its slot would be worse than one that slept.
 
 from __future__ import annotations
 
-import pytest
 
 from agent_worker.errors import ExitCode
 from swarm_common.models import ProviderState
@@ -79,7 +78,6 @@ def test_park_happens_before_the_slot_is_returned(db, worker_factory):
     worker, _, _ = worker_factory()
     assert worker.run() == ExitCode.PARKED
 
-    paths = [path for _, path, _ in db.writes]
     state_write = max(
         i for i, (op, path, data) in enumerate(db.writes)
         if path == "tasks/task_1" and data.get("state") == TaskState.PARKED.value
