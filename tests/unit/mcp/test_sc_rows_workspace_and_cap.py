@@ -193,13 +193,15 @@ def test_a_submitted_workflows_rows_carry_the_workspace_the_reply_names(tmp_path
         "SUBMIT": {
             "workflow_id": "wf_s", "workspace": "u-bogdan", "console": None,
             "steps": [{"step_id": "implement", "task_id": "t1", "depends_on": [], "console": None}],
-            "repository": None, "repository_notes": [], "spec_digest": None, "bridge_version": "0.1.0",
+            "repository": None, "repository_notes": [], "spec_digest": workflows.spec_digest(spec),
+            "bridge_version": "0.1.0",
             "follow_error": None, "error": None,
         },
         "step:implement": _step("SUCCEEDED"),
         "STATUS": {"state": "SUCCEEDED", "state_note": None, "console": None, "steps": []},
     })
     step_rows = [c["label"] for c in got["calls"] if c["agentType"] == "sc:step"]
+    assert got["result"]["state"] == "SUCCEEDED", got["result"]
     assert step_rows == ["[SwarmCloud] [u-bogdan] gate · stage 1 · implement"]
     assert got["result"]["workspace"] == "u-bogdan"
     assert got["result"]["title"] == "SC · [u-bogdan] gate · 1 step"
