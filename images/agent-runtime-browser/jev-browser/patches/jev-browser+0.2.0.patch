@@ -21,15 +21,167 @@ index 7ee0517..1aa263b 100755
    process.stderr.write("jev-browser: Chromium for Playwright is missing, installing it (one time, a few hundred MB)\n");
    await promisify(execFile)(process.execPath, [cli, "install", "chromium"], { timeout: 600_000 });
 diff --git a/node_modules/jev-browser/src/index.mjs b/node_modules/jev-browser/src/index.mjs
-index 9012aad..a08c21b 100644
+index 9012aad..bb9def7 100644
 --- a/node_modules/jev-browser/src/index.mjs
 +++ b/node_modules/jev-browser/src/index.mjs
-@@ -1,4 +1,4 @@
+@@ -1,5 +1,6 @@
 -export { JevBrowser, TOOLS, KEYS } from "./session.mjs";
 +export { JevBrowser, TOOLS, KEYS, LAUNCH_REFUSED } from "./session.mjs";
  export { runFlow } from "./flow.mjs";
  export { jev, apiKey } from "./jev.mjs";
++export { adaptForBackend, adaptInternal, compatMode, stableStringify, INTERNAL_PLACEHOLDER_KEY } from "./internal-compat.mjs";
  export { brief, pageDiff, formatPage, formatDiff, redactPage } from "./page-model.mjs";
+ export { webmcpText } from "./webmcp.mjs";
+diff --git a/node_modules/jev-browser/src/internal-compat.mjs b/node_modules/jev-browser/src/internal-compat.mjs
+new file mode 100644
+index 0000000..90c4efb
+--- /dev/null
++++ b/node_modules/jev-browser/src/internal-compat.mjs
+@@ -0,0 +1,114 @@
++// swarm (JUDGE-ADAPT, owner decision 2026-10-14, part of #1030): the request adapter for Saga's
++// internal decision API (Internal Jev, Internal Laya). jev() calls adaptForBackend() on every
++// request; with JEV_API_COMPAT unset it returns the request untouched, so TypeSafe sees exactly
++// what upstream sends. With JEV_API_COMPAT=internal (set by whatever points JEV_API_URL at an
++// internal backend) it rewrites the two shapes the internal API refuses, measured 2026-10-14
++// (docs/design/live-browser.md, "Judgment backends"):
++//
++//   * `state` must be a string ("state: Input should be a valid string"): an object state is
++//     JSON with sorted keys and no whitespace, so the same page is the same request;
++//   * a `choice` needs described criteria ("criteria Field required"), and jev-browser's element
++//     and group picks send only the keys (`{"7": null}`): a missing description is filled from
++//     `state.page.elements` by `i` ("<role> <name>", at most 80 chars) or `state.page.groups` by
++//     `g` (the group's summary), whichever the instructions name. A choice with no criteria at
++//     all and neither reference fails with an error; nothing is guessed. A described key keeps
++//     its description, and a keys-only choice that names neither (dropdown options, keyboard
++//     keys) is described by its own key, which is the option's whole text;
++//   * a `score` with dict criteria ("criteria Input should be a valid list") is refused:
++//     jev-browser asks none, and the list's element shape was not measured.
++//
++// The answers come back in TypeSafe's shape (choice / probabilities / confidence / noul) and are
++// passed through unchanged. The internal API ignores the key, so an internal backend is sent
++// INTERNAL_PLACEHOLDER_KEY and never TYPESAFE_API_KEY.
++
++export const INTERNAL_PLACEHOLDER_KEY = "internal-backend-takes-no-key";
++export const LABEL_MAX = 80;
++const ELEMENTS = /`page\.elements`/;
++const GROUPS = /`page\.groups`/;
++
++// "" or unset -> TypeSafe's API, as upstream; "internal" -> Saga's internal decision API.
++export function compatMode(env = process.env) {
++  const v = env.JEV_API_COMPAT ?? "";
++  if (v === "") return "typesafe";
++  if (v === "internal") return "internal";
++  throw new Error(`JEV_API_COMPAT=${JSON.stringify(String(v).slice(0, 40))} is not understood: leave it unset for TypeSafe's API, or set "internal" for Saga's internal decision API`);
++}
++
++// An internal request at TypeSafe would carry the placeholder key and a reshaped body: refuse it.
++export function checkInternalUrl(url) {
++  let host;
++  try { host = new URL(url).hostname; } catch { throw new Error(`JEV_API_COMPAT=internal needs JEV_API_URL to be the internal backend's URL; it is not a URL`); }
++  if (host === "typesafe.ai" || host.endsWith(".typesafe.ai")) {
++    throw new Error(`JEV_API_COMPAT=internal but the API URL is TypeSafe's (${host}): set JEV_API_URL to the internal backend, or unset JEV_API_COMPAT`);
++  }
++}
++
++// JSON with every object's keys sorted and no whitespace.
++export function stableStringify(v) {
++  if (Array.isArray(v)) return `[${v.map(x => x === undefined || typeof x === "function" ? "null" : stableStringify(x)).join(",")}]`;
++  if (v && typeof v === "object" && typeof v.toJSON !== "function") {
++    const parts = [];
++    for (const k of Object.keys(v).sort()) {
++      if (v[k] === undefined || typeof v[k] === "function") continue;
++      parts.push(`${JSON.stringify(k)}:${stableStringify(v[k])}`);
++    }
++    return `{${parts.join(",")}}`;
++  }
++  return JSON.stringify(v);
++}
++
++export function elementLabel(e) {
++  const role = e.role || e.tag || "element";
++  const name = e.label || e.text || e.placeholder || e.name || e.near || e.href || "";
++  return `${role} ${String(name)}`.trim().slice(0, LABEL_MAX);
++}
++
++function described(v) { return typeof v === "string" && v !== ""; }
++
++function choiceCriteria(name, q, state) {
++  const given = q.criteria;
++  if (given != null && (typeof given !== "object" || Array.isArray(given))) {
++    throw new Error(`Jev question "${name}": a choice's criteria must be an object of option -> description`);
++  }
++  if (given && Object.keys(given).length && Object.values(given).every(described)) return given;
++  const instructions = String(q.instructions ?? "");
++  const refs = [ELEMENTS.test(instructions) && "elements", GROUPS.test(instructions) && "groups"].filter(Boolean);
++  if (refs.length === 2) throw new Error(`Jev question "${name}": its instructions name both \`page.elements\` and \`page.groups\`, so its options cannot be described for the internal API`);
++  if (refs.length === 0) {
++    if (!given || !Object.keys(given).length) throw new Error(`Jev question "${name}": a choice without criteria that names neither \`page.elements\` nor \`page.groups\` cannot be sent to the internal API, which requires criteria`);
++    return Object.fromEntries(Object.entries(given).map(([k, v]) => [k, described(v) ? v : k]));
++  }
++  const page = state && typeof state === "object" ? state.page : undefined;
++  const [list, id, label] = refs[0] === "elements"
++    ? [page?.elements, "i", elementLabel]
++    : [page?.groups, "g", g => String(g.summary ?? "")];
++  if (!Array.isArray(list)) throw new Error(`Jev question "${name}": its instructions name \`page.${refs[0]}\` but the state has no page.${refs[0]}`);
++  const byId = new Map(list.map(x => [String(x[id]), x]));
++  const keys = given && Object.keys(given).length ? Object.keys(given) : [...byId.keys()];
++  if (!keys.length) throw new Error(`Jev question "${name}": page.${refs[0]} is empty, so there is nothing to choose from`);
++  return Object.fromEntries(keys.map(k => {
++    if (given && described(given[k])) return [k, given[k]];
++    const x = byId.get(k);
++    if (!x) throw new Error(`Jev question "${name}": option "${k.slice(0, 40)}" is not an entry of page.${refs[0]} (by its \`${id}\`)`);
++    return [k, label(x) || k];
++  }));
++}
++
++// The request as the internal API accepts it; inputs are never mutated.
++export function adaptInternal(state, questions) {
++  const out = {};
++  for (const [name, q] of Object.entries(questions ?? {})) {
++    if (q?.type === "choice") out[name] = { ...q, criteria: choiceCriteria(name, q, state) };
++    else if (q?.type === "score" && q.criteria && typeof q.criteria === "object" && !Array.isArray(q.criteria)) {
++      throw new Error(`Jev question "${name}": a score with criteria as an object is refused by the internal API ("criteria Input should be a valid list"), and jev-browser asks none; not sent`);
++    } else out[name] = q;
++  }
++  return { state: typeof state === "string" ? state : stableStringify(state), questions: out };
++}
++
++// jev()'s one entry point: TypeSafe untouched, internal adapted.
++export function adaptForBackend(state, questions, url, env = process.env) {
++  if (compatMode(env) !== "internal") return { state, questions };
++  checkInternalUrl(url);
++  return adaptInternal(state, questions);
++}
+diff --git a/node_modules/jev-browser/src/jev.mjs b/node_modules/jev-browser/src/jev.mjs
+index 3fd6d9b..fb09ca5 100644
+--- a/node_modules/jev-browser/src/jev.mjs
++++ b/node_modules/jev-browser/src/jev.mjs
+@@ -3,6 +3,7 @@
+ import { readFileSync, existsSync } from "node:fs";
+ import { resolve, dirname } from "node:path";
+ import { fileURLToPath } from "node:url";
++import { adaptForBackend, compatMode, INTERNAL_PLACEHOLDER_KEY } from "./internal-compat.mjs";
+ 
+ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+ export const API_URL = process.env.JEV_API_URL || "https://api.typesafe.ai/v1/systemone";
+@@ -12,6 +13,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
+ const KEY_NAMES = ["TYPESAFE_API_KEY"];
+ let cachedKey;
+ export function apiKey() {
++  // swarm: an internal backend ignores the key; it is sent a placeholder and never the TypeSafe key.
++  if (compatMode() === "internal") return INTERNAL_PLACEHOLDER_KEY;
+   if (cachedKey) return cachedKey;
+   for (const k of KEY_NAMES) if (process.env[k]) return (cachedKey = process.env[k]);
+   // The MCP server skips the working directory's .env: as a plugin that is the user's project,
+@@ -29,6 +32,8 @@ export function apiKey() {
+ 
+ // questions: { name: { type: "noul" | "choice" | "score", instructions, criteria? } }
+ export async function jev(state, questions, { retries = 2, timeout = 60_000 } = {}) {
++  // swarm: JEV_API_COMPAT=internal reshapes the request for Saga's internal decision API (src/internal-compat.mjs).
++  ({ state, questions } = adaptForBackend(state, questions, API_URL));
+   const key = apiKey();
+   for (let attempt = 0; ; attempt++) {
+     const t = performance.now();
 diff --git a/node_modules/jev-browser/src/session.mjs b/node_modules/jev-browser/src/session.mjs
 index 14d2ec3..e1c3a69 100644
 --- a/node_modules/jev-browser/src/session.mjs
