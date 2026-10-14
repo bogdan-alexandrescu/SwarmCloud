@@ -3177,6 +3177,21 @@ line in its summary -- as an object the operator uploads with
 ([runbook](runbooks/build-mirror.md)). It is a warning, not a failure: the
 job cannot see whether the upload happened.
 
+**Main fills the bucket itself (owner decision 2026-10-14, on PR 1298).**
+Main's `build images` job, which holds the deployer's identity, runs
+`scripts/refresh-build-mirror.sh --tools-only` before it builds. That uploads
+every manifest object the bucket lacks, each downloaded from its upstream URL
+and checked against its pinned sha256 first. A mismatch is refused and fails
+the step, naming the object. An object already there is left alone, nothing
+is ever deleted, and no image is pulled through (`--tools-only`). The step
+never runs on a pull request or a queue entry, where the job itself is
+skipped. So a merged manifest row no longer fails main's build; the PR
+warning above says the object will be uploaded from upstream at the merge.
+
+**The scan blocks (owner decision 2026-10-14).** A fixable HIGH or CRITICAL
+finding fails the pull request's image job, the same rule as the release's
+promotion scan, even when the CVE is new upstream and unrelated to the change.
+
 **Download retries.** The three fetches PR 1281 measured failing runs now
 retry, bounded: every `curl -fsSL` in a Dockerfile carries `--retry 5
 --retry-all-errors --retry-connrefused` (the `build images` exit 22 was an

@@ -24,6 +24,7 @@ import pytest
 import yaml
 
 from .test_build_images_local import _builds, _local, _value
+from .test_build_mirror import _refresh
 
 REPO = Path(__file__).resolve().parents[3]
 APPLICATION = REPO / ".github" / "workflows" / "application.yml"
@@ -202,3 +203,37 @@ def test_ruff_check_is_a_gated_job():
     runs = "\n".join(str(s.get("run", "")) for s in job["steps"])
     assert "uv run --frozen --only-dev ruff check" in runs, runs
     assert "ruff" in jobs["ci-gate"]["needs"]
+
+
+# --------------------------------------------------------------------------
+# Main fills the tool mirror (owner decision 2026-10-14, on PR 1298).
+# --------------------------------------------------------------------------
+def test_main_fills_the_tool_mirror_before_it_builds_and_a_pull_request_never_does():
+    """MUTATION: drop the step, move it after the build, or drop --tools-only."""
+    job = _jobs()["build"]
+    names = [s.get("name") for s in job["steps"]]
+    fill = names.index("fill the tool mirror with what this commit pins")
+    assert fill < names.index("build with Cloud Build"), names
+    assert job["steps"][fill]["run"].strip() == "./scripts/refresh-build-mirror.sh --tools-only"
+    assert job["if"] == "github.event_name != 'pull_request' && github.event_name != 'merge_group'", job["if"]
+    for other_id, other in _jobs().items():
+        if other_id != "build":
+            for st in other.get("steps", []):
+                for line in str(st.get("run", "")).splitlines():
+                    assert not line.strip().startswith(("./scripts/refresh-build-mirror.sh", "scripts/refresh-build-mirror.sh")), (other_id, line)
+
+
+def test_tools_only_uploads_checked_files_and_touches_no_image_and_deletes_nothing(tmp_path):
+    """--tools-only: only `storage objects describe` and `storage cp` to the
+    bucket, every upload matching its pinned sha256; no artifacts call, no
+    delete. MUTATION: let --tools-only fall through to the image half."""
+    import hashlib
+
+    rows, bucket, proc, calls, _ = _refresh(tmp_path, "--tools-only")
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    assert calls, "the refresh made no gcloud call"
+    for argv in calls:
+        assert argv[0] == "storage" and argv[1] in {"objects", "cp"}, argv
+        assert not any(word in {"rm", "delete"} for word in argv), argv
+    for sha, obj in rows:
+        assert hashlib.sha256((bucket / "swarm-build-mirror-swarm-test-project" / obj).read_bytes()).hexdigest() == sha

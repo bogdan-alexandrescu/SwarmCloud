@@ -1827,12 +1827,12 @@ jobs:
             {
               echo "### New tool-mirror objects"
               echo
-              echo "This pull request adds ${count} row(s) to \`${manifest}\`. Main's build reads each from the mirror bucket and fails if it is missing, so before merging the operator runs \`scripts/refresh-build-mirror.sh --tools-only\` and then \`--check\` (docs/runbooks/build-mirror.md):"
+              echo "This pull request adds ${count} row(s) to \`${manifest}\`. Main's \`build images\` uploads each missing one from upstream, sha256-checked, before it builds (\`scripts/refresh-build-mirror.sh --tools-only\`); an upstream that is down or a sha256 that does not match then fails main's build, so check the URLs below are reachable (docs/runbooks/build-mirror.md):"
               echo
               sed 's/^/- `/; s/$/`/' "${RUNNER_TEMP}/mirror-added"
             } >> "$GITHUB_STEP_SUMMARY"
             while IFS= read -r obj; do
-              echo "::warning file=${manifest},title=upload before merging::${obj} is new: run scripts/refresh-build-mirror.sh --tools-only before this merges, or main's build fails at its tool-mirror step"
+              echo "::warning file=${manifest},title=new tool-mirror object::${obj} is new: main's build uploads it from https://${obj} after checking its sha256 (refresh-build-mirror.sh --tools-only)"
             done < "${RUNNER_TEMP}/mirror-added"
           else
             echo "no tool-mirror row added; the manifest and the Dockerfiles' pins agree"
@@ -1975,6 +1975,20 @@ jobs:
           service_account: ${{ vars.GCP_DEPLOY_SA }}
 
       - uses: google-github-actions/setup-gcloud@v3
+
+      - name: fill the tool mirror with what this commit pins
+        # OWNER DECISION 2026-10-14 (PR 1298; docs/ci.md "A pull request scans
+        # the images it builds"). PR 1276 merged a new tool-mirror row before
+        # anyone uploaded its object, and this build failed at its
+        # `tool-mirror` step. A pull request cannot see the bucket (it has no
+        # Google identity), so it only warns; this job can, so it fills it.
+        # `--tools-only` uploads every manifest object the bucket lacks, each
+        # downloaded from upstream and checked against its pinned sha256
+        # first (a mismatch is refused and fails the step, naming it); an
+        # object already there is left alone; nothing is ever deleted; no
+        # image is pulled through. Main only: this job never runs on a pull
+        # request or a queue entry (its `if:` above).
+        run: ./scripts/refresh-build-mirror.sh --tools-only
 
       - name: build with Cloud Build
         # Never a local docker build: the targets are amd64 and Cloud Build is
