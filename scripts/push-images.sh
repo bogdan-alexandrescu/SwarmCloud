@@ -64,14 +64,15 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 # shellcheck source=lib/image-scan.sh
 source "${REPO_ROOT}/scripts/lib/image-scan.sh"
 
-# The same twelve build-images.sh builds (agent-runtime-indexer since #625, workspace-apply since #847, swarm-live since LB-L8e,
-# agent-runtime-base-nocodex -- the codex-less base agent-runtime-browser is built FROM -- since BROWSER-NO-CODEX). This list had six -- no swarm-ui, no
+# The same thirteen build-images.sh builds (agent-runtime-indexer since #625, workspace-apply since #847, swarm-live since LB-L8e,
+# agent-runtime-base-nocodex -- the codex-less base agent-runtime-browser is built FROM -- since BROWSER-NO-CODEX, swarm-egress since
+# EGRESS-BUILD: its promoted digest is the image_refs entry egress.tf renders swarm_egress_manifest from). This list had six -- no swarm-ui, no
 # swarm-verify -- and it is the fallback whenever build/images-<env>.json is
 # absent. That used to cost only an unpromoted image; now terraform deploys
 # every image by digest from the manifest this writes and refuses to plan one
 # with no digest, so a promotion that silently skips two images is a deploy
 # that fails naming them. Better to promote them.
-ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live workspace-apply)
+ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live swarm-egress workspace-apply)
 TARGETS=()
 TAG=""
 CHANNEL="${ENVIRONMENT}"

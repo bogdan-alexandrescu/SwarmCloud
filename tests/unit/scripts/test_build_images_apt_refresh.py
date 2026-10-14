@@ -64,7 +64,8 @@ REPO = Path(__file__).resolve().parents[3]
 # and the two built FROM a base, which are rebuilt with it.
 UPGRADES = {
     "agent-runtime-base", "agent-runtime-base-nocodex", "swarm-api", "swarm-scheduler",
-    "swarm-quota-broker", "swarm-reconciler", "swarm-ui", "swarm-live", "workspace-apply",
+    "swarm-quota-broker", "swarm-reconciler", "swarm-ui", "swarm-live", "swarm-egress",
+    "workspace-apply",
 }
 BUILT_FROM_A_BASE = {"agent-runtime-browser", "agent-runtime-indexer"}
 NO_UPGRADE = set(IMAGES) - UPGRADES - BUILT_FROM_A_BASE

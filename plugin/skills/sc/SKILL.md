@@ -93,13 +93,19 @@ the session may ask once before the first read.
 
 ### Every run is titled after its workflow
 
-A SwarmCloud workflow run here is titled `SC · [<workspace>] <name> · N
-steps` (at most 150 characters), not `swarmcloud`: <workspace> is the
-workspace (tenant) the API's document says it runs in -- its display name
-when the API gives one -- and <name> is the spec's `title`, else its `label`
-cut at a word, else the title or label SwarmCloud stored, else the workflow
-id. The name is cut to fit, never the workspace or the step count. Every row
-is labelled the same way, `[SwarmCloud] [<workspace>] <name> · stage <n> ·
+A SwarmCloud workflow run here is titled `SC · <name> · N steps` (at most
+150 characters), not `swarmcloud`: <name> is the spec's `title`, else its
+`label` cut at a word, else the title or label SwarmCloud stored, else the
+workflow id, cut to fit, never the step count. A run of single tasks is
+titled `SC · <label> · task` (several: `SC · <first label> +N · N tasks`).
+The run's NAME carries no workspace; its DESCRIPTION starts with it,
+`Workspace: <workspace> (<tenant>) · ` then the rest -- <workspace> is the
+workspace (tenant) the API's document says it runs in, by its display name
+when the API gives one, and <tenant> its tenant id (`Workspace: <tenant> · `
+alone when there is no display name) -- first, so clipping a long
+description never drops it; `Workspace: not reported` when the API names
+none (owner, 2026-10-14). Every row INSIDE the run still names its
+workspace, `[SwarmCloud] [<workspace>] <name> · stage <n> ·
 <step>` (a single task: `[SwarmCloud] [<workspace>] <label> · task`), with its
 console link, and every result and summary line names the workspace. A run's name is fixed when it is launched, so `run` and `attach`
 first call `swarm_workflow_launch`, which writes a copy of the
@@ -144,7 +150,8 @@ workflow keeps its own step count, as the console shows it. Call
 `swarm_workflow_launch` once with `{attach: "all"}`. It lists the caller's
 tenant's running workflows once and, for the newest 30 (the plugin's
 `max_live_rows` option, held to 1-50), grouped by workspace, writes one
-titled script each; then make one Workflow call per entry of its `launches`,
+titled script each -- named `SC · <name> · N steps`, its description
+starting `Workspace: <workspace> (<tenant>) · ` -- then make one Workflow call per entry of its `launches`,
 `{scriptPath: <its script_path>, args: <its args>}` — each attaches its
 workflow exactly as `attach <wf_id>` does: finished steps reported once, a
 live row for every unfinished step; every row's label carries its task's

@@ -103,7 +103,7 @@ from .device import WINDOW_OVERHANG, DeviceController, XRandrDisplay, captured
 from .. import browser_tools
 from .egress import EgressConfigError, EgressSettings, LocalForwarder, chromium_proxy_args, describe, notice_url
 from .inject import InjectError, XInjector, display_socket
-from .mask import MaskCdp, MaskState
+from .mask import REASON_SWITCHING, MaskCdp, MaskState
 from .pointer import css_to_frame
 from .presets import DEFAULT_PRESET, MAX_DISPLAY_HEIGHT, MAX_DISPLAY_WIDTH, Device, UnknownPreset, resolve
 from .report import agent_report, browser_report, device_report, egress_report, encode_report, page_origin
@@ -181,6 +181,27 @@ PAGE_INFO_SECONDS = 2.0
 #: milliseconds; then every two seconds, one `Target.getTargets` each, for as
 #: long as the page is there and will not take a session (a crashed renderer).
 RECONNECT_DELAYS = (0.05, 0.25, 0.5, 1.0, 2.0)
+
+#: THE PAGE FOLLOWED IS THE TAB CHROMIUM SHOWS (LIVE-BLANK; part of #1030).
+#: Every this many seconds the follower asks each page whether it is shown
+#: (`PageFollower.check`), besides when a tab opens, closes or is brought
+#: forward. Half a second bounds how long a tab switch nobody announced -- a
+#: link opening a tab, a page closing itself -- shows the "unavailable" fill;
+#: each ask is two CDP round trips per page.
+VISIBLE_POLL_SECONDS = 0.5
+#: A page that has not answered in this long is "unknown", not shown: a tab
+#: restored from the profile may have no renderer until it is loaded.
+VISIBLE_PROBE_SECONDS = 2.0
+#: The isolated world the visibility probe reads `document.visibilityState`
+#: in: a world no page script can reach, so a page cannot claim to be shown.
+VISIBLE_WORLD = "swarm-live-visible"
+#: Agent commands after which another tab may be on screen. The mask holds
+#: (`MaskState.hold`) from the moment one is forwarded until the follower has
+#: looked again, and at most `TAB_SWITCH_HOLD_SECONDS` if it never answers.
+TAB_SWITCH_METHODS = frozenset({
+    "Target.createTarget", "Target.activateTarget", "Target.closeTarget", "Page.bringToFront", "Page.close",
+})
+TAB_SWITCH_HOLD_SECONDS = 5.0
 
 #: CHROMIUM IS STARTED AGAIN WHEN IT EXITS UNEXPECTEDLY (BROWSER-RELAUNCH;
 #: part of #1030), at most this many times in this many seconds, then it
@@ -546,15 +567,35 @@ class Deps:
 
 
 class GateProxy(CdpProxy):
-    """The proxy, remembering whether an agent has ever connected (SessionCarry asks)."""
+    """The proxy, remembering whether an agent has ever connected (SessionCarry asks).
+
+    It also tells the page follower when the agent asks Chromium to open,
+    close or bring forward a tab (`TAB_SWITCH_METHODS`): `on_tab_switch` as
+    the command is forwarded, so the mask holds before the switch can happen,
+    and `on_tab_switched` when Chromium has answered it, so the follower looks
+    which tab is shown after it did (LIVE-BLANK).
+    """
 
     agent_seen = False
+    on_tab_switch: Callable[[], None] | None = None
+    on_tab_switched: Callable[[], None] | None = None
 
     async def connect_agent(self, link: AgentLink, client: str | None = None) -> AgentConnection | None:
         connection = await super().connect_agent(link, client)
         if connection is not None:
             self.agent_seen = True
         return connection
+
+    async def _forward(self, connection: AgentConnection, message: Mapping[str, Any]) -> None:
+        if message.get("method") in TAB_SWITCH_METHODS and self.on_tab_switch is not None:
+            self.on_tab_switch()
+        await super()._forward(connection, message)
+
+    async def _on_response(self, pending: Any, message: Mapping[str, Any]) -> None:
+        await super()._on_response(pending, message)
+        if pending.owner is not None and pending.method in TAB_SWITCH_METHODS \
+                and self.on_tab_switched is not None:
+            self.on_tab_switched()
 
 
 class _CurrentBrowser:
@@ -606,10 +647,38 @@ def redacted_stderr(lines: list[str]) -> list[str]:
 class PageFollower:
     """Which page is on screen, and the mask's gate-only session on it.
 
-    The display holds one window (§3.1) whose visible tab is the one opened
-    last, so the mask follows the newest page and falls back to the newest
-    one left when it closes. Between pages the mask's session is down, so
-    every frame is the blank "masking unavailable" frame: it fails closed.
+    The display holds one window (§3.1), and the page on screen is its tab
+    Chromium shows. Between pages the mask's session is down, so every frame
+    is the blank "masking unavailable" frame: it fails closed.
+
+    WHICH TAB IS SHOWN IS ASKED, NOT GUESSED (LIVE-BLANK; part of #1030). The
+    follower used to follow the NEWEST page target, on the rule that "the
+    visible tab is the one opened last", and on start the last one
+    `Target.getTargets` listed. MEASURED 2026-10-13 on release 1e86c37e: on
+    task_2ac5d7e22a51460995a2, at Google's reCAPTCHA page, and on
+    task_9d2890cce74147f985ff, the page area was the mask's flat #222 for ten
+    minutes and more; on task_84cb2038aa704c829d48's resumed attempt the whole
+    frame was the "unavailable" #555. An agent driving Chromium over the CDP
+    proxy (Playwright MCP, swarm_browser) opens tabs and brings others
+    forward, and a profile restored on a resumed attempt brings back several
+    tabs in an order that says nothing about which is shown. A followed tab
+    that is not shown runs no animation frames, so its observer never
+    measures again; its first layout change after that left its report stale
+    for good, and the page area of the tab that WAS shown blanked with it.
+
+    So `check` asks every page for `document.visibilityState`, in an isolated
+    world (`VISIBLE_WORLD`) no page script can reach, and follows the shown
+    one -- of several (a second window: the gate's own fresh page), the one
+    shown most recently. It runs on start, when a tab is created or
+    destroyed, after the agent's every tab command (`TAB_SWITCH_METHODS`,
+    while the mask holds), and every `VISIBLE_POLL_SECONDS`. A Chromium that
+    answers no probe at all gets the old rule, the newest page.
+
+    OUT-OF-PROCESS FRAMES. The mask's install asks Chromium to auto-attach
+    the page's cross-site iframes (mask.py `MaskCdp`); each one's session is
+    a CHILD of the page's, and the follower installs the observer on it
+    (`MaskCdp(child=True)`) and routes its events, so a cross-site frame --
+    an ad, an embedded sign-in -- is shown and masked rather than covered.
 
     The mask's handlers await replies (`MaskCdp.link`), and the pipe reader
     must never wait on a reply (cdpproxy.py), so its events are queued here
@@ -641,13 +710,16 @@ class PageFollower:
     def __init__(self, cdp: CdpProxy, state: MaskState,
                  on_origin: Callable[[dict[str, Any] | None], None] | None = None,
                  on_state: Callable[[str, str | None, str | None], None] | None = None,
-                 delays: tuple[float, ...] = RECONNECT_DELAYS) -> None:
+                 delays: tuple[float, ...] = RECONNECT_DELAYS,
+                 poll: float = VISIBLE_POLL_SECONDS) -> None:
         self._cdp = cdp
         self._state = state
         self._on_origin = on_origin
         #: Told (state, cause, target) when `state` changes.
         self._on_state = on_state
         self._delays = delays
+        self._poll = poll
+        #: Page targets, the one shown most recently last (`check`).
         self.pages: list[str] = []
         self.current: str | None = None
         self.state = "none"
@@ -655,10 +727,23 @@ class PageFollower:
         #: The session is attached but what the mask installed on it is gone (a crash).
         self._stale = False
         self._mask: MaskCdp | None = None
+        #: The mask on every session this follow holds: the page's and its
+        #: out-of-process frames', by session id.
+        self._masks: dict[str, MaskCdp] = {}
+        #: Out-of-process frame sessions under the page's: session -> targetId.
+        self._children: dict[str, str] = {}
+        #: The visibility probe's own session on each page, and its world there.
+        self._probes: dict[str, str] = {}
+        self._probe_worlds: dict[str, int] = {}
+        #: What each page last answered: True shown, False hidden, None unknown.
+        self._shown_last: dict[str, bool | None] = {}
+        self._checking = False
+        self._check_again = False
         self._queue: asyncio.Queue[tuple[str, str, dict[str, Any]]] = asyncio.Queue()
         self._lock = asyncio.Lock()
         self._tasks: set[asyncio.Task[None]] = set()
         self._worker: asyncio.Task[None] | None = None
+        self._watcher: asyncio.Task[None] | None = None
         self._reconnecting: asyncio.Task[None] | None = None
         self._closing = False
 
@@ -670,9 +755,10 @@ class PageFollower:
                 if info["targetId"] not in self.pages:
                     self.pages.append(info["targetId"])
         try:
-            await self.follow(self.pages[-1] if self.pages else None)
+            await self.check()
         except Exception as exc:  # noqa: BLE001 -- the reconnect loop takes it from here
             self.recover("attach_failed", exc)
+        self._watcher = asyncio.create_task(self._watch())
 
     def on_event(self, message: Mapping[str, Any]) -> None:
         """A message from Chromium's pipe. Never waits."""
@@ -683,9 +769,16 @@ class PageFollower:
         if not isinstance(method, str):
             return
         if session is not None:
-            if session == self._session:
-                if method == "Inspector.targetCrashed":
-                    self._crashed()
+            if session == self._session and method == "Inspector.targetCrashed":
+                self._crashed()
+            elif session in self._masks:
+                if method == "Target.attachedToTarget":
+                    self._attached(params)
+                elif method == "Target.detachedFromTarget":
+                    child = params.get("sessionId")
+                    if child in self._children:
+                        del self._children[child]
+                        self._masks.pop(child, None)
                 else:
                     self._queue.put_nowait((session, method, params))
             return
@@ -694,25 +787,168 @@ class PageFollower:
             target = info.get("targetId")
             if info.get("type") == "page" and isinstance(target, str) and target not in self.pages:
                 self.pages.append(target)
-                self._spawn(self.follow(target))
+                # A new tab is usually shown at once: hold until it is looked at.
+                self.tab_switching()
         elif method == "Target.targetDestroyed":
             target = params.get("targetId")
+            self._forget_probe(target)
             if target in self.pages:
                 self.pages.remove(target)
                 if target == self.current:
-                    self._spawn(self.follow(self.pages[-1] if self.pages else None))
+                    self.tab_switching()
         elif method == "Target.targetCrashed":
             if params.get("targetId") == self.current and self._session is not None:
                 self._crashed()
-        elif method == "Target.detachedFromTarget" and session is None \
-                and self._session is not None and params.get("sessionId") == self._session:
-            self._session = None
-            self._mask = None
-            self._state.session_down()
-            if self.current is not None:
-                # Its page may well still be there (a renderer swap, a session
-                # Chromium dropped): attach again rather than stay grey.
-                self.recover("detached")
+        elif method == "Target.detachedFromTarget" and session is None:
+            gone = params.get("sessionId")
+            for page, probe in list(self._probes.items()):
+                if probe == gone:
+                    self._forget_probe(page)
+            if self._session is not None and gone == self._session:
+                self._session = None
+                self._mask = None
+                self._masks.clear()
+                self._children.clear()
+                self._state.session_down()
+                if self.current is not None:
+                    # Its page may well still be there (a renderer swap, a session
+                    # Chromium dropped): attach again rather than stay grey.
+                    self.recover("detached")
+
+    def _attached(self, params: Mapping[str, Any]) -> None:
+        """Chromium auto-attached a target under the page's session: an out-of-process frame, or not ours."""
+        child = params.get("sessionId")
+        info = params.get("targetInfo") or {}
+        if not isinstance(child, str):
+            return
+        if info.get("type") != "iframe":
+            # A worker or anything else the auto-attach brought: the mask has no use for it.
+            self._spawn_quiet(self._cdp.call("Target.detachFromTarget", {"sessionId": child}))
+            return
+        self._children[child] = str(info.get("targetId", ""))
+
+        async def send(method: str, params: dict[str, Any]) -> dict[str, Any]:
+            return await self._cdp.call(method, params, child)
+
+        mask = MaskCdp(self._state, send, child=True)
+        self._masks[child] = mask
+        self._spawn_quiet(mask.install())
+
+    def tab_switching(self) -> None:
+        """Another tab may be about to be shown: hold the mask and look. Never waits."""
+        if self._closing:
+            return
+        self._state.hold(REASON_SWITCHING)
+        self._spawn(self.check())
+        self._spawn_quiet(self._release_after(TAB_SWITCH_HOLD_SECONDS))
+
+    def tab_switched(self) -> None:
+        """Chromium answered the agent's tab command: look which tab it shows now."""
+        if not self._closing:
+            self._spawn(self.check())
+
+    async def _release_after(self, seconds: float) -> None:
+        """A tab command Chromium never answered must not hold the mask for ever."""
+        await asyncio.sleep(seconds)
+        await self.check()
+
+    async def check(self) -> None:
+        """Follow the tab Chromium shows, then let the mask trust reports again."""
+        if self._checking:
+            self._check_again = True
+            return
+        self._checking = True
+        try:
+            while True:
+                self._check_again = False
+                target = await self._shown()
+                await self.follow(target)
+                if not self._check_again or self._closing:
+                    break
+        finally:
+            self._checking = False
+            self._state.release()
+
+    async def _watch(self) -> None:
+        while not self._closing:
+            await asyncio.sleep(self._poll)
+            if self._reconnecting is not None and not self._reconnecting.done():
+                continue  # the reconnect loop has the page
+            try:
+                await self.check()
+            except Exception as exc:  # noqa: BLE001 -- the reconnect loop takes it from here
+                self.recover("attach_failed", exc)
+
+    async def _shown(self) -> str | None:
+        """The page Chromium shows: of several, the one shown most recently; None with no page."""
+        pages = list(self.pages)
+        if not pages:
+            return None
+        answers = await asyncio.gather(*(self._visible(page) for page in pages))
+        for page, shown in zip(pages, answers):
+            if shown and self._shown_last.get(page) is not True and page in self.pages:
+                # Newly shown: the most recently shown page goes last.
+                self.pages.remove(page)
+                self.pages.append(page)
+            self._shown_last[page] = shown
+        live = [p for p in self.pages if p in pages]
+        if not live:
+            return self.pages[-1] if self.pages else None
+        shown = [p for p in live if self._shown_last.get(p) is True]
+        if shown:
+            return shown[-1]
+        if all(self._shown_last.get(p) is None for p in live):
+            return live[-1]  # a Chromium that answers no probe: the newest page
+        if self.current in live:
+            return self.current  # none shown (a minimised window): stay, the mask says why
+        unknown = [p for p in live if self._shown_last.get(p) is None]
+        return unknown[-1] if unknown else live[-1]
+
+    async def _visible(self, target: str) -> bool | None:
+        """Whether `target` is the tab shown, read in a world its page cannot reach; None if unknown."""
+        try:
+            return await asyncio.wait_for(self._probe(target), VISIBLE_PROBE_SECONDS)
+        except Exception as exc:  # noqa: BLE001 -- a page closing, loading, or not answering: unknown
+            self._probe_worlds.pop(target, None)
+            if not isinstance(exc, (CdpError, asyncio.TimeoutError)) or "session" in str(exc).lower():
+                # The probe's session is gone or never was: attach again next time.
+                self._forget_probe(target)
+            return None
+
+    async def _probe(self, target: str) -> bool | None:
+        session = self._probes.get(target)
+        if session is None:
+            result = await self._cdp.call("Target.attachToTarget", {"targetId": target, "flatten": True})
+            session = self._probes[target] = str(result["sessionId"])
+        for _ in range(2):
+            world = self._probe_worlds.get(target)
+            if world is None:
+                # One world per document, made again only when its context is
+                # gone (a navigation): every call to make one is a new world.
+                made = await self._cdp.call("Page.createIsolatedWorld",
+                                            {"frameId": target, "worldName": VISIBLE_WORLD}, session)
+                world = self._probe_worlds[target] = int(made["executionContextId"])
+            try:
+                reply = await self._cdp.call("Runtime.evaluate", {
+                    "expression": "document.visibilityState", "contextId": world,
+                    "returnByValue": True}, session)
+            except CdpError:
+                self._probe_worlds.pop(target, None)
+                continue
+            value = (reply.get("result") or {}).get("value")
+            if value in ("visible", "hidden", "prerender"):
+                return value == "visible"
+            return None
+        return None
+
+    def _forget_probe(self, target: Any) -> None:
+        if not isinstance(target, str):
+            return
+        self._probe_worlds.pop(target, None)
+        self._shown_last.pop(target, None)
+        session = self._probes.pop(target, None)
+        if session is not None and not self._closing:
+            self._spawn_quiet(self._cdp.call("Target.detachFromTarget", {"sessionId": session}))
 
     def _crashed(self) -> None:
         """The page's renderer is gone, and with it the observer: fail closed and re-attach."""
@@ -740,7 +976,7 @@ class PageFollower:
                 live = [i["targetId"] for i in infos
                         if i.get("type") == "page" and isinstance(i.get("targetId"), str)]
                 self.pages = [p for p in self.pages if p in live] + [p for p in live if p not in self.pages]
-                target = self.current if self.current in self.pages else (self.pages[-1] if self.pages else None)
+                target = self.current if self.current in self.pages else await self._shown()
                 await self.follow(target)
                 if target is None:
                     return
@@ -765,6 +1001,18 @@ class PageFollower:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
+    def _spawn_quiet(self, work: Awaitable[Any]) -> None:
+        """`work` on a task whose failure is only logged: a detach, an out-of-process frame's install."""
+        async def run() -> None:
+            try:
+                await work
+            except Exception as exc:  # noqa: BLE001 -- the frame stays covered; the session is gone
+                log.info("live gate: page follower side task failed (%s)", type(exc).__name__)
+
+        task = asyncio.get_running_loop().create_task(run())
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
     async def _quietly(self, work: Awaitable[None]) -> None:
         try:
             await work
@@ -776,11 +1024,15 @@ class PageFollower:
             if target is not None and target == self.current and self._session is not None \
                     and not self._stale:
                 return
+            if target is None and self.current is None and self.state == "closed":
+                return
             old, old_session = self.current, self._session
             self._state.session_down()
             self._session = None
             self._stale = False
             self._mask = None
+            self._masks.clear()
+            self._children.clear()
             if old is not None:
                 # A page's main frame id is its target id.
                 self._state.frame_detached(old)
@@ -804,6 +1056,7 @@ class PageFollower:
             try:
                 mask = MaskCdp(self._state, send)
                 self._mask = mask
+                self._masks[session] = mask
                 await mask.install()
                 tree = await send("Page.getFrameTree", {})
             except BaseException:
@@ -813,6 +1066,8 @@ class PageFollower:
                 if self._session == session:
                     self._session = None
                     self._mask = None
+                    self._masks.clear()
+                    self._children.clear()
                 try:
                     await self._cdp.call("Target.detachFromTarget", {"sessionId": session})
                 except Exception:  # noqa: BLE001 -- already gone
@@ -835,10 +1090,10 @@ class PageFollower:
     async def _drain(self) -> None:
         while True:
             session, method, params = await self._queue.get()
-            mask = self._mask
-            if mask is None or session != self._session:
+            mask = self._masks.get(session)
+            if mask is None:
                 continue
-            if method == "Page.frameNavigated":
+            if method == "Page.frameNavigated" and session == self._session:
                 self._top_frame(params.get("frame") or {})
             try:
                 await mask.on_event(method, params)
@@ -850,15 +1105,19 @@ class PageFollower:
         self._closing = True
         if self._reconnecting is not None:
             self._reconnecting.cancel()
+        if self._watcher is not None:
+            self._watcher.cancel()
 
     async def close(self) -> None:
         self._closing = True
         tasks = [*self._tasks, *([self._worker] if self._worker else []),
+                 *([self._watcher] if self._watcher else []),
                  *([self._reconnecting] if self._reconnecting else [])]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         self._state.session_down()
+        self._state.release()
 
 
 # --------------------------------------------------------------------------
@@ -1158,6 +1417,9 @@ class LiveGate:
             self._device_changed(self.devices.device)
         self.pages = PageFollower(self.proxy, self.mask_state, on_origin=self._origin_changed,
                                   on_state=self._page_state)
+        # The agent's own tab commands: the mask holds until the follower has looked (LIVE-BLANK).
+        self.proxy.on_tab_switch = self.pages.tab_switching
+        self.proxy.on_tab_switched = self.pages.tab_switched
         await self.pages.start()
         self.cdp_server = await self.deps.serve_cdp(self.proxy, self.cfg.cdp_host, self.cfg.cdp_port)
         self._ready_browser = browser
@@ -1344,14 +1606,21 @@ class LiveGate:
             device = self.devices.device if self.devices is not None else self.desktop
             try:
                 frame = await asyncio.to_thread(self._grab, device)
-            except CaptureError as exc:
+                published = masked(frame, self.mask_state)
+            except Exception as exc:  # noqa: BLE001 -- see below
+                # NOTHING IS SENT FOR THIS FRAME, AND THE LOOP GOES ON
+                # (LIVE-BLANK). Only `CaptureError` was caught here, so any
+                # other failure -- a header caught mid-rewrite, a mask that
+                # raised -- ended the capture task in silence: the viewer kept
+                # the hub's first blank for good and `first_frame` never came.
                 if not failing:
-                    log.warning("live gate: capture failed (%s); nothing is sent", exc)
+                    log.warning("live gate: capture failed (%s); nothing is sent",
+                                exc if isinstance(exc, CaptureError) else type(exc).__name__)
                 failing = True
                 await self._pace(started + 1.0 / fps)
                 continue
             failing = False
-            self.hub.publish(masked(frame, self.mask_state))
+            self.hub.publish(published)
             # The first frame the stream is given: the capture runs only while
             # an RFB stream (a viewer, or the relay's recorder) is open, and
             # every stream sends from the hub this was published to.

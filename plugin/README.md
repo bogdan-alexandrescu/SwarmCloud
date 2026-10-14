@@ -864,9 +864,12 @@ pieces do it, and none of them submits anything.
   stays a cap. The bridge reads the option and hands it to each run as
   `max_rows`. The rest are logged and returned as `not_followed`, each with
   its `workspace` and the `/sc attach` that follows it.
-* **Every row names its workspace.** Run titles are `SC · [<workspace>]
-  <name> · N steps` (the name is cut to 150, never the workspace or the
-  count), rows are `[SwarmCloud] [<workspace>] <name> · stage <n> · <step>`
+* **Every row names its workspace.** Run titles are `SC · <name> · N steps`
+  and `SC · <label> · task` (the name is cut to 150, never the count), and
+  each run's description starts with `Workspace: <workspace> (<tenant>) · `
+  (`Workspace: not reported` when the API names none) — the workspace moved
+  out of the run's name into its description in SC-WS-DESC, owner
+  2026-10-14; rows inside the run are `[SwarmCloud] [<workspace>] <name> · stage <n> · <step>`
   and `[SwarmCloud] [<workspace>] <label> · task`, and every result object and
   summary line carries `workspace` — from the API's workflow and task
   documents, so one attach can cover several workspaces correctly.
