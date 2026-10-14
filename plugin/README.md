@@ -783,15 +783,19 @@ computes the spec's digest (`fnv1a32:` over its sorted-key compact JSON — the
 same function as `swarm_mcp.workflows.spec_digest`, held equal by a test) and
 the agent passes it beside the spec; `swarm_workflow` submits NOTHING when the
 spec it received digests differently. The reply must carry the digest back,
-every step of the spec and no other, each step's `depends_on` as the spec has
-it, and a distinct task per step — or no row starts and the run returns
-`SUBMITTED_UNVERIFIED` with the workflow id and what differed. The one
-exception is the steps SwarmCloud itself appends for a merge: `re-review` and
-`merge` for `"merge": "on_merge_verdict"`, `merge` alone for `"on"`, with the
-`depends_on` swarm-api builds them with. A spec that names no `merge` takes the
-repository's registered `merge_policy`, else the platform default, which the
-script cannot see, so it accepts no appended step or exactly one of the shapes
-those could produce. Appended steps get a row each, after the spec's own, so
+every step of the spec under its own id (none dropped, none renamed), each
+spec step's `depends_on` as the spec has it, and a distinct task per step — or
+no row starts and the run returns `SUBMITTED_UNVERIFIED` with the workflow id
+and what differed. A step the reply names beyond the spec is one SwarmCloud
+added — a `re-review` and a `merge` for the merge choice — and is accepted
+when the bridge marked it `added: true` (it compares the reply with the spec it
+submitted itself) or, from a bridge too old to mark it, when every step it
+depends on is a spec step or another added step. The script no longer has to
+predict the server's merge rules: measured on 0.5.27, a 3-step spec came back
+with 5 steps and the prediction refused it. An extra step marked `added:
+false`, or tied to no spec step, is still refused, and so is a reply that names
+no step beyond a spec whose own `merge` choice makes SwarmCloud append some.
+Appended steps get a row each, after the spec's own, so
 the rows count what the console counts. Each `sc:step`
 row passes its `step_id` to `swarm_follow`, which will not follow a task that
 is a different step.
@@ -806,6 +810,16 @@ is a different step.
 
 A Result row that fails does not lose the steps: the run returns every row with
 `state` null and a `state_note` saying why.
+
+**A step row that cannot answer is not an error row.** Every field of the
+`sc:step` answer is optional and takes a null, and `sc:step` is given the exact
+object to send. A row that still throws — "StructuredOutput retry cap (5)
+exceeded", "subagent completed without calling StructuredOutput" — or answers
+with no state makes one `swarm_workflow_status` read at once, labelled
+`<workflow> · <step> · setup · status`: a step SwarmCloud names as finished
+becomes a row with that state, `state_from: "workflow status"` and the row's
+failure in `row_note`. A step still running, or not named, stays a
+`row_error`, which the Result step re-attaches while the workflow runs on.
 
 All five agents run on **haiku at low effort** (`model` and `effort` in their
 frontmatter), load no `CLAUDE.md`, and can call only the SwarmCloud tools they
