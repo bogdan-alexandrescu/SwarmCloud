@@ -270,6 +270,74 @@ def record_exhausted(
     )
 
 
+class TargetResetRefused(ValueError):
+    """A reset an admin asked for that this module will not apply as asked."""
+
+
+def reset_target(
+    state: QuotaState,
+    target: int,
+    *,
+    now: datetime | None = None,
+    config: AimdConfig = AimdConfig(),
+    clear_cooldown: bool = False,
+) -> QuotaState:
+    """An admin's reset of the working target. The ONLY path that raises it
+    other than additive increase (QUOTA-RESET, owner 2026-10-14).
+
+    It exists because one 429 halves the target and the climb back is
+    `additive_increase` per `success_threshold` successes: a tenant halved to 3
+    under a hard max of 50 needs some 740 clean calls to get back to 40, and
+    an operator who has just lent it more accounts knows something AIMD
+    cannot. It is deliberately narrow:
+
+      * the result goes through `_clamp`, so it lands in
+        [min_target, configured_hard_max] and the invariant holds;
+        `configured_hard_max` itself is never touched -- raising the ceiling
+        is `set_hard_max`'s decision, not this one's;
+      * the success run and the rate-limit run restart from the new target,
+        so the next 429 halves FROM it and the exhaustion threshold counts
+        afresh;
+      * a cooldown is cleared only when asked. A raised target under a live
+        cooldown still caps at 0 until the window reopens;
+      * EXHAUSTED is refused unless the cooldown is cleared too: the provider
+        has said the window is spent, and a raised target that opens nothing
+        would read as if it had;
+      * DISABLED stays DISABLED. Only the admin's enable switch leaves it.
+    """
+    moment = now or utcnow()
+    if state.state is ProviderState.EXHAUSTED and not clear_cooldown:
+        raise TargetResetRefused(
+            f"{state.provider} is EXHAUSTED for tenant {state.tenant_id}: the "
+            "provider said the quota window is spent, so a raised target would "
+            "open nothing. Send clear_cooldown=true to reopen it as well"
+        )
+    changed = replace(
+        state,
+        adaptive_target=_clamp(int(target), state, config),
+        success_count=0,
+        rate_limit_count=0,
+        updated_at=moment,
+    )
+    if clear_cooldown:
+        changed = replace(
+            changed,
+            state=(
+                ProviderState.DISABLED
+                if state.state is ProviderState.DISABLED
+                else ProviderState.AVAILABLE
+            ),
+            cooldown_until=None,
+            retry_after_seconds=None,
+            quota_derived_limit=None,
+            # `refresh` holds a state until BOTH the cooldown and the reset
+            # window have passed; a cleared cooldown with a future `reset_at`
+            # left behind would be reopened here and nowhere else.
+            reset_at=None,
+        )
+    return changed
+
+
 def refresh(
     state: QuotaState,
     *,
