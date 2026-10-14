@@ -349,6 +349,19 @@ def test_quotas_keep_the_minimum_tests_and_guards_and_cap_docs_and_similar_prs()
     assert len(chosen) == 12
 
 
+def test_a_guard_names_a_path_by_itself_or_by_a_distinctive_base_name():
+    """As `changed-guards.sh` selects: the path, or its base name, never a longer name."""
+    from agent_worker.contextpack.retrieve import _needles
+
+    needles = _needles(["apps/w/agent_worker/children.py", "src/pkg/__init__.py"])
+    labels = [label for label, _ in needles]
+    assert labels == ["apps/w/agent_worker/children.py", "children.py", "src/pkg/__init__.py"]
+    base = dict(needles)["children.py"]
+    assert base.search("reads agent_worker/children.py as text")
+    assert base.search("`children.py`")
+    assert not base.search("tests/test_children.py") and not base.search("children.pyc")
+
+
 def test_the_local_score_is_the_design_s_weighted_sum_and_deterministic():
     near = Candidate(kind="caller", ref="a#f", path="a.py", why="w", hops=1, confidence=0.9)
     far = Candidate(kind="caller", ref="b#g", path="b.py", why="w", hops=2, confidence=0.9)

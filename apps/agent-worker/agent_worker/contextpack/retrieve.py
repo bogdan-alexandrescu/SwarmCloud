@@ -63,6 +63,13 @@ MAX_HISTORY_COMMITS = 200
 MAX_COMMIT_FILES = 40
 GIT_TIMEOUT_SECONDS = 10.0
 RULE_DOCS = ("CLAUDE.md", "AGENTS.md", "CONTRIBUTING.md")
+#: Base names too common to mean one file when a doc or test names them alone.
+GENERIC_BASENAMES = frozenset({
+    "__init__.py", "__main__.py", "main.py", "main.go", "main.tf", "conftest.py",
+    "setup.py", "utils.py", "util.py", "helpers.py", "config.py", "models.py",
+    "schemas.py", "types.py", "constants.py", "index.ts", "index.tsx", "index.js",
+    "api.ts", "types.ts", "utils.ts", "variables.tf", "outputs.tf", "README.md",
+})
 _PR = re.compile(r"\(#(\d+)\)\s*$")
 _FIX = re.compile(r"\b(?:fix|fixes|fixed|repair|repairs|revert|reverts)\b", re.I)
 _HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$")
@@ -161,8 +168,13 @@ def graph(pool: Pool, snap: Snapshot, seeds: Seeds, task_type: str) -> None:
                else "changed by the diff" if task_type == "review"
                else "named by the step" if symbol in seeds.symbols
                else "defined in a file the step touches")
-        pool.add(Candidate(kind="symbol", ref=symbol, path=path_of(symbol), why=why, hops=0,
-                           confidence=1.0, bm25=seeds.bm25.get(symbol),
+        # A symbol the step names (or changes, or searched for) is the centre of
+        # the pack; the rest of a seed file's symbols are in the file the agent
+        # opens anyway, so they rank below its callers and tests.
+        named = symbol in seeds.symbols
+        pool.add(Candidate(kind="symbol", ref=symbol, path=path_of(symbol), why=why,
+                           hops=0 if named else 1, confidence=1.0 if named else None,
+                           bm25=seeds.bm25.get(symbol),
                            extra={"signature": sig.get("signature")} if sig else {}))
         _test_rows(pool, snap, symbol, f"covers {symbol}")
     for path in seeds.files:
@@ -335,6 +347,20 @@ def _read_tracked(checkout: Path, rel: str, budget: list[int]) -> str | None:
     return data.decode("utf-8", "replace")
 
 
+def _needles(targets: list[str]) -> list[tuple[str, re.Pattern[str]]]:
+    """What counts as naming a path: the path itself, or its base name when
+    that is distinctive -- `changed-guards.sh` selects by both, and a guard
+    that reads `children.py` as text names it by base name. A name that is
+    part of a longer one (`test_children.py`) is not a mention."""
+    out: list[tuple[str, re.Pattern[str]]] = []
+    for target in targets:
+        out.append((target, re.compile(re.escape(target))))
+        base = posixpath.basename(target)
+        if base != target and base not in GENERIC_BASENAMES and len(base) >= 6:
+            out.append((base, re.compile(rf"(?<![\w.-]){re.escape(base)}(?!\w)")))
+    return out
+
+
 def rules(pool: Pool, checkout: Path, seeds: Seeds, extra_paths: Iterable[str],
           tracked: list[str]) -> None:
     """Docs, house rules and guard tests that NAME one of the seed paths."""
@@ -342,6 +368,7 @@ def rules(pool: Pool, checkout: Path, seeds: Seeds, extra_paths: Iterable[str],
                or "." in p]
     if not targets:
         return
+    needles = _needles(targets)
     budget = [MAX_SCANNED_TOTAL]
     seed_tests = set(seeds.tests)
     for rel in tracked:
@@ -352,21 +379,22 @@ def rules(pool: Pool, checkout: Path, seeds: Seeds, extra_paths: Iterable[str],
         text = _read_tracked(checkout, rel, budget)
         if text is None:
             continue
-        for target in targets:
-            at = text.find(target)
-            if at < 0:
+        for target, needle in needles:
+            match = needle.search(text)
+            if match is None:
                 continue
+            at = match.start()
             if markdown:
                 section = _section(text, at)
                 rule = posixpath.basename(rel) in RULE_DOCS
                 ref = f"{rel} § {section}" if section else rel
                 pool.add(Candidate(kind="rule" if rule else "doc", ref=ref, path=rel,
                                    why=f"names {target}: keep it true",
-                                   support=text.count(target)))
+                                   support=len(needle.findall(text))))
             else:
                 pool.add(Candidate(kind="guard", ref=rel, path=rel,
                                    why=f"names {target}: it polices that file",
-                                   support=text.count(target)))
+                                   support=len(needle.findall(text))))
             break
 
 

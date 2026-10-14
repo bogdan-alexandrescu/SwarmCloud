@@ -31,7 +31,7 @@ HALF_LIFE_DAYS = 14.0
 #: Co-change support counts up to this many; more is not more evidence.
 SUPPORT_CAP = 5
 PRIOR = {"symbol": 0.6, "caller": 0.3, "callee": 0.1, "test": 0.4, "guard": 0.8,
-         "rule": 0.9, "doc": 0.3, "similar_pr": 0.3}
+         "rule": 0.9, "doc": 0.6, "similar_pr": 0.3}
 _ALL = ("symbol", "caller", "callee", "test", "guard", "rule", "doc", "similar_pr")
 EMPHASIS: dict[str, dict[str, float]] = {
     "implement": {},
@@ -41,7 +41,14 @@ EMPHASIS: dict[str, dict[str, float]] = {
     "design": {"doc": 1.8, "rule": 1.3, "caller": 0.6, "callee": 0.5, "test": 0.6},
     "plan": {"similar_pr": 1.3, "doc": 1.1},
 }
-_BASE_QUOTA = {"min": {"test": 3, "guard": 2}, "max": {"doc": 5, "similar_pr": 5}}
+#: `symbol` is capped because a seed file's own symbols are what the agent
+#: opens first, and `test` because a hub file is covered by hundreds: the
+#: pre-publish gate (CTXQ-G) runs the graph-selected tests whatever is shown,
+#: and `tests_for` pages the rest. Measured on this repository's own snapshot
+#: (2026-10-14, a step touching `agent_worker/children.py`): uncapped, 65
+#: test rows and 62 symbol rows filled the 16 KiB and no doc was shown.
+_BASE_QUOTA = {"min": {"test": 3, "guard": 2},
+               "max": {"doc": 5, "similar_pr": 5, "symbol": 10, "test": 20}}
 QUOTAS: dict[str, dict[str, dict[str, int]]] = {
     kind: {"min": dict(_BASE_QUOTA["min"]), "max": dict(_BASE_QUOTA["max"])}
     for kind in EMPHASIS
