@@ -35,7 +35,7 @@ def _train_world(tmp_path) -> MergeWorld:
 
 
 def _entry(world: MergeWorld) -> dict | None:
-    return world.slot_db.docs.get(
+    return world.slot_db.documents.get(
         f"{mergetrain.ENTRIES_COLLECTION}/{mergetrain.entry_id_for(TENANT, TASK)}")
 
 
@@ -86,7 +86,7 @@ def test_train_mode_still_refuses_a_red_pull_request_before_registering(tmp_path
 def test_train_mode_does_not_take_the_merge_slot(tmp_path):
     world = _train_world(tmp_path)
     merge.run_merge(world.context())
-    assert not any(path.startswith("merge_slots/") for path in world.slot_db.docs)
+    assert not any(path.startswith("merge_slots/") for path in world.slot_db.documents)
 
 
 def test_a_wake_while_queued_parks_again_and_keeps_its_place(tmp_path):

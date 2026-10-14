@@ -74,7 +74,8 @@ def _audit(db) -> list[dict]:
 
 
 def _settings_doc(db, tenant_id):
-    return db.docs.get(f"{mergesettings.COLLECTION}/{tenant_id}")
+    whole = db.docs.get(f"{mergesettings.COLLECTION}/{tenant_id}")
+    return (whole or {}).get(mergesettings.FIELD)
 
 
 # --------------------------------------------------------------------------

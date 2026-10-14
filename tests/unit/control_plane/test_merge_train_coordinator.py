@@ -230,11 +230,11 @@ def ctx(db, tokens, group_map, objects, github, clock):
 
 
 def _settings(db, tenant_id="eng", **values):
-    db.docs[f"{mergesettings.COLLECTION}/{tenant_id}"] = {
+    db.docs[f"{mergesettings.COLLECTION}/{tenant_id}"] = {mergesettings.FIELD: {
         "tenant_id": tenant_id, "mode": "train",
         "train_size": mergesettings.TRAIN_SIZE_DEFAULT,
         "max_train_age_minutes": mergesettings.MAX_TRAIN_AGE_DEFAULT, **values,
-    }
+    }}
 
 
 def _ride(db, github, number, *, tenant_id="eng", minute=0, state="PARKED", code=None):

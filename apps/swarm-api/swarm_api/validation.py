@@ -649,6 +649,11 @@ REREVIEW_PREAMBLE = (
 #: worker spells it `agent_worker.merge.MERGE_TARGET_FIELD`;
 #: tests/unit/worker/test_merge_action.py holds the two equal.
 MERGE_TARGET_FIELD = "merge_target"
+#: `merge_target.merge_mode` (TRAIN-WS, docs/merge-trains.md §5.1): the
+#: two modes a workspace merges in. Defined here, where the signed block is
+#: built, and imported by `mergesettings`; only TRAIN is ever written.
+MERGE_MODE_DIRECT = "direct"
+MERGE_MODE_TRAIN = "train"
 
 #: The forge hosts a merge step can act on: github.com, the only host the
 #: tenant's token is ever sent to (`agent_worker.forge.may_receive_forge_token`,
@@ -1529,6 +1534,7 @@ class DispatchOptions:
         number: int | None = None,
         head_sha: str | None = None,
         pull_request_workflow: str | None = None,
+        merge_mode: str | None = None,
     ) -> "DispatchOptions":
         """The `merge` step's target, already resolved to task ids. No role:
         it runs no agent, clones nothing and is integrated by nobody.
@@ -1544,7 +1550,16 @@ class DispatchOptions:
 
         A merge-only continuation names `pull_request_workflow` too: the
         continued task's own workflow, which the worker verifies that task's
-        signed spec against instead of the merge's (#900). It has no review."""
+        signed spec against instead of the merge's (#900). It has no review.
+
+        `merge_mode` is the workspace's effective merge mode for this
+        repository (TRAIN-WS, `mergesettings.effective_mode`), read at
+        submission. Only `train` is written: direct is the absence of the
+        key, so a workspace that never chose trains stores exactly the block
+        it stored before, and the worker merges as it always has."""
+        if merge_mode not in (None, MERGE_MODE_DIRECT, MERGE_MODE_TRAIN):
+            raise ValueError(f"unknown merge mode {merge_mode!r}")
+        train = [("merge_mode", MERGE_MODE_TRAIN)] if merge_mode == MERGE_MODE_TRAIN else []
         target: list[tuple[str, Any]]
         if pull_request is None:
             if number is None or head_sha is None:
@@ -1552,7 +1567,8 @@ class DispatchOptions:
             target = [("number", number), ("head_sha", head_sha)]
             if base:
                 target.append(("base", base))
-            return replace(self, role=None, integrates=(), merge_target=tuple(target))
+            return replace(self, role=None, integrates=(),
+                           merge_target=tuple(target + train))
         target = [("pull_request", pull_request)]
         if pull_request_workflow is not None:
             if review is not None or verdict_file is not None:
@@ -1562,7 +1578,7 @@ class DispatchOptions:
             target += [("review", review), ("verdict_file", verdict_file)]
         if base:
             target.append(("base", base))
-        return replace(self, role=None, integrates=(), merge_target=tuple(target))
+        return replace(self, role=None, integrates=(), merge_target=tuple(target + train))
 
     def to_metadata(self) -> dict[str, Any]:
         """The `task.metadata["dispatch"]` block, exactly as the worker reads it."""

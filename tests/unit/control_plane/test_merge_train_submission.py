@@ -48,7 +48,7 @@ def _register(db, **fields):
 
 
 def _workspace_mode(db, mode: str) -> None:
-    db.docs[f"{mergesettings.COLLECTION}/eng"] = {"tenant_id": "eng", "mode": mode}
+    db.docs[f"{mergesettings.COLLECTION}/eng"] = {"merge": {"tenant_id": "eng", "mode": mode}}
 
 
 def test_a_workspace_that_never_chose_trains_signs_no_merge_mode(client, db):

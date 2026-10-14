@@ -73,6 +73,7 @@ from .forgeapp import GRANTS, ORGS, Caller
 from .gittokens import Scope, owner_suffix, provider_suffix
 from .metrics import ApiMetrics
 from .repositories import Repositories, merge_policy_of, repo_id_for
+from .mergesettings import MergeSettingsStore
 from .runnerinputs import input_contract
 from .schemas import TaskCreate, WorkflowCreate, WorkflowStepCreate
 from .served_limits import configured_limits
@@ -855,6 +856,14 @@ class SubmissionService:
             self._registered_base(tenant.tenant_id, repository_url)
             if merge_plan is not None else None
         )
+        # TRAIN-WS, read once at submission like the base: the workspace's
+        # merge mode for this repository, its registration's override first
+        # (docs/merge-trains.md §5.1). Signed into the merge step's target;
+        # a setting changed later reaches later workflows.
+        merge_mode = (
+            self._merge_mode(tenant.tenant_id, repository_url)
+            if merge_plan is not None else None
+        )
         # Every step's commits name the workflow's submitter (P37). A
         # continuation a service account submitted names the person behind
         # the task it continues instead, else the bot (`gitidentity`).
@@ -875,6 +884,7 @@ class SubmissionService:
                 single_pr=single_pr,
                 merge_plan=merge_plan,
                 merge_base=merge_base,
+                merge_mode=merge_mode,
                 named_pull=named_pull,
                 continued_workflow=continuation.workflow_id if continuation else None,
             ).with_routing(
@@ -1233,6 +1243,12 @@ class SubmissionService:
         None when it is unregistered or set none (the platform default then)."""
         return merge_policy_of(self._registration(tenant_id, repository_url))
 
+    def _merge_mode(self, tenant_id: str, repository_url: str | None) -> str:
+        """The mode `tenant_id`'s merge step merges this repository in: the
+        registration's override, else the workspace's (TRAIN-WS)."""
+        return MergeSettingsStore(self._store.db, now=self._now).mode_for(
+            tenant_id, self._registration(tenant_id, repository_url))
+
     def _registered_base(self, tenant_id: str, repository_url: str | None) -> str | None:
         """The default branch `tenant_id` registered this repository with, or None.
 
@@ -1254,6 +1270,7 @@ class SubmissionService:
         single_pr: SinglePrPlan | None = None,
         merge_plan: MergePlan | None = None,
         merge_base: str | None = None,
+        merge_mode: str | None = None,
         named_pull: NamedPull | None = None,
         continued_workflow: str | None = None,
     ) -> DispatchOptions:
@@ -1305,6 +1322,7 @@ class SubmissionService:
                 # caller named, as `resolve_merge_pr` checked them.
                 return dispatch.with_merge_target(
                     number=named_pull.number, head_sha=named_pull.head_sha, base=merge_base,
+                    merge_mode=merge_mode,
                 )
             return dispatch.with_merge_target(
                 pull_request=(
@@ -1320,6 +1338,7 @@ class SubmissionService:
                 pull_request_workflow=(
                     (continued_workflow or None) if sources.continued else None
                 ),
+                merge_mode=merge_mode,
             )
         if integrator_step_id is None:
             return dispatch

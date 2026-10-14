@@ -178,6 +178,11 @@ class ActionContext:
     #: #295): one merge step per base at a time. None for any other action;
     #: a merge given none refuses `merge_slot_unavailable`.
     merge_slots: Any = None
+    #: The merge's train entry (`mergetrain.FirestoreTrainEntries`, TRAIN-WS):
+    #: read and written only when the signed target says `merge_mode: train`.
+    #: None for any other action; a train merge given none refuses
+    #: `merge_train_unavailable`.
+    merge_trains: Any = None
     #: The merge's read of the PR-side CI fixer's tasks (#1073,
     #: `inputs.find_ci_fix_tasks`): `(pull request number, root task)` ->
     #: `[(task id, document)]`, this tenant's only. Claims, every one checked
