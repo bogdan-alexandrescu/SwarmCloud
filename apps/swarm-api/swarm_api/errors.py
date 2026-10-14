@@ -164,3 +164,13 @@ class WorkspaceNotRequested(Conflict):
     loan is for the workspace, and admins address it by its id."""
 
     code = "WORKSPACE_NOT_REQUESTED"
+
+
+class KeyLinkInvalid(Forbidden):
+    """A one-time key-form link (KEYS-API, docs/provider-keys.md §3) that is
+    unknown, used, expired, someone else's, or for another scope or tenant.
+    A new refusal: raised only through `refusals.refuse`, behind its switch.
+    Off, the write goes ahead on the caller's own session, which is all the
+    link ever proves anyway -- it grants nothing that session could not do."""
+
+    code = "KEY_LINK_INVALID"

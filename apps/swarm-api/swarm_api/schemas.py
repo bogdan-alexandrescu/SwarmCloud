@@ -167,6 +167,15 @@ class WorkflowCreate(StrictModel):
     #: `merge` ("on" | "off", `resolve_merge_choice`) and `merge_fix_rounds`
     #: (0-5, only beside a merge step, `resolve_merge_fix_rounds`).
     metadata: dict[str, Any] = Field(default_factory=dict)
+    #: How many fix rounds the merge step may spend on a pull request whose
+    #: required checks are red at its head (lane SPEED-D2): each a claude-code
+    #: continuation of the pull request's branch, handed only the failing
+    #: jobs and their log tails. 0 disables them; absent is 2 beside a merge
+    #: step (`validation.LANE_FIX_ROUNDS_DEFAULT`), and refused without one.
+    #: The same budget as `metadata.merge_fix_rounds`, which it is stored as
+    #: on the merge task (`validation.resolve_fix_rounds`). A conflicting pull
+    #: request's rounds keep their own cap of 2 (`mergewake`).
+    fix_rounds: StrictInt | None = Field(default=None, ge=0, le=5)
     #: Chosen once for the whole workflow, not per step: `integrate` produces
     #: ONE pull request, so "which repository" cannot be a per-step answer.
     #: Same accepted values and same defaults as `TaskCreate`.

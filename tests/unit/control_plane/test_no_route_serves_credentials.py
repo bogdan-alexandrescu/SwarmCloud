@@ -76,6 +76,9 @@ ROUTER_MODULES = (
     # GET /v1/leases (#179): the caller's own tenant's heartbeats, ids and
     # timestamps only.
     "leases",
+    # GET /v1/provider-keys/{provider} (KEYS-API): whether a TypeSafe key is
+    # set, when and by whom, never the key. Swept for `typesafe`.
+    "provider_keys",
 )
 
 #: A query string for a route that refuses to answer without one. Stripped
@@ -142,6 +145,12 @@ def leaky(client, db):
     assert REGISTERED_KEY not in stored.text, (
         "the credential route echoed the key it was given back in its own response"
     )
+    # The same key as eng's TypeSafe tenant key, through its own write-only
+    # route (KEYS-API), so the sweep proves that route's status read too.
+    stored = client.put("/v1/provider-keys/typesafe/tenant", headers=auth_header("root"),
+                        json={"api_key": REGISTERED_KEY})
+    assert stored.status_code == 200, stored.text
+    assert REGISTERED_KEY not in stored.text
     return client
 
 
@@ -162,6 +171,8 @@ def _get_routes() -> list[str]:
                 .replace("{checkpoint_id}", "ckpt-00001")
                 .replace("{path:path}", "notes.md")
             )
+            if filled.startswith("/v1/provider-keys/"):
+                filled = filled.replace("{provider}", "typesafe")
             if re.search(r"\{[^}]*\}", filled):
                 # An unfilled parameter would request a resource that does not
                 # exist, which proves nothing. Anything left here is a route
@@ -209,6 +220,7 @@ def test_every_get_route_is_either_swept_or_named(leaky):
          .replace("acct_1", "{account_id}")
          .replace("ckpt-00001", "{checkpoint_id}")
          .replace("notes.md", "{path:path}")
+         .replace("/v1/provider-keys/typesafe", "/v1/provider-keys/{provider}")
         for p in _get_routes()
     }
     unreached = sorted(declared - swept_templates - UNREACHED_BY_THE_SWEEP)

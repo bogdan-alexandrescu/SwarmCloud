@@ -151,6 +151,24 @@ def test_the_tenants_only_registered_repository_is_merged_at_the_named_head(clie
     assert read[1].endswith(f"/repos/{OWNER}/{NAME}/pulls/{NUMBER}")
 
 
+@pytest.mark.parametrize("fix_rounds", [None, 0])
+def test_a_merge_pr_workflow_gets_no_fix_rounds(client, db, fix_rounds):
+    """SPEED-D2: a lane gets 2 rounds by default, but a named pull request's
+    branch is no task's, so no round could ever push to it; rounds asked for
+    would only park the worker on `ci_fix_pending` until its 6 h bound."""
+    _register(db, "eng", OWNER, NAME)
+    spec = _spec() if fix_rounds is None else _spec(fix_rounds=fix_rounds)
+    response = _post(client, spec)
+    assert response.status_code == 201, response.text
+    (step,) = response.json()["workflow"]["steps"]
+    assert db.docs[f"tasks/{step['task_id']}"]["metadata"]["merge_fix_rounds"] == 0
+
+
+def test_a_merge_pr_workflow_asking_for_fix_rounds_is_refused(client, db):
+    _register(db, "eng", OWNER, NAME)
+    _refused(client, db, _spec(fix_rounds=2), "merge_pr takes no fix_rounds")
+
+
 def test_the_named_registered_repository_is_used_when_the_tenant_has_several(client, db):
     _register(db, "eng", OWNER, NAME)
     _register(db, "eng", OWNER, "gadget-shop")

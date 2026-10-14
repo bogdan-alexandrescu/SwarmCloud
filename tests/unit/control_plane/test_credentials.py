@@ -344,3 +344,52 @@ def test_an_ordinary_provider_is_still_stored_and_bound_on_both_stores():
 
     result = InMemoryCredentials().put_credential(tenant(), "anthropic", "sk-" + "x" * 40)
     assert result.accessor == WORKER_SA
+
+
+# -- delete: destroy, never disable (KEYS-API) ----------------------------------
+
+class VersionedSecretManager(FakeSecretManager):
+    """Adds version listing and destruction, filtered as Secret Manager filters."""
+
+    def __init__(self, states: dict[str, str] | None = None, *, missing: bool = False) -> None:
+        super().__init__()
+        self.states = dict(states or {})
+        self.missing = missing
+        self.list_requests: list[dict] = []
+        self.destroyed: list[str] = []
+
+    def list_secret_versions(self, request):
+        self.list_requests.append(dict(request))
+        if self.missing:
+            raise gexc.NotFound(request["parent"])
+        wanted = {"ENABLED", "DISABLED"}
+        return [type("Version", (), {"name": f"{request['parent']}/versions/{n}"})()
+                for n, state in self.states.items() if state in wanted]
+
+    def destroy_secret_version(self, request):
+        self.destroyed.append(request["name"])
+        self.states[request["name"].rsplit("/", 1)[1]] = "DESTROYED"
+
+
+def test_delete_destroys_every_live_version_of_the_tenants_own_secret():
+    client = VersionedSecretManager({"1": "DISABLED", "2": "ENABLED", "3": "DESTROYED"})
+    destroyed = writer(client).delete_credential(tenant(), "typesafe")
+    assert destroyed == 2
+    parent = f"projects/{PROJECT}/secrets/swarm-tenant-eng-typesafe"
+    assert client.list_requests == [{"parent": parent,
+                                     "filter": "state:ENABLED OR state:DISABLED"}]
+    assert client.destroyed == [f"{parent}/versions/1", f"{parent}/versions/2"]
+    # Nothing about the secret's IAM policy is touched by a delete.
+    assert client.policy_writes == []
+
+
+def test_deleting_from_a_missing_secret_destroys_nothing():
+    assert writer(VersionedSecretManager(missing=True)).delete_credential(tenant(), "typesafe") == 0
+
+
+@pytest.mark.parametrize("provider", NEVER_THE_WORKERS)
+def test_delete_refuses_the_providers_put_refuses(provider):
+    client = VersionedSecretManager({"1": "ENABLED"})
+    with pytest.raises(ValidationFailed):
+        writer(client).delete_credential(tenant(), provider)
+    assert client.list_requests == [] and client.destroyed == []
