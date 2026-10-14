@@ -985,6 +985,20 @@ function arrive(url: string, tenant: string | null, signal: AbortSignal | undefi
   })
 }
 
+/**
+ * Drop every kept answer and abandon every read in flight: sign-out
+ * (signout.ts). The page is about to be left, but a read that lands in the
+ * moment before is one person's data, and nothing of it should be handed to a
+ * caller after they asked to leave. Bumping `writes` keys every later read
+ * apart from anything asked before.
+ */
+export function forgetReads(): void {
+  for (const entry of inFlight.values()) entry.controller.abort()
+  inFlight.clear()
+  settled.clear()
+  writes += 1
+}
+
 /** How many distinct GETs are in flight: for tests of the de-duplication. */
 export function readsInFlight(): number {
   return inFlight.size
