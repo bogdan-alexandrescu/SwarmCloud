@@ -262,7 +262,6 @@ def test_the_note_says_wait_and_do_not_poll_the_browser():
 
 
 def test_the_agents_python_is_the_venv_with_playwright(monkeypatch, tmp_path):
-    from agent_worker.runners import claude_code
 
     seen = _run_body(monkeypatch, tmp_path, browsers="/opt/playwright", endpoint=ENDPOINT)
     assert seen["spec"].path_prefix == ("/opt/venv/bin",)

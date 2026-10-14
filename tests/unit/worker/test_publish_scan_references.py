@@ -224,7 +224,7 @@ def test_a_vendor_key_in_a_file_of_slots_is_still_refused(make, rule):
 def test_a_private_key_in_a_file_of_slots_is_still_refused():
     text = _plugin_line() + _pem()
     assert _rule(".claude-plugin/plugin.json", text) == "private_key_block"
-    assert _rule("terraform/infra/main.tf", f'  token = "${{var.x}}"\n' + _pem()) == "private_key_block"
+    assert _rule("terraform/infra/main.tf", '  token = "${var.x}"\n' + _pem()) == "private_key_block"
 
 
 def test_an_authorization_scheme_with_a_slot_publishes_and_a_literal_does_not():

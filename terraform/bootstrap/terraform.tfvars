@@ -167,3 +167,10 @@ workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swar
 # 4 adds / 0 changes / 0 destroys whose two conditions linted clean
 # (iamPolicies:lintPolicy). Recorded here so the next bootstrap plan keeps it.
 enable_browser_logins = true
+
+# KEYS-IAM (2026-10-14, owner: "Yes, scoped bootstrap role"): swarm-api may
+# write and destroy tenant provider keys, on swarm-tenant-* secrets only
+# (provider_keys.tf). NOT YET APPLIED when this line was committed: the owner
+# applies it after linting the condition (docs/provider-keys.md §6). The plan
+# is 2 adds -- the role and the conditioned grant.
+enable_provider_keys = true

@@ -45,7 +45,6 @@ import shutil
 import sys
 from pathlib import Path
 
-import pytest
 
 import swarm_mcp
 from swarm_mcp import auth, cli, client, follow, server, signin

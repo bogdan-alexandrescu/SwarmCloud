@@ -298,8 +298,8 @@ def test_a_failure_s_cascade_is_a_failure_s_however_far_down_it_reaches():
     failure's cascade count by the very re-derive that was meant to fix it."""
     a = _ended_doc("a", "FAILED", text="runner exited 1")
     b, c, d = _cascade("b", "a"), _cascade("c", "b"), _cascade("d", "c")
-    for task in (b, c, d):
-        assert _split(task, a, b, c, d) == "after_failure", task["id"]
+    for doc in (b, c, d):
+        assert _split(doc, a, b, c, d) == "after_failure", doc["id"]
     # A typed link anywhere in the chain is read as its writer said.
     assert _split(d, _cascade("c", "b", cause="failed_parent")) == "after_failure"
     assert _split(d, _cascade("c", "b", cause="cancelled_parent")) == "after_cancel"

@@ -31,7 +31,6 @@ from __future__ import annotations
 import inspect
 import json
 
-import pytest
 
 from swarm_api.brokerclient import AccountPool, BrokerClient
 

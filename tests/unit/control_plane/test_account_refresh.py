@@ -12,10 +12,9 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 
-import pytest
 
 from quota_broker.credentials import REFRESH_SUFFIX, CredentialRefresher
-from quota_broker.oauth import CredentialError, ReauthRequired
+from quota_broker.oauth import ReauthRequired
 from swarm_common.logging_setup import CloudLoggingFormatter
 
 NOW = datetime(2026, 9, 18, 12, 0, tzinfo=timezone.utc)
