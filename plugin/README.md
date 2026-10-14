@@ -940,6 +940,40 @@ never lists it: five lanes dispatched that day ran with no row at all. So:
   **`/sc attach --all`**: it covers workflows and single tasks alike. A task
   this session dispatches needs nothing — its reply starts the row.
 
+### Stuck or stale work, checked on an interval (SC-WATCH)
+
+Owner request 2026-10-14: a check every set interval (default 30 minutes)
+for stuck or stale workflows and tasks, which also attaches every workflow
+of the project running at the time.
+
+* **`/sc check`** makes ONE `swarm_check` call. It is read-only and scoped to
+  this checkout's `origin` repository (a workflow belongs to the repository
+  its steps clone): it flags a RUNNING or STARTING task with no heartbeat and
+  no event for 20 minutes, a READY or QUEUED one waiting longer than that
+  (naming the pool that binds it), a PARKED one on HUMAN_REQUIRED, on
+  CI_PENDING past 90 minutes or on a dependency that failed, a merge step
+  refused with `head_moved`, `merge_conflict` or `checks_failed`, and a
+  workflow whose stored state disagrees with its derived state about whether
+  it is finished. Each comes with the evidence the API served, its console
+  link and the next command; it acts on none of them. The API serves no pull
+  request state, so a refused merge's PR is linked, not read. Then it calls
+  `swarm_workflow_launch {attach: "all", repository, new_only: true}`: rows
+  only for the project's running workflows and tasks this session has no row
+  for. The bridge process lives as long as the session, so it remembers what
+  it handed a row; `/sc attach <id>` by hand always attaches.
+* **`/sc watch [interval]`** (`swarm_check_schedule`) schedules `/sc check`
+  with Claude Code's own CronCreate — the facility a plugin skill can call —
+  every interval (default `30m`, at least `5m`; rounded to what a cron
+  expression can say), and remembers it for the project in
+  `<config dir>/sc-watch/<sha256 of the project directory>.json`, never in
+  the repository. Where CronCreate is not available, `/loop 30m /sc check`
+  does the same. **`/sc watch off`** cancels it and forgets it.
+* CronCreate's jobs end with the session (and a recurring one after 7 days),
+  so the **SessionStart hook** reads the saved preference — locally, before
+  and without the bridge — and asks each new session in the project to run
+  `/sc watch <N>m` first, beside the attach or on its own, even with
+  `auto_attach` off.
+
 ### What a row shows, and what it costs
 
 A row writes one short line when its task's state or progress changes, and
