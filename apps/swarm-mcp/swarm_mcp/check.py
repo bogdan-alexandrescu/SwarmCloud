@@ -827,6 +827,15 @@ def run(
     }
     if scope.get("note"):
         out["repository_note"] = scope["note"]
+    if not out["running"]["workflows"] and not out["running"]["single_tasks"]:
+        # Said, not acted on (SC-AUTO-WATCH, owner 2026-10-14): an armed watch
+        # with nothing to watch costs one read per interval, so the check
+        # leaves it armed for the next workflow rather than cancelling it.
+        where = f"in {scope['key']}" if scope["key"] else "in any repository"
+        out["nothing_running"] = (
+            f"nothing of yours is running in SwarmCloud {where}; the watch stays armed for the "
+            "next workflow (`/sc watch off` cancels it)"
+        )
     for r in per_tenant:
         for key in ("reconciler_stalled_workflows", "running_incomplete_because",
                     "single_tasks_incomplete_because"):
