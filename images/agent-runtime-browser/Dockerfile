@@ -155,6 +155,52 @@ RUN --mount=type=bind,source=images/agent-runtime-browser,target=/tmp/swarm-brow
  && chmod -R a+rX,a-w /opt/swarm \
  && rm -rf "${scratch}"
 
+# DEV-BROWSER, OPT-IN, ATTACH ONLY (DEVB-INSTALL, owner decision 2026-10-14,
+# part of #1030; docs/design/live-browser.md "dev-browser (opt-in)"). Beside
+# the Playwright MCP server, which stays the default, the agent may script
+# multi-step browsing with SawyerHood/dev-browser v1 -- and only against the
+# live browser:
+#
+#   * the REAL binary is /opt/swarm/dev-browser/dev-browser-bin, off PATH. It
+#     is the upstream release's standalone Bun build (puppeteer-core 25.8.0
+#     inside; libc only, so no Node and no npm package). The npm package
+#     `dev-browser@1.0.0-rc.3` (dist-tag `next`) is only a shim whose
+#     postinstall downloads this same file, which is why it is not used, and
+#     why DEV_BROWSER_SKIP_DOWNLOAD=1 is exported to every run anyway;
+#   * `dev-browser` on PATH is images/agent-runtime-browser/dev-browser, the
+#     wrapper that always passes `--connect "$SWARM_CDP_ENDPOINT"` and refuses
+#     `install`, `chrome`, `--headless` and any other `--connect`;
+#   * /opt/swarm/dev-browser/live-browser-only is the stub
+#     install-browser-stub.py installs for Playwright, copied to one fixed
+#     path. dev-browser never reads PLAYWRIGHT_BROWSERS_PATH (no such string
+#     in the binary, checked 2026-10-14), so the stub directory above does not
+#     cover it; DEV_BROWSER_CHROME, which it reads before any other lookup, is
+#     pointed here instead -- by the wrapper, and by the claude-code runner for
+#     the agent's whole environment (`claude_code.DEV_BROWSER_CHROME`), not by
+#     an ENV, which never reaches the agent's CLI (runners/cliagent.py builds
+#     its environment from scratch). So a launch, even by the real binary,
+#     fails with the stub's message rather than starting a hidden Chromium.
+#
+# The binary is read from the tool mirror like the base's release files (see
+# images/agent-runtime-base/Dockerfile, THE TOOL MIRROR; tool-mirror.sha256
+# lists it). Obtained 2026-10-14: DEV_BROWSER_SHA256 is `sha256sum` of
+# https://github.com/SawyerHood/dev-browser/releases/download/v1.0.0-rc.3/dev-browser-linux-x64
+# as downloaded, equal to that file's line in the release's own SHA256SUMS.
+# 96,442,496 bytes; `dev-browser-bin --version` printed `dev-browser 1.0.0-rc.3`.
+ARG DEV_BROWSER_VERSION=1.0.0-rc.3
+ARG DEV_BROWSER_SHA256=390dd08f8321807bca2e1e060ec031511adb0af002e871dfde3b1f6c8feac914
+COPY --chmod=0555 images/agent-runtime-browser/dev-browser /usr/local/bin/dev-browser
+RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
+    --mount=type=bind,source=images/agent-runtime-browser,target=/tmp/swarm-browser-build \
+    mkdir -p /tmp/dev-browser \
+ && curl -fsSL -o /tmp/dev-browser/dev-browser-linux-x64 \
+      "file:///tmp/tool-mirror/github.com/SawyerHood/dev-browser/releases/download/v${DEV_BROWSER_VERSION}/dev-browser-linux-x64" \
+ && echo "${DEV_BROWSER_SHA256}  /tmp/dev-browser/dev-browser-linux-x64" | sha256sum -c - \
+ && install -d -m 0755 /opt/swarm/dev-browser \
+ && install -o root -g root -m 0555 /tmp/dev-browser/dev-browser-linux-x64 /opt/swarm/dev-browser/dev-browser-bin \
+ && install -o root -g root -m 0555 /tmp/swarm-browser-build/live-browser-only /opt/swarm/dev-browser/live-browser-only \
+ && rm -rf /tmp/dev-browser
+
 USER swarm:swarm
 # NO `WORKDIR /workspace` HERE: the base sets it and this image inherits it.
 # Restating it wrote BuildKit's empty layer (sha256:4f4fb700ef54...) a second
@@ -169,12 +215,15 @@ USER swarm:swarm
 # that the agent's own launch is refused toward the live browser, that the
 # helper and the MCP server are there, that codex is not and every other tool
 # of the base is, and that the display sidecar's pieces
-# are where the dispatcher expects them, rather than discovering any of it at
-# 3am in a tenant's attempt. selftest.py lists each check; it is
-# bind-mounted, not shipped.
+# are where the dispatcher expects them, and that `dev-browser` is the wrapper
+# over the pinned binary and refuses a browser of its own, rather than
+# discovering any of it at 3am in a tenant's attempt. selftest.py lists each
+# check; it is bind-mounted, not shipped. DEV_BROWSER_VERSION is the ARG above,
+# which every RUN of this stage sees: the version the binary must report.
 RUN --mount=type=bind,source=images/agent-runtime-browser,target=/tmp/swarm-browser-build \
     scratch="$(mktemp -d)" \
- && TMPDIR="${scratch}" python /tmp/swarm-browser-build/selftest.py /opt/swarm/live-browser-only \
+ && TMPDIR="${scratch}" DEV_BROWSER_VERSION="${DEV_BROWSER_VERSION}" \
+      python /tmp/swarm-browser-build/selftest.py /opt/swarm/live-browser-only \
  && rm -rf "${scratch}"
 
 ENTRYPOINT ["/usr/bin/tini", "--", "python", "-m", "agent_worker"]
