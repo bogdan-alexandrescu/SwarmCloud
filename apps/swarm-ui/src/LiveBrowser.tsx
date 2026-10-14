@@ -120,6 +120,29 @@ export const LIVE_RENEW_MS = 20_000
 /** The longest wait between reconnects; noVNC's socket ends with Cloud Run's request timeout (§3.3, R2). */
 const RECONNECT_MAX_MS = 30_000
 
+/**
+ * RFC 6455's 1012, "Service Restart": the relay is restarting, reconnect now
+ * (RELAY-ROLL). The relay closes with it on a roll, and swarm-api closes a
+ * viewer with it whenever the viewer's relay link ends. MEASURED 2026-10-12/14:
+ * 40 relay restarts in ~48 h, one per release, and each one cost every viewer
+ * the 2 s, 4 s, 8 s ... backoff of an ordinary drop before it rejoined.
+ */
+export const LIVE_RESTART_CODE = 1012
+/** After a restart: the first reconnect ~250 ms away, doubling, jittered, never past 4 s. */
+const RESTART_RECONNECT_MS = 250
+const RESTART_RECONNECT_MAX_MS = 4_000
+
+/**
+ * How long reconnect number `tries` (1 first) waits. After a restart close,
+ * ~250 ms doubling and jittered to 75-125 %, so the viewers a relay drops at
+ * once do not all knock in the same instant; otherwise the ordinary backoff.
+ */
+export function liveReconnectDelay(tries: number, restart: boolean, rand: () => number = Math.random): number {
+  const step = Math.max(0, Math.min(tries - 1, 10))
+  if (restart) return Math.min(RESTART_RECONNECT_MAX_MS, RESTART_RECONNECT_MS * 2 ** step * (0.75 + 0.5 * rand()))
+  return Math.min(RECONNECT_MAX_MS, 1000 * 2 ** Math.min(tries, 5))
+}
+
 /** The presets' display names (§6.1, LB-6). The gate holds the list and its sizes; a name not here is shown as served. */
 const PRESET_LABEL: Readonly<Record<string, string>> = {
   desktop: 'Desktop',
@@ -1318,12 +1341,17 @@ function LiveScreen({
       // reads again which session is current, as for a ticket that moved.
       movedRef.current?.()
     }
-    const retry = (message: string) => {
+    // Set when the relay closed this viewer with LIVE_RESTART_CODE, and kept
+    // through the retries that meet it still coming back, until one connects.
+    let restarting = false
+    const retry = (message: string, restart = false) => {
       if (stopped) return
       tries += 1
+      restarting = restarting || restart
       setWhy(message)
-      setConn(tries > 5 ? 'failed' : 'reconnecting')
-      timer = setTimeout(() => void connect(), Math.min(RECONNECT_MAX_MS, 1000 * 2 ** Math.min(tries, 5)))
+      // A relay coming back is not a failed viewer, however many quick knocks it takes.
+      setConn(tries > 5 && !restarting ? 'failed' : 'reconnecting')
+      timer = setTimeout(() => void connect(), liveReconnectDelay(tries, restarting))
     }
     const connect = async () => {
       // noVNC is loaded BEFORE a ticket is minted or a socket opened, so the
@@ -1406,15 +1434,25 @@ function LiveScreen({
           }
           rfb.current = r
           applyInput()
+          // noVNC set the channel's close handler as it attached; the close
+          // code is read on the way through, for the 'disconnect' below.
+          let closeCode: number | null = null
+          const noVncClose = ws.onclose
+          ws.onclose = (ev) => {
+            closeCode = ev.code
+            noVncClose?.call(ws, ev)
+          }
           r.addEventListener('connect', () => {
             tries = 0
+            restarting = false
             setWhy(null)
             setRefused(null)
             setConn('connected')
           })
           r.addEventListener('disconnect', () => {
             if (rfb.current === r) rfb.current = null
-            retry('The live connection closed. Reconnecting with a new ticket.')
+            if (closeCode === LIVE_RESTART_CODE) retry('The live relay restarted. Reconnecting.', true)
+            else retry('The live connection closed. Reconnecting with a new ticket.')
           })
         }, onStatus, onRefused)
       } catch (err) {

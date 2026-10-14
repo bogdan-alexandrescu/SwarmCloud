@@ -494,6 +494,47 @@ what re-QA pass 8 (2026-10-12) saw on a resumed attempt. Scale-out, when measure
 `session_id` across named replicas with the shard written on the session
 document.
 
+**The relay restarts only for a new image, not under a person's hands, and
+says so when it does (RELAY-ROLL).** One replica holding every rendezvous in
+memory means every restart drops every live session and every person's
+control. MEASURED 2026-10-12/14: 40 restarts in ~48 h, because every release
+rolled it whether or not its image had changed, and each one cost the console
+the ordinary 2-4-8 s reconnect backoff and the gate up to a minute (the 5 s
+doubling above). Three things now hold, and none of them makes a restart free:
+
+* `scripts/roll-live-relay.sh` compares the digest the release rendered with
+  the one the relay's pods run, prints both, and does not apply when they are
+  equal (`--force` rolls anyway). A release that does not roll the relay does
+  not re-apply swarm-system's ingress policies either; a policy-only change is
+  applied by hand with `kubernetes/apply.sh --swarm-system --confirm`.
+* Before a roll it reads the relay's own counts -- `/healthz` now reports
+  `controlled`, sessions a person controls, beside `tunnels` and `viewers` --
+  inside the pod (`kubectl exec ... python -m swarm_live.status`), so the read
+  is authenticated by the Kubernetes API and no NetworkPolicy is widened for
+  it. While anyone is watching or in control it waits, up to 480 s
+  (`--defer-timeout`; with the 600 s rollout wait it fits the release step's
+  20 minutes), then rolls anyway and says why. A person who stays on the page
+  for longer than that is interrupted, once.
+* On SIGTERM the relay closes every gate AND every viewer with 1012 ("restarting,
+  reconnect now", `swarm_live.rendezvous.CLOSE_RESTARTING`) before uvicorn's own
+  shutdown cuts the sockets -- queues drained, the recording's last segment
+  written -- and refuses every connection that arrives during the drain with
+  the same code. 1012 is not 4410: the session is still open, on the next relay.
+  The console reconnects on 1012 after ~250 ms, jittered, doubling to at most
+  4 s and never shown as failed (`LiveBrowser.tsx` `liveReconnectDelay`);
+  swarm-api closes a viewer with 1012 whenever its relay link ends, so the
+  console reads the same code either way. The worker reopens the gate's tunnel
+  in the same poll when the gate's `status` reports `tunnel_close_code` 1012,
+  retrying on the same short schedule for up to 3 s and on every later poll
+  (`livegate.tunnel.reconnect_delay`, `handoff.RESTART_BURST_SECONDS`).
+  Control comes back through swarm-api: a reconnected viewer's first status
+  re-sends the controller's control ticket through the relay (CONTROL-LAPSE).
+
+What is still not immediate: the worker only learns the tunnel closed at its
+next poll of the gate (`CONTROL_POLL_SECONDS`, 10 s), and the new relay pod is
+not serving until Autopilot has placed it; both ends rejoin within about a
+second of that, not of the SIGTERM.
+
 **What the relay is not.** It is not trusted with authorisation: it verifies
 tickets it did not mint against a key it shares only with swarm-api, and it
 refuses a ticket whose tenant, task, attempt or generation does not match the

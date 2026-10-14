@@ -90,6 +90,7 @@ from swarm_redaction import redact as redact_text
 from .egress_ticket import BrowserEgress
 from .errors import ExitCode
 from .hardening import PROTECTED
+from .livegate.tunnel import CLOSE_RESTARTING, RETRY_MAX_SECONDS, RETRY_SECONDS, reconnect_delay
 
 #: The spool's directory under `work/`. `Workspace.handoff_dir` is the one
 #: path; this is its name.
@@ -158,8 +159,17 @@ CANCEL_ANSWER_SECONDS = 3
 #: for a fresh ticket and hands it over (LB-R6). A refused ask is tried again
 #: after TUNNEL_RETRY_SECONDS, doubling to TUNNEL_RETRY_MAX_SECONDS, so a relay
 #: that stays down costs a route call a minute rather than one every poll.
-TUNNEL_RETRY_SECONDS = 5
-TUNNEL_RETRY_MAX_SECONDS = 60
+TUNNEL_RETRY_SECONDS = int(RETRY_SECONDS)
+TUNNEL_RETRY_MAX_SECONDS = int(RETRY_MAX_SECONDS)
+#: RELAY-ROLL: a tunnel the relay closed with 1012 ("restarting, reconnect
+#: now", livegate.tunnel.CLOSE_RESTARTING) is reopened in the same tick, and
+#: a reopen the new relay is not up for yet is tried again after
+#: livegate.tunnel.reconnect_delay (jittered, from ~250 ms) for up to this
+#: long; past it, on every later poll (the delay's cap is under the poll's
+#: 10 s) -- never the 5 s doubling to a minute above. A rolling relay is gone
+#: for the seconds its new pod takes, and every viewer waits on this end.
+#: Bounded so a relay that stays down holds the poll a few seconds, not more.
+RESTART_BURST_SECONDS = 3.0
 #: swarm-api's answers that end the live path for this attempt for good (a
 #: closed session, a stale generation, a profile with no live browser): no
 #: later ticket will come, so the worker stops asking.
@@ -548,8 +558,10 @@ class HandoffPath:
         now: Callable[[], datetime] = utcnow,
         wall: Callable[[], float] = time.time,
         progress: Callable[[str, datetime], bool] | None = None,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.cfg = cfg
+        self._sleep = sleep
         #: Writes one `startup_progress` step; True once it is settled (written,
         #: or not this attempt's to write), False to try again on a later tick.
         self._progress = progress
@@ -584,6 +596,8 @@ class HandoffPath:
         self._tunnel_retry_at = 0.0
         self._tunnel_backoff = float(TUNNEL_RETRY_SECONDS)
         self._tunnel_ended = False
+        #: Reopens tried since the relay said it was restarting (RELAY-ROLL).
+        self._restart_tries = 0
         #: The proxied browser's egress ticket (EGRESS-GATE; egress_ticket.py),
         #: and the note `setup` was given, for a failure found on a later poll.
         self.egress = BrowserEgress(cfg, logger=logger, wall=wall)
@@ -733,22 +747,42 @@ class HandoffPath:
         api = getattr(self._children, "_api", None)
         if key is None or api is None:
             return
-        try:
-            self._open_tunnel(self.gate, key, api)
-        except NoTunnelTicket as exc:
-            if exc.code in TUNNEL_ENDED_CODES:
-                self._tunnel_ended = True
-                self.log.info("live tunnel not reopened: the session has ended", code=exc.code)
+        # RELAY-ROLL: the relay said it is restarting. Reopen now, and while
+        # the new relay is not up yet, again on the short jittered schedule.
+        restart = status.get("tunnel_close_code") == CLOSE_RESTARTING
+        started = self._wall()
+        while True:
+            try:
+                self._open_tunnel(self.gate, key, api)
+            except NoTunnelTicket as exc:
+                if exc.code in TUNNEL_ENDED_CODES:
+                    self._tunnel_ended = True
+                    self.log.info("live tunnel not reopened: the session has ended", code=exc.code)
+                    return
+                failure = exc.code
+            except GateLost as exc:
+                failure = type(exc).__name__
+            else:
+                break
+            if not restart:
+                self._tunnel_backoff_after(failure)
                 return
-            self._tunnel_backoff_after(exc.code)
-            return
-        except GateLost as exc:
-            self._tunnel_backoff_after(type(exc).__name__)
-            return
+            delay = reconnect_delay(CLOSE_RESTARTING, self._restart_tries)
+            self._restart_tries += 1
+            if self._wall() + delay - started > RESTART_BURST_SECONDS:
+                self._tunnel_retry_at = self._wall() + delay
+                self.log.warning("live tunnel not reopened after the relay restarted; trying again",
+                                 code=failure, tries=self._restart_tries)
+                return
+            self._sleep(delay)
         self._tunnel_retry_at = 0.0
         self._tunnel_backoff = float(TUNNEL_RETRY_SECONDS)
+        self._restart_tries = 0
         self.tunnel_reopens += 1
-        self.log.info("live tunnel reopened", reopened=self.tunnel_reopens)
+        if restart:
+            self.log.info("live tunnel reopened", reopened=self.tunnel_reopens, after="relay_restart")
+        else:
+            self.log.info("live tunnel reopened", reopened=self.tunnel_reopens)
 
     def _tunnel_backoff_after(self, code: str) -> None:
         self._tunnel_retry_at = self._wall() + self._tunnel_backoff
