@@ -479,9 +479,13 @@ def attempt(db, worker_factory, monkeypatch, origin, local_urls, forge):  # noqa
 
     def build(*, parent: str | None = None):
         seed_attempt(db, runner_profile="claude-code", task_input={"prompt": "push it"})
-        # The tenant's own provider secret, the API-key form: an OAuth
-        # subscription is `CLAUDE_CODE_OAUTH_TOKEN` by the CLI's own name
-        # (see the PR body); the forge token is what #1225 keeps out.
+        # The tenant's provider secret in its API-key form, a JSON object
+        # naming ANTHROPIC_API_KEY. A SUBSCRIPTION is `CLAUDE_CODE_OAUTH_TOKEN`
+        # by the CLI's own name, and a bare secret is exported under every
+        # name the profile declares (`secrets.resolve_credentials`), so those
+        # two forms put that name in the runner's environment whatever this
+        # lane does: the owner's question in the PR. What #1225 keeps out is a
+        # FORGE token, and nothing the git tools add may match either.
         seed_tenant(db, credentials=["anthropic"])
         task = db.doc("tasks/task_1")
         # `collect`: nothing is published at the end, so the attempt's own
@@ -494,11 +498,20 @@ def attempt(db, worker_factory, monkeypatch, origin, local_urls, forge):  # noqa
         worker, _, _ = worker_factory(
             runner_profile="claude-code", repository_url=f"file://{origin}",
             child_api=routes, child_nonce=NONCE, swarm_api_url="https://swarm-api.example",
+            secret_client=_ApiKeySecrets(),
         )
         monkeypatch.setattr(worker, "_git_token", lambda: None)
         return worker
 
     return build, routes
+
+
+class _ApiKeySecrets:
+    """Secret Manager holding the tenant's API key as a JSON secret. The value
+    is built at runtime (CLAUDE.md: nothing added may look like a credential)."""
+
+    def access(self, secret_name: str, version: str = "latest") -> str:
+        return json.dumps({"ANTHROPIC_API_KEY": "fake-" + "q" * 32 + secret_name[-4:]})
 
 
 def _no_token(env: dict[str, str]) -> list[str]:
