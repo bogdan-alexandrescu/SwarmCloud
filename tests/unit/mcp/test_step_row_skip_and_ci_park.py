@@ -220,9 +220,11 @@ def test_the_step_schema_takes_a_skipped_steps_answer_however_the_relay_writes_i
     assert _errors(_schema("STEP_RESULT"), answer) == []
 
 
-def test_the_step_schema_still_requires_a_state():
-    """Loosened for the empty fields, never for the one the row exists to return."""
-    assert _errors(_schema("STEP_RESULT"), {"result": {"answer_excerpt": ""}}) != []
+def test_the_step_schema_takes_an_answer_with_no_state():
+    """SPEED-D5 (2026-10-14) loosened `state` too: rows on 0.5.27 still ran out
+    of their attempts on it. A stateless answer is read from the workflow
+    status instead (test_server_added_steps_and_tolerant_rows.py)."""
+    assert _errors(_schema("STEP_RESULT"), {"result": {"answer_excerpt": ""}}) == []
 
 
 def test_a_skipped_step_reads_back_as_succeeded_with_nothing_produced(tmp_path):
