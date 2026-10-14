@@ -2897,6 +2897,10 @@ class Worker:
                     # watch an open hand-off's hold. Never raises.
                     with self._heartbeat_meanwhile("hand-off"):
                         ended = self.handoff.tick(ws.work, self.control.fetch_task)
+                        # LB-RETURN: swarm-api decides whether the hold really
+                        # ran out, against a viewer who came as it did.
+                        if ended == handoff_mod.HOLD_EXPIRED and not self.handoff.confirm_expired():
+                            ended = None
                     if ended is not None:
                         return self._park_for_human(child, cause=ended)
 
@@ -8077,12 +8081,17 @@ class Worker:
         self._checkpoint("human-wait")
         uploaded = self._upload_outputs().get("artifacts")
         with self._metrics_after_the_record():
-            handoff_mod.park_human_required(
+            park = handoff_mod.park_human_required(
                 self.control,
                 max_resumes=self.handoff.max_resumes,
                 detail={"park_phase": "human_wait", "cause": cause},
                 uploads=uploaded if isinstance(uploaded, list) else None,
             )
+        if park.returned_by is not None:
+            # A person returned control while this attempt parked: re-queued
+            # READY, lease released all the same (LB-RETURN).
+            self.log.info("a person returned control as the hold ended; re-queued")
+            return Outcome(exit_code=ExitCode.PARKED, state=TaskState.READY)
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
     def _park_for_quota(self, decision: QuotaDecision, *, source: str) -> Outcome:

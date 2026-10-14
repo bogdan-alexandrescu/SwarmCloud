@@ -905,6 +905,10 @@ SCHEDULE_METADATA_KEY = "schedule"
 HUMAN_WAIT_RESUMES_METADATA_KEY = "human_wait_resumes"
 HUMAN_READY_METADATA_KEY = "human_ready"
 HUMAN_HANDOFFS_METADATA_KEY = "human_handoffs"
+#: LB-RETURN: a person returned control while an attempt ran; the worker's park
+#: of exactly that attempt reads it and re-queues READY instead. A caller who
+#: set it would turn a park into a free re-queue.
+HUMAN_RETURNED_METADATA_KEY = "human_returned"
 
 #: Every key inside `task.metadata` this service writes and a caller may not,
 #: in the order a refusal names them. One tuple, checked by one function, so a
@@ -925,6 +929,7 @@ RESERVED_METADATA_KEYS = (
     HUMAN_WAIT_RESUMES_METADATA_KEY,
     HUMAN_READY_METADATA_KEY,
     HUMAN_HANDOFFS_METADATA_KEY,
+    HUMAN_RETURNED_METADATA_KEY,
     START_PROBLEM_METADATA_KEY,
     OWNER_ANSWERS_METADATA_KEY,
     FORGE_SOURCE_METADATA_KEY,
@@ -1615,6 +1620,11 @@ _RESERVED_BECAUSE = {
         f"metadata.{HUMAN_HANDOFFS_METADATA_KEY} is reserved: it counts the "
         "live-browser hand-offs an attempt asked for, written only by the worker's "
         "hand-off route. Drop the key from metadata."
+    ),
+    HUMAN_RETURNED_METADATA_KEY: (
+        f"metadata.{HUMAN_RETURNED_METADATA_KEY} is reserved: it records a person's "
+        "return of the live browser during an attempt, written only by "
+        "POST /v1/tasks/{task_id}/live/control/return. Drop the key from metadata."
     ),
     OWNER_ANSWERS_METADATA_KEY: (
         f"metadata.{OWNER_ANSWERS_METADATA_KEY} is reserved: it holds the owner's "

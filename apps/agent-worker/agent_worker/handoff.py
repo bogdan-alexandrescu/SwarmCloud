@@ -77,7 +77,7 @@ import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, NamedTuple
 from urllib.parse import quote, urlsplit
 
 from swarm_common.models import utcnow
@@ -110,6 +110,14 @@ LIVE_SESSION_PURPOSE = "swarm-live-session/v1"
 #: `swarm_api.validation.HUMAN_WAIT_RESUMES_METADATA_KEY`, restated (this image
 #: does not carry swarm-api); the test holds them equal.
 HUMAN_WAIT_RESUMES_METADATA_KEY = "human_wait_resumes"
+#: `swarm_api.handoff.HUMAN_RETURNED_METADATA_KEY` and HUMAN_READY_METADATA_KEY,
+#: restated (LB-RETURN): a person's return during this attempt, which the park
+#: reads; and the "I'm ready" a re-queue records, as swarm-api's does.
+HUMAN_RETURNED_METADATA_KEY = "human_returned"
+HUMAN_READY_METADATA_KEY = "human_ready"
+#: `swarm_api.handoff.REVIVED`: swarm-api's answer to this worker's expiry when
+#: a viewer or a controller moved the deadline after it was read.
+REVIVED = "revived"
 
 #: `swarm_api.handoff.REQUEST_ID` and its `expect` host rule, restated.
 REQUEST_ID = re.compile(r"^[a-z0-9-]{1,64}$")
@@ -221,7 +229,11 @@ minutes).
 `wait` exits:
 
   0   control was returned; a JSON summary (url, title, held_seconds) is on stdout.
-      Look at the page once and continue: you are signed in.
+      The person may have changed the page: read it again, once, from the tab
+      at that url -- never a page handle, snapshot or value from
+      before the hand-off. From Python, connect again with `swarm_browser.live()` and take
+      `swarm_browser.handoff_page(context)`, not `context.pages[0]`; with the
+      browser_* tools, browser_tabs, select that tab, then browser_snapshot.
   75  still waiting (someone is watching): run `swarm-handoff wait` again, at once.
   3   nobody came in time. Write where you stopped into $SWARM_HANDOFF/notes.md
       now (what is done, what is next); the task is parked until a person is
@@ -1085,6 +1097,43 @@ class HandoffPath:
 
     # -- the ends ----------------------------------------------------------------
 
+    def confirm_expired(self) -> bool:
+        """LB-RETURN: tell swarm-api the open hold expired, BEFORE anything is
+        told to the agent or parked. Never raises.
+
+        False when swarm-api answered it `REVIVED`: a
+        viewer or a controller moved the deadline after `_watch` read it, so
+        the person came first and the hold goes on -- nothing is answered,
+        wiped or parked, and the next poll reads the new deadline. True
+        otherwise, and `end` does not send the resolve again. Any other failure
+        is True too, as it always was: swarm-api clears a stale wait when the
+        task moves on, and a hold that cannot be confirmed must still end
+        (invariant 4).
+
+        The expiry names the deadline it judged (`seen_deadline`), so the
+        refusal is exact: a deadline that merely lies in the future because
+        the worker's clock is behind is not "revived".
+        """
+        active = self.active
+        if active is None:
+            return True
+        deadline = active.get("deadline")
+        fields: dict[str, Any] = {"request_id": active["request_id"], "outcome": "expired"}
+        if isinstance(deadline, datetime):
+            fields["seen_deadline"] = deadline.isoformat()
+        try:
+            _, payload = self._route(
+                f"/v1/tasks/{quote(self.cfg.task_id, safe='')}/handoff/resolve", fields)
+        except Exception as exc:
+            self.log.warning("the hand-off's expiry was not resolved at swarm-api",
+                             error=str(getattr(exc, "code", None) or type(exc).__name__))
+        else:
+            if isinstance(payload, dict) and payload.get("resolved") == REVIVED:
+                self.log.info("a person came as the hand-off's hold ran out; holding on")
+                return False
+        active["resolved"] = True
+        return True
+
     def end(self, work: Path | None, *, outcome: str, cause: str) -> bool:
         """End the open hand-off, if any: answer the agent, resolve the route,
         end control and wipe. Never raises. Returns whether one was open.
@@ -1107,10 +1156,11 @@ class HandoffPath:
                 except OSError as exc:
                     self.log.warning("could not answer the agent's wait", error=type(exc).__name__)
             try:
-                self._route(
-                    f"/v1/tasks/{quote(self.cfg.task_id, safe='')}/handoff/resolve",
-                    {"request_id": active["request_id"], "outcome": outcome},
-                )
+                if not active.get("resolved"):  # `confirm_expired` resolved it already
+                    self._route(
+                        f"/v1/tasks/{quote(self.cfg.task_id, safe='')}/handoff/resolve",
+                        {"request_id": active["request_id"], "outcome": outcome},
+                    )
             except Exception as exc:
                 # swarm-api clears a stale wait itself when the task moves on;
                 # the park or the cancel below still happens.
@@ -1159,13 +1209,22 @@ class HandoffPath:
             self.log.warning("the gate did not resume the agent", error=type(exc).__name__)
 
 
+class HumanPark(NamedTuple):
+    """What `park_human_required` wrote. `returned_by` is the person whose
+    return re-queued the task READY instead of parking it (LB-RETURN), or None
+    when it parked."""
+
+    refunded: bool
+    returned_by: str | None
+
+
 def park_human_required(
     control: Any,
     *,
     max_resumes: int,
     detail: dict[str, Any] | None = None,
     uploads: list[Any] | None = None,
-) -> bool:
+) -> HumanPark:
     """§4.3: PARKED on HUMAN_REQUIRED, slot given back, the attempt refunded
     while fewer than `max_resumes` have been.
 
@@ -1183,12 +1242,26 @@ def park_human_required(
     a `ControlPlane` method because `control.py` is outside lane L4's files;
     the transaction is the same one the other parks run.
 
-    Returns whether the attempt was refunded.
+    A PERSON'S RETURN RE-QUEUES INSTEAD (LB-RETURN, part of #1030). A person
+    who took control and returned it while this attempt was parking left
+    `HUMAN_RETURNED_METADATA_KEY` naming this attempt and generation
+    (swarm-api's `LiveService.return_control`). Read in the same fenced
+    transaction, it turns the park into their "I'm ready": READY rather than
+    PARKED, with everything else the park does -- checkpoint first, attempt
+    refunded within the bound, lease released, exit. The next attempt is
+    admitted all-or-nothing under a new generation like any READY task
+    (invariants 2, 4, 5). A mark naming another attempt or generation answers
+    nothing here. A task with no attempt left parks as before: READY would
+    lease attempt N+1 of N, and the scheduler dead-letters it instead.
+
+    Returns whether the attempt was refunded and who re-queued it, if anyone.
     """
     reason = ParkReason.HUMAN_REQUIRED
     now = utcnow()
+    returned: dict[str, Any] = {}
 
     def _apply(txn: Any) -> tuple[bool, int]:
+        returned.clear()  # a retried transaction starts again
         task = control._fenced_task(txn, write="human park")
         current = TaskState(task.get("state"))
         assert_transition(current, TaskState.PARKED)
@@ -1210,12 +1283,28 @@ def park_human_required(
             metadata[HUMAN_WAIT_RESUMES_METADATA_KEY] = used + 1
             payload["metadata"] = metadata
             payload["attempt_count"] = attempt_count - 1
+        mark = metadata.get(HUMAN_RETURNED_METADATA_KEY)
+        left = int(task.get("max_attempts") or 1) - int(payload.get("attempt_count", attempt_count))
+        if (
+            isinstance(mark, dict)
+            and mark.get("attempt_id") == control.attempt_id
+            and mark.get("generation") == control.generation
+            and left > 0
+        ):
+            assert_transition(current, TaskState.READY)
+            by = str(mark.get("by") or "")
+            metadata.pop(HUMAN_RETURNED_METADATA_KEY, None)
+            metadata[HUMAN_READY_METADATA_KEY] = {"by": by, "at": now.isoformat()}
+            payload.update({"state": TaskState.READY.value, "park_reason": None,
+                            "next_eligible_at": None, "blocked_by": [], "metadata": metadata})
+            returned["by"] = by
         txn.update(control._task_ref(), payload)
         if uploads:
             control._record_parked_uploads(txn, index, uploads, at=now)
         return refund, used + (1 if refund else 0)
 
     refunded, resumes = control._run_transaction(_apply)
+    returned_by = returned.get("by")
     # Best effort, as in every park: the event and the release below are what
     # give the slot back.
     try:
@@ -1225,6 +1314,21 @@ def park_human_required(
             "the human park landed but its attempt end was not recorded",
             error=f"{type(exc).__name__}: {str(exc)[:300]}",
         )
+    if returned_by is not None:
+        # swarm-api's "I'm ready" event's shape (`handoff.ready_writes`).
+        control.emit(
+            EventType.READY,
+            {
+                "reason": "human_returned",
+                "park_reason": reason.value,
+                "by": returned_by,
+                "attempt_refunded": refunded,
+                HUMAN_WAIT_RESUMES_METADATA_KEY: resumes,
+                **(detail or {}),
+            },
+        )
+        control.release_lease("requeued:human_returned")
+        return HumanPark(refunded, returned_by)
     control.emit(
         EventType.PARKED,
         {
@@ -1236,4 +1340,4 @@ def park_human_required(
         },
     )
     control.release_lease(f"parked:{reason.value}")
-    return refunded
+    return HumanPark(refunded, None)

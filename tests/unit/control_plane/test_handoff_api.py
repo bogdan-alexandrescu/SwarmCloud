@@ -42,6 +42,7 @@ from swarm_api.handoff import (
     HUMAN_WAIT_RESUMES_METADATA_KEY,
     LIVE_AUDIT,
     MAX_HANDOFFS_PER_ATTEMPT,
+    REVIVED,
     handoff_message,
 )
 from swarm_api.main import create_app
@@ -649,7 +650,8 @@ def test_a_human_park_on_its_last_attempt_is_dead_lettered_at_once(db, make_sche
 
 @pytest.mark.parametrize(
     "key",
-    [HUMAN_WAIT_RESUMES_METADATA_KEY, HUMAN_READY_METADATA_KEY, HUMAN_HANDOFFS_METADATA_KEY],
+    [HUMAN_WAIT_RESUMES_METADATA_KEY, HUMAN_READY_METADATA_KEY, HUMAN_HANDOFFS_METADATA_KEY,
+     HUMAN_RETURNED_METADATA_KEY],
 )
 def test_the_hand_off_metadata_keys_are_reserved(client, db, key):
     seed_tenant(db, "eng")
@@ -690,8 +692,9 @@ def test_an_expiry_is_refused_when_a_viewer_moved_the_deadline_after_the_worker_
     live_client, db
 ):
     """The worker judged the hold expired on the deadline it read; a viewer
-    joined before its resolve landed and moved it. The resolve is refused --
-    409 handoff_revived, the wait kept -- so the worker does not park."""
+    joined before its resolve landed and moved it. The resolve is answered
+    "revived" -- 200, nothing written, the wait kept -- so the worker does not
+    park. An answer, not a refusal: a worker from before reads any 200."""
     seed_tenant(db, "eng")
     attempt = Attempt()
     doc = running(live_client, db, attempt)
@@ -699,8 +702,8 @@ def test_an_expiry_is_refused_when_a_viewer_moved_the_deadline_after_the_worker_
     seen = datetime.now(timezone.utc) - timedelta(seconds=2)
     doc["human_wait"]["deadline"] = seen + timedelta(seconds=62)  # `LiveService.watched`
     response = _resolve_expired(live_client, attempt, seen)
-    assert response.status_code == 409, response.text
-    assert response.json()["code"] == "handoff_revived"
+    assert response.status_code == 200, response.text
+    assert response.json() == {"resolved": REVIVED}
     assert isinstance(doc["human_wait"], dict)
     assert "human_handoff_resolved" not in [e["type"] for e in _events(db)]
 
@@ -715,6 +718,7 @@ def test_an_expiry_on_the_deadline_the_worker_read_resolves(live_client, db):
     doc["human_wait"]["deadline"] = seen
     response = _resolve_expired(live_client, attempt, seen)
     assert response.status_code == 200, response.text
+    assert response.json() == {"resolved": True}
     assert doc["human_wait"] is None
 
 

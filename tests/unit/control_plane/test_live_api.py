@@ -1260,7 +1260,7 @@ def test_a_late_viewer_revives_a_hold_the_worker_has_not_resolved(ldb, live, clo
     2026-10-14 00:24Z: the viewer joined a few seconds past the unwatched
     minute, before the worker's next poll, and its watch was dropped. The
     hold is over only when the worker RESOLVES it, and that resolve is
-    refused once the deadline it judged has moved (`HandoffRevived`), so a
+    answered "revived" once the deadline it judged has moved, so a
     viewer who arrives first keeps the hold."""
     _wait_opened_at(ldb, clock)
     before = _deadline(ldb)

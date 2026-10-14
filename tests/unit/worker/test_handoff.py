@@ -136,7 +136,8 @@ class FakeLiveRoutes:
         # Built at runtime: nothing in this file has a credential's shape.
         self.ticket = "tkt-" + secrets.token_hex(16)
         #: Called with (task, payload) before a resolve is applied: what a
-        #: person does at swarm-api meanwhile. It may raise swarm-api's refusal.
+        #: person does at swarm-api meanwhile. A dict it returns is swarm-api's
+        #: answer instead, with nothing resolved.
         self.on_resolve: Any = None
 
     def _verify(self, purpose: str, path: str, body: bytes, headers: dict[str, str]) -> None:
@@ -178,7 +179,9 @@ class FakeLiveRoutes:
             self._verify(api_handoff.HANDOFF_PURPOSE, path, body, headers)
             self.trace.append(f"resolve:{payload['outcome']}")
             if self.on_resolve is not None:
-                self.on_resolve(task, payload)
+                answer = self.on_resolve(task, payload)
+                if isinstance(answer, dict):
+                    return 200, answer
             task["human_wait"] = None
             return 200, {"resolved": True}
         raise AssertionError(f"unexpected route {path}")
@@ -800,7 +803,7 @@ def test_the_workers_restatements_match_swarm_api_and_the_command():
     assert handoff_mod.HUMAN_WAIT_RESUMES_METADATA_KEY == api_validation.HUMAN_WAIT_RESUMES_METADATA_KEY
     assert handoff_mod.HUMAN_RETURNED_METADATA_KEY == api_handoff.HUMAN_RETURNED_METADATA_KEY
     assert handoff_mod.HUMAN_READY_METADATA_KEY == api_handoff.HUMAN_READY_METADATA_KEY
-    assert handoff_mod.HANDOFF_REVIVED == api_handoff.HandoffRevived.code
+    assert handoff_mod.REVIVED == api_handoff.REVIVED
     for args in [("POST", "/v1/tasks/t/handoff", b'{"a":1}', "17")]:
         assert handoff_mod.signed_message(handoff_mod.HANDOFF_PURPOSE, *args) == api_handoff.handoff_message(*args)
     assert handoff_mod.LIVE_SESSION_PURPOSE != handoff_mod.HANDOFF_PURPOSE
@@ -1010,7 +1013,7 @@ def test_a_hold_a_viewer_revived_before_the_expiry_landed_is_not_parked(
     db, worker_factory, agent, gate, trace, monkeypatch
 ):
     """The worker read the deadline past; a viewer joined and moved it before
-    its resolve landed, so swarm-api refused the expiry (`handoff_revived`).
+    its resolve landed, so swarm-api answered the expiry "revived".
     The worker does not park and does not tell the agent "expired": it keeps
     holding, and the person's return reaches the agent's `wait` as 0."""
     write_plan, records = agent
@@ -1023,7 +1026,7 @@ def test_a_hold_a_viewer_revived_before_the_expiry_landed_is_not_parked(
         sent.append(payload)
         # The viewer's extension, then the person's take, type and return.
         task["human_wait"] = None
-        raise children_mod.ChildApiError(409, handoff_mod.HANDOFF_REVIVED, "", retryable=False)
+        return {"resolved": handoff_mod.REVIVED}
 
     routes.on_resolve = revived
     worker = _live_worker(worker_factory, routes, gate, trace, monkeypatch)
