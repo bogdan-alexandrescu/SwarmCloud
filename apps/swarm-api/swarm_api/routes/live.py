@@ -643,6 +643,9 @@ class _Proxy:
         self.poll = float(getattr(settings, "live_session_poll_seconds", 2.0))
         self.recheck = float(getattr(settings, "live_membership_recheck_seconds", 300.0))
         self.flush = float(getattr(settings, "live_input_flush_seconds", 15.0))
+        #: HANDOFF-POLICY: how often this open socket says "someone is
+        #: watching", which keeps an open hand-off's hold from parking.
+        self.watch = float(getattr(settings, "live_watch_flush_seconds", 15.0))
         self.in_control = False
         #: The episode `keys` and `pointers` belong to: counted while it was
         #: held, written to it even when it ends before they are flushed.
@@ -657,6 +660,7 @@ class _Proxy:
 
     async def run(self) -> None:
         await run_in_threadpool(self.service.viewer_event, self.admission, "viewer_joined", {})
+        await self._watched()
         await self._status()
         tasks = [asyncio.ensure_future(c) for c in (self._from_viewer(), self._from_relay(),
                                                      self._tick())]
@@ -725,6 +729,14 @@ class _Proxy:
                                  "controller": status_.get("controller")})
         return True
 
+    async def _watched(self) -> None:
+        """A viewer is here: move the open hand-off's hold (`LiveService.watched`).
+        A failure is logged and retried on the next flush, never the socket's end."""
+        try:
+            await run_in_threadpool(self.service.watched, self.admission)
+        except Exception as exc:  # noqa: BLE001 -- the view goes on
+            log.info("live watch not recorded (%s)", type(exc).__name__)
+
     async def _send_viewer(self, message: dict[str, Any]) -> None:
         if message == self.last_sent:
             return  # a status is sent when it changes, not every tick
@@ -792,6 +804,7 @@ class _Proxy:
         loop = asyncio.get_running_loop()
         next_recheck = loop.time() + self.recheck
         next_flush = loop.time() + self.flush
+        next_watch = loop.time() + self.watch
         last_status = None
         while True:
             await asyncio.sleep(self.poll)
@@ -812,6 +825,9 @@ class _Proxy:
             if self.in_control and (self.keys or self.pointers) and now >= next_flush:
                 next_flush = now + self.flush
                 await self._flush_input()
+            if now >= next_watch:
+                next_watch = now + self.watch
+                await self._watched()
             try:
                 if not await self._status():
                     return

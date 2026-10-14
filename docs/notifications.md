@@ -60,9 +60,9 @@ records each time, and the read marks only say which ids have been seen.
 
 That is why **ids are stable**. The same underlying thing derives the same id
 on every read, for example `admin:workspace:<workspace id>:<request id>` or
-`task:handoff:<task>:<generation>`. A new occurrence of the same thing derives
-a new id, which starts unread: a request made again after a denial, a plan
-revised, a second hand-off in a later attempt.
+`task:handoff:<task>:<generation>:<request id>`. A new occurrence of the same
+thing derives a new id, which starts unread: a request made again after a
+denial, a plan revised, a second hand-off in the same attempt or a later one.
 
 ## The groups
 
@@ -70,7 +70,7 @@ revised, a second hand-off in a later attempt.
 |---|---|---|---|
 | `admin` | yes, admins only | `workspaces` in `requested`, `loan_requests` in `requested`: what Admin › People lists first | `/admin/people` |
 | `approval` | yes | the tenant's pending `approvals` records (an expired one, or a merge whose run has moved on, is skipped); `schedule_firings` held for approval before the inbox made their record; `issue_runs` in `PLANNED` | `/approvals/<id>` |
-| `task` | yes | the caller's RUNNING tasks with a live-browser hand-off (`Task.human_wait`) and their PARKED `HUMAN_REQUIRED` tasks; the caller's tasks of the last 7 days whose agent wrote `questions.json` (`result_summary.questions`) | the task's Browser tab; its Artifacts tab |
+| `task` | yes | "Agent needs you": RUNNING tasks with a live-browser hand-off (`Task.human_wait`) the caller may take control of -- their own, and the tenant's while "Let any member take control" is on (docs/design/live-browser.md §4.1) -- and the caller's PARKED `HUMAN_REQUIRED` tasks; the caller's tasks of the last 7 days whose agent wrote `questions.json` (`result_summary.questions`) | the task's Browser tab; its Artifacts tab |
 | `account` | yes for GitHub, no for the workspace | the caller's `forge_connections` document in `refresh_failed` (only reconnecting renews it); their own expired user-scope `git_tokens`; their own workspace becoming `ready` or `denied` in the last 7 days; their own Claude-account loan request `declined` in the last 7 days (LOAN-DECLINE) | `/access`; `/setup#workspace`; `/setup#claude-account` |
 | `finished` | no | the caller's own tasks submitted alone, their workflows (stored state), and their issue runs whose pull request merged, all ended in the last 7 days | the agent, workflow or run |
 

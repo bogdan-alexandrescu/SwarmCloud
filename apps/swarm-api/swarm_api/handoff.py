@@ -39,7 +39,7 @@ from __future__ import annotations
 import hashlib
 import re
 from datetime import datetime, timedelta
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, Mapping
 
 from google.cloud import firestore
 from pydantic import Field
@@ -71,10 +71,20 @@ HANDOFF_PURPOSE = "swarm-handoff/v1"
 #: in the same transaction as the change each records.
 LIVE_AUDIT = "live_audit"
 
-#: §4.3, Q3: how long a pod holds for a person before it parks. A constant
-#: until lane L9 adds the setting; read through `getattr` so it lands without
-#: a change here.
-HUMAN_HOLD_SECONDS = 600
+#: §4.3, HANDOFF-POLICY (owner decision 2026-10-13, "notify, park fast, extend
+#: while watched"): how long a hold lasts with NOBODY watching -- from the
+#: request, and from the last moment a viewer was seen. Was a flat 10 minutes
+#: (Q3); MEASURED over 26 browser tasks, 25 of 42 hand-offs expired, 13 of
+#: them with nobody present, each holding a 2-unit browser lease and its pod
+#: for the full 10 minutes (~4.2 pod-hours). A person who is coming opens the
+#: live view within a minute of the bell; one who is not costs a minute.
+HUMAN_UNWATCHED_SECONDS = 60
+#: The ceiling on a hold that viewers and a controller keep extending, from
+#: the request. 7 of the 42 expired AFTER the person pressed "I'm ready" --
+#: they were there, on a slow or frozen view -- so a watched hold outlives the
+#: old 10 minutes; bounded so a tab left open does not hold an 8-vCPU pod for
+#: an afternoon (invariant 4).
+HUMAN_HOLD_MAX_SECONDS = 30 * 60
 #: §5.10: hand-off requests per attempt, enforced by the worker AND here, from
 #: the task document, so a worker that miscounts cannot pester people.
 MAX_HANDOFFS_PER_ATTEMPT = 3
@@ -282,6 +292,55 @@ def _audit(
     )
 
 
+def attempt_deadline(task: Mapping[str, Any]) -> datetime | None:
+    """When the attempt itself times out (`started_at + timeout_seconds`), or
+    None when the task does not say. No hold outlives it (§4.3)."""
+    started = task.get("started_at")
+    timeout = task.get("timeout_seconds")
+    if isinstance(started, datetime) and isinstance(timeout, int) and not isinstance(timeout, bool):
+        return started + timedelta(seconds=timeout)
+    return None
+
+
+def opening_deadline(now: datetime, task: Mapping[str, Any], *,
+                     unwatched_seconds: int = HUMAN_UNWATCHED_SECONDS) -> datetime:
+    """The deadline a new hold opens with: `unwatched_seconds` from now, never
+    past the attempt's own deadline and never before now. Nobody is watching
+    yet; a viewer or a controller moves it (`extended_deadline`)."""
+    deadline = now + timedelta(seconds=unwatched_seconds)
+    end = attempt_deadline(task)
+    if end is not None:
+        deadline = max(now, min(deadline, end))
+    return deadline
+
+
+def extended_deadline(now: datetime, task: Mapping[str, Any], wait: Mapping[str, Any], *,
+                      seconds: int, max_seconds: int = HUMAN_HOLD_MAX_SECONDS,
+                      revive: bool = True) -> datetime | None:
+    """§4.3: someone is watching or in control, so the hold's deadline moves to
+    `now + seconds` -- capped at `requested_at + max_seconds` and the attempt's
+    own deadline, and never earlier than it already was.
+
+    None when there is nothing to move, or when `revive` is False and the
+    deadline has already passed: the worker may be parking on it, and a viewer
+    arriving a second late must not race that (a controller's input keeps the
+    rule it always had, since `_settle` ends control on an expired hold first).
+    """
+    current = wait.get("deadline")
+    if not revive and isinstance(current, datetime) and current < now:
+        return None
+    target = now + timedelta(seconds=seconds)
+    requested = wait.get("requested_at")
+    if isinstance(requested, datetime):
+        target = min(target, requested + timedelta(seconds=max_seconds))
+    end = attempt_deadline(task)
+    if end is not None:
+        target = min(target, end)
+    if isinstance(current, datetime):
+        target = max(current, target)
+    return target
+
+
 def _wait_to_api(wait: dict[str, Any]) -> dict[str, Any]:
     return {
         k: (v.isoformat() if isinstance(v, datetime) else v)
@@ -384,7 +443,7 @@ class HandoffService:
             if why:
                 raise ValidationFailed(f"expect is not a host a hand-off may name: {why}")
 
-        hold = int(getattr(self._settings, "human_hold_seconds", HUMAN_HOLD_SECONDS))
+        unwatched = int(getattr(self._settings, "human_unwatched_seconds", HUMAN_UNWATCHED_SECONDS))
         cap = int(getattr(self._settings, "max_handoffs_per_attempt", MAX_HANDOFFS_PER_ATTEMPT))
         task_ref = self._db.collection(TASKS).document(task_id)
         lease_ref = self._db.collection(LEASES).document(attempt.lease_id)
@@ -423,18 +482,18 @@ class HandoffService:
             if used >= cap:
                 raise HandoffLimit(f"this attempt has asked for help {used} times; the cap is {cap}")
 
-            deadline = now + timedelta(seconds=hold)
-            started = task.get("started_at")
-            timeout = task.get("timeout_seconds")
-            if isinstance(started, datetime) and isinstance(timeout, int):
-                # Never past the attempt's own deadline (§4.3).
-                deadline = max(now, min(deadline, started + timedelta(seconds=timeout)))
+            # Park fast (HANDOFF-POLICY): a minute unless someone opens the
+            # live view (`LiveService.watched`) or takes control.
+            deadline = opening_deadline(now, task, unwatched_seconds=unwatched)
             wait = {
                 "reason": reason,
                 "expect": expect,
                 "requested_at": now,
                 "deadline": deadline,
                 "controller": None,
+                # The last moment a viewer was seen on the live view; None
+                # until one is. The bell and the console read it.
+                "watched_at": None,
                 "request_id": body.request_id,
                 "attempt_id": attempt.attempt_id,
                 "generation": attempt.generation,
