@@ -459,8 +459,9 @@ def test_the_launcher_refuses_a_missing_file_without_starting_the_server(tmp_pat
 
 def test_the_design_doc_has_the_jev_subsection():
     text = DESIGN_DOC.read_text()
-    assert "jev-browser (opt-in, per key)" in text
-    section = text.split("jev-browser (opt-in, per key)", 1)[1][:6000]
+    heading = "### 3.2.4 jev-browser tools for a keyed submitter (JEV-RUNNER)"
+    assert heading in text
+    section = text.split(heading, 1)[1].split("\n### ", 1)[0]
     for phrase in ("api.typesafe.ai", "jev_launch.py", "private/", "jev_unavailable",
                    "typesafe_user_keys.tf", "same uid"):
         assert phrase in section, phrase
