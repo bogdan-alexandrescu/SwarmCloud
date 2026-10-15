@@ -23,11 +23,15 @@ function codeIntel(opts: { jev?: boolean; canEdit?: boolean; served?: boolean } 
   return {
     tenant_id: 'eng',
     can_edit: opts.canEdit ?? true,
-    // `served: false` is a workspace whose document has no code_intelligence
-    // field yet: the answer carries none, and the switch must read OFF.
-    ...(opts.served === false
-      ? {}
-      : { code_intelligence: { jev: opts.jev ?? false, context: true, set_at: null, set_by: null } }),
+    // `served: false` is an answer that carries no `jev` at all: the switch
+    // must read OFF, since an absent field is a workspace that never turned it on.
+    ...(opts.served === false ? {} : { jev: opts.jev ?? false }),
+    context: 'inherit',
+    context_ab: 'inherit',
+    defaults: { jev: false, context: 'on', context_ab: 'ab' },
+    updated_at: null,
+    updated_by: null,
+    repositories: [],
   }
 }
 
@@ -123,7 +127,7 @@ describe('the Code intelligence switch', () => {
     const t = await toggle()
     expect(t.disabled).toBe(false)
     fireEvent.click(t)
-    await waitFor(() => expect(seen).toEqual([{ code_intelligence: { jev: true } }]))
+    await waitFor(() => expect(seen).toEqual([{ jev: true }]))
     await waitFor(async () => expect((await toggle()).checked).toBe(true))
     expect(visible(await screen.findByRole('status'))).toMatch(/saved/i)
   })

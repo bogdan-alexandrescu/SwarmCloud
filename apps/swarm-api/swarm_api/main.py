@@ -35,7 +35,7 @@ from .routes import (
     browser_slots,
     checkpoints,
     children,
-    code_intelligence,
+    codeintel,
     forgeapp,
     forgeperms,
     gittokens,
@@ -155,6 +155,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # A workspace's merge settings, direct or merge train (TRAIN-WS,
     # docs/merge-trains.md §3): its owner or a platform admin, audited.
     app.include_router(merge_settings.router)
+    # A workspace's code-intelligence setting (CTXQ-SET,
+    # docs/design/context-quality.md §4.7): its owner or a platform admin, audited.
+    app.include_router(codeintel.router)
     # Connect GitHub as yourself (docs/onboarding.md §3.2, lane OB3):
     # authorise, exchange, disconnect, and the refresh sweep the
     # swarm-forge-refresh job calls. No route returns a token.
@@ -178,7 +181,6 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # Each workspace's Code intelligence switch -- whether Jev is ever sent
     # code, OFF by default -- one field of workspace_settings/{tenant_id}, its
     # owner's or an admin's to change, audited (CTXQ-UI, context-quality §4.7).
-    app.include_router(code_intelligence.router)
     # The account pool. Every route on it PROXIES to the quota broker, which is
     # the platform's single writer of subscription credentials; this service
     # supplies the caller's tenant and nothing else.

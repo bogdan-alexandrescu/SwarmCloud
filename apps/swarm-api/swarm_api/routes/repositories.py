@@ -28,6 +28,12 @@ acts as a member of the tenant they are in: the registration is read with
 is where §4.6 puts the platform's. The change and its `admin_audit` entry
 commit in one transaction (`repositories.Repositories.patch` and `create`).
 
+`context` (CTXQ-SET, docs/design/context-quality.md §4.7) is the graph-context
+override: a PATCH that carries it passes `codeintel.require_owner_or_admin`
+first -- the workspace's owner or a platform admin, exactly who may set the
+workspace default it overrides -- so a member's answers 403 with nothing
+written. `inherit` clears it. Its `admin_audit` entry commits with it.
+
 THE INDEX ROUTES (lane RI2, repo-index.md §6.1) are below the registration
 routes: `GET/POST /{repo_id}/index` (and `POST /{repo_id}/index:run`, the
 design's name for "Index now"), `GET /{repo_id}/index/runs` and
@@ -73,6 +79,7 @@ from fastapi.responses import JSONResponse
 from swarm_common.models import Tenant
 
 from ..auth import AuthContext, require_admin
+from ..codeintel import require_owner_or_admin
 from ..deps import AppContext, current_auth, get_context, paged_limit, tenant_scope
 from ..forgeapp import Caller
 from .access import get_access
@@ -291,8 +298,11 @@ def patch_repository(
     platform_by = _platform_admin(body.model_fields_set, auth)
     merge_policy_by = _platform_admin(body.model_fields_set, auth, "merge_policy")
     readable_by = _platform_admin(body.model_fields_set, auth, "readable_by_tasks")
+    context_by = (require_owner_or_admin(auth, ctx.store.get_tenant(tenant_id))
+                  if body.context is not None else None)
     record = _store(ctx).patch(tenant_id, repo_id, body, platform_by=platform_by,
-                               merge_policy_by=merge_policy_by, readable_by=readable_by)
+                               merge_policy_by=merge_policy_by, readable_by=readable_by,
+                               context_by=context_by)
     log.info(
         "repository patch tenant=%s repo_id=%s by=%s fields=%s", tenant_id, record["repo_id"],
         auth.email, ",".join(sorted(body.model_dump(exclude_none=True))),

@@ -5858,13 +5858,15 @@ export async function putJudgmentBackend(tenantId: string, backend: JevBackend):
 // ---------------------------------------------------------------------------
 // Code intelligence (CTXQ-UI over CTXQ-SET; docs/design/context-quality.md
 // §4.7). The workspace's switch is ONE FIELD of `workspace_settings/{tenant_id}`
-// (`code_intelligence`, beside `judgment_backend` and `merge`), written with a
-// merge by swarm-api. `jev` -- whether Jev is ever sent code -- is OFF unless
+// (`code_intelligence`, beside `judgment_backend` and `merge`), written by
+// swarm-api (`swarm_api/codeintel.py`); the API answers and takes the flat
+// shape: `{jev, context, context_ab, defaults, updated_at, updated_by,
+// can_edit, repositories}` and a PUT body of `{jev}`. `jev` -- whether Jev is ever sent code -- is OFF unless
 // the API says, explicitly, `true`: an answer without the field is a workspace
 // that never turned it on. A repository's `context` override is
 // `on | off`, or absent for inherit, and travels on `PATCH
 // /v1/repositories/{repo_id}` as `merge_policy` does, `inherit` clearing it.
-// These shapes are coded against the CTXQ-SET row; a fix to them is here.
+// These shapes follow CTXQ-SET's API; a fix to them is here.
 // ---------------------------------------------------------------------------
 
 export interface CodeIntelligence {
@@ -5881,14 +5883,16 @@ export interface CodeIntelligence {
 
 function normCodeIntelligence(raw: unknown): CodeIntelligence {
   const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
-  const ci = (typeof r.code_intelligence === 'object' && r.code_intelligence !== null ? r.code_intelligence : {}) as Record<string, unknown>
+  const defaults = (typeof r.defaults === 'object' && r.defaults !== null ? r.defaults : {}) as Record<string, unknown>
+  // `context` is `on | off | inherit`; inherit is the platform default.
+  const context = r.context === 'on' || r.context === 'off' ? r.context : defaults.context
   return {
     tenant_id: keyField(r.tenant_id) ?? '',
     can_edit: r.can_edit === true,
-    jev: ci.jev === true,
-    context: ci.context !== false,
-    set_at: keyField(ci.set_at),
-    set_by: keyField(ci.set_by),
+    jev: r.jev === true,
+    context: context !== 'off',
+    set_at: keyField(r.updated_at),
+    set_by: keyField(r.updated_by),
   }
 }
 
@@ -5899,7 +5903,7 @@ export async function loadCodeIntelligence(): Promise<Result<CodeIntelligence>> 
 
 /** `PUT /v1/workspaces/{tenant_id}/code-intelligence`: the owner's or an admin's switch. */
 export async function putCodeIntelligence(tenantId: string, jev: boolean): Promise<Result<unknown>> {
-  return writeTo(route('/v1/workspaces/{tenant_id}/code-intelligence', { tenant_id: tenantId }), 'PUT', { code_intelligence: { jev } })
+  return writeTo(route('/v1/workspaces/{tenant_id}/code-intelligence', { tenant_id: tenantId }), 'PUT', { jev })
 }
 
 /** A repository's `context` override; `inherit` is the absent field. */
