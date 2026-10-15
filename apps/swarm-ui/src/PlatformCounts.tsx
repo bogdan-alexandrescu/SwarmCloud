@@ -88,7 +88,7 @@ export const PLATFORM_TICKS: readonly { name: string; job: string; does: string 
   { name: 'forge_refresh', job: 'forge-refresh', does: 'Refreshes GitHub user access tokens before they expire.' },
   { name: 'schedule_tick', job: 'schedule-tick', does: 'Fires every tenant’s due schedules, one firing per slot (its last hour is on Automate › Schedules, All tenants).' },
   { name: 'workspace_sweep', job: 'workspace-sweep', does: 'Re-dispatches approved personal workspaces nobody built, and logs each one still waiting.' },
-  { name: 'secrets_rotation_sweep', job: 'workspace-secrets-rotation-sweep', does: 'Hourly, disables each rotated-out workspace secret version once its 24-hour grace has passed; never destroys one.' },
+  { name: 'secrets_rotation_sweep', job: 'workspace-secrets-rotation-sweep', does: 'Hourly, disables each rotated-out workspace secret version once its day of grace has passed; never destroys one.' },
 ]
 
 function PlatformTicks() {
