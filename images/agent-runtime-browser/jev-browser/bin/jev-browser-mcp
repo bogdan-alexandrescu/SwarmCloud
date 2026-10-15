@@ -24,11 +24,15 @@
 #   * JEV_MODEL is dropped, and where page text and labels go is the
 #     WORKSPACE'S JUDGMENT BACKEND (JUDGE-SELECT, owner decisions 2026-10-14),
 #     which the dispatcher names in SWARM_JEV_BACKEND:
-#       - internal-jev / internal-laya: Saga's decision API through the
-#         cluster's Tailscale egress Service. JEV_API_URL is passed through
-#         ONLY when it is exactly that Service's /jev or /laya /v1/decide; any
-#         other value, or none (the egress is off), is refused, so page text
-#         is never sent to TypeSafe in its place. JEV_API_COMPAT=internal is
+#       - internal-jev / internal-laya: Saga's decision API BY ITS TAILNET
+#         NAME, over https, through the cluster's Tailscale egress Service
+#         (the dispatcher pins the name to the Service with a hostAliases
+#         entry, so TLS verifies the API's own certificate; owner decision
+#         2026-10-15, #1380). JEV_API_URL is passed through ONLY when it is
+#         exactly that origin's /jev or /laya /v1/decide; any other value --
+#         the old in-cluster http address included -- or none (the egress is
+#         off), is refused, so page text is never sent to TypeSafe in its
+#         place. JEV_API_COMPAT=internal is
 #         set with it (JUDGE-ADAPT), so the patched jev() reshapes each request
 #         for the internal API, which is not wire-compatible with TypeSafe's on
 #         the request side, and sends its placeholder instead of any key. No
@@ -65,7 +69,9 @@ refuse_backend() {
   exit 2
 }
 
-DECISION_SERVICE="http://decision-api.swarm-system.svc.cluster.local"
+# scheduler.judgment INTERNAL_DECISION_ORIGIN; tests/unit/worker/
+# test_jev_browser_image.py holds the two equal.
+DECISION_SERVICE="https://decision-api-staging.taile0bda9.ts.net"
 NO_TYPESAFE_KEY="swarm-internal-no-typesafe-key"
 backend="${SWARM_JEV_BACKEND:-}"
 case "${backend}" in

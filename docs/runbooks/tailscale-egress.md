@@ -21,7 +21,7 @@ What is built (lane JUDGE-NET):
 |---|---|---|
 | Secret container | `terraform/infra/tailscale.tf` | `swarm-tailscale-oauth`, no version. One reader: the deployer that runs the sync, and only while `enable_tailscale_egress` is on. |
 | The switch | `enable_tailscale_egress` (default `false`) | Off: nobody reads the secret, nothing is rendered, `apply.sh` applies nothing about the tailnet. |
-| The egress | `kubernetes/swarm-system/tailscale-egress.yaml` | Service `decision-api` (443) in front of ONE unprivileged pod: Tailscale in userspace mode, plus a forwarder that dials `decision-api-staging.taile0bda9.ts.net:443` and nothing else. |
+| The egress | `kubernetes/swarm-system/tailscale-egress.yaml` | Service `decision-api` (443, fixed clusterIP `10.48.6.120`, stated once as `local.decision_api_cluster_ip` in `terraform/infra/tailscale.tf`) in front of ONE unprivileged pod: Tailscale in userspace mode, plus a forwarder that dials `decision-api-staging.taile0bda9.ts.net:443` and nothing else. |
 | Who reaches it | the manifest's `decision-api-egress-ingress`, and `kubernetes/network-policies/allow-judge-egress.yaml` in every tenant namespace | TCP 8443, only from a pod labelled `swarm-judge: internal` in a tenant namespace. |
 | The sync | `kubernetes/apply.sh --swarm-system --confirm` | Copies the secret from Secret Manager into `swarm-system/operator-oauth`, never printing it. |
 | Storing the secret | `scripts/create-secrets.sh --tailscale-oauth --stdin` | Stdin only; refuses anything that is not an OAuth client secret (`tskey-client-…`). |
@@ -185,13 +185,34 @@ The tenant side, `swarm-allow-judge-egress`, reaches every tenant namespace with
 the release's tenant NetworkPolicy step. To apply it to every tenant namespace
 now, use [tenant-network-policies.md](tenant-network-policies.md).
 
-### 6. The dispatcher's label
+### 6. The dispatcher's label, host alias and URL
 
 Only a pod labelled `swarm-judge: internal` reaches the forwarder. The
 dispatcher sets that label on a live-browser or agent pod whose Jev judgment
 backend is "Internal Jev" or "Internal Laya", never on a TypeSafe-backed pod,
 and never because a caller asked (invariant 10). Until the dispatcher sets it,
 the egress is up and nothing can use it.
+
+With the label, and only with it, the dispatcher gives the pod
+
+    hostAliases: [{ip: 10.48.6.120, hostnames: [decision-api-staging.taile0bda9.ts.net]}]
+    JEV_API_URL=https://decision-api-staging.taile0bda9.ts.net/jev/v1/decide   (or /laya/)
+
+so the pod calls the decision API **by its tailnet name**, the name resolves to
+the `decision-api` Service, and TLS verifies the API's real certificate end to
+end (owner decision 2026-10-15, #1380). The in-cluster name does not work for
+either scheme: `http://decision-api.swarm-system.svc.cluster.local` times out,
+because the Service has no port 80, and `https://` on it fails TLS, because the
+certificate is issued for the tailnet name. That is why the Service's
+clusterIP is FIXED: every judging pod has it in `/etc/hosts`, so a Service
+recreated with a new address would strand them. Change it only together with
+`DECISION_API_CLUSTER_IP` in `apps/scheduler/scheduler/judgment.py` (a unit
+test holds the two equal), and only to a free address inside the cluster's
+`services_cidr` (Terraform refuses one outside it).
+
+The scheduler only does this while `INTERNAL_DECISION_API_URL` is set, i.e.
+while `internal_decision_api_enabled` is on. That switch is flipped in its own
+change, after the third probe under Verify passes.
 
 ## Verify
 
@@ -204,22 +225,31 @@ kubectl --context gke_saga-agents-staging_us-central1_swarm-autopilot \
   -n swarm-system get pods -l app.kubernetes.io/name=decision-api-egress
 ```
 
-Expect `decision-api ClusterIP … 443/TCP`, and one pod `2/2 Running`. The pod
+Expect `decision-api ClusterIP 10.48.6.120 … 443/TCP`, and one pod `2/2 Running`. The pod
 is Ready only once its node has a tailnet address (containerboot's `/healthz`).
 A pod stuck in `ContainerCreating` with `secret "operator-oauth" not found` has
 not been synced: run step 5's `--confirm`. The tailnet's Machines page shows an
 ephemeral `swarmcloud-decision-api` node tagged `tag:swarmcloud`.
 
 **A labelled pod reaches the decision API.** From a throwaway pod in a tenant
-namespace, carrying the label, under the `restricted` standard:
+namespace, carrying the label and the same `hostAliases` entry the dispatcher
+gives a judging pod, under the `restricted` standard. A tenant namespace admits
+it only as written: `requests == limits` at the LimitRange's minimum of
+`250m` / `512Mi`; `automountServiceAccountToken: false`, which
+`swarm-worker-pod-hardening` requires; and an explicit `ephemeral-storage: 1Gi`,
+because the namespace's default of 20Gi is over Autopilot's 10Gi cap. Drop any
+of the three and the pod is refused.
 
 ```bash
 CTX=gke_saga-agents-staging_us-central1_swarm-autopilot
 NS=swarm-tenant-eng
-OVERRIDES='{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}},
+OVERRIDES='{"spec":{"automountServiceAccountToken":false,
+  "hostAliases":[{"ip":"10.48.6.120","hostnames":["decision-api-staging.taile0bda9.ts.net"]}],
+  "securityContext":{"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}},
   "containers":[{"name":"judge-probe","image":"curlimages/curl:8.11.1","command":["sleep","300"],
   "securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}},
-  "resources":{"requests":{"cpu":"100m","memory":"64Mi"},"limits":{"cpu":"100m","memory":"64Mi"}}}]}}'
+  "resources":{"requests":{"cpu":"250m","memory":"512Mi","ephemeral-storage":"1Gi"},
+               "limits":{"cpu":"250m","memory":"512Mi","ephemeral-storage":"1Gi"}}}]}}'
 
 kubectl --context "$CTX" -n "$NS" run judge-probe --restart=Never \
   --labels=swarm-judge=internal --image=curlimages/curl:8.11.1 --overrides="$OVERRIDES"
@@ -237,6 +267,20 @@ Any HTTP status, a 4xx for the empty question set included, proves the path:
 the TCP connection went from the pod to the forwarder to the tailnet, and the
 TLS handshake verified the decision API's certificate. A timeout or `000` does
 not.
+
+**The pod's JEV_API_URL works as the dispatcher sends it.** The same call with
+no `--connect-to`: the name resolves through the pod's `hostAliases` entry, as
+it does in a live-browser pod judged internal. This is the probe that must pass
+before `internal_decision_api_enabled` is flipped:
+
+```bash
+kubectl --context "$CTX" -n "$NS" exec judge-probe -- \
+  curl -sS -o /dev/null -w '%{http_code}\n' --max-time 20 \
+    -H 'content-type: application/json' \
+    -d '{"state":"connectivity probe","questions":{}}' \
+    https://decision-api-staging.taile0bda9.ts.net/jev/v1/decide
+# expect: an HTTP status (400 for this body on 2026-10-15), never 000
+```
 
 **An unlabelled pod does not.** This is the control that shows the first result
 could have come out the other way:

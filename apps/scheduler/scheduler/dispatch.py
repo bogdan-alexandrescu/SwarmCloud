@@ -2434,16 +2434,20 @@ class GkeJobDispatcher:
     def _with_judgment(self, job: dict[str, Any], tenant: Tenant) -> None:
         """Where this live-browser pod's Jev judgments go (`judgment`,
         JUDGE-SELECT): SWARM_JEV_BACKEND always, and for an internal backend
-        with the tailnet egress on, JEV_API_URL and the `swarm-judge:
-        internal` pod label JUDGE-NET's NetworkPolicy opens the decision API
-        to. Only with the live browser: jev-browser attaches to nothing else."""
+        with the tailnet egress on, JEV_API_URL, the `swarm-judge: internal`
+        pod label JUDGE-NET's NetworkPolicy opens the decision API to, and the
+        hostAliases entry that resolves the API's tailnet name to the egress
+        Service. Only with the live browser: jev-browser attaches to nothing
+        else."""
         backend = self._judgment(tenant.tenant_id) if self._judgment else DEFAULT_BACKEND
-        env, labels = jev_dispatch(
+        env, labels, host_aliases = jev_dispatch(
             backend, str(getattr(self._settings, "internal_decision_api_url", "") or ""))
         template = job["spec"]["template"]
         (worker,) = [c for c in template["spec"]["containers"] if c["name"] == "worker"]
         worker["env"].extend({"name": k, "value": v} for k, v in env.items())
         template["metadata"]["labels"].update(labels)
+        if host_aliases:
+            template["spec"].setdefault("hostAliases", []).extend(host_aliases)
 
     @staticmethod
     def _is_forbidden(exc: BaseException) -> bool:

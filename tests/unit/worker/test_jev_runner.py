@@ -275,7 +275,7 @@ def _run_body(monkeypatch, tmp_path, *, endpoint, key_file, backend=None, browse
     # on (scheduler.judgment.jev_dispatch); `route=False` is the egress off,
     # where the runner registers no jev (JEV-OFF, #1345).
     if backend in ("internal-jev", "internal-laya") and route:
-        monkeypatch.setenv("JEV_API_URL", "http://decision-api.swarm-system.svc.cluster.local/"
+        monkeypatch.setenv("JEV_API_URL", "https://decision-api-staging.taile0bda9.ts.net/"
                                           + backend.split("-", 1)[1] + "/v1/decide")
     claude_code.body(_ctx(tmp_path, browser_tool))
     return seen

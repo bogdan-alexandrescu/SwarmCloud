@@ -39,7 +39,7 @@ from swarm_api.judgment import (
     AUDIT_JUDGMENT_SET,
     BACKENDS,
     DEFAULT_BACKEND,
-    INTERNAL_DECISION_SERVICE,
+    INTERNAL_DECISION_ORIGIN,
     INTERNAL_JEV,
     INTERNAL_LAYA,
     LABELS,
@@ -76,7 +76,7 @@ def internal_on(request) -> bool:
 def _client(db, tokens, group_map, objects, *, internal: bool) -> TestClient:
     ctx = build_context(
         settings=api_settings(
-            internal_decision_api_url=INTERNAL_DECISION_SERVICE if internal else ""),
+            internal_decision_api_url=INTERNAL_DECISION_ORIGIN if internal else ""),
         db=db,
         verifier=StaticTokenVerifier(tokens),
         groups=StaticGroups(group_map),
@@ -125,7 +125,7 @@ def test_the_three_backends_and_the_default_are_the_owners():
     assert (INTERNAL_LAYA, TYPESAFE_BACKEND) == ("internal-laya", "typesafe")
     assert LABELS[INTERNAL_JEV] == "Jev (Internal)"
     assert LABELS[TYPESAFE_BACKEND] == "Jev (TypeSafe)"
-    assert INTERNAL_DECISION_SERVICE == "http://decision-api.swarm-system.svc.cluster.local"
+    assert INTERNAL_DECISION_ORIGIN == "https://decision-api-staging.taile0bda9.ts.net"
 
 
 # -- availability: a pure matrix ------------------------------------------------
