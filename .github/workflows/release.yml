@@ -202,6 +202,29 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      # The unit suite runs the sc plugin's run.js under node
+      # (tests/unit/mcp/test_auto_attach.py refuses to pass without it), and
+      # this job runs on a runner whose PATH may have none: dispatched dev
+      # release 38793700524 failed here on 2026-10-15 with "node is not on
+      # PATH in CI". The same major the python job in application.yml reads,
+      # from images/swarm-ui/Dockerfile, not a literal.
+      - name: the Node major the platform builds with
+        id: node
+        run: |
+          set -euo pipefail
+          dockerfile=images/swarm-ui/Dockerfile
+          majors="$(sed -nE 's/^ARG NODE_IMAGE=node:([0-9]+)[^0-9].*/\1/p' "$dockerfile")"
+          count="$(printf '%s' "$majors" | grep -c . || true)"
+          if [ "$count" -ne 1 ]; then
+            echo "::error file=${dockerfile}::expected exactly one 'ARG NODE_IMAGE=node:<major>-...' line, found ${count}"
+            exit 1
+          fi
+          echo "major=${majors}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ steps.node.outputs.major }}
+
       - run: uv sync --frozen --all-extras --dev
       - run: uv run pytest tests/unit -q
       - run: shellcheck -x scripts/*.sh scripts/lib/*.sh
