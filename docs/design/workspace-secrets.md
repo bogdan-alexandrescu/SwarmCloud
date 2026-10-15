@@ -1,8 +1,12 @@
 # Workspace secrets: one store, granted per consumer by checkbox
 
-**Status: DESIGN, 2026-10-15 (lane SECRETS-DESIGN, part of #1347).** Built so
-far: §3.3's IAM only (lane SEC-IAM, `terraform/bootstrap/workspace_secrets.tf`,
-not yet applied). Nothing else here is built.
+**Status: designed 2026-10-15 (lane SECRETS-DESIGN, part of #1347).** Built so
+far: §3.3's IAM (lane SEC-IAM, `terraform/bootstrap/workspace_secrets.tf`, not
+yet applied: `enable_workspace_secrets` turns on when SEC-RELEASE merges) and
+phase 1's management API (lane SEC-STORE-API, §5 "What SEC-STORE-API built").
+The release (SEC-RELEASE), the console (SEC-UI) and the migrations are not
+built. The owner's answers are in §10; where they differ from §9's
+recommendation (Q5, Q8), the answer wins.
 
 Owner request, 2026-10-14 ~21:50 PDT, verbatim:
 
@@ -496,6 +500,44 @@ bodies forbidding unnamed fields):
 | `POST /v1/attempts/{attempt_id}/secrets:release` | the worker only (§3.3) |
 
 No route takes a tenant, a person, an image or a command.
+
+### What SEC-STORE-API built (2026-10-15, part of #1347)
+
+`apps/swarm-api/swarm_api/workspace_secrets.py` (records, grants, the
+catalogue, the Secret Manager writer) and `routes/workspace_secrets.py`,
+held by `tests/unit/control_plane/test_workspace_secrets.py`. Every route in
+the table above is built **except the release**, which is SEC-RELEASE's.
+Where the build differs from the sketch, and why:
+
+* **Owner decisions applied.** Q3: a personal secret carries
+  `use_in_workspaces`, set by its person on `PUT .../{name}/use-in`, naming
+  only group workspaces they are a confirmed member of (`tenant_choices`);
+  SEC-RELEASE reads it. Q4: a group workspace's writes are a full platform
+  admin's (`require_admin` with no route); members read names and grants;
+  a personal workspace is its person's, by the tenant document's principal.
+  **Q5: the previous version stays ENABLED for 24 hours** (`ROTATION_GRACE`),
+  then `POST /v1/admin/workspace-secrets/rotation-sweep` disables it and
+  never destroys it; only a delete destroys. Q7: `GET` lists the tenant's
+  runner provider keys and its pool accounts read-only, from an allow-list of
+  fields, never a value.
+* **The writer binds no one.** `SecretManagerWorkspaceSecrets` creates the
+  secret and adds, disables and destroys versions; it has no read path and no
+  IAM call, so the tenant's worker account never holds a read on a `-wsec-`
+  secret (§3.3). It needs `secretmanager.versions.disable` beside swarm-api's
+  existing `provider_key_writer` permissions: that is a request to SEC-IAM,
+  not built here. The sweep has no Cloud Scheduler job yet either (Track C).
+* **No `github` provider.** A forge token is never readable by an agent
+  (owner rule 2026-09-25), and this store exists to hand values to agents'
+  profiles and tools; forge rows arrive read-only with SEC-MIGRATE-FORGE.
+* **Slots.** `tool:dev-browser`, `tool:playwright`, `component:merge` and
+  `component:indexer` declare no slot in §2.4, so they are listed and refuse
+  a grant (422) until SEC-CONTRACT gives them one; `component:git` is locked.
+* **A name that is part of its own value is refused**: it is a value pasted
+  into the name field, and a name is served, logged and audited.
+* **Delete** keeps the record as `state: deleted` (its audit trail names it),
+  disables every grant and frees the name. A refused form link is a 403
+  `SECRET_LINK_INVALID` outright: these routes are new, so no switch is
+  needed to keep an older behaviour.
 
 ---
 
