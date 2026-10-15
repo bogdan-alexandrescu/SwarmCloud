@@ -583,3 +583,60 @@ read, so the recorded numbers can be re-derived offline with
 `kubectl top` samples miss any peak that falls between two samples. A FITS
 verdict is therefore evidence for the contract request decision 6 asks for,
 not the decision itself.
+
+## 11. First full measurement (2026-10-15 01:00 UTC, release b93ad6cb)
+
+Read 2026-10-15 between 00:58 and 01:05 UTC (17:58–18:05 PDT, 10-14), in
+tenant `u-bogdan`, over the 2 days before it, while the live-browser QA matrix
+(batch `full-1015`) was running browser agents. The deployed release was
+b93ad6cb, which includes IMG-STREAM (#1239). The window also covers starts from
+before that release, so the pull row is not a clean before/after.
+
+**How it was read, and why not with the script as written.** The script's
+default credential is the operator's own gcloud access token, and IAP
+answered 401 to it. The account `.env.example` suggests for
+`SWARM_IMPERSONATE_SA` (`swarm-verify`) is not a member of `u-bogdan`, so the
+API answered 403 `tenant_not_member`. The same reads (`GET /v1/tasks`, then
+every events page of each task) were therefore made through the sc plugin's
+API client as the owner, written in the script's own `events.json` stream
+format. The `kubectl top` samples were taken on `swarm-autopilot` only. The
+numbers below are `scripts/startup_measure.py report --since 2d --top
+top.txt <events.json` over what was read. The inputs are kept in
+`scratchpad/startup-measure/20261015/` on the operator's machine; they are not
+committed, because they are task listings.
+
+Visited 480 tasks and 505 dispatched attempts. 392 starts fall in the window,
+113 of them without a startup step. Cold means a node wait over 10 s.
+Times are p50/p95 in seconds.
+
+| profile | class | starts | n | cold | node wait | pull | browser | total |
+|---|---|---|---|---|---|---|---|---|
+| claude-code-browser | browser | all | 17 | 4/8 (50%) | 3.8/45.4 | 4.0/76.0 | 2.9/4.6 | 6.6/129.4 |
+| claude-code-browser | browser | cold | 4 | | 38.6/45.4 | **54.0/76.0** | 2.9/4.5 | **125.2/129.4** |
+| claude-code-browser | browser | warm | 4 | | -0.5/3.8 | 0.0/4.0 | 2.7/4.6 | 6.2/20.4 |
+| claude-code | standard | all | 317 | 54/317 (17%) | -0.2/42.3 | 0.0/32.0 | | |
+| claude-code | standard | cold | 54 | | 37.5/55.2 | 7.0/33.0 | | |
+| indexer | standard | all | 57 | 11/57 (19%) | -0.3/44.7 | 2.0/47.0 | | |
+| browser | browser | all | 1 | 1/1 | 38.1 | | | |
+
+A negative node wait means `pod_scheduled` was recorded a fraction of a second
+before `dispatched`: two clocks, the reconciler's and the scheduler's.
+
+**What it says.**
+
+* **A warm browser start takes 6 s at p50 and a cold one 125 s.** Half of the
+  browser starts that carry steps were cold. The cold start is still a node
+  wait plus a pull, as §1 found. The cold pull here is 54 s at p50, against
+  §1's single 42 s, with n = 4. That is too few starts, and too mixed across
+  the release, to show IMG-STREAM's effect either way. Re-read it once a day
+  of post-release starts exists.
+* **Decision 3 (warm slots).** On these numbers a warm slot saves a cold
+  browser start its node wait (38.6/45.4 s) and, with the image on the node,
+  its pull (54.0/76.0 s): about 90 s on half of the browser starts.
+* **Decision 6 (a smaller class).** The `browser` pods sampled (4 pods,
+  8 samples, 15 s apart) peaked at **2.13 cores and 1.85 GiB**. That is under
+  80 % of the 4 vCPU / 8 GiB `standard` class, against the 8 vCPU / 16 GiB they
+  are given now: FITS. The display sidecar peaked at 1.90 cores and 1.48 GiB,
+  the worker at 0.55 cores and 0.37 GiB. Samples miss peaks between them, and
+  four pods are not a load test. This is evidence for the contract request,
+  not the decision.
