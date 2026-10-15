@@ -1,11 +1,12 @@
 # Workspace secrets: one store, granted per consumer by checkbox
 
-**Status: designed 2026-10-15 (lane SECRETS-DESIGN, part of #1347); phase 1's
-management API is built (lane SEC-STORE-API, §5 "What SEC-STORE-API built").**
-The release (SEC-RELEASE), the IAM (SEC-IAM), the console (SEC-UI) and the
-migrations are not built. The owner's answers to Q3, Q4, Q5 and Q7 came with
-the SEC-STORE-API brief and are recorded in §5's note; where they differ from
-§9's recommendation (Q5), the answer wins.
+**Status: designed 2026-10-15 (lane SECRETS-DESIGN, part of #1347).** Built so
+far: §3.3's IAM (lane SEC-IAM, `terraform/bootstrap/workspace_secrets.tf`, not
+yet applied: `enable_workspace_secrets` turns on when SEC-RELEASE merges) and
+phase 1's management API (lane SEC-STORE-API, §5 "What SEC-STORE-API built").
+The release (SEC-RELEASE), the console (SEC-UI) and the migrations are not
+built. The owner's answers are in §10; where they differ from §9's
+recommendation (Q5, Q8), the answer wins.
 
 Owner request, 2026-10-14 ~21:50 PDT, verbatim:
 
@@ -295,6 +296,28 @@ before the agent is spawned.
   is found in the name, not listed. **Not verified live:** it must be linted
   with `iamPolicies:lintPolicy` and shown to refuse a broken expression first,
   as provider-keys.md §6 did.
+* **Built (lane SEC-IAM, 2026-10-15, part of #1347):** this grant exists as
+  `terraform/bootstrap/workspace_secrets.tf`, off until the owner sets
+  `enable_workspace_secrets = true` and applies bootstrap. It is the custom
+  role `swarmWorkspaceSecretAccessor` (`secretmanager.versions.access` and
+  nothing else) and one `google_project_iam_member` to swarm-api carrying the
+  condition above byte for byte; the output `workspace_secret_grants.api_read`
+  prints it for the lint. Nothing in it names a tenant worker.
+  `tests/terraform/workspace_secrets.tftest.hcl` evaluates the condition
+  (admits `swarm-tenant-<t>-wsec-<hex>` and its versions; refuses `-git`,
+  `-typesafe`, the forge slots, `swarm-github-app-*`, `agents-*`, `promptlab-*`,
+  another project and the project ID), fails if it is dropped or widened, and
+  checks that no bootstrap grant to a tenant worker admits a `-wsec-` name.
+  **What the condition still reaches:** `extract()` finds the *first* `-wsec-`,
+  so it also admits a non-workspace secret that carries `-wsec-` after a
+  non-empty tenant: a saved browser login named like `x-wsec-y` (the login
+  name rule accepts it today), or any secret of a tenant whose id contains
+  `-wsec-`. swarm-api already reaches those names through
+  `secrets.setIamPolicy`, so this is not new reach. The fix belongs where the
+  names are made: refuse `wsec` as a hyphen-separated token in a login name
+  and a tenant id. That is in apps/ and the frozen contract, and the owner
+  has it as a question. Linting and IAM's live answer are still the owner's
+  to check before apply.
 * **Invariant 9:** the route answers only for the tenant of the attempt whose
   key signed it, and the query is bounded by `tenant_id == task.tenant_id`.
   An attempt key of tenant X cannot name tenant Y: the request carries no
@@ -582,6 +605,15 @@ the key in its own environment. It is §9 Q7.
 [contract-change-requests.md](../contract-change-requests.md) as numbered
 requests once the owner approves the design; nothing here edits the contract.
 
+**Filed 2026-10-15 by lane SEC-CONTRACT** as requests
+[80](../contract-change-requests.md#80-profilespy-a-runner-profile-declares-the-secret-slots-it-may-consume-and-the-vocabulary-of-secret-kinds-sec-contract-workspace-secrets-request-a) (A),
+[81](../contract-change-requests.md#81-profilespy-runtime_tools-the-catalogue-of-runtime-tools-their-secret-slots-and-the-browser_tool-values-that-launch-them-sec-contract-workspace-secrets-request-b) (B),
+[82](../contract-change-requests.md#82-modelspy-the-secret-consumers-spelling-consumer_name-and-the-platform-component-list-sec-contract-workspace-secrets-request-c) (C) and
+[83](../contract-change-requests.md#83-statespy-no-new-park-reason-for-a-missing-workspace-secret-a-required-slot-with-no-grant-parks-credential_missing-sec-contract-workspace-secrets-request-d) (D).
+Request 80 corrects one point below: `browser` declares `files` only.
+It has no `browser_tool` input and launches none of the tools, so only
+`claude-code-browser` reaches the `typesafe` slot.
+
 **Request A. `profiles.py`: a runner profile declares the secret slots it may
 consume.** Add to `RunnerProfile`
 
@@ -690,3 +722,31 @@ build, for TypeSafe.
 **Q9. Default grants for migrated TypeSafe keys?** (a) **`tool:jev-browser`
 and `component:judge` enabled, matching today** (recommended); (b) none, so
 every workspace ticks them (jev stops working until it does).
+
+## 10. Owner decisions (2026-10-14, ~22:40–23:05 PDT)
+
+The owner answered §9 in this session, and these answers bind the build plan in §8:
+
+| Q | Decision |
+|---|---|
+| Q1 enforcement | **B**: swarm-api releases each attempt's granted secrets on an attempt-signed, generation-fenced request (§3.3) |
+| Q2 release route | **Allowed**, as a consequence of Q1: `POST /v1/attempts/{id}/secrets:release` is the one route that serves credential material, and `test_no_route_serves_credentials` is amended to name it |
+| Q3 personal secrets in group workspaces | **Opt-in per secret, only on the owner's own submissions** |
+| Q4 who manages a group's secrets | **Platform admins only** |
+| Q5 rotation | **The previous version stays enabled for 24 hours**, then is disabled (not destroyed). This differs from the recommendation: tasks already running keep working across a rotation |
+| Q6 release audit rows | **90 days, by a Firestore TTL**, for every release row |
+| Q7 runner provider keys and pool accounts | **Listed read-only** on the Secrets page, not moved |
+| Q8 inject mode | **In the first build, for TypeSafe.** This differs from the recommendation: a platform forwarder adds the TypeSafe key to jev's requests, so the TypeSafe key never enters an agent pod. File delivery remains for other providers |
+| Q9 default grants for migrated TypeSafe keys | **`tool:jev-browser` and `component:judge` enabled** |
+
+**Phase 2: user-signed submissions** (owner, 2026-10-14 ~22:40 PDT, issue #1347):
+- each person gets a signing key (a console passkey, or a key the sc plugin keeps in the OS keychain);
+- every task submission is signed, building on #342's signed step specs;
+- a personal secret is released only to a task whose spec carries a valid signature from the secret's owner, and a group-workspace secret needs a current member's signature;
+- headless jobs (schedules, issue runs, CI-fix rounds) use owner-signed standing grants.
+
+This comes after the attempt-signed release of phase 1, so the build plan gains a phase after SEC-RELEASE.
+
+**What Q5 and Q8 change in §8:**
+- **Q5:** SEC-STORE-API disables the old version 24 h after a rotation, from a scheduled sweep.
+- **Q8:** the TypeSafe forwarder becomes a lane of its own (SEC-INJECT-TYPESAFE) beside SEC-RELEASE. SEC-MIGRATE-TYPESAFE then moves jev to the forwarder, not to a key file.

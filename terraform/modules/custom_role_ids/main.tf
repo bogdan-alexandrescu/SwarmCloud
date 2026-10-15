@@ -4,8 +4,10 @@
 # #780), and the five swarmWorkspace* roles of swarm-workspace-deployer
 # (terraform/bootstrap/workspace_deployer.tf, #847), and swarmHistoryPurgeDeleter
 # (terraform/bootstrap/history_purge.tf, the audited history purge), the two
-# browser-session roles (terraform/bootstrap/browser_logins.tf) and
-# swarmProviderKeyWriter (terraform/bootstrap/provider_keys.tf, KEYS-IAM).
+# browser-session roles (terraform/bootstrap/browser_logins.tf),
+# swarmProviderKeyWriter (terraform/bootstrap/provider_keys.tf, KEYS-IAM) and
+# swarmWorkspaceSecretAccessor (terraform/bootstrap/workspace_secrets.tf,
+# SEC-IAM).
 #
 # terraform/bootstrap DEFINES these roles, and the owner applies it.
 # terraform/infra and its modules GRANT them, and CI applies that. The two roots
@@ -77,5 +79,10 @@ locals {
     # (KEYS-IAM, owner decision 2026-10-14): swarm-api's write and destroy of
     # tenant provider keys. terraform/infra never names it.
     provider_key_writer = "swarmProviderKeyWriter${local.role_suffix}"
+    # Defined and granted by terraform/bootstrap/workspace_secrets.tf alone
+    # (SEC-IAM, #1347): swarm-api's read of swarm-tenant-<t>-wsec-* secrets,
+    # versions.access only. terraform/infra never names it, and no tenant
+    # worker holds it.
+    workspace_secret_accessor = "swarmWorkspaceSecretAccessor${local.role_suffix}"
   }
 }

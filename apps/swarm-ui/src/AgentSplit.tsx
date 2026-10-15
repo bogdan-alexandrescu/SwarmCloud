@@ -164,7 +164,10 @@ export function AgentSplit({
   // the state pill, the name and Stop are there on every tab -- not only on
   // Details, whose read is a different, larger one.
   const [reads, setReads] = useState(0)
-  const head = useRead<Task>(() => loadTask(taskId), taskId, `${reads}`, null)
+  // The Browser tab's own re-reads of the task (LIVE-POLL, #1343): the head
+  // only, on the live session's clock, not the children and counts `reads` keys.
+  const [headReads, setHeadReads] = useState(0)
+  const head = useRead<Task>(() => loadTask(taskId), taskId, `${reads}:${headReads}`, null)
   const task = head.state.status === 'ok' || head.state.status === 'stale' ? head.state.data : null
   const live = task !== null && !TERMINAL_STATES.has(task.state)
   useEffect(() => {
@@ -224,7 +227,15 @@ export function AgentSplit({
   // whose profile is a live-browser one opens on its browser. Whether it is
   // one is the session read's `live_browser`, the catalogue's own property,
   // never a guess from the profile's name.
-  const { live: liveRead, reload: reloadLive } = useLiveSession(taskId, inFlight)
+  // WHILE THE BROWSER TAB (OR ITS THEATER) IS ON SCREEN the session and the
+  // task are read every LIVE_POLL_MS until the task is finished (#1343): the
+  // header, the start-up and the strip follow the agent without a reload.
+  const rereadHead = useCallback(() => setHeadReads((n) => n + 1), [])
+  const { live: liveRead, reload: reloadLive } = useLiveSession(taskId, inFlight, {
+    on: pane === 'browser',
+    finished: task !== null && TERMINAL_STATES.has(task.state),
+    onTask: rereadHead,
+  })
   const liveSession = liveRead.status === 'ok' ? liveRead.session : null
   const sessionOpen = liveSession !== null && liveSession.state === 'open'
   // THE TAB STAYS WHILE THE AGENT IS BETWEEN ATTEMPTS (LB-UX1): a parked

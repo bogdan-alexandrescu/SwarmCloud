@@ -87,6 +87,10 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 77 | `profiles.py`: `claude-code-browser` declares the input `browser_tool` (auto, playwright, dev-browser, jev), the live browser's tool picked by name (BSTATUS-API) | ACCEPTED by the owner 2026-10-14 ("Picker on Submit, Auto by default"), APPLIED by this PR |
 | 78 | `models.py` / `states.py`: a workspace's merge mode on `Tenant`, and a park reason for a merge step waiting on its merge train (TRAIN-WS) | proposed; worked around |
 | 79 | `profiles.py`: the `browser` resource class shrinks from 8 vCPU / 16 GiB to 4 vCPU / 8 GiB (MEASURE) | ACCEPTED by the owner 2026-10-14 ("File the request now"); not yet applied |
+| 80 | `profiles.py`: `RunnerProfile.secret_slots`, `SecretSlot` and `SECRET_KINDS`, the workspace-secret slots a profile may consume (workspace secrets request A, part of #1347) | proposed (workspace secrets, owner decisions 2026-10-14) |
+| 81 | `profiles.py`: `RUNTIME_TOOLS`, the runtime tools (`jev-browser`, `dev-browser`, `playwright`), their secret slots and the `browser_tool` values that launch them (workspace secrets request B, part of #1347) | proposed (workspace secrets, owner decisions 2026-10-14) |
+| 82 | `models.py`: `SECRET_CONSUMER_KINDS`, `PLATFORM_COMPONENTS` and `consumer_name`, one spelling of a secret consumer (workspace secrets request C, part of #1347) | proposed (workspace secrets, owner decisions 2026-10-14) |
+| 83 | `states.py`: no new park reason; a required secret slot with no grant parks `CREDENTIAL_MISSING` (workspace secrets request D, part of #1347) | proposed (workspace secrets, owner decisions 2026-10-14) |
 
 ---
 
@@ -11605,3 +11609,507 @@ unchanged: `units` is kept, so admission and reservation count the same.
 **6** unchanged (no Spot). **8** is what limits an OOM's cost. 4, 5, 9, 10
 unchanged.
 
+
+## 80. `profiles.py`: a runner profile declares the secret slots it may consume, and the vocabulary of secret kinds (SEC-CONTRACT, workspace secrets request A)
+
+**Status:** proposed (workspace secrets, owner decisions 2026-10-14). Filed
+by lane SEC-CONTRACT, phase 0 of
+[docs/design/workspace-secrets.md](design/workspace-secrets.md) (§7 request A),
+part of #1347. Nothing under `apps/common/swarm_common/` was edited; the owner
+accepts and applies this.
+
+### Why
+
+A workspace secret is granted to a *consumer* by checkbox (design §2.2), and
+a consumer takes it through a *slot*: a named place with the kinds of secret
+it accepts and whether the consumer can run without it (§2.4). Three readers
+must agree on one declaration of a profile's slots:
+
+1. **The console** renders the grant matrix and disables a cell whose slot
+   cannot take the secret's kind ("jev-browser reads an API key").
+2. **swarm-api** refuses a grant to a slot the consumer does not have, or of
+   a kind the slot refuses (422, SEC-STORE-API), and decides at release time
+   which slot each released secret lands in (§3.3 step 4).
+3. **The worker** refuses any released item whose slot its own catalogue does
+   not have (§3.4, the defence in depth kept under option B), and parks a
+   task whose `required` slot has no enabled grant as `CREDENTIAL_MISSING`
+   before it leases (§4.2).
+
+Today a profile declares only `secrets`, the env-var names of its runner's
+provider key (`RunnerProfile.secrets`, which stays as it is: §7 "Not
+requested", §6.3). There is nowhere to say "this profile takes arbitrary
+workspace files" or "this slot must be filled". Restated in each reader, the
+three copies drift, which is exactly what request 25 did for `inputs`: one
+declaration, read by swarm-api and the plugin.
+
+The kind vocabulary belongs with it. `SecretSlot.kinds` names kinds, and a
+kind spelt `api-key` in the console and `api_key` in the worker would make
+every grant refuse silently. The design's kinds (§2.1) are `api_key`,
+`bearer_token`, `basic_auth`, `oauth_client` and `opaque`, plus
+`forge_token` for the read-only legacy forge rows (§6.2), which no slot but
+`component:git`'s accepts.
+
+### The change
+
+```python
+#: Contract request 80 (workspace secrets, docs/design/workspace-secrets.md
+#: §2.1): the kinds a workspace secret can be. A kind decides the value's
+#: SHAPE (basic_auth is a JSON object of exactly username and password,
+#: oauth_client of exactly client_id and client_secret) and which slots may
+#: take it; never behaviour. `forge_token` is listed so a forge row has a
+#: kind, and is accepted by no profile or tool slot (owner rule 2026-09-25:
+#: a forge token is never readable by the agent).
+SECRET_KINDS: tuple[str, ...] = (
+    "api_key", "bearer_token", "basic_auth", "oauth_client", "opaque", "forge_token",
+)
+_SLOT_NAME = re.compile(r"[a-z][a-z0-9-]{0,31}")
+
+
+@dataclass(frozen=True)
+class SecretSlot:
+    """A place a consumer takes a workspace secret (design §2.4).
+
+    The slot's NAME is the key it is declared under and becomes a directory
+    (`private/secrets/<slot>/<name>`, design §4.1), so it is a short
+    lower-case word. A grant names one slot; a release lands each secret in
+    its grant's slot and nowhere else."""
+
+    kinds: tuple[str, ...]
+    means: str
+    #: True when the consumer cannot run without it: the task parks
+    #: CREDENTIAL_MISSING before it leases, at no cost (invariant 1), and
+    #: starts by itself once a grant is ticked. False (the default) starts
+    #: without it.
+    required: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.kinds:
+            raise ValueError("a secret slot accepts at least one kind")
+        unknown = [k for k in self.kinds if k not in SECRET_KINDS]
+        if unknown:
+            raise ValueError(f"secret slot: unknown kind(s) {unknown}")
+        if "forge_token" in self.kinds:
+            raise ValueError(
+                "secret slot: a forge token is never granted to a profile or a tool "
+                "(contract request 80)"
+            )
+        if not self.means.strip():
+            raise ValueError("secret slot: `means` says what the consumer does with it")
+
+
+#: The slot every agent profile declares: any non-forge kind, one 0600 file
+#: per secret, listed by name in the manifest the runner is pointed at.
+_FILES_SLOT = SecretSlot(
+    kinds=("api_key", "bearer_token", "basic_auth", "oauth_client", "opaque"),
+    means="one file per granted secret under private/secrets/files/, named in "
+          "the manifest at $SWARM_SECRETS_MANIFEST; never in the environment",
+)
+
+
+@dataclass(frozen=True)
+class RunnerProfile:
+    ...
+    #: Contract request 80: the workspace-secret slots this profile's
+    #: attempts may be released into, by slot name. Empty (the default)
+    #: means a grant to `profile:<name>` is refused at write time. NOT the
+    #: provider key (`secrets` above, unchanged). Excluded from the hash, as
+    #: `inputs` is: a mapping is not hashable.
+    secret_slots: Mapping[str, SecretSlot] = field(default_factory=dict, hash=False)
+
+    def __post_init__(self) -> None:
+        ...
+        if self.worker_action is not None:
+            ...
+            if self.secret_slots:
+                raise ValueError(
+                    f"runner {self.name}: a worker_action profile runs no agent and "
+                    "takes no workspace secret (contract request 80)"
+                )
+        for slot, declared in self.secret_slots.items():
+            if not _SLOT_NAME.fullmatch(slot):
+                raise ValueError(f"runner {self.name}: secret slot {slot!r} is not a slot name")
+            if not isinstance(declared, SecretSlot):
+                raise ValueError(f"runner {self.name}: secret slot {slot!r} is not a SecretSlot")
+
+
+RUNNER_PROFILES = {
+    # Every profile that runs an agent declares `files`; none is required.
+    "claude-code":         RunnerProfile(..., secret_slots={"files": _FILES_SLOT}),
+    "codex":               RunnerProfile(..., secret_slots={"files": _FILES_SLOT}),
+    "browser":             RunnerProfile(..., secret_slots={"files": _FILES_SLOT}),
+    "claude-code-review":  RunnerProfile(..., secret_slots={"files": _FILES_SLOT}),
+    "indexer":             RunnerProfile(..., secret_slots={"files": _FILES_SLOT}),
+    "claude-code-browser": RunnerProfile(..., secret_slots={"files": _FILES_SLOT}),
+    # mock, generic, merge, post-verdict: no slots.
+}
+```
+
+**Two corrections to the design's sketch, found by reading the catalogue at
+`78fab43`:**
+
+* **`browser` does not reach `typesafe` "through its tools".** §7 says
+  `claude-code-browser` and `browser` declare `typesafe` through request B's
+  tools. Only `claude-code-browser` declares the `browser_tool` input
+  (`_CLAUDE_CODE_BROWSER_INPUTS`, request 77). `browser` runs
+  `agent_worker.runners.browser`, a scripted runner driven by `url` and
+  `actions` (`_BROWSER_INPUTS`) that launches none of the three tools. So
+  `browser` declares `files` only, and no tool consumer is ever derived for
+  it (request 81). Request 81 is the only place `typesafe` is declared.
+* **`mock` and `generic` declare nothing.** The design's consumer list
+  (§2.3) leaves them out without saying why. `mock` exists so the smoke
+  path works before a tenant registers anything (`provider=None`).
+  `generic` runs one of six fixed commands (`_GENERIC_COMMANDS`) with no
+  agent to read a manifest, so giving it secrets would hand files to a
+  process that cannot use them by name.
+
+### Rollback
+
+Delete `SecretSlot`, `SECRET_KINDS`, `_FILES_SLOT`, the `secret_slots`
+field and its checks. Nothing in the contract reads them. A reader built
+on them (SEC-STORE-API, SEC-RELEASE) then refuses every grant to a profile
+as "no such slot", which fails closed: no secret is released.
+
+### What it would break
+
+* **Nothing that exists.** It is a defaulted field and a new class. `codec`
+  does not serialise `RunnerProfile`. `hash=False` keeps profiles hashable,
+  as `inputs` does.
+* **The profile catalogue's mirrors.** The plugin's and UI's copies of the
+  catalogue (the parity checks behind `scripts/lib/check-contract-parity.sh`)
+  do not carry slots, and need not until SEC-UI renders the matrix, which
+  reads `GET /v1/workspace/secrets/consumers` rather than a mirror (§2.3).
+* **Tests that construct a `worker_action` profile with arbitrary fields**
+  keep passing: a default-empty mapping trips no check.
+* **The red tests §8 names for this lane:** a `worker_action` profile with
+  a slot raises; a slot with an unknown kind or with `forge_token` raises.
+
+### Invariants
+
+**10** is the reason for the shape. A slot is a catalogue property. A
+caller names a profile and cannot add a slot, an image, a path or a
+command. **9** preserved: a slot says *where* a secret lands, never *whose*;
+which workspace's secrets fill it is decided by the release's
+`tenant_id == task.tenant_id` bound (§3.3), not here. **1** preserved: a
+`required` slot with no grant parks before the lease, holding nothing.
+**5** unchanged: the release that fills slots is fenced on the generation
+(request 82 and SEC-RELEASE), and a slot declaration fences nothing.
+2-4 and 6-8 untouched.
+
+## 81. `profiles.py`: `RUNTIME_TOOLS`, the catalogue of runtime tools, their secret slots and the `browser_tool` values that launch them (SEC-CONTRACT, workspace secrets request B)
+
+**Status:** proposed (workspace secrets, owner decisions 2026-10-14). Filed
+by lane SEC-CONTRACT (design §7 request B), part of #1347. Nothing under
+`apps/common/swarm_common/` was edited.
+
+### Why
+
+The owner's own example is a grant to a tool: "only allow access to it for a
+specific runtime job type and image like jev-browser". A grant to
+`tool:jev-browser` has to mean the same tool to swarm-api, which derives an
+attempt's consumers from its signed spec (§2.3), and to the worker, which
+re-checks every released item against its catalogue (§3.4). Today the tool
+names exist in three spellings and none is a catalogue:
+
+* the frozen `browser_tool` input's choices on `claude-code-browser`:
+  `auto`, `playwright`, `dev-browser`, `jev` (request 77);
+* the worker's `agent_worker.browser_tools.TOOLS = ("playwright",
+  "dev-browser", "jev")`, outside the contract;
+* the design's consumer names, `jev-browser`, `dev-browser`, `playwright`.
+  `jev` is spelt `jev-browser` there because that is the program the secret
+  reaches.
+
+This makes it the tool-level checkbox the design recommends option B for
+(§3.6): an attempt with `browser_tool: playwright` is **not** released the
+jev-browser key. That rule is only as good as the mapping from a signed
+`browser_tool` value to the tools it launches, so the mapping has to be
+frozen too, not left for each reader to restate. `auto` launches all three
+(request 77's `means`).
+
+### The change
+
+```python
+#: Contract request 81 (workspace secrets, design §2.3): a program the
+#: platform launches INSIDE an attempt that can be granted a workspace
+#: secret on its own. A tool is a NAME, never an image or a command
+#: (invariant 10): the agent can start any process in its pod, so a grant
+#: is matched against the signed spec's `browser_tool`, never against a
+#: process name.
+@dataclass(frozen=True)
+class RuntimeTool:
+    name: str
+    #: The profiles whose attempts can launch this tool.
+    profiles: tuple[str, ...]
+    #: The `browser_tool` input values that launch it, on those profiles.
+    #: An attempt whose signed value is not listed never launches it, and is
+    #: never released a secret granted only to it.
+    launched_by: tuple[str, ...]
+    secret_slots: Mapping[str, SecretSlot] = field(default_factory=dict, hash=False)
+
+
+RUNTIME_TOOLS: Mapping[str, RuntimeTool] = MappingProxyType({
+    "jev-browser": RuntimeTool(
+        name="jev-browser",
+        profiles=("claude-code-browser",),
+        launched_by=("auto", "jev"),
+        secret_slots={"typesafe": SecretSlot(
+            kinds=("api_key",),
+            means="the TypeSafe key jev_launch.py puts in the jev process's own "
+                  "environment; jev sends page text to TypeSafe",
+        )},
+    ),
+    "dev-browser": RuntimeTool(
+        name="dev-browser", profiles=("claude-code-browser",),
+        launched_by=("auto", "dev-browser"),
+    ),
+    "playwright": RuntimeTool(
+        name="playwright", profiles=("claude-code-browser",),
+        # The fallback under every choice (request 77's `means`).
+        launched_by=("auto", "playwright", "dev-browser", "jev"),
+    ),
+})
+
+
+def tools_launched(profile: RunnerProfile, inputs: Mapping[str, Any]) -> tuple[str, ...]:
+    """The RUNTIME_TOOLS an attempt of `profile` with signed `inputs` launches.
+
+    `browser_tool` absent is `auto` (request 77). Empty for a profile that no
+    tool lists. Read by swarm-api's release and by the worker's re-check, so
+    the two derive the same set."""
+    selected = inputs.get("browser_tool", "auto")
+    return tuple(
+        t.name for t in RUNTIME_TOOLS.values()
+        if profile.name in t.profiles and selected in t.launched_by
+    )
+```
+
+`jev-browser` with no `typesafe` grant still launches as today. Its slot is
+optional, which keeps `browser_tools.choose`'s `no_key` path, where jev is
+not registered and Playwright is used. A tool slot is never `required`,
+because the profile runs without the tool.
+
+**Import-time checks** (in the module, where the catalogue's other
+cross-checks are). Every name in a tool's `profiles` is a key of
+`RUNNER_PROFILES` that declares `browser_tool`. Every `launched_by` value
+is one of that input's choices. Every `browser_tool` choice except `auto`
+is in some tool's `launched_by`. That last check is the red test §8 names
+("every `browser_tool` choice but `auto` maps to a `RUNTIME_TOOLS`
+entry"): it fails the import the day a fifth choice is added without a
+tool.
+
+### Rollback
+
+Delete `RuntimeTool`, `RUNTIME_TOOLS`, `tools_launched` and the import-time
+checks. A release built on them then derives no `tool:` consumer, so a
+secret granted only to a tool is released to nobody (fail closed), and jev
+falls back to today's read through `jevkey` while the §6.1 switch is off.
+
+### What it would break
+
+* **Nothing that exists.** These are new names. `browser_tools.TOOLS` in
+  the worker keeps the short spelling `jev`, the input value. The consumer
+  name `jev-browser` is the catalogue key, and `launched_by` is the bridge
+  between the two. A worker lane may later read `RUNTIME_TOOLS` instead of
+  its own tuple; this request does not require it.
+* **Adding a `browser_tool` choice** now needs a `RUNTIME_TOOLS` edit in the
+  same change, or the import fails. That coupling is deliberate.
+* **A spelling decision for the owner.** The consumer is `tool:jev-browser`
+  while the input value is `jev`. The design chose the program's name. If
+  the owner prefers one spelling, the cheaper change is to key the
+  catalogue `jev`, since the input is already frozen and filed in task
+  documents.
+
+### Invariants
+
+**10** is preserved by construction: the tool is derived from the signed
+`browser_tool` value, a catalogue choice the caller picked by name, and is
+never read from the request or the pod. **9** preserved: the catalogue is
+platform-wide and holds no tenant data. **5** unchanged: what an attempt is
+derived from is its signed spec, verified by `specsign` before the worker
+acts on it. 1-4 and 6-8 untouched.
+
+**Stated limit, not hidden** (design §3.6). The boundary is the attempt. In
+a `claude-code-browser` attempt with `browser_tool: auto`, the jev-browser
+key is a file in a pod whose agent runs as the same uid, so the agent can
+read it. The tool checkbox decides **which attempts** receive a secret, not
+which process inside an attempt can read it. Only the later `inject` mode
+(§3.5) narrows that.
+
+## 82. `models.py`: the secret consumer's spelling, `consumer_name`, and the platform component list (SEC-CONTRACT, workspace secrets request C)
+
+**Status:** proposed (workspace secrets, owner decisions 2026-10-14). Filed
+by lane SEC-CONTRACT (design §7 request C), part of #1347. Nothing under
+`apps/common/swarm_common/` was edited.
+
+### Why
+
+A grant's consumer is a string that is stored in many places: a Firestore
+document id (`workspace_secret_grants/{secret_id}~{consumer}`), a field on
+it, a URL path segment (`PUT /v1/workspace/secrets/{name}/grants/{consumer}`),
+a release row's `consumers` and an audit detail. swarm-api writes it, the
+worker re-derives it, and the console renders it. That is the reason
+`Tenant.secret_name` is frozen: one spelling, or a grant written as
+`tool/jev-browser` silently matches no release.
+
+The spelling also carries the separation the design depends on.
+`profile:indexer` (the agent profile) and `component:indexer` (the
+platform's index step) are different consumers with the same bare name, so
+the kind prefix is part of the identity. A parser that drops it widens a
+grant. And `component:git` is fixed to forge tokens (§6.2), so the
+component list has to be closed: an open list is how a forge token reaches
+an unnamed step.
+
+### The change
+
+```python
+#: Contract request 82 (workspace secrets, design §2.3). A workspace secret
+#: is granted to a CONSUMER, spelt "<kind>:<name>". `profile:` names a key of
+#: RUNNER_PROFILES, `tool:` a key of RUNTIME_TOOLS (request 81), `component:`
+#: one of PLATFORM_COMPONENTS. Never an image, a command or a path
+#: (invariant 10).
+SECRET_CONSUMER_KINDS: tuple[str, ...] = ("profile", "tool", "component")
+
+#: Platform steps that take a workspace secret themselves, outside any
+#: agent. `judge` reads private/jev-key for TypeSafe judging; `merge` and
+#: `indexer` are the worker's own steps; `git` takes forge tokens only and is
+#: never offered a non-forge secret (design §6.2).
+PLATFORM_COMPONENTS: tuple[str, ...] = ("judge", "merge", "indexer", "git")
+
+_CONSUMER_NAME = re.compile(r"[a-z][a-z0-9-]{0,62}")
+
+
+def consumer_name(kind: str, name: str) -> str:
+    """The one spelling of a secret consumer: "<kind>:<name>".
+
+    Checks the kind, the name's characters and, for `component`, the closed
+    list. Membership of `profile` and `tool` names is checked against the
+    catalogue by its reader (`profiles.py` imports this module, not the
+    reverse, so this function cannot see RUNNER_PROFILES). A consumer
+    name holds only `[a-z0-9-]` and one `:`, so it is safe in a Firestore
+    id and a URL segment without escaping."""
+    if kind not in SECRET_CONSUMER_KINDS:
+        raise ValueError(f"unknown secret consumer kind {kind!r}")
+    if not _CONSUMER_NAME.fullmatch(name):
+        raise ValueError(f"secret consumer name {name!r} is not [a-z0-9-]")
+    if kind == "component" and name not in PLATFORM_COMPONENTS:
+        raise ValueError(f"unknown platform component {name!r}")
+    return f"{kind}:{name}"
+
+
+def parse_consumer(consumer: str) -> tuple[str, str]:
+    """The inverse of consumer_name; raises on anything consumer_name would
+    not have produced, so `parse_consumer(consumer_name(k, n)) == (k, n)`
+    and no other string parses."""
+    kind, sep, name = consumer.partition(":")
+    if not sep or consumer_name(kind, name) != consumer:
+        raise ValueError("not a secret consumer name")
+    return kind, name
+```
+
+The error messages echo the kind and name a caller sent. Those are
+catalogue words a member typed into a grant URL, never secret material.
+`parse_consumer`'s message deliberately echoes nothing, because it is fed
+stored ids.
+
+**Where it lives.** §7 says `models.py`. That works because `models.py`
+imports only `states.py` and `profiles.py` imports neither, so the
+catalogue-membership check that needs `RUNNER_PROFILES` and
+`RUNTIME_TOOLS` is a short helper beside them in `profiles.py`
+(`is_secret_consumer(consumer) -> bool`), applied by SEC-STORE-API on
+write and SEC-RELEASE on read. The owner may prefer all of it in
+`profiles.py`, which is equally valid. The spelling must be frozen either
+way.
+
+### Rollback
+
+Delete the two tuples and the two functions. The readers built on them
+(SEC-STORE-API, SEC-RELEASE) would have to carry the spelling themselves,
+which is the drift this request exists to prevent.
+
+### What it would break
+
+* **Nothing that exists.** These are new names, and no Firestore document
+  carries a consumer yet.
+* **Renaming a profile or a tool** now orphans its grants: they stay in
+  Firestore, disabled in effect because no attempt derives that consumer
+  any more. That fails closed. A rename lane must migrate grant ids in the
+  same change, and the request records that so nobody learns it from a
+  user.
+* **The red test §8 names:** `consumer_name` round-trips through
+  `parse_consumer` for every catalogue consumer, and refuses
+  `component:anything-else`, an uppercase name, a second `:`, and an empty
+  kind.
+
+### Invariants
+
+**10** is the point. A consumer is a name from a platform list, so a
+workspace member who writes a grant chooses *which named consumer*, never
+what runs. **9** preserved: a consumer carries no tenant. The tenant of a
+grant is its own field, and the release bounds its query by
+`tenant_id == task.tenant_id`, taken from the task and not from the
+request (§3.3 step 3). Nothing here can name another workspace. **5**: the
+release that reads grants by consumer is fenced on the attempt's
+generation (SEC-RELEASE), so a stale worker is released nothing whatever
+its consumers. 1-4 and 6-8 untouched.
+
+## 83. `states.py`: no new park reason for a missing workspace secret; a required slot with no grant parks `CREDENTIAL_MISSING` (SEC-CONTRACT, workspace secrets request D)
+
+**Status:** proposed (workspace secrets, owner decisions 2026-10-14). Filed
+by lane SEC-CONTRACT (design §7 request D), part of #1347. It requests **no
+change**. It is recorded so that no lane adds a park reason, and so the
+owner's acceptance covers the reuse explicitly.
+
+### Why
+
+A `required` slot (request 80) with no enabled grant must stop the task
+before it leases, at no cost, and start it by itself once someone ticks the
+grant (design §4.2). That is exactly what `ParkReason.CREDENTIAL_MISSING`
+already means for a missing runner provider key. A tenant whose
+`Tenant.credentials` lacks the profile's `provider` parks the step
+`CREDENTIAL_MISSING` (`models.py`, the comment on `Tenant.credentials`),
+and the scheduler promotes it when the credential appears. A second reason
+(`SECRET_MISSING`, `GRANT_MISSING`) would make every reader of park reasons
+(the scheduler's promotion, the console's park text, the outcome ledger)
+learn a new member that means the same thing. A wake path keyed on the old
+reason would also leave the new one parked for ever.
+
+What distinguishes the two cases for a person is the park's **code** and
+message, as `merge_slot_wait` distinguishes a `CI_PENDING` (request 62).
+The proposed code `secret_grant_missing` names the slot and the consumer,
+never a value. Writing it belongs to the scheduler's admission, not the
+contract: `scheduler/credentials.py` already parks `CREDENTIAL_MISSING`
+before any lease, and its credential sweep returns such a park to `READY`
+once the credential exists.
+
+### The change
+
+```python
+# None. ParkReason is unchanged:
+class ParkReason(str, Enum):
+    ...
+    CREDENTIAL_MISSING = "CREDENTIAL_MISSING"   # also: a required secret slot has no enabled grant
+```
+
+The comment is the only edit, and it is optional. Applying the request
+means accepting the reuse.
+
+### Rollback
+
+Nothing to roll back. If the owner declines, the alternative is a new
+member with its own wake path in the scheduler, filed as a new request.
+
+### What it would break
+
+Nothing. **It places one obligation on the build lanes.** The scheduler's
+credential check (`scheduler/credentials.py`) must count an enabled grant
+for a required slot, and its sweep must promote such a park once the grant
+is ticked, the way it promotes a park once a provider key is registered.
+Otherwise "starts by itself" (§4.2) is false. That belongs to the
+scheduler and SEC-STORE-API, not the contract. §8 names no lane for it, so
+the PR body raises it.
+
+### Invariants
+
+**1** is why it exists. The park happens before the lease, so a task
+missing a required secret holds no capacity and no pod. **2-3** unchanged:
+it is never admitted, so nothing is reserved or counted. **4** unchanged:
+it is not a long provider wait inside a worker. 5-10 untouched.
