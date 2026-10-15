@@ -2,7 +2,8 @@
 
   * schema <= 2k tokens: every tool schema plus the server's instructions,
     which the agent pays for on every turn (GitNexus's is about 17.9k);
-  * answer p95 < 300 ms on THIS repository's snapshot.
+  * answer p95 < 300 ms on THIS repository's snapshot -- the design's target.
+    CI holds it to P95_BUDGET_MS (450 ms), see there.
 
 The snapshot is built here, from the checkout under test, with KG2's own
 extractor and shard writer (`graphmcp_fixtures`), and the server is run as the
@@ -31,7 +32,14 @@ from agent_worker.graphmcp import server, tools
 
 SCHEMA_TOKEN_BUDGET = 2000
 BYTES_PER_TOKEN = 3
-P95_BUDGET_MS = 300.0
+#: The CI gate, NOT the design's 300 ms target (knowledge-graph.md §6, KG4).
+#: Owner decision 2026-10-15: raised from 300 after the test failed 3 of 4
+#: runs on loaded shared runners (304-411 ms, best of three batteries), on
+#: PRs and on main, where a red unit shard skips `build images` and the
+#: release ships nothing. The same tree alone measured 158 ms, so 450 still
+#: catches a server that regressed by ~3x. Bringing the real p95 back under
+#: 300 on a busy runner is the caching follow-up, not this number.
+P95_BUDGET_MS = 450.0
 #: Timed runs of the battery the p95 test allows; it passes on the best (see there).
 BATTERIES = 3
 #: §7.7's cap, written here as the number, so a larger `ANSWER_CAP` is a red test.
@@ -89,7 +97,7 @@ def _questions(document: dict) -> list[tuple[str, dict]]:
     return questions
 
 
-def test_answers_on_this_repositorys_snapshot_are_under_300_ms_at_p95(tmp_path: Path):
+def test_answers_on_this_repositorys_snapshot_are_under_the_p95_budget(tmp_path: Path):
     document = gf.graph_of(gf.REPO_ROOT)
     assert len(document["symbols"]) > 10_000, "the extract did not read this repository"
     snapshot = gf.write_snapshot(document, tmp_path / "snapshot")
@@ -102,7 +110,8 @@ def test_answers_on_this_repositorys_snapshot_are_under_300_ms_at_p95(tmp_path: 
     # wall-clock run measures the runner's contention as much as the server:
     # on 2026-10-15 a loaded shard put p95 at 327-351 ms where the same tree,
     # alone, measured 158 ms. A server over budget is over it in every run, so
-    # it is still a red test; the budget does not move.
+    # it is still a red test. The budget moved once, to 450 ms (see
+    # P95_BUDGET_MS), by owner decision; do not move it again to fix a flake.
     runs: list[float] = []
     for _ in range(BATTERIES):
         samples = _battery(snapshot, questions, document["commit_sha"])
