@@ -649,3 +649,31 @@ build, for TypeSafe.
 **Q9. Default grants for migrated TypeSafe keys?** (a) **`tool:jev-browser`
 and `component:judge` enabled, matching today** (recommended); (b) none, so
 every workspace ticks them (jev stops working until it does).
+
+## 10. Owner decisions (2026-10-14, ~22:40–23:05 PDT)
+
+The owner answered §9 in this session, and these answers bind the build plan in §8:
+
+| Q | Decision |
+|---|---|
+| Q1 enforcement | **B**: swarm-api releases each attempt's granted secrets on an attempt-signed, generation-fenced request (§3.3) |
+| Q2 release route | **Allowed**, as a consequence of Q1: `POST /v1/attempts/{id}/secrets:release` is the one route that serves credential material, and `test_no_route_serves_credentials` is amended to name it |
+| Q3 personal secrets in group workspaces | **Opt-in per secret, only on the owner's own submissions** |
+| Q4 who manages a group's secrets | **Platform admins only** |
+| Q5 rotation | **The previous version stays enabled for 24 hours**, then is disabled (not destroyed). This differs from the recommendation: tasks already running keep working across a rotation |
+| Q6 release audit rows | **90 days, by a Firestore TTL**, for every release row |
+| Q7 runner provider keys and pool accounts | **Listed read-only** on the Secrets page, not moved |
+| Q8 inject mode | **In the first build, for TypeSafe.** This differs from the recommendation: a platform forwarder adds the TypeSafe key to jev's requests, so the TypeSafe key never enters an agent pod. File delivery remains for other providers |
+| Q9 default grants for migrated TypeSafe keys | **`tool:jev-browser` and `component:judge` enabled** |
+
+**Phase 2: user-signed submissions** (owner, 2026-10-14 ~22:40 PDT, issue #1347):
+- each person gets a signing key (a console passkey, or a key the sc plugin keeps in the OS keychain);
+- every task submission is signed, building on #342's signed step specs;
+- a personal secret is released only to a task whose spec carries a valid signature from the secret's owner, and a group-workspace secret needs a current member's signature;
+- headless jobs (schedules, issue runs, CI-fix rounds) use owner-signed standing grants.
+
+This comes after the attempt-signed release of phase 1, so the build plan gains a phase after SEC-RELEASE.
+
+**What Q5 and Q8 change in §8:**
+- **Q5:** SEC-STORE-API disables the old version 24 h after a rotation, from a scheduled sweep.
+- **Q8:** the TypeSafe forwarder becomes a lane of its own (SEC-INJECT-TYPESAFE) beside SEC-RELEASE. SEC-MIGRATE-TYPESAFE then moves jev to the forwarder, not to a key file.
