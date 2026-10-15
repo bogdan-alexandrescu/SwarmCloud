@@ -23,6 +23,11 @@ decision API, which needs no TypeSafe key and is never sent one -- or TypeSafe.
 when the resolution below finds a key. See
 [design/live-browser.md §3.2.2](design/live-browser.md#322-judgment-backends-judge-select).
 
+**A workspace secrets store is proposed, not built** (#1347):
+[design/workspace-secrets.md](design/workspace-secrets.md) designs any
+credential kept per workspace and granted by checkbox to named consumers, and
+§6.1 there moves this key into it without breaking the readers below.
+
 Code: `apps/swarm-api/swarm_api/provider_keys.py` (record, audit, links,
 resolution) and `apps/swarm-api/swarm_api/routes/provider_keys.py` (routes).
 The Secret Manager write is still `apps/swarm-api/swarm_api/credentials.py`,
