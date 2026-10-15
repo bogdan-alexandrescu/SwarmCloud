@@ -684,6 +684,65 @@ gate --(WS, TCP 8080, in-cluster)--> swarm-live <--(WS, TCP 8080, internal LB)--
    (`SWARM_LIVE_URL`, `ws://<reserved internal address>:8080`, + `/v1/view`),
    presenting the viewer ticket as the relay's first message.
 
+#### The agent's browser does not wait on the view (NOLIVE-GUARD, #1366)
+
+The tunnel is the **human's** view. The agent's browser is the gate's CDP
+proxy on the pod's loopback, up before ctl.sock is served, and it needs
+nothing from the relay. Until 2026-10-15 the worker treated the two as one
+"live path": measured on benchmark devb-1015, 8 of 60 claude-code-browser
+attempts logged `tunnel_refused {"cause": "relay unreachable: gaierror"}`
+about 4 s after `worker registered`, then "no live path for this attempt",
+and their agents started with no `SWARM_CDP_ENDPOINT` and no Playwright MCP
+entry -- half fell back to the image's headless Python Playwright. So
+(`agent_worker.handoff.HandoffPath`):
+
+* **The browser follows the gate.** Once the gate took the worker's
+  registration (`browser_ready`), the agent gets `SWARM_CDP_ENDPOINT` and the
+  runner wires Playwright MCP / dev-browser on it, whatever happened to the
+  tunnel, the attempt key or the heap check. Those decide only the view and
+  the hand-off.
+* **A tunnel that failed costs the view, and says so.** The attempt's events
+  carry `cause: live_browser_unavailable`, `phase: live_view`, `message: "live
+  view unavailable: <code>; ..."`; the console's tile reads "live view
+  unavailable". A hand-off is still offered: its own poll retries the tunnel,
+  which is exactly when a person needs it, and a hold nobody could open ends
+  as any unwatched hold does.
+* **The tunnel is retried for the attempt's life.** A refused ticket
+  (`tunnel_refused`, the gate's relay did not answer) or a swarm-api error is
+  tried again past a backoff of 5 s doubling to 60 s, jittered to 75-125 % so
+  a burst of pods that met the same DNS failure does not knock again in the
+  same instant. Each retry logs `live view not open; retrying` with its code
+  and count, never a ticket; the first open after failures logs `live view
+  opened`. Only swarm-api's ended codes (`live_session_closed`,
+  `live_fenced`, `live_not_available`) stop it.
+* **A gate that is not ready never starts the agent.** No ctl.sock, or a
+  registration refused (a restarted gate refuses every one), means no CDP
+  proxy: `Worker._prepare` fails the ATTEMPT retryably with
+  `live_gate_unavailable` before the agent runs -- the start-failure path an
+  unreachable forge takes. Its lease and capacity are released at once
+  (invariant 1), the task goes back to READY 30 s later while it has attempts
+  left, and ends CANNOT_START when they are spent. Not a park: nothing about
+  this pod's sidecar improves by waiting, only a new pod brings a new one, and
+  a SCHEDULED_RETRY park is promoted by nothing.
+
+**The DNS side, read from the manifests (2026-10-15).** The gate dials
+`ws://swarm-live.swarm-system.svc.cluster.local:8080` (`livegate.tunnel.
+DEFAULT_RELAY_URL`, or `SWARM_LIVE_URL`). Every GKE worker pod already runs
+`dnsPolicy: None` with `searches: []`, `ndots:1` and NodeLocal DNSCache
+(169.254.20.10) as its only nameserver (`scheduler.dispatch.
+GKE_POD_DNS_CONFIG`, mirrored in `kubernetes/worker-templates/
+worker-job-browser.yaml`), so that name is already queried once, absolute,
+with no search-path expansion: a trailing dot or a lower `ndots` would change
+nothing. The cluster is Cloud DNS (cluster scope) behind NodeLocal DNSCache.
+The failures came only inside a burst of ~60 pod starts, and the worker in
+the same pod had just resolved its own hosts; what is not yet measured is
+whether node-local-dns answered SERVFAIL/timeout under that burst (EAI_AGAIN)
+or the Service name was briefly absent (EAI_NONAME). The worker's retry
+covers either. From this change the gate's record names which
+(`tunnel_refused {"cause": "relay unreachable: gaierror(EAI_AGAIN)"}`,
+`livegate.tunnel.unreachable_cause`); a manifest change waits for that
+reading rather than guessing at one.
+
 #### The relay's wire: owner decisions 2026-10-11
 
 Lanes L7 (the relay), L8 (its infrastructure) and L9 (swarm-api's routes) were
@@ -1482,7 +1541,9 @@ STARTING, at this lease and generation, the lease unreleased, the slot unused.
 Whatever still refuses the live path is never silent: the worker writes a
 RUNNING event with `cause: live_browser_unavailable`, the code, the reason and
 `message: "live browser unavailable: <reason>"`, which the console's event list
-shows.
+shows A refused key or heap costs the view and
+the hand-off only: the gate is up, so the agent keeps its browser (§3.3,
+NOLIVE-GUARD).
 
 #### 5.4.2 The worker talks to the gate on a channel the agent cannot use
 

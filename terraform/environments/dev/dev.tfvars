@@ -692,3 +692,11 @@ workspace_apply_publish = true
 # every search answers 503 search_unconfigured. search_provider stays at
 # its default, "brave".
 search_tool_enabled = false
+
+# The decision-api tailnet egress (terraform/infra/tailscale.tf,
+# docs/runbooks/tailscale-egress.md). ON in dev as of 2026-10-15 (~04:25 PDT):
+# the owner stored the tag:swarmcloud OAuth client as swarm-tailscale-oauth
+# version 2 and saved the tailnet policy grant (tag:swarmcloud ->
+# decision-api-staging tcp:443). internal_decision_api_enabled follows once the
+# egress is applied with kubernetes/apply.sh --swarm-system and reaches the API.
+enable_tailscale_egress = true
