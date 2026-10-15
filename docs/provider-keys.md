@@ -199,13 +199,21 @@ owner applies it; CI cannot (below).
 | `add_secret_version` | `secretmanager.versions.add` |
 | `list_secret_versions` | `secretmanager.versions.list` |
 | `destroy_secret_version` | `secretmanager.versions.destroy` |
+| `disable_secret_version` (`workspace_secrets.py`) | `secretmanager.versions.disable` |
 
-Not `secrets.get`: the module never reads a secret's metadata. Storing a second
+The last row is the workspace secrets store's rotation sweep
+(`SecretManagerWorkspaceSecrets`, #1347, owner decision Q5). It runs as the
+same swarm-api account on the same `swarm-tenant-*` names. It disables a
+rotated-out version after its 24-hour grace and never destroys one
+(docs/design/workspace-secrets.md §4.3). Its other calls are a subset of the
+rows above.
+
+Not `secrets.get`: neither module reads a secret's metadata. Storing a second
 key is `create_secret` answering `ALREADY_EXISTS`, which `create` authorises on
 the project. Not `versions.access`: there is no read path (the module
 docstring, point 3). Not `secrets.delete`: delete destroys versions and keeps
 the secret (§5). `tests/terraform/provider_keys.tftest.hcl` reads
-`credentials.py` and fails when a Secret Manager call is added or removed there
+`credentials.py` and `workspace_secrets.py` and fails when a Secret Manager call is added or removed there
 without the role following. So a new call cannot ship and then 403 in
 production.
 
@@ -277,6 +285,15 @@ Then plan and apply `terraform/bootstrap`. The plan is **2 to add, 0 to change,
 output shows the condition to read the plan against. After applying, the check
 is a live `PUT /v1/provider-keys/typesafe/user` that answers 200 instead of
 503.
+
+Where the role is already applied, the rotation sweep's permission (#1347) is
+**0 to add, 1 to change, 0 to destroy**. The one change is
+`google_project_iam_custom_role.provider_key_writer[0]`, updated in place, and
+its only differing attribute is `permissions` gaining
+`+ "secretmanager.versions.disable"`. Nothing is removed, the grant and its
+condition are unchanged, and no principal is added. After applying, the check
+is the rotation sweep's response reporting `failed: []` for a version past its
+grace.
 
 **Not verified live:** how IAM evaluates the name forms and the create
 resource type (the header of `provider_keys.tf`). The unit tests run against

@@ -412,6 +412,29 @@ once the grant is ticked, which is today's rule for a missing provider key.
   transaction with its audit row. Attempts already running keep the value they
   were given; the next attempt gets the new one. The previous version is
   disabled at once by default (§9 Q5), which `versions enable` can undo.
+
+  **As decided and built (owner decision Q5, #1347).** The previous version
+  stays **enabled for 24 hours**, then is **disabled, never destroyed**. Two
+  pieces make that happen with nobody watching. Each is held by a test:
+  * `POST /v1/admin/workspace-secrets/rotation-sweep` disables every version
+    past its `disable_after`, with one audit row each (SEC-STORE-API).
+  * `swarm-workspace-secrets-rotation-sweep`, a Cloud Scheduler job
+    (`terraform/modules/scheduler/jobs.tf`, `secrets_rotation_sweep`), calls
+    it **hourly at :41** as the rollup-sweeper account. Hourly is enough: a
+    version outlives its grace by at most an hour. That account may call this
+    one route and its other sweeps, nothing else
+    (`auth.ROLLUP_SWEEPER_ROUTES`,
+    `tests/unit/control_plane/test_rollup_sweeper_is_narrow.py`). It is not an
+    admin, so a leaked token can disable only a version whose grace has passed.
+    It can read, add, grant or delete nothing.
+
+  The disable runs as swarm-api, under **`secretmanager.versions.disable` on
+  `swarmProviderKeyWriter`** (`terraform/bootstrap/provider_keys.tf`, held by
+  `tests/terraform/provider_keys.tftest.hcl`). It is the role's only
+  addition, under its existing `swarm-tenant-*` condition, and the owner
+  applies it. Until that apply, each due disable answers 403 and is counted in
+  the response's `failed`. The next hour retries it. The version stays enabled
+  past its grace, and is never destroyed.
 * **Revoke a grant** (untick) takes effect at the **next attempt**: the
   release is computed per attempt, and a parked task that resumes is a new
   attempt. A running attempt keeps what it holds, because a file cannot be
@@ -523,9 +546,8 @@ Where the build differs from the sketch, and why:
 * **The writer binds no one.** `SecretManagerWorkspaceSecrets` creates the
   secret and adds, disables and destroys versions; it has no read path and no
   IAM call, so the tenant's worker account never holds a read on a `-wsec-`
-  secret (§3.3). It needs `secretmanager.versions.disable` beside swarm-api's
-  existing `provider_key_writer` permissions: that is a request to SEC-IAM,
-  not built here. The sweep has no Cloud Scheduler job yet either (Track C).
+  secret (§3.3). The `secretmanager.versions.disable` it needs, and the
+  sweep's hourly Cloud Scheduler job, came with SEC-ROTATE-SWEEP (§4.3).
 * **No `github` provider.** A forge token is never readable by an agent
   (owner rule 2026-09-25), and this store exists to hand values to agents'
   profiles and tools; forge rows arrive read-only with SEC-MIGRATE-FORGE.
