@@ -209,6 +209,14 @@ NOT_SWITCHABLE_CODES = frozenset({
     "search_unproven",
     "search_fenced",
     "search_refused",
+    # The workspace secrets store (SEC-STORE-API, docs/design/
+    # workspace-secrets.md §5), as the search tool's codes above: raised only
+    # by the management routes that change introduces, when a secrets-form
+    # link is presented, so no existing caller can be refused by it.
+    # Continuing past it is the breach itself: an unknown, used or expired
+    # link, or one minted for another person, workspace, action or secret,
+    # accepted as authority to add or rotate a secret.
+    "SECRET_LINK_INVALID",
 })
 
 #: What the guard lets through without a switch.
