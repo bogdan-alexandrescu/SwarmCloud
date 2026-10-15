@@ -41,11 +41,24 @@ def test_what_the_console_writes_it_reads_back(client, db, seeded):
     assert again.json()["updated_by"] == "root@saga.xyz"
 
 
+def _api_routes(routes):
+    """Every route under `routes`, through the routers a newer FastAPI nests
+    lazily (`_IncludedRouter.original_router`; see test_continuation_scope_is_narrow
+    `_iter_api_routes`). Filtering `app.routes` flat finds nothing there."""
+    for route in routes:
+        if (router := getattr(route, "original_router", None)) is not None:
+            yield from _api_routes(router.routes)
+        elif getattr(route, "methods", None):
+            yield route
+        elif (sub_routes := getattr(route, "routes", None)) is not None:
+            yield from _api_routes(sub_routes)
+
+
 def test_each_code_intelligence_path_is_registered_once(client):
     seen = sorted(
         (method, route.path)
-        for route in client.app.routes
-        for method in getattr(route, "methods", None) or ()
+        for route in _api_routes(client.app.routes)
+        for method in route.methods
         if "code-intelligence" in route.path
     )
     assert seen == [
