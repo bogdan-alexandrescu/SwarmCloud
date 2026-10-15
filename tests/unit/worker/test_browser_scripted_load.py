@@ -81,6 +81,8 @@ class FakePage:
                 "Page.screenshot: Timeout 30000ms exceeded.\n"
                 "waiting for fonts to load...\nfonts loaded"
             )
+        if kwargs.get("path"):
+            Path(kwargs["path"]).write_bytes(b"\x89PNG fake")
         return b"\x89PNG fake"
 
     def title(self) -> str:
@@ -265,3 +267,14 @@ def test_a_page_with_text_reports_no_wall_by_default(fake_playwright, tmp_path):
         "wall": None,
     }
     assert out["notes"] == []
+
+
+def test_the_runners_doc_names_the_values_the_runner_uses():
+    """The doc says why; this keeps its numbers the runner's."""
+    doc = (Path(__file__).resolve().parents[3] / "docs" / "browser-scripted-runner.md").read_text()
+    assert browser.DEFAULT_WAIT_UNTIL == "domcontentloaded"
+    assert f"`{browser.DEFAULT_WAIT_UNTIL}`" in doc
+    assert f"({browser.SCREENSHOT_TIMEOUT_MS // 1000} s," in doc
+    for code in ("goto_load_timeout_after_commit", "screenshot_missing"):
+        assert code in doc
+        assert code in Path(browser.__file__).read_text()

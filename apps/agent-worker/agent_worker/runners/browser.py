@@ -25,6 +25,7 @@ exfiltration primitive.
 from __future__ import annotations
 
 import json
+import sys
 import time
 from typing import Any
 from urllib.parse import urlparse
@@ -36,6 +37,129 @@ from .base import RunnerContext, RunnerFailure, run_runner
 ALLOWED_SCHEMES = ("http", "https")
 DEFAULT_TIMEOUT_MS = 30_000
 MAX_ACTIONS = 200
+#: What a goto waits for when the action names nothing. `load` waits for every
+#: subresource, and an ad-heavy page or one full of iframes may never fire it:
+#: QA batch full-1015 (2026-10-15) failed S1-adheavy and S1-iframes 3/3 on
+#: "Page.goto: Timeout 30000ms exceeded ... waiting until load" with the text
+#: already there. The DOM being parsed is what extraction needs (#1363).
+DEFAULT_WAIT_UNTIL = "domcontentloaded"
+#: A screenshot's own bound, below the 30 s default so a page whose web fonts
+#: never settle costs seconds, not the action timeout. S1-wikipedia failed 3/3
+#: in "waiting for fonts to load..." with 111,583 chars already extracted. A
+#: screenshot is evidence, not the product: one that misses this bound is
+#: recorded as missing and the task goes on (#1363).
+SCREENSHOT_TIMEOUT_MS = 15_000
+#: How long a timed-out goto gets to show its DOM is ready before the runner
+#: decides whether the navigation committed.
+COMMIT_PROBE_TIMEOUT_MS = 5_000
+
+#: Title fragments that mean the page is a wall, not the content: a bot
+#: challenge or a consent interstitial. Lower-case, matched as substrings. Only
+#: ever used to SAY so in the result -- never to fail a task or retry it.
+CHALLENGE_TITLES = (
+    "just a moment",
+    "attention required",
+    "access denied",
+    "are you a robot",
+    "are you human",
+    "human verification",
+    "verify you are human",
+    "captcha",
+    "security check",
+    "checking your browser",
+    "request blocked",
+)
+CONSENT_TITLES = (
+    "before you continue",
+    "consent",
+    "cookie",
+    "privacy choices",
+    "your privacy",
+)
+
+
+def _wall_from_title(title: str) -> str | None:
+    """"challenge", "consent" or None, read from the page title alone."""
+    lowered = (title or "").lower()
+    if any(fragment in lowered for fragment in CHALLENGE_TITLES):
+        return "challenge"
+    if any(fragment in lowered for fragment in CONSENT_TITLES):
+        return "consent"
+    return None
+
+
+def _event(events: list[dict[str, Any]], code: str, **detail: Any) -> None:
+    """Record a degraded-but-not-failed step: in the result, and on stderr.
+
+    By code, so a log query or a QA report can count them. Never the page's
+    text, and never a URL beyond what `_check_url` already let through.
+    """
+    events.append({"code": code, **detail})
+    extras = " ".join(f"{key}={value}" for key, value in detail.items())
+    print(f"[browser] event {code} {extras}".rstrip(), file=sys.stderr)
+
+
+def _goto(
+    page: Any,
+    url: str,
+    wait_until: str,
+    index: int,
+    timeout_error: type[BaseException],
+    events: list[dict[str, Any]],
+) -> tuple[Any, bool]:
+    """Navigate; (response, load_timed_out). RunnerFailure if it never committed.
+
+    A wait that times out AFTER the navigation committed -- the document is
+    the new one, its DOM is there -- is loaded enough: whatever the action
+    waited for (`load`, `networkidle`) is a stricter condition than
+    extraction needs. Committed is read two ways: the page's URL moved off
+    the one it had before the goto, or the DOM of the current document
+    reports ready within COMMIT_PROBE_TIMEOUT_MS. A navigation that did
+    neither never reached the site, and that is a failure, said plainly.
+    """
+    before = page.url
+    try:
+        return page.goto(url, wait_until=wait_until), False
+    except timeout_error as exc:
+        committed = page.url not in ("", "about:blank", before)
+        if not committed and page.url not in ("", "about:blank"):
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=COMMIT_PROBE_TIMEOUT_MS)
+                committed = True
+            except timeout_error:
+                committed = False
+        if not committed:
+            raise RunnerFailure(
+                f"action {index} (goto): the navigation never committed: no "
+                f"response from the site within the timeout while waiting "
+                f"until {wait_until!r}"
+            ) from exc
+        _event(events, "goto_load_timeout_after_commit", index=index, wait_until=wait_until)
+        return None, True
+
+
+def _screenshot(
+    page: Any,
+    path: Any,
+    full_page: bool,
+    error: type[BaseException],
+    timeout_error: type[BaseException],
+    events: list[dict[str, Any]],
+    index: int | None,
+) -> bool:
+    """Take a bounded screenshot to `path`; False (and an event) when it failed."""
+    try:
+        page.screenshot(
+            path=str(path),
+            full_page=full_page,
+            timeout=SCREENSHOT_TIMEOUT_MS,
+            animations="disabled",
+        )
+        return True
+    except error as exc:
+        reason = "timeout" if isinstance(exc, timeout_error) else type(exc).__name__
+        _event(events, "screenshot_missing", index=index, reason=reason)
+        return False
 
 
 def _check_url(url: Any) -> str:
@@ -88,7 +212,10 @@ def _launch(playwright: Any, payload: dict[str, Any]) -> Any:
 
 def body(ctx: RunnerContext) -> dict[str, Any]:
     try:
-        from playwright.sync_api import sync_playwright  # lazy: only in the browser image
+        # lazy: only in the browser image
+        from playwright.sync_api import Error as PlaywrightError
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+        from playwright.sync_api import sync_playwright
     except ImportError as exc:  # pragma: no cover - depends on the image
         raise RunnerFailure(
             "playwright is not installed; the browser profile must run on "
@@ -110,6 +237,9 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     timeout_ms = int(payload.get("timeout_ms", DEFAULT_TIMEOUT_MS))
     performed: list[dict[str, Any]] = []
     console_errors: list[str] = []
+    events: list[dict[str, Any]] = []
+    notes: list[str] = []
+    screenshot_report: dict[str, Any] | None = None
     started = time.monotonic()
 
     with sync_playwright() as playwright:
@@ -143,9 +273,19 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
 
                 if kind == "goto":
                     url = _check_url(action.get("url"))
-                    response = page.goto(url, wait_until=action.get("wait_until", "load"))
+                    wait_until = str(action.get("wait_until") or DEFAULT_WAIT_UNTIL)
+                    response, load_timed_out = _goto(
+                        page, url, wait_until, index, PlaywrightTimeoutError, events
+                    )
                     record["url"] = url
                     record["status"] = response.status if response else None
+                    if load_timed_out:
+                        record["load_timed_out"] = True
+                        notes.append(
+                            f"action {index} (goto): {wait_until!r} did not arrive within "
+                            f"the timeout after the navigation committed; went on with "
+                            f"the DOM as it was"
+                        )
                 elif kind == "click":
                     page.click(str(action["selector"]))
                     record["selector"] = action["selector"]
@@ -168,8 +308,19 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
                 elif kind == "screenshot":
                     name = str(action.get("name", f"screenshot-{index:03d}.png"))
                     path = ctx.artifact_path(name)
-                    page.screenshot(path=str(path), full_page=bool(action.get("full_page", True)))
-                    record["artifact"] = path.name
+                    if _screenshot(
+                        page,
+                        path,
+                        bool(action.get("full_page", True)),
+                        PlaywrightError,
+                        PlaywrightTimeoutError,
+                        events,
+                        index,
+                    ):
+                        record["artifact"] = path.name
+                    else:
+                        record["missing"] = True
+                        notes.append(f"action {index} (screenshot): {path.name} is missing")
                 elif kind == "extract":
                     selector = str(action.get("selector", "body"))
                     text = page.inner_text(selector)
@@ -181,29 +332,74 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
                     raise RunnerFailure(f"unsupported browser action type {kind!r}")
                 performed.append(record)
 
-            final_text = page.inner_text("body") if payload.get("extract_text", True) else ""
-            if final_text:
+            extract_text = bool(payload.get("extract_text", True))
+            final_text = page.inner_text("body") if extract_text else ""
+            if final_text.strip():
                 ctx.write_artifact("page.txt", final_text)
-            if payload.get("screenshot", True):
-                ctx.write_artifact(
-                    "final.png", page.screenshot(full_page=True)
-                )
             title = page.title()
             url_now = page.url
+            if payload.get("screenshot", True):
+                path = ctx.artifact_path("final.png")
+                if _screenshot(
+                    page, path, True, PlaywrightError, PlaywrightTimeoutError, events, None
+                ):
+                    screenshot_report = {"artifact": path.name, "missing": False}
+                elif not extract_text:
+                    # Nothing was extracted: the screenshot was the product.
+                    raise RunnerFailure(
+                        "the final screenshot failed and text extraction is off; "
+                        "the run produced nothing"
+                    )
+                else:
+                    screenshot_report = {
+                        "artifact": path.name,
+                        "missing": True,
+                        "error": events[-1].get("reason", "error"),
+                    }
+                    notes.append("the final screenshot is missing; the page text was extracted")
         finally:
             browser.close()
 
     if console_errors:
         ctx.write_artifact("console-errors.json", json.dumps(console_errors, indent=2))
 
-    return {
-        "summary": f"visited {url_now} ({title}) with {len(performed)} action(s)",
+    # An empty page is a fact the result states, not a silent success: QA's
+    # S1-cookie succeeded 3/3 with a 0-char page.txt and no word about why.
+    chars = len(final_text.strip())
+    wall = _wall_from_title(title)
+    page_text: dict[str, Any] = {
+        "chars": chars,
+        "title": title,
+        "final_url": url_now,
+        "wall": wall,
+    }
+    if extract_text and chars == 0:
+        notes.append(
+            f"the text extraction is empty (0 chars) at {url_now}, title {title!r}"
+        )
+    if wall:
+        notes.append(f"the page title {title!r} looks like a {wall} wall, not the content")
+
+    summary = f"visited {url_now} ({title}) with {len(performed)} action(s)"
+    if extract_text:
+        summary += f"; {chars} chars of text"
+        if wall:
+            summary += f"; looks like a {wall} wall"
+
+    result: dict[str, Any] = {
+        "summary": summary,
         "final_url": url_now,
         "title": title,
         "actions": performed,
+        "page_text": page_text,
+        "events": events,
+        "notes": notes,
         "console_error_count": len(console_errors),
         "metrics": {"duration_seconds": round(time.monotonic() - started, 3)},
     }
+    if screenshot_report is not None:
+        result["screenshot"] = screenshot_report
+    return result
 
 
 def main() -> int:
