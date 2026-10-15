@@ -184,3 +184,11 @@ enable_provider_keys = true
 typesafe_user_key_readers = {
   eng = ["u-bogdan"]
 }
+
+# SEC-IAM (PR 1356, #1347): swarm-api alone may read swarm-tenant-<t>-wsec-*
+# secrets (versions.access only, one extract() condition), so the release
+# route (SEC-RELEASE, PR 1369) can hand an attempt its granted workspace
+# secrets. Applied 2026-10-15 ~17:05Z from a plan of 2 adds / 0 changes /
+# 0 destroys equal to PR 1356's listed rows; the condition linted {} with
+# iamPolicies:lintPolicy. Recorded here so the next bootstrap plan keeps it.
+enable_workspace_secrets = true
