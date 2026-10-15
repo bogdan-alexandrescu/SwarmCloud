@@ -397,6 +397,66 @@ def test_j3_failure_leaves_verdict_json_byte_identical(tmp_path, failure):
     assert (artifacts / "verdict.json").read_bytes() == before
 
 
+ENV_HUNK = (
+    "diff --git a/.env b/.env\n--- a/.env\n+++ b/.env\n"
+    "@@ -1,1 +1,1 @@\n-DB_HOST=old.internal\n+DB_HOST=db.internal.corp\n"
+)
+
+
+def test_j3_never_sends_the_hunk_of_a_denied_path(tmp_path):
+    """§5.4: a denied path's diff hunk stays home even when the staged patch
+    carries one; `diff_hunk` is a top-level string the sanitizer cannot tie
+    to a path."""
+    work, checkout, artifacts, payload = _review(tmp_path, [FINDINGS[2]])
+    (work / "inputs" / "swarm-work.patch").write_text(PATCH + ENV_HUNK)
+    assert "db.internal.corp" in poststeps._hunk_for(
+        poststeps.patch_hunks(PATCH + ENV_HUNK), ".env", 1)  # the control: it is there to send
+    fake = FakeJev(_j3_answer([0.5]))
+    assert poststeps.review_post_step(_judge(tmp_path, fake), artifacts, checkout, work,
+                                      payload) is not None
+    (state,) = fake.states()
+    assert state["diff_hunk"] == "" and state["finding"]["file"] == ".env"
+    assert "db.internal.corp" not in json.dumps(fake.requests)
+
+
+def test_j3_never_sends_the_hunk_of_a_hard_stop_path(tmp_path):
+    work, checkout, artifacts, payload = _review(tmp_path, [FINDINGS[0]])
+    fake = FakeJev(_j3_answer([0.5]))
+    jev = _judge(tmp_path, fake)
+    jev.hard_stop_paths = ("pkg/",)
+    assert poststeps.review_post_step(jev, artifacts, checkout, work, payload) is not None
+    (state,) = fake.states()
+    assert state["diff_hunk"] == "" and state["finding"]["file"] == "pkg/mod.py"
+    assert "return 3" not in json.dumps(fake.requests)
+
+
+def test_j4_sends_a_hard_stop_paths_symbols_by_name_only(tmp_path):
+    repo, env = _changed_mod(tmp_path)
+    fake = FakeJev()
+    jev = _judge(tmp_path, fake)
+    jev.hard_stop_paths = ("pkg/",)
+    _gate(repo, tmp_path, env, jev).run()
+    (state,) = fake.states()
+    assert {c["symbol"] for c in state["changed"]} == {"pkg/mod.py#covered", "pkg/mod.py#lonely"}
+    assert all(c["hunk"] == "" for c in state["changed"])
+    assert "return 3" not in json.dumps(fake.requests)
+
+
+def test_j4_sends_a_denied_directorys_symbols_by_name_only(tmp_path, monkeypatch):
+    repo, env = _changed_mod(tmp_path)
+    rows = [{"symbol": "secrets/loader.py#load", "path": "secrets/loader.py",
+             "hunk": "+DB_HOST = 'db.internal.corp'"},
+            {"symbol": "pkg/mod.py#covered", "path": "pkg/mod.py", "hunk": "+    return 3"}]
+    monkeypatch.setattr(prepublish, "changed_symbols", lambda *a, **k: [dict(r) for r in rows])
+    fake = FakeJev()
+    assert prepublish.jev_test_gap(_judge(tmp_path, fake), repo, "HEAD", ["pkg/mod.py"], None,
+                                   ["tests/test_mod.py"], runner=None, env=env) is not None
+    (state,) = fake.states()
+    assert state["changed"] == [{"symbol": "secrets/loader.py#load", "hunk": ""},
+                                {"symbol": "pkg/mod.py#covered", "hunk": "+    return 3"}]
+    assert "db.internal.corp" not in json.dumps(fake.requests)
+
+
 def test_j3_one_failed_finding_annotates_none(tmp_path):
     work, checkout, artifacts, payload = _review(tmp_path, FINDINGS[:2])
     before = (artifacts / "verdict.json").read_bytes()

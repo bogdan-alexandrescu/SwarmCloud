@@ -242,6 +242,7 @@ def review_post_step(judge: Any, artifacts_dir: Path, checkout: Path | None, wor
     if not isinstance(document, dict) or not isinstance(document.get("findings"), list):
         return None
     hunks = patch_hunks(_staged_patch(work_dir, payload))
+    stops = tuple(getattr(judge, "hard_stop_paths", ()) or ())
     p_real: dict[int, float] = {}
     asked = 0
     for index, item in enumerate(document["findings"]):
@@ -256,7 +257,10 @@ def review_post_step(judge: Any, artifacts_dir: Path, checkout: Path | None, wor
         finding = {k: v for k, v in (("summary", item["summary"]), ("file", file),
                                      ("line", line)) if v}
         code = code_window(checkout, file, line) if file and checkout is not None else {}
-        state, questions = shapes.j3_finding(finding, code, _hunk_for(hunks, file, line))
+        # §5.4: names only for a denied path. `diff_hunk` is a top-level
+        # string the client's sanitizer cannot tie to a path, so withhold it here.
+        hunk = "" if file and is_denied_path(file, stops) else _hunk_for(hunks, file, line)
+        state, questions = shapes.j3_finding(finding, code, hunk)
         asked += 1
         answers = _ask(judge, "J3", state, questions)
         p = shapes.read_finding(answers) if answers is not None else None

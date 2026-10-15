@@ -828,9 +828,15 @@ def jev_test_gap(judge: Any, repo: Path, base: str, files: Sequence[str],
     """J4: the changed symbols no listed test would catch, or None -- for no
     symbols, no tests, or any call that did not answer in full."""
     from .judge import shapes
+    from .judge.sanitize import is_denied_path
 
     changed = changed_symbols(repo, base, files, snapshot, runner=runner, env=env)
-    asked = changed[:J4_MAX_SYMBOLS]
+    # §5.4: a denied path (hard stops included) is sent by name only. The
+    # `changed` rows carry no `path` key, so the client's sanitizer cannot
+    # see the path and the hunk has to be withheld here.
+    stops = tuple(getattr(judge, "hard_stop_paths", ()) or ())
+    asked = [dict(row, hunk="") if is_denied_path(row.get("path", ""), stops) else row
+             for row in changed[:J4_MAX_SYMBOLS]]
     test_rows = [{"path": t, "name": Path(t).name, "excerpt": _test_excerpt(repo, t)}
                  for t in list(tests)[:shapes.MAX_CHOICE_TESTS]]
     if not asked or not test_rows:

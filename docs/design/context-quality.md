@@ -868,6 +868,12 @@ or before it, and all share the attempt's one ledger:
 | J3 | `runners/cliagent._jev_post_steps` → `judge.poststeps.review_post_step`, for a review step | `p_real` on each finding in `verdict.json` (`verdict.annotate_findings`). Under 0.15 the finding also carries `"triage": "verify before acting"`, and `verdict.read_verdict` prefixes its text with that mark. It still reaches the fixer, because nothing is dropped. At most 5 findings are asked about |
 | J2, J5 | the same post-step → `plan_post_step`, for a planner step | `plan-advisory.json` beside `plan.json`, which is never touched. It holds the requirements whose best step is under p 0.5 or `none`, and the in-flight lane J5 picked at p ≥ 0.85. swarm-api's planner post-step (`routes/runs.py::_from_planner`) reads the file. On a hold, it sets an `auto` run's `plan_approval` to `required`, so a person approves the plan (§8 Q5 A) |
 
+**§5.4 at the call site, not only in the client.** The client's sanitizer
+reduces only an object that carries a `path` or `file` key. J3's `diff_hunk`
+is a top-level string, and J4's `changed` rows carry only `{symbol, hunk}`.
+So `review_post_step` and `jev_test_gap` send an empty hunk themselves for
+any path `is_denied_path` holds, the client's `hard_stop_paths` included.
+
 **Advisory outputs never decide.**
 * `verdict` is never read, written or reordered by any of this.
 * Auto-merge, the review gate and the requirements read what they read
