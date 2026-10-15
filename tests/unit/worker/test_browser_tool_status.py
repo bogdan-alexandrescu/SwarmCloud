@@ -73,6 +73,24 @@ def test_each_choice_registers_what_it_means(selected, installed, key, tools, en
     assert browser_tools.clean_state(choice.state()) == choice.state()
 
 
+@pytest.mark.parametrize(
+    "selected, installed, tools, reason",
+    [
+        ("jev", True, ("playwright",), "no_route"),
+        ("auto", True, ("playwright", "dev-browser"), "no_route"),
+        ("jev", False, ("playwright",), "not_installed"),
+        ("playwright", True, ("playwright",), "not_selected"),
+        ("dev-browser", True, ("dev-browser", "playwright"), "not_selected"),
+    ],
+)
+def test_no_route_to_the_decision_api_registers_no_jev(selected, installed, tools, reason):
+    """JEV-OFF (#1345): an internal backend whose pod has no JEV_API_URL."""
+    choice = browser_tools.choose(selected, jev_installed=installed, jev_key=True, jev_route=False)
+    assert choice.tools == tools
+    assert (choice.jev_enabled, choice.jev_reason) == (False, reason)
+    assert browser_tools.clean_state(choice.state()) == choice.state()
+
+
 def test_the_worker_names_are_the_catalogues_choices():
     from swarm_common.profiles import RUNNER_PROFILES
 
@@ -115,7 +133,8 @@ def test_the_tag_goes_on_a_bare_origin_and_nothing_else():
 
 
 def _run_body(monkeypatch, tmp_path, *, payload: dict[str, Any], jev_key: bool = False,
-              jev_installed: bool = True, backend: str | None = None) -> dict[str, Any]:
+              jev_installed: bool = True, backend: str | None = None,
+              route: bool = True) -> dict[str, Any]:
     from agent_worker.runners import claude_code
     from agent_worker.runners.base import RunnerContext
 
@@ -151,6 +170,13 @@ def _run_body(monkeypatch, tmp_path, *, payload: dict[str, Any], jev_key: bool =
         monkeypatch.delenv("SWARM_JEV_BACKEND", raising=False)
     else:
         monkeypatch.setenv("SWARM_JEV_BACKEND", backend)
+    # The dispatcher sends JEV_API_URL to an internal backend only while the
+    # tailnet egress is on (scheduler.judgment.jev_dispatch); `route` is that.
+    if backend in ("internal-jev", "internal-laya") and route:
+        monkeypatch.setenv("JEV_API_URL", f"http://decision-api.swarm-system.svc.cluster.local/"
+                                          f"{backend.split('-', 1)[1]}/v1/decide")
+    else:
+        monkeypatch.delenv("JEV_API_URL", raising=False)
     for name in ("SWARM_GIT", "SWARM_SEARCH"):
         monkeypatch.delenv(name, raising=False)
     ctx = RunnerContext(
@@ -227,6 +253,29 @@ def test_jev_chosen_without_a_key_runs_on_playwright_and_says_why(monkeypatch, t
                      jev_installed=False)
     assert claude_code.JEV_UNAVAILABLE_NOTE[browser_tools.NOT_INSTALLED] in seen["prompt"]
     assert set(seen["mcp"]) == {"playwright"}
+
+
+@pytest.mark.parametrize("backend", ["internal-jev", "internal-laya"])
+def test_an_internal_backend_without_the_tailnet_registers_no_jev_and_says_why(monkeypatch, tmp_path, backend):
+    """JEV-OFF (#1345): measured on u-bogdan, the jev server was registered,
+    its wrapper refused for want of JEV_API_URL, and the agent fell back with
+    nothing said. The server the wrapper would refuse is not registered, and
+    the note says why."""
+    from agent_worker.runners import claude_code
+
+    seen = _run_body(monkeypatch, tmp_path, payload={"browser_tool": "jev"}, jev_key=False,
+                     backend=backend, route=False)
+    assert set(seen["mcp"]) == {"playwright"}
+    assert seen["state"]["jev"] == {"enabled": False, "reason": "no_route"}
+    note = claude_code.JEV_UNAVAILABLE_NOTE[browser_tools.NO_ROUTE]
+    assert note in seen["prompt"]
+    assert "tailnet" in note and "decision API" in note
+    # Auto registers no jev either, and names no jev strength.
+    seen = _run_body(monkeypatch, tmp_path / "auto", payload={"browser_tool": "auto"}, jev_key=False,
+                     backend=backend, route=False)
+    assert set(seen["mcp"]) == {"playwright"}
+    assert seen["state"]["jev"] == {"enabled": False, "reason": "no_route"}
+    assert claude_code.BROWSER_TOOL_STRENGTH_JEV_INTERNAL not in seen["prompt"]
 
 
 def test_the_runner_reads_the_input_by_its_declared_name():
