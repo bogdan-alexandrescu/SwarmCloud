@@ -6,7 +6,8 @@
 // tab said why. The gate still fills a frame it cannot vouch for -- every
 // pixel sent passes its mask -- and now names the reason as the RFB desktop
 // name (livegate/rfb.py, DesktopName -307), which noVNC hands the page as a
-// `desktopname` event. The line under the screen says it.
+// `desktopname` event. The strip above the screen says it (it was the line
+// under the screen until #1341: below the fold behind the theater).
 //
 // MUTATIONS: drop the `desktopname` listener; show every desktop name (the
 // gate's ordinary "swarm live browser" would read as a fault); keep the
@@ -142,7 +143,7 @@ describe('the gate’s reason for not showing the page', () => {
     expect(gateReason('')).toBeNull()
   })
 
-  it('is said under the screen while the gate names it, and goes when the page is back', async () => {
+  it('is said in the strip while the gate names it, and goes when the page is back', async () => {
     render(<LiveBrowserPane task={task} live={{ status: 'ok', liveBrowser: true, session: session() }} reload={() => {}} />)
     const r = await waitFor(() => {
       const made = rfb.FakeRfb.made.at(-1)

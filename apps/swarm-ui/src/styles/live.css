@@ -170,6 +170,8 @@
 /* LIVE-UNUSED (#1030): a RUNNING agent that has not connected to this browser
    a minute after its first frame. Its own line in the strip, never the verdict's. */
 .live-strip-unused { flex-basis: 100%; color: var(--text); }
+/* The gate's reason that part of the page is painted over (STRIP-LABEL): a line of its own, above the browser. */
+.live-strip-cover { flex-basis: 100%; color: var(--warn-ink); }
 .live-strip-unused strong { color: var(--warn-ink); }
 
 /* BSTATUS-STRIP (#1030): the browser tool, egress and Jev badges, the strip's

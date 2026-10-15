@@ -646,6 +646,8 @@ export function LiveBrowserPane({
   const [logs, setLogs] = useState(false)
   // The element noVNC draws into, for the theater to borrow; null until LiveScreen has mounted it.
   const [screenNode, setScreenNode] = useState<HTMLElement | null>(null)
+  // The gate's reason the page is not (all) shown, while its desktop name carries one (`gateReason`).
+  const [cover, setCover] = useState<string | null>(null)
   const session = live.status === 'ok' ? live.session : null
   const open = session !== null && session.state === 'open' ? session : null
   const returned = useControlReturned(open?.session_id ?? null, open !== null && isController(open), open?.controller ?? null)
@@ -740,6 +742,15 @@ export function LiveBrowserPane({
           )}
         </span>
         <span className="live-strip-say">{verdict.say}</span>
+        {/* THE COVER REASON IS IN THE STRIP (STRIP-LABEL, part of #1341).
+            MEASURED 2026-10-15: under the screen, it sat below the fold
+            behind the theater, and the strip above the browser said nothing
+            of a page partly painted over. The strip is drawn in both. */}
+        {cover !== null && (
+          <span className="live-strip-cover" data-testid="live-cover">
+            {cover}.
+          </span>
+        )}
         <span className="live-strip-who">
           {session.controller === null
             ? 'Nobody is in control: the agent is driving.'
@@ -792,6 +803,7 @@ export function LiveBrowserPane({
             control={mine}
             touch={mine && session.device !== null && session.device.touch}
             onScreen={setScreenNode}
+            onGateSays={setCover}
             device={deviceSize(session)}
             caption={<span className="live-caption">{deviceCaption(session)}</span>}
             onControlChange={reload}
@@ -1051,7 +1063,11 @@ function LiveDevice({ taskId, session, reload }: { taskId: string; session: Live
     void setLiveDevice(taskId, body).then((r) => {
       setBusy(false)
       setError(r.status === 'error' ? r.error.message : null)
-      reload()
+      // THE ANSWER IS DRAWN (STRIP-LABEL, part of #1341), as every other
+      // control route's is (QA12-22): it is the session as the switch left
+      // it. Dropped, the caption under the device and the chips kept the
+      // preset from before the switch until a later read landed.
+      reload(r.status === 'ok' ? r.data : undefined)
     })
   }
   return (
@@ -1226,6 +1242,7 @@ function LiveScreen({
   control,
   touch,
   onScreen,
+  onGateSays,
   device = null,
   caption,
   onControlChange,
@@ -1241,6 +1258,8 @@ function LiveScreen({
   touch: boolean
   /** Told the element noVNC draws into, and null when it goes: the theater borrows it. */
   onScreen?: (node: HTMLElement | null) => void
+  /** Told the gate's reason the page is not (all) shown (`gateReason`), and null when it has none: the strip draws it. */
+  onGateSays?: (reason: string | null) => void
   /** The device as turned (`deviceSize`): the frame is fitted to its proportions, in an outline when it is mobile. */
   device?: { width: number; height: number; mobile: boolean } | null
   /** Under the device frame: what it is, its size and the page's path. */
@@ -1263,11 +1282,11 @@ function LiveScreen({
   changedRef.current = onControlChange
   const movedRef = useRef(onSessionMoved)
   movedRef.current = onSessionMoved
+  const saysRef = useRef(onGateSays)
+  saysRef.current = onGateSays
   const [conn, setConn] = useState<Conn>('connecting')
   const [why, setWhy] = useState<string | null>(null)
   const [refused, setRefused] = useState<string | null>(null)
-  // The gate's reason the page is not (all) shown, while it names one (`gateReason`).
-  const [gateSays, setGateSays] = useState<string | null>(null)
   const [hasFocus, setHasFocus] = useState(false)
   const stage = useRef<HTMLDivElement>(null)
   const below = useRef<HTMLDivElement>(null)
@@ -1340,12 +1359,21 @@ function LiveScreen({
     let tries = 0
     let timer: ReturnType<typeof setTimeout> | null = null
     // swarm-api's status frames (LB-STREAM): never noVNC's, which reads only
-    // the binary RFB stream. The first one the tab sees is the state the
-    // session read already drew; a later change of controller, of whether
-    // this viewer holds control, or of the session closing re-reads it.
+    // the binary RFB stream. A change of controller, of whether this viewer
+    // holds control, or of the session closing re-reads the session.
+    //
+    // THE FIRST FRAME IS CHECKED, NOT ASSUMED (STRIP-LABEL, part of #1341).
+    // It was taken as the state the session read already drew, so a read
+    // older than the connection -- drawn before a take that the relay
+    // already knew of -- was never read again by a frame: the screen said
+    // "View only." under a header that said "You are in control". The
+    // first frame now re-reads when it disagrees with the control drawn.
     let seen: LiveStatus | null = null
     const onStatus = (s: LiveStatus) => {
-      const changed = seen !== null && (s.in_control !== seen.in_control || s.controller !== seen.controller || s.open !== seen.open)
+      const changed =
+        seen === null
+          ? s.in_control !== controlRef.current
+          : s.in_control !== seen.in_control || s.controller !== seen.controller || s.open !== seen.open
       seen = s
       if (changed && !stopped) changedRef.current?.()
     }
@@ -1468,11 +1496,11 @@ function LiveScreen({
             setConn('connected')
           })
           r.addEventListener('desktopname', (e) => {
-            setGateSays(gateReason((e as CustomEvent<{ name?: unknown }>).detail?.name))
+            if (!stopped) saysRef.current?.(gateReason((e as CustomEvent<{ name?: unknown }>).detail?.name))
           })
           r.addEventListener('disconnect', () => {
             if (rfb.current === r) rfb.current = null
-            setGateSays(null)
+            if (!stopped) saysRef.current?.(null)
             if (closeCode === LIVE_RESTART_CODE) retry('The live relay restarted. Reconnecting.', true)
             else retry('The live connection closed. Reconnecting with a new ticket.')
           })
@@ -1488,6 +1516,8 @@ function LiveScreen({
       const r = rfb.current
       rfb.current = null
       r?.disconnect()
+      // A reason belongs to this connection: the next one starts with none.
+      saysRef.current?.(null)
     }
   }, [taskId, sessionId, applyInput])
 
@@ -1556,11 +1586,6 @@ function LiveScreen({
         {conn === 'connecting' && <StartupProgress taskId={taskId} overlay hideWhenDone />}
       </div>
       <p className="live-screen-say" role="status">
-        {conn === 'connected' && gateSays !== null && (
-          <>
-            <span className="live-screen-why">{gateSays}.</span>{' '}
-          </>
-        )}
         {conn === 'connecting'
           ? 'Connecting to the agent’s browser.'
           : conn === 'connected'
