@@ -23,7 +23,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import secrets
 
 import pytest
 
@@ -42,6 +41,8 @@ from agent_worker.livegate.mask import (
     Outcome,
 )
 
+from test_livegate_main import short_tmp  # noqa: F401  (a pytest fixture, used by name)
+
 WHITE = (0xFF, 0xFF, 0xFF)
 GREEN = (0x10, 0xC0, 0x10)
 TOP = "frame-top"
@@ -52,7 +53,8 @@ PAGE_H = 120
 CHROME_H = SCREEN_H - PAGE_H
 # The child's iframe element: (100, 50) 80 x 60 in the top page.
 BOX = (100, CHROME_H + 50, 180, CHROME_H + 110)
-SITE_KEY = "k=" + secrets.token_hex(8)
+# A site key the record must never carry; fixed, so xdist workers collect the same ids.
+SITE_KEY = "k=site-key-under-test"
 RECAPTCHA = f"https://www.google.com/recaptcha/api2/anchor?{SITE_KEY}"
 
 
@@ -318,7 +320,8 @@ def test_a_shown_challenge_frame_still_masks_the_password_fields_it_reported():
     assert state.apply(frame) is Outcome.MASKED
     # The field from its last report: (105, 85) to (135, 93) on screen.
     assert _covered(frame, (105, CHROME_H + 55, 135, CHROME_H + 63))
-    assert _shown(frame, (140, CHROME_H + 70, 180, CHROME_H + 110))
+    # Beyond the field and its dilation (DILATE_PX), the challenge is shown.
+    assert _shown(frame, (150, CHROME_H + 75, 180, CHROME_H + 110))
 
 
 # --------------------------------------------------------------------------
@@ -436,3 +439,33 @@ def test_a_held_frame_is_never_one_from_another_document():
     frame = _screen(GREEN)
     # No frame of this document was masked yet: nothing to hold, so it blanks.
     assert state.apply(frame) is Outcome.PAGE_BLANKED
+
+
+# --------------------------------------------------------------------------
+# The gate tells the mask who drives
+# --------------------------------------------------------------------------
+
+
+def test_the_gate_says_a_person_holds_control_from_the_hand_off_to_the_resume(short_tmp):  # noqa: F811
+    from agent_worker.livegate.ctl import CtlClient
+    from test_livegate_main import Rig, _started
+
+    async def body() -> None:
+        rig = Rig(short_tmp)
+        stop, task = await _started(rig)
+        gate = rig.gate
+        client = CtlClient(rig.cfg.ctl_path)
+        await asyncio.to_thread(client.register)
+        assert gate.person_in_control is False  # the agent drives
+        await asyncio.to_thread(client.call, "pause", {"request_id": "r1", "expect": "example.test"})
+        assert gate.person_in_control is True
+        await asyncio.to_thread(client.call, "resume", {})
+        assert gate.person_in_control is False
+        await asyncio.to_thread(client.call, "pause", {"request_id": "r2", "expect": "example.test"})
+        await asyncio.to_thread(client.call, "end_control", {"cause": "timeout"})
+        assert gate.person_in_control is False
+        client.close()
+        stop.set()
+        assert await task == 0
+
+    asyncio.run(body())

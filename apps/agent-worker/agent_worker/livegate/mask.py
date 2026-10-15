@@ -45,6 +45,13 @@ more, while a person asked to help waited to see the page. One frame that
 never reported -- an ad iframe the observer never ran in -- blanked
 everything; only that frame needed covering.
 
+THREE AMENDMENTS (issue #1340, design §5.3.2). A failed `MaskCdp.link` is
+tried again (`LINK_TRIES`); while a person holds control a challenge frame on
+`SHOWN_IN_CONTROL` that cannot vouch for itself is shown, not covered, and
+recorded by host; and a top frame stale only by an announced layout change
+keeps the last masked frame on screen for `HOLD_CHANGING_SECONDS` before the
+page area is blanked.
+
 EVERY FRAME THAT IS NOT THE PAGE SAYS WHY (`reason`). `apply` leaves the
 reason in `reason`, and `rfb.masked` carries it to every viewer as the RFB
 desktop name, "Can't show this page safely: <reason>" (`CANNOT_SHOW`), or
@@ -98,14 +105,17 @@ import enum
 import json
 import logging
 import math
+import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Mapping
+from urllib.parse import urlsplit
 
 from swarm_redaction import redact
 
 from .capture import Frame
+from .cdpproxy import CdpError
 
 log = logging.getLogger(__name__)
 
@@ -137,6 +147,41 @@ REASON_TOO_WIDE = "the page is laid out wider than the screen (a device change i
 REASON_CHANGING = "the page is changing faster than it can be checked"
 REASON_TRUNCATED = "the page has more text than the mask can check"
 REASON_UNPLACED = "a frame on the page cannot be placed"
+#: Not a viewer's reason: the gate's event log's, for a challenge frame shown
+#: unchecked while a person holds control (`SHOWN_IN_CONTROL`).
+REASON_SHOWN_IN_CONTROL = "a challenge frame is shown unchecked while a person holds control"
+
+#: The challenge frames a person must see to get past them (issue #1340):
+#: (host, path prefix). Exact hosts; "*." is any subdomain of the rest and
+#: never the rest itself. `https`, no port, no userinfo. While a person holds
+#: control a child frame on this list that cannot vouch for itself is shown,
+#: not covered; never the top frame, never while the agent drives
+#: (`MaskState.set_in_control`). MEASURED 2026-10-15 (task_2ac5d7e22a51460995a2):
+#: a reCAPTCHA covered for a whole hand-off is one the person was asked to
+#: solve and could not see.
+SHOWN_IN_CONTROL = (
+    ("www.google.com", "/recaptcha/"),
+    ("www.recaptcha.net", "/recaptcha/"),
+    ("*.hcaptcha.com", "/"),
+    ("challenges.cloudflare.com", "/"),
+)
+
+#: A failed `MaskCdp.link` is tried again on the parent's next fresh report
+#: or the child's next navigation, at most this many tries in all, each at
+#: least the backoff after the last failure: 250 ms doubling to 2 s. Then the
+#: frame stays unlinked, which fails closed (issue #1340: two reCAPTCHA
+#: frames whose one try failed at attempt start stayed covered for good).
+LINK_TRIES = 5
+LINK_BACKOFF_SECONDS = 0.25
+LINK_BACKOFF_MAX_SECONDS = 2.0
+
+#: How long a top frame stale ONLY because of a layout change keeps the last
+#: frame that was masked on screen before the page area is blanked (issue
+#: #1340: the page went PAGE_BLANKED 0.3-1.2 s per metrics window while it
+#: kept changing). Those pixels were vouched for when they were sent; holding
+#: them sends nothing new. Never across a navigation, a tab switch, a session
+#: loss, a device change or a change of who drives.
+HOLD_CHANGING_SECONDS = 0.3
 
 #: `autocomplete` tokens that name a credential (§5.3.1). Matched per token:
 #: the attribute is a list ("section-pay billing cc-number").
@@ -360,6 +405,11 @@ class _FrameState:
     retired: set[str] = field(default_factory=set)
     #: The observer said its document is hidden: its tab is not on screen.
     hidden: bool = False
+    #: True while every change since `report` was a layout change its
+    #: observer announced: the only staleness `HOLD_CHANGING_SECONDS` covers.
+    holdable: bool = False
+    #: When the first of those changes was announced (`MaskState`'s clock).
+    changing_since: float | None = None
 
     def new_document(self, doc: str | None, epoch: int = 0) -> None:
         self.doc = doc
@@ -368,6 +418,12 @@ class _FrameState:
         self.fresh = False
         self.ever_password = set()
         self.hidden = False
+        self.unhold()
+
+    def unhold(self) -> None:
+        """Something other than a layout change made the report stale: no hold until the next one."""
+        self.holdable = False
+        self.changing_since = None
 
 
 class MaskState:
@@ -378,14 +434,26 @@ class MaskState:
     event loop.
     """
 
-    def __init__(self, *, scale: float = 1.0) -> None:
+    def __init__(self, *, scale: float = 1.0, clock: Callable[[], float] = time.monotonic,
+                 record: Callable[[str, Mapping[str, Any]], None] | None = None) -> None:
         self._scale = _positive(scale)
+        self._clock = clock
+        #: The gate's event log (`Gate.record`): told of every frame shown
+        #: by `SHOWN_IN_CONTROL`, by host.
+        self._record = record
         self._session = False
         self._frames: dict[str, _FrameState] = {}
         self._top: str | None = None
         self._verdicts: OrderedDict[str, bool] = OrderedDict()
         #: Why the frame is not the page while the follower is between tabs (`hold`).
         self._held: str | None = None
+        #: A person holds control and the agent is held (`set_in_control`).
+        self._in_control = False
+        #: Frames shown by `SHOWN_IN_CONTROL` and recorded, this hand-off.
+        self._shown: set[str] = set()
+        #: The last frame `apply` masked from a fresh report, and its reason:
+        #: what a layout change keeps on screen (`HOLD_CHANGING_SECONDS`).
+        self._last: tuple[Frame, str | None] | None = None
         #: Why the last frame `apply` painted is not (all of) the page; None when it is.
         self.reason: str | None = None
 
@@ -399,12 +467,15 @@ class MaskState:
         each frame.
         """
         self._session = True
+        self._last = None
         for frame in self._frames.values():
             frame.report = None
             frame.fresh = False
+            frame.unhold()
 
     def session_down(self) -> None:
         self._session = False
+        self._last = None
 
     def hold(self, reason: str) -> None:
         """The tab on screen may be about to change: no report is trusted until `release`.
@@ -415,18 +486,41 @@ class MaskState:
         over another one's pixels.
         """
         self._held = reason
+        self._last = None
 
     def release(self) -> None:
         self._held = None
 
+    def set_in_control(self, in_control: bool) -> None:
+        """Whether a person holds control (a hand-off or take-control) and the agent is held.
+
+        Only then is a `SHOWN_IN_CONTROL` frame shown unchecked. The gate sets
+        it before every frame it masks. A change either way drops the frame a
+        layout change would hold: one masked under the other rule.
+        """
+        in_control = bool(in_control)
+        if in_control == self._in_control:
+            return
+        self._in_control = in_control
+        self._last = None
+        if not in_control:
+            self._shown.clear()
+
     def has_frame(self, frame_id: str) -> bool:
         return frame_id in self._frames
+
+    def is_fresh(self, frame_id: str) -> bool:
+        """Whether `frame_id`'s report is measured after its last change."""
+        frame = self._frames.get(frame_id)
+        return frame is not None and frame.fresh
 
     def set_scale(self, scale: float) -> None:
         """Screen pixels per CSS pixel changed (a device preset): every report is stale."""
         self._scale = _positive(scale)
+        self._last = None
         for frame in self._frames.values():
             frame.fresh = False
+            frame.unhold()
 
     def frame_attached(self, frame_id: str, parent_id: str | None) -> None:
         if frame_id in self._frames:
@@ -447,10 +541,12 @@ class MaskState:
 
     def frame_detached(self, frame_id: str) -> None:
         self._frames.pop(frame_id, None)
+        self._shown.discard(frame_id)
         for child in [fid for fid, f in self._frames.items() if f.parent == frame_id]:
             self.frame_detached(child)
         if self._top == frame_id:
             self._top = None
+            self._last = None
 
     def frame_swapped(self, frame_id: str) -> None:
         """`frame_id` moved to a renderer of its own (an out-of-process iframe).
@@ -475,6 +571,8 @@ class MaskState:
         if frame.doc is not None:
             frame.retired.add(frame.doc)
         frame.new_document(None)
+        if frame_id == self._top:
+            self._last = None
 
     def url_changed(self, frame_id: str, url: str) -> None:
         """A same-document navigation (history API, fragment): the content may differ."""
@@ -483,6 +581,9 @@ class MaskState:
             return
         frame.url = url
         frame.fresh = False
+        frame.unhold()
+        if frame_id == self._top:
+            self._last = None
 
     def on_message(self, frame_id: str, payload: str) -> None:
         """One message from `frame_id`'s observer."""
@@ -495,6 +596,7 @@ class MaskState:
             # The reason names a shape, never the payload's content.
             log.warning("live mask: malformed observer message (%s); frame is stale", exc)
             frame.fresh = False
+            frame.unhold()
             return
         if doc in frame.retired:
             return
@@ -502,11 +604,16 @@ class MaskState:
             # A document this gate has not heard from: whatever was reported
             # before belongs to another page.
             frame.new_document(doc, epoch)
+        if hidden != frame.hidden:
+            frame.unhold()  # another tab came forward, or this one went
         frame.hidden = hidden
         if kind == "layout":
             if epoch > frame.epoch:
                 frame.epoch = epoch
+            was_fresh = frame.fresh
             frame.fresh = frame.report is not None and frame.report.epoch >= frame.epoch
+            if was_fresh and not frame.fresh and frame.holdable:
+                frame.changing_since = self._clock()
             return
         assert report is not None
         if epoch < frame.epoch:
@@ -514,6 +621,8 @@ class MaskState:
         frame.epoch = epoch
         frame.report = report
         frame.fresh = True
+        frame.holdable = True
+        frame.changing_since = None
         for f in report.fields:
             if f.type == "password":
                 frame.ever_password.add(f.id)
@@ -524,6 +633,12 @@ class MaskState:
 
     def apply(self, frame: Frame) -> Outcome:
         """Paint every sensitive area of `frame`, in place, and say how (and, in `reason`, why)."""
+        outcome = self._apply(frame)
+        if outcome is not Outcome.MASKED:
+            self._last = None
+        return outcome
+
+    def _apply(self, frame: Frame) -> Outcome:
         top = self._frames.get(self._top) if self._top is not None else None
         if self._held is not None:
             return self._unavailable(frame, self._held)
@@ -554,6 +669,9 @@ class MaskState:
         boxes: list[_Box] = []
         covers: list[_Box] = []
         failed = self._collect(self._top, top, page, boxes, covers)
+        if failed == REASON_CHANGING and self._hold(top, frame):
+            log.debug("live mask: last masked frame held through a layout change")
+            return Outcome.MASKED
         if failed is not None:
             _paint(frame, page)
             self.reason = failed
@@ -564,7 +682,30 @@ class MaskState:
         self.reason = None if not covers else (
             "an embedded frame on it cannot be checked" if len(covers) == 1
             else f"{len(covers)} embedded frames on it cannot be checked")
+        self._last = (frame, self.reason)
         return Outcome.MASKED
+
+    def _hold(self, top: _FrameState, frame: Frame) -> bool:
+        """Put the last masked frame's pixels in `frame` if the top frame's change may be waited out.
+
+        Only a staleness every cause of which was an announced layout change
+        (`_FrameState.holdable`), for `HOLD_CHANGING_SECONDS` from the first
+        announcement, and only a frame masked since anything else happened:
+        every other cause drops `_last`.
+        """
+        if self._last is None or not top.holdable or top.changing_since is None:
+            return False
+        if self._clock() - top.changing_since > HOLD_CHANGING_SECONDS:
+            return False
+        last, reason = self._last
+        if ((last.width, last.height, last.stride, len(last.pixels), last.red_mask, last.green_mask,
+             last.blue_mask, last.little_endian)
+                != (frame.width, frame.height, frame.stride, len(frame.pixels), frame.red_mask,
+                    frame.green_mask, frame.blue_mask, frame.little_endian)):
+            return False
+        frame.pixels[:] = last.pixels
+        self.reason = reason
+        return True
 
     def _collect(self, frame_id: str, frame: _FrameState, page: _Box, out: list[_Box],
                  covers: list[_Box]) -> str | None:
@@ -586,16 +727,7 @@ class MaskState:
         to_screen = self._to_screen(frame_id, page)
         if to_screen is None:
             return REASON_UNPLACED
-        for f in report.fields:
-            if (f.type == "password" or f.ever_password or f.id in frame.ever_password
-                    or SENSITIVE_AUTOCOMPLETE.intersection(f.autocomplete.split())):
-                out.append(to_screen(f.box))
-        blocks: dict[int, list[_Text]] = {}
-        for t in report.texts:
-            blocks.setdefault(t.block, []).append(t)
-        for items in blocks.values():
-            if self._matches("".join(t.text for t in items)):
-                out.extend(to_screen(t.box) for t in items)
+        self._sensitive(frame, report, to_screen, out)
         claimed: set[int] = set()
         for child_id, child in list(self._frames.items()):
             if child.parent != frame_id:
@@ -611,6 +743,9 @@ class MaskState:
             if self._collect(child_id, child, page, inner, inner_covers) is None:
                 out.extend(inner)
                 covers.extend(inner_covers)
+            elif self._in_control and (host := challenge_host(child.url)) is not None:
+                # A challenge a person was handed the page to solve (SHOWN_IN_CONTROL).
+                self._show_unchecked(child_id, child, host, page, out)
             else:
                 # Its content is clipped to its box: covering the box covers all of it.
                 covers.append(box)
@@ -623,6 +758,37 @@ class MaskState:
                 # out-of-process frame not yet reporting, or one just created.
                 covers.append(box)
         return None
+
+    def _sensitive(self, frame: _FrameState, report: _Report, to_screen: Callable[[_Box], _Box],
+                   out: list[_Box]) -> None:
+        """The screen boxes of `report`'s credential fields and of its text a rule matches."""
+        for f in report.fields:
+            if (f.type == "password" or f.ever_password or f.id in frame.ever_password
+                    or SENSITIVE_AUTOCOMPLETE.intersection(f.autocomplete.split())):
+                out.append(to_screen(f.box))
+        blocks: dict[int, list[_Text]] = {}
+        for t in report.texts:
+            blocks.setdefault(t.block, []).append(t)
+        for items in blocks.values():
+            if self._matches("".join(t.text for t in items)):
+                out.extend(to_screen(t.box) for t in items)
+
+    def _show_unchecked(self, frame_id: str, frame: _FrameState, host: str, page: _Box,
+                        out: list[_Box]) -> None:
+        """`frame_id` is shown though it cannot vouch for itself: say so once, mask what it reported.
+
+        Its last report on this document, stale or truncated, still names its
+        password and credential fields, and they stay painted out.
+        """
+        if frame_id not in self._shown:
+            self._shown.add(frame_id)
+            if self._record is not None:
+                self._record("mask_frame_shown", {"host": host, "reason": REASON_SHOWN_IN_CONTROL})
+        if frame.report is None:
+            return
+        to_screen = self._to_screen(frame_id, page)
+        if to_screen is not None:
+            self._sensitive(frame, frame.report, to_screen, out)
 
     def _to_screen(self, frame_id: str, page: _Box) -> Callable[[_Box], _Box] | None:
         """The map from `frame_id`'s client rectangles to screen pixels."""
@@ -671,6 +837,30 @@ class MaskState:
         return Outcome.UNAVAILABLE
 
 
+def challenge_host(url: str | None) -> str | None:
+    """`url`'s host when it is on `SHOWN_IN_CONTROL`; None otherwise. The host only: never logged with more."""
+    if not url:
+        return None
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return None
+    if (parts.scheme != "https" or port is not None or parts.username is not None
+            or parts.password is not None or not parts.hostname):
+        return None
+    host = parts.hostname
+    for allowed, prefix in SHOWN_IN_CONTROL:
+        if allowed.startswith("*."):
+            suffix = allowed[1:]
+            matched = host.endswith(suffix) and len(host) > len(suffix)
+        else:
+            matched = host == allowed
+        if matched and parts.path.startswith(prefix):
+            return host
+    return None
+
+
 def _positive(scale: float) -> float:
     if not isinstance(scale, (int, float)) or not math.isfinite(scale) or scale <= 0:
         raise ValueError("scale must be a positive number")
@@ -717,12 +907,23 @@ class MaskCdp:
     same binding, reporting into the same `MaskState`, where the frame kept
     its place. A child's frames are never the top frame: a frame it names with
     no parent this gate knows is ignored, and stays covered.
+
+    A LINK THAT FAILS IS TRIED AGAIN (issue #1340). MEASURED 2026-10-15 on
+    task_2ac5d7e22a51460995a2: `DOM.getFrameOwner` failed (CdpError) for both
+    reCAPTCHA frames at attempt start, and a new parent world was the only
+    retry, so they stayed unlinked for the whole hand-off. Now the parent's
+    next fresh report and the child's next navigation try again, each at
+    least the backoff after the last failure, `LINK_TRIES` in all.
     """
 
-    def __init__(self, state: MaskState, send: Send, *, child: bool = False) -> None:
+    def __init__(self, state: MaskState, send: Send, *, child: bool = False,
+                 clock: Callable[[], float] = time.monotonic) -> None:
         self._state = state
         self._send = send
         self._child = child
+        self._clock = clock
+        #: frame id -> (parent id, failed tries, earliest next try) for each failed `link`.
+        self._failed: dict[str, tuple[str, int, float]] = {}
         #: execution context id -> frame id, for observer worlds only.
         self._worlds: dict[int, str] = {}
         #: frame id -> its current observer world context.
@@ -771,6 +972,8 @@ class MaskCdp:
             if frame_id is None or self._world_of.get(frame_id) != context:
                 return  # not an observer world, or one superseded in its frame
             state.on_message(frame_id, params.get("payload", ""))
+            if state.is_fresh(frame_id):
+                await self._retry_children(frame_id)
         elif method == "Runtime.executionContextCreated":
             context = params.get("context") or {}
             frame_id = (context.get("auxData") or {}).get("frameId")
@@ -801,23 +1004,46 @@ class MaskCdp:
                     state.frame_swapped(params["frameId"])
                 else:
                     state.frame_detached(params["frameId"])
+                    self._failed.pop(params["frameId"], None)
         elif method == "Page.frameNavigated":
             frame = params.get("frame") or {}
             if isinstance(frame.get("id"), str) and self._attach(frame["id"], frame.get("parentId")):
                 state.navigated(frame["id"], str(frame.get("url", "")))
+                failed = self._failed.get(frame["id"])
+                if failed is not None and self._due(frame["id"], failed):
+                    await self.link(frame["id"], failed[0])
         elif method == "Page.navigatedWithinDocument":
             if isinstance(params.get("frameId"), str):
                 state.url_changed(params["frameId"], str(params.get("url", "")))
+
+    def _due(self, frame_id: str, failed: tuple[str, int, float]) -> bool:
+        """Whether a failed link of `frame_id` may be tried now; forgets one that needs no try."""
+        _, tries, next_at = failed
+        if not self._state.has_frame(frame_id) or frame_id not in self._state.unlinked_children(failed[0]):
+            del self._failed[frame_id]
+            return False
+        return tries < LINK_TRIES and self._clock() >= next_at
+
+    async def _retry_children(self, parent_id: str) -> None:
+        """`parent_id` reported fresh: try again every child whose link failed and is due."""
+        for frame_id, failed in list(self._failed.items()):
+            if failed[0] == parent_id and self._due(frame_id, failed):
+                await self.link(frame_id, parent_id)
 
     async def link(self, frame_id: str, parent_id: str) -> None:
         """Name `frame_id`'s iframe element with the id its parent's reports use.
 
         Any failure leaves the frame unlinked, which blanks the page area
-        while it is on screen: fail closed.
+        while it is on screen: fail closed. It is tried again later (class
+        docstring), `LINK_TRIES` in all.
         """
         context = self._world_of.get(parent_id)
         if context is None:
             return
+        failed = self._failed.get(frame_id)
+        tries = failed[1] if failed is not None and failed[0] == parent_id else 0
+        if tries >= LINK_TRIES:
+            return  # given up: it stays covered
         try:
             owner = await self._send("DOM.getFrameOwner", {"frameId": frame_id})
             node = await self._send("DOM.resolveNode", {"backendNodeId": owner["backendNodeId"],
@@ -831,7 +1057,17 @@ class MaskCdp:
                 await self._send("Runtime.releaseObject", {"objectId": object_id})
             value = result["result"]["value"]
         except Exception as exc:  # noqa: BLE001 -- any failure is "unlinked"
-            log.info("live mask: frame owner unresolved (%s)", type(exc).__name__)
+            tries += 1
+            wait = min(LINK_BACKOFF_SECONDS * 2 ** (tries - 1), LINK_BACKOFF_MAX_SECONDS)
+            self._failed[frame_id] = (parent_id, tries, self._clock() + wait)
+            # Chromium's own words for a CdpError ("No frame for given id
+            # found"): about the protocol, never the page. Any other failure
+            # here is this code's, named by its class alone.
+            detail = (f"{type(exc).__name__}: {str(exc)[:200]}" if isinstance(exc, CdpError)
+                      else type(exc).__name__)
+            log.info("live mask: frame owner unresolved (%s); try %d of %d%s", detail, tries,
+                     LINK_TRIES, "" if tries < LINK_TRIES else ", it stays covered")
             return
+        self._failed.pop(frame_id, None)
         if isinstance(value, int) and not isinstance(value, bool):
             self._state.frame_linked(frame_id, value)
