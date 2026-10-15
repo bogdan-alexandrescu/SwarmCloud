@@ -1054,6 +1054,13 @@ ROLLUP_SWEEPER_ROUTES: frozenset[tuple[str, str]] = frozenset(
         # submits nothing for this identity: `redrive: true` is refused unless
         # the caller is an admin (routes/strandedprs.py).
         ("POST", "/v1/admin/stranded-prs/sweep"),
+        # The workspace secrets rotation sweep (#1347, owner decision Q5;
+        # jobs.tf `secrets_rotation_sweep`, hourly): disables previous
+        # versions whose 24-hour grace has passed, each with its audit row,
+        # and never destroys one. It takes no argument, reads no value and
+        # grants nothing: what it may disable is fixed by the records' own
+        # `disable_after`.
+        ("POST", "/v1/admin/workspace-secrets/rotation-sweep"),
     }
 )
 

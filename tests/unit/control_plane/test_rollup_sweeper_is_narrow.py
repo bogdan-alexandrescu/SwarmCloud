@@ -146,10 +146,16 @@ def test_the_rotation_sweep_is_the_only_workspace_secrets_route_the_sweeper_reac
     writes, the grants, the form links, the listing -- stays refused to this
     identity, so a leaked sweeper token can disable a version only once its
     grace has passed, and can read, add, grant or delete nothing."""
-    reached = {r for r in ROLLUP_SWEEPER_ROUTES if "workspace-secrets" in r[1]}
+    def is_secrets_route(route: tuple[str, str]) -> bool:
+        path = route[1]
+        return path.startswith("/v1/workspace/secrets") or "/workspace-secrets/" in path
+
+    reached = {r for r in ROLLUP_SWEEPER_ROUTES if is_secrets_route(r)}
     assert reached == {("POST", "/v1/admin/workspace-secrets/rotation-sweep")}
-    refused = [r for r in REFUSED if "workspace-secrets" in r[1]]
+    refused = [r for r in REFUSED if is_secrets_route(r)]
     assert len(refused) >= 5, f"the workspace-secrets routes were not swept: {refused}"
+    assert ("PUT", "/v1/workspace/secrets/{name}/value") in refused
+    assert ("DELETE", "/v1/workspace/secrets/{name}") in refused
 
 
 class _RecordingWriter:

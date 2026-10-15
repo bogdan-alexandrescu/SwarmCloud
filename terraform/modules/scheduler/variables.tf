@@ -221,6 +221,35 @@ variable "workspace_sweep_schedule" {
   default     = "*/10 * * * *"
 }
 
+variable "enable_secrets_rotation_sweep" {
+  description = "Create swarm-workspace-secrets-rotation-sweep, the hourly caller of swarm-api's workspace secrets rotation sweep (#1347, owner decision Q5). A bool, not derived from api_endpoint, for enable_task_finished_push's reason. The root sets it to true in every environment: without it a rotated-out secret version stays enabled."
+  type        = bool
+  default     = false
+}
+
+variable "secrets_rotation_sweep_path" {
+  description = "swarm-api's workspace secrets rotation sweep (routes/workspace_secrets.py), which the secrets_rotation_sweep job POSTs."
+  type        = string
+  default     = "/v1/admin/workspace-secrets/rotation-sweep"
+
+  validation {
+    condition     = startswith(var.secrets_rotation_sweep_path, "/v1/admin/")
+    error_message = "the rotation sweep is an admin route under /v1/admin/, which swarm-api admits the rollup-sweeper account to by name."
+  }
+}
+
+variable "secrets_rotation_sweep_schedule" {
+  description = <<-EOT
+    How often the workspace secrets rotation sweep runs. Hourly, at :41: a
+    rotated-out version keeps a 24-hour grace (owner decision Q5), so it is
+    disabled at most an hour after the grace ends, and :41 is clear of :00,
+    :30 and the other sweeps' minutes. An idle sweep reads the active records
+    only.
+  EOT
+  type        = string
+  default     = "41 * * * *"
+}
+
 variable "workflow_rollup_schedule" {
   description = <<-EOT
     How often each tenant's stored workflow states are converged.
