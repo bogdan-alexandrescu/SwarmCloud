@@ -42,7 +42,6 @@ from swarm_api.main import create_app
 from swarm_api.metrics import ApiMetrics
 from swarm_api.waker import NullWaker
 from swarm_api.workspace_secrets import (
-    BROWSER_TOOLS,
     CONSUMERS_BY_NAME,
     GRANTS_COLLECTION,
     PROFILE_NAMES,
@@ -50,7 +49,8 @@ from swarm_api.workspace_secrets import (
     SECRETS_COLLECTION,
     SecretManagerWorkspaceSecrets,
 )
-from swarm_common.profiles import RUNNER_PROFILES
+from swarm_common.models import PLATFORM_COMPONENTS
+from swarm_common.profiles import RUNNER_PROFILES, RUNTIME_TOOLS
 
 from .conftest import ADMIN_GROUP, ENG_GROUP, RESEARCH_GROUP, NoForgeTokens, api_settings, auth_header, seed_tenant
 from .fakes import FakeFirestore, FakeTransaction
@@ -381,16 +381,24 @@ def test_a_kind_its_slot_refuses_and_a_locked_or_slotless_consumer_are_422(clien
 def test_profiles_are_the_agent_profiles_of_the_frozen_catalogue():
     agent = {n for n, p in RUNNER_PROFILES.items()
              if p.worker_action is None and p.provider is not None}
-    assert set(PROFILE_NAMES) == agent
+    # Contract request 80: the profiles that declare a slot are the agent profiles.
+    assert set(PROFILE_NAMES) == agent == {n for n, p in RUNNER_PROFILES.items() if p.secret_slots}
     assert {"claude-code", "claude-code-browser"} <= agent
     assert not {"merge", "post-verdict", "mock"} & set(PROFILE_NAMES)
+    for name in PROFILE_NAMES:
+        served = {s.name: s.kinds for s in CONSUMERS_BY_NAME[f"profile:{name}"].slots}
+        assert served == {k: v.kinds for k, v in RUNNER_PROFILES[name].secret_slots.items()}
 
 
-def test_tools_are_the_frozen_browser_tool_choices():
-    choices = set(RUNNER_PROFILES["claude-code-browser"].inputs["browser_tool"].choices)
-    assert choices - {"auto"} == set(BROWSER_TOOLS)
-    assert {f"tool:{t}" for t in BROWSER_TOOLS.values()} \
-        == {c for c in CONSUMERS_BY_NAME if c.startswith("tool:")}
+def test_tools_and_components_are_the_contracts():
+    # Contract requests 81 and 82: no interim list of its own.
+    assert {c for c in CONSUMERS_BY_NAME if c.startswith("tool:")} \
+        == {f"tool:{t}" for t in RUNTIME_TOOLS}
+    assert {c for c in CONSUMERS_BY_NAME if c.startswith("component:")} \
+        == {f"component:{c}" for c in PLATFORM_COMPONENTS}
+    typesafe = CONSUMERS_BY_NAME["tool:jev-browser"].slot("typesafe")
+    assert typesafe is not None
+    assert typesafe.kinds == RUNTIME_TOOLS["jev-browser"].secret_slots["typesafe"].kinds
 
 
 def test_the_consumers_route_serves_the_catalogue(client, seeded):
