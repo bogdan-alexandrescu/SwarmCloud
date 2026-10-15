@@ -1875,16 +1875,23 @@ jobs:
         if: steps.plan.outputs.build == 'true'
         # The release installs it the same way (.github/actions/release-images),
         # with bounded retries here because a failed download is not a finding.
+        # Into a directory this job owns, put on PATH for the steps after it:
+        # run 38663457125 (2026-10-15) was refused `/usr/local/bin` on this
+        # hosted runner ("install: cannot create regular file
+        # '/usr/local/bin/trivy': Permission denied") three times over.
         run: |
           set -euo pipefail
+          bin="${RUNNER_TEMP}/trivy-bin"
+          mkdir -p "${bin}"
           curl -sSfL --retry 5 --retry-all-errors -o "${RUNNER_TEMP}/trivy-install.sh" \
             "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh"
           for attempt in 1 2 3; do
-            if sh "${RUNNER_TEMP}/trivy-install.sh" -b /usr/local/bin "v${TRIVY_VERSION}"; then break; fi
+            if sh "${RUNNER_TEMP}/trivy-install.sh" -b "${bin}" "v${TRIVY_VERSION}"; then break; fi
             [ "${attempt}" -lt 3 ] || exit 1
             sleep $((10 * attempt))
           done
-          trivy --version
+          echo "${bin}" >> "$GITHUB_PATH"
+          "${bin}/trivy" --version
 
       - name: build with docker buildx, pushing nothing
         if: steps.plan.outputs.build == 'true'
