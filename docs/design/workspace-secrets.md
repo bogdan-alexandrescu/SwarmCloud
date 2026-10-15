@@ -562,6 +562,10 @@ A grant to a profile slot is optional unless the profile declares the slot
 `required` (§7 request A). A required slot with no enabled grant parks the task
 `CREDENTIAL_MISSING` **before** it leases, at no cost, and it starts by itself
 once the grant is ticked, which is today's rule for a missing provider key.
+Admission counts a grant as present when it is enabled. A grant's
+`attestation` is enforced by the release, not by admission, so a forged grant
+can at worst admit a task that the worker's backstop then parks ("What
+SEC-ADMIT-PARK built", end of §4).
 
 ### 4.3 Rotation and revocation
 
@@ -706,11 +710,49 @@ from §3.3, and why:
 * **The scheduler** hands the registration nonce to a child whose profile or
   launched tools declare a slot, git tools or not
   (`consumes_workspace_secrets`).
-* **Not built here: the scheduler's pre-lease park.** No catalogue slot is
-  `required` today (request 80), so a required slot with no enabled grant
-  never reaches admission. The worker's park above is the backstop. Admission
-  reading the grants is `scheduler/loop.py` and `credentials.py`, outside
-  this lane's territory, and is the owner's question in this lane's PR.
+* **The scheduler's pre-lease park** was left to a later lane, which built it
+  next (below).
+
+### What SEC-ADMIT-PARK built (2026-10-15, part of #1347)
+
+§4.2's pre-lease park. `apps/scheduler/scheduler/secret_slots.py` states the
+rule: `missing_required_slots(profile, inputs, granted)` is pure, and
+`WorkspaceGrants` reads it. `credentials.credential_for` asks it as the last
+half of its one question, after the provider key and the GitHub connection.
+So `loop.Scheduler._admit_one` parks `CREDENTIAL_MISSING` before the capacity
+transaction, and `_promote_credentials` returns the park to `READY` once every
+required slot has an enabled grant. Held by
+`tests/unit/control_plane/test_secret_slot_admission.py`.
+
+* **The consumers are the release's.** `profile:<name>` when the profile
+  declares a slot, and `tool:<t>` for each tool `tools_launched` says its
+  `browser_tool` launches, spelt by `consumer_name`. The scheduler's image does
+  not carry swarm-api, and `swarm_common` is frozen, so `attempt_consumers`
+  could not be moved. The derivation is composed from the same frozen pieces,
+  and a test holds it to `attempt_consumers` for every profile and every
+  `browser_tool` value. The components (`merge`, `indexer`) declare no slot,
+  so they can require nothing.
+* **A grant counts when it is enabled** and its own document names the task's
+  workspace. A grant naming no slot fills its consumer's only slot. **The
+  release, not admission, is where a grant is proven:** admission reads no
+  secret record of the workspace's own and no `attestation`, so a forged
+  grant can at worst admit a task that the worker's backstop then parks.
+* **Q3 at admission.** A group task counts the submitter's personal secret
+  under the release's rule: the personal tenant names them, and the record is
+  theirs, `personal`, `active` and opted in to this workspace. The one check
+  admission cannot make is the directory's "a member of the group NOW", so a
+  person who has left the group is admitted and then parked by the worker.
+* **The event** keeps `credentials.py`'s fields (`provider`,
+  `account_pool`) and adds `workspace_secrets: [{consumer, slot}]`. It holds
+  names only, never a secret id.
+* **The sweep asks every `CREDENTIAL_MISSING` park,** the worker's backstop
+  park included. A park for a key or an account that is still missing stays
+  parked whatever the grants say. A backstop park whose grant is ticked is
+  promoted at once, even when the worker parked because swarm-api was
+  unreachable, as it was before this lane.
+* **One query per admission pass**, of every enabled grant, made lazily: only
+  a task that requires a slot reads it. No catalogue slot is required yet
+  (request 80), so today no pass reads anything extra.
 
 ### What SEC-GRANT-ATTEST built (2026-10-15, part of #1347)
 

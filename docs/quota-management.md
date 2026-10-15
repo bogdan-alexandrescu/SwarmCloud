@@ -183,7 +183,7 @@ capacity (invariant 1).
 | `DEPENDENCY_INCOMPLETE` | upstream workflow step unfinished | dependency sweep |
 | `MANUAL_PAUSE` | its tenant is missing or disabled, or its runner profile left the catalogue | the scheduler's `_promote_manual_pauses`, once the tenant is enabled, the profile is back, and no pool it needs is `enabled == false` (`resume-swarm.sh` writes it back) |
 | `BUDGET_EXHAUSTED` | **never written**: there are no per-tenant budgets, built or planned (owner, 2026-10-01); `monthly_budget_usd` is refused at `apps/swarm-api/swarm_api/routes/admin.py::set_tenant_limits` | no sweep reads it (`apps/scheduler/scheduler/loop.py::Scheduler._stop_for_failed_workflow`); the frozen enum keeps the value (`apps/common/swarm_common/states.py::ParkReason.BUDGET_EXHAUSTED`) and [contract request 39](contract-change-requests.md) asks about removing it |
-| `CREDENTIAL_MISSING` | tenant has no key for this provider, and no pool account can run the profile for it | admin adds the key, or lends the tenant an account. A worker's park on a task the pool serves also waits for its `next_eligible_at` (below) |
+| `CREDENTIAL_MISSING` | tenant has no key for this provider, and no pool account can run the profile for it; or a workspace-secret slot the profile, or a tool it launches, declares `required` has no enabled grant | admin adds the key, or lends the tenant an account, or ticks the grant. A worker's park on a task the pool serves also waits for its `next_eligible_at` (below) |
 
 `CREDENTIAL_MISSING` is worth calling out: a tenant that has not registered a key
 is **not** an error. The task parks, costs nothing, and starts by itself once an
@@ -236,6 +236,24 @@ mounts a secret the tenant does not have. Two sweeps handle this case:
   as the outage lasted. A key registered in the meantime makes the answer the
   tenant's own key, and the sweep promotes that at once. Admission's own parks
   carry no `next_eligible_at`, so this wait does not delay them.
+
+**A required workspace secret is part of the same answer** (lane
+SEC-ADMIT-PARK, docs/design/workspace-secrets.md §4.2). When the key and the
+GitHub connection say yes, `credential_for` also asks
+`apps/scheduler/scheduler/secret_slots.py` whether the profile, or a tool its
+`browser_tool` launches, declares a `required` slot with no enabled grant in
+the task's workspace (or, on a group task, the submitter's own opted-in
+personal secret, owner decision Q3). If one is missing, admission parks the task
+`CREDENTIAL_MISSING` before the capacity transaction, so nothing is leased and
+no pool counter moves. The `parked` event keeps the `provider` and
+`account_pool` fields and adds `workspace_secrets: [{consumer, slot}]`. It
+holds names only, never a secret id. The credential sweep asks the same
+question of every `CREDENTIAL_MISSING` park, including the worker's backstop
+park (`provider: workspace-secret:<slots>`). It promotes a park once every
+required slot has an enabled grant, and only when the key and the connection
+still say yes. The grants are read in one query per admission pass, and only
+when some task in it requires a slot. No catalogue slot is required yet
+(contract request 80), so today that query never runs.
 
 ---
 
