@@ -243,6 +243,9 @@ describe('2. a finished task replaces "starting"', () => {
     await waitFor(() => expect(screen.getByText(/This agent has finished/)).toBeTruthy())
     expect(screen.queryByText('The agent’s browser is starting.')).toBeNull()
 
+    // The checkpoints pane reads the task on its own 10 s clock until it sees
+    // the finish; that read is its own, not this tab's, so it is let land first.
+    await advance(10_500)
     const tasks = api.loadTask.mock.calls.length
     const sessions = api.loadLiveSession.mock.calls.length
     await advance(LIVE_POLL_MS * 10)
