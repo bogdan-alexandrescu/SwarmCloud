@@ -272,15 +272,19 @@ SWITCHES: dict[str, Switch] = {
     ),
     # Lane CTXQ-SET (codeintel.py): a member of a workspace who is neither its
     # owner nor a platform admin changing its code-intelligence setting, or a
-    # repository's `context` override. Off, the change goes through and is
-    # audited under the caller's name. A non-member is the established 404.
+    # repository's `context` override. SHIPS ON (default=True) by owner
+    # decision 2026-10-14, unlike a new refusal's usual report-only start:
+    # this setting decides whether code goes to Jev. Set
+    # REFUSAL_CODE_INTELLIGENCE_OWNER_REQUIRED=off to let the change through
+    # (audited under the caller's name). A non-member is the established 404.
     "code_intelligence_owner_required": Switch(
         code="code_intelligence_owner_required",
         why="a member of a workspace who is neither its owner (a personal workspace's "
         "principal) nor a platform admin is refused 403 when changing its code-intelligence "
-        "setting or a repository's context override. On once the console offers the change "
-        "only to those who may make it (the setting's can_edit), and the log shows no member "
-        "relying on it",
+        "setting or a repository's context override. Ships on by owner decision 2026-10-14 "
+        "because this setting decides whether code goes to Jev; the console offers the change "
+        "only to those who may make it (the setting's can_edit)",
+        default=True,
     ),
     # The browser tool a submission names (BSTATUS-API, contract request 77):
     # `jev` with no TypeSafe key for the submitter or the tenant, or with no

@@ -9,9 +9,9 @@ docs/design/context-quality.md §4.7 and §5.4. Owner decisions 2026-10-14:
     local context is whatever the platform default is (`inherit`);
   * only the workspace's owner (a personal workspace's principal) or a
     platform admin changes it, as for `judgment_backend`: a member is 403
-    once the switched `code_intelligence_owner_required` is on (it ships
-    off, report-only), a caller outside the workspace 404 whatever the
-    switch, and nothing is written for either;
+    `code_intelligence_owner_required` (the switch SHIPS ON, owner decision
+    2026-10-14), a caller outside the workspace 404, and nothing is written
+    for either;
   * every change is one `admin_audit` row written in the SAME transaction: a
     failed write writes neither the setting nor the row.
 
@@ -151,23 +151,31 @@ def test_a_platform_admin_changes_any_workspace(client, db, seeded):
     assert all(_block(db, t)["jev"] is True for t in ("eng", "research", CAROL_TENANT))
 
 
-def test_a_member_cannot_change_it_once_the_switch_is_on(client, db, seeded, monkeypatch):
+def test_a_member_cannot_change_it_and_nothing_is_written(client, db, seeded, monkeypatch):
     # alice is a member of eng, neither its owner (a group has none) nor an admin.
-    monkeypatch.setenv(refusals.env_name(codeintel.OwnerRequired.code), "on")
+    # No env is set: the refusal is enforced by default.
+    monkeypatch.delenv(refusals.env_name(codeintel.OwnerRequired.code), raising=False)
     response = _put(client, "eng", "alice", {"jev": True})
     assert response.status_code == 403, response.text
     assert response.json()["code"] == codeintel.OwnerRequired.code
     assert _document(db, "eng") is None
     assert _audit(db) == []
+    # CONTROL: the platform admin and a personal workspace's owner still succeed, one audit row each.
+    assert _put(client, "eng", "root", {"jev": True}).status_code == 200
+    assert _put(client, CAROL_TENANT, "carol", {"jev": True}).status_code == 200
+    assert len(_audit(db)) == 2
 
 
-def test_the_owner_refusal_is_a_switched_refusal_that_ships_off(client, db, seeded, monkeypatch):
+def test_the_owner_refusal_ships_on_by_owner_decision(client, db, seeded, monkeypatch):
+    # Was test_the_owner_refusal_is_a_switched_refusal_that_ships_off (report-only);
+    # changed to the enforced behaviour by owner decision 2026-10-14.
     switch = refusals.SWITCHES[codeintel.OwnerRequired.code]
-    assert switch.default is False
+    assert switch.default is True
     monkeypatch.delenv(switch.env, raising=False)
-    # Report-only: the change goes through, and it is audited as anyone's is.
-    response = _put(client, "eng", "alice", {"jev": True})
-    assert response.status_code == 200, response.text
+    assert _put(client, "eng", "alice", {"jev": True}).status_code == 403
+    # It can still be switched off explicitly, and then the change is audited under the caller.
+    monkeypatch.setenv(switch.env, "off")
+    assert _put(client, "eng", "alice", {"jev": True}).status_code == 200
     (entry,) = _audit(db)
     assert entry["by"] == "alice@saga.xyz"
 

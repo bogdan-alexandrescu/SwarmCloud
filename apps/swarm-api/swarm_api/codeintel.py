@@ -41,7 +41,7 @@ personal workspace -- `kind: user`, its principal the caller's verified
 email -- or a platform admin (`require_admin`, which answers 503 rather than
 403 when the directory could not be asked). A member who is neither is
 refused `code_intelligence_owner_required` (403) through `refusals.refuse`, a
-SWITCHED refusal that ships report-only (refusals.py): off, the change goes
+SWITCHED refusal that SHIPS ON (owner decision 2026-10-14; refusals.py): switched off, the change goes
 through and is audited under the caller's name. A caller who is not a member at all is
 the established 404: another workspace's setting is neither served nor
 confirmed to exist, and nothing a non-member sends is written (invariant 9).

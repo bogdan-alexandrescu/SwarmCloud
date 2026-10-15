@@ -7,8 +7,8 @@ caller's choice. What these tests hold:
 
   * a registration starts with no override (`inherit`);
   * the workspace's owner or a platform admin sets it; a member is 403 with
-    nothing written once `code_intelligence_owner_required` is on, and is let
-    through and audited while that switched refusal ships off;
+    nothing written (`code_intelligence_owner_required` ships on), and is let
+    through and audited only while that switch is explicitly off;
   * `inherit` clears it -- stored null, the workspace's value again, which is
     what `agent_worker.graphstage.decide` then reads;
   * each change is one `admin_audit` row written in the same transaction as
@@ -97,9 +97,10 @@ def test_a_platform_admin_sets_it(client, db, seeded):
     assert entry["by"] == "root@saga.xyz"
 
 
-def test_a_member_cannot_set_it_once_the_switch_is_on(client, db, seeded, monkeypatch):
-    # alice is a member of eng: she may PATCH its schedule, not this.
-    monkeypatch.setenv(refusals.env_name(codeintel.OwnerRequired.code), "on")
+def test_a_member_cannot_set_it_and_nothing_is_written(client, db, seeded, monkeypatch):
+    # alice is a member of eng: she may PATCH its schedule, not this. The
+    # refusal is enforced with no env set (ships on, owner decision 2026-10-14).
+    monkeypatch.delenv(refusals.env_name(codeintel.OwnerRequired.code), raising=False)
     response = _patch(client, ENG_WIDGETS, {"context": "off"}, "alice")
     assert response.status_code == 403, response.text
     assert "context" not in db.docs[f"repositories/{ENG_WIDGETS}"]
@@ -108,8 +109,9 @@ def test_a_member_cannot_set_it_once_the_switch_is_on(client, db, seeded, monkey
     assert _patch(client, ENG_WIDGETS, {"paused": True}, "alice").status_code == 200
 
 
-def test_a_member_sets_it_while_the_switch_is_off(client, db, seeded, monkeypatch):
-    monkeypatch.delenv(refusals.env_name(codeintel.OwnerRequired.code), raising=False)
+def test_a_member_sets_it_only_while_the_switch_is_explicitly_off(client, db, seeded, monkeypatch):
+    # Was "while the switch is off" (the default); the default is now on.
+    monkeypatch.setenv(refusals.env_name(codeintel.OwnerRequired.code), "off")
     response = _patch(client, ENG_WIDGETS, {"context": "off"}, "alice")
     assert response.status_code == 200, response.text
     assert db.docs[f"repositories/{ENG_WIDGETS}"]["context"] == "off"
