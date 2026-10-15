@@ -56,8 +56,8 @@
 # WHAT IT STILL REACHES (the residual, for the security review). Any secret
 # under the prefix whose id ENDS in `-typesafe` after a non-empty tenant: a
 # saved browser login named `typesafe` or `<x>-typesafe`
-# (`swarm-tenant-u-<user>-browser-login-typesafe`; browser_logins.NAME accepts
-# it today). The forwarder reads only the secret a verified ticket names, and
+# (the browser-login secret id for login `typesafe`, which browser_logins.tf
+# spells; browser_logins.NAME accepts it today). The forwarder reads only the secret a verified ticket names, and
 # swarm-api mints only `Tenant.secret_name("typesafe")`, so its code never
 # names one; closing it in IAM needs matches() or a list. The fix belongs where
 # login names are made (refuse a login name ending `typesafe`), which is apps/,

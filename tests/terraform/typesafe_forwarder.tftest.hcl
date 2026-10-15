@@ -236,7 +236,7 @@ run "no_secret_no_worker_and_every_resource_labelled" {
   # Under `inject` the key never enters a pod: this grant is the forwarder's,
   # and names no tenant worker.
   assert {
-    condition = alltrue([
+    condition = var.enable_typesafe_forwarder_read && alltrue([
       for f in ["worker_ids", "swarm-agent-worker", "service_account_ids", "serviceAccount:"] :
       !strcontains(file("../../terraform/bootstrap/typesafe_forwarder.tf"), f)
     ])
