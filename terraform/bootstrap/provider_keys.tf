@@ -21,15 +21,28 @@
 #         add_secret_version      secretmanager.versions.add
 #         list_secret_versions    secretmanager.versions.list
 #         destroy_secret_version  secretmanager.versions.destroy
+#         disable_secret_version  secretmanager.versions.disable
 #
-#       NOT secrets.get: credentials.py never reads a secret's metadata. A
+#       The last is workspace_secrets.py's (SecretManagerWorkspaceSecrets,
+#       the workspace secrets store, #1347), which runs as the same swarm-api
+#       account on the same swarm-tenant-* names and otherwise calls a subset
+#       of the above. Owner decision Q5: a rotated-out version stays ENABLED
+#       24 hours, then POST /v1/admin/workspace-secrets/rotation-sweep
+#       DISABLES it and never destroys it. Disable is narrower than the
+#       destroy the role already held -- a disabled version can be enabled
+#       again, a destroyed one cannot -- and the condition below narrows it
+#       to swarm-tenant-* versions like the other versions.* permissions. NOT
+#       versions.enable: nothing re-enables a version.
+#
+#       NOT secrets.get: neither file reads a secret's metadata. A
 #       second write to an existing secret is create_secret answering
 #       ALREADY_EXISTS, which create authorises on the project. NOT
-#       versions.access: the module has no read path, by design. NOT
+#       versions.access: neither module has a read path, by design. NOT
 #       secrets.delete: a deleted key keeps its secret and its IAM binding, so
 #       setting it again is the ordinary write. tests/terraform/
-#       provider_keys.tftest.hcl reads credentials.py and fails when a call is
-#       added or removed there without this list following.
+#       provider_keys.tftest.hcl reads credentials.py and workspace_secrets.py
+#       and fails when a call is added or removed there without this list
+#       following.
 #   google_project_iam_member.provider_key_writer        swarm-api holds it,
 #       under one condition (below).
 #
@@ -38,7 +51,7 @@
 #   * `resource.name.startsWith("projects/<NUMBER>/secrets/swarm-tenant-")`.
 #     The project NUMBER: IAM evaluates Secret Manager names with it, and the
 #     project ID "can't be substituted" there (docs.cloud.google.com/iam/docs/
-#     conditions-resource-attributes). getIamPolicy, setIamPolicy and the three
+#     conditions-resource-attributes). getIamPolicy, setIamPolicy and the four
 #     versions.* permissions are evaluated against the secret or the version
 #     (`.../secrets/<id>/versions/<v>`, which starts with the same prefix), so
 #     this arm NARROWS them to the platform's tenant secrets: never
@@ -50,7 +63,7 @@
 #     503. This arm is what lets create through, and the condition CANNOT
 #     narrow create: swarm-api may create an empty secret with any name. It
 #     cannot read, version, or set IAM on one outside the name arm. The other
-#     five permissions are never checked against a project, so this arm
+#     six permissions are never checked against a project, so this arm
 #     grants them nothing. browser_logins.tf's provisioner and
 #     forge_user_slots.tf's unconditioned swarmForgeSlotCreator record the
 #     same finding; while either is on, swarm-api already holds this create,
@@ -86,7 +99,8 @@
 # condition. So the owner applies this (dev-iam).
 #
 # NOT VERIFIED LIVE: that IAM evaluates resource.name for getIamPolicy,
-# setIamPolicy, versions.add, versions.list and versions.destroy in the full
+# setIamPolicy, versions.add, versions.list, versions.destroy and
+# versions.disable in the full
 # `projects/<n>/secrets/<id>[/versions/<v>]` form; that secrets.create is
 # evaluated with resource.type `cloudresourcemanager.googleapis.com/Project`;
 # and that create on an existing secret answers ALREADY_EXISTS without
@@ -141,14 +155,16 @@ resource "google_project_iam_custom_role" "provider_key_writer" {
   description = "managed-by=swarm-terraform; swarm-api stores and destroys tenant provider keys (KEYS-IAM). No versions.access, but setIamPolicy lets it grant read on swarm-tenant-* secrets to anyone, itself too."
   stage       = "GA"
 
-  # credentials.py's calls, one each (the header's table). Not
-  # roles/secretmanager.admin, which reads every value in the shared project.
+  # credentials.py's and workspace_secrets.py's calls, one each (the header's
+  # table). Not roles/secretmanager.admin, which reads every value in the
+  # shared project.
   permissions = [
     "secretmanager.secrets.create",
     "secretmanager.secrets.getIamPolicy",
     "secretmanager.secrets.setIamPolicy",
     "secretmanager.versions.add",
     "secretmanager.versions.destroy",
+    "secretmanager.versions.disable",
     "secretmanager.versions.list",
   ]
 }

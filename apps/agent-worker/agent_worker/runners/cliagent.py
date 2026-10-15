@@ -50,6 +50,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .. import expected_outputs as expected_mod
 from .. import issue as issue_mod
+from ..cachedirs import AGENT_CACHE_ENV
 from ..gitidentity import GIT_IDENTITY_ENV
 from ..logs import StructuredLogger
 from ..procman import TRUNCATION_MARK, ChildProcess, ChildResult, run_child
@@ -89,7 +90,16 @@ _SENSITIVE_PASSTHROUGH: tuple[str, ...] = ("HTTPS_PROXY", "HTTP_PROXY", "TYPESAF
 #: (P37, `agent_worker.gitidentity`): the worker sets them from the task
 #: document, so an agent's `git commit` names that person instead of failing
 #: for want of an identity. A name and an address, never a secret.
-_PLAIN_PASSTHROUGH: tuple[str, ...] = ("NO_PROXY", "NODE_EXTRA_CA_CERTS", *GIT_IDENTITY_ENV)
+#: The cache variables (`cachedirs.AGENT_CACHE_ENV`, CACHE-SCRATCH) are the
+#: worker's paths for the agent's tool caches, off the workspace volume, and
+#: the switches that keep them small on Cloud Run. TMPDIR is set above with
+#: the platform's own values, so it is not repeated here.
+_PLAIN_PASSTHROUGH: tuple[str, ...] = (
+    "NO_PROXY",
+    "NODE_EXTRA_CA_CERTS",
+    *GIT_IDENTITY_ENV,
+    *(name for name in AGENT_CACHE_ENV if name != "TMPDIR"),
+)
 
 #: Substrings that mean "the provider said no, try later".
 _RATE_LIMIT_MARKERS = (

@@ -15,7 +15,10 @@ URLs registered for redaction, since one can embed a password); and, when set,
 the dispatcher's git identity, `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`,
 `GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL` (#764, `agent_worker.gitidentity`),
 which the worker sets from the task so an agent's `git commit` names that
-person; `PLAYWRIGHT_BROWSERS_PATH` when the image sets it (the browser
+person; the worker's cache variables (`cachedirs.AGENT_CACHE_ENV`:
+`UV_CACHE_DIR`, `npm_config_cache`, `PIP_CACHE_DIR`, `TF_PLUGIN_CACHE_DIR`,
+`XDG_CACHE_HOME` and their switches, CACHE-SCRATCH), so the agent's tool
+caches stay off the workspace volume; `PLAYWRIGHT_BROWSERS_PATH` when the image sets it (the browser
 image only, below); and, when the worker set them, the live hand-off's
 variables -- `SWARM_HANDOFF`, `SWARM_CDP_ENDPOINT`, `SWARM_BROWSER_UPLOADS`,
 and the workspace's Jev judgment backend `SWARM_JEV_BACKEND` with, for an
@@ -171,9 +174,13 @@ THE JEV GATE (JEV-RUNNER + BSTATUS-API + JUDGE-SELECT, part of #1030). The
 `jev` MCP server is registered when BOTH hold. (a) The task's `browser_tool`
 allows it: `jev` or `auto` (`browser_tools.choose`; never `playwright` or
 `dev-browser`). (b) The workspace's judgment backend `SWARM_JEV_BACKEND` can
-run it (`_jev_plan`): `internal-jev` / `internal-laya` need NO TypeSafe key
-and no key file is ever written (the entry is the wrapper itself; the
-wrapper refuses by itself when its egress URL is absent); `typesafe`, or
+run it (`_jev_backend_key`): `internal-jev` / `internal-laya` need NO
+TypeSafe key and no key file is ever written (the entry is the wrapper
+itself), but they need the route: `JEV_API_URL`, which the dispatcher sends
+only while the tailnet egress is on. Without it the wrapper refuses to
+start, so the server is NOT registered and the note says why (`no_route`;
+JEV-OFF, #1345: measured 2026-10-15, a registered server failed and the
+agent fell back to Playwright with nothing said); `typesafe`, or
 unset on an old pod, needs the worker's key file (`SWARM_JEV_KEY_FILE`, a
 0600 file in `private/`, never the key; `agent_worker.jevkey`). For a key
 file the entry's command is `jev_launch.py`, which reads it and execs the
@@ -335,6 +342,10 @@ LIVE_BROWSER_DEV_BROWSER_NOTE = (
 #: runner's environment (the key's delivery is lane JEV-RUNNER's).
 JEV_MCP_BIN = "/opt/swarm/jev-browser/bin/jev-browser-mcp"
 JEV_MCP_SERVER_NAME = "jev"
+#: The decision API's address for an internal judgment backend, set by the
+#: dispatcher only while the tailnet egress is on (scheduler.judgment
+#: JEV_API_URL_ENV) and passed on by handoff.AGENT_PASSTHROUGH_ENV.
+JEV_URL_ENV = "JEV_API_URL"
 JEV_KEY_ENV = "TYPESAFE_API_KEY"
 #: Run by absolute path with this runner's interpreter, like the stdin hook,
 #: so the agent cannot edit the copy a later attempt runs (key-file path only).
@@ -392,6 +403,12 @@ JEV_UNAVAILABLE_NOTE = {
     browser_tools.NOT_INSTALLED: (
         "jev was chosen for this task but is not installed in this image, so it "
         "is not registered: use the browser_* tools."
+    ),
+    browser_tools.NO_ROUTE: (
+        "jev was chosen for this task but is unavailable: this workspace judges "
+        "with Saga's internal decision API, and this attempt has no route to it "
+        "(the tailnet egress is off), so it is not registered: use the browser_* "
+        "tools."
     ),
 }
 
@@ -804,11 +821,16 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
             choice = browser_tools.choose(
                 ctx.payload.get("browser_tool"),
                 jev_installed=Path(JEV_MCP_BIN).is_file(),
-                # ONE gate: an internal backend needs no key; typesafe/unset
-                # needs the worker's key file (module docstring, THE JEV GATE).
+                # ONE gate: an internal backend needs no key but needs its
+                # route; typesafe/unset needs the worker's key file (module
+                # docstring, THE JEV GATE).
                 jev_key=jev_internal or bool(jev_key_file),
+                jev_route=not jev_internal or bool(os.environ.get(JEV_URL_ENV, "").strip()),
             )
             jev = choice.jev_enabled
+            if choice.jev_reason == browser_tools.NO_ROUTE:
+                StructuredLogger(stream=sys.stderr, component="claude-code-runner").warning(
+                    "jev_unavailable", reason="no route to the decision API (JEV_API_URL unset)")
             if not jev:
                 jev_key_file, jev_internal = "", False
             browser_tools.write_state(env.get(HANDOFF_ENV, ""), choice)

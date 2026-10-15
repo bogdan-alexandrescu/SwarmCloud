@@ -186,6 +186,11 @@ spec:
               value: __ARTIFACT_BUCKET__
             - name: WORKSPACE_ROOT
               value: /workspace
+            # The pod's `cache` volume (CACHE-SCRATCH): where the worker puts
+            # the agent's tool caches and TMPDIR, off the workspace volume.
+            # GkeJobDispatcher's CACHE_MOUNT / CACHE_ROOT_ENV.
+            - name: SWARM_CACHE_ROOT
+              value: /cache
             - name: CHECKPOINT_INTERVAL_SECONDS
               value: "__CHECKPOINT_INTERVAL_SECONDS__"
             - name: MAX_IN_WORKER_RETRY_DELAY_SECONDS
@@ -227,6 +232,8 @@ spec:
               mountPath: /dev/shm
             - name: tmp
               mountPath: /tmp
+            - name: cache
+              mountPath: /cache
             - name: home
               mountPath: /home/swarm
             # The step-spec public keys (contract request 34): terraform's
@@ -248,8 +255,15 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 2Gi
-        # /tmp and HOME from the dispatcher's GkeDisk, like the workspace: the
-        # three sizeLimits add up to the pod's ephemeral-storage, never past it.
+        # The cache, /tmp and HOME from the dispatcher's GkeDisk, like the
+        # workspace: the four sizeLimits add up to the pod's ephemeral-storage,
+        # never past it.
+        # The agent's tool caches and TMPDIR (CACHE-SCRATCH, the three
+        # evictions of 2026-10-15 on the workspace volume). DISK, its own
+        # sizeLimit, counted in __EPHEMERAL__; never checkpointed.
+        - name: cache
+          emptyDir:
+            sizeLimit: __CACHE_DISK__
         - name: tmp
           emptyDir:
             sizeLimit: __TMP_DISK__

@@ -229,21 +229,27 @@ Every pod carries:
   `cloud.google.com/gke-extended-run-time`, which is not a real annotation and
   which nothing in this repository sets;
 * `requests == limits` on cpu, memory and ephemeral storage. Ephemeral storage
-  is the WHOLE pod's local disk, because kubelet adds the workspace, `/tmp` and
-  HOME emptyDirs together and evicts the pod (no checkpoint, no park) when
-  their total passes it. On Cloud Run only the workspace is a capped tmpfs, and
-  `/tmp` (where the worker builds checkpoint archives of up to 2 GiB) and HOME
-  are outside that cap. So a `standard` pod on GKE gets 10 GiB, split 5 for
-  the workspace + 4 for `/tmp` + 1 for HOME (#893; it was 4 + 2 + 4 under
-  contract request 53). 10 GiB is also the most Autopilot accepts for a
-  general-purpose pod. `browser` gets 8 GiB, split 4 workspace +
-  2 `/tmp` + 2 HOME (owner, 2026-10-07; `/tmp` must hold a 2 GiB checkpoint
-  archive). That was its `disk_gib` until contract request 79 made `disk_gib`
-  4; `disk_gib` sizes Cloud Run's memory tmpfs, and these GKE volumes are disk
+  is the WHOLE pod's local disk, because kubelet adds the workspace, cache,
+  `/tmp` and HOME emptyDirs together and evicts the pod (no checkpoint, no
+  park) when their total passes it. On Cloud Run only the workspace is a capped
+  tmpfs, and `/tmp` (where the worker builds checkpoint archives of up to
+  2 GiB) and HOME are outside that cap. So a `standard` pod on GKE gets 10 GiB,
+  split 5 for the workspace + 2 for the agent's caches + 2 for `/tmp` + 1 for
+  HOME (CACHE-SCRATCH, 2026-10-15; it was 5 + 4 `/tmp` + 1 under #893, and
+  4 + 2 + 4 under contract request 53). 10 GiB is also the most Autopilot
+  accepts for a general-purpose pod. `browser` gets 10 GiB: the owner's
+  4 workspace + 2 `/tmp` + 2 HOME (2026-10-07; `/tmp` must hold a 2 GiB
+  checkpoint archive), unchanged, plus the 2 GiB cache. Its 8 GiB before the
+  cache was also its `disk_gib` until contract request 79 made `disk_gib` 4;
+  `disk_gib` sizes Cloud Run's memory tmpfs, and these GKE volumes are disk
   outside the memory limit, so the request left the layout alone. Before
-  2026-10-07 its volumes were 8 + 2 + 4 = 14 GiB under that 8 GiB limit, so the
-  pod could be evicted before any one volume was full. The per-class layout is `GkeDisk` in `scheduler/dispatch.py`, and a unit
-  test holds every class to sum(sizeLimits) <= ephemeral-storage <= 10 GiB;
+  2026-10-07 its volumes were 8 + 2 + 4 = 14 GiB under an 8 GiB limit, so the
+  pod could be evicted before any one volume was full. The per-class layout is
+  `GkeDisk` in `scheduler/dispatch.py`, and a unit test holds every class to
+  sum(sizeLimits) <= ephemeral-storage <= 10 GiB;
+* a `cache` emptyDir of its own, mounted at `/cache` and named to the worker
+  as `SWARM_CACHE_ROOT`, for the agent's tool caches and TMPDIR -- see
+  [worker-images.md](worker-images.md#where-an-agents-caches-go-cache-scratch);
 * `restartPolicy: Never` and `backoffLimit: 0` — the control plane owns retries;
 * the tenant's Kubernetes service account, workload-identity-bound to the
   tenant's Google service account;

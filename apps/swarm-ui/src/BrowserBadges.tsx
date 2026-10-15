@@ -16,6 +16,13 @@
  * drawn in part: a [Residential · US] badge read off a missing `state` would
  * say the proxy is fine when nothing reported it.
  *
+ * [Jev off · Playwright] WHEN JEV WAS PICKED AND THE ATTEMPT FELL BACK (lane
+ * JEV-OFF, part of #1345). Measured 2026-10-15: a jev task whose workspace
+ * had no route to the decision API ran on Playwright while this chip read
+ * "Jev". The runner reports why jev is off (`no_key`, `not_installed`,
+ * `no_route`), and swarm-api serves the workspace's reason before it has;
+ * either way the chip says what the agent actually drives.
+ *
  * WHY [Proxy off] ONLY WHEN RESIDENTIAL WAS EXPECTED: a pod dispatched
  * without egress leaves through the NAT by design (docs/browser-egress.md);
  * calling that "off" would read as a fault on every ordinary task. Direct is
@@ -36,7 +43,7 @@ export interface LiveBrowserTools {
   tool_last_used: { name: BrowserTool; at: string } | null
   jev: {
     enabled: boolean
-    reason: 'no_key' | 'not_installed' | 'not_selected' | null
+    reason: 'no_key' | 'not_installed' | 'not_selected' | 'no_route' | null
     key_scope: 'user' | 'tenant' | null
   }
   egress: {
@@ -87,7 +94,7 @@ export function browserStatusOf(raw: unknown): LiveBrowserTools | null {
   if (typeof jev.enabled !== 'boolean') return null
   const reason = jev.reason ?? null
   const scope = jev.key_scope ?? null
-  if (!(reason === null || oneOf(reason, ['no_key', 'not_installed', 'not_selected'] as const))) return null
+  if (!(reason === null || oneOf(reason, ['no_key', 'not_installed', 'not_selected', 'no_route'] as const))) return null
   if (!(scope === null || oneOf(scope, ['user', 'tenant'] as const))) return null
   const e = r.egress
   if (typeof e !== 'object' || e === null) return null
@@ -168,6 +175,8 @@ const JEV_WHY: Record<NonNullable<LiveBrowserTools['jev']['reason']>, string> = 
   no_key: 'Jev is off: there is no TypeSafe key for this task. Add one in Settings › API keys.',
   not_installed: 'Jev is off: this runner image does not carry it.',
   not_selected: 'Jev is off: it was not chosen for this task.',
+  no_route:
+    'Jev is off: this workspace judges with Saga’s internal decision API, and this task has no route to Saga’s decision API (the tailnet egress is off). The agent uses Playwright.',
 }
 
 const CHANGE_TOOL = 'The tool is chosen with Browser tool on Submit when a task starts; it does not change while the task runs.'
@@ -176,12 +185,16 @@ const CHANGE_TOOL = 'The tool is chosen with Browser tool on Submit when a task 
 export function BrowserBadges({ status, now = Date.now() }: { status: LiveBrowserTools | null; now?: number }) {
   if (status === null) return null
   const sel = status.tool_selected
+  // Jev picked and off for a known reason: the attempt runs on Playwright.
+  const jevFellBack = sel === 'jev' && !status.jev.enabled && status.jev.reason !== null
   const toolLabel =
     sel === 'auto'
       ? status.tool_last_used === null
         ? 'Auto'
         : `Auto: ${TOOL_LABEL[status.tool_last_used.name]}`
-      : TOOL_LABEL[sel]
+      : jevFellBack
+        ? 'Jev off · Playwright'
+        : TOOL_LABEL[sel]
   const available = status.tools_available.map((t) => TOOL_LABEL[t]).join(', ')
 
   const eg = status.egress
@@ -200,7 +213,7 @@ export function BrowserBadges({ status, now = Date.now() }: { status: LiveBrowse
 
   return (
     <span className="bb-row" data-testid="browser-badges">
-      <Badge kind="tool" tone="plain" label={toolLabel}>
+      <Badge kind="tool" tone={jevFellBack ? 'warn' : 'plain'} label={toolLabel}>
         <span className="bb-line">
           {sel === 'auto'
             ? 'Auto: the agent picks the browser tool for each step.'

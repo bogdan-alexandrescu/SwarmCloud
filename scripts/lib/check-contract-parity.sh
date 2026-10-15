@@ -1970,11 +1970,11 @@ else:
     elif worker_tools != tools:
         wrong.append("agent_worker/browser_tools.py TOOLS is %s, the catalogue offers %s"
                      % (worker_tools, tools))
-    reasons = dict(re.findall(r"^(NO_KEY|NOT_INSTALLED|NOT_SELECTED) = \"([a-z_]+)\"", worker, re.M))
+    reasons = dict(re.findall(r"^(NO_KEY|NOT_INSTALLED|NOT_SELECTED|NO_ROUTE) = \"([a-z_]+)\"", worker, re.M))
     api = TEXT.get("apps/swarm-api/swarm_api/live.py", "")
     api_reasons = re.search(r"^JEV_REASONS: [^=]+= " + LP + r"([^\n]*)" + RP, api, re.M)
     listed = re.findall(r"\"([^\"]+)\"", api_reasons.group(1)) if api_reasons else None
-    if len(reasons) != 3 or listed is None:
+    if len(reasons) != 4 or listed is None:
         wrong.append("the jev reasons are no longer where this scan reads them")
     elif sorted(reasons.values()) != sorted(listed):
         wrong.append("swarm_api.live JEV_REASONS is %s, the worker sends %s"

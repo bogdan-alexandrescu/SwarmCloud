@@ -29,6 +29,8 @@ from types import MappingProxyType
 from typing import Any
 from urllib.parse import urlsplit
 
+from .models import PLATFORM_COMPONENTS, parse_consumer
+
 
 class Backend(str, Enum):
     CLOUD_RUN_JOB = "CLOUD_RUN_JOB"
@@ -726,6 +728,60 @@ def _frozen_inputs(declared: Mapping[str, RunnerInput]) -> Mapping[str, RunnerIn
     return MappingProxyType(dict(declared))
 
 
+#: Contract request 80 (workspace secrets, docs/design/workspace-secrets.md
+#: §2.1): the kinds a workspace secret can be. A kind decides the value's
+#: SHAPE (basic_auth is a JSON object of exactly username and password,
+#: oauth_client of exactly client_id and client_secret) and which slots may
+#: take it; never behaviour. `forge_token` is listed so a forge row has a
+#: kind, and is accepted by no profile or tool slot (owner rule 2026-09-25:
+#: a forge token is never readable by the agent).
+SECRET_KINDS: tuple[str, ...] = (
+    "api_key", "bearer_token", "basic_auth", "oauth_client", "opaque", "forge_token",
+)
+_SLOT_NAME = re.compile(r"[a-z][a-z0-9-]{0,31}")
+
+
+@dataclass(frozen=True)
+class SecretSlot:
+    """A place a consumer takes a workspace secret (design §2.4).
+
+    The slot's NAME is the key it is declared under and becomes a directory
+    (`private/secrets/<slot>/<name>`, design §4.1), so it is a short
+    lower-case word. A grant names one slot; a release lands each secret in
+    its grant's slot and nowhere else."""
+
+    kinds: tuple[str, ...]
+    means: str
+    #: True when the consumer cannot run without it: the task parks
+    #: CREDENTIAL_MISSING before it leases, at no cost (invariant 1), and
+    #: starts by itself once a grant is ticked. False (the default) starts
+    #: without it.
+    required: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.kinds:
+            raise ValueError("a secret slot accepts at least one kind")
+        unknown = [k for k in self.kinds if k not in SECRET_KINDS]
+        if unknown:
+            raise ValueError(f"secret slot: unknown kind(s) {unknown}")
+        if "forge_token" in self.kinds:
+            raise ValueError(
+                "secret slot: a forge token is never granted to a profile or a tool "
+                "(contract request 80)"
+            )
+        if not self.means.strip():
+            raise ValueError("secret slot: `means` says what the consumer does with it")
+
+
+#: The slot every agent profile declares: any non-forge kind, one 0600 file
+#: per secret, listed by name in the manifest the runner is pointed at.
+_FILES_SLOT = SecretSlot(
+    kinds=("api_key", "bearer_token", "basic_auth", "oauth_client", "opaque"),
+    means="one file per granted secret under private/secrets/files/, named in "
+          "the manifest at $SWARM_SECRETS_MANIFEST; never in the environment",
+)
+
+
 @dataclass(frozen=True)
 class RunnerProfile:
     name: str
@@ -833,6 +889,12 @@ class RunnerProfile:
     #: resolves the `browser` class to Cloud Run. Contract request 71 (LB-D),
     #: accepted by the owner 2026-10-11 (#1030).
     live_browser: bool = False
+    #: Contract request 80: the workspace-secret slots this profile's
+    #: attempts may be released into, by slot name. Empty (the default)
+    #: means a grant to `profile:<name>` is refused at write time. NOT the
+    #: provider key (`secrets` above, unchanged). Excluded from the hash, as
+    #: `inputs` is: a mapping is not hashable.
+    secret_slots: Mapping[str, SecretSlot] = field(default_factory=dict, hash=False)
 
     def __post_init__(self) -> None:
         if self.worker_action is not None and self.runner_argv:
@@ -871,6 +933,16 @@ class RunnerProfile:
                     "Run Job's service account, so its backend is CLOUD_RUN_JOB, not "
                     f"{self.backend.value} (contract request 60)"
                 )
+            if self.secret_slots:
+                raise ValueError(
+                    f"runner {self.name}: a worker_action profile runs no agent and "
+                    "takes no workspace secret (contract request 80)"
+                )
+        for slot, declared_slot in self.secret_slots.items():
+            if not _SLOT_NAME.fullmatch(slot):
+                raise ValueError(f"runner {self.name}: secret slot {slot!r} is not a slot name")
+            if not isinstance(declared_slot, SecretSlot):
+                raise ValueError(f"runner {self.name}: secret slot {slot!r} is not a SecretSlot")
         for key, declared in self.inputs.items():
             if not isinstance(declared, RunnerInput):
                 raise ValueError(f"runner {self.name}: input {key!r} is not a RunnerInput")
@@ -1296,6 +1368,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secrets_any_of=True,
         timeout_seconds=7200,
         inputs=_CLI_AGENT_INPUTS,
+        secret_slots={"files": _FILES_SLOT},   # contract request 80
     ),
     "codex": RunnerProfile(
         name="codex",
@@ -1327,6 +1400,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
             "registered credential and the platform is focused on Claude. Use "
             "claude-code."
         ),
+        secret_slots={"files": _FILES_SLOT},   # contract request 80
     ),
     "browser": RunnerProfile(
         name="browser",
@@ -1340,6 +1414,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secrets=("ANTHROPIC_API_KEY",),
         timeout_seconds=5400,
         inputs=_BROWSER_INPUTS,
+        secret_slots={"files": _FILES_SLOT},   # contract request 80
     ),
     # --- #295, the merge chain: contract requests 33, 35 and 36 -------------
     #
@@ -1436,6 +1511,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         never_restore_checkpoint=True,
         available=False,
         disabled_reason=_DISABLED_UNTIL_342,
+        secret_slots={"files": _FILES_SLOT},   # contract request 80
     ),
     # CONTRACT REQUEST 48, accepted by the owner 2026-10-05 (#625): claude-code
     # on agent-runtime-indexer, the image that carries the repository index's
@@ -1460,6 +1536,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secrets_any_of=True,
         timeout_seconds=7200,
         inputs=_CLI_AGENT_INPUTS,
+        secret_slots={"files": _FILES_SLOT},   # contract request 80
     ),
     # CONTRACT REQUEST 67, accepted by the owner 2026-10-11: claude-code on
     # agent-runtime-browser (Playwright + Chromium), so an agent can render
@@ -1486,8 +1563,127 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         inputs=_CLAUDE_CODE_BROWSER_INPUTS,
         # Contract request 71 (LB-D): the one live-browser profile.
         live_browser=True,
+        secret_slots={"files": _FILES_SLOT},   # contract request 80
     ),
 }
+
+
+#: Contract request 81 (workspace secrets, design §2.3): a program the
+#: platform launches INSIDE an attempt that can be granted a workspace
+#: secret on its own. A tool is a NAME, never an image or a command
+#: (invariant 10): the agent can start any process in its pod, so a grant
+#: is matched against the signed spec's `browser_tool`, never against a
+#: process name.
+@dataclass(frozen=True)
+class RuntimeTool:
+    name: str
+    #: The profiles whose attempts can launch this tool.
+    profiles: tuple[str, ...]
+    #: The `browser_tool` input values that launch it, on those profiles.
+    #: An attempt whose signed value is not listed never launches it, and is
+    #: never released a secret granted only to it.
+    launched_by: tuple[str, ...]
+    secret_slots: Mapping[str, SecretSlot] = field(default_factory=dict, hash=False)
+
+
+RUNTIME_TOOLS: Mapping[str, RuntimeTool] = MappingProxyType({
+    "jev-browser": RuntimeTool(
+        name="jev-browser",
+        profiles=("claude-code-browser",),
+        launched_by=("auto", "jev"),
+        # Optional, as every tool slot is: the profile runs without the tool,
+        # and with no grant `browser_tools.choose` takes its `no_key` path.
+        secret_slots={"typesafe": SecretSlot(
+            kinds=("api_key",),
+            means="the TypeSafe key jev_launch.py puts in the jev process's own "
+                  "environment; jev sends page text to TypeSafe",
+        )},
+    ),
+    "dev-browser": RuntimeTool(
+        name="dev-browser", profiles=("claude-code-browser",),
+        launched_by=("auto", "dev-browser"),
+    ),
+    "playwright": RuntimeTool(
+        name="playwright", profiles=("claude-code-browser",),
+        # The fallback under every choice (request 77's `means`).
+        launched_by=("auto", "playwright", "dev-browser", "jev"),
+    ),
+})
+
+
+def _check_runtime_tools(
+    runner_profiles: Mapping[str, RunnerProfile], tools: Mapping[str, RuntimeTool]
+) -> None:
+    """Contract request 81's import-time checks, called below on the catalogue.
+
+    Every name in a tool's `profiles` declares `browser_tool`; every
+    `launched_by` value is one of its choices; and every `browser_tool`
+    choice except `auto` launches some tool, so adding a fifth choice without
+    a tool fails the import."""
+    launched: set[str] = set()
+    for key, tool in tools.items():
+        if tool.name != key:
+            raise ValueError(f"runtime tool {key!r} is named {tool.name!r}")
+        for name in tool.profiles:
+            profile = runner_profiles.get(name)
+            if profile is None or "browser_tool" not in profile.inputs:
+                raise ValueError(
+                    f"runtime tool {key}: profile {name!r} does not declare browser_tool "
+                    "(contract request 81)"
+                )
+            outside = [v for v in tool.launched_by if v not in profile.inputs["browser_tool"].choices]
+            if outside:
+                raise ValueError(
+                    f"runtime tool {key}: launched_by {outside} is not a browser_tool "
+                    f"choice of {name} (contract request 81)"
+                )
+        for slot, declared in tool.secret_slots.items():
+            if not _SLOT_NAME.fullmatch(slot) or not isinstance(declared, SecretSlot):
+                raise ValueError(f"runtime tool {key}: secret slot {slot!r} is not a SecretSlot")
+        launched.update(tool.launched_by)
+    for profile in runner_profiles.values():
+        if "browser_tool" not in profile.inputs:
+            continue
+        orphans = [c for c in profile.inputs["browser_tool"].choices if c != "auto" and c not in launched]
+        if orphans:
+            raise ValueError(
+                f"runner {profile.name}: browser_tool choice(s) {orphans} launch no "
+                "RUNTIME_TOOLS entry; add the tool in the same change (contract request 81)"
+            )
+
+
+_check_runtime_tools(RUNNER_PROFILES, RUNTIME_TOOLS)
+
+
+def tools_launched(profile: RunnerProfile, inputs: Mapping[str, Any]) -> tuple[str, ...]:
+    """The RUNTIME_TOOLS an attempt of `profile` with signed `inputs` launches.
+
+    `browser_tool` absent is `auto` (request 77). Empty for a profile that no
+    tool lists. Read by swarm-api's release and by the worker's re-check, so
+    the two derive the same set."""
+    selected = inputs.get("browser_tool", "auto")
+    return tuple(
+        t.name for t in RUNTIME_TOOLS.values()
+        if profile.name in t.profiles and selected in t.launched_by
+    )
+
+
+def is_secret_consumer(consumer: str) -> bool:
+    """Whether `consumer` is a secret consumer this catalogue has.
+
+    Contract request 82: `models.consumer_name` fixes the spelling and the
+    closed component list; profile and tool membership is checked here,
+    beside RUNNER_PROFILES and RUNTIME_TOOLS. Applied by swarm-api on a
+    grant's write and on a release's read."""
+    try:
+        kind, name = parse_consumer(consumer)
+    except ValueError:
+        return False
+    if kind == "profile":
+        return name in RUNNER_PROFILES
+    if kind == "tool":
+        return name in RUNTIME_TOOLS
+    return name in PLATFORM_COMPONENTS
 
 
 def resolve_backend(profile: RunnerProfile) -> Backend:

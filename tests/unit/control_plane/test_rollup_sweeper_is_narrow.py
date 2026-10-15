@@ -89,6 +89,12 @@ DECIDED = frozenset({
     # `stranded_prs` document; a redrive from this identity is refused
     # (test_stranded_prs.py), so it can submit nothing.
     ("POST", "/v1/admin/stranded-prs/sweep"),
+    # The workspace secrets rotation sweep (#1347, owner decision Q5;
+    # jobs.tf `secrets_rotation_sweep`): it disables previous versions whose
+    # 24-hour grace has passed and never destroys one. It reads no value,
+    # grants nothing, submits nothing, and takes no argument: what it may
+    # disable is fixed by the records' own `disable_after`.
+    ("POST", "/v1/admin/workspace-secrets/rotation-sweep"),
 })
 
 REFUSED = [r for r in SWEPT if r not in DECIDED]
@@ -133,6 +139,76 @@ def test_the_sweep_is_not_empty_and_contains_the_decided_route() -> None:
     assert len(REFUSED) > 20, f"the refused sweep is implausibly small: {len(REFUSED)}"
     assert ("PUT", "/v1/admin/tenants/{tenant_id}/limits") in REFUSED
     assert ("POST", "/v1/tasks") in REFUSED
+
+
+def test_the_rotation_sweep_is_the_only_workspace_secrets_route_the_sweeper_reaches() -> None:
+    """#1347 added ONE route. Every other workspace-secrets route -- the
+    writes, the grants, the form links, the listing -- stays refused to this
+    identity, so a leaked sweeper token can disable a version only once its
+    grace has passed, and can read, add, grant or delete nothing."""
+    def is_secrets_route(route: tuple[str, str]) -> bool:
+        path = route[1]
+        return path.startswith("/v1/workspace/secrets") or "/workspace-secrets/" in path
+
+    reached = {r for r in ROLLUP_SWEEPER_ROUTES if is_secrets_route(r)}
+    assert reached == {("POST", "/v1/admin/workspace-secrets/rotation-sweep")}
+    refused = [r for r in REFUSED if is_secrets_route(r)]
+    assert len(refused) >= 5, f"the workspace-secrets routes were not swept: {refused}"
+    assert ("PUT", "/v1/workspace/secrets/{name}/value") in refused
+    assert ("DELETE", "/v1/workspace/secrets/{name}") in refused
+
+
+class _RecordingWriter:
+    """The rotation sweep's Secret Manager writer, recording what it is
+    asked; nothing here may create, add or destroy."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def create_secret(self, tenant_id: str, secret_id: str) -> None:
+        raise AssertionError("the rotation sweep never creates a secret")
+
+    def add_version(self, secret_id: str, payload: bytes) -> str:
+        raise AssertionError("the rotation sweep never adds a version")
+
+    def disable_version(self, version: str) -> None:
+        self.calls.append(("disable_version", version))
+
+    def destroy_versions(self, secret_id: str) -> int:
+        raise AssertionError("the rotation sweep never destroys")
+
+
+def test_the_sweeper_runs_the_rotation_sweep(db, sweeper_context) -> None:
+    """What swarm-workspace-secrets-rotation-sweep does each hour, through
+    the real app: a version past its grace is disabled, by the sweeper."""
+    from datetime import timedelta
+
+    from swarm_api.workspace_secrets import ROTATION_GRACE, SECRETS_COLLECTION
+
+    now = sweeper_context.now()
+    secret_id = "swarm-tenant-eng-wsec-" + "0" * 16
+    db.docs[f"{SECRETS_COLLECTION}/{secret_id}"] = {
+        "secret_id": secret_id, "tenant_id": "eng", "name": "typesafe-key", "state": "active",
+        "current_version": f"projects/test/secrets/{secret_id}/versions/2",
+        "versions": [
+            {"version": f"projects/test/secrets/{secret_id}/versions/1", "state": "enabled",
+             "disable_after": now - ROTATION_GRACE - timedelta(minutes=1)},
+            {"version": f"projects/test/secrets/{secret_id}/versions/2", "state": "enabled",
+             "disable_after": None},
+        ],
+    }
+    app = create_app(sweeper_context)
+    writer = _RecordingWriter()
+    app.state.workspace_secret_writer = writer
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post("/v1/admin/workspace-secrets/rotation-sweep", headers=SWEEPER_HEADERS)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["disabled"] == 1, response.text
+    assert writer.calls == [("disable_version", f"projects/test/secrets/{secret_id}/versions/1")]
+    states = [v["state"] for v in db.docs[f"{SECRETS_COLLECTION}/{secret_id}"]["versions"]]
+    assert states == ["disabled", "enabled"]
 
 
 def test_the_sweeper_converges_a_workflow_nobody_looked_at(db, sweeper_client) -> None:

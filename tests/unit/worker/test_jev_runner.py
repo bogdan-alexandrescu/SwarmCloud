@@ -243,7 +243,7 @@ def jev_bin(tmp_path, monkeypatch):
     return server
 
 
-def _run_body(monkeypatch, tmp_path, *, endpoint, key_file, backend=None, browser_tool=None):
+def _run_body(monkeypatch, tmp_path, *, endpoint, key_file, backend=None, browser_tool=None, route=True):
     from agent_worker.runners import claude_code
 
     seen: dict[str, Any] = {}
@@ -271,6 +271,12 @@ def _run_body(monkeypatch, tmp_path, *, endpoint, key_file, backend=None, browse
         monkeypatch.delenv("SWARM_JEV_BACKEND", raising=False)
     else:
         monkeypatch.setenv("SWARM_JEV_BACKEND", backend)
+    # What the dispatcher sends an internal backend while the tailnet egress is
+    # on (scheduler.judgment.jev_dispatch); `route=False` is the egress off,
+    # where the runner registers no jev (JEV-OFF, #1345).
+    if backend in ("internal-jev", "internal-laya") and route:
+        monkeypatch.setenv("JEV_API_URL", "http://decision-api.swarm-system.svc.cluster.local/"
+                                          + backend.split("-", 1)[1] + "/v1/decide")
     claude_code.body(_ctx(tmp_path, browser_tool))
     return seen
 

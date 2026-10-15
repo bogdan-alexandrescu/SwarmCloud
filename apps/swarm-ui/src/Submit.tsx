@@ -17,7 +17,7 @@ import { HelpCard } from './HelpCard'
 import { clearTaskPrefill, peekTaskPrefill } from './submitPrefill'
 import { Mark } from './primitives'
 import { RoomFact, RunnerPicker, useProviderKeys } from './RunnerPicker'
-import { AUTO, BROWSER_TOOL_KEY, BrowserToolPicker, declaredBrowserTools, jevAllowed, profileEgress, useTypesafeKey, withBrowserTool } from './BrowserToolPicker'
+import { AUTO, BROWSER_TOOL_KEY, BrowserToolPicker, declaredBrowserTools, jevAllowed, profileEgress, useJevJudgment, useTypesafeKey, withBrowserTool } from './BrowserToolPicker'
 import { FailedPanel, Screen, useSubmitAs } from './Shell'
 import {
   DEFAULT_CARRIER,
@@ -999,7 +999,8 @@ function Form({ capacity }: { capacity: Capacity }) {
   const tools = declaredBrowserTools(profile)
   const [browserTool, setBrowserTool] = useState(AUTO)
   const typesafe = useTypesafeKey(tools !== null)
-  const tool = tools !== null && tools.includes(browserTool) && (browserTool !== 'jev' || jevAllowed(typesafe)) ? browserTool : AUTO
+  const judgment = useJevJudgment(tools !== null)
+  const tool = tools !== null && tools.includes(browserTool) && (browserTool !== 'jev' || jevAllowed(typesafe, judgment)) ? browserTool : AUTO
 
   const pick = (name: string) => {
     setChosen(name)
@@ -1164,7 +1165,7 @@ function Form({ capacity }: { capacity: Capacity }) {
           ) : (
             <>
               {tools !== null && (
-                <BrowserToolPicker tools={tools} value={tool} onChange={setBrowserTool} typesafe={typesafe}
+                <BrowserToolPicker tools={tools} value={tool} onChange={setBrowserTool} typesafe={typesafe} judgment={judgment}
                   egress={profileEgress(profile)} />
               )}
               <InputFields profile={chosen} fields={fields} required={required} onChange={setFields} idPrefix={TASK_FIELDS} />
