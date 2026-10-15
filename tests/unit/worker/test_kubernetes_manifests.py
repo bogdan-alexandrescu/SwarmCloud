@@ -216,7 +216,6 @@ def test_the_quota_forbids_everything_a_worker_never_creates(tenant_docs):
     hard = one(tenant_docs, "ResourceQuota")["spec"]["hard"]
     for forbidden in (
         "count/services",
-        "count/persistentvolumeclaims",
         "count/deployments.apps",
         "count/statefulsets.apps",
         "count/daemonsets.apps",
@@ -224,6 +223,64 @@ def test_the_quota_forbids_everything_a_worker_never_creates(tenant_docs):
     ):
         assert hard[forbidden] == "0", forbidden
     assert int(hard["pods"]) > 0
+
+
+def test_the_quota_admits_one_cache_claim_per_job_on_the_cache_class_alone(tenant_docs):
+    """CACHE-PVC: every worker pod's `cache` is a generic ephemeral volume, whose
+    PVC the ephemeral-volume controller creates in the tenant's namespace and
+    which the quota counts. At `count/persistentvolumeclaims: "0"` every pod
+    would wait forever for a claim the API server refused to create.
+
+    One claim per Job, not per running pod: the claim is the POD's, deleted with
+    it, and a finished Job keeps its pod for ttlSecondsAfterFinished (an hour),
+    which is exactly why count/jobs.batch is 200 against 100 pods. Storage is
+    held to that many CACHE_VOLUME_GIB claims on CACHE_STORAGE_CLASS, and every
+    other class Autopilot ships is held to no claim at all.
+
+    MUTATION: put `count/persistentvolumeclaims` back to "0", or size the storage
+    from the pods quota, and this fails.
+    """
+    from scheduler.dispatch import CACHE_STORAGE_CLASS, CACHE_VOLUME_GIB
+
+    hard = one(tenant_docs, "ResourceQuota")["spec"]["hard"]
+    jobs = int(hard["count/jobs.batch"])
+    storage = f"{jobs * CACHE_VOLUME_GIB}Gi"
+
+    assert hard["count/persistentvolumeclaims"] == str(jobs)
+    assert hard["requests.storage"] == storage
+    scoped = f"{CACHE_STORAGE_CLASS}.storageclass.storage.k8s.io"
+    assert hard[f"{scoped}/persistentvolumeclaims"] == str(jobs)
+    assert hard[f"{scoped}/requests.storage"] == storage
+    for other in ("standard", "standard-rwo", "premium-rwo"):
+        assert hard[f"{other}.storageclass.storage.k8s.io/persistentvolumeclaims"] == "0", other
+
+
+def test_the_cache_storage_class_is_pd_balanced_deleted_and_bound_at_first_consumer(policy_docs):
+    """CACHE-PVC: no StorageClass existed in terraform/ or kubernetes/, so this
+    repository adds one, applied with the cluster-scoped policies
+    (`kubernetes/apply.sh --policies`). Delete, so a disk never outlives its
+    pod; WaitForFirstConsumer, so the disk is made in the zone the pod landed
+    in, not one Autopilot then has to schedule the pod into."""
+    from scheduler.dispatch import CACHE_STORAGE_CLASS
+
+    assert "storage/cache-storage-class.yaml" in render.POLICY_FILES
+    sc = one(policy_docs, "StorageClass", CACHE_STORAGE_CLASS)
+    assert sc["provisioner"] == "pd.csi.storage.gke.io"
+    assert sc["parameters"]["type"] == "pd-balanced"
+    assert sc["reclaimPolicy"] == "Delete"
+    assert sc["volumeBindingMode"] == "WaitForFirstConsumer"
+    assert sc["metadata"]["labels"]["managed-by"] == "swarm-terraform"
+
+
+def test_the_dispatcher_needs_no_claim_permission_for_the_cache(tenant_docs):
+    """The cache's PVC is created by the ephemeral-volume controller from the pod
+    spec, under the controller's own identity, so the scheduler that creates
+    the Job is granted nothing new -- and must not be: a Role that may create
+    claims could create one on any class."""
+    rules = one(tenant_docs, "Role", "swarm-dispatcher")["rules"]
+    granted = {r for rule in rules for r in rule["resources"]}
+    assert "persistentvolumeclaims" not in granted, granted
+    assert granted == {"jobs", "pods", "pods/log", "events"}, granted
 
 
 def test_every_tenant_namespace_gets_the_owners_flat_quota(tenant_docs):
