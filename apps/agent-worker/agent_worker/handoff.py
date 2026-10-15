@@ -19,6 +19,8 @@ end of ctl.sock is `agent_worker.livegate.ctl` (lane L3).
       browser.json         the runner's: the browser tools it registered for the
                            task's `browser_tool`, which this worker forwards to the
                            gate (`browser_tools` on ctl.sock; browser_tools.py)
+      browser-tabs.json    this worker's: the tabs a park kept, reopened by the
+                           next attempt before its agent starts (browser_resume.py)
       README.md            this worker's: the guide the agent reads
 
 WHY A SPOOL. As the child-task spool (`children.py`): no listener in the
@@ -92,6 +94,7 @@ from swarm_common.states import EventType, ParkReason, TaskState, assert_transit
 from swarm_redaction import redact as redact_text
 
 from . import browser_tools
+from .browser_resume import BrowserResume, Restored
 from .egress_ticket import BrowserEgress
 from .errors import ExitCode
 from .hardening import PROTECTED
@@ -235,8 +238,12 @@ LIVE_GATE_RETRY_DELAY_SECONDS = 30
 #: gate `wipe` at every attempt end; the closest faithful version on L3's
 #: channel is `end_control` with `wipe: true`, which the gate's handler must
 #: honour by closing Chromium and removing the profile. Reported on the PR.
+#: `tabs_export` / `session_export` (scope park) are sent at park, before the
+#: wipe; `session_import` / `tabs_restore` on the resumed attempt, before the
+#: agent exists (browser_resume.py, §5.5.2).
 GATE_OPS = frozenset({"tunnel_ticket", "pause", "resume", "end_control", "device", "status",
-                      "egress_ticket", "browser_tools"})
+                      "egress_ticket", "browser_tools", "tabs_export", "tabs_restore",
+                      "session_export", "session_import"})
 
 #: EGRESS-GATE: the agent's notice that its proxied browser has no egress
 #: (`egress_ticket.notice`), in the spool while that is so; the claude-code
@@ -386,7 +393,53 @@ def _read_notes(root: Path) -> str:
     return f"{text}\n[... cut at {MAX_NOTES_CHARS} characters]" if clipped else text
 
 
-def resume_summary(entries: list[dict[str, Any]], attempt_id: str, notes: str = "") -> str | None:
+#: What a resumed agent is told of the artifacts directory (issue #1362): by
+#: design it starts empty (docs/checkpointing.md); the parked attempt's files
+#: were uploaded at the park and are listed with the task's result by reference.
+ARTIFACTS_NOTE = (
+    "Files the earlier attempt wrote to $SWARM_ARTIFACTS_DIR were uploaded when it "
+    "parked and stay listed with this task's result; this attempt's artifacts "
+    "directory starts empty, so they are not on disk here. Do not write them again "
+    "unless they must change; anything you need to read again belongs in your "
+    "working directory."
+)
+
+
+def _browser_lines(restored: Restored | None) -> list[str]:
+    """What the resumed agent is told of its browser (§5.5.2)."""
+    if restored is None or not restored.tabs:
+        lines = [
+            "The browser is a new one: the earlier attempt's pages are not open, so "
+            "open again what you need."
+        ]
+    else:
+        lines = [
+            "The browser was reopened on the tabs the earlier attempt had open, in "
+            "order (the one marked FRONT is the tab in front). These pages were "
+            "loaded again, so check each is in the state you need:",
+            "",
+        ]
+        lines += [
+            f"{number}. {url}" + (" (FRONT)" if url == restored.active else "")
+            for number, url in enumerate(restored.tabs, start=1)
+        ]
+    lines.append("")
+    if restored is not None and restored.storage:
+        lines.append(
+            "Their sign-ins and site storage (cookies, localStorage) were put back as "
+            "they were at the park. If a page asks you to sign in anyway, ask for help then."
+        )
+    else:
+        lines.append(
+            "The earlier attempt's sign-ins and site storage are gone, so if a page you "
+            "need now asks you to sign in again, ask for help then."
+        )
+    return lines
+
+
+def resume_summary(
+    entries: list[dict[str, Any]], attempt_id: str, notes: str = "", restored: Restored | None = None
+) -> str | None:
     """What a resumed attempt's agent is told, or None when no earlier attempt
     asked for help (a first attempt, or one resumed from a park that had
     nothing to do with a person)."""
@@ -397,9 +450,11 @@ def resume_summary(entries: list[dict[str, Any]], attempt_id: str, notes: str = 
         RESUME_HEADLINE,
         "",
         "An earlier attempt of this task stopped part-way and was parked; this "
-        "attempt starts on its working files, restored as they were. The browser "
-        "is a new one: the earlier attempt's pages and sign-ins are gone, so if a "
-        "page you need now asks you to sign in again, ask for help then.",
+        "attempt starts on its working files, restored as they were.",
+        "",
+        *_browser_lines(restored),
+        "",
+        ARTIFACTS_NOTE,
         "",
         "The hand-offs to a person so far, oldest first, as the platform recorded them:",
         "",
@@ -594,6 +649,7 @@ class HandoffPath:
         progress: Callable[[str, datetime], bool] | None = None,
         sleep: Callable[[float], None] = time.sleep,
         rand: Callable[[], float] = random.random,
+        vault: Callable[[], Any] | None = None,
     ) -> None:
         self.cfg = cfg
         self._sleep = sleep
@@ -649,6 +705,17 @@ class HandoffPath:
         self._note: Callable[[dict[str, Any]], Any] | None = None
         #: The browser-tool state last forwarded to the gate (BSTATUS-API).
         self._browser_tools_sent: dict[str, Any] | None = None
+        #: What a park keeps of the browser and a resumed attempt gets back
+        #: (§5.5.2, issue #1362). Secret Manager is reached only in a
+        #: personal tenant, and built only when it is.
+        self._vault_instance: Any = None
+        self._vault_factory = vault
+        self.browser = BrowserResume(
+            cfg, logger=logger, call=self._browser_call, vault=self._vault,
+            slots=self._slots, register_secret=getattr(logger, "register_secret", None),
+        )
+        #: What this attempt's browser got back, once `prepare` has asked.
+        self.restored: Restored | None = None
 
     # -- what the lifecycle asks ---------------------------------------------
 
@@ -927,6 +994,60 @@ class HandoffPath:
     def spool(self, work: Path) -> Path:
         return Path(work) / SPOOL_DIR_NAME
 
+    # -- the browser across a park (§5.5.2, browser_resume.py) -----------------
+
+    def _browser_call(self, op: str, args: Mapping[str, Any]) -> dict[str, Any]:
+        if self.gate is None:
+            raise GateLost("no gate")
+        return self.gate.call(op, args)
+
+    def _vault(self) -> Any:
+        if self._vault_instance is None:
+            if self._vault_factory is not None:
+                self._vault_instance = self._vault_factory()
+            else:
+                from .browser_login import SecretManagerVault
+
+                self._vault_instance = SecretManagerVault(self.cfg.project_id)
+        return self._vault_instance
+
+    def _slots(self) -> Any:
+        from .browser_login import SlotApi
+
+        key = getattr(self._children, "_key", None)
+        api = getattr(self._children, "_api", None)
+        if key is None or api is None:
+            raise RuntimeError(NO_ATTEMPT_KEY)
+        return SlotApi(
+            api, tenant_id=self.cfg.tenant_id, task_id=self.cfg.task_id, attempt_id=self.cfg.attempt_id,
+            lease_id=self.cfg.lease_id, generation=self.cfg.generation, sign=key._private.sign,
+            clock=self._wall,
+        )
+
+    def _browser_reachable(self) -> bool:
+        """A gate this worker registered on, and a heap it can hold a session in (§5.4.1)."""
+        return (self.gate is not None and self.gate.registered and not self._wiped
+                and getattr(self._memory, "status", None) == PROTECTED)
+
+    def _keep_browser(self, work: Path) -> None:
+        """At park, before the wipe: keep the tabs and, in a personal tenant, the session. Never raises."""
+        if not self._browser_reachable():
+            return
+        try:
+            self.browser.capture(self.spool(work))
+        except Exception as exc:
+            self.log.warning("could not keep the browser for the resumed attempt", error=type(exc).__name__)
+
+    def _restore_browser(self, root: Path) -> Restored | None:
+        """Before the runner starts: reopen what the parked attempt kept. Never raises."""
+        if not self._browser_reachable():
+            return None
+        try:
+            return self.browser.restore(root)
+        except Exception as exc:
+            self.log.warning("could not put the earlier attempt's browser back", error=type(exc).__name__)
+            return None
+
     def prepare(self, work: Path) -> dict[str, str]:
         """Create the spool and return the agent's variables, or nothing."""
         if not self.spooled:
@@ -946,6 +1067,10 @@ class HandoffPath:
         tmp.unlink(missing_ok=True)
         tmp.write_text(AGENT_GUIDE, encoding="utf-8")
         os.replace(tmp, guide)
+        # Before the summary, which names what came back; before the runner,
+        # whose agent must find the tabs open on its first connection.
+        if self.restored is None:
+            self.restored = self._restore_browser(root)
         self._prepare_resume(root)
         # Rewritten every attempt, as `unavailable` is: present only while
         # THIS attempt's proxied browser has no egress.
@@ -972,7 +1097,7 @@ class HandoffPath:
         """
         try:
             entries = _load_history(root)
-            summary = resume_summary(entries, str(self.cfg.attempt_id), _read_notes(root))
+            summary = resume_summary(entries, str(self.cfg.attempt_id), _read_notes(root), self.restored)
             target = root / RESUME_NAME
             if summary is None:
                 target.unlink(missing_ok=True)
@@ -1411,6 +1536,10 @@ class HandoffPath:
                 self.log.warning("the hand-off was not resolved at swarm-api",
                                  error=str(getattr(exc, "code", None) or type(exc).__name__))
             self.log.warning("hand-off ended", outcome=outcome, cause=cause)
+        if outcome == "expired" and cause != GATE_LOST and work is not None:
+            # The park (§4.3): what the resumed attempt gets back, read
+            # before the wipe below closes the browser (§5.5.2).
+            self._keep_browser(work)
         if cause != GATE_LOST:
             self.wipe(cause)
         return active is not None

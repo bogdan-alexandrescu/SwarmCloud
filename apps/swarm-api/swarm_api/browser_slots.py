@@ -17,7 +17,9 @@ and swarm-api
   2. refuses any tenant that is not personal -- `kind = "user"`, an id
      starting `u-`, and a principal that derives to that id;
   3. refuses any `secret_id` outside that tenant's own
-     `swarm-tenant-<tenant>-browser-wf-<this task's workflow>` or
+     `swarm-tenant-<tenant>-browser-wf-<this task's workflow>`,
+     `swarm-tenant-<tenant>-browser-park-<this task>` (a park's browser, kept
+     for the same task's resumed attempt; live-browser §5.5.2, issue #1362) or
      `swarm-tenant-<tenant>-browser-login-<name>`, BEFORE it calls Secret
      Manager. swarmBrowserSessionProvisioner's create permission is evaluated
      against the project and its IAM condition cannot narrow it
@@ -29,7 +31,7 @@ and swarm-api
   5. for a login, requires the login record this workspace's person made:
      pending for this task (a save), or active and unexpired (a refresh). The
      expiry the secret is created with is that record's, never the caller's;
-  6. creates the secret -- a carry with the 24-hour TTL, a login with its
+  6. creates the secret -- a carry or a park with the 24-hour TTL, a login with its
      record's expiry, labelled `managed-by=swarm-api`, `swarm-tenant`,
      `swarm-browser` -- and then sets THAT SECRET's IAM policy to exactly two
      bindings, `roles/secretmanager.secretAccessor` and
@@ -85,7 +87,10 @@ log = logging.getLogger(__name__)
 PERSONAL_PREFIX = "u-"
 
 #: The workflow carry's lifetime (§5.5.1): Secret Manager deletes it even if
-#: swarm-api's terminal-state delete never ran.
+#: swarm-api's terminal-state delete never ran. A park's secret has the same
+#: lifetime, and it is its only delete: a hand-off park is dead-lettered after
+#: `human_park_max_seconds` (24 hours by default), so a park secret outlives
+#: no park that could still resume (§5.5.2).
 CARRY_TTL_SECONDS = 24 * 3600
 
 #: The two roles a slot's worker holds on its one secret, and nothing else.
@@ -104,7 +109,8 @@ _WORKFLOW_PART = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 #: Every name this module will hand to Secret Manager, checked again at the
 #: vault, after the route's own check: `swarm-tenant-u-<t>-browser-(wf|login)-<x>`.
 BROWSER_SECRET_ID = re.compile(
-    r"^swarm-tenant-u-[a-z0-9-]+-browser-(?:wf-[A-Za-z0-9_-]{1,128}|login-[a-z0-9-]{1,40})$"
+    r"^swarm-tenant-u-[a-z0-9-]+-browser-(?:wf-[A-Za-z0-9_-]{1,128}|park-[A-Za-z0-9_-]{1,128}"
+    r"|login-[a-z0-9-]{1,40})$"
 )
 
 
@@ -128,8 +134,8 @@ class SlotRequest(_AttemptFields):
 
 @dataclass(frozen=True)
 class SlotName:
-    kind: str  # "carry" or "login"
-    suffix: str  # the workflow id, or the login's name
+    kind: str  # "carry", "park" or "login"
+    suffix: str  # the workflow id, the task id, or the login's name
 
 
 def personal_tenant_id(tenant_id: str) -> bool:
@@ -149,6 +155,8 @@ def slot_name(tenant_id: str, secret_id: str) -> SlotName | None:
     rest = secret_id[len(prefix):]
     if rest.startswith("wf-") and _WORKFLOW_PART.fullmatch(rest[3:]):
         return SlotName("carry", rest[3:])
+    if rest.startswith("park-") and _WORKFLOW_PART.fullmatch(rest[5:]):
+        return SlotName("park", rest[5:])
     if rest.startswith("login-") and NAME.fullmatch(rest[6:]):
         return SlotName("login", rest[6:])
     return None
@@ -301,8 +309,8 @@ class BrowserSlots:
         wanted = slot_name(attempt.tenant_id, body.secret_id)
         if wanted is None:
             raise BrowserSlotOutsidePrefix(
-                "a slot is this workspace's own swarm-tenant-<tenant>-browser-wf-<workflow> or "
-                "-browser-login-<name>, and nothing else"
+                "a slot is this workspace's own swarm-tenant-<tenant>-browser-wf-<workflow>, "
+                "-browser-park-<task> or -browser-login-<name>, and nothing else"
             )
         now = self._now()
         login_ref = self._db.collection(COLLECTION).document(_doc_id(attempt.tenant_id, wanted.suffix))
@@ -325,6 +333,10 @@ class BrowserSlots:
                 raise BrowserSlotOutsidePrefix(
                     "a carry slot is this task's own workflow's, and this task is not a step of it"
                 )
+            ttl_seconds = CARRY_TTL_SECONDS
+        elif wanted.kind == "park":
+            if wanted.suffix != task_id:
+                raise BrowserSlotOutsidePrefix("a park slot is this task's own, and no other task's")
             ttl_seconds = CARRY_TTL_SECONDS
         else:
             if login is None or login.get("tenant_id") != attempt.tenant_id:

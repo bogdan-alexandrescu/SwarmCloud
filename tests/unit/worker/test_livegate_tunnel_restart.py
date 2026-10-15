@@ -152,6 +152,9 @@ def _path(tmp_path, db, trace):
         cfg, logger=_Log(), memory=MemoryProtection(PROTECTED, "test"),
         children=SimpleNamespace(_key=key, _api=routes, unavailable=None),
         live=True, gate_client=lambda p: gate, environ={"SWARM_GATE_CTL": CTL}, wall=clock, sleep=sleep,
+        # The slow backoff's jitter at its midpoint (x1.0), so a wait of
+        # TUNNEL_RETRY_SECONDS is exactly the backoff, never short of it.
+        rand=lambda: 0.5,
     )
     path.setup()
     work = tmp_path / "work"

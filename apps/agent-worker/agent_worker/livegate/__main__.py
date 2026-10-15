@@ -111,6 +111,8 @@ from .rfb import ControlState, FrameHub, RfbSession, masked
 from .rfb import metrics_log as rfb_metrics_log
 from .session import OPS as SESSION_OPS
 from .session import SessionCarry
+from .tabs import OPS as TABS_OPS
+from .tabs import TabKeeper
 from .touch import TouchInjector
 from .tunnel import StreamMux, Tunnel, TunnelError, TunnelWriter, relay_url
 
@@ -1203,6 +1205,8 @@ class LiveGate:
         self.touch: TouchInjector | None = None
         self.control: ControlState | None = None
         self.carry: SessionCarry | None = None
+        #: The tab list a park keeps and a resumed attempt reopens (tabs.py, §5.5.2).
+        self.tabs: TabKeeper | None = None
         self.pages: PageFollower | None = None
         self.cdp_server: Any = None
         self.ctl: CtlServer | None = None
@@ -1321,8 +1325,14 @@ class LiveGate:
         self.control = ControlState(self.touch)
         current = self._current
         self.carry = SessionCarry(current.call, record=self.record, agent_connected=self._agent_connected)
+        self.tabs = TabKeeper(current.call, record=self.record, agent_connected=self._agent_connected,
+                              shown=self._shown_target)
         await self._launch()
         log.info("live gate: chromium up; CDP proxy on %s:%d", self.cfg.cdp_host, self.cfg.cdp_port)
+
+    def _shown_target(self) -> str | None:
+        """The tab the page follower shows: the one a park records as active."""
+        return self.pages.current if self.pages is not None else None
 
     def _agent_connected(self) -> bool:
         return self._agent_seen_before or bool(self.proxy is not None and self.proxy.agent_seen)
@@ -1768,6 +1778,8 @@ class LiveGate:
             return self.status()
         if op in SESSION_OPS:
             return await self._need(self.carry).handle(op, args)
+        if op in TABS_OPS:
+            return await self._need(self.tabs).handle(op, args)
         if op == "tunnel_ticket":
             return await self.open_tunnel(args)
         if op == "pause":
