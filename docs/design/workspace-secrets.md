@@ -318,6 +318,10 @@ before the agent is spawned.
   and a tenant id. That is in apps/ and the frozen contract, and the owner
   has it as a question. Linting and IAM's live answer are still the owner's
   to check before apply.
+  **Residual accepted (owner, 2026-10-15: "Accept the residual").** The
+  owner accepted that `extract()` matches the first `-wsec-`, so a login name
+  or a tenant id containing `-wsec-` stays admitted by the condition. No code
+  change is made for it, here or where the names are made.
 * **Invariant 9:** the route answers only for the tenant of the attempt whose
   key signed it, and the query is bounded by `tenant_id == task.tenant_id`.
   An attempt key of tenant X cannot name tenant Y: the request carries no
@@ -474,6 +478,87 @@ collection, holds a value.**
   logger's body capture by construction, and a unit test (§8, SEC-RELEASE)
   asserts that a runtime-built fake value is absent from every captured log
   line, as `test_provider_keys.py` does for the write.
+
+### What SEC-RELEASE built (2026-10-15, part of #1347)
+
+`apps/swarm-api/swarm_api/routes/attempts_secrets.py` (the route, its
+fence, the one payload read and the rows), the release queries at the end of
+`swarm_api/workspace_secrets.py` (`attempt_consumers`, `release_plan`,
+`owned_by`), `apps/agent-worker/agent_worker/secretrelease.py` with its
+`lifecycle.py` wiring, and `scheduler/dispatch.py::consumes_workspace_secrets`
+in `worker_env`. Held by `tests/unit/control_plane/test_secret_release.py`,
+`tests/unit/worker/test_secretrelease.py`,
+`tests/unit/control_plane/test_attempt_key_every_attempt.py` and the named
+carve-out in `test_no_route_serves_credentials.py`. Where the build differs
+from §3.3, and why:
+
+* **The attempt is found from its id.** The body is `{generation}` and
+  nothing else (an extra field is 422), so swarm-api finds the one lease
+  naming the path's attempt id, takes the tenant and the task from it, and
+  verifies the worker identity and the attempt-key signature under
+  `swarm-secrets-release/v1` against the registration for that whole tuple. A
+  wrong generation, a wrong key, another route's purpose, another tenant's
+  identity or an unknown attempt is the same 403.
+* **Fenced twice.** The task must be STARTING or RUNNING at this lease and
+  generation, the lease unreleased, before anything is read, and again in the
+  transaction that writes the rows. A worker superseded while Secret Manager
+  answered gets 409 and nothing.
+* **Once per attempt.** A mark, `workspace_secret_release_marks/{attempt}`,
+  is written with the rows; a second call is 410. The next attempt asks again.
+* **The signed spec is verified first** (`verdictpublish.spec_refusal`): a
+  tenant's agent can rewrite its task document, and the profile, the
+  `browser_tool` and the submitter all widen what is released.
+* **A record cannot name another workspace's secret.** Grants and records
+  are documents a tenant's agent can write (docs/multi-tenancy.md, "The
+  Firestore row, in full"), so a record is released only when its secret id
+  is `swarm-tenant-<the signed tenant>-wsec-<16 hex>` and its version is a
+  version of that secret. The read is made under swarm-api's own project.
+  **What this does not stop:** an agent that learns one of its own
+  workspace's secret ids (the name index's id is `<tenant>~<name>`) can write
+  an enabled grant for it. That widens the matrix inside its own workspace,
+  never across one. Closing it needs grants that the agent cannot forge,
+  for example an attestation like the attempt key's. That is a
+  `workspace_secrets.py` write-path change, outside this lane.
+* **Q3, as decided.** A personal secret reaches a group task only when its
+  opt-in list names the group, its record's creator and the personal tenant's
+  principal are both the signed submitter, and the submitter is a member of
+  the group NOW. That is asked of the directory for the group in
+  `ApiSettings.tenant_groups`, never the tenant document's principal, and
+  only when there is something to release. A lapsed or unresolved membership
+  withholds them, logged by name.
+* **Q8, as decided: the `typesafe` slot is matched and withheld**
+  (`INJECT_ONLY_SLOTS`, reason `inject_only`). The TypeSafe key reaches jev
+  through the forwarder (SEC-INJECT-TYPESAFE), never as a file in the pod.
+  Every other slot is delivered as §4.1 says.
+* **The components.** `component:merge` and `component:indexer` are derived
+  for the merge action and the indexer profile, and declare no slot yet.
+  `component:judge`'s key is the forwarder's (Q8), and `component:git` takes
+  no workspace secret, so neither is derived.
+* **The rows** carry §4.4's fields plus `secret_tenant_id`, `name` and
+  `slot`, and an `expire_at` 90 days out. The marks have one too. **The
+  Firestore TTL policy on `expire_at` is not built:** it is a Terraform field
+  on each collection, outside this lane.
+* **Before SEC-IAM is applied** every read is PERMISSION_DENIED. The route
+  answers 503 `secrets_release_unavailable` with that reason, and no name
+  and no value. The worker treats it as unreachable.
+* **The worker** asks only when the profile, or a tool its `browser_tool`
+  launches, declares a slot, and only with a registered attempt key. It
+  registers every value, and every field of a structured one, before writing
+  any file. That registered set is also the publish scan's literal list
+  (`Worker._leaks_in_added_text`). It refuses an item whose slot, kind or
+  name its own catalogue does not allow, or that arrives twice. The runner
+  gets `SWARM_SECRETS_MANIFEST` only, and `private/secrets/` is removed first
+  in cleanup on every exit. A required slot with nothing in it parks
+  CREDENTIAL_MISSING before the runner starts. Optional-only starts without.
+  A 409 stands the worker down without touching the lease.
+* **The scheduler** hands the registration nonce to a child whose profile or
+  launched tools declare a slot, git tools or not
+  (`consumes_workspace_secrets`).
+* **Not built here: the scheduler's pre-lease park.** No catalogue slot is
+  `required` today (request 80), so a required slot with no enabled grant
+  never reaches admission. The worker's park above is the backstop. Admission
+  reading the grants is `scheduler/loop.py` and `credentials.py`, outside
+  this lane's territory, and is the owner's question in this lane's PR.
 
 ---
 
