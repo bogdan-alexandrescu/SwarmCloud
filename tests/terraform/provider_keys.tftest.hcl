@@ -58,15 +58,37 @@ run "the_writer_role_carries_exactly_what_credentials_py_calls" {
       "secretmanager.secrets.setIamPolicy",
       "secretmanager.versions.add",
       "secretmanager.versions.destroy",
+      "secretmanager.versions.disable",
       "secretmanager.versions.list",
     ])
-    error_message = "swarmProviderKeyWriter creates a tenant secret, reads and merges its IAM policy, adds a version, and lists and destroys versions -- nothing else: no versions.access (credentials.py has no read path), no secrets.get (it never reads metadata), no secrets.delete (a deleted key keeps its secret)"
+    error_message = "swarmProviderKeyWriter creates a tenant secret, reads and merges its IAM policy, adds a version, lists, disables and destroys versions -- nothing else: no versions.access (neither writer has a read path), no versions.enable (nothing re-enables a version), no secrets.get (neither reads metadata), no secrets.delete (a deleted key keeps its secret)"
   }
 
-  # DERIVED FROM THE CALLER. Every Secret Manager client method, paired with
+  # THE ROTATION SWEEP'S ONE PERMISSION (#1347, owner decision Q5): the
+  # workspace secrets store disables a rotated-out version after its 24-hour
+  # grace and never destroys it. Against the role as KEYS-IAM shipped it, the
+  # sweep adds exactly versions.disable: not versions.enable, not
+  # versions.access, not secrets.delete, and no second destroy-shaped
+  # permission. The grant itself is held unchanged by the next run.
+  assert {
+    condition = setsubtract(google_project_iam_custom_role.provider_key_writer[0].permissions, toset([
+      "secretmanager.secrets.create",
+      "secretmanager.secrets.getIamPolicy",
+      "secretmanager.secrets.setIamPolicy",
+      "secretmanager.versions.add",
+      "secretmanager.versions.destroy",
+      "secretmanager.versions.list",
+    ])) == toset(["secretmanager.versions.disable"])
+    error_message = "the rotation sweep adds secretmanager.versions.disable to swarmProviderKeyWriter and nothing else"
+  }
+
+  # DERIVED FROM THE CALLERS. Every Secret Manager client method, paired with
   # the permission it needs: the role holds the permission exactly when
-  # credentials.py calls the method. `client.<method>(` is how that file
-  # spells every call. Pairs rather than a map, which the worker's publish
+  # credentials.py or workspace_secrets.py (SecretManagerWorkspaceSecrets,
+  # the workspace secrets store's writer, which runs as the same swarm-api
+  # account on the same swarm-tenant-* names) calls the method.
+  # `client.<method>(` and `_secret_client().<method>(` are how those files
+  # spell every call. Pairs rather than a map, which the worker's publish
   # scan reads as credential assignments.
   assert {
     condition = alltrue([
@@ -86,10 +108,20 @@ run "the_writer_role_carries_exactly_what_credentials_py_calls" {
         ["enable_secret_version", "secretmanager.versions.enable"],
         ["destroy_secret_version", "secretmanager.versions.destroy"],
         ] : contains(google_project_iam_custom_role.provider_key_writer[0].permissions, call[1]) == (
-        length(regexall("client\\.${call[0]}\\(", file("../../apps/swarm-api/swarm_api/credentials.py"))) > 0
+        length(regexall("(client|_secret_client\\(\\))\\.${call[0]}\\(", join("\n", [
+          file("../../apps/swarm-api/swarm_api/credentials.py"),
+          file("../../apps/swarm-api/swarm_api/workspace_secrets.py"),
+        ]))) > 0
       )
     ])
-    error_message = "swarmProviderKeyWriter and apps/swarm-api/swarm_api/credentials.py disagree: the role must hold a Secret Manager permission exactly when that file calls its method"
+    error_message = "swarmProviderKeyWriter and its callers (apps/swarm-api/swarm_api/credentials.py, workspace_secrets.py) disagree: the role must hold a Secret Manager permission exactly when one of them calls its method"
+  }
+
+  # The control for the second file: the rotation sweep's call is found, so
+  # the scan above really reads workspace_secrets.py.
+  assert {
+    condition     = var.enable_provider_keys && length(regexall("_secret_client\\(\\)\\.disable_secret_version\\(", file("../../apps/swarm-api/swarm_api/workspace_secrets.py"))) == 1
+    error_message = "the scan found no disable_secret_version call in workspace_secrets.py; check its path and its spelling of a call"
   }
 
   # The control for the scan above: a scan that matched nothing would make
