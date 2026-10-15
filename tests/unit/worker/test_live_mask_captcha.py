@@ -161,8 +161,11 @@ def test_a_link_that_fails_once_is_linked_on_the_next_report_and_the_cover_lifts
     # The CDP error's message is logged with its class: it is Chromium's, never the page's.
     assert "CdpError: No frame for given id found" in caplog.text
     _top_reports(mask, 1)
-    # Unlinked: where it is drawn is unknown, so the page area is blanked.
-    assert state.apply(_screen()) is Outcome.PAGE_BLANKED
+    # Unlinked, and the top frame reports one iframe box no linked frame
+    # claims: the frame is drawn in it, so that box is covered (#1344).
+    frame = _screen()
+    assert state.apply(frame) is Outcome.MASKED
+    assert _covered(frame)
 
     clock.now += 0.3  # past the first backoff (250 ms)
     _top_reports(mask, 2)
@@ -194,8 +197,10 @@ def test_a_report_inside_the_backoff_does_not_retry_and_the_tries_stop_at_the_bo
     clock.now += 60
     _top_reports(mask, epoch)
     assert cdp.tries == LINK_TRIES
-    # It stays covered as before: unplaced, so the page area is blanked.
-    assert state.apply(_screen()) is Outcome.PAGE_BLANKED
+    # It stays covered: the one iframe box its parent reports (#1344).
+    frame = _screen()
+    assert state.apply(frame) is Outcome.MASKED
+    assert _covered(frame)
 
 
 def test_the_childs_navigation_retries_the_link():

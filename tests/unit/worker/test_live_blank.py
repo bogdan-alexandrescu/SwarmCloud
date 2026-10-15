@@ -217,7 +217,8 @@ def test_googles_sorry_page_shows_the_recaptcha_and_covers_the_password_field():
 def test_a_child_frame_the_gate_cannot_place_still_blanks_the_page_area_and_says_why():
     state = _top("https://example.test/")
     state.frame_attached("CHILD", "TOP")  # never linked: where it is drawn is unknown
-    state.on_message("TOP", _report("doc", owners=[_owner(9, 100, 100, 200, 200)]))
+    # ...and no iframe box is left for it: no element the observer reported.
+    state.on_message("TOP", _report("doc"))
     frame = _screen()
     assert state.apply(frame) is Outcome.PAGE_BLANKED
     assert _covered(frame, 0, 0, PAGE_W, PAGE_H)
