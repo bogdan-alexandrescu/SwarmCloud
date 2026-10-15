@@ -20,6 +20,7 @@ from swarm_common.config import Settings
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, RunnerProfile, resolve_backend
 
 from . import artifact_manifest, standalone_outputs
+from .cachedirs import CACHE_ROOT_ENV
 from .checkpoint import CHECKPOINT_BACKOFF_CAP_SECONDS
 from .errors import ConfigError
 
@@ -153,6 +154,11 @@ class WorkerConfig:
     #: Run this is the Preview ephemeral disk mount; it is NOT shared with any
     #: other attempt and is assumed empty on every start.
     workspace_root: Path = Path("/workspace")
+    #: The GKE pod's cache volume (`SWARM_CACHE_ROOT`, CACHE-SCRATCH): where
+    #: the agent's tool caches and TMPDIR go, off the workspace volume. None on
+    #: Cloud Run, whose caches stay small inside the workspace tmpfs. See
+    #: `cachedirs`.
+    cache_root: Path | None = None
 
     # --- timing --------------------------------------------------------------
     #: The worker's beat, `heartbeat_beat_seconds` of the grace -- not the
@@ -498,6 +504,7 @@ class WorkerConfig:
         raw_keys = spec["SPEC_VERIFY_KEYS"]
         signing_key = spec["SPEC_SIGNING_KEY"].strip()
         timeout_env = os.environ.get("TASK_TIMEOUT_SECONDS", "").strip()
+        cache_root = os.environ.get(CACHE_ROOT_ENV, "").strip()
 
         return cls(
             task_id=_require("TASK_ID"),
@@ -511,6 +518,7 @@ class WorkerConfig:
             firestore_database=settings.firestore_database,
             artifact_bucket=os.environ.get("ARTIFACT_BUCKET", settings.artifact_bucket),
             workspace_root=Path(os.environ.get("WORKSPACE_ROOT", "/workspace")),
+            cache_root=Path(cache_root) if cache_root else None,
             heartbeat_interval_seconds=heartbeat_beat_seconds(
                 heartbeat_grace_seconds(settings.heartbeat_interval_seconds),
                 settings.heartbeat_interval_seconds,

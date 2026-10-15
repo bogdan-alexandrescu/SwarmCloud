@@ -314,6 +314,7 @@ _VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
     "MEMORY": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
     "DISK": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
     "TMP_DISK": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
+    "CACHE_DISK": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
     "HOME_DISK": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
     "EPHEMERAL": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
     "TIMEOUT_SECONDS": re.compile(r"^[0-9]{1,8}$"),
@@ -985,13 +986,14 @@ def render_job(args: argparse.Namespace) -> str:
             f"{args.registry}/{profile.image}:{args.tag}",
             "CPU": str(int(rc.cpu)),
             "MEMORY": f"{rc.memory_gib}Gi",
-            # The scratch volumes' sizeLimits -- workspace, /tmp, HOME -- and
+            # The scratch volumes' sizeLimits -- workspace, cache, /tmp, HOME -- and
             # the whole pod's ephemeral-storage, their sum. The dispatcher's
             # own numbers (GkeDisk), imported, so the YAML cannot drift from
             # what runs: until 2026-10-07 the browser template's 8 + 2 + 4 GiB
             # of volumes sat under an 8 GiB pod limit (contract request 53).
             "DISK": f"{gke_disk(rc).workspace_gib}Gi",
             "TMP_DISK": f"{gke_disk(rc).tmp_gib}Gi",
+            "CACHE_DISK": f"{gke_disk(rc).cache_gib}Gi",
             "HOME_DISK": f"{gke_disk(rc).home_gib}Gi",
             "EPHEMERAL": f"{gke_ephemeral_storage_gib(rc)}Gi",
             # The LIFECYCLE's deadline (TASK_TIMEOUT_SECONDS) and the JOB's are

@@ -163,7 +163,7 @@ seen = {name: os.environ.get(name) for name in names}
 artifacts = pathlib.Path(os.environ["SWARM_ARTIFACTS_DIR"])
 (artifacts / "cache-env.json").write_text(json.dumps(seen))
 for name in names:
-    if seen[name]:
+    if seen[name] and os.path.isabs(seen[name]):
         target = pathlib.Path(seen[name]) / "CACHE-JUNK.bin"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b"x" * 1024)

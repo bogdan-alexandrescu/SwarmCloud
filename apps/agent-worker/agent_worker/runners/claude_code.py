@@ -15,7 +15,10 @@ URLs registered for redaction, since one can embed a password); and, when set,
 the dispatcher's git identity, `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`,
 `GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL` (#764, `agent_worker.gitidentity`),
 which the worker sets from the task so an agent's `git commit` names that
-person; `PLAYWRIGHT_BROWSERS_PATH` when the image sets it (the browser
+person; the worker's cache variables (`cachedirs.AGENT_CACHE_ENV`:
+`UV_CACHE_DIR`, `npm_config_cache`, `PIP_CACHE_DIR`, `TF_PLUGIN_CACHE_DIR`,
+`XDG_CACHE_HOME` and their switches, CACHE-SCRATCH), so the agent's tool
+caches stay off the workspace volume; `PLAYWRIGHT_BROWSERS_PATH` when the image sets it (the browser
 image only, below); and, when the worker set them, the live hand-off's
 variables -- `SWARM_HANDOFF`, `SWARM_CDP_ENDPOINT`, `SWARM_BROWSER_UPLOADS`,
 and the workspace's Jev judgment backend `SWARM_JEV_BACKEND` with, for an
