@@ -33,7 +33,7 @@ const { ProfileFacts } = await import('../Submit')
 
 const CLASSES: ResourceClasses = {
   standard: { name: 'standard', cpu: 4, memory_gib: 8, disk_gib: 4, units: 1 },
-  browser: { name: 'browser', cpu: 8, memory_gib: 16, disk_gib: 8, units: 2 },
+  browser: { name: 'browser', cpu: 4, memory_gib: 8, disk_gib: 4, units: 1 },
   large: { name: 'large', cpu: 8, memory_gib: 32, disk_gib: 16, units: 4 },
 }
 
@@ -49,15 +49,17 @@ function pool(over: Partial<Pool> & { name: string }): Pool {
   }
 }
 
-// A browser task under `resource:browser` at limit 1: the one verdict that
-// needs the catalogue's units, so a screen that got them says "never".
-const BELOW: ProfileBlocker = { pool: 'resource:browser', reason: 'RESOURCE_CLASS_LIMIT', limit: 1, active: 0, group: 'no_room' }
+// A large task (4 units) under `resource:large` at limit 1: the one verdict
+// that needs the catalogue's units, so a screen that got them says "never".
+// It was a browser task (2 units) until contract request 79 made the browser
+// class 1 unit, which a limit of 1 admits.
+const BELOW: ProfileBlocker = { pool: 'resource:large', reason: 'RESOURCE_CLASS_LIMIT', limit: 1, active: 0, group: 'no_room' }
 
-const BROWSER: RunnerProfile = {
-  resource_class: 'browser', backend: 'GKE_AUTOPILOT', provider: null, units: 2,
-  pools: ['global', 'tenant:eng', 'resource:browser'],
+const HEAVY: RunnerProfile = {
+  resource_class: 'large', backend: 'GKE_AUTOPILOT', provider: null, units: 4,
+  pools: ['global', 'tenant:eng', 'resource:large'],
   admission: {
-    units: 2, headroom: 0, basis: 'measured', blockers: [BELOW], binding: [BELOW.pool],
+    units: 4, headroom: 0, basis: 'measured', blockers: [BELOW], binding: [BELOW.pool],
     counterfactual: [], complete: true, unread: [], uncapped: [],
   },
 }
@@ -66,9 +68,9 @@ const CAPACITY: Capacity = {
   pools: [
     pool({ name: 'global', hard_limit: 50, effective_limit: 50, available: 50 }),
     pool({ name: 'tenant:eng', hard_limit: 10, effective_limit: 10, available: 10 }),
-    pool({ name: 'resource:browser', hard_limit: 1, effective_limit: 1, available: 1 }),
+    pool({ name: 'resource:large', hard_limit: 1, effective_limit: 1, available: 1 }),
   ],
-  runner_profiles: { browser: BROWSER },
+  runner_profiles: { heavy: HEAVY },
   tenant_id: 'eng',
   generated_at: '2026-09-29T10:00:00Z',
 }
@@ -83,10 +85,10 @@ function twoMounts() {
   return render(
     <>
       <div className="a">
-        <ProfileFacts name="browser" profile={BROWSER} pools={CAPACITY.pools} />
+        <ProfileFacts name="heavy" profile={HEAVY} pools={CAPACITY.pools} />
       </div>
       <div className="b">
-        <ProfileFacts name="browser" profile={BROWSER} pools={CAPACITY.pools} />
+        <ProfileFacts name="heavy" profile={HEAVY} pools={CAPACITY.pools} />
       </div>
     </>,
   )
@@ -109,10 +111,10 @@ describe('the resource-class catalogue is read once for every screen that wants 
   it('a screen mounted later is handed the answer already read', async () => {
     api.loadCapacity.mockResolvedValue(ok(CAPACITY))
     api.loadResourceClasses.mockResolvedValue(ok({ resource_classes: CLASSES }))
-    const first = render(<ProfileFacts name="browser" profile={BROWSER} pools={CAPACITY.pools} />)
+    const first = render(<ProfileFacts name="heavy" profile={HEAVY} pools={CAPACITY.pools} />)
     await waitFor(() => expect(first.container.textContent).toMatch(NEVER), { timeout: 3000 })
     first.unmount()
-    const again = render(<ProfileFacts name="browser" profile={BROWSER} pools={CAPACITY.pools} />)
+    const again = render(<ProfileFacts name="heavy" profile={HEAVY} pools={CAPACITY.pools} />)
     // Drawn with the units on the first frame: nothing had to be asked.
     expect(again.container.textContent).toMatch(NEVER)
     expect(api.loadResourceClasses).toHaveBeenCalledTimes(1)
@@ -124,12 +126,12 @@ describe('the resource-class catalogue is read once for every screen that wants 
       error: { kind: 'server_error', httpStatus: 503, code: null, message: 'unavailable' },
     }
     api.loadResourceClasses.mockResolvedValueOnce(failed).mockResolvedValue(ok({ resource_classes: CLASSES }))
-    const first = render(<ProfileFacts name="browser" profile={BROWSER} pools={CAPACITY.pools} />)
+    const first = render(<ProfileFacts name="heavy" profile={HEAVY} pools={CAPACITY.pools} />)
     await waitFor(() => expect(api.loadResourceClasses).toHaveBeenCalledTimes(1))
     // A failed catalogue claims nothing: the box reads as it did before #66.
     expect(first.container.textContent).not.toMatch(NEVER)
     first.unmount()
-    const again = render(<ProfileFacts name="browser" profile={BROWSER} pools={CAPACITY.pools} />)
+    const again = render(<ProfileFacts name="heavy" profile={HEAVY} pools={CAPACITY.pools} />)
     await waitFor(() => expect(again.container.textContent).toMatch(NEVER), { timeout: 3000 })
     expect(api.loadResourceClasses).toHaveBeenCalledTimes(2)
   })

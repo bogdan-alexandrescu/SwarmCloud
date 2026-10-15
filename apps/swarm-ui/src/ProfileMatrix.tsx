@@ -100,7 +100,7 @@ export function matrixRow(profile: RunnerProfile, byName: ReadonlyMap<string, Po
 /**
  * How many more tasks of a profile ONE pool has room for: its free units over
  * the profile's units, rounded down (#124). Per task, never per unit -- a
- * browser task weighs 2, so 3 free units fit 1. NULL when the pool was not
+ * large task weighs 4, so 7 free units fit 1. NULL when the pool was not
  * read or has no limit set: not measured, never a 0. A PAUSED pool fits 0:
  * `available` stays positive while it is paused (it is ceiling minus active),
  * but admission refuses it, and the server prices it with `resume`.

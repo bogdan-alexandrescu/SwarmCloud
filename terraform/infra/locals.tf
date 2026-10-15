@@ -30,7 +30,7 @@ locals {
   # on drift, which is how this mismatch was caught.
   resource_classes = {
     standard = { cpu = 4, memory_gib = 8, disk_gib = 4, units = 1 }
-    browser  = { cpu = 8, memory_gib = 16, disk_gib = 8, units = 2 }
+    browser  = { cpu = 4, memory_gib = 8, disk_gib = 4, units = 1 }
     large    = { cpu = 8, memory_gib = 32, disk_gib = 16, units = 4 }
   }
 
@@ -585,8 +585,10 @@ locals {
 
   # Every Secret Manager reference swarm-api's environment carries, merged
   # once so main.tf and tests/terraform/live.tftest.hcl read one value.
-  # SWARM_EGRESS_KEY joins them once swarm-egress is deployed (egress.tf).
-  api_secret_env = merge(local.child_key_secret_env, local.live_key_secret_env, local.egress_key_secret_env)
+  # SWARM_EGRESS_KEY joins them once swarm-egress is deployed (egress.tf), and
+  # SWARM_TYPESAFE_FWD_KEY once the TypeSafe forwarder is served (typesafe_fwd.tf),
+  # and SWARM_WORKSPACE_GRANT_KEY once grant attestation is (workspace_grant_key.tf).
+  api_secret_env = merge(local.child_key_secret_env, local.live_key_secret_env, local.egress_key_secret_env, local.typesafe_fwd_key_secret_env, local.workspace_grant_key_secret_env)
 
   # The swarm-api refusal switches (swarm_api.refusals; docs/api-refusals.md).
   # A refusal added to swarm-api ships off; var.api_refusals turns one on.
@@ -600,7 +602,8 @@ locals {
 
   service_env = {
     # local.api_browser_egress_env: the browser egress switch (egress.tf).
-    "swarm-api" = merge(local.common_env, local.api_refusal_env, local.api_browser_egress_env, {
+    # local.api_grant_attestation_env: GRANT_ATTESTATION_REQUIRED (workspace_grant_key.tf).
+    "swarm-api" = merge(local.common_env, local.api_refusal_env, local.api_browser_egress_env, local.api_grant_attestation_env, {
       # DISPATCH_TOPIC, not WAKE_TOPIC. Both apps read `DISPATCH_TOPIC`
       # (swarm_api.settings, scheduler.settings); terraform set `WAKE_TOPIC`,
       # which nothing has ever read. swarm_api.deps falls back to NullWaker()

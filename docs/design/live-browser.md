@@ -684,6 +684,65 @@ gate --(WS, TCP 8080, in-cluster)--> swarm-live <--(WS, TCP 8080, internal LB)--
    (`SWARM_LIVE_URL`, `ws://<reserved internal address>:8080`, + `/v1/view`),
    presenting the viewer ticket as the relay's first message.
 
+#### The agent's browser does not wait on the view (NOLIVE-GUARD, #1366)
+
+The tunnel is the **human's** view. The agent's browser is the gate's CDP
+proxy on the pod's loopback, up before ctl.sock is served, and it needs
+nothing from the relay. Until 2026-10-15 the worker treated the two as one
+"live path": measured on benchmark devb-1015, 8 of 60 claude-code-browser
+attempts logged `tunnel_refused {"cause": "relay unreachable: gaierror"}`
+about 4 s after `worker registered`, then "no live path for this attempt",
+and their agents started with no `SWARM_CDP_ENDPOINT` and no Playwright MCP
+entry -- half fell back to the image's headless Python Playwright. So
+(`agent_worker.handoff.HandoffPath`):
+
+* **The browser follows the gate.** Once the gate took the worker's
+  registration (`browser_ready`), the agent gets `SWARM_CDP_ENDPOINT` and the
+  runner wires Playwright MCP / dev-browser on it, whatever happened to the
+  tunnel, the attempt key or the heap check. Those decide only the view and
+  the hand-off.
+* **A tunnel that failed costs the view, and says so.** The attempt's events
+  carry `cause: live_browser_unavailable`, `phase: live_view`, `message: "live
+  view unavailable: <code>; ..."`; the console's tile reads "live view
+  unavailable". A hand-off is still offered: its own poll retries the tunnel,
+  which is exactly when a person needs it, and a hold nobody could open ends
+  as any unwatched hold does.
+* **The tunnel is retried for the attempt's life.** A refused ticket
+  (`tunnel_refused`, the gate's relay did not answer) or a swarm-api error is
+  tried again past a backoff of 5 s doubling to 60 s, jittered to 75-125 % so
+  a burst of pods that met the same DNS failure does not knock again in the
+  same instant. Each retry logs `live view not open; retrying` with its code
+  and count, never a ticket; the first open after failures logs `live view
+  opened`. Only swarm-api's ended codes (`live_session_closed`,
+  `live_fenced`, `live_not_available`) stop it.
+* **A gate that is not ready never starts the agent.** No ctl.sock, or a
+  registration refused (a restarted gate refuses every one), means no CDP
+  proxy: `Worker._prepare` fails the ATTEMPT retryably with
+  `live_gate_unavailable` before the agent runs -- the start-failure path an
+  unreachable forge takes. Its lease and capacity are released at once
+  (invariant 1), the task goes back to READY 30 s later while it has attempts
+  left, and ends CANNOT_START when they are spent. Not a park: nothing about
+  this pod's sidecar improves by waiting, only a new pod brings a new one, and
+  a SCHEDULED_RETRY park is promoted by nothing.
+
+**The DNS side, read from the manifests (2026-10-15).** The gate dials
+`ws://swarm-live.swarm-system.svc.cluster.local:8080` (`livegate.tunnel.
+DEFAULT_RELAY_URL`, or `SWARM_LIVE_URL`). Every GKE worker pod already runs
+`dnsPolicy: None` with `searches: []`, `ndots:1` and NodeLocal DNSCache
+(169.254.20.10) as its only nameserver (`scheduler.dispatch.
+GKE_POD_DNS_CONFIG`, mirrored in `kubernetes/worker-templates/
+worker-job-browser.yaml`), so that name is already queried once, absolute,
+with no search-path expansion: a trailing dot or a lower `ndots` would change
+nothing. The cluster is Cloud DNS (cluster scope) behind NodeLocal DNSCache.
+The failures came only inside a burst of ~60 pod starts, and the worker in
+the same pod had just resolved its own hosts; what is not yet measured is
+whether node-local-dns answered SERVFAIL/timeout under that burst (EAI_AGAIN)
+or the Service name was briefly absent (EAI_NONAME). The worker's retry
+covers either. From this change the gate's record names which
+(`tunnel_refused {"cause": "relay unreachable: gaierror(EAI_AGAIN)"}`,
+`livegate.tunnel.unreachable_cause`); a manifest change waits for that
+reading rather than guessing at one.
+
 #### The relay's wire: owner decisions 2026-10-11
 
 Lanes L7 (the relay), L8 (its infrastructure) and L9 (swarm-api's routes) were
@@ -988,9 +1047,10 @@ owner decision 2026-10-13, replacing Q3's flat 10 minutes).** The browser and
 its half-finished state are alive, which is the whole point of the feature: a
 sign-in has to happen in the browser that will use the session. Capacity is
 exactly what it is for any `RUNNING` browser task: the lease holds the
-`browser` resource class's 2 units and the backend and provider pools
-(`apps/common/swarm_common/profiles.py::RESOURCE_CLASSES`), and the pod costs 8
-vCPU and 16 GiB per minute, idle or not, because `requests == limits`
+`browser` resource class's 1 unit (2 until contract request 79) and the
+backend and provider pools
+(`apps/common/swarm_common/profiles.py::RESOURCE_CLASSES`), and the pod costs 4
+vCPU and 8 GiB per minute (8 and 16 until request 79), idle or not, because `requests == limits`
 (invariant 7).
 
 *Why the flat 10 minutes went.* Measured over 26 live-browser tasks
@@ -1069,8 +1129,11 @@ it clears (`Scheduler._promote_manual_pauses`,
 `apps/scheduler/scheduler/loop.py::Scheduler._promote_manual_pauses`), so a hand-off parked under it
 would be re-admitted with nobody there to sign in. So it is a new `ParkReason` (contract request LB-A, section 8).
 
-**What the park costs.** The browser is gone: its session, its tabs, its
-history (section 5.5 says why they are not checkpointed). The claude-code
+**What the park costs.** The browser is wiped: its pod, its profile, its
+history (section 5.5 says why the profile is never checkpointed). What comes
+back is what §5.5.2 keeps: the open tabs, reopened before the next agent
+starts, and -- in a personal tenant only -- their cookies and local storage,
+through the saved-logins route. The claude-code
 agent has no conversation resume (`docs/design/child-tasks.md` (`the CLI runners have no conversation resume`)), so the next attempt starts the agent again on
 the restored `work/`. And the person waits for a cold start
 -- admission plus a GKE pod start -- before the browser is back. That is the
@@ -1479,7 +1542,9 @@ STARTING, at this lease and generation, the lease unreleased, the slot unused.
 Whatever still refuses the live path is never silent: the worker writes a
 RUNNING event with `cause: live_browser_unavailable`, the code, the reason and
 `message: "live browser unavailable: <reason>"`, which the console's event list
-shows.
+shows A refused key or heap costs the view and
+the hand-off only: the gate is up, so the agent keeps its browser (§3.3,
+NOLIVE-GUARD).
 
 #### 5.4.2 The worker talks to the gate on a channel the agent cannot use
 
@@ -1670,7 +1735,8 @@ the attempt ends."
   hidden.
 * **The checkpoint still never holds a session.** LB-7 reuses sessions
   through the gate and Secret Manager (§5.5.1), never through `work/`, the
-  checkpoint or the outputs. The two bullets above hold unchanged.
+  checkpoint or the outputs, and so does a park's (§5.5.2). The two bullets
+  above hold unchanged.
 * **Encrypting the session into the checkpoint, so it survives a park, is the
   option turned down for phase 1 (Q7).** It would make a park cheap -- no
   second sign-in -- at the price of a long-lived session stored in the tenant's
@@ -1824,6 +1890,111 @@ create with that resource type.
 
 User-scoped forge tokens and provider keys are a separate question (they are
 per tenant today), filed on its own issue.
+
+### 5.5.2 The browser across a park: tabs, and storage under LB-7 (issue #1362)
+
+MEASURED 2026-10-15 (QA batch full-1015, `u-bogdan`): S5-resume failed 6 of 6,
+three on Playwright MCP and three on dev-browser. Part one opened
+`https://example.com/?qa=<nonce>`, set `localStorage.qa_state`, asked for a
+hand-off and parked; the task resumed as attempt 2 from `ckpt-00001`, and the
+new browser had only `about:blank`.
+
+**Why nothing came back.** Not Chromium's session files, and not the restore
+order: there was nothing to restore. The profile directory is
+`SWARM_BROWSER_PROFILE_DIR` on a sidecar-only memory `emptyDir` of the pod
+(§3.1). The park sends `end_control` with `wipe` before its checkpoint
+(`HandoffPath.end`, `LiveGate.wipe`), which closes Chromium and empties that
+directory, and the checkpoint archives only `work/`
+(`CheckpointManager.create`). The resumed attempt is a new pod whose volume
+starts empty, and the gate launches Chromium with
+`--user-data-dir=<that volume>` and `about:blank` and no
+`--restore-last-session` (`livegate/__main__.py::chromium_args`). Chromium's
+`Sessions/` files, `Current Session` and `restore_on_startup` were therefore
+never in play. Making them so would mean checkpointing the profile, and the
+profile IS the session that §5.5 keeps out of every checkpoint. So the platform
+keeps what a resumed agent needs itself, and Chromium's own session restore is
+not used.
+
+**What a park keeps.** In `HandoffPath.end`, when a hold ends with
+`expired` (the park of §4.3), before the wipe, and only on a gate this worker
+registered with a protected heap (`agent_worker/browser_resume.py`):
+
+* **The tabs, in every tenant.** The gate's `tabs_export`
+  (`livegate/tabs.py`) lists the page targets in the order Chromium lists
+  them, each `{url, active}`. The active one is the tab the page follower
+  shows. The worker writes the list to `$SWARM_HANDOFF/browser-tabs.json`, so
+  it travels in the checkpoint with `work/`. A URL is the agent's own working
+  state: it navigated there, and the list goes back to nobody but the same
+  task's next attempt. That Chromium lists pages in tab-strip order is not
+  measured. A tab dragged elsewhere comes back where Chromium lists it.
+* **The site storage, in a personal tenant only, under LB-7's rules.** The
+  gate's `session_export` with `scope: park` covers cookies of every context,
+  plus the local storage of the open https origins. Unlike a carry, it needs
+  no returned hand-off: the jar goes only to the same task's resumed
+  attempt. The worker asks swarm-api for the slot
+  `swarm-tenant-u-<user>-browser-park-<task>` (`browser_slots.py`: this task's
+  own name only, 24-hour TTL, granted to that tenant's worker alone) and adds a
+  version. The TTL is its only delete. A hand-off park is dead-lettered after
+  `human_park_max_seconds` (24 hours by default), so the secret outlives no
+  park that could still resume. A group tenant keeps its tabs and no storage,
+  for §5.5.1's reason.
+
+**What is not kept or reopened** (`livegate/tabs.py::refusal`, applied by the
+gate at export and again by the worker and the gate on the way back, since
+the file is in the agent's reach):
+
+* anything but http(s);
+* a URL with userinfo, or one over 2,048 characters;
+* a URL whose query or fragment names a credential or a sign-in's state
+  (`token`, `code`, `state`, `session`, ...), or that the redaction filter
+  would change;
+* any URL on a host of the mask's challenge list (`mask.SHOWN_IN_CONTROL`:
+  reCAPTCHA, hCaptcha, Cloudflare's challenge), at any path. A challenge is a
+  person's to solve, and a stale one reopened would only fail.
+
+A sign-in page is reopened like any other page. Nothing here forbids it: it is
+the page the agent was on, the mask still covers its credential fields, and
+the hand-off ledger tells the agent its sign-in was NOT DONE.
+
+**What a resumed attempt gets.** In `HandoffPath.prepare`, after the gate's
+registration and before the runner starts, on an attempt whose spool holds an
+EARLIER attempt's tab list:
+
+1. the park secret's cookies go to `session_import`;
+2. `tabs_restore` opens each tab in order and brings the active one to the
+   front. It closes the `about:blank` Chromium started on.
+
+Both are refused by the gate once an agent has connected. The platform opening
+a URL here is not the agent navigating: the agent does not exist yet. Local
+storage goes WITH ITS TAB. Chromium's `DOMStorage` writes an origin's storage
+only through a frame of that origin, so a blank page cannot take it.
+For the first tab of each origin with carried storage, the gate therefore opens
+the tab on `about:blank`. It adds a script to every new document in an
+isolated world of its own session, then navigates. The script writes the
+items when the URL's document is created, before any of the page's scripts
+run. The gate's session is then detached, which removes the script, so a
+later navigation of the agent's is untouched. The whole restore fits in one
+`ctl.sock` call (7 s of the client's 10). A tab still loading at the end keeps
+its page and loses its storage, recorded as `storage_skipped`.
+
+The tab list is removed once read, so a later retry does not reopen a park it
+did not make. The resume summary (`resumed.md`, §4.3) names the tabs that came
+back, in order, marks the one in front, and says whether sign-ins and storage
+came back.
+
+**IndexedDB is not carried.** CDP's `IndexedDB` domain reads and deletes but
+cannot write. A restore would mean replaying object stores from a page script
+before the page's own scripts open the database, and that cannot be ordered
+reliably. It is left for the owner to decide, not done quietly.
+
+**Artifacts are not part of this, by design.** A parked attempt uploads its
+`$SWARM_ARTIFACTS_DIR` at the park, and the attempt that finishes lists those
+files by reference (`carried_from`; [workflows.md](../workflows.md), #166).
+The artifacts directory is not checkpointed, so a resumed attempt starts with
+an empty one ([checkpointing.md](../checkpointing.md)). The S5 run's
+`qa-phase1.txt` missing from attempt 2's disk is that rule working, not a
+lost file. The resume summary now says so, so an agent does not take the
+empty directory for lost work.
 
 ### 5.6 Keyboard, clipboard and the browser itself
 
@@ -2282,7 +2453,10 @@ What ships, and why each piece is the way it is:
 
 ### 8.2 Resource class
 
-`browser`: 8 vCPU, 16 GiB, 2 units
+`browser`: 8 vCPU, 16 GiB, 2 units when this was written; 4 vCPU, 8 GiB,
+1 unit since contract request 79 (owner, 2026-10-14), which also replaced the
+starting split below with display 3 vCPU / 5 GiB and worker 1 vCPU / 3 GiB
+(`apps/scheduler/scheduler/dispatch.py::LIVE_DISPLAY_SHARE`)
 (`apps/common/swarm_common/profiles.py::RESOURCE_CLASSES`). **The class does not change;
 it is split between the containers**, each with `requests == limits`
 (invariant 7), summing to the class, so admission's unit arithmetic is

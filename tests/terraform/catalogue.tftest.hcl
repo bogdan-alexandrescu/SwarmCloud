@@ -62,15 +62,15 @@ run "resource_classes_match_the_frozen_catalogue" {
     source = "../../terraform/infra"
   }
 
-  # RESOURCE_CLASSES: standard 4/8/20, browser 8/16/40, large 8/32/100.
+  # RESOURCE_CLASSES: standard 4/8/4, browser 4/8/4 (contract request 79), large 8/32/16.
   assert {
     condition     = output.resource_classes["standard"].cpu == 4 && output.resource_classes["standard"].memory_gib == 8 && output.resource_classes["standard"].disk_gib == 4
     error_message = "the standard class is 4 vCPU / 8 GiB / 20 GiB"
   }
 
   assert {
-    condition     = output.resource_classes["browser"].cpu == 8 && output.resource_classes["browser"].memory_gib == 16 && output.resource_classes["browser"].disk_gib == 8
-    error_message = "the browser class is 8 vCPU / 16 GiB / 40 GiB"
+    condition     = output.resource_classes["browser"].cpu == 4 && output.resource_classes["browser"].memory_gib == 8 && output.resource_classes["browser"].disk_gib == 4
+    error_message = "the browser class is 4 vCPU / 8 GiB / 4 GiB (contract request 79)"
   }
 
   assert {
@@ -78,10 +78,11 @@ run "resource_classes_match_the_frozen_catalogue" {
     error_message = "the large class is 8 vCPU / 32 GiB / 100 GiB"
   }
 
-  # units: 1, 2, 4 -- heavier classes cost more scheduling budget.
+  # units: 1, 1, 4 -- heavier classes cost more scheduling budget; browser
+  # dropped from 2 to 1 with contract request 79 (owner, 2026-10-14).
   assert {
-    condition     = output.resource_classes["standard"].units == 1 && output.resource_classes["browser"].units == 2 && output.resource_classes["large"].units == 4
-    error_message = "capacity units must match RESOURCE_CLASSES: 1, 2 and 4"
+    condition     = output.resource_classes["standard"].units == 1 && output.resource_classes["browser"].units == 1 && output.resource_classes["large"].units == 4
+    error_message = "capacity units must match RESOURCE_CLASSES: 1, 1 and 4"
   }
 
   assert {

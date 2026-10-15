@@ -138,7 +138,8 @@ export function classUnits(classes: ResourceClasses | null, resourceClass: strin
  * `blockerVerdict`/`verdictCopy`, threaded only into Capacity, Profiles and
  * Submit -- so the Agents list and the agent inspector, which read
  * `whyAgent`/`whyNeedsAction` in types.ts instead, never saw it: #66's own
- * repro (`resource:browser` at `hard_limit 1`, a 2-unit browser task) still
+ * repro (`resource:browser` at `hard_limit 1`, a browser task when that class
+ * weighed 2 units, before contract request 79) still
  * read "This resource class is busy platform-wide. (0/1)" there. `Verdict`,
  * `blockerVerdict` and `verdictCopy` stay exported -- Capacity.tsx,
  * Profiles.tsx and Submit.tsx call them by these names -- but they are now

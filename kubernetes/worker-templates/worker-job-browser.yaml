@@ -8,9 +8,11 @@
 # Autopilot, where an `emptyDir` with `medium: Memory` mounted at /dev/shm can
 # be sized directly.
 #
-# That emptyDir counts against the container's memory limit, which is why the
-# `browser` resource class is 16 GiB rather than 8: 2 GiB of it is shared memory
-# before Chromium has allocated a single tab.
+# That emptyDir counts against the container's memory limit: 2 GiB of the
+# `browser` class's 8 GiB is shared memory before Chromium has allocated a
+# single tab. The class was 16 GiB for that reason until contract request 79
+# (2026-10-14) measured four browser pods at a 1.85 GiB peak, shm included
+# (docs/browser-startup-speed.md §11). The numbers come from the catalogue.
 #
 # Chromium's own sandbox stays OFF, and the runner passes
 # `chromium_sandbox=False`. It needs user namespaces and CAP_SYS_ADMIN, and this

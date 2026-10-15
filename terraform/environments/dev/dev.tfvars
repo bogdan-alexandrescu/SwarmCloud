@@ -157,7 +157,8 @@ pool_limits = {
   # GKE_AUTOPILOT 40 -> 100: owner, 2026-10-07, accepting contract request 53
   # (claude-code moves to GKE Autopilot). At 40 the backend pool would bind
   # before claude-code's own ceiling (runner:claude-code 80), shared with
-  # browser at 2 units a task, and halve claude-code's concurrency on the
+  # browser at 2 units a task (1 since contract request 79, 2026-10-14),
+  # and halve claude-code's concurrency on the
   # move. 100 is claude-code's 80 plus browser headroom. It fits the quota:
   # us-central1 regional CPUS read 2,990 of 3,000 free on 2026-10-07, and
   # 100 x 4 vCPU = 400.
@@ -692,3 +693,11 @@ workspace_apply_publish = true
 # every search answers 503 search_unconfigured. search_provider stays at
 # its default, "brave".
 search_tool_enabled = false
+
+# The decision-api tailnet egress (terraform/infra/tailscale.tf,
+# docs/runbooks/tailscale-egress.md). ON in dev as of 2026-10-15 (~04:25 PDT):
+# the owner stored the tag:swarmcloud OAuth client as swarm-tailscale-oauth
+# version 2 and saved the tailnet policy grant (tag:swarmcloud ->
+# decision-api-staging tcp:443). internal_decision_api_enabled follows once the
+# egress is applied with kubernetes/apply.sh --swarm-system and reaches the API.
+enable_tailscale_egress = true

@@ -92,7 +92,14 @@ from typing import Any, Protocol
 
 from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE
 from swarm_common.models import Lease, Task, Tenant
-from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend, RunnerProfile
+from swarm_common.profiles import (
+    RESOURCE_CLASSES,
+    RUNNER_PROFILES,
+    RUNTIME_TOOLS,
+    Backend,
+    RunnerProfile,
+    tools_launched,
+)
 
 from .credentials import AccountPool, CredentialSource, credential_for
 from .judgment import DEFAULT_BACKEND, jev_dispatch, read_backend
@@ -364,7 +371,10 @@ class GkeDisk:
 #: (CACHE-SCRATCH), which had taken the owner's 4 + 2 + 2 below from 8 GiB to
 #: Autopilot's 10; the cache's 2 GiB went one each to /tmp and HOME.
 #: claude-code-browser runs the same uv and npm work as claude-code on this
-#: class.
+#: class. The 8 was also the class's disk_gib until contract request 79
+#: (2026-10-14) made that 4; disk_gib sizes Cloud Run's memory tmpfs, and on GKE
+#: these volumes are disk, outside the 8 GiB memory limit, so the request left
+#: this layout as the owner set it.
 #: Owner decisions 2026-10-07 (contract request 53): it was workspace 8 + /tmp 2 +
 #: HOME 4 = 14 GiB of sizeLimits against an 8 GiB pod limit, so the pod could be
 #: evicted before any one volume was full; then 5 + 1 + 2, which left /tmp below
@@ -579,19 +589,28 @@ class LiveDisplayShare:
 
 #: Per class, like GKE_DISK, and refused for a class without a row.
 #:
-#: browser: display 5 vCPU / 10 GiB, worker 3 / 6. The design's proposed
-#:   starting split (§8.2), NOT A MEASUREMENT (§11): Chromium, Xvfb and the
-#:   encoder on one side; claude-code, Node and the worker on the other. The
-#:   sidecar's 10 GiB holds its tmpfs volumes (/dev/shm 2, profile 1,
-#:   downloads 1, /tmp 0.25) and leaves Chromium about 5.75.
+#: browser: display 3 vCPU / 5 GiB, worker 1 / 3, of the class's 4 / 8
+#:   (contract request 79). Chromium, Xvfb and the encoder on one side;
+#:   claude-code, Node and the worker on the other. It was the design's
+#:   starting split (§8.2), display 5 / 10 and worker 3 / 6 of 8 / 16, which
+#:   cannot fit the smaller class. Sized from the measurement that justified
+#:   the class (docs/browser-startup-speed.md §11, 2026-10-15, four pods,
+#:   eight samples): the display peaked at 1.90 cores and 1.48 GiB, the worker
+#:   at 0.55 cores and 0.37 GiB, so each side has about 1.5x its CPU peak and
+#:   the worker about 8x its memory peak. The sidecar's resident tmpfs
+#:   (/dev/shm 2, profile 1, /tmp 0.25) plus its measured peak is 4.73 of its
+#:   5 GiB; downloads (1) do not stay resident because the worker moves each
+#:   one into work/. A heavier page or a download in flight at a peak is an
+#:   OOM kill, whose cost the worker's periodic checkpoint bounds (invariant 8).
 #: standard: display 2 / 4, worker 2 / 4. A workflow step may shrink a task's
 #:   class (swarm_api.validation.validate_resource_class_override), and admission
 #:   charged the smaller class, so the pod must fit it; half each, still with
 #:   the 2 GiB /dev/shm on the sidecar's side.
 #: large: no live profile can reach it (a step only shrinks), but the manifest
-#:   renders any class it is given; browser's sidecar, the rest to the worker.
+#:   renders any class it is given; the design's starting sidecar (§8.2, what
+#:   browser's was until contract request 79), the rest to the worker.
 LIVE_DISPLAY_SHARE: dict[str, LiveDisplayShare] = {
-    "browser": LiveDisplayShare(cpu=5, memory_gib=10),
+    "browser": LiveDisplayShare(cpu=3, memory_gib=5),
     "standard": LiveDisplayShare(cpu=2, memory_gib=4),
     "large": LiveDisplayShare(cpu=5, memory_gib=10),
 }
@@ -974,6 +993,28 @@ def offers_git_tools(profile_name: str) -> bool:
     return any(part in GIT_TOOL_RUNNERS for part in profile.runner_argv)
 
 
+def consumes_workspace_secrets(profile_name: str, inputs: Any) -> bool:
+    """Whether an attempt on this profile could be released a workspace secret,
+    so needs an attempt key to sign the release with (docs/design/workspace-
+    secrets.md §3.3, lane SEC-RELEASE).
+
+    The frozen catalogue's declarations (contract requests 80-81): the profile
+    declares a secret slot, or a RUNTIME_TOOLS entry its `browser_tool` input
+    launches does. The platform components a release can name (`merge`,
+    `indexer`) declare no slot, so they add nobody; the judge's TypeSafe key
+    is not released into a pod at all (owner decision Q8). Read from the
+    catalogue rather than from the grants, so the scheduler reads no
+    workspace's secrets to dispatch it.
+    """
+    profile = RUNNER_PROFILES.get(profile_name)
+    if profile is None or profile.worker_action is not None:
+        return False
+    if profile.secret_slots:
+        return True
+    launched = tools_launched(profile, inputs if isinstance(inputs, dict) else {})
+    return any(RUNTIME_TOOLS[name].secret_slots for name in launched)
+
+
 def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> dict[str, str]:
     """The ONLY thing the environment carries is identifiers and endpoints.
 
@@ -1075,9 +1116,19 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
     # so it needs one too. Having a key does not lift the depth limit:
     # swarm-api refuses a child's `submit` as `child_depth_exceeded` from the
     # task document, whatever its worker registered.
+    #
+    # AND WHEN IT COULD BE RELEASED A WORKSPACE SECRET (docs/design/workspace-
+    # secrets.md §3.3, lane SEC-RELEASE). The release is signed with the same
+    # key, so a child whose profile or tools declare a secret slot needs one
+    # even with no git tools (a `browser` child): without it the worker cannot
+    # ask, a required slot parks it, and an optional one is never delivered.
     child_key = str(getattr(settings, "child_key", "") or "")
     api_url = str(getattr(settings, "swarm_api_url", "") or "").strip()
-    keyed = not task.parent_task_id or offers_git_tools(task.runner_profile)
+    keyed = (
+        not task.parent_task_id
+        or offers_git_tools(task.runner_profile)
+        or consumes_workspace_secrets(task.runner_profile, task.input)
+    )
     if child_key and api_url and keyed:
         from .children import registration_nonce
 
@@ -2325,8 +2376,9 @@ class GkeJobDispatcher:
                             # is the reason browser work is on GKE at all.
                             # Every pod gets it, so `claude-code-browser`
                             # (contract request 67) has it too; its `browser`
-                            # class (16 GiB) is what pays for it, since this
-                            # tmpfs is charged to the memory limit. Chromium's
+                            # class (8 GiB since contract request 79) is what
+                            # pays for it, since this tmpfs is charged to the
+                            # memory limit. Chromium's
                             # own sandbox stays off on both profiles
                             # (CONTAINER_SECURITY_CONTEXT): the claude-code
                             # runner tells its agent to launch with

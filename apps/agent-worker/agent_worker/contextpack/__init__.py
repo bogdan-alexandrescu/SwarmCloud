@@ -39,8 +39,10 @@ NEVER FAILS A STEP. `prepare` catches everything: a broken snapshot is one
 prompt line saying the pack could not be built, and the agent starts as it
 would have without it. Nothing here touches admission, leasing or capacity.
 
-JEV. The pack records `jev` off with the stager's reason and spends nothing:
-the J1 rerank goes into `rank.py` in lane CTXQ-JW, after the client (CTXQ-J).
+JEV. When the workspace opted in and the worker set Jev up for the attempt
+(`judge.attempt`), J1 reranks the pack (`rank.rerank`, lane CTXQ-JW) and the
+pack says `jev: on` with the call's spend. Otherwise, and whenever the call
+fails, it records `jev` off with the stager's reason and spends nothing.
 """
 
 from __future__ import annotations
@@ -48,7 +50,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .layout import (
     ARTIFACT_NAME,
@@ -104,7 +106,7 @@ def context_dir(work_dir: Path) -> Path | None:
     return None
 
 
-def prepare(ctx: "RunnerContext", checkout: Path) -> str | None:
+def prepare(ctx: "RunnerContext", checkout: Path, judge: Any = None) -> str | None:
     """Build the pack for this step and return its prompt line; never raises.
 
     None when nothing was staged. A stager that decided to stage nothing (an
@@ -122,7 +124,7 @@ def prepare(ctx: "RunnerContext", checkout: Path) -> str | None:
         from .build import build_pack, write_artifact
 
         pack = build_pack(where, checkout=Path(checkout), work_dir=Path(ctx.work_dir),
-                          payload=ctx.payload)
+                          payload=ctx.payload, judge=judge)
         write_artifact(Path(ctx.artifacts_dir), pack)
         return prompt_line(where / CONTEXT_FILE)
     except Exception as exc:  # noqa: BLE001 -- a pack is never worth a failed step

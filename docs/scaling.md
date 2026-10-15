@@ -55,8 +55,12 @@ machines:
 | Class | cpu | memory | units | 100 units buys |
 |---|---|---|---|---|
 | `standard` | 4 | 8 GiB | 1 | 100 agents (400 vCPU, 800 GiB) |
-| `browser` | 8 | 16 GiB | 2 | 50 agents (400 vCPU, 800 GiB) |
+| `browser` | 4 | 8 GiB | 1 | 100 agents (400 vCPU, 800 GiB) |
 | `large` | 8 | 32 GiB | 4 | 25 agents (200 vCPU, 800 GiB) |
+
+`browser` weighed 2 (8 vCPU / 16 GiB) until contract request 79 measured its
+pods at a quarter of that and the owner set it to `standard`'s size and weight
+(2026-10-14). Its own `resource:browser` pool still caps it separately.
 
 `max_active_agents` caps the count; `global_capacity_units` caps the weight. Set
 the units budget from what you are willing to run concurrently in vCPU and GiB,

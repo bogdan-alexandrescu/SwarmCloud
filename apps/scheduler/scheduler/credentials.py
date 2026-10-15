@@ -124,6 +124,17 @@ The document shapes are OB3's (`swarm_api.forgeapp`) and §3.1's, read by id
 and never written. The id recipes are RESTATED below because the scheduler's
 image does not carry swarm-api; tests/unit/control_plane/
 test_forge_connection_admission.py holds them to swarm-api's own functions.
+
+A WORKSPACE SECRET A SLOT REQUIRES (docs/design/workspace-secrets.md §4.2;
+lane SEC-ADMIT-PARK, #1347). The last half of the same question, asked only
+by admission and the sweep, and only once the provider and the connection
+have said yes: does the profile, or a tool its `browser_tool` launches,
+declare a `required` slot that no enabled grant fills? `secret_slots.py`
+states that rule and reads the grants. A no parks CREDENTIAL_MISSING before
+any lease, its event naming each `{consumer, slot}` under `workspace_secrets`
+and never a secret id. The sweep asks it of EVERY CREDENTIAL_MISSING park,
+the worker's backstop park (`workspace-secret:<slots>`) included, so a task
+is promoted only when its key, its connection and its grants all answer yes.
 """
 
 from __future__ import annotations
@@ -139,6 +150,8 @@ from quota_broker.accounts import Account, Unavailable, accounts_serving
 from quota_broker.accountstore import AccountStore
 from swarm_common.models import Task, Tenant
 from swarm_common.profiles import RunnerProfile
+
+from .secret_slots import MissingSlot, WorkspaceGrants
 
 #: The variable a pool account's token fills.
 #:
@@ -217,11 +230,19 @@ class CredentialAnswer:
     source: CredentialSource
     pool: PoolAnswer
     forge: ForgeAnswer = ForgeAnswer.NOT_ASKED
+    #: None when the grants were not asked (no task, an earlier half said no,
+    #: or nothing is required); else the required slots no enabled grant
+    #: fills, empty when every one is.
+    workspace_secrets: tuple[MissingSlot, ...] | None = None
 
     @property
     def runnable(self) -> bool:
         """THE PREDICATE: may this task be admitted at all."""
-        return self.source is not CredentialSource.MISSING and self.forge in _FORGE_RUNNABLE
+        return (
+            self.source is not CredentialSource.MISSING
+            and self.forge in _FORGE_RUNNABLE
+            and not self.workspace_secrets
+        )
 
     def park_detail(self) -> dict[str, Any]:
         """What a CREDENTIAL_MISSING park records in its `parked` event.
@@ -235,6 +256,8 @@ class CredentialAnswer:
         detail: dict[str, Any] = {"provider": self.provider, "account_pool": self.pool.value}
         if self.forge is not ForgeAnswer.NOT_ASKED:
             detail["forge_connection"] = self.forge.value
+        if self.workspace_secrets:
+            detail["workspace_secrets"] = [m.to_detail() for m in self.workspace_secrets]
         return detail
 
     def promote_detail(self) -> dict[str, Any]:
@@ -246,6 +269,8 @@ class CredentialAnswer:
         }
         if self.forge is not ForgeAnswer.NOT_ASKED:
             detail["forge_connection"] = self.forge.value
+        if self.workspace_secrets is not None:
+            detail["workspace_secrets"] = "granted"
         return detail
 
 
@@ -522,17 +547,28 @@ def credential_for(
     *,
     task: Task | None = None,
     forge: ForgeConnections | None = None,
+    secrets: WorkspaceGrants | None = None,
+    tenant_of: Callable[[str], Tenant | None] | None = None,
 ) -> CredentialAnswer:
     """THE RULE. See the module docstring for where each condition comes from.
 
-    `task` and `forge` are passed by admission and the credential sweep, and
-    by nobody else: the GitHub connection is asked about only when both are
-    given, and only once the provider half has said yes.
+    `task`, `forge`, `secrets` and `tenant_of` are passed by admission and the
+    credential sweep, and by nobody else: the GitHub connection is asked about
+    only when `task` and `forge` are given, and only once the provider half
+    has said yes; the workspace grants only when `secrets` is given too, and
+    only once the connection has said yes. `tenant_of` reads a personal
+    tenant for Q3 (`secret_slots.WorkspaceGrants._personal`).
     """
     answer = _provider_answer(profile, tenant, pool)
     if task is None or forge is None or not answer.runnable:
         return answer
-    return CredentialAnswer(answer.provider, answer.source, answer.pool, forge_answer(task, forge))
+    answer = CredentialAnswer(
+        answer.provider, answer.source, answer.pool, forge_answer(task, forge)
+    )
+    if secrets is None or not answer.runnable:
+        return answer
+    missing = secrets.missing(task, profile, tenant, tenant_of or (lambda _tenant_id: None))
+    return CredentialAnswer(answer.provider, answer.source, answer.pool, answer.forge, missing)
 
 
 def _provider_answer(profile: RunnerProfile, tenant: Tenant, pool: AccountPool) -> CredentialAnswer:

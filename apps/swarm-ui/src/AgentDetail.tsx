@@ -2245,7 +2245,8 @@ function Why({
    * api.ts) -- not a second fetch of `/v1/resource-classes`. `classUnits`
    * (#66) turns it into this task's weight, never the bundled
    * `RESOURCE_UNITS` table: #66's own repro (`resource:browser` at
-   * `hard_limit 1`, a 2-unit browser task) read "busy platform-wide. (0/1)"
+   * `hard_limit 1`, a browser task when that class weighed 2 units, before
+   * contract request 79) read "busy platform-wide. (0/1)"
    * here before this was threaded through. null keeps the pre-#66 reading
    * when the catalogue has not answered.
    */

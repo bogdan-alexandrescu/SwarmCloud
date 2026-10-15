@@ -159,7 +159,7 @@ Not every task costs the same. `ResourceClass.units` weights them:
 | Class | cpu | memory | workspace | units |
 |---|---|---|---|---|
 | `standard` | 4 | 8 GiB | 4 GiB of the 8 | 1 |
-| `browser` | 8 | 16 GiB | 8 GiB of the 16 | 2 |
+| `browser` | 4 | 8 GiB | 4 GiB of the 8 | 1 |
 | `large` | 8 | 32 GiB | 16 GiB of the 32 | 4 |
 
 **The workspace column is memory, and it is a slice of the memory column, not
@@ -171,6 +171,14 @@ tmpfs carved out of the container's own memory. Adding `memory` and `workspace`
 together, or planning a node budget from the old disk figures, overstates what a
 class holds and understates what it costs. `swarm_common.profiles.ResourceClass`
 is the authority; `disk_gib` there is the slice.
+
+`browser` was 8 / 16 GiB / 8 GiB and 2 units until contract request 79
+(owner, 2026-10-14): four browser pods were measured at a 2.13-core,
+1.85 GiB peak (docs/browser-startup-speed.md §11), so the class became
+`standard`'s size, and the owner then dropped its weight to 1. A pool of N
+units now admits N browser agents, where it admitted N/2. It still has its own
+`resource:browser` pool, which is what keeps browser concurrency a separate
+ceiling from `standard`'s now that the two cost the same.
 
 `max_active_agents` caps the number of agents; `global_capacity_units` caps their
 weight. Both exist because 100 `standard` agents and 25 `large` agents are the

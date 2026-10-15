@@ -278,8 +278,9 @@ run "custom_role_ids_are_legal_and_named_in_this_project" {
     # (terraform/bootstrap/browser_logins.tf, lanes L8b and L8c of #1030), and
     # swarmProviderKeyWriter (terraform/bootstrap/provider_keys.tf, KEYS-IAM),
     # and swarmWorkspaceSecretAccessor (terraform/bootstrap/workspace_secrets.tf,
-    # SEC-IAM).
-    condition = length(output.ids) == 20 && alltrue([
+    # SEC-IAM), and swarmTypesafeForwarderAccessor
+    # (terraform/bootstrap/typesafe_forwarder.tf, SEC-INJECT-A).
+    condition = length(output.ids) == 21 && alltrue([
       for id in values(output.ids) : can(regex("^[a-zA-Z0-9_.]{3,64}$", id))
     ])
     error_message = "every custom role id must be 3 to 64 letters, digits, underscores or dots"

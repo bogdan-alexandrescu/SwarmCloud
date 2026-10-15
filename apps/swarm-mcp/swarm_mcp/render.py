@@ -1218,7 +1218,8 @@ def capacity_subtitle(capacity: dict[str, Any] | None, style: Style) -> str:
     RANKED BY AGENTS, AND SAYS SO (#192). The ranking was always the fewest
     agents of a profile that still fit (ROOM), but the line printed the binding
     pool's UNITS -- `tightest: resource:browser 0/10` -- which named an empty
-    pool the tightest because a browser agent takes two units. It now names
+    pool the tightest because a browser agent took two units (one since
+    contract request 79). It now names
     the profile, the agents that fit, and the pool, with its units labelled.
 
     A pool that could not be graded outranks every measured one, for the same

@@ -154,6 +154,7 @@ from . import handoff as handoff_mod
 from . import inputs as inputs_mod
 from . import issue as issue_mod
 from . import jevkey as jevkey_mod
+from . import secretrelease as secretrelease_mod
 from . import questions as questions_mod
 from . import redact as redact_mod
 from . import standalone_outputs as standalone_mod
@@ -1031,6 +1032,13 @@ class Worker:
         # the spool and the await. Inert unless the scheduler passed a nonce.
         self.children = children_mod.ChildPath(
             config, logger=deps.logger, memory=deps.memory, api=deps.child_api
+        )
+        # The workspace secrets release (docs/design/workspace-secrets.md
+        # §3.3, lane SEC-RELEASE): once per attempt, before the runner exists,
+        # signed with the child path's attempt key. Inert for a profile whose
+        # catalogue entry, and whose launched tools, declare no secret slot.
+        self.secret_release = secretrelease_mod.SecretRelease(
+            config, children=self.children, logger=deps.logger
         )
         # The live-browser path (docs/design/live-browser.md §4, lane L4): the
         # gate's ctl.sock slot, the tunnel ticket and the hand-off spool. Inert
@@ -2365,6 +2373,12 @@ class Worker:
         # task's events, where the console shows it beside an empty Browser
         # tab (task_23cc2e82178640709a45, 2026-10-12, LB-KEYRACE).
         self.handoff.setup(self._live_browser_unavailable)
+        # NOLIVE-GUARD (part of #1366): the agent's browser follows the GATE,
+        # never the viewer's tunnel. A live-browser attempt whose gate is not
+        # ready has no CDP proxy, and it never starts its agent headless: the
+        # ATTEMPT fails retryably, before the agent, after the startup window.
+        if self.handoff.gate_missing:
+            return functools.partial(self._fail_live_gate_missing, self.handoff.unavailable)
 
         # THE FIRST HEARTBEAT GOES HERE, BEFORE ANY SLOW WORK.
         #
@@ -2690,6 +2704,31 @@ class Worker:
 
         # ---- STEP 6: tenant credentials ---------------------------------
         self.phases.enter("credentials")
+        # STEP 6a: the workspace secrets granted to this attempt's consumers
+        # (SEC-RELEASE), ONCE, before the runner exists: every value is
+        # registered for redaction as the answer is parsed, and the runner is
+        # handed only the manifest's path (`_build_child_env`). A 409 is the
+        # fence: stand down without touching the lease (invariant 5). A
+        # required slot with nothing in it -- no grant, or swarm-api not
+        # reachable -- parks CREDENTIAL_MISSING at no cost (invariant 1);
+        # optional slots only, the attempt starts without them.
+        try:
+            released = self.secret_release.release(
+                profile=cfg.profile, inputs=task.get("input"), private_dir=ws.private
+            )
+        except secretrelease_mod.SecretReleaseFenced as exc:
+            raise FencedWriteRefused(
+                cfg.generation, -1, f"secrets release: {exc.code}", write="secrets release"
+            ) from None
+        if released.missing_required:
+            secretrelease_mod.remove(ws.private)
+            return functools.partial(
+                self._park_credential_missing,
+                CredentialMissing(
+                    cfg.tenant_id,
+                    "workspace-secret:" + ",".join(released.missing_required),
+                ),
+            )
         try:
             child_env = self._build_child_env()
         except CredentialMissing as exc:
@@ -7378,6 +7417,13 @@ class Worker:
             call_options=self.control.call_options("tenant"),
             backend=base.get(jevkey_mod.BACKEND_ENV) or os.environ.get(jevkey_mod.BACKEND_ENV),
         ))
+        # The released workspace secrets (SEC-RELEASE): the manifest's PATH,
+        # `SWARM_SECRETS_MANIFEST`, and nothing else -- never a value. The
+        # release ran once, in STEP 6a; a rebuild on a credential reload
+        # hands the same path.
+        released = self.secret_release.result
+        if released is not None:
+            base.update(released.env)
         return ws.child_env(base)
 
     def _graph_context_env(self, ws: Any, clone_base: str | None) -> dict[str, str]:
@@ -8031,9 +8077,48 @@ class Worker:
                 "phase": note.get("phase", "live_session"),
                 "live_path": note.get("live_path"),
                 "reason": reason,
-                "message": f"live browser unavailable: {reason}",
+                # A failed VIEW says "live view unavailable" (NOLIVE-GUARD).
+                "message": note.get("message") or f"live browser unavailable: {reason}",
             },
         )
+
+    def _fail_live_gate_missing(self, code: str | None) -> Outcome:
+        """A retryable failure before the agent ran: the live gate was not ready.
+
+        NOLIVE-GUARD (part of #1366). Ending the ATTEMPT (`fail_retryably`)
+        rather than parking: a park holds no capacity, but nothing about this
+        pod's sidecar gets better by waiting, and only a new attempt brings a
+        new one; SCHEDULED_RETRY parks are promoted by nothing. The task goes
+        back to READY while it has attempts left, its lease and capacity
+        released (invariant 1), and ends CANNOT_START when they are spent.
+        The spec is verified first, as step 4 would have: the retry is decided
+        on the signed `max_attempts`, never the live field (#346).
+        """
+        task, create_time = self.control.fetch_task_snapshot()
+        self._verify_spec(task, create_time)
+        self.control.pin_verified_max_attempts(task.get("max_attempts"))
+        cause = handoff_mod.LIVE_GATE_UNAVAILABLE
+        error = (
+            f"{cause}: the live browser's gate was not ready ({code or 'unknown'}), so the "
+            "agent was not started without its browser; the attempt is retried while the "
+            "task has attempts left."
+        )
+        self.log.warning(
+            "the live gate is not ready; failing the attempt retryably before the agent runs",
+            cause=cause,
+            live_path=code,
+        )
+        with self._metrics_after_the_record():
+            state = self.control.fail_retryably(
+                exit_code=None,
+                error=error,
+                cause=cause,
+                result_summary={"live_gate": {"cause": cause, "live_path": code}},
+                retry_delay_seconds=handoff_mod.LIVE_GATE_RETRY_DELAY_SECONDS,
+                detail={"live_path": code},
+                end_cause=EndCause.CANNOT_START,
+            )
+        return Outcome(exit_code=ExitCode.FAILED, state=state)
 
     def _emit_startup_progress(self, step: str, at: datetime) -> bool:
         """`startup_progress`: one of the browser's start-up steps, at the gate's time (STARTUP-API).
@@ -12377,8 +12462,16 @@ class Worker:
             if self.ws is not None:
                 workspace_mod.destroy(self.ws)
 
+        def remove_released_secrets() -> None:
+            # The released workspace secrets (SEC-RELEASE, design §4.1): gone
+            # once the runner is, on every exit -- success, failure, park,
+            # cancel, fence -- before anything else in cleanup can fail.
+            if self.ws is not None:
+                secretrelease_mod.remove(self.ws.private)
+
         for step, action in (
             ("terminate_runner", terminate_runner),
+            ("remove_released_secrets", remove_released_secrets),
             # THE BROWSER IS WIPED ON EVERY EXIT (live-browser §5.5): success,
             # failure, park, cancel, fence. The hand-off's own park and cancel
             # wipe earlier, before their checkpoint; this is every other exit,

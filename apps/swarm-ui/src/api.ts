@@ -1837,7 +1837,7 @@ async function fixtureResourceClasses(): Promise<Result<{ resource_classes: Reso
     data: {
       resource_classes: {
         standard: { name: 'standard', cpu: 4, memory_gib: 8, disk_gib: 4, units: 1 },
-        browser: { name: 'browser', cpu: 8, memory_gib: 16, disk_gib: 8, units: 2 },
+        browser: { name: 'browser', cpu: 4, memory_gib: 8, disk_gib: 4, units: 1 },
         large: { name: 'large', cpu: 8, memory_gib: 32, disk_gib: 16, units: 4 },
       },
     },
@@ -3096,6 +3096,10 @@ export async function setPoolLimit(poolName: string, limit: number): Promise<Res
  * pools tied at 15 and `codex` by two tied at 10, so every single-ceiling
  * counterfactual on them reads zero. Those zeros are the shape an operator has
  * to recognise, and they are real numbers off the dev platform, not staged ones.
+ *
+ * `browser` was regenerated at 1 unit when contract request 79 dropped the
+ * class from 2; test_blocker_ui_surface.py's `FIXTURE_PROFILES` carries the
+ * weight it is generated with, so change both in one commit.
  */
 const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
   "mock": {
@@ -3410,7 +3414,7 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
     "uncapped": []
   },
   "browser": {
-    "units": 2,
+    "units": 1,
     "headroom": 0,
     "basis": "measured",
     "blockers": [
@@ -3489,14 +3493,13 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
       {
         "pool": "provider:anthropic:tenant:u-bogdan",
         "action": "raise",
-        "headroom_after": 2,
+        "headroom_after": 4,
         "basis_after": "measured",
-        "delta": 2,
+        "delta": 4,
         "next_binding": [
           "resource:browser",
           "runner:browser",
-          "backend:GKE_AUTOPILOT",
-          "provider:anthropic"
+          "backend:GKE_AUTOPILOT"
         ]
       }
     ],
@@ -3661,7 +3664,7 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
           input_contract: FIXTURE_INPUT_CONTRACTS.codex,
         },
         browser: {
-          resource_class: 'browser', backend: 'GKE_AUTOPILOT', provider: 'anthropic', units: 2,
+          resource_class: 'browser', backend: 'GKE_AUTOPILOT', provider: 'anthropic', units: 1,
           ...FIXTURE_AVAILABILITY.browser,
           pools: [
             'global', 'tenant:u-bogdan', 'resource:browser', 'runner:browser',
@@ -3671,10 +3674,11 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
           input_contract: FIXTURE_INPUT_CONTRACTS.browser,
         },
         // Contract request 67: claude-code on the browser image, so it costs a
-        // browser class (2 units) and runs where the browser image must. No
-        // admission row: the panel reads a missing one as not measured.
+        // browser class (1 unit since contract request 79; 2 before) and runs
+        // where the browser image must. No admission row: the panel reads a
+        // missing one as not measured.
         'claude-code-browser': {
-          resource_class: 'browser', backend: 'GKE_AUTOPILOT', provider: 'anthropic', units: 2,
+          resource_class: 'browser', backend: 'GKE_AUTOPILOT', provider: 'anthropic', units: 1,
           ...FIXTURE_AVAILABILITY['claude-code-browser'],
           pools: [
             'global', 'tenant:u-bogdan', 'resource:browser', 'runner:claude-code-browser',

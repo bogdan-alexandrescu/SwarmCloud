@@ -41,6 +41,7 @@ run is created in the caller's tenant (through `submit_tasks`, which runs
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 
@@ -140,6 +141,41 @@ def _read_plan(ctx: AppContext, tenant_id: str, task_id: str) -> tuple[str, dict
     return parse_planner_output(window.get("content") or "")
 
 
+#: What the planner's worker writes beside plan.json when the workspace opted
+#: in to Jev (`agent_worker.judge.poststeps.PLAN_ADVISORY_FILE`, lane CTXQ-JW):
+#: J2's uncovered requirements and J5's likely-duplicate lane. ADVISORY: a
+#: missing, unreadable or malformed file is no advisory, and the run moves
+#: exactly as it did before Jev.
+PLAN_ADVISORY_FILE = "plan-advisory.json"
+MAX_PLAN_ADVISORY_BYTES = 64 * 1024
+
+
+def read_plan_advisory(ctx: AppContext, tenant_id: str, task_id: str) -> dict | None:
+    """The planner's Jev advisory, or None. Never raises: it decides nothing."""
+    try:
+        window = ctx.inspection.read_artifact(
+            tenant_id, task_id, submitted_by=None, name=PLAN_ADVISORY_FILE,
+            limit_bytes=MAX_PLAN_ADVISORY_BYTES,
+        )
+        if window.get("status") != "ok" or window.get("truncated"):
+            return None
+        advisory = json.loads(window.get("content") or "")
+    except Exception:  # noqa: BLE001 -- advisory: absent, gone or malformed is none
+        return None
+    return advisory if isinstance(advisory, dict) and advisory.get("advisory") is True else None
+
+
+def jev_holds_for_human(run: IssueRun, advisory: dict | None) -> bool:
+    """§8 Q5 A (owner decision 2026-10-14): J5 at p >= 0.85 on an in-flight lane
+    holds an AUTO-approved plan for a human. The hold is the run's own
+    `plan_approval` set to `required` -- a person approves it like any
+    required plan, so it is reversible and Jev never decides."""
+    if run.plan_approval != "auto" or not advisory:
+        return False
+    duplicate = advisory.get("duplicate")
+    return advisory.get("hold_for_human") is True and isinstance(duplicate, dict)
+
+
 def workflows_refusal(paths: list[str]) -> str:
     """The run's `error` when its plan names `.github/workflows/` files (§4.4)."""
     return (
@@ -219,11 +255,17 @@ def _from_planner(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
                 tenant_id, run.id, RunState.FAILED, by=SYSTEM,
                 patch={"error": failure_text(workflows_refusal(refused))},
             )
-        return runs.transition(
-            tenant_id, run.id, RunState.PLANNED, by=SYSTEM,
-            patch={"plan": plan, "plan_digest": plan_digest(plan), "plan_revision": 1,
-                   "approval_hold": hard_stops_at_plan(ctx, tenant_id, run, plan)},
-        )
+        patch = {"plan": plan, "plan_digest": plan_digest(plan), "plan_revision": 1,
+                 "approval_hold": hard_stops_at_plan(ctx, tenant_id, run, plan)}
+        advisory = read_plan_advisory(ctx, tenant_id, task.id)
+        if jev_holds_for_human(run, advisory):
+            log.info(
+                "issue run %s tenant=%s: Jev judged the plan a likely duplicate of in-flight "
+                "lane %r; the auto-approval waits for a person", run.id, tenant_id,
+                str((advisory or {}).get("duplicate", {}).get("ref") or "")[:120],
+            )
+            patch["plan_approval"] = "required"
+        return runs.transition(tenant_id, run.id, RunState.PLANNED, by=SYSTEM, patch=patch)
     if task.state in (TaskState.FAILED, TaskState.DEAD_LETTERED):
         why = f"the planner task {task.id} ended {task.state.value}"
         if task.last_error:

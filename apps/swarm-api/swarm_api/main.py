@@ -31,6 +31,7 @@ from .routes import (
     approvals,
     attemptcontext,
     attempts,
+    attempts_secrets,
     browser_logins,
     browser_slots,
     checkpoints,
@@ -60,6 +61,7 @@ from .routes import (
     schedules,
     tasks,
     tenants,
+    typesafe_ticket,
     workflows,
     workspace_secrets,
     workspaces,
@@ -71,6 +73,14 @@ from swarm_common.logging_setup import configure_logging
 log = logging.getLogger(__name__)
 
 TITLE = "swarm control-plane API"
+
+#: Routes whose request body and response are NEVER captured by anything this
+#: app logs (design workspace-secrets.md §4.5). `observe` below captures no body
+#: or response for any route; a capture added to it later must skip these.
+#: The release is the one route that serves credential material (owner
+#: decision Q2), so its body and its answer stay out of every log by
+#: construction, not by a reviewer noticing.
+UNCAPTURED_ROUTES = frozenset({attempts_secrets.RELEASE_ROUTE})
 
 
 def _forbidden_field_hint(errors: list[dict[str, Any]]) -> str | None:
@@ -177,8 +187,8 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     app.include_router(provider_keys.router)
     # The workspace secrets store's management API (docs/design/workspace-
     # secrets.md §5, lane SEC-STORE-API, part of #1347): records and grants,
-    # write-only values, each write audited in its own transaction. No
-    # release route: that is SEC-RELEASE.
+    # write-only values, each write audited in its own transaction. The
+    # release is SEC-RELEASE's, `attempts_secrets` below.
     app.include_router(workspace_secrets.router)
     # Each workspace's Jev judgment backend -- Internal Jev (the default),
     # Internal Laya or TypeSafe -- its owner's or an admin's to choose,
@@ -224,6 +234,11 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # Layer I, in-flight work (docs/design/context-quality.md §4.2, lane CTXQ-I):
     # worker-only, authenticated and fenced as the git tools are.
     app.include_router(attemptcontext.router)
+    # The workspace secrets release (docs/design/workspace-secrets.md §3.3,
+    # lane SEC-RELEASE, part of #1347): worker-only, signed under its own
+    # purpose and fenced; the one route that serves credential material, and
+    # in UNCAPTURED_ROUTES.
+    app.include_router(attempts_secrets.router)
     # Named browser logins and the workflow carry (docs/design/live-browser.md
     # §5.5.1, lane LB-L9b): the person's own logins, and two worker-only
     # routes that authenticate as the child routes do.
@@ -236,6 +251,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # tunnel ticket, a member's view and control, and the socket proxied to
     # swarm-live. Tenant-scoped through the same authenticator as every route.
     app.include_router(live.router)
+    # The TypeSafe forwarder's attempt ticket (docs/design/workspace-secrets.md
+    # §3.5, lane SEC-INJECT-A): worker-only, proven and fenced as above.
+    app.include_router(typesafe_ticket.router)
     # The notification feed (#1206, NOTIF-API; docs/notifications.md): the
     # caller's own items, derived on each read from the records above, and
     # one document of read marks per person.
@@ -243,6 +261,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
 
     @app.middleware("http")
     async def observe(request: Request, call_next):
+        # Metrics only: the route TEMPLATE, the method and the status class.
+        # Never the body or the response of any route, and above all not of
+        # UNCAPTURED_ROUTES.
         route = request.scope.get("path", "unknown")
         started = time.perf_counter()
         try:

@@ -526,6 +526,36 @@ class ApiSettings:
     #: The exit country (owner decision Q6: US), returned with the ticket so
     #: the take-control dialog can say where sites see the browser from.
     browser_egress_country: str = "us"
+    #: THE TYPESAFE FORWARDER (docs/design/workspace-secrets.md §3.5; lane
+    #: SEC-INJECT-A). `swarm-typesafe-fwd-key`, from SWARM_TYPESAFE_FWD_KEY by
+    #: Secret Manager reference (terraform/infra/typesafe_fwd.tf): what the
+    #: attempt TypeSafe ticket is MAC'd with. Empty means no forwarder: the
+    #: route answers 503. Excluded from the repr, as `egress_key` is.
+    typesafe_fwd_key: str = field(default="", repr=False)
+    #: A TypeSafe ticket's life: how long one copied out of a compromised pod
+    #: can spend its key. Five minutes, shorter than the egress ticket's ten,
+    #: because a ticket here spends a person's or a workspace's key rather than
+    #: platform bandwidth. Clamped to the forwarder's 60-900 s.
+    typesafe_ticket_seconds: int = 300
+    #: GRANT ATTESTATION (docs/design/workspace-secrets.md, "What
+    #: SEC-GRANT-ATTEST built"; owner decision 2026-10-15). `swarm-workspace-
+    #: grant-key`, from SWARM_WORKSPACE_GRANT_KEY by Secret Manager reference
+    #: (terraform/infra/workspace_grant_key.tf): what swarm-api MACs every
+    #: workspace-secret grant with (`swarm_api.grant_attest`). Empty means
+    #: grants are written unattested. Excluded from the repr, as `live_key` is.
+    workspace_grant_key: str = field(default="", repr=False)
+    #: The previous version, accepted when VERIFYING beside the current one
+    #: during a rotation; never used to sign. Empty outside one.
+    workspace_grant_key_previous: str = field(default="", repr=False)
+    #: OFF by default, because grants written before SEC-GRANT-ATTEST carry no
+    #: attestation: switched on before `POST /v1/admin/workspace-secrets/
+    #: attest-grants` has re-signed them, every such grant would stop being
+    #: released and a required slot would park CREDENTIAL_MISSING across
+    #: every workspace at once. While off, an UNATTESTED grant is released
+    #: with a `grant_attestation_missing` warning; a grant whose attestation is
+    #: present but wrong is dropped either way. docs/runbooks/
+    #: workspace-grant-attestation.md is the order to turn it on in.
+    grant_attestation_required: bool = False
     #: Whether agent-runtime-browser carries jev-browser (JEV-IMAGE, #1296).
     #: ON by default because the image does; a deployment rolled back to an
     #: image without it sets BROWSER_JEV_INSTALLED=false, and a `browser_tool:
@@ -756,6 +786,12 @@ class ApiSettings:
             browser_egress_profiles=_csv("BROWSER_EGRESS_PROFILES", "claude-code-browser"),
             browser_egress_country=os.environ.get("BROWSER_EGRESS_COUNTRY", "us").strip().lower()
             or "us",
+            typesafe_fwd_key=os.environ.get("SWARM_TYPESAFE_FWD_KEY", "").strip(),
+            typesafe_ticket_seconds=_int("TYPESAFE_TICKET_SECONDS", 300),
+            workspace_grant_key=os.environ.get("SWARM_WORKSPACE_GRANT_KEY", "").strip(),
+            workspace_grant_key_previous=os.environ.get(
+                "SWARM_WORKSPACE_GRANT_KEY_PREVIOUS", "").strip(),
+            grant_attestation_required=_bool("GRANT_ATTESTATION_REQUIRED", False),
             browser_jev_installed=_bool("BROWSER_JEV_INSTALLED", True),
             search_tool_enabled=_bool("SEARCH_TOOL_ENABLED", False),
             search_provider=search_provider,

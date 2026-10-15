@@ -1353,7 +1353,8 @@ export function ProfileFacts({ name, profile, pools }: { name: string; profile: 
   // "busy platform-wide. (0/0)" in this box's words. `blockerCeiling` decides
   // it from the blocker the server sent, not from the pool row.
   //
-  // AND A LEAD WHOSE LIMIT IS BELOW ONE TASK (#66): a browser task under a
+  // AND A LEAD WHOSE LIMIT IS BELOW ONE TASK (#66): a browser task (then 2
+  // units; contract request 79 made it 1, so today it is a large task) under a
   // limit of 1 read "held down by resource:browser, 0 of 1 weighted units in
   // use" -- wait -- about a task no wait will admit. The weight is the class
   // catalogue's (`/v1/resource-classes`); null until it answers, and then the

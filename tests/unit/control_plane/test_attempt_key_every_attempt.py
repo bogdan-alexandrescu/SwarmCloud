@@ -9,8 +9,14 @@ task is exactly what a fan-out lane runs as, and it needs the git tools too.
 So: every attempt of a task whose profile offers git tools gets the nonce,
 children included; its key registers; and having a key still gives a child no
 way to submit children (`child_depth_exceeded`, depth 1, is unchanged). A child
-whose profile is not offered git tools still gets no nonce -- the control,
-without which "a child gets a nonce" would pass by handing one to everything.
+whose profile is not offered git tools, and could be released no workspace
+secret, still gets no nonce -- the control, without which "a child gets a
+nonce" would pass by handing one to everything.
+
+Lane SEC-RELEASE (docs/design/workspace-secrets.md §3.3) widens the rule by
+one clause: the workspace secrets release is signed with the same key, so a
+child whose profile or launched tools declare a secret slot gets a nonce too,
+git tools or not.
 """
 
 from __future__ import annotations
@@ -20,7 +26,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from swarm_common.models import Lease, Task, Tenant
-from swarm_common.profiles import RUNNER_PROFILES
+from swarm_common.profiles import RUNNER_PROFILES, RUNTIME_TOOLS
 from swarm_common.states import TaskState
 
 from swarm_api.childkey import CHILD_KEYS, AttemptTuple, nonce
@@ -90,14 +96,30 @@ def _offered(name: str) -> bool:
     )
 
 
+def _secret_slots(name: str) -> bool:
+    """Read from the frozen catalogue, independently of the scheduler: the
+    profile's own slots, or those of any tool its `browser_tool` can launch."""
+    profile = RUNNER_PROFILES[name]
+    return profile.worker_action is None and bool(
+        profile.secret_slots
+        or any(t.secret_slots for t in RUNTIME_TOOLS.values() if name in t.profiles)
+    )
+
+
 GIT_TOOL_PROFILES = sorted(name for name in RUNNER_PROFILES if _offered(name))
-OTHER_PROFILES = sorted(name for name in RUNNER_PROFILES if not _offered(name))
+SECRET_ONLY_PROFILES = sorted(
+    name for name in RUNNER_PROFILES if not _offered(name) and _secret_slots(name)
+)
+OTHER_PROFILES = sorted(
+    name for name in RUNNER_PROFILES if not _offered(name) and not _secret_slots(name)
+)
 
 
 def test_both_sides_of_the_rule_are_populated():
     """Without this an empty parametrisation would pass both tests below vacuously."""
     assert {"claude-code", "codex"} <= set(GIT_TOOL_PROFILES)
-    assert {"mock", "merge", "post-verdict", "browser"} <= set(OTHER_PROFILES)
+    assert {"mock", "merge", "post-verdict"} <= set(OTHER_PROFILES)
+    assert "browser" in SECRET_ONLY_PROFILES
 
 
 @pytest.mark.parametrize("profile", GIT_TOOL_PROFILES)
@@ -116,6 +138,18 @@ def test_a_child_not_offered_git_tools_gets_no_nonce(profile):
     """The control: the child path's depth rule still holds for everything else."""
     env = _env(_task(profile))
     assert "SWARM_CHILD_NONCE" not in env and "SWARM_API_URL" not in env
+
+
+@pytest.mark.parametrize("profile", SECRET_ONLY_PROFILES)
+def test_a_child_with_a_secret_slot_and_no_git_tools_gets_a_nonce(profile):
+    """SEC-RELEASE: the release is signed with the attempt key. Today absent:
+    a `browser` child had no git tools, so no key, so no release."""
+    assert not _offered(profile)
+    env = _env(_task(profile))
+    assert env.get("SWARM_CHILD_NONCE") == nonce(
+        KEY, AttemptTuple("eng", CHILD, "att_child_1", "lease_child_1", 1)
+    ), f"a {profile} child declares a secret slot and has no key to ask for its secrets with"
+    assert env["SWARM_API_URL"] == "https://api.example"
 
 
 @pytest.mark.parametrize("profile", ["mock", "claude-code"])

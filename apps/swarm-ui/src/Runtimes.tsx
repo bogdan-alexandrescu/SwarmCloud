@@ -308,8 +308,8 @@ function Backends({
                 <th role="columnheader" scope="col">Backend (resolved)</th>
                 <th role="columnheader" scope="col" className="is-num">Runtimes</th>
                 {/* "units", never "agents". Admission increments each pool by the
-                    resource class's weight, so 8 in use may be four agents of a
-                    class that weighs 2. THE `?` THAT SAID SO IS GONE (B7.4):
+                    resource class's weight, so 8 in use may be two agents of a
+                    class that weighs 4. THE `?` THAT SAID SO IS GONE (B7.4):
                     `(units)` is already the entire claim, in the only place it
                     cannot be separated from the figures, and a glyph beside it
                     could only repeat the word above it. */}

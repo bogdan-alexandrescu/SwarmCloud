@@ -217,6 +217,18 @@ NOT_SWITCHABLE_CODES = frozenset({
     # link, or one minted for another person, workspace, action or secret,
     # accepted as authority to add or rotate a secret.
     "SECRET_LINK_INVALID",
+    # The workspace secrets release (SEC-RELEASE, docs/design/
+    # workspace-secrets.md §3.3), as the store's code above: raised only by
+    # the route that change introduces (POST /v1/attempts/{id}/secrets:release),
+    # so no existing caller can be refused by them. Continuing past any of
+    # them is the breach itself: an unproven caller handed a workspace's
+    # secrets, a stale generation holding them past its fence (invariant 5),
+    # a second release of one attempt, or a release computed from a task
+    # document whose signature does not verify.
+    "secrets_release_unproven",
+    "secrets_release_fenced",
+    "secrets_release_spent",
+    "secrets_release_spec_unverified",
 })
 
 #: What the guard lets through without a switch.

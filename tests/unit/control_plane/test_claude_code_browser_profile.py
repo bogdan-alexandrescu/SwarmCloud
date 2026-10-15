@@ -102,7 +102,7 @@ def test_the_profile_is_claude_code_on_the_browser_image():
     assert profile.image == "agent-runtime-browser"
     assert profile.image == RUNNER_PROFILES["browser"].image
     assert profile.resource_class == "browser"
-    assert RESOURCE_CLASSES["browser"].units == 2
+    assert RESOURCE_CLASSES["browser"].units == 1  # contract request 79
     assert profile.runner_argv == ("python", "-m", "agent_worker.runners.claude_code")
     assert profile.available
     assert DOCKERFILE.is_file()

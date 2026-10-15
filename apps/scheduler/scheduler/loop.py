@@ -49,6 +49,7 @@ from swarm_common.states import (
 from . import children as children_mod
 from .codec import as_datetime
 from .credentials import AccountPool, CredentialSource, ForgeConnections, credential_for
+from .secret_slots import WorkspaceGrants
 from .dispatch import BackendRouter, DispatchError
 from .fairness import AgingConfig, round_robin_order
 from .metrics import SchedulerMetrics
@@ -350,6 +351,7 @@ class Scheduler:
         monotonic: Callable[[], float] = time.monotonic,
         pool: AccountPool | None = None,
         forge: ForgeConnections | None = None,
+        secrets: WorkspaceGrants | None = None,
     ) -> None:
         self._settings = settings
         self._store = store
@@ -372,6 +374,12 @@ class Scheduler:
         # (credentials.py, docs/onboarding.md §3.3 step 2). Forgotten at the
         # top of each run, like the pool.
         self._forge = forge if forge is not None else ForgeConnections(store.db)
+        # The workspace's enabled secret grants, which admission and the
+        # credential sweep ask about when a profile or a tool it launches
+        # declares a REQUIRED slot (secret_slots.py, workspace-secrets.md
+        # §4.2). One query at most per admission pass: forgotten at the top
+        # of each run and each pass.
+        self._secrets = secrets if secrets is not None else WorkspaceGrants(store.db)
         self._now = now
         self._monotonic = monotonic
         self._aging = AgingConfig(
@@ -437,6 +445,8 @@ class Scheduler:
         self._pool.forget()
         # A reconnect, or a refresh that failed, since the last drain likewise.
         self._forge.forget()
+        # And a secret grant ticked or unticked.
+        self._secrets.forget()
 
     def drain(self) -> DrainReport:
         started = self._monotonic()
@@ -515,6 +525,9 @@ class Scheduler:
         ordered with everything else by `round_robin_order`, so a released
         task is admitted in its fair turn and never ahead of it.
         """
+        # A grant ticked since the previous pass is seen by this one, and
+        # every task in this pass is judged on one read of the grants.
+        self._secrets.forget()
         candidates = self._store.ready_tasks(self._settings.candidate_batch_size)
         if include:
             seen = {task.id for task in candidates}
@@ -867,7 +880,15 @@ class Scheduler:
         # token GitHub refuses (docs/onboarding.md §3.3 step 2, OB6). Parked
         # here it holds nothing (invariant 1), and nothing was reserved, so
         # the all-or-nothing reservation below is never half-made (2).
-        credential = credential_for(profile, tenant, self._pool, task=task, forge=self._forge)
+        # And so is a slot the profile, or a tool its `browser_tool` launches,
+        # declares `required` with no enabled grant (workspace-secrets.md
+        # §4.2, SEC-ADMIT-PARK): parked here rather than by the worker after
+        # a pod has started. The event names each consumer and slot, never a
+        # secret id. Nothing leased means nothing for concurrency to count (3).
+        credential = credential_for(
+            profile, tenant, self._pool, task=task, forge=self._forge,
+            secrets=self._secrets, tenant_of=self._tenant,
+        )
         if not credential.runnable:
             self._park(
                 task,
@@ -1455,6 +1476,13 @@ class Scheduler:
         any other. If the person instead disconnected, swarm-api deleted their
         grants, the task no longer needs the user slot, and it is promoted to
         run as it would have before onboarding.
+
+        SO ARE THE WORKSPACE'S SECRET GRANTS (SEC-ADMIT-PARK). A task parked
+        for a required slot with no enabled grant -- by admission, or by its
+        worker's backstop (`workspace-secret:<slots>`) -- is promoted once
+        every required slot has one, and only if the key and the connection
+        still answer yes: a park for a provider key or an account that is
+        still missing stays parked whatever the grants say.
         """
         promoted = 0
         now = self._now()
@@ -1470,7 +1498,8 @@ class Scheduler:
             if profile is None:
                 continue
             credential = credential_for(
-                profile, tenant, self._pool, task=task, forge=self._forge
+                profile, tenant, self._pool, task=task, forge=self._forge,
+                secrets=self._secrets, tenant_of=self._tenant,
             )
             if (
                 credential.source is CredentialSource.ACCOUNT_POOL

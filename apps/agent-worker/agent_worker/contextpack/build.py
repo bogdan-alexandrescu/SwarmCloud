@@ -28,14 +28,14 @@ from .layout import (
     read_json,
     read_stage,
 )
-from .rank import ordered, score, select
+from .rank import ordered, rerank, score, select
 from .render import dumps, render_markdown, write_atomically
 from .seeds import seeds_for
 from .tasktype import classify
 
 SCHEMA = "swarm.context-pack/v1"
 #: Why Jev did not rank this pack, when the stager gave no reason of its own.
-JEV_NOT_WIRED = "the J1 rerank is not wired into the pack yet (lane CTXQ-JW)"
+JEV_NOT_SET_UP = "Jev is not set up for this attempt"
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -45,19 +45,26 @@ def _inside(path: Path, root: Path) -> bool:
         return True
 
 
-def _jev(stage: Mapping[str, Any]) -> dict[str, str]:
-    """What the pack says about Jev. It never says `on` for a pack Jev did not rank."""
+def _jev(stage: Mapping[str, Any], j1: Mapping[str, Any] | None = None) -> dict[str, str]:
+    """What the pack says about Jev. It says `on` only for a pack J1 ranked: a
+    call that failed or was skipped leaves exactly the local-only header."""
+    if j1 is not None:
+        return {"state": "on", "reason": f"J1 reranked the top {j1['candidates']} rows"}
     declared = stage.get("jev") if isinstance(stage.get("jev"), dict) else {}
     state = str(declared.get("state") or "off")
     reason = " ".join(str(declared.get("reason") or "").split())[:200]
     if state != "off":
-        return {"state": "off", "reason": f"opted in, but {JEV_NOT_WIRED}"}
-    return {"state": "off", "reason": reason or JEV_NOT_WIRED}
+        return {"state": "off", "reason": f"opted in, but {JEV_NOT_SET_UP}"}
+    return {"state": "off", "reason": reason or JEV_NOT_SET_UP}
 
 
 def build_pack(where: Path, *, checkout: Path, work_dir: Path, payload: Mapping[str, Any],
-               task_type: str | None = None) -> dict[str, Any]:
-    """Write CONTEXT.md and pack.json into `where`; return the pack."""
+               task_type: str | None = None, judge: Any = None) -> dict[str, Any]:
+    """Write CONTEXT.md and pack.json into `where`; return the pack.
+
+    `judge` is the attempt's Jev client (`judge.attempt.load`) or None. With
+    one, J1 reranks after the local scores (`rank.rerank`); whatever J1 does
+    not answer in full leaves the pack the local-only run writes."""
     where, checkout, work_dir = Path(where), Path(checkout), Path(work_dir)
     if _inside(where, checkout):
         raise ContextPackError(f"the context directory {where} is inside the checkout; the "
@@ -92,8 +99,10 @@ def build_pack(where: Path, *, checkout: Path, work_dir: Path, payload: Mapping[
         cand.score = score(cand, kind)
         if cand.kind not in retrieve.ALWAYS:
             cand.stale = observed.stale(cand.path)
+    brief = payload.get("prompt") if isinstance(payload.get("prompt"), str) else ""
+    j1 = rerank(rows, kind, brief, judge) if judge is not None else None
     ranked = select(rows, kind)
-    header = {"task_type": kind, "freshness": freshness, "jev": _jev(stage),
+    header = {"task_type": kind, "freshness": freshness, "jev": _jev(stage, j1),
               "seeds": seeds.as_dict()}
     text, shown, paged = render_markdown(header, rows, ranked, in_flight)
     size = len(text.encode("utf-8"))
@@ -111,8 +120,8 @@ def build_pack(where: Path, *, checkout: Path, work_dir: Path, payload: Mapping[
         "seeds": seeds.as_dict(),
         "freshness": freshness,
         "jev": header["jev"],
-        "jev_calls": 0,
-        "jev_input_tokens": 0,
+        "jev_calls": j1["calls"] if j1 else 0,
+        "jev_input_tokens": j1["input_tokens"] if j1 else 0,
         "in_flight": in_flight,
         "rows": out_rows,
         "paged_out": paged,

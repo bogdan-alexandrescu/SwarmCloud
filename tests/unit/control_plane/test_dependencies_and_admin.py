@@ -435,27 +435,29 @@ def test_capacity_units_really_bounds_the_tenant_pool(client, db):
 
 
 def test_a_capacity_units_ceiling_actually_refuses_admission(db, make_scheduler, dispatcher):
-    """Through the real drain loop, in weighted units rather than task count."""
+    """Through the real drain loop, in weighted units rather than task count.
+
+    `large` weighs 4 (a `browser` task has weighed 1 since contract request
+    79, so it no longer tells units from tasks)."""
     seed_tenant(db, "eng", credentials=("anthropic",), max_active=100)
     seed_pool(db, "global", hard_limit=100)
     from swarm_api.store import Store
 
-    Store(db).set_tenant_limits("eng", capacity_units=3)
+    Store(db).set_tenant_limits("eng", capacity_units=7)
 
     for index in range(4):
         seed_task(
             db,
-            task_id=f"task_browser_{index}",
+            task_id=f"task_large_{index}",
             tenant_id="eng",
-            runner_profile="browser",
-            resource_class="browser",         # 2 units each
-            provider="anthropic",
+            runner_profile="mock",
+            resource_class="large",           # 4 units each
         )
 
     report = make_scheduler().drain()
 
-    assert report.leased == 1, "3 units of budget fits exactly one 2-unit task"
-    assert db.docs["pools/tenant:eng"]["active"] == 2
+    assert report.leased == 1, "7 units of budget fits exactly one 4-unit task"
+    assert db.docs["pools/tenant:eng"]["active"] == 4
 
 
 def test_a_budget_that_cannot_be_enforced_is_refused_rather_than_stored(client, db):
