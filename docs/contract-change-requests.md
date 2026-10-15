@@ -86,6 +86,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 76 | `models.py`/`states.py`: `Workflow.after` and `ParkReason.PULL_REQUEST_PENDING`, a workflow that waits for pull requests to merge (SPEED-D3) | proposed; worked around |
 | 77 | `profiles.py`: `claude-code-browser` declares the input `browser_tool` (auto, playwright, dev-browser, jev), the live browser's tool picked by name (BSTATUS-API) | ACCEPTED by the owner 2026-10-14 ("Picker on Submit, Auto by default"), APPLIED by this PR |
 | 78 | `models.py` / `states.py`: a workspace's merge mode on `Tenant`, and a park reason for a merge step waiting on its merge train (TRAIN-WS) | proposed; worked around |
+| 79 | `profiles.py`: the `browser` resource class shrinks from 8 vCPU / 16 GiB to 4 vCPU / 8 GiB (MEASURE) | ACCEPTED by the owner 2026-10-14 ("File the request now"); not yet applied |
 
 ---
 
@@ -11543,3 +11544,64 @@ needing to skip a code.
 pool count; only the coordinator's per-tenant tick reads them. **2-3**
 untouched: a merge step is admitted like any other. **5** preserved: the
 step's registration is a fenced transaction. 4, 6-10 unchanged.
+
+## 79. `profiles.py`: the `browser` resource class shrinks from 8 vCPU / 16 GiB to 4 vCPU / 8 GiB (MEASURE)
+
+**Status:** ACCEPTED by the owner on 2026-10-14 at about 18:10 PDT ("File the
+request now"), on the measurement in
+[browser-startup-speed.md §11](browser-startup-speed.md). Not yet applied:
+nothing under `apps/common/swarm_common/` was edited by the pull request that
+adds this entry. A lane (BROWSER-CLASS) applies it.
+
+### Why
+
+Both profiles on the `browser` class (`browser` and `claude-code-browser`)
+are given 8 vCPU and 16 GiB as request and limit, because requests == limits
+(invariant 7). On 2026-10-15 at 01:00 UTC, while the live-browser QA matrix
+was running, eight `kubectl top` samples of four `browser` pods peaked at
+**2.13 cores and 1.85 GiB** for the whole pod. The display sidecar peaked at
+1.90 cores and 1.48 GiB, the worker at 0.55 cores and 0.37 GiB. That is under
+80 % of 4 vCPU / 8 GiB. Every browser agent is therefore paying for about
+four times the CPU and eight times the memory it was seen to use.
+
+### The change
+
+```python
+RESOURCE_CLASSES = {
+    ...
+    "browser": ResourceClass("browser", cpu=4, memory_gib=8, disk_gib=4, units=2),
+}
+```
+
+The class keeps its name, so neither profile changes. The workspace is a
+tmpfs carved out of memory (see the comment above `RESOURCE_CLASSES`), so
+`disk_gib` drops with it: 4 GiB of tmpfs leaves 4 GiB for processes, against
+a measured peak of 1.85 GiB. **`units` stays 2** in this request, so pool
+accounting (invariants 2 and 3) does not move with the resize. Lowering it
+to 1 would admit twice as many browser agents into the same pools, and that
+is a separate decision.
+
+### Rollback
+
+Restore `cpu=8, memory_gib=16, disk_gib=8`. A running pod keeps the size it
+was created with; the next dispatch takes the restored size.
+
+### What it would break
+
+* **A page heavier than any sampled.** Eight samples 15 s apart miss peaks
+  between them, and four pods are not a load test. A browser agent that
+  needs more than 8 GiB, or a download filling the 4 GiB tmpfs, is now
+  OOM-killed or out of space where before it was not. The worker's
+  checkpointing (invariant 8) bounds the loss to the last checkpoint.
+* **The Cloud Run path.** `ResourceClass` validates against the Cloud Run
+  Jobs ceiling; 4/8 is inside it, so nothing there is refused.
+* **Tests that pin the catalogue's numbers** (`tests/unit` asserting the
+  `browser` class's cpu or memory) must change with it; the lane names them.
+
+### Invariants
+
+**7** preserved: request and limit stay equal, only smaller. **1-3**
+unchanged: `units` is kept, so admission and reservation count the same.
+**6** unchanged (no Spot). **8** is what limits an OOM's cost. 4, 5, 9, 10
+unchanged.
+

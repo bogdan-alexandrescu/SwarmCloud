@@ -550,6 +550,17 @@ The owner answered §8 on 2026-10-13. Lane names refer to §7.
    - The owner made no separate choice on this; it is the recommended default kept by the slimming decision in 4.
 6. **Smaller `browser` class: measure first** (lane MEASURE). Any change is a contract request.
 
+**After MEASURE (owner, 2026-10-14 ~18:10 PDT, on §11's numbers):**
+
+3. **Warm placeholder slots: no.** A cold browser start stays at about
+   125 s at p50. Invariant 1 stays as written: only `LEASED` through
+   `RUNNING` create infrastructure demand. Do not reopen this without a new
+   measurement and the owner's say.
+6. **Smaller `browser` class: yes, as a contract request now.** It is
+   [request 79](contract-change-requests.md): the `browser` class goes from
+   8 vCPU / 16 GiB to 4 vCPU / 8 GiB. The lane that builds it waits for the
+   request to be applied.
+
 ## 10. How to measure (lane MEASURE)
 
 `scripts/startup-measure.sh` is the measurement decisions 3 and 6 wait for.
