@@ -55,7 +55,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Collection, Iterable, Mapping
 
-from google.cloud.firestore_v1.base_query import FieldFilter
 from swarm_common.identity import tenant_id_for_user
 from swarm_common.models import Task, Tenant, consumer_name
 from swarm_common.profiles import RUNTIME_TOOLS, RunnerProfile, SecretSlot, tools_launched
@@ -153,6 +152,12 @@ class WorkspaceGrants:
     def _grants(self, tenant_id: str) -> list[tuple[str, Granted]]:
         """(secret_id, (consumer, slot)) of each enabled grant of `tenant_id`."""
         if self._by_tenant is None:
+            # Imported here, not at module top: kubernetes/render.py imports
+            # dispatch -> credentials -> this module, and the CI jobs that
+            # render manifests (checkov, kubernetes manifests) install no
+            # google-cloud-firestore.
+            from google.cloud.firestore_v1.base_query import FieldFilter
+
             by_tenant: dict[str, list[tuple[str, Granted]]] = {}
             query = self._db.collection(GRANTS_COLLECTION).where(
                 filter=FieldFilter("enabled", "==", True)
