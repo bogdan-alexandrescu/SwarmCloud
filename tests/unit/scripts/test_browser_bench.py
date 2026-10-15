@@ -404,3 +404,15 @@ def test_doc_lists_every_prompt_and_the_pass_bar():
     assert "0.66" in text and "39.60" in text
     assert "egress" in text.lower()
     assert "scripts/browser-bench.sh" in text
+
+
+def test_pypi_license_accepts_how_pypi_writes_it_now():
+    # Batch devb-1015 (2026-10-15): four agents read the requests page correctly
+    # and answered "Apache Software License (Apache-2.0)", which PyPI's sidebar
+    # shows today; the pattern's fullmatch refused the trailing SPDX id.
+    prompt = next(p for p in bb.PROMPTS if p.id == "pypi-requests-license")
+    for answer in ("Apache Software License (Apache-2.0)", "Apache-2.0", "Apache 2.0",
+                   "License: Apache Software License"):
+        assert bb.check(prompt, f"RESULT: {answer}"), answer
+    for wrong in ("MIT", "Apache Software License (MIT)", "page could not be opened"):
+        assert not bb.check(prompt, f"RESULT: {wrong}"), wrong

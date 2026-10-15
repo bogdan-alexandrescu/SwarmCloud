@@ -200,7 +200,9 @@ PROMPTS: tuple[Prompt, ...] = (
         kind="lookup",
         text=("Open https://pypi.org/project/requests/ and report the license the project "
               "page lists in its Meta section, as written there."),
-        expect=(r"(?i)(license:\s*)?apache[- ]?(software license|2\.0|license 2\.0)",),
+        expect=(r"(?i)(license:\s*)?apache[- ]?(software license|2\.0|license 2\.0)(\s*\(apache-2\.0\))?",),
+        # PyPI's sidebar reads "Apache Software License (Apache-2.0)" (devb-1015,
+        # 2026-10-15): the SPDX id in brackets is allowed, any other suffix is not.
         example="Apache-2.0",
     ),
     Prompt(
