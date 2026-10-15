@@ -219,13 +219,13 @@ function lease(over: Partial<LeaseRow>): LeaseRow {
 const LEASES: LeaseRow[] = [
   lease({}),
   lease({ lease_id: 'lease-cccccccccc', task_id: 'task-dddddddddd', units: 4, pools: ['global:agents', 'resource:large'], dispatch_state: 'LEASED' }),
-  lease({ lease_id: 'lease-eeeeeeeeee', task_id: 'task-ffffffffff', units: 2, pools: ['global:agents', 'resource:browser'] }),
+  lease({ lease_id: 'lease-eeeeeeeeee', task_id: 'task-ffffffffff', units: 1, pools: ['global:agents', 'resource:browser'] }),
 ]
 
 const HOLDERS: HoldersBoard = {
   page: {
     leases: LEASES,
-    units_held: 7,
+    units_held: 6,
     tenant_id: 'eng',
     // What the route serves for a fleet smaller than its window: every live
     // lease is a row. Without these the screen draws its "coverage

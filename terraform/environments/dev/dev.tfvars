@@ -157,7 +157,8 @@ pool_limits = {
   # GKE_AUTOPILOT 40 -> 100: owner, 2026-10-07, accepting contract request 53
   # (claude-code moves to GKE Autopilot). At 40 the backend pool would bind
   # before claude-code's own ceiling (runner:claude-code 80), shared with
-  # browser at 2 units a task, and halve claude-code's concurrency on the
+  # browser at 2 units a task (1 since contract request 79, 2026-10-14),
+  # and halve claude-code's concurrency on the
   # move. 100 is claude-code's 80 plus browser headroom. It fits the quota:
   # us-central1 regional CPUS read 2,990 of 3,000 free on 2026-10-07, and
   # 100 x 4 vCPU = 400.

@@ -7,7 +7,8 @@ behind the near-miss flag -- and the `resource_class` label on the exported
 attempt metric, which the sizing decisions read -- from the PROFILE's class
 only. A workflow step that narrows `browser` (16 GiB) to `standard` (8 GiB)
 was judged against 16 GiB its container never had, so a run at 7.9 GiB of
-8 GiB raised no flag.
+8 GiB raised no flag. (Since contract request 79 `browser` is 8 GiB too, so
+these tests pair `browser` with `large` to keep the two limits apart.)
 
 The CPU limit has used the sized class since #188 (`_cpu_limit`,
 `test_cpu_sampler.py`); these tests hold memory to the same rule.
@@ -62,19 +63,21 @@ def _started(worker_factory, *, profile: str, task_class: str | None):
     return worker, config, exporter
 
 
-def test_a_step_narrowed_from_browser_to_standard_is_judged_against_8_gib(
+def test_a_task_whose_class_differs_from_its_profiles_is_judged_against_the_tasks(
     worker_factory, recorded
 ):
-    """The issue's own pairing: profile `browser`, step class `standard`."""
-    assert RESOURCE_CLASSES["browser"].memory_gib == 16
-    assert RESOURCE_CLASSES["standard"].memory_gib == 8
-    _started(worker_factory, profile="browser", task_class="standard")
-    assert recorded == [8 * GIB], recorded
+    """The issue's pairing was profile `browser` (16 GiB), step class `standard`
+    (8 GiB). Contract request 79 made both 8 GiB, which no longer tells the two
+    apart, so the task's class here is `large`."""
+    assert RESOURCE_CLASSES["browser"].memory_gib == 8
+    assert RESOURCE_CLASSES["large"].memory_gib == 32
+    _started(worker_factory, profile="browser", task_class="large")
+    assert recorded == [32 * GIB], recorded
 
 
 def test_the_profile_class_is_used_when_the_task_names_none(worker_factory, recorded):
     _started(worker_factory, profile="browser", task_class=None)
-    assert recorded == [16 * GIB], recorded
+    assert recorded == [RESOURCE_CLASSES["browser"].memory_gib * GIB], recorded
 
 
 def test_a_class_the_catalogue_no_longer_has_falls_back_to_the_profile(
@@ -82,7 +85,7 @@ def test_a_class_the_catalogue_no_longer_has_falls_back_to_the_profile(
 ):
     """As `resource_class_for` does: the dispatcher sized it with the profile's."""
     _started(worker_factory, profile="browser", task_class="a-class-no-longer-in-the-catalogue")
-    assert recorded == [16 * GIB], recorded
+    assert recorded == [RESOURCE_CLASSES["browser"].memory_gib * GIB], recorded
 
 
 def test_the_exported_metric_is_labelled_with_the_sized_class(worker_factory, recorded):

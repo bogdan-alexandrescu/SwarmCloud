@@ -21,8 +21,9 @@ export interface Pool {
   effective_limit: number | null
   /**
    * WEIGHTED UNITS IN USE, NOT AGENTS. Admission increments by the resource
-   * class's `units` -- standard 1, browser 2, large 4 -- so `active: 8` may be
-   * two large agents or eight standard ones. Never label this "agents".
+   * class's `units` -- standard 1, browser 1 (2 until contract request 79),
+   * large 4 -- so `active: 8` may be two large agents or eight standard ones.
+   * Never label this "agents".
    */
   active: number
   available: number | null
@@ -2711,9 +2712,10 @@ export function reasonCopy(reason: string): string {
  *
  *  - `below-units`: a limit above 0 and below one task's `units`, on a pool
  *    only a person writes. Admission refuses when `active + units > limit`,
- *    so a browser task (2 units) under a limit of 1 is refused at 0 of 1 in
- *    use, on every drain, forever -- the fact `set-to-zero` is, arriving with
- *    the full pool's reason and a positive limit.
+ *    so a large task (4 units) under a limit of 1 is refused at 0 of 1 in
+ *    use, on every drain, forever (#66 found it on a browser task, which
+ *    weighed 2 until contract request 79) -- the fact `set-to-zero` is,
+ *    arriving with the full pool's reason and a positive limit.
  *  - `below-units-quota`: the same on a `provider:` pool, whose limit the
  *    quota broker also moves. The task still cannot be admitted at this
  *    limit, but nobody is named, for the reason `zero` names nobody.
@@ -2870,7 +2872,7 @@ export interface TaskPage {
  */
 export const RESOURCE_UNITS: Readonly<Record<string, number>> = {
   standard: 1,
-  browser: 2,
+  browser: 1,
   large: 4,
 }
 

@@ -192,7 +192,9 @@ describe('the task send panel lists what the click commits to', () => {
     const { container } = render(<SubmitScreen />)
     await screen.findByRole('button', { name: 'Submit one task' }, WAIT)
     fireEvent.click(container.querySelector<HTMLInputElement>('input[name="runner-profile"][value="browser"]')!)
-    expect(valueOf(fact(container, 'cost'))).toBe('2 units in each of 7 pools')
+    // 1 unit since contract request 79 (it was 2): the browser class is now
+    // the standard class's size on its own image.
+    expect(valueOf(fact(container, 'cost'))).toBe('1 unit in each of 7 pools')
     expect(valueOf(fact(container, 'cost')), '"x" reads as a total').not.toMatch(/×|\bx\b/)
     expect(valueOf(fact(container, 'room'))).toBe('room for 0 more')
     fireEvent.click(container.querySelector<HTMLInputElement>('input[name="runner-profile"][value="mock"]')!)
@@ -246,18 +248,21 @@ describe('the workflow send panel lists what the click commits to', () => {
     expect(valueOf(fact(container, 'stages'))).toBe('1 · 1 step')
     const pickIn = (step: HTMLElement, name: string) =>
       fireEvent.change(step.querySelector<HTMLSelectElement>('select.sb-runner-select')!, { target: { value: name } })
-    // One browser step: two units.
+    // One browser step: one unit (two until contract request 79).
     pickIn(container.querySelector<HTMLElement>('.wfb-step')!, 'browser')
-    expect(valueOf(fact(container, 'units'))).toBe('2 units in total')
+    expect(valueOf(fact(container, 'units'))).toBe('1 unit in total')
     fireEvent.click(container.querySelector<HTMLButtonElement>('button.wfb-add.is-stage')!)
     const second = container.querySelectorAll<HTMLElement>('.wfb-stage')[1]!
     fireEvent.click(second.querySelector<HTMLButtonElement>('.wfb-steps > button.sbf-addstep')!)
     for (const s of [...second.querySelectorAll<HTMLElement>('.wfb-step')]) pickIn(s, 'browser')
-    expect(valueOf(fact(container, 'units'))).toBe('6 units in total')
-    // A mock step weighs one: the sum follows the runner, not the step count.
+    expect(valueOf(fact(container, 'units'))).toBe('3 units in total')
+    // A mock step weighs one too. Since contract request 79 every runner in the
+    // development fixture weighs 1, so this swap no longer shows the sum
+    // following the runner rather than the step count; it shows the swap
+    // leaves the sum alone.
     const last = [...container.querySelectorAll<HTMLElement>('.wfb-step')].at(-1)!
     pickIn(last, 'mock')
-    expect(valueOf(fact(container, 'units'))).toBe('5 units in total')
+    expect(valueOf(fact(container, 'units'))).toBe('3 units in total')
     expect(valueOf(fact(container, 'stages'))).toBe('2 · 1 step, then 2 steps')
   })
 })

@@ -98,7 +98,7 @@ class ResourceClass:
 # Cloud Run choice is better served here than by the feature we set out to use.
 RESOURCE_CLASSES: dict[str, ResourceClass] = {
     "standard": ResourceClass("standard", cpu=4, memory_gib=8, disk_gib=4, units=1),
-    "browser": ResourceClass("browser", cpu=8, memory_gib=16, disk_gib=8, units=2),
+    "browser": ResourceClass("browser", cpu=4, memory_gib=8, disk_gib=4, units=1),
     "large": ResourceClass("large", cpu=8, memory_gib=32, disk_gib=16, units=4),
 }
 

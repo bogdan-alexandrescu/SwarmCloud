@@ -4,7 +4,7 @@
 > 20/40/100 GiB of disk-backed ephemeral storage. That is a Cloud Run Preview
 > feature the Terraform google provider cannot express — `empty_dir.medium`
 > accepts only `"MEMORY"` — so the workspace is a tmpfs carved out of the
-> container's memory: **standard ~4 GiB, browser ~8 GiB, large ~16 GiB**, each a
+> container's memory: **standard ~4 GiB, browser ~4 GiB, large ~16 GiB**, each a
 > slice of that class's total memory rather than capacity on top of it.
 > The upside is that this path is fully GA and supports live migration, which the
 > Preview disk explicitly does not, so the no-interruption requirement that drove
@@ -81,11 +81,15 @@ reproduced by following its report. `browser` cannot do that -- it is a
 scripted runner that plays `input.url` or `input.actions` and has no agent
 ([what it waits for and what it reports](browser-scripted-runner.md)) --
 and `claude-code` cannot either, because `agent-runtime-base` has no Chromium.
-It is not free: it costs a **`browser` resource class**, 8 vCPU and 16 GiB at
-2 units against the `resource:browser` pool it shares with `browser`, twice a
-`standard` claude-code step, because the 2 GiB memory-backed `/dev/shm` every
-GKE worker pod mounts is charged to the memory limit and Chromium needs that
-room before it opens a tab. Pick `claude-code` for work that never renders a
+It runs on the **`browser` resource class**, 4 vCPU and 8 GiB at 1 unit
+against the `resource:browser` pool it shares with `browser`: the same size and
+weight as a `standard` claude-code step since contract request 79 (owner,
+2026-10-14). It was 8 vCPU / 16 GiB at 2 units, sized for the 2 GiB
+memory-backed `/dev/shm` every GKE worker pod mounts, which is charged to the
+memory limit; four browser pods then peaked at 2.13 cores and 1.85 GiB, shm
+included ([browser-startup-speed.md §11](browser-startup-speed.md)). What it
+still costs that claude-code does not is a GKE pod and a place in the
+`resource:browser` pool, which caps browser agents separately. Pick `claude-code` for work that never renders a
 page. Chromium's own sandbox stays off (the pod refuses user namespaces and
 drops every capability; the pod is the isolation), so the agent launches it
 with `chromium_sandbox=False`, and the runner says so in its instructions.
@@ -156,7 +160,7 @@ what gets a container OOM-killed under pressure, so the platform never does it.
 
 ```
 standard   4 vCPU   8 GiB   ~4 GiB workspace (tmpfs)
-browser    8 vCPU  16 GiB   ~8 GiB workspace (tmpfs)   (GKE only)
+browser    4 vCPU   8 GiB   ~4 GiB workspace (tmpfs)   (GKE only)
 large      8 vCPU  32 GiB  ~16 GiB workspace (tmpfs)   (Cloud Run ceiling)
 ```
 
@@ -236,7 +240,12 @@ Every pod carries:
   4 + 2 + 4 under contract request 53). 10 GiB is also the most Autopilot
   accepts for a general-purpose pod. `browser` gets 10 GiB: the owner's
   4 workspace + 2 `/tmp` + 2 HOME (2026-10-07; `/tmp` must hold a 2 GiB
-  checkpoint archive), unchanged, plus the 2 GiB cache. The per-class layout is
+  checkpoint archive), unchanged, plus the 2 GiB cache. Its 8 GiB before the
+  cache was also its `disk_gib` until contract request 79 made `disk_gib` 4;
+  `disk_gib` sizes Cloud Run's memory tmpfs, and these GKE volumes are disk
+  outside the memory limit, so the request left the layout alone. Before
+  2026-10-07 its volumes were 8 + 2 + 4 = 14 GiB under an 8 GiB limit, so the
+  pod could be evicted before any one volume was full. The per-class layout is
   `GkeDisk` in `scheduler/dispatch.py`, and a unit test holds every class to
   sum(sizeLimits) <= ephemeral-storage <= 10 GiB;
 * a `cache` emptyDir of its own, mounted at `/cache` and named to the worker
@@ -306,9 +315,16 @@ What the switch adds, and why each piece is shaped this way:
 * **The class is split, not grown.** Each container has `requests == limits`
   (invariant 7), and together they sum to the task's class. Admission's
   units, the pool reservation and the Autopilot bill are therefore what they
-  were. For `browser`, the worker gets 3 vCPU / 6 GiB and the sidecar
-  5 vCPU / 10 GiB. That is the design's starting split, **not a
-  measurement**. A step shrunk to `standard` splits 2/4 and 2/4.
+  were. For `browser` (4 vCPU / 8 GiB since contract request 79), the worker
+  gets 1 vCPU / 3 GiB and the sidecar 3 vCPU / 5 GiB, sized from the
+  measurement in [browser-startup-speed.md §11](browser-startup-speed.md):
+  the sidecar peaked at 1.90 cores and 1.48 GiB, the worker at 0.55 cores
+  and 0.37 GiB. The sidecar's resident tmpfs (`/dev/shm` 2, profile 1, `/tmp`
+  0.25 GiB) plus that peak is 4.73 of its 5 GiB, so a page heavier than any
+  sampled, or a download in flight at the peak, is an OOM kill; the periodic
+  checkpoint (invariant 8) bounds what it costs. It was the design's starting
+  split, worker 3 / 6 and sidecar 5 / 10 of 8 / 16. A step shrunk to
+  `standard` splits 2/4 and 2/4.
   Ephemeral storage gives the sidecar 1 GiB (its logs, since every volume it
   mounts is memory) and the worker the rest, so the pod's sum is still the
   `GkeDisk` total. The per-class table is `LIVE_DISPLAY_SHARE`, and a class

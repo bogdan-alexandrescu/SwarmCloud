@@ -269,8 +269,8 @@ describe('the S3 items the Overview fixes in its own code', () => {
   it('OV-12: a Headroom tile names every binding pool, each told apart', async () => {
     const { ProfileTile } = await import('../Overview')
     const profile = {
-      resource_class: 'browser', backend: 'cloud_run', provider: null, units: 2, pools: ['resource:browser', 'runner:browser'], available: true,
-      admission: { units: 2, headroom: 10, basis: 'measured', blockers: [], binding: ['resource:browser', 'runner:browser'], counterfactual: [], complete: true, unread: [], uncapped: [] },
+      resource_class: 'browser', backend: 'cloud_run', provider: null, units: 1, pools: ['resource:browser', 'runner:browser'], available: true,
+      admission: { units: 1, headroom: 10, basis: 'measured', blockers: [], binding: ['resource:browser', 'runner:browser'], counterfactual: [], complete: true, unread: [], uncapped: [] },
     } as unknown as Capacity['runner_profiles'][string]
     const { container } = render(<ProfileTile name="browser" profile={profile} byName={new Map()} tenant="eng" />)
     expect(text(container.querySelector('small'))).toBe('binds browser · resource + browser · runner')

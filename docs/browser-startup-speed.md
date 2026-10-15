@@ -283,9 +283,11 @@ lane:
 
 ### 4.1 What is happening
 
-The browser pod is one pod of 8 vCPU / 16 GiB, with requests == limits on both
-containers (invariant 7; `apps/scheduler/scheduler/dispatch.py::LIVE_DISPLAY_SHARE`
-splits it 5/10 to the display and 3/6 to the worker). It sets no compute class,
+The browser pod was one pod of 8 vCPU / 16 GiB when this was measured, with
+requests == limits on both containers (invariant 7;
+`apps/scheduler/scheduler/dispatch.py::LIVE_DISPLAY_SHARE` split it 5/10 to the
+display and 3/6 to the worker). Since contract request 79 (§9, decision 6) it
+is 4 vCPU / 8 GiB, split 3/5 and 1/3. It sets no compute class,
 no node selector and no priority (`apps/scheduler/scheduler/dispatch.py::GkeJobDispatcher._manifest`),
 so it lands on Autopilot's default class. When no node has 8 vCPU free,
 Autopilot creates one. Google quotes 80-120 s for a new node in general; 38 s
@@ -303,8 +305,9 @@ This is GKE's documented pattern
 
 * a Deployment of placeholder pods in a PriorityClass of value `-10` with
   `preemptionPolicy: Never` and `terminationGracePeriodSeconds: 0`;
-* each pod requests what one browser pod requests (8 vCPU / 16 GiB, and
-  requests == limits here too);
+* each pod requests what one browser pod requests (8 vCPU / 16 GiB when this
+  was written, 4 vCPU / 8 GiB since contract request 79, and requests ==
+  limits here too);
 * a browser pod at the default priority 0 preempts a placeholder and takes
   its node in seconds;
 * the evicted placeholder goes Pending, and Autopilot provisions a new node
@@ -362,6 +365,9 @@ two slots           = double either figure
 ```
 
 ### 4.3 Option: a smaller resource class
+
+**Done: contract request 79 (§9, decision 6) made `browser` 4 vCPU / 8 GiB
+and 1 unit.** What follows is the reasoning as written before the measurement.
 
 `browser` is 8 vCPU / 16 GiB. The 16 GiB partly pays for the 2 GiB
 `/dev/shm` tmpfs (`images/agent-runtime-browser/Dockerfile` header), and the
@@ -558,8 +564,17 @@ The owner answered §8 on 2026-10-13. Lane names refer to §7.
    measurement and the owner's say.
 6. **Smaller `browser` class: yes, as a contract request now.** It is
    [request 79](contract-change-requests.md): the `browser` class goes from
-   8 vCPU / 16 GiB to 4 vCPU / 8 GiB. The lane that builds it waits for the
-   request to be applied.
+   8 vCPU / 16 GiB to 4 vCPU / 8 GiB, with 4 GiB of workspace tmpfs.
+
+**Later the same evening (owner, 2026-10-14 ~22:55 PDT): "Drop to 1".**
+Request 79 as filed kept `units` at 2. The owner dropped it to 1, so a
+browser agent now weighs what a `standard` one does: a pool of 20 units admits
+20 browser agents where it admitted 10. **Applied** by lane BROWSER-CLASS
+(the pull request that marks request 79 APPLIED): `ResourceClass("browser",
+cpu=4, memory_gib=8, disk_gib=4, units=1)`. The live display sidecar's split
+of the pod became 3 vCPU / 5 GiB for the display and 1 vCPU / 3 GiB for the
+worker, from §11's per-container peaks
+(`apps/scheduler/scheduler/dispatch.py::LIVE_DISPLAY_SHARE`).
 
 ## 10. How to measure (lane MEASURE)
 
@@ -647,7 +662,7 @@ before `dispatched`: two clocks, the reconciler's and the scheduler's.
 * **Decision 6 (a smaller class).** The `browser` pods sampled (4 pods,
   8 samples, 15 s apart) peaked at **2.13 cores and 1.85 GiB**. That is under
   80 % of the 4 vCPU / 8 GiB `standard` class, against the 8 vCPU / 16 GiB they
-  are given now: FITS. The display sidecar peaked at 1.90 cores and 1.48 GiB,
+  were given then: FITS. (Applied as contract request 79, §9 decision 6.) The display sidecar peaked at 1.90 cores and 1.48 GiB,
   the worker at 0.55 cores and 0.37 GiB. Samples miss peaks between them, and
   four pods are not a load test. This is evidence for the contract request,
   not the decision.

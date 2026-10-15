@@ -1,9 +1,15 @@
 """`scripts/pool-limit.sh` warns when a limit shuts out every task of a class (part of #66).
 
 On 2026-09-24 `pools/resource:browser` sat at `hard_limit 1`. A browser task
-needs 2 units, so admission refused it on every drain for twenty minutes while
-the screen called the class busy. The script that set the limit printed
+needed 2 units then, so admission refused it on every drain for twenty minutes
+while the screen called the class busy. The script that set the limit printed
 `ok resource:browser hard_limit=1` and nothing else.
+
+Contract request 79 (2026-10-14) made a browser task 1 unit, so `browser` can
+no longer be shut out this way, and no profile in the catalogue reaches a class
+above 1 unit. The warning is still the script's job for `large` (4 units), so
+these tests judge `resource:large`, and the `global` case serves one synthetic
+profile on `large` beside the real catalogue.
 
 A limit above 0 and below the units of the largest task that can reach a pool
 now draws a warning, from `--pool` and from `--sync`. It is a warning and not a
@@ -61,7 +67,14 @@ PROFILES = {
     for name, p in RUNNER_PROFILES.items()
 }
 LARGEST_REACHABLE = max(CLASSES[p["resource_class"]]["units"] for p in PROFILES.values())
-BROWSER_UNITS = CLASSES["browser"]["units"]
+#: The heaviest class in the catalogue: `large`, 4 units.
+HEAVY = max(CLASSES, key=lambda name: CLASSES[name]["units"])
+HEAVY_UNITS = CLASSES[HEAVY]["units"]
+HEAVY_POOL = f"resource:{HEAVY}"
+#: A profile on that class, served only where a test says so: since contract
+#: request 79 no real profile reaches a class above 1 unit.
+HEAVY_PROFILE = {"image": "agent-runtime-base", "resource_class": HEAVY,
+                 "backend": "GKE_AUTOPILOT", "provider": None}
 
 FAKE_GCLOUD = """#!/usr/bin/env bash
 echo fake-access-token
@@ -130,7 +143,8 @@ def harness(tmp_path: Path):
     (tf_dir / "resource_classes.json").write_text(json.dumps(CLASSES))
     (tf_dir / "runner_profiles.json").write_text(json.dumps(PROFILES))
 
-    live = {"global": 40, "resource:browser": 10, "resource:standard": 10, "runner:mock": 10}
+    live = {"global": 40, "resource:browser": 10, "resource:standard": 10,
+            HEAVY_POOL: 10, "runner:mock": 10}
     (tmp_path / "pools.json").write_text(
         json.dumps({"documents": [_pool_doc(n, v) for n, v in live.items()]})
     )
@@ -170,17 +184,27 @@ def _patched(harness, pool: str) -> bool:
 
 
 def test_a_limit_below_the_class_units_warns_and_still_writes(harness) -> None:
-    proc = harness["run"]("--pool", "resource:browser", "--limit", str(BROWSER_UNITS - 1))
+    assert HEAVY_UNITS > 1, "the catalogue has no class above one unit; this case proves nothing"
+    proc = harness["run"]("--pool", HEAVY_POOL, "--limit", str(HEAVY_UNITS - 1))
     assert proc.returncode == 0, proc.stderr
     assert NEVER in proc.stderr, proc.stderr
-    assert "resource:browser" in proc.stderr
-    assert f"{BROWSER_UNITS} units" in proc.stderr, proc.stderr
+    assert HEAVY_POOL in proc.stderr
+    assert f"{HEAVY_UNITS} units" in proc.stderr, proc.stderr
     # A warning, not a refusal: the value the operator asked for is written.
-    assert _patched(harness, "resource:browser"), harness["log"].read_text()
+    assert _patched(harness, HEAVY_POOL), harness["log"].read_text()
 
 
 def test_a_limit_that_admits_one_task_is_silent(harness) -> None:
-    proc = harness["run"]("--pool", "resource:browser", "--limit", str(BROWSER_UNITS))
+    proc = harness["run"]("--pool", HEAVY_POOL, "--limit", str(HEAVY_UNITS))
+    assert proc.returncode == 0, proc.stderr
+    assert NEVER not in proc.stderr, proc.stderr
+    assert _patched(harness, HEAVY_POOL)
+
+
+def test_a_browser_limit_of_one_admits_a_browser_task(harness) -> None:
+    """#66's own limit: since contract request 79 it admits one browser agent."""
+    assert CLASSES["browser"]["units"] == 1
+    proc = harness["run"]("--pool", "resource:browser", "--limit", "1")
     assert proc.returncode == 0, proc.stderr
     assert NEVER not in proc.stderr, proc.stderr
     assert _patched(harness, "resource:browser")
@@ -193,13 +217,21 @@ def test_zero_is_a_deliberate_stop_and_is_not_warned(harness) -> None:
 
 
 def test_global_is_judged_against_the_largest_class_any_profile_reaches(harness) -> None:
-    assert LARGEST_REACHABLE > 1, "the catalogue has no class above one unit; this case proves nothing"
-    proc = harness["run"]("--pool", "global", "--limit", str(LARGEST_REACHABLE - 1))
+    # The real catalogue: every profile is 1 unit (contract request 79), so a
+    # global limit of 1 shuts nothing out.
+    assert LARGEST_REACHABLE == 1
+    quiet = harness["run"]("--pool", "global", "--limit", "1")
+    assert NEVER not in quiet.stderr, quiet.stderr
+
+    # One profile on the heaviest class, and the same limit now warns.
+    (harness["tf_dir"] / "runner_profiles.json").write_text(
+        json.dumps({**PROFILES, "heavy-test": HEAVY_PROFILE}))
+    proc = harness["run"]("--pool", "global", "--limit", str(HEAVY_UNITS - 1))
     assert proc.returncode == 0, proc.stderr
     assert NEVER in proc.stderr, proc.stderr
-    assert f"{LARGEST_REACHABLE} units" in proc.stderr, proc.stderr
+    assert f"{HEAVY_UNITS} units" in proc.stderr, proc.stderr
 
-    quiet = harness["run"]("--pool", "global", "--limit", str(LARGEST_REACHABLE))
+    quiet = harness["run"]("--pool", "global", "--limit", str(HEAVY_UNITS))
     assert NEVER not in quiet.stderr, quiet.stderr
 
 
@@ -215,13 +247,13 @@ def test_a_runner_pool_is_judged_by_its_own_profiles_class(harness) -> None:
 
 def test_sync_warns_about_the_values_it_copies(harness) -> None:
     limits = json.loads((harness["tf_dir"] / "pool_limits.json").read_text())
-    limits["resource:browser"] = BROWSER_UNITS - 1
+    limits[HEAVY_POOL] = HEAVY_UNITS - 1
     (harness["tf_dir"] / "pool_limits.json").write_text(json.dumps(limits))
     proc = harness["run"]("--sync", SWARM_ASSUME_YES="1")
     assert proc.returncode == 0, proc.stderr
     assert NEVER in proc.stderr, proc.stderr
-    assert "resource:browser" in proc.stderr
-    assert _patched(harness, "resource:browser"), harness["log"].read_text()
+    assert HEAVY_POOL in proc.stderr
+    assert _patched(harness, HEAVY_POOL), harness["log"].read_text()
 
 
 def test_an_unreadable_catalogue_is_said_rather_than_read_as_fine(harness) -> None:
