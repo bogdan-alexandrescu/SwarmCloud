@@ -78,7 +78,8 @@ backend.
 is `claude-code` with Playwright and Chromium beside the agent, for work that
 has to SEE a page: visual QA, a screenshot of what a change rendered, a UI bug
 reproduced by following its report. `browser` cannot do that -- it is a
-scripted runner that plays `input.url` or `input.actions` and has no agent --
+scripted runner that plays `input.url` or `input.actions` and has no agent
+([what it waits for and what it reports](browser-scripted-runner.md)) --
 and `claude-code` cannot either, because `agent-runtime-base` has no Chromium.
 It runs on the **`browser` resource class**, 4 vCPU and 8 GiB at 1 unit
 against the `resource:browser` pool it shares with `browser`: the same size and
