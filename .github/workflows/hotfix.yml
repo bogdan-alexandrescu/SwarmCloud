@@ -82,6 +82,12 @@ env:
   TF_ROOT: terraform/infra
   TRIVY_VERSION: "0.74.0"
 
+# RUNNERS (owner decision 2026-10-14). A job that holds no cloud identity
+# (id-token) runs on the self-hosted `bogdan-ci` VMs through the one guarded
+# `runs-on` expression: a fork's pull request, or the repo variable
+# SELF_HOSTED_CI set to `off` (the capacity escape hatch), sends it to
+# GitHub-hosted ubuntu-24.04 instead. Every job that stays hosted is listed,
+# with why, in tests/unit/scripts/test_fork_prs_off_self_hosted.py.
 jobs:
   # -------------------------------------------------------------------------
   # THE GATE. Proceeds only when this commit is a pull request merged into
@@ -90,7 +96,7 @@ jobs:
   # -------------------------------------------------------------------------
   gate:
     name: is this a hotfix
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     if: github.ref == 'refs/heads/main'
     permissions:
       contents: read

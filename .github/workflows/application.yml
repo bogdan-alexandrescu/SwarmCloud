@@ -87,10 +87,16 @@ env:
   PYTHON_VERSION: "3.11"
   KUBECTL_VERSION: "v1.36.3"
 
+# RUNNERS (owner decision 2026-10-14). A job that holds no cloud identity
+# (id-token) runs on the self-hosted `bogdan-ci` VMs through the one guarded
+# `runs-on` expression: a fork's pull request, or the repo variable
+# SELF_HOSTED_CI set to `off` (the capacity escape hatch), sends it to
+# GitHub-hosted ubuntu-24.04 instead. Every job that stays hosted is listed,
+# with why, in tests/unit/scripts/test_fork_prs_off_self_hosted.py.
 jobs:
   shell:
     name: shellcheck
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # Skipped when the change reaches nothing in this workflow (`changes`).
     needs: changes
     if: needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'shell')
@@ -102,6 +108,14 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v5
+
+      - uses: azure/setup-kubectl@v5
+        with:
+          # The parity checks below find kubectl >= 1.30 (scripts/lib/common.sh
+          # kubectl_bin). GitHub's image carries one; the self-hosted VM does
+          # not, so the check died with "no kubectl >= 1.30 found". Pinned for
+          # the reason the manifests job pins it.
+          version: ${{ env.KUBECTL_VERSION }}
 
       - name: shellcheck
         # -x follows `source` directives so lib/common.sh is analysed in context.
@@ -174,6 +188,13 @@ jobs:
         # cloud credentials, so it skips -- with a ::notice on the run page, not
         # silently. It is here so that skip is visible on every PR; the real
         # comparison is `--require-live` after an apply (kubernetes/README.md).
+        # Only on a GitHub-hosted runner. The self-hosted VM is a GCE
+        # instance, so gcloud finds its service account from the metadata
+        # server and reports an ACTIVE account on every run (an empty
+        # CLOUDSDK_CONFIG did not hide it): the check then went live and died
+        # on "kubectl is pointed at <none>". The live comparison is
+        # `--require-live` after an apply, not this step.
+        if: runner.environment == 'github-hosted'
         run: ./scripts/lib/check-cluster-network-parity.sh
 
       - name: the plan guard still catches offenders
@@ -343,7 +364,7 @@ jobs:
 
   workflows:
     name: release workflow wiring (actionlint)
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # Skipped when the change reaches nothing in this workflow (`changes`).
     needs: changes
     if: needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'workflows')
@@ -431,7 +452,7 @@ jobs:
     # `--output-format github` turns each finding into an annotation on its
     # line. Required through ci-gate's `needs`, like every job here.
     name: ruff check
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     needs: changes
     if: needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'ruff')
     steps:
@@ -488,7 +509,7 @@ jobs:
     # tests/unit/scripts/test_ui_changes_gate.py runs this step over the
     # path-filter matrix (docs-only, UI-only, both, neither, a near miss).
     name: what this change reaches
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # Job-level permissions REPLACE the workflow's. actions: read lists the
     # `tested-tree-<tree>` records and the runs that wrote them, and
     # pull-requests: read names the pull request a push to main merged (the
@@ -807,7 +828,7 @@ jobs:
     # None of it can be reached by a change confined to docs/ or
     # apps/swarm-ui/, so it runs only when `changes` says python=all.
     name: lock / contract / format / bridge install
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     needs: changes
     if: (needs.changes.outputs.python == 'all' || needs.changes.outputs.python == 'selected') && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'python-checks')
     steps:
@@ -946,8 +967,9 @@ jobs:
     timeout-minutes: 30
     # SELF-HOSTED (owner decision 2026-10-12, sagaxyz/ai-studio#336): the ephemeral
     # bogdan-ci VMs, with fork PRs kept on a GitHub-hosted image. The expression is
-    # the one tests/unit/scripts/test_fork_prs_off_self_hosted.py enforces.
-    runs-on: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    # the one tests/unit/scripts/test_fork_prs_off_self_hosted.py enforces, and
+    # SELF_HOSTED_CI=off (a repo variable) sends it to ubuntu-24.04 as well.
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     needs: changes
     if: needs.changes.outputs.python != 'none' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'python-unit')
     strategy:
@@ -1248,7 +1270,7 @@ jobs:
     # was the one job doing all of it; auto-merge.yml's comments, ci-fix.yml's
     # log reads and every doc name it, and `build` below still needs it.
     name: format / unit tests
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     needs: [changes, python-checks, python-unit]
     if: always()
     steps:
@@ -1279,8 +1301,9 @@ jobs:
     name: swarm-ui typecheck / build
     # SELF-HOSTED (owner decision 2026-10-12, sagaxyz/ai-studio#336): the ephemeral
     # bogdan-ci VMs, with fork PRs kept on a GitHub-hosted image. The expression is
-    # the one tests/unit/scripts/test_fork_prs_off_self_hosted.py enforces.
-    runs-on: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    # the one tests/unit/scripts/test_fork_prs_off_self_hosted.py enforces, and
+    # SELF_HOSTED_CI=off (a repo variable) sends it to ubuntu-24.04 as well.
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     needs: changes
     if: needs.changes.outputs.ui == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'ui-build')
     steps:
@@ -1394,8 +1417,9 @@ jobs:
     name: swarm-ui component tests (${{ matrix.shard }}/${{ strategy.job-total }})
     # SELF-HOSTED (owner decision 2026-10-12, sagaxyz/ai-studio#336): the ephemeral
     # bogdan-ci VMs, with fork PRs kept on a GitHub-hosted image. The expression is
-    # the one tests/unit/scripts/test_fork_prs_off_self_hosted.py enforces.
-    runs-on: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    # the one tests/unit/scripts/test_fork_prs_off_self_hosted.py enforces, and
+    # SELF_HOSTED_CI=off (a repo variable) sends it to ubuntu-24.04 as well.
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     needs: changes
     if: needs.changes.outputs.ui == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'ui-tests')
     strategy:
@@ -1483,7 +1507,7 @@ jobs:
     # THE CHECK NAME `swarm-ui typecheck / component tests` IS KEPT, on a job
     # that only reads the others' results, as `format / unit tests` is above.
     name: swarm-ui typecheck / component tests
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     needs: [changes, ui-build, ui-tests]
     if: always()
     steps:
@@ -1511,8 +1535,9 @@ jobs:
     name: integration tests (emulator)
     # SELF-HOSTED (owner decision 2026-10-12, sagaxyz/ai-studio#336): the ephemeral
     # bogdan-ci VMs, with fork PRs kept on a GitHub-hosted image. The expression is
-    # the one tests/unit/scripts/test_fork_prs_off_self_hosted.py enforces.
-    runs-on: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    # the one tests/unit/scripts/test_fork_prs_off_self_hosted.py enforces, and
+    # SELF_HOSTED_CI=off (a repo variable) sends it to ubuntu-24.04 as well.
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # Skipped when the change reaches nothing in this workflow (`changes`).
     needs: changes
     if: needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'integration')
@@ -1628,7 +1653,7 @@ jobs:
 
   manifests:
     name: kubernetes manifests
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # Skipped when the change reaches nothing in this workflow (`changes`).
     needs: changes
     if: needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'manifests')
@@ -1710,7 +1735,7 @@ jobs:
     # wants a fork's images built pushes its branch here. Either way the
     # summary says why.
     name: build changed images without pushing
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # Not after the other checks, as `build` is: this spends no cloud money,
     # and the image build is the slowest check, so it starts at once.
     timeout-minutes: 120
@@ -2124,7 +2149,7 @@ jobs:
     # Writing it is strict -- a broken record is a bug to see -- but its
     # upload is not: a failed upload costs main one full run, never a merge.
     name: record the tested tree
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     needs: [changes, shell, workflows, ruff, python-checks, python-unit, ui-build, ui-tests, integration, manifests]
     if: always() && needs.changes.result == 'success' && github.ref != 'refs/heads/main' && github.event_name != 'workflow_dispatch'
     permissions:
@@ -2201,7 +2226,7 @@ jobs:
     # the gate needs every other job, and each name-keeper's `needs` is inside
     # the gate's.
     name: ci-gate
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     needs: [shell, workflows, ruff, changes, python-checks, python-unit, ui-build, ui-tests, integration, manifests, build-check, build, tested-tree]
     if: always()
     # The script gives up at 90 minutes (CI_GATE_WAIT) and says what was still
