@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Any, Callable
 
@@ -38,7 +37,6 @@ import pytest
 
 from agent_worker import contextpack, prepublish, verdict as verdict_mod
 from agent_worker.contextpack import rank
-from agent_worker.contextpack.build import build_pack
 from agent_worker.contextpack.retrieve import Candidate
 from agent_worker.judge import attempt, budget, client, poststeps, register, settings, shapes
 
@@ -147,11 +145,11 @@ def test_j1_reranks_the_pack_and_says_so(work, tmp_path):  # noqa: F811
     local_order = [r["ref"] for r in local["rows"] if r["kind"] not in ("in_flight", "cannot_push")]
     last = local_order[-1]
 
+    assert len(local_order) <= rank.J1_CANDIDATES  # every ranked row is sent, in local order
+
     def answer(name, q, state):
-        cand = state["candidates"][int(name[1:])]
         # Jev wants the locally LAST row most of all, and nothing else much.
-        wanted = (cand.get("path"), cand.get("symbol")) == _ref_parts(last)
-        return {"noul": 0.99 if wanted else 0.5}
+        return {"noul": 0.99 if int(name[1:]) == len(local_order) - 1 else 0.3}
 
     fake = FakeJev(answer)
     pack = _pack(work, _payload(), judge=_judge(tmp_path, fake))
@@ -163,11 +161,6 @@ def test_j1_reranks_the_pack_and_says_so(work, tmp_path):  # noqa: F811
     assert all("jev_p" in r for r in pack["rows"][:5] if r["kind"] not in rank_always())
     text = (work / contextpack.CONTEXT_DIR_NAME / contextpack.CONTEXT_FILE).read_text()
     assert "Jev: on (" in text
-
-
-def _ref_parts(ref: str) -> tuple[str, str | None]:
-    path, _, symbol = ref.partition("#")
-    return path, symbol or None
 
 
 def rank_always() -> tuple[str, ...]:
@@ -200,7 +193,8 @@ def test_j1_partial_answers_are_not_used(work, tmp_path):  # noqa: F811
 
 
 def _cands() -> list[Candidate]:
-    rows = [Candidate(kind="symbol", ref=f"src/a{i}.py#f{i}", path=f"src/a{i}.py", why="seed",
+    # Callers: a kind with no quota maximum, so `select` takes every row.
+    rows = [Candidate(kind="caller", ref=f"src/a{i}.py#f{i}", path=f"src/a{i}.py", why="seed",
                       score=10.0 - i) for i in range(70)]
     rows += [Candidate(kind="in_flight", ref="lane-x", path="src/a1.py", why="lane"),
              Candidate(kind="cannot_push", ref=".github/workflows/**", path=".github/workflows/**",
@@ -214,7 +208,7 @@ def test_j1_sends_the_top_sixty_and_never_in_flight_or_cannot_push(tmp_path):
     assert rank.rerank(rows, "implement", "brief", _judge(tmp_path, fake)) is not None
     (state,) = fake.states()
     assert len(state["candidates"]) == rank.J1_CANDIDATES == 60
-    assert {c["kind"] for c in state["candidates"]} == {"symbol"}
+    assert {c["kind"] for c in state["candidates"]} == {"caller"}
     always = [c for c in rows if c.kind in ("in_flight", "cannot_push")]
     assert all(c.score == 0.0 and not c.extra for c in always)
 
@@ -305,16 +299,22 @@ def test_j4_lists_changed_behaviours_no_test_would_catch(tmp_path):
 
 @pytest.mark.parametrize("failure", sorted(FAILURES))
 def test_j4_failure_leaves_the_advisory_and_record_identical_to_local_only(tmp_path, failure):
-    local_dir, jev_dir = tmp_path / "local", tmp_path / "jev"
-    local_dir.mkdir()
-    jev_dir.mkdir()
-    repo, env = _changed_mod(local_dir)
-    local = _gate(repo, local_dir, env, None).run()
-    repo2, env2 = _changed_mod(jev_dir)
-    got = _gate(repo2, jev_dir, env2, FAILURES[failure](jev_dir)).run()
-    assert _advisory(local_dir) == _advisory(jev_dir)
+    repo, env = _changed_mod(tmp_path)
+    local = _gate(repo, tmp_path, env, None).run()
+    local_section = _advisory(tmp_path)
+    got = _gate(repo, tmp_path, env, FAILURES[failure](tmp_path)).run()
+    assert _advisory(tmp_path) == local_section
     assert "jev_test_gap" not in got
-    assert set(got) == set(local)
+    assert _timeless(got) == _timeless(local)
+
+
+def _timeless(value: Any) -> Any:
+    """A gate record without its wall-clock durations, the one thing two runs differ by."""
+    if isinstance(value, dict):
+        return {k: _timeless(v) for k, v in value.items() if k != "duration_seconds"}
+    if isinstance(value, list):
+        return [_timeless(v) for v in value]
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -353,15 +353,16 @@ FINDINGS = [
 ]
 
 
-def _j3_answer(p_by_summary: dict[str, float]) -> Callable[..., Any]:
-    return lambda name, q, state: {"noul": p_by_summary[state["finding"]["summary"]]}
+def _j3_answer(p_in_order: list[float]) -> Callable[..., Any]:
+    """One finding per call, so the answers go in call order."""
+    left = list(p_in_order)
+    return lambda name, q, state: {"noul": left.pop(0)}
 
 
 def test_j3_annotates_p_real_marks_low_ones_and_never_drops_or_changes_the_verdict(tmp_path):
     work, checkout, artifacts, payload = _review(tmp_path, FINDINGS)
     before = verdict_mod.read_verdict(artifacts / "verdict.json", task_id="r", filename="verdict.json")
-    fake = FakeJev(_j3_answer({"covered() now returns 3": 0.92, "lonely() is untested": 0.1,
-                               "the env file holds a value": 0.5, "style nit": 0.3}))
+    fake = FakeJev(_j3_answer([0.92, 0.1, 0.5, 0.3]))
     done = poststeps.review_post_step(_judge(tmp_path, fake), artifacts, checkout, work, payload)
     assert done is not None and done["asked"] == 4
     doc = json.loads((artifacts / "verdict.json").read_text())
@@ -381,7 +382,9 @@ def test_j3_annotates_p_real_marks_low_ones_and_never_drops_or_changes_the_verdi
     # The code window is sent with the hunk; the denied path by name only.
     states = fake.states()
     assert "return 3" in states[0]["diff_hunk"] and "def lonely" in states[0]["code"]["window"]
-    assert states[2]["code"] == {"path": ".env"}
+    # §5.4 step 1: a finding on a denied path is sent by its name and line only.
+    assert states[2] == {"finding": {"file": ".env", "line": 1}, "code": {"path": ".env"},
+                         "diff_hunk": ""}
     assert "value-that-must-stay" not in json.dumps(fake.requests)
 
 
@@ -595,7 +598,9 @@ def test_the_budget_is_one_ledger_shared_by_j1_to_j5(work, tmp_path):  # noqa: F
     """Five Js, each its own client over the attempt's one ledger file (as the
     runner and the MCP tool build theirs): the eighth call is the last."""
     ledger = tmp_path / "attempt-ledger.json"
-    fake = FakeJev(_plan_answer(0.9))
+    plan = _plan_answer(0.9)
+    fake = FakeJev(lambda name, q, state: {"noul": 0.7} if q["type"] == "noul"
+                   else plan(name, q, state))
     spent: list[client.JudgeClient] = []
 
     def fresh() -> client.JudgeClient:
@@ -646,7 +651,7 @@ def test_graphstage_hands_the_runner_the_config_only_when_opted_in(tmp_path, mon
     work = tmp_path / "work"
     work.mkdir()
     (work / "repo").mkdir()
-    env = graphstage.prepare(work, profile_name="claude-code", runner_argv=["claude"],
+    env = graphstage.prepare(work, profile_name="claude-code", runner_argv=["python", "-m", "agent_worker.runners.claude_code"],
                              db=object(), store=object(), tenant_id="acme",
                              repository_url=URL, task_id="t", checkout=work / "repo",
                              base_sha="a" * 40)

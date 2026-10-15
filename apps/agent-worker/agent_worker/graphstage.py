@@ -559,11 +559,19 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
         if log is not None:
             log.info("graph context", staged=result.staged, reason=result.reason,
                      arm=result.decision.arm if result.decision else None)
+        # Jev for J1-J5 (lane CTXQ-JW): decided by the workspace's own stored
+        # opt-in, written as `<attempt>/judge/config.json` or not at all.
+        # Here, not in the lifecycle, because this is its one setup call.
+        from .judge import attempt as judge_attempt
+
+        jev = judge_attempt.setup(work=work, db=db, tenant_id=tenant_id,
+                                  repository_url=repository_url, call_options=call_options,
+                                  log=log)
         if result.staged and result.snapshot is not None:
-            return {CONTEXT_ENV: str(context_dir), SNAPSHOT_ENV: str(result.snapshot)}
+            return {CONTEXT_ENV: str(context_dir), SNAPSHOT_ENV: str(result.snapshot), **jev}
         if result.wanted:
-            return {UNSTAGED_ENV: result.reason}
-        return {}
+            return {UNSTAGED_ENV: result.reason, **jev}
+        return dict(jev)
     except Exception as exc:  # noqa: BLE001 -- a staging failure never fails the attempt
         if log is not None:
             log.warning("graph context not staged", error=type(exc).__name__)

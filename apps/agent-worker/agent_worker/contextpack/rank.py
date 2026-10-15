@@ -1,4 +1,4 @@
-"""Local ranking under quotas (§4.3). Jev's J1 rerank plugs in here (lane CTXQ-JW).
+"""Local ranking under quotas, then Jev's J1 rerank when the workspace opted in (§4.3).
 
 THE SCORE is the design's weighted sum, with the weights fixed here and tuned
 only by the offline replay (§6), never per call:
@@ -18,11 +18,22 @@ the red tests' code and earlier fixes.
 QUOTAS, so one kind cannot crowd out the rest: at least 3 tests and 2 guards
 when they exist, at most 5 docs and 5 similar changes (design: 12 docs).
 In-flight and cannot-push rows are not ranked at all: they are always shown.
+
+J1 (lane CTXQ-JW, `rerank`). When this attempt has a Jev client, the best
+`J1_CANDIDATES` locally ranked rows go to Jev in ONE call, one `noul` each
+("would an engineer doing `task` need to read this?"), and each sent row's
+score becomes `JEV_WEIGHT · local/best + (1 - JEV_WEIGHT) · p`. A row Jev puts
+under `JEV_DEMOTE_BELOW` goes below the budget line -- after every other row,
+so it is paged, never deleted (jev-browser's bias-to-keep). In-flight and
+cannot-push rows are never sent and never touched: they are outside the
+ranking. ADVISORY AND ALL-OR-NOTHING: a call that is skipped, fails, times
+out or answers malformed changes nothing, so the pack is byte for byte the
+one the local-only run writes.
 """
 
 from __future__ import annotations
 
-from typing import Iterable
+from typing import Any, Iterable, Mapping
 
 from .retrieve import ALWAYS, Candidate
 
@@ -90,10 +101,13 @@ def select(pool: Iterable[Candidate], task_type: str,
 
     Each kind's minimum comes first (its best rows), then everything else best
     first, skipping a kind at its maximum. `budget_rows` stops it there; the
-    renderer stops it at the byte budget instead.
+    renderer stops it at the byte budget instead. A row J1 demoted
+    (`JEV_DEMOTED`) fills no minimum and comes after every other row.
     """
     quota = QUOTAS.get(task_type, QUOTAS["implement"])
-    rows = ordered(c for c in pool if c.kind not in ALWAYS)
+    ranked = ordered(c for c in pool if c.kind not in ALWAYS)
+    rows = [c for c in ranked if not c.extra.get(JEV_DEMOTED)] + \
+        [c for c in ranked if c.extra.get(JEV_DEMOTED)]
     chosen: list[Candidate] = []
     taken: set[tuple[str, str]] = set()
     counts: dict[str, int] = {}
@@ -107,7 +121,7 @@ def select(pool: Iterable[Candidate], task_type: str,
         return True
 
     for kind, minimum in quota["min"].items():
-        for cand in [c for c in rows if c.kind == kind][:minimum]:
+        for cand in [c for c in rows if c.kind == kind and not c.extra.get(JEV_DEMOTED)][:minimum]:
             take(cand)
     for cand in rows:
         if cand.key() in taken:
@@ -117,3 +131,74 @@ def select(pool: Iterable[Candidate], task_type: str,
         if not take(cand):
             break
     return chosen
+
+
+# -- J1: Jev's rerank (§4.3, §5.2) ---------------------------------------------
+
+#: §4.3: "the top 60 local candidates go to Jev".
+J1_CANDIDATES = 60
+#: §4.3: the final order is `0.5·local_rank_score + 0.5·p_yes`.
+JEV_WEIGHT = 0.5
+#: §4.3: a row Jev scores under this drops below the budget line (paged, kept).
+JEV_DEMOTE_BELOW = 0.15
+#: The keys J1 adds to a row it answered for (`Candidate.extra`, so `as_row`
+#: carries them into pack.json). A row Jev was not asked about has neither.
+JEV_P = "jev_p"
+JEV_DEMOTED = "jev_demoted"
+
+
+def _symbol(cand: Candidate) -> str | None:
+    return cand.ref.split("#", 1)[1] if "#" in cand.ref else None
+
+
+def j1_row(cand: Candidate) -> dict[str, Any]:
+    """What J1 sends for one row: names, the reason, and the row's evidence as
+    its excerpt. `judge.sanitize` then applies §5.4 to every string."""
+    row: dict[str, Any] = {"kind": cand.kind, "path": cand.path, "why": cand.why}
+    symbol = _symbol(cand)
+    if symbol:
+        row["symbol"] = symbol
+    if cand.evidence:
+        row["excerpt"] = cand.evidence
+    return row
+
+
+def rerank(pool: Iterable[Candidate], task_type: str, brief: str, judge: Any,
+           ) -> Mapping[str, Any] | None:
+    """J1 over the pool, in place, or nothing at all.
+
+    Returns `{calls, input_tokens, candidates}` when Jev answered for every
+    sent row and the scores were blended; None -- with every row untouched --
+    for any other outcome.
+    """
+    from ..judge import shapes
+
+    rows = ordered(c for c in pool if c.kind not in ALWAYS)
+    sent = rows[:J1_CANDIDATES]
+    if judge is None or not sent:
+        return None
+    state, questions = shapes.j1_rerank(task_type, brief, [j1_row(c) for c in sent])
+    try:
+        decision = judge.decide("J1", state, questions)
+    except Exception:  # noqa: BLE001 -- a refused question is a local-only pack too
+        return None
+    if not decision.ok or decision.answers is None:
+        return None
+    p_of = shapes.read_rerank(decision.answers)
+    if any(i not in p_of for i in range(len(sent))):
+        return None  # §5.5: no partial probabilities are used
+    best = max((c.score for c in sent), default=0.0) or 1.0
+    for i, cand in enumerate(sent):
+        p = min(max(p_of[i], 0.0), 1.0)
+        cand.score = round(JEV_WEIGHT * (cand.score / best) + (1 - JEV_WEIGHT) * p, 6)
+        cand.extra[JEV_P] = round(p, 4)
+        if p < JEV_DEMOTE_BELOW:
+            cand.extra[JEV_DEMOTED] = True
+    # Rows past the sixty keep their order after the sent ones: Jev was not
+    # asked about them, so nothing it said may lift them over a row it read.
+    floor = min((c.score for c in sent), default=0.0)
+    rest = rows[J1_CANDIDATES:]
+    top = max((c.score for c in rest), default=0.0) or 1.0
+    for cand in rest:
+        cand.score = round(floor * (cand.score / top) * 0.999, 6)
+    return {"calls": 1, "input_tokens": decision.input_tokens, "candidates": len(sent)}
