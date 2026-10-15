@@ -1361,6 +1361,55 @@ window while the page kept changing.
   nothing the mask has not checked. The viewer sees a page up to 300 ms old
   instead of a grey flash.
 
+**Pages dev-browser opens, and iframe pages, issue #1344.** MEASURED
+2026-10-15 by visual QA on release b93ad6cb. On task_f7ff5ae0d8ac4612b0ff
+(browser tool dev-browser) the live view stayed the grey "masking
+unavailable" frame for minutes, also while a person held control, with
+"Can't show this page safely: the page on screen has not reported its layout
+yet". Its timeline shows dev-browser opening a new page for every navigation.
+On https://the-internet.herokuapp.com/iframe, a TinyMCE editor in an iframe,
+the whole page area was blanked for all three browser tools. Two causes, both
+in the mask's install on a newly followed page (`MaskCdp.install`), and one
+rule:
+
+* **The install's frame tree is not a navigation.** The install read
+  `Page.getFrameTree` last and told the state every frame in it had just
+  navigated. Puppeteer's `newPage()` is followed at once by its `goto()`, so
+  the page often committed while the install was under way. Its observer had
+  already reported on the new document, and that "navigation" retired it:
+  every later report from the live document was dropped as one from a page
+  navigated away from, until the next navigation. A person holding control
+  makes no navigation, so the grey stayed. Now a frame the gate already heard
+  of during the install keeps its document; a different URL only makes its
+  report stale until the next one (at most the observer's one-second
+  heartbeat).
+* **The children the tree lists are linked.** A child frame was linked to its
+  iframe element only when it attached, or when its parent's observer world
+  was created, and the install creates that world before it reads the tree.
+  So an iframe already on the page when the gate followed it stayed unlinked
+  for good: a page loaded before a tab switch, a reconnect or a device change,
+  and every page dev-browser opened. The same was true of an out-of-process
+  frame open before the follow, which the page's session never sees attach.
+  Now the install links every unlinked child of a frame it has a world for,
+  and the follower does it again once each out-of-process frame's session is
+  installed. The retries and their bound are unchanged.
+* **An unlinked child covers the box left for it.** The rule above said that
+  only a child the gate cannot place blanks the page area; an unlinked child
+  was such a child. Now an unlinked child (its link not yet answered, or
+  failed for good) whose parent's fresh report has an iframe box that no
+  linked child claims, one box for every unlinked child, covers those boxes
+  and the page is shown. Why this still fails closed: a frame's content is
+  clipped to its element's box. The observer reports the box of every iframe
+  and frame element it walks. The gate hears every child frame attach, on the
+  parent's session, before the report that measured its element. So those
+  unclaimed boxes are the unlinked children's boxes. With fewer unclaimed
+  boxes than unlinked children, one child is drawn where no report places it,
+  and the page area is blanked as before. The page area is also still blanked
+  for a child linked to an element the report does not have (one in a closed
+  shadow root, an `<object>`), and for two children linked to one element.
+  Every other rule in this section is unchanged: the top frame unreported,
+  stale or truncated, the session down, the tab not on screen.
+
 **The mask is applied once, at the source.** The relay, the recorder and the
 viewers all receive the masked frames; there is no unmasked stream anywhere to
 leak.
@@ -1380,6 +1429,14 @@ pointer events", never which keys.
   is not text and is not masked.
 * A secret in a canvas or a closed shadow root is not visible to the isolated
   world and is not masked.
+* An unlinked child frame is matched to the iframe boxes its parent reports by
+  count (§5.3.2, issue #1344), which assumes the gate has heard every child
+  frame attach. One gap remains: an out-of-process frame already open when
+  the page was followed is unknown until Chromium auto-attaches its session.
+  If, in that window, another child is unlinked and held by an element the
+  observer cannot see (a closed shadow root), the out-of-process frame's
+  unclaimed box can stand in for it, and that child is shown unchecked until
+  the auto-attach lands.
 * An ordinary field the person types a secret into, which is not a password
   field, shows what they type. The console's take-control dialog says so.
 * A challenge frame on the allowlist (`SHOWN_IN_CONTROL`, §5.3.2) is shown

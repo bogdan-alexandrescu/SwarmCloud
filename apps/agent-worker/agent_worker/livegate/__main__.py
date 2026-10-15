@@ -843,7 +843,18 @@ class PageFollower:
 
         mask = MaskCdp(self._state, send, child=True)
         self._masks[child] = mask
-        self._spawn_quiet(mask.install())
+        self._spawn_quiet(self._install_child(mask))
+
+    async def _install_child(self, mask: MaskCdp) -> None:
+        """The observer on an out-of-process frame's session, then its link.
+
+        A frame out of process before this page was followed never attached
+        on the page's session, so nothing there linked it: every session's
+        mask links what it can place once the frame is known (#1344).
+        """
+        await mask.install()
+        for other in list(self._masks.values()):
+            await other.relink()
 
     def tab_switching(self) -> None:
         """Another tab may be about to be shown: hold the mask and look. Never waits."""

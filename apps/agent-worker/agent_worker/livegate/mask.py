@@ -29,8 +29,11 @@ it is painted on, so:
   the iframe element's content box its parent reported, and so is an iframe
   element no frame this gate knows claims (an out-of-process frame whose
   session has not reported yet). A frame's content is clipped to that box,
-  so covering it covers all of it. Only a child the gate cannot place at all
-  -- not linked to any box its parent reported -- blanks the page area;
+  so covering it covers all of it. So is a child not yet linked to its
+  element, when its parent reports an iframe box no linked child claims for
+  every such child (`_collect`). Only a child the gate cannot place at all
+  -- fewer unclaimed boxes than unlinked children, or linked to an element
+  the report does not have -- blanks the page area;
 * with the CDP session down, no report from the top frame since its last
   navigation, the top frame's tab not the one on screen, or the follower
   between tabs (`hold`), the whole frame is a blank "masking unavailable"
@@ -51,6 +54,16 @@ tried again (`LINK_TRIES`); while a person holds control a challenge frame on
 recorded by host; and a top frame stale only by an announced layout change
 keeps the last masked frame on screen for `HOLD_CHANGING_SECONDS` before the
 page area is blanked.
+
+DEVB-MASK (issue #1344, design §5.3.2). MEASURED 2026-10-15 on release
+b93ad6cb: a page dev-browser opened (`Target.createTarget`, then `goto` at
+once) stayed UNAVAILABLE, "not reported", for minutes; on an iframe page
+(TinyMCE) the page area blanked for every browser tool. `MaskCdp.install`
+treated its frame tree as a navigation, which retired a document that had
+already reported during the install, and never linked the children that tree
+listed. Now the tree keeps a known frame's document (`MaskState.listed`),
+`MaskCdp.relink` links them, and an unlinked child covers the iframe box left
+for it.
 
 EVERY FRAME THAT IS NOT THE PAGE SAYS WHY (`reason`). `apply` leaves the
 reason in `reason`, and `rfb.masked` carries it to every viewer as the RFB
@@ -585,6 +598,19 @@ class MaskState:
         if frame_id == self._top:
             self._last = None
 
+    def listed(self, frame_id: str, url: str) -> None:
+        """A frame tree the gate read lists `frame_id`, already known, at `url`.
+
+        Not a navigation: a navigation is an event, and one that committed
+        while the tree was read was handled as one. So the document the frame
+        reported on is kept. A different URL than the one known makes its
+        report stale until the next one (fail closed), and never retires it
+        (#1344: retiring it dropped every later report of the live page).
+        """
+        frame = self._frames.get(frame_id)
+        if frame is not None and frame.url != url:
+            self.url_changed(frame_id, url)
+
     def on_message(self, frame_id: str, payload: str) -> None:
         """One message from `frame_id`'s observer."""
         frame = self._frames.get(frame_id)
@@ -727,15 +753,26 @@ class MaskState:
         to_screen = self._to_screen(frame_id, page)
         if to_screen is None:
             return REASON_UNPLACED
+        children = [(cid, c) for cid, c in self._frames.items() if c.parent == frame_id]
+        linked = [(cid, c, c.owner) for cid, c in children if c.owner is not None]
+        claimed = {owner for _, _, owner in linked}
+        if len(claimed) != len(linked) or not claimed <= report.owners.keys():
+            # A frame linked to an element this report does not place (one in
+            # a closed shadow root, an <object>), or two frames to one.
+            return REASON_UNPLACED
+        # An unlinked child (its link not yet answered, or failed) is drawn in
+        # the box of the element that holds it, and every iframe element the
+        # observer reports holds a frame this gate heard attach (on this
+        # session, before the report). So with as many boxes no linked child
+        # claims as unlinked children, they are those children's boxes, all
+        # covered below; with fewer, one is drawn where no report places it
+        # (DEVB-MASK, #1344).
+        unlinked = len(children) - len(linked)
+        if unlinked > len(report.owners) - len(claimed):
+            return REASON_UNPLACED
         self._sensitive(frame, report, to_screen, out)
-        claimed: set[int] = set()
-        for child_id, child in list(self._frames.items()):
-            if child.parent != frame_id:
-                continue
-            if child.owner is None or child.owner not in report.owners:
-                return REASON_UNPLACED  # drawn somewhere this gate cannot place
-            claimed.add(child.owner)
-            box = to_screen(report.owners[child.owner]).intersect(page)
+        for child_id, child, owner in linked:
+            box = to_screen(report.owners[owner]).intersect(page)
             if box.empty:
                 continue  # drawn nowhere on screen
             inner: list[_Box] = []
@@ -749,13 +786,14 @@ class MaskState:
             else:
                 # Its content is clipped to its box: covering the box covers all of it.
                 covers.append(box)
-        for owner, rect in report.owners.items():
-            if owner in claimed:
+        for unclaimed, rect in report.owners.items():
+            if unclaimed in claimed:
                 continue
             box = to_screen(rect).intersect(page)
             if not box.empty:
-                # An iframe element no frame this gate knows is drawn in: an
-                # out-of-process frame not yet reporting, or one just created.
+                # An iframe element no linked frame claims: an unlinked child's
+                # (counted above), an out-of-process frame not yet reporting,
+                # or one just created.
                 covers.append(box)
         return None
 
@@ -948,9 +986,20 @@ class MaskCdp:
             node = stack.pop()
             frame = node.get("frame")
             if isinstance(frame, dict) and isinstance(frame.get("id"), str):
+                known = self._state.has_frame(frame["id"])
                 if self._attach(frame["id"], frame.get("parentId")):
-                    self._state.navigated(frame["id"], str(frame.get("url", "")))
+                    url = str(frame.get("url", ""))
+                    if not known:
+                        self._state.navigated(frame["id"], url)
+                    else:
+                        # Already heard of during this install (a navigation
+                        # that committed, its observer's report): the tree is
+                        # not a navigation, so its document is kept (#1344).
+                        self._state.listed(frame["id"], url)
             stack.extend(node.get("childFrames", []) or [])
+        # The children the tree listed, whose parent's world was created
+        # before they were known here (#1344).
+        await self.relink()
 
     def _attach(self, frame_id: str, parent_id: Any) -> bool:
         """Tell the state of `frame_id`; False when it is not a frame this session may name."""
@@ -1015,6 +1064,21 @@ class MaskCdp:
         elif method == "Page.navigatedWithinDocument":
             if isinstance(params.get("frameId"), str):
                 state.url_changed(params["frameId"], str(params.get("url", "")))
+
+    async def relink(self) -> None:
+        """Link every unlinked child of a frame this session has an observer world for.
+
+        At the end of `install`, for the frames its frame tree listed, and by
+        the page follower once an out-of-process frame's own session is
+        installed: that frame was out of process before this page was
+        followed, so its parent's session never saw it attach (#1344). A
+        failed link is tried only when due, as on every other path.
+        """
+        for parent_id in list(self._world_of):
+            for frame_id in self._state.unlinked_children(parent_id):
+                failed = self._failed.get(frame_id)
+                if failed is None or self._due(frame_id, failed):
+                    await self.link(frame_id, parent_id)
 
     def _due(self, frame_id: str, failed: tuple[str, int, float]) -> bool:
         """Whether a failed link of `frame_id` may be tried now; forgets one that needs no try."""
