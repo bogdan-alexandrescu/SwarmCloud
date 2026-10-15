@@ -10,9 +10,12 @@ the one place in the worker that says what each name means:
   dev-browser  the dev-browser CLI first; Playwright MCP still registered as fallback
   jev          the jev MCP server first; Playwright MCP still registered as fallback
 
-Jev is only ever registered with a TypeSafe key in the runner's environment
-and its wrapper in the image; otherwise the attempt runs without it and says
-why (`no_key`, `not_installed`). swarm-api refuses a `jev` submission that has
+Jev is only ever registered with its wrapper in the image and what its
+judgment backend needs: a TypeSafe key, or for an internal backend the route
+to Saga's decision API (`JEV_API_URL`, which the dispatcher sends only while
+the tailnet egress is on). Otherwise the attempt runs without it and says
+why (`no_key`, `not_installed`, `no_route`; JEV-OFF, #1345: a server the
+wrapper refuses to start was registered, failed, and nothing said so). swarm-api refuses a `jev` submission that has
 no key to use (`browser_tool_unavailable`), but a key deleted between
 submission and run must not cost the attempt, so the runner falls back here
 rather than failing.
@@ -60,7 +63,8 @@ INPUT_KEY = "browser_tool"
 NO_KEY = "no_key"
 NOT_INSTALLED = "not_installed"
 NOT_SELECTED = "not_selected"
-JEV_REASONS = (NO_KEY, NOT_INSTALLED, NOT_SELECTED)
+NO_ROUTE = "no_route"
+JEV_REASONS = (NO_KEY, NOT_INSTALLED, NOT_SELECTED, NO_ROUTE)
 
 #: The file the runner writes into the hand-off spool, and the gate's op.
 STATE_NAME = "browser.json"
@@ -99,8 +103,12 @@ class Choice:
         }
 
 
-def choose(selected: Any, *, jev_installed: bool, jev_key: bool) -> Choice:
+def choose(selected: Any, *, jev_installed: bool, jev_key: bool, jev_route: bool = True) -> Choice:
     """The tools to register for `selected`, given whether jev can run at all.
+
+    `jev_route` is False only for an internal judgment backend whose pod has
+    no `JEV_API_URL`: the wrapper would refuse to start, so jev is not
+    registered and the reason is `no_route`.
 
     Playwright MCP is registered on every choice: it is the only tool for
     `playwright`, and the fallback for `dev-browser` and `jev`. dev-browser is
@@ -108,9 +116,9 @@ def choose(selected: Any, *, jev_installed: bool, jev_key: bool) -> Choice:
     names it; with `playwright` or `jev` the note does not.
     """
     chosen = selection(selected)
-    jev_ready = jev_installed and jev_key
+    jev_ready = jev_installed and jev_route and jev_key
     if chosen in (AUTO, "jev") and not jev_ready:
-        reason: str | None = NOT_INSTALLED if not jev_installed else NO_KEY
+        reason: str | None = NOT_INSTALLED if not jev_installed else NO_ROUTE if not jev_route else NO_KEY
     elif chosen in ("playwright", "dev-browser"):
         reason = NOT_SELECTED
     else:
