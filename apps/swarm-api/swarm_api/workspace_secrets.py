@@ -78,6 +78,7 @@ from .admins import AUDIT_COLLECTION
 from .auth import AuthContext, require_admin
 from .codec import console_origin
 from .errors import Conflict, Forbidden, NotFound, UpstreamUnavailable, ValidationFailed
+from .grant_attest import ATTESTATION_FIELD, VALID, GrantKeys, GrantPolicy
 
 log = logging.getLogger(__name__)
 
@@ -120,6 +121,9 @@ AUDIT_GRANT_ENABLED = "workspace_secret_grant_enabled"
 AUDIT_GRANT_DISABLED = "workspace_secret_grant_disabled"
 AUDIT_USE_IN_SET = "workspace_secret_use_in_set"
 AUDIT_VERSION_DISABLED = "workspace_secret_version_disabled"
+#: SEC-GRANT-ATTEST's migration: a grant written before attestations existed,
+#: re-signed by `attest_grants` because its fields match its newest audit row.
+AUDIT_GRANT_ATTESTED = "workspace_secret_grant_attested"
 
 #: The display name: it becomes a file name in phase 2 (§4.1), so it is
 #: lowercase letters, digits and hyphens, and starts with a letter or digit.
@@ -611,12 +615,26 @@ def record_api(doc: Mapping[str, Any], grants: Iterable[Mapping[str, Any]]) -> d
 
 class WorkspaceSecrets:
     """`workspace_secrets/`, its name index, grants and links; every write
-    with its `admin_audit` row in the same Firestore transaction."""
+    with its `admin_audit` row in the same Firestore transaction.
 
-    def __init__(self, db: Any, writer: SecretWriter, *, now: Any) -> None:
+    `grants` is the attestation policy (`swarm_api.grant_attest`): every grant
+    document written here carries an `attestation` made with its current key.
+    Without one (no `swarm-workspace-grant-key` in this deployment) a grant
+    is written unattested, which the release accepts only while
+    `grant_attestation_required` is off."""
+
+    def __init__(self, db: Any, writer: SecretWriter, *, now: Any,
+                 grants: GrantPolicy | None = None) -> None:
         self._db = db
         self._writer = writer
         self._now = now
+        self._grants = grants or GrantPolicy(keys=GrantKeys(), required=False)
+
+    def _attested(self, grant: dict[str, Any]) -> dict[str, Any]:
+        """`grant` with its attestation, or with none when there is no key.
+        Never a stale one: the field is always written, so a grant re-written
+        without a key cannot keep a MAC made for its earlier fields."""
+        return {**grant, ATTESTATION_FIELD: self._grants.keys.sign(grant)}
 
     # -- reads -------------------------------------------------------------------
 
@@ -758,6 +776,7 @@ class WorkspaceSecrets:
         name_ref = self._db.collection(NAMES_COLLECTION).document(_name_id(tenant_id, name))
         grants = self.grants_of([secret_id]).get(secret_id, [])
         disabled = sorted(str(g.get("consumer")) for g in grants if g.get("enabled"))
+        slots = {str(g.get("consumer")): g.get("slot") for g in grants}
 
         @firestore.transactional
         def _write(txn: Any) -> None:
@@ -771,9 +790,17 @@ class WorkspaceSecrets:
                           "deleted_at": now, "deleted_by": by})
             txn.delete(name_ref)
             for consumer in disabled:
+                # Re-signed as DISABLED: a MAC over enabled=false can never
+                # release, and the one it replaces stops verifying.
+                slot = slots.get(consumer)
                 txn.set(self._db.collection(GRANTS_COLLECTION)
                         .document(_grant_id(secret_id, consumer)),
-                        {"enabled": False, "changed_at": now, "changed_by": by}, merge=True)
+                        self._attested({
+                            "secret_id": secret_id, "tenant_id": tenant_id,
+                            "consumer": consumer,
+                            "slot": slot if isinstance(slot, str) and slot else None,
+                            "enabled": False, "changed_at": now, "changed_by": by}),
+                        merge=True)
             self._audit(txn, AUDIT_DELETED, by=by, at=now, secret_id=secret_id, detail={
                 "tenant_id": tenant_id, "secret_id": secret_id, "name": name,
                 "provider": doc.get("provider"), "kind": doc.get("kind"),
@@ -796,8 +823,14 @@ class WorkspaceSecrets:
         now = self._now()
         ref = self._db.collection(SECRETS_COLLECTION).document(secret_id)
         grant_ref = self._db.collection(GRANTS_COLLECTION).document(_grant_id(secret_id, consumer))
-        grant = {"secret_id": secret_id, "tenant_id": tenant_id, "consumer": consumer,
-                 "slot": chosen.name, "enabled": enabled, "changed_at": now, "changed_by": by}
+        if enabled and self._grants.required and not self._grants.keys.configured:
+            raise UpstreamUnavailable(
+                "this deployment requires attested grants and has no "
+                "swarm-workspace-grant-key, so an enabled grant could never be "
+                "released; nothing was written")
+        grant = self._attested({
+            "secret_id": secret_id, "tenant_id": tenant_id, "consumer": consumer,
+            "slot": chosen.name, "enabled": enabled, "changed_at": now, "changed_by": by})
 
         @firestore.transactional
         def _write(txn: Any) -> None:
@@ -843,6 +876,104 @@ class WorkspaceSecrets:
 
         doc = _write(self._db.transaction())
         return record_api(doc, self.grants_of([secret_id]).get(secret_id, []))
+
+    # -- SEC-GRANT-ATTEST's migration ------------------------------------------------
+
+    def _newest_grant_audit(self, grant: Mapping[str, Any]) -> dict[str, Any] | None:
+        """The newest AUDIT_GRANT_ENABLED or AUDIT_GRANT_DISABLED row for
+        this grant's (secret, consumer), or None."""
+        query = self._db.collection(AUDIT_COLLECTION).where(
+            filter=FieldFilter("target_secret_id", "==", grant.get("secret_id")))
+        newest: dict[str, Any] | None = None
+        for snap in query.stream():
+            row = snap.to_dict() or {}
+            detail = row.get("detail") if isinstance(row.get("detail"), Mapping) else {}
+            if (row.get("action") not in (AUDIT_GRANT_ENABLED, AUDIT_GRANT_DISABLED)
+                    or detail.get("consumer") != grant.get("consumer")
+                    or not isinstance(row.get("at"), datetime)):
+                continue
+            if newest is None or row["at"] > newest["at"]:
+                newest = row
+        return newest
+
+    @staticmethod
+    def _matches_audit(grant: Mapping[str, Any], row: Mapping[str, Any] | None) -> bool:
+        """Are the grant's attested fields exactly what its newest audited
+        write wrote? Types too: `True` is not `1`, and a slot is text or absent."""
+        if row is None:
+            return False
+        detail = row.get("detail") if isinstance(row.get("detail"), Mapping) else {}
+        enabled = row.get("action") == AUDIT_GRANT_ENABLED
+        return (type(grant.get("enabled")) is bool and grant.get("enabled") is enabled
+                and all(isinstance(grant.get(k), str) and grant.get(k) == detail.get(k)
+                        for k in ("secret_id", "tenant_id", "consumer"))
+                and grant.get("slot") == detail.get("slot")
+                and (grant.get("slot") is None or isinstance(grant.get("slot"), str)))
+
+    def attest_grants(self, *, by: str) -> dict[str, Any]:
+        """Sign every grant written before attestations existed, but only one
+        whose fields are what its newest audited write (`set_grant`'s row)
+        wrote. A grant without such a row is NOT signed and is listed by id:
+        it was written by something other than this store, or changed since.
+        A grant that already verifies under the CURRENT key is left alone; one
+        that verifies only under the previous key was signed by swarm-api and
+        is re-signed under the current one, which is what lets a rotation end.
+
+        Each signature is written in a transaction that re-reads the grant and
+        signs only if it is unchanged, with its own audit row. Answers grant
+        ids only: never an attestation or a key."""
+        keys = self._grants.keys
+        if not keys.configured:
+            raise UpstreamUnavailable(
+                "this deployment has no swarm-workspace-grant-key, so no grant can be "
+                "attested; nothing was written")
+        current_only = GrantKeys(current=keys.current)
+        now = self._now()
+        examined = current = 0
+        signed: list[str] = []
+        unsigned: list[str] = []
+        for snap in self._db.collection(GRANTS_COLLECTION).stream():
+            examined += 1
+            grant = snap.to_dict() or {}
+            if current_only.check(grant) == VALID:
+                current += 1
+                continue
+            previous = keys.check(grant) == VALID
+            row = None if previous else self._newest_grant_audit(grant)
+            if not previous and not self._matches_audit(grant, row):
+                unsigned.append(snap.id)
+                continue
+            if self._sign_unchanged(snap.id, grant, by=by, at=now,
+                                    reason="previous_key" if previous else "audit_match"):
+                signed.append(snap.id)
+            else:
+                unsigned.append(snap.id)
+        log.info("workspace secret grants attested examined=%d already=%d signed=%d "
+                 "unsigned=%d", examined, current, len(signed), len(unsigned))
+        return {"examined": examined, "already_attested": current, "signed": sorted(signed),
+                "unsigned": sorted(unsigned), "attested_at": now.isoformat()}
+
+    def _sign_unchanged(self, grant_id: str, seen: Mapping[str, Any], *, by: str,
+                        at: datetime, reason: str) -> bool:
+        ref = self._db.collection(GRANTS_COLLECTION).document(grant_id)
+        fields = ("secret_id", "tenant_id", "consumer", "slot", "enabled", ATTESTATION_FIELD)
+
+        @firestore.transactional
+        def _write(txn: Any) -> bool:
+            snap = _snapshot(txn.get(ref))
+            doc = (snap.to_dict() or {}) if snap.exists else {}
+            if not snap.exists or any(doc.get(k) != seen.get(k) for k in fields):
+                return False
+            txn.set(ref, {ATTESTATION_FIELD: self._grants.keys.sign(doc)}, merge=True)
+            self._audit(txn, AUDIT_GRANT_ATTESTED, by=by, at=at,
+                        secret_id=str(doc.get("secret_id")), detail={
+                            "tenant_id": doc.get("tenant_id"), "secret_id": doc.get("secret_id"),
+                            "consumer": doc.get("consumer"), "slot": doc.get("slot"),
+                            "enabled": doc.get("enabled"), "grant_id": grant_id,
+                            "reason": reason})
+            return True
+
+        return _write(self._db.transaction())
 
     # -- Q5's sweep ------------------------------------------------------------------
 
@@ -1101,7 +1232,7 @@ def _deliverable(grant: Mapping[str, Any], kind: Any) -> str | None:
 
 
 def _plan(db: Any, records: Iterable[Mapping[str, Any]], consumers: tuple[str, ...],
-          grant_tenant: str, plan: ReleasePlan) -> None:
+          grant_tenant: str, plan: ReleasePlan, grants: GrantPolicy) -> None:
     wanted = set(consumers)
     for record in records:
         secret_id = record["secret_id"]
@@ -1114,6 +1245,11 @@ def _plan(db: Any, records: Iterable[Mapping[str, Any]], consumers: tuple[str, .
             if (grant.get("secret_id") != secret_id or grant.get("tenant_id") != grant_tenant
                     or grant.get("enabled") is not True or grant.get("consumer") not in wanted):
                 continue
+            # SEC-GRANT-ATTEST: a grant swarm-api did not sign, or signed for
+            # other fields, is dropped exactly as a disabled one is, so a
+            # required slot it would have filled parks CREDENTIAL_MISSING.
+            if not grants.admits(grant, snap.id):
+                continue
             slot = _deliverable(grant, record.get("kind"))
             if slot is not None:
                 slots.setdefault(slot, []).append(str(grant["consumer"]))
@@ -1125,12 +1261,14 @@ def _plan(db: Any, records: Iterable[Mapping[str, Any]], consumers: tuple[str, .
 
 
 def release_plan(db: Any, *, tenant_id: str, consumers: tuple[str, ...], project_id: str,
-                 personal: tuple[str, str] | None = None,
+                 grants: GrantPolicy, personal: tuple[str, str] | None = None,
                  personal_refusal: Callable[[], str | None] | None = None) -> ReleasePlan:
     """What an attempt of `tenant_id` with `consumers` is released (§3.3 step 3).
 
     THE WORKSPACE'S OWN: every enabled grant of `tenant_id` naming one of
-    `consumers`, on a record `owned_by` the same tenant.
+    `consumers`, on a record `owned_by` the same tenant, whose attestation
+    `grants` admits (`swarm_api.grant_attest.GrantPolicy`). Required, not
+    defaulted: a caller that forgot it would release forged grants.
 
     A PERSON'S OWN, ON A GROUP TASK (owner decision Q3): `personal` is
     `(personal tenant id, submitter email)`, set by the caller only when the
@@ -1153,7 +1291,7 @@ def release_plan(db: Any, *, tenant_id: str, consumers: tuple[str, ...], project
         doc = (snap.to_dict() or {}) if snap.exists else {}
         if doc.get("secret_id") == secret_id and owned_by(doc, tenant_id, project_id):
             own.append(doc)
-    _plan(db, own, consumers, tenant_id, plan)
+    _plan(db, own, consumers, tenant_id, plan, grants)
 
     if personal is not None:
         personal_tenant, email = personal
@@ -1167,7 +1305,7 @@ def release_plan(db: Any, *, tenant_id: str, consumers: tuple[str, ...], project
                  and str(d.get("created_by") or "").strip().lower() == email]
         mine = ReleasePlan(due=[], withheld=[])
         _plan(db, sorted(opted, key=lambda d: str(d.get("name"))), consumers,
-              personal_tenant, mine)
+              personal_tenant, mine, grants)
         refusal = personal_refusal() if (mine.due and personal_refusal is not None) else None
         if refusal:
             plan.withheld.extend((due.name, refusal) for due in mine.due)

@@ -11,6 +11,8 @@
     PUT    /v1/workspace/secrets/{name}/use-in           Q3: a personal secret's opt-in list
     POST   /v1/workspace/secrets/links                   a one-time link to the add/rotate form
     POST   /v1/admin/workspace-secrets/rotation-sweep    Q5: disable versions past their grace
+    POST   /v1/admin/workspace-secrets/attest-grants     SEC-GRANT-ATTEST: sign grants written
+                                                         before attestations, by their audit row
 
 Design: docs/design/workspace-secrets.md §5. There is NO release route here:
 handing a value to a worker is SEC-RELEASE (phase 2), behind its own owner
@@ -40,6 +42,7 @@ from ..auth import AuthContext
 from ..brokerclient import AccountPool
 from ..deps import AppContext, admin_auth, current_auth, get_context, tenant_scope
 from ..errors import NotFound, ValidationFailed
+from ..grant_attest import GrantPolicy
 from ..schemas import StrictModel
 from ..workspace_secrets import (
     CONSUMERS,
@@ -123,7 +126,8 @@ def secret_writer(request: Request, ctx: AppContext = Depends(get_context)) -> S
 
 
 def _store(ctx: AppContext, writer: SecretWriter) -> WorkspaceSecrets:
-    return WorkspaceSecrets(ctx.db, writer, now=ctx.now)
+    return WorkspaceSecrets(ctx.db, writer, now=ctx.now,
+                            grants=GrantPolicy.from_settings(ctx.settings))
 
 
 def _tenant(ctx: AppContext, tenant_id: str) -> Tenant:
@@ -328,3 +332,16 @@ def rotation_sweep(
     """Q5: disable every previous version whose 24-hour grace has passed,
     across workspaces, each with its audit row. Never destroys."""
     return _store(ctx, writer).sweep_rotations(by=auth.email)
+
+
+@router.post("/v1/admin/workspace-secrets/attest-grants")
+def attest_grants(
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+    writer: SecretWriter = Depends(secret_writer),
+) -> dict:
+    """SEC-GRANT-ATTEST's migration (docs/runbooks/workspace-grant-attestation.md):
+    sign every grant whose fields match its newest audited write, re-sign one
+    made under the previous key, and list by id every grant it would not sign.
+    Platform admins only, as the rotation sweep. Answers ids, never a MAC."""
+    return _store(ctx, writer).attest_grants(by=auth.email)
