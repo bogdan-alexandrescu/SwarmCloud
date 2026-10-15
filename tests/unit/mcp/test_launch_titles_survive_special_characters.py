@@ -150,10 +150,22 @@ def test_an_attach_with_a_hostile_stored_title_parses_and_hands_the_name_back_as
         assert meta["name"] == reply["title"] == workflows.workflow_title(name, 2)
 
 
+#: The Claude Code session these listings were submitted by: `/sc attach
+#: --all` attaches only that session's work (SC-SESSION-SCOPE; the scope
+#: itself is held in tests/unit/mcp/test_sc_session_scope.py).
+SESSION = "11111111-2222-4333-8444-555555555555"
+
+
+@pytest.fixture(autouse=True)
+def _this_session(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", SESSION)
+
+
 def test_attach_all_with_hostile_titles_writes_a_parsing_copy_per_workflow(_plugin_root, tmp_path, monkeypatch):
     from swarm_mcp import sc
 
-    entries = [{"workflow_id": f"wf_{i}", "title": title, "label": None, "steps_total": 2, "console": None}
+    entries = [{"workflow_id": f"wf_{i}", "title": title, "label": None, "steps_total": 2, "console": None,
+                "claude_session": SESSION}
                for i, title in enumerate(HOSTILE_TITLES[: launch.MAX_ATTACHED_WORKFLOWS])]
     monkeypatch.setattr(sc, "running_workflows", lambda client: {"count": len(entries), "complete": True,
                                                                   "workflows": entries})

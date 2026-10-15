@@ -454,8 +454,10 @@ def test_the_status_read_carries_the_stored_title_and_label():
 
 def test_attach_all_in_run_js_lists_and_hands_back_one_attach_call_per_workflow(tmp_path):
     listed = {"count": 2, "error": None, "workflows": [
-        {"workflow_id": "wf_a", "label": "alpha", "title": None, "state": "RUNNING", "console": None},
-        {"workflow_id": "wf_b", "label": "beta", "title": "Beta!", "state": "RUNNING", "console": None},
+        {"workflow_id": "wf_a", "label": "alpha", "title": None, "state": "RUNNING", "console": None,
+         "this_session": True},
+        {"workflow_id": "wf_b", "label": "beta", "title": "Beta!", "state": "RUNNING", "console": None,
+         "this_session": True},
     ]}
     got = _run(tmp_path, {"attach": "all"}, {"LIST": listed})
     assert [c["prompt"] for c in got["calls"]] == ["LIST"], "no workflow is attached inside this one run"
@@ -464,12 +466,25 @@ def test_attach_all_in_run_js_lists_and_hands_back_one_attach_call_per_workflow(
     assert result["attach_calls"] == [{"attach": "wf_a", "title": "alpha"}, {"attach": "wf_b", "title": "Beta!"}]
 
 
-def test_attach_all_through_the_bridge_writes_one_run_per_workflow(_plugin_root, monkeypatch):
+#: The Claude Code session these listings were submitted by: `/sc attach
+#: --all` attaches only that session's work (SC-SESSION-SCOPE; the scope
+#: itself is held in tests/unit/mcp/test_sc_session_scope.py).
+SESSION = "11111111-2222-4333-8444-555555555555"
+
+
+@pytest.fixture
+def _this_session(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", SESSION)
+
+
+def test_attach_all_through_the_bridge_writes_one_run_per_workflow(_plugin_root, monkeypatch, _this_session):
     from swarm_mcp import sc
 
     listing = {"count": 2, "complete": True, "workflows": [
-        {"workflow_id": "wf_a", "label": "alpha", "title": None, "steps_total": 3, "console": None},
-        {"workflow_id": "wf_b", "label": "beta", "title": "Beta!", "steps_total": 2, "console": None},
+        {"workflow_id": "wf_a", "label": "alpha", "title": None, "steps_total": 3, "console": None,
+         "claude_session": SESSION},
+        {"workflow_id": "wf_b", "label": "beta", "title": "Beta!", "steps_total": 2, "console": None,
+         "claude_session": SESSION},
     ]}
     monkeypatch.setattr(sc, "running_workflows", lambda client: listing)
     reply = json.loads(server._call(_Recorder(), "swarm_workflow_launch", {"attach": "all"}))

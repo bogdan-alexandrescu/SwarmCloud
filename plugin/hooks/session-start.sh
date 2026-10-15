@@ -77,12 +77,44 @@
 # (CronList first, so never a second job). An explicit `/sc watch off` is
 # saved in the same file as `"watch": "off"`; the hook hands that over as
 # SWARM_SC_WATCH_MINUTES=off and the context then asks for no arming at all.
+#
+# AND ONLY THIS SESSION'S WORK (SC-SESSION-SCOPE, owner 2026-10-14). Claude
+# Code hands this hook the session's id on stdin (`session_id`). It goes to
+# the bridge as SWARM_SC_SESSION_ID, and the context names only workflows and
+# tasks tagged with it (`metadata.claude_session`): another session's work in
+# the same tenant, and untagged work, is not named. When the id differs from
+# the CLAUDE_CODE_SESSION_ID Claude Code was started with -- after /clear --
+# it is also recorded under `<config dir>/sc-session/<sha256 of that starting
+# id>.json`, so the running MCP server tags and scopes by the session's
+# current id (swarm_mcp.session). The matcher includes `clear` for that.
 set -euo pipefail
 
 trap 'exit 0' ERR
 
 lower() {
   printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'
+}
+
+# The bridge's per-user directory, as swarm_mcp.config.config_dir derives it.
+conf_dir() {
+  if [ -n "${SWARM_CONFIG_DIR:-}" ]; then
+    printf '%s' "$SWARM_CONFIG_DIR"
+  elif [ -n "${XDG_CONFIG_HOME:-}" ]; then
+    printf '%s' "$XDG_CONFIG_HOME/swarmcloud"
+  elif [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
+    printf '%s' "${HOME:-}/Library/Application Support/SwarmCloud"
+  else
+    printf '%s' "${HOME:-}/.config/swarmcloud"
+  fi
+}
+
+# sha256 of $1, hex, or nothing.
+sha() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$1" | sha256sum | cut -c1-64
+  elif command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$1" | shasum -a 256 | cut -c1-64
+  fi
 }
 
 # The file `/sc watch` saves this project's preference in, or nothing.
@@ -92,23 +124,42 @@ watch_file() {
   top="$(git -C "$project" rev-parse --show-toplevel 2>/dev/null)" || top=""
   [ -n "$top" ] && project="$top"
   project="$(cd "$project" 2>/dev/null && pwd -P)" || return 0
-  if [ -n "${SWARM_CONFIG_DIR:-}" ]; then
-    conf="$SWARM_CONFIG_DIR"
-  elif [ -n "${XDG_CONFIG_HOME:-}" ]; then
-    conf="$XDG_CONFIG_HOME/swarmcloud"
-  elif [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
-    conf="${HOME:-}/Library/Application Support/SwarmCloud"
-  else
-    conf="${HOME:-}/.config/swarmcloud"
-  fi
-  if command -v sha256sum >/dev/null 2>&1; then
-    key="$(printf '%s' "$project" | sha256sum | cut -c1-64)" || return 0
-  elif command -v shasum >/dev/null 2>&1; then
-    key="$(printf '%s' "$project" | shasum -a 256 | cut -c1-64)" || return 0
-  else
+  conf="$(conf_dir)" || return 0
+  key="$(sha "$project")" || return 0
+  [ -n "$key" ] || return 0
+  printf '%s' "$conf/sc-watch/$key.json"
+}
+
+# An id-shaped value, or nothing (swarm_mcp.session's shape).
+session_shaped() {
+  case "$1" in
+    '' | [!A-Za-z0-9]* | *[!A-Za-z0-9._:-]*) return 0 ;;
+  esac
+  [ "${#1}" -ge 8 ] && [ "${#1}" -le 128 ] || return 0
+  printf '%s' "$1"
+}
+
+# Record the session's CURRENT id for the id this Claude Code process was
+# started with (swarm_mcp.session): after /clear the MCP server keeps the
+# environment it started with, and this record is how it learns the new id.
+# The same id as the environment's removes any older record instead.
+record_session() {
+  local started conf key file temporary
+  started="$(session_shaped "${CLAUDE_CODE_SESSION_ID:-}")" || return 0
+  [ -n "$started" ] && [ -n "$1" ] || return 0
+  conf="$(conf_dir)" || return 0
+  key="$(sha "$started")" || return 0
+  [ -n "$key" ] || return 0
+  file="$conf/sc-session/$key.json"
+  if [ "$1" = "$started" ]; then
+    rm -f "$file" 2>/dev/null || true
     return 0
   fi
-  printf '%s' "$conf/sc-watch/$key.json"
+  mkdir -p "$conf/sc-session" 2>/dev/null || return 0
+  temporary="$(mktemp "$conf/sc-session/.record.XXXXXX" 2>/dev/null)" || return 0
+  # Id-shaped characters only, so the JSON needs no escaping.
+  printf '{"session_id": "%s"}\n' "$1" >"$temporary" 2>/dev/null && mv -f "$temporary" "$file" 2>/dev/null \
+    || rm -f "$temporary" 2>/dev/null || true
 }
 
 # The minutes `/sc watch` saved for this project, or nothing.
@@ -138,6 +189,14 @@ print_rearm() {
   printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"%s"}}\n' \
     "The sc plugin's watch is on for this project: a \`/sc check\` every $1 minutes. Claude Code's scheduled prompts end with each session, so run \`/sc watch $1m\` now to re-arm it (\`/sc watch off\` turns it off)."
 }
+
+# The session this hook fires for: Claude Code's stdin `session_id`. Read
+# first, before any way out, so the record is kept even when nothing else runs.
+hook_input="$(head -c 65536 2>/dev/null)" || hook_input=""
+session_id="$(printf '%s' "$hook_input" | tr -d '\n' \
+  | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)" || session_id=""
+session_id="$(session_shaped "$session_id")" || session_id=""
+record_session "$session_id" || true
 
 url="${SWARM_PLUGIN_DEPLOYMENT_URL:-${CLAUDE_PLUGIN_OPTION_DEPLOYMENT_URL:-}}"
 [ -n "$url" ] || exit 0
@@ -199,6 +258,12 @@ if [ -n "$rearm" ]; then
   export SWARM_SC_WATCH_MINUTES="$rearm"
 elif [ -n "$off" ]; then
   export SWARM_SC_WATCH_MINUTES="$off"
+fi
+
+# The session the bridge's listing is scoped to (SC-SESSION-SCOPE): only work
+# tagged with it is named. Unknown, the bridge names none.
+if [ -n "$session_id" ]; then
+  export SWARM_SC_SESSION_ID="$session_id"
 fi
 
 # The tenant under the variable every client reads, unless one is already set.

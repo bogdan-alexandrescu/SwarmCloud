@@ -93,6 +93,7 @@ body:
         - "Web UI · Agent inspector — one agent beside the Agents list"
         - "Web UI · Checkpoint browser — the agent's Checkpoints tab"
         - "Web UI · Settings › API keys (/settings/keys)"
+        - "Web UI · Settings › Workspace (/settings/workspace)"
         - "Web UI · API reads (/api-reads)"
         - "Web UI · Help (/help)"
         - "Web UI · Navigation, layout or theme — every page"

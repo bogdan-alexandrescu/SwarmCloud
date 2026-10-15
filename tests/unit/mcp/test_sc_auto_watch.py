@@ -33,12 +33,18 @@ import pytest
 from swarm_mcp import check, launch, sc, server, watch
 from swarm_mcp.client import SwarmError
 
-from test_sc_watch import APP, NOW, OTHER, Api, task, workflow
+from test_sc_watch import APP, NOW, OTHER, SESSION, Api, task, workflow
 
 _REPO = Path(__file__).resolve().parents[3]
 _PLUGIN = _REPO / "plugin"
 _HOOK = _PLUGIN / "hooks" / "session-start.sh"
 _SKILL = _PLUGIN / "skills" / "sc" / "SKILL.md"
+
+
+@pytest.fixture(autouse=True)
+def _this_session(monkeypatch):
+    """The session the fixtures were submitted by (SC-SESSION-SCOPE)."""
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", SESSION)
 
 
 @pytest.fixture
@@ -51,6 +57,7 @@ def project(tmp_path, monkeypatch):
     monkeypatch.setenv(launch.PLUGIN_ROOT_ENV, str(_PLUGIN))
     monkeypatch.delenv("SWARM_MCP_CONFIG_FROM", raising=False)
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", SESSION)
     launch.forget_attached()
     yield root
     launch.forget_attached()

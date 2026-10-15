@@ -100,7 +100,7 @@ from typing import Any, Callable, Sequence
 
 from swarm_common.states import CONCURRENCY_STATES, PENDING_STATES, TERMINAL_STATES, TaskState
 
-from . import keys, render
+from . import keys, render, session
 from .client import SwarmClient, SwarmError, chosen_tenant, outputs_of
 from .follow import with_console
 from .invocation import help_command, terminal_command
@@ -794,6 +794,10 @@ def _running_entry(workflow: dict[str, Any], now: datetime, tenant: Any = None) 
         "steps_total": len(workflow.get("steps") or []),
         "current_steps": None,
         "waiting_for": pull_request_wait(workflow),
+        # The Claude Code session that started it (SC-SESSION-SCOPE), as
+        # swarm-api serves it off the step tasks; the detail read fills it
+        # in from the tasks themselves for a deployment that serves none.
+        "claude_session": session.owner_of(workflow),
     }
     return with_console(entry, workflow)
 
@@ -812,6 +816,8 @@ def _read_detail(client: SwarmClient, entry: dict[str, Any]) -> dict[str, Any]:
         entry["state"] = workflow["state"]
     entry["waiting_for"] = pull_request_wait(workflow)
     entry["label"] = _label_of(envelope)
+    entry["claude_session"] = (entry.get("claude_session") or session.owner_of(workflow)
+                               or session.owner_of_tasks(envelope.get("tasks") or []))
     # The repository its steps clone (SC-WATCH): the frozen `Workflow` has
     # none of its own, so `/sc check` scopes a project's workflows by this.
     entry["repository_url"] = next(
@@ -968,6 +974,8 @@ def _single_task_entry(task: dict[str, Any], now: datetime, tenant: Any = None) 
         "age_seconds": max(0, int((now - created).total_seconds())) if created else None,
         # What it clones (SC-WATCH): `/sc check` attaches only this project's.
         "repository_url": task.get("repository_url"),
+        # The Claude Code session that dispatched it (SC-SESSION-SCOPE).
+        "claude_session": session.owner_of(task),
     }
     if task.get("park_reason"):
         entry["park_reason"] = task["park_reason"]
@@ -1145,6 +1153,8 @@ def session_start_context(
     cap = config.max_live_rows()
     text = (
         " ".join(parts)
+        + " Each was started by this Claude Code session (SC-SESSION-SCOPE): other sessions' work "
+        "in the tenant, and untagged work, is not named."
         + " Before anything else, run `/sc attach --all` to show them as live "
         "[SwarmCloud] rows: it submits nothing, starts one slim row per unfinished "
         f"workflow step and one per single task, and follows at most {cap} workflows "
@@ -1157,6 +1167,28 @@ def session_start_context(
     elif not watch_off:
         text += " " + watch.arm_sentence()
     return text
+
+
+def own_only(listing: dict[str, Any] | None, key: str, sid: str | None) -> dict[str, Any] | None:
+    """`listing` (`running_workflows` or `running_tasks`) with only the
+    entries under `key` tagged with session `sid`: none when `sid` is None."""
+    if listing is None:
+        return None
+    kept = [e for e in listing.get(key) or []
+            if isinstance(e, dict) and session.ownership(session.owner_of(e), sid) == "own"]
+    return {**listing, key: kept, "count": len(kept)}
+
+
+def mark_session(entries: list[dict[str, Any]], sid: str | None) -> list[dict[str, Any]]:
+    """`/sc workflows` lists the whole tenant and marks which entries are this
+    session's (`this_session`), in place."""
+    for entry in entries:
+        entry["this_session"] = session.ownership(session.owner_of(entry), sid) == "own"
+    return entries
+
+
+def _session_mark(entry: dict[str, Any]) -> str:
+    return "  [this session]" if entry.get("this_session") else ""
 
 
 def _workspace_tag(entry: dict[str, Any]) -> str:
@@ -1188,8 +1220,14 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
                 tasks_read = pool.submit(_quietly, lambda: running_tasks(client))
                 from .watch import handed_off, rearm_minutes
 
+                # ONLY THIS SESSION'S (SC-SESSION-SCOPE, owner 2026-10-14): the
+                # hook hands over the session id it read on stdin, and work
+                # another session started -- or nobody tagged -- is not named.
+                sid = session.current()
                 context = session_start_context(
-                    workflows_read.result(), tasks_read.result(), watch_minutes=rearm_minutes(),
+                    own_only(workflows_read.result(), "workflows", sid),
+                    own_only(tasks_read.result(), "tasks", sid),
+                    watch_minutes=rearm_minutes(),
                     watch_off=handed_off(),
                 )
         except Exception:  # noqa: BLE001 - nothing may stop a session starting
@@ -1217,12 +1255,16 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
     singles, singles_failure = _attempt(lambda: running_tasks(client))
     # Each workspace by its display name where the API gives one (SC-ROWS).
     names = workspace_names(client) if listing is not None or singles is not None else {}
+    sid = session.current()
     if listing is not None:
         named_workspaces(listing["workflows"], names)
+        mark_session(listing["workflows"], sid)
     if singles is not None:
         named_workspaces(singles["tasks"], names)
+        mark_session(singles["tasks"], sid)
     if args.json:
         payload = dict(listing) if listing is not None else {"error": str(failure)}
+        payload["session"] = session.describe(sid)
         if singles is not None:
             payload["single_tasks"] = singles
         else:
@@ -1241,7 +1283,7 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
         label = f"  {entry['label']}" if entry.get("label") else ""
         lines.append(
             f"  {_workspace_tag(entry)}{entry.get('workflow_id')}{label}  {entry.get('state')}  "
-            f"{_age_text(entry.get('age_seconds'))}"
+            f"{_age_text(entry.get('age_seconds'))}{_session_mark(entry)}"
         )
         lines.append(f"    now: {_steps_text(entry)}")
         if entry.get("waiting_for"):
@@ -1272,12 +1314,14 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
             link = f"  console: {entry['console']}" if entry.get("console") else ""
             lines.append(
                 f"  {_workspace_tag(entry)}{entry.get('task_id')}{label}  {entry.get('state')}  "
-                f"{_age_text(entry.get('age_seconds'))}{link}"
+                f"{_age_text(entry.get('age_seconds'))}{_session_mark(entry)}{link}"
             )
         if not singles.get("complete"):
             lines.append(f"  {singles.get('incomplete_because')}")
     if running or (singles and singles["tasks"]):
         lines.append("  show them as live rows in Claude Code: /sc attach --all")
+        lines.append("  [this session] marks what this Claude Code session started: only those are "
+                     "attached by /sc attach --all; /sc attach <wf_id> attaches any other by hand")
     _emit(lines, out)
     return EXIT_OK if singles is not None else EXIT_FAIL
 

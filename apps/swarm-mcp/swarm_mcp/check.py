@@ -66,7 +66,7 @@ from urllib.parse import urlsplit
 
 from swarm_common.states import TERMINAL_STATES
 
-from . import checkout, render, workflows
+from . import checkout, render, session, workflows
 from .client import SwarmClient, SwarmError, task_id_of
 from .follow import console_link
 
@@ -608,9 +608,29 @@ def _single_tasks(client: SwarmClient) -> tuple[list[dict[str, Any]], str | None
 
 
 def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: datetime,
-                  names: dict[str, str]) -> dict[str, Any]:
+                  names: dict[str, str], sid: str | None = None) -> dict[str, Any]:
     reads = _Reads(client, MAX_TASK_READS)
     running, recent, notes = _workflow_lists(client)
+    # THIS SESSION'S OWN (SC-SESSION-SCOPE): a list row that already names
+    # another session, or names none on a deployment that serves the tag, is
+    # never read step by step; the rest are decided off their step tasks.
+    left_out = {"workflows": session.counts(), "single_tasks": session.counts()}
+
+    def foreign(row: dict[str, Any]) -> str | None:
+        if session.METADATA_KEY not in row:
+            return None
+        kind = session.ownership(session.owner_of(row), sid)
+        return None if kind == "own" else kind
+
+    kept_running = []
+    for row in running:
+        kind = foreign(row)
+        if kind:
+            left_out["workflows"][kind] += 1
+        else:
+            kept_running.append(row)
+    running = kept_running
+    recent = [w for w in recent if not foreign(w)]
     tenant = notes.get("tenant_id")
     running_ids = {str(w.get("workflow_id")) for w in running}
 
@@ -653,6 +673,12 @@ def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: date
         listed = wanted[wid]
         doc = envelope["workflow"]
         tasks = {str(t.get("id")): t for t in envelope.get("tasks") or [] if isinstance(t, dict) and t.get("id")}
+        kind = session.ownership(
+            session.owner_of(listed) or session.owner_of(doc) or session.owner_of_tasks(tasks.values()), sid)
+        if kind != "own":
+            if wid in running_ids:
+                left_out["workflows"][kind] += 1
+            continue
         if not _in_scope(scope, [t.get("repository_url") for t in tasks.values()]):
             if wid in running_ids:
                 out_of_scope["workflows"] += 1
@@ -701,6 +727,10 @@ def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: date
     singles, singles_gap = _single_tasks(client)
     in_scope_singles: list[dict[str, Any]] = []
     for task in singles:
+        kind = session.ownership(session.owner_of(task), sid)
+        if kind != "own":
+            left_out["single_tasks"][kind] += 1
+            continue
         if not _in_scope(scope, [task.get("repository_url")]):
             out_of_scope["single_tasks"] += 1
             continue
@@ -739,6 +769,7 @@ def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: date
         "flagged": flagged,
         "running": {"workflows": in_scope_running, "single_tasks": in_scope_singles},
         "out_of_scope": out_of_scope,
+        "other_sessions": left_out,
         "unchecked": unchecked,
     }
     for key in ("reconciler_stalled_workflows", "running_incomplete_because"):
@@ -788,11 +819,12 @@ def run(
                          f"not {stale_minutes!r}. Nothing was read")
     now = now or datetime.now(timezone.utc)
     scope = resolve_scope(repository)
+    sid = session.current()
     shown = (names or workflows.workspace_names)(client)
     seen_tenants: list[Any] = []
     per_tenant: list[dict[str, Any]] = []
     for reader in _readers(client, tenants):
-        result = _check_tenant(reader, scope["key"], window, now, shown)
+        result = _check_tenant(reader, scope["key"], window, now, shown, sid)
         if result["tenant_id"] in seen_tenants:
             continue
         seen_tenants.append(result["tenant_id"])
@@ -819,6 +851,16 @@ def run(
             "workflows": sum(r["out_of_scope"]["workflows"] for r in per_tenant),
             "single_tasks": sum(r["out_of_scope"]["single_tasks"] for r in per_tenant),
         },
+        # What was left out for being another session's or untagged
+        # (SC-SESSION-SCOPE): counted, never checked, never attached.
+        "session": {
+            **session.describe(sid),
+            "left_out": {
+                group: {kind: sum(r["other_sessions"][group][kind] for r in per_tenant)
+                        for kind in ("other_session", "untagged")}
+                for group in ("workflows", "single_tasks")
+            },
+        },
         "unchecked": [u for r in per_tenant for u in r["unchecked"]],
         "attach_with": (
             "swarm_workflow_launch {attach: \"all\", repository: <this answer's repository, or "
@@ -833,8 +875,8 @@ def run(
         # leaves it armed for the next workflow rather than cancelling it.
         where = f"in {scope['key']}" if scope["key"] else "in any repository"
         out["nothing_running"] = (
-            f"nothing of yours is running in SwarmCloud {where}; the watch stays armed for the "
-            "next workflow (`/sc watch off` cancels it)"
+            f"nothing this session started is running in SwarmCloud {where}; the watch stays armed "
+            "for the next workflow (`/sc watch off` cancels it)"
         )
     for r in per_tenant:
         for key in ("reconciler_stalled_workflows", "running_incomplete_because",

@@ -1,5 +1,7 @@
 """A workspace's code-intelligence setting (CTXQ-SET, docs/design/context-quality.md §4.7).
 
+    GET /v1/code-intelligence                          the caller's selected workspace's
+                                                       setting (what the console reads)
     GET /v1/workspaces/{tenant_id}/code-intelligence   the setting, its defaults,
                                                        each registered repository's
                                                        override and effective context
@@ -29,9 +31,9 @@ from ..codeintel import (
     settings_of,
     view,
 )
-from ..deps import AppContext, current_auth, get_context
+from ..deps import AppContext, current_auth, get_context, tenant_scope
 
-router = APIRouter(prefix="/v1/workspaces", tags=["workspace"])
+router = APIRouter(tags=["workspace"])
 
 
 def _store(ctx: AppContext) -> CodeIntelligenceStore:
@@ -45,7 +47,19 @@ def _answer(auth: AuthContext, tenant: Tenant, store: CodeIntelligenceStore) -> 
                 editable=can_edit(auth, tenant))
 
 
-@router.get("/{tenant_id}/code-intelligence")
+@router.get("/v1/code-intelligence")
+def get_selected_code_intelligence(
+    auth: AuthContext = Depends(current_auth),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The selected workspace's setting: the same answer as the path form
+    (`tenant_scope` is the collision-guarded selection, as for the judgment backend)."""
+    tenant = authorize(auth, ctx.store.get_tenant(tenant_id), tenant_id, write=False)
+    return _answer(auth, tenant, _store(ctx))
+
+
+@router.get("/v1/workspaces/{tenant_id}/code-intelligence")
 def get_code_intelligence(
     tenant_id: str,
     auth: AuthContext = Depends(current_auth),
@@ -55,7 +69,7 @@ def get_code_intelligence(
     return _answer(auth, tenant, _store(ctx))
 
 
-@router.put("/{tenant_id}/code-intelligence")
+@router.put("/v1/workspaces/{tenant_id}/code-intelligence")
 def put_code_intelligence(
     tenant_id: str,
     body: CodeIntelligencePut,

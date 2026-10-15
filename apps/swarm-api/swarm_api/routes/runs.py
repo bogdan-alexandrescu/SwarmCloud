@@ -703,7 +703,7 @@ def create_run(
     )
     run = start_run(
         ctx, auth, ref, open_work=open_work, plan_approval=body.plan_approval,
-        auto_merge=auto_merge, fix_rounds=body.fix_rounds,
+        auto_merge=auto_merge, fix_rounds=body.fix_rounds, claude_session=body.claude_session,
     )
     response.headers["Location"] = f"/v1/runs/{run.id}"
     return {"run": run.to_api()}
@@ -721,6 +721,7 @@ def start_run(
     created_by: str | None = None,
     schedule: dict | None = None,
     merge_approval: str | None = None,
+    claude_session: str | None = None,
 ) -> IssueRun:
     """The planner task, then the run document, then the first write-back.
 
@@ -738,6 +739,10 @@ def start_run(
     retried firing adopts the run instead of making a second; and
     `merge_approval="required"` when its gate says `merge: approve`, so the
     run's green pull request waits in the inbox (§4.2).
+
+    `claude_session` (SC-SESSION-SCOPE) is the Claude Code session the caller
+    tagged the run with: on the planner and on the run, which copies it onto
+    every workflow it starts.
     """
     if merge_approval not in (None, "required"):
         raise ValueError(f"merge_approval is 'required' or None, not {merge_approval!r}")
@@ -757,7 +762,8 @@ def start_run(
     # one finished task nobody reads, while a run without its planner would
     # sit PLANNING for ever.
     submission = ctx.submissions.submit_tasks(
-        auth, [planner_task(ref, run_id, open_work, context=context.section)]
+        auth, [planner_task(ref, run_id, open_work, context=context.section,
+                            claude_session=claude_session)]
     )
     planner = submission.tasks[0]
     now = ctx.now()
@@ -783,6 +789,7 @@ def start_run(
             on_behalf_of=auth.email if created_by else None,
             schedule=dict(schedule) if schedule else None,
             merge_approval=merge_approval,
+            claude_session=claude_session,
         )
     )
     return sync_issue(ctx, run)

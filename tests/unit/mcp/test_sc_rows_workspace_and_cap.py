@@ -251,7 +251,7 @@ def test_task_rows_are_grouped_by_workspace_newest_first_within_each(tmp_path):
 
 def _listed_workflows(count: int, workspaces=("eng",)) -> dict:
     flows = [{"workflow_id": f"wf_{n:02d}", "workspace": workspaces[n % len(workspaces)], "title": f"flow {n:02d}",
-              "label": None, "state": "RUNNING", "console": None} for n in range(count)]
+              "label": None, "state": "RUNNING", "console": None, "this_session": True} for n in range(count)]
     return {"count": count, "error": None, "workflows": flows, "single_tasks": [], "single_tasks_error": None}
 
 
@@ -283,6 +283,17 @@ def test_attach_all_groups_by_workspace_keeping_newest_first(tmp_path):
 # --------------------------------------------------------------------------
 
 
+#: The Claude Code session these listings were submitted by: `/sc attach
+#: --all` attaches only that session's work (SC-SESSION-SCOPE; the scope
+#: itself is held in tests/unit/mcp/test_sc_session_scope.py).
+SESSION = "11111111-2222-4333-8444-555555555555"
+
+
+@pytest.fixture(autouse=True)
+def _this_session(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", SESSION)
+
+
 class _NoTenants:
     """A client that only refuses the display-name read: launches must not
     need it."""
@@ -294,7 +305,7 @@ class _NoTenants:
 def _running(count: int, workspaces=("eng",)) -> dict:
     return {"count": count, "complete": True, "workflows": [
         {"workflow_id": f"wf_{n:02d}", "workspace": workspaces[n % len(workspaces)], "title": f"flow {n:02d}",
-         "label": None, "steps_total": 3, "console": None}
+         "label": None, "steps_total": 3, "console": None, "claude_session": SESSION}
         for n in range(count)
     ]}
 
@@ -318,7 +329,8 @@ def test_launch_all_honours_the_plugin_option(_plugin_root, monkeypatch):
     monkeypatch.setenv("SWARM_PLUGIN_MAX_LIVE_ROWS", "4")
     monkeypatch.setattr(sc, "running_workflows", lambda client: _running(6))
     monkeypatch.setattr(sc, "running_tasks", lambda client: {"count": 7, "tasks": [
-        {"task_id": f"task_{n}", "label": f"lane {n}", "workspace": "eng"} for n in range(7)]})
+        {"task_id": f"task_{n}", "label": f"lane {n}", "workspace": "eng", "claude_session": SESSION}
+        for n in range(7)]})
     out = launch.for_all(_NoTenants())
     workflow_launches = [l for l in out["launches"] if "workflow_id" in l]
     task_launch = [l for l in out["launches"] if "task_ids" in l][0]

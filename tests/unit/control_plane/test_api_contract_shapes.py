@@ -275,9 +275,11 @@ CODECS: tuple[Codec, ...] = (
         # where the reconciler stores it, as `dispatch` is lifted out of
         # `metadata.dispatch`: `codec.start_problem_to_api`. `owner_answers`
         # (TASK-ANSWERS) is lifted out of `metadata.owner_answers` the same
-        # way: `codec.owner_answers_to_api`.
+        # way: `codec.owner_answers_to_api`. `claude_session` (SC-SESSION-SCOPE)
+        # is lifted out of `metadata.claude_session`: `codec.claude_session_of`.
         api_computed=(
-            "dispatch", "start_problem", "owner_answers", "input_redaction_count", "metadata_redaction_count",
+            "dispatch", "start_problem", "owner_answers", "claude_session",
+            "input_redaction_count", "metadata_redaction_count",
             "last_error_redaction_count", "result_summary_redaction_count",
             "repository_url_redaction_count", "waiting_for", "account", "links",
             "heartbeat_at", "heartbeat_grace_seconds", "heartbeat",
@@ -367,7 +369,9 @@ CODECS: tuple[Codec, ...] = (
         #: naming them here is what makes that a decision rather than drift:
         #: delete either from the codec and the shape test below fails.
         #: `links` is the workflow's console page (`codec.workflow_console_url`).
-        api_computed=("stored_state", "state_source", "links"),
+        #: `claude_session` (SC-SESSION-SCOPE) is read off the step tasks,
+        #: the frozen `Workflow` having no metadata: `codec.workflow_claude_session`.
+        api_computed=("stored_state", "state_source", "links", "claude_session"),
     ),
 )
 

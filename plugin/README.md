@@ -1006,6 +1006,48 @@ either one or --all".
 * `/sc check` that finds nothing running for the project says so
   (`nothing_running`) and leaves the job armed: one read per interval is
   cheap, and the next workflow is watched without re-arming.
+* A task sent with `swarm_dispatch` (one or `tasks`) arms it too, and so does
+  `/sc attach <wf_id>` of a workflow that has already finished, and a `/sc
+  run` that ended `SUBMISSION_UNKNOWN` or `SUBMITTED_UNVERIFIED` (work may be
+  running; its result carries `arm_watch`). Only `NOT_SUBMITTED` sent nothing.
+
+### Only this session's work (SC-SESSION-SCOPE)
+
+Owner decision 2026-10-14: "only the tasks related to the work this claude
+code session is doing should pass as valid candidates to attach if not
+attached already. Same goes for watching and checking for staleness" -- even
+when several sessions share one tenant or workspace.
+
+* **The session id.** Claude Code starts the plugin's MCP server, and its
+  hooks, with `CLAUDE_CODE_SESSION_ID` in the environment (measured
+  2026-10-14 on Claude Code 2.1.283: the swarm-mcp process carried the same
+  id as the session's transcript). /compact and `claude --resume <id>` keep
+  it; a new `claude` gets a new one. `/clear` moves the session to a new id
+  while the server keeps running, so the SessionStart hook (its matcher now
+  includes `clear`) records the id it gets on stdin under `<config
+  dir>/sc-session/<sha256 of the starting id>.json`, and the bridge reads
+  that record first (`swarm_mcp.session`).
+* **The tag.** Every submission carries the id as `metadata.claude_session`:
+  `swarm_dispatch` (one and `tasks`), `swarm_workflow` (`spec`, `spec_path`,
+  `spec_ref`, `merge_pr`) and `swarm_run_issue` (as the run's
+  `claude_session`, which swarm-api copies onto the planner, the compiled
+  workflow, every CI-fix round and the merge workflow). The merge step's
+  conflict-fix and CI-fix rounds copy their merge task's tag, so a session's
+  own fix rounds are its own. swarm-api serves it back as `claude_session` on
+  task rows (the summary view too), workflow rows and runs.
+* **The scope.** `/sc check`, `/sc attach --all` (and the check's `new_only`
+  attach), the SessionStart hook's "attach and arm" context, and so the watch
+  consider ONLY work tagged with this session's id. Another session's work,
+  and untagged work (submitted before this change, or by another client),
+  are never automatic candidates; each answer counts them in
+  `session.left_out`. With no session id known, nothing is a candidate and
+  the answer says why.
+* **By hand, anything.** `/sc attach <wf_id>` still attaches any workflow the
+  tenant may read, and says (`not_this_session`) when it is not this
+  session's. `/sc workflows` keeps listing the whole tenant and marks this
+  session's `[this session]` (`this_session` in JSON, and in `swarm_workflows`,
+  whose marks are what `/sc:swarmcloud {attach: "all"}` keeps when it is the
+  fallback).
 
 ### What a row shows, and what it costs
 

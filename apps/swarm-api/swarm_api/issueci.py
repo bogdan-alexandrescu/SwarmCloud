@@ -210,6 +210,7 @@ from .repositories import Repositories, hard_stop_paths_of, platform_of, repo_id
 from .reviewcontext import EARLIER_FIXES, read_fix_context
 from .rollup import SKIPPED_SUMMARY_KEY
 from .schemas import WorkflowCreate
+from . import sessiontag
 from .validation import MERGE_METADATA_KEY, MERGE_STEP_ID, IssueRef
 
 log = logging.getLogger(__name__)
@@ -787,12 +788,16 @@ def ci_fix_workflow(run: IssueRun, round_no: int, excerpt: str, head_sha: str,
         excerpt=excerpt,
         context=context,
         step_input={"issue": ref.number},
-        metadata={"issue_run": {
-            "run_id": run.id,
-            "issue": ref.short,
-            "ci_fix_round": round_no,
-            "head_sha": head_sha,
-        }},
+        metadata={
+            # The run's session (SC-SESSION-SCOPE): its fix rounds are its own.
+            **sessiontag.tag(getattr(run, "claude_session", None)),
+            "issue_run": {
+                "run_id": run.id,
+                "issue": ref.short,
+                "ci_fix_round": round_no,
+                "head_sha": head_sha,
+            },
+        },
     )
 
 
@@ -1290,6 +1295,7 @@ def merge_workflow(run: IssueRun, pushed_by: str, head_sha: str) -> WorkflowCrea
         "steps": [{"step_id": MERGE_STEP_ID, "runner_profile": MERGE_STEP_ID}],
         "metadata": {
             MERGE_METADATA_KEY: "on",
+            **sessiontag.tag(getattr(run, "claude_session", None)),
             "issue_run": {"run_id": run.id, "issue": ref.short, "merge_head_sha": head_sha},
         },
     })

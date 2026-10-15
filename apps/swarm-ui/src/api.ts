@@ -5532,13 +5532,13 @@ export function normRepoHardStops(raw: unknown): RepoHardStops | null {
 }
 
 /** A registration's detail with its hard-stop fields, read from the one answer. */
-export type RepoDetailRead = RepoDetail & { hard_stops: RepoHardStops | null }
+export type RepoDetailRead = RepoDetail & { hard_stops: RepoHardStops | null; context: RepoContext }
 
 /** `GET /v1/repositories/{repo_id}`: one registration, its last index runs, who used its index, and its hard stops. */
 export async function loadRepository(repoId: string): Promise<Result<RepoDetailRead | null>> {
   return readAs(route('/v1/repositories/{repo_id}', { repo_id: repoId }), (raw) => {
     const d = normRepoDetail(raw)
-    return d === null ? null : { ...d, hard_stops: normRepoHardStops(raw) }
+    return d === null ? null : { ...d, hard_stops: normRepoHardStops(raw), context: normRepoContext(raw) }
   })
 }
 
@@ -5853,6 +5853,75 @@ export async function loadJudgment(): Promise<Result<Judgment>> {
 /** `PUT /v1/workspaces/{tenant_id}/judgment-backend`: the owner's or an admin's choice. */
 export async function putJudgmentBackend(tenantId: string, backend: JevBackend): Promise<Result<unknown>> {
   return writeTo(route('/v1/workspaces/{tenant_id}/judgment-backend', { tenant_id: tenantId }), 'PUT', { judgment_backend: backend })
+}
+
+// ---------------------------------------------------------------------------
+// Code intelligence (CTXQ-UI over CTXQ-SET; docs/design/context-quality.md
+// §4.7). The workspace's switch is ONE FIELD of `workspace_settings/{tenant_id}`
+// (`code_intelligence`, beside `judgment_backend` and `merge`), written by
+// swarm-api (`swarm_api/codeintel.py`); the API answers and takes the flat
+// shape: `{jev, context, context_ab, defaults, updated_at, updated_by,
+// can_edit, repositories}` and a PUT body of `{jev}`. `jev` -- whether Jev is ever sent code -- is OFF unless
+// the API says, explicitly, `true`: an answer without the field is a workspace
+// that never turned it on. A repository's `context` override is
+// `on | off`, or absent for inherit, and travels on `PATCH
+// /v1/repositories/{repo_id}` as `merge_policy` does, `inherit` clearing it.
+// These shapes follow CTXQ-SET's API; a fix to them is here.
+// ---------------------------------------------------------------------------
+
+export interface CodeIntelligence {
+  tenant_id: string
+  /** The workspace's owner or a platform admin; the API is the gate. */
+  can_edit: boolean
+  /** Whether Jev is sent excerpts of this workspace's code. Off by default. */
+  jev: boolean
+  /** The local context default (pack and graph tools); nothing leaves the platform. On by default. */
+  context: boolean
+  set_at: string | null
+  set_by: string | null
+}
+
+function normCodeIntelligence(raw: unknown): CodeIntelligence {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  const defaults = (typeof r.defaults === 'object' && r.defaults !== null ? r.defaults : {}) as Record<string, unknown>
+  // `context` is `on | off | inherit`; inherit is the platform default.
+  const context = r.context === 'on' || r.context === 'off' ? r.context : defaults.context
+  return {
+    tenant_id: keyField(r.tenant_id) ?? '',
+    can_edit: r.can_edit === true,
+    jev: r.jev === true,
+    context: context !== 'off',
+    set_at: keyField(r.updated_at),
+    set_by: keyField(r.updated_by),
+  }
+}
+
+/** `GET /v1/code-intelligence`: the selected workspace's Code intelligence setting. */
+export async function loadCodeIntelligence(): Promise<Result<CodeIntelligence>> {
+  return readAs(route('/v1/code-intelligence'), normCodeIntelligence)
+}
+
+/** `PUT /v1/workspaces/{tenant_id}/code-intelligence`: the owner's or an admin's switch. */
+export async function putCodeIntelligence(tenantId: string, jev: boolean): Promise<Result<unknown>> {
+  return writeTo(route('/v1/workspaces/{tenant_id}/code-intelligence', { tenant_id: tenantId }), 'PUT', { jev })
+}
+
+/** A repository's `context` override; `inherit` is the absent field. */
+export type RepoContext = 'on' | 'off' | 'inherit'
+
+/** The registration's `context`, `inherit` when absent or unknown. */
+export function normRepoContext(raw: unknown): RepoContext {
+  if (typeof raw !== 'object' || raw === null) return 'inherit'
+  const outer = raw as Record<string, unknown>
+  const rec = (typeof outer.repository === 'object' && outer.repository !== null ? outer.repository : outer) as Record<string, unknown>
+  return rec.context === 'on' || rec.context === 'off' ? rec.context : 'inherit'
+}
+
+/** `PATCH /v1/repositories/{repo_id}` with `context`: on, off, or inherit to clear it. */
+export async function patchRepositoryContext(repoId: string, context: RepoContext): Promise<Result<unknown>> {
+  const target = route('/v1/repositories/{repo_id}', { repo_id: repoId })
+  if (USE_FIXTURES) return repoNotServed<unknown>(target)
+  return write(target, 'PATCH', { context })
 }
 
 // ---------------------------------------------------------------------------

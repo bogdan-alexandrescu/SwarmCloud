@@ -42,6 +42,10 @@ _SKILL = _PLUGIN / "skills" / "sc" / "SKILL.md"
 _MANIFEST = _PLUGIN / ".claude-plugin" / "plugin.json"
 
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
+#: The Claude Code session every fixture here was submitted by: the check and
+#: the attach consider only that session's work (SC-SESSION-SCOPE,
+#: tests/unit/mcp/test_sc_session_scope.py holds the scope itself).
+SESSION = "11111111-2222-4333-8444-555555555555"
 APP = "https://github.com/acme/app"
 OTHER = "https://github.com/acme/other"
 
@@ -50,7 +54,13 @@ def ago(minutes: float) -> str:
     return (NOW - timedelta(minutes=minutes)).isoformat().replace("+00:00", "Z")
 
 
-def task(task_id: str, state: str, *, repo: str | None = APP, created: float = 180, **extra) -> dict:
+@pytest.fixture(autouse=True)
+def _this_session(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", SESSION)
+
+
+def task(task_id: str, state: str, *, repo: str | None = APP, created: float = 180,
+         session: str | None = SESSION, **extra) -> dict:
     doc = {
         "id": task_id,
         "tenant_id": "eng",
@@ -65,6 +75,8 @@ def task(task_id: str, state: str, *, repo: str | None = APP, created: float = 1
         "heartbeat_at": None,
         "heartbeat": None,
         "links": {"console": f"https://console.test/agents/{task_id}"},
+        "metadata": {"claude_session": session} if session else {},
+        "claude_session": session,
     }
     doc.update(extra)
     return doc
@@ -75,8 +87,10 @@ def event(kind: str, minutes: float) -> dict:
 
 
 def workflow(wid: str, steps: list[tuple[str, str, str, list[str]]], *, state: str = "RUNNING",
-             stored: str | None = None, drift: dict | None = None) -> dict:
+             stored: str | None = None, drift: dict | None = None,
+             session: str | None = SESSION) -> dict:
     doc = {
+        "claude_session": session,
         "workflow_id": wid,
         "tenant_id": "eng",
         "state": state,

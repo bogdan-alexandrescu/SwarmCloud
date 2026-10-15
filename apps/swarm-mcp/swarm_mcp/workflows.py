@@ -51,7 +51,7 @@ import threading
 from typing import Any, Callable
 
 from . import profiles as catalogue
-from .client import SwarmClient, SwarmError
+from .client import SwarmClient, SwarmError, session_tag
 from .follow import follow_command
 from .patches import masked_counts
 from .progress import questions_count
@@ -491,6 +491,9 @@ def submit(
         "steps": steps,
         "metadata": {
             "origin": "swarm-mcp",
+            # The Claude Code session that sent it (SC-SESSION-SCOPE); swarm-api
+            # writes the workflow's metadata onto every step task.
+            **session_tag(),
             **({"unit": label} if label else {}),
             **({"title": title} if title else {}),
             **({"merge": merge} if merge is not None else {}),

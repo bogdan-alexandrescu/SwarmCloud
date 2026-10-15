@@ -168,13 +168,15 @@ probed in this job: call `swarm_workflows` once, with no arguments. Then call
 * `workflows` — for each entry of the reply's `workflows`, in the reply's
   order: its `workflow_id`, `workspace`, `title` and `label` (each null when
   it is null or absent), `state` and `console` (null when the entry has none), copied
-  character for character. Every entry, none dropped, none added, none
+  character for character, and `this_session`: true only when the entry's
+  `this_session` is true, false otherwise. Every entry, none dropped, none added, none
   reordered: each one becomes a run of its own
 * `single_tasks` — for each entry of the reply's `single_tasks` (your running
   tasks in no workflow), in the reply's order: its `task_id`, `workspace` and
   `label` (each null when it is null or absent), `state` and `console` (null when the entry has
-  none), copied character for character. Every entry, none dropped, none
-  added: each one becomes a row. `[]` when the reply has none
+  none), copied character for character, and `this_session` the same way.
+  Every entry, none dropped, none added: the script attaches only those whose
+  `this_session` is true. `[]` when the reply has none
 * `single_tasks_error` — the reply's `single_tasks_error`, verbatim, else null
 * `error` — null
 

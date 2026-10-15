@@ -682,6 +682,26 @@ CTXQ-SET's territory and is a follow-up.
 Because the shape was decided this way -- a field of an existing document,
 not a new collection -- it needs no separate issue.
 
+**What the console offers (CTXQ-UI).** Settings › Workspace
+(`/settings/workspace`) shows the Jev switch, off by default, with what is
+sent when it is on (§5.4), what never is, and where it goes: the workspace's
+judgment backend, by name (Settings › API keys). Only the workspace's owner or
+a platform admin sees it enabled. A repository's Settings tab offers `context`
+as Inherit, On or Off, and says local context sends nothing off the platform.
+The client calls are all in `apps/swarm-ui/src/api.ts` and follow the API's
+shape (`swarm_api/codeintel.py` `view`): `GET /v1/code-intelligence` (the
+selected workspace; the same answer as the path form `GET
+/v1/workspaces/{tenant_id}/code-intelligence`: `tenant_id`, `can_edit`, `jev`,
+`context`, `context_ab`, `defaults`, `updated_at`, `updated_by`,
+`repositories`), `PUT /v1/workspaces/{tenant_id}/code-intelligence` with
+`{jev: true | false}`, and `PATCH /v1/repositories/{repo_id}` with
+`{context: on | off | inherit}`. **One implementation serves these routes.**
+CTXQ-UI first shipped a minimal self-contained backend
+(a nested `{code_intelligence: {...}}` body);
+CTXQ-SET's designed version replaced it and the client was moved to CTXQ-SET's
+flat shape, so two routers never register the same path.
+
+
 ---
 
 ## 5. Jev integration
@@ -931,7 +951,7 @@ that reopen a file run only after the earlier lane has merged.
 | **CTXQ-PL** | 2 | planner: layer I and H in `plancontext`; a NOT_READY `duplicate` kind | `swarm_api/plancontext.py`, `swarm_api/issueruns.py` | #1094, #1136 and #1080 replayed as fixtures: the planner prompt lists the colliding lane; the 24 KiB allowance holds |
 | **CTXQ-RV** | 2 | review and fix: callers and tests outside the diff, the sibling idiom, earlier fixes of the same test (H) | `swarm_api/reviewcontext.py`, `swarm_api/issueci.py` | #1181's sibling sort is listed; the second time-bomb fixer is shown the first fix |
 | **CTXQ-SET** | 3 | settings API: `workspace_settings/{tenant}.code_intelligence` (owner decision 2026-10-14, §4.7), repository `context` override | new `swarm_api/codeintel.py`, new `swarm_api/routes/codeintel.py`, `swarm_api/main.py` (router line), `swarm_api/repositories.py` (`RepositoryPatch`), `swarm_api/routes/repositories.py` | off by default; only the owner or an admin sets the workspace default (a member 403, another workspace 404); `inherit` clears; an audit row is written in the same transaction, and a failed write writes neither; `judgment_backend` and `merge` are unchanged by a write |
-| **CTXQ-UI** | 3 | Settings › Workspace › Code intelligence, and the repository Settings tab override | `apps/swarm-ui/src/` (new `CodeIntelligence.tsx`, `RepositoriesDetail.tsx`, `api.ts`, `paths.ts`) | vitest: the toggle shows off by default and says what leaves the platform; the issue-forms test follows if a nav entry changes |
+| **CTXQ-UI** | 3 | Settings › Workspace › Code intelligence, and the repository Settings tab override | `apps/swarm-ui/src/` (new `CodeIntelligence.tsx`, `RepositoriesDetail.tsx`, `api.ts`, `paths.ts`; `App.tsx` and `Spine.tsx` for the new `/settings/workspace` page and its link), the issue forms' "Where" list and `test_issue_forms.py` | vitest: the toggle shows off by default and says what leaves the platform; only an owner or admin sees it enabled; the repository tab writes on/off/inherit; the issue-forms test follows the new nav entry |
 | **CTXQ-J** | 3 | Jev client in the worker: §5.2 shapes, §5.4 redaction, §5.5 breaker, budget, audit | new `agent_worker/judge/` package | fake Jev: timeout, 429 and malformed answers fall back; a credential-shaped excerpt (built at runtime) is dropped, not masked; the denied paths send names only; no key, no call |
 | **CTXQ-JW** | 4 | J1 into the pack, J2 and J5 into the planner post-step, J3 into the review post-step, J4 into the gate | `contextpack/rank.py`, `prepublish.py`, `agent_worker/verdict.py` (annotation only) | advisory outputs never change `verdict`; auto-merge ignores them; a Jev outage leaves every output identical to the local-only run |
 | **CTXQ-E** | 4 | replay harness and scoring workflow | new `scripts/ctxq-replay.sh`, new `scripts/lib/ctxq_replay.py`, new `tests/unit/scripts/test_ctxq_replay.py` | branches are `replay/*` only, with no PR opened; scoring reads historic-red tests from a fixture body; the pairing is stable |
