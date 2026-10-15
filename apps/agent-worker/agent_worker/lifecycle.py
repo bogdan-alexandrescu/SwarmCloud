@@ -2388,9 +2388,11 @@ class Worker:
 
         # ---- STEP 3: isolated workspace ---------------------------------
         self.phases.enter("workspace")
-        self.ws = workspace_mod.create(cfg.workspace_root, cfg.attempt_id)
+        self.ws = workspace_mod.create(
+            cfg.workspace_root, cfg.attempt_id, cache_root=cfg.cache_root
+        )
         ws = self.ws
-        self.log.info("workspace created", path=str(ws.root))
+        self.log.info("workspace created", path=str(ws.root), cache=str(ws.cache))
 
         # ---- STEP 4: fetch the task and VERIFY ITS SPEC -----------------
         # Contract request 34 (#342). Immediately after the fetch and before
