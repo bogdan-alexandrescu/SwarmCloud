@@ -61,6 +61,7 @@ import json
 import logging
 import os
 import random
+import socket
 import struct
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -147,6 +148,27 @@ def reconnect_delay(close_code: int | None, attempt: int, *,
     return min(RETRY_MAX_SECONDS, RETRY_SECONDS * (2 ** step))
 
 
+#: getaddrinfo's failures by errno, for the gate's `tunnel_refused` record
+#: (NOLIVE-GUARD, #1366): EAI_AGAIN is a resolver that did not answer in time
+#: (an overloaded cache), EAI_NONAME a name it said does not exist. The two
+#: point at different fixes, and "gaierror" alone told them apart from nothing.
+_GAI_NAMES = {
+    getattr(socket, name): name
+    for name in ("EAI_AGAIN", "EAI_NONAME", "EAI_FAIL", "EAI_NODATA", "EAI_SYSTEM")
+    if hasattr(socket, name)
+}
+
+
+def unreachable_cause(exc: BaseException) -> str:
+    """Why the relay could not be reached: the exception's class, and for a
+    resolver failure its EAI name. Never the message, which can quote the host."""
+    name = type(exc).__name__
+    if isinstance(exc, socket.gaierror):
+        code = _GAI_NAMES.get(exc.errno) if isinstance(exc.errno, int) else None
+        return f"{name}({code})" if code else name
+    return name
+
+
 def relay_url(environ: Mapping[str, str]) -> str:
     """The tunnel's URL: `SWARM_LIVE_URL` (or the in-cluster Service) + `/v1/tunnel`."""
     base = (environ.get("SWARM_LIVE_URL") or "").strip() or DEFAULT_RELAY_URL
@@ -187,7 +209,7 @@ class WebSocketClient:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(host, port, limit=MAX_MESSAGE), timeout)
         except (OSError, asyncio.TimeoutError) as exc:
-            raise TunnelError(f"relay unreachable: {type(exc).__name__}") from None
+            raise TunnelError(f"relay unreachable: {unreachable_cause(exc)}") from None
         key = base64.b64encode(os.urandom(16)).decode()
         writer.write((
             f"GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nUpgrade: websocket\r\n"

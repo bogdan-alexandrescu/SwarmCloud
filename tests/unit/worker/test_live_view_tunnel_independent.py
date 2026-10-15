@@ -325,3 +325,21 @@ def test_a_gate_that_is_not_ready_on_the_last_attempt_fails_the_task(
     task = db.doc("tasks/task_1")
     assert task["state"] == TaskState.FAILED.value
     assert _capacity_released(db)
+
+
+# --------------------------------------------------------------------------
+# The gate's record says WHICH resolver failure it met
+# --------------------------------------------------------------------------
+
+
+def test_a_resolver_failure_names_its_eai_code_and_never_the_host():
+    import socket
+
+    from agent_worker.livegate import tunnel
+
+    again = socket.gaierror(socket.EAI_AGAIN, "Temporary failure in name resolution swarm-live.example")
+    assert tunnel.unreachable_cause(again) == "gaierror(EAI_AGAIN)"
+    noname = socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+    assert tunnel.unreachable_cause(noname) == "gaierror(EAI_NONAME)"
+    assert tunnel.unreachable_cause(ConnectionRefusedError(111, "refused")) == "ConnectionRefusedError"
+    assert "swarm-live" not in tunnel.unreachable_cause(again)
