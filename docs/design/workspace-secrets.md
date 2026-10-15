@@ -1,8 +1,8 @@
 # Workspace secrets: one store, granted per consumer by checkbox
 
-**Status: DESIGN ONLY, 2026-10-15 (lane SECRETS-DESIGN, part of #1347).
-Nothing here is built.** No code, test or Terraform follows from this
-document until the owner answers §9 and accepts the requests in §7.
+**Status: DESIGN, 2026-10-15 (lane SECRETS-DESIGN, part of #1347).** Built so
+far: §3.3's IAM only (lane SEC-IAM, `terraform/bootstrap/workspace_secrets.tf`,
+not yet applied). Nothing else here is built.
 
 Owner request, 2026-10-14 ~21:50 PDT, verbatim:
 
@@ -292,6 +292,28 @@ before the agent is spawned.
   is found in the name, not listed. **Not verified live:** it must be linted
   with `iamPolicies:lintPolicy` and shown to refuse a broken expression first,
   as provider-keys.md §6 did.
+* **Built (lane SEC-IAM, 2026-10-15, part of #1347):** this grant exists as
+  `terraform/bootstrap/workspace_secrets.tf`, off until the owner sets
+  `enable_workspace_secrets = true` and applies bootstrap. It is the custom
+  role `swarmWorkspaceSecretAccessor` (`secretmanager.versions.access` and
+  nothing else) and one `google_project_iam_member` to swarm-api carrying the
+  condition above byte for byte; the output `workspace_secret_grants.api_read`
+  prints it for the lint. Nothing in it names a tenant worker.
+  `tests/terraform/workspace_secrets.tftest.hcl` evaluates the condition
+  (admits `swarm-tenant-<t>-wsec-<hex>` and its versions; refuses `-git`,
+  `-typesafe`, the forge slots, `swarm-github-app-*`, `agents-*`, `promptlab-*`,
+  another project and the project ID), fails if it is dropped or widened, and
+  checks that no bootstrap grant to a tenant worker admits a `-wsec-` name.
+  **What the condition still reaches:** `extract()` finds the *first* `-wsec-`,
+  so it also admits a non-workspace secret that carries `-wsec-` after a
+  non-empty tenant: a saved browser login named like `x-wsec-y` (the login
+  name rule accepts it today), or any secret of a tenant whose id contains
+  `-wsec-`. swarm-api already reaches those names through
+  `secrets.setIamPolicy`, so this is not new reach. The fix belongs where the
+  names are made: refuse `wsec` as a hyphen-separated token in a login name
+  and a tenant id. That is in apps/ and the frozen contract, and the owner
+  has it as a question. Linting and IAM's live answer are still the owner's
+  to check before apply.
 * **Invariant 9:** the route answers only for the tenant of the attempt whose
   key signed it, and the query is bounded by `tenant_id == task.tenant_id`.
   An attempt key of tenant X cannot name tenant Y: the request carries no
