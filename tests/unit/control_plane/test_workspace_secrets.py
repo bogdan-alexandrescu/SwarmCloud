@@ -319,7 +319,21 @@ def test_the_list_serves_records_and_grants_never_a_value_or_a_length(client, se
     assert [g["consumer"] for g in row["grants"] if g["enabled"]] == ["tool:jev-browser"]
     assert len(row["versions"]) == 1
     text = json.dumps(row)
-    assert str(len(value)) not in text and value[-6:] not in text
+    assert value[-6:] not in text
+    # Never a length: no number in the row equals the value's length, and no key
+    # names one. A substring test on the JSON text was flaky: a two-digit length
+    # like "43" appears inside timestamps (main CI, 2026-10-15, PR 1361's run).
+    def walk(node, key=""):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                assert not any(w in k.lower() for w in ("length", "len", "size", "bytes")), k
+                yield from walk(v, k)
+        elif isinstance(node, list):
+            for v in node:
+                yield from walk(v, key)
+        else:
+            yield key, node
+    assert [(k, v) for k, v in walk(row) if isinstance(v, int) and not isinstance(v, bool) and v == len(value)] == []
 
 
 def test_the_production_writer_binds_no_one_and_reads_nothing():

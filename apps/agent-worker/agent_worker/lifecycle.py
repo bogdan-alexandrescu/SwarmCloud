@@ -2373,6 +2373,12 @@ class Worker:
         # task's events, where the console shows it beside an empty Browser
         # tab (task_23cc2e82178640709a45, 2026-10-12, LB-KEYRACE).
         self.handoff.setup(self._live_browser_unavailable)
+        # NOLIVE-GUARD (part of #1366): the agent's browser follows the GATE,
+        # never the viewer's tunnel. A live-browser attempt whose gate is not
+        # ready has no CDP proxy, and it never starts its agent headless: the
+        # ATTEMPT fails retryably, before the agent, after the startup window.
+        if self.handoff.gate_missing:
+            return functools.partial(self._fail_live_gate_missing, self.handoff.unavailable)
 
         # THE FIRST HEARTBEAT GOES HERE, BEFORE ANY SLOW WORK.
         #
@@ -8071,9 +8077,48 @@ class Worker:
                 "phase": note.get("phase", "live_session"),
                 "live_path": note.get("live_path"),
                 "reason": reason,
-                "message": f"live browser unavailable: {reason}",
+                # A failed VIEW says "live view unavailable" (NOLIVE-GUARD).
+                "message": note.get("message") or f"live browser unavailable: {reason}",
             },
         )
+
+    def _fail_live_gate_missing(self, code: str | None) -> Outcome:
+        """A retryable failure before the agent ran: the live gate was not ready.
+
+        NOLIVE-GUARD (part of #1366). Ending the ATTEMPT (`fail_retryably`)
+        rather than parking: a park holds no capacity, but nothing about this
+        pod's sidecar gets better by waiting, and only a new attempt brings a
+        new one; SCHEDULED_RETRY parks are promoted by nothing. The task goes
+        back to READY while it has attempts left, its lease and capacity
+        released (invariant 1), and ends CANNOT_START when they are spent.
+        The spec is verified first, as step 4 would have: the retry is decided
+        on the signed `max_attempts`, never the live field (#346).
+        """
+        task, create_time = self.control.fetch_task_snapshot()
+        self._verify_spec(task, create_time)
+        self.control.pin_verified_max_attempts(task.get("max_attempts"))
+        cause = handoff_mod.LIVE_GATE_UNAVAILABLE
+        error = (
+            f"{cause}: the live browser's gate was not ready ({code or 'unknown'}), so the "
+            "agent was not started without its browser; the attempt is retried while the "
+            "task has attempts left."
+        )
+        self.log.warning(
+            "the live gate is not ready; failing the attempt retryably before the agent runs",
+            cause=cause,
+            live_path=code,
+        )
+        with self._metrics_after_the_record():
+            state = self.control.fail_retryably(
+                exit_code=None,
+                error=error,
+                cause=cause,
+                result_summary={"live_gate": {"cause": cause, "live_path": code}},
+                retry_delay_seconds=handoff_mod.LIVE_GATE_RETRY_DELAY_SECONDS,
+                detail={"live_path": code},
+                end_cause=EndCause.CANNOT_START,
+            )
+        return Outcome(exit_code=ExitCode.FAILED, state=state)
 
     def _emit_startup_progress(self, step: str, at: datetime) -> bool:
         """`startup_progress`: one of the browser's start-up steps, at the gate's time (STARTUP-API).
