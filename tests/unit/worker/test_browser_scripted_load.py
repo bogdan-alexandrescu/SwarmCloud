@@ -13,7 +13,10 @@ drive `browser.body` end to end through the same lazy import the image uses.
 MUTATION: put the goto default back to "load" and
 `test_a_goto_defaults_to_domcontentloaded` fails; drop the TimeoutError
 handling around `page.goto` and the commit test fails; drop the screenshot
-try/except and the screenshot test fails.
+try/except and the screenshot test fails; read "committed" from the current
+document's readiness instead of this goto's own commit and
+`test_a_second_goto_that_never_commits_fails_instead_of_extracting_the_first`
+fails.
 """
 
 from __future__ import annotations
@@ -27,19 +30,27 @@ from typing import Any
 import pytest
 
 from agent_worker.runners import browser
-from agent_worker.runners.base import RunnerContext, RunnerFailure
+from agent_worker.runners.base import EXIT_OK, RunnerContext, RunnerFailure, run_runner
 
 
 class FakeTimeoutError(Exception):
     """Stands in for playwright.sync_api.TimeoutError."""
 
 
+MAIN_FRAME = types.SimpleNamespace(parent_frame=None)
+
+
 class FakePage:
+    """`goto_times_out` and `commits` are a bool for every goto, or a list
+    with one entry per goto in call order. A goto that commits fires
+    `framenavigated` for the main frame, as Playwright does, before any wait
+    that then times out."""
+
     def __init__(
         self,
         *,
-        goto_times_out: bool = False,
-        commits: bool = True,
+        goto_times_out: bool | list[bool] = False,
+        commits: bool | list[bool] = True,
         screenshot_times_out: bool = False,
         text: str = "hello world",
         title: str = "Example",
@@ -52,24 +63,33 @@ class FakePage:
         self._title = title
         self.goto_calls: list[dict[str, Any]] = []
         self.screenshot_calls: list[dict[str, Any]] = []
+        self.handlers: dict[str, list[Any]] = {}
 
-    def on(self, _event: str, _handler: Any) -> None:
-        pass
+    def on(self, event: str, handler: Any) -> None:
+        self.handlers.setdefault(event, []).append(handler)
+
+    @staticmethod
+    def _nth(value: bool | list[bool], n: int) -> bool:
+        return value[n] if isinstance(value, list) else value
 
     def goto(self, url: str, **kwargs: Any) -> Any:
+        n = len(self.goto_calls)
         self.goto_calls.append({"url": url, **kwargs})
-        if self.commits:
+        if self._nth(self.commits, n):
             self.url = url
-        if self.goto_times_out:
+            for handler in self.handlers.get("framenavigated", []):
+                handler(MAIN_FRAME)
+        if self._nth(self.goto_times_out, n):
             raise FakeTimeoutError(
                 f'Page.goto: Timeout 30000ms exceeded.\nnavigating to "{url}", '
                 f'waiting until "{kwargs.get("wait_until")}"'
             )
         return types.SimpleNamespace(status=200)
 
-    def wait_for_load_state(self, state: str = "load", **_kw: Any) -> None:
-        if not self.commits:
-            raise FakeTimeoutError(f"waiting for {state}")
+    def wait_for_load_state(self, _state: str = "load", **_kw: Any) -> None:
+        # The document already showing is always past domcontentloaded: a
+        # probe of it cannot tell whether the latest goto committed.
+        return None
 
     def inner_text(self, _selector: str) -> str:
         return self.text
@@ -190,15 +210,68 @@ def test_a_goto_that_never_commits_fails_with_a_clear_error(fake_playwright, tmp
     assert "action 0" in message
 
 
-def test_a_screenshot_timeout_leaves_the_task_succeeded_with_the_screenshot_missing(
+def test_a_second_goto_that_never_commits_fails_instead_of_extracting_the_first(
     fake_playwright, tmp_path
+):
+    """A -> B where B never reaches the site: page A is loaded and its DOM is
+    ready, so asking the current document would call B committed and extract
+    A as a success."""
+    first = "https://example.com/a"
+    page = fake_playwright(
+        FakePage(goto_times_out=[False, True], commits=[True, False], text="page A")
+    )
+    ctx = _ctx(
+        tmp_path,
+        {"actions": [{"type": "goto", "url": first}, {"type": "goto", "url": URL}]},
+    )
+    with pytest.raises(RunnerFailure) as caught:
+        browser.body(ctx)
+    assert "never committed" in str(caught.value)
+    assert "action 1" in str(caught.value)
+    assert page.url == first
+    assert not (ctx.artifacts_dir / "page.txt").exists()
+
+
+def test_a_same_url_goto_that_commits_then_times_out_still_extracts(fake_playwright, tmp_path):
+    """A reload of the URL already showing commits without moving page.url;
+    the main frame's framenavigated is what says it committed."""
+    fake_playwright(FakePage(goto_times_out=[False, True], text="reloaded"))
+    ctx = _ctx(
+        tmp_path,
+        {
+            "actions": [
+                {"type": "goto", "url": URL},
+                {"type": "goto", "url": URL, "wait_until": "load"},
+            ]
+        },
+    )
+    out = browser.body(ctx)
+    assert out["actions"][1]["load_timed_out"] is True
+    assert (ctx.artifacts_dir / "page.txt").read_text() == "reloaded"
+
+
+def test_a_screenshot_timeout_leaves_the_task_succeeded_with_the_screenshot_missing(
+    fake_playwright, tmp_path, monkeypatch
 ):
     """S1-wikipedia: 111,583 chars extracted, then the font wait timed out."""
     page = fake_playwright(FakePage(screenshot_times_out=True, text="x" * 1000))
     ctx = _ctx(tmp_path, {"url": URL})
-    out = browser.body(ctx)
+    ctx.input_path.write_text(json.dumps({"url": URL}))
+    for name, path in (
+        ("SWARM_WORK_DIR", ctx.work_dir),
+        ("SWARM_ARTIFACTS_DIR", ctx.artifacts_dir),
+        ("SWARM_INPUT", ctx.input_path),
+        ("SWARM_RESULT", ctx.result_path),
+        ("SWARM_QUOTA_SIGNAL", ctx.quota_path),
+    ):
+        monkeypatch.setenv(name, str(path))
 
-    assert out.get("status", "succeeded") == "succeeded"
+    # Through run_runner, so SUCCEEDED is what result.json says, not an
+    # absence of an exception.
+    assert run_runner(browser.body, name="browser") == EXIT_OK
+    result = json.loads(ctx.result_path.read_text())
+    assert result["status"] == "succeeded"
+    out = result["output"]
     assert out["screenshot"] == {"artifact": "final.png", "missing": True, "error": "timeout"}
     assert not (ctx.artifacts_dir / "final.png").exists()
     assert any("screenshot" in note for note in out["notes"])
