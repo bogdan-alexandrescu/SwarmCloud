@@ -112,6 +112,23 @@ person's consent: the same trade the owner accepted for GitHub user slots
 the key on their behalf, would need a route that serves a credential, which
 `test_no_route_serves_credentials.py` forbids. That is still open.
 
+**The `inject` delivery mode (SEC-INJECT-A, 2026-10-15, part of #1347).**
+Owner decision Q8 of [the workspace secrets design](design/workspace-secrets.md#35-option-d-the-secret-never-enters-the-pod-inject-first-for-typesafe)
+moves the TypeSafe key out of the agent pod: a platform forwarder in
+swarm-system adds it to jev's and the judge's requests to api.typesafe.ai. The
+same order picks the key. `POST /v1/attempts/{id}/typesafe-ticket` runs
+`resolve_provider_key` for the fenced task's tenant and its submitter's
+confirmed personal tenant, and puts only the chosen secret's id and version in
+a short-lived ticket MAC'd under `swarm-typesafe-fwd-key`. The forwarder reads
+that version with its own identity
+(`terraform/bootstrap/typesafe_forwarder.tf`), so no worker account needs to
+read the key. That also covers a personal key on a group task without a
+`typesafe_user_keys.tf` row, once jev uses the forwarder. The route, the
+Kubernetes objects and the Terraform exist, all off by default. The forwarder
+itself is SEC-INJECT-B, and the worker still reads the key as above until
+SEC-MIGRATE-TYPESAFE switches jev and the judge. The design's §3.5 lists what
+remains.
+
 ## 3. The one-time link
 
 `/sc` must never take the key itself: it would be an MCP tool argument, in a

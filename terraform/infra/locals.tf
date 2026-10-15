@@ -585,8 +585,9 @@ locals {
 
   # Every Secret Manager reference swarm-api's environment carries, merged
   # once so main.tf and tests/terraform/live.tftest.hcl read one value.
-  # SWARM_EGRESS_KEY joins them once swarm-egress is deployed (egress.tf).
-  api_secret_env = merge(local.child_key_secret_env, local.live_key_secret_env, local.egress_key_secret_env)
+  # SWARM_EGRESS_KEY joins them once swarm-egress is deployed (egress.tf), and
+  # SWARM_TYPESAFE_FWD_KEY once the TypeSafe forwarder is served (typesafe_fwd.tf).
+  api_secret_env = merge(local.child_key_secret_env, local.live_key_secret_env, local.egress_key_secret_env, local.typesafe_fwd_key_secret_env)
 
   # The swarm-api refusal switches (swarm_api.refusals; docs/api-refusals.md).
   # A refusal added to swarm-api ships off; var.api_refusals turns one on.

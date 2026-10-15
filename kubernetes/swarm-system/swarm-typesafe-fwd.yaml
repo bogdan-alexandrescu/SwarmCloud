@@ -1,0 +1,236 @@
+# swarm-typesafe-fwd: the TypeSafe forwarder, which adds a TypeSafe key to an
+# agent pod's judgment requests so the key never enters the pod
+# (docs/design/workspace-secrets.md §3.5, the `inject` delivery mode; owner
+# decision §10 Q8; lane SEC-INJECT-A, part of #1347). The pattern is
+# swarm-egress.yaml's (docs/browser-egress.md §2.2).
+#
+# A labelled agent pod sends `POST /v1/systemone` here with an attempt TypeSafe
+# ticket swarm-api minted (`POST /v1/attempts/{id}/typesafe-ticket`) as its
+# bearer credential. The forwarder checks the ticket (MAC, expiry, attempt,
+# generation), the kill switch and the per-attempt rate, reads the secret
+# version the ticket NAMES with its own identity, replaces the authorization
+# header with the key, and forwards to https://api.typesafe.ai over TLS. Any
+# other path, method or host is 404. The ticket wire and the forwarder's
+# contract are the design's §3.5; the forwarder itself is lane SEC-INJECT-B
+# (apps/swarm-typesafe-fwd/), which publishes the image this names.
+#
+# A TEMPLATE. Its double-underscore placeholders are filled by
+# terraform/infra/typesafe_fwd.tf and the result is its
+# `swarm_typesafe_fwd_manifest` output; null until the forwarder is served
+# and its image has a digest in image_refs.
+#
+#   terraform -chdir=terraform/infra output -raw swarm_typesafe_fwd_manifest
+#
+# APPLY IT TO swarm-autopilot ONLY. `agents-staging` in the same project is
+# another team's cluster (CLAUDE.md rule 2).
+#
+# WHY ONE REPLICA. The per-attempt rate limit is counted in memory; two
+# replicas would each allow the full rate. The forwarder holds no state worth
+# keeping across a restart (a ticket is re-presented on every request), so a
+# Deployment of one, surged during a rollout, is enough. Scale-out, when
+# measured to be needed, is a shared counter first.
+#
+# WHO IT RUNS AS. The KSA `swarm-typesafe-fwd` in `swarm-system`, as a
+# Workload Identity Federation for GKE principal: a reader of
+# `swarm-typesafe-fwd-key` (terraform/infra/typesafe_fwd.tf) and, once the
+# owner applies terraform/bootstrap/typesafe_forwarder.tf, of the versions of
+# `swarm-tenant-*-typesafe` secrets. No Google service account to impersonate,
+# no Kubernetes RBAC, no API token. A tenant pod cannot present this KSA: it
+# cannot create a pod in swarm-system.
+#
+# WHO REACHES IT. TCP 8080 from a pod labelled `swarm-typesafe: inject` in a
+# tenant namespace, and from nothing else (the NetworkPolicy below). The label
+# is the dispatcher's, never a caller's (invariant 10); no pod carries it until
+# SEC-MIGRATE-TYPESAFE adds it with the tenant-side egress policy. Plain HTTP
+# inside the VPC, as swarm-egress's CONNECT and the relay's ws are: the ticket
+# is the only credential on that hop, and it is one attempt's for minutes.
+#
+# NOT MEASURED: the resource size below. Forwarding a judgment request is
+# I/O; a quarter of a vCPU and 256 MiB are a starting point, to be read from
+# the pod's metrics once jev uses it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    # The same labels as swarm-live.yaml's and swarm-egress.yaml's copies of
+    # this object, so any of them may be applied first.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: swarm-typesafe-fwd
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/name: swarm-typesafe-fwd
+# The forwarder never calls the Kubernetes API. GKE's metadata server still
+# answers it as this KSA, which is all Workload Identity needs.
+automountServiceAccountToken: false
+---
+# Who may reach it, from the moment it exists: a labelled agent pod in a
+# tenant namespace, on 8080. ONE peer with both selectors (two would be an
+# OR). swarm-system-default-deny-ingress (network-policies/swarm-system-live.yaml)
+# closes every other port and source. Before the Service and the Deployment,
+# so the pod is never selected by no policy at all.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: swarm-typesafe-fwd-ingress
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: swarm-typesafe-fwd
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: swarm
+            matchExpressions:
+              - key: swarm-tenant
+                operator: Exists
+          podSelector:
+            matchLabels:
+              swarm-typesafe: "inject"
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# The kill switch and the limits (design §3.5), rendered by typesafe_fwd.tf
+# from var.typesafe_forwarder. Mounted as a directory, NOT with subPath, so the
+# kubelet refreshes it in place and the forwarder re-reads it within seconds:
+# `"enabled": false` refuses every request with no restart. A missing file, a
+# file that is not JSON or an unknown key refuses everything too (fail closed).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: swarm-typesafe-fwd-config
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/name: swarm-typesafe-fwd
+data:
+  config.json: |
+    __TYPESAFE_FWD_CONFIG_JSON__
+---
+# What an agent pod dials: http://swarm-typesafe-fwd.swarm-system.svc.cluster.local:8080.
+# Headless, so the name resolves to the pod and the tenant policy's pod
+# selector is what admits the connection.
+apiVersion: v1
+kind: Service
+metadata:
+  name: swarm-typesafe-fwd
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/name: swarm-typesafe-fwd
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: swarm-typesafe-fwd
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: swarm-typesafe-fwd
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/name: swarm-typesafe-fwd
+spec:
+  replicas: 1
+  # Never two serving pods for long (the rate limit above), never none.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: swarm-typesafe-fwd
+  template:
+    metadata:
+      labels:
+        managed-by: swarm-terraform
+        app.kubernetes.io/name: swarm-typesafe-fwd
+      annotations:
+        # A changed setting changes this, so terraform's apply also rolls the
+        # pod; the in-place refresh above covers an emergency edit.
+        swarm.saga.xyz/config-sha256: __TYPESAFE_FWD_CONFIG_SHA256__
+    spec:
+      serviceAccountName: swarm-typesafe-fwd
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: forwarder
+          image: __SWARM_TYPESAFE_FWD_IMAGE__
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            # Secret Manager REFERENCES and names, read at run time with the
+            # pod's own identity. Never a key, which stays out of the pod
+            # spec, the environment and every log.
+            - name: SWARM_TYPESAFE_FWD_KEY_SECRET
+              value: __TYPESAFE_FWD_KEY_VERSION__
+            # The ONLY project a ticket's secret is read from. A ticket names
+            # a secret id and a version, never a project or a full name.
+            - name: SWARM_TYPESAFE_FWD_PROJECT
+              value: __PROJECT_ID__
+            - name: SWARM_TYPESAFE_FWD_CONFIG
+              value: /etc/swarm-typesafe-fwd/config.json
+          # Invariant 7: requests == limits, no bursting.
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+              ephemeral-storage: 256Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+              ephemeral-storage: 256Mi
+          # The port opens only after swarm-typesafe-fwd-key has been read.
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/swarm-typesafe-fwd
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: swarm-typesafe-fwd-config

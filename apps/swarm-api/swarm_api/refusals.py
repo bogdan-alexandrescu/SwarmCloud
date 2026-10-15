@@ -247,6 +247,41 @@ SWITCHES: dict[str, Switch] = {
         "not the tenant's worker service account. Off, 403 forbidden with the same message. "
         "On with egress_off",
     ),
+    # Lane SEC-INJECT-A (docs/design/workspace-secrets.md §3.5): the attempt
+    # TypeSafe ticket route. Off, each is answered with the same status and
+    # message under the established code (`conflict` 409 or `forbidden` 403),
+    # and NOTHING is minted either way; typesafe_unavailable is a 503 and not
+    # a refusal. Turn on with REFUSAL_<CODE>=on once the worker
+    # (SEC-MIGRATE-TYPESAFE) reads the codes.
+    "typesafe_fenced": Switch(
+        code="typesafe_fenced",
+        why="the typesafe-ticket route answers 409 typesafe_fenced when the task is not "
+        "RUNNING under the attempt's live lease. Off, 409 conflict with the same message. On "
+        "once the worker's jev launch reads the code",
+    ),
+    "typesafe_unproven": Switch(
+        code="typesafe_unproven",
+        why="the typesafe-ticket route answers 403 typesafe_unproven when the attempt proof "
+        "does not verify. Off, 403 forbidden with the same message. On with typesafe_fenced",
+    ),
+    "typesafe_unauthenticated": Switch(
+        code="typesafe_unauthenticated",
+        why="the typesafe-ticket route answers 403 typesafe_unauthenticated for a caller that "
+        "is not the tenant's worker service account. Off, 403 forbidden with the same "
+        "message. On with typesafe_fenced",
+    ),
+    "typesafe_backend_off": Switch(
+        code="typesafe_backend_off",
+        why="the typesafe-ticket route answers 403 typesafe_backend_off when the workspace's "
+        "judgment backend is not TypeSafe. Off, 403 forbidden with the same message. On with "
+        "typesafe_fenced",
+    ),
+    "typesafe_no_key": Switch(
+        code="typesafe_no_key",
+        why="the typesafe-ticket route answers 403 typesafe_no_key when neither the submitter "
+        "nor the workspace has a TypeSafe key set. Off, 403 forbidden with the same message. "
+        "On with typesafe_fenced",
+    ),
     # The one-time key-form link (KEYS-API, docs/provider-keys.md §3). The
     # link proves only that a write came through the /sc flow; the caller's
     # own console session authorises it, and the admin and personal-workspace
