@@ -34,10 +34,13 @@ text the task came for was parsed long before. So:
   response object to read), adds a note, and goes on with the DOM as it is.
 * **A navigation that never committed still fails**, with
   `action N (goto): the navigation never committed ...`. Committed means the
-  page's URL moved off the one it had before the goto, or the current
-  document's DOM reports ready within `COMMIT_PROBE_TIMEOUT_MS`. A page still
-  on `about:blank` never reached the site, and extracting it would report an
-  empty success for a failure.
+  page's URL moved off the one it had before the goto, or the main frame fired
+  `framenavigated` during it (a same-URL reload commits without moving the
+  URL). It is never read from the current document's readiness: on a second
+  goto (A -> B) that document is still A, long since ready, and a B that never
+  reached the site would pass as loaded and the run would extract A as a
+  success. A page still on `about:blank` never reached the site either, and
+  extracting it would report an empty success for a failure.
 
 ## A screenshot is evidence, not the product
 
