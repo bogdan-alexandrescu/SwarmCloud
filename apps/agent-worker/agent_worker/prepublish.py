@@ -71,6 +71,16 @@ graph selected. Auto-merge, the review verdict and the requirements never
 read it (§4.1 "Advisory signals never decide a merge"). A step with no
 snapshot says reach is unknown; it never says every symbol is covered.
 
+J4, JEV'S TEST GAP (lane CTXQ-JW, §4.6 item 5, §5.2), only when the worker
+set Jev up for this attempt (`judge.attempt`; the workspace opted in). The
+changed symbols the graph knows, each with its hunk, and the tests that
+cover the changed files go to Jev in one call: "which of these tests would
+fail if this change were reverted?". The ones it answers `none` for are
+listed in the same advisory section under "Advisory signals (Jev, not a
+gate)". Advisory and all-or-nothing: a skipped, failed, timed-out or
+malformed call adds nothing, so the section is byte for byte the local-only
+one, and no merge path reads either.
+
 A CHECK THAT CANNOT RUN IS NOT A FAILURE. A tool missing from the image,
 `tflint --init` that cannot reach its plugin source, an unknown base: the check
 is `skipped` (or `error`) with the reason, recorded, and never sent to the
@@ -157,6 +167,11 @@ SELF_CHECK_NAME = "self-check.md"
 SELF_CHECK_MAX_CHARS = 3000
 #: Symbols without a covering test listed by name; the rest are counted.
 REACH_SHOWN = 30
+#: J4's PR-body heading (§4.6 item 5): read by people, by no merge path.
+JEV_SECTION_HEADING = "### Advisory signals (Jev, not a gate)"
+#: J4 asks about at most this many changed symbols in its one call: the API's
+#: own cap on questions in one request (`judge.client.MAX_QUESTIONS`).
+J4_MAX_SYMBOLS = 64
 #: Test files one graph check runs. Past this the graph's ranking is too wide
 #: to be a selection, and CI runs the whole suite anyway.
 GRAPH_TESTS_MAX = 60
@@ -739,6 +754,108 @@ def measure_test_reach(repo: Path, base: str, files: Sequence[str], snapshot: Sn
     }
 
 
+def hunk_texts(diff: str) -> dict[str, list[tuple[int, int, str]]]:
+    """Per file, each `git diff -U0` hunk's base range and its text."""
+    out: dict[str, list[tuple[int, int, str]]] = {}
+    current: str | None = None
+    lines: list[str] = []
+    start = count = 0
+
+    def close() -> None:
+        if current is not None and lines:
+            out.setdefault(current, []).append((start, count, "\n".join(lines)))
+
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            close()
+            current, lines = None, []
+        elif line.startswith("--- "):
+            current = line[6:] if line.startswith("--- a/") else None
+        elif current is not None and (match := _HUNK.match(line)):
+            close()
+            start, count = int(match.group(1)), int(match.group(2) or "1")
+            lines = [line]
+        elif lines and line[:1] in ("+", "-", " ") and not line.startswith("+++ "):
+            lines.append(line)
+    close()
+    return out
+
+
+def changed_symbols(repo: Path, base: str, files: Sequence[str], snapshot: Snapshot, *,
+                    runner: Runner, env: Mapping[str, str]) -> list[dict[str, str]]:
+    """J4's `changed`: each changed, indexed, non-test symbol with the hunks
+    that touch it -- the same symbols `measure_test_reach` counts."""
+    ran = _git(repo, "diff", "-U0", "--no-color", "--no-renames", "--no-ext-diff", base, "--",
+               runner=runner, env=env)
+    if ran.code != 0:
+        return []
+    hunks = hunk_texts(ran.output)
+    out: list[dict[str, str]] = []
+    for path in files:
+        if is_test_path(path) or path not in hunks or not path.endswith(_CODE_SUFFIXES):
+            continue
+        try:
+            if snapshot.file(path) is None:
+                continue
+            symbols = snapshot.symbols_in(path)
+        except SnapshotError:
+            continue
+        for symbol in symbols:
+            symbol_id = str(symbol.get("id") or "")
+            touching = [text for first, count, text in hunks[path]
+                        if _touches(symbol, [(first, count)])]
+            if symbol_id and symbol.get("kind") != "test" and touching:
+                out.append({"symbol": symbol_id, "path": path, "hunk": "\n".join(touching)})
+    return out
+
+
+def _test_excerpt(repo: Path, path: str, limit: int = 800) -> str:
+    """The head of a test file, or "" for one §5.4 never reads (`is_denied_path`)."""
+    from .judge.sanitize import is_denied_path
+
+    target = repo / path
+    if is_denied_path(path) or target.is_symlink() or not target.is_file():
+        return ""
+    try:
+        return target.read_text(encoding="utf-8", errors="replace")[:limit]
+    except OSError:
+        return ""
+
+
+def jev_test_gap(judge: Any, repo: Path, base: str, files: Sequence[str],
+                 snapshot: Snapshot, tests: Sequence[str], *, runner: Runner,
+                 env: Mapping[str, str]) -> dict[str, Any] | None:
+    """J4: the changed symbols no listed test would catch, or None -- for no
+    symbols, no tests, or any call that did not answer in full."""
+    from .judge import shapes
+    from .judge.sanitize import is_denied_path
+
+    changed = changed_symbols(repo, base, files, snapshot, runner=runner, env=env)
+    # §5.4: a denied path (hard stops included) is sent by name only. The
+    # `changed` rows carry no `path` key, so the client's sanitizer cannot
+    # see the path and the hunk has to be withheld here.
+    stops = tuple(getattr(judge, "hard_stop_paths", ()) or ())
+    asked = [dict(row, hunk="") if is_denied_path(row.get("path", ""), stops) else row
+             for row in changed[:J4_MAX_SYMBOLS]]
+    test_rows = [{"path": t, "name": Path(t).name, "excerpt": _test_excerpt(repo, t)}
+                 for t in list(tests)[:shapes.MAX_CHOICE_TESTS]]
+    if not asked or not test_rows:
+        return None
+    state, questions = shapes.j4_test_gap(asked, test_rows)
+    try:
+        decision = judge.decide("J4", state, questions)
+    except Exception:  # noqa: BLE001 -- a refused question adds nothing
+        return None
+    if not decision.ok or decision.answers is None:
+        return None
+    if any(f"s{k}" not in decision.answers for k in range(len(asked))):
+        return None
+    uncovered = [asked[k]["symbol"] for k in shapes.read_test_gap(decision.answers)
+                 if k < len(asked)]
+    return {"asked": len(asked), "not_asked": len(changed) - len(asked), "tests": len(test_rows),
+            "uncovered": uncovered, "input_tokens": decision.input_tokens}
+
+
 def select_checks(repo: Path, files: Sequence[str], *, base: str,
                   env: Mapping[str, str], python: str = "python3",
                   snapshot: Snapshot | None = None) -> list[Check]:
@@ -960,7 +1077,7 @@ def read_self_check(artifacts_dir: Path) -> str | None:
 
 def advisory_section(*, graph: Mapping[str, Any], outcomes: Sequence[Outcome],
                      reach: Mapping[str, Any] | None, self_check: str | None,
-                     secrets: Sequence[str]) -> str:
+                     secrets: Sequence[str], jev_gap: Mapping[str, Any] | None = None) -> str:
     """The advisory markdown the worker appends to the pull request's body.
 
     Read by people. No merge path reads it: auto-merge, the review verdict and
@@ -1012,6 +1129,21 @@ def advisory_section(*, graph: Mapping[str, Any], outcomes: Sequence[Outcome],
     else:
         text = clean_output(self_check, secrets, limit=SELF_CHECK_MAX_CHARS) or "(empty)"
         parts += [f"The agent's own `{SELF_CHECK_NAME}`:", _fence(text)]
+    if jev_gap is not None:
+        parts += ["", JEV_SECTION_HEADING,
+                  f"J4 test gap: Jev was asked which of {jev_gap['tests']} covering test "
+                  f"file(s) would fail if each of {jev_gap['asked']} changed symbol(s) were "
+                  "reverted. A judge's opinion: the checks above, not this, ran the tests."]
+        uncovered = list(jev_gap.get("uncovered") or [])
+        if uncovered:
+            more = (f" and {len(uncovered) - REACH_SHOWN} more"
+                    if len(uncovered) > REACH_SHOWN else "")
+            parts.append("Changed behaviour no listed test would catch: "
+                         + ", ".join(f"`{u}`" for u in uncovered[:REACH_SHOWN]) + more + ".")
+        else:
+            parts.append("Every changed symbol asked about has a test Jev expects to fail.")
+        if jev_gap.get("not_asked"):
+            parts.append(f"{jev_gap['not_asked']} more changed symbol(s) were not asked about.")
     text = "\n".join(parts)
     if len(text) > ADVISORY_MAX_CHARS:
         text = text[:ADVISORY_MAX_CHARS].rstrip() + "\n\n_[cut by the worker]_"
@@ -1046,6 +1178,8 @@ class Gate:
     record: dict[str, Any] = field(default_factory=dict)
     #: Where the step's context is staged; None reads `context_dir`.
     context: Path | None = None
+    #: The attempt's Jev client for J4 (`judge.attempt.load`), or None: no call.
+    judge: Any = None
     _snapshot: Snapshot | None = field(default=None, init=False, repr=False)
     _diff: tuple[str, list[str]] | None = field(default=None, init=False, repr=False)
 
@@ -1112,11 +1246,23 @@ class Gate:
             except (SnapshotError, OSError) as exc:
                 self.log.warning("test reach could not be measured", error=type(exc).__name__)
         record["test_reach"] = reach
+        gap = None
+        if self.judge is not None and self._snapshot is not None:
+            try:
+                gap = jev_test_gap(self.judge, self.repo, resolved, files, self._snapshot,
+                                   list(dict(record["graph"].get("selected") or {})),
+                                   runner=self.runner, env=self.env)
+            except (SnapshotError, OSError) as exc:
+                self.log.warning("the J4 test gap could not be asked", error=type(exc).__name__)
+        if gap is not None:
+            # Only when Jev answered: a failed call leaves the record as it was.
+            record["jev_test_gap"] = {k: gap[k] for k in ("asked", "tests", "uncovered")}
         self_check = read_self_check(self.artifacts_dir)
         record["self_check"] = self_check is not None
         target.write_text(advisory_section(graph=record["graph"], outcomes=outcomes,
                                            reach=reach, self_check=self_check,
-                                           secrets=self.secrets), encoding="utf-8")
+                                           secrets=self.secrets, jev_gap=gap),
+                          encoding="utf-8")
         record["advisory_section"] = True
 
     # -- the checks ---------------------------------------------------------

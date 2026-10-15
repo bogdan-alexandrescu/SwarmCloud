@@ -46,6 +46,16 @@ the first review's NOT_YET, and on MERGE the merge step reads the first
 review's verdict through it. A step that stages any OTHER file from a gated
 step is still refused at submission: only the verdict is passed on.
 
+JEV'S FINDING TRIAGE IS AN ANNOTATION, NEVER A VERDICT (lane CTXQ-JW, J3 of
+docs/design/context-quality.md §5.2). When the review step's workspace opted
+in to Jev, the review's post-step asks, per finding, "is this a real defect in
+this diff, as stated?" and `annotate_findings` writes the answer onto the
+finding as `p_real`. A finding under `FINDING_VERIFY_BELOW` also carries
+`"triage": VERIFY_BEFORE_ACTING`, and its text reads with that mark, so it
+reaches the fixer marked -- and is NEVER dropped. `verdict` is not read,
+written or reordered by any of it: the gate, auto-merge and the requirements
+decide exactly as they would without Jev.
+
 AN UNREADABLE VERDICT FAILS THE ATTEMPT. It is not read as MERGE, which would
 publish unreviewed work, and not as NOT_YET, which would run a fixer against
 findings that are not there. Every refusal is `InputUnavailable`, so the
@@ -79,6 +89,15 @@ MAX_VERDICT_BYTES = 256 * 1024
 #: at 1 MiB with everything else in it.
 MAX_FINDINGS = 50
 MAX_FINDING_CHARS = 1000
+
+#: J3 (§5.2): a finding Jev puts under this reaches the fixer marked, never
+#: dropped. `judge.shapes.FINDING_VERIFY_BELOW`, restated so the verdict reader
+#: imports nothing of the Jev client; test_jev_wiring.py holds the two equal.
+FINDING_VERIFY_BELOW = 0.15
+VERIFY_BEFORE_ACTING = "verify before acting"
+#: The annotation's keys on a finding object.
+P_REAL_KEY = "p_real"
+TRIAGE_KEY = "triage"
 
 _EXPECTED_SHAPE = (
     '{"verdict": "MERGE" | "NOT_YET", "findings": [...]}'
@@ -179,6 +198,29 @@ def _normalise(value: Any) -> str | None:
     return text if text in REVIEW_VERDICTS else None
 
 
+def annotate_findings(document: dict[str, Any], p_real: dict[int, float]) -> dict[str, Any]:
+    """`document` with J3's answers on its findings: `p_real` on each finding
+    `p_real` names (by its index in `findings`), and the verify mark under
+    `FINDING_VERIFY_BELOW`. A string finding becomes `{"summary": <it>, ...}`,
+    which every reader reads as the same text. Nothing is dropped or
+    reordered, and no other key -- `verdict` above all -- is touched."""
+    raw = document.get("findings")
+    if not isinstance(raw, list) or not p_real:
+        return document
+    findings: list[Any] = []
+    for index, item in enumerate(raw):
+        p = p_real.get(index)
+        if p is None or not isinstance(item, (str, dict)):
+            findings.append(item)
+            continue
+        out = dict(item) if isinstance(item, dict) else {"summary": item}
+        out[P_REAL_KEY] = round(float(p), 4)
+        if p < FINDING_VERIFY_BELOW:
+            out[TRIAGE_KEY] = VERIFY_BEFORE_ACTING
+        findings.append(out)
+    return {**document, "findings": findings}
+
+
 def gate_from_dispatch(block: Any) -> VerdictGate | None:
     """The gate in a dispatch block, None when there is none.
 
@@ -232,6 +274,8 @@ def _finding_text(item: Any) -> str | None:
     text = " ".join(text.split())
     if not text:
         return None
+    if isinstance(item, dict) and item.get(TRIAGE_KEY) == VERIFY_BEFORE_ACTING:
+        text = f"[{VERIFY_BEFORE_ACTING}: Jev judged this unlikely to be real] {text}"
     if len(text) > MAX_FINDING_CHARS:
         text = text[: MAX_FINDING_CHARS - 1] + "…"
     return text

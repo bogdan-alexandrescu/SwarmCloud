@@ -833,6 +833,73 @@ built at runtime.
 **In every case the attempt proceeds.** A Jev problem can make a pack less well
 ordered; it cannot fail, park or delay a task beyond the per-call timeout.
 
+### 5.6 What lane CTXQ-JW built: J1-J5 in the pipeline
+
+**Built 2026-10-15 (owner decision ~04:30 PDT: "Build CTXQ-JW now").** Jev
+was unreachable that day (the internal-jev backend has no tailnet route), so
+every piece is held by fake-Jev tests in `tests/unit/worker/test_jev_wiring.py`
+and `tests/unit/control_plane/test_issue_run_jev_hold.py`, not by a live call.
+
+**Set-up, once per attempt.** `agent_worker.judge.attempt.setup` runs inside
+`graphstage.prepare`, the lifecycle's one existing setup call, so
+`lifecycle.py` is unchanged. It reads `workspace_settings/{tenant}`
+(`code_intelligence.jev`, and `judgment_backend` beside it) and the
+repository's registration (its `jev` override, else its `context` override),
+then `register.prepare` writes `<attempt>/judge/config.json` and the ledger.
+The runner gets `SWARM_JUDGE_CONFIG` (a path, never a key) and
+`judge.attempt.load` builds its client from it. No config, no client, no call.
+
+* **Internal backends** need `SWARM_JUDGE_INTERNAL_URL` in the worker's
+  environment. Nothing sets it yet: the scheduler sends `JEV_API_URL` to
+  live-browser attempts only. Until a deployment sets it, an opted-in
+  workspace reads `no_internal_url` and makes no call.
+* **TypeSafe** uses only a key the worker already wrote to
+  `private/jev-typesafe.key` (a live-browser attempt). Any other attempt
+  reads `no_key` and makes no call. Resolving the key for every attempt is a
+  lifecycle change and was left out of this lane.
+
+**Where each J runs.** All of them run in the runner process, after the agent
+or before it, and all share the attempt's one ledger:
+
+| J | Call site | What it changes when Jev answers |
+|---|---|---|
+| J1 | `contextpack.prepare` → `build_pack` → `rank.rerank` | The sent rows (the top 60 local rows; in-flight and cannot-push never) score `0.5 · local/best + 0.5 · p`. A row under p 0.15 goes after every other row and fills no quota minimum: it is paged, never deleted. The header says `jev: on`, and `jev_calls` / `jev_input_tokens` count the call |
+| J4 | `prepublish.Gate._advise` → `jev_test_gap` | "Advisory signals (Jev, not a gate)" in the advisory section, listing the changed symbols for which Jev chose `none`. Also `jev_test_gap` in the gate's record |
+| J3 | `runners/cliagent._jev_post_steps` → `judge.poststeps.review_post_step`, for a review step | `p_real` on each finding in `verdict.json` (`verdict.annotate_findings`). Under 0.15 the finding also carries `"triage": "verify before acting"`, and `verdict.read_verdict` prefixes its text with that mark. It still reaches the fixer, because nothing is dropped. At most 5 findings are asked about |
+| J2, J5 | the same post-step → `plan_post_step`, for a planner step | `plan-advisory.json` beside `plan.json`, which is never touched. It holds the requirements whose best step is under p 0.5 or `none`, and the in-flight lane J5 picked at p ≥ 0.85. swarm-api's planner post-step (`routes/runs.py::_from_planner`) reads the file. On a hold, it sets an `auto` run's `plan_approval` to `required`, so a person approves the plan (§8 Q5 A) |
+
+**§5.4 at the call site, not only in the client.** The client's sanitizer
+reduces only an object that carries a `path` or `file` key. J3's `diff_hunk`
+is a top-level string, and J4's `changed` rows carry only `{symbol, hunk}`.
+So `review_post_step` and `jev_test_gap` send an empty hunk themselves for
+any path `is_denied_path` holds, the client's `hard_stop_paths` included.
+
+**Advisory outputs never decide.**
+* `verdict` is never read, written or reordered by any of this.
+* Auto-merge, the review gate and the requirements read what they read
+  before.
+* The J5 hold only makes a person look.
+
+**All or nothing, and identical when Jev fails.** Each of these makes an
+output byte-identical to the local-only run (`judge=None`):
+* a skipped call (breaker or budget);
+* a failed call, a timeout, a 429 or a 5xx;
+* a malformed answer, or one missing any question.
+
+That covers the pack, CONTEXT.md, the advisory section, the gate's record,
+`verdict.json` and the planner's artifacts. One J3 finding that fails leaves
+every finding unannotated. **This differs from §5.5's "the pack says so" for
+an exhausted budget:** the reason is in the attempt's ledger audit
+(`<attempt>/judge/ledger.json`, `outcome: skipped:<reason>`), not in the
+pack, because a pack that changed whenever Jev failed would not be the
+local-only pack.
+
+**Not built here:**
+* the coverage flags on the plan approval screen and in `swarm_runs`. They
+  are in the planner's `plan-advisory.json` artifact only, because showing
+  them needs an `IssueRun` field and console work;
+* `register_jev_tool` (the agent's `jev_decide` MCP tool) in the runners.
+
 ---
 
 ## 6. Evaluation
