@@ -298,6 +298,58 @@ FORGE_CREDENTIAL = re.compile(r"git(-[ru]-[0-9a-f]{16})?")
 FORGE_ACCESS = ("write", "read")
 
 
+#: Contract request 82 (workspace secrets, design §2.3). A workspace secret
+#: is granted to a CONSUMER, spelt "<kind>:<name>". `profile:` names a key of
+#: RUNNER_PROFILES, `tool:` a key of RUNTIME_TOOLS (request 81), `component:`
+#: one of PLATFORM_COMPONENTS. Never an image, a command or a path
+#: (invariant 10).
+SECRET_CONSUMER_KINDS: tuple[str, ...] = ("profile", "tool", "component")
+
+#: Platform steps that take a workspace secret themselves, outside any
+#: agent. `judge` reads private/jev-key for TypeSafe judging; `merge` and
+#: `indexer` are the worker's own steps; `git` takes forge tokens only and is
+#: never offered a non-forge secret (design §6.2).
+PLATFORM_COMPONENTS: tuple[str, ...] = ("judge", "merge", "indexer", "git")
+
+_CONSUMER_NAME = re.compile(r"[a-z][a-z0-9-]{0,62}")
+
+
+def consumer_name(kind: str, name: str) -> str:
+    """The one spelling of a secret consumer: "<kind>:<name>".
+
+    Checks the kind, the name's characters and, for `component`, the closed
+    list. Membership of `profile` and `tool` names is checked against the
+    catalogue by its reader (`profiles.py` imports this module, not the
+    reverse, so this function cannot see RUNNER_PROFILES). A consumer
+    name holds only `[a-z0-9-]` and one `:`, so it is safe in a Firestore
+    id and a URL segment without escaping."""
+    if kind not in SECRET_CONSUMER_KINDS:
+        raise ValueError(f"unknown secret consumer kind {kind!r}")
+    if not _CONSUMER_NAME.fullmatch(name):
+        raise ValueError(f"secret consumer name {name!r} is not [a-z0-9-]")
+    if kind == "component" and name not in PLATFORM_COMPONENTS:
+        raise ValueError(f"unknown platform component {name!r}")
+    return f"{kind}:{name}"
+
+
+def parse_consumer(consumer: str) -> tuple[str, str]:
+    """The inverse of consumer_name; raises on anything consumer_name would
+    not have produced, so `parse_consumer(consumer_name(k, n)) == (k, n)`
+    and no other string parses.
+
+    Its message echoes nothing, because it is fed stored ids, so
+    consumer_name's own refusal (which names the kind or name) is replaced
+    rather than chained."""
+    kind, sep, name = consumer.partition(":")
+    try:
+        spelt = consumer_name(kind, name) if sep else None
+    except ValueError:
+        spelt = None
+    if spelt != consumer:
+        raise ValueError("not a secret consumer name")
+    return kind, name
+
+
 @dataclass
 class Task:
     id: str

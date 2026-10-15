@@ -87,10 +87,10 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 77 | `profiles.py`: `claude-code-browser` declares the input `browser_tool` (auto, playwright, dev-browser, jev), the live browser's tool picked by name (BSTATUS-API) | ACCEPTED by the owner 2026-10-14 ("Picker on Submit, Auto by default"), APPLIED by this PR |
 | 78 | `models.py` / `states.py`: a workspace's merge mode on `Tenant`, and a park reason for a merge step waiting on its merge train (TRAIN-WS) | proposed; worked around |
 | 79 | `profiles.py`: the `browser` resource class shrinks from 8 vCPU / 16 GiB to 4 vCPU / 8 GiB (MEASURE) | ACCEPTED by the owner 2026-10-14 ("File the request now"); not yet applied |
-| 80 | `profiles.py`: `RunnerProfile.secret_slots`, `SecretSlot` and `SECRET_KINDS`, the workspace-secret slots a profile may consume (workspace secrets request A, part of #1347) | proposed (workspace secrets, owner decisions 2026-10-14) |
-| 81 | `profiles.py`: `RUNTIME_TOOLS`, the runtime tools (`jev-browser`, `dev-browser`, `playwright`), their secret slots and the `browser_tool` values that launch them (workspace secrets request B, part of #1347) | proposed (workspace secrets, owner decisions 2026-10-14) |
-| 82 | `models.py`: `SECRET_CONSUMER_KINDS`, `PLATFORM_COMPONENTS` and `consumer_name`, one spelling of a secret consumer (workspace secrets request C, part of #1347) | proposed (workspace secrets, owner decisions 2026-10-14) |
-| 83 | `states.py`: no new park reason; a required secret slot with no grant parks `CREDENTIAL_MISSING` (workspace secrets request D, part of #1347) | proposed (workspace secrets, owner decisions 2026-10-14) |
+| 80 | `profiles.py`: `RunnerProfile.secret_slots`, `SecretSlot` and `SECRET_KINDS`, the workspace-secret slots a profile may consume (workspace secrets request A, part of #1347) | ACCEPTED by the owner 2026-10-14 and APPLIED by the pull request that adds this line (proposed 2026-10-14; accepted on PR #1354) |
+| 81 | `profiles.py`: `RUNTIME_TOOLS`, the runtime tools (`jev-browser`, `dev-browser`, `playwright`), their secret slots and the `browser_tool` values that launch them (workspace secrets request B, part of #1347) | ACCEPTED by the owner 2026-10-14 and APPLIED by the pull request that adds this line (proposed 2026-10-14; accepted on PR #1354) |
+| 82 | `models.py`: `SECRET_CONSUMER_KINDS`, `PLATFORM_COMPONENTS` and `consumer_name`, one spelling of a secret consumer (workspace secrets request C, part of #1347) | ACCEPTED by the owner 2026-10-14 and APPLIED by the pull request that adds this line (proposed 2026-10-14; accepted on PR #1354) |
+| 83 | `states.py`: no new park reason; a required secret slot with no grant parks `CREDENTIAL_MISSING` (workspace secrets request D, part of #1347) | ACCEPTED by the owner 2026-10-14 and APPLIED by the pull request that adds this line (proposed 2026-10-14; accepted on PR #1354) |
 
 ---
 
@@ -11612,11 +11612,10 @@ unchanged.
 
 ## 80. `profiles.py`: a runner profile declares the secret slots it may consume, and the vocabulary of secret kinds (SEC-CONTRACT, workspace secrets request A)
 
-**Status:** proposed (workspace secrets, owner decisions 2026-10-14). Filed
-by lane SEC-CONTRACT, phase 0 of
+**Status:** ACCEPTED by the owner 2026-10-14 and APPLIED by the pull request that adds this line. Filed by lane SEC-CONTRACT, phase 0 of
 [docs/design/workspace-secrets.md](design/workspace-secrets.md) (§7 request A),
-part of #1347. Nothing under `apps/common/swarm_common/` was edited; the owner
-accepts and applies this.
+part of #1347. Proposed 2026-10-14 (workspace secrets, owner decisions
+2026-10-14), accepted on PR #1354 at about 23:20 PDT.
 
 ### Why
 
@@ -11797,9 +11796,9 @@ which workspace's secrets fill it is decided by the release's
 
 ## 81. `profiles.py`: `RUNTIME_TOOLS`, the catalogue of runtime tools, their secret slots and the `browser_tool` values that launch them (SEC-CONTRACT, workspace secrets request B)
 
-**Status:** proposed (workspace secrets, owner decisions 2026-10-14). Filed
-by lane SEC-CONTRACT (design §7 request B), part of #1347. Nothing under
-`apps/common/swarm_common/` was edited.
+**Status:** ACCEPTED by the owner 2026-10-14 and APPLIED by the pull request that adds this line. Filed by lane SEC-CONTRACT (design §7 request B), part of #1347.
+Proposed 2026-10-14, accepted on PR #1354 at about 23:20 PDT. The
+import-time checks are `_check_runtime_tools`, called on the catalogue.
 
 ### Why
 
@@ -11936,9 +11935,13 @@ which process inside an attempt can read it. Only the later `inject` mode
 
 ## 82. `models.py`: the secret consumer's spelling, `consumer_name`, and the platform component list (SEC-CONTRACT, workspace secrets request C)
 
-**Status:** proposed (workspace secrets, owner decisions 2026-10-14). Filed
-by lane SEC-CONTRACT (design §7 request C), part of #1347. Nothing under
-`apps/common/swarm_common/` was edited.
+**Status:** ACCEPTED by the owner 2026-10-14 and APPLIED by the pull request that adds this line. Filed by lane SEC-CONTRACT (design §7 request C), part of #1347.
+Proposed 2026-10-14, accepted on PR #1354 at about 23:20 PDT.
+`is_secret_consumer` is applied beside the catalogue in `profiles.py`, as
+"Where it lives" says, so `profiles.py` now imports `models.py`.
+`parse_consumer`'s message echoes nothing, as this entry says, so
+`consumer_name`'s own refusal is replaced rather than propagated (the
+sketch below would have propagated it).
 
 ### Why
 
@@ -12053,10 +12056,12 @@ its consumers. 1-4 and 6-8 untouched.
 
 ## 83. `states.py`: no new park reason for a missing workspace secret; a required slot with no grant parks `CREDENTIAL_MISSING` (SEC-CONTRACT, workspace secrets request D)
 
-**Status:** proposed (workspace secrets, owner decisions 2026-10-14). Filed
-by lane SEC-CONTRACT (design §7 request D), part of #1347. It requests **no
-change**. It is recorded so that no lane adds a park reason, and so the
-owner's acceptance covers the reuse explicitly.
+**Status:** ACCEPTED by the owner 2026-10-14 and APPLIED by the pull request that adds this line. Filed by lane SEC-CONTRACT (design §7 request D), part of #1347.
+Proposed 2026-10-14, accepted on PR #1354 at about 23:20 PDT. It requests
+**no change**, and none was made: `ParkReason.CREDENTIAL_MISSING` exists
+(`states.py`) and `scheduler/credentials.py` parks it before any lease. It
+is recorded so that no lane adds a park reason, and so the owner's
+acceptance covers the reuse explicitly.
 
 ### Why
 
