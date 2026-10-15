@@ -31,8 +31,9 @@
 # `requests == limits` on every resource, including ephemeral-storage. No
 # bursting: bursting is what gets a two-hour agent container OOM-killed at
 # minute ninety. ephemeral-storage is the WHOLE pod's local disk -- workspace,
-# cache, /tmp and HOME together, which kubelet sums -- not the workspace volume's
-# sizeLimit. It is the sum of the four volumes' sizeLimits, and all five numbers
+# /tmp and HOME together, which kubelet sums -- not the workspace volume's
+# sizeLimit. It is the sum of the three volumes' sizeLimits; the cache is a
+# network-disk claim kubelet does not count (CACHE-PVC). All of these numbers
 # are the dispatcher's, per resource class: see GkeDisk in
 # apps/scheduler/scheduler/dispatch.py.
 #
@@ -223,7 +224,8 @@ spec:
             # agent's npm, uv, pip, terraform and XDG caches and its TMPDIR,
             # CACHE-SCRATCH), the worker's own temp dir (checkpoint archives,
             # and any literal /tmp an agent writes), and the worker's HOME.
-            # Their sizes, and what each holds, are GKE_DISK's.
+            # Their sizes, and what each holds, are GKE_DISK's; the cache's
+            # is CACHE_VOLUME_GIB, on its own network disk (CACHE-PVC).
             - name: tmp
               mountPath: /tmp
             - name: cache
@@ -250,12 +252,21 @@ spec:
         - name: workspace
           emptyDir:
             sizeLimit: __DISK__
-        # The agent's tool caches and TMPDIR (CACHE-SCRATCH, the three
-        # evictions of 2026-10-15 on the workspace volume). DISK, its own
-        # sizeLimit, counted in __EPHEMERAL__; never checkpointed.
+        # The agent's tool caches and TMPDIR, on a NETWORK DISK of their own
+        # (CACHE-PVC, owner decision 2026-10-15): a generic ephemeral volume,
+        # created with the pod and deleted with it by the ephemeral-volume
+        # controller. The 2 GiB emptyDir it replaces evicted
+        # task_247c87a8714c4977921a twice, and Autopilot's 10 GiB had no more
+        # to give it. NOT counted in __EPHEMERAL__; never checkpointed.
         - name: cache
-          emptyDir:
-            sizeLimit: __CACHE_DISK__
+          ephemeral:
+            volumeClaimTemplate:
+              spec:
+                accessModes: ["ReadWriteOnce"]
+                storageClassName: __CACHE_STORAGE_CLASS__
+                resources:
+                  requests:
+                    storage: __CACHE_DISK__
         - name: tmp
           emptyDir:
             sizeLimit: __TMP_DISK__

@@ -212,7 +212,9 @@ PRE_L6_DIGESTS = {
     "network-policies/default-deny.yaml": "3cafd43f2f6c5412cc53eeb2f222bd4d9a5f84c688bfaa79f027125bc33bbb68",
     "network-policies/allow-egress.yaml": "0a3754646d11bba7a0abb3961b8f9c3ac698f7ae1ca19f2b1d95cc0d26382d28",
 }
-PRE_L6_TENANT_RENDER = "91fad5854e2d1cc9ad0fac3a528641350ef75184a866538a20de7e80b8f66ad8"
+#: Re-read for CACHE-PVC (2026-10-15): the tenant ResourceQuota admits one cache
+#: PVC per Job on the cache's StorageClass, where it held PVCs at 0.
+PRE_L6_TENANT_RENDER = "6619902dc7ca4e4ca2b94d16bfd9334b225864f24b11789e00bb803ac73de23f"
 
 
 def _tenant_values() -> dict[str, str]:

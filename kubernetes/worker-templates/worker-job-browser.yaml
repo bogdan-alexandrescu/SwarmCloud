@@ -255,15 +255,23 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 2Gi
-        # The cache, /tmp and HOME from the dispatcher's GkeDisk, like the
-        # workspace: the four sizeLimits add up to the pod's ephemeral-storage,
-        # never past it.
-        # The agent's tool caches and TMPDIR (CACHE-SCRATCH, the three
-        # evictions of 2026-10-15 on the workspace volume). DISK, its own
-        # sizeLimit, counted in __EPHEMERAL__; never checkpointed.
+        # /tmp and HOME from the dispatcher's GkeDisk, like the workspace: the
+        # three sizeLimits add up to the pod's ephemeral-storage, never past it.
+        # The agent's tool caches and TMPDIR, on a NETWORK DISK of their own
+        # (CACHE-PVC, owner decision 2026-10-15): a generic ephemeral volume,
+        # created with the pod and deleted with it by the ephemeral-volume
+        # controller. The 2 GiB emptyDir it replaces evicted
+        # task_247c87a8714c4977921a twice, and Autopilot's 10 GiB had no more
+        # to give it. NOT counted in __EPHEMERAL__; never checkpointed.
         - name: cache
-          emptyDir:
-            sizeLimit: __CACHE_DISK__
+          ephemeral:
+            volumeClaimTemplate:
+              spec:
+                accessModes: ["ReadWriteOnce"]
+                storageClassName: __CACHE_STORAGE_CLASS__
+                resources:
+                  requests:
+                    storage: __CACHE_DISK__
         - name: tmp
           emptyDir:
             sizeLimit: __TMP_DISK__

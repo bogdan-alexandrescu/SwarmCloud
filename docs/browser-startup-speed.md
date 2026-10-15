@@ -666,3 +666,29 @@ before `dispatched`: two clocks, the reconciler's and the scheduler's.
   the worker at 0.55 cores and 0.37 GiB. Samples miss peaks between them, and
   four pods are not a load test. This is evidence for the contract request,
   not the decision.
+
+### 11.1 A new step on every GKE start: the cache disk's attach (CACHE-PVC, unmeasured)
+
+**What changed after this measurement.** Since CACHE-PVC (owner decision
+2026-10-15 ~04:00 PDT) every GKE worker pod, `standard` and `browser` alike,
+has its `cache` volume on a 20 GiB pd-balanced network disk: a generic
+ephemeral volume on the `swarm-cache-pd-balanced` StorageClass
+(`kubernetes/storage/cache-storage-class.yaml`), instead of a 2 GiB local
+emptyDir. The 2 GiB emptyDir evicted task_247c87a8714c4977921a twice, and
+Autopilot's 10 GiB ephemeral-storage cap had no more local disk to give it
+(`GKE_DISK` in `apps/scheduler/scheduler/dispatch.py`).
+
+**Why it costs start-up time.** The class binds `WaitForFirstConsumer`, so the
+disk cannot be made until the pod is scheduled: after `pod_scheduled` the CSI
+driver creates a disk in the node's zone and attaches it, and the container
+cannot start until it is mounted. A local emptyDir cost none of that. The new
+step sits between the node wait and the pull in the table above, and it is
+paid on warm starts too: a warm slot (decision 3) saves the node wait and the
+pull, never this attach, because the disk is the pod's own.
+
+**What it is: unmeasured.** No number here is a measurement. The warm 6 s and
+the cold 125 s above were read before the change and do not include it. The
+orchestrator measures the live number after the release that carries CACHE-PVC,
+with §10's `scripts/startup_measure.py`, and records it here as a row per
+class with the attach split out. Until then, read every start-up number in this
+document as the attach plus what it says.

@@ -243,16 +243,26 @@ directories under one per-attempt cache directory, and the CLI and generic
 runners carry them on to the agent by exact name. HOME stays `work/`: the CLI's
 own state is the agent's and is checkpointed with it.
 
-* **GKE.** The pod has a `cache` emptyDir of its own, disk-backed, mounted at
-  `/cache`, with an explicit `sizeLimit` (2 GiB on every class, `GkeDisk` in
-  `apps/scheduler/scheduler/dispatch.py`), counted in the pod's
-  ephemeral-storage with requests == limits. The dispatcher names it to the
-  worker as `SWARM_CACHE_ROOT`; the attempt's caches are
-  `/cache/<attempt>/`. A full cache is now the cache volume's limit, never the
-  workspace's. On `standard` the 2 GiB came out of `/tmp` (back to exactly the
-  2 GiB checkpoint cap) because Autopilot admits no more than 10 GiB: an agent
-  that writes gigabytes under a literal `/tmp` while a checkpoint is being
-  built can be evicted on `/tmp` again, as before #893. `uv` cannot hard-link
+* **GKE.** The pod has a `cache` volume of its own, mounted at `/cache`. The
+  dispatcher names it to the worker as `SWARM_CACHE_ROOT`; the attempt's
+  caches are `/cache/<attempt>/`. A full cache is the cache volume's limit,
+  never the workspace's. Since CACHE-PVC (owner decision 2026-10-15) it is a
+  **20 GiB pd-balanced network disk**: a generic ephemeral volume on the
+  `swarm-cache-pd-balanced` StorageClass
+  (`kubernetes/storage/cache-storage-class.yaml`), ReadWriteOnce, created by
+  the ephemeral-volume controller with the pod and deleted with it
+  (`CACHE_STORAGE_CLASS`, `CACHE_VOLUME_GIB` in
+  `apps/scheduler/scheduler/dispatch.py`). **Why:** CACHE-SCRATCH's first
+  cache was a 2 GiB local emptyDir, and task_247c87a8714c4977921a was evicted
+  on it twice (`EmptyDir volume "cache" exceeds 2Gi`); Autopilot caps a pod's
+  ephemeral storage at 10 GiB and the split was already 10. A PVC is not
+  ephemeral-storage, so a full cache is now ENOSPC in the tool that filled it,
+  not an eviction, and its 2 local GiB went back to `/tmp` (3, 1 GiB above the
+  checkpoint cap) and HOME. **The trade:** the disk's create-and-attach is on
+  every GKE start's critical path, warm or cold
+  ([browser-startup-speed.md](browser-startup-speed.md) §11.1, unmeasured as of
+  the change), and a disk lives as long as its pod, which a finished Job keeps
+  for an hour, so the tenant quota admits one claim per Job. `uv` cannot hard-link
   a venv from a cache on another volume, so it copies (`UV_LINK_MODE=copy`):
   the checkout's `.venv` is the size it was, and what leaves the workspace is
   everything else the caches hold -- npm's tarballs, downloads and builds,

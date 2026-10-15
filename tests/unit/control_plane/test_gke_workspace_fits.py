@@ -32,8 +32,17 @@ on the 5 GiB WORKSPACE volume, which also held every tool cache and the
 agent's TMPDIR. The caches and TMPDIR moved to a `cache` volume of their own
 (agent_worker/cachedirs.py), and under Autopilot's 10 GiB the 2 GiB it needs
 came out of /tmp, back to the checkpoint cap: workspace 5 + cache 2 + /tmp 2 +
-HOME 1. Put `standard` back to 5/0/4/1 and the layout test fails; point the
-agent's TMPDIR back at the workspace volume and the TMPDIR test fails.
+HOME 1. Point the agent's TMPDIR back at the workspace volume and the TMPDIR
+test fails.
+
+CACHE-PVC (owner decision 2026-10-15 ~04:00 PDT): the 2 GiB cache emptyDir
+evicted task_247c87a8714c4977921a twice (`EmptyDir volume "cache" exceeds
+2Gi`). The cache became a 20 GiB pd-balanced generic ephemeral volume, which
+is NOT ephemeral-storage, so its 2 GiB went back to the local volumes:
+standard workspace 5 + /tmp 3 + HOME 2 = 10, browser 4 + 3 + 3 = 10. Put either
+class back to its CACHE-SCRATCH numbers and its layout test fails; put the
+cache back to an emptyDir and both layout tests fail on the extra volume; drop
+any class's /tmp below 2 GiB and the checkpoint test fails naming the class.
 """
 
 from __future__ import annotations
@@ -138,7 +147,7 @@ def test_a_claude_code_pod_has_disk_for_its_workspace_tmp_and_home_together(tena
     resources = _worker(pod)["resources"]
     volumes = _disk_volumes(pod)
 
-    assert set(volumes) == {"workspace", "cache", "tmp", "home"}, volumes
+    assert set(volumes) == {"workspace", "tmp", "home"}, volumes
     assert resources["requests"] == resources["limits"], "invariant 7"
     assert _gib(resources["limits"]["ephemeral-storage"]) >= sum(volumes.values()), (
         f"the pod may write {sum(volumes.values())} GiB across {volumes} but is evicted "
@@ -153,18 +162,18 @@ def test_the_gke_workspace_is_no_smaller_than_cloud_runs(tenant):
     assert _disk_volumes(_pod(tenant, "claude-code"))["workspace"] >= workspace_size_gib(rc)
 
 
-def test_tmp_holds_the_largest_checkpoint_archive_the_worker_builds():
+@pytest.mark.parametrize("name", sorted(GKE_DISK))
+def test_tmp_holds_the_largest_checkpoint_archive_the_worker_builds(name):
     """The archive is built under /tmp (`checkpoint.py`, TemporaryDirectory).
 
-    claude-code's class only. Browser's /tmp is 1 GiB by the owner's decision of
-    2026-10-07 (see GKE_DISK): it fits the pod's 8 GiB, not the 2 GiB cap.
+    Every class: since CACHE-PVC each one's /tmp is 3 GiB, the 2 GiB cap plus
+    1 GiB for a literal /tmp write while an archive is being built.
     """
     from agent_worker.config import WorkerConfig
 
     defaults = {f.name: f.default for f in dataclasses.fields(WorkerConfig)}
 
-    standard = GKE_DISK[RUNNER_PROFILES["claude-code"].resource_class]
-    assert standard.tmp_gib * GIB >= defaults["max_checkpoint_bytes"]
+    assert GKE_DISK[name].tmp_gib * GIB >= defaults["max_checkpoint_bytes"], name
 
 
 @pytest.mark.parametrize("profile_name", sorted({"claude-code"} | {
@@ -237,14 +246,14 @@ def test_a_gke_pods_scratch_volumes_never_add_up_past_its_disk_limit(
     )
 
 
-def test_a_browser_pod_has_the_owners_disk_layout_and_a_cache(tenant):
-    """Owner decision 2026-10-07: workspace 4 + /tmp 2 + HOME 2, unchanged, and
-    CACHE-SCRATCH's 2 GiB cache beside them: 10 GiB, Autopilot's maximum.
+def test_a_browser_pod_has_the_owners_cache_pvc_disk_layout(tenant):
+    """Owner's preview, CACHE-PVC (2026-10-15): workspace 4 + /tmp 3 + HOME 3 =
+    10 GiB, Autopilot's maximum, with the cache on its network disk instead.
 
     /tmp holds the largest checkpoint archive (max_checkpoint_bytes = 2 GiB)."""
     pod = _pod(tenant, "browser")
 
-    assert _disk_volumes(pod) == {"workspace": 4, "cache": 2, "tmp": 2, "home": 2}
+    assert _disk_volumes(pod) == {"workspace": 4, "tmp": 3, "home": 3}
     assert _worker(pod)["resources"]["limits"]["ephemeral-storage"] == "10Gi"
 
 
@@ -257,13 +266,13 @@ def test_the_tenant_jobs_quota_defaults_to_200():
     assert re.search(r'"--quota-jobs",\s*type=int,\s*default=200\)', src)
 
 
-def test_a_claude_code_pod_has_the_layout_of_cache_scratch(tenant):
-    """workspace 5 + cache 2 + /tmp 2 + HOME 1 = Autopilot's 10 GiB (CACHE-SCRATCH):
-    what each holds is GKE_DISK's. The workspace keeps the 5 GiB it was evicted
-    at, now without the caches; /tmp gives back what #893 added."""
+def test_a_claude_code_pod_has_the_layout_of_cache_pvc(tenant):
+    """workspace 5 + /tmp 3 + HOME 2 = Autopilot's 10 GiB (CACHE-PVC, the
+    owner's preview): what each holds is GKE_DISK's. The cache left the local
+    disk for its own PVC, and its 2 GiB went to /tmp and HOME, one each."""
     pod = _pod(tenant, "claude-code")
 
-    assert _disk_volumes(pod) == {"workspace": 5, "cache": 2, "tmp": 2, "home": 1}
+    assert _disk_volumes(pod) == {"workspace": 5, "tmp": 3, "home": 2}
     assert _worker(pod)["resources"]["limits"]["ephemeral-storage"] == "10Gi"
 
 
