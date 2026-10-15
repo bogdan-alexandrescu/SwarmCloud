@@ -125,6 +125,7 @@ One document per pair, `workspace_secret_grants/{secret_id}~{consumer}`:
 | `enabled` | the checkbox |
 | `slot` | where the consumer takes it (§2.4); defaults to the consumer's only slot when it has one |
 | `changed_at`, `changed_by` | the last toggle |
+| `attestation` | `v1.<base64url HMAC-SHA256>` over the canonical form of `(secret_id, tenant_id, consumer, slot, enabled)` under `swarm-workspace-grant-key` (SEC-GRANT-ATTEST). Null or absent on a grant written without the key |
 
 A grant is **never deleted**, only disabled, so its history stays readable in
 `admin_audit` beside it. Deleting the secret disables every grant on it in the
@@ -613,6 +614,7 @@ they describe, as `provider_key_set` does:
 |---|---|
 | `workspace_secret_created`, `_rotated`, `_deleted` | `{tenant_id, secret_id, name, provider, kind, version}` |
 | `workspace_secret_grant_enabled`, `_disabled` | `{tenant_id, secret_id, consumer, slot}` |
+| `workspace_secret_grant_attested` | `{tenant_id, secret_id, consumer, slot, enabled, grant_id, reason}`: the attest route signed a grant written before SEC-GRANT-ATTEST (`audit_match`) or under the previous key (`previous_key`). Never the MAC |
 
 Release rows go to their own collection, `workspace_secret_releases`, because
 there is one row for each secret in each attempt. A row's fields are `at`,
@@ -669,12 +671,10 @@ from §3.3, and why:
   Firestore row, in full"), so a record is released only when its secret id
   is `swarm-tenant-<the signed tenant>-wsec-<16 hex>` and its version is a
   version of that secret. The read is made under swarm-api's own project.
-  **What this does not stop:** an agent that learns one of its own
-  workspace's secret ids (the name index's id is `<tenant>~<name>`) can write
-  an enabled grant for it. That widens the matrix inside its own workspace,
-  never across one. Closing it needs grants that the agent cannot forge,
-  for example an attestation like the attempt key's. That is a
-  `workspace_secrets.py` write-path change, outside this lane.
+  **Forged grants inside a workspace** were the gap this lane left: an
+  agent that learned one of its own workspace's secret ids could write an
+  enabled grant for it. SEC-GRANT-ATTEST closes it. "What SEC-GRANT-ATTEST
+  built" below says what is now stopped and what still is not.
 * **Q3, as decided.** A personal secret reaches a group task only when its
   opt-in list names the group, its record's creator and the personal tenant's
   principal are both the signed submitter, and the submitter is a member of
@@ -753,6 +753,100 @@ required slot has an enabled grant. Held by
 * **One query per admission pass**, of every enabled grant, made lazily: only
   a task that requires a slot reads it. No catalogue slot is required yet
   (request 80), so today no pass reads anything extra.
+
+### What SEC-GRANT-ATTEST built (2026-10-15, part of #1347)
+
+Owner decision 2026-10-15, answering SEC-RELEASE's open question "Attest
+grants": swarm-api MACs every grant it writes, and the release ignores a grant
+whose attestation fails. Built: `apps/swarm-api/swarm_api/grant_attest.py`
+(the canonical form, the key ring, the release policy), the grant writers in
+`workspace_secrets.py` (`set_grant`, `delete`, `attest_grants`), the policy in
+`release_plan`, the admin route `POST /v1/admin/workspace-secrets/attest-grants`
+in `routes/workspace_secrets.py`, three settings, the
+`--workspace-grant-key` slot of `scripts/create-secrets.sh`, and
+`terraform/infra/workspace_grant_key.tf`. Held by
+`tests/unit/control_plane/test_grant_attest.py`,
+`tests/unit/scripts/test_create_secrets_workspace_grant_key.py` and
+`tests/terraform/workspace_grant_key.tftest.hcl`.
+
+* **The form is stated once**, in `grant_attest.canonical`:
+  `["v1", secret_id, tenant_id, consumer, slot or null, enabled]`, compact
+  JSON, ASCII. Every field the release decides on is in it: the secret, the
+  workspace the grant is queried under, the consumer it is matched against,
+  the slot it is delivered into and the checkbox. A wrong type (an `enabled`
+  of `1`, an empty slot) is not canonical and never verifies. `"v1"` comes
+  first so the form can change. A test greps that no other module builds it.
+* **The key** is `swarm-workspace-grant-key`. Only swarm-api reads it, as a
+  ring like `swarm-child-key`'s: `SWARM_WORKSPACE_GRANT_KEY` signs and
+  verifies, and `SWARM_WORKSPACE_GRANT_KEY_PREVIOUS`, set only during a
+  rotation, only verifies. Each ring key is compared with
+  `hmac.compare_digest`.
+* **The release drops** a grant whose attestation is malformed, made for
+  other fields or made by neither ring key. It logs
+  `grant_attestation_invalid` with the grant id, the tenant id and the secret
+  id, never the MAC or the key. A dropped grant is treated exactly like a
+  disabled one, so a required slot it would have filled parks
+  CREDENTIAL_MISSING through the worker's existing path.
+* **`grant_attestation_required` is off by default.** No grant written
+  before this lane carries an attestation. Switched on first, all of them
+  would stop being released at once, in every workspace. While it is off, an
+  UNATTESTED grant is still released, with a `grant_attestation_missing`
+  warning. A grant whose attestation is PRESENT but wrong is dropped either
+  way. The only way to make one is to alter a grant swarm-api signed, so the
+  migration gives no reason to accept it.
+* **The migration** is `POST /v1/admin/workspace-secrets/attest-grants`,
+  for platform admins only (the rotation sweep's auth). It signs a grant only
+  when the grant's fields equal its newest `workspace_secret_grant_enabled`
+  or `_disabled` audit row, and lists every other grant by id. A grant that
+  verifies only under the previous key gets re-signed under the current one,
+  which is what lets a rotation end. Each signature gets its own
+  `workspace_secret_grant_attested` audit row. The operator sequence is in
+  [docs/runbooks/workspace-grant-attestation.md](../runbooks/workspace-grant-attestation.md).
+* **The writers.** `set_grant` signs every grant it writes. With no key it
+  writes `attestation: null`, never a stale MAC. It refuses to ENABLE a grant
+  while attestation is required and there is no key. `delete` re-signs the
+  grants it disables, as disabled.
+* **Rotation.** Add a version with `scripts/create-secrets.sh
+  --workspace-grant-key` and set `workspace_grant_attestation.previous_version`
+  to the replaced version number. Apply, then run the attest route, which
+  re-signs every previous-key grant. Then clear `previous_version`, apply
+  again, and disable the old version. The previous key must stay in the ring
+  until the route has run. Otherwise every grant it signed is dropped.
+
+**What is now stopped.** With the setting on, an agent that can write
+Firestore cannot get a secret released that a manager did not grant. Each of
+these fails the MAC and is dropped: a new grant document, an attestation
+copied from another grant, a disabled grant flipped to enabled, and a grant
+whose consumer, secret, slot or workspace has been rewritten. With the
+setting off, every one of those that carries an attestation is still
+dropped. Only an unattested grant gets through, and it is logged.
+
+**What still is not stopped:**
+
+* **Replaying a grant's own earlier state.** A MAC over the grant's fields
+  cannot tell its current state from an earlier one swarm-api also signed.
+  Suppose an agent reads a grant while it is enabled (it can read any grant
+  whose document id it can guess), and a manager then disables it. The agent
+  can write the grant back as it was, attestation and all. After revoking a
+  sensitive grant, the workaround is to rotate the key twice, following the
+  runbook's rotation each time, so the old MAC verifies under neither ring
+  key. A lasting fix needs state the agent cannot write, and Firestore offers
+  no such state to a server-side identity (docs/multi-tenancy.md, "The
+  Firestore row, in full").
+* **The migration window.** Until `grant_attestation_required` is on, an
+  unattested grant is released. Turn it on as soon as the attest route has
+  run and its unsigned list is dealt with.
+* **The attest route trusts `admin_audit`**, which an agent can write to as
+  easily as it writes grants (a new document under a random id). If an agent
+  forged a grant AND a matching audit row before the route ran, that grant
+  would be signed. Run the route once, soon after the key is served. Check its
+  `signed` list against the console's matrix before turning the setting on.
+* **The record is not attested.** A record's `current_version` and
+  `use_in_workspaces` can still be written by the tenant. `owned_by` keeps
+  the version inside the workspace's own `-wsec-` secrets, and Q3 re-checks
+  membership and the creator, so neither crosses a workspace. Inside a
+  workspace, an agent can point a granted record at another version of the
+  same secret, if the sweep has not yet disabled it.
 
 ---
 

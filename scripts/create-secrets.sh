@@ -26,6 +26,7 @@
 #   scripts/create-secrets.sh --egress-credential --stdin [--overwrite swarm-egress-credential] < credential.json
 #   scripts/create-secrets.sh --tailscale-oauth --stdin
 #   scripts/create-secrets.sh --typesafe-fwd-key [--overwrite swarm-typesafe-fwd-key]
+#   scripts/create-secrets.sh --workspace-grant-key [--overwrite swarm-workspace-grant-key]
 #
 # The forge token (`--provider git`, stored as swarm-tenant-<tenant>-git) is
 # read by the tenant's workers AND by swarm-api, which writes an issue run's
@@ -87,6 +88,17 @@
 # (terraform/infra/typesafe_fwd.tf) owns the container and its two readers,
 # and an enabled version is replaced only after the same typed confirmation.
 #
+# --workspace-grant-key adds a version to `swarm-workspace-grant-key`, the
+# PLATFORM key swarm-api MACs every workspace-secret grant with and verifies
+# it with at release (docs/design/workspace-secrets.md, SEC-GRANT-ATTEST;
+# docs/runbooks/workspace-grant-attestation.md). Generated and added exactly
+# as --typesafe-fwd-key's is, never read and never shown; terraform
+# (terraform/infra/workspace_grant_key.tf) owns the container and its one
+# reader, swarm-api, and an enabled version is replaced only after the same
+# typed confirmation. A rotation is the runbook's: the replaced version goes to
+# workspace_grant_key_previous_version until the attest route has re-signed
+# every grant under the new one.
+#
 # --egress-key adds a version to `swarm-egress-key`, the PLATFORM key swarm-api
 # mints browser egress tickets with and swarm-egress verifies them with
 # (docs/browser-egress.md §9). Generated and added exactly as --live-key's is,
@@ -142,6 +154,7 @@ SEARCH_API_KEY=0
 EGRESS_KEY=0
 EGRESS_CREDENTIAL=0
 TYPESAFE_FWD_KEY=0
+WORKSPACE_GRANT_KEY=0
 OVERWRITE=""
 TAILSCALE_OAUTH=0
 
@@ -161,11 +174,12 @@ while [[ $# -gt 0 ]]; do
     --egress-key)       EGRESS_KEY=1; shift ;;
     --egress-credential) EGRESS_CREDENTIAL=1; shift ;;
     --typesafe-fwd-key) TYPESAFE_FWD_KEY=1; shift ;;
+    --workspace-grant-key) WORKSPACE_GRANT_KEY=1; shift ;;
     --overwrite)        [[ $# -ge 2 ]] || die "--overwrite takes the name of the secret to add a version to"
                         OVERWRITE="$2"; shift 2 ;;
     # A value glued to a flag is a value on the command line, which argv
     # exposes through ps and shell history. Refused without repeating it.
-    --egress-key=*|--egress-credential=*|--typesafe-fwd-key=*)
+    --egress-key=*|--egress-credential=*|--typesafe-fwd-key=*|--workspace-grant-key=*)
       die "${1%%=*} takes no value on the command line: the key is generated, and the credential is read from --stdin only. Nothing was stored." ;;
     --tailscale-oauth)  TAILSCALE_OAUTH=1; shift ;;
     # The header above `set -euo pipefail`, however long it grows; a fixed
@@ -279,6 +293,24 @@ confirm_overwrite() {
   die "${name} already has an enabled version and its reader takes the latest. Confirm by typing its name:
      --overwrite ${name}   (SWARM_ASSUME_YES is not a confirmation). Nothing was stored."
 }
+
+if [[ "${WORKSPACE_GRANT_KEY}" -eq 1 ]]; then
+  GRANT_KEY_NAME="swarm-workspace-grant-key"
+  if [[ -n "${TENANT}${PROVIDER}${FROM_FILE}${GITHUB_APP_SLOT}" || "${READ_STDIN}" -eq 1 || "${SUBSCRIPTION}" -eq 1 || "${CHILD_KEY}" -eq 1 || "${LIVE_KEY}" -eq 1 || "${EGRESS_KEY}" -eq 1 || "${EGRESS_CREDENTIAL}" -eq 1 || "${TAILSCALE_OAUTH}" -eq 1 || "${SEARCH_API_KEY}" -eq 1 || "${TYPESAFE_FWD_KEY}" -eq 1 || "${DISABLE_PREVIOUS}" -eq 1 ]]; then
+    die "--workspace-grant-key takes no --stdin, --tenant, --provider, --from-file, --subscription, other key or --disable-previous: the key is the platform's and is generated here, and an old version is disabled by hand once every grant is re-signed under the new one (docs/runbooks/workspace-grant-attestation.md)"
+  fi
+  # Exists first: terraform/infra/workspace_grant_key.tf creates it with its reader.
+  GRANT_KEY_ERR=""
+  if ! GRANT_KEY_ERR="$(gcloud secrets describe "${GRANT_KEY_NAME}" --project "${PROJECT_ID}" \
+       --format='value(name)' 2>&1 >/dev/null)"; then
+    die_if_auth_failure "${GRANT_KEY_ERR}"
+    die "${GRANT_KEY_NAME} does not exist in ${PROJECT_ID}. terraform creates it with its reader (terraform/infra/workspace_grant_key.tf): run 'make apply' first, then this"
+  fi
+  confirm_overwrite "${GRANT_KEY_NAME}"
+  add_generated_platform_key "${GRANT_KEY_NAME}" "terraform/infra/workspace_grant_key.tf" "--workspace-grant-key"
+  dim "swarm-api reads it when an instance starts. On a rotation, set workspace_grant_key_previous_version to the replaced version, apply, run the attest route, then clear it (docs/runbooks/workspace-grant-attestation.md)"
+  exit 0
+fi
 
 if [[ "${TYPESAFE_FWD_KEY}" -eq 1 ]]; then
   TS_FWD_NAME="swarm-typesafe-fwd-key"

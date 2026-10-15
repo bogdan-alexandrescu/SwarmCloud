@@ -31,7 +31,11 @@ MANAGER BEFORE STEP 5:
      document is released nothing.
   5. THE QUERY (`workspace_secrets.release_plan`): enabled grants of the task's
      tenant naming those consumers, and a person's own opted-in secrets under
-     owner decision Q3; then each due record's current version, read from
+     owner decision Q3, each grant's attestation checked (SEC-GRANT-ATTEST:
+     `grant_attest.GrantPolicy`; a forged or altered grant is dropped as a
+     disabled one is, logged `grant_attestation_invalid`, and an unattested
+     one too once `grant_attestation_required` is on); then each due record's
+     current version, read from
      Secret Manager under the conditioned grant SEC-IAM wrote. A read swarm-api
      may not make (the grant not yet applied) is 503 with a reason and no name.
   6. THE ROWS (§4.4): one `workspace_secret_releases` row per secret, with an
@@ -81,6 +85,7 @@ from ..children import (
 )
 from ..deps import AppContext, get_context
 from ..errors import ApiError, UpstreamUnavailable
+from ..grant_attest import GrantPolicy
 from ..store import LEASES, TASKS
 from ..verdictpublish import spec_refusal
 from ..workspace_secrets import (
@@ -245,7 +250,8 @@ class SecretRelease:
         project_id = self.ctx.settings.project_id
         plan = release_plan(
             self.ctx.db, tenant_id=attempt.tenant_id, consumers=consumers,
-            project_id=project_id, personal=self._personal(task),
+            project_id=project_id, grants=GrantPolicy.from_settings(self.ctx.settings),
+            personal=self._personal(task),
             personal_refusal=lambda: self._membership_refusal(task),
         )
         released: list[dict[str, Any]] = []
