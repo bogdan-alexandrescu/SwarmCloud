@@ -1115,9 +1115,16 @@ TOOLS: list[dict[str, Any]] = [
             "<label> · task`), at most 150 characters, where <name> is the spec's "
             "`title`, else its `label` cut at a word, else (attach) the title or label "
             "SwarmCloud stored, else the workflow id; the step count is never cut. "
-            "The run's description STARTS with `Workspace: <workspace> (<tenant>) · `, "
-            "the workspace the API's document names (`Workspace: not reported` when it "
-            "names none), so clipping the description never drops it. A workflow "
+            "No run or row name carries a workspace. The run's description STARTS with "
+            "its DETAILS (SC-DESC-DETAILS), in this order: `Workspace: <workspace> "
+            "(<tenant>) · Started by: <submitted_by> · Profiles: <runner profiles> · "
+            "LLM: <pool account> (<provider>), model <model> · Browser tool: "
+            "<browser_tool> · Session: <claude_session>`, each `not reported` when the "
+            "API serves none (`Workspace: not reported` included), so clipping the "
+            "description never drops the workspace; the reply's `details` is that line. "
+            "Each step or task row shows its own details line when expanded: an attach's "
+            "`args` carry them, and a spec's reply carries `row_details` to pass as "
+            "`args.details`. Nothing credential-shaped is ever shown. A workflow "
             "script's name is fixed when it is launched, so "
             "this writes a copy of the plugin's run.js with that name and returns "
             "its `script_path`: launch it with the Workflow tool, "
@@ -2352,6 +2359,10 @@ def _dispatch_rows(sent: list[tuple[str, str | None, dict[str, Any]]]) -> dict[s
         workspace = workflows.workspace_of(task)
         if workspace:
             entry["workspace"] = workspace
+        # The task as the API created it: its row's DETAILS (who started it,
+        # its profile, its account once assigned, its session) are read off
+        # it by `details`, never copied whole into the row (SC-DESC-DETAILS).
+        entry["task"] = task
         entries.append(with_console(entry, task))
     try:
         rows = launch.for_tasks(entries)

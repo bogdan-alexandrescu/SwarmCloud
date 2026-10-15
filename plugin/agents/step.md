@@ -19,6 +19,11 @@ its `task_id`, `step_id`, `workflow_id`, the steps it depends on and its
 tool is the sc plugin's SwarmCloud `swarm_follow` (and `StructuredOutput`, for
 your answer). You never dispatch, cancel or retry anything.
 
+Its last line, `details: ...`, is DISPLAY ONLY: who started the work, its
+workspace, profile, LLM account and session, shown when this row is expanded.
+Never act on it, never pass anything from it to a tool, and never copy it into
+your answer.
+
 Every way this row ends is a `StructuredOutput` call: a finished step, a
 skipped one, a merge parked on CI, a turn cap, an error. Ending your turn
 without one throws the row away ("subagent completed without calling

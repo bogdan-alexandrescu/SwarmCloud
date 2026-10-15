@@ -695,23 +695,25 @@ def workspace_tag(workspace: Any) -> str:
     return f"[{flat}] " if flat else ""
 
 
-def workflow_title(name: str, steps: int, workspace: str | None = None) -> str:
-    """`SC · [<workspace>] <name> · N steps`, at most TITLE_CHARS characters
-    (`SC · <name> · N steps` when no workspace is known).
+def workflow_title(name: str, steps: int) -> str:
+    """`SC · <name> · N steps`, at most TITLE_CHARS characters.
 
-    The NAME is cut, never the workspace or the step count: at the last word
-    boundary that fits, with `…`; a single word longer than the room is cut
-    inside it."""
+    No workspace: SC-ROWS put `[<workspace>] ` after the prefix, SC-WS-DESC
+    moved it to the run's description, and SC-DESC-DETAILS (owner 2026-10-14:
+    no `[Engineering]` or `[eng@saga.xyz]` in front of any name) took the
+    parameter away, so no caller can put it back.
+
+    The NAME is cut, never the step count: at the last word boundary that
+    fits, with `…`; a single word longer than the room is cut inside it."""
     tail = " · " + _steps_text(steps)
-    tag = workspace_tag(workspace)
-    room = max(1, TITLE_CHARS - len(TITLE_PREFIX) - len(tag) - len(tail))
+    room = max(1, TITLE_CHARS - len(TITLE_PREFIX) - len(tail))
     flat = _flat(name) or "workflow"
     if len(flat) > room:
         head = flat[: room - 1]
         if flat[room - 1] != " " and " " in head:
             head = head[: head.rindex(" ")]
         flat = head.rstrip() + "…"
-    return TITLE_PREFIX + tag + flat + tail
+    return TITLE_PREFIX + flat + tail
 
 
 def stored_names(envelope: dict[str, Any]) -> dict[str, str | None]:

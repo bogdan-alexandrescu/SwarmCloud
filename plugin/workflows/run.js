@@ -40,12 +40,15 @@ export const meta = {
 // THE RUN IS NAMED AFTER THE WORKFLOW. `meta` is a literal and a running
 // script cannot rename its run, so the plugin launches each run from a copy
 // of this script whose meta.name is `SC · <name> · N steps` (`SC · <label> ·
-// task` for single tasks) and whose meta.description starts with `Workspace:
-// <workspace> (<tenant>) · ` -- the workspace is in the description, not the
-// name, since SC-WS-DESC (owner 2026-10-14)
+// task` for single tasks) and whose meta.description starts with its DETAILS
+// -- `Workspace: <workspace> (<tenant>) · Started by: ... · Profiles: ... ·
+// LLM: ... · Browser tool: ... · Session: ...` (SC-WS-DESC, then
+// SC-DESC-DETAILS, owner 2026-10-14) -- never with the workspace in the name
 // (swarm_mcp.launch, the swarm_workflow_launch tool). Inside, the same name
 // and step count open the first row's label, and the Result row adds the
-// workflow id, which only exists once SwarmCloud has answered.
+// workflow id, which only exists once SwarmCloud has answered. No row label
+// carries `[<workspace>]`: each row's own details line ends its prompt, which
+// is what Claude Code shows when the row is expanded (rowDetails below).
 //
 // A ROW SHOWS PROGRESS, NOT THE LOG (owner decision, 2026-10-01). Rows
 // once followed the remote agent's narrated log: 5-16 KB per reply, re-read
@@ -528,12 +531,27 @@ function readSpec(given) {
     // `title`: the name swarm_workflow_launch titled this run with, and
     // `workspace` the one it read off the API's document, for the attach row
     // until the workflow itself is read again.
-    return { attach: id, title: flatText(value.title), workspace: flatText(value.workspace) }
+    // `details`: each step row's details line, as the bridge wrote it.
+    return { attach: id, title: flatText(value.title), workspace: flatText(value.workspace), details: readDetails(value.details) }
   }
   if (isObject && typeof value.spec_path === 'string' && value.spec_path.trim()) {
-    return { spec: checkSpec(value.spec), specPath: value.spec_path.trim() }
+    return { spec: checkSpec(value.spec), specPath: value.spec_path.trim(), details: readDetails(value.details) }
   }
-  return { spec: checkSpec(value) }
+  // A spec object handed with `details` beside it (swarm_workflow_launch's
+  // `row_details`) is `{spec, details}`; the spec itself never has the key.
+  if (isObject && value.spec && typeof value.spec === 'object' && value.details) {
+    return { spec: checkSpec(value.spec), details: readDetails(value.details) }
+  }
+  return { spec: checkSpec(value), details: {} }
+}
+
+// `{step_id: step}` of a spec, for rowDetails' fallback.
+function specStepsById(spec) {
+  const out = {}
+  for (const step of (spec && Array.isArray(spec.steps) ? spec.steps : [])) {
+    if (step && typeof step.step_id === 'string') out[step.step_id] = step
+  }
+  return out
 }
 
 // {attach_tasks}: each entry `{task_id, title, console}` (or a bare task id),
@@ -553,6 +571,7 @@ function readTasks(given) {
       title: isEntry ? flatText(entry.title) : null,
       workspace: isEntry ? flatText(entry.workspace) : null,
       console: isEntry ? consoleLink(entry.console) : null,
+      details: isEntry ? detailsText(entry.details) : null,
     })
   }
   if (tasks.length === 0) {
@@ -658,11 +677,12 @@ function stagePhase(stage) {
 // SwarmCloud prefix, at most 100; owner 2026-10-05: prefix `SC · ` because
 // Claude Code's task panel shows ~28 characters of a name, and at most 150
 // because Enter shows the full name. swarm_mcp.workflows.workflow_title writes
-// the same title into the per-run copy's meta.name -- with no workspace
-// there since SC-WS-DESC: the copy's meta.description leads with it instead,
-// while this Result title and the row labels still carry `[<workspace>] ` --
-// and the plugin's tests hold the two cuts equal. Counted in code points, as
-// Python counts.
+// the same title into the per-run copy's meta.name, and this Result title is
+// that title: no `[<workspace>] ` in either since SC-DESC-DETAILS (owner
+// 2026-10-14: "workflows in here should not have the [Engineering] or
+// [eng@saga.xyz] prefix in front of the names") -- the copy's
+// meta.description leads with the workspace instead -- and the plugin's tests
+// hold the two cuts equal. Counted in code points, as Python counts.
 const TITLE_CHARS = 150
 const TITLE_PREFIX = 'SC · '
 
@@ -699,19 +719,20 @@ function stepsText(count) {
   return count === 1 ? '1 step' : count + ' steps'
 }
 
-// `[<workspace>] `, or '' when none is known (SC-ROWS). The workspace is never
-// cut: a cut name could be another workspace's.
-function workspaceTag(workspace) {
+// ` · workspace: <workspace>`, or '' when none is known: a narrator line that
+// lists work of several workspaces still says whose each is (SC-ROWS), at
+// its END -- never `[<workspace>]` in front of a name (SC-DESC-DETAILS). The
+// workspace is never cut: a cut name could be another workspace's.
+function workspaceNote(workspace) {
   const flat = flatText(workspace)
-  return flat ? '[' + flat + '] ' : ''
+  return flat ? ' · workspace: ' + flat : ''
 }
 
-// `SC · [<workspace>] <name> · N steps`: the NAME is cut, never the workspace
-// or the step count (swarm_mcp.workflows.workflow_title).
-function workflowTitle(name, count, workspace) {
+// `SC · <name> · N steps`: the NAME is cut, never the step count
+// (swarm_mcp.workflows.workflow_title).
+function workflowTitle(name, count) {
   const tail = ' · ' + stepsText(count)
-  const tag = workspaceTag(workspace)
-  const room = Math.max(1, TITLE_CHARS - Array.from(TITLE_PREFIX).length - Array.from(tag).length - Array.from(tail).length)
+  const room = Math.max(1, TITLE_CHARS - Array.from(TITLE_PREFIX).length - Array.from(tail).length)
   let chars = Array.from(flatText(name) || 'workflow')
   if (chars.length > room) {
     let head = chars.slice(0, room - 1)
@@ -719,7 +740,7 @@ function workflowTitle(name, count, workspace) {
     while (head.length > 0 && head[head.length - 1] === ' ') head.pop()
     chars = head.concat(['…'])
   }
-  return TITLE_PREFIX + tag + chars.join('') + tail
+  return TITLE_PREFIX + chars.join('') + tail
 }
 
 function duration(seconds) {
@@ -757,21 +778,75 @@ function clip(text, limit) {
 const LABEL_PREFIX = '[SwarmCloud] '
 const LABEL_CHARS = 100
 
-// A row that is not a step: `[SwarmCloud] [<workspace>] <name> · [<facts> · ]setup · <what>`.
-function setupLabel(name, facts, what, link, workspace) {
-  return rowLabel(name, facts.concat(['setup', what]).join(' · '), link, workspace)
+// A row that is not a step: `[SwarmCloud] <name> · [<facts> · ]setup · <what>`.
+function setupLabel(name, facts, what, link) {
+  return rowLabel(name, facts.concat(['setup', what]).join(' · '), link)
 }
 
-// THE WORKSPACE ON EVERY ROW (SC-ROWS, owner request 2026-10-14): right after
-// the `[SwarmCloud]` prefix, `[<workspace>] `, the workspace the API's
-// document names -- never this session's configured tenant. Like the suffix,
-// it is outside the name's budget: the name is cut, never the workspace.
-function rowLabel(name, suffix, link, workspace) {
+// NO WORKSPACE IN ANY LABEL (SC-DESC-DETAILS, owner 2026-10-14 ~22:00 PDT:
+// "workflows in here should not have the [Engineering] or [eng@saga.xyz]
+// prefix in front of the names"). SC-ROWS put `[<workspace>] ` after the
+// prefix; the workspace is now the first field of each row's details line
+// (rowDetails), which Claude Code shows when the row is expanded.
+function rowLabel(name, suffix, link) {
   const tail = ' · ' + suffix
-  const tag = workspaceTag(workspace)
-  const room = Math.max(8, LABEL_CHARS - LABEL_PREFIX.length - tag.length - tail.length)
+  const room = Math.max(8, LABEL_CHARS - LABEL_PREFIX.length - tail.length)
   const served = consoleLink(link)
-  return LABEL_PREFIX + tag + clip(name, room) + tail + (served ? ' · ' + served : '')
+  return LABEL_PREFIX + clip(name, room) + tail + (served ? ' · ' + served : '')
+}
+
+// THE DETAILS OF A ROW (SC-DESC-DETAILS, owner 2026-10-14: "a section in the
+// workflow or task description when you expand it in claude, that will
+// provide more details like user that created the job, tenant or workspace
+// that is using and maybe even what LLM subscription or config is using").
+// One line, the six fields in swarm_mcp.details.line's order. The Workflow
+// API gives an agent no description of its own, so the line is the LAST line
+// of the row's prompt -- `details: <line>` -- which is what Claude Code shows
+// when the row is expanded; sc:step and sc:task read it as display only.
+// The bridge writes it from the API's documents into each copy's args
+// (`details.steps` for a workflow, `details` on each attach_tasks entry);
+// a run launched without it gets the fields this script knows -- the
+// workspace, and a spec step's profile and browser tool -- and `not
+// reported` for the rest, never a guess.
+const DETAILS_CHARS = 600
+const NOT_REPORTED = 'not reported'
+const BROWSER_PROFILE = 'claude-code-browser'
+
+function detailsText(text) {
+  const flat = flatText(text)
+  return flat ? clip(flat, DETAILS_CHARS) : null
+}
+
+// `{step_id: line}` from the args' `details` ({steps: {...}}), or {}.
+function readDetails(value) {
+  const out = {}
+  const steps = value && typeof value === 'object' && value.steps && typeof value.steps === 'object' ? value.steps : {}
+  for (const id of Object.keys(steps)) {
+    const line = detailsText(steps[id])
+    if (line) out[id] = line
+  }
+  return out
+}
+
+function fallbackDetails(workspace, specStep) {
+  const profile = specStep ? flatText(specStep.runner_profile) : null
+  const raw = specStep ? specStep.inputs || specStep.input : null
+  let browser = NOT_REPORTED
+  if (profile === BROWSER_PROFILE) browser = flatText(raw && typeof raw === 'object' ? raw.browser_tool : null) || 'auto'
+  else if (profile) browser = 'not used'
+  return [
+    'Workspace: ' + (flatText(workspace) || NOT_REPORTED),
+    'Started by: ' + NOT_REPORTED,
+    'Profiles: ' + (profile || NOT_REPORTED),
+    'LLM: ' + NOT_REPORTED,
+    'Browser tool: ' + browser,
+    'Session: ' + NOT_REPORTED,
+  ].join(' · ')
+}
+
+// A step row's line: the bridge's for this step, else what this script knows.
+function rowDetails(wf, step) {
+  return (wf.details && wf.details[step.step_id]) || fallbackDetails(wf.workspace, wf.specSteps && wf.specSteps[step.step_id])
 }
 
 // Entries (newest first) grouped by their `workspace`, STABLY: each
@@ -1054,7 +1129,7 @@ function submitPrompt(digest, source) {
 // call while they run. `console` is the step's link as the submit or attach
 // reply carried it, or `none`: the row ends a progress line with it when the
 // follow reply that line came from carries no link of its own.
-function stepPrompt(workflowId, step, parentTasks) {
+function stepPrompt(workflowId, step, parentTasks, details) {
   const parents = (step.depends_on || []).join(', ') || 'none'
   return [
     'task_id: ' + step.task_id,
@@ -1063,6 +1138,7 @@ function stepPrompt(workflowId, step, parentTasks) {
     'depends_on: ' + parents,
     'parent_task_ids: ' + ((parentTasks || []).join(', ') || 'none'),
     'console: ' + (consoleLink(step.console) || 'none'),
+    'details: ' + details,
   ].join('\n')
 }
 
@@ -1127,7 +1203,7 @@ async function waitForBridge(wf, step, next, phaseName) {
   let answer = null
   try {
     answer = await agent('WAIT\nseconds: ' + BRIDGE_RETRY_S, {
-      label: setupLabel(wf.name, [], 'waiting for the bridge · ' + step.step_id + ' · try ' + next + ' of ' + BRIDGE_TRIES, null, wf.workspace),
+      label: setupLabel(wf.name, [], 'waiting for the bridge · ' + step.step_id + ' · try ' + next + ' of ' + BRIDGE_TRIES, null),
       phase: phaseName,
       agentType: 'sc:wait',
       schema: WAITED,
@@ -1176,7 +1252,7 @@ async function followRow(wf, step, prompt, opts) {
 // too, stays the row_error it was, which finish() re-attaches while the
 // workflow runs on: nothing here guesses a state.
 async function rowFromStatus(wf, step, why, phaseName) {
-  const read = await readStatus(wf.id, setupLabel(wf.name, [step.step_id], 'status', null, wf.workspace), phaseName)
+  const read = await readStatus(wf.id, setupLabel(wf.name, [step.step_id], 'status', null), phaseName)
   const state = statusSteps(read.final)[step.step_id]
   if (!state || TERMINAL.indexOf(state) < 0) return { row_error: why }
   return {
@@ -1192,10 +1268,14 @@ async function rowFromStatus(wf, step, why, phaseName) {
   }
 }
 
-// The prompt of one sc:task row: its task and the link the dispatch or the
-// list served for it, or `none`.
+// The prompt of one sc:task row: its task, the link the dispatch or the
+// list served for it, or `none`, and its details line (rowDetails).
 function taskPrompt(task) {
-  return ['task_id: ' + task.task_id, 'console: ' + (consoleLink(task.console) || 'none')].join('\n')
+  return [
+    'task_id: ' + task.task_id,
+    'console: ' + (consoleLink(task.console) || 'none'),
+    'details: ' + (task.details || fallbackDetails(task.workspace, null)),
+  ].join('\n')
 }
 
 // One single task's row, started again under the same label while the bridge
@@ -1203,7 +1283,7 @@ function taskPrompt(task) {
 // then ends with the command that gives it a row again.
 async function followTaskRow(task, name) {
   const opts = {
-    label: rowLabel(name, 'task', task.console, task.workspace),
+    label: rowLabel(name, 'task', task.console),
     phase: 'Tasks',
     agentType: 'sc:task',
     schema: STEP_RESULT,
@@ -1233,12 +1313,12 @@ async function attachTasks(given, cap) {
   const follow = tasks.slice(0, limit)
   const rest = tasks.slice(limit)
   log(follow.length + ' single task(s) · one row each' + (rest.length ? ' · ' + rest.length + ' listed, not followed (at most ' + limit + ')' : ''))
-  for (const task of rest) log(workspaceTag(task.workspace) + task.task_id + ' · not followed · swarm_follow it, or /sc status ' + task.task_id + consoleSuffix(task.console))
+  for (const task of rest) log(task.task_id + ' · not followed · swarm_follow it, or /sc status ' + task.task_id + workspaceNote(task.workspace) + consoleSuffix(task.console))
   const rows = await pipeline(
     follow,
     async (task) => await followTaskRow(task, titleName([task.title, task.task_id])),
     (result, task) => {
-      log(workspaceTag(task.workspace) + narrate(titleName([task.title, task.task_id]), result, task.console))
+      log(narrate(titleName([task.title, task.task_id]), result, task.console) + workspaceNote(task.workspace))
       const row = { task_id: task.task_id, workspace: task.workspace || null, title: task.title || null }
       if (!result || result.row_error) {
         row.state = null
@@ -1260,10 +1340,15 @@ async function attachTasks(given, cap) {
 // A workflow as its rows show it: `id`; `name`, the title's name; `count`,
 // its steps; `all`, every step (step_id, task_id, depends_on, console) in the
 // workflow's own order; `stages`, consoleStages(all); `workspace`, the one the
-// API's document names, or null; `title`.
-function workflowView(id, name, all, workspace) {
+// API's document names, or null; `title`; `details`, the bridge's details
+// line per step id ({} when it sent none), and `specSteps`, the spec's own
+// step per id when this run submitted it -- both for rowDetails.
+function workflowView(id, name, all, workspace, details, specSteps) {
   const ws = flatText(workspace)
-  return { id: id, name: name, count: all.length, all: all, stages: consoleStages(all), workspace: ws, title: workflowTitle(name, all.length, ws) }
+  return {
+    id: id, name: name, count: all.length, all: all, stages: consoleStages(all), workspace: ws,
+    title: workflowTitle(name, all.length), details: details || {}, specSteps: specSteps || {},
+  }
 }
 
 // One sc:step row per step in `steps`, in the console's order, each handed
@@ -1278,15 +1363,15 @@ async function followSteps(wf, steps, parentTasksOf) {
     async (step) => {
       if (!step.task_id) return { row_error: 'SwarmCloud named no task for this step' }
       const stage = wf.stages.stage[step.step_id] || 1
-      return await followRow(wf, step, stepPrompt(wf.id, step, parentTasksOf(step)), {
-        label: rowLabel(wf.name, 'stage ' + stage + ' · ' + step.step_id, step.console, wf.workspace),
+      return await followRow(wf, step, stepPrompt(wf.id, step, parentTasksOf(step), rowDetails(wf, step)), {
+        label: rowLabel(wf.name, 'stage ' + stage + ' · ' + step.step_id, step.console),
         phase: stagePhase(stage),
         agentType: 'sc:step',
         schema: STEP_RESULT,
       })
     },
     (result, step) => {
-      log(workspaceTag(wf.workspace) + narrate(step.step_id, result, step.console))
+      log(narrate(step.step_id, result, step.console))
       const row = { step_id: step.step_id, task_id: step.task_id, depends_on: step.depends_on || [] }
       if (!result || result.row_error) {
         row.state = null
@@ -1371,7 +1456,7 @@ function reattachable(wf, rows, final) {
 // not take every step's result down with it.
 async function finish(wf, rows, knownConsole) {
   phase('Result')
-  const label = setupLabel(wf.name, [stepsText(wf.count), wf.id], 'result', knownConsole, wf.workspace)
+  const label = setupLabel(wf.name, [stepsText(wf.count), wf.id], 'result', knownConsole)
   let read = await readStatus(wf.id, label)
   fillFromStatus(rows, read.final)
 
@@ -1379,7 +1464,7 @@ async function finish(wf, rows, knownConsole) {
   const again = reattachable(wf, rows, read.final)
   if (again.length > 0) {
     reattached = again.map((step) => step.step_id)
-    log(workspaceTag(wf.workspace) + wf.id + ' · ' + reattached.join(', ') + ' ended without a state while SwarmCloud says the workflow is ' + read.final.state + ' · re-attaching ' + (again.length === 1 ? 'it' : 'them') + ' once, with a new row each')
+    log(wf.id + ' · ' + reattached.join(', ') + ' ended without a state while SwarmCloud says the workflow is ' + read.final.state + ' · re-attaching ' + (again.length === 1 ? 'it' : 'them') + ' once, with a new row each')
     const statusOf = statusSteps(read.final)
     const taskOf = {}
     for (const step of wf.all) taskOf[step.step_id] = step.task_id
@@ -1406,7 +1491,7 @@ async function finish(wf, rows, knownConsole) {
   // submit or attach reply carried.
   const workflowConsole = (final && final.console) || knownConsole
   const workflowLink = consoleSuffix(workflowConsole)
-  log(workspaceTag(wf.workspace) + wf.id + ' ' + (state || 'state not read') + (note ? ' · ' + clip(note, 160) : '') + workflowLink)
+  log(wf.id + ' ' + (state || 'state not read') + (note ? ' · ' + clip(note, 160) : '') + workspaceNote(wf.workspace) + workflowLink)
 
   const finished = {
     workflow_id: wf.id,
@@ -1424,12 +1509,12 @@ async function finish(wf, rows, knownConsole) {
 // ATTACH one workflow: nothing is submitted. One read, one probe, a row per
 // unfinished step. `givenTitle` is the name the launch titled this run with,
 // if any; the rows take the names SwarmCloud stored once the read returns.
-async function attachOne(workflowId, givenTitle, givenWorkspace) {
+async function attachOne(workflowId, givenTitle, givenWorkspace, givenDetails) {
   let attached = null
   let attachFailure = null
   try {
     attached = await agent('ATTACH\nworkflow_id: ' + workflowId, {
-      label: setupLabel(titleName([givenTitle, workflowId]), [], 'attach', null, givenWorkspace),
+      label: setupLabel(titleName([givenTitle, workflowId]), [], 'attach', null),
       phase: 'Attach',
       agentType: 'sc:workflow',
       schema: ATTACHED,
@@ -1444,13 +1529,13 @@ async function attachOne(workflowId, givenTitle, givenWorkspace) {
       : attachFailure
         ? 'the row reading workflow ' + workflowId + ' failed: ' + attachFailure
         : 'the row reading workflow ' + workflowId + ' stopped before it answered'
-    log(workspaceTag(givenWorkspace) + 'not attached · ' + clip(error, 200))
+    log('not attached · ' + clip(error, 200) + workspaceNote(givenWorkspace))
     return { workflow_id: workflowId, workspace: givenWorkspace || null, state: 'NOT_ATTACHED', error: error, steps: [] }
   }
   if (attached.follow_error) return followRefused(workflowId, attached.bridge_version, attached.follow_error, attached.console)
 
   // The workspace the read names wins over the one the launch was given.
-  const wf = workflowView(workflowId, titleName([attached.title, attached.label, givenTitle, workflowId]), attached.steps, flatText(attached.workspace) || givenWorkspace)
+  const wf = workflowView(workflowId, titleName([attached.title, attached.label, givenTitle, workflowId]), attached.steps, flatText(attached.workspace) || givenWorkspace, givenDetails)
   const known = {}
   for (const step of attached.steps) known[step.step_id] = step
   const finished = (step) => !!step && TERMINAL.indexOf(step.state) >= 0
@@ -1459,14 +1544,14 @@ async function attachOne(workflowId, givenTitle, givenWorkspace) {
   for (const step of attached.steps) {
     if (!finished(step)) continue
     // Said once, here, and given no row: there is nothing left to watch.
-    log(workspaceTag(wf.workspace) + step.step_id + ' ' + step.state + ' · finished before attach' + consoleSuffix(step.console))
+    log(step.step_id + ' ' + step.state + ' · finished before attach' + consoleSuffix(step.console))
     doneRows[step.step_id] = {
       step_id: step.step_id, task_id: step.task_id, depends_on: step.depends_on || [],
       state: step.state, finished_before_attach: true,
     }
     if (consoleSuffix(step.console)) doneRows[step.step_id].console = step.console.trim()
   }
-  log(workspaceTag(wf.workspace) + workflowId + ' attached · ' + wf.title + ' · ' + open.length + ' unfinished' + consoleSuffix(attached.console))
+  log(workflowId + ' attached · ' + wf.title + ' · ' + open.length + ' unfinished' + workspaceNote(wf.workspace) + consoleSuffix(attached.console))
 
   const followed = await followSteps(wf, open, (step) =>
     (step.depends_on || [])
@@ -1526,7 +1611,7 @@ async function attachAll(cap) {
   }
   const groupedTasks = groupByWorkspace(tasks)
   if (listed.single_tasks_error) log('your single tasks could not be listed · ' + clip(listed.single_tasks_error, 200))
-  for (const task of groupedTasks) log(workspaceTag(task.workspace) + task.task_id + (task.title ? ' ' + task.title : '') + ' ' + (task.state || 'state not read') + ' · single task · row: /sc attach --all' + consoleSuffix(task.console))
+  for (const task of groupedTasks) log(task.task_id + (task.title ? ' ' + task.title : '') + ' ' + (task.state || 'state not read') + ' · single task · row: /sc attach --all' + workspaceNote(task.workspace) + consoleSuffix(task.console))
   const taskCall = groupedTasks.length === 0
     ? null
     : {
@@ -1560,11 +1645,11 @@ async function attachAll(cap) {
   // its run has started.
   for (const entry of follow) {
     const name = nameOf(entry) ? ' ' + nameOf(entry) : ''
-    log(workspaceTag(entry.workspace) + entry.workflow_id + name + ' ' + (entry.state || 'state not read') + ' · attach: /sc attach ' + entry.workflow_id + consoleSuffix(entry.console))
+    log(entry.workflow_id + name + ' ' + (entry.state || 'state not read') + ' · attach: /sc attach ' + entry.workflow_id + workspaceNote(entry.workspace) + consoleSuffix(entry.console))
   }
   for (const entry of rest) {
     const name = nameOf(entry) ? ' ' + nameOf(entry) : ''
-    log(workspaceTag(entry.workspace) + entry.workflow_id + name + ' ' + (entry.state || 'state not read') + ' · not followed · /sc attach ' + entry.workflow_id + consoleSuffix(entry.console))
+    log(entry.workflow_id + name + ' ' + (entry.state || 'state not read') + ' · not followed · /sc attach ' + entry.workflow_id + workspaceNote(entry.workspace) + consoleSuffix(entry.console))
   }
   const described = (entry) => {
     const out = { workflow_id: entry.workflow_id, workspace: flatText(entry.workspace), title: entry.title || null, label: entry.label || null, state: entry.state || null }
@@ -1602,7 +1687,7 @@ if (given.attachAll) {
 
 if (given.attach) {
   phase('Attach')
-  return await attachOne(given.attach, given.title, given.workspace)
+  return await attachOne(given.attach, given.title, given.workspace, given.details)
 }
 
 phase('Submit')
@@ -1706,10 +1791,12 @@ const wf = workflowView(
   titleName([spec.title, spec.label, submitted.workflow_id]),
   spec.steps.concat(appendedSteps).map((step) => replied[step.step_id]),
   submitted.workspace,
+  given.details,
+  specStepsById(spec),
 )
 
 const where = submitted.repository ? ' · clones ' + submitted.repository : ' · clones no repository'
-log(workspaceTag(wf.workspace) + submitted.workflow_id + ' submitted · ' + submitted.steps.length + ' step(s)' + where + consoleSuffix(submitted.console))
+log(submitted.workflow_id + ' submitted · ' + submitted.steps.length + ' step(s)' + where + workspaceNote(wf.workspace) + consoleSuffix(submitted.console))
 log(wf.title + ' · ' + submitted.workflow_id)
 // Every inference note the bridge made, verbatim: it exists only in this
 // reply, and this is the one place a session watching the workflow can see it.

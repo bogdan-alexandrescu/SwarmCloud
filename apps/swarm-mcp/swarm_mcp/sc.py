@@ -1122,8 +1122,8 @@ def session_start_context(
         for entry in running[:SESSION_START_NAMED]:
             label = f' "{entry["label"]}"' if entry.get("label") else ""
             named.append(
-                f"{_workspace_tag(entry)}{entry.get('workflow_id')}{label} ({entry.get('state')}; {_steps_text(entry)}; "
-                f"{_age_text(entry.get('age_seconds'))})"
+                f"{entry.get('workflow_id')}{label} ({entry.get('state')}; {_steps_text(entry)}; "
+                f"{_age_text(entry.get('age_seconds'))}{_workspace_clause(entry)})"
             )
         if count > SESSION_START_NAMED:
             named.append(f"and {count - SESSION_START_NAMED} more")
@@ -1139,8 +1139,8 @@ def session_start_context(
         for entry in singles[:SESSION_START_TASKS_NAMED]:
             label = f' "{entry["label"]}"' if entry.get("label") else ""
             named.append(
-                f"{_workspace_tag(entry)}{entry.get('task_id')}{label} ({entry.get('state')}; "
-                f"{_age_text(entry.get('age_seconds'))})"
+                f"{entry.get('task_id')}{label} ({entry.get('state')}; "
+                f"{_age_text(entry.get('age_seconds'))}{_workspace_clause(entry)})"
             )
         if count > SESSION_START_TASKS_NAMED:
             named.append(f"and {count - SESSION_START_TASKS_NAMED} more")
@@ -1189,6 +1189,17 @@ def mark_session(entries: list[dict[str, Any]], sid: str | None) -> list[dict[st
 
 def _session_mark(entry: dict[str, Any]) -> str:
     return "  [this session]" if entry.get("this_session") else ""
+
+
+def _workspace_clause(entry: dict[str, Any]) -> str:
+    """`; workspace <workspace>` for an entry the SessionStart notice names,
+    "" when the API named none. Inside the entry's parentheses, never
+    `[<workspace>]` in front of its id (SC-DESC-DETAILS, owner 2026-10-14:
+    no workspace prefix in front of a workflow's or task's name)."""
+    from .workflows import _flat
+
+    workspace = _flat(entry.get("workspace"))
+    return f"; workspace {workspace}" if workspace else ""
 
 
 def _workspace_tag(entry: dict[str, Any]) -> str:

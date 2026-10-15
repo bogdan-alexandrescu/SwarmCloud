@@ -1,6 +1,6 @@
 ---
 name: sc
-description: The SwarmCloud front door, `/sc [verb]`. With no verb, show and interpret SwarmCloud cluster state — the subscription account pool and its 5-hour/7-day quota windows, pool ceilings and which pool binds each runner profile, agents running and queued, and what is wrong right now. `status <id>` reads one workflow or task once; `workflows` lists your tenant's workflows still running in SwarmCloud; `attach <workflow_id>` re-attaches live rows to a workflow still running in SwarmCloud and submits nothing, and `attach --all` does that for every running workflow of your tenant (at most 30 followed, the plugin's `max_live_rows`) and gives each of your running single tasks — dispatched with swarm_dispatch, in no workflow — one row (at most 30), every row naming the workspace it runs in; `run <spec>` submits a workflow spec through /sc:swarmcloud and says so before it does; `run --issue owner/repo#N` plans a GitHub issue (one planner task) and `plan show|approve|edit|reject <run>` reads or acts on that plan, approving only the digest the developer was shown — `run` and `plan approve|edit|reject` are the verbs that write. `check` reads which of this project's SwarmCloud workflows and tasks are stuck or stale (swarm_check, read-only) and then gives every running workflow of the project that has no row in this session its live rows; `watch [interval]` runs that `check` every interval (default 30m, at least 5m) with Claude Code's CronCreate and remembers it for the project; the watch also arms itself (CronList first, never a second job) whenever this session attaches to or starts SwarmCloud work, and `watch off` stops it and keeps it off for the project until `watch` again. `keys` says whether a TypeSafe key is set for you and your tenant and which one a task would use; `keys set <provider> [--tenant]` gives the developer a one-time console link to paste the key into themselves — the key never passes through this session. Use when asked "is my TypeSafe key set", "set my TypeSafe key", "what is the swarm doing", "how much quota is left", "why is my task queued", "is anything broken", "which account is nearly full", "where is my workflow", "what workflows are running", "show my workflow's rows again", before dispatching a long batch, to run a spec, or to plan and run a GitHub issue ("work on issue #N", "approve the plan").
+description: The SwarmCloud front door, `/sc [verb]`. With no verb, show and interpret SwarmCloud cluster state — the subscription account pool and its 5-hour/7-day quota windows, pool ceilings and which pool binds each runner profile, agents running and queued, and what is wrong right now. `status <id>` reads one workflow or task once; `workflows` lists your tenant's workflows still running in SwarmCloud; `attach <workflow_id>` re-attaches live rows to a workflow still running in SwarmCloud and submits nothing, and `attach --all` does that for every running workflow of your tenant (at most 30 followed, the plugin's `max_live_rows`) and gives each of your running single tasks — dispatched with swarm_dispatch, in no workflow — one row (at most 30), every run's and row's expanded details naming the workspace it runs in, who started it and its LLM account; `run <spec>` submits a workflow spec through /sc:swarmcloud and says so before it does; `run --issue owner/repo#N` plans a GitHub issue (one planner task) and `plan show|approve|edit|reject <run>` reads or acts on that plan, approving only the digest the developer was shown — `run` and `plan approve|edit|reject` are the verbs that write. `check` reads which of this project's SwarmCloud workflows and tasks are stuck or stale (swarm_check, read-only) and then gives every running workflow of the project that has no row in this session its live rows; `watch [interval]` runs that `check` every interval (default 30m, at least 5m) with Claude Code's CronCreate and remembers it for the project; the watch also arms itself (CronList first, never a second job) whenever this session attaches to or starts SwarmCloud work, and `watch off` stops it and keeps it off for the project until `watch` again. `keys` says whether a TypeSafe key is set for you and your tenant and which one a task would use; `keys set <provider> [--tenant]` gives the developer a one-time console link to paste the key into themselves — the key never passes through this session. Use when asked "is my TypeSafe key set", "set my TypeSafe key", "what is the swarm doing", "how much quota is left", "why is my task queued", "is anything broken", "which account is nearly full", "where is my workflow", "what workflows are running", "show my workflow's rows again", before dispatching a long batch, to run a spec, or to plan and run a GitHub issue ("work on issue #N", "approve the plan").
 argument-hint: "[status <wf_id|task_id> | workflows | attach <wf_id> | attach --all | check | watch [interval] | watch off | run <spec path|JSON> | run --issue owner/repo#N | runs | plan show|approve|edit|reject <run> | keys | keys set <provider> [--tenant]]"
 arguments:
   - verb
@@ -98,16 +98,30 @@ A SwarmCloud workflow run here is titled `SC · <name> · N steps` (at most
 `label` cut at a word, else the title or label SwarmCloud stored, else the
 workflow id, cut to fit, never the step count. A run of single tasks is
 titled `SC · <label> · task` (several: `SC · <first label> +N · N tasks`).
-The run's NAME carries no workspace; its DESCRIPTION starts with it,
-`Workspace: <workspace> (<tenant>) · ` then the rest -- <workspace> is the
-workspace (tenant) the API's document says it runs in, by its display name
-when the API gives one, and <tenant> its tenant id (`Workspace: <tenant> · `
-alone when there is no display name) -- first, so clipping a long
-description never drops it; `Workspace: not reported` when the API names
-none (owner, 2026-10-14). Every row INSIDE the run still names its
-workspace, `[SwarmCloud] [<workspace>] <name> · stage <n> ·
-<step>` (a single task: `[SwarmCloud] [<workspace>] <label> · task`), with its
-console link, and every result and summary line names the workspace. A run's name is fixed when it is launched, so `run` and `attach`
+NO NAME CARRIES A WORKSPACE -- not the run's, not a row's (owner,
+2026-10-14: "workflows in here should not have the [Engineering] or
+[eng@saga.xyz] prefix in front of the names"). The run's DESCRIPTION starts
+with its DETAILS, one line, six fields in this order:
+`Workspace: <workspace> (<tenant>) · Started by: <submitted_by> · Profiles: <runner profiles> · LLM: <pool account> (<provider>), model <model> · Browser tool: <browser_tool> · Session: <claude_session>`
+-- <workspace> is the workspace (tenant) the API's document says it runs in,
+by its display name when the API gives one, and <tenant> its tenant id
+(`Workspace: <tenant> · ` alone when there is no display name); `Started by`
+is the `submitted_by` the API stores (an email, or the principal a key acts
+as); `LLM` is the pool account each step's attempt runs on, by the label its
+owner gave it, and the model; `Browser tool` is a `claude-code-browser`
+step's tool (`auto` when it named none, `not used` when no step runs that
+profile); `Session` is the Claude Code session tag, `this session (<id>)`
+when it is this one. Each field says `not reported` when the API serves
+none -- `Workspace: not reported` included -- and the workspace stays first,
+so clipping a long description never drops it. Nothing credential-shaped is
+ever shown: a value that looks like a key is `withheld`. A run started
+before an account was assigned says `LLM: not assigned yet`; each of its
+rows then says `LLM: <account>` once, on its first progress line after the
+assignment. Every row INSIDE the run is `[SwarmCloud] <name> · stage <n> ·
+<step>` (a single task: `[SwarmCloud] <label> · task`) with its console
+link, and shows ITS OWN details line when expanded (the last line of its
+prompt, `details: ...`); every result object and every listing line names
+the workspace. A run's name is fixed when it is launched, so `run` and `attach`
 first call `swarm_workflow_launch`, which writes a copy of the
 `/sc:swarmcloud` script with that name and returns its `script_path`, and
 then launch THAT copy with the Workflow tool, `{scriptPath: <script_path>,
@@ -118,8 +132,8 @@ the same, only the run's title is the generic one.
 ### `attach <wf_id>`
 
 Call `swarm_workflow_launch` with `{attach: "<wf_id>"}`, then run the script it
-returned with the args it returned — `{attach: <wf_id>}` plus the `title`
-and `workspace` it chose, nothing else. It submits nothing: it reads the workflow once, reports
+returned with the args it returned — `{attach: <wf_id>}` plus the `title`,
+`workspace` and `details` (each step row's details line) it chose, nothing else. It submits nothing: it reads the workflow once, reports
 its finished steps once, starts a live row for every unfinished step, and ends
 with the workflow's state. This is how a session that restarted gets its rows
 back for a workflow that kept running in SwarmCloud. An unknown or
@@ -171,7 +185,7 @@ workflow keeps its own step count, as the console shows it. Call
 tenant's running workflows once, keeps this session's and, for the newest 30 (the plugin's
 `max_live_rows` option, held to 1-50), grouped by workspace, writes one
 titled script each -- named `SC · <name> · N steps`, its description
-starting `Workspace: <workspace> (<tenant>) · ` -- then make one Workflow call per entry of its `launches`,
+starting with its details, `Workspace: <workspace> (<tenant>) · Started by: ...` -- then make one Workflow call per entry of its `launches`,
 `{scriptPath: <its script_path>, args: <its args>}` — each attaches its
 workflow exactly as `attach <wf_id>` does: finished steps reported once, a
 live row for every unfinished step; every row's label carries its task's
@@ -184,14 +198,14 @@ stays a cap.
 **SCROLLING IS CLAUDE CODE'S, NOT THE PLUGIN'S.** The /workflows panel is
 Claude Code's own UI: this plugin cannot add scrolling to it, and cannot make
 it show more lines. What the plugin does is keep 30 rows scannable: every row
-is ONE compact line (`[SwarmCloud] [<workspace>] <name> · stage <n> · <step>
+is ONE compact line (`[SwarmCloud] <name> · stage <n> · <step>
 · <console link>`), in a stable order -- newest first, grouped by workspace
 -- so a row never moves within its block between two attaches. Say this
 plainly when someone asks for scrolling.
 SINGLE TASKS (#830): your running tasks in no workflow get ONE more entry in
 `launches`, whose args are `{attach_tasks: [...]}` — launch it like the
 others; it starts one `[SwarmCloud]` row per task, titled from the task's
-label and labelled with its workspace, each following its task until it
+label, with its workspace and the rest of its details shown when the row is expanded, each following its task until it
 finishes (at most 30, `max_live_rows`; the rest come back in `not_followed`). `single_tasks` says how many there were;
 `single_tasks_error` means they could not be read — say so verbatim.
 `count: 0` and no task launch is an answer: nothing is running. Report each run's `state`
@@ -381,7 +395,9 @@ The one verb that writes: it spends the shared pool, a step at a time.
    retype the spec, which is how long specs came back altered and were
    refused. Given a file under the checkout, the args are `{spec: <the spec
    object>, spec_path: "<its absolute path>"}`; given JSON text, or a file
-   outside the checkout, `{spec: <the spec object>}`.
+   outside the checkout, `{spec: <the spec object>}`. Either way add
+   `details: <the reply's row_details>` beside them, so each step's row
+   shows its own details when expanded.
    `spec_path` beside the object is a reference, not the spec: the bridge
    reads those exact bytes for the submission and checks them against the
    digest of the object, so nothing is retyped and a spec that changed on the

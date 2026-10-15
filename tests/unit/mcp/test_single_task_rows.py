@@ -237,9 +237,12 @@ def test_a_task_launch_titles_its_run_and_rows_from_the_labels(_plugin_root):
         {"task_id": "task_b", "label": None},
     ])
     assert out["title"] == "SC · lane-a +1 · 2 tasks"
+    # SC-DESC-DETAILS: each row carries its details line; these entries carry
+    # no task document, so every field says it was not reported.
+    none = "Workspace: not reported · Started by: not reported · Profiles: not reported · LLM: not reported · Browser tool: not reported · Session: not reported"
     assert out["args"] == {"attach_tasks": [
-        {"task_id": "task_a", "title": "lane-a", "console": "https://c.test/agents/task_a"},
-        {"task_id": "task_b", "title": "task_b"},
+        {"task_id": "task_a", "title": "lane-a", "console": "https://c.test/agents/task_a", "details": none},
+        {"task_id": "task_b", "title": "task_b", "details": none},
     ], "max_rows": launch.MAX_ATTACHED_TASKS}
     assert Path(out["script_path"]).is_file()
     assert launch.for_tasks([{"task_id": "task_a", "label": "lane-a"}])["title"] == "SC · lane-a · task"
@@ -332,8 +335,11 @@ def test_attach_tasks_starts_one_task_row_per_task_titled_from_its_label(tmp_pat
     assert [c["agentType"] for c in calls] == ["sc:task", "sc:task"], "one row per task, the duplicate dropped"
     assert calls[0]["label"] == f"[SwarmCloud] lane-a · task · {link}"
     assert calls[1]["label"] == "[SwarmCloud] lane-b · task"
-    assert calls[0]["prompt"] == f"task_id: task_a\nconsole: {link}"
-    assert calls[1]["prompt"] == "task_id: task_b\nconsole: none"
+    # SC-DESC-DETAILS: the last line is the row's details, what Claude Code
+    # shows when the row is expanded; none handed, so what run.js knows.
+    none = "details: Workspace: not reported · Started by: not reported · Profiles: not reported · LLM: not reported · Browser tool: not reported · Session: not reported"
+    assert calls[0]["prompt"] == f"task_id: task_a\nconsole: {link}\n{none}"
+    assert calls[1]["prompt"] == f"task_id: task_b\nconsole: none\n{none}"
     assert all("step_id" not in c["prompt"] for c in calls)
     assert got["phases"] == ["Tasks"]
     result = got["result"]
