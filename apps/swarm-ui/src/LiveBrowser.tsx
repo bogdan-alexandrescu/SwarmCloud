@@ -648,6 +648,8 @@ export function LiveBrowserPane({
   const [screenNode, setScreenNode] = useState<HTMLElement | null>(null)
   // The gate's reason the page is not (all) shown, while its desktop name carries one (`gateReason`).
   const [cover, setCover] = useState<string | null>(null)
+  // The preset the person in control last asked for, on the session they asked on (`LiveDevice`'s `onAsked`).
+  const [asked, setAsked] = useState<{ sessionId: string; preset: string } | null>(null)
   const session = live.status === 'ok' ? live.session : null
   const open = session !== null && session.state === 'open' ? session : null
   const returned = useControlReturned(open?.session_id ?? null, open !== null && isController(open), open?.controller ?? null)
@@ -712,6 +714,16 @@ export function LiveBrowserPane({
 
   const mine = isController(session)
   const verdict = stripVerdict(session)
+  // A PRESET ASKED FOR IS SAID UNTIL THE GATE REPORTS IT (STRIP-LABEL, part of
+  // #1341). `session.device` is what the gate last REPORTED (swarm-api
+  // live.py `set_device`): the device route answers with the session as it
+  // was before the switch, and the device changes only when the gate's report
+  // reaches a later read. Until then the caption said the old preset ("iPad")
+  // with nothing of the Desktop the person had just chosen. It goes when the
+  // gate reports the preset asked for, or the session is another.
+  const pending =
+    asked !== null && asked.sessionId === session.session_id && session.device?.preset !== asked.preset ? asked.preset : null
+  const onAsked = (preset: string) => setAsked({ sessionId: session.session_id, preset })
   const o = session.origin
   // The tool, egress and Jev badges (BSTATUS-STRIP): the API may serve the
   // object on the session or beside it; either, and none from an older one.
@@ -769,7 +781,7 @@ export function LiveBrowserPane({
       strip={strip}
       handoff={handoff}
       logs={<AgentLogs task={task} />}
-      device={<LiveDevice taskId={task.id} session={session} reload={reload} />}
+      device={<LiveDevice taskId={task.id} session={session} reload={reload} onAsked={onAsked} />}
       control={<LiveControl taskId={task.id} session={session} reload={reload} />}
       take={<LiveControl taskId={task.id} session={session} reload={reload} takeOnly />}
     >
@@ -787,6 +799,7 @@ export function LiveBrowserPane({
           logs={logs}
           onLogs={() => setLogs((v) => !v)}
           reload={reload}
+          onAsked={onAsked}
         />
         <SaveAsLoginOffer taskId={task.id} tenantId={task.tenant_id} site={o?.origin ?? null} controlReturned={returned} />
         {/* LOGS ON THE LEFT, THE DEVICE ON THE RIGHT (the mockup's ◫ logs). */}
@@ -805,7 +818,16 @@ export function LiveBrowserPane({
             onScreen={setScreenNode}
             onGateSays={setCover}
             device={deviceSize(session)}
-            caption={<span className="live-caption">{deviceCaption(session)}</span>}
+            caption={
+              <span className="live-caption">
+                {deviceCaption(session)}
+                {pending !== null && (
+                  <span className="live-caption-asked" data-testid="live-device-asked">
+                    {` · ${presetLabel(pending)} asked for; the browser has not applied it yet`}
+                  </span>
+                )}
+              </span>
+            }
             onControlChange={reload}
             onSessionMoved={reload}
           />
@@ -946,17 +968,19 @@ function LiveToolbar({
   logs,
   onLogs,
   reload,
+  onAsked,
 }: {
   taskId: string
   session: LiveSession
   logs: boolean
   onLogs: () => void
   reload: LiveReload
+  onAsked?: (preset: string) => void
 }) {
   return (
     <div className="live-toolbar" role="toolbar" aria-label="Browser view">
       <LiveToolMenu>
-        <LiveDevice taskId={taskId} session={session} reload={reload} />
+        <LiveDevice taskId={taskId} session={session} reload={reload} onAsked={onAsked} />
         <Button size="sm" aria-pressed={logs} onClick={onLogs} title={logs ? 'Hide the logs' : 'Show the logs beside the browser'}>
           ◫ logs
         </Button>
@@ -1039,7 +1063,18 @@ function rotated(orientation: Orientation): Orientation {
 }
 
 /** The device chips, rotate and touch: the toolbar's, and the same component in the theater's device slot. */
-function LiveDevice({ taskId, session, reload }: { taskId: string; session: LiveSession; reload: LiveReload }) {
+function LiveDevice({
+  taskId,
+  session,
+  reload,
+  onAsked,
+}: {
+  taskId: string
+  session: LiveSession
+  reload: LiveReload
+  /** Told the preset a switch the route accepted asked for: the caption says it until the gate reports it. */
+  onAsked?: (preset: string) => void
+}) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const whyId = useId()
@@ -1063,10 +1098,11 @@ function LiveDevice({ taskId, session, reload }: { taskId: string; session: Live
     void setLiveDevice(taskId, body).then((r) => {
       setBusy(false)
       setError(r.status === 'error' ? r.error.message : null)
-      // THE ANSWER IS DRAWN (STRIP-LABEL, part of #1341), as every other
-      // control route's is (QA12-22): it is the session as the switch left
-      // it. Dropped, the caption under the device and the chips kept the
-      // preset from before the switch until a later read landed.
+      // The answer is drawn as every other control route's is (QA12-22), but
+      // its `device` is still the one the gate last reported, from before
+      // this switch (swarm-api live.py `set_device`): what was asked for is
+      // told to the pane instead, which says it until the gate reports it.
+      if (r.status === 'ok') onAsked?.(body.preset)
       reload(r.status === 'ok' ? r.data : undefined)
     })
   }

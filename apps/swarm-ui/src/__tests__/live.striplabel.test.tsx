@@ -14,14 +14,16 @@
 //
 //   1. In theater, the gate's reason is in the strip above the browser while
 //      the desktop name carries one, and goes when it does not.
-//   2. The device label follows a preset change: the device route's answer is
-//      the session as the switch left it, and it is drawn.
+//   2. The device label follows a preset change. As swarm-api's `set_device`
+//      really answers, the route's answer and the next read still carry the
+//      device the gate last REPORTED (iPad): the caption says the Desktop
+//      asked for beside it until a read carries the gate's report of it.
 //   3. The control label reads in-control while the viewer holds control,
 //      also when the relay's first status frame says so before the session
 //      read drawn has caught up: that frame is checked against what is drawn.
 //
-// MUTATIONS: draw the reason only under the screen (1 fails); call `reload()`
-// without the device route's answer (2 fails); take the relay's first status
+// MUTATIONS: draw the reason only under the screen (1 fails); drop the
+// preset asked for, drawing only the reported device (2 fails); take the relay's first status
 // frame as what the read already drew, unchecked (3 fails).
 
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
@@ -152,12 +154,16 @@ const task: Task = runTask({
   result_summary: null,
 })
 
+/** A later read landing, as the split's poll draws it (set while `Held` is mounted). */
+let polled: (s: LiveSession) => void = () => {}
+
 /**
  * The pane as the split holds it (`useLiveSession`): `reload(answer)` draws a
- * control route's answer, and `reload()` reads the session again.
+ * control route's answer and reads the session again behind it.
  */
 function Held({ first }: { first: LiveSession }) {
   const [s, setS] = useState(first)
+  polled = setS
   const draw = (answer: unknown) => {
     const read = liveReadOf(answer)
     if (read !== null && read.session !== null) setS(read.session)
@@ -169,7 +175,7 @@ function Held({ first }: { first: LiveSession }) {
       live={{ status: 'ok', liveBrowser: true, session: s }}
       reload={(answer) => {
         if (answer !== undefined) draw(answer)
-        else void api.loadLiveSession(ID).then((r: Result<LiveRead>) => r.status === 'ok' && draw(r.data))
+        void api.loadLiveSession(ID).then((r: Result<LiveRead>) => r.status === 'ok' && draw(r.data))
       }}
     />
   )
@@ -236,21 +242,39 @@ describe('1. the theater strip says why part of the page is covered', () => {
 })
 
 describe('2. the device label follows the preset', () => {
-  it('reads Desktop once the person in control switches to it, from the device route’s answer', async () => {
+  it('says the Desktop asked for while the gate still reports iPad, and reads Desktop once it reports it', async () => {
     render(<Held first={session()} />)
     await connected()
     const caption = () => document.querySelector('.live-caption')?.textContent ?? ''
     expect(caption()).toBe('iPad · 810×1080 · /sorry/index')
 
-    const desktop = session({ device: { preset: 'desktop', orientation: 'landscape', touch: false } })
-    api.setLiveDevice.mockResolvedValue(ok<LiveRead>({ live_browser: true, session: desktop }))
+    // swarm-api's set_device answers with the session as it is: the device
+    // the gate last reported, iPad. The read behind it says the same.
+    api.setLiveDevice.mockResolvedValue(ok<LiveRead>({ live_browser: true, session: session() }))
+    api.loadLiveSession.mockResolvedValue(ok<LiveRead>({ live_browser: true, session: session() }))
     const panel = theaterRoot().querySelector('.th-device') as HTMLElement
     fireEvent.click(within(panel).getByRole('button', { name: 'Desktop' }))
     await waitFor(() => expect(api.setLiveDevice).toHaveBeenCalledWith(ID, { preset: 'desktop' }))
 
-    await waitFor(() => expect(caption()).toBe('Desktop · 1440×900 · /sorry/index'))
+    await waitFor(() =>
+      expect(caption()).toBe('iPad · 810×1080 · /sorry/index · Desktop asked for; the browser has not applied it yet'),
+    )
+
+    // The gate reports Desktop, and a later read carries it.
+    act(() => polled(session({ device: { preset: 'desktop', orientation: 'landscape', touch: false } })))
+    expect(caption()).toBe('Desktop · 1440×900 · /sorry/index')
     expect(within(panel).getByRole('button', { name: 'Desktop' }).getAttribute('aria-pressed')).toBe('true')
     expect(panel.querySelector('.th-device-now')?.textContent).toContain('Desktop · landscape')
+  })
+
+  it('says nothing was asked for when the device route refuses the switch', async () => {
+    render(<Held first={session()} />)
+    await connected()
+    api.setLiveDevice.mockResolvedValue({ status: 'error', error: { kind: 'http', status: 409, message: 'not in control' } })
+    const panel = theaterRoot().querySelector('.th-device') as HTMLElement
+    fireEvent.click(within(panel).getByRole('button', { name: 'Desktop' }))
+    await waitFor(() => expect(within(panel).getByRole('alert').textContent).toBe('not in control'))
+    expect(document.querySelector('[data-testid="live-device-asked"]')).toBeNull()
   })
 })
 
