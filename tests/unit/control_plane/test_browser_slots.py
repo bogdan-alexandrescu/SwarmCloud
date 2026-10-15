@@ -36,6 +36,7 @@ from swarm_api.browser_slots import (
     SLOT_ROLES,
     VERSION_ADDER_ROLE,
     BrowserSlotTaken,
+    SlotName,
     SecretManagerSlotVault,
     slot_name,
 )
@@ -387,3 +388,43 @@ def test_the_vault_refuses_a_non_browser_name_before_any_call(secret_id) -> None
             secret_id, tenant_id="u-a", member="serviceAccount:w@p", labels={},
         )
     assert client.calls == []
+
+
+# --------------------------------------------------------------------------
+# A park's slot (live-browser §5.5.2, issue #1362): this task's own, 24 hours
+# --------------------------------------------------------------------------
+
+
+def park_id(task: str = TASK, tenant: str = CAROL_TENANT) -> str:
+    return f"swarm-tenant-{tenant}-browser-park-{task}"
+
+
+def test_a_park_slot_is_this_tasks_own_with_the_carry_ttl(live, db, slots) -> None:
+    attempt = Attempt()
+    seed_attempt(live, db, attempt)  # a park needs no workflow
+
+    response = slot_post(live, attempt, park_id())
+
+    assert response.status_code == 200, response.text
+    assert response.json()["kind"] == "park"
+    [call] = slots.calls
+    assert call["secret_id"] == park_id() and call["member"] == CAROL_MEMBER
+    assert call["ttl_seconds"] == CARRY_TTL_SECONDS
+    assert call["labels"]["swarm-browser"] == "park"
+
+
+def test_another_tasks_park_slot_is_refused_before_secret_manager(live, db, slots) -> None:
+    attempt = Attempt()
+    seed_attempt(live, db, attempt)
+
+    response = slot_post(live, attempt, park_id(task="task_someone_elses"))
+
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == "browser_slot_outside_prefix"
+    assert slots.calls == []
+
+
+def test_slot_name_reads_a_park_only_in_the_tenants_own_prefix() -> None:
+    assert slot_name("u-a", "swarm-tenant-u-a-browser-park-task_1") == SlotName("park", "task_1")
+    assert slot_name("eng", "swarm-tenant-eng-browser-park-task_1") is None
+    assert slot_name("u-a", "swarm-tenant-u-a-browser-park-") is None

@@ -584,8 +584,10 @@ def test_an_unprotected_heap_gets_no_tunnel_and_the_agent_is_refused_with_5(
     (request,) = seen["steps"]
     assert request["exit"] == handoff_mod.EXIT_REFUSED == 5
     assert request["out"]["code"] == handoff_mod.WORKER_UNPROTECTED
-    # No CDP address for an attempt without a live path.
-    assert "SWARM_CDP_ENDPOINT" not in seen["env"]
+    # NOLIVE-GUARD (#1366): no hand-off, but the gate is up, so the agent
+    # keeps its browser. The proxy is on the pod's loopback either way:
+    # withholding its address protected nothing and cost the agent its tools.
+    assert seen["env"]["SWARM_CDP_ENDPOINT"] == CDP
 
 
 class _WindowClosedRoutes(FakeLiveRoutes):
