@@ -31,6 +31,7 @@ import { cascade } from './cssgate'
 const api = vi.hoisted(() => ({
   loadCapacity: vi.fn(),
   loadProviderKeys: vi.fn(),
+  loadJudgment: vi.fn(),
 }))
 
 vi.mock('../api', async (importOriginal) => {
@@ -49,6 +50,13 @@ const visible = (el: Element | null) => (el?.textContent ?? '').replace(/\s+/g, 
 const realFetch = globalThis.fetch
 
 const TOOLS = ['auto', 'playwright', 'dev-browser', 'jev']
+// These cases are the TypeSafe backend's: the key decides (JEV-OFF's
+// jev.off.test.tsx covers the internal backends).
+const TYPESAFE_JEV = {
+  backend: 'typesafe' as const, label: 'Jev (TypeSafe)', available: true, reason: null,
+  default: 'internal-jev' as const, set_at: null, set_by: null, options: [],
+}
+const TYPESAFE = { kind: 'read' as const, jev: TYPESAFE_JEV }
 
 function ok<T>(data: T): Result<T> {
   return { status: 'ok', data, fetchedAt: Date.now() }
@@ -108,6 +116,7 @@ const tool = (name: RegExp) => within(picker()!).getByRole('radio', { name })
 
 beforeEach(() => {
   api.loadProviderKeys.mockResolvedValue(keys('user'))
+  api.loadJudgment.mockResolvedValue(ok({ tenant_id: 'eng', can_edit: true, jev: TYPESAFE_JEV }))
 })
 
 afterEach(() => {
@@ -219,11 +228,11 @@ describe('Jev and the TypeSafe key', () => {
 
   it('stays disabled while the key read is unanswered or failed', () => {
     const { rerender, container } = render(
-      <BrowserToolPicker tools={TOOLS} value="auto" onChange={() => {}} typesafe={{ kind: 'reading' }} egress={null} />,
+      <BrowserToolPicker tools={TOOLS} value="auto" onChange={() => {}} judgment={TYPESAFE} typesafe={{ kind: 'reading' }} egress={null} />,
     )
     expect((screen.getByRole('radio', { name: /^Jev/ }) as HTMLInputElement).disabled).toBe(true)
     expect(visible(container.querySelector('.btp-jev-off'))).toBe('Checking for a TypeSafe key…')
-    rerender(<BrowserToolPicker tools={TOOLS} value="auto" onChange={() => {}} typesafe={{ kind: 'unread', detail: 'HTTP 503' }} egress={null} />)
+    rerender(<BrowserToolPicker tools={TOOLS} value="auto" onChange={() => {}} judgment={TYPESAFE} typesafe={{ kind: 'unread', detail: 'HTTP 503' }} egress={null} />)
     expect((screen.getByRole('radio', { name: /^Jev/ }) as HTMLInputElement).disabled).toBe(true)
     expect(visible(container.querySelector('.btp-jev-off'))).toContain('Whether a TypeSafe key exists could not be read')
   })
@@ -253,7 +262,7 @@ describe('the Network row', () => {
 describe('keyboard and phone width', () => {
   it('is a native radio group: arrows move the pick, and a disabled Jev is skipped by the browser', () => {
     const onChange = vi.fn()
-    render(<BrowserToolPicker tools={TOOLS} value="auto" onChange={onChange} typesafe={{ kind: 'read', uses: 'user' }} egress={null} />)
+    render(<BrowserToolPicker tools={TOOLS} value="auto" onChange={onChange} judgment={TYPESAFE} typesafe={{ kind: 'read', uses: 'user' }} egress={null} />)
     const radios = screen.getAllByRole('radio') as HTMLInputElement[]
     expect(new Set(radios.map((r) => r.name)).size, 'one name, so arrows move within the group').toBe(1)
     expect(radios.every((r) => r.type === 'radio')).toBe(true)
@@ -263,7 +272,7 @@ describe('keyboard and phone width', () => {
 
   it('puts the segments two to a row at 390px and in one row at 1440px', () => {
     const { container } = render(
-      <BrowserToolPicker tools={TOOLS} value="auto" onChange={() => {}} typesafe={{ kind: 'read', uses: 'user' }} egress={{ mode: 'residential', country: 'us' }} />,
+      <BrowserToolPicker tools={TOOLS} value="auto" onChange={() => {}} judgment={TYPESAFE} typesafe={{ kind: 'read', uses: 'user' }} egress={{ mode: 'residential', country: 'us' }} />,
     )
     const seg = container.querySelector<HTMLElement>('.btp-seg')!
     const at = (width: number) => cascade(SUBMIT_CSS, seg, 'grid-template-columns', { width }).winner?.value

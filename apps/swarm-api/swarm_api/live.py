@@ -121,6 +121,7 @@ from .childkey import AttemptTuple, verify_proof
 from .children import ChildService, _AttemptFields, _lease_is_live, parse_body
 from .codec import event_to_firestore
 from .errors import ApiError, NotFound, ValidationFailed
+from .judgment import DEFAULT_BACKEND, TYPESAFE_BACKEND, JudgmentSettings, unavailable_code
 from .provider_keys import task_key_scope
 from .validation import BROWSER_TOOL_INPUT_KEY, TYPESAFE_PROVIDER
 from .handoff import (
@@ -693,10 +694,15 @@ class LiveToolUse(_Wire):
 
 class LiveJev(_Wire):
     """Whether jev is registered on this attempt, why not, and whose
-    TypeSafe key it runs on (`user`, `tenant`; null when it is not on)."""
+    TypeSafe key it runs on (`user`, `tenant`; null when it is not on).
+
+    `no_route`: the workspace judges with an internal backend and the
+    tailnet egress to the decision API is off (JEV-OFF, #1345). Before the
+    runner has reported, a task that chose jev or auto is served the reason
+    its workspace's backend cannot run (`judgment.unavailable_code`)."""
 
     enabled: bool
-    reason: Literal["no_key", "not_installed", "not_selected"] | None
+    reason: Literal["no_key", "not_installed", "not_selected", "no_route"] | None
     key_scope: Literal["user", "tenant"] | None
 
 
@@ -957,7 +963,7 @@ def clean_agent(raw: Any) -> dict[str, Any] | None:
 BROWSER_TOOL_CHOICES: tuple[str, ...] = tuple(
     RUNNER_PROFILES["claude-code-browser"].inputs["browser_tool"].choices)
 BROWSER_TOOLS: tuple[str, ...] = tuple(c for c in BROWSER_TOOL_CHOICES if c != "auto")
-JEV_REASONS: tuple[str, ...] = ("no_key", "not_installed", "not_selected")
+JEV_REASONS: tuple[str, ...] = ("no_key", "not_installed", "not_selected", "no_route")
 #: The longest egress error kept (the gate's report.MAX_EGRESS_ERROR_CHARS).
 MAX_EGRESS_ERROR_CHARS = 200
 
@@ -1769,7 +1775,8 @@ class LiveService:
             enabled, reason = tools["jev"]["enabled"], tools["jev"]["reason"]
         else:
             enabled = False
-            reason = "not_selected" if selected in ("playwright", "dev-browser") else None
+            reason = "not_selected" if selected in ("playwright", "dev-browser") \
+                else self._jev_unavailable(task)
         scope = None
         if enabled:
             # Whose key jev runs on: the resolution the key page serves
@@ -1787,6 +1794,22 @@ class LiveService:
                 if egress["mode"] == "residential" else None,
             },
         }
+
+    def _jev_unavailable(self, task: Task) -> str | None:
+        """Why the task's workspace cannot run jev, before the runner has
+        reported what it registered (JEV-OFF, #1345): `no_route` for an
+        internal backend with the tailnet egress off, `no_key` for TypeSafe
+        with no key for the submitter or the tenant, else None. The backend
+        is read as the dispatcher reads it -- unreadable is the default."""
+        try:
+            backend = JudgmentSettings(self._db, now=self._now).read(task.tenant_id)["judgment_backend"]
+        except Exception:  # noqa: BLE001 - a read never fails on this, as dispatch does not
+            backend = DEFAULT_BACKEND
+        key = backend == TYPESAFE_BACKEND and task_key_scope(
+            self._db, self._store, task.tenant_id, task.submitted_by, TYPESAFE_PROVIDER,
+            now=self._now) is not None
+        return unavailable_code(backend, typesafe_key=key, internal_enabled=bool(
+            str(self._s("internal_decision_api_url", "") or "").strip()))
 
     def _task(self, tenant_id: str, task_id: str, submitted_by: str | None) -> Task:
         # The tenant read first: another tenant's task is a 404 (§5.2 step 2).

@@ -84,6 +84,13 @@ NO_KEY = ("no TypeSafe key resolves for you in this workspace: set your own key,
           "or ask an admin to set a tenant key")
 
 
+#: Each reason sentence above as the code the live read's `browser.jev.reason`
+#: carries (`live.JEV_REASONS`, the worker's `browser_tools.JEV_REASONS`):
+#: `no_route` is what the runner reports when the dispatcher sent no
+#: JEV_API_URL to an internal backend, `no_key` when TypeSafe has no key.
+UNAVAILABLE_CODES = {NO_EGRESS: "no_route", NO_KEY: "no_key"}
+
+
 def check_backend(value: str) -> str:
     name = (value or "").strip().lower()
     if name not in BACKENDS:
@@ -107,6 +114,18 @@ def availability(*, internal_enabled: bool,
         INTERNAL_LAYA: internal,
         TYPESAFE_BACKEND: (True, None) if typesafe_key else (False, NO_KEY),
     }
+
+
+def unavailable_code(backend: str, *, internal_enabled: bool, typesafe_key: bool) -> str | None:
+    """Why `backend` cannot run jev, as a live-read reason code; None when it can.
+
+    Read off `availability`, the one table that restates the dispatcher's
+    condition (`scheduler.judgment.jev_dispatch` sends JEV_API_URL to an
+    internal backend only when INTERNAL_DECISION_API_URL is set), so the
+    console and the dispatcher cannot disagree on it (JEV-OFF, #1345)."""
+    available, reason = availability(internal_enabled=internal_enabled,
+                                     typesafe_key=typesafe_key)[backend]
+    return None if available else UNAVAILABLE_CODES[str(reason)]
 
 
 def jev_status(backend: str, *, internal_enabled: bool, typesafe_key: bool,

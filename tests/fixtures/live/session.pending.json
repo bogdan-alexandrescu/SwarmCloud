@@ -7,7 +7,7 @@
     "tool_last_used": null,
     "jev": {
       "enabled": false,
-      "reason": null,
+      "reason": "no_route",
       "key_scope": null
     },
     "egress": null
