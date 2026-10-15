@@ -118,12 +118,12 @@ def test_the_api_shape_computes_the_predicates_server_side(db):
 
 
 def test_units_are_not_agents(db):
-    """A browser agent takes 2 units and a large one 4."""
-    _lease(db, "l1", "eng", units=2)
+    """A standard or browser agent takes 1 unit (contract request 79) and a large one 4."""
+    _lease(db, "l1", "eng", units=1)
     _lease(db, "l2", "eng", units=4)
     leases = _store(db).list_leases("eng")
     assert len(leases) == 2
-    assert sum(x.units for x in leases) == 6
+    assert sum(x.units for x in leases) == 5
 
 
 # -- attempts -------------------------------------------------------------

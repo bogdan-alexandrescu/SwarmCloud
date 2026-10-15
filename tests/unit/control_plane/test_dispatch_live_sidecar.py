@@ -194,14 +194,19 @@ def test_the_containers_sum_to_the_resource_class(tenant, resource_class):
         assert _gib(c["resources"]["limits"]["memory"]) > 0
 
 
-def test_the_browser_split_is_the_designs_starting_split(tenant):
-    """§8.2: worker 3 vCPU / 6 GiB, display 5 vCPU / 10 GiB."""
+def test_the_browser_split_follows_the_measurement(tenant):
+    """Contract request 79: worker 1 vCPU / 3 GiB, display 3 vCPU / 5 GiB.
+
+    The class is 4 / 8 since request 79, so the design's starting split
+    (display 5 / 10, worker 3 / 6) no longer fits inside it. Each side is
+    sized from docs/browser-startup-speed.md §11: the display peaked at 1.90
+    cores and 1.48 GiB, the worker at 0.55 cores and 0.37 GiB."""
     spec = _spec(_job(tenant))
     worker, display = _worker(spec), _display(spec)
     assert (_cpu(worker["resources"]["limits"]["cpu"]),
-            _gib(worker["resources"]["limits"]["memory"])) == (3, 6)
+            _gib(worker["resources"]["limits"]["memory"])) == (1, 3)
     assert (_cpu(display["resources"]["limits"]["cpu"]),
-            _gib(display["resources"]["limits"]["memory"])) == (5, 10)
+            _gib(display["resources"]["limits"]["memory"])) == (3, 5)
 
 
 def test_dev_shm_is_on_the_sidecar_only(tenant):
@@ -243,14 +248,31 @@ def test_the_sidecars_private_volumes_never_reach_the_worker(tenant):
         assert not display[name]["mountPath"].startswith("/workspace"), name
 
 
+#: The display sidecar's measured peak, whole container, in GiB
+#: (docs/browser-startup-speed.md §11, 2026-10-15: 1.48 GiB over four pods
+#: and eight samples). It already includes what Chromium had in /dev/shm.
+DISPLAY_MEASURED_PEAK_GIB = 1.48
+
+
 def test_the_memory_volumes_fit_inside_the_container_that_fills_them(tenant):
+    """Every tmpfs the sidecar keeps full PLUS its measured peak fits its limit.
+
+    Until contract request 79 this held the tmpfs under HALF a 10 GiB sidecar;
+    no split of an 8 GiB pod can do that with 4.25 GiB of sizeLimits. So the
+    volumes that stay resident (/dev/shm, its /tmp, the browser profile) are
+    added to the measured peak, which is conservative because that peak already
+    counts the shm Chromium used. Downloads are left out: the worker MOVES each
+    one into work/ (with_live_display), so the volume does not stay full.
+    A download that fills it while Chromium is at a heavier peak than any
+    sampled is an OOM; the worker's checkpoint bounds what that costs
+    (invariant 8)."""
     spec = _spec(_job(tenant))
     volumes = _volumes(spec)
     display = _display(spec)
-    filled_by_sidecar = ("dshm", "display-tmp", "browser-profile", "live-downloads")
-    tmpfs = sum(_gib(volumes[n]["emptyDir"]["sizeLimit"]) for n in filled_by_sidecar)
-    assert tmpfs < _gib(display["resources"]["limits"]["memory"]) / 2, (
-        "Chromium needs most of the sidecar's memory for itself"
+    resident = ("dshm", "display-tmp", "browser-profile")
+    tmpfs = sum(_gib(volumes[n]["emptyDir"]["sizeLimit"]) for n in resident)
+    assert tmpfs + DISPLAY_MEASURED_PEAK_GIB <= _gib(display["resources"]["limits"]["memory"]), (
+        "the sidecar's resident tmpfs and Chromium's measured peak must both fit"
     )
 
 
