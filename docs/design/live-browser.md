@@ -1300,10 +1300,66 @@ So the gate **fails closed**:
 * a frame is masked only with a report taken after the last layout-changing
   event (scroll, resize, navigation, a mutation inside a tracked element);
   otherwise the whole page area below the address bar is painted out for that
-  frame. Scrolling flickers. That is the cost;
+  frame -- after the short hold below, and only for a layout change. Scrolling
+  flickers. That is the cost;
 * while the gate's CDP session is down, or no report has arrived since a
   navigation, every frame is a blank "masking unavailable" frame;
 * every box is dilated by 8 pixels.
+
+**Three amendments, issue #1340 (owner decisions 2026-10-14).** MEASURED
+2026-10-15 on task_2ac5d7e22a51460995a2, release b93ad6cb: the gate logged
+`live mask: frame owner unresolved (CdpError)` twice at attempt start. Linking
+an iframe to the element box its parent reports (`MaskCdp.link`) had failed for
+both reCAPTCHA frames, and the only retry was a re-created parent observer
+world, which never came. So both frames stayed covered for the whole hand-off
+("Part of this page is covered: an embedded frame on it cannot be checked"),
+and the person asked to solve the challenge could not see it. On the same
+page, the whole page area went PAGE_BLANKED for 0.3-1.2 s in every metrics
+window while the page kept changing.
+
+* **A failed link is retried** on the parent frame's next fresh report and on
+  the child's next navigation. Each retry waits at least a backoff after the
+  last failure, 250 ms doubling to 2 s, and there are at most 5 tries in all.
+  After that the frame stays covered as before. The log line carries the CDP
+  error's message as well as its class (`CdpError: No frame for given id
+  found`). That message is Chromium's protocol text and never page content;
+  any other exception is still logged by class alone. Why: one transient
+  failure at attempt start should not decide a whole hand-off. Bounded,
+  because a frame that never links must still fail closed.
+* **Challenge frames are shown while a person holds control.** Holding control
+  means a `human_wait` hand-off (`pause` until `resume` or `end_control`) or
+  take-control, and in either case the agent is held. During that time, a
+  child frame whose URL is on an exact allowlist is not covered when it cannot
+  vouch for itself. The allowlist (`mask.SHOWN_IN_CONTROL`) is `https`, an
+  exact host and a path prefix, with no port and no userinfo:
+  `www.google.com/recaptcha/`, `www.recaptcha.net/recaptcha/`,
+  `*.hcaptcha.com/` (a subdomain, not `hcaptcha.com` itself) and
+  `challenges.cloudflare.com/`. A lookalike stays covered: `recaptcha.evil.com`,
+  `www.google.com.evil.com`, `www.google.com@evil.com`, or another path on an
+  allowlisted host. Whenever the frame has reported on its current document,
+  that last report's password and credential fields stay masked, and so does
+  any of its text a redaction rule matches. The top
+  frame is never shown this way, and nothing is shown this way while the agent
+  drives: the gate reads `Gate.person_in_control` as each frame is masked, and
+  a resume clears it before the agent's held commands are released. Each frame
+  shown this way is recorded once per hand-off in the gate's event log as
+  `mask_frame_shown`, carrying the host (never the path, the query or the
+  content) and the reason `REASON_SHOWN_IN_CONTROL`. Why: a challenge is the
+  thing the person was handed the page to do. It is a third party's widget,
+  not the site's content, and while a person holds control what it shows is
+  for that person. The frame's own content, including any frame inside it, is
+  shown unchecked. That is the trade the owner chose, and §5.3.4 lists it.
+* **Fewer whole-page blanks.** When the top frame's report is stale only
+  because its observer announced a layout change (`REASON_CHANGING`), the gate
+  keeps sending the last frame it masked from a fresh report, for up to 300 ms
+  from the first announcement (`HOLD_CHANGING_SECONDS`), before it blanks.
+  Further announcements do not extend the hold. A navigation (cross-document
+  or same-document), a tab switch, a hidden tab, a session loss, a device
+  change or a change of who drives drops the held frame, and each one blanks
+  or goes UNAVAILABLE at once, as before. Why this keeps the rule: the held
+  pixels were vouched for when they were first sent, so holding them sends
+  nothing the mask has not checked. The viewer sees a page up to 300 ms old
+  instead of a grey flash.
 
 **The mask is applied once, at the source.** The relay, the recorder and the
 viewers all receive the masked frames; there is no unmasked stream anywhere to
@@ -1326,6 +1382,11 @@ pointer events", never which keys.
   world and is not masked.
 * An ordinary field the person types a secret into, which is not a password
   field, shows what they type. The console's take-control dialog says so.
+* A challenge frame on the allowlist (`SHOWN_IN_CONTROL`, §5.3.2) is shown
+  unchecked while a person holds control, when it cannot vouch for itself.
+  Its last report on its current document is still applied: its password and
+  credential fields, and any text a redaction rule matches. Whatever it drew
+  after that report, or before it ever reported, is not checked.
 * A viewer can photograph their screen. Masking reduces what a viewer sees; it
   is not DRM.
 

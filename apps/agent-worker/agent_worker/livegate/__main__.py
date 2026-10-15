@@ -1178,7 +1178,8 @@ class LiveGate:
         #: which launches no browser.
         self.startup: dict[str, float] = {}
         self.desktop = resolve(DEFAULT_PRESET)
-        self.mask_state = MaskState()
+        #: The event log hears of every challenge frame shown in a hand-off (mask.py SHOWN_IN_CONTROL).
+        self.mask_state = MaskState(record=self.record)
         self.hub = FrameHub(self.desktop.display_width, self.desktop.display_height)
         #: Set once ctl.sock listens: the dispatcher's startup probe condition.
         self.ready = asyncio.Event()
@@ -1228,6 +1229,9 @@ class LiveGate:
         self._lease_until: float | None = None
         self._had_control = False
         self._self_paused = False
+        #: The worker's hand-off (`pause`) holds the agent for a person,
+        #: until `resume`, `end_control` or a wipe.
+        self._handed_off = False
         self._fresh_target: str | None = None
         self._watching = asyncio.Event()
         #: Set when control is granted or released: the capture loop's rate changed.
@@ -1617,6 +1621,9 @@ class LiveGate:
             device = self.devices.device if self.devices is not None else self.desktop
             try:
                 frame = await asyncio.to_thread(self._grab, device)
+                # Read after the grab, as the mask is applied: a resume in
+                # between is the agent driving again.
+                self.mask_state.set_in_control(self.person_in_control)
                 published = masked(frame, self.mask_state)
             except Exception as exc:  # noqa: BLE001 -- see below
                 # NOTHING IS SENT FOR THIS FRAME, AND THE LOOP GOES ON
@@ -1658,6 +1665,18 @@ class LiveGate:
     def control_changed(self) -> None:
         """Control was granted or released: the capture rate follows at once."""
         self._rate_changed.set()
+
+    @property
+    def person_in_control(self) -> bool:
+        """A person holds control -- a hand-off, or take-control -- and the agent is held.
+
+        The mask shows a challenge frame unchecked only then (mask.py
+        `SHOWN_IN_CONTROL`, issue #1340): never while the agent drives, so
+        never once `resume` has begun handing the agent its page back.
+        """
+        if self.proxy is None or not self.proxy.paused:
+            return False
+        return self._handed_off or self._episode is not None
 
     def _agent_pointer(self, x: float, y: float) -> None:
         """The agent's `Input.dispatchMouseEvent`, in CSS pixels: where watchers see the pointer (pointer.py)."""
@@ -2184,6 +2203,7 @@ class LiveGate:
         proxy = self._need(self.proxy)
         self._self_paused = False
         await proxy.pause()
+        self._handed_off = True
         expect = args.get("expect")
         if (args.get("fresh_page") is True and isinstance(expect, str) and expect
                 and _HOST.fullmatch(expect)):
@@ -2209,6 +2229,7 @@ class LiveGate:
         proxy = self.proxy
         if proxy is None or self.wiped:
             raise RuntimeError("the browser is not running")
+        self._handed_off = False
         target = self._episode.target if self._episode is not None else (
             self._fresh_target or (self.pages.current if self.pages else None))
         await self._release("returned")
@@ -2221,6 +2242,7 @@ class LiveGate:
     async def end_control(self, args: Mapping[str, Any]) -> dict[str, Any]:
         """§4.3, §4.4, §5.5: control ends; with `wipe`, Chromium closes and the profile goes."""
         cause = str(args.get("cause") or "ended")[:64]
+        self._handed_off = False
         await self._release(cause)
         wipe = args.get("wipe") is True
         if wipe:
@@ -2232,6 +2254,7 @@ class LiveGate:
         if self.wiped:
             return
         self.wiped = True
+        self._handed_off = False
         relaunch = self._tasks.pop("relaunch", None)
         if relaunch is not None:
             relaunch.cancel()
