@@ -13,7 +13,15 @@ g4: 12). These tests hold the gate's half:
 * swarm-api's revoke ends control with its cause, and the agent's CDP
   connection is accepted after it;
 * a refused agent connection says why and since when, and asks it to retry
-  later, over the CDP endpoint's own HTTP.
+  later, over the CDP endpoint's own HTTP;
+* a gate cancelled while a person holds control finishes: nothing it started
+  outlives the cancel by more than `GATE_FINISHES_SECONDS` (HANG-LEASE, part
+  of #1335).
+
+Every test stops its gate in a `finally`, bounded, so a failed assert fails
+the test. MEASURED 2026-10-14, run 38633285923: a renewal test whose assert
+failed left the gate's tunnel task running, and `asyncio.run` waited on it in
+`_cancel_all_tasks` until the 30-minute job timeout killed unit shard 3/4.
 
 Offline, over test_livegate_main's fakes. Every ticket is built at runtime.
 """
@@ -33,6 +41,10 @@ from agent_worker.livegate import cdpproxy, tunnel
 
 #: The production lease (read by name, so this file imports before it exists).
 LEASE = getattr(gate_main, "CONTROL_LEASE_SECONDS", 50.0)
+
+#: How long a stopped or cancelled gate may take to finish before the test
+#: fails instead of hanging the shard.
+GATE_FINISHES_SECONDS = 2.0
 
 
 class Agent:
@@ -57,6 +69,12 @@ def _rig(tmp, lease: float) -> tuple[Rig, list[tuple[str, dict[str, Any]]]]:
     return rig, records
 
 
+async def _stopped(stop: asyncio.Event, task: asyncio.Task[int]) -> int:
+    """Stop the gate and wait for it, bounded: the `finally` of every test here."""
+    stop.set()
+    return await asyncio.wait_for(task, 5 * GATE_FINISHES_SECONDS)
+
+
 def _control_actions(rig: Rig) -> list[tuple[str, Any]]:
     actions = [json.loads(f[2]) for f in rig.relay.frames if f[0] == tunnel.OP_ACTION]
     return [(a["event"], a.get("cause")) for a in actions if a.get("kind") == "control"]
@@ -76,40 +94,49 @@ def test_control_with_no_renewal_ends_at_the_gate_when_its_lease_runs_out(short_
     async def body() -> None:
         rig, records = _rig(short_tmp, lease=0.3)
         stop, task = await _started(rig)
-        gate = rig.gate
-        await _granted(rig)
-        refused = await gate.proxy.connect_agent(Agent())
-        assert refused is None, "the agent waits while a person is in control"
+        try:
+            gate = rig.gate
+            await _granted(rig)
+            refused = await gate.proxy.connect_agent(Agent())
+            assert refused is None, "the agent waits while a person is in control"
 
-        await _until(lambda: gate.control.controller is None and not gate.proxy.paused, timeout=3.0)
-        assert ("control_ended", {"cause": "lease_expired"}) in records
-        assert ("ended", "lease_expired") in _control_actions(rig)
-        # The agent has its browser back.
-        assert await gate.proxy.connect_agent(Agent()) is not None
-        stop.set()
-        assert await task == 0
+            await _until(lambda: gate.control.controller is None and not gate.proxy.paused, timeout=3.0)
+            assert ("control_ended", {"cause": "lease_expired"}) in records
+            assert ("ended", "lease_expired") in _control_actions(rig)
+            # The agent has its browser back.
+            assert await gate.proxy.connect_agent(Agent()) is not None
+        finally:
+            code = await _stopped(stop, task)
+        assert code == 0
 
     asyncio.run(body())
 
 
 def test_a_renewal_keeps_control_and_is_not_a_second_grant(short_tmp):
     async def body() -> None:
-        rig, records = _rig(short_tmp, lease=0.4)
+        # A 1.0 s lease renewed every 0.1 s: ten renewals per lease, so a slow
+        # runner's scheduling jitter cannot let it lapse between two of them
+        # (0.4 s every 0.1 s was four, and run 38633285923 lost one).
+        rig, records = _rig(short_tmp, lease=1.0)
         stop, task = await _started(rig)
-        gate = rig.gate
-        await _granted(rig)
-        for _ in range(8):  # 0.8 s: twice the lease, renewed every 0.1 s
-            await asyncio.sleep(0.1)
-            rig.relay.push(tunnel.OP_CONTROL, "v1")
-        await asyncio.sleep(0.05)
-        assert gate.control.controller == "v1" and gate.proxy.in_control
-        assert _control_actions(rig) == [("granted", None)]
-        assert not [r for r in records if r[0] == "control_lease_expired"]
-        # And when the renewals stop, the lease runs out.
-        await _until(lambda: gate.control.controller is None, timeout=3.0)
-        assert ("ended", "lease_expired") in _control_actions(rig)
-        stop.set()
-        assert await task == 0
+        try:
+            gate = rig.gate
+            await _granted(rig)
+            for _ in range(20):  # 2.0 s: twice the lease
+                await asyncio.sleep(0.1)
+                rig.relay.push(tunnel.OP_CONTROL, "v1")
+            await asyncio.sleep(0.05)
+            assert gate.control.controller == "v1" and gate.proxy.in_control
+            assert _control_actions(rig) == [("granted", None)]
+            assert not [r for r in records if r[0] == "control_lease_expired"]
+            # And when the renewals stop, the lease runs out. The controller
+            # is cleared before the relay is told (`_release` reads the page
+            # in between), so wait for the action, not the controller.
+            await _until(lambda: ("ended", "lease_expired") in _control_actions(rig), timeout=5.0)
+            assert gate.control.controller is None
+        finally:
+            code = await _stopped(stop, task)
+        assert code == 0
 
     asyncio.run(body())
 
@@ -118,20 +145,22 @@ def test_swarm_apis_revoke_ends_control_with_its_cause_and_the_agent_is_let_back
     async def body() -> None:
         rig, records = _rig(short_tmp, lease=LEASE)
         stop, task = await _started(rig)
-        gate = rig.gate
-        await _granted(rig)
-        assert await gate.proxy.connect_agent(Agent()) is None
-        rig.relay.push(tunnel.OP_CONTROL, "", b"renew_lapsed")
-        await _until(lambda: gate.control.controller is None and not gate.proxy.paused)
-        assert ("control_ended", {"cause": "renew_lapsed"}) in records
-        assert _control_actions(rig)[-1] == ("ended", "renew_lapsed")
-        assert await gate.proxy.connect_agent(Agent()) is not None
-        # Idempotent: a second revoke of nobody changes nothing.
-        rig.relay.push(tunnel.OP_CONTROL, "", b"renew_lapsed")
-        await asyncio.sleep(0.05)
-        assert [a for a in _control_actions(rig) if a[0] == "ended"] == [("ended", "renew_lapsed")]
-        stop.set()
-        assert await task == 0
+        try:
+            gate = rig.gate
+            await _granted(rig)
+            assert await gate.proxy.connect_agent(Agent()) is None
+            rig.relay.push(tunnel.OP_CONTROL, "", b"renew_lapsed")
+            await _until(lambda: gate.control.controller is None and not gate.proxy.paused)
+            assert ("control_ended", {"cause": "renew_lapsed"}) in records
+            assert _control_actions(rig)[-1] == ("ended", "renew_lapsed")
+            assert await gate.proxy.connect_agent(Agent()) is not None
+            # Idempotent: a second revoke of nobody changes nothing.
+            rig.relay.push(tunnel.OP_CONTROL, "", b"renew_lapsed")
+            await asyncio.sleep(0.05)
+            assert [a for a in _control_actions(rig) if a[0] == "ended"] == [("ended", "renew_lapsed")]
+        finally:
+            code = await _stopped(stop, task)
+        assert code == 0
 
     asyncio.run(body())
 
@@ -148,20 +177,22 @@ def test_the_refusal_says_a_person_is_in_control_and_since_when(short_tmp):
     async def body() -> None:
         rig, records = _rig(short_tmp, lease=LEASE)
         stop, task = await _started(rig)
-        gate = rig.gate
-        await _granted(rig)
-        assert await gate.proxy.connect_agent(Agent()) is None
-        cause, reason = gate.proxy.refusal()
-        assert cause == "person_in_control"
-        assert "a person is in control of this browser since " in reason
-        assert "Z (" in reason and " s)" in reason
-        assert f"{int(LEASE)} s after their console stops renewing" in reason
-        assert f"Retry in {cdpproxy.RETRY_AFTER_SECONDS} s" in reason
-        refused = [f for e, f in records if e == "cdp_connection_refused"]
-        assert refused and refused[-1]["cause"] == "person_in_control"
-        assert isinstance(refused[-1]["held_seconds"], int)
-        stop.set()
-        assert await task == 0
+        try:
+            gate = rig.gate
+            await _granted(rig)
+            assert await gate.proxy.connect_agent(Agent()) is None
+            cause, reason = gate.proxy.refusal()
+            assert cause == "person_in_control"
+            assert "a person is in control of this browser since " in reason
+            assert "Z (" in reason and " s)" in reason
+            assert f"{int(LEASE)} s after their console stops renewing" in reason
+            assert f"Retry in {cdpproxy.RETRY_AFTER_SECONDS} s" in reason
+            refused = [f for e, f in records if e == "cdp_connection_refused"]
+            assert refused and refused[-1]["cause"] == "person_in_control"
+            assert isinstance(refused[-1]["held_seconds"], int)
+        finally:
+            code = await _stopped(stop, task)
+        assert code == 0
 
     asyncio.run(body())
 
@@ -207,11 +238,48 @@ def test_a_gate_stopped_while_a_person_holds_control_stops_and_ends_the_episode(
     async def body() -> None:
         rig, records = _rig(short_tmp, lease=LEASE)
         stop, task = await _started(rig)
-        gate = rig.gate
-        await _granted(rig)
-        stop.set()
-        assert await asyncio.wait_for(task, 10) == 0
+        try:
+            gate = rig.gate
+            await _granted(rig)
+        finally:
+            code = await _stopped(stop, task)
+        assert code == 0
         assert gate.control.controller is None
         assert ("control_ended", {"cause": "tunnel_closed"}) in records
 
     asyncio.run(body())
+
+
+def test_a_gate_cancelled_while_a_person_holds_control_finishes(short_tmp):
+    """HANG-LEASE (part of #1335): what `asyncio.run` does to the tasks a test
+    leaves when its body raises -- cancel every one and wait for all of them.
+    The gate's run task ended on the cancel, but the tunnel task's cleanup
+    released control and then resumed the agent through a pipe whose reader
+    had been cancelled with it, unbounded: it never finished, and unit shard
+    3/4 of run 38633285923 hung in `_cancel_all_tasks` for 30 minutes."""
+
+    async def body() -> list[str]:
+        rig, records = _rig(short_tmp, lease=LEASE)
+        stop, task = await _started(rig)
+        gate = rig.gate
+        await _granted(rig)
+        assert gate.control.controller == "v1"
+        task.cancel()
+        left = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        for t in left:
+            t.cancel()
+        _, pending = await asyncio.wait(left, timeout=GATE_FINISHES_SECONDS)
+        assert task.cancelled(), "a cancelled gate is a cancelled task, not an exit code"
+        assert gate.control.controller is None
+        assert ("control_ended", {"cause": "tunnel_closed"}) in records
+        return sorted(t.get_coro().__qualname__ for t in pending)
+
+    # Not asyncio.run: it would wait on a task that never finishes, and hang
+    # this test exactly as it hung the shard. A loop closed over a pending
+    # task only warns, so the verdict is the assert below.
+    loop = asyncio.new_event_loop()
+    try:
+        still_running = loop.run_until_complete(body())
+    finally:
+        loop.close()
+    assert still_running == [], "still running after the cancel"
