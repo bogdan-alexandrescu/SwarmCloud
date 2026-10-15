@@ -175,6 +175,17 @@ MAX_CONTROL_CAUSE = 32
 #: How long reading a page's URL and title may take when control ends.
 PAGE_INFO_SECONDS = 2.0
 
+#: How long a CANCELLED tunnel task may spend ending the episode a person
+#: holds (HANG-LEASE; part of #1335). The gate's own stop never cancels it
+#: first: it closes the tunnel, and the task ends control with Chromium's
+#: pipe still read. A cancel from outside -- the event loop shutting down --
+#: cancels the pipe's reader with it, so the release's reads (the page's
+#: title, the agent's resume) are answered by nobody, and the resume was
+#: unbounded: MEASURED 2026-10-14, run 38633285923, `asyncio.run` waited on
+#: the task in `_cancel_all_tasks` until the job's 30-minute timeout. Under
+#: one `PAGE_INFO_SECONDS` read, because nothing is going to answer.
+CANCELLED_RELEASE_SECONDS = 1.0
+
 #: Between the page follower's attempts to attach to the agent's page again
 #: (`PageFollower._reconnect`), the last repeated: fast at first, because the
 #: usual cause -- a session Chromium dropped in a device switch -- is over in
@@ -1878,15 +1889,30 @@ class LiveGate:
 
     async def _run_tunnel(self, tunnel: Tunnel, mux: StreamMux) -> None:
         code: int | None = None
+        cancelled = False
         try:
             code = await tunnel.run(mux.on_frame)
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
         finally:
             reporter = self._tasks.get("report")
             if reporter is not None:
                 reporter.cancel()
             await mux.close()
             if self._episode is not None:
-                await self._release("tunnel_closed")
+                if cancelled:
+                    # Bounded, and the cancel still propagates (HANG-LEASE):
+                    # see CANCELLED_RELEASE_SECONDS. Cut short, the release
+                    # skips what waits on Chromium or the relay (the lift,
+                    # the page read, the action, the resume); the proxy's
+                    # `resume`, once started, leaves its hold in its `finally`.
+                    try:
+                        await asyncio.wait_for(self._release("tunnel_closed"), CANCELLED_RELEASE_SECONDS)
+                    except asyncio.TimeoutError:
+                        self.record("release_degraded", {"step": "cancelled", "cause": "TimeoutError"})
+                else:
+                    await self._release("tunnel_closed")
             self.record("tunnel_closed", {"code": code})
 
     async def _serve_rfb(self, conn_id: str, reader: asyncio.StreamReader, writer: TunnelWriter) -> None:
