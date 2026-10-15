@@ -72,11 +72,15 @@ SETTINGS_COLLECTION = "workspace_settings"
 SETTING_FIELD = "judgment_backend"
 AUDIT_JUDGMENT_SET = "judgment_backend_set"
 
-#: The Tailscale egress Service JUDGE-NET runs in swarm-system, as a pod sees
-#: it. The only value INTERNAL_DECISION_API_URL may hold besides "" (off):
-#: the jev wrapper accepts exactly this host, so a second spelling here would
-#: be one the wrapper refuses.
-INTERNAL_DECISION_SERVICE = "http://decision-api.swarm-system.svc.cluster.local"
+#: Saga's decision API by its TAILNET NAME, over https, as a judging pod calls
+#: it: the pod's hostAliases entry resolves the name to JUDGE-NET's egress
+#: Service, which passes TLS through, so the API's own certificate verifies
+#: (owner decision 2026-10-15, #1380). The only value INTERNAL_DECISION_API_URL
+#: may hold besides "" (off): the jev wrapper accepts exactly this host, so a
+#: second spelling here would be one the wrapper refuses. Restates
+#: `scheduler.judgment.INTERNAL_DECISION_ORIGIN`;
+#: tests/unit/control_plane/test_dispatch_judgment.py holds them equal.
+INTERNAL_DECISION_ORIGIN = "https://decision-api-staging.taile0bda9.ts.net"
 
 NO_EGRESS = ("the tailnet egress to the decision API is not enabled on this platform "
              "(INTERNAL_DECISION_API_URL is unset)")

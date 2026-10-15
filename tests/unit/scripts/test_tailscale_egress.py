@@ -59,9 +59,17 @@ IMAGE = "ghcr.io/tailscale/tailscale:v1.104.1@sha256:" + (
 )
 
 
+def _cluster_ip() -> str:
+    """terraform/infra/tailscale.tf's local.decision_api_cluster_ip: the
+    Service's fixed clusterIP, stated there once."""
+    (ip,) = re.findall(r'^\s*decision_api_cluster_ip\s*=\s*"([^"]+)"', TAILSCALE_TF.read_text(), re.M)
+    return ip
+
+
 def _rendered(text: str | None = None) -> list[dict[str, Any]]:
     """The manifest as terraform/infra/tailscale.tf renders it."""
     text = (text if text is not None else TEMPLATE.read_text()).replace("__TAILNET_FQDN__", TARGET)
+    text = text.replace("__DECISION_API_CLUSTER_IP__", _cluster_ip())
     return [d for d in yaml.safe_load_all(text) if d]
 
 
@@ -81,10 +89,12 @@ def _containers(pod: dict[str, Any]) -> dict[str, dict[str, Any]]:
 # --- the manifest --------------------------------------------------------------
 
 
-def test_the_template_has_one_placeholder_and_terraform_fills_it():
-    assert set(re.findall(r"__[A-Z0-9_]+__", TEMPLATE.read_text())) == {"__TAILNET_FQDN__"}
+def test_the_template_has_two_placeholders_and_terraform_fills_both():
+    assert set(re.findall(r"__[A-Z0-9_]+__", TEMPLATE.read_text())) == {
+        "__TAILNET_FQDN__", "__DECISION_API_CLUSTER_IP__"}
     tf = TAILSCALE_TF.read_text()
     assert '"__TAILNET_FQDN__", var.tailscale_egress_target' in tf
+    assert '"__DECISION_API_CLUSTER_IP__", local.decision_api_cluster_ip' in tf
     assert f'default     = "{TARGET}"' in tf
 
 
@@ -199,6 +209,16 @@ def test_one_service_decision_api_on_443_to_the_forwarder():
     assert service["metadata"]["annotations"]["swarm.saga.xyz/tailnet-fqdn"] == TARGET
     ports = [p["containerPort"] for c in _pod()["containers"] for p in c.get("ports", [])]
     assert ports == [FORWARD_PORT]
+
+
+def test_the_service_clusterip_is_rendered_from_the_one_value():
+    """Judging pods pin the tailnet name to this address (hostAliases, #1380),
+    so the Service carries it fixed, from terraform's one statement of it --
+    never written into the template itself."""
+    (service,) = _kind(_rendered(), "Service")
+    assert service["spec"]["clusterIP"] == _cluster_ip() == "10.48.6.120"
+    assert _cluster_ip() not in TEMPLATE.read_text()
+    assert "clusterIP: __DECISION_API_CLUSTER_IP__" in TEMPLATE.read_text()
 
 
 # --- who reaches it ------------------------------------------------------------
@@ -460,7 +480,9 @@ def cluster(tmp_path: Path) -> dict[str, Any]:
     (d / "subnet.json").write_text(json.dumps({"name": FAKE_SUBNET, "ipCidrRange": FAKE_API_CIDR}))
     (d / "relay.yaml").write_text(_relay_manifest())
     (d / "live_relay.json").write_text(json.dumps({"enabled": True, "port": 8080, "swarm_api_egress_cidr": FAKE_API_CIDR}))
-    (d / "tailscale.yaml").write_text(TEMPLATE.read_text().replace("__TAILNET_FQDN__", TARGET))
+    (d / "tailscale.yaml").write_text(
+        TEMPLATE.read_text().replace("__TAILNET_FQDN__", TARGET)
+        .replace("__DECISION_API_CLUSTER_IP__", _cluster_ip()))
     value = _oauth_value()
     (d / "oauth-value").write_text(value + "\n")
     (tmp_path / "tfdata").mkdir()

@@ -305,9 +305,17 @@ Kubernetes operator in `swarm-system` with ONE egress Service to
 `decision-api-staging`, its OAuth client (`tag:swarmcloud`, ACL limited to
 `decision-api-staging:443`) in Secret Manager as `swarm-tailscale-oauth`, stored
 by the owner and never in the repository, a tfvars file, an environment or a log.
-A pod reaches it as `http://decision-api.swarm-system.svc.cluster.local`.
-`terraform/infra` `internal_decision_api_enabled` (off by default) renders that
-address as `INTERNAL_DECISION_API_URL` onto swarm-api and the scheduler.
+A pod reaches it **by the decision API's tailnet name**,
+`https://decision-api-staging.taile0bda9.ts.net`, which its `hostAliases`
+entry pins to the egress Service's fixed clusterIP (`10.48.6.120`, stated once
+as `terraform/infra/tailscale.tf` `local.decision_api_cluster_ip`). The Service
+passes raw TLS through to the tailnet, so the pod verifies the API's real
+certificate end to end (owner decision 2026-10-15, #1380). The in-cluster name
+it replaced, `http://decision-api.swarm-system.svc.cluster.local`, never
+worked: the Service has no port 80, and over https the certificate is the
+tailnet name's. `terraform/infra` `internal_decision_api_enabled` (off by
+default) renders the tailnet origin as `INTERNAL_DECISION_API_URL` onto
+swarm-api and the scheduler, which accept no other value.
 
 **The setting** is per workspace: `workspace_settings/{tenant}.judgment_backend`,
 read and written with `GET`/`PUT /v1/workspaces/{id}/judgment-backend` by the
@@ -321,16 +329,17 @@ the browser strip; Settings › API keys has the radio.
 
 **What a pod gets** (`scheduler/judgment.py`, live-browser pods only):
 `SWARM_JEV_BACKEND`, always; for an internal backend with the egress on,
-`JEV_API_URL` (the Service's `/jev` or `/laya` `/v1/decide`) and the pod label
-`swarm-judge: internal`, which JUDGE-NET's NetworkPolicy keys the decision API's
-egress on. The worker passes both variables to the CLI
+`JEV_API_URL` (`https://decision-api-staging.taile0bda9.ts.net/jev/v1/decide`
+or `/laya/v1/decide`), the pod label `swarm-judge: internal`, which JUDGE-NET's
+NetworkPolicy keys the decision API's egress on, and the `hostAliases` entry
+that resolves that name to the egress Service -- the three together or none. The worker passes both variables to the CLI
 (`handoff.AGENT_PASSTHROUGH_ENV`), whose MCP servers inherit them.
 
 **No fallback, in either direction.** An internal choice with the egress off is
 *unavailable*, not TypeSafe: the pod gets no URL, and `jev-browser-mcp` refuses
 to start rather than let jev-browser use its TypeSafe default. The wrapper
-passes `JEV_API_URL` through only when it is exactly the egress Service's path
-for the chosen backend, and sets `JEV_API_COMPAT=internal` with it, so the
+passes `JEV_API_URL` through only when it is exactly the decision API's
+tailnet path for the chosen backend, and sets `JEV_API_COMPAT=internal` with it, so the
 patched jev-browser reshapes each request for the internal API (§3.2.3). For an
 internal backend it sends **no TypeSafe key**: upstream jev-browser 0.2.0
 refuses to start without `TYPESAFE_API_KEY` and sends it as a Bearer token, so

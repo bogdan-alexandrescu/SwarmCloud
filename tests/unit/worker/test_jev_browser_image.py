@@ -252,7 +252,13 @@ def test_the_wrapper_drops_what_would_launch_or_redirect_and_forbids_downloads(w
     assert env["TYPESAFE_API_KEY"] == key  # passed through, never printed by the wrapper
 
 
-DECISION = "http://decision-api.swarm-system.svc.cluster.local"
+#: The decision API by its tailnet name, over https (owner decision 2026-10-15,
+#: #1380). tests/unit/control_plane/test_dispatch_judgment.py holds the
+#: wrapper's copy equal to scheduler.judgment.INTERNAL_DECISION_ORIGIN.
+DECISION = "https://decision-api-staging.taile0bda9.ts.net"
+#: The in-cluster http address the wrapper accepted before #1380: the Service
+#: has no port 80, so a pod sent there timed out.
+OLD_DECISION = "http://decision-api.swarm-system.svc.cluster.local"
 
 
 @pytest.mark.parametrize("backend,path", [("internal-jev", "jev"), ("internal-laya", "laya")])
@@ -279,8 +285,11 @@ def test_an_internal_backend_passes_its_url_through_and_no_typesafe_key(wrapper,
     f"{DECISION}/laya/v1/decide",  # the other backend's path
     "https://api.typesafe.ai/v1/systemone",
     "https://decision-api-staging.example.invalid/jev/v1/decide",
+    f"{OLD_DECISION}/jev/v1/decide",  # the old in-cluster http URL (#1380)
+    "https://decision-api.swarm-system.svc.cluster.local/jev/v1/decide",  # wrong certificate
+    "http://decision-api-staging.taile0bda9.ts.net/jev/v1/decide",  # the name, without TLS
 ])
-def test_an_internal_backend_without_its_in_cluster_url_is_refused(wrapper, url):
+def test_an_internal_backend_without_its_tailnet_url_is_refused(wrapper, url):
     env = {"SWARM_CDP_ENDPOINT": ENDPOINT, "SWARM_JEV_BACKEND": "internal-jev",
            "TYPESAFE_API_KEY": "ts-" + "k" * 24}
     if url:

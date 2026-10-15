@@ -560,7 +560,15 @@ locals {
   # and what the scheduler builds a live-browser pod's JEV_API_URL from
   # (scheduler.judgment). Empty while var.internal_decision_api_enabled is
   # off, so no workspace's Jev is offered a backend the cluster cannot reach.
-  internal_decision_api_url = var.internal_decision_api_enabled ? "http://decision-api.swarm-system.svc.cluster.local" : ""
+  # BY ITS TAILNET NAME, over https (owner decision 2026-10-15, #1380): the
+  # pod pins that name to the egress Service (tailscale.tf
+  # local.decision_api_cluster_ip), which passes TLS through, so the API's
+  # own certificate -- issued for that name -- verifies. The scheduler and
+  # swarm-api accept only this origin (scheduler.judgment
+  # INTERNAL_DECISION_ORIGIN, held equal by tests/unit/control_plane/
+  # test_dispatch_judgment.py), so a changed tailscale_egress_target stops
+  # the scheduler at start rather than failing in every pod.
+  internal_decision_api_url = var.internal_decision_api_enabled ? "https://${var.tailscale_egress_target}" : ""
 
   # swarm-api's address for the live relay (live.tf, LB-L8d). PLAIN ws on 8080,
   # on the internal load balancer's reserved address: owner decision

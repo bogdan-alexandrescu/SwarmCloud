@@ -161,6 +161,11 @@ run "on_one_reader_the_deployer_and_a_rendered_manifest" {
     )
     error_message = "on, the manifest is rendered with the tailnet name and no placeholder left"
   }
+
+  assert {
+    condition     = strcontains(output.tailscale_egress_manifest, "clusterIP: 10.48.6.120")
+    error_message = "on, the decision-api Service carries the fixed clusterIP judging pods pin the tailnet name to (local.decision_api_cluster_ip, #1380)"
+  }
 }
 
 run "on_without_a_deployer_has_no_binding" {
@@ -199,4 +204,21 @@ run "the_target_is_one_magicdns_name" {
   }
 
   expect_failures = [var.tailscale_egress_target]
+}
+
+# The Service's fixed clusterIP is dev's; a services range that does not hold
+# it is refused rather than rendered into a Service Kubernetes would reject.
+run "the_fixed_cluster_ip_must_be_in_the_services_range" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    enable_tailscale_egress = true
+    services_cidr           = "10.68.0.0/20"
+  }
+
+  expect_failures = [output.tailscale_egress_manifest]
 }

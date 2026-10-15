@@ -173,7 +173,7 @@ def _run_body(monkeypatch, tmp_path, *, payload: dict[str, Any], jev_key: bool =
     # The dispatcher sends JEV_API_URL to an internal backend only while the
     # tailnet egress is on (scheduler.judgment.jev_dispatch); `route` is that.
     if backend in ("internal-jev", "internal-laya") and route:
-        monkeypatch.setenv("JEV_API_URL", f"http://decision-api.swarm-system.svc.cluster.local/"
+        monkeypatch.setenv("JEV_API_URL", f"https://decision-api-staging.taile0bda9.ts.net/"
                                           f"{backend.split('-', 1)[1]}/v1/decide")
     else:
         monkeypatch.delenv("JEV_API_URL", raising=False)

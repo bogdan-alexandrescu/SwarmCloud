@@ -57,7 +57,7 @@ def _read(client) -> dict[str, Any]:
 def routed_client(ldb, people, groups, objects, clock, relay):
     """The same app with the tailnet egress on (INTERNAL_DECISION_API_URL set)."""
     return make_client(ldb, people, groups, objects, clock, relay,
-                       internal_decision_api_url=judgment.INTERNAL_DECISION_SERVICE)
+                       internal_decision_api_url=judgment.INTERNAL_DECISION_ORIGIN)
 
 
 # --------------------------------------------------------------------------- #

@@ -329,9 +329,10 @@ class SchedulerSettings:
     #: workspace chose an internal judgment backend gets JEV_API_URL under it
     #: and the `swarm-judge: internal` label (`scheduler.judgment`). Empty,
     #: no pod gets either, and an internal choice leaves Jev unavailable
-    #: rather than sending page text to TypeSafe. Only "" or the egress
-    #: Service's own address (`judgment.INTERNAL_DECISION_SERVICE`), because
-    #: that is the one host the jev wrapper accepts.
+    #: rather than sending page text to TypeSafe. Only "" or the decision
+    #: API's tailnet origin (`judgment.INTERNAL_DECISION_ORIGIN`), because
+    #: that is the one host the jev wrapper accepts and the pod's hostAliases
+    #: entry resolves.
     internal_decision_api_url: str = ""
 
     # --- child tasks (docs/design/child-tasks.md) --------------------------
