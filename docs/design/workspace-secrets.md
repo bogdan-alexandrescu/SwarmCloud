@@ -456,7 +456,10 @@ change to both, and `swarm_api.typesafe_ticket` is the reference.
   judgment backend (403 `typesafe_backend_off`), and
   `provider_keys.resolve_provider_key` must find a key from the status records
   (403 `typesafe_no_key`): the submitter's confirmed personal key, else the
-  tenant's. The answer is `201 {ticket, expires_in, scope}`. The ticket lives
+  tenant's, with one narrowing (§10 Q3): on a GROUP workspace's task the
+  submitter's own key is never named, because a personal key reaches a group
+  task only by per-secret opt-in and none exists for it yet; the group's key is
+  named or the ticket is refused. The answer is `201 {ticket, expires_in, scope}`. The ticket lives
   `TYPESAFE_TICKET_SECONDS` (300 by default, clamped to 60-900). swarm-api
   reads no secret value to mint it. With no `SWARM_TYPESAFE_FWD_KEY` the route
   is 503 `typesafe_unavailable`. The five refusals ship off, as every new

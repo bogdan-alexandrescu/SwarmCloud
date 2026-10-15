@@ -243,6 +243,14 @@ class TypesafeTicketService:
         keys = ProviderKeys(self._db, now=self._now)
         personal = submitter_personal_tenant(
             self._store, submitted_by if isinstance(submitted_by, str) else None)
+        # Owner decision Q3 (docs/design/workspace-secrets.md §10): a person's own
+        # key is spent on a GROUP workspace's task only by per-secret opt-in, and
+        # that opt-in does not exist for this key yet. Until it does, a group task
+        # names only the workspace's key; the submitter's own key is spent only in
+        # their own personal workspace (answer to SEC-INJECT-A's question,
+        # 2026-10-15, under the owner's Q3).
+        if personal != tenant_id:
+            personal = None
         statuses: dict[str, dict[str, Any]] = {}
         for owner in (personal, tenant_id):
             if owner:

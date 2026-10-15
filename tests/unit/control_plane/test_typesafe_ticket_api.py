@@ -213,15 +213,28 @@ def test_the_tenant_key_is_named_by_id_and_version_and_never_carried(ready):
     assert FWD_KEY not in response.text
 
 
-def test_the_submitters_own_key_wins(ready, ldb):
+def test_a_group_task_never_spends_the_submitters_own_key(ready, ldb):
+    """Q3: a personal key reaches a group workspace's task only by per-secret
+    opt-in, which this key does not have, so the group's own key is named."""
     client, attempt = ready
     personal_tenant(ldb, "u-alice", "alice@saga.xyz")
     set_key(ldb, ALICE_SECRET, version=7, tenant_id="u-alice")
     response = ask(client, attempt)
     assert response.status_code == 201, response.text
     got = claims(response.json()["ticket"])
-    assert (got["scope"], got["secret_id"], got["secret_version"]) == ("user", ALICE_SECRET, "7")
+    assert (got["scope"], got["secret_id"]) == ("tenant", TENANT_SECRET)
+    assert ALICE_SECRET not in response.text
     assert got["tenant_id"] == "eng"
+
+
+def test_a_group_task_with_only_the_submitters_key_is_refused(ready, ldb):
+    client, attempt = ready
+    del ldb.docs[f"provider_keys/{TENANT_SECRET}"]
+    personal_tenant(ldb, "u-alice", "alice@saga.xyz")
+    set_key(ldb, ALICE_SECRET, version=7, tenant_id="u-alice")
+    response = ask(client, attempt)
+    assert response.status_code == 403
+    assert response.json()["code"] == "typesafe_no_key"
 
 
 def test_a_namesakes_personal_key_is_never_spent(ready, ldb):
