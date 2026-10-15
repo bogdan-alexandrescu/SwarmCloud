@@ -59,14 +59,20 @@ import secrets as _random
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.admission import _snapshot
 from swarm_common.models import PLATFORM_COMPONENTS, Tenant, consumer_name
-from swarm_common.profiles import RUNNER_PROFILES, RUNTIME_TOOLS, SECRET_KINDS, SecretSlot
+from swarm_common.profiles import (
+    RUNNER_PROFILES,
+    RUNTIME_TOOLS,
+    SECRET_KINDS,
+    SecretSlot,
+    tools_launched,
+)
 
 from .admins import AUDIT_COLLECTION
 from .auth import AuthContext, require_admin
@@ -946,3 +952,240 @@ class WorkspaceSecrets:
                 "for someone else, another workspace or another secret; mint a new one or "
                 "open the settings page directly")
         return True
+
+
+# ---------------------------------------------------------------------------
+# SEC-RELEASE's queries (design §3.3, §4.4): which secrets an attempt is due
+# ---------------------------------------------------------------------------
+#
+# Read by `routes/attempts_secrets.py`, the one route that serves a value.
+# Nothing here reads a payload either: these functions decide WHICH records
+# and slots an attempt is released, from Firestore and the frozen catalogue;
+# the Secret Manager read, the fence and the rows are the route's.
+#
+# EVERY DOCUMENT READ HERE IS ONE A TENANT'S AGENT CAN WRITE (docs/multi-
+# tenancy.md, "The Firestore row, in full": no collection-level IAM, and a
+# document id it can guess is one it can rewrite). So nothing a record or a
+# grant says is trusted to name ANOTHER workspace's secret: a record is
+# released only when its Secret Manager id and its version both sit under
+# `swarm-tenant-<the tenant the signed spec names>-wsec-` (`owned_by`), and
+# that tenant comes from the signed task, never from a document.
+
+#: One row per secret per attempt (§4.4). Never a value.
+RELEASES_COLLECTION = "workspace_secret_releases"
+#: One document per attempt that was released anything or nothing, keyed by
+#: the attempt id: what makes the release once per attempt.
+RELEASE_MARKS_COLLECTION = "workspace_secret_release_marks"
+#: Owner decision Q6: release rows are kept 90 days, by a Firestore TTL on
+#: `expire_at` (the TTL policy itself is a Terraform field on the collection).
+RELEASE_RETENTION = timedelta(days=90)
+
+#: Owner decision Q8 (§10): the TypeSafe key never enters an agent pod; a
+#: platform forwarder adds it to jev's requests (lane SEC-INJECT-TYPESAFE). A
+#: grant into one of these slots is therefore matched (so the console's "last
+#: used" and the forwarder lane read the same rule) and WITHHELD from the
+#: release, by name, with this reason.
+INJECT_ONLY_SLOTS: tuple[str, ...] = ("typesafe",)
+INJECT_ONLY = "inject_only"
+
+_WSEC_HEX = re.compile(r"[0-9a-f]{16}")
+_VERSION_TAIL = re.compile(r"[0-9]+")
+
+
+def attempt_consumers(task: Mapping[str, Any]) -> tuple[str, ...]:
+    """The consumers an attempt IS (design §2.3), from its SIGNED task fields.
+
+    `profile:<runner_profile>` when the profile declares a slot; `tool:<t>`
+    for each RUNTIME_TOOLS entry its signed `browser_tool` launches
+    (`tools_launched`: absent is `auto`); `component:merge` for the merge
+    worker action and `component:indexer` for the indexer profile. The judge
+    reads its TypeSafe key outside this release (Q8), and `component:git`
+    never takes a workspace secret (§6.2), so neither is derived here. The
+    caller has verified the spec's signature first: every field read here is
+    one a tenant's agent can rewrite otherwise."""
+    profile = RUNNER_PROFILES.get(str(task.get("runner_profile") or ""))
+    if profile is None:
+        return ()
+    out: list[str] = []
+    if profile.secret_slots:
+        out.append(consumer_name("profile", profile.name))
+    inputs = task.get("input") if isinstance(task.get("input"), Mapping) else {}
+    out.extend(consumer_name("tool", name) for name in tools_launched(profile, inputs))
+    action = getattr(profile.worker_action, "value", profile.worker_action)
+    if action == "merge":
+        out.append(consumer_name("component", "merge"))
+    if profile.name == "indexer":
+        out.append(consumer_name("component", "indexer"))
+    return tuple(dict.fromkeys(out))
+
+
+def wsec_prefix(tenant_id: str) -> str:
+    """`swarm-tenant-<tenant>-wsec-`: every store secret of `tenant_id` starts so."""
+    return f"swarm-tenant-{tenant_id}-wsec-"
+
+
+def _version_number(doc: Mapping[str, Any]) -> str | None:
+    """The `<n>` of `projects/<p>/secrets/<secret_id>/versions/<n>`, or None.
+
+    Secret Manager answers `add_secret_version` with the project NUMBER, so
+    the stored name's project segment is not compared with an id; the read
+    is made under this project by `version_to_read`, whatever it says."""
+    secret_id, version = doc.get("secret_id"), doc.get("current_version")
+    if not isinstance(secret_id, str) or not isinstance(version, str):
+        return None
+    head, sep, number = version.rpartition("/versions/")
+    parts = head.split("/")
+    if (not sep or len(parts) != 4 or parts[0] != "projects" or not parts[1]
+            or parts[2] != "secrets" or parts[3] != secret_id):
+        return None
+    return number if _VERSION_TAIL.fullmatch(number) else None
+
+
+def owned_by(doc: Mapping[str, Any], tenant_id: str, project_id: str) -> bool:
+    """Is `doc` a live store record of `tenant_id` whose current version is
+    that tenant's own `-wsec-` secret?
+
+    The record is tenant-writable, so its `secret_id` is checked as a NAME,
+    `swarm-tenant-<tenant>-wsec-<16 hex>`, and its `current_version` as a
+    version of that same secret. A rewritten record can then point only at
+    its own workspace's secrets, and only in this project (`version_to_read`)."""
+    secret_id = doc.get("secret_id")
+    if doc.get("tenant_id") != tenant_id or doc.get("state") != ACTIVE or not project_id:
+        return False
+    prefix = wsec_prefix(tenant_id)
+    if not isinstance(secret_id, str) or not secret_id.startswith(prefix):
+        return False
+    return bool(_WSEC_HEX.fullmatch(secret_id[len(prefix):])) and _version_number(doc) is not None
+
+
+def version_to_read(doc: Mapping[str, Any], project_id: str) -> str:
+    """The version name the release reads: rebuilt under THIS project from a
+    record `owned_by` has accepted, never the stored string itself."""
+    number = _version_number(doc)
+    if number is None:
+        raise ValueError("not a store record's version")
+    return f"projects/{project_id}/secrets/{doc['secret_id']}/versions/{number}"
+
+
+@dataclass(frozen=True)
+class Due:
+    """One secret an attempt is due, in one slot, for these consumers."""
+
+    record: Mapping[str, Any]
+    slot: str
+    consumers: tuple[str, ...]
+
+    @property
+    def name(self) -> str:
+        return str(self.record.get("name"))
+
+
+@dataclass
+class ReleasePlan:
+    due: list[Due]
+    #: `(name, reason)`: matched, not released. Names only, never a value.
+    withheld: list[tuple[str, str]]
+
+
+def _deliverable(grant: Mapping[str, Any], kind: Any) -> str | None:
+    """The slot an enabled grant delivers into, or None. The catalogue's rule
+    (`check_grant`) re-applied at read time: a grant document is tenant-
+    writable, so the slot, the consumer and the kind are checked again."""
+    entry = CONSUMERS_BY_NAME.get(str(grant.get("consumer") or ""))
+    if entry is None or entry.locked or not entry.slots:
+        return None
+    chosen = entry.slot(grant.get("slot") if isinstance(grant.get("slot"), str) else None)
+    if chosen is None or kind not in chosen.kinds or kind == "forge_token":
+        return None
+    return chosen.name
+
+
+def _plan(db: Any, records: Iterable[Mapping[str, Any]], consumers: tuple[str, ...],
+          grant_tenant: str, plan: ReleasePlan) -> None:
+    wanted = set(consumers)
+    for record in records:
+        secret_id = record["secret_id"]
+        query = db.collection(GRANTS_COLLECTION) \
+            .where(filter=FieldFilter("secret_id", "==", secret_id)) \
+            .where(filter=FieldFilter("enabled", "==", True))
+        slots: dict[str, list[str]] = {}
+        for snap in query.stream():
+            grant = snap.to_dict() or {}
+            if (grant.get("secret_id") != secret_id or grant.get("tenant_id") != grant_tenant
+                    or grant.get("enabled") is not True or grant.get("consumer") not in wanted):
+                continue
+            slot = _deliverable(grant, record.get("kind"))
+            if slot is not None:
+                slots.setdefault(slot, []).append(str(grant["consumer"]))
+        for slot, by in sorted(slots.items()):
+            if slot in INJECT_ONLY_SLOTS:
+                plan.withheld.append((str(record.get("name")), INJECT_ONLY))
+                continue
+            plan.due.append(Due(record, slot, tuple(sorted(by))))
+
+
+def release_plan(db: Any, *, tenant_id: str, consumers: tuple[str, ...], project_id: str,
+                 personal: tuple[str, str] | None = None,
+                 personal_refusal: Callable[[], str | None] | None = None) -> ReleasePlan:
+    """What an attempt of `tenant_id` with `consumers` is released (§3.3 step 3).
+
+    THE WORKSPACE'S OWN: every enabled grant of `tenant_id` naming one of
+    `consumers`, on a record `owned_by` the same tenant.
+
+    A PERSON'S OWN, ON A GROUP TASK (owner decision Q3): `personal` is
+    `(personal tenant id, submitter email)`, set by the caller only when the
+    signed submitter's personal tenant is confirmed theirs. Its records are
+    those whose opt-in list names `tenant_id` and whose creator is that
+    person; `personal_refusal` re-checks their membership of `tenant_id` NOW,
+    and only when there is something to release: a refusal (a lapsed or
+    unresolved membership) withholds every one of them, by name."""
+    plan = ReleasePlan(due=[], withheld=[])
+    if not consumers:
+        return plan
+    query = db.collection(GRANTS_COLLECTION) \
+        .where(filter=FieldFilter("tenant_id", "==", tenant_id)) \
+        .where(filter=FieldFilter("enabled", "==", True))
+    secret_ids = sorted({str((s.to_dict() or {}).get("secret_id") or "") for s in query.stream()}
+                        - {""})
+    own: list[Mapping[str, Any]] = []
+    for secret_id in secret_ids:
+        snap = db.collection(SECRETS_COLLECTION).document(secret_id).get()
+        doc = (snap.to_dict() or {}) if snap.exists else {}
+        if doc.get("secret_id") == secret_id and owned_by(doc, tenant_id, project_id):
+            own.append(doc)
+    _plan(db, own, consumers, tenant_id, plan)
+
+    if personal is not None:
+        personal_tenant, email = personal
+        query = db.collection(SECRETS_COLLECTION) \
+            .where(filter=FieldFilter("tenant_id", "==", personal_tenant)) \
+            .where(filter=FieldFilter("use_in_workspaces", "array_contains", tenant_id))
+        opted = [d for d in (s.to_dict() or {} for s in query.stream())
+                 if owned_by(d, personal_tenant, project_id)
+                 and d.get("scope") == SCOPE_PERSONAL
+                 and tenant_id in (d.get("use_in_workspaces") or [])
+                 and str(d.get("created_by") or "").strip().lower() == email]
+        mine = ReleasePlan(due=[], withheld=[])
+        _plan(db, sorted(opted, key=lambda d: str(d.get("name"))), consumers,
+              personal_tenant, mine)
+        refusal = personal_refusal() if (mine.due and personal_refusal is not None) else None
+        if refusal:
+            plan.withheld.extend((due.name, refusal) for due in mine.due)
+        else:
+            plan.due.extend(mine.due)
+        plan.withheld.extend(mine.withheld)
+    return plan
+
+
+def release_row(due: Due, *, task: Mapping[str, Any], attempt_id: str, generation: int,
+                at: datetime) -> dict[str, Any]:
+    """The §4.4 row for one released secret. Names, ids and a version: never a value."""
+    record = due.record
+    return {
+        "at": at, "expire_at": at + RELEASE_RETENTION,
+        "task_id": task.get("id"), "attempt_id": attempt_id, "generation": generation,
+        "tenant_id": task.get("tenant_id"), "secret_tenant_id": record.get("tenant_id"),
+        "secret_id": record.get("secret_id"), "name": record.get("name"),
+        "version": record.get("current_version"), "slot": due.slot,
+        "consumers": list(due.consumers), "submitted_by": task.get("submitted_by"),
+    }

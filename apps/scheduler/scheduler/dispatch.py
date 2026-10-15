@@ -92,7 +92,14 @@ from typing import Any, Protocol
 
 from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE
 from swarm_common.models import Lease, Task, Tenant
-from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend, RunnerProfile
+from swarm_common.profiles import (
+    RESOURCE_CLASSES,
+    RUNNER_PROFILES,
+    RUNTIME_TOOLS,
+    Backend,
+    RunnerProfile,
+    tools_launched,
+)
 
 from .credentials import AccountPool, CredentialSource, credential_for
 from .judgment import DEFAULT_BACKEND, jev_dispatch, read_backend
@@ -934,6 +941,28 @@ def offers_git_tools(profile_name: str) -> bool:
     return any(part in GIT_TOOL_RUNNERS for part in profile.runner_argv)
 
 
+def consumes_workspace_secrets(profile_name: str, inputs: Any) -> bool:
+    """Whether an attempt on this profile could be released a workspace secret,
+    so needs an attempt key to sign the release with (docs/design/workspace-
+    secrets.md §3.3, lane SEC-RELEASE).
+
+    The frozen catalogue's declarations (contract requests 80-81): the profile
+    declares a secret slot, or a RUNTIME_TOOLS entry its `browser_tool` input
+    launches does. The platform components a release can name (`merge`,
+    `indexer`) declare no slot, so they add nobody; the judge's TypeSafe key
+    is not released into a pod at all (owner decision Q8). Read from the
+    catalogue rather than from the grants, so the scheduler reads no
+    workspace's secrets to dispatch it.
+    """
+    profile = RUNNER_PROFILES.get(profile_name)
+    if profile is None or profile.worker_action is not None:
+        return False
+    if profile.secret_slots:
+        return True
+    launched = tools_launched(profile, inputs if isinstance(inputs, dict) else {})
+    return any(RUNTIME_TOOLS[name].secret_slots for name in launched)
+
+
 def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> dict[str, str]:
     """The ONLY thing the environment carries is identifiers and endpoints.
 
@@ -1035,9 +1064,19 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
     # so it needs one too. Having a key does not lift the depth limit:
     # swarm-api refuses a child's `submit` as `child_depth_exceeded` from the
     # task document, whatever its worker registered.
+    #
+    # AND WHEN IT COULD BE RELEASED A WORKSPACE SECRET (docs/design/workspace-
+    # secrets.md §3.3, lane SEC-RELEASE). The release is signed with the same
+    # key, so a child whose profile or tools declare a secret slot needs one
+    # even with no git tools (a `browser` child): without it the worker cannot
+    # ask, a required slot parks it, and an optional one is never delivered.
     child_key = str(getattr(settings, "child_key", "") or "")
     api_url = str(getattr(settings, "swarm_api_url", "") or "").strip()
-    keyed = not task.parent_task_id or offers_git_tools(task.runner_profile)
+    keyed = (
+        not task.parent_task_id
+        or offers_git_tools(task.runner_profile)
+        or consumes_workspace_secrets(task.runner_profile, task.input)
+    )
     if child_key and api_url and keyed:
         from .children import registration_nonce
 
