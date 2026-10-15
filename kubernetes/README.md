@@ -19,6 +19,7 @@ to be written down rather than assumed.
 | `rbac/worker-rbac.yaml` | A Role with no rules, and the binding |
 | `network-policies/default-deny.yaml` | Deny ingress and egress, for every pod |
 | `network-policies/allow-egress.yaml` | DNS (NodeLocal DNSCache and kube-dns), the metadata server, Google APIs, the internet minus the cluster |
+| `storage/cache-storage-class.yaml` | The cluster-scoped pd-balanced StorageClass of every worker pod's 20 GiB `cache` claim (CACHE-PVC), applied with the policies |
 | `policies/pod-security.yaml` | Cluster-scoped ValidatingAdmissionPolicies |
 | `policies/workspace-provisioner-scope.yaml` | The policies that confine the workspace deployer's writes to `swarm-tenant-u-*` and to what the tenant render produces |
 | `rbac/provisioner-rbac.yaml` | The workspace deployer's ClusterRole and binding, and its two reads in `kube-system` — the one cluster-scoped grant here ([docs/workspaces.md](../docs/workspaces.md) §2.3) |

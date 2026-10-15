@@ -49,7 +49,7 @@ import yaml
 
 from agent_worker.cachedirs import CACHE_ROOT_ENV
 from swarm_common.models import Tenant
-from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend, resolve_backend
+from swarm_common.profiles import RUNNER_PROFILES, Backend, resolve_backend
 
 from scheduler.dispatch import (
     AUTOPILOT_MAX_EPHEMERAL_GIB,

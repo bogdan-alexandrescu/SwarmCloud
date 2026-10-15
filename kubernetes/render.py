@@ -97,6 +97,8 @@ sys.path.insert(0, str(REPO / "apps" / "quota-broker"))
 sys.path.insert(0, str(REPO / "apps" / "scheduler"))
 from quota_broker.accounts import _LABEL as _ACCOUNT_LABEL  # noqa: E402
 from scheduler.dispatch import (  # noqa: E402
+    CACHE_STORAGE_CLASS,
+    CACHE_VOLUME_GIB,
     backend_deadline_seconds,
     gke_disk,
     gke_ephemeral_storage_gib,
@@ -299,6 +301,8 @@ _VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
     "QUOTA_CPU": re.compile(r"^[0-9]{1,6}m?$"),
     "QUOTA_MEMORY": re.compile(r"^[0-9]{1,9}(Ki|Mi|Gi|Ti|K|M|G|T)?$"),
     "QUOTA_EPHEMERAL": re.compile(r"^[0-9]{1,9}(Ki|Mi|Gi|Ti|K|M|G|T)?$"),
+    "QUOTA_CACHE_STORAGE": re.compile(r"^[0-9]{1,9}Gi$"),
+    "CACHE_STORAGE_CLASS": re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"),
     # Firestore document ids. Underscores are legal here and are exactly why the
     # label spellings have to be sanitised separately.
     "TASK_ID": re.compile(r"^[A-Za-z0-9._-]{1,128}$"),
@@ -430,6 +434,10 @@ def tenant_files(bound: Iterable[str] = ()) -> tuple[str, ...]:
 #: namespace and nothing yet narrows it to `swarm-tenant-u-*`
 #: (docs/workspaces.md §2.3).
 POLICY_FILES = (
+    # The cache's StorageClass (CACHE-PVC): cluster-scoped, so it is applied
+    # with these and not per tenant. First: nothing here depends on it, and a
+    # worker pod dispatched before it exists waits Pending for a class.
+    "storage/cache-storage-class.yaml",
     "policies/pod-security.yaml",
     "policies/workspace-provisioner-scope.yaml",
     "rbac/provisioner-rbac.yaml",
@@ -748,6 +756,13 @@ def tenant_values(args: argparse.Namespace) -> dict[str, str]:
         "QUOTA_CPU": str(args.quota_cpu),
         "QUOTA_MEMORY": args.quota_memory,
         "QUOTA_EPHEMERAL": args.quota_ephemeral,
+        # The cache's network disks (CACHE-PVC): one claim per Job, because the
+        # claim is the pod's and a finished Job keeps its pod for
+        # ttlSecondsAfterFinished. Derived, not a flag: it is a consequence of
+        # the jobs quota and the dispatcher's CACHE_VOLUME_GIB, never a third
+        # number to keep in step with them.
+        "QUOTA_CACHE_STORAGE": f"{args.quota_jobs * CACHE_VOLUME_GIB}Gi",
+        "CACHE_STORAGE_CLASS": CACHE_STORAGE_CLASS,
     }
 
 
@@ -786,6 +801,9 @@ def policy_values(args: argparse.Namespace) -> dict[str, str]:
             "RECONCILER_UID": args.reconciler_uid or reconciler,
             "WORKSPACE_DEPLOYER_GSA": deployer,
             "WORKSPACE_DEPLOYER_UID": args.workspace_deployer_uid or deployer,
+            # The dispatcher's own name for the cache's class, so the
+            # StorageClass applied and the claim every pod makes cannot differ.
+            "CACHE_STORAGE_CLASS": CACHE_STORAGE_CLASS,
         }
     )
 
@@ -986,14 +1004,15 @@ def render_job(args: argparse.Namespace) -> str:
             f"{args.registry}/{profile.image}:{args.tag}",
             "CPU": str(int(rc.cpu)),
             "MEMORY": f"{rc.memory_gib}Gi",
-            # The scratch volumes' sizeLimits -- workspace, cache, /tmp, HOME -- and
-            # the whole pod's ephemeral-storage, their sum. The dispatcher's
+            # The local scratch volumes' sizeLimits -- workspace, /tmp, HOME --
+            # and the whole pod's ephemeral-storage, their sum; and the cache's
+            # network-disk claim (CACHE-PVC), which is not in that sum. The dispatcher's
             # own numbers (GkeDisk), imported, so the YAML cannot drift from
             # what runs: until 2026-10-07 the browser template's 8 + 2 + 4 GiB
             # of volumes sat under an 8 GiB pod limit (contract request 53).
             "DISK": f"{gke_disk(rc).workspace_gib}Gi",
             "TMP_DISK": f"{gke_disk(rc).tmp_gib}Gi",
-            "CACHE_DISK": f"{gke_disk(rc).cache_gib}Gi",
+            "CACHE_DISK": f"{CACHE_VOLUME_GIB}Gi",
             "HOME_DISK": f"{gke_disk(rc).home_gib}Gi",
             "EPHEMERAL": f"{gke_ephemeral_storage_gib(rc)}Gi",
             # The LIFECYCLE's deadline (TASK_TIMEOUT_SECONDS) and the JOB's are

@@ -177,6 +177,19 @@ WORKER_ARTIFACTS_DIR = f"{WORKSPACE_MOUNT}/artifacts"
 CACHE_MOUNT = "/cache"
 CACHE_ROOT_ENV = "SWARM_CACHE_ROOT"
 
+#: THE CACHE VOLUME IS A NETWORK DISK (CACHE-PVC, owner decision 2026-10-15
+#: ~04:00 PDT, "Network-disk cache"): a generic ephemeral volume, i.e. a
+#: PersistentVolumeClaim the ephemeral-volume controller creates from the pod
+#: spec when the pod is created and deletes when the pod is deleted. It is NOT
+#: ephemeral-storage: kubelet counts neither it nor its usage against the pod's
+#: limit, so filling it is ENOSPC in the writing process, never an eviction.
+#: The class is kubernetes/storage/cache-storage-class.yaml's (pd-balanced,
+#: reclaimPolicy Delete, WaitForFirstConsumer; none existed in terraform/ or
+#: kubernetes/); the size is the owner's, ten times the 2 GiB emptyDir that
+#: evicted (GKE_DISK says why). ReadWriteOnce: one pod, one disk.
+CACHE_STORAGE_CLASS = "swarm-cache-pd-balanced"
+CACHE_VOLUME_GIB = 20
+
 #: THE CLOUD RUN WORKSPACE IS A TMPFS, sized as terraform sizes it.
 #:
 #: terraform/modules/cloud_run_jobs/main.tf gives its Jobs `empty_dir { medium =
@@ -216,12 +229,12 @@ AUTOPILOT_MAX_EPHEMERAL_GIB = 10
 
 @dataclass(frozen=True)
 class GkeDisk:
-    """A GKE worker pod's disk-backed scratch volumes, in GiB, for one resource class.
+    """A GKE worker pod's LOCAL disk-backed scratch volumes, in GiB, for one resource class.
 
-    `readOnlyRootFilesystem` makes these the only places the worker and its
-    toolchain can write: the workspace (the attempt tree, which is also the
-    agent's HOME -- see GKE_DISK), the cache (the agent's tool caches and
-    TMPDIR, CACHE-SCRATCH), /tmp (where `checkpoint.py`
+    `readOnlyRootFilesystem` makes these, and the cache's network disk
+    (CACHE_VOLUME_GIB, not here: a PVC is not ephemeral-storage), the only
+    places the worker and its toolchain can write: the workspace (the attempt
+    tree, which is also the agent's HOME -- see GKE_DISK), /tmp (where `checkpoint.py`
     builds its archive, up to `max_checkpoint_bytes`, 2 GiB, and wherever an
     agent names /tmp by its literal path) and the WORKER's HOME, /home/swarm.
     kubelet sums every disk-backed emptyDir against the pod's ONE
@@ -233,13 +246,12 @@ class GkeDisk:
     """
 
     workspace_gib: int
-    cache_gib: int
     tmp_gib: int
     home_gib: int
 
     @property
     def ephemeral_gib(self) -> int:
-        return self.workspace_gib + self.cache_gib + self.tmp_gib + self.home_gib
+        return self.workspace_gib + self.tmp_gib + self.home_gib
 
 
 #: Per resource class, because one formula cannot fit them all under
@@ -254,7 +266,8 @@ class GkeDisk:
 #:   the checkout, its `node_modules` and `.venv`, and the agent's HOME
 #:   (`work/`: the CLI's own state, which is checkpointed). `restore/` stages
 #:   a downloaded checkpoint here too, before the agent starts.
-#: * cache -- `<CACHE_MOUNT>/<attempt>/` (agent_worker/cachedirs.py,
+#: * cache -- NOT a GkeDisk volume since CACHE-PVC: a CACHE_VOLUME_GIB network
+#:   disk (below). `<CACHE_MOUNT>/<attempt>/` (agent_worker/cachedirs.py,
 #:   CACHE-SCRATCH): UV_CACHE_DIR, npm_config_cache, PIP_CACHE_DIR,
 #:   TF_PLUGIN_CACHE_DIR, XDG_CACHE_HOME and the agent's TMPDIR, so every
 #:   `mkdtemp` and pytest/xdist temp tree too. Emptied at the start of every
@@ -285,6 +298,29 @@ class GkeDisk:
 #: volume of their OWN, which does move them. None of these variables reaches a
 #: literal `/tmp`; that is still the `tmp` volume's.
 #:
+#: WHY THE CACHE LEFT THE LOCAL DISK (CACHE-PVC, owner decision 2026-10-15
+#: ~04:00 PDT). The cache volume CACHE-SCRATCH (PR 1360) added was a 2 GiB
+#: emptyDir, and task_247c87a8714c4977921a (SEC-INJECT-TYPESAFE implement) was
+#: evicted on it twice -- `EmptyDir volume "cache" exceeds 2Gi` -- and not
+#: retried: one uv sync and one npm install of this repository fill 2 GiB.
+#: There was no local GiB left to give it: Autopilot caps a general-purpose
+#: pod's ephemeral-storage at 10 GiB (AUTOPILOT_MAX_EPHEMERAL_GIB), and the
+#: split was already 10. So the cache is a CACHE_VOLUME_GIB (20 GiB)
+#: pd-balanced generic ephemeral volume: outside the 10 GiB cap entirely, sized
+#: by the owner, deleted with the pod, and a full one is ENOSPC in the tool
+#: that filled it rather than an eviction of the pod. Its 2 local GiB went
+#: back to /tmp and HOME, one each.
+#:
+#: THE TRADE, stated: a disk attach is on every GKE start's critical path. The
+#: pod waits, after it is scheduled, for the CSI driver to create a disk in the
+#: node's zone (WaitForFirstConsumer) and attach it before the container can
+#: start -- tens of seconds that a local emptyDir never cost. UNMEASURED when
+#: this was written: docs/browser-startup-speed.md §11 has the slot for it
+#: beside the warm 6 s / cold 125 s it adds to. And a disk outlives the run by
+#: as long as the pod does: a finished Job keeps its pod for
+#: ttlSecondsAfterFinished (an hour), so the tenant quota admits one claim per
+#: Job, not per running pod (kubernetes/namespaces/tenant-namespace.yaml).
+#:
 #: HOW GKE FAILS WHEN A VOLUME FILLS, compared with Cloud Run. Cloud Run's
 #: workspace is a memory-medium tmpfs with a size (`workspace_size_gib`): a
 #: write past it fails in the writing process with ENOSPC, and the worker
@@ -297,16 +333,17 @@ class GkeDisk:
 #: what the reconciler does when it is reached anyway is name the eviction and
 #: retry it at most once (`reconciler.detect.detect_evicted`).
 #:
-#: standard: workspace 5 + cache 2 + /tmp 2 + HOME 1 = 10, Autopilot's maximum
-#:   (CACHE-SCRATCH, 2026-10-15). It was 5 + 0 + 4 + 1 (#893), and 4 + 2 + 4
-#:   before that (contract request 53). The cache's 2 GiB came out of /tmp:
-#:   the workspace was what evicted, so it keeps its 5 and loses the caches,
-#:   and /tmp goes back to exactly the checkpoint cap, which the test still
-#:   holds it to. THE TRADE, stated: an agent that writes gigabytes under a
-#:   LITERAL /tmp while a checkpoint is being built can be evicted on /tmp
-#:   again, as task_22e763906edd4edcb630 was before #893. The reconciler names
-#:   and retries such an eviction once (`detect_evicted`). The history of the
-#:   other numbers, for the record:
+#: standard: workspace 5 + /tmp 3 + HOME 2 = 10, Autopilot's maximum (CACHE-PVC,
+#:   the owner's preview, 2026-10-15), plus the 20 GiB network-disk cache. It
+#:   was 5 + cache 2 + /tmp 2 + 1 (CACHE-SCRATCH, the same day), 5 + 4 + 1
+#:   (#893), and 4 + 2 + 4 before that (contract request 53). The cache's
+#:   2 GiB went back one to /tmp -- 1 GiB above the 2 GiB checkpoint cap, which
+#:   the test still holds every class to, for an agent's literal /tmp writes
+#:   while an archive is built (task_22e763906edd4edcb630's eviction, #893) --
+#:   and one to HOME. An agent that writes more than that 1 GiB under a
+#:   LITERAL /tmp while a checkpoint is being built can still be evicted on
+#:   /tmp; the reconciler names and retries such an eviction once
+#:   (`detect_evicted`). The history of the other numbers, for the record:
 #:   - /tmp 4: the 2 GiB checkpoint archive (`max_checkpoint_bytes`) plus 2 GiB
 #:     an agent can write under a literal /tmp while one is being built, and 4
 #:     when none is. The checkpoint cap still fits on its own:
@@ -316,15 +353,18 @@ class GkeDisk:
 #:     caches, and it keeps the GiB now that they are on the cache volume.
 #:     task_5ccac63ae3724e72b5cd was evicted on the 4 GiB workspace once on
 #:     2026-10-08.
-#:   - HOME 1: what is left. It holds the worker's own files only (above).
+#:   - HOME 2: what is left (it was 1 until CACHE-PVC). It holds the worker's
+#:     own files only (above).
 #:   On Cloud Run claude-code's /tmp and HOME sit in the container's in-memory
 #:   writable layer, bounded only by the 8 GiB memory limit; on GKE all three
 #:   are disk, and their sum is the pod's ephemeral-storage limit.
 #:
-#: browser: workspace 4 + cache 2 + /tmp 2 + HOME 2 = 10 (CACHE-SCRATCH). The
-#: owner's 4 + 2 + 2 below is unchanged; the cache is added beside it, which
-#: takes the pod from 8 GiB to Autopilot's 10. claude-code-browser runs the
-#: same uv and npm work as claude-code on this class.
+#: browser: workspace 4 + /tmp 3 + HOME 3 = 10 (CACHE-PVC, the owner's preview,
+#: 2026-10-15), plus the 20 GiB network-disk cache. It was 4 + cache 2 + 2 + 2
+#: (CACHE-SCRATCH), which had taken the owner's 4 + 2 + 2 below from 8 GiB to
+#: Autopilot's 10; the cache's 2 GiB went one each to /tmp and HOME.
+#: claude-code-browser runs the same uv and npm work as claude-code on this
+#: class.
 #: Owner decisions 2026-10-07 (contract request 53): it was workspace 8 + /tmp 2 +
 #: HOME 4 = 14 GiB of sizeLimits against an 8 GiB pod limit, so the pod could be
 #: evicted before any one volume was full; then 5 + 1 + 2, which left /tmp below
@@ -333,15 +373,15 @@ class GkeDisk:
 #: workspace gives up the GiB: 4 + 2 + 2. Left as the owner set it: #893 is
 #: claude-code's eviction, and browser's numbers are a decision of their own.
 #:
-#: large: 5 + 2 + 2 + 1 = 10, standard's layout. No GKE profile can reach it --
+#: large: 5 + 3 + 2 = 10, standard's layout. No GKE profile can reach it --
 #: none is `large`, and a step's resource_class override may only shrink
 #: (swarm_api.validation.validate_resource_class_override) -- but the manifest
 #: renders any class it is given, and its disk_gib of 16 alone is past what
 #: Autopilot admits, so a pod sized from it would never start.
 GKE_DISK: dict[str, GkeDisk] = {
-    "standard": GkeDisk(workspace_gib=5, cache_gib=2, tmp_gib=2, home_gib=1),
-    "browser": GkeDisk(workspace_gib=4, cache_gib=2, tmp_gib=2, home_gib=2),
-    "large": GkeDisk(workspace_gib=5, cache_gib=2, tmp_gib=2, home_gib=1),
+    "standard": GkeDisk(workspace_gib=5, tmp_gib=3, home_gib=2),
+    "browser": GkeDisk(workspace_gib=4, tmp_gib=3, home_gib=3),
+    "large": GkeDisk(workspace_gib=5, tmp_gib=3, home_gib=2),
 }
 
 
@@ -2159,8 +2199,8 @@ class GkeJobDispatcher:
             "cpu": str(int(rc.cpu)),
             "memory": f"{rc.memory_gib}Gi",
             # The whole pod's local disk -- the sum of the scratch volumes'
-            # sizeLimits below, the cache's included, not the workspace's:
-            # see GkeDisk.
+            # sizeLimits below, not the workspace's alone, and not the
+            # cache's network disk, which is no ephemeral-storage: see GkeDisk.
             "ephemeral-storage": f"{gke_ephemeral_storage_gib(rc)}Gi",
         }
         labels = {
@@ -2295,10 +2335,20 @@ class GkeJobDispatcher:
                                 "medium": "Memory", "sizeLimit": "2Gi"}},
                             {"name": "tmp", "emptyDir": {"sizeLimit": f"{disk.tmp_gib}Gi"}},
                             {"name": "home", "emptyDir": {"sizeLimit": f"{disk.home_gib}Gi"}},
-                            # DISK, not memory: a memory tmpfs would be charged
-                            # to the memory limit and OOM-kill the agent. Its
-                            # own sizeLimit, counted in ephemeral-storage.
-                            {"name": "cache", "emptyDir": {"sizeLimit": f"{disk.cache_gib}Gi"}},
+                            # A NETWORK DISK, not a local emptyDir (CACHE-PVC):
+                            # the 2 GiB emptyDir evicted, and Autopilot's
+                            # 10 GiB had no more to give it. The ephemeral-
+                            # volume controller creates the claim with the pod
+                            # and deletes it with the pod, under its own
+                            # identity, so the dispatcher's Role needs nothing
+                            # new. Not ephemeral-storage. See CACHE_STORAGE_CLASS.
+                            {"name": "cache", "ephemeral": {"volumeClaimTemplate": {
+                                "spec": {
+                                    "accessModes": ["ReadWriteOnce"],
+                                    "storageClassName": CACHE_STORAGE_CLASS,
+                                    "resources": {"requests": {
+                                        "storage": f"{CACHE_VOLUME_GIB}Gi"}},
+                                }}}},
                             # `optional`: a namespace whose ConfigMap has not
                             # been applied (one onboarding created) still
                             # starts its pod, and verifies with the keys in

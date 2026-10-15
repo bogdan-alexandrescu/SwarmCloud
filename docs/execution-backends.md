@@ -231,16 +231,23 @@ Every pod carries:
   park) when their total passes it. On Cloud Run only the workspace is a capped
   tmpfs, and `/tmp` (where the worker builds checkpoint archives of up to
   2 GiB) and HOME are outside that cap. So a `standard` pod on GKE gets 10 GiB,
-  split 5 for the workspace + 2 for the agent's caches + 2 for `/tmp` + 1 for
-  HOME (CACHE-SCRATCH, 2026-10-15; it was 5 + 4 `/tmp` + 1 under #893, and
-  4 + 2 + 4 under contract request 53). 10 GiB is also the most Autopilot
-  accepts for a general-purpose pod. `browser` gets 10 GiB: the owner's
-  4 workspace + 2 `/tmp` + 2 HOME (2026-10-07; `/tmp` must hold a 2 GiB
-  checkpoint archive), unchanged, plus the 2 GiB cache. The per-class layout is
-  `GkeDisk` in `scheduler/dispatch.py`, and a unit test holds every class to
+  split 5 for the workspace + 3 for `/tmp` + 2 for HOME (CACHE-PVC,
+  2026-10-15; it was 5 + 2 cache + 2 `/tmp` + 1 under CACHE-SCRATCH the same
+  day, 5 + 4 `/tmp` + 1 under #893, and 4 + 2 + 4 under contract request 53).
+  10 GiB is also the most Autopilot accepts for a general-purpose pod.
+  `browser` gets 10 GiB: 4 workspace + 3 `/tmp` + 3 HOME (CACHE-PVC; the
+  owner's 4 + 2 + 2 of 2026-10-07 plus the cache's 2 GiB, given back one each
+  to `/tmp` and HOME once the cache left the local disk). `/tmp` must hold a
+  2 GiB checkpoint archive on every class. The per-class layout is `GkeDisk`
+  in `scheduler/dispatch.py`, and a unit test holds every class to
   sum(sizeLimits) <= ephemeral-storage <= 10 GiB;
-* a `cache` emptyDir of its own, mounted at `/cache` and named to the worker
-  as `SWARM_CACHE_ROOT`, for the agent's tool caches and TMPDIR -- see
+* a `cache` volume of its own, mounted at `/cache` and named to the worker
+  as `SWARM_CACHE_ROOT`, for the agent's tool caches and TMPDIR: since
+  CACHE-PVC a 20 GiB pd-balanced network disk (a generic ephemeral volume,
+  created and deleted with the pod), not local disk and not ephemeral-storage,
+  because the 2 GiB emptyDir it was evicted twice and the 10 GiB cap had no
+  more to give it. Its attach adds start-up time, unmeasured as of the change
+  ([browser-startup-speed.md](browser-startup-speed.md) §11.1) -- see
   [worker-images.md](worker-images.md#where-an-agents-caches-go-cache-scratch);
 * `restartPolicy: Never` and `backoffLimit: 0` — the control plane owns retries;
 * the tenant's Kubernetes service account, workload-identity-bound to the
