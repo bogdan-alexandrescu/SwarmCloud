@@ -24,6 +24,7 @@ from types import MappingProxyType
 import pytest
 
 from swarm_api import workspace_secrets as api_secrets
+from swarm_api.grant_attest import GrantKeys, GrantPolicy
 from swarm_common import profiles as profiles_mod
 from swarm_common.identity import tenant_id_for_user
 from swarm_common.models import Tenant
@@ -293,12 +294,18 @@ def test_a_personal_secret_is_not_anyone_elses(
 def test_the_q3_rule_matches_swarm_apis_release(db, opted_in):
     """The same personal seed, granted to a real catalogue consumer, is
     released by swarm-api's own `release_plan` (the submitter a member)
-    exactly when admission counts it."""
+    exactly when admission counts it.
+
+    The seed's grants are unattested, as the scheduler's own tests write
+    them, so the release runs under the migration-window policy
+    (`grant_attestation_required` off, no key): attestation is swarm-api's
+    check alone, and this test holds only the Q3 rule both sides share."""
     consumer = "profile:claude-code"
     personal_world(db, opted_in=opted_in, consumer=consumer)
     seed_tenant(db, TENANT)
     plan = api_secrets.release_plan(
         db, tenant_id=TENANT, consumers=(consumer,), project_id="p",
+        grants=GrantPolicy(keys=GrantKeys(), required=False),
         personal=(PERSONAL, PERSON), personal_refusal=lambda: None,
     )
     released = [d.name for d in plan.due]
