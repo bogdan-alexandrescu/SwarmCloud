@@ -41,10 +41,12 @@ What keeps one workspace out of another's:
     secret is a 404 whatever its name, and the record's own `tenant_id` is
     checked again before anything is returned or written.
 
-The consumer catalogue (§2.3) lives at the end of this module. Profiles come
-from the frozen `RUNNER_PROFILES`; tools and components are listed here until
-SEC-CONTRACT's request (design §7, requests A-C) moves them into
-`swarm_common`, at which point this list is deleted in favour of it.
+The consumer catalogue (§2.3) lives at the end of this module. Its names,
+kinds and slots are the frozen contract's (requests 80-82): profiles and their
+slots from `RUNNER_PROFILES[...].secret_slots`, tools and theirs from
+`RUNTIME_TOOLS`, components from `PLATFORM_COMPONENTS`, every spelling from
+`consumer_name`. Only the components' slots are declared here: the contract
+names the components and leaves what each reads to its reader.
 """
 
 from __future__ import annotations
@@ -63,8 +65,8 @@ from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.admission import _snapshot
-from swarm_common.models import Tenant
-from swarm_common.profiles import RUNNER_PROFILES
+from swarm_common.models import PLATFORM_COMPONENTS, Tenant, consumer_name
+from swarm_common.profiles import RUNNER_PROFILES, RUNTIME_TOOLS, SECRET_KINDS, SecretSlot
 
 from .admins import AUDIT_COLLECTION
 from .auth import AuthContext, require_admin
@@ -124,10 +126,11 @@ NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 #: SEC-MIGRATE-FORGE from their own records, never written here.
 PROVIDERS = ("anthropic", "brave", "openai", "typesafe", "other")
 
-#: `kind` (§2.1). Unpacked from one tuple rather than one `NAME = "..."`
-#: line each: the worker's publish-time credential scan reads a line like
-#: that as a key assignment.
-KINDS = ("api_key", "bearer_token", "basic_auth", "oauth_client", "opaque")
+#: `kind` (§2.1): the contract's SECRET_KINDS (request 80) but `forge_token`,
+#: which this store never holds (see PROVIDERS). Unpacked from one tuple
+#: rather than one `NAME = "..."` line each: the worker's publish-time
+#: credential scan reads a line like that as a key assignment.
+KINDS = tuple(kind for kind in SECRET_KINDS if kind != "forge_token")
 API_KEY, BEARER_TOKEN, BASIC_AUTH, OAUTH_CLIENT, OPAQUE = KINDS
 #: The structured kinds' exact keys (§2.1): the value is a JSON object of these.
 STRUCTURED_FIELDS: dict[str, tuple[str, ...]] = {
@@ -403,7 +406,7 @@ class Consumer:
 
     @property
     def consumer(self) -> str:
-        return f"{self.kind}:{self.name}"
+        return consumer_name(self.kind, self.name)
 
     def slot(self, name: str | None) -> Slot | None:
         if name is None:
@@ -420,48 +423,52 @@ class Consumer:
         }
 
 
-#: Every agent profile: one that starts a runner (no `worker_action`) and
-#: holds a provider (so not `mock` or `generic`, which run no agent). Read
-#: from the frozen catalogue so a profile added there is offered here.
+#: Every profile that declares a workspace-secret slot (contract request 80):
+#: the agent profiles. `mock`, `generic` and the worker actions declare none.
+#: Read from the frozen catalogue so a profile added there is offered here.
 PROFILE_NAMES: tuple[str, ...] = tuple(sorted(
-    name for name, profile in RUNNER_PROFILES.items()
-    if profile.worker_action is None and profile.provider is not None
+    name for name, profile in RUNNER_PROFILES.items() if profile.secret_slots
 ))
 
-#: The frozen `browser_tool` input's choices (claude-code-browser), but `auto`,
-#: to the program each launches. `jev` is spelled `jev-browser` because that is
-#: the program the secret reaches (§2.3). Held equal to the contract's choices
-#: by tests/unit/control_plane/test_workspace_secrets.py.
-BROWSER_TOOLS: dict[str, str] = {
-    "jev": "jev-browser",
-    "dev-browser": "dev-browser",
-    "playwright": "playwright",
+#: The components' slots. The contract fixes WHICH components exist
+#: (PLATFORM_COMPONENTS, request 82) and that `git` takes forge tokens only
+#: (design §6.2); what each reads is this reader's, so it is declared here,
+#: keyed by the contract's names and held to them by `_catalogue`.
+_COMPONENT_SLOTS: dict[str, tuple[Slot, ...]] = {
+    "judge": (Slot("typesafe", (API_KEY,), "the TypeSafe key"),),
+    "merge": (),
+    "indexer": (),
+    "git": (Slot("forge", ("forge_token",), "the forge token"),),
 }
 
-_FILES = Slot("files", KINDS, "one file per secret, named in the attempt's secrets manifest")
-_TYPESAFE = Slot("typesafe", (API_KEY,), "the TypeSafe key")
+
+def _slots(declared: Mapping[str, SecretSlot]) -> tuple[Slot, ...]:
+    return tuple(Slot(name, slot.kinds, slot.means) for name, slot in declared.items())
 
 
 def _catalogue() -> tuple[Consumer, ...]:
-    """THESE MOVE INTO THE CONTRACT once SEC-CONTRACT's request is applied
-    (design §7, requests A-C: `RunnerProfile.secret_slots`, `RUNTIME_TOOLS`,
-    `PLATFORM_COMPONENTS`); until then the tools, the components and every
-    slot are declared here and nowhere else."""
-    profiles = [Consumer("profile", name, (_FILES,)) for name in PROFILE_NAMES]
+    """Every consumer the contract names, with its slots (design §2.3, §2.4).
+
+    A consumer with no slot is listed and not grantable: a grant would
+    deliver nothing."""
+    if set(_COMPONENT_SLOTS) != set(PLATFORM_COMPONENTS):
+        raise RuntimeError("workspace secrets: component slots do not match PLATFORM_COMPONENTS")
     no_slot = "declares no secret slot yet; a grant would deliver nothing"
-    tools = [
-        Consumer("tool", "jev-browser", (_TYPESAFE,)),
-        Consumer("tool", "dev-browser", (), note=no_slot),
-        Consumer("tool", "playwright", (), note=no_slot),
-    ]
-    components = [
-        Consumer("component", "judge", (_TYPESAFE,)),
-        Consumer("component", "merge", (), note=no_slot),
-        Consumer("component", "indexer", (), note=no_slot),
-        Consumer("component", "git", (Slot("forge", ("forge_token",), "the forge token"),),
-                 note="forge tokens only, never granted from this page (design §6.2)",
-                 locked=True),
-    ]
+    profiles = [Consumer("profile", name, _slots(RUNNER_PROFILES[name].secret_slots))
+                for name in PROFILE_NAMES]
+    tools = [Consumer("tool", name, _slots(tool.secret_slots),
+                      note="" if tool.secret_slots else no_slot)
+             for name, tool in RUNTIME_TOOLS.items()]
+    components = []
+    for name in PLATFORM_COMPONENTS:
+        if name == "git":
+            components.append(Consumer(
+                "component", name, _COMPONENT_SLOTS[name],
+                note="forge tokens only, never granted from this page (design §6.2)",
+                locked=True))
+        else:
+            components.append(Consumer("component", name, _COMPONENT_SLOTS[name],
+                                       note="" if _COMPONENT_SLOTS[name] else no_slot))
     return tuple(profiles + tools + components)
 
 
