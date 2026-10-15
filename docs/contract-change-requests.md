@@ -86,7 +86,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 76 | `models.py`/`states.py`: `Workflow.after` and `ParkReason.PULL_REQUEST_PENDING`, a workflow that waits for pull requests to merge (SPEED-D3) | proposed; worked around |
 | 77 | `profiles.py`: `claude-code-browser` declares the input `browser_tool` (auto, playwright, dev-browser, jev), the live browser's tool picked by name (BSTATUS-API) | ACCEPTED by the owner 2026-10-14 ("Picker on Submit, Auto by default"), APPLIED by this PR |
 | 78 | `models.py` / `states.py`: a workspace's merge mode on `Tenant`, and a park reason for a merge step waiting on its merge train (TRAIN-WS) | proposed; worked around |
-| 79 | `profiles.py`: the `browser` resource class shrinks from 8 vCPU / 16 GiB to 4 vCPU / 8 GiB (MEASURE) | ACCEPTED by the owner 2026-10-14 ("File the request now"); not yet applied |
+| 79 | `profiles.py`: the `browser` resource class shrinks from 8 vCPU / 16 GiB to 4 vCPU / 8 GiB, and from 2 units to 1 (MEASURE, BROWSER-CLASS) | ACCEPTED by the owner 2026-10-14 and APPLIED by the pull request that adds this line |
 | 80 | `profiles.py`: `RunnerProfile.secret_slots`, `SecretSlot` and `SECRET_KINDS`, the workspace-secret slots a profile may consume (workspace secrets request A, part of #1347) | proposed (workspace secrets, owner decisions 2026-10-14) |
 | 81 | `profiles.py`: `RUNTIME_TOOLS`, the runtime tools (`jev-browser`, `dev-browser`, `playwright`), their secret slots and the `browser_tool` values that launch them (workspace secrets request B, part of #1347) | proposed (workspace secrets, owner decisions 2026-10-14) |
 | 82 | `models.py`: `SECRET_CONSUMER_KINDS`, `PLATFORM_COMPONENTS` and `consumer_name`, one spelling of a secret consumer (workspace secrets request C, part of #1347) | proposed (workspace secrets, owner decisions 2026-10-14) |
@@ -11549,13 +11549,67 @@ pool count; only the coordinator's per-tenant tick reads them. **2-3**
 untouched: a merge step is admitted like any other. **5** preserved: the
 step's registration is a fenced transaction. 4, 6-10 unchanged.
 
-## 79. `profiles.py`: the `browser` resource class shrinks from 8 vCPU / 16 GiB to 4 vCPU / 8 GiB (MEASURE)
+## 79. `profiles.py`: the `browser` resource class shrinks from 8 vCPU / 16 GiB to 4 vCPU / 8 GiB, and from 2 units to 1 (MEASURE, BROWSER-CLASS)
 
-**Status:** ACCEPTED by the owner on 2026-10-14 at about 18:10 PDT ("File the
-request now"), on the measurement in
-[browser-startup-speed.md §11](browser-startup-speed.md). Not yet applied:
-nothing under `apps/common/swarm_common/` was edited by the pull request that
-adds this entry. A lane (BROWSER-CLASS) applies it.
+**Status:** ACCEPTED by the owner 2026-10-14 and APPLIED by the pull request
+that adds this line. Accepted at about 18:10 PDT ("File the request now"), on
+the measurement in [browser-startup-speed.md §11](browser-startup-speed.md),
+with `units` kept at 2 as written below; amended by the owner at about 22:55
+PDT ("Drop to 1") to `units=1`. Lane BROWSER-CLASS applied the one line, as
+amended:
+
+```python
+    "browser": ResourceClass("browser", cpu=4, memory_gib=8, disk_gib=4, units=1),
+```
+
+### Amendment: `units` drops to 1 (owner, 2026-10-14 ~22:55 PDT)
+
+The request as filed (below) kept `units` at 2 so that pool accounting would
+not move with the resize, and called lowering it "a separate decision". The
+owner took that decision the same evening: **"Drop to 1"**. A browser agent
+now weighs what a `standard` one does, which is consistent with what it now
+is: the same 4 vCPU / 8 GiB.
+
+**Why it doubles browser concurrency per pool.** Admission reserves a task's
+`units` in every pool it requires, in one transaction (invariants 2 and 3),
+and a pool admits while `active + units <= limit`. Every pool a browser agent
+requires (`global`, `tenant:<t>`, `resource:browser`, `runner:<profile>`,
+`backend:GKE_AUTOPILOT`, `provider:anthropic`, `provider:anthropic:tenant:<t>`)
+therefore held `floor(limit / 2)` browser agents and now holds `limit`. A
+`resource:browser` pool of 20, as `dev.tfvars` and `prod.tfvars` set it,
+admitted 10 browser agents and now admits 20. No pool limit changed with this
+request: the doubling is entirely the weight. `resource:browser` stays its
+own pool, and is now the one ceiling that tells browser concurrency apart
+from `standard`'s, since the two cost the same.
+
+**What else it moved.**
+
+* **The live display sidecar's split.** `LIVE_DISPLAY_SHARE["browser"]`
+  (`apps/scheduler/scheduler/dispatch.py`) was display 5 vCPU / 10 GiB and
+  worker 3 / 6, the design's starting split, which cannot fit 4 / 8. It is now
+  display 3 vCPU / 5 GiB and worker 1 vCPU / 3 GiB, sized from §11's
+  per-container peaks (display 1.90 cores / 1.48 GiB, worker 0.55 cores /
+  0.37 GiB). Both containers keep `requests == limits` and sum to the class.
+  The sidecar's resident tmpfs (`/dev/shm` 2, profile 1, `/tmp` 0.25 GiB)
+  plus its measured peak is 4.73 of its 5 GiB, so a page heavier than any
+  sampled, or a 1 GiB download in flight at that peak, is an OOM kill that
+  checkpointing (invariant 8) bounds.
+* **The GKE disk layout did not move.** `GKE_DISK["browser"]` stays
+  4 + 2 + 2 = 8 GiB of disk-backed `emptyDir`s, outside the memory limit.
+  `disk_gib` sizes Cloud Run's memory tmpfs; on GKE it was only ever equal to
+  that layout's total by coincidence of the old numbers.
+* **`scripts/pool-limit.sh`'s below-units warning** can no longer fire for
+  `browser` (#66's case): a limit of 1 now admits one browser agent. No
+  profile in the catalogue reaches a class above 1 unit, so the warning stays
+  for `large` only.
+
+**Invariants, as amended.** **7** preserved: request and limit stay equal on
+every container. **1-3**: admission and reservation count units exactly as
+before, all-or-nothing across every pool, from `LEASED`; what changes is the
+number, 1 per browser agent instead of 2. **8** is what bounds an OOM's cost.
+4, 5, 6, 9, 10 unchanged.
+
+### As filed (2026-10-14 ~18:10 PDT, before the amendment)
 
 ### Why
 

@@ -988,9 +988,10 @@ owner decision 2026-10-13, replacing Q3's flat 10 minutes).** The browser and
 its half-finished state are alive, which is the whole point of the feature: a
 sign-in has to happen in the browser that will use the session. Capacity is
 exactly what it is for any `RUNNING` browser task: the lease holds the
-`browser` resource class's 2 units and the backend and provider pools
-(`apps/common/swarm_common/profiles.py::RESOURCE_CLASSES`), and the pod costs 8
-vCPU and 16 GiB per minute, idle or not, because `requests == limits`
+`browser` resource class's 1 unit (2 until contract request 79) and the
+backend and provider pools
+(`apps/common/swarm_common/profiles.py::RESOURCE_CLASSES`), and the pod costs 4
+vCPU and 8 GiB per minute (8 and 16 until request 79), idle or not, because `requests == limits`
 (invariant 7).
 
 *Why the flat 10 minutes went.* Measured over 26 live-browser tasks
@@ -2282,7 +2283,10 @@ What ships, and why each piece is the way it is:
 
 ### 8.2 Resource class
 
-`browser`: 8 vCPU, 16 GiB, 2 units
+`browser`: 8 vCPU, 16 GiB, 2 units when this was written; 4 vCPU, 8 GiB,
+1 unit since contract request 79 (owner, 2026-10-14), which also replaced the
+starting split below with display 3 vCPU / 5 GiB and worker 1 vCPU / 3 GiB
+(`apps/scheduler/scheduler/dispatch.py::LIVE_DISPLAY_SHARE`)
 (`apps/common/swarm_common/profiles.py::RESOURCE_CLASSES`). **The class does not change;
 it is split between the containers**, each with `requests == limits`
 (invariant 7), summing to the class, so admission's unit arithmetic is

@@ -25,6 +25,12 @@
 //
 // Rendered with hand-built arguments, as submit.input.test.tsx does, because
 // the claim is about what ONE admission block draws, not about the fixture.
+//
+// THE CASES RUN ON THE `large` CLASS, under a profile called `heavy`. The live
+// case above was `browser`, which weighed 2 units then; contract request 79
+// made it 1, and the head's "N units in each of M pools" needs a weight above
+// 1 to show the plural. Pool kind and reason are what the verdicts read, and
+// `resource:large` is the same kind as `resource:browser`.
 
 import { describe, expect, it } from 'vitest'
 import { render } from '@testing-library/react'
@@ -48,14 +54,14 @@ function pool(over: Partial<Pool> & { name: string }): Pool {
 }
 
 function blocker(over: Partial<ProfileBlocker>): ProfileBlocker {
-  return { pool: 'resource:browser', reason: 'RESOURCE_CLASS_LIMIT', limit: 4, active: 4, group: 'no_room', ...over }
+  return { pool: 'resource:large', reason: 'RESOURCE_CLASS_LIMIT', limit: 4, active: 4, group: 'no_room', ...over }
 }
 
-const REQUIRED = ['tenant:acme', 'global', 'resource:browser']
+const REQUIRED = ['tenant:acme', 'global', 'resource:large']
 
 function profile(blockers: ProfileBlocker[], over: Partial<ProfileAdmission> = {}): RunnerProfile {
   const admission: ProfileAdmission = {
-    units: 2,
+    units: 4,
     headroom: 0,
     basis: 'measured',
     blockers,
@@ -68,11 +74,11 @@ function profile(blockers: ProfileBlocker[], over: Partial<ProfileAdmission> = {
     uncapped: [],
     ...over,
   }
-  return { resource_class: 'browser', backend: 'cloudrun', provider: null, units: 2, pools: REQUIRED, admission }
+  return { resource_class: 'large', backend: 'cloudrun', provider: null, units: 4, pools: REQUIRED, admission }
 }
 
 function room(blockers: ProfileBlocker[], pools: Pool[]): HTMLElement {
-  return render(<ProfileFacts name="browser" profile={profile(blockers)} pools={pools} />)
+  return render(<ProfileFacts name="heavy" profile={profile(blockers)} pools={pools} />)
     .container as HTMLElement
 }
 
@@ -91,7 +97,7 @@ function firstRow(el: HTMLElement): HTMLElement {
 }
 
 const ZERO = blocker({ limit: 0, active: 0 })
-const ZERO_POOL = pool({ name: 'resource:browser', hard_limit: 0, effective_limit: 0, available: 0 })
+const ZERO_POOL = pool({ name: 'resource:large', hard_limit: 0, effective_limit: 0, available: 0 })
 
 describe('the submit box tells a pool capped at zero from a full one', () => {
   /**
@@ -103,13 +109,13 @@ describe('the submit box tells a pool capped at zero from a full one', () => {
     const row = firstRow(el)
     expect(row.querySelector('.tag.full'), 'a pool capped at zero is not full').toBeNull()
     expect(row.querySelector('.tag')?.textContent).toMatch(/limit 0/)
-    expect(row.textContent).toContain('resource:browser')
+    expect(row.textContent).toContain('resource:large')
     expect(el.textContent, '"0 of 0" is the fraction that read as busy').not.toMatch(/\b0 of 0\b/)
   })
 
   it('says the pool is paused by an operator in the sentence, not "held down by ... 0 of 0"', () => {
     const line = sentence(room([ZERO], [pool({ name: 'global' }), ZERO_POOL]))
-    expect(line).toMatch(/resource:browser is paused by operator \(limit 0\)/)
+    expect(line).toMatch(/resource:large is paused by operator \(limit 0\)/)
     expect(line).not.toMatch(/held down by/)
     expect(line).not.toMatch(/\b0 of 0\b/)
   })
@@ -123,7 +129,7 @@ describe('the submit box tells a pool capped at zero from a full one', () => {
     const drained = blocker({ reason: 'MANUAL_PAUSE', limit: 1_000_000, active: 0, group: 'needs_action' })
     const el = room([drained], [
       pool({ name: 'global' }),
-      pool({ name: 'resource:browser', hard_limit: 1_000_000, effective_limit: 1_000_000, enabled: false }),
+      pool({ name: 'resource:large', hard_limit: 1_000_000, effective_limit: 1_000_000, enabled: false }),
     ])
     const row = firstRow(el)
     expect(row.querySelector('.tag.paused')).not.toBeNull()
@@ -143,7 +149,7 @@ describe('the submit box tells a pool capped at zero from a full one', () => {
         [pool({ name: 'global', active: 50, available: 0 }), ZERO_POOL],
       ),
     )
-    expect(line).toMatch(/resource:browser is paused by operator \(limit 0\)/)
+    expect(line).toMatch(/resource:large is paused by operator \(limit 0\)/)
     expect(line, 'global at its ceiling was named over a pool no wait reopens').not.toMatch(/held down by global/)
   })
 
@@ -160,11 +166,11 @@ describe('the submit box tells a pool capped at zero from a full one', () => {
 
   /** The other half: the fix must not turn every refusal into a pause. */
   it('keeps full, and the fraction, for a pool genuinely at a positive ceiling', () => {
-    const el = room([blocker({})], [pool({ name: 'global' }), pool({ name: 'resource:browser', hard_limit: 4, effective_limit: 4, active: 4, available: 0 })])
+    const el = room([blocker({})], [pool({ name: 'global' }), pool({ name: 'resource:large', hard_limit: 4, effective_limit: 4, active: 4, available: 0 })])
     const row = firstRow(el)
     expect(row.querySelector('.tag.full')).not.toBeNull()
     expect(row.textContent).toMatch(/4 of 4 units in use/)
-    expect(sentence(el)).toMatch(/held down by resource:browser, 4 of 4 weighted units in use/)
+    expect(sentence(el)).toMatch(/held down by resource:large, 4 of 4 weighted units in use/)
   })
 })
 
@@ -173,8 +179,8 @@ describe('the submit box tells a pool capped at zero from a full one', () => {
 // encoding rather than a paragraph saying it is not zero. Committed RED first.
 describe('the room box is one sentence, and an unread room is the unread mark', () => {
   it('puts the cost on the head as a fact -- "in each of", never a multiplication -- and drops the cost sentence', () => {
-    const el = room([blocker({})], [pool({ name: 'global' }), pool({ name: 'resource:browser', hard_limit: 4, effective_limit: 4, active: 4, available: 0 })])
-    expect(el.querySelector('.sbf-room-h')!.textContent).toBe('browser right now · 2 units in each of 3 pools')
+    const el = room([blocker({})], [pool({ name: 'global' }), pool({ name: 'resource:large', hard_limit: 4, effective_limit: 4, active: 4, available: 0 })])
+    expect(el.querySelector('.sbf-room-h')!.textContent).toBe('heavy right now · 4 units in each of 3 pools')
     expect(el.textContent, 'the cost sentence is still a paragraph').not.toMatch(/Costs|all at once/)
     // What is left under the head is the room sentence and the refusing pools.
     expect(el.querySelectorAll('.sbf-room > p.muted')).toHaveLength(1)
@@ -185,14 +191,14 @@ describe('the room box is one sentence, and an unread room is the unread mark', 
     // pools`. A one-pool profile read "in its 1 pool", a wording nobody
     // decided. The count agrees with its noun, as `unit(s)` already does.
     const one: RunnerProfile = { ...profile([]), pools: ['global'] }
-    const el = render(<ProfileFacts name="browser" profile={one} pools={[pool({ name: 'global' })]} />)
+    const el = render(<ProfileFacts name="heavy" profile={one} pools={[pool({ name: 'global' })]} />)
       .container as HTMLElement
-    expect(el.querySelector('.sbf-room-h')!.textContent).toBe('browser right now · 2 units in each of 1 pool')
+    expect(el.querySelector('.sbf-room-h')!.textContent).toBe('heavy right now · 4 units in each of 1 pool')
   })
 
   it('draws an unread room as the unread mark and a pool count, with no room figure and no "not zero" prose', () => {
     const unread = profile([], { headroom: null, basis: 'unknown', binding: [], unread: ['global'], complete: false })
-    const el = render(<ProfileFacts name="browser" profile={unread} pools={[pool({ name: 'global' })]} />)
+    const el = render(<ProfileFacts name="heavy" profile={unread} pools={[pool({ name: 'global' })]} />)
       .container as HTMLElement
     const mark = el.querySelector('.sbf-room .ctl-mark.is-unread')
     expect(mark, 'an unread room is drawn without the unread mark').not.toBeNull()

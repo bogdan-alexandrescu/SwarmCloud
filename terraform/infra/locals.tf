@@ -30,7 +30,7 @@ locals {
   # on drift, which is how this mismatch was caught.
   resource_classes = {
     standard = { cpu = 4, memory_gib = 8, disk_gib = 4, units = 1 }
-    browser  = { cpu = 8, memory_gib = 16, disk_gib = 8, units = 2 }
+    browser  = { cpu = 4, memory_gib = 8, disk_gib = 4, units = 1 }
     large    = { cpu = 8, memory_gib = 32, disk_gib = 16, units = 4 }
   }
 

@@ -87,7 +87,7 @@ live_json() {
 
 # --- a limit no task of some class can ever fit under ----------------------
 # #66: `--pool resource:browser --limit 1` printed "ok" and nothing else, and a
-# browser task (2 units) was then refused on every drain for twenty minutes
+# browser task (2 units then; 1 since contract request 79) was refused on every drain for twenty minutes
 # while the screen called the class busy. A limit above 0 and below the units
 # of the largest task that can reach the pool now draws a WARNING, from --pool
 # and from --sync. Not a refusal: shutting a class out on purpose is a

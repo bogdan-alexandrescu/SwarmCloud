@@ -1,8 +1,9 @@
 // #66'S OWN REPRO, ON THE AGENTS LIST AND THE AGENT INSPECTOR.
 //
 // THE DEFECT. `blockers.belowunits.test.tsx` proved Capacity, Profiles and
-// Submit say a browser task (2 units) can never be admitted under
-// `resource:browser` at `hard_limit 1`, and that a person has to raise it --
+// Submit say a task heavier than its pool's limit (#66's was a browser task,
+// 2 units, under `resource:browser` at `hard_limit 1`) can never be admitted,
+// and that a person has to raise it --
 // but that fix was a PARALLEL `blockerVerdict`/`verdictCopy` in Blockers.tsx,
 // threaded only into those three screens. Work > Agents (`Agents.tsx`) and
 // the agent inspector (`AgentDetail.tsx`) go through `whyAgent`/
@@ -47,22 +48,26 @@ const { Run } = await import('../AgentDetail')
 
 const CLASSES: ResourceClasses = {
   standard: { name: 'standard', cpu: 4, memory_gib: 8, disk_gib: 4, units: 1 },
-  browser: { name: 'browser', cpu: 8, memory_gib: 16, disk_gib: 8, units: 2 },
+  browser: { name: 'browser', cpu: 4, memory_gib: 8, disk_gib: 4, units: 1 },
   large: { name: 'large', cpu: 8, memory_gib: 32, disk_gib: 16, units: 4 },
 }
 
 const NEVER = /can never (be )?admit/i
 const RAISE = /(somebody|someone|a person) (has|needs) to raise/i
 
-/** #66's repro: a browser task (2 units) under `resource:browser` at limit 1. */
-function browserTask(over: Partial<Task> = {}): Task {
+/**
+ * #66's repro, moved to `large`: a large task (4 units) under `resource:large`
+ * at limit 1. #66 found it as a browser task (2 units) under `resource:browser`;
+ * contract request 79 made the browser class 1 unit, which a limit of 1 admits.
+ */
+function heavyTask(over: Partial<Task> = {}): Task {
   return task({
-    id: 'tsk_browser0',
+    id: 'tsk_heavy000',
     state: 'READY',
-    resource_class: 'browser',
+    resource_class: 'large',
     started_at: null,
     completed_at: null,
-    blocked_by: [{ pool: 'resource:browser', reason: 'RESOURCE_CLASS_LIMIT', limit: 1, active: 0 }],
+    blocked_by: [{ pool: 'resource:large', reason: 'RESOURCE_CLASS_LIMIT', limit: 1, active: 0 }],
     ...over,
   })
 }
@@ -75,9 +80,9 @@ function ok<T>(data: T) {
 // Work > Agents
 // ---------------------------------------------------------------------------
 
-describe('the Agents list, a browser task under resource:browser at limit 1', () => {
+describe('the Agents list, a large task under resource:large at limit 1', () => {
   it('says the task can never be admitted and a person has to raise it, not "busy platform-wide. (0/1)"', async () => {
-    api.loadTasks.mockResolvedValue(ok({ tasks: [browserTask()], tenant_id: 'acme' }))
+    api.loadTasks.mockResolvedValue(ok({ tasks: [heavyTask()], tenant_id: 'acme' }))
     api.loadResourceClasses.mockResolvedValue(ok({ resource_classes: CLASSES }))
 
     render(<AgentsScreen onOpen={() => {}} />)
@@ -108,9 +113,9 @@ describe('the Agents list, a browser task under resource:browser at limit 1', ()
     api.loadTasks.mockResolvedValue(
       ok({
         tasks: [
-          browserTask({
-            id: 'tsk_browser1',
-            blocked_by: [{ pool: 'resource:browser', reason: 'RESOURCE_CLASS_LIMIT', limit: 4, active: 3 }],
+          heavyTask({
+            id: 'tsk_heavy001',
+            blocked_by: [{ pool: 'resource:large', reason: 'RESOURCE_CLASS_LIMIT', limit: 4, active: 3 }],
           }),
         ],
         tenant_id: 'acme',
@@ -134,7 +139,7 @@ describe('the Agents list, a browser task under resource:browser at limit 1', ()
 // The agent inspector (AgentDetail.tsx)
 // ---------------------------------------------------------------------------
 
-describe('the agent inspector, the same browser task', () => {
+describe('the agent inspector, the same large task', () => {
   function run(t: Task): AgentRun {
     return {
       task: t,
@@ -152,7 +157,7 @@ describe('the agent inspector, the same browser task', () => {
     api.loadCheckpoints.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
     api.loadTaskLogs.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
 
-    const { container } = render(<Run run={run(browserTask())} />)
+    const { container } = render(<Run run={run(heavyTask())} />)
 
     const why = await waitFor(() => {
       const p = container.querySelector<HTMLElement>('.why-full')
