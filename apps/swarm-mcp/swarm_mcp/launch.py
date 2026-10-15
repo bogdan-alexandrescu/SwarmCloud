@@ -38,8 +38,22 @@ task instead"). The name is `SC · <name> · N steps` or `SC · <label> ·
 task`, and the description STARTS with `Workspace: <workspace> (<tenant>) · `
 -- first, because DESCRIPTION_CHARS clips the end, so a long description
 loses its tail and never the workspace -- or `Workspace: not reported` when
-the API named none. The per-step `[SwarmCloud] [<workspace>] ...` row labels
-inside a run still carry it: run.js writes those from each run's `args`.
+the API named none.
+
+THE DETAILS, AND NO WORKSPACE IN ANY NAME (SC-DESC-DETAILS, owner 2026-10-14
+~22:00 PDT: "workflows in here should not have the [Engineering] or
+[eng@saga.xyz] prefix in front of the names. We do want to have a section in
+the workflow or task description when you expand it in claude, that will
+provide more details like user that created the job, tenant or workspace that
+is using and maybe even what LLM subscription or config is using"). The
+description now STARTS with the whole DETAILS line `details.line` writes --
+`Workspace: ... · Started by: ... · Profiles: ... · LLM: ... · Browser tool:
+... · Session: ...`, each `not reported` when the API served nothing -- and
+the workspace is still its first field, so the clip still takes the end. Each
+row gets the same line for its own task: the copy's args carry it
+(`details.steps` for a workflow, `details` on each `attach_tasks` entry) and
+run.js puts it on the row's prompt, which is what Claude Code shows when the
+row is expanded. No row label carries `[<workspace>]` any more.
 
 SINGLE TASKS (#830, owner 2026-10-07). A task sent with `swarm_dispatch`
 belongs to no workflow, so it never had a row. `for_tasks` writes ONE copy
@@ -61,7 +75,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import config, workflows
+from . import config, details, workflows
 from .client import SwarmClient, SwarmError, _repo_root
 
 PLUGIN_ROOT_ENV = "SWARM_SC_PLUGIN_ROOT"
@@ -265,36 +279,53 @@ def workspace_line(shown: str | None) -> str:
     return f"Workspace: {shown or WORKSPACE_NOT_REPORTED}"
 
 
-def _launch(title: str, description: str, args: dict[str, Any] | None, workspace: str | None) -> dict[str, Any]:
-    """Write the titled copy. `workspace` (`workspace_shown`'s text, None when
-    the API named none) leads the description, ahead of anything clipped."""
-    script = write_script(title, workspace_line(workspace) + " · " + description)
-    out: dict[str, Any] = {"title": title, "script_path": str(script)}
+def _launch(
+    title: str,
+    description: str,
+    args: dict[str, Any] | None,
+    workspace: str | None,
+    facts: dict[str, list] | None = None,
+    labels: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Write the titled copy. The DETAILS line (`details.line`: `workspace`,
+    `workspace_shown`'s text or None when the API named none, first, then
+    what `facts` hold) leads the description, ahead of anything clipped."""
+    head = details.line(workspace, facts or details.empty(), labels)
+    script = write_script(title, head + " · " + description)
+    out: dict[str, Any] = {"title": title, "script_path": str(script), "details": head}
     if args is not None:
         out["args"] = args
     return out
 
 
-def _submitting_workspace(client: SwarmClient | None) -> str | None:
-    """The workspace a spec about to be submitted will run in, as
-    `workspace_shown` writes it: the tenant the API says this client acts as
-    (`GET /v1/tenants/me`, the API's answer, not this session's setting),
-    with its display name when it gives one. None when it cannot be read: the
-    description then says it was not reported, and every row still gets the
-    one the submission's reply names."""
+def _submitting(client: SwarmClient | None) -> tuple[str | None, str | None]:
+    """`(workspace, submitter)` for a spec about to be submitted, from ONE
+    `GET /v1/tenants/me`: the workspace as `workspace_shown` writes it -- the
+    tenant the API says this client acts as (the API's answer, not this
+    session's setting), with its display name when it gives one -- and the
+    `principal.email` the submission will be stored under as `submitted_by`.
+    `(None, None)` when it cannot be read: the description then says each was
+    not reported, and every row still gets the workspace the submission's
+    reply names."""
     if client is None:
-        return None
+        return None, None
     from .render import tenant_of
 
     try:
         me = client.request("GET", "/v1/tenants/me")
     except Exception:  # noqa: BLE001 - a title is never worth a failed launch
-        return None
+        return None, None
     tenant = tenant_of(me)
     record = me.get("tenant") if isinstance(me, dict) and isinstance(me.get("tenant"), dict) else me
     shown = record.get("display_name") if isinstance(record, dict) else None
     workspace = workflows.workspace_of({"tenant_id": tenant}, {tenant: shown} if tenant and isinstance(shown, str) else None)
-    return workspace_shown(workspace, tenant)
+    principal = me.get("principal") if isinstance(me, dict) and isinstance(me.get("principal"), dict) else {}
+    return workspace_shown(workspace, tenant), principal.get("email") if isinstance(principal.get("email"), str) else None
+
+
+def _submitting_workspace(client: SwarmClient | None) -> str | None:
+    """The workspace half of `_submitting`."""
+    return _submitting(client)[0]
 
 
 def for_spec(document: dict[str, Any], client: SwarmClient | None = None) -> dict[str, Any]:
@@ -311,20 +342,31 @@ def for_spec(document: dict[str, Any], client: SwarmClient | None = None) -> dic
         f"{title}: each step runs in SwarmCloud and is shown here as one [SwarmCloud] row, "
         "by the console's stage, with its console link"
     )
-    out = _launch(title, description, None, _submitting_workspace(client))
+    workspace, submitter = _submitting(client)
+    out = _launch(title, description, None, workspace, details.for_spec(spec, submitter))
     out["steps"] = steps
+    # Each step row's own line: its profile and browser tool, no account yet.
+    out["row_details"] = {"steps": {
+        str(step["step_id"]): details.line(workspace, details.for_spec({"steps": [step]}, submitter))
+        for step in spec["steps"]
+    }}
     out["launch_with"] = (
         "the Workflow tool with {scriptPath: <script_path>, args: <the same args /sc:swarmcloud "
-        "takes -- {spec, spec_path} or {spec}>}"
+        "takes -- {spec, spec_path} or {spec}> plus `details`: this reply's `row_details`, so "
+        "each step's row shows its own details when expanded>}"
     )
     return out
 
 
 def _attach_launch(
     workflow_id: str, name: str, steps: int, workspace: str | None = None, tenant: str | None = None,
+    envelope: dict[str, Any] | None = None, labels: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """`workspace` is the one the rows are labelled with (a display name or
-    the tenant id); `tenant` the tenant id behind it, for the description."""
+    """`workspace` is the one the API's document names (a display name or the
+    tenant id); `tenant` the tenant id behind it, for the description.
+    `envelope`, the workflow as `GET /v1/workflows/{id}` served it, gives the
+    DETAILS -- the run's, and each step row's in `args.details.steps` -- and
+    `labels` the accounts' labels (`details.account_labels`)."""
     title = workflows.workflow_title(name, steps)
     description = (
         f"{title}: attached to SwarmCloud workflow {workflow_id}; each unfinished step is shown "
@@ -332,10 +374,18 @@ def _attach_launch(
     )
     args: dict[str, Any] = {"attach": workflow_id, "title": name}
     if workspace:
-        # The workspace the API's document names, so the attach row is
-        # labelled with it before the workflow is read again.
+        # The workspace the API's document names: the attach run's results
+        # and its details carry it before the workflow is read again.
         args["workspace"] = workspace
-    out = _launch(title, description, args, workspace_shown(workspace, tenant))
+    shown = workspace_shown(workspace, tenant)
+    rows = {
+        step_id: details.line(shown, facts, labels)
+        for step_id, facts in details.per_step(envelope).items()
+    } if envelope is not None else {}
+    if rows:
+        args["details"] = {"steps": rows}
+    out = _launch(title, description, args, shown,
+                  details.for_workflow(envelope) if envelope is not None else None, labels)
     out["workflow_id"] = workflow_id
     out["workspace"] = workspace
     remember_attached([workflow_id])
@@ -352,7 +402,8 @@ def for_attach(client: SwarmClient, workflow_id: str) -> dict[str, Any]:
     name = workflows.title_name(stored=stored["title"] or stored["label"], workflow_id=workflow_id)
     tenant = workflows._flat(envelope["workflow"].get("tenant_id")) or workflows._flat(envelope.get("tenant_id"))
     workspace = workflows.workspace_of({"tenant_id": tenant}, workflows.workspace_names(client))
-    out = _attach_launch(workflow_id, name, len(envelope["workflow"].get("steps") or []), workspace, tenant)
+    out = _attach_launch(workflow_id, name, len(envelope["workflow"].get("steps") or []), workspace, tenant,
+                         envelope, details.account_labels(client))
     out["launch_with"] = "the Workflow tool with {scriptPath: <script_path>, args: <args>}"
     # BY HAND, ANY WORKFLOW THE TENANT MAY READ (SC-SESSION-SCOPE): the
     # session scope decides what is attached automatically, never what a
@@ -398,14 +449,43 @@ def tasks_title(entries: list[dict[str, Any]]) -> str:
     return head + (" · task" if count == 1 else f" · {count} tasks")
 
 
-def for_tasks(entries: list[dict[str, Any]]) -> dict[str, Any]:
+def _read_tasks(client: SwarmClient, entries: list[dict[str, Any]]) -> None:
+    """Give each entry with no `task` its task document (`GET /v1/tasks/{id}`),
+    at most eight reads at a time; an entry whose read fails keeps none, and
+    its details say `not reported`."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    missing = [e for e in entries if not isinstance(e.get("task"), dict)]
+    if not missing:
+        return
+
+    def read(entry: dict[str, Any]) -> None:
+        try:
+            entry["task"] = client.task(str(entry["task_id"]))
+        except Exception:  # noqa: BLE001 - details are never worth a failed launch
+            pass
+
+    with ThreadPoolExecutor(max_workers=min(8, len(missing))) as pool:
+        list(pool.map(read, missing))
+
+
+def for_tasks(entries: list[dict[str, Any]], client: SwarmClient | None = None) -> dict[str, Any]:
     """ONE titled copy that starts an `sc:task` row per task in `entries` --
-    each `{task_id, label?, console?, workspace?}` -- up to the live-row cap
-    (`max_live_rows()`, 30 unless the plugin's option says otherwise). The
-    rest come back in `not_followed`. Reads nothing and submits nothing."""
+    each `{task_id, label?, console?, workspace?, tenant_id?, task?}` -- up to
+    the live-row cap (`max_live_rows()`, 30 unless the plugin's option says
+    otherwise). The rest come back in `not_followed`. Submits nothing.
+
+    `task`, the task document as the API served it, gives each row its
+    DETAILS (`details.line`); it is read off the row, never copied into the
+    args. With `client`, an entry without one is read (`_read_tasks`) and the
+    accounts' labels are read once (`details.account_labels`)."""
     cap = max_live_rows()
     wanted = [e for e in entries if isinstance(e, dict) and e.get("task_id")]
     follow = wanted[:cap]
+    labels: dict[str, str] = {}
+    if client is not None and follow:
+        _read_tasks(client, follow)
+        labels = details.account_labels(client)
     rows = []
     for entry in follow:
         row: dict[str, Any] = {"task_id": str(entry["task_id"]), "title": _task_name(entry)}
@@ -413,6 +493,8 @@ def for_tasks(entries: list[dict[str, Any]]) -> dict[str, Any]:
             row["workspace"] = entry["workspace"].strip()
         if isinstance(entry.get("console"), str) and entry["console"].strip():
             row["console"] = entry["console"].strip()
+        shown = workspace_shown(entry.get("workspace"), entry.get("tenant_id")) if entry.get("workspace") else None
+        row["details"] = details.line(shown, details.for_task(entry.get("task")), labels)
         rows.append(row)
     title = tasks_title(follow)
     description = (
@@ -421,7 +503,9 @@ def for_tasks(entries: list[dict[str, Any]]) -> dict[str, Any]:
     )
     # `max_rows`: the cap this bridge used, so run.js -- which caps the rows
     # it starts too, at 30 when told nothing -- follows every task handed it.
-    out = _launch(title, description, {"attach_tasks": rows, "max_rows": cap}, _tasks_workspace(follow))
+    facts = details.merge(details.for_task(e.get("task")) for e in follow)
+    out = _launch(title, description, {"attach_tasks": rows, "max_rows": cap}, _tasks_workspace(follow),
+                  facts, labels)
     out["task_ids"] = [row["task_id"] for row in rows]
     remember_attached(out["task_ids"])
     out["not_followed"] = [
@@ -496,6 +580,23 @@ def _own(entries: list[dict[str, Any]], sid: str | None, left_out: dict[str, int
     return kept
 
 
+def _read_workflows(client: SwarmClient, workflow_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """`{workflow_id: envelope}` for each id whose `GET /v1/workflows/{id}`
+    answered, at most eight reads at a time."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def read(workflow_id: str) -> tuple[str, dict[str, Any] | None]:
+        try:
+            return workflow_id, workflows.fetch(client, workflow_id)
+        except Exception:  # noqa: BLE001 - details are never worth a failed launch
+            return workflow_id, None
+
+    if not workflow_ids:
+        return {}
+    with ThreadPoolExecutor(max_workers=min(8, len(workflow_ids))) as pool:
+        return {wid: env for wid, env in pool.map(read, workflow_ids) if env is not None}
+
+
 def for_all(
     client: SwarmClient,
     *,
@@ -555,11 +656,18 @@ def for_all(
             already += more
             unread += unread_tasks
     launches = []
-    for entry in entries[:cap]:
+    followed = entries[:cap]
+    # THE DETAILS of each run launched (SC-DESC-DETAILS): one workflow read
+    # each, at most eight at a time, and the accounts' labels once. A read
+    # that fails costs that run its details -- `not reported` -- never its row.
+    envelopes = _read_workflows(client, [str(e["workflow_id"]) for e in followed])
+    labels = details.account_labels(client) if followed else {}
+    for entry in followed:
         workflow_id = str(entry["workflow_id"])
         name = workflows.title_name(stored=entry.get("title") or entry.get("label"), workflow_id=workflow_id)
         launches.append(_attach_launch(
             workflow_id, name, int(entry.get("steps_total") or 0), entry.get("workspace"), entry.get("tenant_id"),
+            envelopes.get(workflow_id), labels,
         ))
     not_followed = [
         {"workflow_id": e["workflow_id"], "workspace": e.get("workspace"), "title": e.get("title") or e.get("label"),
@@ -582,7 +690,8 @@ def for_all(
     if singles_error is not None:
         out["single_tasks_error"] = singles_error
     elif singles and singles["tasks"]:
-        task_launch = for_tasks(sc.group_by_workspace(named_workspaces(singles["tasks"], names, keep_tenant=True)))
+        task_launch = for_tasks(sc.group_by_workspace(named_workspaces(singles["tasks"], names, keep_tenant=True)),
+                                client)
         launches.append(task_launch)
         out["single_tasks"] = len(singles["tasks"])
         not_followed.extend(task_launch.pop("not_followed"))

@@ -864,15 +864,29 @@ pieces do it, and none of them submits anything.
   stays a cap. The bridge reads the option and hands it to each run as
   `max_rows`. The rest are logged and returned as `not_followed`, each with
   its `workspace` and the `/sc attach` that follows it.
-* **Every row names its workspace.** Run titles are `SC · <name> · N steps`
-  and `SC · <label> · task` (the name is cut to 150, never the count), and
-  each run's description starts with `Workspace: <workspace> (<tenant>) · `
-  (`Workspace: not reported` when the API names none) — the workspace moved
-  out of the run's name into its description in SC-WS-DESC, owner
-  2026-10-14; rows inside the run are `[SwarmCloud] [<workspace>] <name> · stage <n> · <step>`
-  and `[SwarmCloud] [<workspace>] <label> · task`, and every result object and
-  summary line carries `workspace` — from the API's workflow and task
-  documents, so one attach can cover several workspaces correctly.
+* **No name carries a workspace; every expanded run and row says whose,
+  where and on which LLM** (SC-DESC-DETAILS, owner 2026-10-14: "workflows in
+  here should not have the [Engineering] or [eng@saga.xyz] prefix in front of
+  the names"). Run titles are `SC · <name> · N steps` and `SC · <label> ·
+  task` (the name is cut to 150, never the count); rows inside the run are
+  `[SwarmCloud] <name> · stage <n> · <step>` and `[SwarmCloud] <label> ·
+  task`. Each run's description starts with its DETAILS, one line, six
+  fields in this order: `Workspace: <workspace> (<tenant>) · Started by:
+  <submitted_by> · Profiles: <runner profiles> · LLM: <pool account>
+  (<provider>), model <model> · Browser tool: <browser_tool> · Session:
+  <claude_session>` — each `not reported` when the API serves none, the
+  workspace first so the 300-character clip takes the end, the account by the
+  label `GET /v1/accounts` gives it, and anything credential-shaped shown as
+  `withheld`. Each row's prompt ends with ITS OWN `details:` line, which is
+  what Claude Code shows when the row is expanded: `swarm_workflow_launch`
+  writes them into an attach's args (`details.steps`) and an `attach_tasks`
+  entry (`details`), and hands a spec's back as `row_details` for the args;
+  a run launched without them says what run.js knows and `not reported` for
+  the rest. A run started before its account was assigned says `LLM: not
+  assigned yet`, and each of its rows says `LLM: <account>` once, on the first
+  progress line after the assignment. Every result object and listing line
+  still carries `workspace` — from the API's workflow and task documents, so
+  one attach can cover several workspaces correctly.
 * **Scrolling is Claude Code's.** `/workflows` is Claude Code's panel; the
   plugin cannot make it scroll. It keeps 30 rows scannable instead: one
   compact line per row, newest first, grouped by workspace, in a stable
@@ -925,7 +939,7 @@ never lists it: five lanes dispatched that day ran with no row at all. So:
   by `swarm_workflow_launch` — which starts one `[SwarmCloud] <label> · task`
   row per running single task, titled from the task's label (else its id), at
   most **30** (`max_live_rows`), the same row cap as workflows for the same
-  reason, each labelled `[SwarmCloud] [<workspace>] <label> · task`. Launched by
+  reason, each labelled `[SwarmCloud] <label> · task` with its details line. Launched by
   name with `{attach: "all"}`, the run returns those args as `task_call`.
 * **`swarm_dispatch` starts its own rows.** Every dispatch reply (one task or
   `tasks`) carries `rows`: a titled copy of the run script whose args are

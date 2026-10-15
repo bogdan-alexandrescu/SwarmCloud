@@ -59,6 +59,7 @@ from typing import Any, Callable
 
 from swarm_common.states import CONCURRENCY_STATES
 
+from . import details
 from .client import TERMINAL, SwarmClient, SwarmError
 from .follow import console_link, event_type
 from .progress import (
@@ -147,8 +148,11 @@ _WAITS_FOR = {
 # The token
 # --------------------------------------------------------------------------
 
-def encode_since(states: dict[str, Any], keys: dict[str, str], failures: dict[str, int]) -> str:
-    """States last reported, each task's last line key, and the read-failure streaks.
+def encode_since(
+    states: dict[str, Any], keys: dict[str, str], failures: dict[str, int], llm_said: set[str] | None = None,
+) -> str:
+    """States last reported, each task's last line key, the read-failure
+    streaks, and the tasks whose `LLM: <account>` was already said.
 
     The same envelope as `progress.encode_since` -- base64url JSON, a dot, a
     CRC-32 -- so a relay that changes one character is refused, not resumed
@@ -161,6 +165,8 @@ def encode_since(states: dict[str, Any], keys: dict[str, str], failures: dict[st
         "k": keys,
         "f": {k: int(v) for k, v in failures.items() if v},
     }
+    if llm_said:
+        payload["l"] = sorted(llm_said)
     raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     body = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
     return f"{body}.{_checksum(body)}"
@@ -184,6 +190,15 @@ def decode_since(token: Any) -> tuple[dict[str, Any], dict[str, str], dict[str, 
         if isinstance(v, int) and not isinstance(v, bool) and v > 0
     }
     return dict(_dict("s")), {str(k): str(v) for k, v in _dict("k").items()}, failures
+
+
+def llm_said(token: Any) -> set[str]:
+    """The tasks whose `LLM: <account>` a row already wrote (SC-DESC-DETAILS);
+    empty for no token, one of another format, or one from before it."""
+    payload = _payload(token)
+    if payload is None or payload.get("fmt") != _FORMAT or not isinstance(payload.get("l"), list):
+        return set()
+    return {str(t) for t in payload["l"]}
 
 
 # --------------------------------------------------------------------------
@@ -538,6 +553,7 @@ def watch_progress(
             "given; follow one task with it, or pass no `step_id`"
         )
     states, keys, failures = decode_since(since)
+    said_llm = llm_said(since)
     first_call = since in (None, "")
     wait = max(0.0, min(float(wait_seconds or 0), max_wait, MAX_WAIT_SECONDS))
     deadline = clock() + wait
@@ -667,7 +683,17 @@ def watch_progress(
                 # the person looked. Not part of `key`, so a link never makes
                 # an unchanged line news: a row still writes only on a change.
                 line = f"{line} · console: {link}"
-            if key != keys.get(task_id) or first_call:
+            # WHICH LLM, ONCE (SC-DESC-DETAILS): a run started before its
+            # account was assigned said `LLM: not assigned yet` in its
+            # details, so the first line after the assignment says which
+            # account and model -- on that line, even when nothing else on
+            # it is news, and never again for this task.
+            held = details.llm_line(task) if task["read"] == "ok" else None
+            fresh_llm = bool(held) and task_id not in said_llm
+            if fresh_llm:
+                line = f"{line} · LLM: {held}"
+                said_llm.add(task_id)
+            if key != keys.get(task_id) or first_call or fresh_llm:
                 progress.append(line)
             keys[task_id] = key
             if task["read"] == "ok" and task.get("terminal"):
@@ -688,7 +714,7 @@ def watch_progress(
         "changed": bool(progress),
         "transitions": transitions,
         "stop": stop,
-        "since": encode_since(states, keys, failures),
+        "since": encode_since(states, keys, failures, said_llm),
         "tasks": rows,
     }
     if parents:

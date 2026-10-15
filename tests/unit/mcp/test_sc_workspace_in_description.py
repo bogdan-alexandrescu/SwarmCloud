@@ -10,12 +10,13 @@ the workflow or task instead". Held here:
 * THE DESCRIPTION. meta.description STARTS with `Workspace: <shown>
   (<tenant>) · `, so DESCRIPTION_CHARS clips the end of it and never the
   workspace; with no workspace named by the API it says `Workspace: not
-  reported` instead of leaving it out.
+  reported` instead of leaving it out. Since SC-DESC-DETAILS the rest of the
+  run's details follow it (`Started by: ...`; held in test_sc_desc_details).
 * THE DOCS. The skill and the swarm_workflow_launch tool description state the
   format launch.py writes.
 
-The per-step `[SwarmCloud] [<workspace>] ...` row labels inside a run are not
-part of this: test_sc_rows_workspace_and_cap holds those.
+No row label inside a run carries the workspace either since
+SC-DESC-DETAILS: test_sc_desc_details holds that.
 
 THE MUTATIONS THESE CATCH: pass the workspace to workflow_title again (the
 name tests go red); append the workspace to the description instead of
@@ -147,19 +148,21 @@ def test_an_attached_workflow_is_named_by_its_workflow_alone(_plugin_root, monke
 def test_a_workflow_runs_description_starts_with_its_workspace(_plugin_root):
     out = launch.for_spec(_spec("gate"), _Me("eng", "eng@saga.xyz"))
     _, description = _meta(out["script_path"])
-    assert description.startswith("Workspace: eng@saga.xyz (eng) · SC · gate · 2 steps: ")
+    assert description.startswith("Workspace: eng@saga.xyz (eng) · Started by: ")
+    assert "· SC · gate · 2 steps: " in description
 
 
 def test_a_workspace_with_no_display_name_is_its_tenant_once(_plugin_root):
     out = launch.for_spec(_spec("gate"), _Me("eng"))
     _, description = _meta(out["script_path"])
-    assert description.startswith("Workspace: eng · SC · gate")
+    assert description.startswith("Workspace: eng · Started by: ")
 
 
 def test_a_task_runs_description_starts_with_its_workspace(_plugin_root):
     out = launch.for_tasks([{"task_id": "task_a", "label": "lane-a", "workspace": "eng"}])
     _, description = _meta(out["script_path"])
-    assert description.startswith("Workspace: eng · SC · lane-a · task: ")
+    assert description.startswith("Workspace: eng · Started by: ")
+    assert "· SC · lane-a · task: " in description
 
 
 def test_tasks_in_several_workspaces_name_each_once(_plugin_root):
@@ -185,7 +188,7 @@ def test_a_clipped_description_keeps_the_workspace(_plugin_root, monkeypatch):
     out = launch.for_attach(_Me("eng", "eng@saga.xyz"), workflow_id)
     _, description = _meta(out["script_path"])
     assert len(description) == launch.DESCRIPTION_CHARS and description.endswith("…"), "it was clipped"
-    assert description.startswith("Workspace: eng@saga.xyz (eng) · SC · a very long")
+    assert description.startswith("Workspace: eng@saga.xyz (eng) · Started by: ")
 
 
 def test_no_workspace_reported_says_so_rather_than_omitting_it(_plugin_root):
@@ -193,10 +196,12 @@ def test_no_workspace_reported_says_so_rather_than_omitting_it(_plugin_root):
     document named no tenant, say `Workspace: not reported`."""
     out = launch.for_spec(_spec("gate"), _Me(None))
     _, description = _meta(out["script_path"])
-    assert description.startswith("Workspace: not reported · SC · gate · 2 steps")
+    assert description.startswith("Workspace: not reported · Started by: ")
+    assert "· SC · gate · 2 steps" in description
     out = launch.for_tasks([{"task_id": "task_a", "label": "lane-a"}])
     _, description = _meta(out["script_path"])
-    assert description.startswith("Workspace: not reported · SC · lane-a · task")
+    assert description.startswith("Workspace: not reported · Started by: ")
+    assert "· SC · lane-a · task" in description
 
 
 #: The Claude Code session these listings were submitted by: `/sc attach
@@ -221,7 +226,7 @@ def test_attach_all_names_runs_alone_and_describes_each_workspace(_plugin_root, 
         {"task_id": "task_a", "label": "lane-a", "workspace": "eng", "claude_session": SESSION}]})
     client = types.SimpleNamespace(tenants_mine=lambda: [{"tenant_id": "eng", "display_name": "eng@saga.xyz"}])
     out = launch.for_all(client)
-    got = [(l["title"], _meta(l["script_path"])[1].split(" · SC · ")[0]) for l in out["launches"]]
+    got = [(l["title"], _meta(l["script_path"])[1].split(" · Started by: ")[0]) for l in out["launches"]]
     assert got == [
         ("SC · flow 00 · 3 steps", "Workspace: eng@saga.xyz (eng)"),
         ("SC · flow 01 · 1 step", "Workspace: u-bogdan"),
@@ -243,7 +248,7 @@ def test_the_skill_doc_states_the_title_format_launch_writes(_plugin_root):
     text = _flat(_SKILL.read_text(encoding="utf-8"))
     assert "SC · [<workspace>]" not in text, "the run's name carries no workspace any more"
     assert "`SC · <name> · N steps`" in text and "`SC · <label> · task`" in text
-    assert "`Workspace: <workspace> (<tenant>) · `" in text and "`Workspace: not reported`" in text
+    assert "`Workspace: <workspace> (<tenant>) · Started by: " in text and "`Workspace: not reported`" in text
     # The stated formats, filled in, are launch.py's output.
     flow = launch.for_spec(_spec("gate", steps=4), _Me("eng", "eng@saga.xyz"))
     assert flow["title"] == "SC · <name> · N steps".replace("<name>", "gate").replace("N", "4")

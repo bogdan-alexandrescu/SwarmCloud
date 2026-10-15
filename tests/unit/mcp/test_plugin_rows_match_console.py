@@ -387,7 +387,10 @@ def test_a_launch_writes_a_copy_of_run_js_named_after_the_workflow(_plugin_root,
     meta = _meta_of(script)
     assert meta["name"] == reply["title"] == workflows.workflow_title(workflows.title_name(label=_LONG_LABEL), 3)
     assert len(meta["name"]) <= workflows.TITLE_CHARS
-    assert meta["name"] in meta["description"]
+    # SC-DESC-DETAILS: the description leads with the run's details, then
+    # the name, clipped from the end at DESCRIPTION_CHARS.
+    assert meta["description"].startswith("Workspace: ")
+    assert meta["name"][:60] in meta["description"]
     assert meta["phases"] == _meta_of(_RUN_JS)["phases"]
     # Everything but the name and the description is run.js, byte for byte.
     copy, original = script.read_text().splitlines(), _RUN_JS.read_text().splitlines()
