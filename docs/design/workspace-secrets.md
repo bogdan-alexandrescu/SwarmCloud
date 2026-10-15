@@ -541,6 +541,15 @@ the key in its own environment. It is §9 Q7.
 [contract-change-requests.md](../contract-change-requests.md) as numbered
 requests once the owner approves the design; nothing here edits the contract.
 
+**Filed 2026-10-15 by lane SEC-CONTRACT** as requests
+[80](../contract-change-requests.md#80-profilespy-a-runner-profile-declares-the-secret-slots-it-may-consume-and-the-vocabulary-of-secret-kinds-sec-contract-workspace-secrets-request-a) (A),
+[81](../contract-change-requests.md#81-profilespy-runtime_tools-the-catalogue-of-runtime-tools-their-secret-slots-and-the-browser_tool-values-that-launch-them-sec-contract-workspace-secrets-request-b) (B),
+[82](../contract-change-requests.md#82-modelspy-the-secret-consumers-spelling-consumer_name-and-the-platform-component-list-sec-contract-workspace-secrets-request-c) (C) and
+[83](../contract-change-requests.md#83-statespy-no-new-park-reason-for-a-missing-workspace-secret-a-required-slot-with-no-grant-parks-credential_missing-sec-contract-workspace-secrets-request-d) (D).
+Request 80 corrects one point below: `browser` declares `files` only.
+It has no `browser_tool` input and launches none of the tools, so only
+`claude-code-browser` reaches the `typesafe` slot.
+
 **Request A. `profiles.py`: a runner profile declares the secret slots it may
 consume.** Add to `RunnerProfile`
 
