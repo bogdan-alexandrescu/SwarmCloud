@@ -84,5 +84,10 @@ locals {
     # versions.access only. terraform/infra never names it, and no tenant
     # worker holds it.
     workspace_secret_accessor = "swarmWorkspaceSecretAccessor${local.role_suffix}"
+    # Defined and granted by terraform/bootstrap/typesafe_forwarder.tf alone
+    # (SEC-INJECT-A, #1347): the TypeSafe forwarder's read of
+    # swarm-tenant-<t>-typesafe versions, versions.access only. terraform/infra
+    # never names it, and no tenant worker holds it.
+    typesafe_forwarder_accessor = "swarmTypesafeForwarderAccessor${local.role_suffix}"
   }
 }

@@ -25,6 +25,7 @@
 #   scripts/create-secrets.sh --egress-key [--overwrite swarm-egress-key]
 #   scripts/create-secrets.sh --egress-credential --stdin [--overwrite swarm-egress-credential] < credential.json
 #   scripts/create-secrets.sh --tailscale-oauth --stdin
+#   scripts/create-secrets.sh --typesafe-fwd-key [--overwrite swarm-typesafe-fwd-key]
 #
 # The forge token (`--provider git`, stored as swarm-tenant-<tenant>-git) is
 # read by the tenant's workers AND by swarm-api, which writes an issue run's
@@ -78,6 +79,13 @@
 # grants swarm-api, and nobody else, secretAccessor on it. Terraform holds no
 # copy of it, for the reason at the top of this file. swarm-api reads it only
 # while SEARCH_TOOL_ENABLED is on, so storing it changes nothing by itself.
+#
+# --typesafe-fwd-key adds a version to `swarm-typesafe-fwd-key`, the PLATFORM
+# key swarm-api mints attempt TypeSafe tickets with and the TypeSafe forwarder
+# verifies them with (docs/design/workspace-secrets.md §3.5). Generated and
+# added exactly as --egress-key's is, never read and never shown; terraform
+# (terraform/infra/typesafe_fwd.tf) owns the container and its two readers,
+# and an enabled version is replaced only after the same typed confirmation.
 #
 # --egress-key adds a version to `swarm-egress-key`, the PLATFORM key swarm-api
 # mints browser egress tickets with and swarm-egress verifies them with
@@ -133,6 +141,7 @@ GITHUB_APP_SLOT=""
 SEARCH_API_KEY=0
 EGRESS_KEY=0
 EGRESS_CREDENTIAL=0
+TYPESAFE_FWD_KEY=0
 OVERWRITE=""
 TAILSCALE_OAUTH=0
 
@@ -151,11 +160,12 @@ while [[ $# -gt 0 ]]; do
     --search-api-key)   SEARCH_API_KEY=1; shift ;;
     --egress-key)       EGRESS_KEY=1; shift ;;
     --egress-credential) EGRESS_CREDENTIAL=1; shift ;;
+    --typesafe-fwd-key) TYPESAFE_FWD_KEY=1; shift ;;
     --overwrite)        [[ $# -ge 2 ]] || die "--overwrite takes the name of the secret to add a version to"
                         OVERWRITE="$2"; shift 2 ;;
     # A value glued to a flag is a value on the command line, which argv
     # exposes through ps and shell history. Refused without repeating it.
-    --egress-key=*|--egress-credential=*)
+    --egress-key=*|--egress-credential=*|--typesafe-fwd-key=*)
       die "${1%%=*} takes no value on the command line: the key is generated, and the credential is read from --stdin only. Nothing was stored." ;;
     --tailscale-oauth)  TAILSCALE_OAUTH=1; shift ;;
     # The header above `set -euo pipefail`, however long it grows; a fixed
@@ -255,20 +265,38 @@ confirm_overwrite() {
   if [[ -n "${OVERWRITE}" ]]; then
     [[ "${OVERWRITE}" == "${name}" ]] \
       || die "--overwrite names '${OVERWRITE}', not ${name}; nothing was stored"
-    warn "${name} has an enabled version; adding a new one, which swarm-egress reads as latest (--overwrite ${name})"
+    warn "${name} has an enabled version; adding a new one, which its reader takes as latest (--overwrite ${name})"
     return 0
   fi
   if { exec 3</dev/tty; } 2>/dev/null; then
-    printf '%s already has an enabled version, and swarm-egress reads the latest.\n' "${name}" >/dev/tty
+    printf '%s already has an enabled version, and its reader takes the latest.\n' "${name}" >/dev/tty
     printf 'Type %s to add a new one: ' "${name}" >/dev/tty
     read -r answer <&3 || answer=""
     exec 3<&-
     [[ "${answer}" == "${name}" ]] || die "confirmation did not match; nothing was stored"
     return 0
   fi
-  die "${name} already has an enabled version and swarm-egress reads the latest. Confirm by typing its name:
+  die "${name} already has an enabled version and its reader takes the latest. Confirm by typing its name:
      --overwrite ${name}   (SWARM_ASSUME_YES is not a confirmation). Nothing was stored."
 }
+
+if [[ "${TYPESAFE_FWD_KEY}" -eq 1 ]]; then
+  TS_FWD_NAME="swarm-typesafe-fwd-key"
+  if [[ -n "${TENANT}${PROVIDER}${FROM_FILE}${GITHUB_APP_SLOT}" || "${READ_STDIN}" -eq 1 || "${SUBSCRIPTION}" -eq 1 || "${CHILD_KEY}" -eq 1 || "${LIVE_KEY}" -eq 1 || "${EGRESS_KEY}" -eq 1 || "${EGRESS_CREDENTIAL}" -eq 1 || "${TAILSCALE_OAUTH}" -eq 1 || "${SEARCH_API_KEY}" -eq 1 || "${DISABLE_PREVIOUS}" -eq 1 ]]; then
+    die "--typesafe-fwd-key takes no --stdin, --tenant, --provider, --from-file, --subscription, other key or --disable-previous: the key is the platform's and is generated here, and an old version is disabled by hand once swarm-api and the forwarder run on the new one"
+  fi
+  # Exists first: terraform/infra/typesafe_fwd.tf creates it with its readers.
+  TS_FWD_ERR=""
+  if ! TS_FWD_ERR="$(gcloud secrets describe "${TS_FWD_NAME}" --project "${PROJECT_ID}" \
+       --format='value(name)' 2>&1 >/dev/null)"; then
+    die_if_auth_failure "${TS_FWD_ERR}"
+    die "${TS_FWD_NAME} does not exist in ${PROJECT_ID}. terraform creates it with its readers (terraform/infra/typesafe_fwd.tf, enable_typesafe_forwarder): apply that first, then this"
+  fi
+  confirm_overwrite "${TS_FWD_NAME}"
+  add_generated_platform_key "${TS_FWD_NAME}" "terraform/infra/typesafe_fwd.tf" "--typesafe-fwd-key"
+  dim "swarm-api reads it when an instance starts; the forwarder keeps the previous key for a ticket's life. Disable the old version by hand once both use the new one"
+  exit 0
+fi
 
 if [[ "${EGRESS_KEY}" -eq 1 || "${EGRESS_CREDENTIAL}" -eq 1 ]]; then
   if [[ "${EGRESS_KEY}" -eq 1 && "${EGRESS_CREDENTIAL}" -eq 1 ]]; then
@@ -350,7 +378,7 @@ PYEOF2
 fi
 
 if [[ -n "${OVERWRITE}" ]]; then
-  die "--overwrite confirms a new version of swarm-egress-key or swarm-egress-credential only"
+  die "--overwrite confirms a new version of swarm-egress-key, swarm-egress-credential or swarm-typesafe-fwd-key only"
 fi
 
 if [[ "${CHILD_KEY}" -eq 1 && "${LIVE_KEY}" -eq 1 ]]; then

@@ -61,6 +61,7 @@ from .routes import (
     schedules,
     tasks,
     tenants,
+    typesafe_ticket,
     workflows,
     workspace_secrets,
     workspaces,
@@ -250,6 +251,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # tunnel ticket, a member's view and control, and the socket proxied to
     # swarm-live. Tenant-scoped through the same authenticator as every route.
     app.include_router(live.router)
+    # The TypeSafe forwarder's attempt ticket (docs/design/workspace-secrets.md
+    # §3.5, lane SEC-INJECT-A): worker-only, proven and fenced as above.
+    app.include_router(typesafe_ticket.router)
     # The notification feed (#1206, NOTIF-API; docs/notifications.md): the
     # caller's own items, derived on each read from the records above, and
     # one document of read marks per person.

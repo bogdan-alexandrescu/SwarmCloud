@@ -526,6 +526,17 @@ class ApiSettings:
     #: The exit country (owner decision Q6: US), returned with the ticket so
     #: the take-control dialog can say where sites see the browser from.
     browser_egress_country: str = "us"
+    #: THE TYPESAFE FORWARDER (docs/design/workspace-secrets.md §3.5; lane
+    #: SEC-INJECT-A). `swarm-typesafe-fwd-key`, from SWARM_TYPESAFE_FWD_KEY by
+    #: Secret Manager reference (terraform/infra/typesafe_fwd.tf): what the
+    #: attempt TypeSafe ticket is MAC'd with. Empty means no forwarder: the
+    #: route answers 503. Excluded from the repr, as `egress_key` is.
+    typesafe_fwd_key: str = field(default="", repr=False)
+    #: A TypeSafe ticket's life: how long one copied out of a compromised pod
+    #: can spend its key. Five minutes, shorter than the egress ticket's ten,
+    #: because a ticket here spends a person's or a workspace's key rather than
+    #: platform bandwidth. Clamped to the forwarder's 60-900 s.
+    typesafe_ticket_seconds: int = 300
     #: Whether agent-runtime-browser carries jev-browser (JEV-IMAGE, #1296).
     #: ON by default because the image does; a deployment rolled back to an
     #: image without it sets BROWSER_JEV_INSTALLED=false, and a `browser_tool:
@@ -756,6 +767,8 @@ class ApiSettings:
             browser_egress_profiles=_csv("BROWSER_EGRESS_PROFILES", "claude-code-browser"),
             browser_egress_country=os.environ.get("BROWSER_EGRESS_COUNTRY", "us").strip().lower()
             or "us",
+            typesafe_fwd_key=os.environ.get("SWARM_TYPESAFE_FWD_KEY", "").strip(),
+            typesafe_ticket_seconds=_int("TYPESAFE_TICKET_SECONDS", 300),
             browser_jev_installed=_bool("BROWSER_JEV_INSTALLED", True),
             search_tool_enabled=_bool("SEARCH_TOOL_ENABLED", False),
             search_provider=search_provider,
