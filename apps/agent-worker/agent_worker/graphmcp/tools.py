@@ -242,7 +242,17 @@ def _mark_head(head: dict, obs: Observation) -> dict:
     """A head about one symbol or one file is stale when that file is."""
     key = head.get("symbol") or head.get("file")
     why = _stale_of(key, obs) if isinstance(key, str) else None
-    return {**head, "stale": why} if why else head
+    if not why:
+        return head
+    # Where each handler wrote `stale` before the compute/page split, so every
+    # answer stays byte-identical (§2.4 seam 2; test_graphmcp_byte_identity):
+    # `context` (the one head with `lines`) marked its head before adding its
+    # `note`; every other head is marked last. Decided from the head alone,
+    # because `remark` sees only the answer, never the tool.
+    if "lines" in head and "note" in head:
+        rest = {k: v for k, v in head.items() if k != "note"}
+        return {**rest, "stale": why, "note": head["note"]}
+    return {**head, "stale": why}
 
 
 HEAD_OVER_CAP = "the answer's head alone is over the 4 KiB cap; ask for less"

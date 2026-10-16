@@ -26,8 +26,10 @@ from agent_worker.graphmcp.freshness import Observation
 from agent_worker.graphmcp.snapshot import ALL_LAYERS, Snapshot
 
 #: TOOLS_VERSION -> the sha256 of every answer below, joined.
+#: "1" was recorded once more before it ever shipped, when the review of the
+#: PR that introduced it put `context`'s `stale` back ahead of its `note`.
 FINGERPRINTS = {
-    "1": "1ee49405861cec35b3a6db0f0e2332d0aafabf0c5b69311a6db964da508d2453",
+    "1": "6e49f1dcd02131125fcac182ae7ecbd1dfa1b0317a325fdaaf0b36b99141875d",
 }
 
 HANDLE = f"{APP}#handle"
