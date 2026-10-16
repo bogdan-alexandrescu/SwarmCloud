@@ -206,3 +206,10 @@ enable_workspace_secrets = true
 # bootstrap plan from main read it as false and planned to destroy both. It is
 # recorded here so the state and this file agree.
 enable_typesafe_forwarder_read = true
+
+# The GitHub push receiver's create-only Firestore role (HOOKS-ROLE, PR 1423;
+# github_hooks_role.tf; owner decision 2026-10-16 on #1384): swarmGithubHooksDedup
+# holds datastore.entities.create and nothing else, and the deployer may grant
+# it. ON 2026-10-16, before terraform/infra's enable_github_hooks, whose binding
+# names this role (docs/runbooks/github-app.md, Step 9 step 2).
+enable_github_hooks_dedup_role = true
