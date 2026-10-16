@@ -568,6 +568,19 @@ EGRESS_POD_LABEL = ("swarm-egress", "proxy")
 #: TCP 8080. Set by `_with_judgment`, only when `typesafe_forwarder_on`.
 TYPESAFE_POD_LABEL = ("swarm-typesafe", "inject")
 
+#: THE WORKER'S FORWARDER SWITCH (lane TS-INJECT, part of #1347). The worker
+#: takes the forwarder path, instead of reading the key file, only when this is
+#: in its environment on GKE (`agent_worker.typesafe_shim.SWITCH_ENV` /
+#: `SWITCH_ON`, `switched_on`). RESTATED, because the scheduler's image does not
+#: carry the worker and cannot import it;
+#: tests/unit/control_plane/test_typesafe_inject_parity.py holds the two equal.
+#: Set by `_with_judgment` on the worker container, from the same
+#: `typesafe_forwarder_on` decision as TYPESAFE_POD_LABEL and never otherwise:
+#: a labelled pod whose worker still read the key file would hold the
+#: forwarder open for nothing, and a switched worker on an unlabelled pod could
+#: not reach the forwarder at all.
+TYPESAFE_INJECT_ENV = ("SWARM_TYPESAFE_INJECT", "on")
+
 #: The three volumes both containers mount, and only these (§3.1). All memory,
 #: so inside the pod's memory limit, and none under WORKSPACE_MOUNT, so none
 #: is checkpointed.
@@ -2564,7 +2577,8 @@ class GkeJobDispatcher:
         hostAliases entry that resolves the API's tailnet name to the egress
         Service. For the TypeSafe backend with the forwarder serving the
         tenant (`typesafe_forwarder_on`), the `swarm-typesafe: inject` label
-        that opens swarm-typesafe-fwd instead. Only with the live browser:
+        that opens swarm-typesafe-fwd instead, and with it
+        SWARM_TYPESAFE_INJECT=on, the worker's switch onto that path. Only with the live browser:
         jev-browser attaches to nothing else."""
         backend = self._judgment(tenant.tenant_id) if self._judgment else DEFAULT_BACKEND
         env, labels, host_aliases = jev_dispatch(
@@ -2572,6 +2586,7 @@ class GkeJobDispatcher:
         if typesafe_forwarder_on(self._settings, tenant_id=tenant.tenant_id,
                                  profile=profile, backend=backend):
             labels[TYPESAFE_POD_LABEL[0]] = TYPESAFE_POD_LABEL[1]
+            env[TYPESAFE_INJECT_ENV[0]] = TYPESAFE_INJECT_ENV[1]
         template = job["spec"]["template"]
         (worker,) = [c for c in template["spec"]["containers"] if c["name"] == "worker"]
         worker["env"].extend({"name": k, "value": v} for k, v in env.items())

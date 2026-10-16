@@ -19,6 +19,12 @@ these hold, and each is turned off once below:
 A Cloud Run Job gets no label and keeps today's path: the forwarder is
 reachable only from GKE pods.
 
+The worker's switch, `SWARM_TYPESAFE_INJECT=on` (lane TS-INJECT), rides on
+the same decision: the worker container carries it exactly when the pod carries
+the label, so a labelled pod's worker takes the forwarder path and no other
+worker does. Its name and value are held to the worker's by
+test_typesafe_inject_parity.py.
+
 MUTATION: drop any one condition from `typesafe_forwarder_on`, label a pod of
 another backend, or match the tenant by prefix, and the named case fails.
 """
@@ -34,6 +40,7 @@ from swarm_common.models import Tenant
 from swarm_common.profiles import RUNNER_PROFILES
 
 from scheduler.dispatch import (
+    TYPESAFE_INJECT_ENV,
     TYPESAFE_POD_LABEL,
     CloudRunJobDispatcher,
     GkeJobDispatcher,
@@ -72,15 +79,29 @@ def _settings(*, forwarder: bool, tenants: tuple[str, ...], live: bool) -> Sched
     )
 
 
-def _labels(tenant: Tenant, *, forwarder: bool, tenants: tuple[str, ...], backend: str,
-            live: bool, profile: str) -> dict[str, str]:
+def _job(tenant: Tenant, *, forwarder: bool, tenants: tuple[str, ...], backend: str,
+         live: bool, profile: str) -> dict[str, Any]:
     settings = _settings(forwarder=forwarder, tenants=tenants, live=live)
     dispatcher = GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"),
                                   batch_api=object(), judgment=lambda tenant_id: backend)
     task = make_task(profile)
-    job = dispatcher._manifest(task=task, lease=make_lease(task),
-                               profile=RUNNER_PROFILES[profile], tenant=tenant)
-    return job["spec"]["template"]["metadata"]["labels"]
+    return dispatcher._manifest(task=task, lease=make_lease(task),
+                                profile=RUNNER_PROFILES[profile], tenant=tenant)
+
+
+def _labels(tenant: Tenant, **conditions: Any) -> dict[str, str]:
+    return _job(tenant, **conditions)["spec"]["template"]["metadata"]["labels"]
+
+
+def _worker_env(tenant: Tenant, **conditions: Any) -> list[dict[str, Any]]:
+    """The worker container's env entries, in order (duplicates kept)."""
+    spec = _job(tenant, **conditions)["spec"]["template"]["spec"]
+    (worker,) = [c for c in spec["containers"] if c["name"] == "worker"]
+    return list(worker["env"])
+
+
+def _switch(env: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [e for e in env if e["name"] == "SWARM_TYPESAFE_INJECT"]
 
 
 def test_the_label_is_the_one_both_policies_select():
@@ -106,6 +127,65 @@ def test_every_condition_on_labels_the_pod(tenant):
 def test_any_condition_off_leaves_the_pod_unlabelled(tenant, off):
     labels = _labels(tenant, **{**ON, **off})
     assert "swarm-typesafe" not in labels
+
+
+def test_the_switch_name_and_value_are_the_workers():
+    assert TYPESAFE_INJECT_ENV == ("SWARM_TYPESAFE_INJECT", "on")
+
+
+def test_every_condition_on_switches_the_worker_on(tenant):
+    """The labelled pod's worker container carries SWARM_TYPESAFE_INJECT=on,
+    once, as a plain value (no secret reference, nothing a caller chose)."""
+    assert _switch(_worker_env(tenant, **ON)) == [
+        {"name": "SWARM_TYPESAFE_INJECT", "value": "on"}]
+
+
+@pytest.mark.parametrize("off", [
+    pytest.param({"forwarder": False}, id="forwarder-off"),
+    pytest.param({"tenants": ()}, id="no-tenant-listed"),
+    pytest.param({"tenants": ("research",)}, id="another-tenant-listed"),
+    pytest.param({"tenants": ("en", "eng-x")}, id="a-prefix-is-not-the-tenant"),
+    pytest.param({"backend": "internal-jev"}, id="internal-jev-backend"),
+    pytest.param({"backend": "internal-laya"}, id="internal-laya-backend"),
+    pytest.param({"live": False}, id="display-switch-off"),
+    pytest.param({"profile": "claude-code"}, id="not-a-live-browser-profile"),
+])
+def test_any_condition_off_leaves_the_worker_switched_off(tenant, off):
+    assert _switch(_worker_env(tenant, **{**ON, **off})) == []
+
+
+@pytest.mark.parametrize("off", [
+    pytest.param({}, id="all-on"),
+    pytest.param({"forwarder": False}, id="forwarder-off"),
+    pytest.param({"tenants": ("research",)}, id="another-tenant-listed"),
+    pytest.param({"backend": "internal-jev"}, id="internal-jev-backend"),
+    pytest.param({"live": False}, id="display-switch-off"),
+    pytest.param({"profile": "claude-code"}, id="not-a-live-browser-profile"),
+])
+def test_the_switch_is_set_exactly_when_the_label_is(tenant, off):
+    """One decision, two marks: the label and the worker's switch never part."""
+    conditions = {**ON, **off}
+    labelled = _labels(tenant, **conditions).get("swarm-typesafe") == "inject"
+    switched = bool(_switch(_worker_env(tenant, **conditions)))
+    assert labelled == switched
+
+
+def test_the_switch_changes_nothing_else_in_the_worker_env(tenant):
+    """The same pod with the forwarder off differs by that one variable."""
+    on = _worker_env(tenant, **ON)
+    off = _worker_env(tenant, **{**ON, "forwarder": False})
+    assert [e for e in on if e["name"] != "SWARM_TYPESAFE_INJECT"] == off
+
+
+def test_a_cloud_run_job_never_switches_the_worker_on(tenant):
+    """GKE only: the worker's switch is read on GKE_AUTOPILOT alone, and the
+    forwarder is unreachable from Cloud Run, so the Job never carries it."""
+    settings = _settings(forwarder=True, tenants=("eng",), live=True)
+    job = CloudRunJobDispatcher(settings, client=FakeJobsClient())._build_job(
+        RUNNER_PROFILES[LIVE], tenant)
+    names = [e.name for c in job.template.template.containers for e in c.env]
+    assert names, "the Job's containers carry an environment to search"
+    assert "SWARM_TYPESAFE_INJECT" not in names
 
 
 def test_the_label_changes_nothing_else_on_the_pod(tenant):
