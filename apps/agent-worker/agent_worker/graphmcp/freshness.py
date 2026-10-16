@@ -11,22 +11,38 @@ A stale index says so, every time. Two sets of paths make a row stale:
     the step began, committed or not, and the files it has added. Read again
     for every answer, because the agent edits between questions.
 
-THE SERVER KEEPS ITS OWN COPY OF THE GIT INDEX. Git compares the working
-tree through the index's stat cache; a fresh clone's cache is often racy, and
-then every `git diff` re-reads every file -- measured here at 240 ms an
-answer, most of the 300 ms budget, until something refreshes the index. A
-read-only server must not write the agent's index (nor take its lock: git
-runs with `--no-optional-locks`), so it refreshes a PRIVATE copy, taken once
-at start, through `GIT_INDEX_FILE`. The copy is only a stat cache here: the
-dirty set is the working tree against the base COMMIT, so a file the agent
-has staged, committed or removed since reads the same either way, and a file
-it has added is untracked to the copy and counted dirty all the same.
+ONE GIT CALL PER ANSWER (docs/design/graph-service.md §4.3). Once, at start,
+the server builds a PRIVATE git index of the base commit
+(`GIT_INDEX_FILE=<tmp>/index git read-tree <base>`, then a refresh of its stat
+cache). For each answer it runs one `git status --porcelain=v2` against that
+index. Because the index IS the base tree:
+
+  * the "staged" column (HEAD against the index) is every path committed
+    since the base;
+  * the "unstaged" column (the index against the working tree) is every path
+    changed in the tree against the base;
+  * an untracked entry is a path absent from the base and not ignored; a
+    directory comes back with a trailing `/` (`Observation.dirty_dirs`).
+
+Their union is the dirty set against the base COMMIT, which the three calls
+this replaced (`update-index --refresh`, `diff --name-only <base>`,
+`ls-files --others`) computed. One case is marked where the three calls did
+not: a file committed and then put back in the tree as it was in the base is
+listed by the staged column. That errs safe -- a row marked stale that is not
+is a hint, an unmarked stale row is a wrong answer.
+
+The agent's own index and its lock are never touched. The private index and
+its lock are the server's, so `git status` runs WITHOUT `--no-optional-locks`
+and writes back its refreshed stat cache: a fresh clone's cache is often racy
+and then every comparison re-reads every file (measured at 240 ms an answer on
+this repository), but only on the first call. Without a private index -- no
+checkout, or a base tree git cannot read -- the dirty set is `unknown`, never
+zero.
 """
 
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -40,14 +56,20 @@ DIRTY = "dirtied in this step"
 GIT_TIMEOUT_SECONDS = 5.0
 
 
-def _git(workdir: Path, *args: str, index: Path | None = None) -> str | None:
+def _git(workdir: Path, *args: str, index: Path | None = None,
+         locks: bool = False) -> str | None:
+    """stdout of one git call, or None when it failed or ran past the timeout.
+
+    `locks` is only ever True against the server's own private index: without
+    it git takes no optional lock, so it never writes the agent's index.
+    """
     env = None
     if index is not None:
         env = {**os.environ, "GIT_INDEX_FILE": str(index)}
+    argv = ["git"] + ([] if locks else ["--no-optional-locks"])
     try:
         done = subprocess.run(
-            ["git", "--no-optional-locks", "-c", "core.quotepath=off", "-C", str(workdir),
-             *args],
+            [*argv, "-c", "core.quotepath=off", "-C", str(workdir), *args],
             capture_output=True, timeout=GIT_TIMEOUT_SECONDS, check=False, env=env)
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -63,6 +85,39 @@ def _git_status(workdir: Path, *args: str, index: Path | None = None) -> None:
                        timeout=GIT_TIMEOUT_SECONDS, check=False, env=env)
     except (OSError, subprocess.TimeoutExpired):
         return
+
+
+#: The one call each answer makes, against the private index of the base.
+STATUS_ARGS = ("status", "--porcelain=v2", "-z", "--no-renames", "--untracked-files=normal",
+               "--ignore-submodules=dirty")
+#: Fields before the path in a porcelain v2 record, by its first character:
+#: `1 XY sub mH mI mW hH hI path` and `u XY sub m1 m2 m3 mW h1 h2 h3 path`.
+_STATUS_FIELDS = {"1": 8, "u": 10}
+
+
+def parse_status(output: str) -> tuple[set[str], set[str]]:
+    """(dirty files, untracked directories ending in `/`) of `git status
+    --porcelain=v2 -z --no-renames`. Every record names a path that differs from
+    the index in some column, so every one is dirty."""
+    files: set[str] = set()
+    dirs: set[str] = set()
+    for record in output.split("\0"):
+        if not record or record.startswith("#"):
+            continue
+        kind = record[0]
+        if kind in ("?", "!"):
+            path = record[2:]
+        elif kind in _STATUS_FIELDS:
+            parts = record.split(" ", _STATUS_FIELDS[kind])
+            if len(parts) <= _STATUS_FIELDS[kind]:
+                continue
+            path = parts[-1]
+        else:
+            continue
+        if kind == "!" or not path:
+            continue
+        (dirs if path.endswith("/") else files).add(path)
+    return files, dirs
 
 
 def _paths(output: str | None) -> set[str] | None:
@@ -88,6 +143,13 @@ class Observation:
             return CHANGED
         return None
 
+    @classmethod
+    def empty(cls, index_sha: str) -> "Observation":
+        """The observation the shared graph service computes every answer under
+        (graph-service.md §4.4): nothing stale, a block naming only the index.
+        Staleness belongs to one working tree, and only the pod's shim knows it."""
+        return cls(block={"index_sha": index_sha}, changed=frozenset(), dirty=frozenset())
+
 
 @dataclass
 class Freshness:
@@ -106,76 +168,68 @@ class Freshness:
                   record: dict | None) -> "Freshness":
         """From the stager's record when there is one, else from the checkout."""
         fresh = cls(index_sha=index_sha, workdir=Path(workdir) if workdir else None)
+        fresh._from(record)
         fresh._private_index()
-        if record is not None and record.get("index_sha") not in (None, index_sha):
-            fresh._notes.append("freshness.json names another index commit; ignored")
-            record = None
-        if record is not None:
-            fresh.base_sha = record.get("base_sha")
-            behind = record.get("behind_by")
-            fresh.behind_by = behind if isinstance(behind, int) else None
-            changed = record.get("changed")
-            if isinstance(changed, list):
-                fresh.changed = frozenset(str(p) for p in changed)
-            fresh.basis = "staged"
-            return fresh
-        if fresh.workdir is None:
-            fresh._notes.append("no freshness record and no checkout: staleness unknown")
-            return fresh
-        head = _git(fresh.workdir, "rev-parse", "--verify", "HEAD")
-        fresh.base_sha = head.strip() if head else None
-        if fresh.base_sha and _git(fresh.workdir, "cat-file", "-e",
-                                   f"{index_sha}^{{commit}}") is not None:
-            count = _git(fresh.workdir, "rev-list", "--count", f"{index_sha}..{fresh.base_sha}")
-            fresh.behind_by = int(count.strip()) if count and count.strip().isdigit() else None
-            changed = _paths(_git(fresh.workdir, "diff", "--name-only", "-z", "--no-renames",
-                                  index_sha, fresh.base_sha))
-            fresh.changed = frozenset(changed) if changed is not None else None
-            fresh.basis = "git" if fresh.changed is not None else "unknown"
-        else:
-            fresh._notes.append("the index commit is not in this clone: changes since it "
-                                "are unknown")
         return fresh
 
+    def _from(self, record: dict | None) -> None:
+        if record is not None and record.get("index_sha") not in (None, self.index_sha):
+            self._notes.append("freshness.json names another index commit; ignored")
+            record = None
+        if record is not None:
+            self.base_sha = record.get("base_sha")
+            behind = record.get("behind_by")
+            self.behind_by = behind if isinstance(behind, int) else None
+            changed = record.get("changed")
+            if isinstance(changed, list):
+                self.changed = frozenset(str(p) for p in changed)
+            self.basis = "staged"
+            return
+        if self.workdir is None:
+            self._notes.append("no freshness record and no checkout: staleness unknown")
+            return
+        head = _git(self.workdir, "rev-parse", "--verify", "HEAD")
+        self.base_sha = head.strip() if head else None
+        if self.base_sha and _git(self.workdir, "cat-file", "-e",
+                                  f"{self.index_sha}^{{commit}}") is not None:
+            count = _git(self.workdir, "rev-list", "--count",
+                         f"{self.index_sha}..{self.base_sha}")
+            self.behind_by = int(count.strip()) if count and count.strip().isdigit() else None
+            changed = _paths(_git(self.workdir, "diff", "--name-only", "-z", "--no-renames",
+                                  self.index_sha, self.base_sha))
+            self.changed = frozenset(changed) if changed is not None else None
+            self.basis = "git" if self.changed is not None else "unknown"
+        else:
+            self._notes.append("the index commit is not in this clone: changes since it "
+                               "are unknown")
+
     def _private_index(self) -> None:
-        """Copy the checkout's index once and refresh the copy's stat cache."""
+        """Read the base commit's tree into an index of our own, once, and fill
+        its stat cache (graph-service.md §4.3)."""
         if self.workdir is None or self._index is not None:
             return
-        where = _git(self.workdir, "rev-parse", "--git-path", "index")
-        if not where:
-            return
-        source = Path(where.strip())
-        if not source.is_absolute():
-            source = self.workdir / source
         self._scratch = tempfile.TemporaryDirectory(prefix="swarm-graph-index-")
         private = Path(self._scratch.name) / "index"
-        try:
-            shutil.copyfile(source, private)
-        except OSError:
+        base = self.base_sha or "HEAD"
+        if _git(self.workdir, "read-tree", f"{base}^{{tree}}", index=private,
+                locks=True) is None:
+            self._notes.append("the base commit's tree could not be read: dirtied paths "
+                               "are unknown")
             return
         self._index = private
-        self._refresh()
-
-    def _refresh(self) -> None:
-        if self.workdir is not None and self._index is not None:
-            # Exit 1 means "some files differ", which is what we are asking.
-            _git_status(self.workdir, "update-index", "-q", "--refresh", "--unmerged",
-                        index=self._index)
+        # Exit 1 means "some files differ", which is what we are asking.
+        _git_status(self.workdir, "update-index", "-q", "--refresh", "--unmerged",
+                    index=self._index)
 
     def observe(self) -> Observation:
-        """The block for one answer, the dirty set read now."""
+        """The block for one answer, the dirty set read now in one git call."""
         dirty: set[str] | None = None
         dirty_dirs: tuple[str, ...] = ()
-        if self.workdir is not None:
-            against = self.base_sha or "HEAD"
-            self._refresh()
-            tracked = _paths(_git(self.workdir, "diff", "--name-only", "-z", "--no-renames",
-                                  against, index=self._index))
-            untracked = _paths(_git(self.workdir, "ls-files", "-z", "--others",
-                                    "--exclude-standard", "--directory", index=self._index))
-            if tracked is not None and untracked is not None:
-                dirty = tracked | {p for p in untracked if not p.endswith("/")}
-                dirty_dirs = tuple(sorted(p for p in untracked if p.endswith("/")))
+        if self.workdir is not None and self._index is not None:
+            output = _git(self.workdir, *STATUS_ARGS, index=self._index, locks=True)
+            if output is not None:
+                dirty, dirs = parse_status(output)
+                dirty_dirs = tuple(sorted(dirs))
         block: dict[str, Any] = {
             "index_sha": self.index_sha,
             "base_sha": self.base_sha,
