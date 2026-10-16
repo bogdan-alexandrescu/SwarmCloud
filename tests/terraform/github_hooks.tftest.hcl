@@ -12,8 +12,10 @@
 #     other resource in the plan;
 #   * swarm-github-app-webhook-secret exists with NO VERSION, read by the
 #     sweeper account alone;
-#   * the sweeper gets roles/datastore.user (it held nothing on Firestore) and
-#     github_deliveries.expires_at a TTL policy;
+#   * the sweeper gets the bootstrap custom role swarmGithubHooksDedup
+#     (datastore.entities.create alone; terraform/bootstrap/github_hooks_role.tf,
+#     lane HOOKS-ROLE, owner decision 2026-10-16), never roles/datastore.user,
+#     and github_deliveries.expires_at a TTL policy;
 #   * on without a digest, the IAM rows exist, the service does not, and the
 #     check says why;
 #   * every labelable resource carries managed-by=swarm-terraform.
@@ -209,13 +211,26 @@ run "on_the_receiver_is_public_runs_as_the_sweeper_and_reads_its_secret_alone" {
 
   assert {
     condition = (
-      google_project_iam_member.github_hooks_firestore[0].role == "roles/datastore.user"
+      google_project_iam_member.github_hooks_firestore[0].role == "projects/saga-agents-staging/roles/swarmGithubHooksDedup"
       && google_project_iam_member.github_hooks_firestore[0].member == "serviceAccount:${module.scheduler.rollup_sweeper_email}"
       && google_firestore_field.github_deliveries_ttl[0].collection == "github_deliveries"
       && google_firestore_field.github_deliveries_ttl[0].field == "expires_at"
       && length(google_firestore_field.github_deliveries_ttl[0].ttl_config) == 1
     )
-    error_message = "the sweeper can create github_deliveries documents, and Firestore expires them on expires_at"
+    error_message = "the sweeper can create github_deliveries documents through swarmGithubHooksDedup, the custom role terraform/bootstrap defines, and Firestore expires them on expires_at"
+  }
+
+  # The owner's 2026-10-16 decision (HOOKS-ROLE): a public-facing service's
+  # identity holds create on Firestore and nothing more. roles/datastore.user
+  # is read-write on every collection of the platform's database, and no IAM
+  # condition narrows Firestore's data plane, so no grant in the plan may hand
+  # the sweeper account any predefined datastore role.
+  assert {
+    condition = alltrue([
+      for k, g in google_project_iam_member.github_hooks_firestore :
+      !startswith(g.role, "roles/")
+    ])
+    error_message = "github_hooks_firestore grants a predefined role; the receiver's dedup holds the bootstrap custom role swarmGithubHooksDedup, never roles/datastore.user"
   }
 
   assert {

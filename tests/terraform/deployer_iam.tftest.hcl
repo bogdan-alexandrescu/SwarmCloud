@@ -998,9 +998,43 @@ run "every_project_role_the_verify_identity_holds_is_grantable" {
 }
 
 # terraform/infra/github_hooks.tf (lane GS-HOOKS, part of #1384) grants the
-# rollup sweeper account roles/datastore.user for the push receiver's delivery
-# dedup, only with enable_github_hooks on -- so it is planned on here, and the
-# grant is held to exist, not passed over an empty count.
+# rollup sweeper account swarmGithubHooksDedup for the push receiver's delivery
+# dedup (lane HOOKS-ROLE: it was roles/datastore.user), only with
+# enable_github_hooks on -- so it is planned on here, and the grant is held to
+# exist, not passed over an empty count. The role is grantable only once
+# terraform/bootstrap defines it (enable_github_hooks_dedup_role, the owner's
+# apply that must come first), so the list it is read against is that run's.
+run "the_github_hooks_dedup_role_is_grantable_once_bootstrap_defines_it" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  override_data {
+    target          = data.google_project.this
+    override_during = plan
+    values = {
+      number = "209012342332"
+    }
+  }
+
+  variables {
+    enable_github_wif              = true
+    github_repository              = "saga/agent-swarm-infra"
+    deployer_scoped_roles          = ["roles/resourcemanager.projectIamAdmin"]
+    enable_github_hooks_dedup_role = true
+  }
+
+  assert {
+    condition = (
+      contains(local.deployer_grantable_project_roles, "projects/saga-agents-staging/roles/swarmGithubHooksDedup")
+      && !contains(run.every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one.deployer_grantable_project_roles, "projects/saga-agents-staging/roles/swarmGithubHooksDedup")
+    )
+    error_message = "swarmGithubHooksDedup is grantable exactly when terraform/bootstrap defines it (enable_github_hooks_dedup_role), and not before"
+  }
+}
+
 run "the_github_hooks_firestore_role_is_grantable" {
   command = plan
 
@@ -1034,7 +1068,7 @@ run "the_github_hooks_firestore_role_is_grantable" {
 
   assert {
     condition = length(google_project_iam_member.github_hooks_firestore) == 1 && alltrue([
-      for k, g in google_project_iam_member.github_hooks_firestore : contains(run.every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one.deployer_grantable_project_roles, g.role)
+      for k, g in google_project_iam_member.github_hooks_firestore : contains(run.the_github_hooks_dedup_role_is_grantable_once_bootstrap_defines_it.deployer_grantable_project_roles, g.role)
     ])
     error_message = "terraform/infra/github_hooks.tf grants a project-level role the scoped projectIamAdmin may not grant; add it to deployer_grantable_project_roles"
   }

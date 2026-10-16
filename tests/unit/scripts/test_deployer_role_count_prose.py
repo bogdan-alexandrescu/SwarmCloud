@@ -86,8 +86,18 @@ SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z*`(\[0-9])")
 CLAUSE_SPLIT = re.compile(r"[,;:]|--|—")
 
 
-def grantable_roles() -> list[str]:
-    """local.deployer_grantable_project_roles, as deployer_conditions.tf builds it."""
+# A role a bootstrap variable adds to the list only when on, the shape
+# `var.<flag> ? [module.custom_role_ids.names["<key>"]] : []`. The counts the
+# prose states are of the list as committed, with every such flag at its
+# default, false (#1384, HOOKS-ROLE).
+GATED = re.compile(
+    r'var\.(\w+)\s*\?\s*\[\s*module\.custom_role_ids\.names\["([a-z_]+)"\]\s*\]\s*:\s*\[\s*\]'
+)
+BOOTSTRAP = REPO / "terraform" / "bootstrap"
+
+
+def _concat_body() -> str:
+    """concat()'s arguments, comments dropped."""
     text = CONDITIONS.read_text()
     m = re.search(
         r"^\s*deployer_grantable_project_roles\s*=\s*concat\((.*?)^\s*\)\s*$",
@@ -95,9 +105,20 @@ def grantable_roles() -> list[str]:
         re.M | re.S,
     )
     assert m, "deployer_grantable_project_roles = concat(...) not found"
-    body = "\n".join(
+    return "\n".join(
         line for line in m.group(1).splitlines() if not line.lstrip().startswith("#")
     )
+
+
+def gated_roles() -> dict[str, str]:
+    """custom_role_ids key -> the bootstrap variable that puts it on the list."""
+    return {key: flag for flag, key in GATED.findall(_concat_body())}
+
+
+def grantable_roles() -> list[str]:
+    """local.deployer_grantable_project_roles, as deployer_conditions.tf builds
+    it with every gated role's flag at its default (off)."""
+    body = _concat_body()
     literal = re.match(r"\s*\[(.*?)\]", body, re.S)
     assert literal, "the list of literal roles is not concat()'s first argument"
     roles = re.findall(r'"(roles/[^"]+)"', literal.group(1))
@@ -194,6 +215,49 @@ def test_the_list_is_parsed_not_typed():
     assert "custom_role_ids.worker_firestore" in roles
     # swarmSecretLister came off in #150; the parser must not find it.
     assert not any("secret_lister" in r for r in roles)
+
+
+def test_a_gated_role_is_off_by_default_and_read_by_nothing_else():
+    """swarmGithubHooksDedup (terraform/bootstrap/github_hooks_role.tf) joins
+    the list only when the owner turns enable_github_hooks_dedup_role on, so the
+    committed bootstrap plan's chunks, and every count stated in prose, are
+    unchanged by merging it. MUTATION: add it to the custom_role_ids loop, or
+    default its variable to true."""
+    gated = gated_roles()
+    assert gated == {"github_hooks_dedup": "enable_github_hooks_dedup_role"}, gated
+    for key, flag in gated.items():
+        assert f"custom_role_ids.{key}" not in grantable_roles(), key
+        declared = [
+            p
+            for p in sorted(BOOTSTRAP.glob("*.tf"))
+            if re.search(rf'^variable\s+"{flag}"\s*\{{', p.read_text(), re.M)
+        ]
+        assert len(declared) == 1, f"{flag} is declared in {declared}"
+        block = re.search(
+            rf'^variable\s+"{flag}"\s*\{{(.*?)^\}}', declared[0].read_text(), re.M | re.S
+        )
+        assert block and re.search(r"^\s*default\s*=\s*false\s*$", block.group(1), re.M), (
+            f"{flag} must default to false: on, it changes every projectIamAdmin chunk"
+        )
+        assert not re.search(
+            rf"^\s*{flag}\s*=", (BOOTSTRAP / "terraform.tfvars").read_text(), re.M
+        ), f"terraform/bootstrap/terraform.tfvars sets {flag}; the owner turns it on"
+
+
+def test_every_role_on_the_list_is_one_the_parser_reads():
+    """concat()'s arguments are the literal roles, the custom_role_ids loop and
+    gated roles, and nothing else: a role added in a fourth shape would be on
+    the list but missing from every count this file checks."""
+    body = _concat_body()
+    rest = re.sub(r"\s*\[(.*?)\]", "", body, count=1, flags=re.S)
+    rest = re.sub(
+        r"\[\s*for\s+key\s+in\s+\[.*?\]\s*:\s*module\.custom_role_ids\.names\[key\]\s*\]",
+        "",
+        rest,
+        flags=re.S,
+    )
+    rest = GATED.sub("", rest)
+    assert re.fullmatch(r"[\s,]*", rest), f"an argument the parser does not read: {rest!r}"
 
 
 def test_every_stated_grantable_role_and_chunk_count_matches_the_list():
