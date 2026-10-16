@@ -260,7 +260,8 @@ def test_a_50_kb_spec_given_with_its_path_submits_by_spec_path_and_no_prompt_car
 
     assert "error" not in got, got.get("error")
     submit = got["calls"][0]
-    assert submit["prompt"] == "SUBMIT\nspec_digest: " + digest + "\nspec_path: /work/widgets/specs/big.json"
+    assert submit["prompt"].split("\n")[:3] == ["SUBMIT", "spec_digest: " + digest,
+                                                "spec_path: /work/widgets/specs/big.json"]
     assert all("PROMPTMARK" not in c["prompt"] for c in got["calls"]), "an agent prompt carried the spec"
     assert got["result"]["workflow_id"] == "wf_1"
 
@@ -276,7 +277,8 @@ def test_a_spec_given_by_path_alone_is_submitted_by_the_ref_the_bridge_read(tmp_
     assert "error" not in got, got.get("error")
     read_call, submit = got["calls"][0], got["calls"][1]
     assert read_call["prompt"] == "READ SPEC\npath: specs/scan.json"
-    assert submit["prompt"] == "SUBMIT\nspec_digest: " + read["spec_digest"] + "\nspec_ref: spec_0123456789abcdef"
+    assert submit["prompt"].split("\n")[:3] == ["SUBMIT", "spec_digest: " + read["spec_digest"],
+                                                "spec_ref: spec_0123456789abcdef"]
     assert "scan a" not in submit["prompt"]
     labels = [c["label"] for c in got["calls"] if c["agentType"] == "sc:step"]
     # The console's stage (level + 1), not the outline's `stage` name.

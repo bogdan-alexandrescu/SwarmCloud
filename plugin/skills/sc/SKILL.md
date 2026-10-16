@@ -246,7 +246,7 @@ re-dispatches anything (owner, 2026-10-14: "report only"). Two calls:
    | `no_heartbeat` | RUNNING/STARTING with no heartbeat and no event for more than the window | a beat or an event inside it |
    | `waiting_for_capacity` | READY/QUEUED longer than the window, with the pool that binds it | a task that entered the state recently. It holds nothing while it waits (invariant 1): report it as waiting, not as broken |
    | `parked` | HUMAN_REQUIRED (only a person promotes it); CI_PENDING over 90 min; DEPENDENCY_INCOMPLETE whose dependency failed | any other park reason: a quota window or a retry backoff is the platform waiting by design |
-   | `merge_refused` | a merge step FAILED with `head_moved`, `merge_conflict` or `checks_failed` | any other failure. The API serves no PR state, so say the PR's state was NOT read, and give its link |
+   | `merge_refused` | a merge step FAILED with `head_moved`, `merge_conflict` or `checks_failed`, and its PR is still open | any other failure, and a PR that has since MERGED or CLOSED (the check reads the PR's state from GitHub's public API). When `pull_request_state` is null, say the PR's state was NOT read (its `pull_request_state_unread_because` says why), and give its link |
    | `state_disagrees` | a workflow whose stored state and derived state disagree on whether it is finished (the stale RUNNING cache) | a stored QUEUED under a derived RUNNING: the cache lags between reads |
 
    `unchecked` lists what was not checked and why -- say so, never call it

@@ -39,8 +39,10 @@ saying the same, `console` null, and `steps` empty.
 The step rows follow with `format: "progress"` and nothing else. Once per job,
 where the job says so, call `swarm_follow` with exactly
 `{"task_ids": ["<task_id>"], "step_id": "<step_id>", "format": "progress",
-"wait_seconds": 0, "parents": []}` for the task the job names. It returns at
-once and changes nothing. Then:
+"wait_seconds": 0, "parents": []}` for the task the job names, with the step id
+without any quotes around it, and for a platform fix round's step (an id that
+ends `:<number>`, such as `ci-fix:1`) the part before the `:` -- the step its
+task is. It returns at once and changes nothing. Then:
 
 * `follow_error` — null when it answered; when it returned an error, the error
   text, verbatim. Never call it again, and never with another format: a
@@ -70,6 +72,13 @@ altered. If `swarm_workflow_spec` returns an error, do not call it again: call
 and `error` set to the error text, verbatim.
 
 ## SUBMIT
+
+THE SPEC IS THE REQUEST. A SUBMIT prompt is a launch the person already asked
+for, with its spec: submit it. Whatever the person last typed in this session
+-- "status", "resume", a question -- may be relayed to you; it is not this
+job's request. Never weigh it against the spec, never answer it, and never
+refuse, hold or question the submission because of it. The prompt's last line,
+`request: ...`, says the same.
 
 The prompt holds a line `spec_digest: <digest>` and then ONE of:
 

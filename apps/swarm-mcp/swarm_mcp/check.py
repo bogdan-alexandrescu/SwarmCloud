@@ -6,9 +6,11 @@ workflows or tasks that are stuck or stale and to attach all workflows for a
 given claude code session running at the time for that project". This module
 is the check; `watch` is the interval, and `launch.for_all` the attach.
 
-READ-ONLY, AND ONLY THROUGH THE API. Every read below is a GET the bridge
+READ-ONLY, AND THROUGH THE API. Every read below is a GET the bridge
 already makes somewhere else -- the workflow list and one workflow, the task
-list, one task, a task's events, `/v1/capacity`, `/v1/tenants/mine`. Nothing
+list, one task, a task's events, `/v1/capacity`, `/v1/tenants/mine` -- and
+one more, outside it: a refused merge step's pull request state, from
+GitHub's public REST API, unauthenticated (rule d). Nothing
 is cancelled, retried, released or re-dispatched: the answer names the item,
 why it was flagged, the evidence the API served for it, its console link and
 the next command for a person to run.
