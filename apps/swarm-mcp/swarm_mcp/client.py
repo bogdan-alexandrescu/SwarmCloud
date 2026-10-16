@@ -946,13 +946,16 @@ class RateGate:
 
 
 class _Flight:
-    __slots__ = ("done", "value", "error", "hold")
+    __slots__ = ("done", "value", "error", "hold", "generation")
 
-    def __init__(self, hold: bool) -> None:
+    def __init__(self, hold: bool, generation: int) -> None:
         self.done = threading.Event()
         self.value: Any = None
         self.error: BaseException | None = None
         self.hold = hold
+        # The write count when this read began: a read begun before a write
+        # is not joined after it.
+        self.generation = generation
 
 
 class SharedReads:
@@ -990,13 +993,19 @@ class SharedReads:
             if kept is not None and kept[0] > now:
                 return copy.deepcopy(kept[1])
             flight = self._flying.get((key, False))
+            if flight is not None and flight.generation != self._generation:
+                flight = None
             if flight is None and hold:
                 flight = self._flying.get((key, True))
+                if flight is not None and flight.generation != self._generation:
+                    flight = None
             leading = flight is None
             if leading:
-                flight = _Flight(hold)
-                self._flying[(key, hold)] = flight
                 generation = self._generation
+                flight = _Flight(hold, generation)
+                # A flight begun before a write is left to finish for its own
+                # waiters; this one replaces it as the key's current flight.
+                self._flying[(key, hold)] = flight
         assert flight is not None
         if not leading:
             flight.done.wait()

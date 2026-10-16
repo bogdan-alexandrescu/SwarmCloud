@@ -15,7 +15,6 @@ from __future__ import annotations
 import email.message
 import io
 import json
-import statistics
 import threading
 import time
 
