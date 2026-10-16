@@ -112,6 +112,7 @@ from .errors import (
 )
 from .quota import UNKNOWN_WAIT_SECONDS
 from .startup import StartupInterrupted
+from .storable import storable
 
 #: The attempt document's map of checkpoint id to the SHA-256 of its archive,
 #: written by `ControlPlane.record_checkpoint` beside `checkpoints`. A retry
@@ -2091,7 +2092,7 @@ class ControlPlane:
             "end_cause": end_cause.value if end_cause is not None else None,
         }
         if result_summary is not None:
-            fields["result_summary"] = result_summary
+            fields["result_summary"] = self._storable_summary(result_summary)
         self.transition(state, fields=fields)
         self.record_attempt_end(exit_code=exit_code, error=error)
         event = {
@@ -2103,6 +2104,26 @@ class ControlPlane:
         self.emit(event, {"exit_code": exit_code, "error": error})
         self.release_lease(f"terminal:{state.value}")
         self._announce_finished(state)
+
+    def _storable_summary(self, summary: dict[str, Any]) -> dict[str, Any]:
+        """`summary` as Firestore can store it (`agent_worker.storable`).
+
+        A summary carries the runner's own output, and one array held in
+        another -- the pre-publish gate's rounds, a hunk's `(start, end)` --
+        made Firestore refuse the whole terminal write (89 crashes from
+        2026-10-16 19:51 UTC: pushed branches, no terminal state, every retry
+        refused at push). Reshaped here, at the one write, so no writer's
+        shape can end an attempt as a lost worker. Logged by path and count,
+        never by value.
+        """
+        stored, rewritten, paths = storable(summary)
+        if rewritten:
+            self._log.warning(
+                "result_summary held values Firestore cannot store; reshaped them",
+                rewritten=rewritten,
+                paths=paths,
+            )
+        return stored
 
     def _announce_finished(self, state: TaskState) -> None:
         """Ring the scheduler: this task has ended, its dependants may run (#636).
@@ -2175,6 +2196,8 @@ class ControlPlane:
         """
         write = "retryable failure"
         now = utcnow()
+        # Reshaped once, outside the transaction, which may run `_apply` again.
+        summary = None if result_summary is None else self._storable_summary(result_summary)
 
         def _apply(txn: Any) -> tuple[TaskState, int, int]:
             task = self._fenced_task(txn, write=write)
@@ -2201,8 +2224,8 @@ class ControlPlane:
                     f"cancelled on request; {error}" if target is TaskState.CANCELLED else error
                 ),
             }
-            if result_summary is not None:
-                payload["result_summary"] = result_summary
+            if summary is not None:
+                payload["result_summary"] = summary
             if target is TaskState.READY:
                 payload["next_eligible_at"] = now + timedelta(
                     seconds=max(0, retry_delay_seconds)
