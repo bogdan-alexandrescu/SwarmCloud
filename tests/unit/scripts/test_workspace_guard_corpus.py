@@ -215,13 +215,16 @@ def test_a_judged_call_starts_one_jq_and_no_dirname_of_its_own(tmp_path: Path, c
     assert out.returncode == 0, out.stderr[-2000:]
     started = log.read_text().split() if log.exists() else []
     count = {name: started.count(name) for name in COUNTED}
-    assert count["bash"] >= 1 and count["dirname"] >= 1, f"the wrappers saw nothing start: {count}"
+    assert count["bash"] >= 1 and count["jq"] >= 1, f"the wrappers saw nothing start: {count}"
     # One jq: the judge, which also builds the argument list, the condition
     # files and the deny-lists it used to ask separate jq calls for.
     assert count["jq"] == 1, count
-    # The two dirname left are the shim's and common.sh's first line, both
-    # outside the guard; the guard resolves paths by parameter expansion.
-    assert count["dirname"] <= 2 and count["basename"] == 0, count
+    # No dirname at all: the guard, the shim and common.sh resolve paths by
+    # parameter expansion (GUARD-SPEED-2). The one cat a call can start is the
+    # guard copying a stdin it was handed; common.sh no longer starts one when
+    # it is sourced.
+    assert count["dirname"] == 0 and count["basename"] == 0, count
+    assert count["cat"] <= (1 if p["stdin"] is not None else 0), count
     # The kubeconfig's context is read by the shell, not sed | sed | tr; the
     # deny-list is filtered in the judge, not by grep.
     assert count["sed"] == 0 and count["tr"] == 0 and count["grep"] == 0, count

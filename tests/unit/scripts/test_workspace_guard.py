@@ -320,7 +320,8 @@ def test_each_shim_hands_its_call_to_the_guard(tool: str) -> None:
     code = [line for line in shim.read_text().splitlines() if line and not line.startswith("#")]
     assert code == [
         "set -euo pipefail",
-        f'exec "$(cd -- "$(dirname -- "${{BASH_SOURCE[0]}}")/.." && pwd)/workspace-guard.sh" run {tool} "$@"',
+        'here="${BASH_SOURCE[0]%/*}"; [[ "${here}" != "${BASH_SOURCE[0]}" ]] || here=.',
+        f'exec "$(cd -- "${{here}}/.." && pwd)/workspace-guard.sh" run {tool} "$@"',
     ]
     assert sorted(p.name for p in SHIMS.iterdir()) == ["curl", "gcloud", "kubectl"]
 
