@@ -376,6 +376,54 @@ def _live_holder(txn: Any, db: Any, tenant_id: str, held: Mapping[str, Any],
     return None
 
 
+def _claim_repository(url: str) -> str:
+    """The `repository` a claim is written and read under."""
+    return _repository(url) or url.lower()
+
+
+class _Reads:
+    """`_live_holder`'s reads outside a transaction: `get(query)` is the query's own."""
+
+    @staticmethod
+    def get(query: Any) -> Any:
+        return query.get()
+
+
+#: The most claims one (pull request, head) is read for: one per red run at
+#: that head, and a head is red in a handful of runs at most.
+LIVE_CLAIMS_READ = 10
+
+
+def live_claim(db: Any, tenant_id: str, repository_url: str, pull_request: int,
+               head_sha: str, now: datetime) -> dict[str, Any] | None:
+    """The live PR-side fix holding a claim on (repository, pull request, head),
+    of any run, as `{task_id, workflow_id}`; None when there is none.
+
+    The claim's liveness is `stamp`'s own (`_live_holder`): its task is not
+    terminal, or no task is written yet and the claim is inside
+    `CLAIM_GRACE_SECONDS`. Read with equality filters on the claim's fields,
+    never by rebuilding its id. For the merge step's own CI-fix round
+    (`mergewake._on_red`), which must not start a second agent on a failure
+    a PR-side fix is already on.
+    """
+    query = (
+        db.collection(CLAIMS)
+        .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        .where(filter=FieldFilter("repository", "==", _claim_repository(repository_url)))
+        .where(filter=FieldFilter("pull_request", "==", pull_request))
+        .where(filter=FieldFilter("head_sha", "==", head_sha))
+        .limit(LIVE_CLAIMS_READ)
+    )
+    for snap in query.stream():
+        held = snap.to_dict() or {}
+        if held.get("tenant_id") != tenant_id:
+            continue
+        live = _live_holder(_Reads(), db, tenant_id, held, now)
+        if live is not None:
+            return live
+    return None
+
+
 def _claim(store: Any, tenant_id: str, continuation: Continuation,
            record: Mapping[str, Any]) -> str | None:
     """Take this failure's claim, or refuse `CiFixInFlight` naming the live fix
@@ -389,7 +437,7 @@ def _claim(store: Any, tenant_id: str, continuation: Continuation,
     db = store.db
     clock = getattr(store, "_now", None)
     now = clock() if callable(clock) else datetime.now(timezone.utc)
-    repository = _repository(continuation.repository_url) or continuation.repository_url.lower()
+    repository = _claim_repository(continuation.repository_url)
     ref = db.collection(CLAIMS).document(_claim_key(tenant_id, repository, record))
     claim_id = uuid.uuid4().hex
     transaction = db.transaction()
