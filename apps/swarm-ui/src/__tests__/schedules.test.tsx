@@ -291,12 +291,13 @@ describe('the list', () => {
     expect(painted(row.querySelector<HTMLElement>('.sc-name')!, 'grid-area', PHONE)).toBe('name')
     expect(painted(row.querySelector<HTMLElement>('td[data-label="State"]')!, 'grid-area', PHONE)).toBe('state')
     expect(painted(row.querySelector<HTMLElement>('td[data-label="Actions"]')!, 'grid-area', PHONE)).toBe('acts')
-    // Line 2: one line, cut, carrying what the hidden cells said, in the owner's order.
+    // Line 2: carrying what the hidden cells said, in the owner's order. It
+    // WRAPS (visual QA V173, 2026-10-16): cut to one line, everything after
+    // the cadence was off the screen, in a title a touch screen cannot open.
     const line = row.querySelector<HTMLElement>('.sc-line2')!
     expect(painted(line, 'grid-area', PHONE)).toBe('line')
     expect(painted(line, 'display', PHONE)).toBe('block')
-    expect(painted(line, 'white-space', PHONE)).toBe('nowrap')
-    expect(painted(line, 'text-overflow', PHONE)).toBe('ellipsis')
+    expect(painted(line, 'white-space', PHONE)).toBe('normal')
     await waitFor(() => expect(visible(line)).toContain('example-org/example-api'), WAIT)
     const words = visible(line)
     const order = ['issue-sweep', 'example-org/example-api', 'at 09:00, Monday through Friday', 'last succeeded', 'next in 3h', '$3.10', '2 waiting']
