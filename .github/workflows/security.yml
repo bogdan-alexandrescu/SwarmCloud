@@ -363,7 +363,8 @@ jobs:
           # and ffmpeg is the largest third-party surface any control-plane image ships.
           # swarm-egress too (EGRESS-BUILD): it holds the vendor credential and relays
           # every proxied browser byte.
-          for image in agent-runtime-base agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler workspace-apply swarm-live swarm-egress; do
+          # swarm-typesafe-fwd too (SEC-INJECT-B, PR 1385): it holds every tenant's TypeSafe key in memory.
+          for image in agent-runtime-base agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler workspace-apply swarm-live swarm-egress swarm-typesafe-fwd; do
             echo "==> ${image}:dev"
             trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
               --exit-code 1 --no-progress "${repo}/${image}:dev" || status=1
