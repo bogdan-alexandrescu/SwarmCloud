@@ -161,6 +161,10 @@
 .ov-fc-mark { width: 28px; }
 .ov-fc-age { width: 76px; }
 .ov-fc-open { width: 48px; }
+/* THE WHOLE WORKFLOW ID ON A WIDE SCREEN (visual QA V263, owner Q5,
+   2026-10-16): the short form is the phone's alone, below. The row head
+   breaks anywhere (above), so the whole id wraps in its cell rather than
+   pushing the age and Open out of the card. */
 .ov-fails .ov-why { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .ov-tbl td:last-child, .ov-tbl th:last-child { padding-right: 0; }
 .ov-sub { display: block; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
@@ -178,6 +182,9 @@
 /* The phone's compact Running list (O1 390 frame). Hidden on a wide screen,
    where the table says the same rows with more columns. */
 .ov-prun { display: none; list-style: none; margin: 0; padding: 0; }
+/* Its "N more" (visual QA V177) is the phone's too: the table's own sits in
+   `.ov-rows`, which the phone hides. */
+.ov-prun-more { display: none; }
 .ov-prun li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center; min-height: 32px; }
 .ov-prun .sk-st-w { display: none; }
 .ov-prun-m { display: flex; flex-direction: column; min-width: 0; }
@@ -251,6 +258,10 @@
    the weight above as the greyscale channel -- at every width, so the two
    widths agree. */
 .ov-pl b.is-full { color: var(--bad); }
+/* NEARLY FULL, ON THE FIGURE (visual QA V057, owner decision Q4
+   2026-10-16): the hidden track turns warn at 80%, so the figure does too, at
+   every width -- the warn ink, as the full figure takes the bad. */
+.ov-pl b.is-near { color: var(--warn); }
 .ov-acc { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; font-size: var(--t-micro); }
 .ov-acc .sk-st-w { font-size: var(--t-micro); }
 .ov-acc-proj { color: var(--text-dim); }
@@ -265,6 +276,11 @@
 /* THE MARK STANDS OFF ITS HEADING (visual QA V141, 2026-10-11): a bordered
    pill and one space read as flush against the word after it. */
 .ctl-empty.ov-empty > h3 > .ctl-mark { margin-right: var(--ctl-s1); }
+/* WHY IT IS BLIND, IN SIGHT (visual QA V259, 2026-10-16): the reason a card
+   could not read was only the mark's accessible name. It is the one sentence
+   under the heading, on a line of its own, a step below the heading it
+   explains, and a long error message breaks rather than widening the card. */
+.ctl-empty.ov-empty > p { flex-basis: 100%; margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); overflow-wrap: anywhere; }
 /* The page-level one (an expired session) keeps its box: no card is around it. */
 .ov-page-empty { display: flex; align-items: flex-start; gap: var(--ctl-s3); flex-wrap: wrap; }
 .ov-page-empty > h3 { margin: 0; flex: 1 1 auto; }
@@ -329,10 +345,13 @@
   .ov-fails tr:last-child { border-bottom: 0; }
   .ov-fails td, .ov-fails tbody th { height: auto; padding: 0; border-bottom: 0; }
   .ov-fails tbody th { grid-column: 2 / 4; grid-row: 1; }
+  /* The phone's short form, `wf_5e5ad3…`, cut by the sheet from the whole id
+     the row carries (V263): about nine characters, then the ellipsis. */
+  .ov-fails .ov-wf-id { display: inline-block; max-width: 10ch; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; vertical-align: bottom; }
   .ov-fails td:first-child { grid-row: 1; }
   .ov-fails td.is-num { grid-row: 2; grid-column: 2; text-align: left; }
   .ov-fails td.is-num:last-child { grid-column: 3; text-align: right; }
-  .ov-prun { display: block; }
+  .ov-prun, .ov-prun-more { display: block; }
   /* A DISABLED REASON WHOLE ON A PHONE (live QA OV-13, 2026-10-11): past two
      lines the reason was only in the tile's `title`, which a touch screen
      cannot open. Whole, the sentence costs the tile a line or two of
