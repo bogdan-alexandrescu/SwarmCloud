@@ -240,3 +240,50 @@ def test_a_client_that_is_not_the_bridge_shares_nothing(wire):
     client.task("t1")
     client.task("t1")
     assert len(wire.sent) == 2
+
+
+def test_a_read_started_before_a_write_is_not_joined_after_it(wire):
+    """A poll in flight when swarm_cancel completes must not answer the next read."""
+    client = _paced(_Clock())
+    gate = threading.Event()
+    wire.gates["/v1/tasks/t1"] = gate
+    first = threading.Thread(target=lambda: client.task("t1"))
+    first.start()
+    deadline = time.monotonic() + 5
+    while not wire.sent and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert len(wire.sent) == 1
+    del wire.gates["/v1/tasks/t1"]  # only the pre-write flight is held
+    client.request("POST", "/v1/tasks/t1/cancel", payload={})
+    try:
+        client.task("t1")
+        assert [(m, p) for m, p, _ in wire.sent] == [
+            ("GET", "/v1/tasks/t1"), ("POST", "/v1/tasks/t1/cancel"), ("GET", "/v1/tasks/t1"),
+        ], "the read after the write joined the flight that began before it"
+    finally:
+        gate.set()
+        first.join(5)
+
+
+def test_the_flight_across_a_write_still_answers_its_own_waiter():
+    """The pre-write flight finishes for its caller, the post-write read gets
+    the newer answer, and neither flight removes the other's entry."""
+    reads = mcp_client.SharedReads(clock=_Clock())
+    release = threading.Event()
+    started = threading.Event()
+    out: dict[str, str] = {}
+
+    def old_fetch():
+        started.set()
+        release.wait(10)
+        return "before"
+
+    first = threading.Thread(target=lambda: out.__setitem__("first", reads.read("k", old_fetch)))
+    first.start()
+    assert started.wait(5)
+    reads.invalidate()
+    out["second"] = reads.read("k", lambda: "after")
+    release.set()
+    first.join(5)
+    assert out == {"first": "before", "second": "after"}
+    assert reads.read("k", lambda: "unexpected") == "after"
