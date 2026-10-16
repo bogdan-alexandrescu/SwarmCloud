@@ -272,13 +272,16 @@ def test_the_post_back_says_when_the_per_pr_cap_is_reached(fix_client, db, githu
 # --------------------------------------------------------------------------
 
 def test_the_cap_holds_at_the_api_whatever_the_caller_numbers_the_attempt(fix_client, db):
+    # Each attempt answers its own red run: one run with a live fix gets no
+    # second task at all (test_cifix_one_live_fix.py), so the cap is about runs.
     original = _original(fix_client)
     assert _submit(fix_client, _red_run_payload(original, attempt=1)).status_code == 201
-    assert _submit(fix_client, _red_run_payload(original, attempt=2)).status_code == 201
+    assert _submit(fix_client, _red_run_payload(original, attempt=2,
+                                                run_id=RUN_ID + 1)).status_code == 201
 
     # A third, numbered 1 again -- as it would be if the attempt comments were
     # deleted from the pull request -- is still the third for this PR.
-    third = _submit(fix_client, _red_run_payload(original, attempt=1))
+    third = _submit(fix_client, _red_run_payload(original, attempt=1, run_id=RUN_ID + 2))
     assert third.status_code == 422, third.text
     assert third.json()["code"] == "invalid_dispatch"
     assert len(_ci_fix_tasks(db)) == 2
