@@ -325,3 +325,69 @@ def test_a_changed_since_token_is_refused(swarm, world, compact):
     flipped = ("A" if token[0] != "A" else "B") + token[1:]
     with pytest.raises(SwarmError, match="checksum"):
         compact.watch_progress(swarm, ["task_a"], since=flipped)
+
+
+# --------------------------------------------------------------------------
+# A 429 is waited out, never a failed read (epic #1334)
+# --------------------------------------------------------------------------
+
+
+class _Limited:
+    """The world's client, whose first `limited` task reads answer 429."""
+
+    def __init__(self, client, limited: int, status: int = 429) -> None:
+        self._client = client
+        self.limited = limited
+        self.status = status
+        self.reads = 0
+
+    def task(self, task_id):
+        self.reads += 1
+        if self.reads <= self.limited:
+            raise SwarmError(f"GET /v1/tasks/{task_id} -> {self.status}: slow down", status=self.status)
+        return self._client.task(task_id)
+
+    def __getattr__(self, name):
+        return getattr(self._client, name)
+
+
+def test_a_rate_limited_read_backs_off_and_reads_again_inside_the_call(swarm, world, compact):
+    # A second attach of one workflow minutes after the first hit a 429, and
+    # its rows ended UNKNOWN.
+    _running(world, step_id="implement")
+    limited = _Limited(swarm, limited=3)
+    clock = _Time()
+
+    got = compact.watch_progress(limited, ["task_a"], step_id="implement", wait_seconds=1800,
+                                 sleep=clock.sleep, clock=clock.clock)
+
+    (row,) = got["tasks"]
+    assert row["read"] == "ok", row
+    assert "abandoned" not in row and "read_failures" not in row
+    assert "RUNNING" in got["progress"][0]
+    # Backed off, longer each time -- never the 10 s poll that was limited.
+    assert clock.slept[:3] == sorted(clock.slept[:3]) and clock.slept[0] >= 15, clock.slept
+
+
+def test_a_call_still_rate_limited_when_its_window_ends_never_counts_a_failure(swarm, world, compact):
+    _running(world, step_id="implement")
+    limited = _Limited(swarm, limited=10_000)
+    clock = _Time()
+    since = None
+    for _ in range(compact.READ_FAILURE_LIMIT + 2):
+        got = compact.watch_progress(limited, ["task_a"], since=since, step_id="implement", wait_seconds=300,
+                                     sleep=clock.sleep, clock=clock.clock)
+        since = got["since"]
+        (row,) = got["tasks"]
+        assert row["read"] == "rate_limited", row
+        assert "abandoned" not in row, row
+        assert got["stop"] is False
+
+    # The control: another failure, as many calls, IS given up on.
+    other = _Limited(swarm, limited=10_000, status=503)
+    since = None
+    for _ in range(compact.READ_FAILURE_LIMIT):
+        got = compact.watch_progress(other, ["task_a"], since=since, step_id="implement", wait_seconds=0,
+                                     sleep=clock.sleep, clock=clock.clock)
+        since = got["since"]
+    assert got["tasks"][0]["read"] == "failed" and got["tasks"][0]["abandoned"] is True

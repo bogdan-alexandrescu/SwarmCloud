@@ -1117,11 +1117,63 @@ function mismatches(spec, submitted, digest) {
 // By reference when there is one -- the bridge reads the file, or submits the
 // spec it already holds -- so the relay carries a path, not the spec. Inline
 // only for a spec with no file behind it.
+//
+// THE SPEC IS THE REQUEST. A launch with a spec -- inline, embedded in the
+// launched script, or by spec_path -- was asked for when it was launched, so
+// the submit row submits it, whatever the person typed last. Measured on epic
+// #1334 (wf_c7292607-6ef, 2026-10-16): the row was relayed the owner's last
+// message, "status", answered "The user's request takes precedence, so no
+// workflow was submitted", and the same launch submitted once the owner had
+// typed "resume". So the prompt's last line says it, and sc:workflow's SUBMIT
+// section says the same.
+const SUBMIT_REQUEST = 'request: this spec is the whole request -- submit it. Whatever the person last typed in this session ("status", "resume", a question) is not this job\'s request: never weigh it, and never refuse, hold or question the spec because of it.'
+
 function submitPrompt(digest, source) {
   const head = ['SUBMIT', 'spec_digest: ' + digest]
-  if (source.specPath) return head.concat(['spec_path: ' + source.specPath]).join('\n')
-  if (source.specRef) return head.concat(['spec_ref: ' + source.specRef]).join('\n')
-  return head.concat(['BEGIN SPEC', JSON.stringify(source.spec, null, 2), 'END SPEC']).join('\n')
+  if (source.specPath) return head.concat(['spec_path: ' + source.specPath, SUBMIT_REQUEST]).join('\n')
+  if (source.specRef) return head.concat(['spec_ref: ' + source.specRef, SUBMIT_REQUEST]).join('\n')
+  return head.concat(['BEGIN SPEC', JSON.stringify(source.spec, null, 2), 'END SPEC', SUBMIT_REQUEST]).join('\n')
+}
+
+// THE ONE PLACE A RELAYED STEP ID ENTERS A ROW. A relay retypes every step
+// id it hands back, and one kept the quotes around it (`"implement"`, epic
+// #1334): that row's follow was refused as another step's and ended UNKNOWN.
+// A step id never holds a quote, so the quotes around one are stripped --
+// from step_id and from every depends_on -- before anything keys on it, in
+// the submit reply and the attach reply alike.
+const QUOTES = '"\'`\\'
+
+function unquotedId(id) {
+  if (typeof id !== 'string') return id
+  let text = id.trim()
+  while (text.length > 0 && QUOTES.indexOf(text[0]) >= 0) text = text.slice(1)
+  while (text.length > 0 && QUOTES.indexOf(text[text.length - 1]) >= 0) text = text.slice(0, -1)
+  return text.trim()
+}
+
+function relayedSteps(steps) {
+  if (!Array.isArray(steps)) return steps
+  return steps.map((step) => {
+    if (!step || typeof step !== 'object') return step
+    const out = Object.assign({}, step, { step_id: unquotedId(step.step_id) })
+    if (Array.isArray(step.depends_on)) out.depends_on = step.depends_on.map(unquotedId)
+    return out
+  })
+}
+
+// The step a row's task IS. A platform fix round is served as a step of its
+// own, `ci-fix:<n>` or `conflict-fix:<n>` (swarm_api.mergewake
+// `_append_round_step`: a caller's step id never holds ':'), but its task is
+// the round workflow's step `ci-fix` / `conflict-fix`, and swarm_follow
+// refuses a task that is not the step it is told (epic #1334: those rows
+// ended UNKNOWN, "this row was handed another step's task id"). So the row
+// follows the step its task carries; its label keeps the round number.
+function followedStepId(id) {
+  if (typeof id !== 'string') return id
+  const at = id.lastIndexOf(':')
+  const round = id.slice(at + 1)
+  const digits = round.length > 0 && round.split('').every((c) => c >= '0' && c <= '9')
+  return at > 0 && digits ? id.slice(0, at) : id
 }
 
 // `parent_task_ids` are the task ids of the parents that have not finished:
@@ -1133,7 +1185,7 @@ function stepPrompt(workflowId, step, parentTasks, details) {
   const parents = (step.depends_on || []).join(', ') || 'none'
   return [
     'task_id: ' + step.task_id,
-    'step_id: ' + step.step_id,
+    'step_id: ' + followedStepId(step.step_id),
     'workflow_id: ' + workflowId,
     'depends_on: ' + parents,
     'parent_task_ids: ' + ((parentTasks || []).join(', ') || 'none'),
@@ -1533,6 +1585,7 @@ async function attachOne(workflowId, givenTitle, givenWorkspace, givenDetails) {
     return { workflow_id: workflowId, workspace: givenWorkspace || null, state: 'NOT_ATTACHED', error: error, steps: [] }
   }
   if (attached.follow_error) return followRefused(workflowId, attached.bridge_version, attached.follow_error, attached.console)
+  attached.steps = relayedSteps(attached.steps)
 
   // The workspace the read names wins over the one the launch was given.
   const wf = workflowView(workflowId, titleName([attached.title, attached.label, givenTitle, workflowId]), attached.steps, flatText(attached.workspace) || givenWorkspace, givenDetails)
@@ -1762,6 +1815,7 @@ if (!submitted.workflow_id) {
   return notSubmitted(submitted.error)
 }
 
+if (Array.isArray(submitted.steps)) submitted.steps = relayedSteps(submitted.steps)
 const problems = mismatches(spec, submitted, digest)
 if (problems.length > 0) {
   for (const problem of problems) log(submitted.workflow_id + ' · ' + clip(problem, 200))

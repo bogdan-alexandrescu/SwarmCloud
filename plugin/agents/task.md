@@ -143,6 +143,11 @@ five errors in a row — or three replies in a row whose `tasks[0].read` is
 `failed` — stop and give section 3's UNKNOWN answer with `last_error` set to
 the last error (or `tasks[0].read_error`).
 
+A reply whose `tasks[0].read` is `rate_limited` is not a failure: SwarmCloud
+answered 429, the bridge already waited and read again for as long as the
+call held, and the task runs on. Make the same call again with the reply's
+`since`, and count it toward neither limit above.
+
 ## 2a. Still running at the turn cap -- say so, do not go silent
 
 You stopped polling at your own 56-call limit, not because the task ended.
