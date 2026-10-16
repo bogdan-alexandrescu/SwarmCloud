@@ -2,7 +2,7 @@
 # changed-guards: run the repo-wide guard tests, and every unit test file that
 # reads a path this checkout changes, in one quiet pass.
 #
-#   scripts/changed-guards.sh [--base <rev>] [--files <file>|-] [--list]
+#   scripts/changed-guards.sh [--base <rev>] [--files <file>|-] [--list] [--shard <k>/<n>]
 #
 # WHY (#642). 25% of lane PRs (33 of 131, measured 2026-10-05) were red on
 # their first CI run, and the reds were mostly repo-wide guard tests that a
@@ -24,6 +24,14 @@
 #     alone it would select half the suite;
 # then runs them in ONE `pytest -q -n auto -p no:warnings` call, followed by
 # scripts/lib/check-contract-parity.sh. An empty diff runs nothing.
+#
+# `--shard k/n` runs the k-th of n parts of that selection, so a selection too
+# heavy for one command's limit runs as n commands, each under it (#1334). The
+# parts are cut the way CI cuts its unit shards (docs/ci.md): longest file
+# first onto the lightest part, weighted by tests/unit/scripts/
+# unit_test_durations.json, a file with no weight at the median. The cut is
+# deterministic, so the n commands together run every selected file once; the
+# contract-parity check runs in part 1 only.
 #
 # The diff is `git diff --name-only <base>...HEAD` plus uncommitted and
 # untracked files, since the worker commits those too. <base> is --base, else
@@ -63,9 +71,22 @@ PARITY_CHECK="scripts/lib/check-contract-parity.sh"
 GENERIC_BASENAMES=" __init__.py conftest.py README.md main.py app.py config.py models.py utils.py index.ts index.tsx types.ts package.json pyproject.toml Makefile Dockerfile "
 
 # The whole run stays under the 10 minutes a lane allows a command: the pytest
-# pass gets 540 s and the parity check 60 s.
+# pass gets 540 s and the parity check 60 s. NOT RAISED for a selection that
+# needs longer (#1334: GS-HOOKS, 79 files, 2,603 tests, all passing in 595 s on
+# 6 cores): past 600 s the agent's own command limit kills the run, with no
+# `ran past` line and no faulthandler frames to name what held it. A heavier
+# selection is split instead (`--shard`, SHARD_HINT_WEIGHT), and every part
+# keeps this limit, so a hang still ends at 540 s.
 PYTEST_SECONDS=540
 PARITY_SECONDS=60
+DURATIONS="tests/unit/scripts/unit_test_durations.json"
+# The CI-seconds of selected files past which a run is told to split, and the
+# weight of each part it is told to split into. CI's weights are a file's
+# summed test seconds on a CI runner; a SwarmCloud container on 6 cores ran
+# test_register_tenant_workspace.py (583 CI-seconds) in 428 s of wall clock
+# (2026-10-16), about 0.73 s a CI-second. At that rate 540 CI-seconds is ~400 s
+# here, the 540 s limit less a quarter for a busier container.
+SHARD_HINT_WEIGHT=540
 
 # NAMING THE SLOW TEST (box 102, #888). Lanes hit the 540 s cap with nothing
 # saying which test held it. `--durations=10` lists the ten slowest on any run
@@ -84,6 +105,7 @@ usage() {
 base="${SWARM_CLONE_BASE:-origin/main}"
 files_from=""
 list_only=0
+shard=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --base)
@@ -93,10 +115,25 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || { usage; exit 2; }
       files_from="$2"; shift 2 ;;
     --list) list_only=1; shift ;;
+    --shard)
+      [[ $# -ge 2 ]] || { usage; exit 2; }
+      shard="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) err "unknown option: $1"; usage; exit 2 ;;
   esac
 done
+
+shard_k=0
+shard_n=0
+if [[ -n "${shard}" ]]; then
+  if [[ ! "${shard}" =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] \
+      || [[ "${BASH_REMATCH[1]}" -gt "${BASH_REMATCH[2]}" ]]; then
+    err "--shard takes k/n with 1 <= k <= n, not ${shard}"
+    exit 2
+  fi
+  shard_k="${BASH_REMATCH[1]}"
+  shard_n="${BASH_REMATCH[2]}"
+fi
 
 work="$(mktemp -d)"
 trap 'rm -rf "${work}"' EXIT
@@ -169,14 +206,46 @@ sort -u "${work}/own-tests" "${work}/readers" | while IFS= read -r test_file; do
   grep -qxF -- "${test_file}" "${work}/selected" || printf '%s\n' "${test_file}" >>"${work}/selected"
 done
 
+# The selection's weight in CI-seconds, and with --shard the part to run.
+weights="${REPO_ROOT}/${DURATIONS}"
+[[ -r "${weights}" ]] || weights=/dev/null
+require_cmd jq
+weight="$(jq -R . "${work}/selected" | jq -rs --slurpfile d "${weights}" '
+  ($d[0] // {}) as $w | ([$w[]] | sort) as $all
+  | (if ($all | length) > 0 then $all[($all | length) / 2 | floor] else 1 end) as $median
+  | map($w[.] // $median) | add // 0 | ceil')"
+total_count="$(wc -l <"${work}/selected" | tr -d ' ')"
+if [[ "${shard_n}" -gt 0 ]]; then
+  jq -R . "${work}/selected" | jq -rs --slurpfile d "${weights}" --argjson k "${shard_k}" --argjson n "${shard_n}" '
+    ($d[0] // {}) as $w | ([$w[]] | sort) as $all
+    | (if ($all | length) > 0 then $all[($all | length) / 2 | floor] else 1 end) as $median
+    | map({f: ., w: ($w[.] // $median)}) | sort_by(-.w, .f)
+    | reduce .[] as $x ([range($n) | {t: 0, f: []}];
+        (to_entries | min_by(.value.t) | .key) as $i | .[$i].t += $x.w | .[$i].f += [$x.f])
+    | .[$k - 1].f | sort[]' >"${work}/part"
+  mv "${work}/part" "${work}/selected"
+fi
+
 selected=()
 while IFS= read -r test_file; do
   selected+=("${test_file}")
 done <"${work}/selected"
 
-info "${changed_count} changed path(s) in ${source_name}; ${#selected[@]} test file(s) read them or guard the repository:"
+# The parts a selection this heavy should run as (SHARD_HINT_WEIGHT).
+parts=$(( (weight + SHARD_HINT_WEIGHT - 1) / SHARD_HINT_WEIGHT ))
+[[ "${parts}" -ge 2 ]] || parts=2
+split_hint="run it as ${parts} commands: scripts/changed-guards.sh --shard 1/${parts} ... --shard ${parts}/${parts}"
+
+info "${changed_count} changed path(s) in ${source_name}; ${total_count} test file(s) read them or guard the repository:"
+if [[ "${shard_n}" -gt 0 ]]; then
+  info "part ${shard_k} of ${shard_n}: ${#selected[@]} of the ${total_count} file(s)"
+elif [[ "${weight}" -gt "${SHARD_HINT_WEIGHT}" ]]; then
+  warn "the selection weighs ${weight} CI-seconds (${DURATIONS}), more than one ${PYTEST_SECONDS} s run may hold; ${split_hint}"
+fi
 printf '%s\n' ${selected[@]+"${selected[@]}"}
-printf 'bash %s\n' "${PARITY_CHECK}"
+if [[ "${shard_k}" -le 1 ]]; then
+  printf 'bash %s\n' "${PARITY_CHECK}"
+fi
 
 if [[ "${list_only}" -eq 1 ]]; then
   exit 0
@@ -207,34 +276,44 @@ fi
 log="$(mktemp "${TMPDIR:-/tmp}/changed-guards.XXXXXX")"
 failed=0
 
-step "pytest: ${#selected[@]} file(s), -n auto"
 pytest_status=0
-(cd "${REPO_ROOT}" && "${caller_only[@]}" ${deadline[@]+"${deadline[@]}"} "${py[@]}" -m pytest -q -n auto -p no:warnings \
-  --durations=10 -o "faulthandler_timeout=${FAULTHANDLER_SECONDS}" \
-  ${selected[@]+"${selected[@]}"}) >"${log}" 2>&1 || pytest_status=$?
-tail -n 25 "${log}" | redact
-if [[ "${pytest_status}" -eq 124 ]]; then
-  err "pytest ran past ${PYTEST_SECONDS} s"
-  # The dumps sit far above the tail; print only their frames in a test file.
-  if grep -E '^ *File ".*/test_[^/"]*\.py", line [0-9]+ in ' "${log}" | sort -u >"${work}/stuck" \
-      && [[ -s "${work}/stuck" ]]; then
-    err "still running after ${FAULTHANDLER_SECONDS} s (faulthandler):"
-    redact <"${work}/stuck" >&2
-  else
-    err "no test ran past ${FAULTHANDLER_SECONDS} s: many moderate tests filled the cap; read the log's durations"
+if [[ ${#selected[@]} -eq 0 ]]; then
+  # More parts than files: pytest given no file would run all of tests/unit.
+  info "part ${shard_k} of ${shard_n} holds no test file; pytest has nothing to run"
+else
+  step "pytest: ${#selected[@]} file(s), -n auto"
+  (cd "${REPO_ROOT}" && "${caller_only[@]}" ${deadline[@]+"${deadline[@]}"} "${py[@]}" -m pytest -q -n auto -p no:warnings \
+    --durations=10 -o "faulthandler_timeout=${FAULTHANDLER_SECONDS}" \
+    ${selected[@]+"${selected[@]}"}) >"${log}" 2>&1 || pytest_status=$?
+  tail -n 25 "${log}" | redact
+  if [[ "${pytest_status}" -eq 124 ]]; then
+    err "pytest ran past ${PYTEST_SECONDS} s"
+    # The dumps sit far above the tail; print only their frames in a test file.
+    if grep -E '^ *File ".*/test_[^/"]*\.py", line [0-9]+ in ' "${log}" | sort -u >"${work}/stuck" \
+        && [[ -s "${work}/stuck" ]]; then
+      err "still running after ${FAULTHANDLER_SECONDS} s (faulthandler):"
+      redact <"${work}/stuck" >&2
+    else
+      err "no test ran past ${FAULTHANDLER_SECONDS} s: many moderate tests filled the cap; read the log's durations"
+    fi
+    if [[ "${shard_n}" -eq 0 ]]; then
+      err "the selection weighs ${weight} CI-seconds; ${split_hint}"
+    fi
   fi
-fi
-if [[ "${pytest_status}" -ne 0 ]]; then
-  err "pytest failed (exit ${pytest_status}); full output: ${log}"
-  failed=1
+  if [[ "${pytest_status}" -ne 0 ]]; then
+    err "pytest failed (exit ${pytest_status}); full output: ${log}"
+    failed=1
+  fi
 fi
 
 if [[ ${#deadline[@]} -gt 0 ]]; then
   deadline=(timeout "${PARITY_SECONDS}")
 fi
 parity_status=0
-(cd "${REPO_ROOT}" && "${caller_only[@]}" ${deadline[@]+"${deadline[@]}"} bash "${PARITY_CHECK}") >"${log}.parity" 2>&1 \
-  || parity_status=$?
+if [[ "${shard_k}" -le 1 ]]; then
+  (cd "${REPO_ROOT}" && "${caller_only[@]}" ${deadline[@]+"${deadline[@]}"} bash "${PARITY_CHECK}") >"${log}.parity" 2>&1 \
+    || parity_status=$?
+fi
 if [[ "${parity_status}" -ne 0 ]]; then
   tail -n 25 "${log}.parity" | redact
   err "contract parity failed (exit ${parity_status}); full output: ${log}.parity"
@@ -245,4 +324,10 @@ if [[ "${failed}" -ne 0 ]]; then
   exit 1
 fi
 rm -f "${log}" "${log}.parity"
-ok "${#selected[@]} guard and source-reading test file(s) and contract parity pass"
+if [[ "${shard_n}" -eq 0 ]]; then
+  ok "${#selected[@]} guard and source-reading test file(s) and contract parity pass"
+elif [[ "${shard_k}" -eq 1 ]]; then
+  ok "part 1 of ${shard_n}: ${#selected[@]} of ${total_count} test file(s) and contract parity pass"
+else
+  ok "part ${shard_k} of ${shard_n}: ${#selected[@]} of ${total_count} test file(s) pass"
+fi

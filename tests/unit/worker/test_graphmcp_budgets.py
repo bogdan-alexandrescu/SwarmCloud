@@ -3,7 +3,8 @@
   * schema <= 2k tokens: every tool schema plus the server's instructions,
     which the agent pays for on every turn (GitNexus's is about 17.9k);
   * answer p95 < 300 ms on THIS repository's snapshot -- the design's target.
-    CI holds it to P95_BUDGET_MS (450 ms), see there.
+    CI holds it to P95_BUDGET_RATIO times a reference workload timed in the
+    same loop, see there: a wall-clock limit measured the runner.
 
 The snapshot is built here, from the checkout under test, with KG2's own
 extractor and shard writer (`graphmcp_fixtures`), and the server is run as the
@@ -22,6 +23,7 @@ from __future__ import annotations
 
 import json
 import math
+import statistics
 import time
 from collections import Counter
 from pathlib import Path
@@ -32,14 +34,19 @@ from agent_worker.graphmcp import server, tools
 
 SCHEMA_TOKEN_BUDGET = 2000
 BYTES_PER_TOKEN = 3
-#: The CI gate, NOT the design's 300 ms target (knowledge-graph.md §6, KG4).
-#: Owner decision 2026-10-15: raised from 300 after the test failed 3 of 4
-#: runs on loaded shared runners (304-411 ms, best of three batteries), on
-#: PRs and on main, where a red unit shard skips `build images` and the
-#: release ships nothing. The same tree alone measured 158 ms, so 450 still
-#: catches a server that regressed by ~3x. Bringing the real p95 back under
-#: 300 on a busy runner is the caching follow-up, not this number.
-P95_BUDGET_MS = 450.0
+#: The design's target (knowledge-graph.md §6, KG4), printed, NOT asserted.
+P95_TARGET_MS = 300.0
+#: The CI gate: answer p95 over the median of `_reference_ms()`, the two timed
+#: alternately in one loop, so a loaded runner slows both and the ratio holds.
+#: Measured 2026-10-16 in a 6-core SwarmCloud container: 3.0-3.5 alone (p95
+#: 78-85 ms), 2.95-3.65 beside 12 busy loops, where the absolute p95 was
+#: 435-567 ms and the 450 ms limit this replaces failed two runs of three.
+#: That limit (owner decision 2026-10-15, up from 300 after 304-411 ms on
+#: loaded shared runners, #1334) measured the runner, not the server. 10 is
+#: about 3x the measured ratio -- the headroom 450 ms gave over CI's 158 ms
+#: unloaded -- so a server ~3x slower is red, and the test asserts below that
+#: a 10x slower one is.
+P95_BUDGET_RATIO = 10.0
 #: Timed runs of the battery the p95 test allows; it passes on the best (see there).
 BATTERIES = 3
 #: §7.7's cap, written here as the number, so a larger `ANSWER_CAP` is a red test.
@@ -115,39 +122,60 @@ def test_answers_on_this_repositorys_snapshot_are_under_the_p95_budget(tmp_path:
 
     # THE BEST OF UP TO `BATTERIES` RUNS, each the whole battery on a fresh
     # server, so every run starts from cold shard caches exactly as one run
-    # did. The unit shard runs this beside its `-n auto` workers, and one
-    # wall-clock run measures the runner's contention as much as the server:
-    # on 2026-10-15 a loaded shard put p95 at 327-351 ms where the same tree,
-    # alone, measured 158 ms. A server over budget is over it in every run, so
-    # it is still a red test. The budget moved once, to 450 ms (see
-    # P95_BUDGET_MS), by owner decision; do not move it again to fix a flake.
+    # did. Each run's p95 is read against a reference timed in the same loop
+    # (see P95_BUDGET_RATIO): the unit shard runs this beside its `-n auto`
+    # workers, and on 2026-10-15 a loaded shard put p95 at 327-351 ms where
+    # the same tree, alone, measured 158 ms. A server over budget is over it
+    # in every run, so it is still a red test.
     runs: list[float] = []
     for _ in range(BATTERIES):
-        samples = _battery(snapshot, questions, document["commit_sha"])
+        samples, reference = _battery(snapshot, questions, document["commit_sha"])
         p95 = _p95(samples)
-        runs.append(p95)
+        ratio = p95 / reference
+        runs.append(ratio)
         print(f"swarm-graph: {len(samples)} answers, p50 {sorted(samples)[len(samples) // 2]:.1f} "
-              f"ms, p95 {p95:.1f} ms, max {max(samples):.1f} ms")
-        if p95 < P95_BUDGET_MS:
+              f"ms, p95 {p95:.1f} ms (target {P95_TARGET_MS:.0f}), max {max(samples):.1f} ms; "
+              f"reference {reference:.1f} ms, ratio {ratio:.2f}")
+        # The budget must still tell: the same answers, ten times slower, fail it.
+        assert _p95([s * 10 for s in samples]) / reference >= P95_BUDGET_RATIO, (
+            f"a server 10x slower than this one ({10 * p95:.1f} ms) would pass")
+        if ratio < P95_BUDGET_RATIO:
             break
-    assert min(runs) < P95_BUDGET_MS, (
-        f"answer p95 over {P95_BUDGET_MS} ms in all {len(runs)} runs: "
-        f"{', '.join(f'{r:.1f}' for r in runs)} ms")
+    assert min(runs) < P95_BUDGET_RATIO, (
+        f"answer p95 over {P95_BUDGET_RATIO}x the reference in all {len(runs)} runs: "
+        f"{', '.join(f'{r:.2f}' for r in runs)}")
 
 
-def _battery(snapshot: Path, questions: list[tuple[str, dict]], commit_sha: str) -> list[float]:
-    """One timed run of `questions` on a fresh stdio server: a latency in ms each."""
+def _reference_ms() -> float:
+    """A fixed interpreter-bound workload, of the kind an answer is (build,
+    serialise, parse and sort Python objects): what the runner's load does to
+    it, it does to the server's answers. Not the server's code, so a
+    regression there cannot slow it too and cancel out."""
+    started = time.perf_counter()
+    table = {str(i): [i, str(i) * 3, {"k": i}] for i in range(3000)}
+    for _ in range(3):
+        json.loads(json.dumps(table))
+        sorted(table.items(), key=lambda p: p[1][1])
+    return (time.perf_counter() - started) * 1000.0
+
+
+def _battery(snapshot: Path, questions: list[tuple[str, dict]],
+             commit_sha: str) -> tuple[list[float], float]:
+    """One timed run of `questions` on a fresh stdio server: a latency in ms
+    each, and the median of `_reference_ms()` timed after each answer."""
     graph = gf.StdioServer(snapshot, workdir=gf.REPO_ROOT)
     try:
         graph.request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
                                      "clientInfo": {"name": "test", "version": "0"}})
         graph.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
         samples: list[float] = []
+        references: list[float] = []
         answered = 0
         for tool, arguments in questions:
             started = time.perf_counter()
             text, failed = graph.call(tool, arguments)
             samples.append((time.perf_counter() - started) * 1000.0)
+            references.append(_reference_ms())
             assert len(text.encode()) <= ANSWER_CAP_BYTES, (tool, arguments, len(text))
             answer = json.loads(text)
             assert next(iter(answer)) == "freshness", (tool, answer)
@@ -158,4 +186,4 @@ def _battery(snapshot: Path, questions: list[tuple[str, dict]], commit_sha: str)
         assert answered >= 0.9 * len(questions), answered
     finally:
         graph.close()
-    return samples
+    return samples, statistics.median(references)
