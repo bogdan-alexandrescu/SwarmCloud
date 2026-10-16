@@ -208,11 +208,15 @@ export function EdgeGroups({ r, doc, filter, go }: { r: RepoRecord; doc: IndexDo
               {t.tests.length === 0 ? (
                 <Dash why="No tests listed for this path" />
               ) : (
+                // THREE FIXED SLOTS, EVERY ROW (V217): the test, its evidence, its Copy. Drawn as a
+                // space-between run, a chip sat wherever its row's own widths left it ("import" at 1180
+                // in one row and 1172 in the next), and a row with no command slid "co-change" into the
+                // Copy column. The Copy slot is drawn empty when there is no command to copy.
                 t.tests.map((x) => (
                   <span className="ur-test" key={`${t.source}\u0000${x.test}`} title={x.command === null ? 'No command recorded for this test' : `Run: ${x.command}`}>
                     <code>{x.test}</code>
-                    {x.evidence === null ? <Dash why="No evidence recorded" /> : <Chip>{x.evidence}</Chip>}
-                    {x.command !== null && <UrCopy text={x.command} label={`Copy the command for ${x.test}`} />}
+                    <span className="ur-test-ev">{x.evidence === null ? <Dash why="No evidence recorded" /> : <Chip>{x.evidence}</Chip>}</span>
+                    <span className="ur-test-copy">{x.command !== null && <UrCopy text={x.command} label={`Copy the command for ${x.test}`} />}</span>
                   </span>
                 ))
               )}

@@ -5,7 +5,7 @@
  * canonical set that is on main (components.html A); lane U0's set is landing
  * in parallel, and a later pass can swap each of these for its own by name.
  */
-import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
 import { Banner, Button, ButtonLink, Dash, EmptyState, LoadingState, routedClick, type ButtonKind, type ButtonSize } from './components'
 import { MarkGlyph } from './marks'
 import { AGED_AFTER_MS, FailedPanel, RefreshControl, useClaimPageAge } from './Shell'
@@ -65,16 +65,19 @@ export type UrRead<T> = { state: Result<T>; reload: () => void }
  * page age, so the frame prints none beside it: one age per screen. These
  * pages are read once per visit, so it carries no cadence (#117 names none).
  */
-export function UrRefresh({ reads }: { reads: readonly UrRead<unknown>[] }) {
+export function UrRefresh({ reads, ageOf = reads }: { reads: readonly UrRead<unknown>[]; ageOf?: readonly UrRead<unknown>[] }) {
   useClaimPageAge(true)
   const now = useNow(AGE_TICK_MS)
-  const ats = reads.flatMap((r) => (r.state.status === 'loading' || r.state.status === 'error' ? [] : [r.state.fetchedAt]))
+  // THE AGE IS THE PAGE'S OWN READ'S (V223). `ageOf` names the reads the
+  // page stands on: a repository whose registration is still pending, or
+  // failed, said "read 0 s ago" from the index read beside it on this control.
+  const ats = ageOf.flatMap((r) => (r.state.status === 'loading' || r.state.status === 'error' ? [] : [r.state.fetchedAt]))
   const readAt = ats.length === 0 ? null : Math.max(...ats)
   return (
     <RefreshControl
       readAt={readAt}
       now={now}
-      stale={reads.some((r) => r.state.status === 'stale') || (readAt !== null && now - readAt > AGED_AFTER_MS)}
+      stale={ageOf.some((r) => r.state.status === 'stale') || (readAt !== null && now - readAt > AGED_AFTER_MS)}
       reading={reads.some((r) => r.state.status === 'loading')}
       onRefresh={() => {
         for (const r of reads) r.reload()
@@ -306,10 +309,24 @@ export function UrNavButton({
   )
 }
 
+/** The longest label a segment of a row of three or more holds before the row is drawn as a stack (V220). */
+export const SEGMENT_WORDS = 32
+
+/**
+ * Whether a group's options are sentences rather than segment words (V220):
+ * three or more options, one longer than `SEGMENT_WORDS`. The change trigger's
+ * "Webhook · on push to the default branch" wrapped its row in a half-width
+ * card at 1440, leaving "Off" alone on a second row under a divider.
+ */
+export function stacksOf(options: readonly { label: ReactNode }[]): boolean {
+  return options.length > 2 && options.some((o) => typeof o.label === 'string' && o.label.length > SEGMENT_WORDS)
+}
+
 /**
  * A single choice drawn as the canonical segmented control (`c-seg`, whose
  * `aria-checked` state it already styles), with radio semantics: the frames'
  * `.radio` rows (schedule, scope, policy) are one-of-N choices, not toggles.
+ * Options that are sentences are one segment per line (`is-stack`, V220).
  */
 export function UrRadio<K extends string>({
   label,
@@ -317,16 +334,20 @@ export function UrRadio<K extends string>({
   value,
   onChange,
   disabled = false,
+  stack = stacksOf(options),
 }: {
   label: string
   options: readonly { key: K; label: ReactNode; title?: string; disabled?: boolean }[]
   value: K | null
   onChange?: (k: K) => void
   disabled?: boolean
+  /** One segment per line; by default when the options are sentences (`stacksOf`). */
+  stack?: boolean
 }) {
+  const cls = ['c-seg', 'ur-radio', stack ? 'is-stack' : null, disabled ? 'is-readonly' : null].filter(Boolean).join(' ')
   return (
     // A whole group disabled is a value shown, not a choice refused: drawn read-only, at full contrast (V046).
-    <div className={disabled ? 'c-seg ur-radio is-readonly' : 'c-seg ur-radio'} role="radiogroup" aria-label={label} aria-readonly={disabled || undefined}>
+    <div className={cls} role="radiogroup" aria-label={label} aria-readonly={disabled || undefined}>
       {options.map((o) => (
         <button
           key={o.key}
@@ -350,6 +371,30 @@ export function UrRadio<K extends string>({
  */
 export function writeFailure(e: ApiError): string {
   return notServed(e) ? 'Not served yet: this API does not take this request yet.' : e.message
+}
+
+/**
+ * A repository path that breaks only after a `/` (V216): with
+ * `overflow-wrap: anywhere` the Modules column cut "swarm_common" into
+ * "swarm_comm / on". The text is unchanged; each `/` is followed by a break
+ * opportunity, so a narrow column wraps at a directory, never inside a name.
+ */
+export function SlashBreaks({ path }: { path: string }) {
+  const parts = path.split('/')
+  return (
+    <>
+      {parts.map((p, i) => (
+        <Fragment key={i}>
+          {p}
+          {i < parts.length - 1 && (
+            <>
+              /<wbr />
+            </>
+          )}
+        </Fragment>
+      ))}
+    </>
+  )
 }
 
 /** The test-map bar: filled to the ratio, or hatched when there is nothing measured. */
