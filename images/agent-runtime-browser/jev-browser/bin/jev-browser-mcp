@@ -85,7 +85,16 @@ case "${backend}" in
     export JEV_API_COMPAT=internal
     ;;
   "" | typesafe)
-    unset JEV_API_URL
+    # swarm-typesafe-shim-passthrough/v1 (SEC-MIGRATE-TYPESAFE, part of #1347):
+    # with the worker's TypeSafe forwarder switched on, jev_launch.py sets
+    # JEV_API_URL to the worker's loopback shim, which forwards to the
+    # in-cluster forwarder with the attempt's ticket. That one shape is
+    # passed through; anything else is dropped as before, so judgments go
+    # only to TypeSafe's own API. jev_launch.py refuses to start a wrapper
+    # without the marker above, rather than let jev call TypeSafe keyless.
+    if [[ ! "${JEV_API_URL:-}" =~ ^http://127\.0\.0\.1:[0-9]{1,5}/v1/systemone$ ]]; then
+      unset JEV_API_URL
+    fi
     ;;
   *)
     refuse_backend "unknown judgment backend in SWARM_JEV_BACKEND; expected internal-jev, internal-laya or typesafe."
