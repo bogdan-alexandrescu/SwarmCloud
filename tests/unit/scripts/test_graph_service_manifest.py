@@ -283,7 +283,9 @@ def test_the_two_sides_name_the_same_pods_and_port():
 
 def test_render_puts_the_tenant_side_in_every_tenant_namespace_last():
     files = _render_module().TENANT_FILES
-    assert files[-1] == TENANT_POLICY_FILE
+    # Only the TypeSafe forwarder's tenant policy (lane TS-MIGRATE-POD)
+    # follows it, appended the same way.
+    assert files[-2:] == (TENANT_POLICY_FILE, "network-policies/allow-typesafe-fwd.yaml")
     assert files.count(TENANT_POLICY_FILE) == 1
 
 

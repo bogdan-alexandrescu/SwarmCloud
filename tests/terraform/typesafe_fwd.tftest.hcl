@@ -15,7 +15,11 @@
 #     project and the setting, whose kill switch ships OFF;
 #   * served without a digest renders nothing and fails its check; served or
 #     switched on without the layer below it is refused by its check;
-#   * every labelable resource carries managed-by=swarm-terraform.
+#   * every labelable resource carries managed-by=swarm-terraform;
+#   * the scheduler's switch (TYPESAFE_FORWARDER_ENABLED/_TENANTS, lane
+#     TS-MIGRATE-POD) is the forwarder's own kill switch and tenants, and is
+#     "false" whenever the forwarder is not served, so the dispatcher never
+#     labels a pod `swarm-typesafe: inject` for a forwarder that is not there.
 #
 # The infra root's setup is egress.tftest.hcl's, with a swarm-typesafe-fwd
 # digest added to image_refs.
@@ -125,6 +129,14 @@ run "off_by_default_nothing_exists" {
     condition     = local.typesafe_fwd_config.enabled == false && length(local.typesafe_fwd_config.tenants) == 0
     error_message = "the forwarder's kill switch ships OFF with no tenant named"
   }
+
+  assert {
+    condition = (
+      local.service_env["swarm-scheduler"]["TYPESAFE_FORWARDER_ENABLED"] == "false"
+      && local.service_env["swarm-scheduler"]["TYPESAFE_FORWARDER_TENANTS"] == ""
+    )
+    error_message = "the scheduler's switch ships OFF: no pod is labelled swarm-typesafe: inject"
+  }
 }
 
 run "created_the_key_has_two_readers_and_nothing_references_it" {
@@ -230,6 +242,65 @@ run "the_switch_without_the_service_is_refused" {
   }
 
   expect_failures = [check.typesafe_forwarder_switch_needs_the_service]
+
+  assert {
+    condition     = local.service_env["swarm-scheduler"]["TYPESAFE_FORWARDER_ENABLED"] == "false"
+    error_message = "switched on without the service, the scheduler still labels nothing: a labelled pod would dial a forwarder that is not there"
+  }
+}
+
+run "switched_on_the_scheduler_labels_by_the_forwarders_own_setting" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    enable_typesafe_forwarder = true
+    typesafe_forwarder = {
+      serve   = true
+      enabled = true
+      tenants = ["eng", "u-alice"]
+    }
+  }
+
+  assert {
+    condition = (
+      local.service_env["swarm-scheduler"]["TYPESAFE_FORWARDER_ENABLED"] == "true"
+      && local.service_env["swarm-scheduler"]["TYPESAFE_FORWARDER_TENANTS"] == "eng,u-alice"
+    )
+    error_message = "served and enabled, the scheduler labels the listed tenants' TypeSafe-backed pods"
+  }
+
+  assert {
+    condition = (
+      local.typesafe_fwd_config.enabled == true
+      && join(",", local.typesafe_fwd_config.tenants) == local.service_env["swarm-scheduler"]["TYPESAFE_FORWARDER_TENANTS"]
+    )
+    error_message = "the scheduler's tenants are the forwarder's own: a pod labelled for a tenant the forwarder refuses fails every request, and one left unlabelled never reaches it"
+  }
+}
+
+run "served_but_not_enabled_labels_nothing" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    enable_typesafe_forwarder = true
+    typesafe_forwarder = {
+      serve   = true
+      tenants = ["eng"]
+    }
+  }
+
+  assert {
+    condition     = local.service_env["swarm-scheduler"]["TYPESAFE_FORWARDER_ENABLED"] == "false"
+    error_message = "served with the kill switch off, the scheduler labels nothing even for a listed tenant"
+  }
 }
 
 run "serving_without_the_key_container_is_refused" {

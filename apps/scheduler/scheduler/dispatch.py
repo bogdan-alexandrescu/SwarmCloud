@@ -102,7 +102,7 @@ from swarm_common.profiles import (
 )
 
 from .credentials import AccountPool, CredentialSource, credential_for
-from .judgment import DEFAULT_BACKEND, jev_dispatch, read_backend
+from .judgment import DEFAULT_BACKEND, TYPESAFE_BACKEND, jev_dispatch, read_backend
 
 log = logging.getLogger(__name__)
 
@@ -553,6 +553,14 @@ BROWSER_EGRESS_ENV = ("SWARM_BROWSER_EGRESS", "proxy")
 BROWSER_EGRESS_BYPASS_ENV = "SWARM_EGRESS_BYPASS"
 EGRESS_POD_LABEL = ("swarm-egress", "proxy")
 
+#: THE TYPESAFE FORWARDER'S LABEL (docs/design/workspace-secrets.md §3.5,
+#: SEC-MIGRATE-TYPESAFE; lane TS-MIGRATE-POD, part of #1347). What
+#: `swarm-allow-typesafe-fwd` (kubernetes/network-policies/allow-typesafe-fwd.yaml,
+#: the tenant side) and `swarm-typesafe-fwd-ingress` (the forwarder's own
+#: manifest) both select: only a pod carrying it reaches swarm-typesafe-fwd on
+#: TCP 8080. Set by `_with_judgment`, only when `typesafe_forwarder_on`.
+TYPESAFE_POD_LABEL = ("swarm-typesafe", "inject")
+
 #: The three volumes both containers mount, and only these (§3.1). All memory,
 #: so inside the pod's memory limit, and none under WORKSPACE_MOUNT, so none
 #: is checkpointed.
@@ -758,6 +766,30 @@ def browser_egress_on(settings: Any, *, tenant_id: str, profile: Any) -> bool:
         return False
     return str(getattr(profile, "name", "")) in tuple(
         getattr(settings, "browser_egress_profiles", ()))
+
+
+def typesafe_forwarder_on(settings: Any, *, tenant_id: str, profile: Any, backend: str) -> bool:
+    """Whether this attempt's TypeSafe key is delivered by the forwarder, so its
+    pod is labelled `swarm-typesafe: inject` (design §3.5).
+
+    All four, FROM CONFIGURATION ONLY (invariant 10): the forwarder switched on,
+    the tenant listed by exact name, a live-browser pod (the profile and the
+    display rollout switch), and the workspace's stored judgment backend is
+    `typesafe`. A TypeSafe-backed jev or judge is exactly that attempt: the
+    worker resolves a TypeSafe key only for a live-browser attempt on the
+    TypeSafe backend (`jevkey.prepare`), and the judge reads the key jevkey
+    wrote, so neither runs on TypeSafe anywhere else. GKE only, because this is
+    called only from GkeJobDispatcher: a Cloud Run Job cannot reach the
+    forwarder and keeps today's path.
+    """
+    if not getattr(settings, "typesafe_forwarder_enabled", False):
+        return False
+    if tenant_id not in tuple(getattr(settings, "typesafe_forwarder_tenants", ())):
+        return False
+    if not (getattr(profile, "live_browser", False)
+            and getattr(settings, "live_browser_sidecar", False)):
+        return False
+    return backend == TYPESAFE_BACKEND
 
 
 def with_browser_egress(job: dict[str, Any], *, bypass: Any) -> dict[str, Any]:
@@ -2420,7 +2452,7 @@ class GkeJobDispatcher:
         # is on. Every other pod is returned exactly as built above.
         if getattr(profile, "live_browser", False) and getattr(
                 self._settings, "live_browser_sidecar", False):
-            self._with_judgment(job, tenant)
+            self._with_judgment(job, tenant, profile)
             job = with_live_display(job, rc=rc)
             # Residential egress (docs/browser-egress.md §10.3): only on a pod
             # that has the display sidecar, so only a browser that exists is
@@ -2431,17 +2463,22 @@ class GkeJobDispatcher:
                     job, bypass=getattr(self._settings, "browser_egress_bypass", ()))
         return job
 
-    def _with_judgment(self, job: dict[str, Any], tenant: Tenant) -> None:
+    def _with_judgment(self, job: dict[str, Any], tenant: Tenant, profile: Any) -> None:
         """Where this live-browser pod's Jev judgments go (`judgment`,
         JUDGE-SELECT): SWARM_JEV_BACKEND always, and for an internal backend
         with the tailnet egress on, JEV_API_URL, the `swarm-judge: internal`
         pod label JUDGE-NET's NetworkPolicy opens the decision API to, and the
         hostAliases entry that resolves the API's tailnet name to the egress
-        Service. Only with the live browser: jev-browser attaches to nothing
-        else."""
+        Service. For the TypeSafe backend with the forwarder serving the
+        tenant (`typesafe_forwarder_on`), the `swarm-typesafe: inject` label
+        that opens swarm-typesafe-fwd instead. Only with the live browser:
+        jev-browser attaches to nothing else."""
         backend = self._judgment(tenant.tenant_id) if self._judgment else DEFAULT_BACKEND
         env, labels, host_aliases = jev_dispatch(
             backend, str(getattr(self._settings, "internal_decision_api_url", "") or ""))
+        if typesafe_forwarder_on(self._settings, tenant_id=tenant.tenant_id,
+                                 profile=profile, backend=backend):
+            labels[TYPESAFE_POD_LABEL[0]] = TYPESAFE_POD_LABEL[1]
         template = job["spec"]["template"]
         (worker,) = [c for c in template["spec"]["containers"] if c["name"] == "worker"]
         worker["env"].extend({"name": k, "value": v} for k, v in env.items())

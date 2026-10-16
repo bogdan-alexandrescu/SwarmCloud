@@ -345,9 +345,10 @@ def _render() -> Any:
 
 def test_the_tenant_policy_reaches_every_tenant_namespace_last():
     files = _render().TENANT_FILES
-    # Only the graph service's tenant policy (lane GS-INFRA) follows it,
-    # appended the same way.
-    assert files[-2:] == (TENANT_POLICY_FILE, "network-policies/allow-graph-service.yaml")
+    # Only the graph service's tenant policy (lane GS-INFRA) and the TypeSafe
+    # forwarder's (lane TS-MIGRATE-POD) follow it, appended the same way.
+    assert files[-3:] == (TENANT_POLICY_FILE, "network-policies/allow-graph-service.yaml",
+                          "network-policies/allow-typesafe-fwd.yaml")
 
 
 def test_the_workspace_deployer_may_write_the_tenant_policy():
