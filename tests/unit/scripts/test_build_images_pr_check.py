@@ -69,9 +69,11 @@ WORKER = {"agent-runtime-base", "agent-runtime-base-nocodex", "agent-runtime-bro
 # swarm-live (LB-L8e) is the one recipe under apps/ rather than images/
 # (apps/swarm-live/Dockerfile); find_recipe() accepts both. swarm-egress
 # (EGRESS-BUILD) sits beside its app the same way (apps/swarm-egress/Dockerfile),
-# and so does swarm-typesafe-fwd (SEC-INJECT-B, apps/swarm-typesafe-fwd/Dockerfile).
+# and so does swarm-typesafe-fwd (SEC-INJECT-B, apps/swarm-typesafe-fwd/Dockerfile),
+# and swarm-graph (GS-INFRA, apps/swarm-graph/Dockerfile), which also copies
+# the worker package in (docs/design/graph-service.md §2.4).
 ALL = PYTHON_SERVICES | WORKER | {"swarm-ui", "swarm-verify", "swarm-live", "swarm-egress",
-                                  "swarm-typesafe-fwd", "workspace-apply"}
+                                  "swarm-typesafe-fwd", "swarm-graph", "workspace-apply"}
 
 
 def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
@@ -150,7 +152,7 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         # COPY'd files outside images/.
         (["apps/common/swarm_common/models.py"],
          PYTHON_SERVICES | WORKER | {"swarm-live", "swarm-egress", "swarm-typesafe-fwd",
-                                     "workspace-apply"}),
+                                     "swarm-graph", "workspace-apply"}),
         # The live relay: its recipe beside it, and its own lock.
         (["apps/swarm-live/swarm_live/main.py"], {"swarm-live"}),
         (["apps/swarm-live/uv.lock"], {"swarm-live"}),
@@ -165,9 +167,14 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         (["apps/swarm-typesafe-fwd/swarm_typesafe_fwd/forwarder.py"], {"swarm-typesafe-fwd"}),
         (["apps/swarm-typesafe-fwd/uv.lock"], {"swarm-typesafe-fwd"}),
         (["apps/swarm-typesafe-fwd/Dockerfile"], {"swarm-typesafe-fwd"}),
+        # The graph service (GS-INFRA): the same shape again, and it imports
+        # graphmcp from the worker package, so a worker change reaches it too.
+        (["apps/swarm-graph/swarm_graph/server.py"], {"swarm-graph"}),
+        (["apps/swarm-graph/uv.lock"], {"swarm-graph"}),
+        (["apps/swarm-graph/Dockerfile"], {"swarm-graph"}),
         (["apps/redaction/redaction/scan.py"],
-         WORKER | {"swarm-api", "swarm-egress", "swarm-typesafe-fwd"}),
-        (["apps/agent-worker/worker/main.py"], WORKER),
+         WORKER | {"swarm-api", "swarm-egress", "swarm-typesafe-fwd", "swarm-graph"}),
+        (["apps/agent-worker/worker/main.py"], WORKER | {"swarm-graph"}),
         (["apps/quota-broker/quota_broker/app.py"], {"swarm-quota-broker", "swarm-scheduler", "workspace-apply"}),
         (["apps/swarm-ui/src/App.tsx"], {"swarm-ui"}),
         # `COPY apps/swarm-ui/package-lock.json*`: a glob source.

@@ -76,6 +76,7 @@ IMAGES = [
     "swarm-live",
     "swarm-egress",
     "swarm-typesafe-fwd",
+    "swarm-graph",
     "workspace-apply",
 ]
 
