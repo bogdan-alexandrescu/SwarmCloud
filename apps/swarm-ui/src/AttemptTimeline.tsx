@@ -385,6 +385,11 @@ function AttemptCard({
           // FIVE `<dt>/<dd>` PAIRS BECAME ONE STRIP, and every absence keeps
           // its key and its slot. A row that disappears when its value is null
           // is indistinguishable from a row that was never going to be there.
+          // ONE ABSENCE, ONE GLYPH (V261, VQA2-R13). `exec — none`, `ran —
+          // none` and `peak rss — not measured` drew the em dash AND the mark
+          // for one missing value; the mark is the fact (its words and its
+          // sentence), so it stands alone. `exit` has no mark, so its em dash
+          // stays.
           <ul className="ctl-facts">
             <li className="ctl-fact">
               <b>att</b>
@@ -400,13 +405,10 @@ function AttemptCard({
             <li className={`ctl-fact${a.execution_name === null ? ' is-absent' : ''}`}>
               <b>exec</b>
               {a.execution_name === null ? (
-                <>
-                  <Em />{' '}
-                  <Mark
-                    kind="zero"
-                    say="This attempt was never dispatched, so no execution was ever named. That is a fact about the attempt, not a missing record."
-                  />
-                </>
+                <Mark
+                  kind="zero"
+                  say="This attempt was never dispatched, so no execution was ever named. That is a fact about the attempt, not a missing record."
+                />
               ) : (
                 <span className="mono">{a.execution_name}</span>
               )}
@@ -414,17 +416,14 @@ function AttemptCard({
             <li className={`ctl-fact${ranText === null ? ' is-absent' : ''}`}>
               <b>ran</b>
               {ranText ?? (
-                <>
-                  <Em />{' '}
-                  <Mark
-                    kind={a.started_at === null ? 'zero' : 'absent'}
-                    say={
-                      a.started_at === null
-                        ? 'This attempt was created and nothing ever ran, so there is no duration to measure. That is a fact about the attempt rather than a missing record.'
-                        : 'This attempt has a start time and no readable finish time, so how long it ran cannot be computed from what was recorded.'
-                    }
-                  />
-                </>
+                <Mark
+                  kind={a.started_at === null ? 'zero' : 'absent'}
+                  say={
+                    a.started_at === null
+                      ? 'This attempt was created and nothing ever ran, so there is no duration to measure. That is a fact about the attempt rather than a missing record.'
+                      : 'This attempt has a start time and no readable finish time, so how long it ran cannot be computed from what was recorded.'
+                  }
+                />
               )}
             </li>
             {/* A null exit code means still running or never finished. It is
@@ -439,13 +438,10 @@ function AttemptCard({
             <li className={`ctl-fact${a.peak_rss_bytes === null ? ' is-absent' : ''}`}>
               <b>peak rss</b>
               {a.peak_rss_bytes === null ? (
-                <>
-                  <Em />{' '}
-                  <Mark
-                    kind="absent"
-                    say="Peak RSS is written at the end of an attempt. This attempt has none recorded, so what it used is unknown — it is a missing record, never a zero."
-                  />
-                </>
+                <Mark
+                  kind="absent"
+                  say="Peak RSS is written at the end of an attempt. This attempt has none recorded, so what it used is unknown — it is a missing record, never a zero."
+                />
               ) : (
                 // `bytesLabel`, AS THE DETAIL PANE PRINTS IT (AG-21). This
                 // was `/ 1e9` and `GB`: the same attempt read `18.6 MiB` in
