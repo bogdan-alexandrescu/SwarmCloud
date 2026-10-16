@@ -18,9 +18,13 @@
 #
 # OFF IS NOT A FAILURE. The output is null until graph_service.serve is set
 # (every environment today); then this prints one notice and exits 0, having
-# asked nothing of gcloud or the cluster. `-raw` refuses a null, so a failed
-# `-raw` read is told apart with `-json`: `null` is off, anything else is
-# terraform failing to read its state, and that fails.
+# asked nothing of gcloud or the cluster. Terraform does not store a null
+# output in state at all, so a named read of it -- `-raw` or `-json` -- fails
+# with 'Output "swarm_graph_manifest" not found', exactly as a missing state
+# would (release 38867328505, 2026-10-16, went red on that). A failed named
+# read is told apart with ONE unnamed `output -json`: a state that reads as an
+# object and has no non-null swarm_graph_manifest is off; a state terraform
+# cannot read at all fails.
 #
 # IN THE SHAPE OF scripts/roll-egress.sh (roll-live-relay.sh), not a call to
 # it: that implementation rolls StatefulSets through `apply.sh --swarm-system`,
@@ -141,10 +145,14 @@ fi
 
 if ! tf -chdir="${TF_DIR}" output -raw "${MANIFEST_OUTPUT}" >"${WORK}/graph.yaml" 2>"${WORK}/graph.err" \
     || [[ ! -s "${WORK}/graph.yaml" ]]; then
-  # Null (not served) or a state terraform could not read: -json tells them
-  # apart, and only an explicit null or empty string is "not served".
-  if tf -chdir="${TF_DIR}" output -json "${MANIFEST_OUTPUT}" >"${WORK}/graph.json" 2>>"${WORK}/graph.err" \
-      && jq -e '. == null or . == ""' "${WORK}/graph.json" >/dev/null 2>&1; then
+  # Null (not served) or a state terraform could not read: the unnamed
+  # -json read tells them apart. Terraform leaves a null output out of state,
+  # so "not served" is an object without the key, or with a null or empty
+  # value; a read that fails, or is not an object, is not "off".
+  if tf -chdir="${TF_DIR}" output -json >"${WORK}/outputs.json" 2>>"${WORK}/graph.err" \
+      && jq -e --arg k "${MANIFEST_OUTPUT}" \
+        'type == "object" and ((.[$k].value // null) == null or .[$k].value == "")' \
+        "${WORK}/outputs.json" >/dev/null 2>&1; then
     notice "${GRAPH_DEPLOYMENT} not rolled" "graph_service.serve is off for ${ENVIRONMENT}: terraform rendered no ${MANIFEST_OUTPUT}, so there is no graph service to roll."
     exit 0
   fi
