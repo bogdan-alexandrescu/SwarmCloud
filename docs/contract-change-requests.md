@@ -12172,3 +12172,75 @@ the PR body raises it.
 missing a required secret holds no capacity and no pod. **2-3** unchanged:
 it is never admitted, so nothing is reserved or counted. **4** unchanged:
 it is not a long provider wait inside a worker. 5-10 untouched.
+
+## 84. `profiles.py`: `claude-code-review` is the one CLOUD_RUN_JOB profile that carries the Jev client; move it to GKE_AUTOPILOT, or retire it under request 50 (JUDGE-GKE)
+
+**Status:** open. Filed 2026-10-16 by lane JUDGE-GKE, part of #1347, after the
+owner's decision of 2026-10-16 (~11:20 PDT, on #1347): every attempt that
+judges with TypeSafe runs on GKE, so the key never enters a pod and
+SEC-RETIRE can remove every tenant worker's `-typesafe` grant.
+
+### What is true today
+
+The worker's Jev client (`agent_worker/judge/`) is set up by
+`graphstage.prepare`, only for a runner in `graphstage.GRAPH_RUNNERS`
+(`runners.claude_code`, `runners.codex`) and never for an index run. In the
+catalogue that is `claude-code`, `codex`, `claude-code-browser` and
+`claude-code-review`. The first three are GKE_AUTOPILOT (requests 53, 65,
+67). `claude-code-review` is CLOUD_RUN_JOB, and no other CLOUD_RUN_JOB
+profile carries the client: `mock` runs the mock runner, and `post-verdict`
+is a worker action that runs no agent.
+
+`claude-code-review` is also `available=False` (the #295 chain is off for
+every tenant) and has no Job (`profiles_without_a_job` in
+`terraform/infra/locals.tf`). It can dispatch nowhere today. The scheduler's
+guard (`scheduler.dispatch.typesafe_judge_needs_gke`, lane JUDGE-GKE) would
+refuse it on Cloud Run anyway whenever the forwarder serves its tenant and
+the workspace judges with TypeSafe. So this request changes what the
+catalogue says, not what can run.
+
+### The change
+
+Either of these. The owner picks one.
+
+**(a) Move it to GKE, as `claude-code` moved in request 53.**
+
+```python
+_CLAUDE_CODE_REVIEW = RunnerProfile(
+    name="claude-code-review",
+    ...
+    backend=Backend.GKE_AUTOPILOT,   # was CLOUD_RUN_JOB: its judge reaches the
+                                     # TypeSafe forwarder only from GKE
+    ...
+)
+```
+
+**(b) Leave it on Cloud Run, and let request 50 retire it.** Then it simply
+never judges with TypeSafe: it never runs. If it is ever re-enabled, it must
+move to GKE first. Until it does, the scheduler's guard refuses a
+TypeSafe-judging attempt of it at dispatch: each refusal returns the task to
+READY, and at the retry cap it ends FAILED with `typesafe_judge_needs_gke`.
+
+The lane recommends (b). The profile is retired in all but name, request 50
+already removes it, and moving a profile that cannot run buys nothing.
+
+### Rollback
+
+(a) is one line back to CLOUD_RUN_JOB. (b) changes nothing.
+
+### What it would break
+
+(a) Nothing that runs: the profile is unavailable and has no Job. The
+Terraform catalogue mirror (`runner_profiles` in `terraform/infra/locals.tf`,
+held field for field by `tests/terraform/catalogue.tftest.hcl`) and
+`tests/unit/control_plane/test_internet_profiles_on_gke.py`, which lists the profiles that stay on Cloud Run, must
+follow in the same pull request. (b) Nothing.
+
+### Invariants
+
+**1** unchanged: a refused attempt is returned to READY and holds no
+capacity. **2** unchanged: the guard runs before anything is created, and
+the lease it returns gives back every pool it reserved. **6** and **7**
+unchanged: GKE runs on demand with `requests == limits`, as every
+GKE_AUTOPILOT profile does. **10** unchanged: the backend stays the
+catalogue's, never a caller's.
