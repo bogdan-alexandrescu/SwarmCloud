@@ -434,8 +434,10 @@ change to both, and `swarm_api.typesafe_ticket` is the reference.
   409 `stale_generation`, 429 `rate_limited`, 503 `disabled` (the kill switch,
   or a setting that is missing, not JSON, or has an unknown key: fail closed),
   502 `key_unreadable` or `upstream_failed`, 504 `upstream_timeout`, 404
-  `not_found`. Nothing is ever forwarded without a key, and never with the
-  caller's.
+  `not_found`, 413 `too_large` (the body over `max_request_bytes`) and 400
+  `bad_request` (a chunked or unparseable body length, or a request line the
+  server cannot parse; both codes added by SEC-INJECT-B, swarm-api unchanged).
+  Nothing is ever forwarded without a key, and never with the caller's.
 * **The setting** is `config.json` in the ConfigMap `swarm-typesafe-fwd-config`,
   re-read every 5 s, with exactly the keys `enabled` (bool), `tenants` (the
   tenant ids served; a ticket for any other is `tenant_off`),
@@ -495,14 +497,80 @@ change to both, and `swarm_api.typesafe_ticket` is the reference.
   before applying.
 * `scripts/create-secrets.sh --typesafe-fwd-key`.
 
+**What SEC-INJECT-B built (2026-10-16, part of #1347).**
+
+* `apps/swarm-typesafe-fwd/`, the forwarder, to the spec above. The standard
+  library serves (`http.server`'s threading server) and calls upstream
+  (`http.client` over `ssl.create_default_context()`); google-auth reads
+  Secret Manager over REST; swarm-redaction filters every line. Its own
+  `uv.lock`, seeded from swarm-egress's: the third-party closure is the same,
+  so nothing new enters the platform.
+  * `ticket.py` verifies the ticket with its own code (the image carries no
+    swarm-api). The MAC is compared with `hmac.compare_digest` against every
+    ring key, all of them each time, before the payload is parsed. Then the
+    claims are checked as the spec says: exactly the nine, `exp` live and at
+    most 900 s (+1 s, the reference's rounding) ahead, `scope: tenant` naming
+    exactly `swarm-tenant-<tenant_id>-typesafe`, `scope: user` naming a
+    `swarm-tenant-u-<user>-typesafe`, and the version digits or `latest`.
+    Every id is held to a shape that cannot carry a `/`, so a claim cannot
+    widen the Secret Manager name it becomes.
+  * `keyring.py`: the ring is the current key and the one before it, until
+    the next change (no timer), re-read every 300 s (`main.SECRET_POLL_SECONDS`).
+    The secret cache reads `projects/<SWARM_TYPESAFE_FWD_PROJECT>/secrets/<id>/versions/<v>`
+    and holds a value for at most 60 s. A value that is not one printable
+    ASCII line is `key_unreadable`, so a value can never split the upstream
+    request's headers.
+  * `forwarder.py` runs the checks in the order its docstring lists, and
+    nothing is read or forwarded until all of them pass: route (404), kill
+    switch (503), ticket (401), tenant (403), generation (409), rate (429),
+    body length (413/400), key (502), upstream (502/504). It forwards only
+    `Content-Type`, `Accept` and `User-Agent`, and sets the Authorization
+    header itself, bearer scheme, to the key. It answers with the upstream's status and
+    `Content-Type` alone, streamed. Fencing and the per-attempt sliding-minute
+    rate are in memory, which is why the Deployment has one replica.
+  * `upstream.py`: the upstream is the constant
+    `https://api.typesafe.ai/v1/systemone`. Nothing in the request names it.
+    The overall deadline is `max_response_seconds`, checked between chunks as
+    well as per socket read.
+  * `server.py` overrides what the standard library would leak: an unknown
+    method is 404, not 501; a parse error is 400 `bad_request` with no echo,
+    not an HTML page quoting the request line; the request line is never
+    logged; no `Server` version. One request per connection.
+  * `main.py` reads the MAC key before it opens the port, because the
+    readiness probe is a TCP check.
+  * The log is JSON events (`typesafe_refused`, `typesafe_forwarded`,
+    `typesafe_config`, `typesafe_key_rotated`, ...). They carry only the code,
+    status, ids, scope, secret id, byte counts, duration and a cause word.
+    Each line goes through `swarm_redaction.redact` with the ring keys and
+    every held value registered as literals.
+* `apps/swarm-typesafe-fwd/Dockerfile`: swarm-egress's posture (digest-pinned
+  bases through the mirrors, hash-locked installs, uid 10001,
+  `PYTHONDONTWRITEBYTECODE` for the read-only root, tini) on port 8080.
+* The image `swarm-typesafe-fwd` in `ALL_TARGETS` of
+  `scripts/build-images.sh` and `scripts/push-images.sh`, after swarm-egress.
+  Its promoted digest becomes `image_refs["swarm-typesafe-fwd"]`, which
+  `typesafe_fwd.tf` already substitutes for `__SWARM_TYPESAFE_FWD_IMAGE__`.
+  swarm-system images are rendered by terraform, not `kubernetes/render.py`,
+  so render.py is unchanged.
+* Tests, all offline: `tests/unit/typesafe_fwd/`. The real server runs over
+  loopback against a fake upstream and a fake Secret Manager, with every key
+  built at runtime. A ticket `swarm_api.typesafe_ticket` mints verifies. Every
+  bad ticket, tenant, generation, route, method and host is refused with
+  nothing read and nothing forwarded. The caller's authorization is replaced.
+  The kill switch, the rate limit and the ring all hold. No log line or
+  response carries a key, a value or a ticket. The image is in the build path.
+
 **Still to do.**
 
-* **SEC-INJECT-B:** the forwarder itself, `apps/swarm-typesafe-fwd/`
-  (pyproject, Dockerfile, package) to the spec above; the image in
-  `ALL_TARGETS` of `scripts/build-images.sh` and `scripts/push-images.sh`; its
-  apply in `kubernetes/apply.sh --swarm-system` and a roll script like
-  `scripts/roll-egress.sh`, and the release step that runs it (a workflow
-  change, which the owner makes).
+* **SEC-INJECT-B, what is left:** its apply in `kubernetes/apply.sh
+  --swarm-system` (`terraform output -raw swarm_typesafe_fwd_manifest`, with
+  the placeholder, RBAC and namespace checks swarm-egress's block makes), a
+  roll script like `scripts/roll-egress.sh`, and the release step that runs it.
+  Also `swarm-typesafe-fwd` in `security.yml`'s scheduled image scan. The
+  workflow changes are the owner's (lanes cannot push workflow files); the
+  lines are in SEC-INJECT-B's pull request. The other two were outside the
+  lane's territory and went to the owner as a question. Until they land, the
+  forwarder is built and promoted but nothing applies it.
 * **SEC-MIGRATE-TYPESAFE:** the dispatcher labels a TypeSafe-backed pod
   `swarm-typesafe: inject`; the tenant-side egress policy
   (`network-policies/allow-typesafe-fwd.yaml`, built like
@@ -520,6 +588,23 @@ change to both, and `swarm_api.typesafe_ticket` is the reference.
   it: that needs a decision before the judge moves. `jevkey.prepare` then stops
   writing the key file, and SEC-RETIRE removes the tenant workers' `-typesafe`
   grants.
+
+  What the built forwarder asks of that lane:
+  * The URL is exactly
+    `http://swarm-typesafe-fwd.swarm-system.svc.cluster.local:8080/v1/systemone`.
+    The `Host` must be that full name: `swarm-typesafe-fwd.swarm-system` and
+    other short forms are 404.
+  * The ticket is the bearer credential of the one Authorization header
+    (two Authorization headers are 401).
+  * The body is sent with a `Content-Length`, never chunked.
+  * One request per connection.
+  * The answer to a refusal carries `X-Swarm-Typesafe-Refused`. A 401
+    `ticket_invalid` means renew the ticket. A 409 `stale_generation` means
+    exit without judging (invariant 5).
+  * The worker's ticket renewal must stay ahead of `exp`, because the
+    forwarder allows no grace past it.
+  * The owner adds the tenant to `typesafe_forwarder.tenants` and sets
+    `enabled`.
 
 ### 3.6 Recommendation
 
