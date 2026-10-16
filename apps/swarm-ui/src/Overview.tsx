@@ -7,6 +7,7 @@ import {
   WaitingWhy,
   agentPath,
   failuresOf,
+  readWhy,
   rowLabel,
   stateView,
   useRowTitles,
@@ -43,6 +44,7 @@ import { HelpCard, HelpNote, phoneWidth } from './HelpCard'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
 import { Button, Dash, NamedMark, Skeleton, StateMark, ToneMark, UsageTrack, WarnMark, type TrackTone } from './components'
 import { Absent, Mark } from './primitives'
+import { safeStorage } from './panes'
 import { disabledSentence } from './ProfileMatrix'
 import { AGED_AFTER_MS, CountNote, PageHead, RefreshControl, staleFoot, timeAgo, useClaimPageAge, useIdleStop, usePoll } from './Shell'
 import { AGE_TICK_MS, PageClock, usePageClock, useNow as useAgeClock } from './useNow'
@@ -835,6 +837,38 @@ function Reading({ rows = 3 }: { rows?: number }) {
  *   - WHILE A CHECK IS STILL READING (OV-9) no count is drawn: the pending
  *     mark, because a count taken before every check ran is not the count.
  */
+/**
+ * HOW MANY CARDS THE LEAD LAST DREW, so the skeleton holds that much room
+ * (visual QA V176, 2026-10-16). The row held one ~80px skeleton card until
+ * every check ran, then ten cards landed and everything below jumped: CLS
+ * 0.297 at 1440 and 0.685 at 400, where Agents measures 0.001-0.004. A fixed
+ * reservation is wrong one way or the other -- eight held cards collapsing
+ * to one jumped as far as one growing to ten -- so the row reserves what it
+ * last settled at on this device, and one card before it has ever settled.
+ * A height hint and nothing else: the skeleton is `aria-hidden`, so the
+ * stored number is never drawn or read out as a count. `safeStorage` is the
+ * guarded handle; a private window simply reserves one card.
+ */
+export const NEEDS_ROOM_PREF = 'swarm.overview.needs'
+const NEEDS_ROOM_MAX = 12
+
+export function needsRoom(): number {
+  try {
+    const n = Number.parseInt(safeStorage()?.getItem(NEEDS_ROOM_PREF) ?? '', 10)
+    return Number.isFinite(n) ? Math.min(Math.max(n, 1), NEEDS_ROOM_MAX) : 1
+  } catch {
+    return 1
+  }
+}
+
+function keepNeedsRoom(cards: number): void {
+  try {
+    safeStorage()?.setItem(NEEDS_ROOM_PREF, String(Math.min(Math.max(cards, 1), NEEDS_ROOM_MAX)))
+  } catch {
+    // Storage that refuses keeps nothing: the next first draw reserves one card.
+  }
+}
+
 function NeedsALook({ checks }: { checks: Check[] }) {
   const problems = checks
     .flatMap((c) => (c.status === 'found' ? c.problems : []))
@@ -845,6 +879,12 @@ function NeedsALook({ checks }: { checks: Check[] }) {
   const found = checks.filter((c) => c.status === 'found').length
   const ran = clear.length + found
   const blindSay = blind.map((c) => `${c.label.toLowerCase()} — ${c.why}`).join('; ')
+  // Read once a mount, so a poll's redraw does not change what is held.
+  const [held] = useState(needsRoom)
+  const settled = reading.length === 0
+  useEffect(() => {
+    if (settled) keepNeedsRoom(problems.length)
+  }, [settled, problems.length])
 
   return (
     <>
@@ -887,18 +927,24 @@ function NeedsALook({ checks }: { checks: Check[] }) {
         // 2026-10-03): the pending mark here was an empty dashed box the
         // width of the row, which read as a broken input. Still no count:
         // the sentence is the row's accessible name.
+        //
+        // AS MANY SKELETON CARDS AS THE ROW LAST DREW (visual QA V176,
+        // `needsRoom`), in the same grid, so what lands is the height that
+        // was held.
         <div
           className="ov-atts"
           aria-busy="true"
           aria-label={`${reading.length} of ${checks.length} checks are still reading: ${reading.map((c) => c.label.toLowerCase()).join(', ')}. No count is drawn until they have run.`}
         >
-          <div className="ov-att is-skel" aria-hidden="true">
-            <span className="ov-att-t">
-              <Skeleton title width="45%" />
-              <Skeleton width="85%" />
-              <Skeleton width="60%" />
-            </span>
-          </div>
+          {Array.from({ length: held }, (_, i) => (
+            <div className="ov-att is-skel" aria-hidden="true" key={i}>
+              <span className="ov-att-t">
+                <Skeleton title width="45%" />
+                <Skeleton width="85%" />
+                <Skeleton width="60%" />
+              </span>
+            </div>
+          ))}
         </div>
       ) : problems.length > 0 ? (
         <div className="ov-atts">
@@ -1261,7 +1307,9 @@ function CapacityStacks({ state }: { state: Result<Capacity> }) {
         heading="Pool state unread"
         say={`${b.why} No figure here is a claim about room.`}
         explain={b.admin ? 'admin-gate-not-failure' : 'read-failed'}
-      />
+      >
+        {readWhy(b)}
+      </CardAbsent>
     )
   }
   if (state.status === 'empty') {
@@ -1329,7 +1377,9 @@ function PoolsBody({ state }: { state: Result<Capacity> }) {
         kind={b.admin ? 'admin' : 'failed'}
         heading="Pool state unread"
         say={`${b.why} No figure here is a claim about room.`}
-      />
+      >
+        {readWhy(b)}
+      </CardAbsent>
     )
   }
   if (state.status === 'empty') {
@@ -1475,7 +1525,13 @@ export function PoolRow({ pool: p }: { pool: Pool }) {
   // 2026-10-11): the phone hides the track, which was the only place a full
   // pool showed, so `5/5` takes the bad tone itself.
   const full = limit !== null && limit > 0 && p.active >= limit
-  const say = `${poolLabel(p.name)}: ${p.active} of ${limit === null ? 'no limit set' : `${limit}`} units in use${full ? ', full' : ''}${paused ? ', paused' : ''}`
+  // NEARLY FULL IS SAID ON THE FIGURE TOO (visual QA V057, owner decision Q4,
+  // 2026-10-16): at >=80% the hidden track is toned warn, and the phone read
+  // `4/5` as plainly as `0/5`. The figure takes the warn tone at the same
+  // threshold as the track, so the two widths agree; a paused pool keeps its
+  // own tone and is not warned about.
+  const near = !full && !paused && known && ratio >= 0.8
+  const say = `${poolLabel(p.name)}: ${p.active} of ${limit === null ? 'no limit set' : `${limit}`} units in use${full ? ', full' : near ? ', nearly full' : ''}${paused ? ', paused' : ''}`
   return (
     <div className="ov-pl" title={say}>
       <span className="ov-idc" title={p.name}>
@@ -1487,7 +1543,7 @@ export function PoolRow({ pool: p }: { pool: Pool }) {
         zeroTitle={`Measured: 0 of ${limit} in use on ${p.name}.`}
         meter={known ? { label: say, now: p.active, max: limit } : { label: say, now: p.active, max: 0 }}
       />
-      <b className={full ? 'is-full' : undefined}>
+      <b className={full ? 'is-full' : near ? 'is-near' : undefined}>
         {p.active}/{limit === null ? <span className="ctl-em" title="No limit set: not a ceiling of 0.">&mdash;</span> : limit}
       </b>
     </div>
@@ -1513,7 +1569,9 @@ function AccountLine({ state }: { state: Result<AccountsPage> }) {
         heading="Account pool unread"
         say={`${b.why} This says nothing about whether the accounts have room.`}
         explain={b.admin ? 'admin-gate-not-failure' : 'read-failed'}
-      />
+      >
+        {readWhy(b)}
+      </CardAbsent>
     )
   }
   if (state.status === 'empty') {
@@ -1690,7 +1748,9 @@ function RunningCard({
           heading="Task list unread"
           say={`${b.why} This card is blind; it is not reporting that nothing is running.`}
           explain={b.admin ? 'admin-gate-not-failure' : 'read-failed'}
-        />
+        >
+          {readWhy(b)}
+        </CardAbsent>
       </>
     )
   }
@@ -1797,37 +1857,58 @@ function RunningCard({
       {/* THE PHONE'S LIST (O1 390 frame): mark, name, elapsed. The sheet shows
           one of the two, by width. */}
       <ul className="ov-prun" aria-label="Running now">
-        {running.map((t) => (
-          <li key={t.id}>
-            <StateMark state={t.state} />
-            <span className="ov-prun-m">
-              <a className="ov-prun-n" href={agentPath(t)} title={`${rowLabel(t, titleOf(t))} · ${t.id}`}>
-                {rowLabel(t, titleOf(t))}
-              </a>
-              {/* THE SECOND LINE IS THE DESKTOP'S STATE AND PROFILE COLUMNS
-                  (QA G1-08, 2026-10-07): a dot and "implement" twice could
-                  not be told apart. State, profile, and the workflow by its
-                  short id, whole in the link's title. */}
-              <span className="ov-prun-sub">
-                {t.state.toLowerCase().replace('_', '-')} · {t.runner_profile}
-                {t.workflow_id && (
-                  <>
-                    {' · '}
-                    <a className="ctl-link ov-wf" href={`/workflows/${encodeURIComponent(t.workflow_id)}`} title={t.step_id ? `step ${t.step_id} of ${t.workflow_id}` : t.workflow_id}>
-                      {shortWorkflowId(t.workflow_id)}
-                    </a>
-                  </>
-                )}
-              </span>
-            </span>
-            <em>
-              <Runtime task={t} leasedAt={leased.get(t.id)} />
-            </em>
-          </li>
+        {shown.map((t) => (
+          <PhoneRunRow key={t.id} task={t} title={titleOf(t)} leasedAt={leased.get(t.id)} />
         ))}
       </ul>
+      {/* THE SAME EIGHT ROWS, THEN "N MORE", ON A PHONE (visual QA V177,
+          2026-10-16): the list mapped every task, so 47 holding agents drew
+          a 1,804px list while the table beside it stopped at eight. The rest
+          are in place under the same disclosure, closed. */}
+      {running.length > shown.length && (
+        <details className="ov-more ov-prun-more">
+          <summary>{running.length - shown.length} more</summary>
+          <ul className="ov-prun" aria-label="Running now, the rest">
+            {running.slice(RUNNING_ROWS).map((t) => (
+              <PhoneRunRow key={t.id} task={t} title={titleOf(t)} leasedAt={leased.get(t.id)} />
+            ))}
+          </ul>
+        </details>
+      )}
       {foot}
     </>
+  )
+}
+
+/** One row of the phone's Running list (O1 390 frame): mark, name, elapsed. */
+function PhoneRunRow({ task: t, title, leasedAt }: { task: Task; title: string | null; leasedAt: string | undefined }) {
+  return (
+    <li>
+      <StateMark state={t.state} />
+      <span className="ov-prun-m">
+        <a className="ov-prun-n" href={agentPath(t)} title={`${rowLabel(t, title)} · ${t.id}`}>
+          {rowLabel(t, title)}
+        </a>
+        {/* THE SECOND LINE IS THE DESKTOP'S STATE AND PROFILE COLUMNS
+            (QA G1-08, 2026-10-07): a dot and "implement" twice could
+            not be told apart. State, profile, and the workflow by its
+            short id, whole in the link's title. */}
+        <span className="ov-prun-sub">
+          {t.state.toLowerCase().replace('_', '-')} · {t.runner_profile}
+          {t.workflow_id && (
+            <>
+              {' · '}
+              <a className="ctl-link ov-wf" href={`/workflows/${encodeURIComponent(t.workflow_id)}`} title={t.step_id ? `step ${t.step_id} of ${t.workflow_id}` : t.workflow_id}>
+                {shortWorkflowId(t.workflow_id)}
+              </a>
+            </>
+          )}
+        </span>
+      </span>
+      <em>
+        <Runtime task={t} leasedAt={leasedAt} />
+      </em>
+    </li>
   )
 }
 
@@ -2003,7 +2084,9 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
           kind={b.admin ? 'admin' : 'failed'}
           heading="Spend unassembled"
           say={`Spend is summed from the attempts of the most recent tasks, and the task list itself could not be read. ${b.why} No attempt read was made, so nothing here is a statement about spend.`}
-        />
+        >
+          {readWhy(b)}
+        </CardAbsent>
       )
     }
     return (
@@ -2012,7 +2095,9 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
         heading="No attempt read completed"
         say={`${errorHeading(state.error)} — ${state.error.message} No figure is shown.`}
         explain="read-failed"
-      />
+      >
+        {readWhy({ why: `${errorHeading(state.error)} — ${state.error.message}` })}
+      </CardAbsent>
     )
   }
   if (state.status === 'empty') {
