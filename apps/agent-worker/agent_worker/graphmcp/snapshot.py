@@ -29,6 +29,20 @@ row shapes this reader takes, which CTXQ-H's writer must produce:
             `?` do not, a trailing `/` is the whole directory, and anything
             else is one exact path. `path` is taken in place of `glob`.
 
+THE DOCUMENT LAYER (docs/design/graph-service.md §2.3; written by lane
+GS-INDEXDOC). repo-index.md §2.1's document, one more `index_shards` layer
+keyed by section (`DOCUMENT_SECTIONS`), so the manifest digest a graph ticket
+pins covers it too. Its rows are the section's, in stored order; this reader
+only names the layer and pages it (`tools.tool_index`).
+
+WHERE THE BLOBS COME FROM (graph-service.md §2.4, seam 1). A `Snapshot` reads
+its shards through a `BlobSource`: `decoded(hexdigest)` gives one verified,
+decoded shard. `Snapshot(root)` reads a staged directory (`DirectorySource`,
+which keeps today's per-snapshot LRU); the shared graph service builds
+`Snapshot.from_manifest(raw, manifest_digest=..., source=...)` over its own
+tenant-scoped source. Every source decodes through `decode_blob`, so the
+sha256-against-name check holds whichever one supplies the bytes.
+
 LAZY, SHARD BY SHARD. A question about one symbol reads its module's shard
 and nothing else, so memory stays near the size of the shards touched. Decoded
 shards are kept in a cache bounded by their raw bytes (`CACHE_RAW_BYTES`);
@@ -63,7 +77,7 @@ import posixpath
 import re
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Protocol
 
 MANIFEST_SCHEMA = "swarm.repo-graph-manifest/v1"
 MANIFEST_NAME = "manifest.json"
@@ -77,6 +91,13 @@ LAYERS = ("symbols", "callers", "callees", "tests", "files")
 INDEX_LAYERS = ("communities", "terms", "signatures", "signature_changes", "flows")
 #: Layers H and R (context-quality.md §4.2), also under `index_shards`.
 CONTEXT_LAYERS = ("history", "rules")
+#: repo-index.md §2.1's document, under `index_shards` keyed by section
+#: (graph-service.md §2.3, lane GS-INDEXDOC writes it).
+DOCUMENT_LAYER = "document"
+DOCUMENT_SECTIONS = ("modules", "entry_points", "routes", "test_layout", "test_map",
+                     "territory", "commands", "hot_spots", "notes")
+#: Every layer `tools.tool_index` pages, in the order it lists them.
+ALL_LAYERS = LAYERS + INDEX_LAYERS + CONTEXT_LAYERS + (DOCUMENT_LAYER,)
 #: The key of a layer stored as one shard (`repo_graph_shards.WHOLE`).
 WHOLE = "*"
 #: `repo_graph_shards.TERM_BUCKET_CHARS`: the hex characters of a term's bucket.
@@ -203,44 +224,132 @@ class _Shard:
         return index
 
 
+def blob_hexdigest(entry: dict) -> str:
+    """The hex sha256 a manifest entry names its blob by; refused if it names none."""
+    match = _HEX.match(str(entry.get("blob") or ""))
+    if not match:
+        raise SnapshotError(f"the manifest names a blob {entry.get('blob')!r} that is "
+                            "not a sha256 digest")
+    return match.group(1)
+
+
+def decode_blob(hexdigest: str, data: bytes) -> _Shard:
+    """`data` checked against its name, decompressed and parsed: every source's reader."""
+    if hashlib.sha256(data).hexdigest() != hexdigest:
+        raise SnapshotError(f"blob {hexdigest[:12]} does not match its name; refused")
+    raw = gzip.decompress(data)
+    # One parse of the whole shard as a JSON array: a line is a canonical
+    # JSON object, which never holds a raw newline, and one `loads` over
+    # the lot is about twice as fast as one per line on the largest shards.
+    body = raw.strip()
+    try:
+        rows = json.loads(b"[" + body.replace(b"\n", b",") + b"]") if body else []
+    except ValueError:
+        raise SnapshotError(f"blob {hexdigest[:12]} is not JSON lines") from None
+    if not all(isinstance(row, dict) for row in rows):
+        raise SnapshotError(f"blob {hexdigest[:12]} holds a line that is not a JSON "
+                            "object")
+    return _Shard(rows, len(raw))
+
+
+class BlobSource(Protocol):
+    """Where a `Snapshot`'s shards come from (graph-service.md §2.4, seam 1).
+
+    `decoded` returns the shard of the blob named `hexdigest`, checked against
+    that name before it was decoded (`decode_blob`), or raises `SnapshotError`.
+    A source may cache what it decodes; a blob's name is its content, so a
+    cached shard is the right one for every manifest that names it.
+    """
+
+    def decoded(self, hexdigest: str) -> _Shard: ...
+
+
+class DirectorySource:
+    """A staged snapshot's `blobs/`, decoded on first use and kept in an LRU
+    bounded by raw bytes (`CACHE_RAW_BYTES`)."""
+
+    def __init__(self, root: Path | str, *, cache_raw_bytes: int = CACHE_RAW_BYTES) -> None:
+        self.root = Path(root)
+        self._cache: OrderedDict[str, _Shard] = OrderedDict()
+        self._cache_bytes = 0
+        self._cache_limit = cache_raw_bytes
+
+    def decoded(self, hexdigest: str) -> _Shard:
+        cached = self._cache.get(hexdigest)
+        if cached is not None:
+            self._cache.move_to_end(hexdigest)
+            return cached
+        path = self.root / BLOBS_DIR / f"{hexdigest}{BLOB_SUFFIX}"
+        try:
+            data = path.read_bytes()
+        except OSError:
+            raise SnapshotError(f"blob {hexdigest[:12]} is named by the manifest but not "
+                                "staged") from None
+        shard = decode_blob(hexdigest, data)
+        self._cache[hexdigest] = shard
+        self._cache_bytes += shard.raw_bytes
+        while self._cache_bytes > self._cache_limit and len(self._cache) > 1:
+            _key, evicted = self._cache.popitem(last=False)
+            self._cache_bytes -= evicted.raw_bytes
+        return shard
+
+
+def _verified_manifest(raw: bytes, manifest_digest: str | None) -> dict:
+    if manifest_digest is not None:
+        actual = "sha256:" + hashlib.sha256(raw).hexdigest()
+        if actual != manifest_digest:
+            raise SnapshotError("the manifest does not match the digest the stager "
+                                "recorded; it is not read")
+    try:
+        manifest = json.loads(raw)
+    except ValueError:
+        raise SnapshotError("the manifest is not JSON") from None
+    if not isinstance(manifest, dict) or manifest.get("schema") != MANIFEST_SCHEMA:
+        raise SnapshotError(f"the manifest is not a {MANIFEST_SCHEMA} document")
+    if manifest.get("compression", COMPRESSION) != COMPRESSION:
+        raise SnapshotError(f"compression {manifest.get('compression')!r} is not "
+                            f"{COMPRESSION!r}")
+    if manifest.get("blob_suffix", BLOB_SUFFIX) != BLOB_SUFFIX:
+        raise SnapshotError(f"blob suffix {manifest.get('blob_suffix')!r} is not "
+                            f"{BLOB_SUFFIX!r}")
+    return manifest
+
+
 class Snapshot:
-    """A staged snapshot directory, read lazily and checked blob by blob."""
+    """A snapshot's manifest, its shards read lazily from a `BlobSource`, checked
+    blob by blob."""
 
     def __init__(self, root: Path | str, *, manifest_digest: str | None = None,
                  cache_raw_bytes: int = CACHE_RAW_BYTES) -> None:
-        self.root = Path(root)
+        root = Path(root)
         try:
-            raw = (self.root / MANIFEST_NAME).read_bytes()
+            raw = (root / MANIFEST_NAME).read_bytes()
         except OSError as exc:
             raise SnapshotError(f"no manifest in the snapshot: {exc.strerror}") from None
-        if manifest_digest is not None:
-            actual = "sha256:" + hashlib.sha256(raw).hexdigest()
-            if actual != manifest_digest:
-                raise SnapshotError("the manifest does not match the digest the stager "
-                                    "recorded; it is not read")
-        try:
-            manifest = json.loads(raw)
-        except ValueError:
-            raise SnapshotError("the manifest is not JSON") from None
-        if not isinstance(manifest, dict) or manifest.get("schema") != MANIFEST_SCHEMA:
-            raise SnapshotError(f"the manifest is not a {MANIFEST_SCHEMA} document")
-        if manifest.get("compression", COMPRESSION) != COMPRESSION:
-            raise SnapshotError(f"compression {manifest.get('compression')!r} is not "
-                                f"{COMPRESSION!r}")
-        if manifest.get("blob_suffix", BLOB_SUFFIX) != BLOB_SUFFIX:
-            raise SnapshotError(f"blob suffix {manifest.get('blob_suffix')!r} is not "
-                                f"{BLOB_SUFFIX!r}")
+        self._load(_verified_manifest(raw, manifest_digest),
+                   DirectorySource(root, cache_raw_bytes=cache_raw_bytes))
+        self.root: Path | None = root
+
+    @classmethod
+    def from_manifest(cls, raw: bytes, *, manifest_digest: str | None,
+                      source: BlobSource) -> "Snapshot":
+        """A snapshot over manifest bytes the caller holds, checked against
+        `manifest_digest` before they are parsed, with blobs from `source`."""
+        snap = cls.__new__(cls)
+        snap._load(_verified_manifest(raw, manifest_digest), source)
+        snap.root = None
+        return snap
+
+    def _load(self, manifest: dict, source: BlobSource) -> None:
         self.manifest = manifest
+        self.source = source
         self.commit_sha = str(manifest.get("commit_sha") or "")
         self.format_version = int(manifest.get("format_version") or 2)
         self._tables = {layer: dict((manifest.get("shards") or {}).get(layer) or {})
                         for layer in LAYERS}
         index_shards = (manifest.get("index_shards") or {}) if self.format_version >= 3 else {}
         self._tables.update({layer: dict(index_shards.get(layer) or {})
-                             for layer in INDEX_LAYERS + CONTEXT_LAYERS})
-        self._cache: OrderedDict[tuple[str, str], _Shard] = OrderedDict()
-        self._cache_bytes = 0
-        self._cache_limit = cache_raw_bytes
+                             for layer in INDEX_LAYERS + CONTEXT_LAYERS + (DOCUMENT_LAYER,)})
         self._communities: dict[str, dict] | None = None
 
     # -- blobs and shards ----------------------------------------------------
@@ -249,50 +358,20 @@ class Snapshot:
         """The modules (or buckets) a layer has a shard for."""
         return sorted(self._tables.get(layer) or {})
 
+    def entry(self, layer: str, key: str) -> dict | None:
+        """The manifest's entry for one shard (`blob`, `records`, ...), if any."""
+        entry = (self._tables.get(layer) or {}).get(key)
+        return entry if isinstance(entry, dict) else None
+
     def shard(self, layer: str, key: str) -> _Shard:
         """The decoded shard of `layer` for `key`; an empty one if there is none."""
-        cached = self._cache.get((layer, key))
-        if cached is not None:
-            self._cache.move_to_end((layer, key))
-            return cached
-        entry = (self._tables.get(layer) or {}).get(key)
+        entry = self.entry(layer, key)
         if entry is None:
             return _Shard([], 0)
-        shard = self._decode(entry)
-        self._cache[(layer, key)] = shard
-        self._cache_bytes += shard.raw_bytes
-        while self._cache_bytes > self._cache_limit and len(self._cache) > 1:
-            _key, evicted = self._cache.popitem(last=False)
-            self._cache_bytes -= evicted.raw_bytes
-        return shard
+        return self._decode(entry)
 
     def _decode(self, entry: dict) -> _Shard:
-        match = _HEX.match(str(entry.get("blob") or ""))
-        if not match:
-            raise SnapshotError(f"the manifest names a blob {entry.get('blob')!r} that is "
-                                "not a sha256 digest")
-        hexdigest = match.group(1)
-        path = self.root / BLOBS_DIR / f"{hexdigest}{BLOB_SUFFIX}"
-        try:
-            data = path.read_bytes()
-        except OSError:
-            raise SnapshotError(f"blob {hexdigest[:12]} is named by the manifest but not "
-                                "staged") from None
-        if hashlib.sha256(data).hexdigest() != hexdigest:
-            raise SnapshotError(f"blob {hexdigest[:12]} does not match its name; refused")
-        raw = gzip.decompress(data)
-        # One parse of the whole shard as a JSON array: a line is a canonical
-        # JSON object, which never holds a raw newline, and one `loads` over
-        # the lot is about twice as fast as one per line on the largest shards.
-        body = raw.strip()
-        try:
-            rows = json.loads(b"[" + body.replace(b"\n", b",") + b"]") if body else []
-        except ValueError:
-            raise SnapshotError(f"blob {hexdigest[:12]} is not JSON lines") from None
-        if not all(isinstance(row, dict) for row in rows):
-            raise SnapshotError(f"blob {hexdigest[:12]} holds a line that is not a JSON "
-                                "object")
-        return _Shard(rows, len(raw))
+        return self.source.decoded(blob_hexdigest(entry))
 
     # -- lookups ---------------------------------------------------------------
 
