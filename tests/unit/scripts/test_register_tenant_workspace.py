@@ -32,6 +32,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -43,6 +44,15 @@ GUARD = REPO / "scripts" / "lib" / "workspace-guard.sh"
 SHIMS = REPO / "scripts" / "lib" / "guard-bin"
 WORLD_PY = Path(__file__).resolve().parent / "fixtures" / "workspace_world.py"
 DEPLOYER_RBAC = REPO / "kubernetes" / "rbac" / "provisioner-rbac.yaml"
+#: Where every Python a run starts (the fake world on each of a run's ~130
+#: gcloud, kubectl and curl calls, kubernetes/render.py) keeps its bytecode.
+#: An image whose stdlib ships no .pyc, and cannot write one -- the SwarmCloud
+#: runtime image, 2026-10-16 -- recompiles `re`, `json` and the rest on every
+#: start: 0.21 s a fake call there against 0.08 s with this, ~20 s of a
+#: create's 80 s (#1334). Outside the repository, shared by sessions and
+#: workers: a .pyc is checked against its source's mtime, so a stale one is
+#: never used.
+PYCACHE = Path(tempfile.gettempdir()) / f"swarm-test-pycache-{os.getuid()}"
 
 pytestmark = pytest.mark.skipif(shutil.which("jq") is None, reason="jq is required")
 
@@ -152,6 +162,7 @@ class Job:
             SWARM_CALL_GUARD_ENFORCE="1",
             SWARM_WORKSPACE_RETRY_DELAYS="0 0 0",
             FAKE_WORLD=str(self.world_file),
+            PYTHONPYCACHEPREFIX=str(PYCACHE),
             BUILD_ID="b-0001",
             NO_COLOR="1",
         )
@@ -242,9 +253,8 @@ def job(tmp_path: Path) -> Job:
     return Job(tmp_path)
 
 
-@pytest.fixture(scope="session")
-def created(tmp_path_factory) -> dict:
-    """ONE full create per test session, shared by every xdist worker.
+def _once(tmp_path_factory, name: str, run) -> dict:
+    """`run(job)` ONCE per test session, shared by every xdist worker.
 
     A full run is ~40 s of guard judging, and a module fixture would make it
     once per worker. The first worker to take the lock runs it and leaves the
@@ -257,16 +267,22 @@ def created(tmp_path_factory) -> dict:
     root = tmp_path_factory.getbasetemp()
     if os.environ.get("PYTEST_XDIST_WORKER"):
         root = root.parent
-    result = root / "register-tenant-workspace-created.json"
-    with open(root / "register-tenant-workspace-created.lock", "w") as lock:
+    result = root / f"register-tenant-workspace-{name}.json"
+    with open(root / f"register-tenant-workspace-{name}.lock", "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if not result.exists():
-            first = Job(Path(tmp_path_factory.mktemp("created")))
-            proc = first.create()
+            first = Job(Path(tmp_path_factory.mktemp(name)))
+            proc = run(first)
             result.write_text(json.dumps({
                 "returncode": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr,
                 "stopped": first.stopped(), "world": first.read()}))
     return json.loads(result.read_text())
+
+
+@pytest.fixture(scope="session")
+def created(tmp_path_factory) -> dict:
+    """ONE full create per test session (`_once`)."""
+    return _once(tmp_path_factory, "created", lambda job: job.create())
 
 
 @pytest.fixture()
@@ -281,6 +297,37 @@ def ready_world(created: dict) -> dict:
 
 def _from_ready(job: Job, ready_world: dict) -> None:
     job.write(copy.deepcopy(ready_world))
+
+
+MARKER = f"gs://{BUCKET}/tenants/{TENANT}/.tenant"
+
+
+@pytest.fixture(scope="session")
+def rerun(created: dict, tmp_path_factory) -> dict:
+    """ONE admin-retried create over a complete workspace (`_once`), whose
+    marker an earlier run wrote. Two tests read it: the full re-run changes
+    nothing, and the marker is left as it is. Each was its own ~40 s run of
+    the same script over the same world but the marker's text (#1334)."""
+    assert created["returncode"] == 0, created["stderr"][-6000:]
+
+    def run(job: Job) -> subprocess.CompletedProcess[str]:
+        world = copy.deepcopy(created["world"])
+        world["calls"] = []
+        world["writes"] = []
+        world["objects"][MARKER] = "written by an earlier run"
+        world["firestore"][f"workspaces/{TENANT}"]["fields"].update(
+            state=_s("failed"),
+            retry={"mapValue": {"fields": {"by": _s(ADMIN), "at": {"timestampValue": "2099-01-01T00:00:00Z"}}}})
+        job.write(world)
+        return job.create()
+
+    return _once(tmp_path_factory, "rerun", run)
+
+
+def _rerun_job(job: Job, rerun: dict) -> subprocess.CompletedProcess[str]:
+    """`rerun`'s result, and its world in `job`, as if `job` had run it."""
+    job.write(rerun["world"])
+    return subprocess.CompletedProcess([], rerun["returncode"], rerun["stdout"], rerun["stderr"])
 
 
 # ---------------------------------------------------------------------------
@@ -529,12 +576,8 @@ def test_a_rerun_after_a_failure_makes_only_what_is_missing(job: Job) -> None:
     assert not any("add-iam-policy-binding" in c and c[0] in ("iam", "storage") for c in changed)
 
 
-def test_a_full_rerun_on_a_complete_workspace_changes_nothing(job: Job, ready_world: dict) -> None:
-    _from_ready(job, ready_world)
-    job.edit(lambda w: w["firestore"][f"workspaces/{TENANT}"]["fields"].update(
-        state=_s("failed"),
-        retry={"mapValue": {"fields": {"by": _s(ADMIN), "at": {"timestampValue": "2099-01-01T00:00:00Z"}}}}))
-    proc = job.create()
+def test_a_full_rerun_on_a_complete_workspace_changes_nothing(job: Job, rerun: dict) -> None:
+    proc = _rerun_job(job, rerun)
     out = _out(proc)
     assert proc.returncode == 0, out
     changed = _changes(job.calls("gcloud"))
@@ -620,7 +663,6 @@ def test_a_stale_bucket_binding_goes_to_the_owner_and_is_never_removed(job: Job)
     assert not any("remove-iam-policy-binding" in c for c in job.calls("gcloud"))
 
 
-MARKER = f"gs://{BUCKET}/tenants/{TENANT}/.tenant"
 UPLOAD = f"https://storage.googleapis.com/upload/storage/v1/b/{BUCKET}/o"
 
 
@@ -646,15 +688,10 @@ def test_the_marker_is_one_create_only_upload(created: dict) -> None:
     assert json.loads(created["world"]["objects"][MARKER]) == {"tenant_id": TENANT, "workspace_id": WORKSPACE}
 
 
-def test_an_existing_marker_is_left_as_it_is(job: Job, ready_world: dict) -> None:
+def test_an_existing_marker_is_left_as_it_is(job: Job, rerun: dict) -> None:
     """A re-run meets its own marker: the upload answers 412, which is "already
     there", and A5 is done without reading or replacing it."""
-    _from_ready(job, ready_world)
-    job.edit(lambda w: w["objects"].update({MARKER: "written by an earlier run"}))
-    job.edit(lambda w: w["firestore"][f"workspaces/{TENANT}"]["fields"].update(
-        state=_s("failed"),
-        retry={"mapValue": {"fields": {"by": _s(ADMIN), "at": {"timestampValue": "2099-01-01T00:00:00Z"}}}}))
-    proc = job.create()
+    proc = _rerun_job(job, rerun)
     out = _out(proc)
     assert proc.returncode == 0, out
     assert _steps(job.record())["A5"] == "done", out
@@ -941,22 +978,29 @@ def test_verify_accepts_terraforms_documents_on_a_migrated_record_only(job: Job,
     assert proc.returncode == 0, _out(proc)
     assert _field(job.record(), "state") == "ready"
     assert _steps(job.record())["A9"] == "done"
-    # The same documents on a record the job made: A8 wrote every field as
-    # checked, so the strict check refuses each one that differs, by name.
-    # (jq reads 8.0 and 8 as one number, so the double passes both checks.)
+
+
+# The same documents on a record the job made: A8 wrote every field as
+# checked, so the strict check refuses each one that differs, by name.
+# (jq reads 8.0 and 8 as one number, so the double passes both checks.)
+# Each case was a third of the test above, run one after another on one
+# worker from a fresh ready world; as cases they run side by side (#1334).
+JOB_MADE_REFUSES = {
+    "tenant": (_terraform_era_tenant, "tenant",
+               "tenant document's fields principal, namespace, capacity_units are not as the record specifies\n"),
+    "pool": (None, "pool", "pool document's fields hard_limit are not as the record specifies\n"),
+}
+
+
+@pytest.mark.parametrize("tenant_change,document,line", JOB_MADE_REFUSES.values(), ids=JOB_MADE_REFUSES.keys())
+def test_verify_refuses_terraforms_documents_on_a_job_made_record(
+        job: Job, ready_world: dict, tenant_change, document: str, line: str) -> None:
     _from_ready(job, ready_world)
-    job.edit(_terraform_docs(_terraform_era_tenant, _terraform_era_pool))
+    job.edit(_terraform_docs(tenant_change, _terraform_era_pool))
     proc = job.run("--workspace", WORKSPACE, "--mode", "verify")
     assert proc.returncode == 1, _out(proc)
-    assert _field(job.record(), "failure", "object") == "tenant document"
-    assert "tenant document's fields principal, namespace, capacity_units are not as the record specifies\n" \
-        in proc.stderr, _out(proc)
-    _from_ready(job, ready_world)
-    job.edit(_terraform_docs(None, _terraform_era_pool))
-    proc = job.run("--workspace", WORKSPACE, "--mode", "verify")
-    assert proc.returncode == 1, _out(proc)
-    assert _field(job.record(), "failure", "object") == "pool document"
-    assert "pool document's fields hard_limit are not as the record specifies\n" in proc.stderr, _out(proc)
+    assert _field(job.record(), "failure", "object") == f"{document} document"
+    assert line in proc.stderr, _out(proc)
 
 
 def _mismatched_tenant(fields: dict) -> None:
