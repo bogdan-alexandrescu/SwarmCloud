@@ -99,7 +99,6 @@ async function mount(reads: Reads): Promise<HTMLElement> {
 afterEach(() => {
   cleanup()
   document.body.innerHTML = ''
-  localStorage.clear()
   for (const fn of Object.values(api)) fn.mockReset()
 })
 
@@ -142,36 +141,34 @@ describe('V176: Needs a look holds the room it last drew while its checks read',
   }
   const skeletons = (el: HTMLElement): number => el.querySelectorAll('#ov-needs .ov-atts[aria-busy="true"] .ov-att.is-skel').length
 
-  // MUTATION: draw the single skeleton card back, whatever was stored.
-  it('reserves as many skeleton cards as the row last settled at', async () => {
-    localStorage.setItem(Overview.NEEDS_ROOM_PREF, '6')
+  it('reserves one card before the row has ever settled', async () => {
+    vi.resetModules()
+    const fresh = await import('../Overview')
+    expect(fresh.needsRoom()).toBe(1)
+  })
+
+  // MUTATION: draw the single skeleton card back, whatever was kept.
+  it('reserves as many skeleton cards as the row last settled at, one to twelve', async () => {
+    Overview.keepNeedsRoom(6)
     const el = pending()
     await new Promise((r) => setTimeout(r, 5))
     expect(skeletons(el)).toBe(6)
-  })
-
-  it('reserves one card before the row has ever settled, and never more than twelve', async () => {
-    localStorage.removeItem(Overview.NEEDS_ROOM_PREF)
-    expect(Overview.needsRoom()).toBe(1)
-    localStorage.setItem(Overview.NEEDS_ROOM_PREF, '400')
+    Overview.keepNeedsRoom(400)
     expect(Overview.needsRoom()).toBe(12)
-    localStorage.setItem(Overview.NEEDS_ROOM_PREF, 'junk')
+    Overview.keepNeedsRoom(0)
     expect(Overview.needsRoom()).toBe(1)
-    localStorage.removeItem(Overview.NEEDS_ROOM_PREF)
-    const el = pending()
-    await new Promise((r) => setTimeout(r, 5))
-    expect(skeletons(el)).toBe(1)
   })
 
   // MUTATION: drop the `keepNeedsRoom` effect.
   it('remembers how many cards it drew once every check has run', async () => {
-    localStorage.removeItem(Overview.NEEDS_ROOM_PREF)
+    Overview.keepNeedsRoom(9)
     const tasks = Array.from({ length: 3 }, (_, i) => task({ id: `tsk_f${i}`, state: 'FAILED', completed_at: ago(i + 1), step_id: `s${i}` }))
     const el = await mount({ tasks: ok({ tasks, tenant_id: 'eng', next_page_token: null } as TaskPage) })
     expect(el.querySelector('#ov-needs .ov-atts[aria-busy="true"]'), 'the checks never settled').toBeNull()
     const cards = el.querySelectorAll('#ov-needs .ov-att:not(.is-skel)').length
     expect(cards).toBeGreaterThan(0)
-    expect(localStorage.getItem(Overview.NEEDS_ROOM_PREF)).toBe(String(cards))
+    expect(cards).not.toBe(9)
+    expect(Overview.needsRoom()).toBe(cards)
   })
 })
 

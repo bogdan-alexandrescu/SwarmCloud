@@ -44,7 +44,6 @@ import { HelpCard, HelpNote, phoneWidth } from './HelpCard'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
 import { Button, Dash, NamedMark, Skeleton, StateMark, ToneMark, UsageTrack, WarnMark, type TrackTone } from './components'
 import { Absent, Mark } from './primitives'
-import { safeStorage } from './panes'
 import { disabledSentence } from './ProfileMatrix'
 import { AGED_AFTER_MS, CountNote, PageHead, RefreshControl, staleFoot, timeAgo, useClaimPageAge, useIdleStop, usePoll } from './Shell'
 import { AGE_TICK_MS, PageClock, usePageClock, useNow as useAgeClock } from './useNow'
@@ -844,29 +843,24 @@ function Reading({ rows = 3 }: { rows?: number }) {
  * 0.297 at 1440 and 0.685 at 400, where Agents measures 0.001-0.004. A fixed
  * reservation is wrong one way or the other -- eight held cards collapsing
  * to one jumped as far as one growing to ten -- so the row reserves what it
- * last settled at on this device, and one card before it has ever settled.
- * A height hint and nothing else: the skeleton is `aria-hidden`, so the
- * stored number is never drawn or read out as a count. `safeStorage` is the
- * guarded handle; a private window simply reserves one card.
+ * last settled at, and one card before it has ever settled.
+ *
+ * IN MEMORY, FOR THIS PAGE LOAD: coming back to the Overview from another
+ * screen holds the room; a reload starts from one card again. Keeping it
+ * across reloads is a `swarm.` storage key, and every such key must be
+ * classified for sign-out in signoutState.ts, which is not this lane's file
+ * (asked in VQA2-R12's PR). A height hint and nothing else: the skeleton is
+ * `aria-hidden`, so the number is never drawn or read out as a count.
  */
-export const NEEDS_ROOM_PREF = 'swarm.overview.needs'
 const NEEDS_ROOM_MAX = 12
+let needsHeld: number | null = null
 
 export function needsRoom(): number {
-  try {
-    const n = Number.parseInt(safeStorage()?.getItem(NEEDS_ROOM_PREF) ?? '', 10)
-    return Number.isFinite(n) ? Math.min(Math.max(n, 1), NEEDS_ROOM_MAX) : 1
-  } catch {
-    return 1
-  }
+  return needsHeld ?? 1
 }
 
-function keepNeedsRoom(cards: number): void {
-  try {
-    safeStorage()?.setItem(NEEDS_ROOM_PREF, String(Math.min(Math.max(cards, 1), NEEDS_ROOM_MAX)))
-  } catch {
-    // Storage that refuses keeps nothing: the next first draw reserves one card.
-  }
+export function keepNeedsRoom(cards: number): void {
+  needsHeld = Math.min(Math.max(cards, 1), NEEDS_ROOM_MAX)
 }
 
 function NeedsALook({ checks }: { checks: Check[] }) {
