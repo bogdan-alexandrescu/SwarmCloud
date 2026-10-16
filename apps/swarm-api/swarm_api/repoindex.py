@@ -138,6 +138,8 @@ from .repositories import (
     INTERVAL_HOURS_DEFAULT,
     MIN_CHANGE_INTERVAL_DEFAULT,
     ON_CHANGE_DEFAULT,
+    ON_CHANGE_POLLED,
+    ON_CHANGE_PUSHED,
     Repositories,
     settle_relation,
 )
@@ -994,7 +996,8 @@ def poll_decision(
 ) -> PollDecision:
     """Whether the poll queues a run of `head`, and why (§3.3). Pure.
 
-    CHANGE when `on_change` is `poll`, the head is not the BUILT index
+    CHANGE when `on_change` is `poll` or `webhook` (poll and push, graph-service.md
+    §6.2), the head is not the BUILT index
     (`current_sha`, what promotion recorded), and `min_change_interval_minutes`
     has passed since the newest run was queued. Only the built index counts:
     a run that was given this head and then failed, was refused at promotion
@@ -1012,7 +1015,7 @@ def poll_decision(
     if not head:
         return PollDecision(None, "no_head")
     behind = head != index.get("current_sha")
-    on_change = index.get("on_change", ON_CHANGE_DEFAULT) == "poll"
+    on_change = index.get("on_change", ON_CHANGE_DEFAULT) in ON_CHANGE_POLLED
     if on_change and behind:
         last_queued = _parse_time((newest_run or {}).get("queued_at"))
         minimum = timedelta(minutes=_int_or(
@@ -2810,21 +2813,7 @@ class RepoIndex:
                 report.registrations += 1
                 seen.append((str(record.get("repo_id") or ""),
                              f"{record.get('owner')}/{record.get('repo')}"))
-                try:
-                    self._poll_one(tenant_id, record, tenant, owner_auth, report)
-                except ApiError as failed:
-                    code = failed.code
-                except Exception as failed:  # one registration never stops the pass
-                    code = "internal"
-                    log.warning("repo index poll tenant=%s repo_id=%s error=%s",
-                                tenant_id, record.get("repo_id"), type(failed).__name__)
-                else:
-                    continue
-                report.failures.append({"repo_id": record["repo_id"], "code": code})
-                self._record_poll(tenant_id, record["repo_id"], head=None,
-                                  outcome="failed", reason=code)
-                log.info("repo index poll tenant=%s repo_id=%s outcome=%s",
-                         tenant_id, record["repo_id"], code)
+                self._poll_guarded(tenant_id, record, tenant, owner_auth, report)
             if report.truncated or token is None:
                 break
         # git-tokens.md §5.3: the daily token x repository re-verification
@@ -2847,6 +2836,80 @@ class RepoIndex:
             report.coalesced, len(report.failures), report.truncated,
         )
         return report
+
+    def push(
+        self, forge: str, owner: str, repo: str, *,
+        owner_auth_for: Callable[[str], Callable[[Mapping[str, Any]], AuthContext]],
+        page_size: int, clock: Callable[[], float] = time.monotonic,
+    ) -> PollReport:
+        """A push to `owner/repo`'s default branch: poll it now, in every
+        workspace that registered it (docs/design/graph-service.md §6.2).
+
+        A HINT THAT MAKES THE NEXT POLL HAPPEN NOW, not a new decision path:
+        each registration goes through `_poll_one`, exactly as a tick does, so
+        the push and the poll can never disagree. That path re-reads the head
+        with the registration's OWN tenant's token, honours `paused`,
+        `backoff`, the in-flight rule and `min_change_interval_minutes`, and
+        submits only as `owner_auth_for(tenant_id)(record)` -- the
+        registration's creator, in the tenant the stored document names
+        (decision 3, invariant 9). Two workspaces that registered one public
+        repository each get their own read, their own run and their own index.
+
+        Nothing of the push but the name arrives here, so no commit sha from a
+        payload is read, trusted or stored. Only registrations whose
+        `on_change` is `webhook` are polled; `poll` and `off` are counted as
+        held (`on_change_<value>`) and not read. Bounded like a tick
+        (`POLL_MAX_REGISTRATIONS`, `POLL_BUDGET_SECONDS`): what a truncated
+        push leaves, the next tick reads.
+        """
+        report = PollReport()
+        started = clock()
+        auths: dict[str, Callable[[Mapping[str, Any]], AuthContext]] = {}
+        for record in self.registrations.registrations_of(forge, owner, repo,
+                                                          page_size=page_size):
+            if (report.registrations >= POLL_MAX_REGISTRATIONS
+                    or clock() - started >= POLL_BUDGET_SECONDS):
+                report.truncated = True
+                break
+            report.registrations += 1
+            tenant_id = str(record["tenant_id"])
+            on_change = (record.get("index") or {}).get("on_change", ON_CHANGE_DEFAULT)
+            if on_change != ON_CHANGE_PUSHED:
+                reason = f"on_change_{on_change}"
+                report.held[reason] = report.held.get(reason, 0) + 1
+                continue
+            if tenant_id not in auths:
+                auths[tenant_id] = owner_auth_for(tenant_id)
+            self._poll_guarded(tenant_id, record, self.tenant(tenant_id),
+                               auths[tenant_id], report)
+        log.info(
+            "repo index push registrations=%d read=%d submitted=%d coalesced=%d "
+            "failures=%d truncated=%s", report.registrations, report.read,
+            report.submitted, report.coalesced, len(report.failures), report.truncated,
+        )
+        return report
+
+    def _poll_guarded(
+        self, tenant_id: str, record: Mapping[str, Any], tenant: Tenant,
+        owner_auth: Callable[[Mapping[str, Any]], AuthContext], report: PollReport,
+    ) -> None:
+        """`_poll_one`, with one registration's failure reported by code and
+        stored as its `last_poll`, never raised: the pass goes on."""
+        try:
+            self._poll_one(tenant_id, record, tenant, owner_auth, report)
+        except ApiError as failed:
+            code = failed.code
+        except Exception as failed:  # one registration never stops the pass
+            code = "internal"
+            log.warning("repo index poll tenant=%s repo_id=%s error=%s",
+                        tenant_id, record.get("repo_id"), type(failed).__name__)
+        else:
+            return
+        report.failures.append({"repo_id": record["repo_id"], "code": code})
+        self._record_poll(tenant_id, record["repo_id"], head=None,
+                          outcome="failed", reason=code)
+        log.info("repo index poll tenant=%s repo_id=%s outcome=%s",
+                 tenant_id, record["repo_id"], code)
 
     def _poll_one(
         self, tenant_id: str, record: Mapping[str, Any], tenant: Tenant,
@@ -2892,7 +2955,7 @@ class RepoIndex:
             record = self.registrations.get(tenant_id, repo_id)
             index = record.get("index") or {}
         newest = next(iter(self.runs(tenant_id, repo_id, limit=1)), None)
-        reads = index.get("on_change", ON_CHANGE_DEFAULT) == "poll" or interval_due(
+        reads = index.get("on_change", ON_CHANGE_DEFAULT) in ON_CHANGE_POLLED or interval_due(
             index, newest_run=newest, created_at=record.get("created_at"), now=self._now()
         )
         if reads:

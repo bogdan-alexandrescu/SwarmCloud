@@ -150,9 +150,19 @@ MAX_READABLE_PAGES = 10
 # The index settings (repo-index.md §3.3): default and range, side by side.
 INTERVAL_HOURS_DEFAULT = 24
 INTERVAL_HOURS_RANGE = (1, 168)
-#: `webhook` is phase 3 (RI8): no route verifies a push yet, so a registration
-#: that asked for it would never be indexed on change. Refused until it exists.
-ON_CHANGE_VALUES = ("poll", "off")
+#: `poll` reads the head every five minutes; `webhook` is "poll AND push"
+#: (docs/design/graph-service.md §6.2): the same poll, plus a GitHub push to the
+#: default branch polls the registration at once through
+#: `POST /v1/admin/repositories/push`; `off` is neither. The poll stays under
+#: `webhook` because GitHub does not retry a failed delivery (owner decision 2).
+ON_CHANGE_VALUES = ("poll", "webhook", "off")
+#: The values the five-minute poll reads a moved head for, and the one a push does.
+ON_CHANGE_POLLED = ("poll", "webhook")
+ON_CHANGE_PUSHED = "webhook"
+#: Stays `poll` until the receiver (`swarm-github-hooks`, lane GS-HOOKS) is
+#: live and the App's webhook is ticked: before that, `webhook` would promise
+#: pushes that nothing delivers (§6.2: it "becomes the default ... once the
+#: receiver is live").
 ON_CHANGE_DEFAULT = "poll"
 MIN_CHANGE_INTERVAL_DEFAULT = 30
 MIN_CHANGE_INTERVAL_RANGE = (10, 1440)
@@ -492,7 +502,7 @@ class IndexSettings(_Body):
     (`current_sha`, `head_sha`, ...) are written by index runs, never a caller."""
 
     interval_hours: StrictInt | Literal["off"] | None = None
-    on_change: Literal["poll", "off"] | None = None
+    on_change: Literal["poll", "webhook", "off"] | None = None
     min_change_interval_minutes: StrictInt | None = Field(
         default=None, ge=MIN_CHANGE_INTERVAL_RANGE[0], le=MIN_CHANGE_INTERVAL_RANGE[1]
     )
@@ -594,6 +604,30 @@ class RepositoryPatch(_Body):
         ):
             raise ValueError("a PATCH must change at least one setting")
         return self
+
+
+class RepositoryPush(_Body):
+    """What `swarm-github-hooks` forwards of a verified push: the repository's
+    name and nothing else (docs/design/graph-service.md §6.2 step 4).
+
+    extra="forbid": a payload's `after` sha, its `ref` or a tenant is refused,
+    never ignored, so nothing from the payload but the name can be read,
+    trusted or stored. The head is read from GitHub with each workspace's own
+    credential (`repoindex.RepoIndex.push`)."""
+
+    forge: Literal["github"]
+    full_name: str = Field(min_length=3, max_length=141)
+
+    @field_validator("full_name")
+    @classmethod
+    def _full_name(cls, value: str) -> str:
+        owner, repo = parse_repository(value)
+        return f"{owner}/{repo}"
+
+    @property
+    def owner_repo(self) -> tuple[str, str]:
+        owner, _, repo = self.full_name.partition("/")
+        return owner, repo
 
 
 # --------------------------------------------------------------------------
@@ -837,6 +871,42 @@ class Repositories:
             rows = rows[:limit]
             next_token = _encode_cursor(rows[-1]["repo_id"])
         return rows, next_token
+
+    def registrations_of(
+        self, forge: str, owner: str, repo: str, *, page_size: int
+    ) -> Iterator[dict[str, Any]]:
+        """Every registration of `forge` `owner/repo`, in EVERY workspace that
+        registered it (docs/design/graph-service.md §6.2), matched on the
+        lower-cased `owner/repo` as `repo_id_for` keys a registration.
+
+        The one read here that is not filtered on a tenant, because a push
+        names a repository and not a workspace. It returns the documents and
+        decides nothing: the caller handles each one in the tenant the
+        document itself names, with that tenant's credential (invariant 9).
+        Ordered by the document id under one equality filter, as `list` is,
+        so it needs no composite index. Not by computing each tenant's
+        `repo_id_for`: a registration can exist without a tenant document
+        (`routes.repositories` falls back to a bare `Tenant`), and walking
+        the tenants would miss it.
+        """
+        wanted = f"{owner}/{repo}".lower()
+        query = self._db.collection(COLLECTION).where(
+            filter=FieldFilter("forge", "==", forge)
+        ).order_by("__name__")
+        after: str | None = None
+        while True:
+            page = query if after is None else query.start_after({"__name__": after})
+            snaps = list(page.limit(page_size).stream())
+            for snap in snaps:
+                row = snap.to_dict() or {}
+                # The filter again, in the application, as `list` does.
+                if (row.get("forge") == forge and row.get("tenant_id")
+                        and _REPO_ID.match(str(row.get("repo_id") or ""))
+                        and f"{row.get('owner')}/{row.get('repo')}".lower() == wanted):
+                    yield row
+            if len(snaps) < page_size:
+                return
+            after = snaps[-1].id
 
     def registered(self, tenant_id: str, repo_ids: list[str]) -> set[str]:
         """Which of `repo_ids` the tenant has registered: one batched read."""
