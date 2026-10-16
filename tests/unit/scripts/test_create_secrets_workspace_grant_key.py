@@ -77,3 +77,42 @@ def test_help_names_the_slot():
                           env={**os.environ, "SWARM_ENV_FILE": "/nonexistent", "NO_COLOR": "1"})
     assert proc.returncode == 0, proc.stderr
     assert "--workspace-grant-key" in proc.stdout and KEY in proc.stdout
+
+
+def _declared_previous_version_settings() -> set[str]:
+    """Every `<variable>.previous_version` terraform/infra declares as an
+    object attribute, plus every bare `*_previous_version` variable."""
+    import re
+
+    from .test_create_secrets_egress import ROOT
+
+    declared: set[str] = set()
+    for tf in (ROOT / "terraform" / "infra").glob("*.tf"):
+        text = tf.read_text()
+        for block in re.finditer(r'variable\s+"([a-z0-9_]+)"\s*\{(.*?)\n\}', text, re.S):
+            name, body = block.group(1), block.group(2)
+            if name.endswith("previous_version"):
+                declared.add(name)
+            if re.search(r"^\s*previous_version\s*=", body, re.M):
+                declared.add(f"{name}.previous_version")
+    return declared
+
+
+def test_the_rotation_line_names_a_setting_terraform_declares(tmp_path):
+    # #1334: the dim after the mint (and the header --help prints) told the
+    # operator to set `workspace_grant_key_previous_version`, which no
+    # variable declares; terraform refuses an undeclared tfvars key.
+    import re
+
+    declared = _declared_previous_version_settings()
+    assert "workspace_grant_attestation.previous_version" in declared
+    rc, out, _calls = _run(tmp_path, "--workspace-grant-key", existing=KEY)
+    assert rc == 0, out
+    helped = subprocess.run(["bash", str(SCRIPT), "--help"], capture_output=True, text=True,
+                            timeout=30, check=False,
+                            env={**os.environ, "SWARM_ENV_FILE": "/nonexistent",
+                                 "NO_COLOR": "1"}).stdout
+    for printed in (out, helped):
+        named = set(re.findall(r"[a-z0-9_.]*previous_version", printed))
+        assert "workspace_grant_attestation.previous_version" in named, printed
+        assert named <= declared | {"previous_version"}, named - declared
