@@ -751,3 +751,18 @@ enable_typesafe_forwarder = true
 # serving references the key from swarm-api, and a reference to a secret with
 # no version stops swarm-api starting.
 enable_graph_service = true
+
+# Step 3 of 3 (owner decision 2026-10-16, "run dark", recorded on #1384):
+# serve, but do not answer. `serve` puts SWARM_GRAPH_TICKET_KEY on swarm-api
+# by reference and renders the swarm-graph manifest the release's "roll
+# swarm-graph" step applies (two pods, 1 CPU / 3 GiB each, requests == limits).
+# It merges only after `scripts/create-secrets.sh --graph-ticket-key` has
+# written the key's first version (version 1, 2026-10-16 ~12:03Z): a Cloud
+# Run reference to a secret with no version stops swarm-api starting.
+# `enabled` stays false, so swarm-api mints
+# no graph ticket and no workspace uses the service until the owner turns it
+# on and a workspace's code_intelligence.graph_delivery is `service`.
+graph_service = {
+  serve   = true
+  enabled = false
+}
