@@ -74,6 +74,14 @@ is only submitted for a pull request whose head branch is the root's own
 a round at another branch. With no round left, red wakes the step, which
 refuses `checks_failed`.
 
+A FAILURE A PR-SIDE FIX IS ALREADY ON IS NOT THE MERGE'S TO FIX (FIX-MERGE-2,
+epic #1334). The PR-side fixer (scripts/ci-fix.sh) claims its failing
+(repository, pull request, head, run) in `cifix.CLAIMS`. While the task
+holding a claim at the head read is not terminal (`cifix.live_claim`, the
+liveness `stamp` itself refuses on), the tick claims no round and asks for no
+re-run: the merge stays parked on CI_PENDING, as for any wait. Once that task
+is terminal the red reading is handed off as above.
+
 A CONFLICTING PULL REQUEST IS NEVER WAITED ON FOR CHECKS (#1076). GitHub
 runs no checks on a pull request that conflicts with its base, so a park
 that read them would wait out the worker's six hours for nothing (PR 1028:
@@ -164,7 +172,7 @@ from swarm_rollup import is_fix_round_step
 
 from . import gitidentity
 from .auth import AuthContext
-from .cifix import BRANCH_PREFIX
+from .cifix import BRANCH_PREFIX, live_claim
 from .continuation import TASK_ID_RE
 from .errors import ApiError, Forbidden, NotFound, UpstreamUnavailable
 from .forgechecks import GREEN, RED, CiReading, evaluate, required_status_checks
@@ -788,6 +796,17 @@ def _on_red(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], ref: IssueRe
     asked = _rounds_asked(_mapping(doc.get("metadata")))
 
     def first() -> tuple[str, None] | None:
+        # A PR-side fix (scripts/ci-fix.sh, `cifix.stamp`) already on this
+        # head's failure: a round, or a re-run, would be a second hand on the
+        # branch it pushes to. Stay parked on CI_PENDING until it ends; its
+        # push moves the head, and a red reading after it is ours again.
+        held = live_claim(db, tenant.tenant_id, str(doc.get("repository_url") or ""),
+                          ref.number, head, now)
+        if held is not None:
+            log.info("merge wake %s tenant=%s: CI fix round waits: PR-side fix %s (%s) "
+                     "holds pull request #%d at %s", task_id, tenant.tenant_id,
+                     held.get("task_id"), held.get("workflow_id"), ref.number, head[:12])
+            return _WAITING, None
         return _rerun_first(ctx, db, tenant.tenant_id, doc, ref, head, read, token, now)
 
     def build(target: str, round_no: int, resource_class: str | None) -> WorkflowCreate:
