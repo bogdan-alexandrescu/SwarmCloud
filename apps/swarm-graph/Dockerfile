@@ -5,6 +5,11 @@
 # reads that tenant's pinned graph from GCS with its own identity, and answers
 # the swarm-graph MCP tools over streamable HTTP, through per-tenant caches.
 #
+# Built by every release from GS-INFRA (PR 1399) on, which put it in
+# build-images.sh's ALL_TARGETS. A pull request builds only the images its
+# diff reaches, so this line is what made PR 1399's build check build and scan
+# it before the first release did.
+#
 # Beside the service, as apps/swarm-typesafe-fwd/Dockerfile is: `scripts/build-images.sh`
 # `find_recipe()` accepts `apps/<target>/Dockerfile`. Build from the
 # REPOSITORY ROOT -- the frozen contract, the redaction package and the worker
