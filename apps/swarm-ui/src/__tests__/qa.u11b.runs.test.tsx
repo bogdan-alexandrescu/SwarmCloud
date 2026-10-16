@@ -154,11 +154,11 @@ describe('D11: a reference heading and the list\'s columns fit', () => {
     expect(container.querySelector('.rn-run.is-ref .c-phead > .sub'), 'a sub-line is back in the head').toBeNull()
     const acts = container.querySelector('.rn-run.is-ref .c-phead > .c-acts')!
     expect(acts).not.toBeNull()
-    // V096 (2026-10-11): the actions are the head's second row -- a 100%
-    // basis, never wider than the column -- since the `?` now shares the
-    // heading's row. Never a basis as wide as their text.
+    // V208 (2026-10-16): the actions follow the heading and its `?` on their
+    // row when they fit, as on the workflow page, and wrap to the next when
+    // they do not -- shrinking, and never wider than the column.
     const flex = painted(acts, ['flex', 'flex-basis'], WIDE) ?? ''
-    expect(flex, 'the actions keep a basis as wide as their text').toBe('1 0 100%')
+    expect(flex).toBe('0 1 auto')
     expect(painted(acts, 'max-width', WIDE)).toBe('100%')
     expect(painted(acts, 'min-width', WIDE)).toBe('0')
   })
@@ -175,7 +175,7 @@ describe('D11: a reference heading and the list\'s columns fit', () => {
     }
     const id = row.querySelector('td[data-label="Run"] a')!
     expect(room('run'), 'the run id is cut').toBeGreaterThanOrEqual(textPx(RUN_ID, id, WIDE))
-    const ref = row.querySelector('td[data-label="Issue"] .rn-cut')!
+    const ref = row.querySelector('td[data-label="Issue"] .rn-refcut')!
     expect(room('issue'), 'the issue reference is cut').toBeGreaterThanOrEqual(textPx(REF, ref, WIDE))
   })
 })
