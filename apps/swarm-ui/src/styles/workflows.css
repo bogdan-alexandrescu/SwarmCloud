@@ -73,6 +73,14 @@
   /* A COST IS NEVER CUT (visual QA Q9): "not re…" was a cut word. The
      column holds "$12.3456 3/5"; an unreported cost is a dash. */
   .wfl .wfl-table td[data-col="cost"] { text-overflow: clip; white-space: nowrap; }
+  /* THE COVERAGE IS ITS OWN LINE UNDER THE FIGURE (V163, #1427). On the
+     figure's line, "$0.426 3 of 4 reported" was 172-179px in a 100px cell
+     and the clip took "reported" -- the word that says the figure is a
+     floor, the one part that must not go. The figure stays one line; the
+     coverage wraps at its spaces ("3 of 4" / "reported") before anything of
+     it is cut. The column stays 100px: the name's floors at 1056 (D8, R10)
+     have nothing to give, and the row is already three lines tall. */
+  .wfl .wfl-table td[data-col="cost"] .wf-spend-cov { display: block; margin-left: 0; white-space: normal; }
   .wfl .wfl-table td[data-col="owner"] { white-space: nowrap; }
   /* At the micro size, as the row's other secondary facts are: it is what
      lets both hold their longest value and the name keep 168px at 1056. */
@@ -134,6 +142,16 @@
     border: 0;
     background: none;
   }
+  /* A FAILED CARD IS RED ACROSS THE WHOLE CARD (V101, #1427). The cells'
+     `background: none` above lost the first cell to the held-column failed
+     rule in styles.css (`.is-scroll > ... tr.wfl-row.is-failed > td:first-child`,
+     a class more), so the State cell alone was tinted: a red bar behind
+     "failed" that stopped short of the card's edge. A card is one box, so
+     the ROW takes the tint -- across the gaps and the padding too -- and no
+     cell paints one, the held one included (`.is-scroll` and `:not([colspan])`
+     are what out-rank that rule). */
+  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row.is-failed { background: var(--s-badb); }
+  .wfl > .wfl-scroll.is-scroll > .wfl-table > tbody > tr.wfl-row.is-failed > td:not([colspan]) { background: none; }
   .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="workflow"] { grid-area: name; }
   .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="state"] { grid-area: state; }
   .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="duration"] { grid-area: duration; text-align: right; }
@@ -202,8 +220,6 @@
   gap: var(--ctl-s2) var(--ctl-s3);
 }
 .wfp > .wfp-head > .wfp-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); }
-.wfp-head .wfp-cost .wf-spend { display: inline; }
-
 
 /* THE BODY CARD KEEPS ALL FOUR EDGES on the page. `styles.css` took its
    border away (`.wf-card.is-page`), which left a card with no top edge under
@@ -239,6 +255,23 @@
    through the `<p>`: collapsed, the line was 12px where the loaded note's is
    17.4, and the tabs still moved by the difference. */
 .wfp-skel-sum { display: flow-root; }
+/* EACH HEAD CHIP'S BAR IS THE HEIGHT OF THE TEXT IT STANDS FOR (V103,
+   #1427). A bar's margins are a `--lh-meta` line's half-leading, which made
+   every placeholder chip 27.4px; the loaded state and policy chips are set
+   at `--lh-flush`, 22px. On one line the cost chip (`.wf-spend`, 27.4px) hid
+   the difference; on a phone, where the cost has its own line, the first
+   line was 5px taller while the page read. The cost's bar, in `.wfp-cost`,
+   keeps the full line, as the loaded cost does. */
+.wfp.is-loading .wfp-chips > .c-chip > .wfl-skel { margin: calc((var(--lh-flush) * 1em - 1em) / 2) 0; }
+/* AND THE COST CHIP IS ONE HEIGHT WHATEVER IT SAYS (V103). The figure
+   (`.wf-spend`) is set at `--lh-micro`, a 27.4px chip; "cost not reported",
+   which the head shows until the attempt read lands, was the chip's bare
+   12px line, 24px, so the read head was 101px, then 98, then 101 again,
+   and the tabs moved by 3px each time. It takes the figure's line less
+   the 1px of its own dashed underline: the chip is inline-flex, so the cell
+   is a block whose border adds to its height, and at the full line the
+   chip came out 28.4px (measured in Chromium, 2026-10-16). */
+.wfp-head .wfp-cost .wf-cell.is-absent { line-height: calc(var(--lh-micro) * 1em - 1px); }
 /* At a phone's column the loaded census is two lines (~90 characters at 12px
    in ~350px), so the placeholder is too; wider, it is one. */
 .wfp-skel-sum > .wfp-skel-sum-2 { display: none; margin-top: calc(var(--lh-micro) * 1em - 1em); }
@@ -251,6 +284,14 @@
      landed. The head's actions take their own row here whatever they say.
      Scoped by the back link this page alone draws before its head. */
   .wfp-back + .c-phead > .c-acts { flex: 1 0 100%; }
+  /* AND THE CHIPS ARE TWO LINES IN BOTH STATES (V103, #1427): the cost takes
+     a line of its own. Beside the state and `on failure: fail the workflow`
+     a short cost (`$0.0366`) fitted and a partial one (`$0.426 3 of 4
+     reported`) wrapped, so the loaded head was 71px or 101px by what the
+     cost said, and the reading head, which cannot know, was 71: the tabs
+     dropped ~30px when the read landed. The skeleton's cost bar is in the
+     same `.wfp-cost` slot (Workflows.tsx), so it takes the same line. */
+  .wfp-head > .wfp-chips > .wfp-cost { flex: 1 0 100%; }
 }
 
 /* THE INSPECTOR HEAD'S FIRST LINE IS THE WORKFLOW AND THE CLOSE BUTTON (V100).
@@ -283,6 +324,9 @@
 /* ◀ position ▶ as one unit that never wraps (browser QA D30); the shape after
    it shrinks and is cut, whole in its title. */
 .wf-scrub > .wf-scrub-nav { display: inline-flex; align-items: center; gap: var(--ctl-s2); flex: none; white-space: nowrap; }
+/* The table's counted figure, after the attempt stepper's unit (V200): the
+   position's own face, dim, as the shape after the same-step unit is. */
+.wf-scrub > .wf-scrub-counted { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
 .wf-scrub > .wf-scrub-shape { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wf-scrub-strip > li > .wf-mk { display: inline-flex; }
 
@@ -359,17 +403,28 @@
      px it has at the 980px minimum. */
   .wf-card .ctl-table.wf-table th[data-col="step"] { width: 96px; min-width: 96px; }
   .wf-card .ctl-table.wf-table.no-why th[data-col="step"] { width: auto; }
-  .wf-card .ctl-table.wf-table th[data-col="state"] { width: 136px; }
+  /* 126px: `skipped by verdict` beside its mark is 114px of 12px sans
+     (measured in Chromium, 2026-10-16) and 12px of padding. It was the
+     list's 136; the 10px went to Ran (V202, #1427). */
+  .wf-card .ctl-table.wf-table th[data-col="state"] { width: 126px; }
   .wf-card .ctl-table.wf-table th[data-col="runner"] { width: 96px; }
   .wf-card .ctl-table.wf-table th[data-col="waited"] { width: 108px; }
-  .wf-card .ctl-table.wf-table th[data-col="ran"] { width: 114px; }
+  /* 128px, not 114: `between attempts` is 115px of 12px mono and was cut
+     (V202, #1427); State and Tokens gave the 14px, so the columns still sum
+     to 920 and Why keeps 60px at the 980px minimum. These px widths are each
+     figure column's CEILING now: the head cell carries the column's own width
+     inline, its longest value in this table (`figureColumnWidths`), so Why
+     takes what they do not use. */
+  .wf-card .ctl-table.wf-table th[data-col="ran"] { width: 128px; }
   /* 'task unread' is 79px of 12px mono; at 70px it clipped (owner QA R8).
      Step gives the 22px: its name is one line cut with its title (D12), and
      Why keeps its 60px at the 980px minimum. */
   .wf-card .ctl-table.wf-table th[data-col="attempts"] { width: 92px; }
   .wf-card .ctl-table.wf-table th[data-col="inputs"] { width: 72px; }
   .wf-card .ctl-table.wf-table th[data-col="cost"] { width: 100px; }
-  .wf-card .ctl-table.wf-table th[data-col="tokens"] { width: 104px; }
+  /* 100px: `not reported`, its longest word, is 98.4px of 12px mono with
+     the padding; the 4px went to Ran (V202). */
+  .wf-card .ctl-table.wf-table th[data-col="tokens"] { width: 100px; }
   /* WHY WRAPS ONTO TWO LINES before it is cut (QA G3-10): `expecte…` and
      `Waiting o…` said nothing. The whole reason is still its title. */
   .wf-card .ctl-table.wf-table td[data-col="why"] { white-space: normal; }
@@ -394,8 +449,10 @@
   .wf-card .ctl-table.wf-table.is-scroll > table > thead { display: none; }
   .wf-card .ctl-table.wf-table.is-scroll > table > tbody { display: block; }
   /* `padding-left: 14px` (QA G3-34): the row's 4px state edge is an inset
-     shadow, and the 4px padding left every label flush against it. */
-  .wf-card .ctl-table.wf-table.is-scroll tr[data-step] { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; height: auto; padding: 6px 4px 6px 14px; border-bottom: 1px solid var(--line-soft); }
+     shadow, and the 4px padding left every label flush against it. THE RIGHT
+     IS 14px TOO (V204, #1427): at 4px the state word ended against the
+     tinted card's right edge, while every label sat well in from its left. */
+  .wf-card .ctl-table.wf-table.is-scroll tr[data-step] { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; height: auto; padding: 6px 14px 6px 14px; border-bottom: 1px solid var(--line-soft); }
   .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td { display: block; padding: 0; border: 0; overflow: visible; position: static; }
   .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td[data-col="step"] { flex: 1 1 60%; width: auto; min-width: 0; max-width: none; overflow: hidden; background: none; }
   .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td[data-col="state"] { flex: none; }
