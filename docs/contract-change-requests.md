@@ -91,6 +91,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 81 | `profiles.py`: `RUNTIME_TOOLS`, the runtime tools (`jev-browser`, `dev-browser`, `playwright`), their secret slots and the `browser_tool` values that launch them (workspace secrets request B, part of #1347) | ACCEPTED by the owner 2026-10-14 and APPLIED by the pull request that adds this line (proposed 2026-10-14; accepted on PR #1354) |
 | 82 | `models.py`: `SECRET_CONSUMER_KINDS`, `PLATFORM_COMPONENTS` and `consumer_name`, one spelling of a secret consumer (workspace secrets request C, part of #1347) | ACCEPTED by the owner 2026-10-14 and APPLIED by the pull request that adds this line (proposed 2026-10-14; accepted on PR #1354) |
 | 83 | `states.py`: no new park reason; a required secret slot with no grant parks `CREDENTIAL_MISSING` (workspace secrets request D, part of #1347) | ACCEPTED by the owner 2026-10-14 and APPLIED by the pull request that adds this line (proposed 2026-10-14; accepted on PR #1354) |
+| 84 | `profiles.py`: `claude-code-review` is the one CLOUD_RUN_JOB profile that carries the Jev client; move it to GKE_AUTOPILOT, or retire it under request 50 (JUDGE-GKE, part of #1347) | ACCEPTED as (b) by the owner 2026-10-16 (on PR 1422): retired under request 50, not moved; nothing to apply |
 
 ---
 
@@ -12175,7 +12176,10 @@ it is not a long provider wait inside a worker. 5-10 untouched.
 
 ## 84. `profiles.py`: `claude-code-review` is the one CLOUD_RUN_JOB profile that carries the Jev client; move it to GKE_AUTOPILOT, or retire it under request 50 (JUDGE-GKE)
 
-**Status:** open. Filed 2026-10-16 by lane JUDGE-GKE, part of #1347, after the
+**Status:** ACCEPTED as (b) by the owner 2026-10-16 (~11:35 PDT, on PR 1422 and
+#1347): `claude-code-review` is retired under request 50 and is not moved, so
+`profiles.py` is unchanged; it must move to GKE before it is ever re-enabled.
+Filed 2026-10-16 by lane JUDGE-GKE, part of #1347, after the
 owner's decision of 2026-10-16 (~11:20 PDT, on #1347): every attempt that
 judges with TypeSafe runs on GKE, so the key never enters a pod and
 SEC-RETIRE can remove every tenant worker's `-typesafe` grant.
