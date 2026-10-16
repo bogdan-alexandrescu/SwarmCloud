@@ -694,6 +694,20 @@ workspace_apply_publish = true
 # its default, "brave".
 search_tool_enabled = false
 
+# Workspace-secret grant attestation (SEC-GRANT-ATTEST, PR 1377;
+# terraform/infra/workspace_grant_key.tf,
+# docs/runbooks/workspace-grant-attestation.md). Step 2, served in dev as of
+# 2026-10-16 (owner chose "mint, serve, sign; required off" ~03:10 PDT):
+# version 1 of swarm-workspace-grant-key was added with
+# `scripts/create-secrets.sh --workspace-grant-key` before this was set, so
+# swarm-api's reference resolves. From this revision on, every grant a manager
+# ticks or unticks is signed. `required` stays false, the owner's "warn first,
+# flip later": with it on, every grant written before this revision would be
+# dropped at release until the attest route has signed it.
+workspace_grant_attestation = {
+  serve = true
+}
+
 # The decision-api tailnet egress (terraform/infra/tailscale.tf,
 # docs/runbooks/tailscale-egress.md). ON in dev as of 2026-10-15 (~04:25 PDT):
 # the owner stored the tag:swarmcloud OAuth client as swarm-tailscale-oauth
