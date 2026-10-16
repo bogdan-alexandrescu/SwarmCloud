@@ -2194,7 +2194,7 @@ function WorkflowSteps({
           // an element that rendered nothing, and the table drew an empty
           // 32px row and its margin -- a ~45px band between the facts and
           // the table, where the Graph has its toolbar.
-          head={usage.kind === 'ready' && usage.usage !== null ? sampleNote(usage.usage, workflow) : null}
+          head={usage.kind === 'ready' && usage.usage !== null ? SampleNote(usage.usage, workflow) : null}
         />
         <p className="wf-table-total">
           <span>Total</span> <Spend spend={spend} />
@@ -2620,7 +2620,7 @@ const TIER_TITLE: Readonly<Record<ZoomTier, string>> = {
  *
  * A ZOOM IS A VIEW CHOICE, NOT A READ, SO IT TAKES NO DATA MARK (WF-14, epic
  * #83). This was a `.ctl-mark.is-partial` -- the amber, one-sided-dash mark
- * that says a READ came back partial, and which `sampleNote` still wears for
+ * that says a READ came back partial, and which `SampleNote` still wears for
  * exactly that. On a zoom it made the reader's own choice, or the automatic
  * one made for them, look like something the platform had failed to report.
  * It is `.wf-zoom-note` now: the same words, faint mono type, no border, no
@@ -4915,8 +4915,12 @@ function NodeSource({ f, pending }: { f: StepFigures; pending: boolean }) {
  * contains the words `not zero`: that clause is the entire reason this
  * component exists and it does not get to become implicit just because it
  * stopped being visible ink.
+ *
+ * CALLED, NOT RENDERED (V203, #1427), so the table's `head` is null when it is
+ * silent; it keeps its component's name because
+ * test_workflow_step_measurements.py reads this function by it.
  */
-function sampleNote(usage: WorkflowUsage, workflow: Workflow): ReactNode {
+function SampleNote(usage: WorkflowUsage, workflow: Workflow): ReactNode {
   // THIS WORKFLOW'S TASKS ONLY (QA G3-05). The read is the board's -- every
   // workflow's tasks, this one's first under the ceiling -- and the mark
   // printed `12/296 sampled` over a three-step table whose three steps all
