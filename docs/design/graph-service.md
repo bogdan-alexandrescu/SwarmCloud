@@ -36,7 +36,7 @@ Symbols move less than lines do, so search for the symbol.
   against a private git index built from the step's base commit (§4).
 * **Caches never need invalidating**, because a commit's index is immutable
   and every key holds the manifest digest (§5). There are three layers:
-  * a per-replica LRU of decoded shards, warmed on promotion;
+  * a per-replica LRU of decoded shards, warmed on first sight of a promoted digest (§5.4, owner Q5);
   * a per-replica cache of query results, keyed by (tenant, digest, tool,
     canonical args);
   * GCS as the store of record.
@@ -455,9 +455,9 @@ Notes on these rows:
   * refused: `tenants/a/repos/r/index/...`, `tenants/a/tasks/...`,
     `tenants/a/b/repos/r/graph/x`, `tenants//repos/r/graph/x`,
     `tenants/a/repos//graph/x`, `tenants/a/repos/r/x/graph/y`.
-* **One more row is needed only if Q5 chooses Pub/Sub warming** (§5.4):
-  `roles/pubsub.subscriber` on one subscription. That row goes beyond the
-  owner's "graph/** only", so it is a question, not a default.
+* **No further row.** Owner decision Q5 (2026-10-15): warming is on first
+  sight (§5.4), so the service holds read on `graph/**` and nothing else. No
+  Pub/Sub grant.
 
 ---
 
@@ -709,35 +709,22 @@ The store is unchanged, and the service only reads it:
 * Retention keeps 20 versions (repo-index.md §2.3, `KEPT_VERSIONS`). A pin
   older than that is §10's "index missing".
 
-### 5.4 Warming on promotion
+### 5.4 Warming: on first sight (owner decision Q5)
 
-After `repoindex.py::RepoIndex._promote_from`'s transaction commits, the new
-`current_sha` should be hot before the next agent asks. swarm-api runs on
-Cloud Run and cannot reach a headless in-cluster Service, so warming has to
-be pulled by the service. Two ways, and Q5 asks the owner to pick:
+**Decided 2026-10-15 by the owner: warm on first sight, with no new IAM.**
+The first ticket that names a manifest digest a replica has not seen starts a
+background fetch. The replica fetches the manifest, verifies it against the
+ticket's digest, then fetches and decodes the hot layers (`symbols`,
+`callers`, `files`, `terms`), bounded by `graphstage.py::MAX_SNAPSHOT_BYTES`.
+That first query is answered as soon as the shards it needs are in. Only the
+first query after a promotion, per replica, pays a GCS read, which is about
+one object GET per touched shard.
 
-* **(recommended) Pub/Sub.**
-  * swarm-api publishes `{tenant_id, repo_id, index_sha, manifest_digest}`
-    to a topic `swarm-graph-promotions` after the commit. The message holds
-    ids and digests only.
-  * One pull subscription delivers each message to one replica.
-  * That replica fetches the manifest, verifies it against the message's
-    digest, then fetches and decodes the hot layers (`symbols`, `callers`,
-    `files`, `terms`), bounded by `graphstage.py::MAX_SNAPSHOT_BYTES`.
-  * It then tells its peer through the headless Service, with `POST
-    /internal/warm` carrying the same message. The peer accepts that only on
-    the pod network, and the ingress policy admits only tenant namespaces
-    and the service itself.
-  * A spoofed message can only make a replica cache bytes **whose digest is
-    the one it names**. That is correct content under its own key, and a
-    ticket can name it only if swarm-api promoted it.
-  * Cost: one Terraform topic, one subscription, a `pubsub.publisher` grant
-    to swarm-api on the topic and a `pubsub.subscriber` grant to the service
-    principal on the subscription.
-* **(no new IAM) Warm on first sight.** The first ticket naming a digest the
-  replica has not seen starts the same background fetch. Only the first
-  query after a promotion, per replica, pays a GCS read, which is about one
-  object GET per touched shard.
+**Not built: Pub/Sub warming.** It was the doc's first recommendation: a
+`swarm-graph-promotions` topic, a pull subscription and a peer fan-out over
+`/internal/warm`. It needed a `pubsub.subscriber` grant beyond the owner's
+"graph/** only", and the owner declined it. Revisit it only if the first-query
+cost after a promotion measures as a problem; GS-SVC's metrics record it.
 
 ---
 
@@ -833,10 +820,11 @@ own credential, and their own index under their own prefix (decision 3).
   The 5-minute poll is the fallback (owner decision 2), unchanged, and it
   "enqueues one whenever the head is past the indexed commit".
 
-### 6.3 Promotion warms the service
+### 6.3 Promotion and the service
 
-See §5.4. Promotion is the only event the service needs to learn of. A push
-never reaches it: the service serves only promoted, pinned indexes.
+The service learns of a promotion only when the first ticket names the new
+digest (§5.4). A push never reaches it: the service serves only promoted,
+pinned indexes.
 
 ---
 
@@ -1045,7 +1033,7 @@ Territory is files. Each lane's brief names `scripts/changed-guards.sh` and
 | **GS-CORE** | 1 | §2.4's three seams (`BlobSource`, compute/page split, `remark`); the `call_graph` and `index` tools; the `document` layer name; the one-git-call `observe` (§4.3); `TOOLS_VERSION` | `apps/agent-worker/agent_worker/graphmcp/snapshot.py`, `.../graphmcp/tools.py`, `.../graphmcp/freshness.py`, `.../graphmcp/server.py` (instructions only) | `tests/unit/worker/test_graphmcp_budgets.py`, new `test_graphmcp_source.py`, new `test_graphmcp_remark.py` (page-concatenation property), new `test_graphmcp_freshness_one_call.py` (the six cases), new `test_graphmcp_call_graph_index.py`, new `test_graphmcp_tools_version.py` |
 | **GS-TICKET** | 1 | §3.1-§3.2: the reference mint and verify; the route; the setting | new `apps/swarm-api/swarm_api/graph_ticket.py`, new `apps/swarm-api/swarm_api/routes/graph_ticket.py`, `apps/swarm-api/swarm_api/main.py` (include the router), `apps/swarm-api/swarm_api/settings.py` | new `tests/unit/control_plane/test_graph_ticket_api.py` (fence, repository from the task, digest from Firestore, setting off is 403, field set, clamp) |
 | **GS-INDEXDOC** | 1 | the repo-index document as the `document` `index_shards` layer in the manifest | `images/agent-runtime-indexer/repo-index/repo_graph_shards.py` | `tests/unit/worker/test_repo_graph_shards.py`, `tests/unit/worker/test_repo_graph_format.py` |
-| **GS-PUSHAPI** | 1 | `POST /v1/admin/repositories/push`; `webhook` in `ON_CHANGE_VALUES`; promotion publishes to Pub/Sub if Q5 is the recommended option | `apps/swarm-api/swarm_api/repoindex.py`, `apps/swarm-api/swarm_api/routes/admin.py`, `apps/swarm-api/swarm_api/repositories.py` | new `tests/unit/control_plane/test_repository_index_push.py` (mapping across workspaces, `_poll_one` reused, payload sha never stored, identity check), `tests/unit/control_plane/test_repository_index_poll.py` |
+| **GS-PUSHAPI** | 1 | `POST /v1/admin/repositories/push`; `webhook` in `ON_CHANGE_VALUES` | `apps/swarm-api/swarm_api/repoindex.py`, `apps/swarm-api/swarm_api/routes/admin.py`, `apps/swarm-api/swarm_api/repositories.py` | new `tests/unit/control_plane/test_repository_index_push.py` (mapping across workspaces, `_poll_one` reused, payload sha never stored, identity check), `tests/unit/control_plane/test_repository_index_poll.py` |
 | **GS-SETTING** | 1 | `code_intelligence.graph_delivery` | `apps/swarm-api/swarm_api/codeintel.py` | `tests/unit/control_plane/test_repository_context_override.py` or a new `test_code_intelligence_delivery.py` |
 | **GS-SVC** | 2 | the `swarm-graph` service: HTTP, verifier, `TenantSource`, the caches, warming | new `apps/swarm-graph/` (`pyproject.toml`, `uv.lock`, `Dockerfile`, `swarm_graph/{main,server,ticket,store,cache,warm}.py`) | new `tests/unit/graphsvc/` (ticket parity with `graph_ticket.py`, tenant-leading keys, hit correctness, fairness, sizing assertion, every §10 status) |
 | **GS-HOOKS** | 2 | the public receiver `swarm-github-hooks` | new `apps/swarm-github-hooks/` (same layout as GS-SVC), `docs/runbooks/github-app.md` | new `tests/unit/hooks/` (signature, size cap, event filter, delivery dedup, forwards only `full_name`) |
@@ -1106,6 +1094,12 @@ stops.
 The owner decides each of these. The recommended option is the one the
 sections above are written against.
 
+**Answered by the owner on 2026-10-15 (~18:00 PDT):** Q1 recommended (the
+ticket file), Q2 recommended (keep staging for Cloud Run Job steps), Q3
+recommended (the `swarm-github-hooks` receiver), Q5 **warm on first sight**.
+Q4 and Q6 to Q11 follow the recommended option; the owner may revisit any of
+them before its lane starts.
+
 * **Q1, ticket custody.**
   * **Recommended:** the worker writes the ticket to `private/graph-ticket`
     and the shim reads it. The agent runs as the same uid and can read it,
@@ -1127,10 +1121,9 @@ sections above are written against.
   * Alternative: no receiver, with the poll at 1 minute instead.
 * **Q4, the change interval for pushes.** Keep the default 30 minutes, or
   lower the default to 10.
-* **Q5, warming.**
-  * **Recommended:** Pub/Sub plus a peer fan-out. This adds one subscriber
-    grant beyond "graph/** only".
-  * Alternative: warm on first sight, with no new IAM.
+* **Q5, warming. DECIDED (owner, 2026-10-15): warm on first sight, with no
+  new IAM** (§5.4). Pub/Sub was the doc's first recommendation and is not
+  built.
 * **Q6, packaging.**
   * **Recommended:** the service installs the `swarm-agent-worker` wheel and
     imports `graphmcp` from it, which costs about the google-cloud client
