@@ -740,6 +740,21 @@ internal_decision_api_enabled = true
 # and no agent pod reaches the forwarder before SEC-MIGRATE-TYPESAFE.
 enable_typesafe_forwarder = true
 
+# Step 2 of 3, 2026-10-16 (owner: "mint the key, then a serve PR"). Version 1
+# of swarm-typesafe-fwd-key was added at 19:00Z with
+# `scripts/create-secrets.sh --typesafe-fwd-key` (generated, never shown), so
+# swarm-api's reference resolves. `serve` puts SWARM_TYPESAFE_FWD_KEY on
+# swarm-api and renders swarm_typesafe_fwd_manifest, which the release's
+# "roll swarm-typesafe-fwd" step (PR 1417, scripts/roll-typesafe-fwd.sh)
+# applies to swarm-system. `enabled` stays false and `tenants` empty: the
+# forwarder forwards nothing until the owner names tenants (step 3), and pods
+# reach it only once SWARM_TYPESAFE_INJECT is set and the owner has re-applied
+# `kubernetes/apply.sh --policies` for allow-typesafe-fwd (PR 1409).
+typesafe_forwarder = {
+  serve   = true
+  enabled = false
+}
+
 # The shared graph service (#1384, docs/design/graph-service.md;
 # terraform/infra/graph_service.tf). Step 1 of 3, ON in dev as of 2026-10-16
 # (owner decision ~02:20 PDT, recorded on #1384): creates the
