@@ -50,6 +50,7 @@ from ..purge import HistoryPurge, parse_query
 from ..verdictpublish import on_task_finished
 from ..waker import TASK_FINISHED
 from ..repoindex import RepoIndex
+from ..repositories import RepositoryPush
 from ..brokerclient import AccountPool
 from ..schemas import (
     AdaptiveTargetRequest,
@@ -1113,6 +1114,52 @@ def poll_repositories(
         # healthy tick returns an empty list, which is an answer.
         "failures": report.failures,
     }
+
+
+@router.post("/repositories/push")
+def push_repository(
+    body: RepositoryPush,
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """A verified push to a registered repository's default branch (graph-service.md §6.2).
+
+    Called by the public receiver `swarm-github-hooks` (lane GS-HOOKS) after it
+    has checked `X-Hub-Signature-256`, deduped `X-GitHub-Delivery` and kept
+    only a non-deleting push to `refs/heads/<default_branch>`. It forwards
+    `{forge, full_name}` and nothing else; `RepositoryPush` refuses any other
+    field, so a payload's `after` sha is never read or stored.
+
+    Every registration of that repository, in every workspace that registered
+    it, is polled now through the poll's own `RepoIndex._poll_one`
+    (`RepoIndex.push`): its head re-read with that workspace's credential, the
+    throttle and the in-flight rule applied, a run queued in that tenant as
+    the registration's creator (`registration_owner_auth`). Only registrations
+    whose `on_change` is `webhook` are read; the five-minute poll stays the
+    fallback for a missed delivery (owner decision 2).
+
+    The answer carries counts and, for a registration that could not be
+    polled, its opaque `repo_id` and a code: never a tenant id, a head or a
+    name, since the receiver needs none of them.
+
+    ONE IDENTITY, as `poll_repositories` admits only the scheduler's: the
+    rollup sweeper (§6.2 step 4). Not an admin and not a member: a push is
+    forwarded by the receiver, never typed by a person.
+    """
+    if not auth.is_rollup_sweeper:
+        raise Forbidden(
+            "POST /v1/admin/repositories/push is the swarm-github-hooks receiver's; "
+            "a person who wants an index now uses Index now on the repository"
+        )
+    service = RepoIndex.from_context(ctx)
+    owner, repo = body.owner_repo
+    report = service.push(
+        body.forge, owner, repo,
+        owner_auth_for=lambda tenant_id: registration_owner_auth(ctx, tenant_id),
+        page_size=paged_limit(ctx, None),
+    )
+    ctx.metrics.admin_actions.labels(action="repo_index_push").inc()
+    return {"report": report.to_api(), "failures": report.failures}
 
 
 def _push_fields(envelope: Mapping[str, Any]) -> dict[str, str]:
