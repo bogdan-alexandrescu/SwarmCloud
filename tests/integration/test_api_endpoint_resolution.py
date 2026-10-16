@@ -258,6 +258,12 @@ def test_the_front_door_is_given_an_access_token_and_cloud_run_an_id_token(tmp_p
 
     Both token functions are stubbed, so nothing here mints a credential. What
     is under test is only which of the two api_credential reaches for.
+
+    The front-door case runs as CI's impersonated service account: that is the
+    caller the access token is for. A person at the front door presents their
+    `sc login` sign-in instead (_api_uses_signin in common.sh), because IAP
+    answers a gcloud USER access token 401, error 900 -- so without
+    SWARM_IMPERSONATE_SA this case would be asking a different question.
     """
     stub = (
         "id_token() { printf %s ID-TOKEN; }\n"
@@ -268,6 +274,7 @@ def test_the_front_door_is_given_an_access_token_and_cloud_run_an_id_token(tmp_p
     front = _run(
         tmp_path / "front", stub,
         fake_gcloud=GCLOUD_INTERNAL_LB,
+        env_extra={"SWARM_IMPERSONATE_SA": f"swarm-verify@{PROJECT}.iam.gserviceaccount.com"},
         tfvars='enable_frontend   = true\nfrontend_hostname = "swarm.example.test"\n',
     )
     assert front.returncode == 0, front.stdout + front.stderr

@@ -123,8 +123,9 @@
 # (terraform/infra/workspace_grant_key.tf) owns the container and its one
 # reader, swarm-api, and an enabled version is replaced only after the same
 # typed confirmation. A rotation is the runbook's: the replaced version goes to
-# workspace_grant_key_previous_version until the attest route has re-signed
-# every grant under the new one.
+# workspace_grant_attestation.previous_version (the tfvars object
+# terraform/infra/workspace_grant_key.tf declares) until the attest route has
+# re-signed every grant under the new one.
 #
 # --egress-key adds a version to `swarm-egress-key`, the PLATFORM key swarm-api
 # mints browser egress tickets with and swarm-egress verifies them with
@@ -414,7 +415,7 @@ if [[ "${WORKSPACE_GRANT_KEY}" -eq 1 ]]; then
   fi
   confirm_overwrite "${GRANT_KEY_NAME}"
   add_generated_platform_key "${GRANT_KEY_NAME}" "terraform/infra/workspace_grant_key.tf" "--workspace-grant-key"
-  dim "swarm-api reads it when an instance starts. On a rotation, set workspace_grant_key_previous_version to the replaced version, apply, run the attest route, then clear it (docs/runbooks/workspace-grant-attestation.md)"
+  dim "swarm-api reads it when an instance starts. On a rotation, set workspace_grant_attestation.previous_version in terraform/environments/<env>/<env>.tfvars to the replaced version, apply, run the attest route, then clear it (docs/runbooks/workspace-grant-attestation.md)"
   exit 0
 fi
 

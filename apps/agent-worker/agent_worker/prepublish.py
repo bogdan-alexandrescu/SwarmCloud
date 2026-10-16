@@ -197,13 +197,17 @@ class Ran:
     code: int
     output: str
     timed_out: bool = False
+    #: stderr, when the command was run with it kept apart (`run_split`).
+    errors: str = ""
 
 
 Runner = Callable[[Sequence[str], Path, Mapping[str, str], float], Ran]
 
 
-def run_command(argv: Sequence[str], cwd: Path, env: Mapping[str, str], timeout: float) -> Ran:
-    """Run `argv` in its own process group; stdout and stderr together.
+def run_command(argv: Sequence[str], cwd: Path, env: Mapping[str, str], timeout: float,
+                *, merge_stderr: bool = True) -> Ran:
+    """Run `argv` in its own process group; stdout and stderr together, unless
+    `merge_stderr` is false, when stderr is kept apart in `Ran.errors`.
 
     The group is killed on timeout, so a pytest-xdist worker or a checkov
     subprocess does not outlive the check that started it.
@@ -211,21 +215,31 @@ def run_command(argv: Sequence[str], cwd: Path, env: Mapping[str, str], timeout:
     try:
         proc = subprocess.Popen(
             list(argv), cwd=str(cwd), env=dict(env), stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
+            start_new_session=True,
         )
     except OSError as exc:
         return Ran(127, f"{argv[0]}: could not start ({type(exc).__name__})")
     try:
-        out, _ = proc.communicate(timeout=max(1.0, timeout))
-        return Ran(proc.returncode, out.decode("utf-8", errors="replace"))
+        out, err = proc.communicate(timeout=max(1.0, timeout))
+        return Ran(proc.returncode, out.decode("utf-8", errors="replace"),
+                   errors=(err or b"").decode("utf-8", errors="replace"))
     except subprocess.TimeoutExpired:
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except OSError:
             pass
-        out, _ = proc.communicate()
+        out, err = proc.communicate()
         text = out.decode("utf-8", errors="replace")
-        return Ran(124, f"{text}\n[timed out after {int(timeout)}s]", timed_out=True)
+        return Ran(124, f"{text}\n[timed out after {int(timeout)}s]", timed_out=True,
+                   errors=(err or b"").decode("utf-8", errors="replace"))
+
+
+def run_split(argv: Sequence[str], cwd: Path, env: Mapping[str, str], timeout: float) -> Ran:
+    """`run_command` with stderr kept apart: for a command whose stdout is a
+    file another tool parses."""
+    return run_command(argv, cwd, env, timeout, merge_stderr=False)
 
 
 # ---------------------------------------------------------------------------
@@ -350,12 +364,19 @@ def _tflint(files: Sequence[str]) -> Callable[[Runner, Path, Mapping[str, str], 
     return run
 
 
-def _render_and_scan(python: str) -> Callable[[Runner, Path, Mapping[str, str], float],
-                                              tuple[str, str]]:
+def _render_and_scan(python: str, *, render: Runner = run_split
+                     ) -> Callable[[Runner, Path, Mapping[str, str], float], tuple[str, str]]:
     """`make security`'s Kubernetes half: checkov reads the RENDERED manifests,
     because a raw template's placeholder either reads as an unpinned image or
-    makes checkov skip the file and still exit 0 (Makefile `security`)."""
+    makes checkov skip the file and still exit 0 (Makefile `security`).
+
+    Each render runs through `render`, which keeps stderr apart: only stdout
+    is the manifest. A merged stream put render.py's warning line into the
+    file checkov scanned, which then was not YAML, and every job pod failed
+    CKV2_K8S_6 (#1334, PR 1399). What render.py wrote to stderr is reported,
+    redacted, as a note beside the scan."""
     def run(runner: Runner, repo: Path, env: Mapping[str, str], timeout: float) -> tuple[str, str]:
+        notes: list[str] = []
         with tempfile.TemporaryDirectory(prefix="prepublish-k8s-") as tmp:
             out = Path(tmp)
             listed = runner(
@@ -373,13 +394,19 @@ def _render_and_scan(python: str) -> Callable[[Runner, Path, Mapping[str, str], 
                           "--attempt", "att_lint", "--lease", "lease_lint", "--generation", "1"])
                         for p in listed.output.split()]
             for name, args in renders:
-                ran = runner([python, "kubernetes/render.py", *args], repo, env, timeout)
+                ran = render([python, "kubernetes/render.py", *args], repo, env, timeout)
+                errors = redact_text(ran.errors).text.strip()
                 if ran.code != 0:
-                    return FAILED, f"kubernetes/render.py {' '.join(args)} failed:\n{ran.output}"
+                    return FAILED, (f"kubernetes/render.py {' '.join(args)} failed:\n"
+                                    f"{ran.output}\n{errors}").rstrip()
                 (out / name).write_text(ran.output)
-            return _verdict(runner(
+                if errors:
+                    notes.append(f"note: kubernetes/render.py {' '.join(args)} wrote to "
+                                 f"stderr (not scanned):\n{errors}")
+            status, output = _verdict(runner(
                 ["checkov", "-d", str(out), "--framework", "kubernetes", "--skip-check",
                  _K8S_SKIP, "--quiet", "--compact"], repo, env, timeout))
+            return status, "\n".join([output.rstrip(), *notes]).strip() + "\n"
     return run
 
 
