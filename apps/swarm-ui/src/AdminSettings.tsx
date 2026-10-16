@@ -724,8 +724,13 @@ export function AdmSetBy({ pool }: { pool: Pool }) {
   const by = setBy(pool)
   // A faint dot, not the word (QA G5-19, capacity.html §G): `configured` on
   // nearly every row hid the rows where something else set the ceiling.
+  // NAMED FOR THE MOUSE TOO (VQA V190): the word was on `aria-label` alone,
+  // so a sighted reader hovering a lone `·` learnt nothing. Its own `title`
+  // says the word and the sentence why, whatever cell it is drawn in.
   return by.term === 'configured' ? (
-    <span className="adm-setby-cfg" role="img" aria-label="configured">·</span>
+    <span className="adm-setby-cfg" role="img" aria-label="configured" title={`configured. ${by.detail}`}>
+      ·
+    </span>
   ) : (
     <>{by.term}</>
   )
@@ -757,17 +762,39 @@ export function keyBreaks(name: string): ReactNode {
   )
 }
 
-/** `ops@… · 20 → 10 · 3h ago`, with the instant on the `time` element. */
+/**
+ * `ops@… · 20 → 10 · 3h ago`, with the instant on the `time` element.
+ *
+ * EACH `·` LEADS THE PART IT INTRODUCES (VQA V191). The separator trailed
+ * the part before it, so at 400 the line broke after it -- `ops@saga.xyz ·
+ * 40 → 20 ·` over `3h ago` -- and left a `·` alone at the line end. Every
+ * part after the author is one unbreakable run, `· 40 → 20`, `· 3h ago`
+ * (`.adm-changed-part`, styles/admin.css), and the only breaks are the
+ * spaces before them, so a line never ends on a separator.
+ */
 function Changed({ change, now, as: Tag }: { change: Change; now: number; as: 'dd' | 'p' | 'span' }) {
   return (
     <Tag className="adm-changed">
-      {change.by} · {change.what !== null && <span className="mono">{change.what} · </span>}
-      <time dateTime={change.at} title={change.at}>{timeAgo(change.at, now)}</time>
+      {change.by}
+      {change.what !== null && (
+        <>
+          {' '}
+          <span className="adm-changed-part">
+            · <span className="mono">{change.what}</span>
+          </span>
+        </>
+      )}{' '}
+      <span className="adm-changed-part">
+        · <time dateTime={change.at} title={change.at}>{timeAgo(change.at, now)}</time>
+      </span>
       {change.since !== null && (
         <>
-          {' · '}
-          <span className="adm-changed-since" title={change.since} aria-label={`changed since. ${change.since}`}>
-            changed since
+          {' '}
+          <span className="adm-changed-part">
+            ·{' '}
+            <span className="adm-changed-since" title={change.since} aria-label={`changed since. ${change.since}`}>
+              changed since
+            </span>
           </span>
         </>
       )}
@@ -886,7 +913,9 @@ function PoolEditor({
     )
 
   return (
-    <section className="section">
+    // `has-filter` moves the sticky family heads below the filter, which
+    // sticks too (VQA V077, V187; styles/admin.css `.adm-ceilings`).
+    <section className={`section adm-ceilings${filtered ? ' has-filter' : ''}`}>
       <span className="ctl-eyebrow has-q">
         Ceilings
         {/* What a write here DOES NOT do -- evict anything -- is the one
