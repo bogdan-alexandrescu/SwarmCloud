@@ -69,6 +69,28 @@ export function notServed(e: ApiError): boolean {
 
 export type ChangeTrigger = 'poll' | 'webhook' | 'off'
 
+/**
+ * The change trigger's choices, one list for Register and Settings (HOOKS-UI,
+ * part of #1384). `webhook` is "poll AND push" (swarm_api/repositories.py
+ * `ON_CHANGE_POLLED`, graph-service.md §6.2): the five-minute poll still reads
+ * it, so it is safe to offer while the push receiver (`swarm-github-hooks`)
+ * is off -- a webhook registration is never left unrefreshed, it only
+ * waits for the poll the way a `poll` one does.
+ */
+export const TRIGGER_OPTIONS: readonly { key: ChangeTrigger; label: string }[] = [
+  { key: 'poll', label: 'Poll the default branch (every 5 min)' },
+  { key: 'webhook', label: 'Webhook · on push to the default branch' },
+  { key: 'off', label: 'Off' },
+]
+
+/** What a webhook needs outside this console (docs/runbooks/github-app.md Step 9). */
+export const WEBHOOK_NOTE =
+  "Webhook: the GitHub App's webhook must be ticked (runbook Step 9). The five-minute poll stays on as the fallback for a lost push."
+
+export function triggerLabel(t: ChangeTrigger): string {
+  return TRIGGER_OPTIONS.find((o) => o.key === t)!.label
+}
+
 /** `index.interval_hours` as designed: 1-168, or `'off'`. Anything else is not that, so unknown. */
 function intervalHours(v: unknown): number | 'off' | null {
   if (v === 'off') return 'off'

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { loadReadableRepositories, loadRunnerProfiles, registerRepository, runRepositoryIndex, type RegisterRepositoryBody } from './api'
 import { Banner, Button, Card, EmptyState } from './components'
-import { normRepo, type Readable, type ReadableList } from './RepositoriesData'
+import { normRepo, triggerLabel, TRIGGER_OPTIONS, WEBHOOK_NOTE, type ChangeTrigger, type Readable, type ReadableList } from './RepositoriesData'
 import { LIST, UrCrumb, UrNavButton, UrRadio, UrRefresh, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
 import { PageHead } from './Shell'
 import { timeAgo } from './types'
@@ -48,7 +48,6 @@ const INTERVALS = [
 ] as const
 type IntervalKey = (typeof INTERVALS)[number]['key']
 
-type Trigger = 'poll' | 'webhook' | 'off'
 
 /** repo-index.md §1: a registration's profiles default to claude-code. */
 const DEFAULT_PROFILE = 'claude-code'
@@ -309,7 +308,7 @@ function ScheduleStep({
   const profiles = useUrRead(loadRunnerProfiles, 'profiles')
   const [chosen, setChosen] = useState<string[] | null>(null)
   const [every, setEvery] = useState<IntervalKey>('24')
-  const [trigger, setTrigger] = useState<Trigger>('poll')
+  const [trigger, setTrigger] = useState<ChangeTrigger>('poll')
   const [firstIndex, setFirstIndex] = useState(true)
   const [busy, setBusy] = useState(false)
   const [refused, setRefused] = useState<string | null>(null)
@@ -372,7 +371,7 @@ function ScheduleStep({
           <div className="ur-fl">Re-index every</div>
           <div data-review="interval">{every === 'off' ? 'Off: no scheduled re-index' : INTERVALS.find((i) => i.key === every)?.label}</div>
           <div className="ur-fl">Change trigger</div>
-          <div data-review="trigger">{trigger === 'poll' ? 'Poll the default branch (every 5 min)' : 'Off'}</div>
+          <div data-review="trigger">{triggerLabel(trigger)}</div>
           <div className="ur-fl">First index</div>
           <div data-review="first-index">
             {firstIndex
@@ -410,17 +409,9 @@ function ScheduleStep({
         </div>
         <div className="ur-fl">Change trigger</div>
         <div>
-          <UrRadio<Trigger>
-            label="Change trigger"
-            options={[
-              { key: 'poll', label: 'Poll the default branch (every 5 min)' },
-              { key: 'webhook', label: 'Webhook · phase 3', disabled: true, title: 'Webhooks come in phase 3 (repo-index.md §3.3)' },
-              { key: 'off', label: 'Off' },
-            ]}
-            value={trigger}
-            onChange={setTrigger}
-          />
+          <UrRadio<ChangeTrigger> label="Change trigger" options={TRIGGER_OPTIONS} value={trigger} onChange={setTrigger} />
           <p className="ur-hint">At most one change-triggered run every 30 min; ten pushes in a minute cost one run.</p>
+          <p className="ur-hint">{WEBHOOK_NOTE}</p>
         </div>
         <div className="ur-fl">First index</div>
         <div>

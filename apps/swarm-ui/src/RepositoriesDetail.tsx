@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
-  loadRepository, loadRepositoryIndex, loadRepositoryLanguages, loadResolvedToken, patchRepositoryContext, runRepositoryIndex,
+  loadRepository, loadRepositoryIndex, loadRepositoryLanguages, loadResolvedToken, patchRepositoryContext, patchRepositoryTrigger, runRepositoryIndex,
   type RepoContext, type RepoDetailRead, type RepoHardStops,
 } from './api'
 import { Banner, Button, Card, Chip, Dash, EmptyState, NamedMark, StatePill, ToneMark, routedClick } from './components'
 import { addressToPath } from './paths'
 import {
   coverageWords, freshness, HEAD_UNREAD, intervalWords, kindWords, pct, repoName, shortSha, notServed, expiryWords,
-  thousands,
-  type IndexDoc, type IndexRun, type LanguageRow, type RepoDetail, type RepoRecord, type ResolvedToken, type UsedBy,
+  thousands, TRIGGER_OPTIONS, WEBHOOK_NOTE,
+  type ChangeTrigger, type IndexDoc, type IndexRun, type LanguageRow, type RepoDetail, type RepoRecord, type ResolvedToken, type UsedBy,
 } from './RepositoriesData'
 import type { Result } from './fetch'
 import {
@@ -42,10 +42,10 @@ import { formatDuration, pluralise, timeAgo, TERMINAL_STATES } from './types'
  * region: the index document, the languages and the resolved token each say
  * "not served yet" in place, naming their route, while the rest draws.
  *
- * SETTINGS SHOW THE SERVED VALUES AND DO NOT CHANGE THEM. Changing one is
- * `PATCH /v1/repositories/{repo_id}` (repo-index.md §6.1), and fetch.ts's
- * `write()` sends POST, PUT and DELETE only; the controls are drawn as the
- * frame draws them, disabled, with that reason beside them.
+ * SETTINGS SHOW THE SERVED VALUES AND DO NOT CHANGE THEM, except Code
+ * intelligence and the change trigger (HOOKS-UI), which write through
+ * `PATCH /v1/repositories/{repo_id}` (repo-index.md §6.1). The other controls
+ * are drawn as the frame draws them, disabled, with that reason beside them.
  */
 
 const TABS = [
@@ -67,7 +67,7 @@ function tabOf(t: string | null): TabKey {
 
 /** The route these settings change through; named on the element, not in the words (walkthrough E). */
 const PATCH_ROUTE = 'PATCH /v1/repositories/{repo_id}'
-const PATCH_WHY = 'Except Code intelligence, these settings cannot be changed from this console yet: the controls show the served values.'
+const PATCH_WHY = 'Except Code intelligence and the change trigger, these settings cannot be changed from this console yet: the controls show the served values.'
 
 /** Where an absent `index_runs` / `used_by` would have been served (repo-index.md §6.1). */
 const DETAIL_ROUTE = 'GET /v1/repositories/{repo_id}'
@@ -804,6 +804,7 @@ function SettingsTab({
         <div className="ur-stack">
           <Card title="Schedule and change trigger">
             <ScheduleLines r={r} />
+            <ChangeTriggerControl repoId={r.repo_id} served={r.index.on_change} onWrite={onWrite} />
           </Card>
           {/* Drawn only where the registration serves the fields: an API older than lane S11 has no card to show. */}
           {stops !== null && <HardStopsCard stops={stops} />}
@@ -970,6 +971,46 @@ function CodeIntelligenceCard({ repoId, served, onWrite, go }: { repoId: string;
       </p>
       {failed !== null && <Banner tone="bad" title={failed} role="alert" />}
     </Card>
+  )
+}
+
+/**
+ * THE CHANGE TRIGGER, CHANGED IN PLACE (HOOKS-UI, part of #1384). One PATCH
+ * carrying `index.on_change` alone. Webhook is always offered: it is "poll AND
+ * push" (TRIGGER_OPTIONS), so a registration that chose it while the push
+ * receiver is off is still read by the five-minute poll. Any member may write
+ * it (`IndexSettings` passes no admin check), so no role hides it here.
+ */
+function ChangeTriggerControl({ repoId, served, onWrite }: { repoId: string; served: ChangeTrigger | null; onWrite: () => void }) {
+  const [picked, setPicked] = useState<ChangeTrigger | null>(served)
+  const [busy, setBusy] = useState(false)
+  const [failed, setFailed] = useState<string | null>(null)
+  useEffect(() => {
+    if (!busy) setPicked(served)
+  }, [served, busy])
+
+  async function choose(next: ChangeTrigger) {
+    if (busy || next === picked) return
+    const was = picked
+    setPicked(next)
+    setBusy(true)
+    setFailed(null)
+    const res = await patchRepositoryTrigger(repoId, next)
+    setBusy(false)
+    if (res.status === 'error') {
+      setPicked(was)
+      setFailed(`The change trigger was not changed: ${writeFailure(res.error)}`)
+      return
+    }
+    onWrite()
+  }
+
+  return (
+    <div className="ur-trigger">
+      <UrRadio<ChangeTrigger> label="Change trigger" value={picked} options={TRIGGER_OPTIONS} disabled={busy} onChange={(k) => void choose(k)} />
+      <p className="ur-hint">{WEBHOOK_NOTE}</p>
+      {failed !== null && <Banner tone="bad" title={failed} role="alert" />}
+    </div>
   )
 }
 

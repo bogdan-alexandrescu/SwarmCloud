@@ -5663,7 +5663,7 @@ export interface RegisterRepositoryBody {
   repository: string
   default_branch?: string
   allowed_profiles?: string[]
-  /** repo-index.md §3.3: 1-168 or `'off'`; `poll`, `webhook` (phase 3) or `off`. */
+  /** repo-index.md §3.3: 1-168 or `'off'`; `poll`, `webhook` (poll and push, graph-service.md §6.2) or `off`. */
   index?: { interval_hours: number | 'off'; on_change: 'poll' | 'webhook' | 'off' }
 }
 
@@ -5926,6 +5926,17 @@ export async function patchRepositoryContext(repoId: string, context: RepoContex
   const target = route('/v1/repositories/{repo_id}', { repo_id: repoId })
   if (USE_FIXTURES) return repoNotServed<unknown>(target)
   return write(target, 'PATCH', { context })
+}
+
+/**
+ * `PATCH /v1/repositories/{repo_id}` with `index.on_change` alone: the API
+ * merges `index` field by field (`Repositories.patch`), so the interval and
+ * the throttle are left as they are. Any member of the workspace may send it.
+ */
+export async function patchRepositoryTrigger(repoId: string, onChange: 'poll' | 'webhook' | 'off'): Promise<Result<unknown>> {
+  const target = route('/v1/repositories/{repo_id}', { repo_id: repoId })
+  if (USE_FIXTURES) return repoNotServed<unknown>(target)
+  return write(target, 'PATCH', { index: { on_change: onChange } })
 }
 
 // ---------------------------------------------------------------------------
