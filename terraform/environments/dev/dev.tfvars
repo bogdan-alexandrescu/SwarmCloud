@@ -726,6 +726,20 @@ enable_tailscale_egress = true
 # leaves Jev unavailable instead of sending page text to TypeSafe.
 internal_decision_api_enabled = true
 
+# The TypeSafe forwarder (SEC-INJECT-A/B, #1347; terraform/infra/typesafe_fwd.tf,
+# docs/design/workspace-secrets.md section 3.5). Step 1 of 3, ON in dev as of
+# 2026-10-16 (owner decision ~03:45 PDT): creates swarm-typesafe-fwd-key with
+# no version and its two readers, swarm-api and the swarm-typesafe-fwd KSA --
+# the IAM row held at the release's dev-iam gate. The bootstrap half
+# (enable_typesafe_forwarder_read: the forwarder's conditioned
+# secretmanager.versions.access on swarm-tenant-<t>-typesafe versions) was
+# applied the same morning. typesafe_forwarder.serve is a separate change made
+# only after `scripts/create-secrets.sh --typesafe-fwd-key` has written a
+# version: a Cloud Run reference to a secret with no version stops swarm-api
+# starting. Nothing forwards until typesafe_forwarder.enabled names tenants,
+# and no agent pod reaches the forwarder before SEC-MIGRATE-TYPESAFE.
+enable_typesafe_forwarder = true
+
 # The shared graph service (#1384, docs/design/graph-service.md;
 # terraform/infra/graph_service.tf). Step 1 of 3, ON in dev as of 2026-10-16
 # (owner decision ~02:20 PDT, recorded on #1384): creates the
