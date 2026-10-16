@@ -12233,7 +12233,7 @@ already removes it, and moving a profile that cannot run buys nothing.
 (a) Nothing that runs: the profile is unavailable and has no Job. The
 Terraform catalogue mirror (`runner_profiles` in `terraform/infra/locals.tf`,
 held field for field by `tests/terraform/catalogue.tftest.hcl`) and
-`tests/unit/control_plane/test_internet_profiles_on_gke.py` (`STAYING`) must
+`tests/unit/control_plane/test_internet_profiles_on_gke.py`, which lists the profiles that stay on Cloud Run, must
 follow in the same pull request. (b) Nothing.
 
 ### Invariants
