@@ -1084,6 +1084,25 @@ function failedClauses(failed: number, workflow: Workflow, taskById: ReadonlyMap
  * workflow is over -- and a request whose outcome was not read is still a
  * request, so the tag stays exactly as it was before this check existed.
  */
+/**
+ * WHAT PULL REQUEST THE WORKFLOW WAITS FOR (lane SPEED-D3): the API's sentence
+ * while it waits, or once one closed unmerged; null once released, and for a
+ * workflow submitted without `after`. Its steps read PARKED on a dependency,
+ * which alone says "a step it depends on has not finished" -- and none has run.
+ */
+export function pullRequestWait(workflow: Workflow): string | null {
+  const wait = workflow.after_pull_requests
+  if (wait === undefined || (wait.state !== 'waiting' && wait.state !== 'closed')) return null
+  return wait.text || null
+}
+
+/** `pullRequestWait` as the tag the list row and the page head draw. */
+export function PullRequestWaitTag({ workflow }: { workflow: Workflow }) {
+  const text = pullRequestWait(workflow)
+  if (text === null) return null
+  return <span className="tag wait">{text}</span>
+}
+
 function cancelPending(workflow: Workflow): boolean {
   if (!workflow.cancel_requested) return false
   const roll = workflow.rollup
@@ -5526,6 +5545,7 @@ function WorkflowListRow({
           <Mix steps={workflow.steps} />
         </span>
         {why !== null && <RowWhyLine why={why} />}
+        <PullRequestWaitTag workflow={workflow} />
         {cancelPending(workflow) && <span className="tag wait">cancel requested</span>}
       </td>
       <td className="wfl-shape" data-col="shape" title={shapeOf(workflow.steps).label}>
@@ -5973,6 +5993,7 @@ function WorkflowHead({
           <Chip>{spend.usd === null ? <span className="wf-cell is-absent">cost not reported</span> : <Spend spend={spend} />}</Chip>
         </span>
         {label !== null && <Id title={workflow.workflow_id}>{workflow.workflow_id}</Id>}
+        <PullRequestWaitTag workflow={workflow} />
         {cancelPending(workflow) && <span className="tag wait">cancel requested</span>}
       </div>
       <span className="wfp-actions">

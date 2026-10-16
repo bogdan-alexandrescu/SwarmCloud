@@ -38,6 +38,15 @@ nothing on -- not a frame, not a ping -- for `SILENT_SECONDS`. The gate's
 `status` then says `closed` and the worker hands it a fresh ticket
 (handoff.HandoffPath._keep_tunnel).
 
+A RESTARTING RELAY IS REJOINED AT ONCE (RELAY-ROLL). The relay closes every
+tunnel with `CLOSE_RESTARTING` (1012, "restarting, reconnect now") when it is
+stopped for a roll. `Tunnel.close_code` keeps the code, the gate's `status`
+reports it, and the worker -- the only holder of the attempt key that proves a
+tunnel ticket -- reopens on `reconnect_delay`'s schedule: jittered, from about
+250 ms, never past `RESTART_RETRY_MAX_SECONDS`, instead of the 5 s doubling to
+a minute every other close gets. MEASURED 2026-10-12/14: 40 relay restarts in
+~48 h, one per release, each leaving the gate up to a minute behind the relay.
+
 NOTHING CARRIED HERE IS LOGGED. The ticket admits whoever holds it, and DATA
 is a person's keystrokes (§5.3.3). Log lines carry close codes, conn ids and
 counts.
@@ -51,6 +60,8 @@ import hashlib
 import json
 import logging
 import os
+import random
+import socket
 import struct
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -81,6 +92,20 @@ READY_SECONDS = 10.0
 #: relay's 20-second pings, so one lost ping is not a dead relay.
 SILENT_SECONDS = 75.0
 
+#: The relay's "restarting, reconnect now" (swarm_live.rendezvous
+#: CLOSE_RESTARTING; RFC 6455's 1012 "Service Restart", which uvicorn sends
+#: on SIGTERM too). test_livegate_tunnel_restart.py holds the two equal.
+CLOSE_RESTARTING = 1012
+#: The first reopen after a restart, before jitter, and the longest wait
+#: between reopens while the new relay comes up. The cap is under the worker's
+#: 10 s poll (CONTROL_POLL_SECONDS), so every poll tries again.
+RESTART_RETRY_SECONDS = 0.25
+RESTART_RETRY_MAX_SECONDS = 4.0
+#: Every other close: the wait after a refused reopen, doubling to the cap,
+#: so a relay that stays down costs a route call a minute (LB-R6).
+RETRY_SECONDS = 5.0
+RETRY_MAX_SECONDS = 60.0
+
 _WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 _TEXT, _BINARY, _CLOSE, _PING, _PONG, _CONTINUATION = 0x1, 0x2, 0x8, 0x9, 0xA, 0x0
 
@@ -104,6 +129,44 @@ def decode_frame(data: bytes) -> tuple[int, str, bytes]:
     except UnicodeDecodeError:
         raise ValueError("bad tunnel frame") from None
     return data[0], conn_id, bytes(data[2 + data[1]:])
+
+
+def reconnect_delay(close_code: int | None, attempt: int, *,
+                    rand: Callable[[], float] = random.random) -> float:
+    """Seconds to wait before reopen number `attempt` (0 first) of a tunnel
+    that closed with `close_code`.
+
+    A restart (`CLOSE_RESTARTING`): `RESTART_RETRY_SECONDS` doubling, jittered
+    to 75-125 % so a relay's every gate does not knock in the same instant,
+    capped at `RESTART_RETRY_MAX_SECONDS` -- the first try is ~250 ms away.
+    Anything else: `RETRY_SECONDS` doubling to `RETRY_MAX_SECONDS`, unjittered,
+    as before."""
+    step = max(0, min(int(attempt), 16))
+    if close_code == CLOSE_RESTARTING:
+        base = RESTART_RETRY_SECONDS * (2 ** step)
+        return min(RESTART_RETRY_MAX_SECONDS, base * (0.75 + 0.5 * rand()))
+    return min(RETRY_MAX_SECONDS, RETRY_SECONDS * (2 ** step))
+
+
+#: getaddrinfo's failures by errno, for the gate's `tunnel_refused` record
+#: (NOLIVE-GUARD, #1366): EAI_AGAIN is a resolver that did not answer in time
+#: (an overloaded cache), EAI_NONAME a name it said does not exist. The two
+#: point at different fixes, and "gaierror" alone told them apart from nothing.
+_GAI_NAMES = {
+    getattr(socket, name): name
+    for name in ("EAI_AGAIN", "EAI_NONAME", "EAI_FAIL", "EAI_NODATA", "EAI_SYSTEM")
+    if hasattr(socket, name)
+}
+
+
+def unreachable_cause(exc: BaseException) -> str:
+    """Why the relay could not be reached: the exception's class, and for a
+    resolver failure its EAI name. Never the message, which can quote the host."""
+    name = type(exc).__name__
+    if isinstance(exc, socket.gaierror):
+        code = _GAI_NAMES.get(exc.errno) if isinstance(exc.errno, int) else None
+        return f"{name}({code})" if code else name
+    return name
 
 
 def relay_url(environ: Mapping[str, str]) -> str:
@@ -146,7 +209,7 @@ class WebSocketClient:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(host, port, limit=MAX_MESSAGE), timeout)
         except (OSError, asyncio.TimeoutError) as exc:
-            raise TunnelError(f"relay unreachable: {type(exc).__name__}") from None
+            raise TunnelError(f"relay unreachable: {unreachable_cause(exc)}") from None
         key = base64.b64encode(os.urandom(16)).decode()
         writer.write((
             f"GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nUpgrade: websocket\r\n"
@@ -258,6 +321,9 @@ class Tunnel:
         self._silent = silent_seconds
         self._ws: Any = None
         self.closed = False
+        #: The relay's close code once `run` has ended (None before, or when
+        #: the link ended without one): `CLOSE_RESTARTING` asks for a reopen now.
+        self.close_code: int | None = None
 
     async def open(self, ticket: str) -> None:
         """Dial, present `ticket`, and wait for `ready`. `TunnelError` if refused."""
@@ -313,7 +379,8 @@ class Tunnel:
             while True:
                 message = await self._ws.receive()
                 if message is None:
-                    return getattr(self._ws, "close_code", None)
+                    self.close_code = getattr(self._ws, "close_code", None)
+                    return self.close_code
                 is_text, data = message
                 if is_text:
                     continue
@@ -387,7 +454,7 @@ class StreamMux:
     """Routes the relay's frames to one `serve(conn_id, reader, writer)` per stream."""
 
     def __init__(self, tunnel: Tunnel, serve: Callable[[str, asyncio.StreamReader, TunnelWriter], Awaitable[None]],
-                 on_control: Callable[[str], Awaitable[None]],
+                 on_control: Callable[..., Awaitable[None]],
                  on_device: Callable[[bytes], Awaitable[None]] | None = None) -> None:
         self._tunnel = tunnel
         self._serve = serve
@@ -416,7 +483,12 @@ class StreamMux:
             if stream is not None:
                 stream[0].feed_eof()
         elif op == OP_CONTROL:
-            await self._on_control(conn_id)
+            # A revoke's cause rides in the payload (rendezvous.py); a plain
+            # grant or release has none, and is passed as before.
+            if payload:
+                await self._on_control(conn_id, payload)
+            else:
+                await self._on_control(conn_id)
         elif op == OP_DEVICE and self._on_device is not None:
             await self._on_device(payload)
 

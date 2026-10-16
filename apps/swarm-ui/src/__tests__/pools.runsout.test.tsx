@@ -10,11 +10,14 @@
 //   * an opened row that is a per-pool Fits table with a `+N if lifted`
 //     column, in place of the counterfactual sentences.
 //
-// BREAK IT: name only `binding[0]` in the column -- `browser`, where two pools
+// BREAK IT: name only `binding[0]` in the column -- `heavy`, where two pools
 // tie, loses `backend:gke`. Or compute Fits as `available` without dividing by
-// the profile's units -- `browser` weighs 2, so resource:browser's 3 free
-// units would read 3 rather than 1. Or drop the counterfactual lookup -- the
-// opened `claude-code` row loses its `+3`.
+// the profile's units -- `heavy` is the `large` class and weighs 4, so
+// resource:large's 7 free units would read 7 rather than 1. Or drop the
+// counterfactual lookup -- the opened `claude-code` row loses its `+3`.
+//
+// The weighted profile was `browser` (2 units) until contract request 79 made
+// the browser class 1 unit, where dividing by the weight changes nothing.
 
 import { fireEvent, render, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
@@ -58,10 +61,10 @@ const CAPACITY: Capacity = {
     pool('global', 31, 40),
     pool('tenant:eng', 18, 20),
     pool('resource:standard', 26, 40),
-    pool('resource:browser', 5, 8),
+    pool('resource:large', 5, 12),
     pool('runner:claude-code', 12, 20),
     pool('backend:cloudrun', 27, 40),
-    pool('backend:gke', 6, 8),
+    pool('backend:gke', 4, 8),
     pool('provider:anthropic', 22, 22),
   ],
   runner_profiles: {
@@ -75,11 +78,11 @@ const CAPACITY: Capacity = {
         ],
       }),
     }),
-    // Two pools tie and both bind. Weighs 2 units, so Fits is free units / 2.
-    browser: profile({
-      resource_class: 'browser', backend: 'gke', provider: null, units: 2,
-      pools: ['global', 'tenant:eng', 'resource:browser', 'backend:gke'],
-      admission: admission({ units: 2, headroom: 1, binding: ['resource:browser', 'backend:gke'] }),
+    // Two pools tie and both bind. Weighs 4 units, so Fits is free units / 4.
+    heavy: profile({
+      resource_class: 'large', backend: 'gke', provider: null, units: 4,
+      pools: ['global', 'tenant:eng', 'resource:large', 'backend:gke'],
+      admission: admission({ units: 4, headroom: 1, binding: ['resource:large', 'backend:gke'] }),
     }),
   },
 }
@@ -112,11 +115,11 @@ describe('Pools › By runner profile names what runs out first (#124)', () => {
     expect(cc.textContent).toContain('anthropic')
     expect(cc.textContent).toContain('fits 0')
 
-    const br = row('browser').querySelector('td[data-label="Runs out first"]')!
+    const br = row('heavy').querySelector('td[data-label="Runs out first"]')!
     const brItems = [...br.querySelectorAll('[data-pool]')].map((el) => el.getAttribute('data-pool')).sort()
-    expect(brItems, 'a tie lost one of the binding pools').toEqual(['backend:gke', 'resource:browser'])
-    // resource:browser: 3 free units, 2 per browser task -> fits 1.
-    const res = br.querySelector('[data-pool="resource:browser"]')!
+    expect(brItems, 'a tie lost one of the binding pools').toEqual(['backend:gke', 'resource:large'])
+    // resource:large: 7 free units, 4 per large task -> fits 1.
+    const res = br.querySelector('[data-pool="resource:large"]')!
     expect(res.textContent).toContain('fits 1')
   })
 
@@ -146,7 +149,7 @@ describe('Pools › By runner profile names what runs out first (#124)', () => {
   })
 
   it('works Fits out per task, never per unit, and never invents a figure', () => {
-    expect(fitsIn(pool('resource:browser', 5, 8), 2)).toBe(1)
+    expect(fitsIn(pool('resource:large', 5, 12), 4)).toBe(1)
     expect(fitsIn(pool('global', 40, 40), 1)).toBe(0)
     expect(fitsIn({ ...pool('global', 1, 4), effective_limit: null, hard_limit: null, available: null }, 1)).toBeNull()
     expect(fitsIn(null, 1)).toBeNull()

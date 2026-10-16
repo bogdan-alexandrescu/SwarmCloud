@@ -30,7 +30,7 @@ locals {
   # on drift, which is how this mismatch was caught.
   resource_classes = {
     standard = { cpu = 4, memory_gib = 8, disk_gib = 4, units = 1 }
-    browser  = { cpu = 8, memory_gib = 16, disk_gib = 8, units = 2 }
+    browser  = { cpu = 4, memory_gib = 8, disk_gib = 4, units = 1 }
     large    = { cpu = 8, memory_gib = 32, disk_gib = 16, units = 4 }
   }
 
@@ -554,6 +554,22 @@ locals {
   # serves nothing yet, so it is not a link either.
   console_url = var.enable_frontend && var.frontend_hostname != "" ? "https://${var.frontend_hostname}" : ""
 
+  # Saga's decision API through the cluster's ONE Tailscale egress Service in
+  # swarm-system (JUDGE-NET; owner decision 2026-10-14). Non-empty is what
+  # makes the internal Jev judgment backends available (swarm_api.judgment)
+  # and what the scheduler builds a live-browser pod's JEV_API_URL from
+  # (scheduler.judgment). Empty while var.internal_decision_api_enabled is
+  # off, so no workspace's Jev is offered a backend the cluster cannot reach.
+  # BY ITS TAILNET NAME, over https (owner decision 2026-10-15, #1380): the
+  # pod pins that name to the egress Service (tailscale.tf
+  # local.decision_api_cluster_ip), which passes TLS through, so the API's
+  # own certificate -- issued for that name -- verifies. The scheduler and
+  # swarm-api accept only this origin (scheduler.judgment
+  # INTERNAL_DECISION_ORIGIN, held equal by tests/unit/control_plane/
+  # test_dispatch_judgment.py), so a changed tailscale_egress_target stops
+  # the scheduler at start rather than failing in every pod.
+  internal_decision_api_url = var.internal_decision_api_enabled ? "https://${var.tailscale_egress_target}" : ""
+
   # swarm-api's address for the live relay (live.tf, LB-L8d). PLAIN ws on 8080,
   # on the internal load balancer's reserved address: owner decision
   # 2026-10-11 (b) proxies every browser through swarm-api, so this hop never
@@ -577,7 +593,11 @@ locals {
 
   # Every Secret Manager reference swarm-api's environment carries, merged
   # once so main.tf and tests/terraform/live.tftest.hcl read one value.
-  api_secret_env = merge(local.child_key_secret_env, local.live_key_secret_env)
+  # SWARM_EGRESS_KEY joins them once swarm-egress is deployed (egress.tf), and
+  # SWARM_TYPESAFE_FWD_KEY once the TypeSafe forwarder is served (typesafe_fwd.tf),
+  # SWARM_WORKSPACE_GRANT_KEY once grant attestation is (workspace_grant_key.tf),
+  # and SWARM_GRAPH_TICKET_KEY once the graph service is (graph_service.tf).
+  api_secret_env = merge(local.child_key_secret_env, local.live_key_secret_env, local.egress_key_secret_env, local.typesafe_fwd_key_secret_env, local.workspace_grant_key_secret_env, local.graph_ticket_key_secret_env)
 
   # The swarm-api refusal switches (swarm_api.refusals; docs/api-refusals.md).
   # A refusal added to swarm-api ships off; var.api_refusals turns one on.
@@ -590,7 +610,9 @@ locals {
   }
 
   service_env = {
-    "swarm-api" = merge(local.common_env, local.api_refusal_env, {
+    # local.api_browser_egress_env: the browser egress switch (egress.tf).
+    # local.api_grant_attestation_env: GRANT_ATTESTATION_REQUIRED (workspace_grant_key.tf).
+    "swarm-api" = merge(local.common_env, local.api_refusal_env, local.api_browser_egress_env, local.api_grant_attestation_env, {
       # DISPATCH_TOPIC, not WAKE_TOPIC. Both apps read `DISPATCH_TOPIC`
       # (swarm_api.settings, scheduler.settings); terraform set `WAKE_TOPIC`,
       # which nothing has ever read. swarm_api.deps falls back to NullWaker()
@@ -704,6 +726,17 @@ locals {
       # var.repository_grants_enforced; service submissions are never refused.
       REPOSITORY_GRANTS_ENFORCED = var.repository_grants_enforced ? "true" : "false"
 
+      # The live browser's search tool (swarm_api.settings
+      # `search_tool_enabled`, `search_provider`; docs/search-tool.md, lane
+      # SEARCH-TF, #1030). Off unless the environment's tfvars sets
+      # var.search_tool_enabled, so turning it on is a tfvars change an apply
+      # keeps rather than a hand edit the next apply puts back. Off, the route
+      # is a 404 and no agent is offered the tool. The provider's key is not
+      # here: it is a platform secret read per call from Secret Manager
+      # (scripts/create-secrets.sh --search-api-key --stdin).
+      SEARCH_TOOL_ENABLED = var.search_tool_enabled ? "true" : "false"
+      SEARCH_PROVIDER     = var.search_provider
+
       # The personal-workspace job's trigger (docs/workspaces.md §2.1-2.2,
       # #847): approve, retry and the dispatch sweep publish a workspace id to
       # this topic, which terraform/bootstrap creates with its Cloud Build
@@ -786,6 +819,10 @@ locals {
       # built from (swarm_api.settings `console_url`). See local.console_url.
       SWARM_CONSOLE_URL = local.console_url
 
+      # Whether the internal Jev judgment backends are available
+      # (swarm_api.judgment). See local.internal_decision_api_url.
+      INTERNAL_DECISION_API_URL = local.internal_decision_api_url
+
       # The audience the child routes pin a worker's ID token to
       # (swarm_api.settings `child_audience`, routes/children.py): the custom
       # audience this service accepts, and the value the scheduler hands each
@@ -809,7 +846,10 @@ locals {
       # relay is off, which swarm_api.settings reads as "no relay".
       SWARM_LIVE_URL = local.live_relay_url
     })
-    "swarm-scheduler" = merge(local.common_env, local.spec_worker_env, {
+    "swarm-scheduler" = merge(local.common_env, local.spec_worker_env, local.scheduler_browser_egress_env, {
+      # local.scheduler_browser_egress_env: the browser egress switch the
+      # dispatcher labels and routes a live-browser pod by (egress.tf).
+      #
       # local.spec_worker_env, merged in above: the four step-spec settings
       # (contract request 34), which the scheduler passes VERBATIM onto every
       # Cloud Run Job it creates itself (#353, scheduler.dispatch.spec_job_env),
@@ -907,6 +947,11 @@ locals {
       # serves.
       SWARM_CONSOLE_URL      = local.console_url
       SWARM_PR_CONSOLE_LINKS = tostring(var.pr_console_links)
+
+      # A live-browser pod's JEV_API_URL for a workspace that judges with an
+      # internal backend (scheduler.judgment, JUDGE-SELECT). See
+      # local.internal_decision_api_url.
+      INTERNAL_DECISION_API_URL = local.internal_decision_api_url
 
       # Child tasks (child_tasks.tf): passed through to a worker the scheduler
       # also mints a registration nonce for -- only when it holds

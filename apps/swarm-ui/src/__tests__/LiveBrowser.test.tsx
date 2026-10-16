@@ -178,7 +178,7 @@ class FakeSocket extends EventTarget {
 }
 
 const { AgentSplit } = await import('../AgentSplit')
-const { LiveBrowserPane, LiveControl, crispAt } = await import('../LiveBrowser')
+const { LiveBrowserPane, LiveControl, crispAt, liveReconnectDelay, LIVE_RESTART_CODE } = await import('../LiveBrowser')
 const { resetListSnap } = await import('../listSnap')
 
 const ID = 'task_0123456789abcdef0456'
@@ -841,4 +841,56 @@ describe('touch events are sent only in control with touch on', () => {
     expect(await touchesFrom(viewer({ device: { preset: 'iphone-15', orientation: 'portrait', touch: true } }))).toBe(0)
   })
 
+})
+
+// RELAY-ROLL (part of #1030). MEASURED 2026-10-12/14: the relay restarted 40
+// times in ~48 h, once per release, and every viewer waited the 2 s, 4 s, 8 s
+// ... of an ordinary drop before it rejoined. A close with 1012 ("restarting,
+// reconnect now") is rejoined at once. MUTATION: drop the `restart` branch in
+// `liveReconnectDelay`, or stop reading the close code: the first block's
+// reconnect then waits 2 s and the test times out.
+describe('a relay restart is rejoined at once', () => {
+  /** Close the connected socket with `code`, as swarm-api does, then let noVNC say so. */
+  function drop(r: InstanceType<typeof rfb.FakeRfb>, code: number) {
+    const raw = FakeSocket.made.at(-1) as unknown as { onclose: ((e: CloseEvent) => void) | null }
+    act(() => {
+      raw.onclose?.({ code } as CloseEvent)
+      r.emit('disconnect')
+    })
+  }
+
+  beforeEach(() => {
+    api.loadLiveSession.mockResolvedValue(ok<LiveRead>({ live_browser: true, session: session() }))
+  })
+
+  it('reconnects in well under a second when the relay closed with 1012', async () => {
+    pane(session())
+    const r = await connected()
+    expect(api.mintLiveTicket).toHaveBeenCalledTimes(1)
+    drop(r, LIVE_RESTART_CODE)
+    await waitFor(() => expect(api.mintLiveTicket).toHaveBeenCalledTimes(2), { timeout: 900 })
+    await waitFor(() => expect(FakeSocket.made).toHaveLength(2))
+    expect(document.querySelector('.live-screen-say')?.textContent ?? '').not.toContain('failed')
+  })
+
+  it('keeps the ordinary backoff for any other close', async () => {
+    pane(session())
+    const r = await connected()
+    drop(r, 1006)
+    await new Promise((done) => setTimeout(done, 900))
+    expect(api.mintLiveTicket, 'an ordinary drop reconnected at the restart pace').toHaveBeenCalledTimes(1)
+  })
+
+  it('starts at ~250 ms, jittered, and never waits past 4 s while the relay comes back', () => {
+    expect(LIVE_RESTART_CODE).toBe(1012)
+    for (const rand of [0, 0.5, 0.999]) {
+      const first = liveReconnectDelay(1, true, () => rand)
+      expect(first).toBeGreaterThanOrEqual(150)
+      expect(first).toBeLessThan(1000)
+    }
+    expect(liveReconnectDelay(3, true, () => 0)).toBeLessThan(liveReconnectDelay(3, true, () => 0.999))
+    expect(Math.max(...[1, 2, 4, 8, 20].map((n) => liveReconnectDelay(n, true, () => 0.999)))).toBe(4000)
+    expect(liveReconnectDelay(1, false)).toBe(2000)
+    expect(liveReconnectDelay(9, false)).toBe(30_000)
+  })
 })

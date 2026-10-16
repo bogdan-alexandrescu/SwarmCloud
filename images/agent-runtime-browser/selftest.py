@@ -23,7 +23,27 @@ attempt at 3am:
   6. the display sidecar's pieces: uid 10002, Xvfb, a policy Chromium parses;
   7. codex is NOT in the image -- it is built FROM agent-runtime-base-nocodex
      (BROWSER-NO-CODEX, owner decision 2026-10-13) -- and every other tool the
-     base carries is.
+     base carries is;
+  8. `dev-browser` on PATH is the wrapper, the real binary is off PATH and
+     reports the pinned DEV_BROWSER_VERSION, `dev-browser install`,
+     `--headless` and a foreign `--connect` are refused, a run without
+     SWARM_CDP_ENDPOINT while the stub is active fails toward the live
+     browser, and the real binary's own launch, with DEV_BROWSER_CHROME on
+     the stub, ends in the stub's message (DEVB-INSTALL, part of #1030);
+  9. jev-browser is the pinned JEV_BROWSER_VERSION on the image's Playwright,
+     its wrapper refuses to start without SWARM_CDP_ENDPOINT, the patched
+     module exports the attach and refuses a launch, the attach drives a real
+     Chromium's existing context over CDP without one method the live gate
+     refuses and leaves the browser running when it closes, and the MCP
+     server lists its tools through the wrapper (JEV-IMAGE, part of #1030);
+ 10. the patched jev-browser exports its backend adapter; unset
+     JEV_API_COMPAT leaves TypeSafe's request untouched (object state, the
+     TypeSafe key, TypeSafe's URL); JEV_API_COMPAT=internal with no
+     TYPESAFE_API_KEY does not throw, sends a string state, described choice
+     criteria and the placeholder key -- never the TypeSafe key, even when
+     one is set -- and jev-browser's own decide()/resolve() turn the recorded
+     internal-API answers into a numeric element index, one stage and two;
+     internal toward TypeSafe's URL is refused (JUDGE-ADAPT, part of #1030).
 """
 
 from __future__ import annotations
@@ -32,10 +52,14 @@ import glob
 import json
 import os
 import pwd
+import re
+import secrets
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
+import urllib.request
 
 MESSAGE = (
     "This agent's browser is the live browser the person watches: connect with "
@@ -53,6 +77,38 @@ TOOLS = (
     "trivy", "shellcheck", "make", "docker",
 )
 CODEX_PACKAGE = "/usr/local/share/npm-global/lib/node_modules/@openai/codex"
+#: dev-browser (DEVB-INSTALL): the wrapper on PATH, the real binary off it,
+#: and the stub the real binary is given as its Chrome.
+DEV_BROWSER = "/usr/local/bin/dev-browser"
+DEV_BROWSER_BIN = "/opt/swarm/dev-browser/dev-browser-bin"
+DEV_BROWSER_STUB = "/opt/swarm/dev-browser/live-browser-only"
+#: What the wrapper prints on every refusal.
+DEV_BROWSER_REFUSAL = "dev-browser here drives only the live browser the person watches"
+#: jev-browser (JEV-IMAGE): the npm install, its wrapper, and the probe beside
+#: this file that attaches the patched package to a Chromium over CDP.
+JEV_ROOT = "/opt/swarm/jev-browser"
+JEV_WRAPPER = f"{JEV_ROOT}/bin/jev-browser-mcp"
+JEV_PACKAGE = f"{JEV_ROOT}/node_modules/jev-browser"
+JEV_PROBE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jev-browser", "attach-probe.mjs")
+#: The backend adapter's probe (JUDGE-ADAPT) and the internal API's recorded answers it replays.
+JEV_COMPAT_PROBE = os.path.join(os.path.dirname(JEV_PROBE), "compat-probe.mjs")
+JEV_COMPAT_FIXTURE = os.path.join(os.path.dirname(JEV_PROBE), "fixtures", "internal-decide.json")
+JEV_REFUSAL = "jev-browser here drives only the live browser the person watches"
+#: The MCP server's tools, as jev-browser 0.2.0 registers them.
+JEV_TOOLS = {
+    "browser_open", "browser_do", "browser_check", "browser_choose", "browser_snapshot", "browser_act",
+    "browser_screenshot", "browser_close", "browser_read", "browser_webmcp_tools", "browser_webmcp_call",
+}
+#: What an attach must never send: each is refused by the live gate
+#: (livegate/cdppolicy.py DENIED) and would mean a new context, a device of its
+#: own, the remote browser closed, or the cookie jar touched.
+JEV_GATE_REFUSED = (
+    "Target.createBrowserContext", "Browser.close", "Emulation.setDeviceMetricsOverride",
+    "Emulation.clearDeviceMetricsOverride", "Emulation.setTouchEmulationEnabled", "Emulation.setVisibleSize",
+    "Network.setUserAgentOverride", "Network.setExtraHTTPHeaders", "Network.getCookies",
+    "Network.getAllCookies", "Storage.getCookies", "Network.setCookies", "Storage.setCookies",
+    "Network.clearBrowserCookies", "Storage.clearCookies", "Target.sendMessageToTarget",
+)
 POLICIES = ("/etc/opt/chrome/policies/managed/swarm.json", "/etc/chromium/policies/managed/swarm.json")
 
 
@@ -153,10 +209,241 @@ def no_codex() -> None:
     check(not missing, f"{len(TOOLS)} tools of the base are present (missing: {missing})")
 
 
+def _dev_browser(argv: list[str], env: dict[str, str]) -> subprocess.CompletedProcess:
+    return subprocess.run(argv, env=env, capture_output=True, text=True, timeout=120,
+                          stdin=subprocess.DEVNULL)
+
+
+def dev_browser(stub_root: str, version: str) -> None:
+    check(bool(version), "DEV_BROWSER_VERSION names the pinned version")
+    check(shutil.which("dev-browser") == DEV_BROWSER, f"dev-browser on PATH is the wrapper {DEV_BROWSER}")
+    check(os.access(DEV_BROWSER_BIN, os.X_OK), f"the real binary is {DEV_BROWSER_BIN}")
+    check(shutil.which("dev-browser-bin") is None, "the real binary is not on PATH")
+    check(os.access(DEV_BROWSER_STUB, os.X_OK), f"the stub dev-browser launches is {DEV_BROWSER_STUB}")
+    home = tempfile.mkdtemp()
+    base = {**os.environ, "HOME": home, "DEV_BROWSER_HOME": os.path.join(home, "dev-browser")}
+    base.pop("SWARM_CDP_ENDPOINT", None)
+    base.pop("DISPLAY", None)
+
+    done = _dev_browser([DEV_BROWSER_BIN, "--version"], base)
+    check(done.returncode == 0 and done.stdout.strip() == f"dev-browser {version}",
+          f"the real binary is dev-browser {version}: {done.stdout.strip()!r} {done.stderr[-300:]!r}")
+    done = _dev_browser([DEV_BROWSER, "--version"], base)
+    check(done.returncode == 0 and version in done.stdout, f"the wrapper passes --version through: {done.stdout!r}")
+
+    # The live browser's variables as the claude-code runner sets them; the
+    # endpoint answers nothing here, and nothing below gets as far as it.
+    live = {**base, "PLAYWRIGHT_BROWSERS_PATH": stub_root, "SWARM_CDP_ENDPOINT": "http://127.0.0.1:9"}
+    for argv, what in (
+        (["install"], "`dev-browser install`"),
+        (["install", "--force"], "`dev-browser install --force`"),
+        (["chrome"], "`dev-browser chrome`"),
+        (["--headless", "-e", "1"], "`dev-browser --headless`"),
+        (["--connect", "9222", "-e", "1"], "`dev-browser --connect 9222`"),
+        (["--connect", "-e", "1"], "a bare `--connect`"),
+    ):
+        done = _dev_browser([DEV_BROWSER, *argv], live)
+        check(done.returncode == 2 and DEV_BROWSER_REFUSAL in done.stderr,
+              f"{what} is refused toward the live browser: {done.returncode} {done.stderr[-400:]!r}")
+
+    no_endpoint = {k: v for k, v in live.items() if k != "SWARM_CDP_ENDPOINT"}
+    done = _dev_browser([DEV_BROWSER, "-e", "1"], no_endpoint)
+    check(done.returncode == 2 and "SWARM_CDP_ENDPOINT is not set" in done.stderr
+          and DEV_BROWSER_REFUSAL in done.stderr,
+          f"a run without SWARM_CDP_ENDPOINT fails toward the live browser: {done.stderr[-400:]!r}")
+
+    # The real binary, run by its path, launching: DEV_BROWSER_CHROME is the
+    # stub, so the launch fails with the stub's message. Then stop the daemon
+    # it started, so nothing outlives this RUN.
+    own = {**base, "DEV_BROWSER_CHROME": DEV_BROWSER_STUB, "DEV_BROWSER_SKIP_DOWNLOAD": "1"}
+    done = _dev_browser([DEV_BROWSER_BIN, "--headless", "-e", "1"], own)
+    _dev_browser([DEV_BROWSER_BIN, "stop"], own)
+    check(done.returncode != 0 and MESSAGE in done.stdout + done.stderr,
+          f"the real binary's own launch ends in the stub: {(done.stdout + done.stderr)[-600:]!r}")
+
+
+def _cdp_chromium(profile: str) -> tuple[subprocess.Popen, str]:
+    """The gate's Chromium, headless, on a CDP port of its choosing."""
+    from agent_worker.livegate.__main__ import find_chromium
+
+    proc = subprocess.Popen(
+        [find_chromium(REAL), "--headless=new", "--no-sandbox", "--disable-dev-shm-usage", "--no-zygote",
+         "--remote-debugging-port=0", f"--user-data-dir={profile}", "about:blank"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    port_file = os.path.join(profile, "DevToolsActivePort")
+    for _ in range(300):
+        if os.path.exists(port_file) and open(port_file, encoding="utf-8").read().strip():
+            return proc, f"http://127.0.0.1:{open(port_file, encoding='utf-8').read().split()[0]}"
+        if proc.poll() is not None:
+            break
+        time.sleep(0.1)
+    proc.kill()
+    check(False, "a Chromium with a CDP port started for the jev-browser attach")
+    raise AssertionError  # unreachable: check() exits
+
+
+def _cdp_pages(endpoint: str) -> list[str]:
+    with urllib.request.urlopen(f"{endpoint}/json/list", timeout=10) as resp:
+        return [t["id"] for t in json.load(resp) if t.get("type") == "page"]
+
+
+def _mcp_tools(env: dict[str, str]) -> set[str]:
+    """tools/list over the wrapper's stdio, newline-delimited JSON-RPC."""
+    lines = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": "swarm-selftest", "version": "0"}}},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+    ]
+    proc = subprocess.Popen([JEV_WRAPPER], env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True)
+    assert proc.stdin and proc.stdout
+    try:
+        for msg in lines:
+            proc.stdin.write(json.dumps(msg) + "\n")
+        proc.stdin.flush()
+        for _ in range(10):
+            line = proc.stdout.readline()
+            if not line:
+                break
+            reply = json.loads(line)
+            if reply.get("id") == 2:
+                return {t["name"] for t in reply["result"]["tools"]}
+    finally:
+        proc.kill()
+        proc.wait(timeout=30)
+    return set()
+
+
+def jev_browser(version: str) -> None:
+    check(bool(version), "JEV_BROWSER_VERSION names the pinned version")
+    from importlib.metadata import version as dist_version
+
+    pw_version = dist_version("playwright")  # playwright-python has no __version__
+
+    with open(f"{JEV_PACKAGE}/package.json", encoding="utf-8") as fh:
+        check(json.load(fh)["version"] == version, f"jev-browser is {version}")
+    with open(f"{JEV_ROOT}/node_modules/playwright-core/package.json", encoding="utf-8") as fh:
+        core = json.load(fh)["version"]
+    check(core == pw_version, f"jev-browser's Playwright is the image's {pw_version}: {core}")
+    check(not os.path.exists(f"{JEV_ROOT}/node_modules/jev-browser/node_modules/playwright-core"),
+          "no second Playwright under jev-browser")
+    check(os.access(JEV_WRAPPER, os.X_OK) and shutil.which("jev-browser-mcp") is None,
+          f"the wrapper is {JEV_WRAPPER}, off PATH")
+
+    home = tempfile.mkdtemp()
+    base = {**os.environ, "HOME": home}
+    for name in ("SWARM_CDP_ENDPOINT", "JEV_BROWSER_CDP_ENDPOINT", "DISPLAY"):
+        base.pop(name, None)
+    done = subprocess.run([JEV_WRAPPER], env=base, capture_output=True, text=True, timeout=60,
+                          stdin=subprocess.DEVNULL)
+    check(done.returncode == 2 and "SWARM_CDP_ENDPOINT is not set" in done.stderr and JEV_REFUSAL in done.stderr,
+          f"the wrapper refuses without SWARM_CDP_ENDPOINT: {done.returncode} {done.stderr[-400:]!r}")
+
+    # The patched module: the attach is exported, and a launch is refused.
+    code = (
+        "const m = await import(process.argv[1]);"
+        "if (typeof m.JevBrowser.attach !== 'function' || !m.LAUNCH_REFUSED) process.exit(3);"
+        "try { await m.JevBrowser.launch(); console.log('LAUNCHED'); }"
+        "catch (e) { console.log(e.message === m.LAUNCH_REFUSED ? 'LAUNCH_REFUSED' : e.message); }"
+    )
+    done = subprocess.run(["node", "--input-type=module", "-e", code, f"{JEV_PACKAGE}/src/index.mjs"],
+                          env=base, capture_output=True, text=True, timeout=60)
+    check(done.returncode == 0 and done.stdout.strip() == "LAUNCH_REFUSED",
+          f"the patched module exports the attach and refuses a launch: {done.stdout[-300:]!r} {done.stderr[-300:]!r}")
+
+    # The attach, against a real Chromium over CDP, the way the live gate's
+    # proxy presents it; Playwright's protocol log is every method it sent.
+    profile = tempfile.mkdtemp()
+    proc, endpoint = _cdp_chromium(profile)
+    try:
+        before = _cdp_pages(endpoint)
+        env = {**base, "JEV_BROWSER_CDP_ENDPOINT": endpoint, "DEBUG": "pw:protocol"}
+        done = subprocess.run(["node", JEV_PROBE, f"{JEV_PACKAGE}/src/index.mjs"], env=env,
+                              capture_output=True, text=True, timeout=180)
+        check(done.returncode == 0, "the attach probe ran" if done.returncode == 0
+              else f"the attach probe ran: {done.stdout[-400:]!r} {done.stderr[-1200:]!r}")
+        seen = json.loads(done.stdout.strip().splitlines()[-1])
+        check(seen == {"attached": True, "contexts": 1, "viewport": None, "title": "jev attach ok",
+                       "snapshot_has_button": True, "webmcp_tools": 0, "contexts_after": 1,
+                       "connected_after_close": False},
+              f"jev-browser drives the existing context with no viewport and no WebMCP script: {seen}")
+        sent = set(re.findall(r'SEND . \{"id":\d+,"method":"([A-Za-z]+\.[A-Za-z]+)"', done.stderr))
+        check(bool(sent), f"the protocol log was read ({len(sent)} methods)")
+        refused = sorted(sent.intersection(JEV_GATE_REFUSED))
+        check(not refused, f"the attach sends no method the live gate refuses: {refused}")
+        # The one gate-refused method Playwright sends on every attach, with an
+        # empty user agent, and whose failure it swallows (crNetworkManager).
+        agents = re.findall(r'"method":"Emulation.setUserAgentOverride","params":\{"userAgent":"([^"]*)"', done.stderr)
+        check(all(a == "" for a in agents), f"no user agent is set: {agents}")
+        check(proc.poll() is None and _cdp_pages(endpoint) == before,
+              "close() disconnected and left the browser and its tab running")
+
+        tools = _mcp_tools({**base, "SWARM_CDP_ENDPOINT": endpoint})
+        check(tools == JEV_TOOLS, f"the MCP server lists its {len(JEV_TOOLS)} tools through the wrapper: {sorted(tools)}")
+    finally:
+        proc.kill()
+        proc.wait(timeout=30)
+
+
+def _compat_probe(env: dict[str, str]) -> subprocess.CompletedProcess:
+    return subprocess.run(["node", JEV_COMPAT_PROBE, f"{JEV_PACKAGE}/src/index.mjs", JEV_COMPAT_FIXTURE],
+                          env=env, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+
+
+def jev_compat() -> None:
+    base = {k: v for k, v in os.environ.items() if not k.startswith(("JEV_", "TYPESAFE_"))}
+    base["HOME"] = tempfile.mkdtemp()
+    key = "ts-" + secrets.token_hex(12)  # built at run time: nothing here looks like a credential
+    internal_url = "http://internal.invalid/jev/v1/decide"
+
+    def run(env: dict[str, str], what: str) -> dict:
+        done = _compat_probe({**base, **env})
+        check(done.returncode == 0, f"{what}: the compat probe ran (exit {done.returncode}) {done.stderr[-600:]!r}")
+        return json.loads(done.stdout.strip().splitlines()[-1])
+
+    typesafe = run({"TYPESAFE_API_KEY": key}, "TypeSafe")
+    check(typesafe["mode"] == "typesafe" and [(s["url"], s["auth"], s["state_type"]) for s in typesafe["sent"]]
+          == [("https://api.typesafe.ai/v1/systemone", "typesafe_key", "object")],
+          f"JEV_API_COMPAT unset: TypeSafe's URL, its key, the object state, untouched: {typesafe['sent']}")
+
+    for env, what in (({"JEV_API_COMPAT": "internal", "JEV_API_URL": internal_url}, "internal, no TypeSafe key"),
+                      ({"JEV_API_COMPAT": "internal", "JEV_API_URL": internal_url, "TYPESAFE_API_KEY": key},
+                       "internal, a TypeSafe key set")):
+        out = run(env, what)
+        sent = out["sent"]
+        check(out["key"] == "placeholder" and len(sent) == 4 and {s["auth"] for s in sent} == {"placeholder"},
+              f"{what}: apiKey() does not throw and only the placeholder is sent: {[s['auth'] for s in sent]}")
+        check(all(s["url"] == internal_url and s["state_type"] == "string" and s["state_parses"] for s in sent),
+              f"{what}: every request is a JSON-string state to the internal URL")
+        check(all(isinstance(v, str) and v for s in sent for c in s["choices"].values() for v in c.values()),
+              f"{what}: every choice option is described")
+        check(sent[1]["choices"]["target"] == {"0": "a Home", "1": "input:text Search", "2": "button Go"},
+              f"{what}: the element pick is described from page.elements: {sent[1]['choices'].get('target')}")
+        check(sorted(sent[2]["choices"]["group"], key=int) == [str(g) for g in range(9)]
+              and sent[2]["choices"]["group"]["4"].startswith("Item 120 | Item 121"),
+              f"{what}: the group pick is described from page.groups")
+        check(out["single"] == {"stages": 1, "tool": "click", "target": 2, "target_type": "number", "p_target": 0.98},
+              f"{what}: decide()/resolve() read the internal answer as element 2: {out['single']}")
+        check(out["grouped"] == {"stages": 2, "groups_considered": [4], "tool": "click", "target": 137,
+                                 "target_type": "number", "p_target": 0.98},
+              f"{what}: the two-stage pick reads as element 137: {out['grouped']}")
+        check("names neither `page.elements` nor `page.groups`" in out["undescribable"] and out["undescribable_sent"] == 0,
+              f"{what}: a choice nothing describes fails and sends nothing: {out['undescribable']!r}")
+
+    done = _compat_probe({**base, "JEV_API_COMPAT": "internal", "TYPESAFE_API_KEY": key})
+    check(done.returncode != 0 and "the API URL is TypeSafe's" in done.stderr and key not in done.stderr + done.stdout,
+          f"internal toward TypeSafe's URL is refused: {done.returncode} {done.stderr[-300:]!r}")
+
+
 if __name__ == "__main__":
     real_browser()
     stub_launches(sys.argv[1])
     helper_and_mcp()
     display_pieces()
     no_codex()
+    dev_browser(sys.argv[1], os.environ.get("DEV_BROWSER_VERSION", ""))
+    jev_browser(os.environ.get("JEV_BROWSER_VERSION", ""))
+    jev_compat()
     print("browser image self-test passed")

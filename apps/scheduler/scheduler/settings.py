@@ -22,6 +22,8 @@ from datetime import datetime
 from swarm_common.config import Settings
 from swarm_common.profiles import RUNNER_PROFILES
 
+from .judgment import check_internal_decision_api_url
+
 #: `<registry path>@sha256:<64 hex>`, and nothing before the `@` that could be a
 #: tag. The same shape terraform/infra/variables.tf validates `image_refs`
 #: against: the runtime ignores a tag when a digest is present, so a tag there
@@ -190,6 +192,11 @@ def _bool(name: str, default: bool) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _csv(name: str, default: str = "") -> tuple[str, ...]:
+    raw = os.environ.get(name, default)
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
+
+
 @dataclass(frozen=True)
 class SchedulerSettings:
     core: Settings
@@ -316,6 +323,17 @@ class SchedulerSettings:
     #: Default False: off until the owner has seen it on a real PR (owner
     #: decision, 2026-10-01).
     pr_console_links: bool = False
+    #: Saga's decision API through the cluster's Tailscale egress Service
+    #: (INTERNAL_DECISION_API_URL; JUDGE-NET's switch, terraform
+    #: `internal_decision_api_enabled`). Set, a live-browser pod whose
+    #: workspace chose an internal judgment backend gets JEV_API_URL under it
+    #: and the `swarm-judge: internal` label (`scheduler.judgment`). Empty,
+    #: no pod gets either, and an internal choice leaves Jev unavailable
+    #: rather than sending page text to TypeSafe. Only "" or the decision
+    #: API's tailnet origin (`judgment.INTERNAL_DECISION_ORIGIN`), because
+    #: that is the one host the jev wrapper accepts and the pod's hostAliases
+    #: entry resolves.
+    internal_decision_api_url: str = ""
 
     # --- child tasks (docs/design/child-tasks.md) --------------------------
     #: `swarm-child-key` (SWARM_CHILD_KEY), from Secret Manager, held by this
@@ -370,6 +388,26 @@ class SchedulerSettings:
     #: every `claude-code-browser` pod. Turn it on (LIVE_BROWSER_SIDECAR=true)
     #: once the image that the scheduler dispatches carries the gate.
     live_browser_sidecar: bool = False
+    #: THE BROWSER EGRESS SWITCH, the dispatcher's side (docs/browser-egress.md
+    #: §10.3; lane EGRESS-DISPATCH, part of #1030). A live-browser pod is
+    #: dispatched for residential egress -- `SWARM_BROWSER_EGRESS=proxy` on its
+    #: `display` sidecar and the `swarm-egress: proxy` label -- only when
+    #: `browser_egress_enabled`, its tenant is in `browser_egress_tenants` AND
+    #: its profile is in `browser_egress_profiles` (scheduler.dispatch
+    #: `browser_egress_on`). terraform/infra/egress.tf renders these from
+    #: var.browser_egress, the SAME values it gives swarm-api, which mints the
+    #: attempt's ticket by the same three tests: a pod routed here that
+    #: swarm-api refused would fail closed with no browser, and one left
+    #: direct that swarm-api would mint for would never ask. OFF BY DEFAULT,
+    #: and the profile default is swarm-api's, so the two agree on a
+    #: deployment that names only the tenants. Never from a task (invariant 10).
+    browser_egress_enabled: bool = False
+    browser_egress_tenants: tuple[str, ...] = ()
+    browser_egress_profiles: tuple[str, ...] = ("claude-code-browser",)
+    #: Hosts the browser reaches DIRECT, as SWARM_EGRESS_BYPASS: egress.tf's
+    #: `egress_bypass_hosts`, the list swarm-egress refuses a CONNECT for, so
+    #: the gate's `--proxy-bypass-list` and the forwarder's refusal agree.
+    browser_egress_bypass: tuple[str, ...] = ()
     dispatch_topic: str = ""
     #: The step-spec verification settings a worker needs (contract request
     #: 34), passed through VERBATIM onto every Cloud Run Job this scheduler
@@ -414,6 +452,7 @@ class SchedulerSettings:
             quota_broker_audience=os.environ.get("QUOTA_BROKER_AUDIENCE", "").strip(),
             console_url=os.environ.get("SWARM_CONSOLE_URL", "").strip(),
             pr_console_links=_bool("SWARM_PR_CONSOLE_LINKS", False),
+            internal_decision_api_url=os.environ.get("INTERNAL_DECISION_API_URL", "").strip(),
             child_key=os.environ.get("SWARM_CHILD_KEY", "").strip(),
             swarm_api_url=os.environ.get("SWARM_API_URL", "").strip(),
             swarm_api_audience=os.environ.get("SWARM_API_AUDIENCE", "").strip(),
@@ -429,6 +468,10 @@ class SchedulerSettings:
             worker_image_refs=parse_worker_image_refs(os.environ.get("WORKER_IMAGE_REFS", "")),
             worker_models=parse_worker_models(os.environ.get("WORKER_MODELS", "")),
             live_browser_sidecar=_bool("LIVE_BROWSER_SIDECAR", False),
+            browser_egress_enabled=_bool("BROWSER_EGRESS_ENABLED", False),
+            browser_egress_tenants=_csv("BROWSER_EGRESS_TENANTS"),
+            browser_egress_profiles=_csv("BROWSER_EGRESS_PROFILES", "claude-code-browser"),
+            browser_egress_bypass=_csv("BROWSER_EGRESS_BYPASS"),
             dispatch_topic=os.environ.get("DISPATCH_TOPIC", ""),
             spec_verify_keys=os.environ.get("SPEC_VERIFY_KEYS", "").strip(),
             spec_signing_key=os.environ.get("SPEC_SIGNING_KEY", "").strip(),
@@ -462,3 +505,4 @@ class SchedulerSettings:
         check_worker_image_refs(self.worker_image_refs)
         check_worker_models(self.worker_models)
         check_spec_settings(self)
+        check_internal_decision_api_url(self.internal_decision_api_url)

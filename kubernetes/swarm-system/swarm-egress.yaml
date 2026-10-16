@@ -1,0 +1,239 @@
+# swarm-egress: the live browser's egress forwarder, which holds the vendor
+# credential so no pod has to (docs/browser-egress.md §2.2, §3.1, §3.5; lane
+# EGRESS-SVC, part of #1030).
+#
+# A labelled browser pod's gate sends CONNECT host:443 here with an attempt
+# egress ticket swarm-api minted. swarm-egress checks the ticket (attempt,
+# generation, expiry), the platform switch, the tenant, the bypass list and the
+# caps, then opens the CONNECT to Bright Data with the credential and the
+# per-attempt sticky US session, and only relays bytes from there.
+#
+# A TEMPLATE. Its double-underscore placeholders are filled by
+# terraform/infra/egress.tf and the result is its `swarm_egress_manifest`
+# output; `kubernetes/apply.sh --swarm-system` applies it after the live relay's.
+#
+#   terraform -chdir=terraform/infra output -raw swarm_egress_manifest
+#
+# APPLY IT TO swarm-autopilot ONLY. `agents-staging` in the same project is
+# another team's cluster (CLAUDE.md rule 2); apply.sh refuses it.
+#
+# WHY A ONE-REPLICA STATEFULSET. The byte ledger that enforces the monthly
+# caps lives on a persistent volume, and one writer is what keeps it honest; a
+# second replica would count half the bytes each and let the platform spend
+# twice the cap. A StatefulSet of one is at most one pod through a rollout.
+# Scale-out, when measured to be needed, is a shared ledger first.
+#
+# WHO IT RUNS AS. The KSA `swarm-egress` in `swarm-system`, which is the ONLY
+# reader of `swarm-egress-credential` (the vendor credential) and a reader of
+# `swarm-egress-key`, both as a Workload Identity Federation for GKE principal
+# (egress.tf). No Kubernetes RBAC, no API token, no Google service account.
+#
+# WHO REACHES IT. TCP 3128 from a pod labelled `swarm-egress: proxy` in a
+# tenant namespace, and from nothing else: the NetworkPolicy below, and
+# network-policies/allow-egress-proxy.yaml on the tenant side. The label is the
+# dispatcher's (lane EGRESS-DISPATCH), never a caller's (invariant 10).
+#
+# ITS OWN EGRESS is the internet minus nothing, as swarm-system's is today: the
+# code dials only the vendor host in the credential. Pinning that with GKE's
+# FQDN network policy is not evaluated on this cluster yet (§2.5, §8).
+#
+# NOT MEASURED: the resource size below. Relaying is I/O, not CPU; a quarter
+# of a vCPU and 512 MiB are a starting point for the pilot's few concurrent
+# browser attempts, to be read from the pod's metrics in phase 1.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    # The same labels as swarm-live.yaml's copy of this object: both manifests
+    # create the namespace, so either may be applied first, and they must not
+    # fight over it.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: swarm-egress
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/name: swarm-egress
+# swarm-egress never calls the Kubernetes API. GKE's metadata server still
+# answers it as this KSA, which is all Workload Identity needs.
+automountServiceAccountToken: false
+---
+# Who may reach it, from the moment it exists: a labelled browser pod in a
+# tenant namespace, on 3128. ONE peer with both selectors (two would be an
+# OR). swarm-system-default-deny-ingress (network-policies/swarm-system-live.yaml)
+# closes every other port and source. Before the Service and the StatefulSet,
+# so the pod is never selected by no policy at all.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: swarm-egress-ingress
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: swarm-egress
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: swarm
+            matchExpressions:
+              - key: swarm-tenant
+                operator: Exists
+          podSelector:
+            matchLabels:
+              swarm-egress: "proxy"
+      ports:
+        - protocol: TCP
+          port: 3128
+---
+# The platform setting (config.py), rendered by egress.tf from
+# var.browser_egress. Mounted as a directory, NOT with subPath, so the kubelet
+# refreshes it in place and swarm-egress re-reads it within seconds of that:
+# the kill switch needs no restart.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: swarm-egress-config
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/name: swarm-egress
+data:
+  config.json: |
+    __EGRESS_CONFIG_JSON__
+---
+# The gate's upstream: swarm-egress.swarm-system.svc.cluster.local:3128.
+# Headless, so the name resolves to the pod and the tenant policy's pod
+# selector is what admits the connection.
+apiVersion: v1
+kind: Service
+metadata:
+  name: swarm-egress
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/name: swarm-egress
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: swarm-egress
+  ports:
+    - name: connect
+      protocol: TCP
+      port: 3128
+      targetPort: 3128
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: swarm-egress
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/name: swarm-egress
+spec:
+  replicas: 1
+  serviceName: swarm-egress
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: swarm-egress
+  template:
+    metadata:
+      labels:
+        managed-by: swarm-terraform
+        app.kubernetes.io/name: swarm-egress
+      annotations:
+        # A changed setting changes this, so terraform's apply also rolls the
+        # pod; the in-place refresh above covers an emergency edit.
+        swarm.saga.xyz/config-sha256: __EGRESS_CONFIG_SHA256__
+    spec:
+      serviceAccountName: swarm-egress
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # Open tunnels are closed and the ledger written on SIGTERM.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: egress
+          image: __SWARM_EGRESS_IMAGE__
+          ports:
+            - name: connect
+              containerPort: 3128
+              protocol: TCP
+          env:
+            # Secret Manager REFERENCES, read at run time with the pod's own
+            # identity. Never the key or the credential itself, which stay out
+            # of the pod spec, the environment and every log.
+            - name: SWARM_EGRESS_KEY_SECRET
+              value: __EGRESS_KEY_VERSION__
+            - name: SWARM_EGRESS_CREDENTIAL_SECRET
+              value: __EGRESS_CREDENTIAL_VERSION__
+            - name: SWARM_EGRESS_CONFIG
+              value: /etc/swarm-egress/config.json
+            - name: SWARM_EGRESS_LEDGER
+              value: /var/lib/swarm-egress/usage.json
+          # Invariant 7: requests == limits, no bursting.
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+              ephemeral-storage: 1Gi
+            limits:
+              cpu: 250m
+              memory: 512Mi
+              ephemeral-storage: 1Gi
+          # The port opens only after swarm-egress-key has been read.
+          readinessProbe:
+            tcpSocket:
+              port: 3128
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 3128
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/swarm-egress
+              readOnly: true
+            - name: ledger
+              mountPath: /var/lib/swarm-egress
+      volumes:
+        - name: config
+          configMap:
+            name: swarm-egress-config
+  # The byte ledger (ledger.py). Small, and kept across restarts and
+  # rollouts, so a restart never hands the month a fresh budget.
+  volumeClaimTemplates:
+    - metadata:
+        name: ledger
+        labels:
+          managed-by: swarm-terraform
+          app.kubernetes.io/name: swarm-egress
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

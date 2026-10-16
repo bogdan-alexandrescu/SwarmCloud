@@ -3,8 +3,9 @@
 
     python -m agent_worker.graphmcp --snapshot <dir> [--workdir <checkout>]
 
-WHAT IT IS. A stdio MCP server with six tools -- `search`, `context`,
-`impact`, `tests_for`, `neighbours`, `territory` -- that a claude-code step
+WHAT IT IS. A stdio MCP server with eight tools -- `search`, `context`,
+`impact`, `tests_for`, `neighbours`, `territory`, and context-quality.md
+§4.4's `similar_changes` and `rules_for` (lane CTXQ-T) -- that a claude-code step
 asks mid-task instead of grepping one level at a time. It answers from a
 LOCAL snapshot of the KG2 graph (`snapshot.py`) and nothing else: it makes no
 network call, holds no credential and takes no repository argument, so

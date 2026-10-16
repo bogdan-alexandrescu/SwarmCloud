@@ -33,7 +33,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from swarm_common.models import (
     Task,
@@ -51,6 +51,7 @@ from . import gitidentity
 from .auth import AuthContext
 from .codec import hard_limit_known, quota_to_api
 from .cifix import stamp as stamp_ci_fix
+from .prgate import gate_for, resolve_after
 from .continuation import (
     NamedPull,
     resolve_continuation,
@@ -58,7 +59,8 @@ from .continuation import (
     with_merge_pr_label,
 )
 from .access import MODES, grant_id_for, org_id_for, via_token
-from .errors import Forbidden, NotFound, ValidationFailed
+from . import refusals
+from .errors import BrowserToolUnavailable, Forbidden, NotFound, ValidationFailed
 from .browser_logins import refuse_unless_personal
 from .expected_outputs import expected_outputs_by_step, record_expected_outputs
 from .forge import (
@@ -71,7 +73,10 @@ from .forge import (
 from .forgeapp import GRANTS, ORGS, Caller
 from .gittokens import Scope, owner_suffix, provider_suffix
 from .metrics import ApiMetrics
+from .judgment import TYPESAFE_BACKEND, JudgmentSettings
+from .provider_keys import task_key_scope
 from .repositories import Repositories, merge_policy_of, repo_id_for
+from .mergesettings import MergeSettingsStore
 from .runnerinputs import input_contract
 from .schemas import TaskCreate, WorkflowCreate, WorkflowStepCreate
 from .served_limits import configured_limits
@@ -81,10 +86,14 @@ from .store import Store, derived_service_account
 from .task_accounts import ACCOUNT_TOKEN_ENV
 from .validation import (
     APP_CREDENTIAL_PROVIDERS,
+    BROWSER_TOOL_INPUT_KEY,
+    CONFLICT_ROUND_METADATA_KEY,
+    TYPESAFE_PROVIDER,
     DISPATCH_METADATA_KEY,
     FORGE_SOURCE_METADATA_KEY,
     INPUT_FROM_METADATA_KEY,
     INPUT_LAYOUT_BY_PARENT,
+    MERGE_FIX_ROUNDS_KEY,
     MERGE_METADATA_KEY,
     MERGE_ON_VERDICT,
     MERGE_STEP_MAX_ATTEMPTS,
@@ -111,7 +120,9 @@ from .validation import (
     resolve_input_layout,
     resolve_integrator_step,
     resolve_merge_choice,
+    resolve_fix_rounds,
     resolve_merge_fix_rounds,
+    AFTER_PRS_METADATA_KEY,
     github_repository,
     is_service_submitter,
     repository_not_granted,
@@ -506,6 +517,11 @@ class SubmissionService:
             profile, spec.input, step_id=step_id,
             repository_url=repository_url or spec.repository_url,
         )
+        # The browser tool it names can run for it (BSTATUS-API): after the
+        # declaration, which has already refused a name outside the enum.
+        self._refuse_unavailable_browser_tool(
+            profile, spec.input, tenant.tenant_id, submitted_by, step_id=step_id,
+        )
         # After the declaration, so a declared key out of range is refused
         # naming its bound; this is the store's own limit, for every profile.
         validate_storable(spec.input, step_id=step_id)
@@ -582,6 +598,49 @@ class SubmissionService:
             step_id=step_id,
             depends_on=list(depends_on),
         )
+
+    def _refuse_unavailable_browser_tool(
+        self, profile: Any, payload: Mapping[str, Any], tenant_id: str,
+        submitted_by: str | None, *, step_id: str | None = None,
+    ) -> None:
+        """`browser_tool: jev` with nothing to run it on: refused through its
+        switch (`browser_tool_unavailable`, default off), never silently.
+
+        Jev needs the image to carry it (`browser_jev_installed`) and, ONLY
+        when the workspace's judgment backend is `typesafe` (JUDGE-SELECT,
+        `judgment.JudgmentSettings`), a TypeSafe key for the submitter or the
+        tenant -- the resolution `GET /v1/provider-keys/typesafe` serves
+        (`task_key_scope`). The default backend, Internal Jev, and Internal
+        Laya need no key, so they are never refused for its absence. Every
+        other name runs on what every live-browser attempt has. Off, the
+        task is admitted and the runner falls back to Playwright, saying why.
+        """
+        if payload.get(BROWSER_TOOL_INPUT_KEY) != "jev" or BROWSER_TOOL_INPUT_KEY not in profile.inputs:
+            return
+        if not getattr(self._settings, "browser_jev_installed", True):
+            reason = "not_installed"
+            message = ("browser_tool 'jev' cannot run: this deployment's browser image has no "
+                       "jev-browser; pick auto, playwright or dev-browser")
+        else:
+            db = getattr(self._store, "db", None)
+            if db is not None and JudgmentSettings(db, now=self._now).read(
+                    tenant_id)["judgment_backend"] != TYPESAFE_BACKEND:
+                return
+            scope = task_key_scope(db, self._store, tenant_id, submitted_by, TYPESAFE_PROVIDER,
+                                   now=self._now) if db is not None else None
+            if scope is not None:
+                return
+            reason = "no_key"
+            message = ("browser_tool 'jev' needs a TypeSafe key because this workspace's "
+                       "judgment backend is TypeSafe, and none is set for you or for this "
+                       "tenant: add one on the console's key page, choose Internal Jev as "
+                       "the backend, or pick auto, playwright or dev-browser")
+        detail: dict[str, Any] = {"runner_profile": profile.name, "key": BROWSER_TOOL_INPUT_KEY,
+                                  "browser_tool": "jev", "reason": reason}
+        if step_id is not None:
+            detail["step_id"] = step_id
+            message = f"step {step_id!r}: {message}"
+        refusals.refuse(BrowserToolUnavailable(message, detail=detail))
 
     def submit_tasks(
         self, ctx: AuthContext, specs: Sequence[TaskCreate], *, service_submission: bool = False
@@ -725,8 +784,18 @@ class SubmissionService:
                 scale="workflow",
                 repository_url=repository_url,
             )
+            # Lane SPEED-D3: the pull requests of the workflow's own
+            # repository it waits for, once that repository is known.
+            after_prs = resolve_after(
+                [entry.pr for entry in spec.after] if spec.after else None, repository_url,
+            )
             if continuation:
                 dispatch = replace(dispatch, continues=continuation.root_task_id)
+                # A merge step's conflict fix round (#1321), marked inside the
+                # signed block so the worker may check, before it pushes, that
+                # the round left the branch on the default branch's head.
+                if isinstance(spec.metadata.get(CONFLICT_ROUND_METADATA_KEY), dict):
+                    dispatch = replace(dispatch, conflict_round=True)
             # The merge step (contract request 47): appended here, once the
             # strategy is known and before anything is built or signed, then
             # checked with the rest of the graph.
@@ -778,6 +847,7 @@ class SubmissionService:
             # inside this try, so a refused step is counted like every other
             # refusal. The size first, as `_build_task` orders them, which
             # checks each step again; by then neither can fail.
+            merge_metadata: Mapping[str, Any] = spec.metadata
             for step in spec.steps:
                 profile = validate_runner_profile(step.runner_profile)
                 validate_input_size(step.input, self._settings.core.max_input_bytes)
@@ -795,9 +865,17 @@ class SubmissionService:
                 # Lane MS1: the CI-fix rounds a merge step may spend, as each
                 # step's task will store them.
                 resolve_merge_fix_rounds(step_metadata, merge_step=merge_plan is not None)
+                if merge_plan is not None and step.step_id == merge_plan.merge_step:
+                    merge_metadata = step_metadata
                 validate_input_size(step_metadata, 16 * 1024, label="metadata")
                 reject_non_finite(step.metadata, label="metadata", step_id=step.step_id)
                 validate_storable(step_metadata, label="metadata", step_id=step.step_id)
+            # Lane SPEED-D2: the fix rounds the merge step may spend, stamped
+            # on the merge task below; None when there is no merge step.
+            fix_rounds = resolve_fix_rounds(
+                spec.fix_rounds, merge_metadata, merge_step=merge_plan is not None,
+                named_pull=named_pull is not None,
+            )
         except ValidationFailed as exc:
             self._metrics.tasks_rejected.labels(reason=exc.code).inc()
             raise
@@ -831,6 +909,14 @@ class SubmissionService:
             self._registered_base(tenant.tenant_id, repository_url)
             if merge_plan is not None else None
         )
+        # TRAIN-WS, read once at submission like the base: the workspace's
+        # merge mode for this repository, its registration's override first
+        # (docs/merge-trains.md §5.1). Signed into the merge step's target;
+        # a setting changed later reaches later workflows.
+        merge_mode = (
+            self._merge_mode(tenant.tenant_id, repository_url)
+            if merge_plan is not None else None
+        )
         # Every step's commits name the workflow's submitter (P37). A
         # continuation a service account submitted names the person behind
         # the task it continues instead, else the bot (`gitidentity`).
@@ -851,6 +937,7 @@ class SubmissionService:
                 single_pr=single_pr,
                 merge_plan=merge_plan,
                 merge_base=merge_base,
+                merge_mode=merge_mode,
                 named_pull=named_pull,
                 continued_workflow=continuation.workflow_id if continuation else None,
             ).with_routing(
@@ -882,7 +969,15 @@ class SubmissionService:
                     runner_profile=source.runner_profile,
                     input=source.input,
                     priority=spec.priority,
-                    metadata={**spec.metadata, **source.metadata, "workflow_step": step_id},
+                    metadata={
+                        **spec.metadata, **source.metadata, "workflow_step": step_id,
+                        # SPEED-D2: what the wake tick and the worker read as
+                        # the rounds left (`resolve_fix_rounds`), on the merge
+                        # task only.
+                        **({MERGE_FIX_ROUNDS_KEY: fix_rounds}
+                           if fix_rounds is not None and merge_plan is not None
+                           and step_id == merge_plan.merge_step else {}),
+                    },
                     timeout_seconds=source.timeout_seconds,
                     # A merge step waits for CI by failing its attempt while a
                     # required check runs, so it gets more attempts than an
@@ -904,6 +999,15 @@ class SubmissionService:
                 repository_ref=spec.repository_ref,
                 git_identity=git_identity,
             )
+            if after_prs and not source.depends_on:
+                # SPEED-D3: a root step waits for the pull requests to merge,
+                # PARKED and holding nothing (invariant 1); every other step
+                # already waits on a root. The wake tick marks the gate and
+                # the scheduler's dependency sweep promotes it (`prgate`).
+                assert_transition(TaskState.QUEUED, TaskState.PARKED)
+                task.state = TaskState.PARKED
+                task.park_reason = ParkReason.DEPENDENCY_INCOMPLETE
+                task.metadata[AFTER_PRS_METADATA_KEY] = gate_for(after_prs, repository_url or "")
             # The one place `metadata.input_from` is written. After `_build_task`,
             # which refused the key in the caller's metadata, so what lands here
             # is only ever this rewrite of a step declaration the DAG check has
@@ -1192,6 +1296,12 @@ class SubmissionService:
         None when it is unregistered or set none (the platform default then)."""
         return merge_policy_of(self._registration(tenant_id, repository_url))
 
+    def _merge_mode(self, tenant_id: str, repository_url: str | None) -> str:
+        """The mode `tenant_id`'s merge step merges this repository in: the
+        registration's override, else the workspace's (TRAIN-WS)."""
+        return MergeSettingsStore(self._store.db, now=self._now).mode_for(
+            tenant_id, self._registration(tenant_id, repository_url))
+
     def _registered_base(self, tenant_id: str, repository_url: str | None) -> str | None:
         """The default branch `tenant_id` registered this repository with, or None.
 
@@ -1213,6 +1323,7 @@ class SubmissionService:
         single_pr: SinglePrPlan | None = None,
         merge_plan: MergePlan | None = None,
         merge_base: str | None = None,
+        merge_mode: str | None = None,
         named_pull: NamedPull | None = None,
         continued_workflow: str | None = None,
     ) -> DispatchOptions:
@@ -1264,6 +1375,7 @@ class SubmissionService:
                 # caller named, as `resolve_merge_pr` checked them.
                 return dispatch.with_merge_target(
                     number=named_pull.number, head_sha=named_pull.head_sha, base=merge_base,
+                    merge_mode=merge_mode,
                 )
             return dispatch.with_merge_target(
                 pull_request=(
@@ -1279,6 +1391,7 @@ class SubmissionService:
                 pull_request_workflow=(
                     (continued_workflow or None) if sources.continued else None
                 ),
+                merge_mode=merge_mode,
             )
         if integrator_step_id is None:
             return dispatch

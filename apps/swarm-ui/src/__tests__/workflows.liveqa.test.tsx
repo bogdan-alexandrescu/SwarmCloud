@@ -19,7 +19,7 @@
  */
 import STYLES from '../styles.css?raw'
 import WF_CSS from '../styles/workflows.css?raw'
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Result } from '../fetch'
@@ -185,6 +185,12 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  // Unmount BEFORE the mocks are restored. In vitest 3.2 `restoreAllMocks`
+  // also resets every `vi.fn()` above to return undefined, and this hook runs
+  // before setup.ts's `cleanup()` (hooks stack), so a render still landing
+  // in between -- a tab click's re-render, a read resolving late on a loaded
+  // runner -- called `loadWorkflowUsage(...).then` on undefined (CI, PR #1375).
+  cleanup()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })

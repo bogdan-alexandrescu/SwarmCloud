@@ -516,6 +516,12 @@ module "scheduler" {
   # which is exactly when an approved workspace waits (2026-10-09).
   enable_workspace_sweep = true
 
+  # #1347 (owner decision Q5): swarm-workspace-secrets-rotation-sweep, the
+  # hourly caller that ends a rotated-out workspace secret's 24-hour grace.
+  # A literal, like the workspace sweep: an environment without it keeps
+  # every rotated-out value enabled for ever.
+  enable_secrets_rotation_sweep = true
+
   # The API publishes a wake message on submission; the reconciler republishes
   # when it returns reclaimed work to READY.
   publisher_members = {

@@ -40,8 +40,10 @@ In a Claude Code session:
 You are prompted for the deployment URL (required), the OAuth client ID and
 the OAuth client secret. The secret is `sensitive` in the manifest, so Claude
 Code keeps it in your system's secure credential store, never in
-`settings.json`. Two more settings have defaults: `default_target` and
-`auto_attach`, and a third, **`tenant`**, is empty unless you name one — see
+`settings.json`. Three more settings have defaults: `default_target`,
+`auto_attach` and **`max_live_rows`** (how many running workflows, and how
+many single tasks, `/sc attach --all` follows as live rows: 30, held to
+1–50), and a fourth, **`tenant`**, is empty unless you name one — see
 *Acting as one of several tenants*, below. Then:
 
 ```text
@@ -620,6 +622,7 @@ class and runs on GKE Autopilot; it declares what `claude-code` does:
 | input | kind and bounds | what the claude-code-browser runner does with it |
 |---|---|---|
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `browser_tool` | string, one of auto \| playwright \| dev-browser \| jev | the live browser's tool: auto (every tool available; the default), playwright (the Playwright MCP tools only), dev-browser (the dev-browser CLI first, Playwright as fallback) or jev (the jev MCP tools, which send page text to TypeSafe and need a TypeSafe key; Playwright as fallback) |
 <!-- /runner-inputs:claude-code-browser -->
 
 `--input issue=<number>` on `swarm dispatch`, or `"inputs": {"issue": <number>}`
@@ -783,15 +786,19 @@ computes the spec's digest (`fnv1a32:` over its sorted-key compact JSON — the
 same function as `swarm_mcp.workflows.spec_digest`, held equal by a test) and
 the agent passes it beside the spec; `swarm_workflow` submits NOTHING when the
 spec it received digests differently. The reply must carry the digest back,
-every step of the spec and no other, each step's `depends_on` as the spec has
-it, and a distinct task per step — or no row starts and the run returns
-`SUBMITTED_UNVERIFIED` with the workflow id and what differed. The one
-exception is the steps SwarmCloud itself appends for a merge: `re-review` and
-`merge` for `"merge": "on_merge_verdict"`, `merge` alone for `"on"`, with the
-`depends_on` swarm-api builds them with. A spec that names no `merge` takes the
-repository's registered `merge_policy`, else the platform default, which the
-script cannot see, so it accepts no appended step or exactly one of the shapes
-those could produce. Appended steps get a row each, after the spec's own, so
+every step of the spec under its own id (none dropped, none renamed), each
+spec step's `depends_on` as the spec has it, and a distinct task per step — or
+no row starts and the run returns `SUBMITTED_UNVERIFIED` with the workflow id
+and what differed. A step the reply names beyond the spec is one SwarmCloud
+added — a `re-review` and a `merge` for the merge choice — and is accepted
+when the bridge marked it `added: true` (it compares the reply with the spec it
+submitted itself) or, from a bridge too old to mark it, when every step it
+depends on is a spec step or another added step. The script no longer has to
+predict the server's merge rules: measured on 0.5.27, a 3-step spec came back
+with 5 steps and the prediction refused it. An extra step marked `added:
+false`, or tied to no spec step, is still refused, and so is a reply that names
+no step beyond a spec whose own `merge` choice makes SwarmCloud append some.
+Appended steps get a row each, after the spec's own, so
 the rows count what the console counts. Each `sc:step`
 row passes its `step_id` to `swarm_follow`, which will not follow a task that
 is a different step.
@@ -806,6 +813,16 @@ is a different step.
 
 A Result row that fails does not lose the steps: the run returns every row with
 `state` null and a `state_note` saying why.
+
+**A step row that cannot answer is not an error row.** Every field of the
+`sc:step` answer is optional and takes a null, and `sc:step` is given the exact
+object to send. A row that still throws — "StructuredOutput retry cap (5)
+exceeded", "subagent completed without calling StructuredOutput" — or answers
+with no state makes one `swarm_workflow_status` read at once, labelled
+`<workflow> · <step> · setup · status`: a step SwarmCloud names as finished
+becomes a row with that state, `state_from: "workflow status"` and the row's
+failure in `row_note`. A step still running, or not named, stays a
+`row_error`, which the Result step re-attaches while the workflow runs on.
 
 All five agents run on **haiku at low effort** (`model` and `effort` in their
 frontmatter), load no `CLAUDE.md`, and can call only the SwarmCloud tools they
@@ -831,17 +848,49 @@ pieces do it, and none of them submits anything.
   (unfinished) steps with their states, its age, and the console link the API
   served. The route filters on the state it DERIVED from the steps, never the
   stored cache, and the bridge filters again so a deployment older than the
-  filter still lists only running ones. The 20 newest are read step by step;
-  any more are listed with `steps_unread_because`.
+  filter still lists only running ones. The 30 newest are read step by step;
+  any more are listed with `steps_unread_because`. Each entry names the
+  `workspace` it runs in, read from the workflow's own `tenant_id` (the
+  display name when `GET /v1/tenants/mine` gives one), never from the
+  session's configured tenant, and the list is newest first, grouped by
+  workspace.
 * **`/sc attach --all`** runs `/sc:swarmcloud` with `{attach: "all"}`: one
-  `sc:workflow` row lists them (`LIST`), and each of the newest **10** is
+  `sc:workflow` row lists them (`LIST`), and each of the newest **30** is
   attached exactly as `/sc attach <wf_id>` attaches one — finished steps said
-  once, one slim `sc:step` row per unfinished step, all workflows at once. The
-  cap is 10 because every unfinished step is an agent of its own in the
-  session: ten workflows of three to five steps is already 30–50 rows, and past
-  that `/workflows` is unreadable and watching costs more than the work. The
-  rest are logged and returned as `not_followed`, each with the `/sc attach`
-  that follows it. The run ends `ATTACHED`, `NOTHING_RUNNING`, or
+  once, one slim `sc:step` row per unfinished step, all workflows at once.
+  30 is the owner's number (SC-ROWS, 2026-10-14; 10 before) and the default
+  of the plugin's **`max_live_rows`** option, which any value is held to
+  1–50: every unfinished step is an agent of its own in the session, so it
+  stays a cap. The bridge reads the option and hands it to each run as
+  `max_rows`. The rest are logged and returned as `not_followed`, each with
+  its `workspace` and the `/sc attach` that follows it.
+* **No name carries a workspace; every expanded run and row says whose,
+  where and on which LLM** (SC-DESC-DETAILS, owner 2026-10-14: "workflows in
+  here should not have the [Engineering] or [eng@saga.xyz] prefix in front of
+  the names"). Run titles are `SC · <name> · N steps` and `SC · <label> ·
+  task` (the name is cut to 150, never the count); rows inside the run are
+  `[SwarmCloud] <name> · stage <n> · <step>` and `[SwarmCloud] <label> ·
+  task`. Each run's description starts with its DETAILS, one line, six
+  fields in this order: `Workspace: <workspace> (<tenant>) · Started by:
+  <submitted_by> · Profiles: <runner profiles> · LLM: <pool account>
+  (<provider>), model <model> · Browser tool: <browser_tool> · Session:
+  <claude_session>` — each `not reported` when the API serves none, the
+  workspace first so the 300-character clip takes the end, the account by the
+  label `GET /v1/accounts` gives it, and anything credential-shaped shown as
+  `withheld`. Each row's prompt ends with ITS OWN `details:` line, which is
+  what Claude Code shows when the row is expanded: `swarm_workflow_launch`
+  writes them into an attach's args (`details.steps`) and an `attach_tasks`
+  entry (`details`), and hands a spec's back as `row_details` for the args;
+  a run launched without them says what run.js knows and `not reported` for
+  the rest. A run started before its account was assigned says `LLM: not
+  assigned yet`, and each of its rows says `LLM: <account>` once, on the first
+  progress line after the assignment. Every result object and listing line
+  still carries `workspace` — from the API's workflow and task documents, so
+  one attach can cover several workspaces correctly.
+* **Scrolling is Claude Code's.** `/workflows` is Claude Code's panel; the
+  plugin cannot make it scroll. It keeps 30 rows scannable instead: one
+  compact line per row, newest first, grouped by workspace, in a stable
+  order. The run ends `ATTACHED`, `NOTHING_RUNNING`, or
   `NOT_ATTACHED` with the list's error verbatim; one workflow that cannot be
   attached is `NOT_ATTACHED` on its own and does not stop the others.
 * **The SessionStart hook** (`hooks/hooks.json`, `hooks/session-start.sh`).
@@ -889,7 +938,8 @@ never lists it: five lanes dispatched that day ran with no row at all. So:
   `/sc:swarmcloud` with `{attach_tasks: [{task_id, title, console}]}`, written
   by `swarm_workflow_launch` — which starts one `[SwarmCloud] <label> · task`
   row per running single task, titled from the task's label (else its id), at
-  most **10**, the same row cap as workflows for the same reason. Launched by
+  most **30** (`max_live_rows`), the same row cap as workflows for the same
+  reason, each labelled `[SwarmCloud] <label> · task` with its details line. Launched by
   name with `{attach: "all"}`, the run returns those args as `task_call`.
 * **`swarm_dispatch` starts its own rows.** Every dispatch reply (one task or
   `tasks`) carries `rows`: a titled copy of the run script whose args are
@@ -907,6 +957,111 @@ never lists it: five lanes dispatched that day ran with no row at all. So:
   `/reload-plugins`, or for a task started outside this session mid-way, run
   **`/sc attach --all`**: it covers workflows and single tasks alike. A task
   this session dispatches needs nothing — its reply starts the row.
+
+### Stuck or stale work, checked on an interval (SC-WATCH)
+
+Owner request 2026-10-14: a check every set interval (default 30 minutes)
+for stuck or stale workflows and tasks, which also attaches every workflow
+of the project running at the time.
+
+* **`/sc check`** makes ONE `swarm_check` call. It is read-only and scoped to
+  this checkout's `origin` repository (a workflow belongs to the repository
+  its steps clone): it flags a RUNNING or STARTING task with no heartbeat and
+  no event for 20 minutes, a READY or QUEUED one waiting longer than that
+  (naming the pool that binds it), a PARKED one on HUMAN_REQUIRED, on
+  CI_PENDING past 90 minutes or on a dependency that failed, a merge step
+  refused with `head_moved`, `merge_conflict` or `checks_failed`, and a
+  workflow whose stored state disagrees with its derived state about whether
+  it is finished. Each comes with the evidence the API served, its console
+  link and the next command; it acts on none of them. The API serves no pull
+  request state, so a refused merge's PR is linked, not read. Then it calls
+  `swarm_workflow_launch {attach: "all", repository, new_only: true}`: rows
+  only for the project's running workflows and tasks this session has no row
+  for. The bridge process lives as long as the session, so it remembers what
+  it handed a row; `/sc attach <id>` by hand always attaches.
+* **`/sc watch [interval]`** (`swarm_check_schedule`) schedules `/sc check`
+  with Claude Code's own CronCreate — the facility a plugin skill can call —
+  every interval (default `30m`, at least `5m`; rounded to what a cron
+  expression can say), and remembers it for the project in
+  `<config dir>/sc-watch/<sha256 of the project directory>.json`, never in
+  the repository. Where CronCreate is not available, `/loop 30m /sc check`
+  does the same. **`/sc watch off`** cancels it and saves "off" for the
+  project.
+* CronCreate's jobs end with the session (and a recurring one after 7 days),
+  so the **SessionStart hook** reads the saved preference — locally, before
+  and without the bridge — and asks each new session in the project to run
+  `/sc watch <N>m` first, beside the attach or on its own, even with
+  `auto_attach` off.
+
+### The watch arms itself (SC-AUTO-WATCH)
+
+Owner request 2026-10-14: "/sc watch should automatically be set if there is
+at least one workflow being worked on in sc that is attached here or if and
+when we start a new workflow ... Also this should run when we attach manually
+either one or --all".
+
+* `/sc run` (a spec submitted), `/sc run --issue` once its workflow exists,
+  `/sc attach <wf_id>`, `/sc attach --all` and a `/sc check` that attached
+  something each END by arming the watch. The tools say so themselves:
+  `swarm_workflow_launch` (spec and attach), `swarm_workflow` and the issue-run
+  tools answer `arm_watch` — the CronCreate call at the project's saved
+  interval, else 30 minutes, with the `swarm_check_schedule` call that
+  remembers it. The skill runs CronList first and makes no call when a
+  `/sc check` job exists, so a session never holds two watches.
+* `arm_watch` is null when nothing was attached, when no workflow exists yet,
+  and when the project's watch was turned off: **an explicit `/sc watch off`
+  is saved** (`"watch": "off"` in the same file) and wins until `/sc watch`
+  again, so an attach does not undo it.
+* At session start, when the bridge finds running workflows or single tasks
+  of yours and no interval was ever saved, its context asks the session to
+  arm the watch beside the attach; the hook hands an explicit off over as
+  `SWARM_SC_WATCH_MINUTES=off` and then nothing is asked. Nothing running,
+  nothing asked.
+* `/sc check` that finds nothing running for the project says so
+  (`nothing_running`) and leaves the job armed: one read per interval is
+  cheap, and the next workflow is watched without re-arming.
+* A task sent with `swarm_dispatch` (one or `tasks`) arms it too, and so does
+  `/sc attach <wf_id>` of a workflow that has already finished, and a `/sc
+  run` that ended `SUBMISSION_UNKNOWN` or `SUBMITTED_UNVERIFIED` (work may be
+  running; its result carries `arm_watch`). Only `NOT_SUBMITTED` sent nothing.
+
+### Only this session's work (SC-SESSION-SCOPE)
+
+Owner decision 2026-10-14: "only the tasks related to the work this claude
+code session is doing should pass as valid candidates to attach if not
+attached already. Same goes for watching and checking for staleness" -- even
+when several sessions share one tenant or workspace.
+
+* **The session id.** Claude Code starts the plugin's MCP server, and its
+  hooks, with `CLAUDE_CODE_SESSION_ID` in the environment (measured
+  2026-10-14 on Claude Code 2.1.283: the swarm-mcp process carried the same
+  id as the session's transcript). /compact and `claude --resume <id>` keep
+  it; a new `claude` gets a new one. `/clear` moves the session to a new id
+  while the server keeps running, so the SessionStart hook (its matcher now
+  includes `clear`) records the id it gets on stdin under `<config
+  dir>/sc-session/<sha256 of the starting id>.json`, and the bridge reads
+  that record first (`swarm_mcp.session`).
+* **The tag.** Every submission carries the id as `metadata.claude_session`:
+  `swarm_dispatch` (one and `tasks`), `swarm_workflow` (`spec`, `spec_path`,
+  `spec_ref`, `merge_pr`) and `swarm_run_issue` (as the run's
+  `claude_session`, which swarm-api copies onto the planner, the compiled
+  workflow, every CI-fix round and the merge workflow). The merge step's
+  conflict-fix and CI-fix rounds copy their merge task's tag, so a session's
+  own fix rounds are its own. swarm-api serves it back as `claude_session` on
+  task rows (the summary view too), workflow rows and runs.
+* **The scope.** `/sc check`, `/sc attach --all` (and the check's `new_only`
+  attach), the SessionStart hook's "attach and arm" context, and so the watch
+  consider ONLY work tagged with this session's id. Another session's work,
+  and untagged work (submitted before this change, or by another client),
+  are never automatic candidates; each answer counts them in
+  `session.left_out`. With no session id known, nothing is a candidate and
+  the answer says why.
+* **By hand, anything.** `/sc attach <wf_id>` still attaches any workflow the
+  tenant may read, and says (`not_this_session`) when it is not this
+  session's. `/sc workflows` keeps listing the whole tenant and marks this
+  session's `[this session]` (`this_session` in JSON, and in `swarm_workflows`,
+  whose marks are what `/sc:swarmcloud {attach: "all"}` keeps when it is the
+  fallback).
 
 ### What a row shows, and what it costs
 
@@ -1227,6 +1382,27 @@ the onboarding tools, by name. Disabling an org
 `uv run sc access disconnect` revokes SwarmCloud's access at GitHub: both have no tool, take a typed
 confirmation and ignore `SWARM_ASSUME_YES`. `tests/unit/mcp/test_setup_and_access.py`
 holds the flow against a fake API, including that no secret is printed.
+
+## Your TypeSafe key: set it without Claude seeing it
+
+TypeSafe serves the Jev judgment models. A person's own key wins over the
+tenant's, which an admin sets ([docs/provider-keys.md](../docs/provider-keys.md)
+is the API). **The key never passes through Claude** (owner, 2026-10-14): no
+MCP tool takes it as an argument and no reply carries it, so there is no tool
+that sets a key at all.
+
+| Surface | See what is set | Set it |
+|---|---|---|
+| `/sc` | `/sc keys` | `/sc keys set typesafe [--tenant]`: a one-time console link (ten minutes, one use, only in your own console session); you paste the key into the console form |
+| MCP | `swarm_keys` (read-only: set, version, who, when; never a value) | `swarm_key_set_link` (answers only `url` and `expires_at`; its schema has no field a key fits in) |
+| terminal | — | `uv run sc key set typesafe [--tenant] [--stdin]`: a hidden prompt, or one piped line; prints only `stored: version N` |
+
+`sc key set` refuses a key given as an argument, before sending anything and
+without repeating it, because an argument lands in shell history and `ps`.
+No skill is granted it. Until the deployment's owner applies the KEYS-IAM
+bootstrap role, storing a key answers 503 and `sc key set` says
+`keys can't be saved yet: <the API's reason>`. Nothing reads these keys yet.
+`tests/unit/mcp/test_provider_keys_bridge.py` holds all of this.
 
 ## What keeps these honest
 

@@ -31,8 +31,8 @@ way: a gate that cannot prove it is the first never opens the slot. The
 worker sees its channel drop and treats the live path as ended for the
 attempt (§5.4.2); it does not re-key.
 
-NOTHING CARRIED HERE IS LOGGED. The tunnel ticket travels over this channel
-(§3.3, step 2); log lines and records carry the operation's outcome and a
+NOTHING CARRIED HERE IS LOGGED. The tunnel ticket (§3.3, step 2) and the
+egress ticket (browser-egress.md §2.5) travel over this channel; log lines and records carry the operation's outcome and a
 refusal's cause, never `args`, a key or a MAC.
 
 The gate side (`CtlServer`) is asyncio, like the rest of the gate. The worker
@@ -55,6 +55,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from .session import OPS as SESSION_OPS
+from .tabs import OPS as TABS_OPS
 
 log = logging.getLogger(__name__)
 
@@ -72,7 +73,17 @@ KEY_BYTES = 32
 #: * `session_export` / `session_import` -- a signed-in session carried gate
 #:   to gate (session.py, §5.5.1). Named there, once; the worker sends them
 #:   (browser_login.py), and before L3m this list refused both.
-OPS = frozenset({"tunnel_ticket", "pause", "resume", "end_control", "device", "status"}) | SESSION_OPS
+#: * `egress_ticket` -- the attempt egress ticket swarm-api minted, or why none
+#:   can be had (`failed`); the gate's local forwarder presents it to
+#:   swarm-egress on every CONNECT and refuses all of them without it
+#:   (egress.py, docs/browser-egress.md §2.5; EGRESS-GATE).
+#: * `browser_tools` -- what the runner registered for the task's browser
+#:   tool, forwarded from the hand-off spool, which the gate reports
+#:   (agent_worker/browser_tools.py; BSTATUS-API).
+#: * `tabs_export` / `tabs_restore` -- the open tabs a park keeps, reopened
+#:   before a resumed attempt's agent connects (tabs.py, §5.5.2; issue #1362).
+OPS = frozenset({"tunnel_ticket", "pause", "resume", "end_control", "device", "status",
+                 "egress_ticket", "browser_tools"}) | SESSION_OPS | TABS_OPS
 
 #: The first start's marker, in the sidecar's own /tmp (§3.1; the dispatcher
 #: mounts that volume in the sidecar only). Directly in /tmp, not a subdirectory:

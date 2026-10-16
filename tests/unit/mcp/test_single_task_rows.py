@@ -153,7 +153,7 @@ def _session_start(client) -> tuple[int, str]:
     return sc.cmd_workflows(client, args, out), out.getvalue()
 
 
-def test_session_start_names_a_running_single_task(swarm, api, db):  # noqa: F811
+def test_session_start_names_a_running_single_task(swarm, api, db, claude_session):  # noqa: F811
     lane = _dispatch(swarm, label="lane-a")
     code, text = _session_start(swarm)
     assert code == 0
@@ -163,7 +163,7 @@ def test_session_start_names_a_running_single_task(swarm, api, db):  # noqa: F81
     assert "/sc attach --all" in context and "auto_attach" in context
 
 
-def test_session_start_names_workflows_and_single_tasks_together(swarm, api, db):  # noqa: F811
+def test_session_start_names_workflows_and_single_tasks_together(swarm, api, db, claude_session):  # noqa: F811
     lane = _dispatch(swarm, label="lane-a")
     created = _workflow(swarm)
     context = json.loads(_session_start(swarm)[1])["hookSpecificOutput"]["additionalContext"]
@@ -171,7 +171,7 @@ def test_session_start_names_workflows_and_single_tasks_together(swarm, api, db)
     assert "1 SwarmCloud workflow is running" in context
 
 
-def test_session_start_names_the_tasks_when_the_workflow_read_fails():
+def test_session_start_names_the_tasks_when_the_workflow_read_fails(claude_session):
     """Each read fails alone: a deployment whose workflow route is broken
     still gets the caller's single tasks named."""
 
@@ -181,7 +181,8 @@ def test_session_start_names_the_tasks_when_the_workflow_read_fails():
 
         def request(self, method, path, **_):
             if path.startswith("/v1/tasks?") and "state=RUNNING" in path:
-                return {"tasks": [{"id": "task_x", "state": "RUNNING", "metadata": {"unit": "x"}}],
+                return {"tasks": [{"id": "task_x", "state": "RUNNING",
+                                   "metadata": {"unit": "x", "claude_session": claude_session}}],
                         "next_page_token": None, "tenant_id": "eng"}
             if path.startswith("/v1/tasks?"):
                 return {"tasks": [], "next_page_token": None, "tenant_id": "eng"}
@@ -236,10 +237,13 @@ def test_a_task_launch_titles_its_run_and_rows_from_the_labels(_plugin_root):
         {"task_id": "task_b", "label": None},
     ])
     assert out["title"] == "SC · lane-a +1 · 2 tasks"
+    # SC-DESC-DETAILS: each row carries its details line; these entries carry
+    # no task document, so every field says it was not reported.
+    none = "Workspace: not reported · Started by: not reported · Profiles: not reported · LLM: not reported · Browser tool: not reported · Session: not reported"
     assert out["args"] == {"attach_tasks": [
-        {"task_id": "task_a", "title": "lane-a", "console": "https://c.test/agents/task_a"},
-        {"task_id": "task_b", "title": "task_b"},
-    ]}
+        {"task_id": "task_a", "title": "lane-a", "console": "https://c.test/agents/task_a", "details": none},
+        {"task_id": "task_b", "title": "task_b", "details": none},
+    ], "max_rows": launch.MAX_ATTACHED_TASKS}
     assert Path(out["script_path"]).is_file()
     assert launch.for_tasks([{"task_id": "task_a", "label": "lane-a"}])["title"] == "SC · lane-a · task"
 
@@ -248,10 +252,12 @@ def test_a_task_launch_follows_at_most_the_cap(_plugin_root):
     entries = [{"task_id": f"task_{n:02d}"} for n in range(launch.MAX_ATTACHED_TASKS + 2)]
     out = launch.for_tasks(entries)
     assert len(out["args"]["attach_tasks"]) == launch.MAX_ATTACHED_TASKS
-    assert [e["task_id"] for e in out["not_followed"]] == ["task_10", "task_11"]
+    cap = launch.MAX_ATTACHED_TASKS
+    assert [e["task_id"] for e in out["not_followed"]] == [f"task_{cap:02d}", f"task_{cap + 1:02d}"]
 
 
-def test_attach_all_launches_one_more_run_for_my_single_tasks(_plugin_root, swarm, api, db):  # noqa: F811
+def test_attach_all_launches_one_more_run_for_my_single_tasks(_plugin_root, swarm, api, db,  # noqa: F811
+                                                              claude_session):
     lane = _dispatch(swarm, label="lane-a")
     created = _workflow(swarm)
     reply = json.loads(server._call(swarm, "swarm_workflow_launch", {"attach": "all"}))
@@ -329,8 +335,11 @@ def test_attach_tasks_starts_one_task_row_per_task_titled_from_its_label(tmp_pat
     assert [c["agentType"] for c in calls] == ["sc:task", "sc:task"], "one row per task, the duplicate dropped"
     assert calls[0]["label"] == f"[SwarmCloud] lane-a · task · {link}"
     assert calls[1]["label"] == "[SwarmCloud] lane-b · task"
-    assert calls[0]["prompt"] == f"task_id: task_a\nconsole: {link}"
-    assert calls[1]["prompt"] == "task_id: task_b\nconsole: none"
+    # SC-DESC-DETAILS: the last line is the row's details, what Claude Code
+    # shows when the row is expanded; none handed, so what run.js knows.
+    none = "details: Workspace: not reported · Started by: not reported · Profiles: not reported · LLM: not reported · Browser tool: not reported · Session: not reported"
+    assert calls[0]["prompt"] == f"task_id: task_a\nconsole: {link}\n{none}"
+    assert calls[1]["prompt"] == f"task_id: task_b\nconsole: none\n{none}"
     assert all("step_id" not in c["prompt"] for c in calls)
     assert got["phases"] == ["Tasks"]
     result = got["result"]
@@ -346,8 +355,9 @@ def test_attach_tasks_naming_no_task_is_refused(tmp_path):
 def test_attach_all_by_name_returns_the_call_for_my_single_tasks(tmp_path):
     listed = _listed("wf_a")
     listed["single_tasks"] = [
-        {"task_id": "task_a", "label": "lane-a", "state": "RUNNING", "console": None},
-        {"task_id": "task_b", "label": None, "state": "QUEUED", "console": "https://c.test/agents/task_b"},
+        {"task_id": "task_a", "label": "lane-a", "state": "RUNNING", "console": None, "this_session": True},
+        {"task_id": "task_b", "label": None, "state": "QUEUED", "console": "https://c.test/agents/task_b",
+         "this_session": True},
     ]
     listed["single_tasks_error"] = None
     got = _run(tmp_path, {"attach": "all"}, {"LIST": listed})
@@ -358,12 +368,13 @@ def test_attach_all_by_name_returns_the_call_for_my_single_tasks(tmp_path):
     assert result["task_call"] == {"attach_tasks": [
         {"task_id": "task_a", "title": "lane-a"},
         {"task_id": "task_b", "title": "task_b", "console": "https://c.test/agents/task_b"},
-    ]}
+    ], "max_rows": 30}
 
 
 def test_attach_all_with_only_single_tasks_running_is_not_nothing_running(tmp_path):
     listed = _listed()
-    listed["single_tasks"] = [{"task_id": "task_a", "label": "lane-a", "state": "RUNNING", "console": None}]
+    listed["single_tasks"] = [{"task_id": "task_a", "label": "lane-a", "state": "RUNNING", "console": None,
+                               "this_session": True}]
     got = _run(tmp_path, {"attach": "all"}, {"LIST": listed})
     assert got["result"]["state"] == "LISTED"
     assert got["result"]["attach_calls"] == []

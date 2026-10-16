@@ -157,7 +157,8 @@ pool_limits = {
   # GKE_AUTOPILOT 40 -> 100: owner, 2026-10-07, accepting contract request 53
   # (claude-code moves to GKE Autopilot). At 40 the backend pool would bind
   # before claude-code's own ceiling (runner:claude-code 80), shared with
-  # browser at 2 units a task, and halve claude-code's concurrency on the
+  # browser at 2 units a task (1 since contract request 79, 2026-10-14),
+  # and halve claude-code's concurrency on the
   # move. 100 is claude-code's 80 plus browser headroom. It fits the quota:
   # us-central1 regional CPUS read 2,990 of 3,000 free on 2026-10-07, and
   # 100 x 4 vCPU = 400.
@@ -491,6 +492,35 @@ enable_forge_refresh = true
 # enable_browser_logins, which this does not touch.
 enable_live_browser = true
 
+# --- browser egress (docs/browser-egress.md §9, #1030) -----------------------
+# ON in dev: owner decision 2026-10-14 (lane EGRESS-BUILD). Residential egress
+# through Bright Data, US exit, for the owner's personal tenant u-bogdan and
+# the claude-code-browser profile ONLY; every other tenant and profile runs
+# direct. The budget is $150/month: browser_egress.monthly_cap_usd keeps its
+# default of 150, which at the default list price of $8/GB is the 18.75 GB
+# swarm-egress refuses past. The hard stop is the Bright Data sub-user's own
+# $150 traffic limit, set in the vendor dashboard, not here. Raising the cap
+# or naming another tenant is a new owner decision, and
+# tests/terraform/egress.tftest.hcl holds this block to exactly these values.
+#
+# enable_browser_egress deploys swarm-egress (step 4 of terraform/infra/egress.tf's
+# order). Steps 1-3 were done 2026-10-14: the bootstrap apply, version 1 of
+# swarm-egress-key and swarm-egress-credential, and -- from this change on --
+# every release builds swarm-egress and pins its digest in image_refs
+# (scripts/build-images.sh). Each release then rolls it to swarm-autopilot
+# (scripts/roll-egress.sh, after the live relay; never agents-staging).
+# Needs enable_gke_autopilot (true above) and enable_live_browser (true just
+# above: kubernetes/apply.sh applies swarm-egress after the relay).
+# Kill switch: browser_egress.enabled = false and apply (docs/browser-egress.md
+# §9.3, "Stopping it").
+enable_browser_egress = true
+browser_egress = {
+  enabled  = true
+  tenants  = ["u-bogdan"]
+  profiles = ["claude-code-browser"]
+  country  = "us"
+}
+
 # D4's refusal is ON in dev (#780 OB10, the migration step). A PERSON's task on
 # a GitHub repository they have not chosen under Access is refused with 403
 # REPOSITORY_NOT_GRANTED ("choose it under Access") instead of running with the
@@ -654,3 +684,42 @@ deployer_service_account = "swarm-tf-deployer@saga-agents-staging.iam.gserviceac
 # (publishing_off). If the job path breaks, turning this off again stops new
 # dispatches; the sweep and the stuck alert keep reporting waiting records.
 workspace_apply_publish = true
+
+# The live browser's search tool (swarm-api SEARCH_TOOL_ENABLED /
+# SEARCH_PROVIDER, docs/search-tool.md, #1030). OFF in dev as of 2026-10-14:
+# the owner chose Brave and "add it (off by default)" on 2026-10-13. It turns on
+# once the Brave key is stored with
+# `scripts/create-secrets.sh --search-api-key --stdin` -- on without the key,
+# every search answers 503 search_unconfigured. search_provider stays at
+# its default, "brave".
+search_tool_enabled = false
+
+# The decision-api tailnet egress (terraform/infra/tailscale.tf,
+# docs/runbooks/tailscale-egress.md). ON in dev as of 2026-10-15 (~04:25 PDT):
+# the owner stored the tag:swarmcloud OAuth client as swarm-tailscale-oauth
+# version 2 and saved the tailnet policy grant (tag:swarmcloud ->
+# decision-api-staging tcp:443). internal_decision_api_enabled follows once the
+# egress is applied with kubernetes/apply.sh --swarm-system and reaches the API.
+enable_tailscale_egress = true
+
+# The internal Jev and Laya judgment backends (JUDGE-SELECT), ON in dev as of
+# 2026-10-15 ~17:20 PDT (2026-10-16 00:20Z). Verified before switching: the egress joined the
+# tailnet (version 3 of swarm-tailscale-oauth, stored 2026-10-15 19:32Z), and
+# after JEV-URL (PR 1382) a `swarm-judge: internal` pod with the scheduler's
+# hostAliases entry got HTTP 400 for the empty probe from
+# https://decision-api-staging.taile0bda9.ts.net/{jev,laya}/v1/decide, while
+# an unlabelled pod timed out. Off renders no URL, and an internal choice
+# leaves Jev unavailable instead of sending page text to TypeSafe.
+internal_decision_api_enabled = true
+
+# The shared graph service (#1384, docs/design/graph-service.md;
+# terraform/infra/graph_service.tf). Step 1 of 3, ON in dev as of 2026-10-16
+# (owner decision ~02:20 PDT, recorded on #1384): creates the
+# swarm-graph-ticket-key container (no version), its two readers (swarm-api
+# and the swarm-graph KSA) and swarm-graph's read of
+# tenants/<t>/repos/<r>/graph/** -- the IAM rows held at the release's dev-iam
+# gate. graph_service.serve (step 3) is a separate change made only after
+# `scripts/create-secrets.sh --graph-ticket-key` has written a version:
+# serving references the key from swarm-api, and a reference to a secret with
+# no version stops swarm-api starting.
+enable_graph_service = true

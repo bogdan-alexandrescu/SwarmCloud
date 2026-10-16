@@ -159,7 +159,7 @@ export function HoldersScreen() {
             {rows === 1 && coverage.kind !== 'cut' ? '' : 's'}
             {coverage.kind === 'unreported' ? ' listed' : ''} ·{' '}
             {/* "units", never "agents": admission counts weighted units, so 6
-                units may be six standard leases or one large plus one browser.
+                units may be six standard leases or one large plus two browser.
                 And held by THESE rows when the rows are not all of them:
                 `units_held` is summed over the page the route returned. */}
             {b.page.units_held} units held

@@ -199,6 +199,36 @@ NOT_SWITCHABLE_CODES = frozenset({
     "git_tool_unproven",
     "git_fenced",
     "git_tool_refused",
+    # The search tool (SEARCH-TOOL, docs/search-tool.md), as the git tools'
+    # codes above: raised only by the route that change introduces (POST
+    # /v1/attempts/{id}/search), which is a 404 while SEARCH_TOOL_ENABLED is
+    # off, so no existing caller can be refused by them. Continuing past any
+    # of them is the breach itself: an unproven caller spending the
+    # platform's provider key, a stale generation searching past its fence
+    # (invariant 5), or a tenant past the daily cap the owner's budget sets.
+    "search_unproven",
+    "search_fenced",
+    "search_refused",
+    # The workspace secrets store (SEC-STORE-API, docs/design/
+    # workspace-secrets.md §5), as the search tool's codes above: raised only
+    # by the management routes that change introduces, when a secrets-form
+    # link is presented, so no existing caller can be refused by it.
+    # Continuing past it is the breach itself: an unknown, used or expired
+    # link, or one minted for another person, workspace, action or secret,
+    # accepted as authority to add or rotate a secret.
+    "SECRET_LINK_INVALID",
+    # The workspace secrets release (SEC-RELEASE, docs/design/
+    # workspace-secrets.md §3.3), as the store's code above: raised only by
+    # the route that change introduces (POST /v1/attempts/{id}/secrets:release),
+    # so no existing caller can be refused by them. Continuing past any of
+    # them is the breach itself: an unproven caller handed a workspace's
+    # secrets, a stale generation holding them past its fence (invariant 5),
+    # a second release of one attempt, or a release computed from a task
+    # document whose signature does not verify.
+    "secrets_release_unproven",
+    "secrets_release_fenced",
+    "secrets_release_spent",
+    "secrets_release_spec_unverified",
 })
 
 #: What the guard lets through without a switch.

@@ -1,6 +1,6 @@
 ---
 description: SwarmCloud cluster state — accounts, capacity, agents, trouble
-argument-hint: "[accounts|agents|capacity|trouble|task <id>|runs|run show <run>|plan show <run>|schedules|schedules show <name>|approvals]"
+argument-hint: "[accounts|agents|capacity|trouble|check|watch [interval]|task <id>|runs|run show <run>|plan show <run>|schedules|schedules show <name>|approvals]"
 allowed-tools:
   - Bash(uv run sc)
   - Bash(uv run sc overview:*)
@@ -31,6 +31,12 @@ uv run sc $ARGUMENTS
 With no arguments that is the overview. Other views: `accounts`, `agents`,
 `capacity`, `task <id>`, `trouble`, `whoami`, and for issue runs (#454)
 `runs`, `run show <run>` and `plan show <run>`.
+
+If the arguments are `check`, `watch [interval]` or `watch off`, do **not**
+run them here: `sc` has no such view. They are the `sc` skill's verbs -- one
+`swarm_check` read and the attach of this project's running workflows, and
+the CronCreate schedule `swarm_check_schedule` hands back -- so follow that
+skill's `check` and `watch` sections.
 
 If the arguments are `run --issue ...` or `plan approve|edit|reject ...`, do
 **not** run them here: they create an issue run or act on its plan, so they
@@ -67,6 +73,14 @@ every later call reaches, so they are theirs to run. Tell them the command
 (`uv run sc login` opens a browser and waits for them) and stop. This command
 is granted each view by name, not `sc` as a whole, for exactly that reason, so
 running one of those would stop at a permission prompt anyway.
+
+If the arguments are `key set ...` or `keys set ...`, do **not** run them.
+They store a TypeSafe key, and the key never passes through this session: tell
+the operator to run `uv run sc key set typesafe` (`--tenant` for the tenant's
+key, `--stdin` to pipe it) in their own terminal, where it asks for the key at
+a hidden prompt and prints only `stored: version N` -- or use the `sc` skill's
+`keys set` verb, which hands them a one-time console link instead. Never ask
+for the key.
 
 Then read the output using the rules in the `sc` skill, which matter more than
 the numbers themselves:

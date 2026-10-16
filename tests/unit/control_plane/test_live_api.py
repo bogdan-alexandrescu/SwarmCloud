@@ -49,6 +49,7 @@ from swarm_api.groups import CloudIdentityGroups
 from swarm_api.handoff import LIVE_AUDIT
 from swarm_api.live import (
     LIVE_SESSIONS,
+    LiveLimits,
     ROLE_TUNNEL,
     ROLE_VIEWER,
     TicketRefused,
@@ -59,6 +60,7 @@ from swarm_api.live import (
 )
 from swarm_api.main import create_app
 from swarm_api.metrics import ApiMetrics
+from swarm_api.ratelimit import TokenBucketLimiter
 from swarm_api.waker import NullWaker
 
 from .conftest import ENG_GROUP, PROJECT, RESEARCH_GROUP, api_settings, seed_task, seed_tenant
@@ -800,6 +802,9 @@ def test_the_open_socket_is_re_checked_and_closed_when_membership_lapses(
         with pytest.raises(WebSocketDisconnect) as closed:
             while True:
                 ws.receive_json()
+        # Inside the session: the app writes `viewer_left` after the close, and
+        # leaving the `with` cancels it (see the viewer-socket hold test below).
+        assert wait_until(lambda: len(audit(ldb, "viewer_left")) == 1)
     assert closed.value.code == 4403
     assert wait_until(lambda: session_doc(ldb)["controller"] is None)
     ended = audit(ldb, "control_ended")
@@ -885,7 +890,9 @@ def test_every_key_event_of_an_episode_is_on_its_returned_event(
         with pytest.raises(WebSocketDisconnect):
             while True:
                 ws.receive_json()
-    assert wait_until(lambda: len(audit(ldb, "viewer_left")) == 1)
+        # Inside the session: the app writes `viewer_left` after the close, and
+        # leaving the `with` cancels it (see the viewer-socket hold test below).
+        assert wait_until(lambda: len(audit(ldb, "viewer_left")) == 1)
     assert returned_event()["detail"]["keys"] == 18
     (row,) = audit(ldb, "control_returned")
     assert row["detail"]["keys"] == 18
@@ -902,7 +909,10 @@ def test_no_route_takes_a_ticket_in_its_url(client):
     from swarm_api.routes import live as live_routes
 
     for route in live_routes.router.routes:
-        assert "ticket" not in route.path_format.replace("/live/ticket", "")
+        # Two routes MINT a ticket into their response body and are named for
+        # it; neither takes one in its URL (the parameter check below).
+        minted = route.path_format.replace("/live/ticket", "").replace("/egress-ticket", "")
+        assert "ticket" not in minted
         dependant = getattr(route, "dependant", None)
         if dependant is not None:
             for param in dependant.query_params + dependant.path_params:
@@ -951,6 +961,12 @@ def test_a_ticket_for_someone_else_is_refused_on_the_socket(client, ldb, live, r
 
 
 def test_viewer_tickets_are_rate_limited_per_person(client, ldb, live):
+    # The bucket refills at 30/min on the real monotonic clock: 31 requests
+    # that take over 2 s on a loaded CI runner earn a token back and the 31st
+    # is admitted. A stopped clock tests the burst alone.
+    limits = LiveLimits(client.app.state.ctx.settings)
+    limits.tickets = TokenBucketLimiter(30 / 60.0, 30, clock=lambda: 0.0)
+    client.app.state.live_limits = limits
     codes = [client.post(f"/v1/tasks/{TASK}/live/ticket", headers=bearer("root")).status_code
              for _ in range(31)]
     assert codes[:30] == [200] * 30 and codes[30] == 429
@@ -1251,13 +1267,19 @@ def test_a_connected_viewer_extends_the_hold_and_the_extension_is_capped(ldb, li
     assert ldb.docs[f"tasks/{TASK}"]["state"] == "RUNNING"
 
 
-def test_a_viewer_does_not_revive_a_hold_that_already_ran_out(ldb, live, clock):
-    """The worker may already be parking: a deadline in the past is final."""
+def test_a_late_viewer_revives_a_hold_the_worker_has_not_resolved(ldb, live, clock):
+    """LB-RETURN (part of #1030). Was "a deadline in the past is final", and
+    that is how the live-browser acceptance group parked on every run from
+    2026-10-14 00:24Z: the viewer joined a few seconds past the unwatched
+    minute, before the worker's next poll, and its watch was dropped. The
+    hold is over only when the worker RESOLVES it, and that resolve is
+    answered "revived" once the deadline it judged has moved, so a
+    viewer who arrives first keeps the hold."""
     _wait_opened_at(ldb, clock)
     before = _deadline(ldb)
     clock.advance(61)
-    assert _service(ldb, clock).watched(_admission()) is False
-    assert _deadline(ldb) == before
+    assert _service(ldb, clock).watched(_admission()) is True
+    assert _deadline(ldb) == clock() + timedelta(seconds=60) > before
 
 
 def test_watching_needs_an_open_hand_off_of_this_sessions_attempt(ldb, live, clock):
@@ -1308,10 +1330,120 @@ def test_the_viewer_socket_extends_the_hold_while_it_is_open(
         clock.advance(30)
         assert wait_until(lambda: _deadline(ldb) == clock() + timedelta(seconds=60))
         # The server ends the socket (a retry's new generation), as the other
-        # socket tests do: a client-side close cancels the app mid-flush.
+        # socket tests do: a client-side close cancels the app mid-write, and
+        # the TestClient's portal then raises CancelledError on exit.
         ldb.docs[f"tasks/{TASK}"].update(
             {"current_lease_id": "lease_live_2", "current_generation": 2})
         with pytest.raises(WebSocketDisconnect):
             while True:
                 ws.receive_json()
-    assert wait_until(lambda: len(audit(ldb, "viewer_left")) == 1)
+        # INSIDE the session, not after it (flake fixed 2026-10-14; failed PRs
+        # 1267 and 1268 with CancelledError at this `with`). The close reaches
+        # the client before the app has finished: `_Proxy.run` still writes the
+        # `viewer_left` audit after closing the socket. Leaving the `with` makes
+        # the TestClient cancel the app's task, so a test that left as soon as
+        # it read the close cancelled that teardown mid-await -- surfacing as
+        # CancelledError from the portal, or as a missing audit. The app's
+        # last write is its `viewer_left` row: once it is there, nothing of the
+        # app is left to cancel.
+        assert wait_until(lambda: len(audit(ldb, "viewer_left")) == 1)
+
+
+# --------------------------------------------------------------------------
+# LB-RETURN (part of #1030): a person's return is never lost to a park
+# --------------------------------------------------------------------------
+#
+# The acceptance flow's exact sequence (scripts/acceptance/groups/
+# live-browser.sh, tests/acceptance/test_live_browser.py): the agent asks; the
+# hold opens for the unwatched minute; the viewer joins, takes control, types
+# and returns. On every run since 2026-10-14 00:24Z all of that answered 200
+# and the task sat PARKED(HUMAN_REQUIRED) at the 900 s deadline: the worker
+# had judged the hold expired and was parking while the person was in
+# control, and their return re-queued nothing.
+
+
+def _parked_by_the_worker(db) -> None:
+    """What the worker's `park_human_required` leaves: PARKED, lease gone."""
+    task = db.docs[f"tasks/{TASK}"]
+    task.update({"state": "PARKED", "park_reason": "HUMAN_REQUIRED", "current_lease_id": None,
+                 "human_wait": None, "attempt_count": 0,
+                 "metadata": {"human_handoffs": {"attempt_id": ATTEMPT, "count": 1}}})
+    db.docs[f"leases/{LEASE}"]["released_at"] = clock_now()
+
+
+def test_a_return_while_the_worker_parks_is_recorded_for_the_park(client, ldb, live, clock):
+    """The worker resolved the expiry (the wait is gone, the task still
+    RUNNING while it checkpoints): a person takes control and returns. The
+    return is written onto the task for the park to read, naming the attempt
+    and generation it answers."""
+    _wait_opened_at(ldb, clock)
+    ldb.docs[f"tasks/{TASK}"]["human_wait"] = None  # the worker's resolve
+    assert take(client, "alice").status_code == 200
+    returned = client.post(f"/v1/tasks/{TASK}/live/control/return", headers=bearer("alice"))
+    assert returned.status_code == 200, returned.text
+    mark = ldb.docs[f"tasks/{TASK}"]["metadata"]["human_returned"]
+    assert (mark["attempt_id"], mark["generation"], mark["by"]) == (ATTEMPT, 1, "alice@saga.xyz")
+    assert ldb.docs[f"tasks/{TASK}"]["state"] == "RUNNING"
+
+
+def test_a_return_that_resolves_the_hand_off_is_recorded_too(client, ldb, live, clock):
+    """The worker may have judged the hold expired on a read from before the
+    take: the return that resolves the wait leaves the same mark."""
+    _wait_opened_at(ldb, clock)
+    assert take(client, "alice").status_code == 200
+    assert client.post(f"/v1/tasks/{TASK}/live/control/return",
+                       headers=bearer("alice")).status_code == 200
+    task = ldb.docs[f"tasks/{TASK}"]
+    assert task["human_wait"] is None
+    assert task["metadata"]["human_returned"]["attempt_id"] == ATTEMPT
+
+
+def test_a_return_after_the_park_landed_re_queues_the_task(client, ldb, live, clock):
+    """The park committed while the person was in control: their return is
+    their "I'm ready". PARKED -> READY, the parked attempt's lease stays
+    released (invariant 4), and the next attempt is admitted all-or-nothing
+    with a new generation like any READY task (invariants 2 and 5)."""
+    _wait_opened_at(ldb, clock)
+    assert take(client, "alice").status_code == 200
+    _parked_by_the_worker(ldb)
+    returned = client.post(f"/v1/tasks/{TASK}/live/control/return", headers=bearer("alice"))
+    assert returned.status_code == 200, returned.text
+    task = ldb.docs[f"tasks/{TASK}"]
+    assert (task["state"], task["park_reason"]) == ("READY", None)
+    assert task["metadata"]["human_ready"]["by"] == "alice@saga.xyz"
+    assert task["current_lease_id"] is None
+    ready = [d for p, d in ldb.docs.items()
+             if p.startswith(f"tasks/{TASK}/events/") and d["type"] == "ready"]
+    assert len(ready) == 1 and ready[0]["detail"]["reason"] == "human_returned"
+    # Idempotent: the same return again changes nothing and re-queues nothing.
+    again = client.post(f"/v1/tasks/{TASK}/live/control/return", headers=bearer("alice"))
+    assert again.status_code == 409
+    assert ldb.docs[f"tasks/{TASK}"]["state"] == "READY"
+    assert len([d for p, d in ldb.docs.items()
+                if p.startswith(f"tasks/{TASK}/events/") and d["type"] == "ready"]) == 1
+
+
+def test_a_return_after_the_park_by_someone_who_was_not_in_control_re_queues_nothing(
+    client, ldb, live, clock
+):
+    """The control: only the person who held control of the parked attempt
+    returns it. Anyone else gets the old answer and the task stays PARKED
+    (they press "I'm ready", which checks who may)."""
+    _wait_opened_at(ldb, clock)
+    assert take(client, "alice").status_code == 200
+    _parked_by_the_worker(ldb)
+    assert client.post(f"/v1/tasks/{TASK}/live/control/return",
+                       headers=bearer("root")).status_code == 409
+    assert ldb.docs[f"tasks/{TASK}"]["state"] == "PARKED"
+
+
+def test_a_return_on_a_stale_generations_session_re_queues_nothing(client, ldb, live, clock):
+    """Ordered by generation: a park of a LATER attempt is not answered by a
+    return on an earlier attempt's session."""
+    _wait_opened_at(ldb, clock)
+    assert take(client, "alice").status_code == 200
+    _parked_by_the_worker(ldb)
+    ldb.docs[f"tasks/{TASK}"]["current_generation"] = 2
+    assert client.post(f"/v1/tasks/{TASK}/live/control/return",
+                       headers=bearer("alice")).status_code == 409
+    assert ldb.docs[f"tasks/{TASK}"]["state"] == "PARKED"

@@ -82,6 +82,12 @@ env:
   TF_ROOT: terraform/infra
   TRIVY_VERSION: "0.74.0"
 
+# RUNNERS (owner decision 2026-10-14). A job that holds no cloud identity
+# (id-token) runs on the self-hosted `bogdan-ci` VMs through the one guarded
+# `runs-on` expression: a fork's pull request, or the repo variable
+# SELF_HOSTED_CI set to `off` (the capacity escape hatch), sends it to
+# GitHub-hosted ubuntu-24.04 instead. Every job that stays hosted is listed,
+# with why, in tests/unit/scripts/test_fork_prs_off_self_hosted.py.
 jobs:
   # -------------------------------------------------------------------------
   # THE GATE. Proceeds only when this commit is a pull request merged into
@@ -90,7 +96,7 @@ jobs:
   # -------------------------------------------------------------------------
   gate:
     name: is this a hotfix
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     if: github.ref == 'refs/heads/main'
     permissions:
       contents: read
@@ -404,6 +410,38 @@ jobs:
           # apply.sh runs render.py and network_parity.py on ${PYTHON_BIN}.
           PYTHON_BIN: ${{ github.workspace }}/.venv/bin/python
         run: ./scripts/roll-live-relay.sh --tf-init --get-credentials --confirm
+      - name: roll swarm-egress to this release's image
+        # Lane EGRESS-BUILD (part of #1030; docs/browser-egress.md §9.3).
+        # swarm-egress, the StatefulSet swarm-system/swarm-egress on
+        # swarm-autopilot, is applied by the relay step's apply.sh (after the
+        # relay, in the same stream), but nothing waited for it to roll or
+        # read back what it runs. scripts/roll-egress.sh is
+        # roll-live-relay.sh --component egress: the same apply.sh path, the
+        # same agents-staging refusal, then `rollout status` and the digest
+        # check for swarm-egress. Its Python is the relay's, synced above.
+        # No continue-on-error: a forwarder left on the old image fails every
+        # proxied browser attempt closed. enable_browser_egress false is a
+        # notice, not a failure.
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        timeout-minutes: 20
+        env:
+          PYTHON_BIN: ${{ github.workspace }}/.venv/bin/python
+        run: ./scripts/roll-egress.sh --tf-init --get-credentials --confirm
+      - name: roll swarm-graph to this release's image
+        # Lane GS-ROLL (part of #1384; docs/design/graph-service.md §2.1, §8.2).
+        # swarm-graph, the Deployment swarm-system/swarm-graph on
+        # swarm-autopilot, is rendered by terraform/infra/graph_service.tf as
+        # `swarm_graph_manifest`, null until graph_service.serve. This applies
+        # it through kubernetes/apply.sh --swarm-graph (the same agents-staging
+        # refusal), waits for `rollout status deploy/swarm-graph` and checks
+        # its pods run the manifest's digest. Not served is a notice, not a
+        # failure, and then gcloud and the cluster are asked nothing.
+        # No continue-on-error: a graph service left on the old image or
+        # crash-looping fails every agent's graph tools. No PYTHON_BIN: the
+        # --swarm-graph path runs neither render.py nor network_parity.py.
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        timeout-minutes: 20
+        run: ./scripts/roll-graph.sh --tf-init --get-credentials --confirm
 
       - name: smoke test (inside the VPC)
         id: smoke

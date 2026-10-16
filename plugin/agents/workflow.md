@@ -96,12 +96,18 @@ the branch is not pushed.
 Then call `StructuredOutput` with, all read from the REPLY of `swarm_workflow`:
 
 * `workflow_id` — the reply's `workflow_id`
+* `workspace` — the reply's `workspace`, copied character for character (null
+  when it is null or absent): the workspace the workflow runs in, which every
+  row is labelled with. Never fill it in from anything else
 * `console` — the reply's `console`, copied character for character; null
   when the reply has none. It is the workflow's console link as SwarmCloud's
   API served it: never build one, never guess one
-* `steps` — for each entry of the reply's `steps`: its `step_id`, `task_id`
-  and `depends_on`, copied character for character, and its `console` (null
-  when that entry has none)
+* `steps` — for each entry of the reply's `steps`, every one, in the reply's
+  order: its `step_id`, `task_id` and `depends_on`, copied character for
+  character, its `console` (null when that entry has none) and its `added`
+  (null when that entry has none). `added: true` marks a step SwarmCloud
+  added to the spec -- a `re-review`, a `merge` -- and it belongs in `steps`
+  like any other: never drop a step because the spec did not name it
 * `repository` — the reply's `repository.url` (null when it is null)
 * `repository_notes` — the reply's `repository.notes` (empty list when it is
   absent). Uncommitted changes not visible to the remote agent, the branch's
@@ -130,6 +136,8 @@ of the reply's `steps` whose `state` is not `SUCCEEDED`, `FAILED`,
 `StructuredOutput` with:
 
 * `workflow_id` — the reply's `workflow_id`
+* `workspace` — the reply's `workspace`, copied character for character (null
+  when it is null or absent). Never fill it in from anything else
 * `title` and `label` — the reply's `title` and `label`, the names SwarmCloud
   stored for the workflow, copied character for character (each null when the
   reply's is null or absent)
@@ -158,15 +166,17 @@ probed in this job: call `swarm_workflows` once, with no arguments. Then call
 
 * `count` — the reply's `count`
 * `workflows` — for each entry of the reply's `workflows`, in the reply's
-  order: its `workflow_id`, `title` and `label` (each null when it is null or
-  absent), `state` and `console` (null when the entry has none), copied
-  character for character. Every entry, none dropped, none added, none
+  order: its `workflow_id`, `workspace`, `title` and `label` (each null when
+  it is null or absent), `state` and `console` (null when the entry has none), copied
+  character for character, and `this_session`: true only when the entry's
+  `this_session` is true, false otherwise. Every entry, none dropped, none added, none
   reordered: each one becomes a run of its own
 * `single_tasks` — for each entry of the reply's `single_tasks` (your running
-  tasks in no workflow), in the reply's order: its `task_id`, `label` (null
-  when it is null or absent), `state` and `console` (null when the entry has
-  none), copied character for character. Every entry, none dropped, none
-  added: each one becomes a row. `[]` when the reply has none
+  tasks in no workflow), in the reply's order: its `task_id`, `workspace` and
+  `label` (each null when it is null or absent), `state` and `console` (null when the entry has
+  none), copied character for character, and `this_session` the same way.
+  Every entry, none dropped, none added: the script attaches only those whose
+  `this_session` is true. `[]` when the reply has none
 * `single_tasks_error` — the reply's `single_tasks_error`, verbatim, else null
 * `error` — null
 

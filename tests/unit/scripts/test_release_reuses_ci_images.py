@@ -245,7 +245,10 @@ def _evaluate(expression, **context: str):
         text = re.sub(rf"(?<![\w.]){re.escape(name)}(?![\w.])", repr(value), text)
     text = text.replace("&&", " and ").replace("||", " or ")
     text = re.sub(r"!(?!=)", " not ", text)
-    return eval(text, {"__builtins__": {}}, {"format": _gh_format})  # noqa: S307 -- repository file, test only
+    # Status functions are evaluated for a run in which nothing upstream failed
+    # or was cancelled: the run this file reasons about, a commit main ships.
+    status = {"cancelled": lambda: False, "failure": lambda: False, "success": lambda: True, "always": lambda: True}
+    return eval(text, {"__builtins__": {}}, {"format": _gh_format, **status})  # noqa: S307 -- repository file, test only
 
 
 def _render(template, **context: str) -> str:

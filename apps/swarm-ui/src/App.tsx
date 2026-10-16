@@ -30,8 +30,10 @@ import {
 } from './fetch'
 import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCard'
 import { HELP as HELP_TOPICS, HELP_GROUPS, HELP_ROUTE, TOPIC_IDS, type TopicId } from './help'
-import { GITHUB_CALLBACK_ADDRESS, SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, pathToAddress } from './paths'
+import { GITHUB_CALLBACK_ADDRESS, KEY_LINK_ADDRESS, SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, keyLinkScope, keyLinkToken, pathToAddress } from './paths'
 import { GitHubCallbackScreen } from './GitHubConnect'
+import { ProviderKeysScreen } from './ProviderKeys'
+import { WorkspaceSettingsScreen } from './CodeIntelligence'
 import { NotFound, nearestPath } from './NotFound'
 import { fmtLatency } from './panes'
 import { Icon, SkyShell, type SpineSection } from './Spine'
@@ -526,6 +528,37 @@ const SUBMIT_HELP: SectionQuestionDef = {
 const GITHUB_CALLBACK = GITHUB_CALLBACK_ADDRESS
 
 /**
+ * SETTINGS › API KEYS (KEYS-UI, owner request 2026-10-14;
+ * docs/provider-keys.md). Not a section, for the reason API reads is not one:
+ * it is a thing you set once, not a thing you work in, and a fifth section
+ * would sit beside the questions people arrive with. It is reached from the
+ * panel's foot, beside the person's own name, because the first key on it is
+ * theirs. Two addresses: the page, `settings/keys`, and the one-time link
+ * `/sc` mints, `settings/keys/typesafe?scope=..` (the token never enters the
+ * address, paths.ts `KEY_LINK_ADDRESS`), which opens the same page.
+ *
+ * `#settings` and `#settings/<anything else>` still land on Pool limits
+ * (LEGACY, MOVED_PANES): only these two exact addresses are this page.
+ */
+const SETTINGS = 'settings'
+const KEYS_TAB = 'keys'
+/** The link's tab: the same page, opened from a one-time link. */
+const KEY_LINK_TAB = KEY_LINK_ADDRESS.slice(SETTINGS.length + 1)
+const SETTINGS_LABEL = 'Settings'
+/** The page's `<h1>` and the second half of its name in the issue forms. */
+const KEYS_LABEL = 'API keys'
+/**
+ * SETTINGS › WORKSPACE (CTXQ-UI; docs/design/context-quality.md §4.7): the
+ * selected workspace's own settings -- Code intelligence, OFF by default for
+ * Jev, and what leaves the platform when it is on. Beside API keys and not a
+ * section, for the reason API keys is not one. One exact address, like the
+ * keys page: `#settings/<anything else>` still lands on Pool limits.
+ */
+const WORKSPACE_TAB = 'workspace'
+/** The page's `<h1>` and the second half of its name in the issue forms. */
+const WORKSPACE_LABEL = 'Workspace'
+
+/**
  * The utility button's label AND the heading of the screen it opens. One
  * constant, used in both places, because they are two renderings of one name.
  *
@@ -878,6 +911,14 @@ export function fromAddress(full: string): Route {
 
   if (head === REFERENCE) return { sectionId: REFERENCE, tab: '', ...blank }
   if (hash === GITHUB_CALLBACK) return { sectionId: GITHUB_CALLBACK, tab: '', ...blank }
+  // Settings › API keys and its one-time link, before LEGACY reads `settings`
+  // as the eleven-item nav's Pool limits. Only the link's scope is kept.
+  if (hash === `${SETTINGS}/${KEYS_TAB}`) return { sectionId: SETTINGS, tab: KEYS_TAB, ...blank }
+  if (hash === `${SETTINGS}/${WORKSPACE_TAB}`) return { sectionId: SETTINGS, tab: WORKSPACE_TAB, ...blank }
+  if (hash === KEY_LINK_ADDRESS) {
+    const scope = keyLinkScope(query)
+    return { sectionId: SETTINGS, tab: KEY_LINK_TAB, ...blank, ...(scope === null ? {} : { view: `scope=${scope}` }) }
+  }
   // The Submit chooser (/submit): two large choices, opened by the spine's
   // Submit and by N.
   if (head === SUBMIT && tail.length === 0) return { sectionId: SUBMIT, tab: '', ...blank }
@@ -1035,6 +1076,7 @@ export function canonical(r: Route): string {
   if (r.sectionId === REFERENCE) return REFERENCE
   if (r.sectionId === SUBMIT) return SUBMIT
   if (r.sectionId === GITHUB_CALLBACK) return GITHUB_CALLBACK
+  if (r.sectionId === SETTINGS) return r.view ? `${SETTINGS}/${r.tab}?${r.view}` : `${SETTINGS}/${r.tab}`
   if (r.sectionId === HELP) return r.tab === '' ? HELP : `${HELP}/${r.tab}`
   // A list address is written only while no drawer is open: the drawer's own
   // address wins above, and the list it was opened from is kept by App.
@@ -1103,6 +1145,11 @@ export function App() {
   // The fragment the page was opened at, read before the normalise effect
   // rewrites the bar to its path: `useState(fromLocation)` already applied it.
   const mountHash = useRef(typeof window === 'undefined' ? '' : window.location.hash)
+  // THE KEY LINK'S TOKEN, read before the normalise effect below rewrites the
+  // bar without it (paths.ts `KEY_LINK_ADDRESS`): the key page may mount
+  // later than this render, behind a takeover, and would find it gone. Held
+  // here and handed to that page, never written into a route.
+  const keyLink = useRef(typeof window === 'undefined' ? null : keyLinkToken(window.location.pathname, window.location.search))
   const lastList = useRef<AgentList | null>(at.list ?? null)
   if (at.taskId === null) lastList.current = at.list ?? null
 
@@ -1276,7 +1323,11 @@ export function App() {
           ? REFERENCE_LABEL
           : at.sectionId === GITHUB_CALLBACK
             ? 'Connect GitHub'
-            : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
+            : at.sectionId === SETTINGS
+              ? at.tab === WORKSPACE_TAB
+                ? WORKSPACE_LABEL
+                : KEYS_LABEL
+              : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
   const object = at.missing ? null : documentObjectOf(at)
   useEffect(() => {
     document.title = documentTitleOf(title, object)
@@ -1360,6 +1411,10 @@ export function App() {
                   <SubmitChooser go={go} />
                 ) : at.sectionId === GITHUB_CALLBACK ? (
                   <GitHubCallbackScreen go={go} />
+                ) : at.sectionId === SETTINGS && at.tab === WORKSPACE_TAB ? (
+                  <WorkspaceSettingsScreen />
+                ) : at.sectionId === SETTINGS ? (
+                  <ProviderKeysScreen link={at.tab === KEY_LINK_TAB ? { scope: keyLinkScope(at.view ?? ''), token: keyLink.current } : null} />
                 ) : (
                   <ReferenceScreen failuresOnly={apiFailuresOnly} />
                 )
@@ -1521,7 +1576,7 @@ function Head({
   // of its own, not API reads (#503), and the two forms lead back to it.
   const submitForm = at.sectionId === WORK && isSubmitPage(at)
   const head = isSubmitPage(at) ? 'Submit'
-    : section?.label ?? (at.sectionId === HELP ? 'Help' : REFERENCE_LABEL)
+    : section?.label ?? (at.sectionId === HELP ? 'Help' : at.sectionId === SETTINGS ? SETTINGS_LABEL : REFERENCE_LABEL)
   const home = submitForm ? SUBMIT : section === null ? at.sectionId : `${section.id}/${firstTab(section)}`
   // The open agent by its name once its split has read it (walkthrough G).
   const named = useAgentName(at.taskId)

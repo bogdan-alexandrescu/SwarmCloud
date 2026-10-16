@@ -126,6 +126,15 @@
 # finish. docs/ci.md, "Saying what a pull request depends on". A check that
 # cannot tell fails the job: fail closed.
 #
+# WITH THE MERGE TRAIN ON, `READY` IS THE TRAIN'S (owner decision 2026-10-14,
+# "A1 Merge train"). vars.MERGE_TRAIN = `on` makes the gate say `train` where
+# it would have said `merge` or `wait`: every refusal still applies, nothing
+# is armed, and .github/workflows/merge-train.yml boards the pull request once
+# it is green at head, tests it with others on main and lands it. With the
+# variable unset (the default) or anything but `on`, this workflow is exactly
+# what it was. docs/runbooks/merge-train.md says when to turn it on.
+# tests/unit/scripts/test_merge_train.py holds both halves.
+#
 # tests/unit/scripts/test_auto_merge_workflow.py holds every point above and
 # runs the enable, requeue, requeue-edited and disable jobs' shells against a
 # fake `gh`;
@@ -195,10 +204,20 @@ concurrency:
   group: auto-merge-${{ github.event_name == 'workflow_dispatch' && 'requeue-' || '' }}${{ github.event.pull_request.number || inputs.pr || github.run_id }}${{ github.event_name == 'pull_request_target' && github.event.action != 'labeled' && format('-{0}', github.run_id) || '' }}
   cancel-in-progress: false
 
+# RUNNERS (owner decision 2026-10-14). A job that holds no cloud identity
+# (id-token) runs on the self-hosted `bogdan-ci` VMs through the one guarded
+# `runs-on` expression, in its SHORT form: only the repo variable
+# SELF_HOSTED_CI set to `off` (the capacity escape hatch) sends it to
+# GitHub-hosted ubuntu-24.04. The fork-PR clause the other workflows carry is
+# left out on purpose: this workflow runs on pull_request_target (the base
+# branch's workflow file), workflow_run, check_suite and dispatch, and never
+# checks out or runs a pull request's code (test_auto_merge_workflow.py holds
+# that; test_fork_prs_off_self_hosted.py holds that it has no `pull_request`
+# trigger). Every job that stays hosted is listed, with why, in that test.
 jobs:
   enable:
     name: queue for auto-merge
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # The label event itself, or a re-evaluation dispatched by `requeue`.
     if: >-
       (github.event_name == 'pull_request_target' &&
@@ -358,7 +377,10 @@ jobs:
           HAS_MERGE_APP_KEY: ${{ secrets.MERGE_APP_PRIVATE_KEY != '' }}
           CLOSING_REFUSAL: ${{ steps.closing-references.outputs.refusal }}
           DEPENDENCY_REFUSAL: ${{ steps.dependencies.outputs.refusal }}
-        # Says `decision` = merge, wait or refused; only `merge` runs the
+          # `on` hands a `ready` pull request to the merge train instead of
+          # arming auto-merge (item 5b). Unset or anything else: unchanged.
+          MERGE_TRAIN: ${{ vars.MERGE_TRAIN }}
+        # Says `decision` = merge, wait, train or refused; only `merge` runs the
         # steps after it. A refusal on the label fails the run, as it always
         # has. A refusal on a re-evaluation runs on main's head commit, so it
         # does not fail; it drops `ready` and says `disarm`, for the `disarm`
@@ -560,6 +582,34 @@ jobs:
               ] | unique | join(", ")' "${runs}")"
           if [[ -n "${failing}" ]]; then
             refuse "This check already ran on the head commit and is failing: ${failing}. A failed check holds the merge, required or not."
+          fi
+
+          # 5b. THE MERGE TRAIN HAS IT (owner decision 2026-10-14, "A1 Merge
+          #    train"). With vars.MERGE_TRAIN `on`, .github/workflows/
+          #    merge-train.yml boards `ready` pull requests that are green at
+          #    head, tests them together on main and lands each as its own
+          #    squash; arming native auto-merge as well would merge them one
+          #    at a time, untested together, around it. So after every refusal
+          #    above (a failing check still drops `ready` on a re-evaluation,
+          #    and the train boards none that fails), nothing is armed: said
+          #    once, on the label. A re-evaluation says nothing more. Exactly
+          #    `on`: anything else is the train off, and this gate unchanged.
+          if [[ "${MERGE_TRAIN:-}" == "on" ]]; then
+            echo "decision=train" >>"${GITHUB_OUTPUT}"
+            body="$(mktemp)"
+            {
+              echo "**Left to the merge train.** Auto-merge is not armed: once this pull request is green at its head, \`.github/workflows/merge-train.yml\` boards it with other \`ready\` pull requests, tests them together on main, and squash-merges each under its title. A push drops \`ready\` unless it only merges the base branch in."
+              echo "(.github/workflows/auto-merge.yml; docs/runbooks/merge-train.md)"
+            } >"${body}"
+            if [[ "${reevaluation}" != "true" ]]; then
+              gh pr comment "${PR_NUMBER}" --body-file "${body}"
+            fi
+            {
+              echo "### Left to the merge train"
+              echo
+              cat "${body}"
+            } >>"${GITHUB_STEP_SUMMARY}"
+            exit 0
           fi
 
           # 6. A REQUIRED check still running WAITS (#697). Nothing is armed:
@@ -869,7 +919,7 @@ jobs:
 
   requeue:
     name: re-evaluate ready pull requests when a run finishes
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # A pull request's run only: a push to main has no `ready` pull request
     # at its head. Or any check suite's completion (#815) -- not filtered by
     # branch, because a fork's pull request may come from a branch named
@@ -916,7 +966,7 @@ jobs:
 
   requeue-edited:
     name: re-evaluate a ready pull request whose body was edited
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # #888 box 97: adding or removing `depends on` changes the gate's answer,
     # and nothing looked again until the next label or finishing CI run --
     # an armed auto-merge merged past a dependency added after the label.
@@ -953,7 +1003,7 @@ jobs:
 
   disable:
     name: disable auto-merge on a new head
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # Only a pull request that is (or was) queued: `ready` still on it. Never
     # for the `labeled` action itself -- GitHub already lists the just-added
     # label in `github.event.pull_request.labels`, so without excluding that
@@ -1133,7 +1183,7 @@ jobs:
 
   close-issues:
     name: close the merged pull request's issues
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # Every merge into the default branch, not only the App's: the event does
     # not reliably say who merged, an owner merge's issues are already closed
     # by the time this reads them (the script leaves a closed issue alone),

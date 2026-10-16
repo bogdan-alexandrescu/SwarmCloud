@@ -31,6 +31,30 @@ script cannot start a separate run -- `workflow()` nests the child inside the
 caller's run, sharing its agent counter -- so the bridge writes one copy per
 running workflow and the session launches each.
 
+THE WORKSPACE IS IN THE DESCRIPTION, NOT THE NAME (SC-WS-DESC, owner request
+2026-10-14, seeing the rows after plugin 0.5.35: "instead of [eng@saga.xyz] in
+the main row name, we should have it in the description of the workflow or
+task instead"). The name is `SC · <name> · N steps` or `SC · <label> ·
+task`, and the description STARTS with `Workspace: <workspace> (<tenant>) · `
+-- first, because DESCRIPTION_CHARS clips the end, so a long description
+loses its tail and never the workspace -- or `Workspace: not reported` when
+the API named none.
+
+THE DETAILS, AND NO WORKSPACE IN ANY NAME (SC-DESC-DETAILS, owner 2026-10-14
+~22:00 PDT: "workflows in here should not have the [Engineering] or
+[eng@saga.xyz] prefix in front of the names. We do want to have a section in
+the workflow or task description when you expand it in claude, that will
+provide more details like user that created the job, tenant or workspace that
+is using and maybe even what LLM subscription or config is using"). The
+description now STARTS with the whole DETAILS line `details.line` writes --
+`Workspace: ... · Started by: ... · Profiles: ... · LLM: ... · Browser tool:
+... · Session: ...`, each `not reported` when the API served nothing -- and
+the workspace is still its first field, so the clip still takes the end. Each
+row gets the same line for its own task: the copy's args carry it
+(`details.steps` for a workflow, `details` on each `attach_tasks` entry) and
+run.js puts it on the row's prompt, which is what Claude Code shows when the
+row is expanded. No row label carries `[<workspace>]` any more.
+
 SINGLE TASKS (#830, owner 2026-10-07). A task sent with `swarm_dispatch`
 belongs to no workflow, so it never had a row. `for_tasks` writes ONE copy
 whose args are `{attach_tasks: [...]}`: run.js starts one `sc:task` row per
@@ -46,11 +70,12 @@ import os
 import re
 import secrets
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
 
-from . import config, workflows
+from . import config, details, workflows
 from .client import SwarmClient, SwarmError, _repo_root
 
 PLUGIN_ROOT_ENV = "SWARM_SC_PLUGIN_ROOT"
@@ -65,16 +90,27 @@ DESCRIPTION_OPEN = "  description: '"
 #: dialog and the workflow list, not a paragraph.
 DESCRIPTION_CHARS = 300
 
-#: The same cap run.js puts on `{attach: "all"}` (MAX_ATTACHED_WORKFLOWS):
-#: every unfinished step is a live row, and past 10 workflows /workflows is
-#: no longer readable. The rest are listed with the call that attaches each.
-MAX_ATTACHED_WORKFLOWS = 10
+#: The DEFAULT cap on `{attach: "all"}`, and run.js's (MAX_ATTACHED_WORKFLOWS):
+#: 30 since SC-ROWS (owner request 2026-10-14: "increase live rows to 30"),
+#: 10 before. Every unfinished step is a live row, an agent of its own in the
+#: session, so it stays a cap: the plugin's `max_live_rows` option moves it
+#: within 1..50 (`config.max_live_rows`, read per launch by `max_live_rows()`
+#: below). The rest are listed in `not_followed` with the call that attaches
+#: each.
+MAX_ATTACHED_WORKFLOWS = config.DEFAULT_MAX_LIVE_ROWS
 
-#: The cap on single-task rows in one copy: each is an agent of its own in
-#: the session for as long as its task runs, like a step row, and run.js
-#: holds the same number (MAX_ATTACHED_TASKS). The rest are listed with the
-#: command that shows them.
-MAX_ATTACHED_TASKS = 10
+#: The default cap on single-task rows in one copy: each is an agent of its
+#: own in the session for as long as its task runs, like a step row, and
+#: run.js holds the same number (MAX_ATTACHED_TASKS). The same option moves
+#: it. The rest are listed with the command that shows them.
+MAX_ATTACHED_TASKS = config.DEFAULT_MAX_LIVE_ROWS
+
+
+def max_live_rows() -> int:
+    """The live-row cap this launch uses: the sc plugin's `max_live_rows`,
+    held to 1..50, else 30. Read per launch, so the copies and run.js (which
+    each copy's args hand it as `max_rows`) agree on one number."""
+    return config.max_live_rows()
 
 #: Where the copies go: the system's temporary directory, one file per run.
 RUN_DIR = "sc-swarmcloud-runs"
@@ -191,18 +227,113 @@ def _prune(folder: Path) -> None:
             continue
 
 
-def _launch(title: str, description: str, args: dict[str, Any] | None) -> dict[str, Any]:
-    script = write_script(title, description)
-    out: dict[str, Any] = {"title": title, "script_path": str(script)}
+# SC-WATCH (owner request 2026-10-14): `/sc check` attaches every running
+# workflow of the project that has NO live row in this session, and never
+# one twice. This bridge process lives exactly as long as the Claude Code
+# session that started it, so it is the session's memory of what it handed
+# a row: every workflow id an attach launch was written for, and every task
+# id a task-row launch was written for (`/sc attach`, `/sc attach --all`,
+# swarm_dispatch's rows, `/sc check`). `{attach: "all", new_only: true}`
+# leaves those out. `/sc attach <id>` never consults it: attaching by hand
+# always attaches, which is how a row the developer closed comes back.
+_ATTACHED: set[str] = set()
+_ATTACHED_LOCK = threading.Lock()
+
+
+def remember_attached(ids: list[str]) -> None:
+    with _ATTACHED_LOCK:
+        _ATTACHED.update(str(i) for i in ids if i)
+
+
+def attached() -> frozenset[str]:
+    """The workflow and task ids this session was handed a row launch for."""
+    with _ATTACHED_LOCK:
+        return frozenset(_ATTACHED)
+
+
+def forget_attached() -> None:
+    """Empty the registry (tests; a new session starts empty anyway)."""
+    with _ATTACHED_LOCK:
+        _ATTACHED.clear()
+
+
+#: What a run's description says when the API named no workspace for it:
+#: said, never left out, so a missing workspace reads as missing.
+WORKSPACE_NOT_REPORTED = "not reported"
+
+
+def workspace_shown(workspace: Any, tenant: Any = None) -> str | None:
+    """`<workspace> (<tenant>)` when the workspace is shown by a display name
+    other than its tenant id, `<workspace>` when it is the tenant id, None
+    when neither is known."""
+    shown = workflows._flat(workspace)
+    tenant = workflows._flat(tenant)
+    if not shown:
+        return tenant
+    return f"{shown} ({tenant})" if tenant and tenant != shown else shown
+
+
+def workspace_line(shown: str | None) -> str:
+    """`Workspace: <shown>`, or `Workspace: not reported`: the head of every
+    run's description (SC-WS-DESC)."""
+    return f"Workspace: {shown or WORKSPACE_NOT_REPORTED}"
+
+
+def _launch(
+    title: str,
+    description: str,
+    args: dict[str, Any] | None,
+    workspace: str | None,
+    facts: dict[str, list] | None = None,
+    labels: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Write the titled copy. The DETAILS line (`details.line`: `workspace`,
+    `workspace_shown`'s text or None when the API named none, first, then
+    what `facts` hold) leads the description, ahead of anything clipped."""
+    head = details.line(workspace, facts or details.empty(), labels)
+    script = write_script(title, head + " · " + description)
+    out: dict[str, Any] = {"title": title, "script_path": str(script), "details": head}
     if args is not None:
         out["args"] = args
     return out
 
 
-def for_spec(document: dict[str, Any]) -> dict[str, Any]:
+def _submitting(client: SwarmClient | None) -> tuple[str | None, str | None]:
+    """`(workspace, submitter)` for a spec about to be submitted, from ONE
+    `GET /v1/tenants/me`: the workspace as `workspace_shown` writes it -- the
+    tenant the API says this client acts as (the API's answer, not this
+    session's setting), with its display name when it gives one -- and the
+    `principal.email` the submission will be stored under as `submitted_by`.
+    `(None, None)` when it cannot be read: the description then says each was
+    not reported, and every row still gets the workspace the submission's
+    reply names."""
+    if client is None:
+        return None, None
+    from .render import tenant_of
+
+    try:
+        me = client.request("GET", "/v1/tenants/me")
+    except Exception:  # noqa: BLE001 - a title is never worth a failed launch
+        return None, None
+    tenant = tenant_of(me)
+    record = me.get("tenant") if isinstance(me, dict) and isinstance(me.get("tenant"), dict) else me
+    shown = record.get("display_name") if isinstance(record, dict) else None
+    workspace = workflows.workspace_of({"tenant_id": tenant}, {tenant: shown} if tenant and isinstance(shown, str) else None)
+    principal = me.get("principal") if isinstance(me, dict) and isinstance(me.get("principal"), dict) else {}
+    return workspace_shown(workspace, tenant), principal.get("email") if isinstance(principal.get("email"), str) else None
+
+
+def _submitting_workspace(client: SwarmClient | None) -> str | None:
+    """The workspace half of `_submitting`."""
+    return _submitting(client)[0]
+
+
+def for_spec(document: dict[str, Any], client: SwarmClient | None = None) -> dict[str, Any]:
     """The titled copy for a spec about to be submitted. The workflow id is not
     known yet, so the title has none; the run's first row and its Result row
-    carry it once SwarmCloud has answered."""
+    carry it once SwarmCloud has answered. The workspace, at the head of the
+    description, is the tenant the API says `client` acts as, which is where
+    the workflow will be stored."""
     spec = workflows.read_spec(document, where="the spec")
     steps = len(spec["steps"])
     name = workflows.title_name(title=spec["title"], label=spec["label"])
@@ -211,34 +342,79 @@ def for_spec(document: dict[str, Any]) -> dict[str, Any]:
         f"{title}: each step runs in SwarmCloud and is shown here as one [SwarmCloud] row, "
         "by the console's stage, with its console link"
     )
-    out = _launch(title, description, None)
+    workspace, submitter = _submitting(client)
+    out = _launch(title, description, None, workspace, details.for_spec(spec, submitter))
     out["steps"] = steps
+    # Each step row's own line: its profile and browser tool, no account yet.
+    out["row_details"] = {"steps": {
+        str(step["step_id"]): details.line(workspace, details.for_spec({"steps": [step]}, submitter))
+        for step in spec["steps"]
+    }}
     out["launch_with"] = (
         "the Workflow tool with {scriptPath: <script_path>, args: <the same args /sc:swarmcloud "
-        "takes -- {spec, spec_path} or {spec}>}"
+        "takes -- {spec, spec_path} or {spec}> plus `details`: this reply's `row_details`, so "
+        "each step's row shows its own details when expanded>}"
     )
     return out
 
 
-def _attach_launch(workflow_id: str, name: str, steps: int) -> dict[str, Any]:
+def _attach_launch(
+    workflow_id: str, name: str, steps: int, workspace: str | None = None, tenant: str | None = None,
+    envelope: dict[str, Any] | None = None, labels: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """`workspace` is the one the API's document names (a display name or the
+    tenant id); `tenant` the tenant id behind it, for the description.
+    `envelope`, the workflow as `GET /v1/workflows/{id}` served it, gives the
+    DETAILS -- the run's, and each step row's in `args.details.steps` -- and
+    `labels` the accounts' labels (`details.account_labels`)."""
     title = workflows.workflow_title(name, steps)
     description = (
         f"{title}: attached to SwarmCloud workflow {workflow_id}; each unfinished step is shown "
         "here as one [SwarmCloud] row, by the console's stage. Nothing is submitted"
     )
-    out = _launch(title, description, {"attach": workflow_id, "title": name})
+    args: dict[str, Any] = {"attach": workflow_id, "title": name}
+    if workspace:
+        # The workspace the API's document names: the attach run's results
+        # and its details carry it before the workflow is read again.
+        args["workspace"] = workspace
+    shown = workspace_shown(workspace, tenant)
+    rows = {
+        step_id: details.line(shown, facts, labels)
+        for step_id, facts in details.per_step(envelope).items()
+    } if envelope is not None else {}
+    if rows:
+        args["details"] = {"steps": rows}
+    out = _launch(title, description, args, shown,
+                  details.for_workflow(envelope) if envelope is not None else None, labels)
     out["workflow_id"] = workflow_id
+    out["workspace"] = workspace
+    remember_attached([workflow_id])
     return out
 
 
 def for_attach(client: SwarmClient, workflow_id: str) -> dict[str, Any]:
     """The titled copy for attaching one workflow: one read, for the name
     SwarmCloud stored and the step count."""
+    from . import session
+
     envelope = workflows.fetch(client, workflow_id)
     stored = workflows.stored_names(envelope)
     name = workflows.title_name(stored=stored["title"] or stored["label"], workflow_id=workflow_id)
-    out = _attach_launch(workflow_id, name, len(envelope["workflow"].get("steps") or []))
+    tenant = workflows._flat(envelope["workflow"].get("tenant_id")) or workflows._flat(envelope.get("tenant_id"))
+    workspace = workflows.workspace_of({"tenant_id": tenant}, workflows.workspace_names(client))
+    out = _attach_launch(workflow_id, name, len(envelope["workflow"].get("steps") or []), workspace, tenant,
+                         envelope, details.account_labels(client))
     out["launch_with"] = "the Workflow tool with {scriptPath: <script_path>, args: <args>}"
+    # BY HAND, ANY WORKFLOW THE TENANT MAY READ (SC-SESSION-SCOPE): the
+    # session scope decides what is attached automatically, never what a
+    # developer may ask for by id. The reply says whose it is.
+    sid = session.current()
+    owner = session.owner_of(envelope["workflow"]) or session.owner_of_tasks(envelope.get("tasks") or [])
+    out["claude_session"] = owner
+    out["this_session"] = session.ownership(owner, sid) == "own"
+    not_ours = session.attached_note(owner, sid)
+    if not_ours:
+        out["not_this_session"] = not_ours
     return out
 
 
@@ -246,10 +422,23 @@ def _task_name(entry: dict[str, Any]) -> str:
     return workflows.title_name(stored=entry.get("label") or entry.get("title"), workflow_id=entry.get("task_id"))
 
 
+def _tasks_workspace(entries: list[dict[str, Any]]) -> str | None:
+    """The workspace(s) the tasks run in, as `workspace_shown` writes each, in
+    order of first appearance and joined with `, ` when there are several;
+    None when no entry names one. An entry's `tenant_id` is the tenant behind
+    a `workspace` shown by its display name (`named_workspaces(keep_tenant)`)."""
+    seen: list[str] = []
+    for entry in entries:
+        shown = workspace_shown(entry.get("workspace"), entry.get("tenant_id")) if entry.get("workspace") else None
+        if shown and shown not in seen:
+            seen.append(shown)
+    return ", ".join(seen) or None
+
+
 def tasks_title(entries: list[dict[str, Any]]) -> str:
     """`SC · <label> · task` for one task, `SC · <first label> +N · N tasks`
     for several, at most workflows.TITLE_CHARS: the name is cut, never the
-    count."""
+    count. The workspace is in the run's description (SC-WS-DESC)."""
     count = len(entries)
     name = _task_name(entries[0]) if entries else "tasks"
     if count > 1:
@@ -260,37 +449,179 @@ def tasks_title(entries: list[dict[str, Any]]) -> str:
     return head + (" · task" if count == 1 else f" · {count} tasks")
 
 
-def for_tasks(entries: list[dict[str, Any]]) -> dict[str, Any]:
+def _read_tasks(client: SwarmClient, entries: list[dict[str, Any]]) -> None:
+    """Give each entry with no `task` its task document (`GET /v1/tasks/{id}`),
+    at most eight reads at a time; an entry whose read fails keeps none, and
+    its details say `not reported`."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    missing = [e for e in entries if not isinstance(e.get("task"), dict)]
+    if not missing:
+        return
+
+    def read(entry: dict[str, Any]) -> None:
+        try:
+            entry["task"] = client.task(str(entry["task_id"]))
+        except Exception:  # noqa: BLE001 - details are never worth a failed launch
+            pass
+
+    with ThreadPoolExecutor(max_workers=min(8, len(missing))) as pool:
+        list(pool.map(read, missing))
+
+
+def for_tasks(entries: list[dict[str, Any]], client: SwarmClient | None = None) -> dict[str, Any]:
     """ONE titled copy that starts an `sc:task` row per task in `entries` --
-    each `{task_id, label?, console?}` -- up to MAX_ATTACHED_TASKS. The rest
-    come back in `not_followed`. Reads nothing and submits nothing."""
+    each `{task_id, label?, console?, workspace?, tenant_id?, task?}` -- up to
+    the live-row cap (`max_live_rows()`, 30 unless the plugin's option says
+    otherwise). The rest come back in `not_followed`. Submits nothing.
+
+    `task`, the task document as the API served it, gives each row its
+    DETAILS (`details.line`); it is read off the row, never copied into the
+    args. With `client`, an entry without one is read (`_read_tasks`) and the
+    accounts' labels are read once (`details.account_labels`)."""
+    cap = max_live_rows()
     wanted = [e for e in entries if isinstance(e, dict) and e.get("task_id")]
-    follow = wanted[:MAX_ATTACHED_TASKS]
+    follow = wanted[:cap]
+    labels: dict[str, str] = {}
+    if client is not None and follow:
+        _read_tasks(client, follow)
+        labels = details.account_labels(client)
     rows = []
     for entry in follow:
         row: dict[str, Any] = {"task_id": str(entry["task_id"]), "title": _task_name(entry)}
+        if isinstance(entry.get("workspace"), str) and entry["workspace"].strip():
+            row["workspace"] = entry["workspace"].strip()
         if isinstance(entry.get("console"), str) and entry["console"].strip():
             row["console"] = entry["console"].strip()
+        shown = workspace_shown(entry.get("workspace"), entry.get("tenant_id")) if entry.get("workspace") else None
+        row["details"] = details.line(shown, details.for_task(entry.get("task")), labels)
         rows.append(row)
     title = tasks_title(follow)
     description = (
         f"{title}: each SwarmCloud single task is shown here as one [SwarmCloud] row, "
         "titled from its label, with its console link. Nothing is submitted"
     )
-    out = _launch(title, description, {"attach_tasks": rows})
+    # `max_rows`: the cap this bridge used, so run.js -- which caps the rows
+    # it starts too, at 30 when told nothing -- follows every task handed it.
+    facts = details.merge(details.for_task(e.get("task")) for e in follow)
+    out = _launch(title, description, {"attach_tasks": rows, "max_rows": cap}, _tasks_workspace(follow),
+                  facts, labels)
     out["task_ids"] = [row["task_id"] for row in rows]
+    remember_attached(out["task_ids"])
     out["not_followed"] = [
-        {"task_id": str(e["task_id"]), "label": e.get("label"), "follow_with": "swarm_follow"}
-        for e in wanted[MAX_ATTACHED_TASKS:]
+        {"task_id": str(e["task_id"]), "workspace": e.get("workspace"), "label": e.get("label"),
+         "follow_with": "swarm_follow"}
+        for e in wanted[cap:]
     ]
     out["launch_with"] = "the Workflow tool with {scriptPath: <script_path>, args: <args>}"
     return out
 
 
-def for_all(client: SwarmClient) -> dict[str, Any]:
-    """One titled copy per running workflow, newest first, up to the cap, and
-    one more for the caller's running single tasks (#830)."""
-    from . import sc
+def named_workspaces(
+    entries: list[dict[str, Any]], names: dict[str, str], *, keep_tenant: bool = False,
+) -> list[dict[str, Any]]:
+    """`entries` with each `workspace` (a tenant id, as the listing read it off
+    the API's documents) shown as its display name where `names` -- the API's
+    `GET /v1/tenants/mine` -- gives one that fits. The same entries, changed in
+    place, in the same order. `keep_tenant` also keeps the tenant id as the
+    entry's `tenant_id`, for a run's description (`for_all` only: the listings
+    `swarm_workflows` and `sc workflows` print are unchanged)."""
+    for entry in entries:
+        if entry.get("workspace"):
+            if keep_tenant:
+                entry["tenant_id"] = entry["workspace"]
+            entry["workspace"] = workflows.workspace_of({"tenant_id": entry["workspace"]}, names)
+    return entries
+
+
+def _scoped(
+    entries: list[dict[str, Any]], kind: str, key: str | None, skip: frozenset[str],
+) -> tuple[list[dict[str, Any]], list[str], list[dict[str, Any]]]:
+    """`(kept, already_attached, unread)`: `entries` in `key`'s repository
+    (all of them when `key` is None) and not in `skip`. An entry whose
+    repository was not read cannot be placed in a project: it is not
+    launched, and comes back in `unread` with the command that attaches it."""
+    from .check import repo_key
+
+    id_key = "workflow_id" if kind == "workflow" else "task_id"
+    kept: list[dict[str, Any]] = []
+    already: list[str] = []
+    unread: list[dict[str, Any]] = []
+    for entry in entries:
+        ident = str(entry.get(id_key) or "")
+        if key is not None:
+            if not entry.get("repository_url"):
+                if entry.get("steps_unread_because") or kind == "task":
+                    unread.append({id_key: ident, "workspace": entry.get("workspace"),
+                                   "why": "its repository was not read, so it cannot be placed in this project",
+                                   "attach_with": f"/sc attach {ident}" if kind == "workflow" else "swarm_follow"})
+                continue
+            if repo_key(entry["repository_url"]) != key:
+                continue
+        if ident in skip:
+            already.append(ident)
+            continue
+        kept.append(entry)
+    return kept, already, unread
+
+
+def _own(entries: list[dict[str, Any]], sid: str | None, left_out: dict[str, int]) -> list[dict[str, Any]]:
+    """The entries tagged with session `sid`; the rest counted in `left_out`
+    by why (`other_session`, `untagged`). With no `sid`, none."""
+    from . import session
+
+    kept = []
+    for entry in entries:
+        kind = session.ownership(session.owner_of(entry), sid)
+        if kind == "own":
+            kept.append(entry)
+        else:
+            left_out[kind] += 1
+    return kept
+
+
+def _read_workflows(client: SwarmClient, workflow_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """`{workflow_id: envelope}` for each id whose `GET /v1/workflows/{id}`
+    answered, at most eight reads at a time."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def read(workflow_id: str) -> tuple[str, dict[str, Any] | None]:
+        try:
+            return workflow_id, workflows.fetch(client, workflow_id)
+        except Exception:  # noqa: BLE001 - details are never worth a failed launch
+            return workflow_id, None
+
+    if not workflow_ids:
+        return {}
+    with ThreadPoolExecutor(max_workers=min(8, len(workflow_ids))) as pool:
+        return {wid: env for wid, env in pool.map(read, workflow_ids) if env is not None}
+
+
+def for_all(
+    client: SwarmClient,
+    *,
+    repository: str | None = None,
+    new_only: bool = False,
+    exclude: list[str] | None = None,
+) -> dict[str, Any]:
+    """One titled copy per running workflow, newest first and grouped by
+    workspace (`sc.group_by_workspace`), up to the live-row cap, and
+    one more for the caller's running single tasks (#830).
+
+    SC-WATCH: `repository` keeps only the workflows and tasks that clone it
+    (`check.resolve_scope`: a URL, `owner/repo`, "origin" for this checkout's
+    remote, "all" for every one); `new_only` leaves out every id this
+    session was already handed a row for (`attached()`), and `exclude` the
+    ids the caller names -- rows it can see live. Without them, unchanged."""
+    from . import sc, session
+
+    filtering = repository is not None or new_only or bool(exclude)
+    scope = None
+    if repository is not None:
+        from .check import resolve_scope
+
+        scope = resolve_scope(repository)
+    skip = frozenset((attached() if new_only else frozenset()) | {str(i) for i in exclude or [] if i})
 
     # The single tasks first, and on their own: a failure to read them is
     # reported beside the workflows, never instead of them.
@@ -300,18 +631,51 @@ def for_all(client: SwarmClient) -> dict[str, Any]:
     except SwarmError as exc:
         singles, singles_error = None, str(exc)
     listing = sc.running_workflows(client)
-    entries = [e for e in listing.get("workflows") or [] if isinstance(e, dict) and e.get("workflow_id")]
+    names = workflows.workspace_names(client)
+    cap = max_live_rows()
+    entries = sc.group_by_workspace(named_workspaces(
+        [e for e in listing.get("workflows") or [] if isinstance(e, dict) and e.get("workflow_id")], names,
+        keep_tenant=True,
+    ))
+    # THIS SESSION'S OWN, AND NOTHING ELSE (SC-SESSION-SCOPE, owner
+    # 2026-10-14): another session's work in the same tenant, and untagged
+    # work, is never a candidate -- before the cap, so the cap counts only
+    # this session's. `/sc attach <wf_id>` still attaches any by hand.
+    sid = session.current()
+    left_out = {"workflows": session.counts(), "single_tasks": session.counts()}
+    entries = _own(entries, sid, left_out["workflows"])
+    if singles:
+        singles = {**singles, "tasks": _own(singles["tasks"], sid, left_out["single_tasks"])}
+    already: list[str] = []
+    unread: list[dict[str, Any]] = []
+    if filtering:
+        entries, already, unread = _scoped(entries, "workflow", scope and scope["key"], skip)
+        if singles:
+            kept, more, unread_tasks = _scoped(singles["tasks"], "task", scope and scope["key"], skip)
+            singles = {**singles, "tasks": kept}
+            already += more
+            unread += unread_tasks
     launches = []
-    for entry in entries[:MAX_ATTACHED_WORKFLOWS]:
+    followed = entries[:cap]
+    # THE DETAILS of each run launched (SC-DESC-DETAILS): one workflow read
+    # each, at most eight at a time, and the accounts' labels once. A read
+    # that fails costs that run its details -- `not reported` -- never its row.
+    envelopes = _read_workflows(client, [str(e["workflow_id"]) for e in followed])
+    labels = details.account_labels(client) if followed else {}
+    for entry in followed:
         workflow_id = str(entry["workflow_id"])
         name = workflows.title_name(stored=entry.get("title") or entry.get("label"), workflow_id=workflow_id)
-        launches.append(_attach_launch(workflow_id, name, int(entry.get("steps_total") or 0)))
+        launches.append(_attach_launch(
+            workflow_id, name, int(entry.get("steps_total") or 0), entry.get("workspace"), entry.get("tenant_id"),
+            envelopes.get(workflow_id), labels,
+        ))
     not_followed = [
-        {"workflow_id": e["workflow_id"], "title": e.get("title") or e.get("label"),
+        {"workflow_id": e["workflow_id"], "workspace": e.get("workspace"), "title": e.get("title") or e.get("label"),
          "attach_with": f"/sc attach {e['workflow_id']}"}
-        for e in entries[MAX_ATTACHED_WORKFLOWS:]
+        for e in entries[cap:]
     ]
     out: dict[str, Any] = {
+        "max_live_rows": cap,
         "count": len(entries),
         "launches": launches,
         "not_followed": not_followed,
@@ -326,7 +690,8 @@ def for_all(client: SwarmClient) -> dict[str, Any]:
     if singles_error is not None:
         out["single_tasks_error"] = singles_error
     elif singles and singles["tasks"]:
-        task_launch = for_tasks(singles["tasks"])
+        task_launch = for_tasks(sc.group_by_workspace(named_workspaces(singles["tasks"], names, keep_tenant=True)),
+                                client)
         launches.append(task_launch)
         out["single_tasks"] = len(singles["tasks"])
         not_followed.extend(task_launch.pop("not_followed"))
@@ -339,4 +704,11 @@ def for_all(client: SwarmClient) -> dict[str, Any]:
         "<args>}: one Claude Code run per SwarmCloud workflow, and one for your running "
         "single tasks (args `attach_tasks`), with a row per task"
     )
+    out["session"] = {**session.describe(sid), "left_out": left_out}
+    if filtering:
+        out["repository"] = scope["key"] if scope else None
+        if scope and scope.get("note"):
+            out["repository_note"] = scope["note"]
+        out["already_attached"] = already
+        out["repository_unread"] = unread
     return out

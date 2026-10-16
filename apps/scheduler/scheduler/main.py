@@ -35,7 +35,7 @@ from swarm_common.models import utcnow
 
 from .credentials import AccountPool
 from .dispatch import build_router
-from .loop import DrainReport, Scheduler
+from .loop import Scheduler
 from .metrics import SchedulerMetrics
 from .settings import SchedulerSettings
 from .store import SchedulerStore
@@ -141,7 +141,7 @@ def build_scheduler(
     return Scheduler(
         settings=settings,
         store=SchedulerStore(db),
-        router=router or build_router(settings, pool=pool),
+        router=router or build_router(settings, pool=pool, db=db),
         metrics=metrics or SchedulerMetrics(),
         pool=pool,
     )

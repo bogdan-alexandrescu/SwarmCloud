@@ -78,7 +78,14 @@ FROM ${MIRROR_DOCKER_HUB}/library/${ALPINE_IMAGE}
 # the fixture patch was byte-correct and still reported FAIL. This is not the
 # gcloud/Cloud-SDK tradeoff above: git alone, with no Python dependency chain,
 # carries no comparable CVE surface.
-RUN apk add --no-cache bash curl jq coreutils ca-certificates python3 git
+# sed (GNU) because `redact` in scripts/lib/common.sh is one sed -E program
+# with `#` delimiters and back-references that busybox sed refuses to compile
+# ("sed: unmatched '#'"). Without it every acceptance reason piped through
+# redact came out EMPTY: 13 of the 14 failed live-browser runs read on
+# 2026-10-14 printed that error once per check (lane SPEED-C2). It fails
+# closed -- nothing leaked, the reason was lost -- which is still a check
+# that cannot say why it failed.
+RUN apk add --no-cache bash curl jq coreutils ca-certificates python3 git sed
 
 WORKDIR /swarm
 
@@ -96,6 +103,11 @@ COPY tests/acceptance/fixtures/ /swarm/tests/acceptance/fixtures/
 # live-browser.sh runs it with python3): standard library only, so it needs
 # nothing the image does not already carry.
 COPY tests/acceptance/test_live_browser.py /swarm/tests/acceptance/test_live_browser.py
+# The git-tools group's prompts and judge (scripts/acceptance/groups/
+# git-tools.sh runs it with python3 for every prompt and verdict): standard
+# library only. Missing from the image from PR 1269 until 2026-10-15, every
+# git-tools check failed "the judge wrote no verdict" with an empty prompt.
+COPY tests/acceptance/test_runner_git_tools.py /swarm/tests/acceptance/test_runner_git_tools.py
 
 # Fail loudly at build time rather than at 3am if a script lost its bit.
 RUN chmod +x /swarm/scripts/*.sh /swarm/scripts/lib/*.sh 2>/dev/null || true

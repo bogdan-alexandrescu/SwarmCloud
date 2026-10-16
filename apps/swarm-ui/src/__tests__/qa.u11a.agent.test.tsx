@@ -33,6 +33,7 @@ import type { Result } from '../fetch'
 import type { CheckpointsPage, Task, TaskPage } from '../types'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
+import { landed } from './reads'
 import { at, attempt, task as runTask } from './runfixture'
 
 const api = vi.hoisted(() => ({
@@ -162,7 +163,14 @@ describe('D21: the Checkpoints tab counts from the read its pane draws, from the
     render(<Routed start="detail" />)
     // On Details, before Checkpoints has ever been opened: a count, not a dash.
     // Kept of written (G2-12): a bare `0` read as none ever written.
-    await waitFor(() => expect(tab('Checkpoints').querySelector('em')?.textContent).toBe('0 of 1'))
+    // Wait on the three reads the badge is drawn from, then query the tablist
+    // ONCE (reads.ts, #605): `tab()` is a `*ByRole` query, and polling it inside
+    // `waitFor` spent the 2000 ms window on `getComputedStyle` -- red at 3911 ms
+    // on a bogdan-ci runner (run 38267927535, PR 1184).
+    await landed(api.loadTask)
+    await landed(api.loadAttempts)
+    await landed(api.loadCheckpoints)
+    expect(tab('Checkpoints').querySelector('em')?.textContent).toBe('0 of 1')
     expect(tab('Details').getAttribute('aria-selected')).toBe('true')
     expect(tab('Checkpoints').querySelector('em')?.getAttribute('title')).toMatch(/^1 written, 0 kept/)
     // One read: the badge and the pane are the same answer.

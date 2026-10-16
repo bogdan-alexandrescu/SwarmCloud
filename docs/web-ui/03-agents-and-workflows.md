@@ -127,7 +127,7 @@ The primary screen of this section. One table, three tabs, no sub-pages.
 | 5 | Workflow | `step_id` as a pill linking to the DAG view; em-dash when standalone | `task.workflow_id`, `task.step_id` |
 | 6 | Elapsed | live ticking duration (§2.3) | derived from `created_at` / `started_at` / `completed_at` |
 | 7 | Try | `attempt_count`/`max_attempts`, with a small fence glyph when `current_generation > attempt_count` | `task.attempt_count`, `task.max_attempts`, `task.current_generation` |
-| 8 | Class | `resource_class` + units, e.g. `browser · 2u` | `task.resource_class`, units from `RESOURCE_CLASSES` (`profiles.py:77-81`, frozen catalogue, bundled client-side) |
+| 8 | Class | `resource_class` + units, e.g. `large · 4u` | `task.resource_class`, units from `RESOURCE_CLASSES` (`profiles.py:77-81`, frozen catalogue, bundled client-side) |
 | 9 | *(actions)* | Cancel, enabled only when the state is non-terminal | `POST /v1/tasks/{id}/cancel` |
 
 Nine columns. Not fourteen. The things deliberately *not* columns: `tenant_id` (every row is the caller's own tenant — it goes in the page header once), `priority` (nobody sorts by it because the server will not sort by it), `provider` (implied by `runner_profile`; the 5-profile catalogue makes it redundant), `repository_url`, `timeout_seconds`, `input` — all of those live in the detail view.

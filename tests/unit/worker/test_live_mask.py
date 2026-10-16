@@ -400,20 +400,35 @@ def test_a_child_frame_is_masked_at_its_owner_offset(tmp_path):
     assert _untouched(frame, 0, CHROME_H, 90, SCREEN_H)
 
 
-def test_an_unlinked_or_silent_child_frame_blanks_the_page_area(tmp_path):
+def test_an_unlinked_child_frame_covers_the_box_left_for_it_and_a_silent_one_covers_its_box(tmp_path):
+    # LIVE-BLANK (part of #1030): a child that cannot vouch for itself covers
+    # its own box -- its content is clipped to it -- not the whole page.
+    # DEVB-MASK (part of #1344): so does an unlinked one, when its parent
+    # reports an iframe box for every unlinked child that no linked one claims.
     state = _state()
     state.on_message(TOP, _report(owners=[{"id": 42, "r": [100, 50, 80, 60]}]))
     state.frame_attached(CHILD, TOP)
-    # Not linked to its owner: where it is drawn is unknown.
-    assert state.apply(_frame(tmp_path)) is Outcome.PAGE_BLANKED
+    # Not linked to its owner: the one unclaimed iframe box is covered.
+    frame = _frame(tmp_path)
+    assert state.apply(frame) is Outcome.MASKED
+    assert _painted(frame, 100, CHROME_H + 50, 180, CHROME_H + 110)
+    assert _untouched(frame, 0, CHROME_H, 90, SCREEN_H)
     state.frame_linked(CHILD, 42)
-    # Linked, visible, and no report yet.
-    assert state.apply(_frame(tmp_path)) is Outcome.PAGE_BLANKED
+    # Linked, visible, and no report yet: its box is covered, the page shown.
+    frame = _frame(tmp_path)
+    assert state.apply(frame) is Outcome.MASKED
+    assert _painted(frame, 100, CHROME_H + 50, 180, CHROME_H + 110)
+    assert _untouched(frame, 0, CHROME_H, 90, SCREEN_H)
     state.on_message(CHILD, _report(doc="child-doc", viewport=(80, 60, 0, 0, 1)))
-    assert state.apply(_frame(tmp_path)) is Outcome.MASKED
-    # Its own layout change makes the whole page stale.
+    frame = _frame(tmp_path)
+    assert state.apply(frame) is Outcome.MASKED
+    assert _untouched(frame, 100, CHROME_H + 50, 180, CHROME_H + 110)
+    # Its own layout change makes it stale: its box is covered again.
     state.on_message(CHILD, _layout(2, doc="child-doc"))
-    assert state.apply(_frame(tmp_path)) is Outcome.PAGE_BLANKED
+    frame = _frame(tmp_path)
+    assert state.apply(frame) is Outcome.MASKED
+    assert _painted(frame, 100, CHROME_H + 50, 180, CHROME_H + 110)
+    assert _untouched(frame, 0, CHROME_H, 90, SCREEN_H)
 
 
 def test_a_child_frame_drawn_nowhere_does_not_blank_the_page(tmp_path):

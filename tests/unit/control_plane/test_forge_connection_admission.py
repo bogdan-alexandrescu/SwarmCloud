@@ -34,7 +34,7 @@ from scheduler.credentials import (
 )
 from scheduler.store import SchedulerStore
 
-from .conftest import scheduler_settings, seed_pool, seed_task, seed_tenant
+from .conftest import seed_pool, seed_task, seed_tenant
 
 TENANT = "eng"
 OTHER = "research"

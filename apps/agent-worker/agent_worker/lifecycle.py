@@ -149,9 +149,13 @@ from . import continuation as continuation_mod
 from . import egress as egress_mod
 from . import expected_outputs as expected_mod
 from . import gitops as gitops_mod
+from . import graph_ticket as graph_ticket_mod
+from . import graphstage as graphstage_mod
 from . import handoff as handoff_mod
 from . import inputs as inputs_mod
 from . import issue as issue_mod
+from . import jevkey as jevkey_mod
+from . import secretrelease as secretrelease_mod
 from . import questions as questions_mod
 from . import redact as redact_mod
 from . import standalone_outputs as standalone_mod
@@ -208,6 +212,7 @@ from . import indexrun as indexrun_mod
 from . import forge as forge_mod
 from . import merge as merge_mod
 from . import mergeslot as mergeslot_mod
+from . import mergetrain as mergetrain_mod
 from . import post_verdict as post_verdict_mod
 from . import specverify
 from .forge import ForgeError, RepoAccess, probe_repository, open_pull_request
@@ -234,6 +239,8 @@ from .gitops import (
     retry_clone,
     shallow_clone,
     summarize_work,
+    validate_ref,
+    verify_merged_default_branch,
     verify_worker_authorship,
 )
 # The helpers every function in `gitops` builds its git commands from. Borrowed
@@ -483,6 +490,16 @@ PUBLISH_UNREACHABLE_FIELD = "forge_unreachable"
 #: task_6a0c9afdbaea449eb53d: "push failed with exit 1", state SUCCEEDED, the
 #: workflow green, and the work found in `swarm-work.patch` six hours later.
 PUBLISH_FAILED_FIELD = "publish_failed"
+#: The dispatch block's mark of a merge step's conflict fix round (#1321):
+#: swarm-api copies it from the `metadata.merge_conflict_round` record
+#: `mergewake._on_conflict` submits the round with, INTO the signed block,
+#: because the worker acts on no metadata the step-spec signature does not
+#: cover. Restated here because the worker cannot import swarm_api
+#: (`swarm_api.validation.CONFLICT_ROUND_FIELD`);
+#: tests/unit/worker/test_conflict_round_merge_parents.py holds the two
+#: together. A round checks, before it pushes, that it merged the default
+#: branch (`gitops.verify_merged_default_branch`).
+CONFLICT_ROUND_FIELD = "conflict_round"
 #: The file whose presence makes a clean run that changed nothing a RESULT
 #: (Proposal J, owner decision 2026-10-08): the agent checked, found nothing
 #: to change, and wrote down why. Read from `$SWARM_ARTIFACTS_DIR`; its text is
@@ -507,6 +524,19 @@ TITLE_MISSING_PREFIX = "[title missing] "
 #: `Worker._agent_pull_request_text`.
 PR_TITLE_FILE = "pr-title.txt"
 PR_BODY_FILE = "pr-body.md"
+#: The runner's pre-publish section (SPEED-D1; `prepublish.PR_SECTION_NAME` and
+#: `prepublish.PR_SECTION_HEADING`, restated because the runner never imports
+#: the worker; tests/unit/worker/test_prepublish_gate.py holds them equal).
+PREPUBLISH_SECTION_FILE = "prepublish-checks.md"
+PREPUBLISH_SECTION_HEADING = "## Pre-publish checks failed"
+PREPUBLISH_SECTION_MAX_CHARS = 20000
+#: The runner's advisory section (CTXQ-G; `prepublish.ADVISORY_SECTION_NAME`
+#: and `_HEADING`, held equal by tests/unit/worker/test_prepublish_graph_gate.py):
+#: test reach, the agent's self-check, what the graph selected. Appended for
+#: the reader; no merge path reads it, and it never marks the checks failed.
+PREPUBLISH_ADVISORY_FILE = "prepublish-advisory.md"
+PREPUBLISH_ADVISORY_HEADING = "## Advisory signals (not a gate)"
+PREPUBLISH_ADVISORY_MAX_CHARS = 10000
 #: One line, at most this many characters: GitHub's own title field is 256.
 PR_TITLE_MAX_CHARS = 256
 #: At most this many bytes of the agent's body, before the platform's block. A
@@ -708,6 +738,9 @@ class Worker:
         self.secret_client = deps.secret_client
         self.memory = deps.memory
         self.ws: workspace_mod.Workspace | None = None
+        #: The staged graph's runner variables (CTXQ-S), decided once per
+        #: attempt: a credential reload rebuilds the env and must not restage.
+        self._graph_env: dict[str, str] | None = None
         self.checkpoints = CheckpointManager(
             store=deps.store,
             tenant_id=config.tenant_id,
@@ -808,6 +841,10 @@ class Worker:
         # in this process, or the base a previous attempt's worker recorded in
         # the checkpoint manifest. `EMPTY_CLONE_BASE` for an empty repository.
         self._publish_base: str | None = None
+        # The base BRANCH the runner rebases the lane onto before it publishes
+        # (SPEED-D1, `agent_worker.prepublish`), when that is safe for this
+        # step (`_prepublish_rebase_ref`); None, and no rebase, otherwise.
+        self._prepublish_rebase: str | None = None
         # What `metadata.input_from` put in the workspace. Kept so the result
         # summary can report which upstream artifact this attempt actually ran
         # on -- the question every debugging of a wrong workflow output starts
@@ -982,6 +1019,8 @@ class Worker:
         # what the agent start reads to say whether this attempt cloned.
         self._clone_marked = False
         self._agent_start_marked = False
+        # `graph_ready` (lane GS-MEASURE): what staging the graph cost, once.
+        self._graph_marked = False
         # The workflow base pin (`_upstream_base_pin`): what this step's clone
         # started from and why, `result_summary.git.base_pin`. None for a root
         # step, a non-workflow task, a step that starts from an upstream
@@ -996,6 +1035,20 @@ class Worker:
         # the spool and the await. Inert unless the scheduler passed a nonce.
         self.children = children_mod.ChildPath(
             config, logger=deps.logger, memory=deps.memory, api=deps.child_api
+        )
+        # The shared graph service's attempt ticket (docs/design/graph-service.md
+        # §4.1, lane GS-WORKER): minted by `graphstage.prepare` only when the
+        # workspace stored `graph_delivery: service`, then renewed on the
+        # control poll. Signs with the child path's attempt key. Inert otherwise.
+        self.graph_ticket = graph_ticket_mod.GraphTicket(
+            config, children=self.children, logger=deps.logger
+        )
+        # The workspace secrets release (docs/design/workspace-secrets.md
+        # §3.3, lane SEC-RELEASE): once per attempt, before the runner exists,
+        # signed with the child path's attempt key. Inert for a profile whose
+        # catalogue entry, and whose launched tools, declare no secret slot.
+        self.secret_release = secretrelease_mod.SecretRelease(
+            config, children=self.children, logger=deps.logger
         )
         # The live-browser path (docs/design/live-browser.md §4, lane L4): the
         # gate's ctl.sock slot, the tunnel ticket and the hand-off spool. Inert
@@ -1926,6 +1979,18 @@ class Worker:
                 )
                 if action is WorkerAction.MERGE else None
             ),
+            # The repository's merge train (TRAIN-WS): this step's entry,
+            # written only in train mode, fenced on this attempt as the slot is.
+            merge_trains=(
+                mergetrain_mod.FirestoreTrainEntries(
+                    self.db,
+                    tenant_id=self.cfg.tenant_id,
+                    run_transaction=self.control._run_transaction,
+                    fence=lambda txn: self.control._fenced_task(txn, write="merge train entry"),
+                    call_options=self.control.call_options,
+                )
+                if action is WorkerAction.MERGE else None
+            ),
             # The PR-side CI fixer's tasks for the merged pull request (#1073):
             # this tenant's only, each held to its signed spec by the merge.
             find_ci_fix_tasks=(
@@ -2084,6 +2149,10 @@ class Worker:
         # `checks_timeout` reads, so a long queue neither spends the step's CI
         # wakes nor times its checks out.
         slot_wait = code == mergeslot_mod.MERGE_SLOT_WAIT
+        # A wait on the repository's merge train (TRAIN-WS) likewise: its own
+        # bound and counter, off the CI clock -- several trains ahead of it
+        # are a queue, not a slow CI.
+        train_wait = code == mergetrain_mod.TRAIN_WAITING
         # Recorded before any metrics export (TEL #718, `_metrics_after_the_record`).
         with self._metrics_after_the_record():
             refunded = self.control.park_ci_pending(
@@ -2092,10 +2161,12 @@ class Worker:
                 pull_request=int(wait.get("pull_request") or 0),
                 pending=[str(name) for name in wait.get("pending") or []],
                 max_wakes=(mergeslot_mod.MERGE_SLOT_MAX_WAITS if slot_wait
+                           else mergetrain_mod.TRAIN_MAX_WAITS if train_wait
                            else merge_mod.MERGE_CI_MAX_WAKES),
                 fallback_seconds=merge_mod.MERGE_CI_FALLBACK_SECONDS,
-                counter="slot_waits" if slot_wait else "wakes",
-                ci_clock=not slot_wait,
+                counter=("slot_waits" if slot_wait else "train_waits" if train_wait
+                         else "wakes"),
+                ci_clock=not (slot_wait or train_wait),
             )
         self.log.info("worker action parked until CI settles", action=action.value,
                       code=wait.get("code"), attempt_refunded=refunded)
@@ -2312,6 +2383,12 @@ class Worker:
         # task's events, where the console shows it beside an empty Browser
         # tab (task_23cc2e82178640709a45, 2026-10-12, LB-KEYRACE).
         self.handoff.setup(self._live_browser_unavailable)
+        # NOLIVE-GUARD (part of #1366): the agent's browser follows the GATE,
+        # never the viewer's tunnel. A live-browser attempt whose gate is not
+        # ready has no CDP proxy, and it never starts its agent headless: the
+        # ATTEMPT fails retryably, before the agent, after the startup window.
+        if self.handoff.gate_missing:
+            return functools.partial(self._fail_live_gate_missing, self.handoff.unavailable)
 
         # THE FIRST HEARTBEAT GOES HERE, BEFORE ANY SLOW WORK.
         #
@@ -2335,9 +2412,11 @@ class Worker:
 
         # ---- STEP 3: isolated workspace ---------------------------------
         self.phases.enter("workspace")
-        self.ws = workspace_mod.create(cfg.workspace_root, cfg.attempt_id)
+        self.ws = workspace_mod.create(
+            cfg.workspace_root, cfg.attempt_id, cache_root=cfg.cache_root
+        )
         ws = self.ws
-        self.log.info("workspace created", path=str(ws.root))
+        self.log.info("workspace created", path=str(ws.root), cache=str(ws.cache))
 
         # ---- STEP 4: fetch the task and VERIFY ITS SPEC -----------------
         # Contract request 34 (#342). Immediately after the fetch and before
@@ -2635,6 +2714,31 @@ class Worker:
 
         # ---- STEP 6: tenant credentials ---------------------------------
         self.phases.enter("credentials")
+        # STEP 6a: the workspace secrets granted to this attempt's consumers
+        # (SEC-RELEASE), ONCE, before the runner exists: every value is
+        # registered for redaction as the answer is parsed, and the runner is
+        # handed only the manifest's path (`_build_child_env`). A 409 is the
+        # fence: stand down without touching the lease (invariant 5). A
+        # required slot with nothing in it -- no grant, or swarm-api not
+        # reachable -- parks CREDENTIAL_MISSING at no cost (invariant 1);
+        # optional slots only, the attempt starts without them.
+        try:
+            released = self.secret_release.release(
+                profile=cfg.profile, inputs=task.get("input"), private_dir=ws.private
+            )
+        except secretrelease_mod.SecretReleaseFenced as exc:
+            raise FencedWriteRefused(
+                cfg.generation, -1, f"secrets release: {exc.code}", write="secrets release"
+            ) from None
+        if released.missing_required:
+            secretrelease_mod.remove(ws.private)
+            return functools.partial(
+                self._park_credential_missing,
+                CredentialMissing(
+                    cfg.tenant_id,
+                    "workspace-secret:" + ",".join(released.missing_required),
+                ),
+            )
         try:
             child_env = self._build_child_env()
         except CredentialMissing as exc:
@@ -2892,11 +2996,26 @@ class Worker:
                     return self._exit_fenced_mid_run(
                         child, observed_generation=-1, reason=f"child submission: {exc.code}"
                     )
+                # The graph ticket (GS-WORKER), renewed when a third of its
+                # life is left; a stat-free clock check when it is not due.
+                # A 409 is the fence: stop the agent, leave the lease.
+                if self.graph_ticket.due():
+                    try:
+                        with self._heartbeat_meanwhile("graph ticket"):
+                            self.graph_ticket.keep()
+                    except graph_ticket_mod.GraphTicketFenced as exc:
+                        return self._exit_fenced_mid_run(
+                            child, observed_generation=-1, reason=str(exc)
+                        )
                 if self.handoff.spooled:
                     # Live-browser §4.1-§4.3: answer the agent's requests and
                     # watch an open hand-off's hold. Never raises.
                     with self._heartbeat_meanwhile("hand-off"):
                         ended = self.handoff.tick(ws.work, self.control.fetch_task)
+                        # LB-RETURN: swarm-api decides whether the hold really
+                        # ran out, against a viewer who came as it did.
+                        if ended == handoff_mod.HOLD_EXPIRED and not self.handoff.confirm_expired():
+                            ended = None
                     if ended is not None:
                         return self._park_for_human(child, cause=ended)
 
@@ -4616,6 +4735,12 @@ class Worker:
         # manifest from here on, so a resumed attempt can trust it too.
         self._publish_base = clone.commit or (EMPTY_CLONE_BASE if clone.empty else None)
         self.checkpoints.clone_base = self._publish_base
+        self._prepublish_rebase = self._prepublish_rebase_ref(
+            ref=ref,
+            checkout=Path(destination),
+            fixed_base=bool(pr_branch or continued or builds_on or carried)
+            or pinned_sha is not None,
+        )
         self._write_clone_base(clone.commit)
         info: dict[str, Any] = {
             "path": REPO_DIR_NAME,
@@ -4640,6 +4765,145 @@ class Worker:
         if refusal:
             info["git_token_refused"] = refusal
         return info
+
+    def _prepublish_rebase_ref(
+        self, *, ref: str | None, checkout: Path, fixed_base: bool
+    ) -> str | None:
+        """The branch the runner may rebase this lane onto before publishing, or None.
+
+        SPEED-D1 (owner decision 2026-10-14): 128 of 150 merged pull requests
+        needed an update from main, because a lane's branch is cut from the
+        commit it started on. The runner rebases onto the base's CURRENT tip
+        through the git tools (`agent_worker.prepublish`), and the publish
+        then diffs from where it landed (`_adopt_rebase_base`). Only where a
+        moved base breaks nothing:
+
+        * an AUTHOR of its own pull request -- `direct-pr`, or `single-pr`'s
+          author. `collect` stages its patch onto a downstream step's pinned
+          base, an amender only fast-forwards the author's branch, an
+          integrator merges contributors onto their base;
+        * cloned from the repository's branch, not from a continued, built-on,
+          carried or author's branch (`fixed_base`), whose pushed tip a
+          rewritten history would no longer fast-forward, and not pinned to an
+          upstream step's base, which a downstream patch must apply to;
+        * no `carrier: branches`, whose checkpoints already pushed the branch;
+        * a BRANCH: a ref that is a sha has no newer tip.
+
+        The default branch, when the task names no ref, is read from the
+        clone's own HEAD file, which this process wrote before any agent ran.
+        """
+        if fixed_base or self._dispatch_carrier() == "branches":
+            return None
+        role = self._pr_role()
+        if role:
+            if role != "author":
+                return None
+        elif self._dispatch_strategy() != "direct-pr":
+            return None
+        name = (ref or "").strip()
+        if not name:
+            try:
+                head = (checkout / ".git" / "HEAD").read_text(encoding="utf-8").strip()
+            except OSError:
+                return None
+            prefix = "ref: refs/heads/"
+            name = head[len(prefix):] if head.startswith(prefix) else ""
+        if not name or re.fullmatch(r"[0-9a-f]{7,40}", name):
+            return None
+        try:
+            validate_ref(name)
+        except GitError:
+            return None
+        return name
+
+    def _adopt_rebase_base(self, publish_repo: Path, floor: str | None) -> str | None:
+        """The commit the publish diffs from after a pre-publish rebase, or None.
+
+        The runner rebased the lane onto the base's newer tip
+        (`agent_worker.prepublish`), so `floor..HEAD` holds every commit the
+        base gained since the clone; replayed as the lane's, they would be
+        republished under the worker's name. The commit the rebase landed on
+        is a sha the git tools' relay fetched itself (`GitTools.rebased_onto`),
+        so origin has it, and it becomes the publish base when, in the
+        worker's own clean repository, the floor is its ancestor and HEAD
+        descends from it -- an aborted or undone rebase fails the second test
+        and the floor stands.
+        """
+        onto = self.children.rebased_onto
+        base = (floor or "").strip()
+        if not onto or not _FULL_SHA_RE.fullmatch(onto) or not _FULL_SHA_RE.fullmatch(base) \
+                or onto == base:
+            return None
+        ws = self.ws
+        assert ws is not None
+        g = ["git", *_NO_HOOKS]
+        for older, newer, slug in ((base, onto, "publish-rebase-floor"),
+                                   (onto, "HEAD", "publish-rebase-head")):
+            code, _ = _git_text(
+                [*g, "merge-base", "--is-ancestor", older, newer],
+                repo=Path(publish_repo), private_dir=ws.private, logs_dir=ws.logs, slug=slug,
+                timeout_seconds=self.cfg.git_harvest_timeout_seconds, logger=self.log,
+            )
+            if code != 0:
+                self.log.warning(
+                    "the lane was rebased but its head no longer stands on that base; "
+                    "the publish diffs from the clone base",
+                    onto=onto, base=base, failed=slug,
+                )
+                return None
+        self.log.info("the lane was rebased before publishing; the publish diffs from "
+                      "where it landed", onto=onto, base=base)
+        return onto
+
+    def _prepublish_advisory(self) -> str:
+        """The runner's "Advisory signals (not a gate)" section, or "" (CTXQ-G).
+
+        Read, scrubbed and capped exactly like `_prepublish_section`, and only
+        when it carries the runner's heading, so no other file in the
+        artifacts folder reaches the pull request's body this way.
+        """
+        ws = self.ws
+        if ws is None:
+            return ""
+        path = ws.artifacts / PREPUBLISH_ADVISORY_FILE
+        try:
+            if path.is_symlink() or not path.is_file():
+                return ""
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+        text = str(self._scrub(redact_text(text).text)).strip()
+        if not text.startswith(PREPUBLISH_ADVISORY_HEADING):
+            return ""
+        if len(text) > PREPUBLISH_ADVISORY_MAX_CHARS:
+            text = text[:PREPUBLISH_ADVISORY_MAX_CHARS].rstrip() + "\n\n_[cut by the worker]_"
+        return text
+
+    def _prepublish_section(self) -> str:
+        """The runner's "Pre-publish checks failed" section, or "" (SPEED-D1).
+
+        Written into the artifacts folder by the runner (`prepublish.Gate`)
+        only when a check still failed after the agent's fix turn, or a
+        rebase conflict was not resolved: the branch is published anyway and
+        this tells the operator what is red. Read after the pre-publish reap,
+        like the agent's own body; scrubbed again here, and capped.
+        """
+        ws = self.ws
+        if ws is None:
+            return ""
+        path = ws.artifacts / PREPUBLISH_SECTION_FILE
+        try:
+            if path.is_symlink() or not path.is_file():
+                return ""
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+        text = str(self._scrub(redact_text(text).text)).strip()
+        if not text.startswith(PREPUBLISH_SECTION_HEADING):
+            return ""
+        if len(text) > PREPUBLISH_SECTION_MAX_CHARS:
+            text = text[:PREPUBLISH_SECTION_MAX_CHARS].rstrip() + "\n\n_[cut by the worker]_"
+        return text
 
     def _fail_clone_unreachable(self, reason: str, tries: int) -> Outcome:
         """A retryable failure before the agent ran: the clone's forge did not answer.
@@ -5317,6 +5581,8 @@ class Worker:
         found_by = f"found by review `{verdict.get('task_id')}`" + (
             f" of workflow `{workflow_id}`" if workflow_id else ""
         )
+        # The lambdas run inside this call, before `del token` below; ruff reads
+        # the `del` as leaving `token` unbound in them (F821).
         result = findings_epic_mod.file_minors(
             minors=minors,
             epic=epic,
@@ -5324,12 +5590,12 @@ class Worker:
             # Reads are retried on an outage; the POST is not, since one whose
             # answer was lost may have made the comment (the dedup finds it).
             list_comments=lambda number: forge_mod.retry_transient(
-                lambda: forge_mod.list_issue_comments(ref=ref, token=token, number=number),
+                lambda: forge_mod.list_issue_comments(ref=ref, token=token, number=number),  # noqa: F821
                 policy=self._forge_retry(),
                 what="the findings epic's comments",
             ),
             post_comment=lambda number, body: forge_mod.create_issue_comment(
-                ref=ref, token=token, number=number, body=body
+                ref=ref, token=token, number=number, body=body  # noqa: F821
             ),
             found_by=found_by,
             clean=lambda text: _neutralise_mentions(str(self._scrub(text))),
@@ -7043,6 +7309,12 @@ class Worker:
         clone_base = self._publish_base or self._clone_base
         if clone_base:
             base[CLONE_BASE_ENV] = clone_base
+        # THE BRANCH THE RUNNER REBASES ONTO BEFORE PUBLISHING (SPEED-D1), set
+        # only when that is safe for this step (`_prepublish_rebase_ref`).
+        # The runner rebases through the git tools, so without them it is
+        # recorded and skipped. Set by the worker, never from `input`.
+        if self._prepublish_rebase:
+            base[PREPUBLISH_BASE_ENV] = self._prepublish_rebase
         # WHAT THE IMAGE SETS THAT THE RUNNER NEEDS, carried by EXACT NAME.
         # Everything else in the worker's environment stays behind; see
         # `workspace.child_env` for why this environment is built rather than
@@ -7150,7 +7422,82 @@ class Worker:
         # The hand-off spool, on a live-browser attempt (live-browser §4.1):
         # a path and the gate's loopback CDP address, never a credential.
         base.update(self.handoff.prepare(ws.work))
+        base.update(self._graph_context_env(ws, clone_base))
+        # The jev MCP server's TypeSafe key, on a live-browser attempt with a
+        # key (JEV-RUNNER, `jevkey`): the PATH of a 0600 file in private/,
+        # never the key, which reaches only that server's process. Never
+        # fatal: no key, or no read, is an attempt without the jev tools.
+        base.update(jevkey_mod.prepare(
+            endpoint=base.get(jevkey_mod.CDP_ENDPOINT_ENV),
+            db=self.db,
+            client=self.secret_client,
+            tenant_id=self.cfg.tenant_id,
+            submitted_by=(self._task or {}).get("submitted_by"),
+            private_dir=ws.private,
+            logger=self.log,
+            call_options=self.control.call_options("tenant"),
+            backend=base.get(jevkey_mod.BACKEND_ENV) or os.environ.get(jevkey_mod.BACKEND_ENV),
+        ))
+        # The released workspace secrets (SEC-RELEASE): the manifest's PATH,
+        # `SWARM_SECRETS_MANIFEST`, and nothing else -- never a value. The
+        # release ran once, in STEP 6a; a rebuild on a credential reload
+        # hands the same path.
+        released = self.secret_release.result
+        if released is not None:
+            base.update(released.env)
         return ws.child_env(base)
+
+    def _graph_context_env(self, ws: Any, clone_base: str | None) -> dict[str, str]:
+        """The staged graph snapshot's variables (docs/design/context-quality.md
+        §4.7, lane CTXQ-S): decided by the stored setting, once per attempt.
+        A staging failure is a reason in `stage.json`, never this attempt's.
+
+        Or the served graph's (graph-service.md §4.1, lane GS-WORKER): the pin,
+        the ticket file in `private/` and the service URL, when the workspace
+        stored `graph_delivery: service`. A 409 at the ticket's mint is the
+        fence (invariant 5): raised as FencedWriteRefused, which `run` turns
+        into a stand-down that touches neither the lease nor the task, as the
+        secrets release's 409 is."""
+        if self._graph_env is None:
+            try:
+                self._graph_env = graphstage_mod.prepare(
+                    ws.work, profile_name=self.cfg.runner_profile,
+                    runner_argv=self.cfg.profile.runner_argv, db=self.db, store=self.store,
+                    tenant_id=self.cfg.tenant_id, repository_url=self._repo_url,
+                    task_id=self.cfg.task_id,
+                    checkout=ws.checkout() if self._repo_url else None,
+                    base_sha=clone_base, call_options=self.control.call_options(),
+                    log=self.log, mark=self._mark_graph_ready,
+                    graph_ticket=self.graph_ticket, private_dir=ws.private,
+                    backend=self.cfg.backend, service_url=self.cfg.graph_service_url)
+            except graph_ticket_mod.GraphTicketFenced as exc:
+                raise FencedWriteRefused(
+                    self.cfg.generation, -1, str(exc), write="graph ticket"
+                ) from None
+            except Exception as exc:  # noqa: BLE001 -- never fails the attempt
+                self.log.warning("graph context not staged", error=type(exc).__name__)
+                self._graph_env = {}
+        return dict(self._graph_env)
+
+    def _mark_graph_ready(self, detail: dict[str, Any]) -> None:
+        """`graph_ready`: how the graph reached this attempt and what it cost.
+
+        docs/design/graph-service.md §9.1 and §9.3 (lane GS-MEASURE, part of
+        #1384). Staging ran inside `_build_child_env`, under the `credentials`
+        phase, with no timer: no mark isolated it, and its bytes were only in
+        the pod-local `stage.json`. The detail is `graph`, built by
+        `graphstage.ready_detail`: `delivery` (`staged`, `service` or `none`),
+        `seconds` (the decision's wall time, Firestore reads, ancestry git
+        calls and downloads), `bytes` and `blobs` (None when nothing was
+        delivered) and `reason`. Numbers and a fixed sentence only. Once per
+        attempt, on the same RUNNING startup-mark path as `clone_timed`;
+        never raises.
+        """
+        if self._graph_marked:
+            return
+        # Set before the write, so a failed write is not tried again later.
+        self._graph_marked = True
+        self._emit_startup_mark(graphstage_mod.READY_MARK, detail)
 
     # -- the account pool --------------------------------------------------
     def _pool_credential_env(self, profile: Any) -> dict[str, str] | None:
@@ -7784,9 +8131,48 @@ class Worker:
                 "phase": note.get("phase", "live_session"),
                 "live_path": note.get("live_path"),
                 "reason": reason,
-                "message": f"live browser unavailable: {reason}",
+                # A failed VIEW says "live view unavailable" (NOLIVE-GUARD).
+                "message": note.get("message") or f"live browser unavailable: {reason}",
             },
         )
+
+    def _fail_live_gate_missing(self, code: str | None) -> Outcome:
+        """A retryable failure before the agent ran: the live gate was not ready.
+
+        NOLIVE-GUARD (part of #1366). Ending the ATTEMPT (`fail_retryably`)
+        rather than parking: a park holds no capacity, but nothing about this
+        pod's sidecar gets better by waiting, and only a new attempt brings a
+        new one; SCHEDULED_RETRY parks are promoted by nothing. The task goes
+        back to READY while it has attempts left, its lease and capacity
+        released (invariant 1), and ends CANNOT_START when they are spent.
+        The spec is verified first, as step 4 would have: the retry is decided
+        on the signed `max_attempts`, never the live field (#346).
+        """
+        task, create_time = self.control.fetch_task_snapshot()
+        self._verify_spec(task, create_time)
+        self.control.pin_verified_max_attempts(task.get("max_attempts"))
+        cause = handoff_mod.LIVE_GATE_UNAVAILABLE
+        error = (
+            f"{cause}: the live browser's gate was not ready ({code or 'unknown'}), so the "
+            "agent was not started without its browser; the attempt is retried while the "
+            "task has attempts left."
+        )
+        self.log.warning(
+            "the live gate is not ready; failing the attempt retryably before the agent runs",
+            cause=cause,
+            live_path=code,
+        )
+        with self._metrics_after_the_record():
+            state = self.control.fail_retryably(
+                exit_code=None,
+                error=error,
+                cause=cause,
+                result_summary={"live_gate": {"cause": cause, "live_path": code}},
+                retry_delay_seconds=handoff_mod.LIVE_GATE_RETRY_DELAY_SECONDS,
+                detail={"live_path": code},
+                end_cause=EndCause.CANNOT_START,
+            )
+        return Outcome(exit_code=ExitCode.FAILED, state=state)
 
     def _emit_startup_progress(self, step: str, at: datetime) -> bool:
         """`startup_progress`: one of the browser's start-up steps, at the gate's time (STARTUP-API).
@@ -8077,12 +8463,17 @@ class Worker:
         self._checkpoint("human-wait")
         uploaded = self._upload_outputs().get("artifacts")
         with self._metrics_after_the_record():
-            handoff_mod.park_human_required(
+            park = handoff_mod.park_human_required(
                 self.control,
                 max_resumes=self.handoff.max_resumes,
                 detail={"park_phase": "human_wait", "cause": cause},
                 uploads=uploaded if isinstance(uploaded, list) else None,
             )
+        if park.returned_by is not None:
+            # A person returned control while this attempt parked: re-queued
+            # READY, lease released all the same (LB-RETURN).
+            self.log.info("a person returned control as the hold ended; re-queued")
+            return Outcome(exit_code=ExitCode.PARKED, state=TaskState.READY)
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
     def _park_for_quota(self, decision: QuotaDecision, *, source: str) -> Outcome:
@@ -8796,7 +9187,8 @@ class Worker:
         return Outcome(exit_code=ExitCode.FAILED, state=state)
 
     def _scan_floor(
-        self, publish_repo: Path, *, url: str, token: str, default_branch: str | None
+        self, publish_repo: Path, *, url: str, token: str, default_branch: str | None,
+        tip: str | None = None,
     ) -> str | None:
         """The commit the publish scans read from when it is not the clone base, or None.
 
@@ -8819,6 +9211,16 @@ class Worker:
 
         No merge, no default branch, a fetch that fails, or a floor that is
         the base itself: None, and the scans read from the clone base.
+
+        `tip`, when given, is the default branch's tip the caller already
+        fetched from the forge (`_default_branch_tip`, a conflict fix round),
+        and it is not fetched again.
+
+        THE FLOOR IS ALSO WHAT KEEPS A MERGE A MERGE (#1321). The replay and
+        the fold keep a merge parent that is the floor or one of its
+        ancestors -- a commit the forge's default branch holds -- so a lane
+        that merged `main` pushes a two-parent merge and its pull request's
+        merge base moves to where it merged.
         """
         ws = self.ws
         assert ws is not None
@@ -8844,25 +9246,10 @@ class Worker:
         )
         if code != 0 or not merges.split():
             return None
-        try:
-            tip = fetch_branch_tip(
-                repo=publish_repo,
-                url=url,
-                branch=default_branch,
-                token=token,
-                private_dir=ws.private,
-                logs_dir=ws.logs,
-                timeout_seconds=cfg.git_clone_timeout_seconds,
-                logger=self.log,
-                # The default branch is read, never written: `push_branch`
-                # still refuses it (`protected`), and the prefix rule governs
-                # what this worker may push.
-                branch_prefix="",
+        if not tip:
+            tip = self._default_branch_tip(
+                publish_repo, url=url, token=token, default_branch=default_branch
             )
-        except GitError as exc:
-            self.log.warning("could not read the default branch; scanning from the clone base",
-                             error=str(self._scrub(str(exc)[:300])))
-            return None
         if not tip:
             return None
         code, found = run([*g, "merge-base", "HEAD", tip], "publish-floor-base")
@@ -8875,6 +9262,43 @@ class Worker:
             base=base,
         )
         return floor
+
+    def _default_branch_tip(
+        self, publish_repo: Path, *, url: str, token: str, default_branch: str | None
+    ) -> str | None:
+        """The default branch's tip, fetched from the FORGE into the publish
+        repository (`fetch_branch_tip`, the token-bearing fetch the carrier
+        uses), or None when there is no default branch or the fetch failed.
+        Never read from the agent's clone, whose `origin/main` the agent can
+        point anywhere."""
+        if not default_branch:
+            return None
+        ws = self.ws
+        assert ws is not None
+        try:
+            return fetch_branch_tip(
+                repo=publish_repo,
+                url=url,
+                branch=default_branch,
+                token=token,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=self.cfg.git_clone_timeout_seconds,
+                logger=self.log,
+                # The default branch is read, never written: `push_branch`
+                # still refuses it (`protected`), and the prefix rule governs
+                # what this worker may push.
+                branch_prefix="",
+            )
+        except GitError as exc:
+            self.log.warning("could not read the default branch from the forge",
+                             error=str(self._scrub(str(exc)[:300])))
+            return None
+
+    def _conflict_round(self) -> bool:
+        """True when this step is a merge step's conflict fix round (#1076):
+        `dispatch.conflict_round`, inside the signed block (#1321)."""
+        return self._dispatch_block().get(CONFLICT_ROUND_FIELD) is True
 
     def _publish_identity(self) -> tuple[str, str]:
         """(name, email) every commit the worker pushes is written as.
@@ -9915,6 +10339,15 @@ class Worker:
         )
         try:
             publish_repo = self._build_clean_repo(repo, floor=floor, allow_unknown_base=True)
+            # A lane the runner rebased onto the base's newer tip (SPEED-D1)
+            # is described, scanned and published from where it landed.
+            rebased = self._adopt_rebase_base(publish_repo, self._publish_base)
+            if rebased is not None:
+                out["rebased_from"] = self._publish_base
+                out["rebased_onto"] = rebased
+                self._publish_base = rebased
+                self.checkpoints.clone_base = rebased
+                fetched_base = rebased
             work = summarize_work(
                 repo=publish_repo,
                 base=fetched_base,
@@ -10407,10 +10840,24 @@ class Worker:
             # replay or the fold, the integrator's merges. The bot only when
             # the task names nobody. See `_publish_identity`.
             author_name, author_email = self._publish_identity()
-            # Read before the replay or the fold rewrites the agent's merges
-            # away. See `_scan_floor`.
+            # A CONFLICT FIX ROUND READS MAIN'S TIP WHETHER OR NOT IT MERGED
+            # (#1321): the check before the push asks whether the round's
+            # branch now stands on it, and a round that merged nothing is the
+            # case that check exists to refuse.
+            conflict_round = self._conflict_round()
+            default_tip = (
+                self._default_branch_tip(
+                    publish_repo, url=url, token=token, default_branch=access.default_branch
+                )
+                if conflict_round
+                else None
+            )
+            # Read before the replay or the fold rewrites the agent's commits.
+            # See `_scan_floor`: it is also the bound on which merge parents
+            # the replay and the fold keep.
             scan_floor = self._scan_floor(
-                publish_repo, url=url, token=token, default_branch=access.default_branch
+                publish_repo, url=url, token=token, default_branch=access.default_branch,
+                tip=default_tip,
             )
             new_sha = commit_dirty(
                 repo=publish_repo,
@@ -10492,11 +10939,32 @@ class Worker:
                         logs_dir=ws.logs,
                         timeout_seconds=cfg.git_harvest_timeout_seconds,
                         logger=self.log,
+                        # The default branch's commit the lane merged, proven
+                        # on the forge: the fold's second parent (#1321).
+                        merged=scan_floor or "",
                     )
                     # The worker's own auto-commit is among what was replaced when
                     # there was one; the rest were the agent's.
                     folded = max(replaced - (1 if new_sha else 0), 0)
                     out["agent_commits_folded"] = folded
+
+            # A CONFLICT FIX ROUND MUST LEAVE THE BRANCH ON MAIN (#1321). Its
+            # whole job is to move the pull request's merge base to the
+            # default branch's head; a branch that does not stand on it still
+            # conflicts, and pushing it would spend one of the merge step's
+            # rounds on a head that changes nothing. Refused here, with the
+            # merge base named, as the attempt's error.
+            if conflict_round:
+                verify_merged_default_branch(
+                    repo=publish_repo,
+                    base=self._publish_base,
+                    tip=default_tip,
+                    default_branch=access.default_branch or "the default branch",
+                    private_dir=ws.private,
+                    logs_dir=ws.logs,
+                    timeout_seconds=cfg.git_harvest_timeout_seconds,
+                    logger=self.log,
+                )
 
             # THE BRANCH AS IT WILL BE PUSHED IS SCANNED BEFORE ANY PUSH
             # (owner decision, 2026-09-28, #259 review M4). The scan above
@@ -10684,6 +11152,17 @@ class Worker:
         )
         agent_title, agent_body, refused = self._agent_pull_request_text()
         title = agent_title or self._generated_pull_request_title()
+        # WHAT THE PRE-PUBLISH GATE COULD NOT CLEAR (SPEED-D1): published
+        # anyway, never dropped, and said where the operator reads first.
+        prepublish = self._prepublish_section()
+        if prepublish:
+            generated = f"{prepublish}\n\n{generated}"
+            out["prepublish_checks_failed"] = True
+        # WHAT THE GATE ADVISES (CTXQ-G): test reach and the self-check, for
+        # the reader. It sets nothing in `out` that a merge path reads.
+        advisory = self._prepublish_advisory()
+        if advisory:
+            generated = f"{generated}\n\n{advisory}"
         body = f"{agent_body}\n\n---\n\n{generated}" if agent_body else generated
         # The generated block quotes the step's prompt, which is anyone's
         # text too; the whole body is neutralised, so no part of what the
@@ -10711,6 +11190,7 @@ class Worker:
                 self._pull_request_amendment(
                     agent_body=agent_body, branch=branch, head=str(pushed or work_head or "")
                 )
+                + (f"\n\n{prepublish}" if prepublish else "")
             ),
             origin=cfg.console_url,
             task_id=cfg.task_id,
@@ -12036,8 +12516,16 @@ class Worker:
             if self.ws is not None:
                 workspace_mod.destroy(self.ws)
 
+        def remove_released_secrets() -> None:
+            # The released workspace secrets (SEC-RELEASE, design §4.1): gone
+            # once the runner is, on every exit -- success, failure, park,
+            # cancel, fence -- before anything else in cleanup can fail.
+            if self.ws is not None:
+                secretrelease_mod.remove(self.ws.private)
+
         for step, action in (
             ("terminate_runner", terminate_runner),
+            ("remove_released_secrets", remove_released_secrets),
             # THE BROWSER IS WIPED ON EVERY EXIT (live-browser §5.5): success,
             # failure, park, cancel, fence. The hand-off's own park and cancel
             # wipe earlier, before their checkpoint; this is every other exit,
@@ -12316,6 +12804,9 @@ SCAN_OVERLAP_CHARS = 64 * 1024
 #: secret was outside its diff (#470's review). A description of the work,
 #: never trusted for the push: the publish keeps reading `_publish_base`.
 CLONE_BASE_ENV = "SWARM_CLONE_BASE"
+#: The branch the runner rebases onto before publishing (SPEED-D1;
+#: `prepublish.PREPUBLISH_BASE_ENV`, held equal by test_prepublish_gate.py).
+PREPUBLISH_BASE_ENV = "SWARM_PREPUBLISH_BASE"
 
 
 class CredentialHit(NamedTuple):
@@ -13772,8 +14263,15 @@ def replay_agent_commits(
     made with `git commit-tree` under `_worker_identity`, and #219's rule that
     the worker writes every commit it pushes holds, checked again at the push
     by `verify_worker_authorship`. A merge the agent made keeps its merged
-    tree and loses its second parent: every commit on that side would
-    otherwise be pushed as it was written.
+    tree, and keeps a second parent ONLY when that parent is `upstream` or
+    one of its ancestors -- a commit of the default branch proven on the
+    forge (`Worker._scan_floor`), already published, so nothing on that side
+    is pushed as the agent wrote it (#1321). Every other merge parent -- a
+    side branch the agent made -- is dropped: every commit on that side would
+    otherwise be pushed as it was written. Dropping main's parent too was
+    #1321: a conflict fix round's `git merge origin/main` reached the forge
+    with one parent, GitHub kept the old merge base and the pull request
+    still conflicted.
 
     The index and working tree are not touched; `reset --soft` moves the
     branch onto the rewritten line, which ends in the same tree HEAD had.
@@ -13873,6 +14371,9 @@ def replay_agent_commits(
         tree = trees[0].strip() if trees else ""
         if not _SHA_RE.match(tree):
             raise GitError(f"could not read the tree of commit {sha[:12]}")
+        merged = _published_merge_parents(
+            run, g, header, upstream=upstream, base=floor
+        )
         if sha == keep:
             # The worker's own message, from `commit_dirty`.
             text = message.replace("\x00", "").strip()
@@ -13887,6 +14388,8 @@ def replay_agent_commits(
         argv = [*g, "commit-tree", tree]
         if parent:
             argv += ["-p", parent]
+        for other in merged:
+            argv += ["-p", other]
         argv += ["-m", text]
         code, made = run(argv, "publish-keep-write")
         made = made.strip()
@@ -13901,6 +14404,42 @@ def replay_agent_commits(
         kept=kept,
         rewritten=len(shas),
     )
+    return kept
+
+
+def _published_merge_parents(
+    run: Callable[[list[str], str], tuple[int, str]],
+    g: list[str],
+    header: str,
+    *,
+    upstream: str,
+    base: str,
+) -> list[str]:
+    """The merge parents of a commit (its `header`) the replay keeps (#1321).
+
+    Every parent after the first that is `upstream` or one of its ancestors
+    -- the default branch's commit the lane merged, proven on the forge
+    (`Worker._scan_floor`) -- and that `base` does not already contain,
+    which would make it a redundant parent. Nothing when `upstream` is "".
+    A side branch the agent made is no ancestor of the forge's default
+    branch, so it is never here.
+    """
+    if not upstream:
+        return []
+    parents = [line[len("parent "):].strip() for line in header.split("\n")
+               if line.startswith("parent ")]
+    kept: list[str] = []
+    for other in parents[1:]:
+        if not _SHA_RE.match(other):
+            continue
+        code, _ = run([*g, "merge-base", "--is-ancestor", other, upstream], "publish-keep-merged")
+        if code != 0:
+            continue
+        if base:
+            code, _ = run([*g, "merge-base", "--is-ancestor", other, base], "publish-keep-redundant")
+            if code == 0:
+                continue
+        kept.append(other)
     return kept
 
 

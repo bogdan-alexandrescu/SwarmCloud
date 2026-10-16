@@ -61,6 +61,7 @@ from starlette.websockets import WebSocketDisconnect, WebSocketState
 from ..auth import AuthContext, require_continuation_route
 from ..children import PROOF_HEADER, TIMESTAMP_HEADER, ChildService, parse_body
 from ..deps import AppContext, current_auth, get_context, submission_scope, tenant_scope
+from ..egress import EgressService
 from ..errors import ApiError, NotFound, ValidationFailed
 from ..live import (
     Admission,
@@ -236,6 +237,37 @@ async def open_live_session(
     if not created:
         response.status_code = status.HTTP_200_OK
     return answer
+
+
+@router.post("/attempts/{attempt_id}/egress-ticket", status_code=status.HTTP_201_CREATED)
+async def mint_egress_ticket(
+    attempt_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    serverless_authorization: str | None = Header(
+        default=None, alias="X-Serverless-Authorization"
+    ),
+    proof: str | None = Header(default=None, alias=PROOF_HEADER),
+    timestamp: str | None = Header(default=None, alias=TIMESTAMP_HEADER),
+    ctx: AppContext = Depends(get_context),
+    children: ChildService = Depends(child_service),
+) -> dict:
+    """WORKER ONLY: the attempt egress ticket the gate presents to swarm-egress
+    on every CONNECT (docs/browser-egress.md §2.2, §2.5), under the same proof
+    and fence as `/live-session`. 409 `egress_off` when the platform, the
+    tenant or the profile is not switched on: the attempt then runs direct."""
+    raw = await request.body()
+    service = EgressService(settings=ctx.settings, db=ctx.db, children=children, now=ctx.now)
+    return await run_in_threadpool(
+        lambda: service.mint(
+            serverless_authorization or authorization,
+            attempt_id,
+            raw,
+            path=request.url.path,
+            proof=proof,
+            timestamp=timestamp,
+        )
+    )
 
 
 # --------------------------------------------------------------------------
@@ -672,6 +704,8 @@ class _Proxy:
             await asyncio.gather(*tasks, return_exceptions=True)
             if self.keys or self.pointers:
                 await self._flush_input()
+            if self.close_code == 1012:
+                await self._settle_on_relay_end()
             try:
                 await self.link.close()
             except Exception:  # the relay already went
@@ -682,6 +716,18 @@ class _Proxy:
                 {"close_code": self.close_code, "keys": self.total_keys,
                  "pointer_events": self.total_pointers},
             )
+
+    async def _settle_on_relay_end(self) -> None:
+        """The relay link ended under this socket -- the gate's tunnel went,
+        as it does when the task ends -- so the session is settled once more
+        by its own id before the socket closes: an attempt that has ended
+        closes it, and an episode still open in it ends with its audit
+        (CONTROL-LAPSE; task c6bf0368..., 2026-10-13). After this the task's
+        current session is gone, and nothing would read this one again."""
+        try:
+            await run_in_threadpool(self.service.status, self.admission)
+        except Exception as exc:  # noqa: BLE001 -- the socket closes either way
+            log.info("live session not settled at the relay's end (%s)", type(exc).__name__)
 
     async def _status(self) -> bool:
         status_ = await run_in_threadpool(self.service.status, self.admission)
@@ -694,13 +740,18 @@ class _Proxy:
             await run_in_threadpool(self.service.close_relay, self.admission.session_id)
             return False
         episode = status_.get("episode_id") if status_["in_control"] else None
+        # Control ended and this person took it again between two polls: the
+        # end's revoke took the relay's grant (CONTROL-LAPSE), so the new
+        # episode's grant is sent again even though `in_control` never read false.
+        regrant = (self.in_control and status_["in_control"] and self.episode is not None
+                   and episode != self.episode)
         if self.in_control and episode != self.episode and (self.keys or self.pointers):
             # The episode ended (a Return press, a lapse, a preemption) with
             # input this socket had not flushed: it is that episode's, and goes
             # on its entries, never into the next one's (LB-POLISH).
             await self._flush_input()
         self.episode = episode
-        if status_["in_control"] != self.in_control:
+        if status_["in_control"] != self.in_control or regrant:
             self.in_control = status_["in_control"]
             ticket = await run_in_threadpool(self.service.control_ticket, self.admission,
                                              self.in_control)

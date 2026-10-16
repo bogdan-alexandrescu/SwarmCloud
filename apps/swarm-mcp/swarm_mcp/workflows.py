@@ -51,7 +51,7 @@ import threading
 from typing import Any, Callable
 
 from . import profiles as catalogue
-from .client import SwarmClient, SwarmError
+from .client import SwarmClient, SwarmError, session_tag
 from .follow import follow_command
 from .patches import masked_counts
 from .progress import questions_count
@@ -136,8 +136,51 @@ SPEC_KEYS = frozenset(
         # `metadata.merge`, for the reason `title` is; swarm-api checks the
         # value (`validation.MERGE_CHOICES`) and derives the steps.
         "merge",
+        # The pull requests of the workflow's own repository that must merge
+        # before any step starts (SPEED-D3): `{"pr": 41}` or a list of them.
+        # Sent as the top-level `after` WorkflowCreate takes; checked for
+        # shape by `check_after`, and for everything else by swarm-api.
+        "after",
     }
 )
+
+#: The most pull requests `after` may name: swarm-api's
+#: `schemas.MAX_AFTER_PRS`, which this package cannot import;
+#: tests/unit/mcp/test_spec_after_pr.py holds the two equal.
+MAX_AFTER_PRS = 10
+
+
+def check_after(value: Any, *, where: str = "the workflow spec") -> list[dict[str, int]] | None:
+    """A spec's `after`, as the list the API takes; None when it names none.
+
+    THE SHAPE ONLY: one `{"pr": <integer >= 1>}` or a non-empty list of them,
+    at most MAX_AFTER_PRS. Whether the workflow has a GitHub repository for
+    the numbers to be pull requests of is swarm-api's rule
+    (`prgate.resolve_after`) and is not restated here.
+    """
+    if value is None:
+        return None
+    entries = [value] if isinstance(value, dict) else value
+    shape = (
+        f'{where}: after must be {{"pr": <pull request number>}} or a list of them, '
+        f"at most {MAX_AFTER_PRS} -- the pull requests of the workflow's own repository "
+        "that must merge before any of its steps starts"
+    )
+    if not isinstance(entries, list) or not entries or len(entries) > MAX_AFTER_PRS:
+        raise SwarmError(shape)
+    out: list[dict[str, int]] = []
+    for entry in entries:
+        number = entry.get("pr") if isinstance(entry, dict) else None
+        if (
+            not isinstance(entry, dict)
+            or set(entry) != {"pr"}
+            or not isinstance(number, int)
+            or isinstance(number, bool)
+            or number < 1
+        ):
+            raise SwarmError(shape)
+        out.append({"pr": number})
+    return out
 
 DEFAULT_PROFILE = "claude-code"
 
@@ -416,6 +459,7 @@ def read_spec(document: Any, *, where: str = "the workflow spec") -> dict[str, A
         "label": document.get("label"),
         "title": title,
         "merge": document.get("merge"),
+        "after": check_after(document.get("after"), where=where),
     }
 
 
@@ -433,6 +477,7 @@ def submit(
     title: str | None = None,
     merge_pr: dict[str, Any] | None = None,
     merge: str | None = None,
+    after: list[dict[str, int]] | None = None,
 ) -> dict[str, Any]:
     """`POST /v1/workflows`. Returns the route's envelope, not just the workflow.
 
@@ -446,6 +491,9 @@ def submit(
         "steps": steps,
         "metadata": {
             "origin": "swarm-mcp",
+            # The Claude Code session that sent it (SC-SESSION-SCOPE); swarm-api
+            # writes the workflow's metadata onto every step task.
+            **session_tag(),
             **({"unit": label} if label else {}),
             **({"title": title} if title else {}),
             **({"merge": merge} if merge is not None else {}),
@@ -465,6 +513,8 @@ def submit(
         body["priority"] = int(priority)
     if merge_pr is not None:
         body["merge_pr"] = merge_pr
+    if after:
+        body["after"] = after
     envelope = _envelope(client.request("POST", "/v1/workflows", payload=body), "submitting")
     _remember_launch(envelope["workflow"])
     return envelope
@@ -589,13 +639,74 @@ def _steps_text(steps: int) -> str:
     return f"{steps} step" if steps == 1 else f"{steps} steps"
 
 
+# THE WORKSPACE ON EVERY ROW (SC-ROWS, owner request 2026-10-14: "include
+# the workspace where the workflow or task is running in the info that is
+# easily displayed"). A row names the workspace -- the tenant -- its workflow
+# or task RUNS in, read from the API's own document (`tenant_id` on the
+# workflow or task, else the `tenant_id` the listing page answered for), never
+# from the tenant this session is configured with: `/sc attach --all` may one
+# day cover several workspaces, and a guessed name on a row is worse than none.
+
+#: A display name longer than this is not shown: the tenant id is. The
+#: workspace is never cut (a cut name could be another workspace's), so it has
+#: to be short enough to leave the title room for the workflow's own name.
+WORKSPACE_NAME_CHARS = 40
+
+
+def workspace_of(
+    document: Any,
+    names: dict[str, str] | None = None,
+    *,
+    fallback: Any = None,
+) -> str | None:
+    """The workspace `document` (a workflow or a task as the API served it)
+    runs in: its tenant's display name when `names` -- the API's
+    `GET /v1/tenants/mine` -- gives one that fits, else its `tenant_id`, else
+    `fallback` (the tenant the listing page answered for). None when neither
+    names one."""
+    tenant = _flat(document.get("tenant_id")) if isinstance(document, dict) else None
+    tenant = tenant or _flat(fallback)
+    if not tenant:
+        return None
+    shown = _flat((names or {}).get(tenant))
+    return shown if shown and len(shown) <= WORKSPACE_NAME_CHARS else tenant
+
+
+def workspace_names(client: Any) -> dict[str, str]:
+    """`{tenant_id: display_name}` from `GET /v1/tenants/mine`, for the rows'
+    workspace. Best effort: a caller whose tenant is personal has no entries,
+    and a deployment that cannot answer costs the rows their display names,
+    never their workspace -- the tenant id is shown instead."""
+    try:
+        listing = client.tenants_mine()
+    except Exception:  # noqa: BLE001 - a display name is never worth a failed launch
+        return {}
+    names: dict[str, str] = {}
+    for entry in listing if isinstance(listing, list) else []:
+        tenant, shown = _flat(entry.get("tenant_id")), _flat(entry.get("display_name"))
+        if tenant and shown:
+            names[tenant] = shown
+    return names
+
+
+def workspace_tag(workspace: Any) -> str:
+    """`[<workspace>] `, or "" when no workspace is known."""
+    flat = _flat(workspace)
+    return f"[{flat}] " if flat else ""
+
+
 def workflow_title(name: str, steps: int) -> str:
     """`SC · <name> · N steps`, at most TITLE_CHARS characters.
+
+    No workspace: SC-ROWS put `[<workspace>] ` after the prefix, SC-WS-DESC
+    moved it to the run's description, and SC-DESC-DETAILS (owner 2026-10-14:
+    no `[Engineering]` or `[eng@saga.xyz]` in front of any name) took the
+    parameter away, so no caller can put it back.
 
     The NAME is cut, never the step count: at the last word boundary that
     fits, with `…`; a single word longer than the room is cut inside it."""
     tail = " · " + _steps_text(steps)
-    room = TITLE_CHARS - len(TITLE_PREFIX) - len(tail)
+    room = max(1, TITLE_CHARS - len(TITLE_PREFIX) - len(tail))
     flat = _flat(name) or "workflow"
     if len(flat) > room:
         head = flat[: room - 1]
@@ -862,6 +973,9 @@ def report(
     workflow = envelope["workflow"]
     rows = step_rows(envelope, describe=describe)
     out: dict[str, Any] = {"workflow_id": workflow.get("workflow_id")}
+    # The workspace it runs in, from its own document (SC-ROWS): every row
+    # /sc:swarmcloud starts for it is labelled with this.
+    out["workspace"] = workspace_of(workflow, fallback=envelope.get("tenant_id"))
     # The workflow's names as stored, for /sc:swarmcloud's attach to title
     # its rows the way the run that submitted it did.
     out.update(stored_names(envelope))

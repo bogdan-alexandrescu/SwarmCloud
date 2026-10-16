@@ -24,7 +24,8 @@ CONTROL MODE (`pause` .. `resume`), section 5.4.3:
 * every event to the agent is DROPPED, and the ids of requests that started
   in the window are kept: after return their `postData` is stripped from any
   event, and `Network.getRequestPostData` / `getResponseBody` are refused
-  for them;
+  for them. What the dropped events said about the page's STATE is told on
+  return, once, as it stands then (HANDOFF-RESYNC, below);
 * a response to a command sent BEFORE control that completes during it is
   held, and if it carries page content (`CONTENT_METHODS`) it is replaced by
   an error on return -- an `awaitPromise` waiting on the password field
@@ -37,6 +38,13 @@ CONTROL MODE (`pause` .. `resume`), section 5.4.3:
 * a page that auto-attaches to the agent in the window is DETACHED from the
   agent: it would otherwise wait for a debugger whose commands are held, and
   report to the agent once released.
+
+A REFUSED AGENT IS TOLD WHY (CONTROL-LAPSE; part of #1030). A new agent
+connection while the agent is held is answered 503 with a `Retry-After` and a
+one-line reason (`refusal`): a person is in control, or the agent is held for
+a hand-off, and since when -- so an agent can wait sensibly instead of
+retrying blind. MEASURED 2026-10-13: 72 bare refusals in 54 minutes on one
+task. The reason names no person: the agent's output is logged.
 
 THE FRESH PAGE. `open_fresh_page` creates a browser context on the gate's own
 root session, with no proxy parameters and downloads set to `downloads/`, and
@@ -76,8 +84,52 @@ This module never awaits a reply inside `on_chromium_message`: the pipe reader
 delivers replies one at a time, so a handler that waited on one would wait on
 itself. Commands the proxy sends from there are fire-and-forget.
 
-Nothing here is logged. A refusal is recorded through `record` by method name
-only; a page's content, a request body, a key or a parameter never is.
+Nothing here is logged but a quiet refusal (`cdppolicy.QUIET_REFUSALS`), at
+debug, by method name and count. A refusal is recorded through `record` by
+method name only; a page's content, a request body, a key or a parameter never
+is.
+
+THE AGENT GETS ITS PAGE BACK (HANDOFF-RESYNC; DEVB-GATE, part of #1030).
+Dropping events in control has a cost the drop alone does not show: when the
+person navigates, Chromium destroys the page's execution contexts and makes new
+ones, and the agent's client -- Playwright and Puppeteer alike keep a context
+id per frame and world, learnt only from `Runtime.executionContextCreated` --
+never hears of either. Its first evaluate after return names a context
+Chromium no longer has ("Cannot find context with specified id"), and its
+frame still has the URL the person left. MEASURED by
+tests/unit/worker/test_live_cdp_clients.py against a modelled Chromium, red
+before this.
+
+So while the agent is held, the proxy keeps a JOURNAL per agent session of what
+the dropped events did to the page's state, and on return -- after the
+hand-over, before the held replies and commands -- tells the agent the NET
+result, in the order Chromium itself would: `Runtime.executionContextsCleared`;
+per frame that changed, its attach, last `frameNavigated`, last
+`navigatedWithinDocument`, the lifecycle events of its current document and its
+last loading event, or its detach; each target's last `targetInfoChanged`; then
+`Runtime.executionContextCreated` for every context live now. The proxy knows
+which those are because it tracks every agent session's contexts from the
+events it relays, held or not. Then, because the agent's page scripts were
+lifted for the window (above), a document the person loaded has no utility
+world -- the `worldName` script Playwright and Puppeteer both install, and
+both wait on for actionability and `waitForSelector` -- so the proxy asks
+Chromium for one (`Page.createIsolatedWorld`) in every frame that lacks it, on
+the agent's session, and the agent hears of it as it would of any.
+
+WHY THIS AND NOT THE ALTERNATIVES. `Target.detachedFromTarget` and a
+re-attach resync everything, but both clients read a detach as the page
+CLOSING: Playwright MCP's tab and a script's `page` die, and only dev-browser
+(which re-attaches named pages by targetId) would survive it.
+`Runtime.disable` + `Runtime.enable` re-reports the live contexts, but releases
+every remote object the agent holds even when nothing navigated, and says
+nothing of the frame. Replaying the window's events as they happened would
+show the agent the URLs the person passed through -- an OAuth callback's
+`code` among them -- which it never sees this way: only the state at return,
+which the agent's page can read for itself the moment it is released anyway.
+A hand-off with no navigation journals nothing and replays nothing, so the
+agent's handles stay valid. Known limit: a frame the person's navigation
+created and removed again is never mentioned, and an agent command HELD during
+control was written against the old context and fails on release, honestly.
 
 THE ACTION LOG (section 7; lane LB-V3). Every agent method the proxy forwards,
 and every one it refuses, is handed to `on_action` as one line (`action_line`):
@@ -100,6 +152,19 @@ wall time the FIRST agent connection was accepted (None until one is), and
 `agent_connections` how many are open now. `on_agents` is told the count on
 every accept and close, so the gate can report it to the console the moment
 it changes rather than on a poll.
+
+WHICH TOOL DROVE IT (BSTATUS-API; part of #1030). Each of the agent's browser
+tools connects with a CLIENT TAG on its endpoint
+(`agent_worker.browser_tools.tag_endpoint`): `http://127.0.0.1:9222/client/<tool>`.
+`split_client` reads the tag off the path (or a `client=` query) and STRIPS
+it: the version answer and the websocket path are matched on the bare path,
+and nothing of the tag is ever sent to Chromium. The version answer echoes it
+into the websocket URL it hands back, so the connection that follows carries
+it too. A tagged connection is that tool's; each command it sends dates
+`tool_last_used`, and `on_tool` is told on a change of tool and at most every
+`TOOL_REPORT_SECONDS` otherwise, so a busy agent is not a report per command.
+An untagged connection, or a tag naming no tool, is served exactly as before
+and attributed to nothing.
 """
 
 from __future__ import annotations
@@ -109,6 +174,7 @@ import base64
 import hashlib
 import ipaddress
 import json
+import logging
 import os
 import re
 import time
@@ -118,9 +184,12 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
+from .. import browser_tools
 from . import cdppolicy
 from .cdppolicy import PolicyPaths
 from .scripts import ADD_BINDING, ADD_SCRIPT, REMOVE_BINDING, REMOVE_SCRIPT, ScriptRegistry
+
+log = logging.getLogger(__name__)
 
 SendToChromium = Callable[[dict[str, Any]], Awaitable[None]]
 Record = Callable[[str, Mapping[str, str]], None]
@@ -140,6 +209,29 @@ ACTION_URL_PARAMS: Mapping[str, str] = {"Page.navigate": "url", "Target.createTa
 #: A logged path is cut here: the relay refuses a value over 2,048 characters,
 #: and what a person reads in the timeline is the site and where on it.
 MAX_ACTION_PATH = 256
+#: How long a refused agent connection is asked to wait before it tries
+#: again (`Retry-After`): long enough not to spin, short next to a hand-off.
+RETRY_AFTER_SECONDS = 5
+#: How often a tool still in use is reported again (module docstring).
+TOOL_REPORT_SECONDS = 15.0
+#: A client tag as the path carries it, and the rest of the path after it.
+_CLIENT_PATH = re.compile(r"/" + browser_tools.CLIENT_SEGMENT + r"/([A-Za-z0-9_-]{1,32})(/.*)?")
+
+
+def split_client(target: str) -> tuple[str, str | None]:
+    """A request target's bare path (no tag, no query) and the tool its client
+    tag names, or None when there is no tag or it names no tool."""
+    path, _, query = target.partition("?")
+    tag: str | None = None
+    found = _CLIENT_PATH.fullmatch(path)
+    if found is not None:
+        tag, path = found.group(1), found.group(2) or "/"
+    for pair in query.split("&") if query else ():
+        name, _, value = pair.partition("=")
+        if name == browser_tools.CLIENT_SEGMENT:
+            tag = value
+    return path, tag if tag in browser_tools.TOOLS else None
+
 #: Why the proxy refused an agent method, as the timeline names it: the method
 #: policy (cdppolicy.py), a session the agent's connection does not own, or a
 #: request body from a request made while a person was in control (§5.4.3).
@@ -218,6 +310,126 @@ class AgentConnection:
     sessions: dict[str, str] = field(default_factory=dict)  # child session -> targetId
     auto_attach: bool = False
     closed: bool = False
+    #: The tool its client tag named (`split_client`), or None.
+    client: str | None = None
+    #: Held while the return's resync is sent, so a live event cannot land
+    #: between its messages (`_replay`).
+    send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+#: The events that carry a session's execution contexts.
+_CONTEXT_EVENTS = (
+    "Runtime.executionContextCreated",
+    "Runtime.executionContextDestroyed",
+    "Runtime.executionContextsCleared",
+)
+#: The events that carry a frame's state, keyed by their `frameId` (the
+#: frame of `Page.frameNavigated` is its `frame.id`).
+_FRAME_EVENTS = (
+    "Page.frameAttached",
+    "Page.frameNavigated",
+    "Page.navigatedWithinDocument",
+    "Page.frameDetached",
+    "Page.lifecycleEvent",
+    "Page.frameStartedLoading",
+    "Page.frameStoppedLoading",
+)
+
+
+def _frame_of(method: str, params: Mapping[str, Any]) -> str | None:
+    frame = (params.get("frame") or {}).get("id") if method == "Page.frameNavigated" else params.get("frameId")
+    return frame if isinstance(frame, str) else None
+
+
+@dataclass
+class _Frame:
+    """One frame's net change in the control window (module docstring)."""
+
+    attached: dict[str, Any] | None = None
+    navigated: dict[str, Any] | None = None
+    within: dict[str, Any] | None = None
+    lifecycle: list[dict[str, Any]] = field(default_factory=list)
+    loading: tuple[str, dict[str, Any]] | None = None
+    detached: dict[str, Any] | None = None
+
+
+@dataclass
+class _Journal:
+    """What the events dropped for one agent session did to its page."""
+
+    contexts_changed: bool = False
+    frames: dict[str, _Frame] = field(default_factory=dict)
+    targets: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    def note(self, method: str, params: Mapping[str, Any]) -> None:
+        if method in _CONTEXT_EVENTS:
+            self.contexts_changed = True
+            return
+        if method == "Target.targetInfoChanged":
+            target = (params.get("targetInfo") or {}).get("targetId")
+            if isinstance(target, str):
+                self.targets[target] = dict(params)
+            return
+        frame_id = _frame_of(method, params) if method in _FRAME_EVENTS else None
+        if frame_id is None:
+            return
+        frame = self.frames.setdefault(frame_id, _Frame())
+        if method == "Page.frameAttached":
+            self.frames[frame_id] = _Frame(attached=dict(params))
+        elif method == "Page.frameDetached":
+            if frame.attached is not None:
+                # Born and gone inside the window: the agent never knew it.
+                del self.frames[frame_id]
+            else:
+                self.frames[frame_id] = _Frame(detached=dict(params))
+        elif method == "Page.frameNavigated":
+            frame.navigated, frame.within = dict(params), None
+            frame.lifecycle = [e for e in frame.lifecycle if e.get("loaderId") == (params.get("frame") or {}).get("loaderId")]
+        elif method == "Page.navigatedWithinDocument":
+            frame.within = dict(params)
+        elif method == "Page.lifecycleEvent":
+            if params.get("name") == "init":
+                frame.lifecycle = []
+            frame.lifecycle.append(dict(params))
+        else:
+            frame.loading = (method, dict(params))
+
+    def superseded(self, method: str, params: Mapping[str, Any]) -> None:
+        """A live event the agent has seen after return: the journal's older
+        state of the same frame or target must not be replayed over it."""
+        if method == "Target.targetInfoChanged":
+            self.targets.pop(str((params.get("targetInfo") or {}).get("targetId")), None)
+        elif method in _FRAME_EVENTS:
+            self.frames.pop(_frame_of(method, params) or "", None)
+
+    def messages(self, session: str, live: Mapping[int, dict[str, Any]], to_browser: bool) -> list[dict[str, Any]]:
+        """The resync, in the order Chromium itself sends a navigation's events."""
+        events: list[tuple[str, dict[str, Any]]] = []
+        if self.contexts_changed:
+            events.append(("Runtime.executionContextsCleared", {}))
+        for frame in self.frames.values():
+            if frame.detached is not None:
+                events.append(("Page.frameDetached", frame.detached))
+                continue
+            if frame.attached is not None:
+                events.append(("Page.frameAttached", frame.attached))
+            if frame.navigated is not None:
+                events.append(("Page.frameNavigated", frame.navigated))
+            if frame.within is not None:
+                events.append(("Page.navigatedWithinDocument", frame.within))
+            events.extend(("Page.lifecycleEvent", e) for e in frame.lifecycle)
+            if frame.loading is not None:
+                events.append(frame.loading)
+        events.extend(("Target.targetInfoChanged", info) for info in self.targets.values())
+        if self.contexts_changed:
+            events.extend(("Runtime.executionContextCreated", {"context": c}) for c in live.values())
+        out = []
+        for method, params in events:
+            message: dict[str, Any] = {"method": method, "params": params}
+            if not to_browser:
+                message["sessionId"] = session
+            out.append(message)
+        return out
 
 
 @dataclass
@@ -249,6 +461,7 @@ class CdpProxy:
         on_action: Callable[[dict[str, Any]], None] | None = None,
         on_pointer: Callable[[float, float], None] | None = None,
         on_agents: Callable[[int], None] | None = None,
+        on_tool: Callable[[str, float], None] | None = None,
         wall: Callable[[], float] = time.time,
     ) -> None:
         self._send = send_to_chromium
@@ -258,7 +471,12 @@ class CdpProxy:
         self._on_action = on_action
         self._on_pointer = on_pointer
         self._on_agents = on_agents
+        self._on_tool = on_tool
         self._wall = wall
+        #: The tool that sent the last command, and when (epoch seconds):
+        #: None until a tagged connection has (module docstring).
+        self.tool_last_used: tuple[str, float] | None = None
+        self._tool_told_at = 0.0
         #: Wall time (epoch seconds) the first agent connection was accepted;
         #: None until one is. Never cleared: an agent that connected and left
         #: did use this browser.
@@ -273,12 +491,24 @@ class CdpProxy:
         self._held: list[tuple[AgentConnection, dict[str, Any]]] = []
         self._held_responses: list[tuple[_Pending, dict[str, Any]]] = []
         self._control_requests: set[str] = set()
+        #: Every agent session's live execution contexts, id -> description,
+        #: and the journal of what control dropped (module docstring).
+        self._contexts: dict[str, dict[int, dict[str, Any]]] = {}
+        self._journals: dict[str, _Journal] = {}
+        #: Quiet refusals (`cdppolicy.QUIET_REFUSALS`) so far, by method.
+        self.quiet_refusals: dict[str, int] = {}
         self._gate_sessions: dict[str, str] = {}  # watched page session -> targetId
         self._gate_children: dict[str, str] = {}  # frame session under a watched page -> targetId
         self._gate_contexts: set[str] = set()
         self._security: dict[str, str] = {}
         self._security_seen: dict[str, asyncio.Event] = {}
         self._controlled: str | None = None
+        #: Wall times (epoch seconds) the agent was held and a person took
+        #: control, for the reason a refused connection is given (`refusal`).
+        self._paused_at: float | None = None
+        self._controlled_at: float | None = None
+        #: The gate's control lease, said in the refusal when it is set.
+        self.control_lease_seconds: float | None = None
         # Control was granted on about:blank and the page has not navigated
         # since: a state that is not `secure` is checked against the URL.
         self._granted_blank = False
@@ -304,6 +534,19 @@ class CdpProxy:
     def _agents_changed(self) -> None:
         if self._on_agents is not None:
             self._on_agents(self.agent_connections)
+
+    def _tool_used(self, tool: str | None) -> None:
+        """`tool` sent something now: dated, and told on a change or when due."""
+        if tool is None:
+            return
+        now = self._wall()
+        before = self.tool_last_used
+        self.tool_last_used = (tool, now)
+        if self._on_tool is None:
+            return
+        if before is None or before[0] != tool or now - self._tool_told_at >= TOOL_REPORT_SECONDS:
+            self._tool_told_at = now
+            self._on_tool(tool, now)
 
     # ------------------------------------------------------- the gate's calls
 
@@ -343,23 +586,55 @@ class CdpProxy:
 
     # ------------------------------------------------------ agent connections
 
-    async def connect_agent(self, link: AgentLink) -> AgentConnection | None:
-        """A new agent connection, or None while a person is in control."""
+    def refusal(self) -> tuple[str, str]:
+        """Why a new agent connection is refused now: a cause code and the
+        sentence the agent reads. Never a person's name (module docstring)."""
+        now = self._wall()
+        if self._controlled is not None:
+            cause, since = "person_in_control", self._controlled_at
+            what = "a person is in control of this browser"
+            after = ("the agent's browser comes back when they return control or their "
+                     "control lapses")
+            if self.control_lease_seconds:
+                after += (f" (the gate takes it back by itself {int(self.control_lease_seconds)} s "
+                          "after their console stops renewing it)")
+        else:
+            cause, since = "held_for_handoff", self._paused_at
+            what = "the agent is held while the browser is handed to a person"
+            after = "the agent's browser comes back when the hand-off ends"
+        if since is not None:
+            stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(since))
+            what += f" since {stamp} ({max(0, int(now - since))} s)"
+        return cause, (f"refused by the live gate: {what}; {after}. "
+                       f"Retry in {RETRY_AFTER_SECONDS} s.")
+
+    def _refuse_agent(self) -> None:
+        cause, _ = self.refusal()
+        since = self._controlled_at if self._controlled is not None else self._paused_at
+        held = int(self._wall() - since) if since is not None else None
+        self._record("cdp_connection_refused", {"cause": cause, "held_seconds": held})
+
+    async def connect_agent(self, link: AgentLink, client: str | None = None) -> AgentConnection | None:
+        """A new agent connection, or None while the agent is held (`refusal` says why).
+
+        `client` is the tool its tag named (`split_client`), or None."""
         if self._mode != _OPEN:
-            self._record("cdp_connection_refused", {})
+            self._refuse_agent()
             return None
         result = await self.call("Target.attachToBrowserTarget")
         session = result["sessionId"]
         if self._mode != _OPEN:
             await self._post("Target.detachFromTarget", {"sessionId": session}, None)
-            self._record("cdp_connection_refused", {})
+            self._refuse_agent()
             return None
-        connection = AgentConnection(link=link, browser_session=session)
+        connection = AgentConnection(link=link, browser_session=session,
+                                     client=client if client in browser_tools.TOOLS else None)
         self._owner[session] = connection
         self._connections.append(connection)
         if self.agent_connected_at is None:
             self.agent_connected_at = self._wall()
         self._agents_changed()
+        self._tool_used(connection.client)
         return connection
 
     async def disconnect_agent(self, connection: AgentConnection) -> None:
@@ -383,6 +658,8 @@ class CdpProxy:
         call made after this fails at once.
         """
         self._gone = True
+        self._contexts.clear()
+        self._journals.clear()
         pending, self._pending = self._pending, {}
         for entry in pending.values():
             if entry.future is not None and not entry.future.done():
@@ -403,6 +680,8 @@ class CdpProxy:
         if owner is not None:
             owner.sessions.pop(session, None)
         self._scripts.forget_session(session)
+        self._contexts.pop(session, None)
+        self._journals.pop(session, None)
 
     def _note(self, method: Any, params: Any, refused: str | None = None) -> None:
         """One action-log line (`action_line`); never awaited."""
@@ -426,6 +705,7 @@ class CdpProxy:
     async def on_agent_message(self, connection: AgentConnection, message: Mapping[str, Any]) -> None:
         if connection.closed:
             return
+        self._tool_used(connection.client)
         method = message.get("method")
         if "id" not in message:
             return
@@ -446,7 +726,11 @@ class CdpProxy:
                 message = {**message, "params": dict(confined)}
         refusal = cdppolicy.check(method, params if isinstance(params, Mapping) else {}, self._paths)
         if refusal is not None:
-            self._record("cdp_method_refused", {"method": method})
+            if method in cdppolicy.QUIET_REFUSALS:
+                count = self.quiet_refusals[method] = self.quiet_refusals.get(method, 0) + 1
+                log.debug("live gate: %s refused quietly (%d so far)", method, count)
+            else:
+                self._record("cdp_method_refused", {"method": method})
             self._note(method, params, "method_policy")
             await self._reply_error(connection, message, refusal.message())
             return
@@ -465,6 +749,14 @@ class CdpProxy:
         session = agent_session if agent_session is not None else connection.browser_session
         raw = message.get("params")
         params: dict[str, Any] = dict(raw) if isinstance(raw, Mapping) else {}
+        if method in cdppolicy.LOCAL_REPLIES:
+            # Answered here and never forwarded (cdppolicy.py, DEVB-GATE).
+            self._note(method, params)
+            reply: dict[str, Any] = {"id": message["id"], "result": dict(cdppolicy.LOCAL_REPLIES[method])}
+            if agent_session is not None:
+                reply["sessionId"] = agent_session
+            await connection.link.send(reply)
+            return
         if method in cdppolicy.REQUEST_BODY_METHODS and params.get("requestId") in self._control_requests:
             self._record("cdp_method_refused", {"method": method})
             self._note(method, params, "control_window_request")
@@ -549,8 +841,24 @@ class CdpProxy:
             self._owner[child] = pending.owner
             pending.owner.sessions.setdefault(child, str(pending.params.get("targetId", "")))
 
+    def _track_contexts(self, session: str, method: str, params: Mapping[str, Any]) -> None:
+        contexts = self._contexts.setdefault(session, {})
+        if method == "Runtime.executionContextsCleared":
+            contexts.clear()
+        elif method == "Runtime.executionContextDestroyed":
+            contexts.pop(params.get("executionContextId"), None)
+        else:
+            context = params.get("context")
+            if isinstance(context, dict) and isinstance(context.get("id"), int):
+                contexts[context["id"]] = dict(context)
+
     async def _on_agent_event(self, owner: AgentConnection, session: str, method: str, params: dict[str, Any]) -> None:
+        if method.startswith(cdppolicy.DROPPED_EVENT_DOMAINS):
+            # Never the agent's, enabled or not (cdppolicy.py, DEVB-GATE).
+            return
         paused = self._mode == _PAUSED
+        if method in _CONTEXT_EVENTS:
+            self._track_contexts(session, method, params)
         if method == "Target.attachedToTarget":
             child = params.get("sessionId")
             info = params.get("targetInfo") or {}
@@ -581,12 +889,18 @@ class CdpProxy:
                     {"requestId": params.get("requestId"), "authChallengeResponse": {"response": "Default"}},
                     session,
                 )
+            else:
+                self._journals.setdefault(session, _Journal()).note(method, params)
             return
+        journal = self._journals.get(session)
+        if journal is not None:
+            journal.superseded(method, params)
         params = self._strip(method, params)
         event: dict[str, Any] = {"method": method, "params": params}
         if session != owner.browser_session:
             event["sessionId"] = session
-        await owner.link.send(event)
+        async with owner.send_lock:
+            await owner.link.send(event)
 
     def _strip(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         """A request from the control window, seen after return, without its body."""
@@ -645,6 +959,7 @@ class CdpProxy:
         if self._mode != _OPEN:
             return
         self._mode = _PAUSED
+        self._paused_at = self._wall()
         for session, method, params in self._scripts.removal_commands():
             await self._call_quietly(method, params, session)
 
@@ -702,6 +1017,7 @@ class CdpProxy:
             if self._mode != _PAUSED:
                 return self._refuse("not_paused")
             self._controlled = target_id
+            self._controlled_at = self._wall()
             self._granted_blank = True
             return ControlDecision(True)
         if target_id not in self._security:
@@ -717,6 +1033,7 @@ class CdpProxy:
         if self._mode != _PAUSED:
             return self._refuse("not_paused")
         self._controlled = target_id
+        self._controlled_at = self._wall()
         self._granted_blank = False
         return ControlDecision(True)
 
@@ -753,6 +1070,7 @@ class CdpProxy:
 
     def _end_control(self, cause: str) -> None:
         self._controlled = None
+        self._controlled_at = None
         self._granted_blank = False
         self._record("control_ended", {"cause": cause})
         if self._on_control_ended is not None:
@@ -770,6 +1088,7 @@ class CdpProxy:
                 await self._call_quietly("Runtime.evaluate", {"expression": _CLEAR_PASSWORDS, "returnByValue": True}, session)
             await self._restore_scripts()
             await self._hand_over()
+            await self._resync()
             held_responses, self._held_responses = self._held_responses, []
             for pending, reply in held_responses:
                 assert pending.owner is not None
@@ -788,6 +1107,47 @@ class CdpProxy:
                     await self._forward(connection, message)
         finally:
             self._mode = _OPEN
+            self._paused_at = None
+            self._controlled_at = None
+
+    async def _resync(self) -> None:
+        """Tell each agent session the net state control dropped, then give
+        back the utility worlds a new document lacks (module docstring)."""
+        journals, self._journals = self._journals, {}
+        worlds: dict[str, set[str]] = {}
+        for session, method, params, _ in self._scripts.restore_commands():
+            if method == ADD_SCRIPT and isinstance(params.get("worldName"), str) and params["worldName"]:
+                worlds.setdefault(session, set()).add(params["worldName"])
+        for session, journal in journals.items():
+            owner = self._owner.get(session)
+            if owner is None or owner.closed:
+                continue
+            live = self._contexts.get(session, {})
+            messages = journal.messages(session, live, session == owner.browser_session)
+            async with owner.send_lock:
+                for message in messages:
+                    await owner.link.send(message)
+            if not journal.contexts_changed:
+                continue
+            for frame, name in self._missing_worlds(live, worlds.get(session, set())):
+                await self._call_quietly(
+                    "Page.createIsolatedWorld", {"frameId": frame, "worldName": name, "grantUniveralAccess": True}, session
+                )
+
+    @staticmethod
+    def _missing_worlds(live: Mapping[int, Mapping[str, Any]], names: set[str]) -> list[tuple[str, str]]:
+        """(frame, world) for each frame with a main world and no `names` world."""
+        frames: list[str] = []
+        have: set[tuple[str, str]] = set()
+        for context in live.values():
+            aux = context.get("auxData") or {}
+            frame = aux.get("frameId")
+            if not isinstance(frame, str):
+                continue
+            if aux.get("isDefault") and frame not in frames:
+                frames.append(frame)
+            have.add((frame, str(context.get("name", ""))))
+        return [(f, n) for f in frames for n in sorted(names) if (f, n) not in have]
 
     async def _restore_scripts(self) -> None:
         for session, method, params, agent_identifier in self._scripts.restore_commands():
@@ -977,9 +1337,11 @@ async def _read_message(reader: asyncio.StreamReader, link: _WebSocketLink) -> b
             return b"".join(fragments)
 
 
-def _respond(writer: asyncio.StreamWriter, status: str, body: bytes = b"", content_type: str = "text/plain") -> None:
+def _respond(writer: asyncio.StreamWriter, status: str, body: bytes = b"", content_type: str = "text/plain",
+             headers: Mapping[str, str] | None = None) -> None:
+    extra = "".join(f"{name}: {value}\r\n" for name, value in (headers or {}).items())
     writer.write(
-        f"HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode()
+        f"HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {len(body)}\r\n{extra}Connection: close\r\n\r\n".encode()
         + body
     )
 
@@ -1015,7 +1377,9 @@ async def _serve_one(proxy: CdpProxy, reader: asyncio.StreamReader, writer: asyn
     if len(parts) != 3 or parts[0] != "GET":
         _respond(writer, "405 Method Not Allowed")
         return
-    path = parts[1]
+    # The client tag is read and stripped here, before any path is matched
+    # (`split_client`); nothing of it reaches Chromium.
+    path, client = split_client(parts[1])
     headers: dict[str, str] = {}
     for line in lines[1:]:
         if ":" in line:
@@ -1027,9 +1391,12 @@ async def _serve_one(proxy: CdpProxy, reader: asyncio.StreamReader, writer: asyn
     if host not in loopback or "origin" in headers:
         _respond(writer, "403 Forbidden")
         return
-    if path.split("?")[0] in ("/json/version", "/json/version/"):
+    if path in ("/json/version", "/json/version/"):
+        # The tag rides on into the websocket URL, so the connection is attributed.
+        tagged = f"?{browser_tools.CLIENT_SEGMENT}={client}" if client else ""
         body = json.dumps(
-            {"Browser": "swarm-live-gate", "Protocol-Version": "1.3", "webSocketDebuggerUrl": f"ws://{host}{browser_path}"}
+            {"Browser": "swarm-live-gate", "Protocol-Version": "1.3",
+             "webSocketDebuggerUrl": f"ws://{host}{browser_path}{tagged}"}
         ).encode()
         _respond(writer, "200 OK", body, "application/json")
         return
@@ -1037,9 +1404,13 @@ async def _serve_one(proxy: CdpProxy, reader: asyncio.StreamReader, writer: asyn
         _respond(writer, "404 Not Found")
         return
     link = _WebSocketLink(writer)
-    connection = await proxy.connect_agent(link)
+    connection = await proxy.connect_agent(link, client=client)
     if connection is None:
-        _respond(writer, "503 Service Unavailable", b"a person is in control of the browser")
+        # Playwright puts the status line and the body in its error, so the
+        # agent reads why and for how long (`CdpProxy.refusal`).
+        _, reason = proxy.refusal()
+        _respond(writer, "503 Service Unavailable", reason.encode("utf-8"),
+                 headers={"Retry-After": str(RETRY_AFTER_SECONDS)})
         return
     accept = base64.b64encode(hashlib.sha1((headers["sec-websocket-key"] + _WS_GUID).encode()).digest()).decode()
     writer.write(

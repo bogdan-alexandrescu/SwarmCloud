@@ -32,7 +32,8 @@
 # bursting: bursting is what gets a two-hour agent container OOM-killed at
 # minute ninety. ephemeral-storage is the WHOLE pod's local disk -- workspace,
 # /tmp and HOME together, which kubelet sums -- not the workspace volume's
-# sizeLimit. It is the sum of the three volumes' sizeLimits, and all four numbers
+# sizeLimit. It is the sum of the three volumes' sizeLimits; the cache is a
+# network-disk claim kubelet does not count (CACHE-PVC). All of these numbers
 # are the dispatcher's, per resource class: see GkeDisk in
 # apps/scheduler/scheduler/dispatch.py.
 #
@@ -177,6 +178,11 @@ spec:
               value: __ARTIFACT_BUCKET__
             - name: WORKSPACE_ROOT
               value: /workspace
+            # The pod's `cache` volume (CACHE-SCRATCH): where the worker puts
+            # the agent's tool caches and TMPDIR, off the workspace volume.
+            # GkeJobDispatcher's CACHE_MOUNT / CACHE_ROOT_ENV.
+            - name: SWARM_CACHE_ROOT
+              value: /cache
             - name: CHECKPOINT_INTERVAL_SECONDS
               value: "__CHECKPOINT_INTERVAL_SECONDS__"
             - name: MAX_IN_WORKER_RETRY_DELAY_SECONDS
@@ -213,13 +219,17 @@ spec:
             - name: workspace
               mountPath: /workspace
             # readOnlyRootFilesystem means every writable path must be declared.
-            # These three are the only ones the worker and its toolchain need:
-            # the workspace (also the agent's HOME and TMPDIR, so its npm, uv
-            # and git caches), the worker's own temp dir (checkpoint archives,
+            # These four are the only ones the worker and its toolchain need:
+            # the workspace (the checkout and the agent's HOME), the cache (the
+            # agent's npm, uv, pip, terraform and XDG caches and its TMPDIR,
+            # CACHE-SCRATCH), the worker's own temp dir (checkpoint archives,
             # and any literal /tmp an agent writes), and the worker's HOME.
-            # Their sizes, and what each holds, are GKE_DISK's (#893).
+            # Their sizes, and what each holds, are GKE_DISK's; the cache's
+            # is CACHE_VOLUME_GIB, on its own network disk (CACHE-PVC).
             - name: tmp
               mountPath: /tmp
+            - name: cache
+              mountPath: /cache
             - name: home
               mountPath: /home/swarm
             # /dev/shm and the spec-verify keys: `GkeJobDispatcher._manifest`
@@ -242,6 +252,21 @@ spec:
         - name: workspace
           emptyDir:
             sizeLimit: __DISK__
+        # The agent's tool caches and TMPDIR, on a NETWORK DISK of their own
+        # (CACHE-PVC, owner decision 2026-10-15): a generic ephemeral volume,
+        # created with the pod and deleted with it by the ephemeral-volume
+        # controller. The 2 GiB emptyDir it replaces evicted
+        # task_247c87a8714c4977921a twice, and Autopilot's 10 GiB had no more
+        # to give it. NOT counted in __EPHEMERAL__; never checkpointed.
+        - name: cache
+          ephemeral:
+            volumeClaimTemplate:
+              spec:
+                accessModes: ["ReadWriteOnce"]
+                storageClassName: __CACHE_STORAGE_CLASS__
+                resources:
+                  requests:
+                    storage: __CACHE_DISK__
         - name: tmp
           emptyDir:
             sizeLimit: __TMP_DISK__

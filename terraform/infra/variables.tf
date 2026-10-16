@@ -422,6 +422,23 @@ variable "pr_console_links" {
   default     = false
 }
 
+variable "internal_decision_api_enabled" {
+  description = <<-EOT
+    Whether the cluster's Tailscale egress to Saga's decision API is on
+    (JUDGE-NET: the Tailscale Kubernetes operator in swarm-system with ONE
+    egress Service to decision-api-staging). On, swarm-api and the scheduler
+    get INTERNAL_DECISION_API_URL, the egress Service's in-cluster address,
+    and a workspace's "Internal Jev" / "Internal Laya" judgment backend is
+    available (JUDGE-SELECT).
+
+    OFF BY DEFAULT: the egress needs the operator's OAuth client, which the
+    owner stores as swarm-tailscale-oauth in Secret Manager. Off, an internal
+    choice leaves Jev unavailable rather than sending page text to TypeSafe.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "frontend_iap_audiences" {
   description = <<-EOT
     Audiences swarm-api accepts on an IAP assertion, one per backend service:
@@ -835,6 +852,38 @@ variable "repository_grants_enforced" {
   EOT
   type        = bool
   default     = false
+}
+
+variable "search_tool_enabled" {
+  description = <<-EOT
+    swarm-api's SEARCH_TOOL_ENABLED (docs/search-tool.md, #1030): whether
+    POST /v1/attempts/{id}/search exists and live-browser agents are offered
+    the `search` tool. OFF by default (owner decision 2026-10-13), as
+    swarm_api.settings is: every query is billed to the platform, and the
+    provider's key must be stored first with
+    scripts/create-secrets.sh --search-api-key --stdin. Off, the route is a
+    404 and no agent is told the tool exists.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "search_provider" {
+  description = <<-EOT
+    swarm-api's SEARCH_PROVIDER: which swarm_api.search.PROVIDERS entry
+    answers a search. "brave" is the owner's choice (2026-10-13) and the only
+    provider implemented. Validated here against the same names because
+    swarm-api refuses to START on an unknown one, which a plan should catch
+    before a revision does; add a name here in the change that adds it to
+    PROVIDERS.
+  EOT
+  type        = string
+  default     = "brave"
+
+  validation {
+    condition     = contains(["brave"], var.search_provider)
+    error_message = "search_provider must name a swarm_api.search.PROVIDERS entry: brave."
+  }
 }
 
 variable "workspace_apply_publish" {

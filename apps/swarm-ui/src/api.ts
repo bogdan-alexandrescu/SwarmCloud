@@ -1837,7 +1837,7 @@ async function fixtureResourceClasses(): Promise<Result<{ resource_classes: Reso
     data: {
       resource_classes: {
         standard: { name: 'standard', cpu: 4, memory_gib: 8, disk_gib: 4, units: 1 },
-        browser: { name: 'browser', cpu: 8, memory_gib: 16, disk_gib: 8, units: 2 },
+        browser: { name: 'browser', cpu: 4, memory_gib: 8, disk_gib: 4, units: 1 },
         large: { name: 'large', cpu: 8, memory_gib: 32, disk_gib: 16, units: 4 },
       },
     },
@@ -3096,6 +3096,10 @@ export async function setPoolLimit(poolName: string, limit: number): Promise<Res
  * pools tied at 15 and `codex` by two tied at 10, so every single-ceiling
  * counterfactual on them reads zero. Those zeros are the shape an operator has
  * to recognise, and they are real numbers off the dev platform, not staged ones.
+ *
+ * `browser` was regenerated at 1 unit when contract request 79 dropped the
+ * class from 2; test_blocker_ui_surface.py's `FIXTURE_PROFILES` carries the
+ * weight it is generated with, so change both in one commit.
  */
 const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
   "mock": {
@@ -3410,7 +3414,7 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
     "uncapped": []
   },
   "browser": {
-    "units": 2,
+    "units": 1,
     "headroom": 0,
     "basis": "measured",
     "blockers": [
@@ -3489,14 +3493,13 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
       {
         "pool": "provider:anthropic:tenant:u-bogdan",
         "action": "raise",
-        "headroom_after": 2,
+        "headroom_after": 4,
         "basis_after": "measured",
-        "delta": 2,
+        "delta": 4,
         "next_binding": [
           "resource:browser",
           "runner:browser",
-          "backend:GKE_AUTOPILOT",
-          "provider:anthropic"
+          "backend:GKE_AUTOPILOT"
         ]
       }
     ],
@@ -3661,7 +3664,7 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
           input_contract: FIXTURE_INPUT_CONTRACTS.codex,
         },
         browser: {
-          resource_class: 'browser', backend: 'GKE_AUTOPILOT', provider: 'anthropic', units: 2,
+          resource_class: 'browser', backend: 'GKE_AUTOPILOT', provider: 'anthropic', units: 1,
           ...FIXTURE_AVAILABILITY.browser,
           pools: [
             'global', 'tenant:u-bogdan', 'resource:browser', 'runner:browser',
@@ -3671,10 +3674,11 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
           input_contract: FIXTURE_INPUT_CONTRACTS.browser,
         },
         // Contract request 67: claude-code on the browser image, so it costs a
-        // browser class (2 units) and runs where the browser image must. No
-        // admission row: the panel reads a missing one as not measured.
+        // browser class (1 unit since contract request 79; 2 before) and runs
+        // where the browser image must. No admission row: the panel reads a
+        // missing one as not measured.
         'claude-code-browser': {
-          resource_class: 'browser', backend: 'GKE_AUTOPILOT', provider: 'anthropic', units: 2,
+          resource_class: 'browser', backend: 'GKE_AUTOPILOT', provider: 'anthropic', units: 1,
           ...FIXTURE_AVAILABILITY['claude-code-browser'],
           pools: [
             'global', 'tenant:u-bogdan', 'resource:browser', 'runner:claude-code-browser',
@@ -5532,13 +5536,13 @@ export function normRepoHardStops(raw: unknown): RepoHardStops | null {
 }
 
 /** A registration's detail with its hard-stop fields, read from the one answer. */
-export type RepoDetailRead = RepoDetail & { hard_stops: RepoHardStops | null }
+export type RepoDetailRead = RepoDetail & { hard_stops: RepoHardStops | null; context: RepoContext }
 
 /** `GET /v1/repositories/{repo_id}`: one registration, its last index runs, who used its index, and its hard stops. */
 export async function loadRepository(repoId: string): Promise<Result<RepoDetailRead | null>> {
   return readAs(route('/v1/repositories/{repo_id}', { repo_id: repoId }), (raw) => {
     const d = normRepoDetail(raw)
-    return d === null ? null : { ...d, hard_stops: normRepoHardStops(raw) }
+    return d === null ? null : { ...d, hard_stops: normRepoHardStops(raw), context: normRepoContext(raw) }
   })
 }
 
@@ -5691,6 +5695,237 @@ export async function registerTokenSlot(body: { scope: TokenScope; repo_id?: str
 /** `POST /v1/git-tokens/{token_id}/verify`: re-probe now. */
 export async function verifyGitToken(tokenId: string): Promise<Result<unknown>> {
   return writeTo(route('/v1/git-tokens/{token_id}/verify', { token_id: tokenId }), 'POST')
+}
+
+// ---------------------------------------------------------------------------
+// Provider keys a person or an admin sets: TypeSafe (KEYS-API, PR #1284;
+// docs/provider-keys.md). Settings › API keys (ProviderKeys.tsx) is the only
+// caller. THE KEY IS AN ARGUMENT OF `putProviderKey` AND NOTHING ELSE: it goes
+// into that one request's body and is not kept, logged or returned here, and
+// no response carries it back. The status is copied field by field
+// (`normKeyStatus`), so anything a response carried by mistake is never drawn.
+// ---------------------------------------------------------------------------
+
+/** Whose key: the caller's own (`u-<you>`), or the selected tenant's (admins). */
+export type ProviderKeyScope = 'user' | 'tenant'
+
+/** One key's status: never a value, its length, a prefix or a suffix. */
+export interface ProviderKeyStatus {
+  /** False for `user` when the caller has no ready personal workspace to keep a key in. */
+  available: boolean
+  set: boolean
+  set_at: string | null
+  set_by: string | null
+  version: string | null
+}
+
+/** `GET /v1/provider-keys/{provider}`. */
+export interface ProviderKeys {
+  provider: string
+  user: ProviderKeyStatus
+  tenant: ProviderKeyStatus & { tenant_id: string }
+  /** Which key a task the caller submits in `tenant_id` would use. */
+  resolution: { tenant_id: string; uses: ProviderKeyScope | 'none' }
+  /** What reads these keys today. Empty: nothing does yet (docs/provider-keys.md). */
+  consumed_by: string[]
+}
+
+function keyField(v: unknown): string | null {
+  return typeof v === 'string' && v !== '' ? v : typeof v === 'number' ? String(v) : null
+}
+
+function normKeyStatus(raw: unknown): ProviderKeyStatus {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  return {
+    available: r.available !== false,
+    set: r.set === true,
+    set_at: keyField(r.set_at),
+    set_by: keyField(r.set_by),
+    version: keyField(r.version),
+  }
+}
+
+function normProviderKeys(raw: unknown): ProviderKeys {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  const tenant = (typeof r.tenant === 'object' && r.tenant !== null ? r.tenant : {}) as Record<string, unknown>
+  const res = (typeof r.resolution === 'object' && r.resolution !== null ? r.resolution : {}) as Record<string, unknown>
+  const uses = res.uses === 'user' || res.uses === 'tenant' ? res.uses : 'none'
+  const tenantId = keyField(res.tenant_id) ?? keyField(tenant.tenant_id) ?? ''
+  return {
+    provider: keyField(r.provider) ?? '',
+    user: normKeyStatus(r.user),
+    tenant: { ...normKeyStatus(r.tenant), tenant_id: keyField(tenant.tenant_id) ?? tenantId },
+    resolution: { tenant_id: tenantId, uses },
+    consumed_by: Array.isArray(r.consumed_by) ? r.consumed_by.filter((c): c is string => typeof c === 'string') : [],
+  }
+}
+
+/** `GET /v1/provider-keys/{provider}`: your key's status, your selected tenant's, and which a task here would use. */
+export async function loadProviderKeys(provider: string): Promise<Result<ProviderKeys>> {
+  return readAs(route('/v1/provider-keys/{provider}', { provider }), normProviderKeys)
+}
+
+/**
+ * `PUT /v1/provider-keys/{provider}/user|tenant`: store a key. `linkToken` is
+ * the `t` of a one-time link minted for this scope, sent back so the API can
+ * consume it; it authorises nothing (the caller's session does).
+ */
+export async function putProviderKey(provider: string, scope: ProviderKeyScope, apiKey: string, linkToken: string | null): Promise<Result<unknown>> {
+  const target = scope === 'user'
+    ? route('/v1/provider-keys/{provider}/user', { provider })
+    : route('/v1/provider-keys/{provider}/tenant', { provider })
+  return writeTo(target, 'PUT', linkToken === null ? { api_key: apiKey } : { api_key: apiKey, link_token: linkToken })
+}
+
+/** `DELETE /v1/provider-keys/{provider}/user|tenant`: destroy every version of the key. */
+export async function deleteProviderKey(provider: string, scope: ProviderKeyScope): Promise<Result<unknown>> {
+  const target = scope === 'user'
+    ? route('/v1/provider-keys/{provider}/user', { provider })
+    : route('/v1/provider-keys/{provider}/tenant', { provider })
+  return writeTo(target, 'DELETE')
+}
+
+// ---------------------------------------------------------------------------
+// The workspace's Jev judgment backend (JUDGE-SELECT; swarm_api/judgment.py).
+// Internal Jev is the default; Internal Laya and TypeSafe are the others. The
+// backend is chosen BY NAME: no URL or key goes in the PUT body.
+// ---------------------------------------------------------------------------
+
+export type JevBackend = 'internal-jev' | 'internal-laya' | 'typesafe'
+
+export const JEV_BACKENDS: readonly JevBackend[] = ['internal-jev', 'internal-laya', 'typesafe']
+
+export interface JevOption {
+  backend: JevBackend
+  label: string
+  available: boolean
+  /** Why not, in the API's words; null when available. */
+  reason: string | null
+}
+
+/** The `jev` object: the chosen backend, whether it can run, and every option. */
+export interface JevStatus extends JevOption {
+  default: JevBackend
+  set_at: string | null
+  set_by: string | null
+  options: JevOption[]
+}
+
+/** `GET /v1/judgment` and `GET|PUT /v1/workspaces/{id}/judgment-backend`. */
+export interface Judgment {
+  tenant_id: string
+  can_edit: boolean
+  jev: JevStatus
+}
+
+function jevBackend(v: unknown): JevBackend {
+  return v === 'internal-laya' || v === 'typesafe' ? v : 'internal-jev'
+}
+
+function normJevOption(raw: unknown): JevOption {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  return {
+    backend: jevBackend(r.backend),
+    label: keyField(r.label) ?? '',
+    available: r.available === true,
+    reason: keyField(r.reason),
+  }
+}
+
+function normJudgment(raw: unknown): Judgment {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  const jev = (typeof r.jev === 'object' && r.jev !== null ? r.jev : {}) as Record<string, unknown>
+  const options = Array.isArray(jev.options) ? jev.options.map(normJevOption) : []
+  return {
+    tenant_id: keyField(r.tenant_id) ?? '',
+    can_edit: r.can_edit === true,
+    jev: {
+      ...normJevOption(jev),
+      default: jevBackend(jev.default),
+      set_at: keyField(jev.set_at),
+      set_by: keyField(jev.set_by),
+      options: JEV_BACKENDS.map((b) => options.find((o) => o.backend === b) ?? { backend: b, label: b, available: false, reason: null }),
+    },
+  }
+}
+
+/** `GET /v1/judgment`: the selected workspace's Jev backend and what is available. */
+export async function loadJudgment(): Promise<Result<Judgment>> {
+  return readAs(route('/v1/judgment'), normJudgment)
+}
+
+/** `PUT /v1/workspaces/{tenant_id}/judgment-backend`: the owner's or an admin's choice. */
+export async function putJudgmentBackend(tenantId: string, backend: JevBackend): Promise<Result<unknown>> {
+  return writeTo(route('/v1/workspaces/{tenant_id}/judgment-backend', { tenant_id: tenantId }), 'PUT', { judgment_backend: backend })
+}
+
+// ---------------------------------------------------------------------------
+// Code intelligence (CTXQ-UI over CTXQ-SET; docs/design/context-quality.md
+// §4.7). The workspace's switch is ONE FIELD of `workspace_settings/{tenant_id}`
+// (`code_intelligence`, beside `judgment_backend` and `merge`), written by
+// swarm-api (`swarm_api/codeintel.py`); the API answers and takes the flat
+// shape: `{jev, context, context_ab, defaults, updated_at, updated_by,
+// can_edit, repositories}` and a PUT body of `{jev}`. `jev` -- whether Jev is ever sent code -- is OFF unless
+// the API says, explicitly, `true`: an answer without the field is a workspace
+// that never turned it on. A repository's `context` override is
+// `on | off`, or absent for inherit, and travels on `PATCH
+// /v1/repositories/{repo_id}` as `merge_policy` does, `inherit` clearing it.
+// These shapes follow CTXQ-SET's API; a fix to them is here.
+// ---------------------------------------------------------------------------
+
+export interface CodeIntelligence {
+  tenant_id: string
+  /** The workspace's owner or a platform admin; the API is the gate. */
+  can_edit: boolean
+  /** Whether Jev is sent excerpts of this workspace's code. Off by default. */
+  jev: boolean
+  /** The local context default (pack and graph tools); nothing leaves the platform. On by default. */
+  context: boolean
+  set_at: string | null
+  set_by: string | null
+}
+
+function normCodeIntelligence(raw: unknown): CodeIntelligence {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  const defaults = (typeof r.defaults === 'object' && r.defaults !== null ? r.defaults : {}) as Record<string, unknown>
+  // `context` is `on | off | inherit`; inherit is the platform default.
+  const context = r.context === 'on' || r.context === 'off' ? r.context : defaults.context
+  return {
+    tenant_id: keyField(r.tenant_id) ?? '',
+    can_edit: r.can_edit === true,
+    jev: r.jev === true,
+    context: context !== 'off',
+    set_at: keyField(r.updated_at),
+    set_by: keyField(r.updated_by),
+  }
+}
+
+/** `GET /v1/code-intelligence`: the selected workspace's Code intelligence setting. */
+export async function loadCodeIntelligence(): Promise<Result<CodeIntelligence>> {
+  return readAs(route('/v1/code-intelligence'), normCodeIntelligence)
+}
+
+/** `PUT /v1/workspaces/{tenant_id}/code-intelligence`: the owner's or an admin's switch. */
+export async function putCodeIntelligence(tenantId: string, jev: boolean): Promise<Result<unknown>> {
+  return writeTo(route('/v1/workspaces/{tenant_id}/code-intelligence', { tenant_id: tenantId }), 'PUT', { jev })
+}
+
+/** A repository's `context` override; `inherit` is the absent field. */
+export type RepoContext = 'on' | 'off' | 'inherit'
+
+/** The registration's `context`, `inherit` when absent or unknown. */
+export function normRepoContext(raw: unknown): RepoContext {
+  if (typeof raw !== 'object' || raw === null) return 'inherit'
+  const outer = raw as Record<string, unknown>
+  const rec = (typeof outer.repository === 'object' && outer.repository !== null ? outer.repository : outer) as Record<string, unknown>
+  return rec.context === 'on' || rec.context === 'off' ? rec.context : 'inherit'
+}
+
+/** `PATCH /v1/repositories/{repo_id}` with `context`: on, off, or inherit to clear it. */
+export async function patchRepositoryContext(repoId: string, context: RepoContext): Promise<Result<unknown>> {
+  const target = route('/v1/repositories/{repo_id}', { repo_id: repoId })
+  if (USE_FIXTURES) return repoNotServed<unknown>(target)
+  return write(target, 'PATCH', { context })
 }
 
 // ---------------------------------------------------------------------------

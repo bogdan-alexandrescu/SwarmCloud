@@ -29,32 +29,42 @@ from .routes import (
     accounts,
     admin,
     approvals,
+    attemptcontext,
     attempts,
+    attempts_secrets,
     browser_logins,
     browser_slots,
     checkpoints,
     children,
+    codeintel,
     forgeapp,
     forgeperms,
     gittokens,
     gittools,
+    graph_ticket,
     health,
     issues,
+    judgment,
     leases,
     live,
+    merge_settings,
     notifications,
     onboarding,
     outcomes,
+    provider_keys,
     people,
     platform,
     repositories,
     runs,
     schedule_tick,
+    search,
     strandedprs,
     schedules,
     tasks,
     tenants,
+    typesafe_ticket,
     workflows,
+    workspace_secrets,
     workspaces,
 )
 from .validation import FORBIDDEN_CALLER_FIELDS
@@ -64,6 +74,14 @@ from swarm_common.logging_setup import configure_logging
 log = logging.getLogger(__name__)
 
 TITLE = "swarm control-plane API"
+
+#: Routes whose request body and response are NEVER captured by anything this
+#: app logs (design workspace-secrets.md §4.5). `observe` below captures no body
+#: or response for any route; a capture added to it later must skip these.
+#: The release is the one route that serves credential material (owner
+#: decision Q2), so its body and its answer stay out of every log by
+#: construction, not by a reviewer noticing.
+UNCAPTURED_ROUTES = frozenset({attempts_secrets.RELEASE_ROUTE})
 
 
 def _forbidden_field_hint(errors: list[dict[str, Any]]) -> str | None:
@@ -146,6 +164,12 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # each read from the records above, read-only, the caller's own tenant.
     app.include_router(onboarding.router)
     app.include_router(workspaces.router)
+    # A workspace's merge settings, direct or merge train (TRAIN-WS,
+    # docs/merge-trains.md §3): its owner or a platform admin, audited.
+    app.include_router(merge_settings.router)
+    # A workspace's code-intelligence setting (CTXQ-SET,
+    # docs/design/context-quality.md §4.7): its owner or a platform admin, audited.
+    app.include_router(codeintel.router)
     # Connect GitHub as yourself (docs/onboarding.md §3.2, lane OB3):
     # authorise, exchange, disconnect, and the refresh sweep the
     # swarm-forge-refresh job calls. No route returns a token.
@@ -158,6 +182,22 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # The caller's own tenant; the App's settings link for admins only.
     app.include_router(forgeperms.router)
     app.include_router(tenants.router)
+    # Provider keys a person or a tenant admin sets, TypeSafe first
+    # (docs/provider-keys.md, lane KEYS-API): write-only, a person's own key in
+    # their personal tenant, the tenant key for admins, one-time form links.
+    app.include_router(provider_keys.router)
+    # The workspace secrets store's management API (docs/design/workspace-
+    # secrets.md §5, lane SEC-STORE-API, part of #1347): records and grants,
+    # write-only values, each write audited in its own transaction. The
+    # release is SEC-RELEASE's, `attempts_secrets` below.
+    app.include_router(workspace_secrets.router)
+    # Each workspace's Jev judgment backend -- Internal Jev (the default),
+    # Internal Laya or TypeSafe -- its owner's or an admin's to choose,
+    # audited (swarm_api.judgment, lane JUDGE-SELECT).
+    app.include_router(judgment.router)
+    # Each workspace's Code intelligence switch -- whether Jev is ever sent
+    # code, OFF by default -- one field of workspace_settings/{tenant_id}, its
+    # owner's or an admin's to change, audited (CTXQ-UI, context-quality §4.7).
     # The account pool. Every route on it PROXIES to the quota broker, which is
     # the platform's single writer of subscription credentials; this service
     # supplies the caller's tenant and nothing else.
@@ -189,6 +229,17 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # The runner git tools (docs/runner-git-tools.md, lane G5): worker-only,
     # authenticated as the child routes are, plus the audit's tenant read.
     app.include_router(gittools.router)
+    # The search tool (docs/search-tool.md, lane SEARCH-TOOL): worker-only,
+    # authenticated as the git tools are; a 404 while SEARCH_TOOL_ENABLED is off.
+    app.include_router(search.router)
+    # Layer I, in-flight work (docs/design/context-quality.md §4.2, lane CTXQ-I):
+    # worker-only, authenticated and fenced as the git tools are.
+    app.include_router(attemptcontext.router)
+    # The workspace secrets release (docs/design/workspace-secrets.md §3.3,
+    # lane SEC-RELEASE, part of #1347): worker-only, signed under its own
+    # purpose and fenced; the one route that serves credential material, and
+    # in UNCAPTURED_ROUTES.
+    app.include_router(attempts_secrets.router)
     # Named browser logins and the workflow carry (docs/design/live-browser.md
     # §5.5.1, lane LB-L9b): the person's own logins, and two worker-only
     # routes that authenticate as the child routes do.
@@ -201,6 +252,12 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # tunnel ticket, a member's view and control, and the socket proxied to
     # swarm-live. Tenant-scoped through the same authenticator as every route.
     app.include_router(live.router)
+    # The TypeSafe forwarder's attempt ticket (docs/design/workspace-secrets.md
+    # §3.5, lane SEC-INJECT-A): worker-only, proven and fenced as above.
+    app.include_router(typesafe_ticket.router)
+    # The shared graph service's attempt ticket (docs/design/graph-service.md
+    # §3.1, lane GS-TICKET): worker-only, proven and fenced as above.
+    app.include_router(graph_ticket.router)
     # The notification feed (#1206, NOTIF-API; docs/notifications.md): the
     # caller's own items, derived on each read from the records above, and
     # one document of read marks per person.
@@ -208,6 +265,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
 
     @app.middleware("http")
     async def observe(request: Request, call_next):
+        # Metrics only: the route TEMPLATE, the method and the status class.
+        # Never the body or the response of any route, and above all not of
+        # UNCAPTURED_ROUTES.
         route = request.scope.get("path", "unknown")
         started = time.perf_counter()
         try:

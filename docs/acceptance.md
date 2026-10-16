@@ -35,10 +35,13 @@ That also gives each group its own execution and its own 30-minute timeout
 
 Each check prints `PASS`, `FAIL` or `SKIP` with a one-line reason and the task
 id, and the run exits non-zero when any check failed. `accept.yml` runs every
-group after a dev release completes, one matrix job per group in two waves
-that fit the smoke tenant's ceiling, after its own warm and smoke. A `FAIL`
-fails that group's job and opens (or updates) the one acceptance issue; it no
-longer fails the release ([ci.md, "The release timeline"](ci.md#the-release-timeline)).
+group but live-browser after a dev release completes, one matrix job per group
+in two waves that fit the smoke tenant's ceiling, after its own warm and smoke.
+A `FAIL` fails that group's job and opens (or updates) the one acceptance
+issue; it no longer fails the release ([ci.md, "The release timeline"](ci.md#the-release-timeline)).
+live-browser runs every three hours instead, off the red path, and files its
+own issue, until it passes five scheduled runs in a row
+([ci.md, "live-browser runs on a schedule"](ci.md#live-browser-runs-on-a-schedule)).
 
 ## What accept.yml's identity may run
 
@@ -302,8 +305,12 @@ question for the owner (its CVE surface is the reason the image has no Cloud
 SDK either). A local run with `ffmpeg` on `PATH` judges them.
 
 It needs a second `swarm-verify` execution of its own (`scripts/acceptance/
-live-browser.sh`) and runs in wave 2 of `accept.yml`, because wave 1 is at
-the smoke tenant's ceiling. Its one task peaks the group at 1.
+live-browser.sh`). Its one task peaks the group at 1. It ran in wave 2 of
+`accept.yml` until 2026-10-14, when it failed 18 of 34 post-release runs. It
+now runs on `accept.yml`'s schedule, every three hours, and reports to an
+issue of its own. It goes back into wave 2 when
+`scripts/accept-live-browser-streak.sh` says it passed five in a row
+([ci.md, "live-browser runs on a schedule"](ci.md#live-browser-runs-on-a-schedule)).
 
 ### git-tools
 

@@ -1,4 +1,14 @@
-"""The six tools, their schemas, and the 4 KiB answer with paging (§4.2, §7.7).
+"""The ten tools, their schemas, and the 4 KiB answer with paging (§4.2, §7.7).
+
+KG4's six, and two from docs/design/context-quality.md §4.4 (lane CTXQ-T),
+both offline, over the snapshot's layers H and R (`snapshot.py` documents
+their rows): `similar_changes` lists the merged PRs, fix commits and
+co-changing files of the files asked about -- precedent, and fixes not to
+make a second time -- and `rules_for` the paths a lane cannot push, the guard
+tests that police the files and the docs that name them. Zero rows from
+either is `UNKNOWN`, as zero callers is: a history the indexer did not read
+that far back, or a rule nobody wrote down, is not "no precedent" or
+"unconstrained". A snapshot indexed before those layers says so in its note.
 
 EVERY ANSWER IS ONE JSON OBJECT, AT MOST `ANSWER_CAP` BYTES:
 
@@ -18,6 +28,26 @@ THE SCHEMAS ARE THE BUDGET (§7.7: under 2k tokens; GitNexus's ≈ 17.9k). The
 agent pays for them on every turn, so the descriptions say what a tool
 answers and nothing about how; the module docstrings carry the why.
 
+TWO TOOLS FOR THE SHARED GRAPH SERVICE (docs/design/graph-service.md §2.3).
+`call_graph` walks callers, callees or both from a symbol (or every symbol of
+a file) and lists the edges breadth-first, bounded like `impact`; `index`
+pages any layer of the snapshot -- its keys with their row counts, or one
+shard's rows in stored order -- which is the whole index, page by page, and
+"the index for X" is `index(layer, path=X)`. `document` is repo-index.md
+§2.1's document, one shard per section (`snapshot.DOCUMENT_LAYER`).
+
+COMPUTE, THEN PAGE (graph-service.md §2.4, seam 2). Each handler (`tool_*`)
+computes a `Computed` -- head and rows -- from the snapshot and the
+arguments alone, with no observation, so the service can cache it and serve
+every page of one question from one computation. `page` applies the
+observation: it marks the head (by its `symbol` or `file`) and every row
+stale. `remark` turns an answer computed under the empty observation into the
+one the local server would have given under a real one: the pod's shim does
+nothing else. `TOOLS_VERSION` names the handlers' output, and is part of
+every cached answer's key; bump it whenever an answer changes
+(tests/unit/worker/test_graphmcp_tools_version.py fails when one changes and
+it does not).
+
 `territory` answers what a local snapshot can know: each file's community,
 how many other files depend on it and which. Which in-flight steps and lanes
 hold a file is phase 3's (§4.8, served by swarm-api) and is not in a snapshot;
@@ -26,13 +56,28 @@ the answer says so in `in_flight` rather than leaving it out silently.
 
 from __future__ import annotations
 
+import functools
 import json
 import posixpath
+import re
+from dataclasses import dataclass
 from typing import Any, Callable
 
 from agent_worker.graphmcp.freshness import Observation
-from agent_worker.graphmcp.snapshot import Snapshot, SnapshotError, module_of, name_of, path_of
+from agent_worker.graphmcp.snapshot import (
+    ALL_LAYERS,
+    DOCUMENT_LAYER,
+    Snapshot,
+    SnapshotError,
+    module_of,
+    name_of,
+    path_of,
+)
 
+#: The version of every handler's output (graph-service.md §5.2): part of the
+#: shared service's result-cache key. Bump it in the same change as any edit
+#: that changes an answer; test_graphmcp_tools_version.py holds the two together.
+TOOLS_VERSION = "1"
 #: §7.7: an answer is capped at 4 KiB, paged beyond.
 ANSWER_CAP = 4096
 #: `search`'s default and largest result count.
@@ -53,8 +98,25 @@ NEIGHBOUR_FILES = 12
 RESOLVE_CANDIDATES = 200
 SHOWN_CANDIDATES = 10
 
+#: `call_graph`'s directions, and its default and deepest walk.
+CALL_GRAPH_DIRECTIONS = ("callers", "callees", "both")
+CALL_GRAPH_DEFAULT_DEPTH = 2
+#: Files of a past PR one `similar_changes` row lists; the rest are counted.
+SHOWN_FILES = 8
+#: Characters of a rule's `why` or a commit's subject one row carries.
+SHOWN_TEXT = 200
+#: `rules_for`'s order: what the lane must not do, then what will police it.
+RULE_ORDER = {"cannot_push": 0, "guard": 1, "doc": 2}
+
 UNKNOWN_CALLERS = ("zero resolved callers is UNKNOWN, never safe: a call through a "
                    "dynamic dispatch, a string or a module object can be invisible")
+NO_HISTORY = ("zero recorded changes is UNKNOWN, never 'no precedent': the history "
+              "holds merged PRs only, as far back as the indexer read")
+NO_RULES = ("zero matching rules is UNKNOWN, never 'unconstrained': CLAUDE.md and the "
+            "guard set still apply")
+NO_HISTORY_LAYER = "this snapshot has no history layer (indexed before layer H)"
+NO_RULES_LAYER = "this snapshot has no rules layer (indexed before layer R)"
+NO_LAYER = "this snapshot has no {layer} layer (indexed before it was written)"
 IN_FLIGHT = "not in a snapshot: in-flight steps and lanes come from swarm-api (phase 3)"
 
 _CURSOR = {"type": "string", "description": "next_cursor of the previous page"}
@@ -95,6 +157,30 @@ TOOLS: list[dict[str, Any]] = [
      "description": "For files: community, fan-in and the files depending on them.",
      "inputSchema": {"type": "object", "required": ["files"], "properties": {
          "files": _FILES, "cursor": _CURSOR}}},
+    {"name": "similar_changes",
+     "description": "Earlier merged PRs, fix commits and co-changing files for files or "
+                    "symbols: precedent to follow, fixes not to repeat.",
+     "inputSchema": {"type": "object", "properties": {
+         "files": _FILES, "symbols": {"type": "array", "items": {"type": "string"}},
+         "cursor": _CURSOR}}},
+    {"name": "rules_for",
+     "description": "For files: paths a lane cannot push, guard tests policing them, "
+                    "docs naming them.",
+     "inputSchema": {"type": "object", "required": ["files"], "properties": {
+         "files": _FILES, "cursor": _CURSOR}}},
+    {"name": "call_graph",
+     "description": "Call edges from a symbol or file, breadth-first.",
+     "inputSchema": {"type": "object", "required": ["symbol"], "properties": {
+         "symbol": {"type": "string", "description": "symbol id, name, or file path"},
+         "direction": {"type": "string", "enum": list(CALL_GRAPH_DIRECTIONS)},
+         "depth": {"type": "integer", "minimum": 1, "maximum": IMPACT_MAX_DEPTH},
+         "cursor": _CURSOR}}},
+    {"name": "index",
+     "description": "Page a graph layer: its keys with row counts, or one key's rows "
+                    "(path: the module holding it).",
+     "inputSchema": {"type": "object", "required": ["layer"], "properties": {
+         "layer": {"type": "string", "enum": list(ALL_LAYERS)}, "key": {"type": "string"},
+         "path": {"type": "string"}, "cursor": _CURSOR}}},
 ]
 TOOL_NAMES = tuple(tool["name"] for tool in TOOLS)
 
@@ -117,12 +203,68 @@ def dumps(value: Any) -> str:
 
 # --- the answer ---------------------------------------------------------------
 
+@dataclass(frozen=True)
+class Computed:
+    """A handler's answer before paging: its head and every row, in order.
+
+    `expand` (when set) turns a row into what is shown, page by page, so a
+    question that only reads its first page does not expand the rest.
+    """
+
+    head: dict
+    rows: list
+    expand: Callable[[Any], dict] | None = None
+
+    def materialised(self) -> "Computed":
+        """The same answer with every row expanded: what a cache keeps."""
+        if self.expand is None:
+            return self
+        return Computed(self.head, [self.expand(row) for row in self.rows])
+
+
+def _stale_of(key: Any, obs: Observation) -> str | None:
+    return obs.stale(path_of(str(key))) if key else None
+
+
 def _mark(row: dict, obs: Observation) -> dict:
     key = row.get("path") or row.get("symbol") or row.get("test") or ""
-    why = obs.stale(path_of(str(key))) if key else None
+    why = _stale_of(key, obs)
+    if not key:
+        # An edge (`call_graph`, the `callers`/`callees` layers): stale when
+        # either end's file is.
+        why = _stale_of(row.get("from"), obs) or _stale_of(row.get("to"), obs)
     if why:
         row = {**row, "stale": why}
     return row
+
+
+def _mark_head(head: dict, obs: Observation) -> dict:
+    """A head about one symbol or one file is stale when that file is."""
+    key = head.get("symbol") or head.get("file")
+    why = _stale_of(key, obs) if isinstance(key, str) else None
+    if not why:
+        return head
+    # Where each handler wrote `stale` before the compute/page split, so every
+    # answer stays byte-identical (§2.4 seam 2; test_graphmcp_byte_identity):
+    # `context` (the one head with `lines`) marked its head before adding its
+    # `note`; every other head is marked last. Decided from the head alone,
+    # because `remark` sees only the answer, never the tool.
+    if "lines" in head and "note" in head:
+        rest = {k: v for k, v in head.items() if k != "note"}
+        return {**rest, "stale": why, "note": head["note"]}
+    return {**head, "stale": why}
+
+
+HEAD_OVER_CAP = "the answer's head alone is over the 4 KiB cap; ask for less"
+ONE_ROW_OVER = {"omitted": "one row over the 4 KiB answer cap"}
+
+
+def _fits(size: int, piece: int, after: int, total: int) -> bool:
+    """Whether a row of `piece` bytes fits an answer of `size` bytes so far,
+    the shell's `next_cursor` counted as `str(total)`. When the row is the last
+    one the cursor is written `null`, a byte longer than a one-digit total."""
+    extra = max(4 - len(dumps(str(total))), 0) if after >= total else 0
+    return size + piece + extra <= ANSWER_CAP
 
 
 def page(obs: Observation, head: dict, rows: list[Any], offset: int,
@@ -131,31 +273,86 @@ def page(obs: Observation, head: dict, rows: list[Any], offset: int,
     total = len(rows)
     if offset > total:
         raise ToolInputError(f"cursor {offset} is past the last row ({total})")
+    head = _mark_head(head, obs)
     shell = {"freshness": obs.block, **head, "total": total, "rows": [],
              "next_cursor": str(total)}
     size = len(dumps(shell))
     if size > ANSWER_CAP:
-        raise ToolInputError("the answer's head alone is over the 4 KiB cap; ask for less")
+        raise ToolInputError(HEAD_OVER_CAP)
     out: list[dict] = []
     index = offset
     while index < total:
         row = _mark(expand(rows[index]) if expand else rows[index], obs)
         piece = len(dumps(row)) + (1 if out else 0)
-        if size + piece > ANSWER_CAP:
+        if not _fits(size, piece, index + 1, total):
             break
         out.append(row)
         size += piece
         index += 1
     if not out and index < total:
         # One row over the cap on its own: say so in its place and move on,
-        # so paging always advances.
-        out.append({"omitted": "one row over the 4 KiB answer cap"})
+        # so paging always advances. A head that leaves no room even for that
+        # is the head over the cap.
+        if not _fits(size, len(dumps(ONE_ROW_OVER)), index + 1, total):
+            raise ToolInputError(HEAD_OVER_CAP)
+        out.append(ONE_ROW_OVER)
         index += 1
     answer = {"freshness": obs.block, **head, "total": total, "rows": out,
               "next_cursor": str(index) if index < total else None}
     text = dumps(answer)
     assert len(text) <= ANSWER_CAP, len(text)
     return text
+
+
+_PAGE_KEYS = ("freshness", "total", "rows", "next_cursor")
+
+
+def remark(text: str, obs: Observation) -> str:
+    """`text`, an answer computed under the empty observation, as the local
+    server would have given it under `obs` (graph-service.md §4.4).
+
+    The freshness block becomes `obs`'s, and the head and every row are marked
+    as `page` marks them. Marks add bytes, so when the page no longer fits it
+    loses rows from the end and `next_cursor` points at the first one dropped:
+    a cursor is an offset into a fixed row order, so the next page starts
+    exactly there. The pages, concatenated, are the local server's.
+    """
+    answer = json.loads(text)
+    if not isinstance(answer, dict):
+        raise ValueError("an answer is a JSON object")
+    if "error" in answer:
+        return error_answer(obs, str(answer["error"]),
+                            [str(c) for c in answer.get("candidates") or []])
+    if not all(key in answer for key in _PAGE_KEYS[1:]):
+        return dumps({"freshness": obs.block,
+                      **{k: v for k, v in answer.items() if k != "freshness"}})
+    head = _mark_head({k: v for k, v in answer.items() if k not in _PAGE_KEYS}, obs)
+    total = int(answer["total"])
+    rows = list(answer["rows"])
+    following = answer["next_cursor"]
+    start = (int(following) if following is not None else total) - len(rows)
+    size = len(dumps({"freshness": obs.block, **head, "total": total, "rows": [],
+                      "next_cursor": str(total)}))
+    if size > ANSWER_CAP:
+        return error_answer(obs, HEAD_OVER_CAP)
+    out: list[dict] = []
+    for row in rows:
+        row = _mark(row, obs)
+        piece = len(dumps(row)) + (1 if out else 0)
+        if not _fits(size, piece, start + len(out) + 1, total):
+            break
+        out.append(row)
+        size += piece
+    if not out and rows:
+        if not _fits(size, len(dumps(ONE_ROW_OVER)), start + 1, total):
+            return error_answer(obs, HEAD_OVER_CAP)
+        out.append(ONE_ROW_OVER)
+    index = start + len(out)
+    marked = {"freshness": obs.block, **head, "total": total, "rows": out,
+              "next_cursor": str(index) if index < total else None}
+    result = dumps(marked)
+    assert len(result) <= ANSWER_CAP, len(result)
+    return result
 
 
 def error_answer(obs: Observation, message: str, candidates: list[str] | None = None) -> str:
@@ -298,7 +495,7 @@ def _test_row(test: dict) -> dict:
             "depth": test.get("depth")}
 
 
-def tool_search(snap: Snapshot, obs: Observation, args: dict) -> str:
+def tool_search(snap: Snapshot, args: dict) -> Computed:
     args = _args(args, {"query", "limit", "cursor"}, {"query"})
     query = _string(args, "query")
     limit = _int(args, "limit", SEARCH_DEFAULT, 1, SEARCH_MAX)
@@ -309,10 +506,10 @@ def tool_search(snap: Snapshot, obs: Observation, args: dict) -> str:
         return {**_describe(snap, symbol), "score": score,
                 "community": _community(snap, path_of(symbol))}
 
-    return page(obs, {"query": query}, hits, _cursor(args), expand)
+    return Computed({"query": query}, hits, expand)
 
 
-def tool_context(snap: Snapshot, obs: Observation, args: dict) -> str:
+def tool_context(snap: Snapshot, args: dict) -> Computed:
     args = _args(args, {"symbol", "cursor"}, {"symbol"})
     symbol = resolve(snap, _string(args, "symbol"))
     row = snap.symbol(symbol) or {}
@@ -322,18 +519,18 @@ def tool_context(snap: Snapshot, obs: Observation, args: dict) -> str:
     tests = sorted(snap.tests(symbol), key=lambda t: (-(t.get("confidence") or 0),
                                                       str(t.get("test"))))
     signature = snap.signature(symbol)
-    head = _mark({"symbol": symbol, "kind": row.get("kind"),
-                  "lines": [row.get("start_line"), row.get("end_line")],
-                  "signature": signature.get("signature") if signature else None,
-                  "community": _community(snap, path_of(symbol)),
-                  "callers": len(callers) if callers else "UNKNOWN",
-                  "callees": len(callees), "tests": len(tests)}, obs)
+    head = {"symbol": symbol, "kind": row.get("kind"),
+            "lines": [row.get("start_line"), row.get("end_line")],
+            "signature": signature.get("signature") if signature else None,
+            "community": _community(snap, path_of(symbol)),
+            "callers": len(callers) if callers else "UNKNOWN",
+            "callees": len(callees), "tests": len(tests)}
     if not callers:
         head["note"] = UNKNOWN_CALLERS
     rows = ([_edge_row("caller", e, "from") for e in callers]
             + [_edge_row("callee", e, "to") for e in callees]
             + [_test_row(t) for t in tests])
-    return page(obs, head, rows, _cursor(args))
+    return Computed(head, rows)
 
 
 def _is_test(snap: Snapshot, symbol_id: str) -> bool:
@@ -344,17 +541,11 @@ def _is_test(snap: Snapshot, symbol_id: str) -> bool:
     return bool(file and file.get("test"))
 
 
-def tool_impact(snap: Snapshot, obs: Observation, args: dict) -> str:
+def tool_impact(snap: Snapshot, args: dict) -> Computed:
     args = _args(args, {"symbol", "depth", "cursor"}, {"symbol"})
     target = _string(args, "symbol")
     depth = _int(args, "depth", IMPACT_DEFAULT_DEPTH, 1, IMPACT_MAX_DEPTH)
-    if "#" not in target and snap.file(_file_arg(target)) is not None:
-        target = _file_arg(target)
-        roots = [s["id"] for s in snap.symbols_in(target) if s.get("kind") != "local"]
-        head: dict[str, Any] = {"file": target, "symbols": len(roots)}
-    else:
-        roots = [resolve(snap, target)]
-        head = {"symbol": roots[0]}
+    roots, head = _roots(snap, target)
     seen = set(roots)
     found: list[dict] = []
     tests: dict[str, dict] = {}
@@ -393,16 +584,13 @@ def tool_impact(snap: Snapshot, obs: Observation, args: dict) -> str:
     if not found:
         head["callers"] = "UNKNOWN"
         head["note"] = UNKNOWN_CALLERS
-    why = obs.stale(path_of(target if "file" in head else roots[0]))
-    if why:
-        head["stale"] = why
     module_rows = [{"rel": "module", "module": m} for m in sorted(modules)]
     test_rows = sorted(tests.values(), key=lambda t: (-(t.get("confidence") or 0),
                                                       str(t.get("test"))))
-    return page(obs, head, found + module_rows + test_rows, _cursor(args))
+    return Computed(head, found + module_rows + test_rows)
 
 
-def tool_tests_for(snap: Snapshot, obs: Observation, args: dict) -> str:
+def tool_tests_for(snap: Snapshot, args: dict) -> Computed:
     args = _args(args, {"files", "symbols", "cursor"}, set())
     files = [_file_arg(f) for f in _strings(args, "files")]
     names = _strings(args, "symbols")
@@ -452,7 +640,7 @@ def tool_tests_for(snap: Snapshot, obs: Observation, args: dict) -> str:
     if unknown:
         head["unknown"] = unknown[:SHOWN_CANDIDATES]
         head["unknown_count"] = len(unknown)
-    return page(obs, head, rows, _cursor(args))
+    return Computed(head, rows)
 
 
 def _nearness(origin: str, other: str) -> tuple[int, str]:
@@ -461,7 +649,7 @@ def _nearness(origin: str, other: str) -> tuple[int, str]:
     return (-(len(common.split("/")) if common else 0), other)
 
 
-def tool_neighbours(snap: Snapshot, obs: Observation, args: dict) -> str:
+def tool_neighbours(snap: Snapshot, args: dict) -> Computed:
     args = _args(args, {"symbol", "cursor"}, {"symbol"})
     symbol = resolve(snap, _string(args, "symbol"))
     row = snap.symbol(symbol) or {}
@@ -483,13 +671,13 @@ def tool_neighbours(snap: Snapshot, obs: Observation, args: dict) -> str:
                      for r in same_kind(snap.symbols_in(other))]
     test_files = sorted({path_of(str(t.get("test"))) for t in snap.tests(symbol)})
     rows += [{"rel": "test_file", "path": f} for f in test_files]
-    head = _mark({"symbol": symbol, "kind": kind,
-                  "community": str(community.get("id")) if community else None,
-                  "community_label": community.get("label") if community else None}, obs)
-    return page(obs, head, rows, _cursor(args))
+    head = {"symbol": symbol, "kind": kind,
+            "community": str(community.get("id")) if community else None,
+            "community_label": community.get("label") if community else None}
+    return Computed(head, rows)
 
 
-def tool_territory(snap: Snapshot, obs: Observation, args: dict) -> str:
+def tool_territory(snap: Snapshot, args: dict) -> Computed:
     args = _args(args, {"files", "cursor"}, {"files"})
     files = [_file_arg(f) for f in _strings(args, "files")]
     if not files:
@@ -516,26 +704,317 @@ def tool_territory(snap: Snapshot, obs: Observation, args: dict) -> str:
         dependants += [{"rel": "dependant", "path": c, "of": path} for c in sorted(callers)]
     head = {"files": len(files), "communities": sorted(communities)[:SHOWN_CANDIDATES],
             "in_flight": IN_FLIGHT}
-    return page(obs, head, file_rows + dependants, _cursor(args))
+    return Computed(head, file_rows + dependants)
 
 
-HANDLERS: dict[str, Callable[[Snapshot, Observation, Any], str]] = {
+def _text(value: Any) -> str | None:
+    return None if value is None else str(value)[:SHOWN_TEXT]
+
+
+def tool_similar_changes(snap: Snapshot, args: dict) -> Computed:
+    args = _args(args, {"files", "symbols", "cursor"}, set())
+    files = [_file_arg(f) for f in _strings(args, "files")]
+    names = _strings(args, "symbols")
+    if not files and not names:
+        raise ToolInputError("give files, symbols or both")
+    unknown: list[str] = []
+    for name in names:
+        try:
+            files.append(path_of(resolve(snap, name)))
+        except _Unresolved:
+            unknown.append(name)
+    inputs = list(dict.fromkeys(files))
+    head: dict[str, Any] = {"inputs": len(inputs) + len(unknown)}
+    if unknown:
+        head["unknown"] = unknown[:SHOWN_CANDIDATES]
+    if not snap.has_layer("history"):
+        head.update(history="UNKNOWN", note=f"{NO_HISTORY_LAYER}: {NO_HISTORY}")
+        return Computed(head, [])
+    changes: dict[str, dict] = {}
+    fixes: dict[str, dict] = {}
+    co_changes: dict[str, dict] = {}
+    silent: list[str] = []
+    for path in inputs:
+        found = snap.history(path)
+        if not found:
+            silent.append(path)
+        for row in found:
+            kind = row.get("kind")
+            if kind == "change":
+                key = str(row.get("pr") if row.get("pr") is not None else row.get("sha"))
+                have = changes.get(key)
+                if have is None:
+                    touched = [str(f) for f in row.get("files") or []]
+                    have = changes[key] = {
+                        "rel": "change", "pr": row.get("pr"), "title": _text(row.get("title")),
+                        "merged_at": row.get("merged_at"),
+                        "fix_round": bool(row.get("fix_round")), "touches": [],
+                        "files": touched[:SHOWN_FILES], "files_total": len(touched)}
+                    if row.get("pr") is None:
+                        have["sha"] = row.get("sha")
+                if path not in have["touches"]:
+                    have["touches"].append(path)
+            elif kind == "fix":
+                key = str(row.get("sha"))
+                if key not in fixes:
+                    fixes[key] = {"rel": "fix", "sha": row.get("sha"),
+                                  "subject": _text(row.get("subject")), "path": path}
+                    for extra in ("pr", "test"):
+                        if row.get(extra) is not None:
+                            fixes[key][extra] = row[extra]
+            elif kind == "co_change":
+                other = str(row.get("other"))
+                support = int(row.get("support") or 0)
+                if other in inputs or support <= co_changes.get(other, {}).get("support", -1):
+                    continue
+                co_changes[other] = {"rel": "co_change", "path": other, "with": path,
+                                     "support": support, "confidence": row.get("confidence")}
+    for change in changes.values():
+        change["touches"].sort()
+    change_rows = sorted(changes.values(), reverse=True,
+                         key=lambda r: (len(r["touches"]), str(r.get("merged_at") or ""),
+                                        int(r.get("pr") or 0)))
+    co_rows = sorted(co_changes.values(), key=lambda r: (-r["support"],
+                                                         -(r.get("confidence") or 0),
+                                                         r["path"]))
+    rows = list(fixes.values()) + change_rows + co_rows
+    head.update(changes=len(change_rows), fixes=len(fixes), co_changes=len(co_rows))
+    if silent:
+        head["no_history"] = silent[:SHOWN_CANDIDATES]
+    if not rows:
+        head.update(history="UNKNOWN", note=NO_HISTORY)
+    return Computed(head, rows)
+
+
+@functools.lru_cache(maxsize=4096)
+def _glob(pattern: str) -> re.Pattern[str]:
+    """`**` crosses directories, `*` and `?` do not; a trailing `/` is the directory."""
+    if pattern.endswith("/"):
+        pattern += "**"
+    out: list[str] = []
+    index = 0
+    while index < len(pattern):
+        if pattern.startswith("**/", index):
+            out.append("(?:.*/)?")
+            index += 3
+        elif pattern.startswith("**", index):
+            out.append(".*")
+            index += 2
+        elif pattern[index] == "*":
+            out.append("[^/]*")
+            index += 1
+        elif pattern[index] == "?":
+            out.append("[^/]")
+            index += 1
+        else:
+            out.append(re.escape(pattern[index]))
+            index += 1
+    return re.compile("".join(out))
+
+
+def glob_match(pattern: str, path: str) -> bool:
+    clean = pattern.strip()
+    while clean.startswith("./"):
+        clean = clean[2:]
+    return bool(clean) and _glob(clean.lstrip("/")).fullmatch(path) is not None
+
+
+def tool_rules_for(snap: Snapshot, args: dict) -> Computed:
+    args = _args(args, {"files", "cursor"}, {"files"})
+    files = list(dict.fromkeys(_file_arg(f) for f in _strings(args, "files")))
+    if not files:
+        raise ToolInputError("files must name at least one path")
+    head: dict[str, Any] = {"files": len(files)}
+    if not snap.has_layer("rules"):
+        head.update(rules="UNKNOWN", note=f"{NO_RULES_LAYER}: {NO_RULES}")
+        return Computed(head, [])
+    found: dict[tuple[str, str], dict] = {}
+    matched: set[str] = set()
+    for rule in snap.rules():
+        pattern = str(rule.get("glob") or rule.get("path") or "")
+        hits = [f for f in files if glob_match(pattern, f)]
+        if not hits:
+            continue
+        kind = str(rule.get("kind") or "rule")
+        key = (kind, str(rule.get("ref")))
+        have = found.get(key)
+        if have is None:
+            have = found[key] = {"rel": kind, "ref": rule.get("ref"),
+                                 "why": _text(rule.get("why")), "glob": pattern,
+                                 "files": [], "confidence": rule.get("confidence")}
+            if rule.get("evidence") is not None:
+                have["evidence"] = rule["evidence"]
+        have["files"] += [f for f in hits if f not in have["files"]]
+        have["confidence"] = max(have.get("confidence") or 0, rule.get("confidence") or 0)
+        matched.update(hits)
+    blocked = sorted({f for row in found.values() if row["rel"] == "cannot_push"
+                      for f in row["files"]})
+    rows = sorted(found.values(), key=lambda r: (RULE_ORDER.get(r["rel"], len(RULE_ORDER)),
+                                                 -len(r["files"]),
+                                                 -(r.get("confidence") or 0), str(r["ref"])))
+    for row in rows:
+        row["files_total"] = len(row["files"])
+        row["files"] = sorted(row["files"])[:SHOWN_FILES]
+    head.update(cannot_push=blocked[:SHOWN_CANDIDATES],
+                guards=sum(1 for r in rows if r["rel"] == "guard"),
+                docs=sum(1 for r in rows if r["rel"] == "doc"))
+    if len(blocked) > SHOWN_CANDIDATES:
+        head["cannot_push_count"] = len(blocked)
+    silent = [f for f in files if f not in matched]
+    if silent:
+        head["no_rules"] = silent[:SHOWN_CANDIDATES]
+    if not rows:
+        head.update(rules="UNKNOWN", note=NO_RULES)
+    return Computed(head, rows)
+
+
+def _roots(snap: Snapshot, target: str) -> tuple[list[str], dict[str, Any]]:
+    """(the symbols a walk starts from, the head naming them): every symbol a
+    file defines when `target` is an indexed file, else the one it resolves to."""
+    if "#" not in target and snap.file(_file_arg(target)) is not None:
+        target = _file_arg(target)
+        roots = [s["id"] for s in snap.symbols_in(target) if s.get("kind") != "local"]
+        return roots, {"file": target, "symbols": len(roots)}
+    root = resolve(snap, target)
+    return [root], {"symbol": root}
+
+
+def _walk(snap: Snapshot, roots: list[str], depth: int, upstream: bool,
+          budget: int) -> tuple[list[dict], int, bool]:
+    """(edges breadth-first, symbols reached, truncated) of one direction.
+
+    Import edges are not calls and are left out, as `impact` leaves them. As in
+    `impact`, the first level is always read whole and deeper levels stop once
+    `budget` symbols have been reached.
+    """
+    seen = set(roots)
+    edges: list[dict] = []
+    frontier = list(roots)
+    reached = 0
+    truncated = False
+    near, far = ("to", "from") if upstream else ("from", "to")
+    for level in range(1, depth + 1):
+        following: list[str] = []
+        for node in frontier:
+            found = snap.callers(node) if upstream else snap.callees(node)
+            for edge in sorted(found, key=lambda e: (str(e.get(far)), e.get("line") or 0,
+                                                     str(e.get("kind")))):
+                if edge.get("kind") == "import":
+                    continue
+                other = str(edge.get(far))
+                if other not in seen:
+                    if level > 1 and reached >= budget:
+                        truncated = True
+                        break
+                    seen.add(other)
+                    reached += 1
+                    following.append(other)
+                edges.append({near: node, far: other, "kind": edge.get("kind"),
+                              "depth": level, "confidence": edge.get("confidence")})
+        frontier = following
+    return [{"from": e["from"], "to": e["to"], "kind": e["kind"], "depth": e["depth"],
+             "confidence": e["confidence"]} for e in edges], reached, truncated
+
+
+def tool_call_graph(snap: Snapshot, args: dict) -> Computed:
+    args = _args(args, {"symbol", "direction", "depth", "cursor"}, {"symbol"})
+    target = _string(args, "symbol")
+    direction = args.get("direction", "both")
+    if direction not in CALL_GRAPH_DIRECTIONS:
+        raise ToolInputError(f"direction must be one of {', '.join(CALL_GRAPH_DIRECTIONS)}")
+    depth = _int(args, "depth", CALL_GRAPH_DEFAULT_DEPTH, 1, IMPACT_MAX_DEPTH)
+    roots, head = _roots(snap, target)
+    rows: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+    budget = IMPACT_MAX_NODES
+    truncated = False
+    callers = 0
+    for upstream in ((True, False) if direction == "both" else (direction == "callers",)):
+        edges, reached, cut = _walk(snap, roots, depth, upstream, budget)
+        budget = max(budget - reached, 0)
+        truncated = truncated or cut
+        for edge in edges:
+            key = (edge["from"], edge["to"], str(edge["kind"]))
+            if key not in seen:
+                seen.add(key)
+                rows.append(edge)
+        if upstream:
+            callers = len(edges)
+    nodes = set(roots) | {e["from"] for e in rows} | {e["to"] for e in rows}
+    head.update(direction=direction, depth=depth, nodes=len(nodes), edges=len(rows),
+                truncated=truncated)
+    if direction != "callees" and not callers:
+        head["callers"] = "UNKNOWN"
+        head["note"] = UNKNOWN_CALLERS
+    return Computed(head, rows)
+
+
+def tool_index(snap: Snapshot, args: dict) -> Computed:
+    args = _args(args, {"layer", "key", "path", "cursor"}, {"layer"})
+    layer = args.get("layer")
+    if layer not in ALL_LAYERS:
+        raise ToolInputError(f"layer must be one of {', '.join(ALL_LAYERS)}")
+    if "key" in args and "path" in args:
+        raise ToolInputError("give key or path, not both")
+    head: dict[str, Any] = {"layer": layer}
+    if "path" in args:
+        if layer == DOCUMENT_LAYER:
+            raise ToolInputError("the document layer is keyed by section: pass key")
+        path = _file_arg(_string(args, "path"))
+        key = module_of(path)
+        head.update(path=path, key=key)
+    elif "key" in args:
+        key = _string(args, "key")
+        head["key"] = key
+    else:
+        if not snap.has_layer(layer):
+            head.update(keys=0, note=NO_LAYER.format(layer=layer))
+            return Computed(head, [])
+        keys = snap.keys(layer)
+        head["keys"] = len(keys)
+
+        def count(key: str) -> dict:
+            records = (snap.entry(layer, key) or {}).get("records")
+            return {"key": key, "rows": records if isinstance(records, int) else "UNKNOWN"}
+
+        return Computed(head, keys, count)
+    if not snap.has_layer(layer):
+        raise ToolInputError(NO_LAYER.format(layer=layer))
+    if snap.entry(layer, key) is None:
+        raise ToolInputError(f"the {layer} layer has no shard {key!r}; call index with "
+                             "the layer alone for its keys")
+    return Computed(head, snap.shard(layer, key).rows)
+
+
+HANDLERS: dict[str, Callable[[Snapshot, Any], Computed]] = {
     "search": tool_search,
     "context": tool_context,
     "impact": tool_impact,
     "tests_for": tool_tests_for,
     "neighbours": tool_neighbours,
     "territory": tool_territory,
+    "similar_changes": tool_similar_changes,
+    "rules_for": tool_rules_for,
+    "call_graph": tool_call_graph,
+    "index": tool_index,
 }
+
+
+def compute(name: str, snap: Snapshot, arguments: Any) -> Computed:
+    """One tool's answer before paging, from the snapshot and the arguments
+    alone. Raises `ToolInputError`, `_Unresolved` or `SnapshotError`."""
+    handler = HANDLERS.get(name)
+    if handler is None:
+        raise ToolInputError(f"no tool {name!r}; the tools are {', '.join(TOOL_NAMES)}")
+    return handler(snap, arguments)
 
 
 def call(snap: Snapshot, obs: Observation, name: str, arguments: Any) -> tuple[str, bool]:
     """(answer text, is_error). Every outcome is an answer with freshness first."""
-    handler = HANDLERS.get(name)
-    if handler is None:
-        return error_answer(obs, f"no tool {name!r}; the tools are {', '.join(TOOL_NAMES)}"), True
     try:
-        return handler(snap, obs, arguments), False
+        computed = compute(name, snap, arguments)
+        return page(obs, computed.head, computed.rows, _cursor(arguments or {}),
+                    computed.expand), False
     except _Unresolved as exc:
         return error_answer(obs, str(exc), exc.candidates), True
     except (ToolInputError, SnapshotError) as exc:

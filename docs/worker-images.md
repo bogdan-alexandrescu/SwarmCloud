@@ -224,6 +224,64 @@ ships a clean release first can join the default build alone, as trivy did.
 Turning both on adds about 52 MB (tofu 1.13.1 34.7, tflint 0.64.0 16.8). Why each still fails the scan (last re-scanned 2026-10-09) is recorded beside
 its pin in the Dockerfile.
 
+## Where an agent's caches go (CACHE-SCRATCH)
+
+**Why.** On 2026-10-15 three claude-code tasks were evicted twice each with
+`Usage of EmptyDir volume "workspace" exceeds the limit "5Gi"` and were not
+retried: task_41ae250f and task_c6a07695 (CI-fix rounds on PR 1338) and
+task_44c61c77 (BROWSER-CLASS implement). The 5 GiB workspace volume held the
+clone and the outputs, and also every cache the agent's tools fill, because the
+agent's HOME (`work/`) and TMPDIR were both inside it: uv's cache, npm's cache,
+pip's, terraform's providers, and every pytest/xdist temp tree. A disk
+`emptyDir`'s `sizeLimit` is not a filesystem size -- the write succeeds and
+kubelet evicts the whole pod on its next scan, with no checkpoint and no park.
+
+**What the worker does now** (`apps/agent-worker/agent_worker/cachedirs.py`).
+Before the runner starts it sets `UV_CACHE_DIR`, `npm_config_cache`,
+`PIP_CACHE_DIR`, `TF_PLUGIN_CACHE_DIR`, `XDG_CACHE_HOME` and `TMPDIR` to
+directories under one per-attempt cache directory, and the CLI and generic
+runners carry them on to the agent by exact name. HOME stays `work/`: the CLI's
+own state is the agent's and is checkpointed with it.
+
+* **GKE.** The pod has a `cache` volume of its own, mounted at `/cache`. The
+  dispatcher names it to the worker as `SWARM_CACHE_ROOT`; the attempt's
+  caches are `/cache/<attempt>/`. A full cache is the cache volume's limit,
+  never the workspace's. Since CACHE-PVC (owner decision 2026-10-15) it is a
+  **20 GiB pd-balanced network disk**: a generic ephemeral volume on the
+  `swarm-cache-pd-balanced` StorageClass
+  (`kubernetes/storage/cache-storage-class.yaml`), ReadWriteOnce, created by
+  the ephemeral-volume controller with the pod and deleted with it
+  (`CACHE_STORAGE_CLASS`, `CACHE_VOLUME_GIB` in
+  `apps/scheduler/scheduler/dispatch.py`). **Why:** CACHE-SCRATCH's first
+  cache was a 2 GiB local emptyDir, and task_247c87a8714c4977921a was evicted
+  on it twice (`EmptyDir volume "cache" exceeds 2Gi`); Autopilot caps a pod's
+  ephemeral storage at 10 GiB and the split was already 10. A PVC is not
+  ephemeral-storage, so a full cache is now ENOSPC in the tool that filled it,
+  not an eviction, and its 2 local GiB went back to `/tmp` (3, 1 GiB above the
+  checkpoint cap) and HOME. **The trade:** the disk's create-and-attach is on
+  every GKE start's critical path, warm or cold
+  ([browser-startup-speed.md](browser-startup-speed.md) §11.1, unmeasured as of
+  the change), and a disk lives as long as its pod, which a finished Job keeps
+  for an hour, so the tenant quota admits one claim per Job. `uv` cannot hard-link
+  a venv from a cache on another volume, so it copies (`UV_LINK_MODE=copy`):
+  the checkout's `.venv` is the size it was, and what leaves the workspace is
+  everything else the caches hold -- npm's tarballs, downloads and builds,
+  terraform's providers, and all of TMPDIR.
+* **Cloud Run.** Every volume is a memory tmpfs and the provider cannot give a
+  Job a second disk, so there is no cache volume and no `SWARM_CACHE_ROOT`.
+  The cache directory is `<attempt>/cache/`, inside the workspace tmpfs, where
+  it counts honestly against the same limit, and caches are kept small:
+  `UV_NO_CACHE=1` and `PIP_NO_CACHE_DIR=1`. npm has no no-cache mode, so its
+  cache stays, in that tmpfs, counted.
+
+**Never checkpointed, never uploaded, never carried over.** The cache directory
+is outside `work/` (a sibling on Cloud Run, another volume on GKE), so neither
+the checkpoint's walk of `work/` nor the artifact upload's walk of `artifacts/`
+reaches it. It is emptied when the attempt's workspace is created and removed
+when it is destroyed. Checkpointing (invariant 8) covers `work/` exactly as
+before; the `TOOL_CACHES` exclusions in `checkpoint.py` still apply to
+anything a tool writes under HOME regardless.
+
 ## Adding to a worker image
 
 Measure what you add with `scripts/image-sizes.sh --layers` after it ships, and

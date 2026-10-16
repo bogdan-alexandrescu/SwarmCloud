@@ -47,6 +47,11 @@ _DEPLOYMENT_VARS = (
     # would put X-Swarm-Tenant on every request a test makes.
     "SWARM_TENANT",
     "XDG_CONFIG_HOME",
+    # Which Claude Code session the bridge serves (SC-SESSION-SCOPE): set on
+    # the machine -- every Claude Code session sets the first -- it would tag
+    # every submission a test makes and scope every attach and check to it.
+    "CLAUDE_CODE_SESSION_ID",
+    "SWARM_SC_SESSION_ID",
 )
 
 
@@ -90,3 +95,16 @@ def _fresh_since_handles():
     yield
     if handles is not None:
         handles.clear()
+
+
+@pytest.fixture
+def claude_session(monkeypatch) -> str:
+    """This test's Claude Code session (SC-SESSION-SCOPE): set where Claude
+    Code sets it, so the bridge tags what it submits and scopes what it
+    attaches and checks to it. A fresh id per test."""
+    import uuid
+
+    sid = str(uuid.uuid4())
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", sid)
+    return sid
+

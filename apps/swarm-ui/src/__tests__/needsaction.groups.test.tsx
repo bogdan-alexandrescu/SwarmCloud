@@ -44,7 +44,7 @@ const { CapacityScreen } = await import('../Capacity')
 
 const CLASSES: ResourceClasses = {
   standard: { name: 'standard', cpu: 4, memory_gib: 8, disk_gib: 4, units: 1 },
-  browser: { name: 'browser', cpu: 8, memory_gib: 16, disk_gib: 8, units: 2 },
+  browser: { name: 'browser', cpu: 4, memory_gib: 8, disk_gib: 4, units: 1 },
   large: { name: 'large', cpu: 8, memory_gib: 32, disk_gib: 16, units: 4 },
 }
 
@@ -56,11 +56,15 @@ function waiting(over: Partial<Task>): Task {
   return task({ state: 'READY', started_at: null, completed_at: null, ...over })
 }
 
-/** A browser task (2 units) under `resource:browser` at limit 1: never admitted at this limit. */
+/**
+ * A large task (4 units) under `resource:large` at limit 1: never admitted at
+ * this limit. It was a browser task (2 units) under `resource:browser` until
+ * contract request 79 made the browser class 1 unit, which a limit of 1 admits.
+ */
 const TOO_SMALL = waiting({
   id: 'tsk_toosmall0',
-  resource_class: 'browser',
-  blocked_by: [{ pool: 'resource:browser', reason: 'RESOURCE_CLASS_LIMIT', limit: 1, active: 0 }],
+  resource_class: 'large',
+  blocked_by: [{ pool: 'resource:large', reason: 'RESOURCE_CLASS_LIMIT', limit: 1, active: 0 }],
 })
 
 /** A task behind a pool with no limit set (#374). */
@@ -88,7 +92,7 @@ function taskIds(el: HTMLElement): string[] {
 
 describe('taskGroup: the Waiting tab split, by blockerGroup with the task units', () => {
   it('files below-units and limit-unset under needs action, a full pool under no room', () => {
-    expect(taskGroup(TOO_SMALL, 2)).toBe('needs_action')
+    expect(taskGroup(TOO_SMALL, 4)).toBe('needs_action')
     expect(taskGroup(UNSET_TASK, 1)).toBe('needs_action')
     expect(taskGroup(FULL, 1)).toBe('no_room')
     // The control: the same limit-1 pool for a task it fits under is a wait.
@@ -148,7 +152,7 @@ function pool(name: string, over: Partial<Pool> = {}): Pool {
 const POOLS: Pool[] = [
   pool('global', { active: 8, available: 0 }), // full: waiting is the answer
   pool('tenant:eng', { hard_limit: null, effective_limit: null, available: null }), // no limit set
-  pool('resource:browser', { hard_limit: 1, effective_limit: 1, available: 1 }), // below one browser task
+  pool('resource:large', { hard_limit: 1, effective_limit: 1, available: 1 }), // below one large task
   pool('resource:standard', { hard_limit: 0, effective_limit: 0, available: 0 }), // set to zero
   pool('runner:codex', { enabled: false }), // paused
   pool('provider:anthropic', { hard_limit: 0, effective_limit: 0, available: 0 }), // quota zero: names nobody
@@ -158,7 +162,7 @@ describe('poolGroup: the same rule, read off a pool', () => {
   it('files paused, set-to-zero, limit-unset and below-units pools under needs action', () => {
     const byName = new Map(POOLS.map((p) => [p.name, p]))
     expect(poolGroup(byName.get('tenant:eng')!)).toBe('needs_action')
-    expect(poolGroup(byName.get('resource:browser')!, 2)).toBe('needs_action')
+    expect(poolGroup(byName.get('resource:large')!, 4)).toBe('needs_action')
     expect(poolGroup(byName.get('resource:standard')!)).toBe('needs_action')
     expect(poolGroup(byName.get('runner:codex')!)).toBe('needs_action')
     expect(poolGroup(byName.get('global')!)).not.toBe('needs_action')
@@ -167,7 +171,7 @@ describe('poolGroup: the same rule, read off a pool', () => {
     expect(poolGroup(pool('global', { active: 4, effective_limit: 4, available: 0 }))).not.toBe('needs_action')
     expect(poolGroup(byName.get('provider:anthropic')!)).not.toBe('needs_action')
     // Without the class weight a limit of 1 is not known to be too small.
-    expect(poolGroup(byName.get('resource:browser')!, null)).not.toBe('needs_action')
+    expect(poolGroup(byName.get('resource:large')!, null)).not.toBe('needs_action')
   })
 })
 
@@ -182,7 +186,7 @@ describe('Capacity puts the pools that need a person under "Needs action" at the
     const names = (el: Element) => [...el.querySelectorAll('tbody .ctl-sub')].map((s) => s.textContent ?? '').sort()
     await waitFor(() => {
       const top = section(/^Needs action/)
-      expect(names(top)).toEqual(['resource:browser', 'resource:standard', 'runner:codex', 'tenant:eng'])
+      expect(names(top)).toEqual(['resource:large', 'resource:standard', 'runner:codex', 'tenant:eng'])
     })
     const top = section(/^Needs action/)
     // It is the first group on the board.

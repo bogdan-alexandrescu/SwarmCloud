@@ -407,6 +407,8 @@ class FakeTransaction:
         for op, ref, data in self._buffer:
             if op == "set":
                 ref.set(data)
+            elif op == "set_merge":
+                ref.set(data, merge=True)
             elif op == "update":
                 ref.update(data)
             else:
@@ -431,7 +433,10 @@ class FakeTransaction:
         return ref.stream()
 
     def set(self, ref: FakeDocumentRef, data: dict[str, Any], merge: bool = False) -> None:
-        self._buffer.append(("set", ref, copy.deepcopy(data)))
+        # `merge=True` keeps the document's other fields, as Firestore does:
+        # `workspace_settings/{tenant_id}` holds one field per feature, and a
+        # fake that replaced the document would hide one feature erasing another.
+        self._buffer.append(("set_merge" if merge else "set", ref, copy.deepcopy(data)))
 
     def update(self, ref: FakeDocumentRef, data: dict[str, Any]) -> None:
         self._buffer.append(("update", ref, copy.deepcopy(data)))

@@ -44,11 +44,16 @@ from ..deps import AppContext, admin_auth, get_context, paged_limit
 from ..errors import Forbidden, NotFound, ValidationFailed
 from ..heartbeats import heartbeat_grace_seconds
 from ..mergewake import wake_tenant
+from ..prgate import wake_tenant as wake_after_prs
+from ..mergetrain import tick_tenant as tick_merge_trains
 from ..purge import HistoryPurge, parse_query
 from ..verdictpublish import on_task_finished
 from ..waker import TASK_FINISHED
 from ..repoindex import RepoIndex
+from ..repositories import RepositoryPush
+from ..brokerclient import AccountPool
 from ..schemas import (
+    AdaptiveTargetRequest,
     DrainRequest,
     HistoryPurgeRequest,
     LimitRequest,
@@ -61,6 +66,7 @@ from ..schemas import (
 from ..task_accounts import accounts_for
 from ..task_input import masking_for
 from ..validation import known_providers
+from .accounts import account_pool
 from .browser_logins import browser_vault
 from .runs import advance_tenant_runs
 
@@ -798,6 +804,43 @@ def list_quota(
     }
 
 
+@router.put("/quota/{provider}/{tenant_id}/adaptive-target")
+def reset_adaptive_target(
+    provider: str,
+    tenant_id: str,
+    body: AdaptiveTargetRequest,
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+    broker: AccountPool = Depends(account_pool),
+) -> dict:
+    """Reset a throttled tenant's AIMD target, through the quota broker.
+
+    QUOTA-RESET (owner, 2026-10-14). One 429 halves `adaptive_target` and the
+    climb back is +1 per 20 consecutive successes, so a tenant can sit far
+    below the ceiling an admin chose long after the cause is gone. The broker
+    is the only writer of quota documents, so this route PROXIES: it checks
+    the caller is a platform admin (`admin_auth`; not a pool admin -- this
+    route is not in `POOL_ADMIN_ROUTES`), that the provider and tenant exist,
+    and forwards the admin's verified email as `requested_by`. The broker
+    clamps to `configured_hard_max`, refuses an EXHAUSTED tenant unless
+    `clear_cooldown`, and audits it in `quota_audit`.
+    docs/runbooks/quota-throttled-tenant.md.
+    """
+    name = _check_provider(provider)
+    if ctx.store.get_tenant(tenant_id) is None:
+        raise NotFound(f"tenant {tenant_id!r} not found")
+    result = broker.set_adaptive_target(
+        name,
+        tenant_id,
+        target=body.target,
+        reason=body.reason,
+        clear_cooldown=body.clear_cooldown,
+        requested_by=auth.email,
+    )
+    ctx.metrics.admin_actions.labels(action="quota_adaptive_target_reset").inc()
+    return result
+
+
 def _provider_pool_name(provider: str, tenant_id: str) -> str:
     # The name `swarm_common.models.pool_names_for` gives a profile's
     # per-tenant provider pool.
@@ -949,6 +992,21 @@ def wake_merges(
     # how its fix step ended (`cifix.postback_tenant`); it never moves a task.
     postback = postback_ci_fixes(ctx, tenant_id, limit=paged_limit(ctx, limit))
     ctx.metrics.admin_actions.labels(action="ci_fix_postback").inc()
+    # Lane SPEED-D3 rides it too, for the same reasons: workflows submitted
+    # with `after` wait, PARKED, for pull requests of their own repository to
+    # merge; this reads each with the same tenant's token and marks the gate
+    # merged or closed (`prgate.wake_tenant`). It never moves a task: the
+    # scheduler's dependency sweep promotes or ends the root.
+    gates = wake_after_prs(ctx, tenant_id, limit=paged_limit(ctx, limit))
+    ctx.metrics.admin_actions.labels(action="after_prs_wake").inc()
+    # The merge train coordinator (TRAIN-WS, docs/merge-trains.md §4) rides
+    # this tick too, for the reason the post-back does: the same tenant, the
+    # same `-git` token and writer, the same minute. It composes, tests,
+    # lands and ejects the tenant's trains and marks each concluded step's
+    # park; it never moves a task. A tenant with no train entries reads two
+    # empty queries and nothing else.
+    trains = tick_merge_trains(ctx, tenant_id, limit=paged_limit(ctx, limit))
+    ctx.metrics.admin_actions.labels(action="merge_train").inc()
     return {
         "tenant_id": tenant_id,
         "report": report.to_api(),
@@ -957,6 +1015,10 @@ def wake_merges(
         "failures": report.failures,
         "ci_fix": postback.to_api(),
         "ci_fix_failures": postback.failures,
+        "after_prs": gates.to_api(),
+        "after_prs_failures": gates.failures,
+        "merge_train": trains.to_api(),
+        "merge_train_failures": trains.failures,
     }
 
 
@@ -1052,6 +1114,52 @@ def poll_repositories(
         # healthy tick returns an empty list, which is an answer.
         "failures": report.failures,
     }
+
+
+@router.post("/repositories/push")
+def push_repository(
+    body: RepositoryPush,
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """A verified push to a registered repository's default branch (graph-service.md §6.2).
+
+    Called by the public receiver `swarm-github-hooks` (lane GS-HOOKS) after it
+    has checked `X-Hub-Signature-256`, deduped `X-GitHub-Delivery` and kept
+    only a non-deleting push to `refs/heads/<default_branch>`. It forwards
+    `{forge, full_name}` and nothing else; `RepositoryPush` refuses any other
+    field, so a payload's `after` sha is never read or stored.
+
+    Every registration of that repository, in every workspace that registered
+    it, is polled now through the poll's own `RepoIndex._poll_one`
+    (`RepoIndex.push`): its head re-read with that workspace's credential, the
+    throttle and the in-flight rule applied, a run queued in that tenant as
+    the registration's creator (`registration_owner_auth`). Only registrations
+    whose `on_change` is `webhook` are read; the five-minute poll stays the
+    fallback for a missed delivery (owner decision 2).
+
+    The answer carries counts and, for a registration that could not be
+    polled, its opaque `repo_id` and a code: never a tenant id, a head or a
+    name, since the receiver needs none of them.
+
+    ONE IDENTITY, as `poll_repositories` admits only the scheduler's: the
+    rollup sweeper (§6.2 step 4). Not an admin and not a member: a push is
+    forwarded by the receiver, never typed by a person.
+    """
+    if not auth.is_rollup_sweeper:
+        raise Forbidden(
+            "POST /v1/admin/repositories/push is the swarm-github-hooks receiver's; "
+            "a person who wants an index now uses Index now on the repository"
+        )
+    service = RepoIndex.from_context(ctx)
+    owner, repo = body.owner_repo
+    report = service.push(
+        body.forge, owner, repo,
+        owner_auth_for=lambda tenant_id: registration_owner_auth(ctx, tenant_id),
+        page_size=paged_limit(ctx, None),
+    )
+    ctx.metrics.admin_actions.labels(action="repo_index_push").inc()
+    return {"report": report.to_api(), "failures": report.failures}
 
 
 def _push_fields(envelope: Mapping[str, Any]) -> dict[str, str]:

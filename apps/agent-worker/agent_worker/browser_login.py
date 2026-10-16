@@ -211,6 +211,14 @@ def carry_secret_name(tenant_id: str, workflow_id: str) -> str:
     return f"{_prefix(tenant_id)}wf-{workflow_id}"
 
 
+def park_secret_name(tenant_id: str, task_id: str) -> str:
+    """Where a park keeps its browser's session for the same task's resumed
+    attempt (§5.5.2, issue #1362): one per task, a personal tenant's only."""
+    if not isinstance(task_id, str) or not _SECRET_PART.match(task_id):
+        raise ValueError("the task id cannot form a secret id")
+    return f"{_prefix(tenant_id)}park-{task_id}"
+
+
 def login_secret_name(tenant_id: str, name: str) -> str:
     if not isinstance(name, str) or not _LOGIN_NAME.match(name):
         raise ValueError("not a browser login name")

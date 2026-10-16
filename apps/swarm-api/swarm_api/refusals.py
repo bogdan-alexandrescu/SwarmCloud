@@ -219,6 +219,121 @@ SWITCHES: dict[str, Switch] = {
         "naming the tenant the call resolved to, instead of a bare not found. On once swarm-mcp "
         "and the coordinator callers that re-read with the launch's tenant are deployed",
     ),
+    # Lane EGRESS-SVC (docs/browser-egress.md §2.2): the attempt egress ticket
+    # route. Off, each is answered with the same status and message under the
+    # established code (`conflict` 409 or `forbidden` 403); egress_unavailable
+    # is a 503 and not a refusal. Turn on with REFUSAL_<CODE>=on once
+    # BROWSER_EGRESS_ENABLED is on and the gate reads the codes.
+    "egress_off": Switch(
+        code="egress_off",
+        why="the egress-ticket route answers 409 egress_off naming disabled, tenant_off or "
+        "profile_off. Off, it answers 409 conflict with the same message. On once the "
+        "browser gate in the worker image reads the code to run direct",
+    ),
+    "egress_fenced": Switch(
+        code="egress_fenced",
+        why="the egress-ticket route answers 409 egress_fenced when the task is not RUNNING "
+        "under the attempt's live lease. Off, 409 conflict with the same message. On with "
+        "egress_off",
+    ),
+    "egress_unproven": Switch(
+        code="egress_unproven",
+        why="the egress-ticket route answers 403 egress_unproven when the attempt proof does "
+        "not verify. Off, 403 forbidden with the same message. On with egress_off",
+    ),
+    "egress_unauthenticated": Switch(
+        code="egress_unauthenticated",
+        why="the egress-ticket route answers 403 egress_unauthenticated for a caller that is "
+        "not the tenant's worker service account. Off, 403 forbidden with the same message. "
+        "On with egress_off",
+    ),
+    # Lane SEC-INJECT-A (docs/design/workspace-secrets.md §3.5): the attempt
+    # TypeSafe ticket route. Off, each is answered with the same status and
+    # message under the established code (`conflict` 409 or `forbidden` 403),
+    # and NOTHING is minted either way; typesafe_unavailable is a 503 and not
+    # a refusal. Turn on with REFUSAL_<CODE>=on once the worker
+    # (SEC-MIGRATE-TYPESAFE) reads the codes.
+    "typesafe_fenced": Switch(
+        code="typesafe_fenced",
+        why="the typesafe-ticket route answers 409 typesafe_fenced when the task is not "
+        "RUNNING under the attempt's live lease. Off, 409 conflict with the same message. On "
+        "once the worker's jev launch reads the code",
+    ),
+    "typesafe_unproven": Switch(
+        code="typesafe_unproven",
+        why="the typesafe-ticket route answers 403 typesafe_unproven when the attempt proof "
+        "does not verify. Off, 403 forbidden with the same message. On with typesafe_fenced",
+    ),
+    "typesafe_unauthenticated": Switch(
+        code="typesafe_unauthenticated",
+        why="the typesafe-ticket route answers 403 typesafe_unauthenticated for a caller that "
+        "is not the tenant's worker service account. Off, 403 forbidden with the same "
+        "message. On with typesafe_fenced",
+    ),
+    "typesafe_backend_off": Switch(
+        code="typesafe_backend_off",
+        why="the typesafe-ticket route answers 403 typesafe_backend_off when the workspace's "
+        "judgment backend is not TypeSafe. Off, 403 forbidden with the same message. On with "
+        "typesafe_fenced",
+    ),
+    "typesafe_no_key": Switch(
+        code="typesafe_no_key",
+        why="the typesafe-ticket route answers 403 typesafe_no_key when neither the submitter "
+        "nor the workspace has a TypeSafe key set. Off, 403 forbidden with the same message. "
+        "On with typesafe_fenced",
+    ),
+    # The one-time key-form link (KEYS-API, docs/provider-keys.md §3). The
+    # link proves only that a write came through the /sc flow; the caller's
+    # own console session authorises it, and the admin and personal-workspace
+    # checks run before it whatever this switch says. Off, a bad link is
+    # logged and the write goes through on that session, as a direct visit to
+    # the settings page does.
+    "KEY_LINK_INVALID": Switch(
+        code="KEY_LINK_INVALID",
+        why="a key write that presents a one-time link refuses one that is unknown, used, "
+        "expired, minted by someone else or for another scope. On once the console's "
+        "settings/keys form (the swarm-ui lane) sends the link token it was opened with",
+    ),
+    # Lane TRAIN-WS (docs/merge-trains.md §3.2): a member of a workspace who
+    # is neither its owner nor a platform admin changing its merge settings.
+    # Off, the change goes through and is audited under the caller's name. A
+    # caller who is not a member at all is the established 404 either way.
+    "merge_settings_owner_required": Switch(
+        code="merge_settings_owner_required",
+        why="a member of a workspace who is neither its owner (a personal workspace's "
+        "principal) nor a platform admin is refused 403 when changing its merge settings. "
+        "On once the console's Settings > Workspace > Merging (TRAIN-WS-UI) offers the "
+        "change only to those who may make it, and the log shows no member relying on it",
+    ),
+    # Lane CTXQ-SET (codeintel.py): a member of a workspace who is neither its
+    # owner nor a platform admin changing its code-intelligence setting, or a
+    # repository's `context` override. SHIPS ON (default=True) by owner
+    # decision 2026-10-14, unlike a new refusal's usual report-only start:
+    # this setting decides whether code goes to Jev. Set
+    # REFUSAL_CODE_INTELLIGENCE_OWNER_REQUIRED=off to let the change through
+    # (audited under the caller's name). A non-member is the established 404.
+    "code_intelligence_owner_required": Switch(
+        code="code_intelligence_owner_required",
+        why="a member of a workspace who is neither its owner (a personal workspace's "
+        "principal) nor a platform admin is refused 403 when changing its code-intelligence "
+        "setting or a repository's context override. Ships on by owner decision 2026-10-14 "
+        "because this setting decides whether code goes to Jev; the console offers the change "
+        "only to those who may make it (the setting's can_edit)",
+        default=True,
+    ),
+    # The browser tool a submission names (BSTATUS-API, contract request 77):
+    # `jev` with no TypeSafe key for the submitter or the tenant, or with no
+    # jev in the image. Off, the task runs and its runner falls back to
+    # Playwright, which the live session's `browser.jev.reason` says.
+    "browser_tool_unavailable": Switch(
+        code="browser_tool_unavailable",
+        why="a claude-code-browser submission naming browser_tool jev is refused when jev is "
+        "not installed, or when the workspace's judgment backend is TypeSafe and no TypeSafe "
+        "key resolves for its submitter or tenant (the default Internal Jev and Internal Laya "
+        "need no key and are never refused for one). On once the Submit form disables Jev "
+        "when GET /v1/provider-keys/typesafe resolves none on the TypeSafe backend, so the "
+        "form never offers what is refused",
+    ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",
         why="a schedule pauses after N failed or refused firings in a row (§4.4, default "

@@ -90,15 +90,19 @@ def test_the_profile_is_claude_code_on_the_browser_image():
         if getattr(profile, f.name) != getattr(claude, f.name)
     )
     # `live_browser` is contract request 71 (LB-D, #1030): the one live profile.
-    assert differ == ["image", "live_browser", "name", "resource_class"], (
+    # `inputs` is contract request 77 (BSTATUS-API): claude-code's plus `browser_tool`.
+    assert differ == ["image", "inputs", "live_browser", "name", "resource_class"], (
         f"the owner's decision was claude-code with its name, image and class changed, "
-        f"and live_browser set (request 71); {differ} differ"
+        f"live_browser set (request 71) and browser_tool declared (request 77); {differ} differ"
     )
+    extra = dict(profile.inputs)
+    assert extra.pop("browser_tool").choices == ("auto", "playwright", "dev-browser", "jev")
+    assert extra == dict(claude.inputs)
     assert profile.live_browser is True
     assert profile.image == "agent-runtime-browser"
     assert profile.image == RUNNER_PROFILES["browser"].image
     assert profile.resource_class == "browser"
-    assert RESOURCE_CLASSES["browser"].units == 2
+    assert RESOURCE_CLASSES["browser"].units == 1  # contract request 79
     assert profile.runner_argv == ("python", "-m", "agent_worker.runners.claude_code")
     assert profile.available
     assert DOCKERFILE.is_file()
@@ -122,8 +126,9 @@ def test_it_is_selectable_by_name():
 
 
 def test_it_accepts_the_issue_input_like_claude_code():
-    assert set(RUNNER_PROFILES[PROFILE].inputs) == {"issue"}
-    assert RUNNER_PROFILES[PROFILE].inputs == RUNNER_PROFILES["claude-code"].inputs
+    # And `browser_tool` besides, by contract request 77 (BSTATUS-API).
+    assert set(RUNNER_PROFILES[PROFILE].inputs) == {"issue", "browser_tool"}
+    assert RUNNER_PROFILES[PROFILE].inputs["issue"] == RUNNER_PROFILES["claude-code"].inputs["issue"]
     assert check_inputs(RUNNER_PROFILES[PROFILE], {"issue": 42}) == {"issue": 42}
     assert check_inputs(RUNNER_PROFILES[PROFILE], {"issue": 42.0}) == {"issue": 42}
     with pytest.raises(InputRefused):
@@ -233,18 +238,41 @@ def test_the_agents_bash_tool_inherits_swarm_handoff_and_the_cdp_endpoint(monkey
     `swarm-handoff` in the Bash tool found no spool. The CLI's environment is
     what its Bash tool inherits; the hand-off's variables are now in it."""
     from agent_worker import handoff
-    from agent_worker.runners import claude_code
 
     spool = tmp_path / ".swarm-handoff"
     monkeypatch.setenv(handoff.HANDOFF_ENV, str(spool))
     monkeypatch.setenv("SWARM_CDP_ENDPOINT", "http://127.0.0.1:9223")
     monkeypatch.setenv("SWARM_BROWSER_UPLOADS", "/run/swarm/uploads")
+    # JUDGE-SELECT's two, so every name the hand-off passes is present.
+    monkeypatch.setenv("SWARM_JEV_BACKEND", "internal-laya")
+    monkeypatch.setenv("JEV_API_URL", "https://decision-api-staging.taile0bda9.ts.net/laya/v1/decide")
     seen = _run_body(monkeypatch, tmp_path, "/opt/playwright")
     assert seen["env"]["SWARM_HANDOFF"] == str(spool)
     assert seen["env"]["SWARM_CDP_ENDPOINT"] == "http://127.0.0.1:9223"
     assert seen["env"]["SWARM_BROWSER_UPLOADS"] == "/run/swarm/uploads"
     # Exactly the hand-off's own names: what the worker hands the agent.
     assert {handoff.HANDOFF_ENV, *handoff.AGENT_PASSTHROUGH_ENV} <= set(seen["env"])
+
+
+def test_the_judgment_backend_and_its_url_reach_the_cli_and_no_typesafe_key(monkeypatch, tmp_path):
+    """JUDGE-SELECT (owner decision 2026-10-14). The dispatcher names the
+    workspace's judgment backend (SWARM_JEV_BACKEND) and, for an internal one,
+    the decision API's tailnet JEV_API_URL; the CLI's environment is what its MCP servers
+    inherit, so jev-browser-mcp reads both there. Nothing here hands the CLI a
+    TypeSafe key: an internal backend needs none."""
+    from agent_worker import handoff
+
+    url = "https://decision-api-staging.taile0bda9.ts.net/jev/v1/decide"
+    monkeypatch.setenv(handoff.HANDOFF_ENV, str(tmp_path / ".swarm-handoff"))
+    monkeypatch.setenv("SWARM_CDP_ENDPOINT", "http://127.0.0.1:9223")
+    monkeypatch.setenv("SWARM_JEV_BACKEND", "internal-jev")
+    monkeypatch.setenv("JEV_API_URL", url)
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    seen = _run_body(monkeypatch, tmp_path, "/opt/playwright")
+    assert seen["env"]["SWARM_JEV_BACKEND"] == "internal-jev"
+    assert seen["env"]["JEV_API_URL"] == url
+    assert "TYPESAFE_API_KEY" not in seen["env"]
+    assert {"SWARM_JEV_BACKEND", "JEV_API_URL"} <= set(handoff.AGENT_PASSTHROUGH_ENV)
 
 
 def test_the_launch_env_built_by_the_cli_runner_carries_swarm_handoff(monkeypatch, tmp_path):

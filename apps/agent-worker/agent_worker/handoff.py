@@ -14,6 +14,13 @@ end of ctl.sock is `agent_worker.livegate.ctl` (lane L3).
       notes.md             the agent's: where it stopped, for the attempt after a park
       resumed.md           this worker's: what a resumed attempt is told (below)
       unavailable          this worker's: present when this attempt has no live path
+      egress.md            this worker's: present while the proxied browser has no
+                           egress (egress_ticket.py; the agent's prompt carries it)
+      browser.json         the runner's: the browser tools it registered for the
+                           task's `browser_tool`, which this worker forwards to the
+                           gate (`browser_tools` on ctl.sock; browser_tools.py)
+      browser-tabs.json    this worker's: the tabs a park kept, reopened by the
+                           next attempt before its agent starts (browser_resume.py)
       README.md            this worker's: the guide the agent reads
 
 WHY A SPOOL. As the child-task spool (`children.py`): no listener in the
@@ -73,11 +80,12 @@ import base64
 import hashlib
 import json
 import os
+import random
 import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, NamedTuple
 from urllib.parse import quote, urlsplit
 
 from swarm_common.models import utcnow
@@ -85,8 +93,12 @@ from swarm_common.profiles import RUNNER_PROFILES, url_refusal
 from swarm_common.states import EventType, ParkReason, TaskState, assert_transition
 from swarm_redaction import redact as redact_text
 
+from . import browser_tools
+from .browser_resume import BrowserResume, Restored
+from .egress_ticket import BrowserEgress
 from .errors import ExitCode
 from .hardening import PROTECTED
+from .livegate.tunnel import CLOSE_RESTARTING, RETRY_MAX_SECONDS, RETRY_SECONDS, reconnect_delay
 
 #: The spool's directory under `work/`. `Workspace.handoff_dir` is the one
 #: path; this is its name.
@@ -98,8 +110,13 @@ HANDOFF_ENV = "SWARM_HANDOFF"
 GATE_CTL_ENV = "SWARM_GATE_CTL"
 #: The gate's CDP proxy for the agent's Playwright (§3.2), and the upload
 #: directory Chromium can read (§3.1). Passed on to the agent: a path and a
-#: loopback address, never a credential.
-AGENT_PASSTHROUGH_ENV = ("SWARM_CDP_ENDPOINT", "SWARM_BROWSER_UPLOADS")
+#: loopback address, never a credential. With them, the workspace's Jev
+#: judgment backend and, for an internal one, the in-cluster decision API URL
+#: the dispatcher set (`scheduler.judgment`, JUDGE-SELECT): a name and a
+#: cluster address, never a credential, which jev-browser-mcp reads from the
+#: CLI's environment.
+AGENT_PASSTHROUGH_ENV = ("SWARM_CDP_ENDPOINT", "SWARM_BROWSER_UPLOADS",
+                         "SWARM_JEV_BACKEND", "JEV_API_URL")
 
 #: §5.4.1: each worker-only route signs a domain-separated message, so a
 #: signature for one is never a signature for another. `swarm_api.handoff`
@@ -110,6 +127,14 @@ LIVE_SESSION_PURPOSE = "swarm-live-session/v1"
 #: `swarm_api.validation.HUMAN_WAIT_RESUMES_METADATA_KEY`, restated (this image
 #: does not carry swarm-api); the test holds them equal.
 HUMAN_WAIT_RESUMES_METADATA_KEY = "human_wait_resumes"
+#: `swarm_api.handoff.HUMAN_RETURNED_METADATA_KEY` and HUMAN_READY_METADATA_KEY,
+#: restated (LB-RETURN): a person's return during this attempt, which the park
+#: reads; and the "I'm ready" a re-queue records, as swarm-api's does.
+HUMAN_RETURNED_METADATA_KEY = "human_returned"
+HUMAN_READY_METADATA_KEY = "human_ready"
+#: `swarm_api.handoff.REVIVED`: swarm-api's answer to this worker's expiry when
+#: a viewer or a controller moved the deadline after it was read.
+REVIVED = "revived"
 
 #: `swarm_api.handoff.REQUEST_ID` and its `expect` host rule, restated.
 REQUEST_ID = re.compile(r"^[a-z0-9-]{1,64}$")
@@ -147,8 +172,17 @@ CANCEL_ANSWER_SECONDS = 3
 #: for a fresh ticket and hands it over (LB-R6). A refused ask is tried again
 #: after TUNNEL_RETRY_SECONDS, doubling to TUNNEL_RETRY_MAX_SECONDS, so a relay
 #: that stays down costs a route call a minute rather than one every poll.
-TUNNEL_RETRY_SECONDS = 5
-TUNNEL_RETRY_MAX_SECONDS = 60
+TUNNEL_RETRY_SECONDS = int(RETRY_SECONDS)
+TUNNEL_RETRY_MAX_SECONDS = int(RETRY_MAX_SECONDS)
+#: RELAY-ROLL: a tunnel the relay closed with 1012 ("restarting, reconnect
+#: now", livegate.tunnel.CLOSE_RESTARTING) is reopened in the same tick, and
+#: a reopen the new relay is not up for yet is tried again after
+#: livegate.tunnel.reconnect_delay (jittered, from ~250 ms) for up to this
+#: long; past it, on every later poll (the delay's cap is under the poll's
+#: 10 s) -- never the 5 s doubling to a minute above. A rolling relay is gone
+#: for the seconds its new pod takes, and every viewer waits on this end.
+#: Bounded so a relay that stays down holds the poll a few seconds, not more.
+RESTART_BURST_SECONDS = 3.0
 #: swarm-api's answers that end the live path for this attempt for good (a
 #: closed session, a stale generation, a profile with no live browser): no
 #: later ticket will come, so the worker stops asking.
@@ -173,6 +207,30 @@ GATE_UNAVAILABLE = "gate_unavailable"
 NO_ATTEMPT_KEY = "no_attempt_key"
 NO_LIVE_SESSION = "no_live_session"
 
+#: NOLIVE-GUARD (part of #1366): why the HUMAN's view has not opened, while the
+#: agent's browser runs. The gate refused `tunnel_ticket`: its relay did not
+#: answer (`tunnel_refused {"cause": "relay unreachable: gaierror"}` in the
+#: gate's own record; ctl.sock carries only "failed").
+TUNNEL_REFUSED = "tunnel_refused"
+#: Before `setup` has tried.
+VIEW_NOT_SET_UP = "not_set_up"
+#: The jitter on a tunnel retry's backoff: 75-125 %, as `reconnect_delay`'s
+#: restart schedule, so the ~60 pods of a burst that all met the same DNS
+#: failure do not all knock on the relay again in the same instant.
+TUNNEL_JITTER = (0.75, 0.5)
+
+#: NOLIVE-GUARD: a live-browser attempt whose GATE is not ready (no ctl.sock,
+#: or a registration the gate refused -- a restarted gate refuses every one)
+#: has no CDP proxy, so it never starts its agent headless: `Worker._prepare`
+#: fails the ATTEMPT retryably with this cause, before the agent, its lease
+#: and capacity released, as an unreachable forge does. The next attempt is a
+#: new pod with a new sidecar. Bounded by `max_attempts`, like every retry.
+LIVE_GATE_UNAVAILABLE = "live_gate_unavailable"
+#: How long that task waits before it is eligible again: long enough for the
+#: burst of pod starts that broke this one to have passed, short enough that a
+#: retried attempt does not look stuck.
+LIVE_GATE_RETRY_DELAY_SECONDS = 30
+
 #: The ctl.sock operations this module sends. Every one must be in the gate's
 #: `livegate.ctl.OPS`; the test holds that once L3 is importable.
 #:
@@ -180,7 +238,17 @@ NO_LIVE_SESSION = "no_live_session"
 #: gate `wipe` at every attempt end; the closest faithful version on L3's
 #: channel is `end_control` with `wipe: true`, which the gate's handler must
 #: honour by closing Chromium and removing the profile. Reported on the PR.
-GATE_OPS = frozenset({"tunnel_ticket", "pause", "resume", "end_control", "device", "status"})
+#: `tabs_export` / `session_export` (scope park) are sent at park, before the
+#: wipe; `session_import` / `tabs_restore` on the resumed attempt, before the
+#: agent exists (browser_resume.py, §5.5.2).
+GATE_OPS = frozenset({"tunnel_ticket", "pause", "resume", "end_control", "device", "status",
+                      "egress_ticket", "browser_tools", "tabs_export", "tabs_restore",
+                      "session_export", "session_import"})
+
+#: EGRESS-GATE: the agent's notice that its proxied browser has no egress
+#: (`egress_ticket.notice`), in the spool while that is so; the claude-code
+#: runner puts it in the prompt.
+EGRESS_NOTICE_NAME = "egress.md"
 
 #: The browser's start-up steps the gate dates in its `status` (`startup`, in
 #: epoch seconds), in order, for the console's progress bar (STARTUP-API,
@@ -221,7 +289,11 @@ minutes).
 `wait` exits:
 
   0   control was returned; a JSON summary (url, title, held_seconds) is on stdout.
-      Look at the page once and continue: you are signed in.
+      The person may have changed the page: read it again, once, from the tab
+      at that url -- never a page handle, snapshot or value from
+      before the hand-off. From Python, connect again with `swarm_browser.live()` and take
+      `swarm_browser.handoff_page(context)`, not `context.pages[0]`; with the
+      browser_* tools, browser_tabs, select that tab, then browser_snapshot.
   75  still waiting (someone is watching): run `swarm-handoff wait` again, at once.
   3   nobody came in time. Write where you stopped into $SWARM_HANDOFF/notes.md
       now (what is done, what is next); the task is parked until a person is
@@ -321,7 +393,53 @@ def _read_notes(root: Path) -> str:
     return f"{text}\n[... cut at {MAX_NOTES_CHARS} characters]" if clipped else text
 
 
-def resume_summary(entries: list[dict[str, Any]], attempt_id: str, notes: str = "") -> str | None:
+#: What a resumed agent is told of the artifacts directory (issue #1362): by
+#: design it starts empty (docs/checkpointing.md); the parked attempt's files
+#: were uploaded at the park and are listed with the task's result by reference.
+ARTIFACTS_NOTE = (
+    "Files the earlier attempt wrote to $SWARM_ARTIFACTS_DIR were uploaded when it "
+    "parked and stay listed with this task's result; this attempt's artifacts "
+    "directory starts empty, so they are not on disk here. Do not write them again "
+    "unless they must change; anything you need to read again belongs in your "
+    "working directory."
+)
+
+
+def _browser_lines(restored: Restored | None) -> list[str]:
+    """What the resumed agent is told of its browser (§5.5.2)."""
+    if restored is None or not restored.tabs:
+        lines = [
+            "The browser is a new one: the earlier attempt's pages are not open, so "
+            "open again what you need."
+        ]
+    else:
+        lines = [
+            "The browser was reopened on the tabs the earlier attempt had open, in "
+            "order (the one marked FRONT is the tab in front). These pages were "
+            "loaded again, so check each is in the state you need:",
+            "",
+        ]
+        lines += [
+            f"{number}. {url}" + (" (FRONT)" if url == restored.active else "")
+            for number, url in enumerate(restored.tabs, start=1)
+        ]
+    lines.append("")
+    if restored is not None and restored.storage:
+        lines.append(
+            "Their sign-ins and site storage (cookies, localStorage) were put back as "
+            "they were at the park. If a page asks you to sign in anyway, ask for help then."
+        )
+    else:
+        lines.append(
+            "The earlier attempt's sign-ins and site storage are gone, so if a page you "
+            "need now asks you to sign in again, ask for help then."
+        )
+    return lines
+
+
+def resume_summary(
+    entries: list[dict[str, Any]], attempt_id: str, notes: str = "", restored: Restored | None = None
+) -> str | None:
     """What a resumed attempt's agent is told, or None when no earlier attempt
     asked for help (a first attempt, or one resumed from a park that had
     nothing to do with a person)."""
@@ -332,9 +450,11 @@ def resume_summary(entries: list[dict[str, Any]], attempt_id: str, notes: str = 
         RESUME_HEADLINE,
         "",
         "An earlier attempt of this task stopped part-way and was parked; this "
-        "attempt starts on its working files, restored as they were. The browser "
-        "is a new one: the earlier attempt's pages and sign-ins are gone, so if a "
-        "page you need now asks you to sign in again, ask for help then.",
+        "attempt starts on its working files, restored as they were.",
+        "",
+        *_browser_lines(restored),
+        "",
+        ARTIFACTS_NOTE,
         "",
         "The hand-offs to a person so far, oldest first, as the platform recorded them:",
         "",
@@ -527,8 +647,13 @@ class HandoffPath:
         now: Callable[[], datetime] = utcnow,
         wall: Callable[[], float] = time.time,
         progress: Callable[[str, datetime], bool] | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+        rand: Callable[[], float] = random.random,
+        vault: Callable[[], Any] | None = None,
     ) -> None:
         self.cfg = cfg
+        self._sleep = sleep
+        self._rand = rand
         #: Writes one `startup_progress` step; True once it is settled (written,
         #: or not this attempt's to write), False to try again on a later tick.
         self._progress = progress
@@ -548,8 +673,17 @@ class HandoffPath:
         self._now = now
         self._wall = wall
         self.gate: Gate | None = None
-        #: Why this attempt has no live path; None while it has one.
-        self.unavailable: str | None = NOT_LIVE if not live else "not_set_up"
+        #: Why this attempt cannot ask a person for help (no hand-off); None
+        #: while it can. NOT why the agent has no browser: that is
+        #: `gate_missing`, and only that (NOLIVE-GUARD).
+        self.unavailable: str | None = NOT_LIVE if not live else VIEW_NOT_SET_UP
+        #: Why the human's live view is not open now; None while it is.
+        self.view: str | None = NOT_LIVE if not live else VIEW_NOT_SET_UP
+        #: Whether this attempt may open the tunnel at all: set once `setup`
+        #: has a protected heap and an attempt key (§5.4.1).
+        self._tunnel_allowed = False
+        #: Tunnel tries that failed since it was last open, for the retry's log.
+        self.tunnel_failures = 0
         #: The open hand-off: request id, when it was opened, its deadline.
         self.active: dict[str, Any] | None = None
         self.requests_made = 0
@@ -563,6 +697,25 @@ class HandoffPath:
         self._tunnel_retry_at = 0.0
         self._tunnel_backoff = float(TUNNEL_RETRY_SECONDS)
         self._tunnel_ended = False
+        #: Reopens tried since the relay said it was restarting (RELAY-ROLL).
+        self._restart_tries = 0
+        #: The proxied browser's egress ticket (EGRESS-GATE; egress_ticket.py),
+        #: and the note `setup` was given, for a failure found on a later poll.
+        self.egress = BrowserEgress(cfg, logger=logger, wall=wall)
+        self._note: Callable[[dict[str, Any]], Any] | None = None
+        #: The browser-tool state last forwarded to the gate (BSTATUS-API).
+        self._browser_tools_sent: dict[str, Any] | None = None
+        #: What a park keeps of the browser and a resumed attempt gets back
+        #: (§5.5.2, issue #1362). Secret Manager is reached only in a
+        #: personal tenant, and built only when it is.
+        self._vault_instance: Any = None
+        self._vault_factory = vault
+        self.browser = BrowserResume(
+            cfg, logger=logger, call=self._browser_call, vault=self._vault,
+            slots=self._slots, register_secret=getattr(logger, "register_secret", None),
+        )
+        #: What this attempt's browser got back, once `prepare` has asked.
+        self.restored: Restored | None = None
 
     # -- what the lifecycle asks ---------------------------------------------
 
@@ -570,6 +723,21 @@ class HandoffPath:
     def offered(self) -> bool:
         """Whether this attempt has a live path an agent may ask through."""
         return self.live and self.unavailable is None
+
+    @property
+    def browser_ready(self) -> bool:
+        """Whether the agent gets its browser: the gate took this worker's
+        registration, so its CDP proxy is up (the gate serves ctl.sock only
+        after the proxy, livegate.__main__ `start`). Independent of the
+        tunnel, the hand-off and the attempt key: those are the HUMAN's view
+        (NOLIVE-GUARD, part of #1366)."""
+        return self.live and self.gate is not None
+
+    @property
+    def gate_missing(self) -> bool:
+        """A live-browser attempt whose gate is not ready: the agent must not
+        start, headless or otherwise (`LIVE_GATE_UNAVAILABLE`)."""
+        return self.live and self.gate is None
 
     @property
     def spooled(self) -> bool:
@@ -596,8 +764,11 @@ class HandoffPath:
         except (GateLost, ImportError, OSError) as exc:
             return self._refuse(note, GATE_UNAVAILABLE, type(exc).__name__)
         self.gate = gate
+        self._note = note
         if getattr(self._memory, "status", None) != PROTECTED:
             # §5.4.1: no tunnel ticket and no hand-off. The slot stays taken.
+            # No egress ticket either; a proxied browser fails closed.
+            self._egress_failed(note, self.egress.unavailable(gate, WORKER_UNPROTECTED))
             return self._refuse(note, WORKER_UNPROTECTED, "the worker's heap is not protected")
         key = getattr(self._children, "_key", None)
         api = getattr(self._children, "_api", None)
@@ -607,15 +778,56 @@ class HandoffPath:
                 or getattr(self._children, "unavailable", None)
                 or "no attempt key registered"
             )
+            self._egress_failed(note, self.egress.unavailable(gate, NO_ATTEMPT_KEY))
             return self._refuse(note, NO_ATTEMPT_KEY, str(why))
+        self._tunnel_allowed = True
+        failure: str | None = None
         try:
             self._open_tunnel(gate, key, api)
         except NoTunnelTicket as exc:
-            return self._refuse(note, NO_LIVE_SESSION, exc.code)
+            if exc.code in TUNNEL_ENDED_CODES:
+                # swarm-api says no session will come: no view and no
+                # hand-off. The browser is the agent's all the same, and its
+                # egress is set up all the same.
+                self._tunnel_ended = True
+                self.view = exc.code
+                self._egress_failed(note, self.egress.start(gate, key, api))
+                return self._refuse(note, NO_LIVE_SESSION, exc.code)
+            failure = exc.code
+        except GateRefused:
+            # The gate is up and answered: its tunnel to the relay did not
+            # open (a relay that did not resolve, #1366). The VIEW's failure.
+            failure = TUNNEL_REFUSED
         except GateLost as exc:
+            # The channel itself failed after the registration: no hand-off
+            # can be paused through it. The CDP proxy is the gate's, not the
+            # channel's, so the agent keeps its browser.
+            self.view = GATE_UNAVAILABLE
             return self._refuse(note, GATE_UNAVAILABLE, type(exc).__name__)
+        # EGRESS-GATE: a proxied browser's first ticket, still before the agent exists.
+        self._egress_failed(note, self.egress.start(gate, key, api))
+        # NOLIVE-GUARD: a hand-off is offered either way. A tunnel that did not
+        # open is retried on every poll past its backoff (`_keep_tunnel`), the
+        # hand-off's own poll included, which is exactly when a person needs it.
         self.unavailable = None
-        self.log.info("live path open for this attempt")
+        if failure is None:
+            self.view = None
+            self.log.info("live path open for this attempt")
+            return
+        self.view = failure
+        self._tunnel_failed(failure)
+        self._view_unavailable(note, failure)
+
+    def _view_unavailable(self, note: Callable[[dict[str, Any]], Any] | None, code: str) -> None:
+        """The human's view did not open; the agent's browser runs. Never raises."""
+        if note is None:
+            return
+        try:
+            note({"phase": "live_view", "live_path": "view_unavailable", "reason": code,
+                  "message": f"live view unavailable: {code}; the agent's browser runs, "
+                             "and the view is retried"})
+        except Exception:  # a note must never stop the attempt
+            pass
 
     def _open_tunnel(self, gate: Gate, key: Any, api: Any) -> None:
         """§3.3 steps 1-2: a tunnel ticket from swarm-api, handed to the gate.
@@ -651,6 +863,37 @@ class HandoffPath:
         finally:
             ticket = None
 
+    def _egress_failed(self, note: Callable[[dict[str, Any]], Any] | None, cause: str | None) -> None:
+        """A proxied browser has no egress: say so on the attempt's events. Never raises."""
+        if cause is None or note is None:
+            return
+        try:
+            note({"phase": "browser_egress", "live_path": "egress_failed_closed",
+                  "reason": f"browser egress {cause}: pages do not load, and there is no direct fallback"})
+        except Exception:  # a note must never stop the attempt
+            pass
+
+    def _keep_egress(self, root: Path) -> None:
+        """Renew the egress ticket when due, and keep the agent's notice current."""
+        if self.gate is None or self._wiped:
+            return
+        key = getattr(self._children, "_key", None)
+        api = getattr(self._children, "_api", None)
+        self._egress_failed(self._note, self.egress.keep(self.gate, key, api))
+        self._write_egress_notice(root)
+
+    def _write_egress_notice(self, root: Path) -> None:
+        target = root / EGRESS_NOTICE_NAME
+        text = self.egress.notice()
+        if text is None:
+            target.unlink(missing_ok=True)
+            return
+        root.mkdir(parents=True, exist_ok=True)
+        tmp = root / f".{EGRESS_NOTICE_NAME}.tmp"
+        tmp.unlink(missing_ok=True)
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, target)
+
     def _keep_tunnel(self, status: Mapping[str, Any]) -> None:
         """Reopen the gate's tunnel when its `status` says it closed (§3.3, LB-R6). Never raises.
 
@@ -661,40 +904,87 @@ class HandoffPath:
         2026-10-12). Reads the status the poll already made; at most one route
         call, and only past the backoff.
         """
-        if (not self.offered or self.gate is None or self._wiped or self._tunnel_ended
-                or status.get("tunnel") != "closed" or status.get("browser") != "running"
+        # "none": a tunnel that never opened this attempt (NOLIVE-GUARD).
+        if (not self._tunnel_allowed or self.gate is None or self._wiped or self._tunnel_ended
+                or status.get("tunnel") not in ("closed", "none") or status.get("browser") != "running"
                 or self._wall() < self._tunnel_retry_at):
             return
         key = getattr(self._children, "_key", None)
         api = getattr(self._children, "_api", None)
         if key is None or api is None:
             return
-        try:
-            self._open_tunnel(self.gate, key, api)
-        except NoTunnelTicket as exc:
-            if exc.code in TUNNEL_ENDED_CODES:
-                self._tunnel_ended = True
-                self.log.info("live tunnel not reopened: the session has ended", code=exc.code)
+        # RELAY-ROLL: the relay said it is restarting. Reopen now, and while
+        # the new relay is not up yet, again on the short jittered schedule.
+        restart = status.get("tunnel_close_code") == CLOSE_RESTARTING
+        started = self._wall()
+        while True:
+            try:
+                self._open_tunnel(self.gate, key, api)
+            except NoTunnelTicket as exc:
+                if exc.code in TUNNEL_ENDED_CODES:
+                    self._tunnel_ended = True
+                    self.view = exc.code
+                    self.log.info("live tunnel not reopened: the session has ended", code=exc.code)
+                    return
+                failure = exc.code
+            except GateRefused:
+                failure = TUNNEL_REFUSED
+            except GateLost as exc:
+                failure = type(exc).__name__
+            else:
+                break
+            if not restart:
+                self._tunnel_failed(failure)
                 return
-            self._tunnel_backoff_after(exc.code)
-            return
-        except GateLost as exc:
-            self._tunnel_backoff_after(type(exc).__name__)
-            return
+            delay = reconnect_delay(CLOSE_RESTARTING, self._restart_tries)
+            self._restart_tries += 1
+            if self._wall() + delay - started > RESTART_BURST_SECONDS:
+                self._tunnel_retry_at = self._wall() + delay
+                self.log.warning("live tunnel not reopened after the relay restarted; trying again",
+                                 code=failure, tries=self._restart_tries)
+                return
+            self._sleep(delay)
         self._tunnel_retry_at = 0.0
         self._tunnel_backoff = float(TUNNEL_RETRY_SECONDS)
+        self._restart_tries = 0
+        late = self.view is not None and self.view != VIEW_NOT_SET_UP
+        self.view = None
+        if late and status.get("tunnel") == "none":
+            # The first open, late: the relay resolved after the agent started.
+            self.log.info("live view opened", after_failures=self.tunnel_failures)
+            self.tunnel_failures = 0
+            return
+        self.tunnel_failures = 0
         self.tunnel_reopens += 1
-        self.log.info("live tunnel reopened", reopened=self.tunnel_reopens)
+        if restart:
+            self.log.info("live tunnel reopened", reopened=self.tunnel_reopens, after="relay_restart")
+        else:
+            self.log.info("live tunnel reopened", reopened=self.tunnel_reopens)
 
-    def _tunnel_backoff_after(self, code: str) -> None:
-        self._tunnel_retry_at = self._wall() + self._tunnel_backoff
-        self.log.warning("live tunnel not reopened; trying again", code=code,
-                         retry_seconds=int(self._tunnel_backoff))
+    def _tunnel_failed(self, code: str) -> None:
+        """Schedule the next tunnel try: the backoff, jittered, doubling to its
+        cap, for the attempt's life (only swarm-api's ended codes stop it).
+        Logged by `code` -- a swarm-api error code, `tunnel_refused` or an
+        exception's class name -- never a ticket."""
+        self.view = code
+        self.tunnel_failures += 1
+        low, spread = TUNNEL_JITTER
+        delay = self._tunnel_backoff * (low + spread * self._rand())
+        self._tunnel_retry_at = self._wall() + delay
+        self.log.warning("live view not open; retrying", code=code, tries=self.tunnel_failures,
+                         retry_seconds=round(delay, 1))
         self._tunnel_backoff = min(self._tunnel_backoff * 2, float(TUNNEL_RETRY_MAX_SECONDS))
 
     def _refuse(self, note: Callable[[dict[str, Any]], Any] | None, code: str, why: str) -> None:
         self.unavailable = code
-        self.log.warning("no live path for this attempt", live_path=code, reason=why)
+        if self.gate is None:
+            self.log.warning("no live browser for this attempt: the gate is not ready",
+                             live_path=code, reason=why)
+        else:
+            # NOLIVE-GUARD: the gate is up, so the agent keeps its browser;
+            # only the human's side (the view, the hand-off) is missing.
+            self.log.warning("no hand-off for this attempt; the agent keeps its browser",
+                             live_path=code, reason=why)
         if note is not None:
             try:
                 note({"phase": "live_session", "live_path": code, "reason": why})
@@ -703,6 +993,60 @@ class HandoffPath:
 
     def spool(self, work: Path) -> Path:
         return Path(work) / SPOOL_DIR_NAME
+
+    # -- the browser across a park (§5.5.2, browser_resume.py) -----------------
+
+    def _browser_call(self, op: str, args: Mapping[str, Any]) -> dict[str, Any]:
+        if self.gate is None:
+            raise GateLost("no gate")
+        return self.gate.call(op, args)
+
+    def _vault(self) -> Any:
+        if self._vault_instance is None:
+            if self._vault_factory is not None:
+                self._vault_instance = self._vault_factory()
+            else:
+                from .browser_login import SecretManagerVault
+
+                self._vault_instance = SecretManagerVault(self.cfg.project_id)
+        return self._vault_instance
+
+    def _slots(self) -> Any:
+        from .browser_login import SlotApi
+
+        key = getattr(self._children, "_key", None)
+        api = getattr(self._children, "_api", None)
+        if key is None or api is None:
+            raise RuntimeError(NO_ATTEMPT_KEY)
+        return SlotApi(
+            api, tenant_id=self.cfg.tenant_id, task_id=self.cfg.task_id, attempt_id=self.cfg.attempt_id,
+            lease_id=self.cfg.lease_id, generation=self.cfg.generation, sign=key._private.sign,
+            clock=self._wall,
+        )
+
+    def _browser_reachable(self) -> bool:
+        """A gate this worker registered on, and a heap it can hold a session in (§5.4.1)."""
+        return (self.gate is not None and self.gate.registered and not self._wiped
+                and getattr(self._memory, "status", None) == PROTECTED)
+
+    def _keep_browser(self, work: Path) -> None:
+        """At park, before the wipe: keep the tabs and, in a personal tenant, the session. Never raises."""
+        if not self._browser_reachable():
+            return
+        try:
+            self.browser.capture(self.spool(work))
+        except Exception as exc:
+            self.log.warning("could not keep the browser for the resumed attempt", error=type(exc).__name__)
+
+    def _restore_browser(self, root: Path) -> Restored | None:
+        """Before the runner starts: reopen what the parked attempt kept. Never raises."""
+        if not self._browser_reachable():
+            return None
+        try:
+            return self.browser.restore(root)
+        except Exception as exc:
+            self.log.warning("could not put the earlier attempt's browser back", error=type(exc).__name__)
+            return None
 
     def prepare(self, work: Path) -> dict[str, str]:
         """Create the spool and return the agent's variables, or nothing."""
@@ -723,9 +1067,22 @@ class HandoffPath:
         tmp.unlink(missing_ok=True)
         tmp.write_text(AGENT_GUIDE, encoding="utf-8")
         os.replace(tmp, guide)
+        # Before the summary, which names what came back; before the runner,
+        # whose agent must find the tabs open on its first connection.
+        if self.restored is None:
+            self.restored = self._restore_browser(root)
         self._prepare_resume(root)
+        # Rewritten every attempt, as `unavailable` is: present only while
+        # THIS attempt's proxied browser has no egress.
+        self._write_egress_notice(root)
+        # This attempt's runner writes its own; a restored checkpoint's is
+        # an earlier attempt's registration, never forwarded as this one's.
+        (root / browser_tools.STATE_NAME).unlink(missing_ok=True)
         env = {HANDOFF_ENV: str(root)}
-        if self.offered:
+        # NOLIVE-GUARD: the agent's browser follows the GATE, never the
+        # tunnel or the hand-off (#1366: 8 of 60 attempts lost it to a relay
+        # that did not resolve).
+        if self.browser_ready:
             env.update(self._passthrough)
         return env
 
@@ -740,7 +1097,7 @@ class HandoffPath:
         """
         try:
             entries = _load_history(root)
-            summary = resume_summary(entries, str(self.cfg.attempt_id), _read_notes(root))
+            summary = resume_summary(entries, str(self.cfg.attempt_id), _read_notes(root), self.restored)
             target = root / RESUME_NAME
             if summary is None:
                 target.unlink(missing_ok=True)
@@ -800,7 +1157,12 @@ class HandoffPath:
             return None
         root = self.spool(work)
         try:
+            self._keep_egress(root)
+        except Exception as exc:  # egress upkeep never crashes the attempt
+            self.log.warning("browser egress upkeep failed", error=type(exc).__name__)
+        try:
             self._answer_devices(root)
+            self._forward_browser_tools(root)
             if self.active is None:
                 self._answer_requests(root)
             if self.active is not None:
@@ -1055,6 +1417,25 @@ class HandoffPath:
                 return
             self.startup_noted.add(step)
 
+    def _forward_browser_tools(self, root: Path) -> None:
+        """The runner's `browser.json`, to the gate, once per change (BSTATUS-API).
+
+        The file is in the agent's reach, so it is checked
+        (`browser_tools.read_state`) and a file that does not hold together
+        is not sent. A refused or lost gate is tried again on the next poll."""
+        if not self.offered or self.gate is None:
+            return
+        state = browser_tools.read_state(root)
+        if state is None or state == self._browser_tools_sent:
+            return
+        try:
+            self.gate.call(browser_tools.CTL_OP, state)
+        except (GateRefused, GateLost):
+            return
+        self._browser_tools_sent = state
+        self.log.info("browser tools told to the gate", tool_selected=state["tool_selected"],
+                      tools=",".join(state["tools_available"]))
+
     def _answer_devices(self, root: Path) -> None:
         devices = root / "devices"
         if not devices.is_dir():
@@ -1085,6 +1466,43 @@ class HandoffPath:
 
     # -- the ends ----------------------------------------------------------------
 
+    def confirm_expired(self) -> bool:
+        """LB-RETURN: tell swarm-api the open hold expired, BEFORE anything is
+        told to the agent or parked. Never raises.
+
+        False when swarm-api answered it `REVIVED`: a
+        viewer or a controller moved the deadline after `_watch` read it, so
+        the person came first and the hold goes on -- nothing is answered,
+        wiped or parked, and the next poll reads the new deadline. True
+        otherwise, and `end` does not send the resolve again. Any other failure
+        is True too, as it always was: swarm-api clears a stale wait when the
+        task moves on, and a hold that cannot be confirmed must still end
+        (invariant 4).
+
+        The expiry names the deadline it judged (`seen_deadline`), so the
+        refusal is exact: a deadline that merely lies in the future because
+        the worker's clock is behind is not "revived".
+        """
+        active = self.active
+        if active is None:
+            return True
+        deadline = active.get("deadline")
+        fields: dict[str, Any] = {"request_id": active["request_id"], "outcome": "expired"}
+        if isinstance(deadline, datetime):
+            fields["seen_deadline"] = deadline.isoformat()
+        try:
+            _, payload = self._route(
+                f"/v1/tasks/{quote(self.cfg.task_id, safe='')}/handoff/resolve", fields)
+        except Exception as exc:
+            self.log.warning("the hand-off's expiry was not resolved at swarm-api",
+                             error=str(getattr(exc, "code", None) or type(exc).__name__))
+        else:
+            if isinstance(payload, dict) and payload.get("resolved") == REVIVED:
+                self.log.info("a person came as the hand-off's hold ran out; holding on")
+                return False
+        active["resolved"] = True
+        return True
+
     def end(self, work: Path | None, *, outcome: str, cause: str) -> bool:
         """End the open hand-off, if any: answer the agent, resolve the route,
         end control and wipe. Never raises. Returns whether one was open.
@@ -1107,16 +1525,21 @@ class HandoffPath:
                 except OSError as exc:
                     self.log.warning("could not answer the agent's wait", error=type(exc).__name__)
             try:
-                self._route(
-                    f"/v1/tasks/{quote(self.cfg.task_id, safe='')}/handoff/resolve",
-                    {"request_id": active["request_id"], "outcome": outcome},
-                )
+                if not active.get("resolved"):  # `confirm_expired` resolved it already
+                    self._route(
+                        f"/v1/tasks/{quote(self.cfg.task_id, safe='')}/handoff/resolve",
+                        {"request_id": active["request_id"], "outcome": outcome},
+                    )
             except Exception as exc:
                 # swarm-api clears a stale wait itself when the task moves on;
                 # the park or the cancel below still happens.
                 self.log.warning("the hand-off was not resolved at swarm-api",
                                  error=str(getattr(exc, "code", None) or type(exc).__name__))
             self.log.warning("hand-off ended", outcome=outcome, cause=cause)
+        if outcome == "expired" and cause != GATE_LOST and work is not None:
+            # The park (§4.3): what the resumed attempt gets back, read
+            # before the wipe below closes the browser (§5.5.2).
+            self._keep_browser(work)
         if cause != GATE_LOST:
             self.wipe(cause)
         return active is not None
@@ -1159,13 +1582,22 @@ class HandoffPath:
             self.log.warning("the gate did not resume the agent", error=type(exc).__name__)
 
 
+class HumanPark(NamedTuple):
+    """What `park_human_required` wrote. `returned_by` is the person whose
+    return re-queued the task READY instead of parking it (LB-RETURN), or None
+    when it parked."""
+
+    refunded: bool
+    returned_by: str | None
+
+
 def park_human_required(
     control: Any,
     *,
     max_resumes: int,
     detail: dict[str, Any] | None = None,
     uploads: list[Any] | None = None,
-) -> bool:
+) -> HumanPark:
     """§4.3: PARKED on HUMAN_REQUIRED, slot given back, the attempt refunded
     while fewer than `max_resumes` have been.
 
@@ -1183,12 +1615,26 @@ def park_human_required(
     a `ControlPlane` method because `control.py` is outside lane L4's files;
     the transaction is the same one the other parks run.
 
-    Returns whether the attempt was refunded.
+    A PERSON'S RETURN RE-QUEUES INSTEAD (LB-RETURN, part of #1030). A person
+    who took control and returned it while this attempt was parking left
+    `HUMAN_RETURNED_METADATA_KEY` naming this attempt and generation
+    (swarm-api's `LiveService.return_control`). Read in the same fenced
+    transaction, it turns the park into their "I'm ready": READY rather than
+    PARKED, with everything else the park does -- checkpoint first, attempt
+    refunded within the bound, lease released, exit. The next attempt is
+    admitted all-or-nothing under a new generation like any READY task
+    (invariants 2, 4, 5). A mark naming another attempt or generation answers
+    nothing here. A task with no attempt left parks as before: READY would
+    lease attempt N+1 of N, and the scheduler dead-letters it instead.
+
+    Returns whether the attempt was refunded and who re-queued it, if anyone.
     """
     reason = ParkReason.HUMAN_REQUIRED
     now = utcnow()
+    returned: dict[str, Any] = {}
 
     def _apply(txn: Any) -> tuple[bool, int]:
+        returned.clear()  # a retried transaction starts again
         task = control._fenced_task(txn, write="human park")
         current = TaskState(task.get("state"))
         assert_transition(current, TaskState.PARKED)
@@ -1210,12 +1656,28 @@ def park_human_required(
             metadata[HUMAN_WAIT_RESUMES_METADATA_KEY] = used + 1
             payload["metadata"] = metadata
             payload["attempt_count"] = attempt_count - 1
+        mark = metadata.get(HUMAN_RETURNED_METADATA_KEY)
+        left = int(task.get("max_attempts") or 1) - int(payload.get("attempt_count", attempt_count))
+        if (
+            isinstance(mark, dict)
+            and mark.get("attempt_id") == control.attempt_id
+            and mark.get("generation") == control.generation
+            and left > 0
+        ):
+            assert_transition(current, TaskState.READY)
+            by = str(mark.get("by") or "")
+            metadata.pop(HUMAN_RETURNED_METADATA_KEY, None)
+            metadata[HUMAN_READY_METADATA_KEY] = {"by": by, "at": now.isoformat()}
+            payload.update({"state": TaskState.READY.value, "park_reason": None,
+                            "next_eligible_at": None, "blocked_by": [], "metadata": metadata})
+            returned["by"] = by
         txn.update(control._task_ref(), payload)
         if uploads:
             control._record_parked_uploads(txn, index, uploads, at=now)
         return refund, used + (1 if refund else 0)
 
     refunded, resumes = control._run_transaction(_apply)
+    returned_by = returned.get("by")
     # Best effort, as in every park: the event and the release below are what
     # give the slot back.
     try:
@@ -1225,6 +1687,21 @@ def park_human_required(
             "the human park landed but its attempt end was not recorded",
             error=f"{type(exc).__name__}: {str(exc)[:300]}",
         )
+    if returned_by is not None:
+        # swarm-api's "I'm ready" event's shape (`handoff.ready_writes`).
+        control.emit(
+            EventType.READY,
+            {
+                "reason": "human_returned",
+                "park_reason": reason.value,
+                "by": returned_by,
+                "attempt_refunded": refunded,
+                HUMAN_WAIT_RESUMES_METADATA_KEY: resumes,
+                **(detail or {}),
+            },
+        )
+        control.release_lease("requeued:human_returned")
+        return HumanPark(refunded, returned_by)
     control.emit(
         EventType.PARKED,
         {
@@ -1236,4 +1713,4 @@ def park_human_required(
         },
     )
     control.release_lease(f"parked:{reason.value}")
-    return refunded
+    return HumanPark(refunded, None)

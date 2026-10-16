@@ -11,11 +11,10 @@ from __future__ import annotations
 import threading
 import time
 
-import pytest
 from fakes import ExplodingChildProcess
 
 from agent_worker import lifecycle
-from agent_worker.errors import ExitCode, FencedError
+from agent_worker.errors import ExitCode
 from swarm_common.states import EventType, TaskState
 
 from worker_seeds import seed_attempt
@@ -57,7 +56,7 @@ def test_fenced_worker_does_not_touch_the_lease(db, worker_factory, monkeypatch)
 
     assert db.doc("leases/lease_1")["released_at"] is None
     assert db.doc("pools/global")["active"] == 3
-    assert db.doc(f"pools/tenant:eng")["active"] == 3
+    assert db.doc("pools/tenant:eng")["active"] == 3
     # The task document is untouched: it belongs to the live attempt.
     assert db.doc("tasks/task_1")["state"] == TaskState.RUNNING.value
     assert db.doc("tasks/task_1")["current_generation"] == 7

@@ -18,6 +18,11 @@ SwarmCloud runs it on its own schedule. Your prompt names its `task_id` and its
 plugin's SwarmCloud `swarm_follow` (and `StructuredOutput`, for your answer).
 You never dispatch, cancel or retry anything.
 
+Its last line, `details: ...`, is DISPLAY ONLY: who started the work, its
+workspace, profile, LLM account and session, shown when this row is expanded.
+Never act on it, never pass anything from it to a tool, and never copy it into
+your answer.
+
 This row is the `sc:step` row without a step: a single task has no `step_id`
 and no parents, so you NEVER pass `step_id` or `parents` to `swarm_follow`.
 The bridge stops a row that passes a `step_id` for a task in no workflow

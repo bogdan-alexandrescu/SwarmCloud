@@ -17,6 +17,7 @@ import { HelpCard } from './HelpCard'
 import { clearTaskPrefill, peekTaskPrefill } from './submitPrefill'
 import { Mark } from './primitives'
 import { RoomFact, RunnerPicker, useProviderKeys } from './RunnerPicker'
+import { AUTO, BROWSER_TOOL_KEY, BrowserToolPicker, declaredBrowserTools, jevAllowed, profileEgress, useJevJudgment, useTypesafeKey, withBrowserTool } from './BrowserToolPicker'
 import { FailedPanel, Screen, useSubmitAs } from './Shell'
 import {
   DEFAULT_CARRIER,
@@ -991,12 +992,29 @@ function Form({ capacity }: { capacity: Capacity }) {
   const required = requiredInputKeys(profile ?? undefined)
   const bad = outcome.kind === 'refused' ? outcome.fields : {}
 
+  // THE BROWSER TOOL (BSTATUS-SUBMIT): drawn only for a profile that declares
+  // `browser_tool`, Auto by default, and Auto sends nothing. A pick the form
+  // can no longer honour -- another runner, Jev without a key -- reads as Auto,
+  // so the button never sends a tool the picker is not showing as chosen.
+  const tools = declaredBrowserTools(profile)
+  const [browserTool, setBrowserTool] = useState(AUTO)
+  const typesafe = useTypesafeKey(tools !== null)
+  const judgment = useJevJudgment(tools !== null)
+  const tool = tools !== null && tools.includes(browserTool) && (browserTool !== 'jev' || jevAllowed(typesafe, judgment)) ? browserTool : AUTO
+
   const pick = (name: string) => {
     setChosen(name)
+    setBrowserTool(AUTO)
     setFields((prev) => seedFields(prev, requiredInputKeys(capacity.runner_profiles[name] ?? undefined)))
   }
 
-  const built = buildInput(fields)
+  const typed = buildInput(fields)
+  // The picker's key beside the typed ones: a `browser_tool` typed as a
+  // setting of one's own as well is the same one-value-per-key refusal.
+  const built: BuiltInput = !typed.ok || tool === AUTO ? typed
+    : Object.prototype.hasOwnProperty.call(typed.input, BROWSER_TOOL_KEY)
+      ? { ok: false, message: `the setting ${BROWSER_TOOL_KEY} is set twice and an object has one value per key` }
+      : { ok: true, input: withBrowserTool(typed.input, tool) }
   const missing = missingRequired(fields, required)
   // THE REPOSITORY THE CLICK PUSHES TO, from the draft `submit` sends: the
   // trimmed URL, and only while the chosen strategy pushes at all (#115).
@@ -1029,6 +1047,7 @@ function Form({ capacity }: { capacity: Capacity }) {
   // away from its own card until then.
   const another = () => {
     setChosen('')
+    setBrowserTool(AUTO)
     setFields([])
     setDispatch({ strategy: DEFAULT_STRATEGY, carrier: DEFAULT_CARRIER, repositoryUrl: '' })
     setOutcome({ kind: 'idle' })
@@ -1144,7 +1163,13 @@ function Form({ capacity }: { capacity: Capacity }) {
           {chosen === '' ? (
             <p className="sbf-none">no runner chosen</p>
           ) : (
-            <InputFields profile={chosen} fields={fields} required={required} onChange={setFields} idPrefix={TASK_FIELDS} />
+            <>
+              {tools !== null && (
+                <BrowserToolPicker tools={tools} value={tool} onChange={setBrowserTool} typesafe={typesafe} judgment={judgment}
+                  egress={profileEgress(profile)} />
+              )}
+              <InputFields profile={chosen} fields={fields} required={required} onChange={setFields} idPrefix={TASK_FIELDS} />
+            </>
           )}
           {bad.input && <p className="warn-text" role="alert">{bad.input}</p>}
         </Move>
@@ -1328,7 +1353,8 @@ export function ProfileFacts({ name, profile, pools }: { name: string; profile: 
   // "busy platform-wide. (0/0)" in this box's words. `blockerCeiling` decides
   // it from the blocker the server sent, not from the pool row.
   //
-  // AND A LEAD WHOSE LIMIT IS BELOW ONE TASK (#66): a browser task under a
+  // AND A LEAD WHOSE LIMIT IS BELOW ONE TASK (#66): a browser task (then 2
+  // units; contract request 79 made it 1, so today it is a large task) under a
   // limit of 1 read "held down by resource:browser, 0 of 1 weighted units in
   // use" -- wait -- about a task no wait will admit. The weight is the class
   // catalogue's (`/v1/resource-classes`); null until it answers, and then the

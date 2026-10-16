@@ -190,6 +190,10 @@ def _run_body(monkeypatch, tmp_path, *, browsers: str | None, endpoint: str | No
         return {}
 
     monkeypatch.setattr(claude_code, "run_cli_agent", fake_run)
+    # The runner git tools register an MCP server of their own when the
+    # attempt has `SWARM_GIT`, which a SwarmCloud container running these
+    # tests does: these cases are about the browser tools alone.
+    monkeypatch.delenv(claude_code.GIT_SPOOL_ENV, raising=False)
     for name, value in ((claude_code.BROWSERS_PATH_ENV, browsers), ("SWARM_CDP_ENDPOINT", endpoint)):
         if value is None:
             monkeypatch.delenv(name, raising=False)
@@ -216,7 +220,8 @@ def test_the_runner_registers_playwright_mcp_on_the_live_browser(monkeypatch, tm
             "playwright": {
                 "type": "stdio",
                 "command": claude_code.PLAYWRIGHT_MCP_BIN,
-                "args": ["--cdp-endpoint", ENDPOINT],
+                # The client tag (BSTATUS-API): the gate attributes and strips it.
+                "args": ["--cdp-endpoint", ENDPOINT + "/client/playwright"],
             }
         }
     }
@@ -232,7 +237,7 @@ def test_the_agents_own_launch_finds_only_the_stub(monkeypatch, tmp_path):
     seen = _run_body(monkeypatch, tmp_path, browsers="/opt/playwright", endpoint=ENDPOINT)
     assert seen["env"]["PLAYWRIGHT_BROWSERS_PATH"] == claude_code.AGENT_BROWSERS_PATH
     assert seen["env"]["SWARM_CDP_ENDPOINT"] == ENDPOINT
-    assert seen["prompt"].endswith(claude_code.LIVE_BROWSER_NOTE)
+    assert claude_code.LIVE_BROWSER_NOTE in seen["prompt"]
     note = claude_code.LIVE_BROWSER_NOTE
     assert "from swarm_browser import live" in note and "browser_navigate" in note
     assert "headless=True" not in note
@@ -262,7 +267,6 @@ def test_the_note_says_wait_and_do_not_poll_the_browser():
 
 
 def test_the_agents_python_is_the_venv_with_playwright(monkeypatch, tmp_path):
-    from agent_worker.runners import claude_code
 
     seen = _run_body(monkeypatch, tmp_path, browsers="/opt/playwright", endpoint=ENDPOINT)
     assert seen["spec"].path_prefix == ("/opt/venv/bin",)

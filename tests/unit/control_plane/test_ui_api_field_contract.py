@@ -291,6 +291,8 @@ UNDECLARED_BY_DESIGN: dict[str, dict[str, str]] = {
         "heartbeat_at": "the current lease's last beat (#179); declared by the UI lane after PR #432",
         "heartbeat_grace_seconds": "the reconciler's grace (#179); declared by the UI lane after PR #432",
         "heartbeat": "what the heartbeat reading is (#179); declared by the UI lane after PR #432",
+        "claude_session": "the Claude Code session that submitted it (SC-SESSION-SCOPE), read by the "
+        "sc plugin's check, attach-all and watch; the console does not scope by it",
     },
     # U26, served ahead of the client the same way; remove when types.ts
     # declares them.
@@ -303,6 +305,8 @@ UNDECLARED_BY_DESIGN: dict[str, dict[str, str]] = {
         "control_document": "present/missing (U26); declared by the UI lane after PR #432",
     },
     "Workflow": {
+        "claude_session": "the Claude Code session that submitted it (SC-SESSION-SCOPE), read by the "
+        "sc plugin; the console does not scope by it",
         "steps": "declared as WorkflowStep[], whose own fields are checked separately",
         "links": "the console link, for surfaces OUTSIDE the console (MCP, sc, plugin, PR bodies); "
         "inside it the address bar is the link",

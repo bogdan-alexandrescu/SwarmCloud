@@ -213,6 +213,38 @@ def git_shim_argv(spool: str) -> list[str]:
     return [sys.executable, "-I", "-m", GIT_SHIM_MODULE, "--spool", spool]
 
 
+#: The search tool's runner (docs/search-tool.md, lane SEARCH-TOOL): claude-code
+#: only, the runner whose `--mcp-config` the live browser's tools are in.
+SEARCH_TOOL_RUNNERS = ("agent_worker.runners.claude_code",)
+#: The search shim's module, as the runner names it.
+SEARCH_SHIM_MODULE = "agent_worker.searchmcp"
+#: Search requests answered per control poll. One call is one HTTP round trip
+#: to swarm-api (and its provider's, bounded at 10 s there), so a tick stays short.
+SEARCH_REQUESTS_PER_TICK = 2
+
+
+def offers_search_tool(profile_name: str) -> bool:
+    """Whether a task on this profile may be offered the search tool.
+
+    A live-browser profile (`RunnerProfile.live_browser`, read from the frozen
+    catalogue) whose runner is claude-code: the tool is for an agent that opens
+    its results in the live browser. swarm-api checks the same property of the
+    task's profile on every call (`swarm_api.search.offers_search`); whether
+    the deployment offers it at all is swarm-api's flag, answered at key
+    registration (`ChildPath.search_flag`).
+    """
+    profile = RUNNER_PROFILES.get(profile_name)
+    if profile is None or profile.worker_action is not None or not profile.live_browser:
+        return False
+    return any(part in SEARCH_TOOL_RUNNERS for part in profile.runner_argv)
+
+
+def search_shim_argv(spool: str) -> list[str]:
+    """The command a CLI runs as the `swarm-search` MCP server: `git_shim_argv`'s
+    shape, for the same reasons (this interpreter, `-I`, the spool named)."""
+    return [sys.executable, "-I", "-m", SEARCH_SHIM_MODULE, "--spool", spool]
+
+
 def _word(value: Any) -> str:
     return value.strip().lower() if isinstance(value, str) else ""
 
@@ -457,6 +489,14 @@ class ChildPath:
         self._git: Any = None
         #: Why this attempt has no git tools, once decided; None while it has them.
         self.git_unavailable: str | None = "not_prepared"
+        #: Whether swarm-api answered the key registration with `search_tool:
+        #: true` -- SEARCH_TOOL_ENABLED is on there (docs/search-tool.md).
+        self.search_flag = False
+        #: The search tool's relay (`searchtools.SearchTools`), built once by
+        #: `prepare` when the attempt is offered it; None otherwise.
+        self._search: Any = None
+        #: Why this attempt has no search tool, once decided; None while it has it.
+        self.search_unavailable: str | None = "not_prepared"
 
     @property
     def keyed(self) -> bool:
@@ -472,6 +512,18 @@ class ChildPath:
     def git_offered(self) -> bool:
         """Whether this attempt has the runner git tools: `$SWARM_GIT` and its relay."""
         return self._git is not None
+
+    @property
+    def rebased_onto(self) -> str | None:
+        """The sha the latest `git_rebase_onto` rebased the clone onto, or None
+        (`gittools.GitTools.rebased_onto`; read by the publish, SPEED-D1)."""
+        onto = getattr(self._git, "rebased_onto", None) if self._git is not None else None
+        return onto if isinstance(onto, str) and onto else None
+
+    @property
+    def search_offered(self) -> bool:
+        """Whether this attempt has the search tool: `$SWARM_SEARCH` and its relay."""
+        return self._search is not None
 
     @property
     def configured(self) -> bool:
@@ -509,7 +561,7 @@ class ChildPath:
             body.update({"key": None, "refused": WORKER_UNPROTECTED})
         path = f"/v1/attempts/{quote(self.cfg.attempt_id, safe='')}/child-key"
         try:
-            self._with_retry(
+            answer = self._with_retry(
                 lambda: self._api.call("POST", path, body=json.dumps(body).encode("utf-8"))
             )
         except ChildApiError as exc:
@@ -522,6 +574,10 @@ class ChildPath:
             return
         self._key = key
         self.unavailable = None
+        # The search flag is swarm-api's, answered here so that a deployment
+        # with it off names no search tool to any agent (docs/search-tool.md).
+        payload = answer[1] if isinstance(answer, tuple) and len(answer) == 2 else None
+        self.search_flag = isinstance(payload, dict) and payload.get("search_tool") is True
         self.log.info("child path registered for this attempt")
 
     def _note(self, note: Callable[[dict[str, Any]], Any], what: str, why: str) -> None:
@@ -590,7 +646,50 @@ class ChildPath:
             work, task=task, checkout=checkout, repository_url=repository_url,
             clone_base=clone_base, private_dir=private_dir, logs_dir=logs_dir, store=store,
         ))
+        env.update(self._prepare_search(work))
         return env
+
+    def _prepare_search(self, work: Path) -> dict[str, str]:
+        """The search tool's spool, when this attempt is offered it.
+
+        Offered when the attempt is keyed (every call is signed with the key),
+        swarm-api's flag is on (`search_flag`) and the profile is a live-browser
+        claude-code one (`offers_search_tool`). Built once, so the relay's rate
+        window survives the credential reload's rebuild of the environment.
+        """
+        if self._search is not None:
+            return self._search.prepare(work)
+        if not self.keyed or self._api is None:
+            why: str | None = "no_attempt_key"
+        elif not self.search_flag:
+            why = "search_tool_disabled"
+        elif not offers_search_tool(self.cfg.runner_profile):
+            why = "profile_has_no_search_tool"
+        else:
+            why = None
+        if why is not None:
+            self.search_unavailable = why
+            return {}
+        assert self._key is not None and self._api is not None
+        from . import searchtools  # lazy: searchtools imports this module
+
+        self._search = searchtools.SearchTools(
+            searchtools.SearchToolsConfig(
+                tenant_id=self.cfg.tenant_id,
+                task_id=self.cfg.task_id,
+                attempt_id=self.cfg.attempt_id,
+                lease_id=self.cfg.lease_id,
+                generation=int(self.cfg.generation),
+            ),
+            key=self._key,
+            api=self._api,
+            logger=self.log,
+            clock=self._clock,
+            wall=self._wall,
+        )
+        self.search_unavailable = None
+        self.log.info("search tool offered for this attempt")
+        return self._search.prepare(work)
 
     def _prepare_children(self, work: Path) -> dict[str, str]:
         if not self.offered:
@@ -736,8 +835,10 @@ class ChildPath:
 
     def has_requests(self, work: Path) -> bool:
         """Whether the agent has spooled anything, on either path; a cheap listing."""
-        return self._has_child_requests(work) or (
-            self._git is not None and self._git.has_requests(work)
+        return (
+            self._has_child_requests(work)
+            or (self._git is not None and self._git.has_requests(work))
+            or (self._search is not None and self._search.has_requests(work))
         )
 
     def _has_child_requests(self, work: Path) -> bool:
@@ -766,6 +867,11 @@ class ChildPath:
         answered = self._tick_children(work, limit=limit, deadline=deadline)
         if self._git is not None and self._clock() < deadline:
             answered += self._git.tick(work, limit=GIT_REQUESTS_PER_TICK)
+        # The search tool's requests, last, on the same budget. A fenced search
+        # raises `searchtools.SearchToolFenced`, a `ChildSubmitFenced`: the
+        # same fenced exit as the git tools' (invariant 5).
+        if self._search is not None and self._clock() < deadline:
+            answered += self._search.tick(work, limit=SEARCH_REQUESTS_PER_TICK)
         return answered
 
     def _tick_children(

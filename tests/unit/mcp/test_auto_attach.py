@@ -232,7 +232,8 @@ def _session_start(client) -> tuple[int, str]:
     return code, out.getvalue()
 
 
-def test_session_start_names_the_running_workflows_and_the_attach(swarm, api, db):  # noqa: F811
+def test_session_start_names_the_running_workflows_and_the_attach(swarm, api, db,  # noqa: F811
+                                                                  claude_session):
     running = _submit(swarm, label="nightly")
     other = _submit(swarm)
     code, text = _session_start(swarm)
@@ -296,7 +297,9 @@ def _attached(workflow_id: str, steps: list[dict]) -> dict:
 def _listed(*ids: str) -> dict:
     return {
         "count": len(ids), "error": None,
-        "workflows": [{"workflow_id": i, "label": f"label-{i}", "state": "RUNNING", "console": None} for i in ids],
+        # This session's (SC-SESSION-SCOPE): swarm_workflows marks them so.
+        "workflows": [{"workflow_id": i, "label": f"label-{i}", "state": "RUNNING", "console": None,
+                       "this_session": True} for i in ids],
     }
 
 
@@ -336,14 +339,15 @@ def test_attach_all_lists_once_and_hands_back_one_attach_call_per_workflow(tmp_p
 
 
 def test_attach_all_follows_at_most_the_cap_and_lists_the_rest(tmp_path):
-    ids = [f"wf_{n:02d}" for n in range(12)]
+    # 30 since SC-ROWS (owner 2026-10-14); 10 before.
+    ids = [f"wf_{n:02d}" for n in range(32)]
     got = _run_all(tmp_path, {"LIST": _listed(*ids)})
     assert "error" not in got, got.get("error")
     calls = [call["attach"] for call in got["result"]["attach_calls"]]
-    assert calls == ids[:10], "the newest ten, in the order the bridge listed them"
-    assert [w["workflow_id"] for w in got["result"]["not_followed"]] == ids[10:]
+    assert calls == ids[:30], "the newest thirty, in the order the bridge listed them"
+    assert [w["workflow_id"] for w in got["result"]["not_followed"]] == ids[30:]
     said = " ".join(got["logs"])
-    for workflow_id in ids[10:]:
+    for workflow_id in ids[30:]:
         assert workflow_id in said, f"{workflow_id} was neither followed nor listed"
 
 
@@ -395,7 +399,7 @@ def test_an_attach_run_names_its_first_row_after_the_title_it_was_launched_with(
 
 def test_the_cap_is_stated_with_its_reason():
     text = _RUN_JS.read_text()
-    assert "const MAX_ATTACHED_WORKFLOWS = 10" in text
+    assert "const MAX_ATTACHED_WORKFLOWS = 30" in text
     at = text.index("const MAX_ATTACHED_WORKFLOWS")
     assert "row" in text[max(0, at - 1200):at].lower(), "the cap's reason must sit above it"
 

@@ -43,6 +43,19 @@ and the device and touch toggle are applied again. At most `RELAUNCH_LIMIT`
 times in `RELAUNCH_WINDOW_SECONDS`; past that the browser stays closed and the
 timeline says `browser_gave_up`. `status` says `restarting` meanwhile.
 
+PROXIED EGRESS (EGRESS-GATE; part of #1030; docs/browser-egress.md §2.2-§2.5).
+With `SWARM_BROWSER_EGRESS=proxy` in the sidecar's environment the gate starts
+its local CONNECT forwarder (egress.py) after the display and BEFORE Chromium,
+and Chromium is launched -- and relaunched -- with `--proxy-server` pointing at
+it. The forwarder refuses every CONNECT until the worker hands over the
+attempt's egress ticket on ctl.sock (`egress_ticket`), and again whenever the
+worker reports that none can be had, the ticket expires or swarm-egress is
+unreachable: FAIL CLOSED (owner decision Q7). A forwarder that cannot listen
+is a fatal setup error, so Chromium is never started without the proxy. When
+egress is unavailable the gate opens a page saying why, which the person
+watching sees and the agent reads; `status` carries the route and its state.
+Without the variable nothing here changes.
+
 A GATE THAT RESTARTS keeps Chromium closed (ctl.py): when the first start's
 marker is already in /tmp, only ctl.sock is served -- it refuses every
 registration and records `gate_restarted` -- and nothing else starts.
@@ -76,7 +89,7 @@ import sys
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -87,15 +100,19 @@ from .cdppolicy import PolicyPaths
 from .cdpproxy import AgentConnection, AgentLink, CdpError, CdpProxy, PipeTransport, serve_agents
 from .ctl import DEFAULT_MARKER, CtlServer
 from .device import WINDOW_OVERHANG, DeviceController, XRandrDisplay, captured
+from .. import browser_tools
+from .egress import EgressConfigError, EgressSettings, LocalForwarder, chromium_proxy_args, describe, notice_url
 from .inject import InjectError, XInjector, display_socket
-from .mask import MaskCdp, MaskState
+from .mask import REASON_SWITCHING, MaskCdp, MaskState
 from .pointer import css_to_frame
 from .presets import DEFAULT_PRESET, MAX_DISPLAY_HEIGHT, MAX_DISPLAY_WIDTH, Device, UnknownPreset, resolve
-from .report import agent_report, device_report, encode_report, page_origin
+from .report import agent_report, browser_report, device_report, egress_report, encode_report, page_origin
 from .rfb import ControlState, FrameHub, RfbSession, masked
 from .rfb import metrics_log as rfb_metrics_log
 from .session import OPS as SESSION_OPS
 from .session import SessionCarry
+from .tabs import OPS as TABS_OPS
+from .tabs import TabKeeper
 from .touch import TouchInjector
 from .tunnel import StreamMux, Tunnel, TunnelError, TunnelWriter, relay_url
 
@@ -143,8 +160,33 @@ MAX_QUEUED_ACTIONS = 1000
 #: every viewer's stream behind it -- the picture and the controller's input.
 CONTROL_GRANT_SECONDS = 15.0
 
+#: The gate's own control lease (CONTROL-LAPSE; part of #1030): control the
+#: gate hears no renewal of for this long is revoked here, and the agent gets
+#: its browser back. Every renewal the controller's console sends
+#: (swarm-ui `LIVE_RENEW_MS`, 20 s) reaches the gate through swarm-api and the
+#: relay as `CONTROL` naming the controller again. 50 s is 2.5 renewals: one
+#: lost request does not take control from someone mid-sign-in, two do, and
+#: it is under swarm-api's own 60 s (`live_control_renew_seconds`), so the
+#: gate never holds control longer than swarm-api would have. MEASURED
+#: 2026-10-13 (task e8cb...): with no lease, a gate swarm-api never told held
+#: control 54 minutes after it lapsed, and refused the agent 72 times.
+CONTROL_LEASE_SECONDS = 50.0
+#: The longest a revoke's cause is (the relay checks `[a-z_]{1,32}`).
+MAX_CONTROL_CAUSE = 32
+
 #: How long reading a page's URL and title may take when control ends.
 PAGE_INFO_SECONDS = 2.0
+
+#: How long a CANCELLED tunnel task may spend ending the episode a person
+#: holds (HANG-LEASE; part of #1335). The gate's own stop never cancels it
+#: first: it closes the tunnel, and the task ends control with Chromium's
+#: pipe still read. A cancel from outside -- the event loop shutting down --
+#: cancels the pipe's reader with it, so the release's reads (the page's
+#: title, the agent's resume) are answered by nobody, and the resume was
+#: unbounded: MEASURED 2026-10-14, run 38633285923, `asyncio.run` waited on
+#: the task in `_cancel_all_tasks` until the job's 30-minute timeout. Under
+#: one `PAGE_INFO_SECONDS` read, because nothing is going to answer.
+CANCELLED_RELEASE_SECONDS = 1.0
 
 #: Between the page follower's attempts to attach to the agent's page again
 #: (`PageFollower._reconnect`), the last repeated: fast at first, because the
@@ -152,6 +194,27 @@ PAGE_INFO_SECONDS = 2.0
 #: milliseconds; then every two seconds, one `Target.getTargets` each, for as
 #: long as the page is there and will not take a session (a crashed renderer).
 RECONNECT_DELAYS = (0.05, 0.25, 0.5, 1.0, 2.0)
+
+#: THE PAGE FOLLOWED IS THE TAB CHROMIUM SHOWS (LIVE-BLANK; part of #1030).
+#: Every this many seconds the follower asks each page whether it is shown
+#: (`PageFollower.check`), besides when a tab opens, closes or is brought
+#: forward. Half a second bounds how long a tab switch nobody announced -- a
+#: link opening a tab, a page closing itself -- shows the "unavailable" fill;
+#: each ask is two CDP round trips per page.
+VISIBLE_POLL_SECONDS = 0.5
+#: A page that has not answered in this long is "unknown", not shown: a tab
+#: restored from the profile may have no renderer until it is loaded.
+VISIBLE_PROBE_SECONDS = 2.0
+#: The isolated world the visibility probe reads `document.visibilityState`
+#: in: a world no page script can reach, so a page cannot claim to be shown.
+VISIBLE_WORLD = "swarm-live-visible"
+#: Agent commands after which another tab may be on screen. The mask holds
+#: (`MaskState.hold`) from the moment one is forwarded until the follower has
+#: looked again, and at most `TAB_SWITCH_HOLD_SECONDS` if it never answers.
+TAB_SWITCH_METHODS = frozenset({
+    "Target.createTarget", "Target.activateTarget", "Target.closeTarget", "Page.bringToFront", "Page.close",
+})
+TAB_SWITCH_HOLD_SECONDS = 5.0
 
 #: CHROMIUM IS STARTED AGAIN WHEN IT EXITS UNEXPECTEDLY (BROWSER-RELAUNCH;
 #: part of #1030), at most this many times in this many seconds, then it
@@ -223,6 +286,10 @@ class GateConfig:
     #: PLAYWRIGHT_BROWSERS_PATH (images/agent-runtime-browser/Dockerfile), read
     #: rather than copied here so the path is written down once.
     browsers_path: str = ""
+    #: Proxied egress (egress.py): off unless the dispatcher set SWARM_BROWSER_EGRESS=proxy.
+    egress: EgressSettings = EgressSettings()
+    #: The local forwarder's port once it listens; Chromium's `--proxy-server`.
+    egress_port: int | None = None
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "GateConfig":
@@ -238,6 +305,10 @@ class GateConfig:
             url = relay_url(env)
         except ValueError as exc:
             raise SetupError(str(exc)) from None
+        try:
+            egress = EgressSettings.from_env(env)
+        except EgressConfigError as exc:
+            raise SetupError(str(exc)) from None
         return cls(
             ctl_path=env["SWARM_GATE_CTL"],
             profile_dir=Path(env["SWARM_BROWSER_PROFILE_DIR"]),
@@ -248,6 +319,7 @@ class GateConfig:
             relay_url=url,
             display=env.get("DISPLAY") or ":0",
             browsers_path=env.get("PLAYWRIGHT_BROWSERS_PATH") or "",
+            egress=egress,
         )
 
 
@@ -386,8 +458,16 @@ def chromium_args(cfg: GateConfig) -> list[str]:
     "only for automated testing" infobar took 56 rows of the page area
     `presets.BROWSER_UI_HEIGHT` measures without it (LB-R3, 2026-10-12). The
     window is one pixel past the display each way (`device.WINDOW_OVERHANG`).
+
+    With proxied egress on, the proxy flags (egress.py `chromium_proxy_args`)
+    come before the first page, and with no listening forwarder this raises
+    SetupError: there is no way to render these arguments without the proxy.
     """
     desktop = resolve(DEFAULT_PRESET)
+    try:
+        egress = chromium_proxy_args(cfg.egress, cfg.egress_port)
+    except EgressConfigError as exc:
+        raise SetupError(str(exc)) from None
     return [
         "--remote-debugging-pipe",
         f"--user-data-dir={cfg.profile_dir}",
@@ -398,6 +478,7 @@ def chromium_args(cfg: GateConfig) -> list[str]:
         "--window-position=0,0",
         "--disable-infobars",
         f"--window-size={desktop.display_width + WINDOW_OVERHANG},{desktop.display_height + WINDOW_OVERHANG}",
+        *egress,
         "about:blank",
     ]
 
@@ -466,6 +547,17 @@ async def serve_cdp(proxy: CdpProxy, host: str, port: int) -> Any:
         raise SetupError(f"the CDP proxy cannot listen on {host}:{port}: {exc.strerror}") from None
 
 
+async def start_egress(cfg: GateConfig, record: Callable[[str, Mapping[str, Any]], None],
+                       on_unavailable: Callable[[str], None]) -> LocalForwarder:
+    """The local CONNECT forwarder on 127.0.0.1, on an ephemeral port."""
+    forwarder = LocalForwarder(cfg.egress, record=record, on_unavailable=on_unavailable)
+    try:
+        await forwarder.start()
+    except OSError as exc:
+        raise SetupError(f"the egress forwarder cannot listen: {exc.strerror}") from None
+    return forwarder
+
+
 @dataclass
 class Deps:
     """What touches the operating system. Tests replace each with a fake."""
@@ -478,6 +570,8 @@ class Deps:
     open_framebuffer: Callable[[GateConfig], Any] = open_framebuffer
     #: The tunnel's connector; None is tunnel.WebSocketClient.connect.
     connect_relay: Callable[[str], Awaitable[Any]] | None = None
+    #: The proxied-egress forwarder, started only when egress is on.
+    start_egress: Callable[..., Awaitable[Any]] = start_egress
 
 
 # --------------------------------------------------------------------------
@@ -486,15 +580,35 @@ class Deps:
 
 
 class GateProxy(CdpProxy):
-    """The proxy, remembering whether an agent has ever connected (SessionCarry asks)."""
+    """The proxy, remembering whether an agent has ever connected (SessionCarry asks).
+
+    It also tells the page follower when the agent asks Chromium to open,
+    close or bring forward a tab (`TAB_SWITCH_METHODS`): `on_tab_switch` as
+    the command is forwarded, so the mask holds before the switch can happen,
+    and `on_tab_switched` when Chromium has answered it, so the follower looks
+    which tab is shown after it did (LIVE-BLANK).
+    """
 
     agent_seen = False
+    on_tab_switch: Callable[[], None] | None = None
+    on_tab_switched: Callable[[], None] | None = None
 
-    async def connect_agent(self, link: AgentLink) -> AgentConnection | None:
-        connection = await super().connect_agent(link)
+    async def connect_agent(self, link: AgentLink, client: str | None = None) -> AgentConnection | None:
+        connection = await super().connect_agent(link, client)
         if connection is not None:
             self.agent_seen = True
         return connection
+
+    async def _forward(self, connection: AgentConnection, message: Mapping[str, Any]) -> None:
+        if message.get("method") in TAB_SWITCH_METHODS and self.on_tab_switch is not None:
+            self.on_tab_switch()
+        await super()._forward(connection, message)
+
+    async def _on_response(self, pending: Any, message: Mapping[str, Any]) -> None:
+        await super()._on_response(pending, message)
+        if pending.owner is not None and pending.method in TAB_SWITCH_METHODS \
+                and self.on_tab_switched is not None:
+            self.on_tab_switched()
 
 
 class _CurrentBrowser:
@@ -546,10 +660,38 @@ def redacted_stderr(lines: list[str]) -> list[str]:
 class PageFollower:
     """Which page is on screen, and the mask's gate-only session on it.
 
-    The display holds one window (§3.1) whose visible tab is the one opened
-    last, so the mask follows the newest page and falls back to the newest
-    one left when it closes. Between pages the mask's session is down, so
-    every frame is the blank "masking unavailable" frame: it fails closed.
+    The display holds one window (§3.1), and the page on screen is its tab
+    Chromium shows. Between pages the mask's session is down, so every frame
+    is the blank "masking unavailable" frame: it fails closed.
+
+    WHICH TAB IS SHOWN IS ASKED, NOT GUESSED (LIVE-BLANK; part of #1030). The
+    follower used to follow the NEWEST page target, on the rule that "the
+    visible tab is the one opened last", and on start the last one
+    `Target.getTargets` listed. MEASURED 2026-10-13 on release 1e86c37e: on
+    task_2ac5d7e22a51460995a2, at Google's reCAPTCHA page, and on
+    task_9d2890cce74147f985ff, the page area was the mask's flat #222 for ten
+    minutes and more; on task_84cb2038aa704c829d48's resumed attempt the whole
+    frame was the "unavailable" #555. An agent driving Chromium over the CDP
+    proxy (Playwright MCP, swarm_browser) opens tabs and brings others
+    forward, and a profile restored on a resumed attempt brings back several
+    tabs in an order that says nothing about which is shown. A followed tab
+    that is not shown runs no animation frames, so its observer never
+    measures again; its first layout change after that left its report stale
+    for good, and the page area of the tab that WAS shown blanked with it.
+
+    So `check` asks every page for `document.visibilityState`, in an isolated
+    world (`VISIBLE_WORLD`) no page script can reach, and follows the shown
+    one -- of several (a second window: the gate's own fresh page), the one
+    shown most recently. It runs on start, when a tab is created or
+    destroyed, after the agent's every tab command (`TAB_SWITCH_METHODS`,
+    while the mask holds), and every `VISIBLE_POLL_SECONDS`. A Chromium that
+    answers no probe at all gets the old rule, the newest page.
+
+    OUT-OF-PROCESS FRAMES. The mask's install asks Chromium to auto-attach
+    the page's cross-site iframes (mask.py `MaskCdp`); each one's session is
+    a CHILD of the page's, and the follower installs the observer on it
+    (`MaskCdp(child=True)`) and routes its events, so a cross-site frame --
+    an ad, an embedded sign-in -- is shown and masked rather than covered.
 
     The mask's handlers await replies (`MaskCdp.link`), and the pipe reader
     must never wait on a reply (cdpproxy.py), so its events are queued here
@@ -581,13 +723,16 @@ class PageFollower:
     def __init__(self, cdp: CdpProxy, state: MaskState,
                  on_origin: Callable[[dict[str, Any] | None], None] | None = None,
                  on_state: Callable[[str, str | None, str | None], None] | None = None,
-                 delays: tuple[float, ...] = RECONNECT_DELAYS) -> None:
+                 delays: tuple[float, ...] = RECONNECT_DELAYS,
+                 poll: float = VISIBLE_POLL_SECONDS) -> None:
         self._cdp = cdp
         self._state = state
         self._on_origin = on_origin
         #: Told (state, cause, target) when `state` changes.
         self._on_state = on_state
         self._delays = delays
+        self._poll = poll
+        #: Page targets, the one shown most recently last (`check`).
         self.pages: list[str] = []
         self.current: str | None = None
         self.state = "none"
@@ -595,10 +740,23 @@ class PageFollower:
         #: The session is attached but what the mask installed on it is gone (a crash).
         self._stale = False
         self._mask: MaskCdp | None = None
+        #: The mask on every session this follow holds: the page's and its
+        #: out-of-process frames', by session id.
+        self._masks: dict[str, MaskCdp] = {}
+        #: Out-of-process frame sessions under the page's: session -> targetId.
+        self._children: dict[str, str] = {}
+        #: The visibility probe's own session on each page, and its world there.
+        self._probes: dict[str, str] = {}
+        self._probe_worlds: dict[str, int] = {}
+        #: What each page last answered: True shown, False hidden, None unknown.
+        self._shown_last: dict[str, bool | None] = {}
+        self._checking = False
+        self._check_again = False
         self._queue: asyncio.Queue[tuple[str, str, dict[str, Any]]] = asyncio.Queue()
         self._lock = asyncio.Lock()
         self._tasks: set[asyncio.Task[None]] = set()
         self._worker: asyncio.Task[None] | None = None
+        self._watcher: asyncio.Task[None] | None = None
         self._reconnecting: asyncio.Task[None] | None = None
         self._closing = False
 
@@ -610,9 +768,10 @@ class PageFollower:
                 if info["targetId"] not in self.pages:
                     self.pages.append(info["targetId"])
         try:
-            await self.follow(self.pages[-1] if self.pages else None)
+            await self.check()
         except Exception as exc:  # noqa: BLE001 -- the reconnect loop takes it from here
             self.recover("attach_failed", exc)
+        self._watcher = asyncio.create_task(self._watch())
 
     def on_event(self, message: Mapping[str, Any]) -> None:
         """A message from Chromium's pipe. Never waits."""
@@ -623,9 +782,16 @@ class PageFollower:
         if not isinstance(method, str):
             return
         if session is not None:
-            if session == self._session:
-                if method == "Inspector.targetCrashed":
-                    self._crashed()
+            if session == self._session and method == "Inspector.targetCrashed":
+                self._crashed()
+            elif session in self._masks:
+                if method == "Target.attachedToTarget":
+                    self._attached(params)
+                elif method == "Target.detachedFromTarget":
+                    child = params.get("sessionId")
+                    if child in self._children:
+                        del self._children[child]
+                        self._masks.pop(child, None)
                 else:
                     self._queue.put_nowait((session, method, params))
             return
@@ -634,25 +800,179 @@ class PageFollower:
             target = info.get("targetId")
             if info.get("type") == "page" and isinstance(target, str) and target not in self.pages:
                 self.pages.append(target)
-                self._spawn(self.follow(target))
+                # A new tab is usually shown at once: hold until it is looked at.
+                self.tab_switching()
         elif method == "Target.targetDestroyed":
             target = params.get("targetId")
+            self._forget_probe(target)
             if target in self.pages:
                 self.pages.remove(target)
                 if target == self.current:
-                    self._spawn(self.follow(self.pages[-1] if self.pages else None))
+                    self.tab_switching()
         elif method == "Target.targetCrashed":
             if params.get("targetId") == self.current and self._session is not None:
                 self._crashed()
-        elif method == "Target.detachedFromTarget" and session is None \
-                and self._session is not None and params.get("sessionId") == self._session:
-            self._session = None
-            self._mask = None
-            self._state.session_down()
-            if self.current is not None:
-                # Its page may well still be there (a renderer swap, a session
-                # Chromium dropped): attach again rather than stay grey.
-                self.recover("detached")
+        elif method == "Target.detachedFromTarget" and session is None:
+            gone = params.get("sessionId")
+            for page, probe in list(self._probes.items()):
+                if probe == gone:
+                    self._forget_probe(page)
+            if self._session is not None and gone == self._session:
+                self._session = None
+                self._mask = None
+                self._masks.clear()
+                self._children.clear()
+                self._state.session_down()
+                if self.current is not None:
+                    # Its page may well still be there (a renderer swap, a session
+                    # Chromium dropped): attach again rather than stay grey.
+                    self.recover("detached")
+
+    def _attached(self, params: Mapping[str, Any]) -> None:
+        """Chromium auto-attached a target under the page's session: an out-of-process frame, or not ours."""
+        child = params.get("sessionId")
+        info = params.get("targetInfo") or {}
+        if not isinstance(child, str):
+            return
+        if info.get("type") != "iframe":
+            # A worker or anything else the auto-attach brought: the mask has no use for it.
+            self._spawn_quiet(self._cdp.call("Target.detachFromTarget", {"sessionId": child}))
+            return
+        self._children[child] = str(info.get("targetId", ""))
+
+        async def send(method: str, params: dict[str, Any]) -> dict[str, Any]:
+            return await self._cdp.call(method, params, child)
+
+        mask = MaskCdp(self._state, send, child=True)
+        self._masks[child] = mask
+        self._spawn_quiet(self._install_child(mask))
+
+    async def _install_child(self, mask: MaskCdp) -> None:
+        """The observer on an out-of-process frame's session, then its link.
+
+        A frame out of process before this page was followed never attached
+        on the page's session, so nothing there linked it: every session's
+        mask links what it can place once the frame is known (#1344).
+        """
+        await mask.install()
+        for other in list(self._masks.values()):
+            await other.relink()
+
+    def tab_switching(self) -> None:
+        """Another tab may be about to be shown: hold the mask and look. Never waits."""
+        if self._closing:
+            return
+        self._state.hold(REASON_SWITCHING)
+        self._spawn(self.check())
+        self._spawn_quiet(self._release_after(TAB_SWITCH_HOLD_SECONDS))
+
+    def tab_switched(self) -> None:
+        """Chromium answered the agent's tab command: look which tab it shows now."""
+        if not self._closing:
+            self._spawn(self.check())
+
+    async def _release_after(self, seconds: float) -> None:
+        """A tab command Chromium never answered must not hold the mask for ever."""
+        await asyncio.sleep(seconds)
+        await self.check()
+
+    async def check(self) -> None:
+        """Follow the tab Chromium shows, then let the mask trust reports again."""
+        if self._checking:
+            self._check_again = True
+            return
+        self._checking = True
+        try:
+            while True:
+                self._check_again = False
+                target = await self._shown()
+                await self.follow(target)
+                if not self._check_again or self._closing:
+                    break
+        finally:
+            self._checking = False
+            self._state.release()
+
+    async def _watch(self) -> None:
+        while not self._closing:
+            await asyncio.sleep(self._poll)
+            if self._reconnecting is not None and not self._reconnecting.done():
+                continue  # the reconnect loop has the page
+            try:
+                await self.check()
+            except Exception as exc:  # noqa: BLE001 -- the reconnect loop takes it from here
+                self.recover("attach_failed", exc)
+
+    async def _shown(self) -> str | None:
+        """The page Chromium shows: of several, the one shown most recently; None with no page."""
+        pages = list(self.pages)
+        if not pages:
+            return None
+        answers = await asyncio.gather(*(self._visible(page) for page in pages))
+        for page, shown in zip(pages, answers):
+            if shown and self._shown_last.get(page) is not True and page in self.pages:
+                # Newly shown: the most recently shown page goes last.
+                self.pages.remove(page)
+                self.pages.append(page)
+            self._shown_last[page] = shown
+        live = [p for p in self.pages if p in pages]
+        if not live:
+            return self.pages[-1] if self.pages else None
+        shown = [p for p in live if self._shown_last.get(p) is True]
+        if shown:
+            return shown[-1]
+        if all(self._shown_last.get(p) is None for p in live):
+            return live[-1]  # a Chromium that answers no probe: the newest page
+        if self.current in live:
+            return self.current  # none shown (a minimised window): stay, the mask says why
+        unknown = [p for p in live if self._shown_last.get(p) is None]
+        return unknown[-1] if unknown else live[-1]
+
+    async def _visible(self, target: str) -> bool | None:
+        """Whether `target` is the tab shown, read in a world its page cannot reach; None if unknown."""
+        try:
+            return await asyncio.wait_for(self._probe(target), VISIBLE_PROBE_SECONDS)
+        except Exception as exc:  # noqa: BLE001 -- a page closing, loading, or not answering: unknown
+            self._probe_worlds.pop(target, None)
+            if not isinstance(exc, (CdpError, asyncio.TimeoutError)) or "session" in str(exc).lower():
+                # The probe's session is gone or never was: attach again next time.
+                self._forget_probe(target)
+            return None
+
+    async def _probe(self, target: str) -> bool | None:
+        session = self._probes.get(target)
+        if session is None:
+            result = await self._cdp.call("Target.attachToTarget", {"targetId": target, "flatten": True})
+            session = self._probes[target] = str(result["sessionId"])
+        for _ in range(2):
+            world = self._probe_worlds.get(target)
+            if world is None:
+                # One world per document, made again only when its context is
+                # gone (a navigation): every call to make one is a new world.
+                made = await self._cdp.call("Page.createIsolatedWorld",
+                                            {"frameId": target, "worldName": VISIBLE_WORLD}, session)
+                world = self._probe_worlds[target] = int(made["executionContextId"])
+            try:
+                reply = await self._cdp.call("Runtime.evaluate", {
+                    "expression": "document.visibilityState", "contextId": world,
+                    "returnByValue": True}, session)
+            except CdpError:
+                self._probe_worlds.pop(target, None)
+                continue
+            value = (reply.get("result") or {}).get("value")
+            if value in ("visible", "hidden", "prerender"):
+                return value == "visible"
+            return None
+        return None
+
+    def _forget_probe(self, target: Any) -> None:
+        if not isinstance(target, str):
+            return
+        self._probe_worlds.pop(target, None)
+        self._shown_last.pop(target, None)
+        session = self._probes.pop(target, None)
+        if session is not None and not self._closing:
+            self._spawn_quiet(self._cdp.call("Target.detachFromTarget", {"sessionId": session}))
 
     def _crashed(self) -> None:
         """The page's renderer is gone, and with it the observer: fail closed and re-attach."""
@@ -680,7 +1000,7 @@ class PageFollower:
                 live = [i["targetId"] for i in infos
                         if i.get("type") == "page" and isinstance(i.get("targetId"), str)]
                 self.pages = [p for p in self.pages if p in live] + [p for p in live if p not in self.pages]
-                target = self.current if self.current in self.pages else (self.pages[-1] if self.pages else None)
+                target = self.current if self.current in self.pages else await self._shown()
                 await self.follow(target)
                 if target is None:
                     return
@@ -705,6 +1025,18 @@ class PageFollower:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
+    def _spawn_quiet(self, work: Awaitable[Any]) -> None:
+        """`work` on a task whose failure is only logged: a detach, an out-of-process frame's install."""
+        async def run() -> None:
+            try:
+                await work
+            except Exception as exc:  # noqa: BLE001 -- the frame stays covered; the session is gone
+                log.info("live gate: page follower side task failed (%s)", type(exc).__name__)
+
+        task = asyncio.get_running_loop().create_task(run())
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
     async def _quietly(self, work: Awaitable[None]) -> None:
         try:
             await work
@@ -716,11 +1048,15 @@ class PageFollower:
             if target is not None and target == self.current and self._session is not None \
                     and not self._stale:
                 return
+            if target is None and self.current is None and self.state == "closed":
+                return
             old, old_session = self.current, self._session
             self._state.session_down()
             self._session = None
             self._stale = False
             self._mask = None
+            self._masks.clear()
+            self._children.clear()
             if old is not None:
                 # A page's main frame id is its target id.
                 self._state.frame_detached(old)
@@ -744,6 +1080,7 @@ class PageFollower:
             try:
                 mask = MaskCdp(self._state, send)
                 self._mask = mask
+                self._masks[session] = mask
                 await mask.install()
                 tree = await send("Page.getFrameTree", {})
             except BaseException:
@@ -753,6 +1090,8 @@ class PageFollower:
                 if self._session == session:
                     self._session = None
                     self._mask = None
+                    self._masks.clear()
+                    self._children.clear()
                 try:
                     await self._cdp.call("Target.detachFromTarget", {"sessionId": session})
                 except Exception:  # noqa: BLE001 -- already gone
@@ -775,10 +1114,10 @@ class PageFollower:
     async def _drain(self) -> None:
         while True:
             session, method, params = await self._queue.get()
-            mask = self._mask
-            if mask is None or session != self._session:
+            mask = self._masks.get(session)
+            if mask is None:
                 continue
-            if method == "Page.frameNavigated":
+            if method == "Page.frameNavigated" and session == self._session:
                 self._top_frame(params.get("frame") or {})
             try:
                 await mask.on_event(method, params)
@@ -790,15 +1129,19 @@ class PageFollower:
         self._closing = True
         if self._reconnecting is not None:
             self._reconnecting.cancel()
+        if self._watcher is not None:
+            self._watcher.cancel()
 
     async def close(self) -> None:
         self._closing = True
         tasks = [*self._tasks, *([self._worker] if self._worker else []),
+                 *([self._watcher] if self._watcher else []),
                  *([self._reconnecting] if self._reconnecting else [])]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         self._state.session_down()
+        self._state.release()
 
 
 # --------------------------------------------------------------------------
@@ -815,6 +1158,18 @@ class _Episode:
     conn_id: str
 
 
+def _revoke_cause(payload: bytes) -> str:
+    """Why swarm-api revoked control, from a `CONTROL` frame with no
+    controller: its cause code, or `released` for a plain release."""
+    try:
+        cause = payload.decode("ascii")
+    except UnicodeDecodeError:
+        return "released"
+    if not cause or len(cause) > MAX_CONTROL_CAUSE or not all(c.islower() or c == "_" for c in cause):
+        return "released"
+    return cause
+
+
 class LiveGate:
     def __init__(self, cfg: GateConfig, deps: Deps | None = None, *,
                  record: Callable[[str, Mapping[str, Any]], None] = _record,
@@ -822,7 +1177,8 @@ class LiveGate:
                  relaunch_limit: int = RELAUNCH_LIMIT,
                  relaunch_window: float = RELAUNCH_WINDOW_SECONDS,
                  relaunch_delays: tuple[float, ...] = RELAUNCH_DELAYS,
-                 clock: Callable[[], float] = time.monotonic) -> None:
+                 clock: Callable[[], float] = time.monotonic,
+                 control_lease_seconds: float = CONTROL_LEASE_SECONDS) -> None:
         self.cfg = cfg
         self.deps = deps or Deps()
         self.record = record
@@ -835,7 +1191,8 @@ class LiveGate:
         #: which launches no browser.
         self.startup: dict[str, float] = {}
         self.desktop = resolve(DEFAULT_PRESET)
-        self.mask_state = MaskState()
+        #: The event log hears of every challenge frame shown in a hand-off (mask.py SHOWN_IN_CONTROL).
+        self.mask_state = MaskState(record=self.record)
         self.hub = FrameHub(self.desktop.display_width, self.desktop.display_height)
         #: Set once ctl.sock listens: the dispatcher's startup probe condition.
         self.ready = asyncio.Event()
@@ -848,12 +1205,16 @@ class LiveGate:
         self.touch: TouchInjector | None = None
         self.control: ControlState | None = None
         self.carry: SessionCarry | None = None
+        #: The tab list a park keeps and a resumed attempt reopens (tabs.py, §5.5.2).
+        self.tabs: TabKeeper | None = None
         self.pages: PageFollower | None = None
         self.cdp_server: Any = None
         self.ctl: CtlServer | None = None
         self.framebuffer: Any = None
         self.tunnel: Tunnel | None = None
         self.mux: StreamMux | None = None
+        #: The proxied-egress forwarder (egress.py); None when egress is off.
+        self.egress: Any = None
         self.wiped = False
         #: Chromium's pipe closed (a wipe, or a crash, until a relaunch is up):
         #: nothing needing it is served.
@@ -877,8 +1238,15 @@ class LiveGate:
         self.viewers = 0
         self.last_episode: dict[str, Any] | None = None
         self._episode: _Episode | None = None
+        #: The control lease (`CONTROL_LEASE_SECONDS`): when, on `clock`,
+        #: control ends unless the relay renews it first. None with nobody in control.
+        self._lease_seconds = control_lease_seconds
+        self._lease_until: float | None = None
         self._had_control = False
         self._self_paused = False
+        #: The worker's hand-off (`pause`) holds the agent for a person,
+        #: until `resume`, `end_control` or a wipe.
+        self._handed_off = False
         self._fresh_target: str | None = None
         self._watching = asyncio.Event()
         #: Set when control is granted or released: the capture loop's rate changed.
@@ -895,6 +1263,12 @@ class LiveGate:
         #: `agent_connected` has been put on the timeline, which happens once.
         self.agent_connected_at: float | None = None
         self._agent_connected_told = False
+        #: WHICH BROWSER TOOL (BSTATUS-API; part of #1030): what the runner
+        #: registered, as the worker forwarded it (`browser_tools`), and the
+        #: tool whose tagged connection sent the last command, by any proxy
+        #: this gate has run (cdpproxy `split_client`). Both None until known.
+        self.browser_tools: dict[str, Any] | None = None
+        self.tool_last_used: tuple[str, float] | None = None
         #: One relay device choice applied at a time. Latest wins: a choice
         #: still waiting when a newer one arrives is dropped (`_device_seq`),
         #: so a burst of switches cannot apply one after another in turn.
@@ -916,6 +1290,7 @@ class LiveGate:
             await self.start_ctl()
             return
         await self.start_display()
+        await self.start_egress()
         await self.start_browser()
         await self.start_ctl()
         await self.start_view()
@@ -927,6 +1302,22 @@ class LiveGate:
             self.cfg, self.desktop.display_width, self.desktop.display_height)
         log.info("live gate: display %s up", self.cfg.display)
 
+    async def start_egress(self) -> None:
+        """1b. With proxied egress on, the local forwarder, before any Chromium.
+
+        Its port goes into the configuration Chromium's flags are rendered
+        from, so a relaunch is proxied exactly as the first start was.
+        """
+        if not self.cfg.egress.proxy:
+            return
+        self.egress = await self.deps.start_egress(self.cfg, self._egress_record, self._egress_unavailable)
+        port = getattr(self.egress, "port", None)
+        if not isinstance(port, int) or port <= 0:
+            raise SetupError("the egress forwarder is not listening; Chromium is not started without the proxy")
+        self.cfg = replace(self.cfg, egress_port=port)
+        self.record("egress_route", {"route": "proxy"})
+        log.info("live gate: browser egress is proxied; forwarder on 127.0.0.1:%d", port)
+
     async def start_browser(self) -> None:
         """2. Headed Chromium on the pipe, and the CDP proxy on 127.0.0.1:9222."""
         self.startup.setdefault("browser_launching", self._wall())
@@ -934,8 +1325,14 @@ class LiveGate:
         self.control = ControlState(self.touch)
         current = self._current
         self.carry = SessionCarry(current.call, record=self.record, agent_connected=self._agent_connected)
+        self.tabs = TabKeeper(current.call, record=self.record, agent_connected=self._agent_connected,
+                              shown=self._shown_target)
         await self._launch()
         log.info("live gate: chromium up; CDP proxy on %s:%d", self.cfg.cdp_host, self.cfg.cdp_port)
+
+    def _shown_target(self) -> str | None:
+        """The tab the page follower shows: the one a park records as active."""
+        return self.pages.current if self.pages is not None else None
 
     def _agent_connected(self) -> bool:
         return self._agent_seen_before or bool(self.proxy is not None and self.proxy.agent_seen)
@@ -965,6 +1362,26 @@ class LiveGate:
         self._agent_connected_told = True
         self._queue_action({"kind": "control", "event": "agent_connected"})
 
+    def _tool_used(self, tool: str, at: float) -> None:
+        """The CDP proxy's `on_tool`: a tagged tool sent a command (BSTATUS-API)."""
+        self.tool_last_used = (tool, at)
+        self._report_due.set()
+
+    def egress_report(self) -> dict[str, Any]:
+        """The report's `browser.egress`: the forwarder's state, or `off`."""
+        if not self.cfg.egress.proxy:
+            return egress_report(proxied=False, ok=True, error=None)
+        forwarder = self.egress
+        if forwarder is None:
+            return egress_report(proxied=True, ok=False, error=describe("forwarder_unreachable"))
+        ok, cause = forwarder.healthy()
+        return egress_report(proxied=True, ok=ok, error=None if ok else describe(cause or ""))
+
+    def browser_report(self) -> dict[str, Any]:
+        """The report's `browser` (report.py `browser_report`)."""
+        return browser_report(tools=self.browser_tools, last_used=self.tool_last_used,
+                              egress=self.egress_report())
+
     def agent_report(self) -> dict[str, Any]:
         """The report's `agent` (report.py `agent_report`)."""
         proxy = self.proxy
@@ -984,6 +1401,10 @@ class LiveGate:
         worker asked for (not a person's unasked take, which ended with the
         browser) the new proxy holds it too, until the worker resumes.
         """
+        if self.cfg.egress.proxy and (self.egress is None or not self.cfg.egress_port):
+            # Fail closed (owner decision Q7): never a browser without its proxy.
+            raise SetupError("browser egress is on and its forwarder is not listening; "
+                             "Chromium is not started without the proxy")
         browser = self.browser = await self.deps.start_chromium(self.cfg)
         self.proxy = GateProxy(
             self.browser.transport.send,
@@ -993,8 +1414,11 @@ class LiveGate:
             on_action=self._queue_action,
             on_pointer=self._agent_pointer,
             on_agents=self._agents_changed,
+            on_tool=self._tool_used,
             wall=self._wall,
         )
+        # A refused agent connection says when the gate takes control back.
+        self.proxy.control_lease_seconds = self._lease_seconds
         if held_by is not None and held_by.paused and not self._self_paused:
             # Decided here, as the proxy is made: a resume before it let the
             # old proxy go, a resume after it lets this one go.
@@ -1029,6 +1453,9 @@ class LiveGate:
             self._device_changed(self.devices.device)
         self.pages = PageFollower(self.proxy, self.mask_state, on_origin=self._origin_changed,
                                   on_state=self._page_state)
+        # The agent's own tab commands: the mask holds until the follower has looked (LIVE-BLANK).
+        self.proxy.on_tab_switch = self.pages.tab_switching
+        self.proxy.on_tab_switched = self.pages.tab_switched
         await self.pages.start()
         self.cdp_server = await self.deps.serve_cdp(self.proxy, self.cfg.cdp_host, self.cfg.cdp_port)
         self._ready_browser = browser
@@ -1215,14 +1642,24 @@ class LiveGate:
             device = self.devices.device if self.devices is not None else self.desktop
             try:
                 frame = await asyncio.to_thread(self._grab, device)
-            except CaptureError as exc:
+                # Read after the grab, as the mask is applied: a resume in
+                # between is the agent driving again.
+                self.mask_state.set_in_control(self.person_in_control)
+                published = masked(frame, self.mask_state)
+            except Exception as exc:  # noqa: BLE001 -- see below
+                # NOTHING IS SENT FOR THIS FRAME, AND THE LOOP GOES ON
+                # (LIVE-BLANK). Only `CaptureError` was caught here, so any
+                # other failure -- a header caught mid-rewrite, a mask that
+                # raised -- ended the capture task in silence: the viewer kept
+                # the hub's first blank for good and `first_frame` never came.
                 if not failing:
-                    log.warning("live gate: capture failed (%s); nothing is sent", exc)
+                    log.warning("live gate: capture failed (%s); nothing is sent",
+                                exc if isinstance(exc, CaptureError) else type(exc).__name__)
                 failing = True
                 await self._pace(started + 1.0 / fps)
                 continue
             failing = False
-            self.hub.publish(masked(frame, self.mask_state))
+            self.hub.publish(published)
             # The first frame the stream is given: the capture runs only while
             # an RFB stream (a viewer, or the relay's recorder) is open, and
             # every stream sends from the hub this was published to.
@@ -1249,6 +1686,18 @@ class LiveGate:
     def control_changed(self) -> None:
         """Control was granted or released: the capture rate follows at once."""
         self._rate_changed.set()
+
+    @property
+    def person_in_control(self) -> bool:
+        """A person holds control -- a hand-off, or take-control -- and the agent is held.
+
+        The mask shows a challenge frame unchecked only then (mask.py
+        `SHOWN_IN_CONTROL`, issue #1340): never while the agent drives, so
+        never once `resume` has begun handing the agent its page back.
+        """
+        if self.proxy is None or not self.proxy.paused:
+            return False
+        return self._handed_off or self._episode is not None
 
     def _agent_pointer(self, x: float, y: float) -> None:
         """The agent's `Input.dispatchMouseEvent`, in CSS pixels: where watchers see the pointer (pointer.py)."""
@@ -1315,9 +1764,11 @@ class LiveGate:
             await self._report_due.wait()
             self._report_due.clear()
             try:
-                payload = encode_report(self.origin, self.device_reported, self.agent_report())
+                payload = encode_report(self.origin, self.device_reported, self.agent_report(),
+                                        self.browser_report())
             except ValueError:  # cannot happen within report.py's limits; never send a part
-                payload = encode_report(None, self.device_reported, self.agent_report())
+                payload = encode_report(None, self.device_reported, self.agent_report(),
+                                        self.browser_report())
             await tunnel.report(payload)
 
     # -- ctl.sock -------------------------------------------------------------
@@ -1327,6 +1778,8 @@ class LiveGate:
             return self.status()
         if op in SESSION_OPS:
             return await self._need(self.carry).handle(op, args)
+        if op in TABS_OPS:
+            return await self._need(self.tabs).handle(op, args)
         if op == "tunnel_ticket":
             return await self.open_tunnel(args)
         if op == "pause":
@@ -1337,7 +1790,78 @@ class LiveGate:
             return await self.end_control(args)
         if op == "device":
             return await self._need(self.devices).handle_ctl(args)
+        if op == "egress_ticket":
+            return await self.egress_ticket(args)
+        if op == browser_tools.CTL_OP:
+            return self.set_browser_tools(args)
         raise ValueError("not an operation of the gate")
+
+    def set_browser_tools(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        """The worker's `browser_tools`: what the runner registered (BSTATUS-API).
+
+        Checked again here (`browser_tools.clean_state`): it came from a file
+        in the agent's reach. Reported on the next report; refused when it
+        does not hold together."""
+        state = browser_tools.clean_state(args)
+        if state is None:
+            raise ValueError("not a browser tool state")
+        if state != self.browser_tools:
+            self.browser_tools = state
+            self._report_due.set()
+        return {"browser_tools": "recorded"}
+
+    # -- proxied egress (egress.py) ---------------------------------------------
+
+    async def egress_ticket(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        """The worker's `egress_ticket`: a ticket to present, or why none can be had.
+
+        `{"ticket": ..., "expires_in": seconds}` arms the forwarder, after
+        which swarm-egress is probed (a TCP connect, no byte sent): when it
+        cannot be reached the answer says `failed` with
+        `forwarder_unreachable`, and every CONNECT stays refused.
+        `{"failed": cause}` -- the mint was refused, no attempt key, ... --
+        leaves every CONNECT refused with that cause. Either way the browser
+        is never sent direct. Refused when egress is off for this browser.
+        """
+        forwarder = self.egress
+        if forwarder is None:
+            raise ValueError("browser egress is off for this browser")
+        failed = args.get("failed")
+        if failed is not None:
+            forwarder.fail(str(failed))
+            return {"egress": "failed", "cause": forwarder.cause}
+        forwarder.set_ticket(args.get("ticket"), args.get("expires_in"))
+        self._report_due.set()
+        if not await forwarder.probe():
+            forwarder.unreachable()
+            self.record("egress_refused", {"cause": "forwarder_unreachable"})
+            self._egress_unavailable("forwarder_unreachable")
+            return {"egress": "failed", "cause": "forwarder_unreachable"}
+        return {"egress": "ready"}
+
+    def _egress_record(self, event: str, fields: Mapping[str, Any]) -> None:
+        """The forwarder's records, and a report: its state may have changed."""
+        self.record(event, fields)
+        self._report_due.set()
+
+    def _egress_unavailable(self, cause: str) -> None:
+        """Proxied egress is unavailable: put a page on screen that says why.
+
+        The forwarder calls this once per cause. The page is a data: URL, so
+        it loads with no network; it is what the person watching sees and
+        what the agent reads when it looks at the browser.
+        """
+        self._spawn(self._show_egress_notice(cause))
+
+    async def _show_egress_notice(self, cause: str) -> None:
+        proxy = self.proxy
+        if proxy is None or self.browser_closed or self.wiped:
+            return
+        try:
+            await proxy.call("Target.createTarget", {"url": notice_url(cause)})
+            self.record("egress_notice", {"cause": cause})
+        except Exception as exc:  # noqa: BLE001 -- the refusals themselves still fail closed
+            self.record("egress_notice_failed", {"cause": cause, "error": type(exc).__name__})
 
     def _need(self, component: Any) -> Any:
         if component is None or self.wiped or self.browser_closed:
@@ -1358,6 +1882,9 @@ class LiveGate:
             "paused": bool(self.proxy is not None and self.proxy.paused),
             "in_control": self._episode is not None,
             "tunnel": tunnel,
+            # RELAY-ROLL: 1012 from a restarting relay is reopened at once
+            # by the worker (handoff.HandoffPath._keep_tunnel).
+            "tunnel_close_code": getattr(self.tunnel, "close_code", None),
             "viewers": self.viewers,
             "device": device.name,
             "orientation": device.orientation,
@@ -1369,6 +1896,9 @@ class LiveGate:
             # holds now.
             "agent_connected_at": self.agent_connected_at,
             "agent_connections": self.agent_report()["connections"],
+            # EGRESS-GATE: the browser's route and, when proxied, its state
+            # and counts (egress.py `stats`); never the ticket.
+            "egress": self.egress.stats() if self.egress is not None else {"route": "direct"},
         }
 
     async def open_tunnel(self, args: Mapping[str, Any]) -> dict[str, Any]:
@@ -1401,15 +1931,30 @@ class LiveGate:
 
     async def _run_tunnel(self, tunnel: Tunnel, mux: StreamMux) -> None:
         code: int | None = None
+        cancelled = False
         try:
             code = await tunnel.run(mux.on_frame)
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
         finally:
             reporter = self._tasks.get("report")
             if reporter is not None:
                 reporter.cancel()
             await mux.close()
             if self._episode is not None:
-                await self._release("tunnel_closed")
+                if cancelled:
+                    # Bounded, and the cancel still propagates (HANG-LEASE):
+                    # see CANCELLED_RELEASE_SECONDS. Cut short, the release
+                    # skips what waits on Chromium or the relay (the lift,
+                    # the page read, the action, the resume); the proxy's
+                    # `resume`, once started, leaves its hold in its `finally`.
+                    try:
+                        await asyncio.wait_for(self._release("tunnel_closed"), CANCELLED_RELEASE_SECONDS)
+                    except asyncio.TimeoutError:
+                        self.record("release_degraded", {"step": "cancelled", "cause": "TimeoutError"})
+                else:
+                    await self._release("tunnel_closed")
             self.record("tunnel_closed", {"code": code})
 
     async def _serve_rfb(self, conn_id: str, reader: asyncio.StreamReader, writer: TunnelWriter) -> None:
@@ -1425,15 +1970,39 @@ class LiveGate:
 
     # -- control (§4.2) -------------------------------------------------------
 
-    async def _on_control(self, conn_id: str) -> None:
-        """The relay's CONTROL: swarm-api granted `conn_id` control, or none (empty)."""
+    async def _on_control(self, conn_id: str, payload: bytes = b"") -> None:
+        """The relay's CONTROL: swarm-api granted `conn_id` control, or none
+        (empty, with why in `payload` when swarm-api revoked it). The
+        controller named again is a renewal of the control lease."""
         if conn_id:
+            if self._episode is not None and self.control is not None and self.control.holds(conn_id):
+                self._renew_lease()
+                return
             try:
                 await asyncio.wait_for(self._grant(conn_id), CONTROL_GRANT_SECONDS)
             except asyncio.TimeoutError:
                 await self._refused("grant_timeout")
         else:
-            await self._release("released")
+            await self._release(_revoke_cause(payload))
+
+    def _renew_lease(self) -> None:
+        """Control goes on for another `CONTROL_LEASE_SECONDS`; the watch
+        that ends it when no renewal comes is started if it is not running."""
+        self._lease_until = self._clock() + self._lease_seconds
+        watch = self._tasks.get("lease")
+        if watch is None or watch.done():
+            self._tasks["lease"] = asyncio.create_task(self._watch_lease())
+
+    async def _watch_lease(self) -> None:
+        """End control the relay stopped renewing (`CONTROL_LEASE_SECONDS`):
+        `control_ended` with cause `lease_expired`, and the agent resumes."""
+        while self._episode is not None and self._lease_until is not None:
+            remaining = self._lease_until - self._clock()
+            if remaining <= 0:
+                self.record("control_lease_expired", {"lease_seconds": self._lease_seconds})
+                await self._release("lease_expired")
+                return
+            await asyncio.sleep(min(remaining, 1.0))
 
     # -- the controller's device (§6.1, Q13; LB-DEV-B) -------------------------
 
@@ -1528,6 +2097,7 @@ class LiveGate:
         else:
             self._episode.conn_id = conn_id
         self._had_control = True
+        self._renew_lease()
         await self._action({"kind": "control", "event": "granted"})
 
     async def _bring_to_front(self, target: str) -> None:
@@ -1556,6 +2126,7 @@ class LiveGate:
         controller is cleared either way; a lift that cannot be sent has
         nothing left to lift (`TouchInjector._lift`, `ControlState.revoke`).
         """
+        self._lease_until = None
         if self.control is not None:
             try:
                 await asyncio.wait_for(self.control.revoke(), PAGE_INFO_SECONDS)
@@ -1622,9 +2193,13 @@ class LiveGate:
     async def _resume_agent(self) -> None:
         assert self.proxy is not None
         try:
-            if self.browser_closed:
+            if self.browser_closed or self._stopping:
                 # Nothing answers on a closed pipe: bounded, and the proxy
-                # leaves its hold however `resume` ends (its `finally`).
+                # leaves its hold however `resume` ends (its `finally`). The
+                # same while stopping: the pipe's reader is cancelled with the
+                # gate's tasks, and a person still in control when the task
+                # ended (CONTROL-LAPSE) waited here forever, so the gate never
+                # finished stopping.
                 await asyncio.wait_for(self.proxy.resume(), PAGE_INFO_SECONDS)
             else:
                 await self.proxy.resume()
@@ -1651,6 +2226,7 @@ class LiveGate:
         proxy = self._need(self.proxy)
         self._self_paused = False
         await proxy.pause()
+        self._handed_off = True
         expect = args.get("expect")
         if (args.get("fresh_page") is True and isinstance(expect, str) and expect
                 and _HOST.fullmatch(expect)):
@@ -1676,6 +2252,7 @@ class LiveGate:
         proxy = self.proxy
         if proxy is None or self.wiped:
             raise RuntimeError("the browser is not running")
+        self._handed_off = False
         target = self._episode.target if self._episode is not None else (
             self._fresh_target or (self.pages.current if self.pages else None))
         await self._release("returned")
@@ -1688,6 +2265,7 @@ class LiveGate:
     async def end_control(self, args: Mapping[str, Any]) -> dict[str, Any]:
         """§4.3, §4.4, §5.5: control ends; with `wipe`, Chromium closes and the profile goes."""
         cause = str(args.get("cause") or "ended")[:64]
+        self._handed_off = False
         await self._release(cause)
         wipe = args.get("wipe") is True
         if wipe:
@@ -1699,6 +2277,7 @@ class LiveGate:
         if self.wiped:
             return
         self.wiped = True
+        self._handed_off = False
         relaunch = self._tasks.pop("relaunch", None)
         if relaunch is not None:
             relaunch.cancel()
@@ -1734,6 +2313,7 @@ class LiveGate:
             ("injector", self._stop_injector),
             ("chromium", self._stop_browser),
             ("xvfb", self._stop_xvfb),
+            ("egress", self._stop_egress),
         ]
         for name, step in steps:
             try:
@@ -1782,6 +2362,10 @@ class LiveGate:
     async def _stop_xvfb(self) -> None:
         if self.xvfb is not None:
             await self.xvfb.stop()
+
+    async def _stop_egress(self) -> None:
+        if self.egress is not None:
+            await self.egress.close()
 
 
 # --------------------------------------------------------------------------

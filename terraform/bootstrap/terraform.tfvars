@@ -167,3 +167,28 @@ workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swar
 # 4 adds / 0 changes / 0 destroys whose two conditions linted clean
 # (iamPolicies:lintPolicy). Recorded here so the next bootstrap plan keeps it.
 enable_browser_logins = true
+
+# KEYS-IAM (2026-10-14, owner: "Yes, scoped bootstrap role"): swarm-api may
+# write and destroy tenant provider keys, on swarm-tenant-* secrets only
+# (provider_keys.tf). NOT YET APPLIED when this line was committed: the owner
+# applies it after linting the condition (docs/provider-keys.md §6). The plan
+# is 2 adds -- the role and the conditioned grant.
+enable_provider_keys = true
+
+# JEV-RUNNER (2026-10-14, owner: "ship ... jev-browser ... by morning"): eng's
+# worker may read u-bogdan's personal TypeSafe key, so a jev task bogdan
+# submits in eng uses his key (typesafe_user_keys.tf). Every eng task can read
+# it -- the row is the consent. NOT YET APPLIED when this line was committed:
+# the owner applies it. The plan is 1 add,
+# google_project_iam_member.typesafe_user_key_reader["eng/u-bogdan"].
+typesafe_user_key_readers = {
+  eng = ["u-bogdan"]
+}
+
+# SEC-IAM (PR 1356, #1347): swarm-api alone may read swarm-tenant-<t>-wsec-*
+# secrets (versions.access only, one extract() condition), so the release
+# route (SEC-RELEASE, PR 1369) can hand an attempt its granted workspace
+# secrets. Applied 2026-10-15 ~17:05Z from a plan of 2 adds / 0 changes /
+# 0 destroys equal to PR 1356's listed rows; the condition linted {} with
+# iamPolicies:lintPolicy. Recorded here so the next bootstrap plan keeps it.
+enable_workspace_secrets = true

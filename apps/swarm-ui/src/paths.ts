@@ -35,6 +35,37 @@ export const REFERENCE_ADDRESS = 'reference'
 export const GITHUB_CALLBACK_ADDRESS = 'onboarding/github/callback'
 export const GITHUB_CALLBACK_PATH = '/onboarding/github/callback'
 
+/**
+ * THE TYPESAFE KEY FORM'S ONE-TIME LINK (KEYS-UI; docs/provider-keys.md §3):
+ * `POST /v1/provider-keys/typesafe/links` answers
+ * `/settings/keys/typesafe?scope=user|tenant&t=<token>`, and `/sc` hands that
+ * to the person so the key never passes through Claude. Not in FIXED: nothing
+ * in the console links to it and the not-found page must never offer it.
+ * ITS TOKEN IS NEVER PART OF THE ADDRESS, exactly like the GitHub callback's
+ * `code`: the address is what the router writes back into the bar, so the
+ * token is dropped here and only `scope` is kept. The form reads the token off
+ * the bar once, itself (ProviderKeys.tsx `takeLinkToken`).
+ */
+export const KEY_LINK_ADDRESS = 'settings/keys/typesafe'
+export const KEY_LINK_PATH = '/settings/keys/typesafe'
+
+/**
+ * The link's token, read off a location: only on KEY_LINK_PATH, so a `t` on
+ * any other page is never taken for one. App reads it once, before its
+ * normalise effect rewrites the bar without it.
+ */
+export function keyLinkToken(pathname: string, search: string): string | null {
+  if (pathname.replace(/\/+$/, '') !== KEY_LINK_PATH) return null
+  const t = new URLSearchParams(search).get('t')
+  return t === null || t === '' ? null : t
+}
+
+/** The scopes a key link may name; anything else is dropped, not guessed at. */
+export function keyLinkScope(query: string): 'user' | 'tenant' | null {
+  const scope = new URLSearchParams(query).get('scope')
+  return scope === 'user' || scope === 'tenant' ? scope : null
+}
+
 /** Address -> path for the panes that are one fixed path each. */
 /** Exported for the not-found page, which offers the nearest of these (NotFound.tsx). */
 export const FIXED: Readonly<Record<string, string>> = {
@@ -72,6 +103,14 @@ export const FIXED: Readonly<Record<string, string>> = {
   'admin/counts': '/admin/counts',
   // #847 W8: Admin › People, everyone who has signed in and their workspace requests.
   'admin/people': '/admin/people',
+  // KEYS-UI: Settings › API keys, the person's own provider keys and, for an
+  // admin, the tenant's. Not a section: reached from the panel's foot by the
+  // person's name. Its one-time link is KEY_LINK_PATH, above.
+  'settings/keys': '/settings/keys',
+  // CTXQ-UI: Settings › Workspace, the selected workspace's own settings
+  // (Code intelligence). Beside API keys at the panel's foot, for the same
+  // reason: set once, not worked in.
+  'settings/workspace': '/settings/workspace',
   [HELP_ROUTE]: '/help',
   reference: '/api-reads',
 }
@@ -92,6 +131,9 @@ export const SECTION_ROOTS: Readonly<Record<string, string>> = {
   '/automate': 'automate/schedules',
   '/capacity': 'capacity/pools',
   '/admin': 'admin/limits',
+  // Not a section, but `/settings` is the head of its two paths, and a person
+  // trimming the link back to it should land on the page rather than a 404.
+  '/settings': 'settings/keys',
 }
 
 const GROUP_IDS: readonly string[] = HELP_GROUPS.map((g) => g.id)
@@ -279,6 +321,11 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
     return group === null ? `/help/${tail}` : `/help/${group}#${tail}`
   }
   if (bare === GITHUB_CALLBACK_ADDRESS) return GITHUB_CALLBACK_PATH
+  // The key link keeps its scope and nothing else (`pathToAddress` dropped the token).
+  if (bare === KEY_LINK_ADDRESS) {
+    const scope = keyLinkScope(query)
+    return scope === null ? KEY_LINK_PATH : `${KEY_LINK_PATH}?scope=${scope}`
+  }
   const fixed = FIXED[bare]
   if (fixed !== undefined) return query === '' ? fixed : `${fixed}?${query}`
   return '/overview'
@@ -404,6 +451,12 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
   // The callback's query (`code`, `state`, `error`) is dropped HERE, so the
   // route never holds it and the router's normalise writes a bare path.
   if (path === GITHUB_CALLBACK_PATH) return plain(GITHUB_CALLBACK_ADDRESS)
+  // THE KEY LINK'S TOKEN (`t`) IS DROPPED HERE, for the same reason: only the
+  // scope enters the route, so no address the router writes can carry it.
+  if (path === KEY_LINK_PATH) {
+    const scope = keyLinkScope(query)
+    return plain(scope === null ? KEY_LINK_ADDRESS : `${KEY_LINK_ADDRESS}?scope=${scope}`)
+  }
 
   // ADMIN › SCHEDULES IS GONE (SCHED-ONE-PAGE, owner decision 2026-10-13):
   // every tenant's schedules are Automate › Schedules' All tenants view, and

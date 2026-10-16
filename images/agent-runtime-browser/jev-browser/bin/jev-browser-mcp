@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# `jev-browser-mcp` on claude-code-browser: the pinned jev-browser MCP server,
+# attached to the live browser and nothing else (JEV-IMAGE, owner decision
+# 2026-10-14, part of #1030). Installed at /opt/swarm/jev-browser/bin/, off PATH;
+# the claude-code runner registers it as an MCP server (JEV-RUNNER).
+#
+# Upstream jev-browser 0.2.0 only ever launches a browser of its own. The
+# image's copy is patched (jev-browser/patches/jev-browser+0.2.0.patch) to
+# attach over CDP to JEV_BROWSER_CDP_ENDPOINT -- the browser's EXISTING default
+# context, no new context, no viewport, no device emulation, the WebMCP init
+# script left out, and close() only disconnecting -- and to refuse every
+# launch and every Chromium download. This wrapper is what makes the endpoint
+# the live browser's:
+#
+#   * it refuses to start without SWARM_CDP_ENDPOINT (only the live browser
+#     sets it), so the server never runs in a state where its first tool call
+#     would fail far from the cause;
+#   * JEV_BROWSER_CDP_ENDPOINT is always SWARM_CDP_ENDPOINT -- the gate's CDP
+#     proxy, whose method policy (livegate/cdppolicy.py) applies to every
+#     command -- never a value the caller brought;
+#   * JEV_BROWSER_PROFILE and JEV_BROWSER_HEADED, which would ask for a
+#     launched browser, are dropped, and JEV_BROWSER_NO_INSTALL=1 and
+#     PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 are set besides the patch's refusal;
+#   * JEV_MODEL is dropped, and where page text and labels go is the
+#     WORKSPACE'S JUDGMENT BACKEND (JUDGE-SELECT, owner decisions 2026-10-14),
+#     which the dispatcher names in SWARM_JEV_BACKEND:
+#       - internal-jev / internal-laya: Saga's decision API BY ITS TAILNET
+#         NAME, over https, through the cluster's Tailscale egress Service
+#         (the dispatcher pins the name to the Service with a hostAliases
+#         entry, so TLS verifies the API's own certificate; owner decision
+#         2026-10-15, #1380). JEV_API_URL is passed through ONLY when it is
+#         exactly that origin's /jev or /laya /v1/decide; any other value --
+#         the old in-cluster http address included -- or none (the egress is
+#         off), is refused, so page text is never sent to TypeSafe in its
+#         place. JEV_API_COMPAT=internal is
+#         set with it (JUDGE-ADAPT), so the patched jev() reshapes each request
+#         for the internal API, which is not wire-compatible with TypeSafe's on
+#         the request side, and sends its placeholder instead of any key. No
+#         TypeSafe key goes with it: upstream refuses to start without
+#         TYPESAFE_API_KEY and sends it as a Bearer token, so it is replaced by
+#         a fixed marker that is not a key, and the internal API needs none;
+#       - typesafe, or unset (a pod from a scheduler older than JUDGE-SELECT):
+#         JEV_API_URL is dropped, so judgments go only to TypeSafe's own API
+#         (api.typesafe.ai), and TYPESAFE_API_KEY is passed through untouched
+#         and never printed. JEV_API_COMPAT is passed through as it came: a
+#         stray `internal` aimed at TypeSafe's URL makes the patched jev()
+#         refuse the call rather than send the reshaped body there.
+#
+# This is guidance, not a sandbox: the agent can run node on the package by
+# its path, and the pod and the gate are the boundary
+# (docs/design/live-browser.md §3.2).
+set -euo pipefail
+
+NODE="/usr/local/bin/node"
+SERVER="/opt/swarm/jev-browser/node_modules/jev-browser/bin/jev-browser-mcp.mjs"
+
+endpoint="${SWARM_CDP_ENDPOINT:-}"
+if [[ -z "${endpoint}" ]]; then
+  cat >&2 <<'MSG'
+jev-browser-mcp: refused: SWARM_CDP_ENDPOINT is not set, so there is no live browser to attach to.
+jev-browser here drives only the live browser the person watches, at $SWARM_CDP_ENDPOINT; it never
+launches a browser of its own. Only claude-code-browser with the live browser sets that endpoint.
+MSG
+  exit 2
+fi
+
+refuse_backend() {
+  printf 'jev-browser-mcp: refused: %s\n' "$1" >&2
+  exit 2
+}
+
+# scheduler.judgment INTERNAL_DECISION_ORIGIN; tests/unit/worker/
+# test_jev_browser_image.py holds the two equal.
+DECISION_SERVICE="https://decision-api-staging.taile0bda9.ts.net"
+NO_TYPESAFE_KEY="swarm-internal-no-typesafe-key"
+backend="${SWARM_JEV_BACKEND:-}"
+case "${backend}" in
+  internal-jev | internal-laya)
+    want="${DECISION_SERVICE}/${backend#internal-}/v1/decide"
+    if [[ "${JEV_API_URL:-}" != "${want}" ]]; then
+      refuse_backend "this workspace judges with ${backend}, and this pod has no route to Saga's decision API (the tailnet egress is off). Jev is unavailable here; page text is never sent to TypeSafe instead."
+    fi
+    export JEV_API_URL="${want}"
+    export TYPESAFE_API_KEY="${NO_TYPESAFE_KEY}"
+    export JEV_API_COMPAT=internal
+    ;;
+  "" | typesafe)
+    unset JEV_API_URL
+    ;;
+  *)
+    refuse_backend "unknown judgment backend in SWARM_JEV_BACKEND; expected internal-jev, internal-laya or typesafe."
+    ;;
+esac
+
+unset JEV_BROWSER_PROFILE JEV_BROWSER_HEADED JEV_MODEL
+# The client tag (BSTATUS-API; agent_worker/browser_tools.py `tag_endpoint`):
+# the gate attributes this connection to jev and strips the tag before
+# anything reaches Chromium. Only a bare http origin is tagged.
+if [[ "${endpoint}" =~ ^https?://[^/?#]+/?$ ]]; then
+  endpoint="${endpoint%/}/client/jev"
+fi
+export JEV_BROWSER_CDP_ENDPOINT="${endpoint}"
+export JEV_BROWSER_NO_INSTALL=1
+export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+
+exec "${NODE}" "${SERVER}" "$@"

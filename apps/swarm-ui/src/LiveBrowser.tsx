@@ -32,6 +32,7 @@ import {
   type LiveStatus,
 } from './api'
 import { SaveAsLoginOffer } from './BrowserLogins'
+import { BrowserBadges, browserStatusOf } from './BrowserBadges'
 import { Button } from './components'
 import { HandoffStrip } from './Handoff'
 import { LiveToolMenu } from './LiveToolMenu'
@@ -120,8 +121,14 @@ import './styles/live.css'
  * to noVNC, which sends it as ClientCutText for the gate to type as keys.
  */
 
-/** How often an open session is read again: the controller, the origin and the hand-off move under the viewer. */
-export const LIVE_POLL_MS = 2000
+/**
+ * How often an open session is read again: the controller, the origin, the
+ * device and the hand-off move under the viewer. ~3 s (#1343): often enough
+ * that a reported device or address shows before the person looks for it,
+ * and over the fetch layer's 2 s reuse window (`REUSE_SETTLED_MS`), so the
+ * task re-read on the same clock is never handed its own last answer.
+ */
+export const LIVE_POLL_MS = 3000
 
 /**
  * The controller's console renews this often. Control ends 60 seconds after
@@ -133,6 +140,29 @@ export const LIVE_RENEW_MS = 20_000
 /** The longest wait between reconnects; noVNC's socket ends with Cloud Run's request timeout (§3.3, R2). */
 const RECONNECT_MAX_MS = 30_000
 
+/**
+ * RFC 6455's 1012, "Service Restart": the relay is restarting, reconnect now
+ * (RELAY-ROLL). The relay closes with it on a roll, and swarm-api closes a
+ * viewer with it whenever the viewer's relay link ends. MEASURED 2026-10-12/14:
+ * 40 relay restarts in ~48 h, one per release, and each one cost every viewer
+ * the 2 s, 4 s, 8 s ... backoff of an ordinary drop before it rejoined.
+ */
+export const LIVE_RESTART_CODE = 1012
+/** After a restart: the first reconnect ~250 ms away, doubling, jittered, never past 4 s. */
+const RESTART_RECONNECT_MS = 250
+const RESTART_RECONNECT_MAX_MS = 4_000
+
+/**
+ * How long reconnect number `tries` (1 first) waits. After a restart close,
+ * ~250 ms doubling and jittered to 75-125 %, so the viewers a relay drops at
+ * once do not all knock in the same instant; otherwise the ordinary backoff.
+ */
+export function liveReconnectDelay(tries: number, restart: boolean, rand: () => number = Math.random): number {
+  const step = Math.max(0, Math.min(tries - 1, 10))
+  if (restart) return Math.min(RESTART_RECONNECT_MAX_MS, RESTART_RECONNECT_MS * 2 ** step * (0.75 + 0.5 * rand()))
+  return Math.min(RECONNECT_MAX_MS, 1000 * 2 ** Math.min(tries, 5))
+}
+
 /** The presets' display names (§6.1, LB-6). The gate holds the list and its sizes; a name not here is shown as served. */
 const PRESET_LABEL: Readonly<Record<string, string>> = {
   desktop: 'Desktop',
@@ -142,6 +172,26 @@ const PRESET_LABEL: Readonly<Record<string, string>> = {
   // `iPad`, as the mockup's chip reads (owner decision 2026-10-12); the
   // preset is the 7th generation's frame, which its size in the caption says.
   'ipad-7': 'iPad',
+}
+
+/**
+ * What the Browser tab says over a closed live session (LB-RETURN, part of #1030).
+ *
+ * A hand-off whose hold ran out closes its session with `hold_expired`, and this
+ * said "The live browser has closed (hold_expired)" over a task that one press of
+ * I'm ready resumes -- MEASURED by the live-browser acceptance group, 2026-10-14;
+ * the person read it as over. A park is not an end: it says so, and what to press.
+ */
+export function closedSessionNote(
+  cause: string | null,
+  task: { state: TaskState; park_reason?: string | null },
+): string {
+  if (cause === 'hold_expired') {
+    return task.state === 'PARKED' && task.park_reason === 'HUMAN_REQUIRED'
+      ? 'The hand-off is parked: nobody took control in time, so its browser closed and its capacity went back. Press I’m ready to resume — the agent starts again and asks for you.'
+      : 'The hand-off is parking: nobody took control in time. Once it has parked, press I’m ready to resume.'
+  }
+  return `The live browser has closed${cause ? ` (${cause})` : ''}. The recording is kept for seven days.`
 }
 
 export function presetLabel(name: string): string {
@@ -155,7 +205,17 @@ export function presetLabel(name: string): string {
 export type LiveState =
   | { status: 'idle' }
   | { status: 'loading' }
-  | { status: 'ok'; liveBrowser: boolean; session: LiveSession | null }
+  | {
+      status: 'ok'
+      liveBrowser: boolean
+      session: LiveSession | null
+      /**
+       * The read's `browser` object (BSTATUS-STRIP), unparsed: the tool,
+       * egress and Jev badges read it with `browserStatusOf`, here or on
+       * `session.browser`, and draw nothing when an older API serves none.
+       */
+      browser?: unknown
+    }
   | { status: 'error'; message: string }
 
 /**
@@ -168,43 +228,98 @@ export function liveReadOf(answer: unknown): LiveRead | null {
   return typeof a.live_browser === 'boolean' && 'session' in a ? (a as LiveRead) : null
 }
 
+/** The read's top-level `browser` object, if it serves one (BSTATUS-STRIP). */
+function browserOfRead(read: LiveRead): unknown {
+  return (read as LiveRead & { browser?: unknown }).browser
+}
+
 /** Read the session again; given a control route's answer, draw it at once first. */
 export type LiveReload = (answer?: unknown) => void
 
 /**
+ * The Browser tab (or its theater) on screen: the session and the task are
+ * read again every `LIVE_POLL_MS` until the task is finished (LIVE-POLL, part
+ * of #1343). `onTask` reads the task again; the agent view owns that read.
+ */
+export interface LiveWatch {
+  on: boolean
+  finished: boolean
+  onTask?: () => void
+}
+
+const NOT_WATCHING: LiveWatch = { on: false, finished: false }
+
+/** The longest wait between re-reads after failures. */
+const LIVE_POLL_MAX_MS = 30_000
+
+/**
+ * The wait before the next re-read after `failures` failed reads in a row:
+ * a poll, doubling per failure, never past `LIVE_POLL_MAX_MS`. A failure
+ * slows the reads; it never ends them.
+ */
+export function liveRereadDelay(failures: number): number {
+  return Math.min(LIVE_POLL_MAX_MS, LIVE_POLL_MS * 2 ** Math.min(Math.max(failures, 0), 4))
+}
+
+function pageHidden(): boolean {
+  return typeof document !== 'undefined' && document.visibilityState === 'hidden'
+}
+
+/**
  * The live session of one agent, read while its attempt is in flight and
- * again every `LIVE_POLL_MS` while its profile is a live-browser one. An
- * agent whose profile is not is read once: a catalogue property does not
- * change under a running task.
+ * again every `LIVE_POLL_MS` while its profile is a live-browser one, or
+ * while `watch.on`. An agent whose profile is not, and nobody is watching,
+ * is read once: a catalogue property does not change under a running task.
+ *
+ * WHILE WATCHED (LIVE-POLL, part of #1343), the reads do not depend on what
+ * the last one said. MEASURED 2026-10-15 (release b93ad6cb): the tab read the
+ * session at load and never again; the header said "dispatched", the strip
+ * said no address had been reported and the device bar stayed disabled while
+ * the API already served all three. The poll ran only while the last read
+ * had said `live_browser`, so a read that failed at load ended the reads for
+ * good, and the task was read on the drawer's 10 s clock. Now a failure backs
+ * off (`liveRereadDelay`), the task is read with the session, and the reads
+ * stop once the task is finished -- the tab then says so.
+ *
+ * NOTHING IS READ WHILE THE PAGE IS HIDDEN; showing it reads at once, rather
+ * than drawing a minutes-old session for one more poll.
  *
  * `reload(answer)` DRAWS A CONTROL ROUTE'S ANSWER BEFORE THE NEXT READ
  * (QA12-22): after Return control the banner kept offering Take control
  * until a poll caught up. The answer is the session as the change left it,
  * so the tab draws that, and reads again behind it.
  */
-export function useLiveSession(taskId: string, inFlight: boolean): { live: LiveState; reload: LiveReload } {
+export function useLiveSession(
+  taskId: string,
+  inFlight: boolean,
+  watch: LiveWatch = NOT_WATCHING,
+): { live: LiveState; reload: LiveReload } {
   const [got, setGot] = useState<{ taskId: string; state: LiveState } | null>(null)
   const [tick, setTick] = useState(0)
+  // Failed reads in a row, for the backoff.
+  const failures = useRef(0)
+  const onTask = useRef(watch.onTask)
+  onTask.current = watch.onTask
   const reload = useCallback(
     (answer?: unknown) => {
       const read = liveReadOf(answer)
       if (read !== null) {
-        setGot({ taskId, state: { status: 'ok', liveBrowser: read.live_browser === true, session: read.session ?? null } })
+        setGot({ taskId, state: { status: 'ok', liveBrowser: read.live_browser === true, session: read.session ?? null, browser: browserOfRead(read) } })
       }
       setTick((n) => n + 1)
     },
     [taskId],
   )
-  const liveBrowser = got !== null && got.taskId === taskId && got.state.status === 'ok' && got.state.liveBrowser
-
-  useEffect(() => {
-    if (!inFlight) return
-    let gone = false
-    void loadLiveSession(taskId).then((r) => {
-      if (gone) return
+  const draw = useCallback(
+    (r: Awaited<ReturnType<typeof loadLiveSession>>) => {
       if (r.status === 'ok' || r.status === 'stale') {
-        setGot({ taskId, state: { status: 'ok', liveBrowser: r.data.live_browser === true, session: r.data.session ?? null } })
+        failures.current = 0
+        setGot({
+          taskId,
+          state: { status: 'ok', liveBrowser: r.data.live_browser === true, session: r.data.session ?? null, browser: browserOfRead(r.data) },
+        })
       } else if (r.status === 'error') {
+        failures.current += 1
         // A failed re-read keeps the session it had: a blip must not tear the
         // canvas down under someone typing into it.
         setGot((was) =>
@@ -213,20 +328,58 @@ export function useLiveSession(taskId: string, inFlight: boolean): { live: LiveS
             : { taskId, state: { status: 'error', message: r.error.message } },
         )
       }
+    },
+    [taskId],
+  )
+  const liveBrowser = got !== null && got.taskId === taskId && got.state.status === 'ok' && got.state.liveBrowser
+
+  // The read at load, and after every `reload`.
+  useEffect(() => {
+    if (!inFlight) return
+    let gone = false
+    void loadLiveSession(taskId).then((r) => {
+      if (!gone) draw(r)
     })
     return () => {
       gone = true
     }
-  }, [taskId, inFlight, tick])
+  }, [taskId, inFlight, tick, draw])
 
+  // THE RE-READS: one at a time, each scheduled when the last has landed, so
+  // a slow API is never asked twice at once and an answer is never dropped
+  // for the next tick's.
+  const watching = watch.on && !watch.finished
+  const looping = watching || (inFlight && liveBrowser)
   useEffect(() => {
-    if (!inFlight || !liveBrowser) return
-    const id = setInterval(() => {
-      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
-      setTick((n) => n + 1)
-    }, LIVE_POLL_MS)
-    return () => clearInterval(id)
-  }, [inFlight, liveBrowser])
+    if (!looping) return
+    let stopped = false
+    let busy = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const run = async (): Promise<void> => {
+      timer = null
+      if (stopped || busy || pageHidden()) return // a hidden page is resumed by `onVisible`
+      busy = true
+      if (watching) onTask.current?.()
+      if (inFlight) {
+        const r = await loadLiveSession(taskId)
+        if (!stopped) draw(r)
+      }
+      busy = false
+      if (!stopped) timer = setTimeout(() => void run(), liveRereadDelay(failures.current))
+    }
+    const onVisible = () => {
+      if (pageHidden() || busy) return
+      if (timer !== null) clearTimeout(timer)
+      void run()
+    }
+    timer = setTimeout(() => void run(), liveRereadDelay(failures.current))
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      stopped = true
+      if (timer !== null) clearTimeout(timer)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [looping, watching, inFlight, taskId, draw])
 
   const live: LiveState = !inFlight
     ? { status: 'idle' }
@@ -598,8 +751,17 @@ export function LiveBrowserPane({
   const [logs, setLogs] = useState(false)
   // The element noVNC draws into, for the theater to borrow; null until LiveScreen has mounted it.
   const [screenNode, setScreenNode] = useState<HTMLElement | null>(null)
+  // The gate's reason the page is not (all) shown, while its desktop name carries one (`gateReason`).
+  const [cover, setCover] = useState<string | null>(null)
+  // The device the person in control last asked for, on the session they asked on (`LiveDevice`'s `onAsked`).
+  const [asked, setAsked] = useState<DeviceAsk | null>(null)
   const session = live.status === 'ok' ? live.session : null
   const open = session !== null && session.state === 'open' ? session : null
+  // A CHANGE IS WAITED ON UNTIL THE GATE REPORTS IT (LIVE-POLL, #1343): read
+  // again every `DEVICE_CONFIRM_MS` meanwhile, and rotate and touch held, so
+  // neither acts on the device from before the change.
+  const unapplied = asked !== null && open !== null && asked.sessionId === open.session_id && !deviceApplied(open.device, asked.body)
+  const waiting = useDeviceReport(unapplied ? asked : null, reload)
   const returned = useControlReturned(open?.session_id ?? null, open !== null && isController(open), open?.controller ?? null)
   const unused = useAgentUnused(open, task.state)
 
@@ -657,14 +819,27 @@ export function LiveBrowserPane({
     )
   }
   if (session.state === 'closed') {
-    return note(
-      `The live browser has closed${session.closed_reason ? ` (${session.closed_reason})` : ''}. The recording is kept for seven days.`,
-    )
+    return note(closedSessionNote(session.closed_reason ?? null, task))
   }
 
   const mine = isController(session)
   const verdict = stripVerdict(session)
+  // A PRESET ASKED FOR IS SAID UNTIL THE GATE REPORTS IT (STRIP-LABEL, part of
+  // #1341). `session.device` is what the gate last REPORTED (swarm-api
+  // live.py `set_device`): the device route answers with the session as it
+  // was before the switch, and the device changes only when the gate's report
+  // reaches a later read. Until then the caption said the old preset ("iPad")
+  // with nothing of the Desktop the person had just chosen. It goes when the
+  // gate reports the preset asked for, or the session is another.
+  const pending =
+    asked !== null && asked.sessionId === session.session_id && session.device?.preset !== asked.body.preset ? asked.body.preset : null
+  const onAsked = (body: DeviceBody) => setAsked({ sessionId: session.session_id, body, at: Date.now() })
   const o = session.origin
+  // The tool, egress and Jev badges (BSTATUS-STRIP): the API may serve the
+  // object on the session or beside it; either, and none from an older one.
+  const tools = browserStatusOf(
+    (session as LiveSession & { browser?: unknown }).browser ?? (live.status === 'ok' ? live.browser : undefined),
+  )
   const theater: TheaterSession = {
     taskId: task.id,
     tenantId: task.tenant_id,
@@ -689,6 +864,15 @@ export function LiveBrowserPane({
           )}
         </span>
         <span className="live-strip-say">{verdict.say}</span>
+        {/* THE COVER REASON IS IN THE STRIP (STRIP-LABEL, part of #1341).
+            MEASURED 2026-10-15: under the screen, it sat below the fold
+            behind the theater, and the strip above the browser said nothing
+            of a page partly painted over. The strip is drawn in both. */}
+        {cover !== null && (
+          <span className="live-strip-cover" data-testid="live-cover">
+            {cover}.
+          </span>
+        )}
         <span className="live-strip-who">
           {session.controller === null
             ? 'Nobody is in control: the agent is driving.'
@@ -696,6 +880,7 @@ export function LiveBrowserPane({
               ? 'You are in control.'
               : `${session.controller.email} is in control.`}
         </span>
+        <BrowserBadges status={tools} />
         {unused && <AgentUnused task={task} />}
       </div>
   )
@@ -706,7 +891,7 @@ export function LiveBrowserPane({
       strip={strip}
       handoff={handoff}
       logs={<AgentLogs task={task} />}
-      device={<LiveDevice taskId={task.id} session={session} reload={reload} />}
+      device={<LiveDevice taskId={task.id} session={session} reload={reload} onAsked={onAsked} waiting={waiting} />}
       control={<LiveControl taskId={task.id} session={session} reload={reload} />}
       take={<LiveControl taskId={task.id} session={session} reload={reload} takeOnly />}
     >
@@ -724,6 +909,8 @@ export function LiveBrowserPane({
           logs={logs}
           onLogs={() => setLogs((v) => !v)}
           reload={reload}
+          onAsked={onAsked}
+          waiting={waiting}
         />
         <SaveAsLoginOffer taskId={task.id} tenantId={task.tenant_id} site={o?.origin ?? null} controlReturned={returned} />
         {/* LOGS ON THE LEFT, THE DEVICE ON THE RIGHT (the mockup's ◫ logs). */}
@@ -740,8 +927,18 @@ export function LiveBrowserPane({
             control={mine}
             touch={mine && session.device !== null && session.device.touch}
             onScreen={setScreenNode}
+            onGateSays={setCover}
             device={deviceSize(session)}
-            caption={<span className="live-caption">{deviceCaption(session)}</span>}
+            caption={
+              <span className="live-caption">
+                {deviceCaption(session)}
+                {pending !== null && (
+                  <span className="live-caption-asked" data-testid="live-device-asked">
+                    {` · ${presetLabel(pending)} asked for; the browser has not applied it yet`}
+                  </span>
+                )}
+              </span>
+            }
             onControlChange={reload}
             onSessionMoved={reload}
           />
@@ -882,17 +1079,21 @@ function LiveToolbar({
   logs,
   onLogs,
   reload,
+  onAsked,
+  waiting = false,
 }: {
   taskId: string
   session: LiveSession
   logs: boolean
   onLogs: () => void
   reload: LiveReload
+  onAsked?: (body: DeviceBody) => void
+  waiting?: boolean
 }) {
   return (
     <div className="live-toolbar" role="toolbar" aria-label="Browser view">
       <LiveToolMenu>
-        <LiveDevice taskId={taskId} session={session} reload={reload} />
+        <LiveDevice taskId={taskId} session={session} reload={reload} onAsked={onAsked} waiting={waiting} />
         <Button size="sm" aria-pressed={logs} onClick={onLogs} title={logs ? 'Hide the logs' : 'Show the logs beside the browser'}>
           ◫ logs
         </Button>
@@ -966,6 +1167,63 @@ function MemberControl({ taskId, session, reload }: { taskId: string; session: L
 }
 
 const DEVICE_WHY = 'Only the person in control can change the device.'
+const DEVICE_WAIT_WHY = 'Waiting for the browser to report the device just chosen.'
+
+/** What the device route is asked for: a preset by name, and an orientation or touch when turned. */
+type DeviceBody = Parameters<typeof setLiveDevice>[1]
+
+/** A device change the route accepted, on the session it was asked on, and when. */
+interface DeviceAsk {
+  sessionId: string
+  body: DeviceBody
+  at: number
+}
+
+/** True when the reported device is what was asked for: the preset, and the orientation and touch when asked. */
+export function deviceApplied(device: LiveSession['device'], body: DeviceBody): boolean {
+  return (
+    device !== null &&
+    device.preset === body.preset &&
+    (body.orientation === undefined || device.orientation === body.orientation) &&
+    (body.touch === undefined || device.touch === body.touch)
+  )
+}
+
+/** How often a device change is read again until the gate reports it. */
+export const DEVICE_CONFIRM_MS = 1000
+/**
+ * How long a change is waited on. A gate that never reports it must not hold
+ * rotate and touch for good: after this they act on the device reported.
+ */
+export const DEVICE_CONFIRM_FOR_MS = 15_000
+
+/**
+ * While `ask` is set (a change not yet reported), the session is read every
+ * `DEVICE_CONFIRM_MS` for up to `DEVICE_CONFIRM_FOR_MS`; true while it is.
+ */
+function useDeviceReport(ask: DeviceAsk | null, reload: LiveReload): boolean {
+  const [lapsed, setLapsed] = useState<number | null>(null)
+  const reread = useRef(reload)
+  reread.current = reload
+  const at = ask?.at ?? null
+  useEffect(() => {
+    if (at === null) return
+    const left = at + DEVICE_CONFIRM_FOR_MS - Date.now()
+    if (left <= 0) {
+      setLapsed(at)
+      return
+    }
+    const id = setInterval(() => {
+      if (!pageHidden()) reread.current()
+    }, DEVICE_CONFIRM_MS)
+    const end = setTimeout(() => setLapsed(at), left)
+    return () => {
+      clearInterval(id)
+      clearTimeout(end)
+    }
+  }, [at])
+  return at !== null && lapsed !== at
+}
 
 /** The orientation a rotate asks for. */
 type Orientation = NonNullable<LiveSession['device']>['orientation']
@@ -978,7 +1236,21 @@ function rotated(orientation: Orientation): Orientation {
  * The device chips, rotate and touch: the toolbar's, and the same component in the theater's device slot.
  * Each is marked `data-live-device`: a switch it asked for hands the keys back to the canvas (KEYS-FOCUS).
  */
-function LiveDevice({ taskId, session, reload }: { taskId: string; session: LiveSession; reload: LiveReload }) {
+function LiveDevice({
+  taskId,
+  session,
+  reload,
+  onAsked,
+  waiting = false,
+}: {
+  taskId: string
+  session: LiveSession
+  reload: LiveReload
+  /** Told what a switch the route accepted asked for: the caption says it, and the pane waits, until the gate reports it. */
+  onAsked?: (body: DeviceBody) => void
+  /** A change is not reported yet: rotate and touch would act on the device from before it, so they wait. */
+  waiting?: boolean
+}) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const whyId = useId()
@@ -994,15 +1266,24 @@ function LiveDevice({ taskId, session, reload }: { taskId: string; session: Live
       : [device.preset, ...session.presets.map((p) => p.name)]
   const can = session.state === 'open' && session.you.can_switch_device && device !== null
   const why = device === null ? 'The gate has not reported which device it applied.' : can ? undefined : DEVICE_WHY
+  // Rotate and touch turn the REPORTED device (#1343): before the gate has
+  // reported a change, that is the device from before it, so they wait.
+  const turnWhy = why ?? (waiting ? DEVICE_WAIT_WHY : undefined)
   const mobile = device === null ? false : (session.presets.find((p) => p.name === device.preset)?.mobile ?? device.touch)
   // The why, said to a screen reader as each disabled control's description.
   const describedBy = why === undefined ? undefined : whyId
-  const send = (body: Parameters<typeof setLiveDevice>[1]) => {
+  const turnDescribedBy = turnWhy === undefined ? undefined : whyId
+  const send = (body: DeviceBody) => {
     setBusy(true)
     void setLiveDevice(taskId, body).then((r) => {
       setBusy(false)
       setError(r.status === 'error' ? r.error.message : null)
-      reload()
+      // The answer is drawn as every other control route's is (QA12-22), but
+      // its `device` is still the one the gate last reported, from before
+      // this switch (swarm-api live.py `set_device`): what was asked for is
+      // told to the pane instead, which says it until the gate reports it.
+      if (r.status === 'ok') onAsked?.(body)
+      reload(r.status === 'ok' ? r.data : undefined)
     })
   }
   return (
@@ -1029,11 +1310,11 @@ function LiveDevice({ taskId, session, reload }: { taskId: string; session: Live
       <Button
         size="sm"
         data-live-device=""
-        disabled={!can || busy}
-        title={why}
-        aria-describedby={describedBy}
+        disabled={!can || busy || waiting}
+        title={turnWhy}
+        aria-describedby={turnDescribedBy}
         onClick={() => {
-          if (device !== null) send({ preset: device.preset, orientation: rotated(device.orientation) })
+          if (device !== null && !waiting) send({ preset: device.preset, orientation: rotated(device.orientation) })
         }}
       >
         ⟲ rotate
@@ -1042,18 +1323,18 @@ function LiveDevice({ taskId, session, reload }: { taskId: string; session: Live
         size="sm"
         data-live-device=""
         aria-pressed={device?.touch ?? false}
-        disabled={!can || busy || !mobile}
-        title={can && !mobile ? 'This preset has no touch.' : why}
-        aria-describedby={describedBy}
+        disabled={!can || busy || !mobile || waiting}
+        title={can && !mobile ? 'This preset has no touch.' : turnWhy}
+        aria-describedby={turnDescribedBy}
         onClick={() => {
-          if (device !== null) send({ preset: device.preset, orientation: device.orientation, touch: !device.touch })
+          if (device !== null && !waiting) send({ preset: device.preset, orientation: device.orientation, touch: !device.touch })
         }}
       >
         {device?.touch === true ? 'touch: on' : 'touch: off'}
       </Button>
-      {why !== undefined && (
+      {turnWhy !== undefined && (
         <span id={whyId} className="sk-vh">
-          {why}
+          {turnWhy}
         </span>
       )}
       {error !== null && (
@@ -1080,7 +1361,23 @@ export interface Rfb {
   compressionLevel: number
   disconnect(): void
   clipboardPasteFrom(text: string): void
-  addEventListener(type: 'connect' | 'disconnect' | 'securityfailure', listener: (e: Event) => void): void
+  addEventListener(type: 'connect' | 'disconnect' | 'securityfailure' | 'desktopname', listener: (e: Event) => void): void
+}
+
+/**
+ * WHY THE PAGE IS NOT SHOWN (LIVE-BLANK; part of #1030). The gate fills a frame
+ * it cannot vouch for -- every pixel it sends passes its mask -- and names the
+ * reason as the RFB desktop name (livegate/rfb.py `desktop_name`, livegate/mask.py
+ * `CANNOT_SHOW` and `PARTLY_COVERED`), which noVNC hands the page as a
+ * `desktopname` event. MEASURED 2026-10-13 on release 1e86c37e: ten minutes of a
+ * flat page area on Google's reCAPTCHA page, and nothing here said why.
+ *
+ * The reason, when `name` is one; null for the gate's ordinary name (the page is
+ * shown), or anything else.
+ */
+export function gateReason(name: unknown): string | null {
+  if (typeof name !== 'string') return null
+  return /^(Can['’]t show this page safely|Part of this page is covered): /.test(name) ? name : null
 }
 
 export type RfbConstructor = new (target: HTMLElement, channel: LiveChannel, options?: { shared?: boolean }) => Rfb
@@ -1169,6 +1466,7 @@ function LiveScreen({
   control,
   touch,
   onScreen,
+  onGateSays,
   device = null,
   caption,
   onControlChange,
@@ -1184,6 +1482,8 @@ function LiveScreen({
   touch: boolean
   /** Told the element noVNC draws into, and null when it goes: the theater borrows it. */
   onScreen?: (node: HTMLElement | null) => void
+  /** Told the gate's reason the page is not (all) shown (`gateReason`), and null when it has none: the strip draws it. */
+  onGateSays?: (reason: string | null) => void
   /** The device as turned (`deviceSize`): the frame is fitted to its proportions, in an outline when it is mobile. */
   device?: { width: number; height: number; mobile: boolean } | null
   /** Under the device frame: what it is, its size and the page's path. */
@@ -1211,6 +1511,8 @@ function LiveScreen({
   changedRef.current = onControlChange
   const movedRef = useRef(onSessionMoved)
   movedRef.current = onSessionMoved
+  const saysRef = useRef(onGateSays)
+  saysRef.current = onGateSays
   const [conn, setConn] = useState<Conn>('connecting')
   const [why, setWhy] = useState<string | null>(null)
   const [refused, setRefused] = useState<string | null>(null)
@@ -1322,12 +1624,21 @@ function LiveScreen({
     let tries = 0
     let timer: ReturnType<typeof setTimeout> | null = null
     // swarm-api's status frames (LB-STREAM): never noVNC's, which reads only
-    // the binary RFB stream. The first one the tab sees is the state the
-    // session read already drew; a later change of controller, of whether
-    // this viewer holds control, or of the session closing re-reads it.
+    // the binary RFB stream. A change of controller, of whether this viewer
+    // holds control, or of the session closing re-reads the session.
+    //
+    // THE FIRST FRAME IS CHECKED, NOT ASSUMED (STRIP-LABEL, part of #1341).
+    // It was taken as the state the session read already drew, so a read
+    // older than the connection -- drawn before a take that the relay
+    // already knew of -- was never read again by a frame: the screen said
+    // "View only." under a header that said "You are in control". The
+    // first frame now re-reads when it disagrees with the control drawn.
     let seen: LiveStatus | null = null
     const onStatus = (s: LiveStatus) => {
-      const changed = seen !== null && (s.in_control !== seen.in_control || s.controller !== seen.controller || s.open !== seen.open)
+      const changed =
+        seen === null
+          ? s.in_control !== controlRef.current
+          : s.in_control !== seen.in_control || s.controller !== seen.controller || s.open !== seen.open
       seen = s
       if (changed && !stopped) changedRef.current?.()
     }
@@ -1341,12 +1652,17 @@ function LiveScreen({
       // reads again which session is current, as for a ticket that moved.
       movedRef.current?.()
     }
-    const retry = (message: string) => {
+    // Set when the relay closed this viewer with LIVE_RESTART_CODE, and kept
+    // through the retries that meet it still coming back, until one connects.
+    let restarting = false
+    const retry = (message: string, restart = false) => {
       if (stopped) return
       tries += 1
+      restarting = restarting || restart
       setWhy(message)
-      setConn(tries > 5 ? 'failed' : 'reconnecting')
-      timer = setTimeout(() => void connect(), Math.min(RECONNECT_MAX_MS, 1000 * 2 ** Math.min(tries, 5)))
+      // A relay coming back is not a failed viewer, however many quick knocks it takes.
+      setConn(tries > 5 && !restarting ? 'failed' : 'reconnecting')
+      timer = setTimeout(() => void connect(), liveReconnectDelay(tries, restarting))
     }
     const connect = async () => {
       // noVNC is loaded BEFORE a ticket is minted or a socket opened, so the
@@ -1429,8 +1745,17 @@ function LiveScreen({
           }
           rfb.current = r
           applyInput()
+          // noVNC set the channel's close handler as it attached; the close
+          // code is read on the way through, for the 'disconnect' below.
+          let closeCode: number | null = null
+          const noVncClose = ws.onclose
+          ws.onclose = (ev) => {
+            closeCode = ev.code
+            noVncClose?.call(ws, ev)
+          }
           r.addEventListener('connect', () => {
             tries = 0
+            restarting = false
             setWhy(null)
             setRefused(null)
             setConn('connected')
@@ -1438,10 +1763,15 @@ function LiveScreen({
             if (keysHere.current && nowhere()) focusCanvas()
             else setHasFocus(typing())
           })
+          r.addEventListener('desktopname', (e) => {
+            if (!stopped) saysRef.current?.(gateReason((e as CustomEvent<{ name?: unknown }>).detail?.name))
+          })
           r.addEventListener('disconnect', () => {
             setHasFocus(typing())
             if (rfb.current === r) rfb.current = null
-            retry('The live connection closed. Reconnecting with a new ticket.')
+            if (!stopped) saysRef.current?.(null)
+            if (closeCode === LIVE_RESTART_CODE) retry('The live relay restarted. Reconnecting.', true)
+            else retry('The live connection closed. Reconnecting with a new ticket.')
           })
         }, onStatus, onRefused)
       } catch (err) {
@@ -1455,6 +1785,8 @@ function LiveScreen({
       const r = rfb.current
       rfb.current = null
       r?.disconnect()
+      // A reason belongs to this connection: the next one starts with none.
+      saysRef.current?.(null)
     }
   }, [taskId, sessionId, applyInput, focusCanvas, typing])
 

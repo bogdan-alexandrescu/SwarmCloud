@@ -157,6 +157,12 @@ env:
   # runs of the same commit.
   TRIVY_VERSION: "0.74.0"
 
+# RUNNERS (owner decision 2026-10-14). A job that holds no cloud identity
+# (id-token) runs on the self-hosted `bogdan-ci` VMs through the one guarded
+# `runs-on` expression: a fork's pull request, or the repo variable
+# SELF_HOSTED_CI set to `off` (the capacity escape hatch), sends it to
+# GitHub-hosted ubuntu-24.04 instead. Every job that stays hosted is listed,
+# with why, in tests/unit/scripts/test_fork_prs_off_self_hosted.py.
 jobs:
   # -------------------------------------------------------------------------
   # Gate. Nothing is built or applied until the cheap checks pass -- a release
@@ -170,7 +176,10 @@ jobs:
   # images` job `needs: [python, shell, manifests]`. On a push `build` below
   # takes CI's image record with `--reuse-ci only` and refuses to build its
   # own, so the record this release ships CANNOT EXIST unless those checks
-  # passed on this very commit. Running them again here was 26.4 min p50 of
+  # passed on this very commit -- or, since 2026-10-14 (B1, docs/ci.md "Main
+  # reuses the tested tree"), on a run of its IDENTICAL tree: the pull
+  # request this commit merged, a merge-train branch or a queue entry, each
+  # checked job by job against the GitHub API before main skips it. Running them again here was 26.4 min p50 of
   # the `release-dev` lock (22 successful runs, measured 2026-10-08) proving
   # what CI had already proven. On a workflow_dispatch -- every prod release,
   # and a dev dispatch that may build its own images (`or-build`), or redeploy
@@ -180,7 +189,7 @@ jobs:
   # -------------------------------------------------------------------------
   verify:
     name: verify
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     if: github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v5
@@ -192,6 +201,29 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+
+      # The unit suite runs the sc plugin's run.js under node
+      # (tests/unit/mcp/test_auto_attach.py refuses to pass without it), and
+      # this job runs on a runner whose PATH may have none: dispatched dev
+      # release 38793700524 failed here on 2026-10-15 with "node is not on
+      # PATH in CI". The same major the python job in application.yml reads,
+      # from images/swarm-ui/Dockerfile, not a literal.
+      - name: the Node major the platform builds with
+        id: node
+        run: |
+          set -euo pipefail
+          dockerfile=images/swarm-ui/Dockerfile
+          majors="$(sed -nE 's/^ARG NODE_IMAGE=node:([0-9]+)[^0-9].*/\1/p' "$dockerfile")"
+          count="$(printf '%s' "$majors" | grep -c . || true)"
+          if [ "$count" -ne 1 ]; then
+            echo "::error file=${dockerfile}::expected exactly one 'ARG NODE_IMAGE=node:<major>-...' line, found ${count}"
+            exit 1
+          fi
+          echo "major=${majors}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ steps.node.outputs.major }}
 
       - run: uv sync --frozen --all-extras --dev
       - run: uv run pytest tests/unit -q
@@ -232,7 +264,7 @@ jobs:
   # -------------------------------------------------------------------------
   plugin-tag:
     name: tag the plugin's bridge (sc-v<version>)
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     needs: [verify, build]
     # AFTER A PROVEN COMMIT. On a dispatch that is `verify`. On a push `verify`
     # is skipped (see its header) and the proof is `build`: it found CI's image
@@ -389,7 +421,7 @@ jobs:
   # -------------------------------------------------------------------------
   approval:
     name: approval (${{ github.event.inputs.environment || 'dev' }})
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     needs: [verify, build]
     # !cancelled(), not always(): it runs past a `build` that skip_build
     # skipped, and a cancelled run asks nobody to approve anything.
@@ -918,6 +950,38 @@ jobs:
           # apply.sh runs render.py and network_parity.py on ${PYTHON_BIN}.
           PYTHON_BIN: ${{ github.workspace }}/.venv/bin/python
         run: ./scripts/roll-live-relay.sh --tf-init --get-credentials --confirm
+      - name: roll swarm-egress to this release's image
+        # Lane EGRESS-BUILD (part of #1030; docs/browser-egress.md §9.3).
+        # swarm-egress, the StatefulSet swarm-system/swarm-egress on
+        # swarm-autopilot, is applied by the relay step's apply.sh (after the
+        # relay, in the same stream), but nothing waited for it to roll or
+        # read back what it runs. scripts/roll-egress.sh is
+        # roll-live-relay.sh --component egress: the same apply.sh path, the
+        # same agents-staging refusal, then `rollout status` and the digest
+        # check for swarm-egress. Its Python is the relay's, synced above.
+        # No continue-on-error: a forwarder left on the old image fails every
+        # proxied browser attempt closed. enable_browser_egress false is a
+        # notice, not a failure.
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        timeout-minutes: 20
+        env:
+          PYTHON_BIN: ${{ github.workspace }}/.venv/bin/python
+        run: ./scripts/roll-egress.sh --tf-init --get-credentials --confirm
+      - name: roll swarm-graph to this release's image
+        # Lane GS-ROLL (part of #1384; docs/design/graph-service.md §2.1, §8.2).
+        # swarm-graph, the Deployment swarm-system/swarm-graph on
+        # swarm-autopilot, is rendered by terraform/infra/graph_service.tf as
+        # `swarm_graph_manifest`, null until graph_service.serve. This applies
+        # it through kubernetes/apply.sh --swarm-graph (the same agents-staging
+        # refusal), waits for `rollout status deploy/swarm-graph` and checks
+        # its pods run the manifest's digest. Not served is a notice, not a
+        # failure, and then gcloud and the cluster are asked nothing.
+        # No continue-on-error: a graph service left on the old image or
+        # crash-looping fails every agent's graph tools. No PYTHON_BIN: the
+        # --swarm-graph path runs neither render.py nor network_parity.py.
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        timeout-minutes: 20
+        run: ./scripts/roll-graph.sh --tf-init --get-credentials --confirm
 
       - name: smoke test (inside the VPC)
         # The `mock` profile needs no provider key, so this proves the whole
@@ -1000,7 +1064,7 @@ jobs:
   # -------------------------------------------------------------------------
   stale-approval:
     name: prod approval is from an earlier attempt
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     needs: [approval, promote, infrastructure, deploy]
     if: ${{ !cancelled() && github.event.inputs.environment == 'prod' && needs.approval.result == 'success' && needs.approval.outputs.attempt != github.run_attempt }}
     env:

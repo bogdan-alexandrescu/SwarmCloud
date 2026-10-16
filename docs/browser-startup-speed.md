@@ -283,9 +283,11 @@ lane:
 
 ### 4.1 What is happening
 
-The browser pod is one pod of 8 vCPU / 16 GiB, with requests == limits on both
-containers (invariant 7; `apps/scheduler/scheduler/dispatch.py::LIVE_DISPLAY_SHARE`
-splits it 5/10 to the display and 3/6 to the worker). It sets no compute class,
+The browser pod was one pod of 8 vCPU / 16 GiB when this was measured, with
+requests == limits on both containers (invariant 7;
+`apps/scheduler/scheduler/dispatch.py::LIVE_DISPLAY_SHARE` split it 5/10 to the
+display and 3/6 to the worker). Since contract request 79 (§9, decision 6) it
+is 4 vCPU / 8 GiB, split 3/5 and 1/3. It sets no compute class,
 no node selector and no priority (`apps/scheduler/scheduler/dispatch.py::GkeJobDispatcher._manifest`),
 so it lands on Autopilot's default class. When no node has 8 vCPU free,
 Autopilot creates one. Google quotes 80-120 s for a new node in general; 38 s
@@ -303,8 +305,9 @@ This is GKE's documented pattern
 
 * a Deployment of placeholder pods in a PriorityClass of value `-10` with
   `preemptionPolicy: Never` and `terminationGracePeriodSeconds: 0`;
-* each pod requests what one browser pod requests (8 vCPU / 16 GiB, and
-  requests == limits here too);
+* each pod requests what one browser pod requests (8 vCPU / 16 GiB when this
+  was written, 4 vCPU / 8 GiB since contract request 79, and requests ==
+  limits here too);
 * a browser pod at the default priority 0 preempts a placeholder and takes
   its node in seconds;
 * the evicted placeholder goes Pending, and Autopilot provisions a new node
@@ -362,6 +365,9 @@ two slots           = double either figure
 ```
 
 ### 4.3 Option: a smaller resource class
+
+**Done: contract request 79 (§9, decision 6) made `browser` 4 vCPU / 8 GiB
+and 1 unit.** What follows is the reasoning as written before the measurement.
 
 `browser` is 8 vCPU / 16 GiB. The 16 GiB partly pays for the 2 GiB
 `/dev/shm` tmpfs (`images/agent-runtime-browser/Dockerfile` header), and the
@@ -550,6 +556,26 @@ The owner answered §8 on 2026-10-13. Lane names refer to §7.
    - The owner made no separate choice on this; it is the recommended default kept by the slimming decision in 4.
 6. **Smaller `browser` class: measure first** (lane MEASURE). Any change is a contract request.
 
+**After MEASURE (owner, 2026-10-14 ~18:10 PDT, on §11's numbers):**
+
+3. **Warm placeholder slots: no.** A cold browser start stays at about
+   125 s at p50. Invariant 1 stays as written: only `LEASED` through
+   `RUNNING` create infrastructure demand. Do not reopen this without a new
+   measurement and the owner's say.
+6. **Smaller `browser` class: yes, as a contract request now.** It is
+   [request 79](contract-change-requests.md): the `browser` class goes from
+   8 vCPU / 16 GiB to 4 vCPU / 8 GiB, with 4 GiB of workspace tmpfs.
+
+**Later the same evening (owner, 2026-10-14 ~22:55 PDT): "Drop to 1".**
+Request 79 as filed kept `units` at 2. The owner dropped it to 1, so a
+browser agent now weighs what a `standard` one does: a pool of 20 units admits
+20 browser agents where it admitted 10. **Applied** by lane BROWSER-CLASS
+(the pull request that marks request 79 APPLIED): `ResourceClass("browser",
+cpu=4, memory_gib=8, disk_gib=4, units=1)`. The live display sidecar's split
+of the pod became 3 vCPU / 5 GiB for the display and 1 vCPU / 3 GiB for the
+worker, from §11's per-container peaks
+(`apps/scheduler/scheduler/dispatch.py::LIVE_DISPLAY_SHARE`).
+
 ## 10. How to measure (lane MEASURE)
 
 `scripts/startup-measure.sh` is the measurement decisions 3 and 6 wait for.
@@ -583,3 +609,86 @@ read, so the recorded numbers can be re-derived offline with
 `kubectl top` samples miss any peak that falls between two samples. A FITS
 verdict is therefore evidence for the contract request decision 6 asks for,
 not the decision itself.
+
+## 11. First full measurement (2026-10-15 01:00 UTC, release b93ad6cb)
+
+Read 2026-10-15 between 00:58 and 01:05 UTC (17:58–18:05 PDT, 10-14), in
+tenant `u-bogdan`, over the 2 days before it, while the live-browser QA matrix
+(batch `full-1015`) was running browser agents. The deployed release was
+b93ad6cb, which includes IMG-STREAM (#1239). The window also covers starts from
+before that release, so the pull row is not a clean before/after.
+
+**How it was read, and why not with the script as written.** The script's
+default credential is the operator's own gcloud access token, and IAP
+answered 401 to it. The account `.env.example` suggests for
+`SWARM_IMPERSONATE_SA` (`swarm-verify`) is not a member of `u-bogdan`, so the
+API answered 403 `tenant_not_member`. The same reads (`GET /v1/tasks`, then
+every events page of each task) were therefore made through the sc plugin's
+API client as the owner, written in the script's own `events.json` stream
+format. The `kubectl top` samples were taken on `swarm-autopilot` only. The
+numbers below are `scripts/startup_measure.py report --since 2d --top
+top.txt <events.json` over what was read. The inputs are kept in
+`scratchpad/startup-measure/20261015/` on the operator's machine; they are not
+committed, because they are task listings.
+
+Visited 480 tasks and 505 dispatched attempts. 392 starts fall in the window,
+113 of them without a startup step. Cold means a node wait over 10 s.
+Times are p50/p95 in seconds.
+
+| profile | class | starts | n | cold | node wait | pull | browser | total |
+|---|---|---|---|---|---|---|---|---|
+| claude-code-browser | browser | all | 17 | 4/8 (50%) | 3.8/45.4 | 4.0/76.0 | 2.9/4.6 | 6.6/129.4 |
+| claude-code-browser | browser | cold | 4 | | 38.6/45.4 | **54.0/76.0** | 2.9/4.5 | **125.2/129.4** |
+| claude-code-browser | browser | warm | 4 | | -0.5/3.8 | 0.0/4.0 | 2.7/4.6 | 6.2/20.4 |
+| claude-code | standard | all | 317 | 54/317 (17%) | -0.2/42.3 | 0.0/32.0 | | |
+| claude-code | standard | cold | 54 | | 37.5/55.2 | 7.0/33.0 | | |
+| indexer | standard | all | 57 | 11/57 (19%) | -0.3/44.7 | 2.0/47.0 | | |
+| browser | browser | all | 1 | 1/1 | 38.1 | | | |
+
+A negative node wait means `pod_scheduled` was recorded a fraction of a second
+before `dispatched`: two clocks, the reconciler's and the scheduler's.
+
+**What it says.**
+
+* **A warm browser start takes 6 s at p50 and a cold one 125 s.** Half of the
+  browser starts that carry steps were cold. The cold start is still a node
+  wait plus a pull, as §1 found. The cold pull here is 54 s at p50, against
+  §1's single 42 s, with n = 4. That is too few starts, and too mixed across
+  the release, to show IMG-STREAM's effect either way. Re-read it once a day
+  of post-release starts exists.
+* **Decision 3 (warm slots).** On these numbers a warm slot saves a cold
+  browser start its node wait (38.6/45.4 s) and, with the image on the node,
+  its pull (54.0/76.0 s): about 90 s on half of the browser starts.
+* **Decision 6 (a smaller class).** The `browser` pods sampled (4 pods,
+  8 samples, 15 s apart) peaked at **2.13 cores and 1.85 GiB**. That is under
+  80 % of the 4 vCPU / 8 GiB `standard` class, against the 8 vCPU / 16 GiB they
+  were given then: FITS. (Applied as contract request 79, §9 decision 6.) The display sidecar peaked at 1.90 cores and 1.48 GiB,
+  the worker at 0.55 cores and 0.37 GiB. Samples miss peaks between them, and
+  four pods are not a load test. This is evidence for the contract request,
+  not the decision.
+
+### 11.1 A new step on every GKE start: the cache disk's attach (CACHE-PVC, unmeasured)
+
+**What changed after this measurement.** Since CACHE-PVC (owner decision
+2026-10-15 ~04:00 PDT) every GKE worker pod, `standard` and `browser` alike,
+has its `cache` volume on a 20 GiB pd-balanced network disk: a generic
+ephemeral volume on the `swarm-cache-pd-balanced` StorageClass
+(`kubernetes/storage/cache-storage-class.yaml`), instead of a 2 GiB local
+emptyDir. The 2 GiB emptyDir evicted task_247c87a8714c4977921a twice, and
+Autopilot's 10 GiB ephemeral-storage cap had no more local disk to give it
+(`GKE_DISK` in `apps/scheduler/scheduler/dispatch.py`).
+
+**Why it costs start-up time.** The class binds `WaitForFirstConsumer`, so the
+disk cannot be made until the pod is scheduled: after `pod_scheduled` the CSI
+driver creates a disk in the node's zone and attaches it, and the container
+cannot start until it is mounted. A local emptyDir cost none of that. The new
+step sits between the node wait and the pull in the table above, and it is
+paid on warm starts too: a warm slot (decision 3) saves the node wait and the
+pull, never this attach, because the disk is the pod's own.
+
+**What it is: unmeasured.** No number here is a measurement. The warm 6 s and
+the cold 125 s above were read before the change and do not include it. The
+orchestrator measures the live number after the release that carries CACHE-PVC,
+with §10's `scripts/startup_measure.py`, and records it here as a row per
+class with the attach split out. Until then, read every start-up number in this
+document as the attach plus what it says.

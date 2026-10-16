@@ -34,6 +34,8 @@ from swarm_common.models import (
 from swarm_common.states import BlockedReason, EventType, ParkReason, TaskState
 from swarm_common.models import ProviderState
 
+from .prgate import wait_for_api
+from . import sessiontag
 from .task_input import TaskMasking, masking_for
 from .validation import (
     DEFAULT_CARRIER,
@@ -306,6 +308,33 @@ def dispatch_of(task: Task) -> dict[str, Any]:
     return out
 
 
+def claude_session_of(task: Task, masking: TaskMasking) -> str | None:
+    """The Claude Code session the task was tagged with (SC-SESSION-SCOPE,
+    `sessiontag`), or None: `metadata.claude_session`, lifted out as
+    `dispatch` is so a list in the summary view -- which drops `metadata` --
+    still says whose the task is. Caller-written, so masked by the task's
+    masker like every other caller string."""
+    raw = sessiontag.of(task.metadata)
+    if raw is None:
+        return None
+    masked, count = masking.text(raw)
+    return masked if count == 0 else None
+
+
+def workflow_claude_session(step_tasks: Mapping[str, Task]) -> dict[str, Any]:
+    """`{claude_session}` for a workflow, off its step tasks (the frozen
+    `Workflow` has no metadata; every step task carries the workflow's): the
+    key only when a step task was read, null when none is tagged, so a reader
+    tells "untagged" from "not read"."""
+    if not step_tasks:
+        return {}
+    for task in step_tasks.values():
+        found = claude_session_of(task, masking_for(task, warm=False))
+        if found:
+            return {sessiontag.KEY: found}
+    return {sessiontag.KEY: None}
+
+
 def start_problem_to_api(task: Task, masking: TaskMasking) -> dict[str, Any] | None:
     """Why the task's pod is not starting, as the reconciler last saw it, or None (F1-POD).
 
@@ -557,6 +586,9 @@ def task_to_api(
         # that predates the feature and has no block -- without knowing the
         # encoding.
         "dispatch": dispatch_of(task),
+        # SC-SESSION-SCOPE: the Claude Code session that submitted it, lifted
+        # out of `metadata` (and kept in the summary view, which drops it).
+        "claude_session": claude_session_of(task, masking),
         # F1-POD: why the pod is not starting, in the summary view too -- the
         # list is where a stuck "dispatched" row is first seen. Null when the
         # reconciler recorded nothing. Also inside `metadata`, masked there too.
@@ -1245,6 +1277,10 @@ def workflow_to_api(
     """
     served = dict(rollup or {})
     state = served.pop("state", None) or workflow.state.value
+    # SPEED-D3: the pull requests the workflow waits for, off its step tasks
+    # (the frozen `Workflow` has no metadata); the key only on a workflow
+    # submitted with `after`, so every other workflow's shape is unchanged.
+    after = wait_for_api(step_tasks or {})
     return {
         "workflow_id": workflow.workflow_id,
         "tenant_id": workflow.tenant_id,
@@ -1260,6 +1296,9 @@ def workflow_to_api(
         "priority": workflow.priority,
         "on_step_failure": workflow.on_step_failure,
         "cancel_requested": workflow.cancel_requested,
+        **({"after_pull_requests": after} if after is not None else {}),
+        # SC-SESSION-SCOPE: the Claude Code session that submitted it.
+        **workflow_claude_session(step_tasks or {}),
         "steps": [
             _step_to_api(
                 s, _step_masking(workflow, s, step_tasks or {}), console_url, summary=summary

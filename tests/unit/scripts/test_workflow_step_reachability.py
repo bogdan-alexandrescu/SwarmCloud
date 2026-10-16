@@ -53,6 +53,10 @@ def _events(condition: Any, universe: frozenset[str]) -> frozenset[str]:
     text = str(condition).strip()
     if text.startswith("${{") and text.endswith("}}"):
         text = text[3:-2].strip()
+    # A status check (!cancelled(), !failure(), success(), always()) says nothing
+    # about which EVENT runs the job, so a conjunct of one is dropped before the
+    # comparison is read (application.yml build, PR 1324).
+    text = re.sub(r"!?\b(?:cancelled|failure|success|always)\(\)\s*&&\s*", "", text).strip()
     if "(" in text or "!" in text.replace("!=", ""):
         return universe
     allowed: frozenset[str] = frozenset()

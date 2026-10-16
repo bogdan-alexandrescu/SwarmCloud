@@ -68,6 +68,9 @@ relay's `{"type": "ready"}`, every tunnel message is binary:
 * `CLOSE`   both ways: that connection ended.
 * `CONTROL` relay -> gate: the connection that now holds control, or an empty
             id for none. The gate's `ControlState.grant`/`revoke` act on it.
+            The same controller again is a renewal of the gate's control
+            lease. With an empty id the payload may name why control ended
+            (a revoke's cause); empty, it is a release.
 * `ACTION`  gate -> relay: one action-log line (JSON) for the recording (§7).
 * `DEVICE`  relay -> gate: a device request swarm-api MAC'd, as JSON
             `{"preset", "orientation", "touch"}`, with an empty id. The gate
@@ -85,7 +88,9 @@ relay's `{"type": "ready"}`, every tunnel message is binary:
             never logged, and dropped with its session. A gate from
             LIVE-UNUSED adds a third, `agent` (whether the agent is driving
             this browser, report.py `agent_report`); it is optional, so a
-            gate that sends only the two is kept as before.
+            gate that sends only the two is kept as before. A gate from
+            BSTATUS-API adds `browser` (the browser tool and the egress,
+            report.py `browser_report`), optional in the same way.
 
 A viewer's websocket carries that viewer's RFB bytes as binary messages, and
 swarm-api's control messages as text: `{"type": "control"|"release",
@@ -108,6 +113,27 @@ controller's link leaves, or is released, the most recently granted link still
 open takes over -- another of the person's tabs, or the person swarm-api gave
 control to next -- so control does not lapse while somebody holds it.
 
+CONTROL REQUESTS (CONTROL-LAPSE; part of #1030). `POST /internal/control`,
+the same shape under a fourth domain tag: swarm-api's word that a person's
+control ENDED (`revoke`) or was RENEWED (`renew`), sent after the transaction
+that recorded it. The body names the session as a ticket does, the person
+(`email`), the `action`, a `cause` (why it ended: a short code such as
+`renew_lapsed`; empty for a renewal), `exp` (at most 30 s ahead) and a
+one-use `nonce`. A control ticket travels on the person's own viewer link, so
+an end of control used to reach the gate only if that link was still open
+when swarm-api noticed it: MEASURED 2026-10-13 (task e8cb...), control lapsed
+at 15:11:12Z and the gate held it until a relay restart at 16:03:47Z, while
+the agent was refused 72 times. A revoke takes the grant from every link of
+that person, and when nobody is left in control it sends the gate `CONTROL`
+with an empty id and the cause as its payload -- even when the relay had
+already forgotten the controller (its link left), since the gate had not. It
+is idempotent: a second revoke changes nothing at the relay and the gate's
+revoke of nobody is a no-op. A renewal re-sends `CONTROL` naming the current
+controller when that link is the person's, which the gate counts as a renewal
+of its control lease (agent_worker/livegate/__main__.py
+`CONTROL_LEASE_SECONDS`): a gate that hears nothing for longer takes control
+back by itself.
+
 NOTHING READ FROM A CONNECTION IS LOGGED. RFB bytes are a person's keystrokes
 (§5.3.3), and a ticket admits whoever holds it. Log lines carry reason codes,
 session ids, connection ids and counts.
@@ -126,6 +152,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -138,6 +165,9 @@ TICKET_DOMAIN = b"swarm-live-ticket/v1\0"
 CLOSE_DOMAIN = b"swarm-live-close/v1\0"
 #: A device request's MAC domain (LB-DEV-B): never a ticket's or a close's.
 DEVICE_DOMAIN = b"swarm-live-device/v1\0"
+#: A control request's MAC domain (CONTROL-LAPSE): never a ticket's, a
+#: close's or a device's.
+CONTROL_DOMAIN = b"swarm-live-control/v1\0"
 
 #: Lifetime of each role's ticket (§3.3: 60 s for the tunnel; §5.2: 30 s for a
 #: viewer). Control tickets are minted by swarm-api the moment its transaction
@@ -154,6 +184,10 @@ CLOSE_TTL_SECONDS = 60
 #: A device request's lifetime: minted the moment swarm-api has checked the
 #: controller and posted at once, so the control ticket's 30 s.
 DEVICE_TTL_SECONDS = 30
+
+#: A control request's lifetime: minted the moment swarm-api's transaction
+#: commits and posted at once, so the control ticket's 30 s.
+CONTROL_TTL_SECONDS = 30
 
 #: How long a closed session's id is remembered. Every ticket minted before
 #: the close has expired by then -- the longest lives 60 s, plus skew either
@@ -183,8 +217,9 @@ _RFB_INPUT = frozenset({4, 5, 6})
 #: 253-character host and a device fit in well under half of it.
 MAX_REPORT_BYTES = 4096
 _REPORT_KEYS = frozenset({"origin", "device"})
-#: Keys a report MAY carry besides those (LIVE-UNUSED): passed on when present.
-_REPORT_OPTIONAL = frozenset({"agent"})
+#: Keys a report MAY carry besides those (LIVE-UNUSED, BSTATUS-API): passed
+#: on when present.
+_REPORT_OPTIONAL = frozenset({"agent", "browser"})
 
 #: Websocket close codes. Every ticket refusal is CLOSE_REFUSED ("404").
 CLOSE_REFUSED = 4404
@@ -192,12 +227,24 @@ CLOSE_BUSY = 4409
 CLOSE_ENDED = 4410
 CLOSE_FULL = 4429
 CLOSE_SLOW = 4408
+#: The relay is restarting (RELAY-ROLL): reconnect now. RFC 6455's 1012
+#: "Service Restart", the code uvicorn itself closes with on SIGTERM and the
+#: one swarm-api already closes a viewer with when its relay link ends, so the
+#: gate, swarm-api and the console all read one code. Unlike CLOSE_ENDED it
+#: says nothing about the session: that is still open, on the next relay.
+CLOSE_RESTARTING = 1012
 
 _TICKET_FIELDS = ("session_id", "tenant_id", "task_id", "attempt_id", "generation",
                   "role", "exp", "nonce", "email")
 _CLOSE_FIELDS = ("session_id", "exp", "nonce")
 _DEVICE_FIELDS = ("session_id", "tenant_id", "task_id", "attempt_id", "generation",
                   "preset", "orientation", "touch", "exp", "nonce")
+_CONTROL_FIELDS = ("session_id", "tenant_id", "task_id", "attempt_id", "generation",
+                   "email", "action", "cause", "exp", "nonce")
+#: What a control request may ask: end a person's control, or say it goes on.
+CONTROL_ACTIONS = ("revoke", "renew")
+#: A revoke's cause: a short code (swarm-api's END_CAUSES), passed to the gate.
+_CAUSE = re.compile(r"[a-z_]{1,32}")
 #: A preset name is short; the gate holds the list (presets.py).
 MAX_PRESET_CHARS = 32
 _ORIENTATIONS = ("portrait", "landscape")
@@ -399,13 +446,66 @@ def verify_device(key: bytes, raw: str, *, now: float) -> DeviceRequest:
     return request
 
 
+def mint_control(key: bytes, *, session_id: str, tenant_id: str, task_id: str, attempt_id: str,
+                 generation: int, email: str, action: str, cause: str = "",
+                 now: float | None = None, ttl: int = CONTROL_TTL_SECONDS) -> str:
+    """A control request as swarm-api mints it (`swarm_api.live.mint_control`
+    restates it; tests/unit/control_plane/test_live_relay_wire.py holds the two
+    to each other)."""
+    issued = int(time.time() if now is None else now)
+    return _signed(key, {
+        "session_id": session_id, "tenant_id": tenant_id, "task_id": task_id,
+        "attempt_id": attempt_id, "generation": int(generation), "email": email,
+        "action": action, "cause": cause, "exp": issued + int(ttl),
+        "nonce": secrets.token_hex(16),
+    }, CONTROL_DOMAIN)
+
+
+@dataclass(frozen=True)
+class ControlRequest:
+    session_id: str
+    tenant_id: str
+    task_id: str
+    attempt_id: str
+    generation: int
+    email: str
+    action: str
+    cause: str
+    exp: int
+    nonce: str
+
+
+def verify_control(key: bytes, raw: str, *, now: float) -> ControlRequest:
+    """A control request's MAC, shape and clock. A revoke carries a short
+    cause code; a renewal carries none."""
+    body = _unsigned(key, raw, CONTROL_DOMAIN)
+    if set(body) != set(_CONTROL_FIELDS):
+        raise Refused("malformed")
+    strings = ("session_id", "tenant_id", "task_id", "attempt_id", "email", "nonce")
+    if (not all(isinstance(body[f], str) and body[f] for f in strings)
+            or body["action"] not in CONTROL_ACTIONS
+            or not isinstance(body["cause"], str)
+            or (body["action"] == "revoke" and not _CAUSE.fullmatch(body["cause"]))
+            or (body["action"] == "renew" and body["cause"])
+            or not all(isinstance(body[f], int) and not isinstance(body[f], bool)
+                       for f in ("generation", "exp"))):
+        raise Refused("malformed")
+    request = ControlRequest(**body)
+    if now > request.exp:
+        raise Refused("expired")
+    if request.exp - now > CONTROL_TTL_SECONDS + CLOCK_SKEW_SECONDS:
+        raise Refused("lifetime")
+    return request
+
+
 class TicketLedger:
     """Nonces already presented, kept until their ticket could no longer verify."""
 
     def __init__(self) -> None:
         self._spent: dict[str, int] = {}
 
-    def spend(self, ticket: Ticket | CloseRequest | DeviceRequest, now: float) -> None:
+    def spend(self, ticket: Ticket | CloseRequest | DeviceRequest | ControlRequest,
+              now: float) -> None:
         if len(self._spent) > 1024:
             self._spent = {n: exp for n, exp in self._spent.items() if exp + CLOCK_SKEW_SECONDS >= now}
         if ticket.nonce in self._spent:
@@ -457,7 +557,7 @@ class SessionRecord:
 _SESSION_FIELDS = ("tenant_id", "task_id", "attempt_id", "generation")
 
 
-def _match(ticket: Ticket | DeviceRequest, session: SessionRecord) -> None:
+def _match(ticket: Ticket | DeviceRequest | ControlRequest, session: SessionRecord) -> None:
     for name in _SESSION_FIELDS:
         if getattr(ticket, name) != getattr(session, name):
             raise Refused("wrong_" + name.removesuffix("_id"))
@@ -589,6 +689,9 @@ class Rendezvous:
         #: session_id -> when it may be forgotten (CLOSED_MEMORY_SECONDS).
         self._closed: dict[str, float] = {}
         self._lock = asyncio.Lock()
+        #: Set by `restarting()`: every connection is told to reconnect, and
+        #: every new one is refused with CLOSE_RESTARTING until the process ends.
+        self._restarting = False
 
     # -- counts --------------------------------------------------------
 
@@ -599,6 +702,10 @@ class Rendezvous:
         return sum(len(t.viewers) for t in self._tunnels.values()
                    if (task_id is None or t.session.task_id == task_id)
                    and (tenant_id is None or t.session.tenant_id == tenant_id))
+
+    def controlled_count(self) -> int:
+        """Sessions a person is in control of here: what a relay roll waits for."""
+        return sum(1 for t in self._tunnels.values() if t.controller is not None)
 
     def controller(self, session_id: str) -> str | None:
         tunnel = self._tunnels.get(session_id)
@@ -630,6 +737,9 @@ class Rendezvous:
         cannot both pass the ledger. Matching it to its session is the
         caller's: a tunnel ticket defines the session, every other names it.
         """
+        if self._restarting:
+            # Before the ticket is spent: the next relay may still admit it.
+            raise Refused("relay_restarting", CLOSE_RESTARTING)
         now = self._clock()
         ticket = verify_ticket(self._key, raw, now=now)
         self._ledger.spend(ticket, now)
@@ -744,8 +854,10 @@ class Rendezvous:
         tunnel.closed = True
         if self._tunnels.get(tunnel.session.session_id) is tunnel:
             del self._tunnels[tunnel.session.session_id]
+        # A restart is said to the viewers too: their session is not over.
+        viewer_code = CLOSE_RESTARTING if code == CLOSE_RESTARTING else CLOSE_ENDED
         for viewer in list(tunnel.viewers.values()):
-            await self._drop_viewer(viewer, CLOSE_ENDED, reason, tell_gate=False)
+            await self._drop_viewer(viewer, viewer_code, reason, tell_gate=False)
         rec, tunnel.recording = tunnel.recording, None
         if rec is not None:
             await self._stop_recording(tunnel, rec)
@@ -940,6 +1052,42 @@ class Rendezvous:
         tunnel.outbox.put(True, encode_frame(OP_DEVICE, "", request.payload()))
         return request.session_id
 
+    async def control_request(self, raw: str) -> tuple[str, str, bool]:
+        """swarm-api's `POST /internal/control` (module docstring): verified
+        and spent like a ticket and matched to its session's tunnel ticket.
+        (session id, action, whether the gate was sent a `CONTROL` frame), or
+        `Refused` -- for a session with no tunnel here too."""
+        now = self._clock()
+        request = verify_control(self._key, raw, now=now)
+        self._ledger.spend(request, now)
+        if self.is_closed(request.session_id):
+            raise Refused("session_closed")
+        tunnel = self._tunnels.get(request.session_id)
+        if tunnel is None or tunnel.closed:
+            raise Refused("no_tunnel")
+        _match(request, tunnel.session)
+        if request.action == "renew":
+            current = tunnel.controller
+            link = tunnel.viewers.get(current) if current is not None else None
+            if link is None or link.email != request.email:
+                return request.session_id, request.action, False
+            # The same controller again: the gate renews its control lease.
+            tunnel.outbox.put(True, encode_frame(OP_CONTROL, current))
+            return request.session_id, request.action, True
+        mine = {c for c, v in tunnel.viewers.items() if v.email == request.email}
+        held = self._ungrant(tunnel, mine)
+        if tunnel.controller is not None:
+            # Another person's granted link holds it now (`_ungrant`).
+            return request.session_id, request.action, held
+        # Nobody is in control: tell the gate even when the relay had already
+        # forgotten the controller, because the gate had not (module docstring).
+        tunnel.outbox.put(True, encode_frame(OP_CONTROL, "", request.cause.encode("ascii")))
+        log.info("live relay: session=%s control revoked by swarm-api: %s",
+                 tunnel.session.session_id, request.cause)
+        if held and tunnel.recording is not None:
+            await tunnel.recording.action({"kind": "control", "event": "control_returned"})
+        return request.session_id, request.action, True
+
     async def flush(self) -> None:
         """Wait until every open connection's queue has been written. For tests
         and for an orderly shutdown."""
@@ -950,6 +1098,25 @@ class Rendezvous:
                     await viewer.outbox.join()
             await asyncio.sleep(0)
 
+    async def restarting(self) -> int:
+        """The relay is going (SIGTERM, a roll): tell every gate and viewer to
+        reconnect now, with CLOSE_RESTARTING, and refuse every new connection
+        the same way. Each tunnel's queue is drained first and its recording's
+        last segment written. The number of connections told.
+
+        WHY THE RELAY SAYS IT, AND NOT ONLY UVICORN. uvicorn also closes every
+        socket with 1012 on SIGTERM, but by cutting it: what was queued to a
+        viewer is lost, the recorder's last segment is not written, and a gate
+        or viewer that dials in during the drain is admitted to a process about
+        to exit. RELAY-ROLL, 2026-10-13: 40 restarts in ~48 h, each one this."""
+        self._restarting = True
+        tunnels = list(self._tunnels.values())
+        told = sum(1 + len(t.viewers) for t in tunnels)
+        # Together: each drain may wait 2 s, and the pod's grace is 30 s.
+        await asyncio.gather(*(self._end_tunnel(t, CLOSE_RESTARTING, "relay_restarting") for t in tunnels))
+        if told:
+            log.info("live relay: restarting; %d connection(s) told to reconnect", told)
+        return told
+
     async def shutdown(self) -> None:
-        for tunnel in list(self._tunnels.values()):
-            await self._end_tunnel(tunnel, CLOSE_ENDED, "relay_stopping")
+        await self.restarting()

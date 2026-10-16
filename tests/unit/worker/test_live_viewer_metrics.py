@@ -285,5 +285,8 @@ def test_the_gate_writes_the_metrics_line_as_bare_json_for_cloud_logging() -> No
 class _Unmasked:
     """A mask state that paints nothing: the frame is whatever the test drew."""
 
+    #: `MaskState.reason`, which `rfb.masked` carries onto the frame: none, the page is shown.
+    reason = None
+
     def apply(self, frame):  # noqa: ANN001 - MaskState's duck type
         return Outcome.MASKED
