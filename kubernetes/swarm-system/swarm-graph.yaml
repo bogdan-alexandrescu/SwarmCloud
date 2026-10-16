@@ -1,0 +1,256 @@
+# swarm-graph: the shared, read-only graph service, which answers the
+# `swarm-graph` MCP tools for every agent runtime from one cached copy of each
+# tenant's pinned index instead of a snapshot staged into each pod
+# (docs/design/graph-service.md §2.1; lane GS-INFRA, part of #1384). The
+# pattern is swarm-typesafe-fwd.yaml's.
+#
+# An agent pod's shim (agent_worker.graphmcp.shim) sends `POST /mcp` here with
+# an attempt graph ticket swarm-api minted (`POST
+# /v1/attempts/{id}/graph-ticket`) as its bearer credential. The service
+# verifies the ticket, builds every object name from the ticket alone, reads
+# `tenants/<t>/repos/<r>/graph/**` with its own identity and answers through
+# caches whose every key starts with the tenant (§3.3, §5). The service itself
+# is lane GS-SVC (apps/swarm-graph/), which publishes the image this names.
+#
+# A TEMPLATE. Its double-underscore placeholders are filled by
+# terraform/infra/graph_service.tf and the result is its
+# `swarm_graph_manifest` output; null until the service is served and its
+# image has a digest in image_refs.
+#
+#   terraform -chdir=terraform/infra output -raw swarm_graph_manifest
+#
+# APPLY IT TO swarm-autopilot ONLY. `agents-staging` in the same project is
+# another team's cluster (CLAUDE.md rule 2).
+#
+# WHY TWO REPLICAS (§2.1, owner Q8). One replica is a single point of failure
+# for every agent's graph tools. Two halve each one's cache hit rate, which
+# §5 accepts because a miss costs one GCS read. Never both down at once:
+# maxUnavailable 0 on a rollout and a PodDisruptionBudget of one for a node
+# drain. Nothing is kept across a restart: every byte is refetched from GCS.
+#
+# WHO IT RUNS AS. The KSA `swarm-graph` in `swarm-system`, as a Workload
+# Identity Federation for GKE principal: a reader of `swarm-graph-ticket-key`
+# and of `tenants/<t>/repos/<r>/graph/**` in the artifact bucket, by exact
+# name (terraform/infra/graph_service.tf). No Google service account to
+# impersonate, no Kubernetes RBAC, no API token, no Firestore. A tenant pod
+# cannot present this KSA: it cannot create a pod in swarm-system.
+#
+# WHO REACHES IT. TCP 8080 from any pod in a tenant namespace, and from
+# nothing else (the NetworkPolicy below; the tenant side is
+# network-policies/allow-graph-service.yaml). No pod label: any agent pod may
+# hold a graph ticket, and the ticket, not the network, is what admits a read.
+# Plain HTTP inside the VPC, as swarm-typesafe-fwd's is: the ticket is the
+# only credential on that hop, one attempt's, for minutes.
+#
+# THE SIZE (§2.1, §5.1). requests == limits (invariant 7): one vCPU, 3 GiB,
+# 1 GiB of ephemeral storage. 3 GiB is apps/swarm-graph/swarm_graph/cache.py
+# MEMORY_LIMIT_BYTES, the limit GS-SVC measured its caches into (a 512 MiB raw
+# shard LRU, a 256 MiB result cache, the manifests and headroom). The memory
+# grows with the caches' bounds, never the other way round.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    # The same labels as swarm-live.yaml's, swarm-egress.yaml's and
+    # swarm-typesafe-fwd.yaml's copies of this object, so any of them may be
+    # applied first.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: swarm-graph
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/name: swarm-graph
+# The service never calls the Kubernetes API. GKE's metadata server still
+# answers it as this KSA, which is all Workload Identity needs.
+automountServiceAccountToken: false
+---
+# Who may reach it, from the moment it exists: any pod in a tenant namespace,
+# on 8080. ONE peer, a namespace selector carrying both the part-of label and
+# swarm-tenant. swarm-system-default-deny-ingress
+# (network-policies/swarm-system-live.yaml) closes every other port and
+# source. Before the Service and the Deployment, so the pods are never
+# selected by no policy at all.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: swarm-graph-ingress
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: swarm-graph
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: swarm
+            matchExpressions:
+              - key: swarm-tenant
+                operator: Exists
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# The kill switch (§2.1), rendered by graph_service.tf from
+# var.graph_service.enabled: EXACTLY {"enabled": <bool>}. Mounted as a
+# directory, NOT with subPath, so the kubelet refreshes it in place and the
+# service re-reads it within seconds: `"enabled": false` answers every call
+# 503 `disabled` with no restart, and the worker stages the graph at its next
+# probe (§8). A missing file, a file that is not JSON or any other key is OFF
+# too (fail closed; swarm_graph.main.load_config).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: swarm-graph-config
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/name: swarm-graph
+data:
+  config.json: |
+    __GRAPH_CONFIG_JSON__
+---
+# What a shim dials: http://swarm-graph.swarm-system.svc.cluster.local:8080/mcp.
+# Headless, so the name resolves to the pods and the tenant policy's pod
+# selector is what admits the connection.
+apiVersion: v1
+kind: Service
+metadata:
+  name: swarm-graph
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/name: swarm-graph
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: swarm-graph
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8080
+      targetPort: 8080
+---
+# Never fewer than one serving pod through a node drain or an Autopilot
+# upgrade.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: swarm-graph
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/name: swarm-graph
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: swarm-graph
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: swarm-graph
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/name: swarm-graph
+spec:
+  replicas: 2
+  # A new pod is ready before an old one goes; never none.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: swarm-graph
+  template:
+    metadata:
+      labels:
+        managed-by: swarm-terraform
+        app.kubernetes.io/name: swarm-graph
+      annotations:
+        # A changed setting changes this, so terraform's render also rolls the
+        # pods; the in-place refresh above covers an emergency edit.
+        swarm.saga.xyz/config-sha256: __GRAPH_CONFIG_SHA256__
+    spec:
+      serviceAccountName: swarm-graph
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # The image's tini forwards SIGTERM; the service stops accepting and
+      # exits well inside this.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: graph
+          image: __SWARM_GRAPH_IMAGE__
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            # A Secret Manager version REFERENCE and a bucket name, read at run
+            # time with the pod's own identity. Never a key, which stays out of
+            # the pod spec, the environment and every log. These are exactly
+            # what swarm_graph.main.settings() reads.
+            - name: SWARM_GRAPH_KEY_SECRET
+              value: __GRAPH_TICKET_KEY_VERSION__
+            - name: SWARM_GRAPH_BUCKET
+              value: __GRAPH_BUCKET__
+            - name: SWARM_GRAPH_CONFIG
+              value: /etc/swarm-graph/config.json
+          # Invariant 7: requests == limits, no bursting. See THE SIZE above.
+          resources:
+            requests:
+              cpu: "1"
+              memory: 3Gi
+              ephemeral-storage: 1Gi
+            limits:
+              cpu: "1"
+              memory: 3Gi
+              ephemeral-storage: 1Gi
+          # The port opens only after swarm-graph-ticket-key has been read.
+          # A TCP probe, not GET /healthz: /healthz is 503 while the kill
+          # switch is off, and a service deployed dark (§8.2 step 2) must
+          # still finish its rollout.
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/swarm-graph
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: swarm-graph-config

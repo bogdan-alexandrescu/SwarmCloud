@@ -27,6 +27,7 @@
 #   scripts/create-secrets.sh --tailscale-oauth --stdin
 #   scripts/create-secrets.sh --typesafe-fwd-key [--overwrite swarm-typesafe-fwd-key]
 #   scripts/create-secrets.sh --workspace-grant-key [--overwrite swarm-workspace-grant-key]
+#   scripts/create-secrets.sh --graph-ticket-key [--overwrite swarm-graph-ticket-key]
 #
 # The forge token (`--provider git`, stored as swarm-tenant-<tenant>-git) is
 # read by the tenant's workers AND by swarm-api, which writes an issue run's
@@ -87,6 +88,16 @@
 # added exactly as --egress-key's is, never read and never shown; terraform
 # (terraform/infra/typesafe_fwd.tf) owns the container and its two readers,
 # and an enabled version is replaced only after the same typed confirmation.
+#
+# --graph-ticket-key adds a version to `swarm-graph-ticket-key`, the PLATFORM
+# key swarm-api mints attempt graph tickets with and the shared graph service
+# (swarm-graph) verifies them with (docs/design/graph-service.md §3.2).
+# Generated and added exactly as --typesafe-fwd-key's is, never read and never
+# shown; terraform (terraform/infra/graph_service.tf, enable_graph_service)
+# owns the container and its two readers, and an enabled version is replaced
+# only after the same typed confirmation. Add it after that apply and before
+# graph_service.serve: swarm-api's reference to a versionless secret would
+# stop it starting.
 #
 # --workspace-grant-key adds a version to `swarm-workspace-grant-key`, the
 # PLATFORM key swarm-api MACs every workspace-secret grant with and verifies
@@ -155,6 +166,7 @@ EGRESS_KEY=0
 EGRESS_CREDENTIAL=0
 TYPESAFE_FWD_KEY=0
 WORKSPACE_GRANT_KEY=0
+GRAPH_TICKET_KEY=0
 OVERWRITE=""
 TAILSCALE_OAUTH=0
 
@@ -175,11 +187,12 @@ while [[ $# -gt 0 ]]; do
     --egress-credential) EGRESS_CREDENTIAL=1; shift ;;
     --typesafe-fwd-key) TYPESAFE_FWD_KEY=1; shift ;;
     --workspace-grant-key) WORKSPACE_GRANT_KEY=1; shift ;;
+    --graph-ticket-key) GRAPH_TICKET_KEY=1; shift ;;
     --overwrite)        [[ $# -ge 2 ]] || die "--overwrite takes the name of the secret to add a version to"
                         OVERWRITE="$2"; shift 2 ;;
     # A value glued to a flag is a value on the command line, which argv
     # exposes through ps and shell history. Refused without repeating it.
-    --egress-key=*|--egress-credential=*|--typesafe-fwd-key=*|--workspace-grant-key=*)
+    --egress-key=*|--egress-credential=*|--typesafe-fwd-key=*|--workspace-grant-key=*|--graph-ticket-key=*)
       die "${1%%=*} takes no value on the command line: the key is generated, and the credential is read from --stdin only. Nothing was stored." ;;
     --tailscale-oauth)  TAILSCALE_OAUTH=1; shift ;;
     # The header above `set -euo pipefail`, however long it grows; a fixed
@@ -293,6 +306,24 @@ confirm_overwrite() {
   die "${name} already has an enabled version and its reader takes the latest. Confirm by typing its name:
      --overwrite ${name}   (SWARM_ASSUME_YES is not a confirmation). Nothing was stored."
 }
+
+if [[ "${GRAPH_TICKET_KEY}" -eq 1 ]]; then
+  GRAPH_KEY_NAME="swarm-graph-ticket-key"
+  if [[ -n "${TENANT}${PROVIDER}${FROM_FILE}${GITHUB_APP_SLOT}" || "${READ_STDIN}" -eq 1 || "${SUBSCRIPTION}" -eq 1 || "${CHILD_KEY}" -eq 1 || "${LIVE_KEY}" -eq 1 || "${EGRESS_KEY}" -eq 1 || "${EGRESS_CREDENTIAL}" -eq 1 || "${TAILSCALE_OAUTH}" -eq 1 || "${SEARCH_API_KEY}" -eq 1 || "${TYPESAFE_FWD_KEY}" -eq 1 || "${WORKSPACE_GRANT_KEY}" -eq 1 || "${DISABLE_PREVIOUS}" -eq 1 ]]; then
+    die "--graph-ticket-key takes no --stdin, --tenant, --provider, --from-file, --subscription, other key or --disable-previous: the key is the platform's and is generated here, and an old version is disabled by hand once swarm-api and swarm-graph run on the new one"
+  fi
+  # Exists first: terraform/infra/graph_service.tf creates it with its readers.
+  GRAPH_KEY_ERR=""
+  if ! GRAPH_KEY_ERR="$(gcloud secrets describe "${GRAPH_KEY_NAME}" --project "${PROJECT_ID}" \
+       --format='value(name)' 2>&1 >/dev/null)"; then
+    die_if_auth_failure "${GRAPH_KEY_ERR}"
+    die "${GRAPH_KEY_NAME} does not exist in ${PROJECT_ID}. terraform creates it with its readers (terraform/infra/graph_service.tf, enable_graph_service): apply that first, then this"
+  fi
+  confirm_overwrite "${GRAPH_KEY_NAME}"
+  add_generated_platform_key "${GRAPH_KEY_NAME}" "terraform/infra/graph_service.tf" "--graph-ticket-key"
+  dim "swarm-api reads it when an instance starts; swarm-graph re-reads it on its own timer and keeps the previous key for a ticket's life. Disable the old version by hand once both use the new one"
+  exit 0
+fi
 
 if [[ "${WORKSPACE_GRANT_KEY}" -eq 1 ]]; then
   GRANT_KEY_NAME="swarm-workspace-grant-key"
@@ -410,7 +441,7 @@ PYEOF2
 fi
 
 if [[ -n "${OVERWRITE}" ]]; then
-  die "--overwrite confirms a new version of swarm-egress-key, swarm-egress-credential or swarm-typesafe-fwd-key only"
+  die "--overwrite confirms a new version of swarm-egress-key, swarm-egress-credential, swarm-typesafe-fwd-key or swarm-graph-ticket-key only"
 fi
 
 if [[ "${CHILD_KEY}" -eq 1 && "${LIVE_KEY}" -eq 1 ]]; then
