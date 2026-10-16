@@ -38,9 +38,13 @@ THE RULES, each with the control that is NOT flagged:
     -- a provider quota window, a retry backoff -- is the platform waiting by
     design, and is not flagged.
 (d) `merge_refused` (STUCK): a `merge` step FAILED with `head_moved`,
-    `merge_conflict` or `checks_failed`. The API serves no pull request
-    state, so whether the PR is still open is NOT read: the answer says so,
-    and hands over the PR link to look.
+    `merge_conflict` or `checks_failed`, and its pull request is still
+    OPEN. The API serves no pull request state, so it is read from
+    GitHub's public REST API (`github_pull_state`: unauthenticated, no
+    token is ever sent), once per PR per check. A PR that has since MERGED
+    or CLOSED is not flagged (epic #1334: four merged PRs stayed flagged
+    `head_moved` for good). When that read fails the flag stays, and its
+    evidence says "PR state not read" and why.
 (e) `state_disagrees` (STALE): a workflow whose stored state and derived
     state disagree about whether it is finished -- the stale RUNNING cache
     (stored RUNNING, every step done) or the reverse -- or one the API served
@@ -57,8 +61,11 @@ the scheduler rewrites it on every pass that records `blocked_by`.
 from __future__ import annotations
 
 import copy
+import json
 import threading
+import urllib.error
 import urllib.parse
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -93,6 +100,13 @@ SINGLE_TASK_PAGES = 3
 #: told which were not checked rather than made to wait.
 MAX_TASK_READS = 80
 
+#: GitHub's public REST API, read for a refused merge step's PR state. The
+#: repository is public, so the read is unauthenticated: no token is sent.
+GITHUB_API = "https://api.github.com"
+#: Seconds one PR-state read may take. A check runs every 30 minutes; a slow
+#: GitHub costs this much per PR, and the flag stays (unread) rather than wait.
+PULL_STATE_TIMEOUT = 5
+
 MERGE_PROFILE = "merge"
 MERGE_CODES = ("head_moved", "merge_conflict", "checks_failed")
 
@@ -124,7 +138,13 @@ def repo_key(url: Any) -> str | None:
     if not text:
         return None
     if "://" not in text and "@" not in text and ":" not in text:
-        text = f"https://github.com/{text}"
+        # `host/owner/repo` (`github.com/acme/app`, what this check's own
+        # answer prints) already names its host; only a bare `owner/repo` is
+        # GitHub's. A GitHub owner never holds a dot, a host always does.
+        # Prefixing both read `github.com/acme/app` as owner `github.com`
+        # (epic #1334).
+        first = text.strip("/").split("/", 1)[0]
+        text = f"https://{text}" if "." in first else f"https://github.com/{text}"
     try:
         parts = urlsplit(checkout.https_url(text))
     except SwarmError:
@@ -181,6 +201,63 @@ def pull_request_link(repository_url: Any, number: Any) -> str | None:
     if key is None or not isinstance(number, int) or isinstance(number, bool) or number <= 0:
         return None
     return f"https://{key}/pull/{number}"
+
+
+def github_pull_state(key: str, number: int) -> str:
+    """`OPEN`, `MERGED` or `CLOSED`: pull request `number` of repository
+    `key` (`github.com/owner/repo`), from GitHub's public REST API.
+
+    UNAUTHENTICATED, ALWAYS. The request carries no Authorization header and
+    no credential of any kind is read to build it: the repositories this
+    platform merges into are public, and a token sent here would be a token
+    sent somewhere the platform never needed it. Raises SwarmError when the
+    state could not be read -- another forge, a rate limit, a timeout."""
+    host, _, path = str(key).partition("/")
+    owner, _, repo = path.partition("/")
+    if host != "github.com" or not owner or not repo:
+        raise SwarmError(f"{key} is not a GitHub repository, and GitHub is the only forge read")
+    url = f"{GITHUB_API}/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/pulls/{int(number)}"
+    request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json",
+                                                   "User-Agent": "swarm-mcp-check"})
+    try:
+        with urllib.request.urlopen(request, timeout=PULL_STATE_TIMEOUT) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise SwarmError(f"GitHub answered HTTP {exc.code} for {url}") from None
+    except (OSError, ValueError) as exc:
+        raise SwarmError(f"GitHub could not be read for {url}: {type(exc).__name__}") from None
+    if not isinstance(data, dict):
+        raise SwarmError(f"GitHub served no pull request at {url}")
+    if data.get("merged") is True or data.get("merged_at"):
+        return "MERGED"
+    state = str(data.get("state") or "").lower()
+    if state in ("open", "closed"):
+        return state.upper()
+    raise SwarmError(f"GitHub served pull request state {data.get('state')!r} at {url}")
+
+
+class _PullStates:
+    """The PR states one check reads: each `(repository, number)` at most
+    once, whatever its outcome, however many steps or tenants name it.
+    Thread-safe."""
+
+    def __init__(self, reader: Callable[[str, int], str] | None = None) -> None:
+        self.reader = reader
+        self.lock = threading.Lock()
+        self.seen: dict[tuple[str, int], tuple[str | None, str | None]] = {}
+
+    def read(self, key: str, number: int) -> tuple[str | None, str | None]:
+        """`(state, None)`, or `(None, why it was not read)`."""
+        with self.lock:
+            if (key, number) not in self.seen:
+                # Looked up at call time, so the module's reader is the one a
+                # test (or a caller) put there.
+                reader = self.reader or github_pull_state
+                try:
+                    self.seen[(key, number)] = (reader(key, number), None)
+                except SwarmError as exc:
+                    self.seen[(key, number)] = (None, str(exc))
+            return self.seen[(key, number)]
 
 
 # --------------------------------------------------------------------------
@@ -470,8 +547,10 @@ def _refusal_code(task: dict[str, Any]) -> tuple[str | None, str | None]:
     return (str(code) if code else None), (str(message) if message else None)
 
 
-def _merge(task: dict[str, Any], step: dict[str, Any]) -> dict[str, Any] | None:
-    """(d): a merge step FAILED on head_moved, merge_conflict or checks_failed."""
+def _merge(task: dict[str, Any], step: dict[str, Any],
+           pulls: _PullStates | None = None) -> dict[str, Any] | None:
+    """(d): a merge step FAILED on head_moved, merge_conflict or checks_failed,
+    and its PR is not known to have MERGED or CLOSED since."""
     if task.get("state") != "FAILED":
         return None
     code, message = _refusal_code(task)
@@ -483,17 +562,25 @@ def _merge(task: dict[str, Any], step: dict[str, Any]) -> dict[str, Any] | None:
         given = (step.get("input") or {}).get("pull_request") if isinstance(step.get("input"), dict) else None
         number = given if isinstance(given, int) else None
     link = pull_request_link(task.get("repository_url"), number)
+    state: str | None = None
+    if link is None:
+        why = "the step names no pull request it could be read for"
+    else:
+        state, why = (pulls or _PullStates()).read(str(repo_key(task.get("repository_url"))), number)
+    if state in ("MERGED", "CLOSED"):
+        # The refusal is history: the PR it refused has since been settled.
+        return None
     evidence = {
         "refusal": code,
         "message": message or task.get("last_error"),
         "pull_request": number,
         "pull_request_url": link,
-        "pull_request_state": None,
-        "pull_request_state_unread_because": (
-            "the API serves no pull request state, so whether the PR is still open was not "
-            "read: open the link to see"
-        ),
+        "pull_request_state": state,
     }
+    if state is None:
+        evidence["pull_request_state_unread_because"] = (
+            f"PR state not read: {why}. Whether the PR is still open is unknown: open the link to see"
+        )
     return {
         "kind": STUCK,
         "rule": "merge_refused",
@@ -608,8 +695,10 @@ def _single_tasks(client: SwarmClient) -> tuple[list[dict[str, Any]], str | None
 
 
 def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: datetime,
-                  names: dict[str, str], sid: str | None = None) -> dict[str, Any]:
+                  names: dict[str, str], sid: str | None = None,
+                  pulls: _PullStates | None = None) -> dict[str, Any]:
     reads = _Reads(client, MAX_TASK_READS)
+    pulls = pulls or _PullStates()
     running, recent, notes = _workflow_lists(client)
     # THIS SESSION'S OWN (SC-SESSION-SCOPE): a list row that already names
     # another session, or names none on a deployment that serves the tag, is
@@ -703,7 +792,7 @@ def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: date
                 continue
             step_where = {**where, "step_id": step.get("step_id")}
             if step.get("runner_profile") == MERGE_PROFILE and doc.get("state") != "SUCCEEDED":
-                merged = _merge(task, step)
+                merged = _merge(task, step, pulls)
                 if merged:
                     extra = merged.pop("pull_request", None)
                     item = _item(merged["kind"], merged["rule"], merged["reason"], merged["evidence"], task, step_where)
@@ -823,8 +912,9 @@ def run(
     shown = (names or workflows.workspace_names)(client)
     seen_tenants: list[Any] = []
     per_tenant: list[dict[str, Any]] = []
+    pulls = _PullStates()  # one cache for the whole check, across tenants
     for reader in _readers(client, tenants):
-        result = _check_tenant(reader, scope["key"], window, now, shown, sid)
+        result = _check_tenant(reader, scope["key"], window, now, shown, sid, pulls)
         if result["tenant_id"] in seen_tenants:
             continue
         seen_tenants.append(result["tenant_id"])

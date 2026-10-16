@@ -108,3 +108,19 @@ def claude_session(monkeypatch) -> str:
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", sid)
     return sid
 
+
+
+@pytest.fixture(autouse=True)
+def _no_github_reads(monkeypatch):
+    """`swarm_check` reads a refused merge step's PR state from GitHub's
+    public API (`check.github_pull_state`, epic #1334). A unit test runs with
+    no network, so every test starts with that read failing -- the check's
+    own "PR state not read" path -- and the tests about the read put their
+    own answer there."""
+    from swarm_mcp import check
+    from swarm_mcp.client import SwarmError
+
+    def offline(key, number):
+        raise SwarmError("unit tests read no network")
+
+    monkeypatch.setattr(check, "github_pull_state", offline, raising=False)
