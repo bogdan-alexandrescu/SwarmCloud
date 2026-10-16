@@ -1,0 +1,158 @@
+"""A pod whose TypeSafe key the forwarder delivers carries `swarm-typesafe: inject`
+(docs/design/workspace-secrets.md §3.5, SEC-MIGRATE-TYPESAFE; lane
+TS-MIGRATE-POD, part of #1347).
+
+The label is what `swarm-allow-typesafe-fwd` (the tenant side) and
+`swarm-typesafe-fwd-ingress` (the forwarder's side) select on, so it is the
+only way a pod reaches swarm-typesafe-fwd. The dispatcher sets it when ALL of
+these hold, and each is turned off once below:
+
+  * the forwarder is switched on (`typesafe_forwarder_enabled`, terraform's
+    typesafe_forwarder.enabled once served);
+  * the task's tenant is in `typesafe_forwarder_tenants`, by exact name;
+  * the attempt runs a TypeSafe-backed jev or judge: a GKE live-browser pod
+    (the display rollout switch on, a `live_browser` profile) whose workspace
+    chose the `typesafe` judgment backend. That is the only attempt the worker
+    resolves a TypeSafe key for today (`jevkey.prepare`), and the judge reads
+    the key jevkey wrote, so it is the same attempt for both.
+
+A Cloud Run Job gets no label and keeps today's path: the forwarder is
+reachable only from GKE pods.
+
+MUTATION: drop any one condition from `typesafe_forwarder_on`, label a pod of
+another backend, or match the tenant by prefix, and the named case fails.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+from typing import Any
+
+import pytest
+
+from swarm_common.models import Tenant
+from swarm_common.profiles import RUNNER_PROFILES
+
+from scheduler.dispatch import (
+    TYPESAFE_POD_LABEL,
+    CloudRunJobDispatcher,
+    GkeJobDispatcher,
+    GkeTarget,
+    typesafe_forwarder_on,
+)
+from scheduler.settings import SchedulerSettings
+
+from .conftest import PROJECT, scheduler_settings
+from .test_dispatch_manifests import NOW, FakeJobsClient, make_lease, make_task
+
+LIVE = "claude-code-browser"
+LABEL = {"swarm-typesafe": "inject"}
+
+#: Every condition on. Each case below turns exactly one off.
+ON: dict[str, Any] = dict(
+    forwarder=True, tenants=("eng",), backend="typesafe", live=True, profile=LIVE,
+)
+
+
+@pytest.fixture
+def tenant() -> Tenant:
+    return Tenant(
+        tenant_id="eng", kind="group", principal="eng@saga.xyz", created_at=NOW,
+        service_account=f"swarm-agent-worker-eng@{PROJECT}.iam.gserviceaccount.com",
+        gcs_prefix=f"gs://{PROJECT}-swarm-artifacts/tenants/eng",
+        namespace="swarm-tenant-eng",
+    )
+
+
+def _settings(*, forwarder: bool, tenants: tuple[str, ...], live: bool) -> SchedulerSettings:
+    return scheduler_settings(
+        live_browser_sidecar=live,
+        typesafe_forwarder_enabled=forwarder,
+        typesafe_forwarder_tenants=tenants,
+    )
+
+
+def _labels(tenant: Tenant, *, forwarder: bool, tenants: tuple[str, ...], backend: str,
+            live: bool, profile: str) -> dict[str, str]:
+    settings = _settings(forwarder=forwarder, tenants=tenants, live=live)
+    dispatcher = GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"),
+                                  batch_api=object(), judgment=lambda tenant_id: backend)
+    task = make_task(profile)
+    job = dispatcher._manifest(task=task, lease=make_lease(task),
+                               profile=RUNNER_PROFILES[profile], tenant=tenant)
+    return job["spec"]["template"]["metadata"]["labels"]
+
+
+def test_the_label_is_the_one_both_policies_select():
+    assert dict([TYPESAFE_POD_LABEL]) == LABEL
+
+
+def test_every_condition_on_labels_the_pod(tenant):
+    labels = _labels(tenant, **ON)
+    assert labels["swarm-typesafe"] == "inject"
+
+
+@pytest.mark.parametrize("off", [
+    pytest.param({"forwarder": False}, id="forwarder-off"),
+    pytest.param({"tenants": ()}, id="no-tenant-listed"),
+    pytest.param({"tenants": ("research",)}, id="another-tenant-listed"),
+    # Exact membership: a tenant whose name starts the same is not this one.
+    pytest.param({"tenants": ("en", "eng-x")}, id="a-prefix-is-not-the-tenant"),
+    pytest.param({"backend": "internal-jev"}, id="internal-jev-backend"),
+    pytest.param({"backend": "internal-laya"}, id="internal-laya-backend"),
+    pytest.param({"live": False}, id="display-switch-off"),
+    pytest.param({"profile": "claude-code"}, id="not-a-live-browser-profile"),
+])
+def test_any_condition_off_leaves_the_pod_unlabelled(tenant, off):
+    labels = _labels(tenant, **{**ON, **off})
+    assert "swarm-typesafe" not in labels
+
+
+def test_the_label_changes_nothing_else_on_the_pod(tenant):
+    """The forwarder's label is added and nothing else moves: the same pod
+    with the forwarder off differs by that one label."""
+    on = _labels(tenant, **ON)
+    off = _labels(tenant, **{**ON, "forwarder": False})
+    assert {k: v for k, v in on.items() if k != "swarm-typesafe"} == off
+
+
+def test_the_pure_decision_reads_configuration_only():
+    """Nothing on the task is read (invariant 10): the switch, the tenant and
+    the workspace's stored backend decide it."""
+    live = RUNNER_PROFILES[LIVE]
+    settings = _settings(forwarder=True, tenants=("eng",), live=True)
+    assert typesafe_forwarder_on(settings, tenant_id="eng", profile=live, backend="typesafe")
+    assert not typesafe_forwarder_on(settings, tenant_id="eng", profile=live, backend="internal-jev")
+    assert not typesafe_forwarder_on(settings, tenant_id="research", profile=live, backend="typesafe")
+    assert not typesafe_forwarder_on(
+        settings, tenant_id="eng", profile=RUNNER_PROFILES["claude-code"], backend="typesafe")
+    assert not typesafe_forwarder_on(
+        dataclasses.replace(settings, live_browser_sidecar=False),
+        tenant_id="eng", profile=live, backend="typesafe")
+    assert not typesafe_forwarder_on(
+        dataclasses.replace(settings, typesafe_forwarder_enabled=False),
+        tenant_id="eng", profile=live, backend="typesafe")
+
+
+def test_a_cloud_run_job_gets_no_label(tenant):
+    """GKE only: a Cloud Run Job keeps today's path even with every switch on."""
+    settings = _settings(forwarder=True, tenants=("eng",), live=True)
+    job = CloudRunJobDispatcher(settings, client=FakeJobsClient())._build_job(
+        RUNNER_PROFILES[LIVE], tenant)
+    assert "swarm-typesafe" not in dict(job.labels)
+    assert "swarm-typesafe" not in dict(job.template.labels or {})
+
+
+def test_the_switch_ships_off_and_reads_its_environment(monkeypatch):
+    monkeypatch.setenv("PROJECT_ID", PROJECT)
+    monkeypatch.setenv("REGION", "us-central1")
+    for name in ("TYPESAFE_FORWARDER_ENABLED", "TYPESAFE_FORWARDER_TENANTS"):
+        monkeypatch.delenv(name, raising=False)
+    off = SchedulerSettings.from_env()
+    assert off.typesafe_forwarder_enabled is False
+    assert off.typesafe_forwarder_tenants == ()
+    monkeypatch.setenv("TYPESAFE_FORWARDER_ENABLED", "true")
+    monkeypatch.setenv("TYPESAFE_FORWARDER_TENANTS", "eng, u-alice")
+    on = SchedulerSettings.from_env()
+    assert on.typesafe_forwarder_enabled is True
+    assert on.typesafe_forwarder_tenants == ("eng", "u-alice")
