@@ -57,10 +57,7 @@
      its title. Shape and Started give up their shares for px (each cut with
      its title, as before), so the name keeps the most room of any column
      (168px at 1056), cut with its title. */
-  /* 128px since V163 (#1427): the figure over its coverage line, which is
-     "3 of 4 reported" -- 15 characters of 12px mono, 108px, and 20px of
-     padding. A two-digit count wraps after "of N" rather than being cut. */
-  .wfl .wfl-table th[data-col="cost"] { width: 128px; }
+  .wfl .wfl-table th[data-col="cost"] { width: 100px; }
   .wfl .wfl-table th[data-col="owner"] { width: 116px; }
   /* Submitted holds "10-05 14:44", an older day's submit time (QA G3-20). */
   .wfl .wfl-table th[data-col="submitted"] { width: 96px; }
@@ -80,7 +77,9 @@
      figure's line, "$0.426 3 of 4 reported" was 172-179px in a 100px cell
      and the clip took "reported" -- the word that says the figure is a
      floor, the one part that must not go. The figure stays one line; the
-     coverage wraps at its spaces before anything of it is cut. */
+     coverage wraps at its spaces ("3 of 4" / "reported") before anything of
+     it is cut. The column stays 100px: the name's floors at 1056 (D8, R10)
+     have nothing to give, and the row is already three lines tall. */
   .wfl .wfl-table td[data-col="cost"] .wf-spend-cov { display: block; margin-left: 0; white-space: normal; }
   .wfl .wfl-table td[data-col="owner"] { white-space: nowrap; }
   /* At the micro size, as the row's other secondary facts are: it is what
@@ -395,13 +394,18 @@
      px it has at the 980px minimum. */
   .wf-card .ctl-table.wf-table th[data-col="step"] { width: 96px; min-width: 96px; }
   .wf-card .ctl-table.wf-table.no-why th[data-col="step"] { width: auto; }
-  .wf-card .ctl-table.wf-table th[data-col="state"] { width: 136px; }
+  /* 126px: `skipped by verdict` beside its mark is 114px of 12px sans
+     (measured in Chromium, 2026-10-16) and 12px of padding. It was the
+     list's 136; the 10px went to Ran (V202, #1427). */
+  .wf-card .ctl-table.wf-table th[data-col="state"] { width: 126px; }
   .wf-card .ctl-table.wf-table th[data-col="runner"] { width: 96px; }
   .wf-card .ctl-table.wf-table th[data-col="waited"] { width: 108px; }
   /* 128px, not 114: `between attempts` is 115px of 12px mono and was cut
-     (V202, #1427). These px widths are each figure column's CEILING now: the
-     head cell carries the column's own width inline, its longest value in
-     this table (`figureColumnWidths`), so Why takes what they do not use. */
+     (V202, #1427); State and Tokens gave the 14px, so the columns still sum
+     to 920 and Why keeps 60px at the 980px minimum. These px widths are each
+     figure column's CEILING now: the head cell carries the column's own width
+     inline, its longest value in this table (`figureColumnWidths`), so Why
+     takes what they do not use. */
   .wf-card .ctl-table.wf-table th[data-col="ran"] { width: 128px; }
   /* 'task unread' is 79px of 12px mono; at 70px it clipped (owner QA R8).
      Step gives the 22px: its name is one line cut with its title (D12), and
@@ -409,7 +413,9 @@
   .wf-card .ctl-table.wf-table th[data-col="attempts"] { width: 92px; }
   .wf-card .ctl-table.wf-table th[data-col="inputs"] { width: 72px; }
   .wf-card .ctl-table.wf-table th[data-col="cost"] { width: 100px; }
-  .wf-card .ctl-table.wf-table th[data-col="tokens"] { width: 104px; }
+  /* 100px: `not reported`, its longest word, is 98.4px of 12px mono with
+     the padding; the 4px went to Ran (V202). */
+  .wf-card .ctl-table.wf-table th[data-col="tokens"] { width: 100px; }
   /* WHY WRAPS ONTO TWO LINES before it is cut (QA G3-10): `expecte…` and
      `Waiting o…` said nothing. The whole reason is still its title. */
   .wf-card .ctl-table.wf-table td[data-col="why"] { white-space: normal; }
@@ -437,7 +443,7 @@
      shadow, and the 4px padding left every label flush against it. THE RIGHT
      IS 14px TOO (V204, #1427): at 4px the state word ended against the
      tinted card's right edge, while every label sat well in from its left. */
-  .wf-card .ctl-table.wf-table.is-scroll tr[data-step] { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; height: auto; padding: 6px 14px; border-bottom: 1px solid var(--line-soft); }
+  .wf-card .ctl-table.wf-table.is-scroll tr[data-step] { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; height: auto; padding: 6px 14px 6px 14px; border-bottom: 1px solid var(--line-soft); }
   .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td { display: block; padding: 0; border: 0; overflow: visible; position: static; }
   .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td[data-col="step"] { flex: 1 1 60%; width: auto; min-width: 0; max-width: none; overflow: hidden; background: none; }
   .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td[data-col="state"] { flex: none; }

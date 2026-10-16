@@ -619,19 +619,19 @@ export function stepColumnWidth(rows: readonly { step: { step_id: string } }[]):
 }
 
 /**
- * EACH FIGURE COLUMN'S PX CEILING: the width the sheet held it at, which is the
- * widest value it can hold -- `skipped by verdict`, `23h 59m so far`, `task
- * unread`, `not reported` (styles/workflows.css). Ran is 128 because `between
- * attempts` is 16 characters of 12px mono, 115px, and it was cut at 114
- * (V202, #1427).
+ * EACH FIGURE COLUMN'S PX CEILING: the width the sheet holds it at, sized to
+ * the widest value it can hold -- `skipped by verdict`, `task unread`, `not
+ * reported` (styles/workflows.css). Ran is 128 because `between attempts` is
+ * 16 characters of 12px mono, 115px, and it was cut at 114; State (136 to
+ * 126) and Tokens (104 to 100) gave the room (V202, #1427).
  */
 const FIGURE_COLUMN_CAP_PX: Readonly<Record<'state' | 'waited' | 'ran' | 'attempts' | 'cost' | 'tokens', number>> = {
-  state: 136,
+  state: 126,
   waited: 108,
   ran: 128,
   attempts: 92,
   cost: 100,
-  tokens: 104,
+  tokens: 100,
 }
 
 /**

@@ -237,17 +237,20 @@ describe('V103: the page head is the same height while it reads as when it has r
 })
 
 describe('V163: the list’s Cost cell keeps its coverage whole', () => {
-  // MUTATION: drop the coverage line's `display: block` or its wrapping, or
-  // put the column back at 100px: "reported" is clipped off "3 of 4".
-  it('puts the coverage on its own wrapping line, in a column that holds it', () => {
+  // MUTATION: drop the coverage line's `display: block` or its wrapping:
+  // the cell's nowrap clip takes "reported" off "3 of 4".
+  it('puts the coverage on its own line, wrapping at its spaces, in a column that holds its longest word', () => {
     const host = listRow(false)
     const cov = host.querySelector('.wf-spend-cov')!
     expect(painted(cov, 'display', { width: 1440 })).toBe('block')
+    expect(painted(cov, 'margin-left', { width: 1440 })).toBe('0')
     expect(painted(cov, 'white-space', { width: 1440 })).toBe('normal')
+    // The control: the cell itself still clips on one line, so the coverage's
+    // own wrapping is what keeps it whole.
+    expect(painted(cov.closest('td')!, 'white-space', { width: 1440 })).toBe('nowrap')
+    // "reported", its longest word, is 8 characters of 12px mono; the cell pads 10px a side.
     const th = html('<div class="wfl"><table class="wfl-table"><thead><tr><th data-col="cost">Cost</th></tr></thead></table></div>').querySelector('th')!
-    // "3 of 4 reported" is 15 characters of 12px mono, 108px, plus 20px of padding.
-    const px = Number.parseFloat(painted(th, 'width', { width: 1440 }) ?? '0')
-    expect(px).toBeGreaterThanOrEqual(15 * 0.6 * 12 + 20)
+    expect(Number.parseFloat(painted(th, 'width', { width: 1440 }) ?? '0')).toBeGreaterThanOrEqual('reported'.length * 0.6 * 12 + 20)
   })
 })
 
@@ -339,7 +342,7 @@ describe('V204: a stacked step card is inset on the right as on the left', () =>
     )
     const row = host.querySelector('tr[data-step]')!
     const env = { width: 400, container: 334 }
-    expect(painted(row, ['padding', 'padding-right'], env)).toBe('6px 14px')
+    expect(painted(row, ['padding', 'padding-right'], env)).toBe('6px 14px 6px 14px')
   })
 })
 
