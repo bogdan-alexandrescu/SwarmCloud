@@ -18,6 +18,12 @@ Every J1-J5 call in an attempt goes through the one ledger file the config
 names, so the owner's 8 calls / 120k tokens (§8 Q4) and §5.5's breaker are
 per attempt, whichever step asks.
 
+THE FORWARDER (SEC-MIGRATE-TYPESAFE). On GKE with `SWARM_TYPESAFE_INJECT`
+on, the worker serves a loopback shim and writes `private/jev-typesafe.shim`
+(`agent_worker.typesafe_shim`) instead of the key file; then TypeSafe is the
+shim's URL (`settings.typesafe_url`) and the bearer the shim's local token.
+A judge on Cloud Run has no shim and keeps the key file below.
+
 THE KEY. The Internal backends (the default) carry none. TypeSafe needs the
 workspace's key, and this module reads only what the worker already resolved
 into `private/` (`jevkey.KEY_FILE_NAME`, written for a live-browser attempt);
@@ -52,6 +58,10 @@ REPOSITORY_JEV_FIELD = "jev"
 REPOSITORY_CONTEXT_FIELD = "context"
 #: `jevkey.KEY_FILE_NAME`, restated so the runner never imports the key code.
 TYPESAFE_KEY_FILE = "jev-typesafe.key"
+#: `typesafe_shim.SHIM_FILE_NAME`, written by the worker on GKE with the
+#: forwarder switched on (SEC-MIGRATE-TYPESAFE). With it, TypeSafe is the
+#: shim's loopback URL and the bearer is its local token: no key is read.
+TYPESAFE_SHIM_FILE = "jev-typesafe.shim"
 
 
 def judge_settings(workspace: Mapping[str, Any] | None,
@@ -88,6 +98,13 @@ def _read_key(private_dir: Path) -> str | None:
         return None
 
 
+def _read_shim(private_dir: Path) -> tuple[str, str] | None:
+    """`(shim_url, token)` from the worker's shim file, or None."""
+    from agent_worker.typesafe_shim import read_shim_file
+
+    return read_shim_file(private_dir / TYPESAFE_SHIM_FILE)
+
+
 def _registration(db: Any, tenant_id: str, repository_url: str | None,
                   options: Mapping[str, Any]) -> Mapping[str, Any] | None:
     """The repository's registration in THIS tenant, or None."""
@@ -115,9 +132,16 @@ def setup(*, work: Path, db: Any, tenant_id: str, repository_url: str | None,
         registration = _registration(db, tenant_id, repository_url, options)
         given = judge_settings(workspace, registration)
         attempt_dir = Path(work).parent
-        done = register.prepare(attempt_dir=attempt_dir, settings=given,
-                                key=_read_key(attempt_dir / register.KEY_DIR),
-                                environ=environ, hard_stop_paths=_hard_stops(registration))
+        private = attempt_dir / register.KEY_DIR
+        shim = _read_shim(private)
+        if shim is not None:
+            # The forwarder (GKE, switched on): the shim, never the key file.
+            shim_url, key = shim
+        else:
+            shim_url, key = None, _read_key(private)
+        done = register.prepare(attempt_dir=attempt_dir, settings=given, key=key,
+                                environ=environ, hard_stop_paths=_hard_stops(registration),
+                                shim_url=shim_url)
     except Exception as exc:  # noqa: BLE001 -- Jev is never worth the attempt
         if log is not None:
             log.warning("jev not set up", error=type(exc).__name__)

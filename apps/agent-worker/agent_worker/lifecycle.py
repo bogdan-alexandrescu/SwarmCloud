@@ -156,6 +156,7 @@ from . import inputs as inputs_mod
 from . import issue as issue_mod
 from . import jevkey as jevkey_mod
 from . import secretrelease as secretrelease_mod
+from . import typesafe_shim as typesafe_shim_mod
 from . import questions as questions_mod
 from . import redact as redact_mod
 from . import standalone_outputs as standalone_mod
@@ -1049,6 +1050,16 @@ class Worker:
         # catalogue entry, and whose launched tools, declare no secret slot.
         self.secret_release = secretrelease_mod.SecretRelease(
             config, children=self.children, logger=deps.logger
+        )
+        # The TypeSafe forwarder's ticket and the loopback shim jev and the
+        # judge call (workspace-secrets.md §3.5, SEC-MIGRATE-TYPESAFE): only
+        # with SWARM_TYPESAFE_INJECT=on, which the scheduler sets with the
+        # pod's `swarm-typesafe: inject` label, and only on GKE. Inert
+        # otherwise: the key file path is today's. Signs with the child
+        # path's attempt key.
+        self.typesafe = typesafe_shim_mod.TypesafeInject(
+            config, children=self.children, logger=deps.logger, environ=os.environ,
+            backend=_config_backend(config),
         )
         # The live-browser path (docs/design/live-browser.md §4, lane L4): the
         # gate's ctl.sock slot, the tunnel ticket and the hand-off spool. Inert
@@ -2739,6 +2750,16 @@ class Worker:
                     "workspace-secret:" + ",".join(released.missing_required),
                 ),
             )
+        # STEP 6a': the TypeSafe forwarder's first ticket and the shim, before
+        # the runner and before `_build_child_env` (whose jev key and judge
+        # setup read the shim file). Switched off, nothing happens. A 409 is
+        # the fence, as for the release: stand down, leave the lease.
+        try:
+            self.typesafe.start(ws.private)
+        except typesafe_shim_mod.TypesafeTicketFenced as exc:
+            raise FencedWriteRefused(
+                cfg.generation, -1, str(exc), write="typesafe ticket"
+            ) from None
         try:
             child_env = self._build_child_env()
         except CredentialMissing as exc:
@@ -3004,6 +3025,17 @@ class Worker:
                         with self._heartbeat_meanwhile("graph ticket"):
                             self.graph_ticket.keep()
                     except graph_ticket_mod.GraphTicketFenced as exc:
+                        return self._exit_fenced_mid_run(
+                            child, observed_generation=-1, reason=str(exc)
+                        )
+                # The TypeSafe ticket (SEC-MIGRATE-TYPESAFE), the same way: a
+                # third of its life left, or a fence the shim found (a 409 at
+                # an on-demand renewal, or the forwarder's stale_generation).
+                if self.typesafe.due():
+                    try:
+                        with self._heartbeat_meanwhile("typesafe ticket"):
+                            self.typesafe.keep()
+                    except typesafe_shim_mod.TypesafeTicketFenced as exc:
                         return self._exit_fenced_mid_run(
                             child, observed_generation=-1, reason=str(exc)
                         )
@@ -7437,6 +7469,8 @@ class Worker:
             logger=self.log,
             call_options=self.control.call_options("tenant"),
             backend=base.get(jevkey_mod.BACKEND_ENV) or os.environ.get(jevkey_mod.BACKEND_ENV),
+            inject=self.typesafe.on,
+            shim_file=self.typesafe.shim_file,
         ))
         # The released workspace secrets (SEC-RELEASE): the manifest's PATH,
         # `SWARM_SECRETS_MANIFEST`, and nothing else -- never a value. The
@@ -12526,6 +12560,9 @@ class Worker:
         for step, action in (
             ("terminate_runner", terminate_runner),
             ("remove_released_secrets", remove_released_secrets),
+            # The TypeSafe shim stops, its file goes and the ticket is dropped
+            # once the runner is gone (SEC-MIGRATE-TYPESAFE). A no-op when off.
+            ("stop_typesafe_shim", self.typesafe.close),
             # THE BROWSER IS WIPED ON EVERY EXIT (live-browser §5.5): success,
             # failure, park, cancel, fence. The hand-off's own park and cancel
             # wipe earlier, before their checkpoint; this is every other exit,
@@ -14787,6 +14824,16 @@ def _refusal_cause(exc: BaseException) -> BaseException | None:
         if isinstance(current, refusals) and not getattr(current, "retryable", False):
             return current
     return None
+
+
+def _config_backend(config: Any) -> str | None:
+    """The backend this worker runs on (`WorkerConfig.backend`), or None when
+    it cannot be said: the TypeSafe forwarder is then not used (fail closed)."""
+    try:
+        backend = config.backend
+    except Exception:  # noqa: BLE001 -- an unresolvable profile is no forwarder
+        return None
+    return backend if isinstance(backend, str) else None
 
 
 def _execution_name() -> str | None:

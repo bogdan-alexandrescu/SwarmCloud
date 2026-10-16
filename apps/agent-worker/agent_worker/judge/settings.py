@@ -21,6 +21,7 @@ unknown value is the safe one: not opted in, the default backend.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -37,6 +38,13 @@ INTERNAL_LAYA_MODEL_ENV = "SWARM_JUDGE_INTERNAL_LAYA_MODEL"
 #: the platform ships (context-quality.md §1.5).
 TYPESAFE_URL = "https://api.typesafe.ai/v1/systemone"
 TYPESAFE_MODEL = "jev-latest"
+#: Where TypeSafe is reached on GKE with the forwarder switched on
+#: (SEC-MIGRATE-TYPESAFE): the worker's loopback shim
+#: (`agent_worker.typesafe_shim`), which forwards to the TypeSafe forwarder
+#: with the attempt's ticket. Only this shape is believed. A judge on Cloud Run
+#: has no shim (the forwarder is a cluster Service) and keeps TYPESAFE_URL
+#: with the key file.
+SHIM_URL_PATTERN = re.compile(r"http://127\.0\.0\.1:[0-9]{1,5}/v1/systemone")
 
 INTERNAL_JEV = "internal-jev"
 INTERNAL_LAYA = "internal-laya"
@@ -110,21 +118,35 @@ def opted_in(given: JudgeSettings) -> Off | None:
     return None
 
 
+def typesafe_url(shim_url: str | None = None) -> str | None:
+    """TypeSafe's address for this judge: the worker's shim when there is one
+    (GKE, the forwarder on), else TYPESAFE_URL. None for a shim address that
+    is not the shim's shape: nothing is sent then, never to TypeSafe direct
+    with the shim's token."""
+    if shim_url is None:
+        return TYPESAFE_URL
+    return shim_url if SHIM_URL_PATTERN.fullmatch(shim_url) else None
+
+
 def resolve_backend(given: JudgeSettings, *, key: str | None,
-                    environ: Mapping[str, str] | None = None) -> Backend | Off:
+                    environ: Mapping[str, str] | None = None,
+                    shim_url: str | None = None) -> Backend | Off:
     """The backend this task's calls go to, or why there are none.
 
     `key` is the TypeSafe key the caller resolved (#1297's `jevkey` order);
-    it is ignored by the Internal backends, which carry no credential.
+    it is ignored by the Internal backends, which carry no credential. With
+    `shim_url` (the worker's shim, `typesafe_url`), `key` is the shim's local
+    token, never a TypeSafe key.
     """
     off = opted_in(given)
     if off is not None:
         return off
     env = os.environ if environ is None else environ
     if given.backend == TYPESAFE:
-        if not key:
+        url = typesafe_url(shim_url)
+        if not key or url is None:
             return Off("no_key")
-        return Backend(TYPESAFE, TYPESAFE_URL, TYPESAFE_MODEL, stringify_state=False, key=key)
+        return Backend(TYPESAFE, url, TYPESAFE_MODEL, stringify_state=False, key=key)
     url = (env.get(INTERNAL_URL_ENV) or "").strip()
     if not url:
         return Off("no_internal_url")
