@@ -1376,13 +1376,18 @@ def main(argv: list[str] | None = None) -> int:
         values = tenant_values(args)
         if values["NETWORK_SOURCE"] == OFFLINE_NETWORK_SOURCE:
             # stderr, so the render on stdout stays a clean manifest for the
-            # lint and checkov callers that pipe it.
+            # lint and checkov callers that pipe it. ONE line starting `# `:
+            # a caller that captures stderr with stdout (the SwarmCloud
+            # worker's pre-publish checkov does) still holds a YAML file, where
+            # a bare warning line made the whole render unparseable and checkov
+            # reported every job pod as having no NetworkPolicy (CKV2_K8S_6).
             print(
-                f"render: WARNING: no cluster network was given, so the egress policy "
+                f"# render: WARNING: no cluster network was given, so the egress policy "
                 f"carries documentation addresses and is marked {OFFLINE_NETWORK_SOURCE}. "
                 "Fine for lint; wrong for a cluster. kubernetes/apply.sh reads the real "
                 "values from the cluster.",
                 file=sys.stderr,
+                flush=True,
             )
         # Validated BEFORE anything is written, so a bad output renders nothing.
         spec_data = (
@@ -1402,11 +1407,13 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "swarm-system":
         values = swarm_system_values(args)
         if values["SWARM_API_EGRESS_SOURCE"] == OFFLINE_NETWORK_SOURCE:
+            # One `# ` line, for the reason the tenant render's warning gives.
             print(
-                "render: WARNING: no swarm-api egress range was given, so the relay's ingress "
+                "# render: WARNING: no swarm-api egress range was given, so the relay's ingress "
                 f"admits a documentation range and is marked {OFFLINE_NETWORK_SOURCE}. Fine for "
                 "lint; wrong for a cluster. kubernetes/apply.sh --swarm-system reads the real one.",
                 file=sys.stderr,
+                flush=True,
             )
         sys.stdout.write(render_files(SWARM_SYSTEM_FILES, values))
     elif args.command == "job":

@@ -328,3 +328,24 @@ def test_the_release_builds_and_promotes_the_image_terraform_renders(script):
     assert targets.index(NAME) == targets.index("swarm-typesafe-fwd") + 1, targets
     assert 'lookup(var.image_refs, "swarm-graph", "")' in GRAPH_TF.read_text()
     assert (REPO / "apps" / NAME / "Dockerfile").is_file()
+
+
+@pytest.mark.parametrize("command", [["tenant", "--tenant", "lint"], ["swarm-system"]])
+def test_an_offline_render_with_its_warning_captured_is_still_yaml(command):
+    """The worker's pre-publish checkov writes render.py's stdout AND stderr to
+    the file it scans. The offline-network warning must read as a YAML comment
+    there, or the whole tenant render is unparseable and checkov reports every
+    job pod as having no NetworkPolicy (CKV2_K8S_6)."""
+    import subprocess
+    import sys
+
+    proc = subprocess.run([sys.executable, str(KUBERNETES / "render.py"), *command],
+                          cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          text=True, timeout=60, check=False)
+    assert proc.returncode == 0, proc.stdout
+    assert "render: WARNING" in proc.stdout  # the control: the warning was captured
+    docs = [d for d in yaml.safe_load_all(proc.stdout) if d]
+    assert docs and all(d["kind"] == "NetworkPolicy" or command[0] == "tenant" for d in docs)
+    if command[0] == "tenant":
+        names = {d["metadata"]["name"] for d in docs if d["kind"] == "NetworkPolicy"}
+        assert {"swarm-default-deny", "swarm-allow-graph-service"} <= names
