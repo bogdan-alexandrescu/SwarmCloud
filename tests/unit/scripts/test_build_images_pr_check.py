@@ -68,8 +68,10 @@ WORKER = {"agent-runtime-base", "agent-runtime-base-nocodex", "agent-runtime-bro
 # and the two ignore files reach it.
 # swarm-live (LB-L8e) is the one recipe under apps/ rather than images/
 # (apps/swarm-live/Dockerfile); find_recipe() accepts both. swarm-egress
-# (EGRESS-BUILD) sits beside its app the same way (apps/swarm-egress/Dockerfile).
-ALL = PYTHON_SERVICES | WORKER | {"swarm-ui", "swarm-verify", "swarm-live", "swarm-egress", "workspace-apply"}
+# (EGRESS-BUILD) sits beside its app the same way (apps/swarm-egress/Dockerfile),
+# and so does swarm-typesafe-fwd (SEC-INJECT-B, apps/swarm-typesafe-fwd/Dockerfile).
+ALL = PYTHON_SERVICES | WORKER | {"swarm-ui", "swarm-verify", "swarm-live", "swarm-egress",
+                                  "swarm-typesafe-fwd", "workspace-apply"}
 
 
 def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
@@ -147,7 +149,8 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         (["apps/scheduler/scheduler/dispatch.py"], {"swarm-scheduler", "workspace-apply"}),
         # COPY'd files outside images/.
         (["apps/common/swarm_common/models.py"],
-         PYTHON_SERVICES | WORKER | {"swarm-live", "swarm-egress", "workspace-apply"}),
+         PYTHON_SERVICES | WORKER | {"swarm-live", "swarm-egress", "swarm-typesafe-fwd",
+                                     "workspace-apply"}),
         # The live relay: its recipe beside it, and its own lock.
         (["apps/swarm-live/swarm_live/main.py"], {"swarm-live"}),
         (["apps/swarm-live/uv.lock"], {"swarm-live"}),
@@ -158,7 +161,12 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         (["apps/swarm-egress/swarm_egress/server.py"], {"swarm-egress"}),
         (["apps/swarm-egress/uv.lock"], {"swarm-egress"}),
         (["apps/swarm-egress/Dockerfile"], {"swarm-egress"}),
-        (["apps/redaction/redaction/scan.py"], WORKER | {"swarm-api", "swarm-egress"}),
+        # The TypeSafe forwarder (SEC-INJECT-B): the same shape again.
+        (["apps/swarm-typesafe-fwd/swarm_typesafe_fwd/forwarder.py"], {"swarm-typesafe-fwd"}),
+        (["apps/swarm-typesafe-fwd/uv.lock"], {"swarm-typesafe-fwd"}),
+        (["apps/swarm-typesafe-fwd/Dockerfile"], {"swarm-typesafe-fwd"}),
+        (["apps/redaction/redaction/scan.py"],
+         WORKER | {"swarm-api", "swarm-egress", "swarm-typesafe-fwd"}),
         (["apps/agent-worker/worker/main.py"], WORKER),
         (["apps/quota-broker/quota_broker/app.py"], {"swarm-quota-broker", "swarm-scheduler", "workspace-apply"}),
         (["apps/swarm-ui/src/App.tsx"], {"swarm-ui"}),

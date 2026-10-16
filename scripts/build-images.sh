@@ -143,7 +143,12 @@ source "${REPO_ROOT}/scripts/lib/build-mirror.sh"
 # and push-images.sh promotes: an image missing here is a forwarder dev's
 # enable_browser_egress could never deploy. It upgrades OS packages, so it is
 # rebuilt by every build (upgrades_os_packages).
-ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live swarm-egress workspace-apply)
+#
+# swarm-typesafe-fwd (SEC-INJECT-B, part of #1347) is the TypeSafe forwarder,
+# apps/swarm-typesafe-fwd/Dockerfile, beside swarm-egress for the same
+# reasons: terraform/infra/typesafe_fwd.tf renders swarm_typesafe_fwd_manifest
+# only once image_refs has its digest (docs/design/workspace-secrets.md §3.5).
+ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live swarm-egress swarm-typesafe-fwd workspace-apply)
 
 # The target whose recipe an image is built from. Every image is its own,
 # except agent-runtime-base-nocodex: agent-runtime-base's Dockerfile built

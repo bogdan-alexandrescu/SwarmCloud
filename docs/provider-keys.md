@@ -125,7 +125,12 @@ that version with its own identity
 read the key. That also covers a personal key on a group task without a
 `typesafe_user_keys.tf` row, once jev uses the forwarder. The route, the
 Kubernetes objects and the Terraform exist, all off by default. The forwarder
-itself is SEC-INJECT-B, and the worker still reads the key as above until
+itself, `apps/swarm-typesafe-fwd/` (SEC-INJECT-B, 2026-10-16), is built and
+promoted as the image `swarm-typesafe-fwd`. It spends only the secret the
+ticket names, read from its own project. A tenant-scope ticket that names
+another tenant's key is refused before anything is read. The caller's
+authorization header is replaced, never passed through. Nothing applies it
+to the cluster yet. The worker still reads the key as above until
 SEC-MIGRATE-TYPESAFE switches jev and the judge. The design's §3.5 lists what
 remains.
 
