@@ -711,3 +711,15 @@ enable_tailscale_egress = true
 # an unlabelled pod timed out. Off renders no URL, and an internal choice
 # leaves Jev unavailable instead of sending page text to TypeSafe.
 internal_decision_api_enabled = true
+
+# The shared graph service (#1384, docs/design/graph-service.md;
+# terraform/infra/graph_service.tf). Step 1 of 3, ON in dev as of 2026-10-16
+# (owner decision ~02:20 PDT, recorded on #1384): creates the
+# swarm-graph-ticket-key container (no version), its two readers (swarm-api
+# and the swarm-graph KSA) and swarm-graph's read of
+# tenants/<t>/repos/<r>/graph/** -- the IAM rows held at the release's dev-iam
+# gate. graph_service.serve (step 3) is a separate change made only after
+# `scripts/create-secrets.sh --graph-ticket-key` has written a version:
+# serving references the key from swarm-api, and a reference to a secret with
+# no version stops swarm-api starting.
+enable_graph_service = true
