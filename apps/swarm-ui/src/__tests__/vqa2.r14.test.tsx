@@ -170,7 +170,9 @@ describe('V256: a disabled secondary button is drawn from tokens, not faded', ()
     for (const theme of THEMES) {
       const env = { ...WIDE, theme }
       const ground = resolveColour('var(--surface)', theme)
-      const back = over(resolveColour(painted(btn, ['background', 'background-color'], env) ?? 'transparent', theme), ground)
+      // `none` (a ghost) and no declaration both leave the panel showing.
+      const fill = painted(btn, ['background', 'background-color'], env)
+      const back = over(resolveColour(fill === null || fill === 'none' ? 'transparent' : fill, theme), ground)
       const ink = over(resolveColour(painted(btn, 'color', env)!, theme), back)
       const ratio = contrast(ink, back)
       expect(ratio, `${kind || 'secondary'} disabled, ${theme}: ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(4.5)
