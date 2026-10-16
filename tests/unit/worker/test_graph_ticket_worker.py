@@ -83,12 +83,16 @@ class Wall:
 class Log:
     def __init__(self) -> None:
         self.lines: list[tuple[str, str, dict[str, Any]]] = []
+        self.secrets: list[str] = []
 
     def info(self, msg: str, **kw: Any) -> None:
         self.lines.append(("info", msg, kw))
 
     def warning(self, msg: str, **kw: Any) -> None:
         self.lines.append(("warning", msg, kw))
+
+    def register_secret(self, value: str) -> None:
+        self.secrets.append(value)
 
     def text(self) -> str:
         return json.dumps(self.lines, default=str)
@@ -189,6 +193,8 @@ def test_nothing_logged_carries_the_ticket(routes, tmp_path):
     for issued in routes.issued:
         assert issued not in log.text()
         assert issued.split(".")[1] not in log.text()
+    # And each is handed to the redaction filter, as jevkey hands its key.
+    assert log.secrets == routes.issued
 
 
 # --------------------------------------------------------------------------

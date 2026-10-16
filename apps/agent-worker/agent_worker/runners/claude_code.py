@@ -170,6 +170,16 @@ same `--mcp-config`. When the setting asked for context and none could be
 staged it sets `SWARM_GRAPH_UNSTAGED` instead, and the prompt gains one line
 saying so. The server reads only the staged directory: no network, no key.
 
+SERVED INSTEAD OF STAGED (docs/design/graph-service.md §4.2, lane GS-WORKER).
+When the workspace's stored `graph_delivery` is `service` and the worker's
+pin, ticket and probe all held, it sets `SWARM_GRAPH_PIN` and
+`SWARM_GRAPH_TICKET_FILE` instead of the snapshot, and `swarm-graph` is the
+pod's shim (`graphstage.shim_argv`), under the same name and with the same
+tools. The service URL is the worker's `SWARM_GRAPH_URL`, written into the
+server entry's `env`, never an argument. claude-code-browser runs this same
+module, so its `--mcp-config` carries the shim beside the live browser's
+servers.
+
 THE JEV GATE (JEV-RUNNER + BSTATUS-API + JUDGE-SELECT, part of #1030). The
 `jev` MCP server is registered when BOTH hold. (a) The task's `browser_tool`
 allows it: `jev` or `auto` (`browser_tools.choose`; never `playwright` or
@@ -576,6 +586,7 @@ def write_mcp_config(
     jev_key_file: str | None = None,
     graph_snapshot: str | None = None,
     graph_workdir: str | None = None,
+    graph_served: tuple[str, str, str] | None = None,
 ) -> Path:
     """Write the CLI's `--mcp-config` and return it: Playwright MCP on the live
     browser when `endpoint` is given, and jev-browser beside it when `jev` is
@@ -583,7 +594,8 @@ def write_mcp_config(
     the key: `jev_launch.py` reads it into the server's own environment; without
     it, an internal backend: the wrapper started directly, no key), the `swarm-git` shim when `git_spool` is, the
     `swarm-search` shim when `search_spool` is, `swarm-graph` when
-    `graph_snapshot` (the staged directory) is.
+    `graph_snapshot` (the staged directory) is, or the graph shim when
+    `graph_served` (`graphstage.served_env`: pin, ticket file, URL) is.
 
     Playwright MCP connects with its client tag on the endpoint
     (`browser_tools.tag_endpoint`), so the gate can say which tool drove the
@@ -622,7 +634,12 @@ def write_mcp_config(
     if search_spool:
         command, *args = search_shim_argv(search_spool)
         servers[SEARCH_MCP_SERVER_NAME] = {"type": "stdio", "command": command, "args": args}
-    if graph_snapshot:
+    if graph_served:
+        pin, ticket_file, url = graph_served
+        command, *args = graphstage.shim_argv(pin, ticket_file, graph_workdir)
+        servers[graphstage.SERVER_NAME] = {"type": "stdio", "command": command, "args": args,
+                                           "env": {graphstage.URL_ENV: url}}
+    elif graph_snapshot:
         command, *args = graphstage.server_argv(graph_snapshot, graph_workdir)
         servers[graphstage.SERVER_NAME] = {"type": "stdio", "command": command, "args": args}
     config = {"mcpServers": servers}
@@ -778,7 +795,10 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     # The staged graph (`graphstage.prepare`): its directory goes to the agent
     # for CONTEXT.md, the snapshot only to the server's argv.
     graph_snapshot = os.environ.get(graphstage.SNAPSHOT_ENV, "").strip()
-    if graph_snapshot and os.environ.get(graphstage.CONTEXT_ENV, "").strip():
+    # Or the served graph's pin and ticket file (GS-WORKER): to the shim's
+    # argv and env only; the agent gets the context directory, as above.
+    graph_served = graphstage.served_env(os.environ)
+    if (graph_snapshot or graph_served) and os.environ.get(graphstage.CONTEXT_ENV, "").strip():
         env[graphstage.CONTEXT_ENV] = os.environ[graphstage.CONTEXT_ENV].strip()
     live_endpoint = ""
     jev = False
@@ -841,13 +861,15 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         if isinstance(prompt, str) and prompt.strip():
             ctx.payload = {**ctx.payload, "prompt": f"{prompt.rstrip()}\n\n{note}"}
     # ONE `--mcp-config` for every server this attempt has (module docstring).
-    if live_endpoint or git_spool or search_spool or graph_snapshot:
+    if live_endpoint or git_spool or search_spool or graph_snapshot or graph_served:
         mcp = write_mcp_config(
             Path(ctx.work_dir) / SETTINGS_DIR_NAME, live_endpoint or None,
             git_spool=git_spool or None, search_spool=search_spool or None,
             jev=jev, jev_key_file=jev_key_file or None,
             graph_snapshot=graph_snapshot or None,
-            graph_workdir=str(ctx.repo_dir) if graph_snapshot and ctx.repo_dir else None)
+            graph_workdir=(str(ctx.repo_dir) if (graph_snapshot or graph_served) and ctx.repo_dir
+                           else None),
+            graph_served=graph_served)
         extra += ["--mcp-config", str(mcp)]
     try:
         return run_cli_agent(ctx, spec, extra_args=extra, extra_env=env)

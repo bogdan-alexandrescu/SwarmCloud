@@ -102,8 +102,25 @@ def test_shim_argv_is_this_interpreter_isolated_and_names_no_host():
 
 
 def test_the_names_are_the_shims_own():
+    from agent_worker import config
+
     assert graphstage.URL_ENV == shim.URL_ENV
     assert graphstage.SERVER_NAME == "swarm-graph"
+    assert config.DEFAULT_GRAPH_SERVICE_URL == graphstage.DEFAULT_SERVICE_URL == shim.DEFAULT_URL
+
+
+def test_the_service_url_is_the_workers_setting(monkeypatch):
+    """Read from the worker's own environment, never from a task (invariant 10)."""
+    from agent_worker.config import DEFAULT_GRAPH_SERVICE_URL, WorkerConfig
+
+    for name, value in {"TASK_ID": "t", "ATTEMPT_ID": "a", "LEASE_ID": "l", "TENANT_ID": "acme",
+                        "RUNNER_PROFILE": "claude-code", "PROJECT_ID": "proj-test",
+                        "GENERATION": "1"}.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv(graphstage.URL_ENV, raising=False)
+    assert WorkerConfig.from_env().graph_service_url == DEFAULT_GRAPH_SERVICE_URL
+    monkeypatch.setenv(graphstage.URL_ENV, "http://graph.internal:8080/mcp")
+    assert WorkerConfig.from_env().graph_service_url == "http://graph.internal:8080/mcp"
 
 
 def test_the_argv_starts_the_shim_and_its_tool_list_is_local(tmp_path):
