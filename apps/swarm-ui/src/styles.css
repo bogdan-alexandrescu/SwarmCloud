@@ -1523,10 +1523,8 @@ body {
 }
 .wf-spend.absent { color: var(--text-faint); font-style: italic; }
 .wf-spend-cov { color: var(--text-faint); margin-left: 5px; }
-/* The table's own total: the narrow-width rules above hide `.wf-spend` in the
-   list bar, which this is not, so it is shown again here. */
+/* The step table's own total, under it. */
 .wf-table-total { margin: var(--ctl-s2) 0 0; font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-dim); text-align: right; }
-.wf-table-total .wf-spend { display: inline; }
 
 /* #376: the workflow's start over its submit time. The start is in the row's
    ink; the submit is the age column's faint micro. */
@@ -2101,51 +2099,20 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
      one phone block, and it is the one in the run list's own region.
      `.row .meta` went with them: no screen has rendered a `.meta` cell in a
      task row since the row was rewritten, so it was hiding nothing. */
-  /* 390px. `[state] [name] [progress] [shape] [actions]` and nothing else --
-     ONE redefinition of the one template, which is the whole reason it is
-     written with named lines (§6.8). Columns are DROPPED, never relabelled
-     into "Label: value"; a stacked record is a different and worse thing than
-     a row, and it is what every other phone layout in this product had.
-
-     WHAT SURVIVES AND WHY, in the order they were fought over:
-       [state]    8px of shape. The mark never drops at any width -- it is the
-                  only field that is legible without being read, and it is
-                  where an underived state is told from an unread one.
-       [name]     what you came to find.
-       [progress] the TRACK only; `.wf-progress-text` drops. The hatched
-                  unknown track is what makes this safe: before this pass the
-                  untrusted case was text-only, so on a phone a workflow whose
-                  census failed drew an empty cell.
-       [shape]    `1 → 5 → 1`. A row that cannot tell a fan-out from a chain
-                  has lost the one field that is not recoverable by squinting
-                  at the others, and it costs 72px. IT COST 56, WHICH WAS 9px
-                  SHORT OF THE COMMONEST SHAPE ON THE BOARD and 38px short of a
-                  four-level one -- and because the text had no containment it
-                  did not ellipse, it PAINTED over the column beside it
-                  (inventory F11, the only genuine escape in that set). The
-                  containment is on `.wf-shape-text` now; this is the 16px that
-                  keeps `1 → 5 → 1` whole rather than merely inside its box. It
-                  comes out of `[name]`, which already ellipses here and whose
-                  full id is on the row's own `title`.
-       [actions]  one action, so a row is never a dead end.
-
-     THE STATE WORD DROPS, and that is survivable precisely because the mark
-     does not: `.ctl-dot`'s default is a hollow ring and `.is-underived` is a
-     ring with a bar through it, so the two absences stay apart at 390px with
-     no word at all. */
-  .wf-state, .wf-mix, .wf-spend { display: none; }
+  /* THE LIST BAR'S PHONE TEMPLATE IS GONE, AND SO ARE ITS HIDE RULES (V164,
+     #1427). This block, and a tablet one under it, hid `.wf-state`,
+     `.wf-mix` and `.wf-spend` to fit the old one-line list bar. The list is
+     a table now (a card per row at 640 and below, styles/workflows.css), and
+     those classes are the cells' own contents: below 900 every card printed
+     the label "cost" with no figure after it, and the runner mix went from
+     the name's second line and from the Runners column alike. Nothing here
+     hides them; where a column is not drawn, the list's own rules say so. */
   /* The open body loses the chrome padding it does not have room for; the
      canvas inside it keeps its own computed width and scrolls, and is NOT
      scaled to fit. Scaling a twenty-step graph onto a 358px column turns
      every step name into texture, which is the one thing a node must not
      become (§7.2). */
   .wf-body { padding: var(--ctl-s2); }
-}
-
-@media (min-width: 561px) and (max-width: 900px) {
-  /* Tablet. The mix and the spend go; the state word and the age come back,
-     because at this width `[name]` no longer needs every spare pixel. */
-  .wf-mix, .wf-spend { display: none; }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -6865,11 +6832,23 @@ table.pools tbody tr.unmeasured {
   align-items: stretch;
   gap: var(--ctl-s1);
 }
-.stop-facts > .ctl-fact { display: flex; flex-wrap: wrap; gap: var(--ctl-s1) var(--ctl-s2); }
-/* A key column, so the four values line up and the pair reads as a table
-   rather than as four sentences. It wraps at 390px rather than forcing a
-   scroll: the value is the part worth reading and it gets the whole line. */
-.stop-facts > .ctl-fact > b { min-width: 13ch; }
+/* A KEY COLUMN AND A VALUE COLUMN, AT EVERY WIDTH, so the values line up and
+   the pairs read as a table rather than as sentences. It was a wrapping flex
+   row with a 13ch floor on the key, and every loose piece of a value -- the
+   text, each `<code>` -- was its own flex item, so at 400 one confirmation
+   drew three layouts (V201, #1427): "stops" put its step id on a line of its
+   own under the key, "attempt" sat beside its key, and the longer values
+   dropped whole under theirs. Each value is one `.stop-val` now
+   (StopRun.tsx), wrapping inside its own column; a key longer than 13ch
+   ("once stopped, also cancels") wraps inside its. */
+.stop-facts > .ctl-fact {
+  display: grid;
+  grid-template-columns: 13ch minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--ctl-s1) var(--ctl-s2);
+}
+.stop-facts > .ctl-fact > b { min-width: 0; }
+.stop-facts > .ctl-fact > .stop-val { min-width: 0; overflow-wrap: anywhere; }
 .stop-blast {
   margin-top: var(--ctl-s2);
   border-top: 1px solid var(--line);
@@ -8438,6 +8417,27 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   .is-scroll > table > tbody > tr > th:first-child,
   .is-scroll > table > tbody > tr > td:first-child:not([colspan]) {
     background-color: var(--surface);
+  }
+  /* A TONED ROW'S HELD CELL PAINTS THE ROW'S WASH (V213, #1427). The wash is
+     on the ROW (`.ctl-table tbody tr.is-bad`, 8% of the hue over what is
+     behind it), and the held cell's opaque `--surface` above covered it: in
+     Outcomes' "Workflows that failed, and where" at 400 every failed row was
+     red but its Workflow column, the one held in view. The held cell paints
+     the same 8% over `--surface` instead -- the colour the wash makes on the
+     card -- so it still hides what scrolls under it and reads as one row.
+     The edge mark (`background-image`, the rule below `.ctl-table .is-num`)
+     is untouched. */
+  .ctl-table.is-scroll > table > tbody > tr.is-bad > th:first-child,
+  .ctl-table.is-scroll > table > tbody > tr.is-bad > td:first-child:not([colspan]) {
+    background-color: color-mix(in srgb, var(--bad) 8%, var(--surface));
+  }
+  .ctl-table.is-scroll > table > tbody > tr.is-warn > th:first-child,
+  .ctl-table.is-scroll > table > tbody > tr.is-warn > td:first-child:not([colspan]) {
+    background-color: color-mix(in srgb, var(--warn) 8%, var(--surface));
+  }
+  .ctl-table.is-scroll > table > tbody > tr.is-paused > th:first-child,
+  .ctl-table.is-scroll > table > tbody > tr.is-paused > td:first-child:not([colspan]) {
+    background-color: color-mix(in srgb, var(--paused) 7%, var(--surface));
   }
   /* The corner cell is held at `left: 0` and paints over both the held column
      and the head row. IT IS THE ONE HEAD CELL THAT PAINTS ITS OWN FILL, AND

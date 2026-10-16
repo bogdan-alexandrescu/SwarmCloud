@@ -618,6 +618,59 @@ export function stepColumnWidth(rows: readonly { step: { step_id: string } }[]):
   return { width: `min(calc(${longest} * 0.6 * var(--t-body) + 22px), calc(96px + 100cqi - 980px))` }
 }
 
+/**
+ * EACH FIGURE COLUMN'S PX CEILING: the width the sheet held it at, which is the
+ * widest value it can hold -- `skipped by verdict`, `23h 59m so far`, `task
+ * unread`, `not reported` (styles/workflows.css). Ran is 128 because `between
+ * attempts` is 16 characters of 12px mono, 115px, and it was cut at 114
+ * (V202, #1427).
+ */
+const FIGURE_COLUMN_CAP_PX: Readonly<Record<'state' | 'waited' | 'ran' | 'attempts' | 'cost' | 'tokens', number>> = {
+  state: 136,
+  waited: 108,
+  ran: 128,
+  attempts: 92,
+  cost: 100,
+  tokens: 104,
+}
+
+/**
+ * THE FIGURE COLUMNS ARE AS WIDE AS WHAT THIS TABLE PRINTS IN THEM, AND WHY
+ * TAKES THE REST (V202, #1427).
+ *
+ * Every figure column was its ceiling, the widest value it could ever hold, in
+ * every table: at 1440 a failed step's reason was cut to two ellipsised lines
+ * in a 60-75px Why ("exit status / 1: pytest…") while Waited, Ran, Cost and
+ * Tokens printed 35-49px of figures in 100-114px cells. Each column now asks for
+ * its longest value in this table at the cell's advance -- the figures are
+ * 12px mono (`td.is-num`), 0.6em each; the state word is sans at no more than
+ * `--t-meta`, measured at the same 0.6em as an upper bound, after its 22px mark
+ * and gap -- never less than its head (the label and the sort arrow, at
+ * `--t-meta`) and never more than its ceiling. 12px is the cell's padding.
+ * Inline on the head cells, as the Step column's width is (`stepColumnWidth`),
+ * because a fixed table takes its column widths from there.
+ */
+export function figureColumnWidths(
+  rows: readonly Pick<StepRowModel, 'look' | 'times' | 'ran' | 'attempts' | 'cost' | 'tokens' | 'costFrom' | 'tokensFrom' | 'pending'>[],
+): Readonly<Record<keyof typeof FIGURE_COLUMN_CAP_PX, CSSProperties>> {
+  const figure = (cell: Cell, from: 'result' | null, pending: boolean): string =>
+    pending ? 'reading…' : from === 'result' && cell.kind !== 'absent' ? `${cell.text} ${FROM_RESULT_WORD}` : cell.text
+  const longest = (texts: readonly string[]) => texts.reduce((n, t) => Math.max(n, t.length), 0)
+  const label = (col: string) => (COLUMNS.find((c) => c.col === col)?.label ?? col).length
+  const width = (col: keyof typeof FIGURE_COLUMN_CAP_PX, content: string): CSSProperties => ({
+    width: `min(max(calc(${label(col) + 2} * 0.6 * var(--t-meta) + 12px), ${content}), ${FIGURE_COLUMN_CAP_PX[col]}px)`,
+  })
+  const mono = (n: number) => `calc(${n} * 0.6 * var(--t-micro) + 12px)`
+  return {
+    state: width('state', `calc(${longest(rows.map((r) => r.look.word))} * 0.6 * var(--t-meta) + 34px)`),
+    waited: width('waited', mono(longest(rows.map((r) => waitedCell(r.times).text)))),
+    ran: width('ran', mono(longest(rows.map((r) => r.ran.text)))),
+    attempts: width('attempts', mono(longest(rows.map((r) => r.attempts.text)))),
+    cost: width('cost', mono(longest(rows.map((r) => figure(r.cost, r.costFrom, r.pending))))),
+    tokens: width('tokens', mono(longest(rows.map((r) => figure(r.tokens, r.tokensFrom, r.pending))))),
+  }
+}
+
 /** The columns a table draws: every one, less Why when no row has a why (D12). */
 export function tableColumns(rows: readonly Pick<StepRowModel, 'why'>[]): typeof COLUMNS {
   return rows.some((r) => r.why !== null) ? COLUMNS : COLUMNS.filter((c) => c.col !== 'why')
@@ -838,8 +891,10 @@ export function WorkflowTable({
   // waiting on a reason or failed, Why was ~110px of blank while ten long step
   // names were squeezed beside it. The step column takes that room instead.
   const columns = tableColumns(rows)
-  // The Step column grows to its longest name (V098; `stepColumnWidth`).
+  // The Step column grows to its longest name (V098; `stepColumnWidth`), and
+  // the figure columns hold their longest value, so Why gets the rest (V202).
   const stepWidth = stepColumnWidth(rows)
+  const figureWidths = figureColumnWidths(rows)
   const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set())
   const toggleInputs = (stepId: string) =>
     setOpened((was) => {
@@ -872,7 +927,15 @@ export function WorkflowTable({
                 data-col={c.col}
                 className={c.num ? 'is-num' : undefined}
                 // With no Why column the sheet's `width: auto` gives Step all the slack already.
-                style={c.col === 'step' && columns.length === COLUMNS.length ? stepWidth : undefined}
+                style={
+                  c.col === 'step'
+                    ? columns.length === COLUMNS.length
+                      ? stepWidth
+                      : undefined
+                    : c.col in figureWidths
+                      ? figureWidths[c.col as keyof typeof figureWidths]
+                      : undefined
+                }
                 aria-sort={c.sort !== null && sort.key === c.sort ? sort.dir : undefined}
               >
                 {c.sort === null ? (
@@ -1309,6 +1372,14 @@ export function StepInspector({
   }
   const prevAttempt = ready !== null && at !== null && at > 0 ? () => toAttempt(-1) : null
   const nextAttempt = ready !== null && at !== null && at < ready.length - 1 ? () => toAttempt(1) : null
+  // The stepper's records and the table's counted attempts differ (a CI park
+  // is refunded): the stepper says `run` and names the counted figure (WF-6).
+  const counted = ready !== null && row.sort.attempts !== null && row.sort.attempts !== ready.length
+  const countedTitle =
+    ready === null || at === null
+      ? undefined
+      : `Run ${at + 1} of the ${ready.length} attempt records this step has. ` +
+        `${row.attempts.text} count against its attempts, as the table says: a wait for CI is refunded and not counted.`
 
   return (
     <section className="wf-inspect" aria-label={`Step ${row.step.step_id} of ${workflowId}`}>
@@ -1414,30 +1485,35 @@ export function StepInspector({
           </span>
         ) : (
           <>
-            <ScrubButton label="Previous attempt" glyph="◀" onPress={prevAttempt} />
-            {/* ONE COUNT, NAMED FOR WHAT IT COUNTS (live QA WF-6, 2026-10-11).
-                The stepper walks the step's attempt DOCUMENTS; the table's
-                Attempts is `attempt_count`, which a merge step's CI park
-                refunds (agent_worker control.py). A merge that parked for CI
-                four times read `attempt 5 of 5` here and `1 of 10` in the
-                table, on one screen. Where the two differ the stepper says
-                `run`, and the counted figure beside it is the table's. */}
-            {row.sort.attempts !== null && row.sort.attempts !== ready.length ? (
-              <span
-                className="wf-scrub-pos"
-                title={
-                  `Run ${at + 1} of the ${ready.length} attempt records this step has. ` +
-                  `${row.attempts.text} count against its attempts, as the table says: a wait for CI is refunded and not counted.`
-                }
-              >
-                run {at + 1} of {ready.length} · {row.attempts.text} counted
-              </span>
-            ) : (
-              <span className="wf-scrub-pos">
-                attempt {at + 1} of {ready.length}
+            {/* ◀ POSITION ▶ IS ONE UNIT THAT NEVER WRAPS, as the same-step
+                stepper's is (V200, #1427): at 400 `run 3 of 3 · 1 of 3
+                counted` filled the line and ▶ wrapped alone onto the next.
+                The counted figure follows the unit and wraps on its own. */}
+            <span className="wf-scrub-nav">
+              <ScrubButton label="Previous attempt" glyph="◀" onPress={prevAttempt} />
+              {/* ONE COUNT, NAMED FOR WHAT IT COUNTS (live QA WF-6, 2026-10-11).
+                  The stepper walks the step's attempt DOCUMENTS; the table's
+                  Attempts is `attempt_count`, which a merge step's CI park
+                  refunds (agent_worker control.py). A merge that parked for CI
+                  four times read `attempt 5 of 5` here and `1 of 10` in the
+                  table, on one screen. Where the two differ the stepper says
+                  `run`, and the counted figure beside it is the table's. */}
+              {counted ? (
+                <span className="wf-scrub-pos" title={countedTitle}>
+                  run {at + 1} of {ready.length}
+                </span>
+              ) : (
+                <span className="wf-scrub-pos">
+                  attempt {at + 1} of {ready.length}
+                </span>
+              )}
+              <ScrubButton label="Next attempt" glyph="▶" onPress={nextAttempt} />
+            </span>
+            {counted && (
+              <span className="wf-scrub-counted" title={countedTitle}>
+                {row.attempts.text} counted
               </span>
             )}
-            <ScrubButton label="Next attempt" glyph="▶" onPress={nextAttempt} />
             <FactList
               facts={attemptFacts(
                 current,

@@ -2189,7 +2189,12 @@ function WorkflowSteps({
           // THE SAMPLE MARK QUALIFIES THESE FIGURES, SO IT IS IN THIS TABLE'S
           // HEAD ROW, inside the card (walkthrough A, 2026-10-03): it was a
           // chip in a strip above the card, floating apart from what it qualifies.
-          head={usage.kind === 'ready' && usage.usage !== null ? <SampleNote usage={usage.usage} workflow={workflow} /> : null}
+          // CALLED, NOT RENDERED (V203, #1427): `head` is null when every task
+          // was sampled, so the table draws no head row. As a component it was
+          // an element that rendered nothing, and the table drew an empty
+          // 32px row and its margin -- a ~45px band between the facts and
+          // the table, where the Graph has its toolbar.
+          head={usage.kind === 'ready' && usage.usage !== null ? sampleNote(usage.usage, workflow) : null}
         />
         <p className="wf-table-total">
           <span>Total</span> <Spend spend={spend} />
@@ -2615,7 +2620,7 @@ const TIER_TITLE: Readonly<Record<ZoomTier, string>> = {
  *
  * A ZOOM IS A VIEW CHOICE, NOT A READ, SO IT TAKES NO DATA MARK (WF-14, epic
  * #83). This was a `.ctl-mark.is-partial` -- the amber, one-sided-dash mark
- * that says a READ came back partial, and which `SampleNote` still wears for
+ * that says a READ came back partial, and which `sampleNote` still wears for
  * exactly that. On a zoom it made the reader's own choice, or the automatic
  * one made for them, look like something the platform had failed to report.
  * It is `.wf-zoom-note` now: the same words, faint mono type, no border, no
@@ -4911,7 +4916,7 @@ function NodeSource({ f, pending }: { f: StepFigures; pending: boolean }) {
  * component exists and it does not get to become implicit just because it
  * stopped being visible ink.
  */
-function SampleNote({ usage, workflow }: { usage: WorkflowUsage; workflow: Workflow }) {
+function sampleNote(usage: WorkflowUsage, workflow: Workflow): ReactNode {
   // THIS WORKFLOW'S TASKS ONLY (QA G3-05). The read is the board's -- every
   // workflow's tasks, this one's first under the ceiling -- and the mark
   // printed `12/296 sampled` over a three-step table whose three steps all
@@ -5884,11 +5889,22 @@ function WorkflowPageSkeleton({ id, query, choose }: { id: string; query: Workfl
     <div className="wfp is-loading" aria-busy="true">
       <div className="wfp-head">
         <div className="wfp-chips" aria-hidden="true">
-          {PAGE_SKELETON_CHIPS.map((w, i) => (
-            <span key={i} className="c-chip">
-              <span className="wfl-skel" style={{ width: `${w}em` }} />
-            </span>
-          ))}
+          {PAGE_SKELETON_CHIPS.map((w, i) => {
+            const chip = (
+              <span key={i} className="c-chip">
+                <span className="wfl-skel" style={{ width: `${w}em` }} />
+              </span>
+            )
+            // THE COST BAR IS IN THE COST'S SLOT (V103, #1427), which a phone
+            // gives a line of its own in both states (styles/workflows.css).
+            return i === PAGE_SKELETON_CHIPS.length - 1 ? (
+              <span key={i} className="wfp-cost">
+                {chip}
+              </span>
+            ) : (
+              chip
+            )
+          })}
         </div>
         <span className="wfp-actions">
           <Button disabled>Copy link</Button>
