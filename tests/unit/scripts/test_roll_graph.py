@@ -130,7 +130,10 @@ PY
 esac
 """
 
-# terraform: `-raw` refuses a null, as the real one does; `-json` prints it.
+# terraform, as the real one behaves: a null output is NOT in state, so a
+# named read of it (`-raw` or `-json`) fails with 'Output "..." not found'
+# (release 38867328505 went red on that); the unnamed `output -json` lists the
+# outputs state holds, without the null one.
 FAKE_TERRAFORM = r"""#!/usr/bin/env bash
 set -euo pipefail
 d="${FAKE_CLUSTER_DIR:?}"
@@ -138,20 +141,28 @@ py="${FAKE_PYTHON:?}"
 printf '%s\n' "$*" >>"${d}/terraform.log"
 case "$*" in
   *" init "*) printf 'Terraform has been successfully initialized!\n' ;;
-  *"output -raw swarm_graph_manifest"*)
+  *"output -raw swarm_graph_manifest"*|*"output -json swarm_graph_manifest"*)
     if [[ -f "${d}/state-unreadable" ]]; then printf 'Error: Failed to load state\n' >&2; exit 1; fi
     if [[ ! -f "${d}/graph.yaml" ]]; then
-      printf 'Error: Unsupported value for raw output\n' >&2
+      printf 'Error: Output "swarm_graph_manifest" not found\n' >&2
       exit 1
     fi
-    cat "${d}/graph.yaml" ;;
-  *"output -json swarm_graph_manifest"*)
+    case "$*" in
+      *"-raw"*) cat "${d}/graph.yaml" ;;
+      *) "${py}" -c 'import json,sys; print(json.dumps(open(sys.argv[1]).read()))' "${d}/graph.yaml" ;;
+    esac ;;
+  *"output -json")
     if [[ -f "${d}/state-unreadable" ]]; then printf 'Error: Failed to load state\n' >&2; exit 1; fi
-    if [[ -f "${d}/graph.yaml" ]]; then
-      "${py}" -c 'import json,sys; print(json.dumps(open(sys.argv[1]).read()))' "${d}/graph.yaml"
-    else
-      printf 'null\n'
-    fi ;;
+    "${py}" - "${d}" <<'PY'
+import json, os, sys
+d = sys.argv[1]
+outs = {"gke_cluster_name": {"sensitive": False, "type": "string", "value": "swarm-autopilot"}}
+g = os.path.join(d, "graph.yaml")
+if os.path.exists(g):
+    outs["swarm_graph_manifest"] = {"sensitive": False, "type": "string", "value": open(g).read()}
+print(json.dumps(outs))
+PY
+    ;;
   *"output -raw gke_cluster_name"*) cat "${d}/gke-cluster" ;;
   *) printf 'fake terraform: unexpected call: %s\n' "$*" >&2; exit 3 ;;
 esac
