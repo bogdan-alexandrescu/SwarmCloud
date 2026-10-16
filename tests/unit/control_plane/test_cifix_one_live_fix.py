@@ -12,6 +12,10 @@ holds it is not terminal -- or, for a claim whose task is not written yet,
 for `CLAIM_GRACE_SECONDS` -- a second request is answered 409
 `ci_fix_in_flight` naming the live task and workflow, and no task is made.
 
+`ci_fix_in_flight` is a new refusal, so it ships report-only
+(`swarm_api.refusals`): these tests switch it on, and the last one holds
+what the off position does.
+
 No credentials, no network, no emulator.
 """
 
@@ -22,7 +26,7 @@ from typing import Any
 
 import pytest
 
-from swarm_api import cifix
+from swarm_api import cifix, refusals
 from swarm_api.continuation import Continuation
 from swarm_api.schemas import WorkflowCreate
 from swarm_api.store import Store
@@ -45,6 +49,13 @@ from .test_ci_fix_postback import (  # noqa: F401 - fixtures
     github,
     tenant_tokens,
 )
+
+SWITCH = refusals.SWITCHES[cifix.CiFixInFlight.code].env
+
+
+@pytest.fixture(autouse=True)
+def _refusal_on(monkeypatch):
+    monkeypatch.setenv(SWITCH, "on")
 
 
 def test_a_second_request_for_a_failure_with_a_live_fix_is_answered_with_the_live_one(fix_client, db):
@@ -153,3 +164,19 @@ def test_a_task_the_racing_winner_wrote_is_found_by_its_claim(fix_client, db, cl
     with pytest.raises(cifix.CiFixInFlight) as refused:
         _stamp(db, clock, original, attempt=2)
     assert refused.value.detail["task_id"] == live["id"]
+
+
+def test_switched_off_a_second_request_goes_through_as_before_the_claim(fix_client, db, monkeypatch):
+    """Report-only: the request is let through, holding no claim of its own,
+    and the claim stays with the live fix."""
+    monkeypatch.setenv(SWITCH, "off")
+    original = _original(fix_client)
+    first = _fix_task(db, _submit(fix_client, _red_run_payload(original, attempt=1)))
+
+    second = _submit(fix_client, _red_run_payload(original, attempt=2))
+
+    assert second.status_code == 201, second.text
+    assert len(_ci_fix_tasks(db)) == 2
+    assert cifix.CLAIM_FIELD not in _fix_task(db, second)["metadata"]["ci_fix"]
+    claims = [doc for key, doc in db.docs.items() if key.startswith(f"{cifix.CLAIMS}/")]
+    assert [c["claim_id"] for c in claims] == [first["metadata"]["ci_fix"][cifix.CLAIM_FIELD]]

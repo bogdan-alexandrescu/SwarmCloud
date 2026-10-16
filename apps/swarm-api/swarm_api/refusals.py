@@ -334,6 +334,16 @@ SWITCHES: dict[str, Switch] = {
         "when GET /v1/provider-keys/typesafe resolves none on the TypeSafe backend, so the "
         "form never offers what is refused",
     ),
+    # Epic #1334 (cifix.py `_claim`): a second CI-fix request for a failing
+    # (pull request, head, run) that already has a live fix task. Off, the
+    # request goes through and makes a second fix task, as before the claim.
+    "ci_fix_in_flight": Switch(
+        code="ci_fix_in_flight",
+        why="a CI-fix submission for a pull request's red run at a head that already has a "
+        "live fix task is refused 409 naming that task. On once the log shows it would have "
+        "refused only second deliveries of one failure, and the CI-fix callers read the 409 "
+        "as that failure being handled",
+    ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",
         why="a schedule pauses after N failed or refused firings in a row (§4.4, default "

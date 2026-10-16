@@ -110,6 +110,7 @@ from .errors import ApiError, Conflict, NotFound
 from .forgewrite import GitHubWriter
 from .issueci import NO_CHANGE_MARKER
 from .issuecomments import bounded, neutral
+from .refusals import refuse
 from .repositories import parse_repository
 from .rollup import SKIPPED_SUMMARY_KEY
 from .schemas import WorkflowCreate
@@ -377,7 +378,8 @@ def _live_holder(txn: Any, db: Any, tenant_id: str, held: Mapping[str, Any],
 
 def _claim(store: Any, tenant_id: str, continuation: Continuation,
            record: Mapping[str, Any]) -> str | None:
-    """Take this failure's claim, or raise `CiFixInFlight` naming the live fix.
+    """Take this failure's claim, or refuse `CiFixInFlight` naming the live fix
+    (through `refusals.refuse`: switched off, None and no claim is taken).
 
     None when the record names no head or no run: then nothing says two
     requests are the same failure, and only the per-PR cap applies.
@@ -411,7 +413,9 @@ def _claim(store: Any, tenant_id: str, continuation: Continuation,
     live = _apply(transaction)
     if live is not None:
         task = live.get("task_id")
-        raise CiFixInFlight(
+        # A new refusal ships report-only (refusals.py): off, the request goes
+        # on as it did before the claim existed, holding no claim of its own.
+        refuse(CiFixInFlight(
             f"pull request #{record['pull_request']}'s red run {record['run_id']} at "
             f"{str(record['head_sha'])[:12]} already has a live CI-fix task"
             + (f" ({task})" if task else ", still being submitted")
@@ -420,7 +424,8 @@ def _claim(store: Any, tenant_id: str, continuation: Continuation,
                     "workflow_id": live.get("workflow_id"),
                     "pull_request": record["pull_request"], "head_sha": record["head_sha"],
                     "run_id": record["run_id"]},
-        )
+        ))
+        return None
     return claim_id
 
 
