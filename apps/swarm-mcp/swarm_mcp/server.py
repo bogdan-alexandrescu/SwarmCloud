@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import os
 import secrets
 import sys
 import threading
@@ -52,6 +53,7 @@ from .client import (
     SwarmClient,
     SwarmError,
     chosen_tenant,
+    enter_hold_lane,
     outputs_of,
     task_id_of,
     task_payload,
@@ -4577,10 +4579,80 @@ def _tool_error_text(exc: SwarmError) -> str:
 #: to the host.
 _WRITE_LOCK = threading.Lock()
 
-#: How many tool calls may be in flight at once. A workflow of a dozen steps is
-#: a dozen `sc:step` agents, each holding a `swarm_follow` open for its window,
-#: plus the session's own calls; this leaves room for all of them.
+#: How many QUICK tool calls may be in flight at once: every call that answers
+#: from a read or two -- a submit, a check, a status, a listing. Holds never
+#: run here (`HOLD_CALLS`), so this many is a ceiling on the session's own
+#: concurrent work, not on how many rows it can watch. 32 was the ceiling for
+#: everything before #1437, and with ~17 workflows' rows holding 60-85
+#: `swarm_follow`s every submit and check queued behind them for up to 30 min.
 MAX_CONCURRENT_CALLS = 32
+
+#: How many HOLDS may be in flight at once (`_holds`): one per live row, and a
+#: 5-step workflow keeps 5. 256 is 50 five-step workflows -- three times the 17
+#: measured on #1437 -- and a parked hold costs one mostly idle thread, its
+#: stack and, since the shared reads, nothing per poll beyond its tasks' one
+#: read. `SWARM_MCP_MAX_HOLDS` moves it, held to 32-1024: under 32 a single big
+#: workflow's rows would queue again, over 1024 threads is a host problem.
+HOLD_CALLS_DEFAULT = 256
+
+#: The client class `serve` paces, held apart from the `SwarmClient` name a
+#: test replaces with a stand-in.
+_PACED_CLIENT = SwarmClient
+HOLD_CALLS_BOUNDS = (32, 1024)
+
+
+def _hold_calls(environ: Any = None) -> int:
+    """`SWARM_MCP_MAX_HOLDS`, read once by `serve`, clamped to `HOLD_CALLS_BOUNDS`."""
+    raw = (os.environ if environ is None else environ).get("SWARM_MCP_MAX_HOLDS", "")
+    try:
+        value = int(str(raw).strip())
+    except ValueError:
+        return HOLD_CALLS_DEFAULT
+    low, high = HOLD_CALLS_BOUNDS
+    return max(low, min(high, value))
+
+
+def _waits(args: dict[str, Any], name: str, default: int) -> bool:
+    """Does this argument ask the call to wait? Absent means `default`; a value
+    that is not a number is taken as waiting, because the classifier must never
+    put a call that might block on the quick lane -- the tool refuses or
+    defaults it either way."""
+    value = args.get(name)
+    if value is None:
+        return default > 0
+    try:
+        return int(value) > 0
+    except (TypeError, ValueError):
+        return True
+
+
+def _holds(name: str, args: Any) -> bool:
+    """Whether this tool call may block for longer than a few reads -- a HOLD,
+    which runs on the hold lane so it can never occupy a quick worker.
+
+    Every tool that blocks is named here, with the argument that makes it:
+
+    * `swarm_follow` with `wait_seconds` > 0, or with `parents` (a step whose
+      parents still run holds even on its first call, up to 30 minutes);
+    * `swarm_wait` unless `timeout_seconds` is 0 (default 3600);
+    * `swarm_collect` unless `wait_seconds` is 0 (default 3600);
+    * `swarm_setup_status` with `wait_for_github_seconds` > 0;
+    * `swarm_account_remove`, which waits up to `ELICIT_TIMEOUT_SECONDS` for
+      the host's human to type a label.
+
+    Everything else answers from a bounded number of reads and is quick.
+    """
+    if not isinstance(args, dict):
+        args = {}
+    if name == "swarm_follow":
+        return _waits(args, "wait_seconds", 0) or bool(args.get("parents"))
+    if name == "swarm_wait":
+        return _waits(args, "timeout_seconds", 3600)
+    if name == "swarm_collect":
+        return _waits(args, "wait_seconds", 3600)
+    if name == "swarm_setup_status":
+        return _waits(args, "wait_for_github_seconds", 0)
+    return name == "swarm_account_remove"
 
 
 #: How often a running tool call tells the host it is alive. Claude Code
@@ -4779,7 +4851,12 @@ def _human_typed_label(account: dict[str, Any], label: str) -> None:
 def serve(stdin=None, stdout=None) -> int:
     """The stdio loop. One JSON-RPC message per line, both directions.
 
-    TOOL CALLS RUN CONCURRENTLY, and answer in the order they finish. This loop
+    TOOL CALLS RUN CONCURRENTLY, and answer in the order they finish, on TWO
+    LANES (#1437): a hold (`_holds`) runs on its own pool of `HOLD_CALLS`, and
+    every other call on a quick pool of `MAX_CONCURRENT_CALLS` that no hold can
+    occupy -- so a submit or a check answers at once however many rows hold.
+    The hold pool's threads are marked (`enter_hold_lane`), so the client's
+    rate gate serves a quick call's request before a hold's. This loop
     answered one call at a time, so one `swarm_wait` -- which blocks for up to
     an hour by design -- held every other tool call in the session behind it,
     and a workflow's step agents, each following its own task, would each have
@@ -4804,7 +4881,14 @@ def serve(stdin=None, stdout=None) -> int:
     def _client() -> SwarmClient:
         with building:
             if "client" not in held:
-                held["client"] = SwarmClient(tenant=tenant)
+                client = SwarmClient(tenant=tenant)
+                # SHARED READS AND A RATE GATE, for the bridge only (#1437):
+                # every hold of this process is one principal at swarm-api's
+                # 20/s. Only the real client is paced; a test's stand-in for
+                # it is served as it is.
+                if isinstance(client, _PACED_CLIENT):
+                    client.pace_for_bridge()
+                held["client"] = client
             return held["client"]
 
     def _answer(message_id: Any, params: dict[str, Any]) -> None:
@@ -4837,7 +4921,10 @@ def serve(stdin=None, stdout=None) -> int:
 
     with ThreadPoolExecutor(
         max_workers=MAX_CONCURRENT_CALLS, thread_name_prefix="swarm-mcp-call"
-    ) as calls:
+    ) as calls, ThreadPoolExecutor(
+        max_workers=_hold_calls(), thread_name_prefix="swarm-mcp-hold",
+        initializer=enter_hold_lane,
+    ) as holds:
         for line in stream:
             line = line.strip()
             if not line:
@@ -4869,7 +4956,9 @@ def serve(stdin=None, stdout=None) -> int:
             elif method == "tools/list":
                 _respond(message_id, {"tools": TOOLS})
             elif method == "tools/call":
-                calls.submit(_answer, message_id, message.get("params") or {})
+                params = message.get("params") or {}
+                lane = holds if _holds(params.get("name", ""), params.get("arguments")) else calls
+                lane.submit(_answer, message_id, params)
             elif method is None and message_id is not None:
                 # A RESPONSE, to a request this bridge sent (an elicitation).
                 # A response is never answered, whatever it matches.
