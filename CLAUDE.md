@@ -265,7 +265,13 @@ after the area run: it runs the repo-wide guard set
 (`test_docs_describe_what_was_built`, `test_docs_spec_amendments`, the UI
 route seam in `test_runtimes_screen.py`, `test_specsign_covers`) and every unit
 test file that names a changed path, in one `pytest -n auto` call, then
-`scripts/lib/check-contract-parity.sh` — about a minute, under ten. A narrowed
+`scripts/lib/check-contract-parity.sh` — about a minute for the guard set
+alone, each pytest call held to 540 s. A selection that weighs more than 540
+CI-seconds (`unit_test_durations.json`) is not one call: run without
+`--shard`, it runs as parts one after another, each its own call under the
+540 s limit, so the whole can pass ten minutes; `--shard k/n` runs the k-th
+part alone, and an agent whose command limit is ten minutes runs the n parts
+as n commands, which the script's warning spells out. A narrowed
 area run never reaches those guards, and they were most of the 25% of lane PRs
 red on their first CI run (#642). Any brief, wherever it is written, names it.
 
