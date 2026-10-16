@@ -341,7 +341,8 @@ In this order:
    for the owner. The service starts without the secret's value: it reads it
    at run time, so until step 3 every signed delivery is a 503, not a revision
    that fails to start. `terraform -chdir=terraform/infra output github_hooks`
-   then names the secret (`webhook_secret`) and the URL (`webhook_url`).
+   then names the secret (`webhook_secret`: `swarm-github-app-webhook-secret`,
+   declared in `terraform/infra/github_hooks.tf`) and the URL (`webhook_url`).
 
 3. **Store the webhook secret.** Choose it on the App's settings page, in the
    **Webhook secret** field (a long random string; GitHub never shows it again
