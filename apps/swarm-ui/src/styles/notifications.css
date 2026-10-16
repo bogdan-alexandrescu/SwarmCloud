@@ -1,10 +1,22 @@
-/* ---- the header bar and its bell (#1206, proposal A) ------------------------
-   48px, at the top of the content area on every page, over the page AND an
-   open agent beside it -- so it carries `.app`'s own width and gutter. The
-   trail and the frame's age sit on the left (`.ctl-head`, drawn only where
-   the page head has not already taken them); the bell is always the last
-   thing on the right. It sticks to the top of the scroller, so the bell is
-   one click away from anywhere on a long page. */
+/* ---- the header bar (#1206, proposal A) -------------------------------------
+   48px, at the top of the content area inside an open object, over the page
+   AND the agent beside it -- so it carries `.app`'s own width and gutter. It
+   holds the trail and the frame's age (`.ctl-head`) and sticks to the top of
+   the scroller.
+
+   ONLY WHERE THERE IS A TRAIL (visual QA V178, 2026-10-16). It was drawn on
+   every page to hold the bell, so with a live API a section page carried a
+   48px band of nothing but a bell above its title, and a phone a second
+   44px sticky band under its header, painting `--bg` over the page as it
+   scrolled. The bell is in the shell's own chrome now (below).
+
+   `--ctl-bar-h` IS THE BAR'S HEIGHT, AND 0 WHERE THERE IS NO BAR. A sticky
+   table head under the bar offsets itself by it (V091, V187) instead of
+   restating 48px/44px; App marks the frame `has-ctl-bar` when it draws one.
+   Set on `.ctl-frame`, which holds every page, not on `:root`: a section
+   sheet declares no root token (sections.stylesheet.test.ts). */
+.ctl-frame { --ctl-bar-h: 0px; }
+.ctl-frame.has-ctl-bar { --ctl-bar-h: 48px; }
 .ctl-bar {
   position: sticky;
   top: 0;
@@ -12,19 +24,52 @@
   display: flex;
   align-items: center;
   gap: var(--ctl-s3);
-  height: 48px;
+  /* The fallback is for a reader of the sheet alone (spaceprobe.ts): App
+     draws the bar only inside `.has-ctl-bar`, where the token is set. */
+  height: var(--ctl-bar-h, 48px);
   max-width: var(--app-max);
   margin: 0 auto;
   padding: 0 var(--app-pad);
   background: var(--bg);
 }
-/* NOTHING TO HOLD, NO STRIP: on a section page against an API that does not
-   serve the feed (the bell hides on its 404) the bar would be 48px of empty
-   ground on every page. */
+/* NOTHING TO HOLD, NO STRIP: a bar whose head drew nothing is not a band. */
 .ctl-bar:empty { display: none; }
-/* The trail fills the bar's left; it already holds one line (CH-15). */
+/* The trail fills the bar; it already holds one line (CH-15). */
 .ctl-bar > .ctl-head { flex: 1 1 auto; min-width: 0; min-height: 0; margin: 0; }
-.ctl-bar > .nt { margin-left: auto; }
+
+/* ---- the bell's two places (V178) -------------------------------------------
+   FROM 760px UP, AT THE SPINE'S FOOT, above Help: on screen from anywhere on
+   a long page, as the sticky bar made it, and over no page. Light on the
+   spine's dark ground, like its items. The drop-down cannot hang under the
+   bell's right edge there -- that is inside an 84px column that scrolls -- so
+   it opens beside the spine, its foot level with the spine's foot (84px of
+   spine and 8px of air). The ink is the spine's own, inherited -- named here,
+   the spine's token reads as a key to the publish scan's `sk-` rule. */
+.sk-bell { display: grid; place-items: center; }
+.sk-bell:empty { display: none; }
+.sk-bell .nt-bell { color: inherit; }
+.sk-bell .nt-bell:hover, .sk-bell .nt-bell.is-open { background: #194b89; color: #fff; }
+.sk-bell .nt-bell:focus-visible { outline-color: currentColor; }
+.sk-bell .nt-panel { position: fixed; top: auto; left: 92px; right: auto; bottom: 12px; }
+/* BELOW 760px, IN THE PHONE HEADER, after its tags: one band, not two. The
+   drop-down is a full-screen page there (`.nt-panel.is-page`), and the
+   header that holds it is lifted over everything while it is open -- the
+   header's own stacking (z-index 15) would leave the page under a trail bar. */
+.sk-pbell { display: inline-flex; flex: none; }
+.sk-pbell:empty { display: none; }
+.sk-pbar .sk-pbell .nt-bell { color: #eef4fa; }
+.sk-pbar .sk-pbell .nt-bell:hover, .sk-pbar .sk-pbell .nt-bell.is-open { background: #194b89; color: #fff; }
+.sk-pbar:has(.nt-panel.is-page) { z-index: 60; }
+
+/* ---- approvals waiting, on the phone's menu button (V237) -------------------
+   The spine's Automate badge (`.sk-badge`, styles/schedules.css) is inside
+   the drawer; this is the same count at the corner of the button that
+   opens it. */
+.sk-pbar .sk-mbadge { top: -2px; right: -4px; }
+
+/* ---- Recent's reason, in words (V150) ---------------------------------------
+   Where Live and Waiting carry a count: muted, so it never reads as one. */
+.sk-knote { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-faint); }
 
 .nt { position: relative; flex: none; }
 .nt-bell {
@@ -149,5 +194,5 @@
 }
 .nt-panel.is-page .nt-body { flex: 1 1 auto; }
 @media (max-width: 759px) {
-  .ctl-bar { height: 44px; }
+  .ctl-frame.has-ctl-bar { --ctl-bar-h: 44px; }
 }
