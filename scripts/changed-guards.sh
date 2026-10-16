@@ -31,7 +31,8 @@
 # first onto the lightest part, weighted by tests/unit/scripts/
 # unit_test_durations.json, a file with no weight at the median. The cut is
 # deterministic, so the n commands together run every selected file once; the
-# contract-parity check runs in part 1 only.
+# contract-parity check runs in part 1 only. Without --shard, a selection that
+# heavy runs its parts in turn (see SHARD_HINT_WEIGHT).
 #
 # The diff is `git diff --name-only <base>...HEAD` plus uncommitted and
 # untracked files, since the worker commits those too. <base> is --base, else
@@ -240,7 +241,7 @@ info "${changed_count} changed path(s) in ${source_name}; ${total_count} test fi
 if [[ "${shard_n}" -gt 0 ]]; then
   info "part ${shard_k} of ${shard_n}: ${#selected[@]} of the ${total_count} file(s)"
 elif [[ "${weight}" -gt "${SHARD_HINT_WEIGHT}" ]]; then
-  warn "the selection weighs ${weight} CI-seconds (${DURATIONS}), more than one ${PYTEST_SECONDS} s run may hold; ${split_hint}"
+  warn "the selection weighs ${weight} CI-seconds (${DURATIONS}), more than one ${PYTEST_SECONDS} s run may hold: it runs as ${parts} parts in turn; under a 10-minute command limit, ${split_hint}"
 fi
 printf '%s\n' ${selected[@]+"${selected[@]}"}
 if [[ "${shard_k}" -le 1 ]]; then
@@ -268,6 +269,26 @@ if [[ "${py[0]}" == */bin/python ]]; then
   venv_bin="${py[0]%/python}"
   caller_only+=("PATH=${venv_bin}:${PATH}" "VIRTUAL_ENV=${venv_bin%/bin}")
 fi
+# A selection over SHARD_HINT_WEIGHT, run without --shard, runs as its parts,
+# one after another: each its own pytest call under the PYTEST_SECONDS limit,
+# so a hang still ends, and a passing selection completes however many files
+# it names (#1334: this lane's own 21 files ran past 540 s as one call). The
+# whole run is then up to parts x 540 s; an agent whose command limit is 10
+# minutes runs the parts as separate commands instead (`--shard`).
+if [[ "${shard_n}" -eq 0 && "${weight}" -gt "${SHARD_HINT_WEIGHT}" ]]; then
+  info "running the selection as ${parts} parts, each under ${PYTEST_SECONDS} s"
+  part_failed=0
+  for ((k = 1; k <= parts; k++)); do
+    "${caller_only[@]}" bash "${BASH_SOURCE[0]}" --files "${work}/changed" --shard "${k}/${parts}" || part_failed=1
+  done
+  if [[ "${part_failed}" -ne 0 ]]; then
+    err "a part failed; its output is above"
+    exit 1
+  fi
+  ok "all ${parts} parts: ${total_count} guard and source-reading test file(s) and contract parity pass"
+  exit 0
+fi
+
 deadline=()
 if command -v timeout >/dev/null 2>&1; then
   deadline=(timeout "${PYTEST_SECONDS}")
