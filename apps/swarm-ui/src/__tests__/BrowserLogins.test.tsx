@@ -21,6 +21,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { DAY, HOUR, serve, visible } from './repofixture'
+import { painted } from './marks'
 
 const NOW = Date.now()
 const iso = (ms: number) => new Date(NOW + ms).toISOString()
@@ -245,5 +246,58 @@ describe('Access › Browser logins', () => {
     // Back to Mine drops the view from the address.
     fireEvent.click(screen.getByRole('radio', { name: /^mine$/i }))
     expect(window.location.search).toBe('')
+  })
+})
+
+describe('visual QA VQA2-R5: Access › Browser logins', () => {
+  const WIDE = { width: 1440 }
+  const listed = (logins: unknown[]) =>
+    serve((m, url) => (m === 'GET' && url === '/v1/browser-logins' ? { status: 200, body: { tenant_id: 'u-alice', logins } } : null))
+
+  it('V233: Keep and Esc give focus back to the row\'s Revoke, and the typed name is inside the warning', async () => {
+    // MUTATION: drop `setRefocus(true)` from onKeep, or move the label and
+    // input back out of the Banner.
+    listed([LOGIN('github-qa', 'https://github.com')])
+    const { BrowserLoginsPane } = await load()
+    render(<BrowserLoginsPane tenantId="u-alice" />)
+    const list = await screen.findByRole('list', { name: /browser logins/i })
+    const revoke = () => within(list).getByRole('button', { name: /^revoke github-qa$/i }) as HTMLButtonElement
+
+    fireEvent.click(revoke())
+    const ask = screen.getByRole('group', { name: /revoke github-qa/i })
+    const typed = within(ask).getByLabelText(/type github-qa to revoke/i) as HTMLInputElement
+    expect(document.activeElement).toBe(typed)
+    // The name is typed inside the warning it confirms, not under it.
+    const banner = typed.closest('.c-banner')
+    expect(banner, 'the typed name sits outside the warning').not.toBeNull()
+    expect(banner!.querySelector('label')!.textContent).toBe('Type github-qa to revoke')
+
+    fireEvent.keyDown(typed, { key: 'Escape' })
+    expect(screen.queryByRole('group', { name: /revoke github-qa/i })).toBeNull()
+    await waitFor(() => expect(document.activeElement).toBe(revoke()))
+    expect(document.activeElement).not.toBe(document.body)
+
+    // Keep, the banner's safe button, does the same.
+    fireEvent.click(revoke())
+    fireEvent.click(within(screen.getByRole('group', { name: /revoke github-qa/i })).getByRole('button', { name: /^keep$/i }))
+    await waitFor(() => expect(document.activeElement).toBe(revoke()))
+  })
+
+  it('V234: an expired login is drawn in the warn ink; one still valid keeps the line\'s tone', async () => {
+    // MUTATION: drop `is-expired` from the expiry, or its rule in onboarding.css.
+    listed([
+      LOGIN('live', 'https://github.com', { expires_at: iso(11 * DAY) }),
+      LOGIN('old', 'https://github.com', { expires_at: iso(-1 * DAY) }),
+    ])
+    const { BrowserLoginsPane } = await load()
+    render(<BrowserLoginsPane tenantId="u-alice" />)
+    await screen.findByRole('list', { name: /browser logins/i })
+    const expiry = (name: string) => document.querySelector<HTMLElement>(`li[data-login="${name}"] .lb-expiry`)!
+    expect(visible(expiry('old'))).toMatch(/^expired \d+[hd] ago$/)
+    expect(visible(expiry('live'))).toMatch(/^expires in /)
+    expect(expiry('old').classList.contains('is-expired')).toBe(true)
+    expect(expiry('live').classList.contains('is-expired')).toBe(false)
+    expect(painted(expiry('old'), 'color', WIDE)).toBe('var(--warn-ink)')
+    expect(painted(expiry('live'), 'color', WIDE)).not.toBe('var(--warn-ink)')
   })
 })

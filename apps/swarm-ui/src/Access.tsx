@@ -1506,11 +1506,20 @@ function Members() {
                 Nobody in tenant {d.tenant_id} has connected GitHub or chosen a repository yet.
               </EmptyState>
             ) : (
-              <ul className="ac-grid" aria-label={`Members of ${d.tenant_id}`}>
-                {d.members.map((m) => (
-                  <MemberRow key={m.user} m={m} />
-                ))}
-              </ul>
+              <>
+                {/* The rows' column names (visual QA V230); a phone's records carry their own (`.ac-cell-l`). */}
+                <div className="ac-members-h" aria-hidden="true">
+                  <span>Member</span>
+                  <span>Connection</span>
+                  <span>Owners</span>
+                  <span>Repositories</span>
+                </div>
+                <ul className="ac-grid" aria-label={`Members of ${d.tenant_id}`}>
+                  {d.members.map((m) => (
+                    <MemberRow key={m.user} m={m} />
+                  ))}
+                </ul>
+              </>
             )
           }
         </UrRegion>
@@ -1521,6 +1530,22 @@ function Members() {
       </p>
     </Card>
   )
+}
+
+/**
+ * THE LEDE SAYS WHAT THE VIEW SHOWS (visual QA V232). It said "the orgs and
+ * repositories SwarmCloud may reach as you" on Members and Browser logins
+ * too, which are about neither.
+ */
+function accessLede(view: View, tenant: string | null): string {
+  const inTenant = tenant !== null ? ` in tenant ${tenant}` : ''
+  if (view === 'members') {
+    return `Every member${inTenant}: whether they connected GitHub, the owners they enabled and how many repositories they chose. States and names, never a value.`
+  }
+  if (view === 'logins') {
+    return 'The browser sessions you saved from a live browser in your workspace, by name and site, with when each expires. A task names one to start signed in.'
+  }
+  return `The orgs and repositories SwarmCloud may reach as you${inTenant}, each Read or Write, and whether it can.`
 }
 
 /** Work › Access. */
@@ -1552,10 +1577,7 @@ export function AccessScreen() {
           </ButtonLink>
         </span>
       </PageHead>
-      <p className="ur-sub">
-        The orgs and repositories SwarmCloud may reach as you{tenant !== null ? ` in tenant ${tenant}` : ''}, each Read or
-        Write, and whether it can.
-      </p>
+      <p className="ur-sub">{accessLede(view, tenant)}</p>
       {view === 'mine' && <AccessPolicy />}
       {view === 'members' ? (
         <Members />
