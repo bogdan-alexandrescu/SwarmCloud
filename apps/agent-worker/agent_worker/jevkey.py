@@ -44,6 +44,13 @@ the provider key already in the CLI's own environment. That is a limit of
 one container, recorded in docs/design/live-browser.md, not something this
 module hides.
 
+WITH THE FORWARDER (SEC-MIGRATE-TYPESAFE, lane TS-MIGRATE-WORKER). On GKE
+with `SWARM_TYPESAFE_INJECT=on` (`typesafe_shim.switched_on`) none of the
+above happens: no key is resolved, read or written, and the runner's
+variable names the worker's shim file (`private/jev-typesafe.shim`: the
+loopback shim's URL and local token), so the key never enters the pod.
+Switched off, this module is exactly what it was.
+
 NEVER FATAL. A key that cannot be resolved costs the attempt the jev tools,
 not the attempt: every failure is logged by type and the attempt runs with
 Playwright MCP and dev-browser alone.
@@ -178,7 +185,8 @@ def _write_private(path: Path, text: str) -> None:
 def prepare(*, endpoint: str | None, db: Any, client: Any, tenant_id: str,
             submitted_by: Any, private_dir: Path, logger: Any,
             call_options: Mapping[str, Any] | None = None,
-            backend: str | None = None) -> dict[str, str]:
+            backend: str | None = None, inject: bool = False,
+            shim_file: Path | None = None) -> dict[str, str]:
     """`{KEY_FILE_ENV: path}` for a live-browser attempt with a key, else {}.
 
     An internal judgment backend (`backend`, JUDGE-SELECT) never reads or
@@ -186,7 +194,16 @@ def prepare(*, endpoint: str | None, db: Any, client: Any, tenant_id: str,
 
     Only with the live browser (`endpoint`, the gate's loopback CDP address):
     jev attaches to nothing else, and a task without one never reads the key.
+
+    With the forwarder switched on (`inject`, `typesafe_shim.switched_on`;
+    SEC-MIGRATE-TYPESAFE) NO KEY IS READ OR WRITTEN: the runner's variable
+    names the worker's shim file instead (`shim_file`, the shim's loopback URL
+    and local token, `typesafe_shim.SHIM_FILE_NAME`), which `jev_launch.py`
+    reads in its place. No shim (the ticket was refused) is no jev tools.
     """
+    if inject:
+        return _shim_env(endpoint=endpoint, backend=backend, shim_file=shim_file,
+                         logger=logger)
     if not endpoint or client is None or db is None:
         return {}
     if (backend or "").strip() in INTERNAL_BACKENDS:
@@ -205,3 +222,15 @@ def prepare(*, endpoint: str | None, db: Any, client: Any, tenant_id: str,
         return {}
     logger.info("jev_key_resolved", scope=scope, secret=secret)
     return {KEY_FILE_ENV: str(path)}
+
+
+def _shim_env(*, endpoint: str | None, backend: str | None, shim_file: Path | None,
+              logger: Any) -> dict[str, str]:
+    """`prepare` with the forwarder on: the shim file's PATH, or {}. Reads nothing."""
+    if not endpoint or (backend or "").strip() in INTERNAL_BACKENDS:
+        return {}
+    if shim_file is None or not Path(shim_file).is_file():
+        logger.info("jev_key_absent", provider=PROVIDER, delivery="inject")
+        return {}
+    logger.info("jev_key_resolved", delivery="inject")
+    return {KEY_FILE_ENV: str(shim_file)}

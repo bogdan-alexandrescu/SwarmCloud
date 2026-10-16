@@ -75,14 +75,18 @@ def _write_private(path: Path, text: str) -> None:
 def prepare(*, attempt_dir: Path, settings: settings_mod.JudgeSettings, key: str | None,
             environ: Mapping[str, str] | None = None, hard_stop_paths: Iterable[str] = (),
             secret_env_names: Iterable[str] = (), month_used_tokens: int = 0,
-            task_calls: int = 0, task_input_tokens: int = 0) -> Registered:
+            task_calls: int = 0, task_input_tokens: int = 0,
+            shim_url: str | None = None) -> Registered:
     """The attempt's Jev, or why there is none. Writes nothing when off.
 
     `month_used_tokens` is the workspace's spend this month, read by the
     caller (`budget.FirestoreMonthlyLedger.used`); `task_calls` and
     `task_input_tokens` carry an earlier attempt's spend on the same task.
+    `shim_url` is the worker's TypeSafe shim (`settings.typesafe_url`); with
+    it, `key` is the shim's local token and is written where a key would be.
     """
-    chosen = settings_mod.resolve_backend(settings, key=key, environ=environ)
+    chosen = settings_mod.resolve_backend(settings, key=key, environ=environ,
+                                          shim_url=shim_url)
     if isinstance(chosen, settings_mod.Off):
         return Registered(False, chosen.reason)
     attempt_dir = Path(attempt_dir)
