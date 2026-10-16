@@ -199,29 +199,39 @@ def test_the_shims_answer_is_the_local_servers_answer(tmp_path, snap, name, argu
 
 
 def test_every_page_through_the_shim_carries_the_pods_marks(tmp_path, snap, monkeypatch):
-    monkeypatch.setattr(tools, "ANSWER_CAP", 700)
+    monkeypatch.setattr(tools, "ANSWER_CAP", CAP)
     obs = observation(snap)
     server, _ = make_shim(tmp_path, Service(snap), obs=obs, ticket=fake_ticket(),
                           index_sha=snap.commit_sha)
     local = GraphServer(snap, FixedFreshness(obs))
     marks: set[str] = set()
-    cursor, pages = None, 0
-    while True:
-        arguments = {"layer": "files", **({"cursor": cursor} if cursor else {})}
-        mine = ask(server, "index", arguments)
-        theirs = local.handle({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
-                               "params": {"name": "index", "arguments": arguments}})
-        assert mine == theirs
-        answer, _ = text_of(mine)
-        assert next(iter(answer)) == "freshness"
-        assert answer["freshness"] == obs.block
-        marks |= {row.get("stale") for row in answer["rows"] if row.get("stale")}
-        pages += 1
-        cursor = answer["next_cursor"]
-        if cursor is None:
-            break
-    assert pages > 1
+    questions = pages = 0
+    for layer in ("files", "symbols"):
+        for key in snap.keys(layer):
+            questions += 1
+            cursor = None
+            while True:
+                arguments = {"layer": layer, "key": key,
+                             **({"cursor": cursor} if cursor else {})}
+                mine = ask(server, "index", arguments)
+                theirs = local.handle({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
+                                       "params": {"name": "index", "arguments": arguments}})
+                assert mine == theirs
+                answer, failed = text_of(mine)
+                assert not failed, answer
+                assert next(iter(answer)) == "freshness"
+                assert answer["freshness"] == obs.block
+                marks |= {row.get("stale") for row in answer["rows"] if row.get("stale")}
+                pages += 1
+                cursor = answer["next_cursor"]
+                if cursor is None:
+                    break
+    assert pages > questions, "the cap is small enough that some answer pages"
     assert marks == {DIRTY, CHANGED}
+
+
+#: Small enough that a shard of the hand snapshot pages, large enough for its head.
+CAP = 520
 
 
 def test_the_request_carries_the_ticket_and_only_name_and_arguments(tmp_path, snap):
@@ -491,6 +501,13 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def do_GET(self) -> None:  # noqa: N802 (a followed 303 arrives as a GET)
+        type(self).seen.append({"path": self.path, "headers": dict(self.headers), "body": None})
+        self.send_response(200)
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"{}")
+
     def log_message(self, *_args: Any) -> None:
         return
 
@@ -532,8 +549,9 @@ def test_the_http_transport_returns_error_statuses(loopback, status):
     assert got == status
 
 
-def test_the_http_transport_never_follows_a_redirect(loopback):
-    _Handler.status = 307
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+def test_the_http_transport_never_follows_a_redirect(loopback, status):
+    _Handler.status = status
     _Handler.location = loopback.replace("/mcp", "/elsewhere")
     with pytest.raises(shim.ServiceUnreachable):
         shim.http_transport(loopback, b"{}", shim.request_headers(fake_ticket()), 2.0)
