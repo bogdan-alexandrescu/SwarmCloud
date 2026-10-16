@@ -130,6 +130,17 @@ export function asSentence(fragment: string): string {
   return /[.!?]$/.test(capped) ? capped : `${capped}.`
 }
 
+/**
+ * The id of the sentence a refusal prints under one field (VQA V002). The
+ * send panel's refusal card names the field and takes the reader to it; where
+ * the field has no control that takes focus -- the carrier's select is
+ * disabled -- this sentence is where it lands, so it carries `tabIndex={-1}`.
+ * One form per page, so the key alone is unique.
+ */
+export function refusedSayId(field: string): string {
+  return `refused-${field.replace(/_/g, '-')}`
+}
+
 /** Where the carrier's caveat is argued. Typed, so a renamed topic fails to build. */
 const CARRIER_HELP: TopicId = 'dispatch-carrier'
 
@@ -221,7 +232,7 @@ export function DispatchChoice({
         scale={scale}
         terminals={terminals}
       />
-      {errors?.strategy && <p className="warn-text" role="alert">{errors.strategy}</p>}
+      {errors?.strategy && <p id={refusedSayId('strategy')} tabIndex={-1} className="warn-text" role="alert">{errors.strategy}</p>}
 
       {scale === 'workflow' && (
         <>
@@ -255,7 +266,7 @@ export function DispatchChoice({
           </p>
         </>
       )}
-      {errors?.carrier && <p className="warn-text" role="alert">{errors.carrier}</p>}
+      {errors?.carrier && <p id={refusedSayId('carrier')} tabIndex={-1} className="warn-text" role="alert">{errors.carrier}</p>}
 
       <label className="t-label dsp-label" htmlFor="dsp-repo">
         repository url {repoRequired ? '(required by this choice)' : '(optional)'}
@@ -295,7 +306,7 @@ export function DispatchChoice({
             : `Strategy ${draft.strategy} ends in a pull request, so the API will refuse this without a repository URL.`}
         </p>
       )}
-      {errors?.repository_url && <p className="warn-text" role="alert">{errors.repository_url}</p>}
+      {errors?.repository_url && <p id={refusedSayId('repository_url')} tabIndex={-1} className="warn-text" role="alert">{errors.repository_url}</p>}
     </fieldset>
   )
 }
@@ -431,10 +442,15 @@ export function DispatchFacts({ task }: { task: Task }) {
       </li>
       <li className="ctl-fact">
         <b>carrier</b>
-        <code>{d.carrier}</code>
-        <i className="ctl-mark" role="img" aria-label={CARRIER_NOTE}>
-          not acted on
-        </i>
+        {/* ONE VALUE, the name and its mark (VQA V250): as two flex items the
+            send panel's `space-between` set "checkpoints" mid-row with the
+            mark at the edge, and a wrap left it floating. */}
+        <span className="dsp-fact-v">
+          <code>{d.carrier}</code>{' '}
+          <i className="ctl-mark" role="img" aria-label={CARRIER_NOTE}>
+            not acted on
+          </i>
+        </span>
       </li>
       {d.role !== null && (
         <li className="ctl-fact">
