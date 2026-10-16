@@ -697,7 +697,7 @@ search_tool_enabled = false
 # Workspace-secret grant attestation (SEC-GRANT-ATTEST, PR 1377;
 # terraform/infra/workspace_grant_key.tf,
 # docs/runbooks/workspace-grant-attestation.md). Step 2, served in dev as of
-# 2026-10-16 (owner chose "mint, serve, sign; required off" ~03:10 PDT):
+# 2026-10-16 (owner chose "mint, serve, sign; required off" ~02:50 PDT):
 # version 1 of swarm-workspace-grant-key was added with
 # `scripts/create-secrets.sh --workspace-grant-key` before this was set, so
 # swarm-api's reference resolves. From this revision on, every grant a manager
