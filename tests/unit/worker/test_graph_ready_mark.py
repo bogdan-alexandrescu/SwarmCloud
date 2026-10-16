@@ -19,6 +19,7 @@ from typing import Any
 
 from agent_worker import graphstage, lifecycle
 from agent_worker.errors import ExitCode
+from swarm_common.states import EventType
 
 from test_graphstage import (  # noqa: F401 -- the `clone` fixture
     URL,
@@ -179,7 +180,7 @@ def test_the_lifecycle_emits_graph_ready_once_as_a_running_mark(
     assert mark == {"cause": "graph_ready", **detail}
     (event,) = [e for e in db.events("task_1")
                 if (e.get("detail") or {}).get("cause") == "graph_ready"]
-    assert event["type"] == "RUNNING"
+    assert event["type"] == EventType.RUNNING.value
 
 
 def test_no_staging_report_means_no_graph_ready_mark(db, worker_factory, monkeypatch):
