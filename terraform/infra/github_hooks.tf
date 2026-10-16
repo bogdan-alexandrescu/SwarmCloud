@@ -14,8 +14,9 @@
 #     Its VALUE is never here: the owner copies it from the App's settings
 #     page into `scripts/create-secrets.sh --github-app-webhook-secret --stdin`;
 #   * that secret's one reader, the identity the service runs as;
-#   * roles/datastore.user for that identity, which it did not hold, for the
-#     delivery dedup: `create()` of github_deliveries/{X-GitHub-Delivery};
+#   * swarmGithubHooksDedup for that identity, which held nothing on
+#     Firestore, for the delivery dedup: `create()` of
+#     github_deliveries/{X-GitHub-Delivery};
 #   * the Firestore TTL policy on github_deliveries.expires_at (now + 7 days).
 #
 # THE IDENTITY IS THE ROLLUP SWEEPER'S (owner decision 2026-10-16, recorded on
@@ -28,7 +29,8 @@
 # advance, the repository poll and push, the merge wake, the GitHub user-token
 # refresh sweep, the workspace dispatch sweep, the task_finished push, the
 # stranded-PR sweep and the workspace-secrets rotation sweep -- plus
-# read-write on the platform's Firestore through the grant below. None of
+# creating new documents in the platform's Firestore through the grant below
+# (create only: no read, query, update or delete). None of
 # those routes accepts an image, a command or a tenant's secret value, and
 # none makes the caller an admin or a member; that is the whole of the
 # mitigation, and the owner accepted it.
@@ -41,20 +43,26 @@
 # WHAT THE SWEEPER HELD ON FIRESTORE BEFORE THIS FILE: NOTHING. Read
 # 2026-10-16 from the code: its only grant anywhere in this root and its
 # modules is run.invoker on swarm-api; every route it calls reads and writes
-# Firestore as swarm-api. roles/datastore.user is the narrowest PREDEFINED role
-# that can create a document, and it is read-write over every collection:
-# IAM conditions are not evaluated on Firestore's data plane
-# (modules/iam/bindings.tf `firestore_condition` records the measurement), so
-# no condition here could narrow it to github_deliveries. A custom role with
-# datastore.entities.create alone would be narrower, but custom roles live in
-# terraform/bootstrap, which the owner applies (custom_roles_moved_to_bootstrap.tf);
-# that is a question in the GS-HOOKS pull request, not something this file can do.
+# Firestore as swarm-api. GS-HOOKS granted roles/datastore.user, the
+# narrowest PREDEFINED role that can create a document, which is read-write
+# over every collection: IAM conditions are not evaluated on Firestore's data
+# plane (modules/iam/bindings.tf `firestore_condition` records the
+# measurement), so no condition here can narrow a grant to github_deliveries.
+# The owner chose a custom role instead (2026-10-16, HOOKS-ROLE):
+# swarmGithubHooksDedup, datastore.entities.create alone, defined in
+# terraform/bootstrap/github_hooks_role.tf -- custom roles live there, which
+# the owner applies (custom_roles_moved_to_bootstrap.tf) -- and named here by
+# the id both roots read from terraform/modules/custom_role_ids.
 #
 # OFF BY DEFAULT, and no tfvars file sets it, so merging this creates and
 # changes nothing. The order, docs/runbooks/github-app.md "Step 9":
 #
 #   1. image_refs has a swarm-github-hooks digest (build-images.sh and
 #      push-images.sh build and promote it with every release);
+#   1b. the owner applies terraform/bootstrap with
+#      enable_github_hooks_dedup_role = true, which defines swarmGithubHooksDedup
+#      and puts it on the CI deployer's grantable list. Before that, step 2's
+#      grant names a role that does not exist and the release fails;
 #   2. enable_github_hooks = true, apply: the IAM rows above are held at the
 #      release's dev-iam gate for the owner. The service starts without the
 #      secret's value: it reads it from Secret Manager at run time, not by
@@ -74,11 +82,13 @@ variable "enable_github_hooks" {
     Create the public GitHub push receiver swarm-github-hooks (ingress all,
     allUsers run.invoker on that service only), its webhook secret container
     swarm-github-app-webhook-secret (no version), that secret's accessor and
-    roles/datastore.user for the rollup sweeper account it runs as, and the
+    swarmGithubHooksDedup (datastore.entities.create only) for the rollup
+    sweeper account it runs as, and the
     TTL policy on github_deliveries.expires_at
     (docs/design/graph-service.md §6.2). Off by default: nothing is created
     until the owner flips it. The service itself also needs a
-    swarm-github-hooks digest in image_refs.
+    swarm-github-hooks digest in image_refs, and terraform/bootstrap applied
+    with enable_github_hooks_dedup_role first, or the role does not exist.
   EOT
   type        = bool
   default     = false
@@ -113,6 +123,14 @@ locals {
 
   # The secret's VERSION reference the receiver reads at run time.
   github_hooks_secret_version = "projects/${var.project_id}/secrets/${local.github_hooks_secret_id}/versions/latest"
+}
+
+# The dedup role's full name, a plain string: terraform/bootstrap defines the
+# role (github_hooks_role.tf), and infra may not so much as read one (#79).
+module "github_hooks_role_ids" {
+  source = "../modules/custom_role_ids"
+
+  project_id = var.project_id
 }
 
 resource "google_secret_manager_secret" "github_webhook_secret" {
@@ -153,13 +171,13 @@ resource "google_secret_manager_secret_iam_binding" "github_webhook_secret_acces
 
 # The delivery dedup's create() (see "WHAT THE SWEEPER HELD" above for why this
 # role and why it carries no condition). An IAM member has no labels: the
-# managed-by marker is in the plan's description of this file and in the
-# GS-HOOKS pull request's IAM rows.
+# managed-by marker is in the role's description (terraform/bootstrap) and in
+# the HOOKS-ROLE pull request's IAM rows.
 resource "google_project_iam_member" "github_hooks_firestore" {
   count = local.github_hooks_on ? 1 : 0
 
   project = var.project_id
-  role    = "roles/datastore.user"
+  role    = module.github_hooks_role_ids.names["github_hooks_dedup"]
   member  = local.github_hooks_sweeper_member
 }
 

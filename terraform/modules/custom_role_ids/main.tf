@@ -5,9 +5,11 @@
 # (terraform/bootstrap/workspace_deployer.tf, #847), and swarmHistoryPurgeDeleter
 # (terraform/bootstrap/history_purge.tf, the audited history purge), the two
 # browser-session roles (terraform/bootstrap/browser_logins.tf),
-# swarmProviderKeyWriter (terraform/bootstrap/provider_keys.tf, KEYS-IAM) and
+# swarmProviderKeyWriter (terraform/bootstrap/provider_keys.tf, KEYS-IAM),
 # swarmWorkspaceSecretAccessor (terraform/bootstrap/workspace_secrets.tf,
-# SEC-IAM).
+# SEC-IAM), swarmTypesafeForwarderAccessor
+# (terraform/bootstrap/typesafe_forwarder.tf) and swarmGithubHooksDedup
+# (terraform/bootstrap/github_hooks_role.tf, HOOKS-ROLE).
 #
 # terraform/bootstrap DEFINES these roles, and the owner applies it.
 # terraform/infra and its modules GRANT them, and CI applies that. The two roots
@@ -89,5 +91,11 @@ locals {
     # swarm-tenant-<t>-typesafe versions, versions.access only. terraform/infra
     # never names it, and no tenant worker holds it.
     typesafe_forwarder_accessor = "swarmTypesafeForwarderAccessor${local.role_suffix}"
+    # Defined by terraform/bootstrap/github_hooks_role.tf (HOOKS-ROLE, part of
+    # #1384, owner decision 2026-10-16): datastore.entities.create alone, for
+    # the GitHub push receiver's delivery dedup. Granted by
+    # terraform/infra/github_hooks.tf to the rollup sweeper account the
+    # receiver runs as, in place of roles/datastore.user.
+    github_hooks_dedup = "swarmGithubHooksDedup${local.role_suffix}"
   }
 }
