@@ -1018,6 +1018,8 @@ class Worker:
         # what the agent start reads to say whether this attempt cloned.
         self._clone_marked = False
         self._agent_start_marked = False
+        # `graph_ready` (lane GS-MEASURE): what staging the graph cost, once.
+        self._graph_marked = False
         # The workflow base pin (`_upstream_base_pin`): what this step's clone
         # started from and why, `result_summary.git.base_pin`. None for a root
         # step, a non-workflow task, a step that starts from an upstream
@@ -7439,11 +7441,31 @@ class Worker:
                     task_id=self.cfg.task_id,
                     checkout=ws.checkout() if self._repo_url else None,
                     base_sha=clone_base, call_options=self.control.call_options(),
-                    log=self.log)
+                    log=self.log, mark=self._mark_graph_ready)
             except Exception as exc:  # noqa: BLE001 -- never fails the attempt
                 self.log.warning("graph context not staged", error=type(exc).__name__)
                 self._graph_env = {}
         return dict(self._graph_env)
+
+    def _mark_graph_ready(self, detail: dict[str, Any]) -> None:
+        """`graph_ready`: how the graph reached this attempt and what it cost.
+
+        docs/design/graph-service.md §9.1 and §9.3 (lane GS-MEASURE, part of
+        #1384). Staging ran inside `_build_child_env`, under the `credentials`
+        phase, with no timer: no mark isolated it, and its bytes were only in
+        the pod-local `stage.json`. The detail is `graph`, built by
+        `graphstage.ready_detail`: `delivery` (`staged`, `service` or `none`),
+        `seconds` (the decision's wall time, Firestore reads, ancestry git
+        calls and downloads), `bytes` and `blobs` (None when nothing was
+        delivered) and `reason`. Numbers and a fixed sentence only. Once per
+        attempt, on the same RUNNING startup-mark path as `clone_timed`;
+        never raises.
+        """
+        if self._graph_marked:
+            return
+        # Set before the write, so a failed write is not tried again later.
+        self._graph_marked = True
+        self._emit_startup_mark(graphstage_mod.READY_MARK, detail)
 
     # -- the account pool --------------------------------------------------
     def _pool_credential_env(self, profile: Any) -> dict[str, str] | None:

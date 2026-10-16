@@ -59,6 +59,15 @@ a reason in `stage.json`, a log line and, when the setting asked for
 context, one prompt line saying none was staged (`UNSTAGED_ENV`). The agent
 then runs as it did before this lane. `prepare` returns `{}` rather than
 raise, and the lifecycle wraps it again.
+
+WHAT STAGING COSTS IS MEASURED (lane GS-MEASURE, docs/design/graph-service.md
+§9.1 and §9.3). Before it, staging had no timer, its bytes lived only in the
+pod-local `stage.json`, and its time was folded into the lifecycle's
+`credentials` phase. `stage` now times the whole decision on a monotonic
+clock, and `prepare` hands the lifecycle `ready_detail`'s numbers, which it
+emits as the RUNNING start-up mark `graph_ready` beside `clone_timed`:
+`{delivery, seconds, bytes, blobs, reason}`. A week of those readings on
+`staged` is the baseline the shared graph service is judged against.
 """
 
 from __future__ import annotations
@@ -71,9 +80,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from . import indexrun
 
@@ -103,6 +113,16 @@ UNSTAGED_ENV = "SWARM_GRAPH_UNSTAGED"
 SERVER_NAME = "swarm-graph"
 #: Its module, started with this runner's own interpreter.
 SERVER_MODULE = "agent_worker.graphmcp"
+
+#: The RUNNING start-up mark the lifecycle emits with `ready_detail`'s numbers
+#: (graph-service.md §9.3). A `cause` string the worker writes, not a member
+#: of the frozen contract (§11).
+READY_MARK = "graph_ready"
+#: How the graph reached this attempt, in `stage.json` and the mark:
+#: `staged`, a snapshot copied into `work/` (today's only delivery);
+#: `service`, pinned and served by `swarm-graph` (lane GS-WORKER, §4.1);
+#: `none`, nothing delivered, and `reason` says why.
+DELIVERY_STAGED, DELIVERY_SERVICE, DELIVERY_NONE = "staged", "service", "none"
 
 #: The runners whose MCP configuration can name the server: claude-code's
 #: `--mcp-config` and codex's `-c mcp_servers.*` (§4.4). The mock, generic and
@@ -434,6 +454,13 @@ class StageResult:
     decision: Decision | None = None
     snapshot: Path | None = None
     facts: dict[str, Any] = field(default_factory=dict)
+    #: The decision's wall time on the monotonic clock: the Firestore reads,
+    #: the ancestry git calls and every download (`stage` sets it).
+    seconds: float | None = None
+
+    @property
+    def delivery(self) -> str:
+        return DELIVERY_STAGED if self.staged else DELIVERY_NONE
 
     @property
     def wanted(self) -> bool:
@@ -447,22 +474,45 @@ class StageResult:
             "reason": self.reason,
             "decision": asdict(self.decision) if self.decision is not None else None,
             "snapshot": str(self.snapshot) if self.snapshot is not None else None,
+            "delivery": self.delivery,
+            "seconds": self.seconds,
             **self.facts,
         }
 
 
+def ready_detail(result: StageResult) -> dict[str, Any]:
+    """The `graph_ready` mark's detail: numbers and the reason, nothing else.
+
+    No path, URL, commit or digest: the API serves an event's detail as
+    stored. `bytes` and `blobs` are None when nothing was delivered, never a
+    zero that would read as an empty graph staged.
+    """
+    return {"graph": {
+        "delivery": result.delivery,
+        "seconds": result.seconds,
+        "bytes": result.facts.get("bytes") if result.staged else None,
+        "blobs": result.facts.get("blobs") if result.staged else None,
+        "reason": result.reason,
+    }}
+
+
 def stage(*, db: Any, store: Any, tenant_id: str, repository_url: str | None, task_id: str,
           checkout: Path | None, base_sha: str | None, context_dir: Path,
-          call_options: Mapping[str, Any] | None = None) -> StageResult:
-    """Decide and stage. Never raises: every failure is a reason."""
+          call_options: Mapping[str, Any] | None = None,
+          clock: Callable[[], float] = time.monotonic) -> StageResult:
+    """Decide and stage, timed on `clock`. Never raises: every failure is a reason."""
+    started = clock()
     try:
-        return _stage(db=db, store=store, tenant_id=tenant_id, repository_url=repository_url,
-                      task_id=task_id, checkout=checkout, base_sha=base_sha,
-                      context_dir=context_dir, options=dict(call_options or {}))
+        result = _stage(db=db, store=store, tenant_id=tenant_id,
+                        repository_url=repository_url, task_id=task_id, checkout=checkout,
+                        base_sha=base_sha, context_dir=context_dir,
+                        options=dict(call_options or {}))
     except StageRefused as refused:
-        return StageResult(False, str(refused))
+        result = StageResult(False, str(refused))
     except Exception as exc:  # noqa: BLE001 -- a staging failure never fails the attempt
-        return StageResult(False, f"staging failed ({type(exc).__name__})")
+        result = StageResult(False, f"staging failed ({type(exc).__name__})")
+    result.seconds = round(clock() - started, 3)
+    return result
 
 
 def _stage(*, db: Any, store: Any, tenant_id: str, repository_url: str | None, task_id: str,
@@ -529,11 +579,18 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
             store: Any, tenant_id: str, repository_url: str | None, task_id: str,
             checkout: Path | None, base_sha: str | None,
             call_options: Mapping[str, Any] | None = None,
-            log: Any = None) -> dict[str, str]:
+            log: Any = None,
+            mark: Callable[[dict[str, Any]], None] | None = None) -> dict[str, str]:
     """Stage for this attempt and return the runner's variables. Never raises.
 
     `{}` for an index run (it builds the graph; it does not read one), a
     runner that names no MCP server, or a step with no checkout.
+
+    `mark` receives `ready_detail(result)` once, when the stored setting
+    asked for context on this step (`StageResult.wanted`): the steps where a
+    graph was to be delivered, staged or not, which is the denominator of
+    §8.2's fallback rate. Arm A and `off` deliver nothing by decision and are
+    not readings. A mark that fails costs only the mark.
     """
     try:
         if profile_name == indexrun.INDEXER_PROFILE or not offers_graph(runner_argv) \
@@ -558,7 +615,15 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
             json.dumps(result.record(), indent=2, default=str) + "\n", encoding="utf-8")
         if log is not None:
             log.info("graph context", staged=result.staged, reason=result.reason,
-                     arm=result.decision.arm if result.decision else None)
+                     arm=result.decision.arm if result.decision else None,
+                     delivery=result.delivery, seconds=result.seconds,
+                     bytes=result.facts.get("bytes"), blobs=result.facts.get("blobs"))
+        if mark is not None and result.wanted:
+            try:
+                mark(ready_detail(result))
+            except Exception as exc:  # noqa: BLE001 -- a measurement is never worth the graph
+                if log is not None:
+                    log.warning("graph_ready not marked", error=type(exc).__name__)
         # Jev for J1-J5 (lane CTXQ-JW): decided by the workspace's own stored
         # opt-in, written as `<attempt>/judge/config.json` or not at all.
         # Here, not in the lifecycle, because this is its one setup call.
@@ -602,9 +667,10 @@ def unstaged_note(environ: Mapping[str, str]) -> str | None:
 
 __all__ = [
     "AB_FIELD", "ARM_A", "ARM_B", "CODE_INTELLIGENCE_FIELD", "CONTEXT_DIR_NAME",
-    "CONTEXT_ENV", "CONTEXT_FIELD", "DEFAULT_AB", "DEFAULT_CONTEXT", "Decision",
-    "GRAPH_RUNNERS", "MIN_FORMAT", "REPOSITORY_CONTEXT_FIELD", "SERVER_NAME",
+    "CONTEXT_ENV", "CONTEXT_FIELD", "DEFAULT_AB", "DEFAULT_CONTEXT", "DELIVERY_NONE",
+    "DELIVERY_SERVICE", "DELIVERY_STAGED", "Decision", "GRAPH_RUNNERS", "MIN_FORMAT",
+    "READY_MARK", "REPOSITORY_CONTEXT_FIELD", "SERVER_NAME",
     "SETTINGS_COLLECTION", "SNAPSHOT_DIR_NAME", "SNAPSHOT_ENV", "STAGE_RECORD_NAME",
     "StageResult", "UNSTAGED_ENV", "assign_arm", "decide", "is_ancestor", "offers_graph",
-    "prepare", "prove_ancestry", "server_argv", "stage", "unstaged_note", "write_snapshot",
+    "prepare", "prove_ancestry", "ready_detail", "server_argv", "stage", "unstaged_note", "write_snapshot",
 ]

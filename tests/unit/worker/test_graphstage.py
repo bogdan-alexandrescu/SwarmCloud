@@ -510,3 +510,101 @@ def test_the_configured_command_answers_mcp_over_the_staged_snapshot(db, store, 
     answer = json.loads(done.stdout.decode().splitlines()[0])
     text = answer["result"]["content"][0]["text"]
     assert first in text
+
+
+# --------------------------------------------------------------------------
+# the timer and the facts the `graph_ready` mark carries (lane GS-MEASURE,
+# docs/design/graph-service.md §9.1 and §9.3)
+# --------------------------------------------------------------------------
+
+
+class _Clock:
+    """A monotonic clock that advances `step` seconds per reading."""
+
+    def __init__(self, start: float = 100.0, step: float = 2.5) -> None:
+        self.now, self.step, self.readings = start, step, 0
+
+    def __call__(self) -> float:
+        value = self.now
+        self.now += self.step
+        self.readings += 1
+        return value
+
+
+def test_staging_is_timed_around_the_whole_decision(db, store, clone):
+    checkout, first, second = clone
+    _no_ab(db)
+    _promote(db, store, first)
+    clock = _Clock(step=2.5)
+
+    result = graphstage.stage(db=db, store=store, tenant_id=TENANT, repository_url=URL,
+                              task_id="task_b", checkout=checkout, base_sha=second,
+                              context_dir=checkout.parent / graphstage.CONTEXT_DIR_NAME,
+                              clock=clock)
+
+    assert result.staged, result.reason
+    # One reading before, one after: the seconds are exactly their difference.
+    assert clock.readings == 2
+    assert result.seconds == 2.5
+    assert result.delivery == graphstage.DELIVERY_STAGED == "staged"
+
+
+def test_the_facts_count_every_byte_and_blob_downloaded(db, store, clone):
+    checkout, first, second = clone
+    _no_ab(db)
+    _promote(db, store, first)
+
+    result = _stage(db, store, checkout, second)
+
+    assert result.staged, result.reason
+    snapshot = checkout.parent / graphstage.CONTEXT_DIR_NAME / graphstage.SNAPSHOT_DIR_NAME
+    on_disk = (snapshot / "manifest.json").stat().st_size + sum(
+        p.stat().st_size for p in (snapshot / "blobs").iterdir())
+    assert result.facts["blobs"] == 1
+    assert result.facts["bytes"] == on_disk
+    assert isinstance(result.seconds, float) and result.seconds >= 0.0
+
+
+def test_stage_json_records_the_delivery_and_the_seconds(db, store, clone):
+    checkout, first, second = clone
+    _no_ab(db)
+    _promote(db, store, first)
+    graphstage.prepare(checkout.parent, profile_name="claude-code",
+                       runner_argv=["python", "-m", "agent_worker.runners.claude_code"],
+                       db=db, store=store, tenant_id=TENANT, repository_url=URL,
+                       task_id="task_b", checkout=checkout, base_sha=second)
+    record = json.loads((checkout.parent / graphstage.CONTEXT_DIR_NAME /
+                         graphstage.STAGE_RECORD_NAME).read_text())
+    assert record["delivery"] == "staged"
+    assert isinstance(record["seconds"], float) and record["seconds"] >= 0.0
+    assert record["blobs"] == 1 and record["bytes"] > 0
+
+
+def test_a_staging_that_delivered_nothing_is_timed_and_says_none(db, clone):
+    checkout, first, second = clone
+    _no_ab(db)
+    _promote(db, _store_for_seed(checkout), first)
+    clock = _Clock(step=0.75)
+
+    result = graphstage.stage(db=db, store=_BrokenStore(), tenant_id=TENANT,
+                              repository_url=URL, task_id="task_b", checkout=checkout,
+                              base_sha=second,
+                              context_dir=checkout.parent / graphstage.CONTEXT_DIR_NAME,
+                              clock=clock)
+
+    assert not result.staged and "OSError" in result.reason
+    assert result.seconds == 0.75
+    assert result.delivery == graphstage.DELIVERY_NONE == "none"
+    assert result.record()["delivery"] == "none" and result.record()["seconds"] == 0.75
+
+
+def test_a_failure_outside_the_decision_is_timed_too(clone):
+    checkout, _first, second = clone
+    clock = _Clock(step=1.25)
+    result = graphstage.stage(db=_Unreachable(), store=None, tenant_id=TENANT,
+                              repository_url=URL, task_id="task_b", checkout=checkout,
+                              base_sha=second,
+                              context_dir=checkout.parent / graphstage.CONTEXT_DIR_NAME,
+                              clock=clock)
+    assert not result.staged and result.reason == "staging failed (RuntimeError)"
+    assert result.seconds == 1.25 and result.delivery == "none"
