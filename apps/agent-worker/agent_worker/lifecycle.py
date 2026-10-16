@@ -149,6 +149,7 @@ from . import continuation as continuation_mod
 from . import egress as egress_mod
 from . import expected_outputs as expected_mod
 from . import gitops as gitops_mod
+from . import graph_ticket as graph_ticket_mod
 from . import graphstage as graphstage_mod
 from . import handoff as handoff_mod
 from . import inputs as inputs_mod
@@ -1034,6 +1035,13 @@ class Worker:
         # the spool and the await. Inert unless the scheduler passed a nonce.
         self.children = children_mod.ChildPath(
             config, logger=deps.logger, memory=deps.memory, api=deps.child_api
+        )
+        # The shared graph service's attempt ticket (docs/design/graph-service.md
+        # §4.1, lane GS-WORKER): minted by `graphstage.prepare` only when the
+        # workspace stored `graph_delivery: service`, then renewed on the
+        # control poll. Signs with the child path's attempt key. Inert otherwise.
+        self.graph_ticket = graph_ticket_mod.GraphTicket(
+            config, children=self.children, logger=deps.logger
         )
         # The workspace secrets release (docs/design/workspace-secrets.md
         # §3.3, lane SEC-RELEASE): once per attempt, before the runner exists,
@@ -2988,6 +2996,17 @@ class Worker:
                     return self._exit_fenced_mid_run(
                         child, observed_generation=-1, reason=f"child submission: {exc.code}"
                     )
+                # The graph ticket (GS-WORKER), renewed when a third of its
+                # life is left; a stat-free clock check when it is not due.
+                # A 409 is the fence: stop the agent, leave the lease.
+                if self.graph_ticket.due():
+                    try:
+                        with self._heartbeat_meanwhile("graph ticket"):
+                            self.graph_ticket.keep()
+                    except graph_ticket_mod.GraphTicketFenced as exc:
+                        return self._exit_fenced_mid_run(
+                            child, observed_generation=-1, reason=str(exc)
+                        )
                 if self.handoff.spooled:
                     # Live-browser §4.1-§4.3: answer the agent's requests and
                     # watch an open hand-off's hold. Never raises.
@@ -7431,7 +7450,14 @@ class Worker:
     def _graph_context_env(self, ws: Any, clone_base: str | None) -> dict[str, str]:
         """The staged graph snapshot's variables (docs/design/context-quality.md
         §4.7, lane CTXQ-S): decided by the stored setting, once per attempt.
-        A staging failure is a reason in `stage.json`, never this attempt's."""
+        A staging failure is a reason in `stage.json`, never this attempt's.
+
+        Or the served graph's (graph-service.md §4.1, lane GS-WORKER): the pin,
+        the ticket file in `private/` and the service URL, when the workspace
+        stored `graph_delivery: service`. A 409 at the ticket's mint is the
+        fence (invariant 5): raised as FencedWriteRefused, which `run` turns
+        into a stand-down that touches neither the lease nor the task, as the
+        secrets release's 409 is."""
         if self._graph_env is None:
             try:
                 self._graph_env = graphstage_mod.prepare(
@@ -7441,7 +7467,13 @@ class Worker:
                     task_id=self.cfg.task_id,
                     checkout=ws.checkout() if self._repo_url else None,
                     base_sha=clone_base, call_options=self.control.call_options(),
-                    log=self.log, mark=self._mark_graph_ready)
+                    log=self.log, mark=self._mark_graph_ready,
+                    graph_ticket=self.graph_ticket, private_dir=ws.private,
+                    backend=self.cfg.backend, service_url=self.cfg.graph_service_url)
+            except graph_ticket_mod.GraphTicketFenced as exc:
+                raise FencedWriteRefused(
+                    self.cfg.generation, -1, str(exc), write="graph ticket"
+                ) from None
             except Exception as exc:  # noqa: BLE001 -- never fails the attempt
                 self.log.warning("graph context not staged", error=type(exc).__name__)
                 self._graph_env = {}

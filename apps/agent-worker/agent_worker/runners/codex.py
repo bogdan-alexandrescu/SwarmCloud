@@ -17,6 +17,13 @@ THE GRAPH TOOLS (docs/design/context-quality.md §4.4, lane CTXQ-S). When the
 worker staged the repository's graph snapshot it sets `SWARM_GRAPH_SNAPSHOT`,
 and `swarm-graph` is named the same way, as `-c mcp_servers.swarm-graph.*`.
 `SWARM_GRAPH_UNSTAGED` adds the one prompt line claude-code adds.
+
+SERVED INSTEAD OF STAGED (docs/design/graph-service.md §4.2, lane GS-WORKER).
+With `SWARM_GRAPH_PIN` and `SWARM_GRAPH_TICKET_FILE` set, the same keys name
+the pod's shim (`graphstage.shim_argv`), plus
+`-c mcp_servers.swarm-graph.env={"SWARM_GRAPH_URL" = …}`: a TOML inline table,
+because codex parses every `-c` value as TOML (the design's sketch wrote it
+as JSON, which TOML does not read as a table).
 """
 
 from __future__ import annotations
@@ -115,6 +122,16 @@ def graph_tools_args(snapshot: str, workdir: str | None) -> list[str]:
             "-c", f"{key}.args={json.dumps(args)}"]
 
 
+def graph_shim_args(pin: str, ticket_file: str, url: str, workdir: str | None) -> list[str]:
+    """`-c` overrides registering the graph shim as `swarm-graph`, its URL in `env`."""
+    command, *args = graphstage.shim_argv(pin, ticket_file, workdir)
+    key = f"mcp_servers.{graphstage.SERVER_NAME}"
+    env = "{" + f"{json.dumps(graphstage.URL_ENV)} = {json.dumps(url)}" + "}"
+    return ["-c", f"{key}.command={json.dumps(command)}",
+            "-c", f"{key}.args={json.dumps(args)}",
+            "-c", f"{key}.env={env}"]
+
+
 def body(ctx: RunnerContext) -> dict[str, Any]:
     spool = os.environ.get(GIT_SPOOL_ENV, "").strip()
     extra_args: list[str] = []
@@ -123,8 +140,13 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         extra_args += git_tools_args(spool)
         extra_env[GIT_SPOOL_ENV] = spool
     snapshot = os.environ.get(graphstage.SNAPSHOT_ENV, "").strip()
-    if snapshot:
-        extra_args += graph_tools_args(snapshot, str(ctx.repo_dir) if ctx.repo_dir else None)
+    served = graphstage.served_env(os.environ)
+    workdir = str(ctx.repo_dir) if ctx.repo_dir else None
+    if served:
+        extra_args += graph_shim_args(*served, workdir)
+    elif snapshot:
+        extra_args += graph_tools_args(snapshot, workdir)
+    if served or snapshot:
         context = os.environ.get(graphstage.CONTEXT_ENV, "").strip()
         if context:
             extra_env[graphstage.CONTEXT_ENV] = context

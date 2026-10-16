@@ -131,6 +131,11 @@ def heartbeat_beat_seconds(grace_seconds: int, platform_interval_seconds: int) -
 #: worker is idle, which is nearly always.
 RUNNER_NICENESS_DEFAULT = 10
 
+#: `graphmcp.shim.DEFAULT_URL` and `graphstage.DEFAULT_SERVICE_URL`: the
+#: `swarm-graph` headless Service in `swarm-system` (graph-service.md §2.1,
+#: §4.2). Restated so this module imports neither; the tests hold them equal.
+DEFAULT_GRAPH_SERVICE_URL = "http://swarm-graph.swarm-system.svc.cluster.local:8080/mcp"
+
 @dataclass(frozen=True)
 class WorkerConfig:
     # --- identity of this attempt -------------------------------------------
@@ -322,6 +327,14 @@ class WorkerConfig:
     #: SWARM_API_AUDIENCE), from the scheduler's own settings.
     swarm_api_url: str | None = None
     swarm_api_audience: str | None = None
+    #: The shared graph service (SWARM_GRAPH_URL; docs/design/graph-service.md
+    #: §4.2, lane GS-WORKER): the worker's own setting, handed to the shim in
+    #: its MCP server entry's `env` and never an argument a caller can set
+    #: (invariant 10). Used only for an attempt whose workspace stored
+    #: `graph_delivery: service`. The default is the in-cluster headless
+    #: Service, which every GKE step can reach; a CLOUD_RUN_JOB step stages
+    #: whatever this says (owner decision Q2).
+    graph_service_url: str = DEFAULT_GRAPH_SERVICE_URL
     #: The design's limits (§7). Requests answered per control poll: four per
     #: 10 s keeps one worker far below the API's per-caller rate.
     max_child_requests_per_tick: int = 4
@@ -556,6 +569,8 @@ class WorkerConfig:
             child_nonce=os.environ.get("SWARM_CHILD_NONCE", "").strip() or None,
             swarm_api_url=os.environ.get("SWARM_API_URL", "").strip() or None,
             swarm_api_audience=os.environ.get("SWARM_API_AUDIENCE", "").strip() or None,
+            graph_service_url=(os.environ.get("SWARM_GRAPH_URL", "").strip()
+                               or DEFAULT_GRAPH_SERVICE_URL),
             provider=profile.provider,
             model=os.environ.get("MODEL", "").strip() or None,
             spec_signature_mode=specverify.parse_mode(spec["SPEC_SIGNATURE_MODE"]),
