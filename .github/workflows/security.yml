@@ -303,7 +303,22 @@ jobs:
             echo "::error::a public IAM member is granted in the Terraform"
             exit 1
           fi
-          echo "no public bindings"
+          # THE ONE DECIDED EXCEPTION (owner answer Q3 on #1384, GS-HOOKS):
+          # the GitHub push receiver swarm-github-hooks, whose public invoker
+          # is held in terraform/infra/github_hooks.tf's local
+          # `github_hooks_public_invoker`. Any other `name = "allUsers"`
+          # assignment in terraform/ -- a local, a default, an argument --
+          # fails here (a comparison, `!=` or `==`, does not), so the
+          # exception cannot quietly grow.
+          public="$(grep -rnIE '(^|[^!=<>])=[[:space:]]*\[?[[:space:]]*"(allUsers|allAuthenticatedUsers)"' \
+               --exclude-dir=.git --exclude-dir=.terraform --include='*.tf' --include='*.tfvars' terraform 2>/dev/null \
+             | grep -vE '^terraform/infra/github_hooks\.tf:[0-9]+:[[:space:]]*github_hooks_public_invoker[[:space:]]*=[[:space:]]*"allUsers"$' || true)"
+          if [ -n "${public}" ]; then
+            printf '%s\n' "${public}"
+            echo "::error::a public IAM member is assigned in the Terraform outside the GitHub push receiver"
+            exit 1
+          fi
+          echo "no public bindings beyond the GitHub push receiver's"
 
       - name: destroy guard still catches offenders
         # This guard is the only thing between `make destroy` and another team's
@@ -365,7 +380,8 @@ jobs:
           # every proxied browser byte.
           # swarm-typesafe-fwd too (SEC-INJECT-B, PR 1385): it holds every tenant's TypeSafe key in memory.
           # swarm-graph too (GS-ROLL, part of #1384): it verifies every agent's graph ticket and serves every tenant's index.
-          for image in agent-runtime-base agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler workspace-apply swarm-live swarm-egress swarm-typesafe-fwd swarm-graph; do
+          # swarm-github-hooks too (GS-HOOKS, part of #1384): the one public service, running as the rollup sweeper account.
+          for image in agent-runtime-base agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler workspace-apply swarm-live swarm-egress swarm-typesafe-fwd swarm-graph swarm-github-hooks; do
             echo "==> ${image}:dev"
             trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
               --exit-code 1 --no-progress "${repo}/${image}:dev" || status=1
