@@ -701,3 +701,13 @@ search_tool_enabled = false
 # decision-api-staging tcp:443). internal_decision_api_enabled follows once the
 # egress is applied with kubernetes/apply.sh --swarm-system and reaches the API.
 enable_tailscale_egress = true
+
+# The internal Jev and Laya judgment backends (JUDGE-SELECT), ON in dev as of
+# 2026-10-16 (~17:20 PDT). Verified before switching: the egress joined the
+# tailnet (version 3 of swarm-tailscale-oauth, stored 2026-10-15 19:32Z), and
+# after JEV-URL (PR 1382) a `swarm-judge: internal` pod with the scheduler's
+# hostAliases entry got HTTP 400 for the empty probe from
+# https://decision-api-staging.taile0bda9.ts.net/{jev,laya}/v1/decide, while
+# an unlabelled pod timed out. Off renders no URL, and an internal choice
+# leaves Jev unavailable instead of sending page text to TypeSafe.
+internal_decision_api_enabled = true
