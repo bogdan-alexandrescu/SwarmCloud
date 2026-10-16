@@ -119,11 +119,30 @@ def test_the_paced_client_takes_a_token_per_request(answers):
     assert len(answers.sent) == 13
 
 
+class _FakeClock:
+    """Time moves only when a test moves it, so no assertion depends on a CI
+    machine's scheduling."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _until(predicate, what: str) -> None:
+    deadline = time.monotonic() + 10
+    while not predicate():
+        assert time.monotonic() < deadline, what
+        time.sleep(0.002)
+
+
 def test_a_quick_call_is_never_made_to_wait_behind_holds():
-    """Sixteen holds asking for tokens as fast as they can: a quick call still
-    gets one within about one token's time, because a hold may not spend the
-    reserve and never takes one while a quick call waits."""
-    gate = RateGate(20, 6)  # reserve 2
+    """Sixteen holds asking for tokens as fast as they can: they stop at the
+    reserve, and when the quick calls then outrun the bucket, the next token
+    refilled goes to the waiting quick call, never to a hold."""
+    clock = _FakeClock()
+    gate = RateGate(20, 6, clock=clock)  # reserve 2
     stop = threading.Event()
     hold_takes = [0]
     lock = threading.Lock()
@@ -134,42 +153,49 @@ def test_a_quick_call_is_never_made_to_wait_behind_holds():
             with lock:
                 hold_takes[0] += 1
 
-    threads = [threading.Thread(target=_hold, daemon=True) for _ in range(16)]
-    for t in threads:
-        t.start()
-    time.sleep(0.4)  # the holds have spent all they may
-    waits = []
-    for _ in range(8):
-        began = time.monotonic()
-        gate.take()
-        waits.append(time.monotonic() - began)
-        time.sleep(0.05)
-    stop.set()  # the hold threads are daemons; one blocked in `take` is left
-    assert hold_takes[0] > 0, "the holds never ran"
-    # One token at 20/s is 0.05 s; a quick call never queues behind 16 holds.
-    assert statistics.median(waits) < 0.06
-    assert max(waits) < 0.2
+    for _ in range(16):
+        threading.Thread(target=_hold, daemon=True).start()
+    try:
+        # The holds spend 6 - 2 = 4 tokens and no more: the clock never moves.
+        _until(lambda: hold_takes[0] == 4, "the holds never spent what they may")
+        quick_done = []
+
+        def _quick() -> None:
+            for _ in range(3):  # the reserve is 2: the third must wait for a refill
+                gate.take()
+                quick_done.append(1)
+
+        quick = threading.Thread(target=_quick, daemon=True)
+        quick.start()
+        _until(lambda: len(quick_done) == 2 and gate._quick_waiting == 1, "the quick call did not queue")
+        assert hold_takes[0] == 4
+        clock.now += 0.1  # two tokens refill; holds need three, quick needs one
+        quick.join(10)
+        assert quick_done == [1, 1, 1], "a quick call was held behind the holds"
+        assert hold_takes[0] == 4, "a hold took a token a quick call was waiting for"
+    finally:
+        stop.set()  # the hold threads are daemons; one blocked in `take` is left
 
 
 def test_a_hold_does_not_spend_the_reserve():
-    gate = RateGate(1, 9)  # reserve 3, refill too slow to matter here
-    taken = 0
-    finished = threading.Event()
+    clock = _FakeClock()
+    gate = RateGate(1, 9, clock=clock)  # reserve 3; the clock never refills it
+    taken = [0]
 
     def _holds() -> None:
-        nonlocal taken
         for _ in range(9):
             gate.take(hold=True)
-            taken += 1
-        finished.set()
+            taken[0] += 1
 
     threading.Thread(target=_holds, daemon=True).start()
-    time.sleep(0.2)
-    assert taken == 6, "a hold took from the quick calls' reserve"
-    for _ in range(3):
-        began = time.monotonic()
+    _until(lambda: taken[0] == 6, "the hold did not take what it may")
+    # It is now blocked at the reserve; give it every chance to take more.
+    for _ in range(50):
+        time.sleep(0.002)
+        assert taken[0] == 6, "a hold took from the quick calls' reserve"
+    for _ in range(3):  # all three reserve tokens are there for quick calls
         gate.take()
-        assert time.monotonic() - began < 0.05
+    assert gate._tokens == 0.0
 
 
 # -- the 429 retry ------------------------------------------------------------
