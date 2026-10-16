@@ -601,12 +601,24 @@ function RecheckButton({ perms }: { perms: ForgePermsRead }) {
   )
 }
 
-function checkedLine(doc: ForgePermissionsDoc): ReactNode {
+/**
+ * When the read was made, then why a fix is a link. `when: false` drops the
+ * time for Setup's GitHub section, whose head already says it (visual QA
+ * V231: "Checked at an unknown time" was printed twice, in the head and at
+ * the start of this line). A repository page has no such head, so it keeps it.
+ */
+function checkedLine(doc: ForgePermissionsDoc, when = true): ReactNode {
   return (
     <>
-      Checked {doc.checked_at === null ? 'at an unknown time' : timeAgo(doc.checked_at)}
-      {doc.cached ? ' (from the last minute’s read)' : ''}. GitHub does not let SwarmCloud grant permissions itself, so a
-      fix is always a link.
+      {when ? (
+        <>
+          Checked {doc.checked_at === null ? 'at an unknown time' : timeAgo(doc.checked_at)}
+          {doc.cached ? ' (from the last minute’s read)' : ''}.{' '}
+        </>
+      ) : (
+        doc.cached && 'From the last minute’s read. '
+      )}
+      GitHub does not let SwarmCloud grant permissions itself, so a fix is always a link.
     </>
   )
 }
@@ -629,7 +641,7 @@ export function GitHubPermissions() {
       <UrRegion state={perms.state} route="GET /v1/forge/permissions" what="GitHub permissions" plural onRetry={perms.reload} lines={4}>
         {(doc) => (
           <div className="fp-cards">
-            <p className="ur-hint fp-checked">{checkedLine(doc)}</p>
+            <p className="ur-hint fp-checked">{checkedLine(doc, false)}</p>
             <AppCard app={doc.app} admin={admin} onFix={perms.armRecheck} />
             {doc.orgs.length === 0 ? (
               <EmptyState kind="empty" heading="No connected org">
