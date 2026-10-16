@@ -956,8 +956,9 @@ def test_the_disable_job_never_runs_on_the_close(disable_job: dict):
 
 def test_the_disable_job_never_checks_out_pr_code_and_uses_least_privilege(disable_job: dict):
     """MUTATION: add a checkout step, or widen permissions past contents: read
-    (the base-merge classifier's fetch, #795) and pull-requests: write."""
-    assert disable_job.get("permissions") == {"contents": "read", "pull-requests": "write"}, disable_job.get(
+    (the base-merge classifier's fetch, #795), pull-requests: write, and
+    actions: write (the one-event re-evaluation, PR 1419, owner-approved 2026-10-16)."""
+    assert disable_job.get("permissions") == {"contents": "read", "pull-requests": "write", "actions": "write"}, disable_job.get(
         "permissions"
     )
     steps = disable_job.get("steps") or []

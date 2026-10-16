@@ -328,12 +328,19 @@ def test_the_disable_job_acts_only_when_the_push_is_not_a_pure_base_merge(disabl
     MUTATION: drop the classify condition from any of the three steps, or the
     `!cancelled()` that keeps the strip after a failed disable."""
     ids = [step.get("id") for step in disable_job["steps"]]
-    assert ids == ["classify", "app-token", "disarm", "strip"], ids
+    assert ids == ["classify", "one-event", "app-token", "disarm", "reevaluate", "strip"], ids
     not_pure = "steps.classify.outputs.pure_base_merge != 'true'"
     for step_id in ("app-token", "disarm", "strip"):
         condition = str(_step(disable_job, step_id).get("if") or "")
         assert not_pure in condition and "!cancelled()" in condition, (step_id, condition)
     assert "vars.MERGE_APP_ID != ''" in str(_step(disable_job, "app-token").get("if"))
+    # The author's push and label, seconds apart, are one event (epic #1334; PR 1419,
+    # owner-approved 2026-10-16): only then is the head re-evaluated, and only a
+    # re-evaluation that was dispatched keeps `ready` from being stripped.
+    assert not_pure in str(_step(disable_job, "one-event").get("if")), _step(disable_job, "one-event").get("if")
+    reevaluate = str(_step(disable_job, "reevaluate").get("if") or "")
+    assert "steps.one-event.outputs.one_event == 'true'" in reevaluate and "steps.disarm.outcome == 'success'" in reevaluate, reevaluate
+    assert "steps.reevaluate.outcome != 'success'" in str(_step(disable_job, "strip").get("if")), _step(disable_job, "strip").get("if")
 
 
 def test_the_disable_job_reads_the_push_from_the_event_through_env(disable_job: dict):
@@ -348,9 +355,11 @@ def test_the_disable_job_reads_the_push_from_the_event_through_env(disable_job: 
 
 def test_the_disable_job_never_checks_out_and_holds_the_least_it_needs(disable_job: dict):
     """contents: read is the classifier's fetch (commits and trees, never a
-    working tree); pull-requests: write the label and the comment. The disable
-    itself is the App's (#795). MUTATION: add a checkout, or widen the token."""
-    assert disable_job.get("permissions") == {"contents": "read", "pull-requests": "write"}
+    working tree); pull-requests: write the label and the comment; actions: write
+    the one-event step's read of this run's created_at and the re-evaluation it
+    dispatches (PR 1419, owner-approved 2026-10-16). The disable itself is the
+    App's (#795). MUTATION: add a checkout, or widen the token further."""
+    assert disable_job.get("permissions") == {"contents": "read", "pull-requests": "write", "actions": "write"}
     for step in disable_job["steps"]:
         assert "checkout" not in str(step.get("uses") or ""), step
 
