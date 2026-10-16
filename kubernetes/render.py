@@ -393,6 +393,12 @@ TENANT_FILES = (
     # before it renders as it did before. It opens nothing until swarm-graph is
     # deployed in swarm-system (terraform/infra/graph_service.tf, off by default).
     "network-policies/allow-graph-service.yaml",
+    # A TypeSafe-backed pod's path to the TypeSafe forwarder (lane
+    # TS-MIGRATE-POD, docs/design/workspace-secrets.md §3.5). Last, for the
+    # same reason: everything before it renders as it did before. It opens
+    # nothing until the dispatcher labels a pod `swarm-typesafe: inject`
+    # (typesafe_forwarder.enabled, off by default).
+    "network-policies/allow-typesafe-fwd.yaml",
 )
 
 #: The older worker identity -- LEGACY_KSA_NAME's ServiceAccount and the

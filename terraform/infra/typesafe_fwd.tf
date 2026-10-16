@@ -47,8 +47,10 @@
 #   3. typesafe_forwarder.enabled = true and name tenants: the forwarder then
 #      serves them. Steps 1-2 forward nothing.
 #
-# Nothing here labels a pod: no agent pod reaches the forwarder until
-# SEC-MIGRATE-TYPESAFE adds the dispatcher label and the tenant-side policy.
+# The scheduler labels a pod `swarm-typesafe: inject` from
+# local.scheduler_typesafe_fwd_env below (lane TS-MIGRATE-POD): the SAME
+# `enabled` and `tenants`, and "false" until the forwarder is served. The
+# tenant-side policy is kubernetes/network-policies/allow-typesafe-fwd.yaml.
 #
 # GKE ONLY: the forwarder runs on the Autopilot cluster and its principal lives
 # in that cluster's workload pool.
@@ -117,6 +119,19 @@ locals {
     max_response_seconds = floor(var.typesafe_forwarder.max_response_seconds)
   }
   typesafe_fwd_config_json = jsonencode(local.typesafe_fwd_config)
+
+  # The scheduler's side of the same switch (design §3.5, SEC-MIGRATE-TYPESAFE;
+  # lane TS-MIGRATE-POD): it labels a TypeSafe-backed live-browser pod of a
+  # listed tenant `swarm-typesafe: inject` (scheduler.dispatch
+  # `typesafe_forwarder_on`). The forwarder's OWN enabled and tenants, so the
+  # dispatcher never labels a pod the forwarder would refuse (every judgment
+  # fails) nor leaves out one it would serve (it can never reach it). "false"
+  # unless served: a label for a forwarder that is not there opens a path to
+  # nothing and takes the pod off its key file for no reason.
+  scheduler_typesafe_fwd_env = {
+    TYPESAFE_FORWARDER_ENABLED = local.typesafe_fwd_serving && var.typesafe_forwarder.enabled ? "true" : "false"
+    TYPESAFE_FORWARDER_TENANTS = join(",", var.typesafe_forwarder.tenants)
+  }
 
   # swarm-typesafe-fwd-key for swarm-api, BY REFERENCE, once served (a
   # reference to a secret with no version would stop swarm-api starting).

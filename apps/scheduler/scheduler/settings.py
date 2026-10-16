@@ -408,6 +408,21 @@ class SchedulerSettings:
     #: `egress_bypass_hosts`, the list swarm-egress refuses a CONNECT for, so
     #: the gate's `--proxy-bypass-list` and the forwarder's refusal agree.
     browser_egress_bypass: tuple[str, ...] = ()
+    #: THE TYPESAFE FORWARDER SWITCH, the dispatcher's side (docs/design/
+    #: workspace-secrets.md §3.5, SEC-MIGRATE-TYPESAFE; lane TS-MIGRATE-POD,
+    #: part of #1347). A GKE live-browser pod whose workspace chose the
+    #: `typesafe` judgment backend is labelled `swarm-typesafe: inject` -- the
+    #: label both sides of the forwarder's NetworkPolicy select -- only when
+    #: `typesafe_forwarder_enabled` and its tenant is in
+    #: `typesafe_forwarder_tenants` (scheduler.dispatch `typesafe_forwarder_on`).
+    #: terraform/infra/typesafe_fwd.tf renders these from var.typesafe_forwarder,
+    #: the SAME `enabled` and `tenants` the forwarder re-reads as its kill
+    #: switch, and "false" unless the forwarder is served: a pod labelled for a
+    #: tenant the forwarder refuses would fail every judgment, and one left
+    #: unlabelled could never reach it. OFF BY DEFAULT. Never from a task
+    #: (invariant 10).
+    typesafe_forwarder_enabled: bool = False
+    typesafe_forwarder_tenants: tuple[str, ...] = ()
     dispatch_topic: str = ""
     #: The step-spec verification settings a worker needs (contract request
     #: 34), passed through VERBATIM onto every Cloud Run Job this scheduler
@@ -472,6 +487,8 @@ class SchedulerSettings:
             browser_egress_tenants=_csv("BROWSER_EGRESS_TENANTS"),
             browser_egress_profiles=_csv("BROWSER_EGRESS_PROFILES", "claude-code-browser"),
             browser_egress_bypass=_csv("BROWSER_EGRESS_BYPASS"),
+            typesafe_forwarder_enabled=_bool("TYPESAFE_FORWARDER_ENABLED", False),
+            typesafe_forwarder_tenants=_csv("TYPESAFE_FORWARDER_TENANTS"),
             dispatch_topic=os.environ.get("DISPATCH_TOPIC", ""),
             spec_verify_keys=os.environ.get("SPEC_VERIFY_KEYS", "").strip(),
             spec_signing_key=os.environ.get("SPEC_SIGNING_KEY", "").strip(),
