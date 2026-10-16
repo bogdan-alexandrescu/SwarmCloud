@@ -134,8 +134,10 @@ describe('G5-12: an identity is cut in the middle, never through the tenant’s 
     // MUTATION: let the key shrink with the others, or cut the whole value at
     // its end again. The key gives way LAST (VQA V026): a thousandth of the
     // others' shrink weight, so it shrinks only once they are at their floor,
-    // and then with an ellipsis rather than a hard clip mid-letter.
-    expect(won(key!, ['flex', 'flex-shrink'], WIDE)).toBe('0 0.001 auto')
+    // and then with an ellipsis rather than a hard clip mid-letter. The
+    // others' weights are 1000 and 4000 to the key's 1, not 1 and 4 to its
+    // 0.001, so the key can take ALL of what is left (vqa2.r3.admin.test.tsx).
+    expect(won(key!, ['flex', 'flex-shrink'], WIDE)).toBe('0 1 auto')
     expect(won(key!, 'text-overflow', WIDE)).toBe('ellipsis')
     expect(won(key!, ['overflow', 'overflow-x'], WIDE)).toBe('hidden')
     for (const part of [head!, tail!]) {

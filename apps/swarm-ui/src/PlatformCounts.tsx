@@ -249,8 +249,8 @@ export function PlatformCountsScreen() {
           with the placeholder it replaces. */}
       {run === null && (
         <div className="ctl-cards counts-scopes" aria-busy={busy || undefined}>
-          <NotRun title="This tenant" queries={STATE_COUNT} />
-          <NotRun title="Every tenant" queries={admin === false ? null : STATE_COUNT} />
+          <NotRun title="This tenant" queries={STATE_COUNT} counting={busy} />
+          <NotRun title="Every tenant" queries={admin === false ? null : STATE_COUNT} counting={busy} />
         </div>
       )}
 
@@ -314,8 +314,13 @@ const STATE_COUNT = REAL_STATES.length + NEVER_WRITTEN.size
  * One scope's card before anything has been counted. `queries` is what this
  * card's half of a run costs; null where the caller is known not to be an
  * admin, whose run does not read this scope at all.
+ *
+ * `counting`: the first run is in flight. THE CARD SAYS SO, AS THE HEAD DOES
+ * (VQA V192): while the head read `counting…`, both cards still read `not run
+ * yet`, which the press had just made untrue. A card this run will not read
+ * -- a non-admin's platform scope -- still says why it has no figure.
  */
-function NotRun({ title, queries }: { title: string; queries: number | null }) {
+function NotRun({ title, queries, counting }: { title: string; queries: number | null; counting: boolean }) {
   return (
     <section className="ctl-card counts-notrun">
       <div className="ctl-card-head">
@@ -329,14 +334,21 @@ function NotRun({ title, queries }: { title: string; queries: number | null }) {
             `not measured` mark of the six kinds of nothing (primitives.tsx
             `Mark`), hatched and greyscale-safe -- not `not read`, which is a
             read that failed -- and the words say why there is no figure. */}
-        <Mark
-          kind="absent"
-          say="Not counted yet. Nothing has been read, so there is no figure to show; this says nothing about the platform."
-        />
+        {counting && queries !== null ? (
+          // The `reading` mark of a read in flight, not `not measured`.
+          <Mark kind="pending" say="Counting now. Nothing has come back yet, so there is no figure to show." />
+        ) : (
+          <Mark
+            kind="absent"
+            say="Not counted yet. Nothing has been read, so there is no figure to show; this says nothing about the platform."
+          />
+        )}
         <span className="counts-notrun-words">
           {queries === null
             ? 'not run yet. Only an admin’s run counts every tenant.'
-            : `not run yet. One exact count per state, ${queries} reads.`}
+            : counting
+              ? `counting now. One exact count per state, ${queries} reads.`
+              : `not run yet. One exact count per state, ${queries} reads.`}
         </span>
       </div>
     </section>
