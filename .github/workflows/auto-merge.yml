@@ -1035,6 +1035,10 @@ jobs:
       # (docs/runbooks/merge-app.md).
       contents: read
       pull-requests: write
+      # actions: read -- this run's own `created_at`, the time GitHub took
+      #   the push in (`one-event` below). actions: write -- dispatch the
+      #   re-evaluation that step asks for, as `requeue` does.
+      actions: write
     env:
       GH_REPO: ${{ github.repository }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -1108,6 +1112,59 @@ jobs:
             echo "${ACTION}: not a merge of ${BASE_REF} alone into the labelled head, so auto-merge is turned off and \`ready\` removed." | tee -a "${GITHUB_STEP_SUMMARY}"
           fi
 
+      # A PUSH AND A LABEL BY THE AUTHOR, SECONDS APART, ARE ONE EVENT (epic
+      # #1334, PRs 1371, 1369 and 1373 on 2026-10-15). `git push` returns
+      # before GitHub moves the pull request's head, so a `ready` put on
+      # right after it is handled first -- at the OLD head -- and this
+      # job's `synchronize` then read "head changed after the label" and
+      # stripped it. When the pusher is the pull request's author, the
+      # latest `ready` label is that same account's, and GitHub took the
+      # push in (this run's `created_at`) within ONE_EVENT_SECONDS of the
+      # label, the label was meant for this head: auto-merge is still
+      # turned off below -- anything armed was armed at the old head -- but
+      # `ready` stays, and the enable job is dispatched to evaluate THIS
+      # head with its whole gate, pinned to it with --match-head-commit.
+      # Anyone else's push, a later push, could-not-tell, or no merge App
+      # (no re-evaluation would arm) is any other push.
+      - name: tell the author's push-and-label from a push after the label
+        id: one-event
+        if: ${{ !cancelled() && steps.classify.outputs.pure_base_merge != 'true' && github.event.action == 'synchronize' && vars.MERGE_APP_ID != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SENDER: ${{ github.event.sender.login }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          ONE_EVENT_SECONDS: "60"
+        run: |
+          set -euo pipefail
+          one=false
+          if [[ -n "${SENDER}" && "${SENDER}" == "${AUTHOR}" ]]; then
+            labels="$(mktemp)"
+            run="$(mktemp)"
+            if gh api graphql \
+                -f query='query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { timelineItems(itemTypes: [LABELED_EVENT], last: 50) { nodes { ... on LabeledEvent { createdAt label { name } actor { login } } } } } } }' \
+                -f owner="${GH_REPO%%/*}" -f name="${GH_REPO#*/}" -F number="${PR_NUMBER}" >"${labels}" \
+              && gh api "repos/${GH_REPO}/actions/runs/${GITHUB_RUN_ID}" >"${run}"; then
+              # Compared explicitly, never with `//` (CLAUDE.md): a missing
+              # label or time is "not one event", not a default.
+              if jq -e -n --slurpfile l "${labels}" --slurpfile r "${run}" \
+                  --arg who "${SENDER}" --argjson window "${ONE_EVENT_SECONDS}" '
+                  ([$l[0].data.repository.pullRequest.timelineItems.nodes[]
+                    | select(.label.name == "ready")] | last) as $ready
+                  | $ready != null and $ready.actor.login == $who
+                    and ($r[0].created_at | type) == "string"
+                    and ((($r[0].created_at | fromdateiso8601) - ($ready.createdAt | fromdateiso8601))
+                         | (if . < 0 then -. else . end)) <= $window' >/dev/null; then
+                one=true
+              fi
+            else
+              echo "::warning::could not read the label's time or this run's: treated as a push after the label"
+            fi
+          fi
+          echo "one_event=${one}" >>"${GITHUB_OUTPUT}"
+          if [[ "${one}" == "true" ]]; then
+            echo "${SENDER} pushed and labelled \`ready\` within ${ONE_EVENT_SECONDS}s: one event. \`ready\` stays; the new head is evaluated afresh." | tee -a "${GITHUB_STEP_SUMMARY}"
+          fi
+
       # Every step below runs unless the push was a pure base merge -- also
       # after a step before it failed, so a failed disable still leaves no
       # stale `ready` behind it, and still fails the job.
@@ -1160,9 +1217,27 @@ jobs:
           fi
           echo "turned off auto-merge on #${PR_NUMBER}."
 
+      # The author's push-and-label (`one-event`): `ready` stays, and the
+      # enable job evaluates the new head. Only once the disarm succeeded:
+      # a failed disarm strips the label as any other push does.
+      - name: evaluate the new head the author labelled
+        id: reevaluate
+        if: ${{ !cancelled() && steps.one-event.outputs.one_event == 'true' && steps.disarm.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::not a pull request number: ${PR_NUMBER}"
+            exit 1
+          fi
+          gh workflow run auto-merge.yml --ref "${DEFAULT_BRANCH}" -f pr="${PR_NUMBER}"
+          echo "dispatched a re-evaluation of #${PR_NUMBER} at its new head" | tee -a "${GITHUB_STEP_SUMMARY}"
+
       - name: drop the stale ready label and say why
         id: strip
-        if: ${{ !cancelled() && steps.classify.outputs.pure_base_merge != 'true' }}
+        if: ${{ !cancelled() && steps.classify.outputs.pure_base_merge != 'true' && steps.reevaluate.outcome != 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
           DISARM_OUTCOME: ${{ steps.disarm.outcome }}
