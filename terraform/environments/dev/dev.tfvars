@@ -703,7 +703,7 @@ search_tool_enabled = false
 enable_tailscale_egress = true
 
 # The internal Jev and Laya judgment backends (JUDGE-SELECT), ON in dev as of
-# 2026-10-16 (~17:20 PDT). Verified before switching: the egress joined the
+# 2026-10-15 ~17:20 PDT (2026-10-16 00:20Z). Verified before switching: the egress joined the
 # tailnet (version 3 of swarm-tailscale-oauth, stored 2026-10-15 19:32Z), and
 # after JEV-URL (PR 1382) a `swarm-judge: internal` pod with the scheduler's
 # hostAliases entry got HTTP 400 for the empty probe from
