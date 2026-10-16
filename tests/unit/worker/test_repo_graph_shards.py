@@ -529,6 +529,14 @@ def test_the_cli_shards_the_extractors_graph_and_records_the_digest_in_the_index
     assert index["graph"]["manifest_digest"] == (
         "sha256:" + hashlib.sha256(manifest_bytes).hexdigest()
     )
+    # The index document itself is stored as the manifest's `document` layer
+    # (lane GS-INDEXDOC), one shard per section, in the extractor's order.
+    assert manifest["document"]["available"] is True, manifest["document"]
+    back = shards.read_document(shards.LocalStore(str(store)), tenant_id=TENANT,
+                                repo_id=REPO_ID, commit_sha=graph["commit_sha"])
+    assert back == {section: index.get(section) or [] for section in shards.DOCUMENT_SECTIONS}
+    assert manifest["document"]["counts"] == {
+        section: len(index.get(section) or []) for section in shards.DOCUMENT_SECTIONS}
 
 
 def test_the_image_ships_the_shard_writer():
