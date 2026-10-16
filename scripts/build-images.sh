@@ -148,7 +148,13 @@ source "${REPO_ROOT}/scripts/lib/build-mirror.sh"
 # apps/swarm-typesafe-fwd/Dockerfile, beside swarm-egress for the same
 # reasons: terraform/infra/typesafe_fwd.tf renders swarm_typesafe_fwd_manifest
 # only once image_refs has its digest (docs/design/workspace-secrets.md §3.5).
-ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live swarm-egress swarm-typesafe-fwd workspace-apply)
+#
+# swarm-graph (GS-INFRA, part of #1384) is the shared graph service,
+# apps/swarm-graph/Dockerfile (lane GS-SVC), beside the forwarder for the
+# same reasons: terraform/infra/graph_service.tf renders swarm_graph_manifest
+# only once image_refs has its digest (docs/design/graph-service.md §2.1). It
+# copies apps/agent-worker in, so a worker change rebuilds it too.
+ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live swarm-egress swarm-typesafe-fwd swarm-graph workspace-apply)
 
 # The target whose recipe an image is built from. Every image is its own,
 # except agent-runtime-base-nocodex: agent-runtime-base's Dockerfile built

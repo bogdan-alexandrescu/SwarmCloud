@@ -388,6 +388,11 @@ TENANT_FILES = (
     # kubernetes/swarm-system/tailscale-egress.yaml). Last, for the same
     # reason: everything before it renders as it did before.
     "network-policies/allow-judge-egress.yaml",
+    # Every agent pod's path to the shared graph service (lane GS-INFRA,
+    # docs/design/graph-service.md §2.1). Last, for the same reason: everything
+    # before it renders as it did before. It opens nothing until swarm-graph is
+    # deployed in swarm-system (terraform/infra/graph_service.tf, off by default).
+    "network-policies/allow-graph-service.yaml",
 )
 
 #: The older worker identity -- LEGACY_KSA_NAME's ServiceAccount and the

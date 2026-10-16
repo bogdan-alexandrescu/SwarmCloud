@@ -345,7 +345,9 @@ def _render() -> Any:
 
 def test_the_tenant_policy_reaches_every_tenant_namespace_last():
     files = _render().TENANT_FILES
-    assert files[-1] == TENANT_POLICY_FILE
+    # Only the graph service's tenant policy (lane GS-INFRA) follows it,
+    # appended the same way.
+    assert files[-2:] == (TENANT_POLICY_FILE, "network-policies/allow-graph-service.yaml")
 
 
 def test_the_workspace_deployer_may_write_the_tenant_policy():
