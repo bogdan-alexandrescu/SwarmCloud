@@ -5,7 +5,7 @@ import type { ApiError } from './fetch'
 import { Button, NamedMark, Tag, WarnMark } from './components'
 import { RunnerPicker, useProviderKeys } from './RunnerPicker'
 import { FailedPanel, Screen } from './Shell'
-import { Move } from './Submit'
+import { Move, OutcomeSlot } from './Submit'
 import { TASK_FORM } from './SubmitChooser'
 import { timeAgo, type Capacity, type IssuePreviewRead, type RunCreateBody, type RunnerProfile } from './types'
 import { Markdown } from './ArtifactViewer'
@@ -462,21 +462,27 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
               ? 'A planner task reads the issue and the repository and writes a plan; nothing else runs until the plan is approved.'
               : 'A planner task reads the issue and the repository and writes a plan; the plan is approved the moment it is written and the work starts without anyone being asked.'}
           </p>
-          {/* The submission gate's refusal (#847): why, and the setup step that fixes it. */}
-          {sending.kind === 'failed' && workspaceRefusal(sending.error) !== null && <WorkspaceRefusalBanner error={sending.error} />}
-          {sending.kind === 'failed' && workspaceRefusal(sending.error) === null && (
-            <>
-              <FailedPanel error={sending.error} onRetry={() => void submit()} />
-              <p className="warn-text">
-                <strong>Check Runs before submitting again.</strong> This failed on a write, so the run may exist anyway.
+          {/* IN THE SLOT THE TASK AND WORKFLOW FORMS DRAW THEIRS IN (VQA V175):
+              at 400 a POST 500 was drawn under the button at y 714-944 with
+              no scroll, and only its heading showed above the Reads dock.
+              The slot brings it into view and takes the keyboard to it. */}
+          <OutcomeSlot at={sending} shown={sending.kind === 'failed' || sending.kind === 'unnamed'}>
+            {/* The submission gate's refusal (#847): why, and the setup step that fixes it. */}
+            {sending.kind === 'failed' && workspaceRefusal(sending.error) !== null && <WorkspaceRefusalBanner error={sending.error} />}
+            {sending.kind === 'failed' && workspaceRefusal(sending.error) === null && (
+              <>
+                <FailedPanel error={sending.error} onRetry={() => void submit()} />
+                <p className="warn-text">
+                  <strong>Check Runs before submitting again.</strong> This failed on a write, so the run may exist anyway.
+                </p>
+              </>
+            )}
+            {sending.kind === 'unnamed' && (
+              <p className="warn-text" role="alert">
+                The API accepted this and named no run. Open Runs to find it before submitting again.
               </p>
-            </>
-          )}
-          {sending.kind === 'unnamed' && (
-            <p className="warn-text" role="alert">
-              The API accepted this and named no run. Open Runs to find it before submitting again.
-            </p>
-          )}
+            )}
+          </OutcomeSlot>
         </div>
       </aside>
     </form>
@@ -534,7 +540,12 @@ export function IssuePreviewCard({ read, at, closedOk, onPlanAnyway, onTakeBack 
           with nothing after it. The issue's three facts are one line, dotted
           between and never after the last; when it was read is its own. */}
       <p className="in-meta">
-        <span className="in-meta-i"><a href={issue.url} target="_blank" rel="noreferrer" className="mono">{issue.ref}</a> ·</span>
+        {/* THE DOT FOLLOWS THE REFERENCE'S LAST LINE (VQA V252): in the
+            item's flex row a wrapped reference was one box and the dot a
+            second, stranded at the card's right edge. As inline text
+            (`.in-meta-i.is-ref`, submit.css) it sits after the last
+            character, held there by a no-break space. */}
+        <span className="in-meta-i is-ref"><a href={issue.url} target="_blank" rel="noreferrer" className="mono">{issue.ref}</a>{'\u00a0·'}</span>
         <span className="in-meta-i">
           <NamedMark mark={closed ? 'succeeded' : 'ready'} hue={closed ? 'neu' : 'live'} word={issue.state} /> ·
         </span>
@@ -662,7 +673,10 @@ function Refusal({ error, typed, tenant, onAgain, onTask }: {
       )
       break
     default:
-      return <FailedPanel error={error} onRetry={onAgain} />
+      // SPACED FROM THE INPUT ROW AS EVERY OTHER ANSWER IN THIS SLOT IS
+      // (VQA V251): a 404's `.in-refusal` sits 12px under it, and a 500's
+      // panel sat flush. `.in-read-failed`, submit.css.
+      return <div className="in-read-failed"><FailedPanel error={error} onRetry={onAgain} /></div>
   }
   return (
     <div className="in-refusal" role="alert" data-code={error.code ?? ''}>
