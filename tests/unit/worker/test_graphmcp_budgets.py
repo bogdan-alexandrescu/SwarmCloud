@@ -58,11 +58,20 @@ def test_the_tool_schemas_and_instructions_are_under_two_thousand_tokens():
         f"{BYTES_PER_TOKEN} bytes a token")
 
 
-def test_there_are_at_most_eight_tools_and_they_are_the_designs():
-    # KG4's six, and context-quality.md §4.4's two offline additions (CTXQ-T).
+def test_there_are_at_most_ten_tools_and_they_are_the_designs():
+    # KG4's six, context-quality.md §4.4's two offline additions (CTXQ-T), and
+    # graph-service.md §2.3's two (GS-CORE), inside the same 2k-token budget.
     assert tools.TOOL_NAMES == ("search", "context", "impact", "tests_for", "neighbours",
-                                "territory", "similar_changes", "rules_for")
+                                "territory", "similar_changes", "rules_for",
+                                "call_graph", "index")
     assert set(tools.HANDLERS) == set(tools.TOOL_NAMES)
+
+
+def test_the_two_service_tools_fit_in_what_the_eight_left():
+    """graph-service.md §2.3: the ceiling is not raised for call_graph and index;
+    if they do not fit, their descriptions are shortened."""
+    new = [t for t in tools.TOOLS if t["name"] in ("call_graph", "index")]
+    assert len(json.dumps(new, separators=(",", ":"))) <= 1000
 
 
 def _p95(samples: list[float]) -> float:
