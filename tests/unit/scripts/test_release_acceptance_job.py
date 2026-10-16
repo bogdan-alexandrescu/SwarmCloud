@@ -432,12 +432,12 @@ def test_the_scheduled_job_files_its_own_issue_not_the_acceptance_one():
 
 
 def test_each_wave_fits_the_smoke_tenant_s_ceiling():
-    """Two waves, because five at once would peak at ~31 tasks against a
+    """Two waves, because the six groups at once would peak at ~36 tasks against a
     ceiling of 20 (owner decision 2026-10-08, cut C: "if they do not fit, run
     them in two waves"). MUTATION: move `generic` into the first wave."""
     smoke = _tenants()["smoke"]
     ceiling = min(int(_unquote(smoke["max_active"])), int(_unquote(smoke["capacity_units"])))
-    assert sum(PEAK.values()) > ceiling, "all five fit at once now: run them in one wave"
+    assert sum(PEAK.values()) > ceiling, "all six groups fit at once now: run them in one wave"
     for job_id in ACCEPT_JOBS:
         groups = _groups(_accept()["jobs"][job_id])
         peak = sum(PEAK[g] for g in groups)

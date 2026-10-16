@@ -1122,8 +1122,10 @@ held the lock, and every later push queued behind it. `release-dev` is
   whose `verify` did not succeed starts nothing that promotes, applies or
   deploys. On a push, the plugin tag waits for `images and scan`, which found
   CI's record.
-* **C. The five groups run in parallel**, as matrix jobs with `fail-fast:
-  false`, one swarm-verify execution each.
+* **C. The groups run in parallel**, as matrix jobs with `fail-fast:
+  false`, one swarm-verify execution each. There were five when this was
+  measured; six run now (git-tools joined, and live-browser left for its own
+  schedule), in the two waves below.
 
 ### Six at once does not fit, so it is two waves
 
@@ -1151,8 +1153,8 @@ run in **two waves**:
   when wave 1 ends, whatever wave 1 concluded.
 
 `test_each_wave_fits_the_smoke_tenant_s_ceiling` reads the ceiling from
-`dev.tfvars`. It fails if a wave's peaks exceed it, and also if all five
-would fit in one wave.
+`dev.tfvars`. It fails if a wave's peaks exceed it, and also if all six
+groups would fit in one wave.
 
 ### live-browser runs on a schedule
 
