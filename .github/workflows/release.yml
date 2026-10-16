@@ -982,6 +982,23 @@ jobs:
         if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
         timeout-minutes: 20
         run: ./scripts/roll-graph.sh --tf-init --get-credentials --confirm
+      - name: roll swarm-typesafe-fwd to this release's image
+        # Lane TS-ROLL (part of #1347; docs/design/workspace-secrets.md §3.5).
+        # swarm-typesafe-fwd, the Deployment swarm-system/swarm-typesafe-fwd
+        # on swarm-autopilot, is rendered by terraform/infra/typesafe_fwd.tf
+        # as `swarm_typesafe_fwd_manifest`, null until
+        # typesafe_forwarder.serve. This applies it through
+        # kubernetes/apply.sh --swarm-typesafe-fwd (the same agents-staging
+        # refusal), waits for `rollout status deploy/swarm-typesafe-fwd` and
+        # checks its pod runs the manifest's digest. Not served is a notice,
+        # not a failure, and then gcloud and the cluster are asked nothing.
+        # No continue-on-error: a forwarder left on the old image or
+        # crash-looping fails every TypeSafe-backed attempt. No PYTHON_BIN:
+        # the --swarm-typesafe-fwd path runs neither render.py nor
+        # network_parity.py.
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        timeout-minutes: 20
+        run: ./scripts/roll-typesafe-fwd.sh --tf-init --get-credentials --confirm
 
       - name: smoke test (inside the VPC)
         # The `mock` profile needs no provider key, so this proves the whole
