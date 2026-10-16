@@ -13,6 +13,16 @@ sent to Jev). Settings > Workspace > Code intelligence:
     platform.
   * `context_ab`: §6.2's online A/B, `ab`, `on` or `off`. Unset is
     `inherit`: `DEFAULT_AB`, the experiment.
+  * `graph_delivery` (docs/design/graph-service.md §8.1, lane GS-SETTING):
+    how an attempt that gets graph context gets it, `staged` (today's
+    snapshot copied into the pod) or `service` (the shared `swarm-graph`
+    service through the pod's shim). Unset is `inherit`:
+    `DEFAULT_GRAPH_DELIVERY`, `staged`, so no workspace moves to the
+    service until its owner or an admin says so, and widening to every
+    workspace (§8.2 step 5) is a change of that one default. It decides
+    HOW, never WHETHER: `context` alone decides whether there is graph
+    context at all, and the platform switch (the service's ConfigMap
+    `enabled`) and the worker's probe still fall back to staging.
 
 A repository's own `context` override (`inherit | on | off`) is kept on its
 registration (`repositories.CONTEXT_FIELD`, set through `RepositoryPatch`)
@@ -32,7 +42,8 @@ read it. Keys of the map this module does not own (CTXQ-J's
 
 The worker reads this document as it stands: `agent_worker.graphstage.decide`
 the `context` and `context_ab` keys, `agent_worker.judge.settings` the `jev`
-key. Their names and defaults are restated here because swarm-api does not
+key, and (lane GS-WORKER, graph-service.md §8.1) `graphstage.prepare` the
+`graph_delivery` key. Their names and defaults are restated here because swarm-api does not
 import the worker; tests/unit/control_plane/test_code_intelligence.py holds
 the two equal.
 
@@ -55,7 +66,8 @@ writes nothing.
 INVARIANTS. A setting is a Firestore document: it holds no capacity and
 creates no infrastructure demand (invariant 1). Nothing here accepts an
 image, a command, a URL or a resource spec (invariant 10): the body is one
-boolean and two words.
+boolean and three words. `graph_delivery` names a mode, never the service's
+URL, which is the worker's own setting (`SWARM_GRAPH_URL`, §4.2).
 """
 
 from __future__ import annotations
@@ -88,10 +100,14 @@ JEV_FIELD = "jev"
 #: `agent_worker.graphstage.CONTEXT_FIELD` and `AB_FIELD`.
 CONTEXT_FIELD = "context"
 AB_FIELD = "context_ab"
+#: graph-service.md §8.1. The worker's reader (GS-WORKER) restates it.
+DELIVERY_FIELD = "graph_delivery"
 
 ON, OFF, AB, INHERIT = "on", "off", "ab", CONTEXT_INHERIT
 CONTEXTS = (ON, OFF)
 AB_MODES = (AB, ON, OFF)
+STAGED, SERVICE = "staged", "service"
+DELIVERIES = (STAGED, SERVICE)
 
 #: Jev sees no code unless a workspace opts in (§4.7; §8 Q9: "Jev stays
 #: per-workspace opt-in forever").
@@ -102,6 +118,10 @@ DEFAULT_CONTEXT = ON
 #: `agent_worker.graphstage.DEFAULT_AB`: until §6.3's thresholds pass, a
 #: workspace that set nothing is in the A/B.
 DEFAULT_AB = AB
+#: graph-service.md §8.1-§8.2: staging until a workspace is switched, and
+#: until the fallback rate is under 1% for 7 days (§8.2 step 5, owner Q9),
+#: at which point widening is this value becoming `service`.
+DEFAULT_GRAPH_DELIVERY = STAGED
 
 AUDIT_ACTION = "workspace_code_intelligence_set"
 
@@ -114,14 +134,17 @@ class OwnerRequired(Forbidden):
 
 @dataclass(frozen=True)
 class CodeIntelligence:
-    """The stored setting. `context` and `context_ab` None mean inherit."""
+    """The stored setting. `context`, `context_ab` and `graph_delivery` None
+    mean inherit."""
 
     jev: bool = DEFAULT_JEV
     context: str | None = None
     context_ab: str | None = None
+    graph_delivery: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
-        return {JEV_FIELD: self.jev, CONTEXT_FIELD: self.context, AB_FIELD: self.context_ab}
+        return {JEV_FIELD: self.jev, CONTEXT_FIELD: self.context, AB_FIELD: self.context_ab,
+                DELIVERY_FIELD: self.graph_delivery}
 
 
 def settings_of(block: Mapping[str, Any] | None) -> CodeIntelligence:
@@ -130,10 +153,13 @@ def settings_of(block: Mapping[str, Any] | None) -> CodeIntelligence:
     block = block if isinstance(block, Mapping) else {}
     context = block.get(CONTEXT_FIELD)
     ab = block.get(AB_FIELD)
+    delivery = block.get(DELIVERY_FIELD)
     return CodeIntelligence(
         jev=block.get(JEV_FIELD) is True,
         context=context if context in CONTEXTS else None,
         context_ab=ab if ab in AB_MODES else None,
+        graph_delivery=delivery if isinstance(delivery, str) and delivery in DELIVERIES
+        else None,
     )
 
 
@@ -144,6 +170,14 @@ def effective_context(settings: CodeIntelligence, registration: Mapping[str, Any
     return context_of(registration or {}) or settings.context or DEFAULT_CONTEXT
 
 
+def effective_delivery(settings: CodeIntelligence) -> str:
+    """`staged` or `service` for the workspace: its stored value, else the
+    platform default. Per workspace only (§8.1); the worker still stages a
+    step it cannot serve from the service (a `CLOUD_RUN_JOB` step, owner Q2,
+    or a failed probe, §8.2)."""
+    return settings.graph_delivery or DEFAULT_GRAPH_DELIVERY
+
+
 class CodeIntelligencePut(StrictModel):
     """PUT /v1/workspaces/{id}/code-intelligence. Every field optional; a
     field left out is unchanged, `inherit` clears, and a body that names
@@ -152,11 +186,13 @@ class CodeIntelligencePut(StrictModel):
     jev: StrictBool | None = None
     context: Literal["on", "off", "inherit"] | None = None
     context_ab: Literal["ab", "on", "off", "inherit"] | None = None
+    graph_delivery: Literal["staged", "service", "inherit"] | None = None
 
     @model_validator(mode="after")
     def _names_something(self) -> "CodeIntelligencePut":
-        if self.jev is None and self.context is None and self.context_ab is None:
-            raise ValueError("name at least one of jev, context or context_ab")
+        if (self.jev is None and self.context is None and self.context_ab is None
+                and self.graph_delivery is None):
+            raise ValueError("name at least one of jev, context, context_ab or graph_delivery")
         return self
 
 
@@ -261,18 +297,21 @@ class CodeIntelligenceStore:
                 jev=body.jev if body.jev is not None else before.jev,
                 context=_word(body.context, before.context),
                 context_ab=_word(body.context_ab, before.context_ab),
+                graph_delivery=_word(body.graph_delivery, before.graph_delivery),
             )
             old, new = before.as_dict(), after.as_dict()
             changed = [k for k in old if old[k] != new[k]]
             if not changed:
                 return after
             block = {k: v for k, v in stored.items()
-                     if k not in (JEV_FIELD, CONTEXT_FIELD, AB_FIELD)}
+                     if k not in (JEV_FIELD, CONTEXT_FIELD, AB_FIELD, DELIVERY_FIELD)}
             block[JEV_FIELD] = after.jev
             if after.context is not None:
                 block[CONTEXT_FIELD] = after.context
             if after.context_ab is not None:
                 block[AB_FIELD] = after.context_ab
+            if after.graph_delivery is not None:
+                block[DELIVERY_FIELD] = after.graph_delivery
             block.update({"updated_at": now, "updated_by": by})
             if whole is None:
                 txn.set(ref, {"tenant_id": tenant_id, FIELD: block})
@@ -303,8 +342,10 @@ def view(tenant_id: str, settings: CodeIntelligence, block: Mapping[str, Any] | 
         JEV_FIELD: settings.jev,
         CONTEXT_FIELD: settings.context or INHERIT,
         AB_FIELD: settings.context_ab or INHERIT,
+        DELIVERY_FIELD: settings.graph_delivery or INHERIT,
+        "effective_graph_delivery": effective_delivery(settings),
         "defaults": {JEV_FIELD: DEFAULT_JEV, CONTEXT_FIELD: DEFAULT_CONTEXT,
-                     AB_FIELD: DEFAULT_AB},
+                     AB_FIELD: DEFAULT_AB, DELIVERY_FIELD: DEFAULT_GRAPH_DELIVERY},
         "updated_at": updated.isoformat() if isinstance(updated, datetime) else None,
         "updated_by": block.get("updated_by") if isinstance(block.get("updated_by"), str)
         else None,
