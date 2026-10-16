@@ -391,6 +391,14 @@ locals {
         "worker_firestore",
       ] : module.custom_role_ids.names[key]
     ],
+    # The GitHub push receiver's create-only Firestore role, which
+    # terraform/infra/github_hooks.tf grants (github_hooks_role.tf, HOOKS-ROLE,
+    # part of #1384). On the list only once this root defines it: with
+    # enable_github_hooks_dedup_role off the list, and so every chunk below, is
+    # what it was, and the plan changes nothing. On, it is one more role in the
+    # sorted list, which shifts the chunk boundary and replaces both chunks,
+    # new grant first (create_before_destroy, below).
+    var.enable_github_hooks_dedup_role ? [module.custom_role_ids.names["github_hooks_dedup"]] : [],
   )
 
   deployer_conditions = {
