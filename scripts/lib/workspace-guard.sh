@@ -41,6 +41,7 @@
 #   scripts/lib/workspace-guard.sh check [--report-only] -- TOOL ARGS...
 #   scripts/lib/workspace-guard.sh run [--report-only] TOOL ARGS...   (the shims)
 #   scripts/lib/workspace-guard.sh self-test [--json] [--case NAME]
+#   scripts/lib/workspace-guard.sh self-test --replay PLAN.jsonl      (judges only)
 #
 # The owner's report-only run, from the repository root:
 #   PATH="$PWD/scripts/lib/guard-bin:$PATH" SWARM_CALL_GUARD=<file> \
@@ -1142,12 +1143,64 @@ GUARD_COVERAGE_JQ='
     | ["allow", "refuse"][] as $x
     | select(([$c[] | select(.rule == $id and .expect == $x)] | length) == 0)
     | "\($id) has no case it must \($x)"'
+# One line of a replay plan as shell assignments (see guard_replay).
+# shellcheck disable=SC2016
+GUARD_REPLAY_JQ='
+      "R_TOOL=\(.tool | @sh)",
+      "R_EXPECT=\(.expect | @sh)",
+      "R_KUBECONFIG=\(.kubeconfig | @sh)",
+      "R_FALLBACK=\(.wd9_fallback | tostring | @sh)",
+      "R_HAS_STDIN=\(if .stdin == null then "0" else "1" end | @sh)",
+      "R_STDIN=\((.stdin // "") | @sh)",
+      "R_IMPERSONATE=\(.env_impersonate | @sh)",
+      "R_PROJECT=\(.env_project | @sh)",
+      "R_ARGV=(\(.argv | map(@sh) | join(" ")))"'
+
+# The verdict corpus (tests/unit/scripts/test_workspace_guard_corpus.py): every
+# call the guard's tests have fed it, judged again in this one process, one
+# verdict per line as JSON. The plan names, per call, the expectation file, the
+# kubeconfig and the stdin the call had, all of which the test writes; the
+# rules are the shipped ones with the WD9 switch as the call saw it. It judges
+# and prints; nothing is run, and no stop file is written.
+guard_replay() {
+  local plan="$1" line assignments
+  [[ -f "${plan}" && -r "${plan}" ]] || die "self-test --replay needs a readable plan file"
+  local tmp
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/swarm-workspace-guard.XXXXXX")"
+  # shellcheck disable=SC2064  # expand now: the path is fixed for this run
+  trap "rm -rf '${tmp}'" EXIT
+  jq '.wd9_fallback = true' "${GUARD_RULES}" >"${tmp}/rules-fallback.json"
+  jq '.wd9_fallback = false' "${GUARD_RULES}" >"${tmp}/rules-principal-set.json"
+  local R_TOOL R_EXPECT R_KUBECONFIG R_FALLBACK R_HAS_STDIN R_STDIN R_IMPERSONATE R_PROJECT
+  local -a R_ARGV=()
+  local visited=0
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ -n "${line}" ]] || continue
+    assignments="$(printf '%s' "${line}" | jq -r "${GUARD_REPLAY_JQ}")"
+    eval "${assignments}"
+    GUARD_RULES_ACTIVE="${tmp}/rules-principal-set.json"
+    [[ "${R_FALLBACK}" == "true" ]] && GUARD_RULES_ACTIVE="${tmp}/rules-fallback.json"
+    GUARD_STDIN="${R_STDIN}"
+    GUARD_HAS_STDIN="${R_HAS_STDIN}"
+    SWARM_CALL_GUARD="${R_EXPECT}" KUBECONFIG="${R_KUBECONFIG}" \
+      CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT="${R_IMPERSONATE}" CLOUDSDK_CORE_PROJECT="${R_PROJECT}" \
+      guard_judge "${R_TOOL}" ${R_ARGV[@]+"${R_ARGV[@]}"}
+    GUARD_RULES_ACTIVE="${GUARD_RULES}"
+    jq -nc --arg verdict "${GUARD_VERDICT}" --arg rule "${GUARD_RULE}" \
+          --arg command "${GUARD_COMMAND}" --arg reason "${GUARD_REASON}" \
+      '[$verdict, $rule, $command, $reason]'
+    visited=$((visited + 1))
+  done <"${plan}"
+  [[ "${visited}" -gt 0 ]] || die "self-test --replay visited no call"
+}
+
 cmd_self_test() {
   local json=0 only=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --json) json=1; shift ;;
       --case) only="${2:-}"; shift 2 ;;
+      --replay) guard_replay "${2:-}"; return 0 ;;
       *) die "unknown argument to self-test: $1" ;;
     esac
   done
@@ -1300,6 +1353,6 @@ case "${SUBCOMMAND}" in
   check)     cmd_check "$@" ;;
   run)       cmd_run "$@" ;;
   self-test|--self-test) cmd_self_test "$@" ;;
-  -h|--help) sed -n '2,49p' "$0" ;;
+  -h|--help) sed -n '2,50p' "$0" ;;
   *) die "unknown subcommand: ${SUBCOMMAND}" ;;
 esac
