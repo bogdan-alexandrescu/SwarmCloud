@@ -7,6 +7,9 @@
 # absolute path, only on an allow; a refusal exits 86 with nothing done.
 #
 # Nothing else belongs in this file: a shim that decides anything is a second
-# guard nobody reviews.
+# guard nobody reviews. Its directory is found by parameter expansion, not
+# dirname, so the shim starts no process of its own before the guard (a bare
+# name, `bash curl` from this directory, has no slash and means `.`).
 set -euo pipefail
-exec "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/workspace-guard.sh" run kubectl "$@"
+here="${BASH_SOURCE[0]%/*}"; [[ "${here}" != "${BASH_SOURCE[0]}" ]] || here=.
+exec "$(cd -- "${here}/.." && pwd)/workspace-guard.sh" run kubectl "$@"

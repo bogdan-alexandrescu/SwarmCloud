@@ -19,7 +19,14 @@ set -euo pipefail
 # Paths
 # ---------------------------------------------------------------------------
 
-SWARM_LIB_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# The directory is cut from BASH_SOURCE by parameter expansion, not dirname:
+# every guarded call in a workspace job sources this file, and a dirname here
+# was a process start on each of them (GUARD-SPEED-2, #1334). The two cases
+# where the cut differs from dirname are spelled out: a bare `common.sh` has no
+# slash (dirname says `.`), and `/common.sh` cuts to empty (dirname says `/`).
+SWARM_LIB_DIR="${BASH_SOURCE[0]%/*}"
+if [[ "${SWARM_LIB_DIR}" == "${BASH_SOURCE[0]}" ]]; then SWARM_LIB_DIR=.; fi
+SWARM_LIB_DIR="$(cd -- "${SWARM_LIB_DIR:-/}" && pwd)"
 REPO_ROOT="$(cd -- "${SWARM_LIB_DIR}/../.." && pwd)"
 BUILD_DIR="${REPO_ROOT}/build"
 export REPO_ROOT BUILD_DIR
@@ -2057,14 +2064,17 @@ iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # a RUN heredoc's body is skipped so a line inside it cannot read as an
 # instruction.
 #
-# THE HEREDOC IS IN A FUNCTION, NOT IN $( ) (#825). bash 3.2 -- macOS's
-# /bin/bash -- scans a heredoc body written inside $( ) for quotes, and the
-# lone apostrophe in the `["']` classes below opened a quote that swallowed
-# the rest of this file: every script sourcing it failed to parse, reported
-# hundreds of lines later inside redact(). The program text is unchanged; the
-# function prints it and $( ) strips its trailing newline exactly as before.
-_dockerfile_copy_awk_program() {
-  cat <<'AWK'
+# THE HEREDOC IS NEVER INSIDE $( ) (#825). bash 3.2 -- macOS's /bin/bash --
+# scans a heredoc body written inside $( ) for quotes, and the lone apostrophe
+# in the `["']` classes below opened a quote that swallowed the rest of this
+# file: every script sourcing it failed to parse, reported hundreds of lines
+# later inside redact(). Nor is it read through `cat`: that was a process start
+# at source time for every script sourcing this file, and for every guarded
+# call a workspace job makes (GUARD-SPEED-2, #1334). The builtin `read` takes
+# the body whole (IFS empty, -r, -d '' so it stops only at the end, which is
+# also why it returns 1 and needs `|| true`), and the one trailing newline is
+# cut, as $( ) cut it before: the program text is unchanged.
+IFS= read -r -d '' DOCKERFILE_COPY_AWK <<'AWK' || true
 function refuse(msg) {
   printf "%s:%d: %s\n", FILENAME, start, msg > "/dev/stderr"
   bad = 1
@@ -2126,9 +2136,7 @@ function refuse(msg) {
 }
 END { exit bad }
 AWK
-}
-DOCKERFILE_COPY_AWK="$(_dockerfile_copy_awk_program)"
-unset -f _dockerfile_copy_awk_program
+DOCKERFILE_COPY_AWK=${DOCKERFILE_COPY_AWK%$'\n'}
 
 dockerfile_copy_sources() {
   awk "${DOCKERFILE_COPY_AWK}" "$1"
