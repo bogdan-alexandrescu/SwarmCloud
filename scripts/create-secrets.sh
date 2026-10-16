@@ -28,6 +28,7 @@
 #   scripts/create-secrets.sh --typesafe-fwd-key [--overwrite swarm-typesafe-fwd-key]
 #   scripts/create-secrets.sh --workspace-grant-key [--overwrite swarm-workspace-grant-key]
 #   scripts/create-secrets.sh --graph-ticket-key [--overwrite swarm-graph-ticket-key]
+#   scripts/create-secrets.sh --github-app-webhook-secret --stdin
 #
 # The forge token (`--provider git`, stored as swarm-tenant-<tenant>-git) is
 # read by the tenant's workers AND by swarm-api, which writes an issue run's
@@ -99,6 +100,21 @@
 # graph_service.serve: swarm-api's reference to a versionless secret would
 # stop it starting.
 #
+# --github-app-webhook-secret adds a version to
+# `swarm-github-app-webhook-secret`, the GitHub App's WEBHOOK secret: the HMAC
+# key GitHub signs every delivery's X-Hub-Signature-256 with and the public
+# receiver swarm-github-hooks verifies it with (docs/design/graph-service.md
+# §6.2; docs/runbooks/github-app.md, "Step 9"). The value is GitHub's: the
+# owner types it into the App's settings and here, so it is NEVER generated,
+# and it is read from stdin ONLY, for the reasons --github-app gives. Inner
+# characters are kept exactly (GitHub signs with the secret as typed); only
+# the paste's trailing newline is dropped. Terraform owns the container and
+# its one reader, the account the receiver runs as
+# (terraform/infra/github_hooks.tf, enable_github_hooks); this never creates
+# it, so a typo cannot make an unbound twin. The receiver re-reads `latest` on
+# a signature mismatch at most once a minute, so a rotation is: change it at
+# GitHub, store it here, and the next delivery after a minute verifies.
+#
 # --workspace-grant-key adds a version to `swarm-workspace-grant-key`, the
 # PLATFORM key swarm-api MACs every workspace-secret grant with and verifies
 # it with at release (docs/design/workspace-secrets.md, SEC-GRANT-ATTEST;
@@ -167,6 +183,7 @@ EGRESS_CREDENTIAL=0
 TYPESAFE_FWD_KEY=0
 WORKSPACE_GRANT_KEY=0
 GRAPH_TICKET_KEY=0
+GITHUB_APP_WEBHOOK_SECRET=0
 OVERWRITE=""
 TAILSCALE_OAUTH=0
 
@@ -188,11 +205,12 @@ while [[ $# -gt 0 ]]; do
     --typesafe-fwd-key) TYPESAFE_FWD_KEY=1; shift ;;
     --workspace-grant-key) WORKSPACE_GRANT_KEY=1; shift ;;
     --graph-ticket-key) GRAPH_TICKET_KEY=1; shift ;;
+    --github-app-webhook-secret) GITHUB_APP_WEBHOOK_SECRET=1; shift ;;
     --overwrite)        [[ $# -ge 2 ]] || die "--overwrite takes the name of the secret to add a version to"
                         OVERWRITE="$2"; shift 2 ;;
     # A value glued to a flag is a value on the command line, which argv
     # exposes through ps and shell history. Refused without repeating it.
-    --egress-key=*|--egress-credential=*|--typesafe-fwd-key=*|--workspace-grant-key=*|--graph-ticket-key=*)
+    --egress-key=*|--egress-credential=*|--typesafe-fwd-key=*|--workspace-grant-key=*|--graph-ticket-key=*|--github-app-webhook-secret=*)
       die "${1%%=*} takes no value on the command line: the key is generated, and the credential is read from --stdin only. Nothing was stored." ;;
     --tailscale-oauth)  TAILSCALE_OAUTH=1; shift ;;
     # The header above `set -euo pipefail`, however long it grows; a fixed
@@ -306,6 +324,63 @@ confirm_overwrite() {
   die "${name} already has an enabled version and its reader takes the latest. Confirm by typing its name:
      --overwrite ${name}   (SWARM_ASSUME_YES is not a confirmation). Nothing was stored."
 }
+
+if [[ "${GITHUB_APP_WEBHOOK_SECRET}" -eq 1 ]]; then
+  # The secret's name is fixed: terraform/infra/github_hooks.tf creates it and
+  # swarm_github_hooks.main.SECRET_ID reads it;
+  # tests/unit/hooks/test_hooks_create_secret.py holds the three spellings equal.
+  WEBHOOK_SECRET_NAME="swarm-github-app-webhook-secret"
+  if [[ -n "${TENANT}${PROVIDER}${FROM_FILE}${GITHUB_APP_SLOT}${OVERWRITE}" || "${SUBSCRIPTION}" -eq 1 || "${CHILD_KEY}" -eq 1 || "${LIVE_KEY}" -eq 1 || "${EGRESS_KEY}" -eq 1 || "${EGRESS_CREDENTIAL}" -eq 1 || "${TAILSCALE_OAUTH}" -eq 1 || "${SEARCH_API_KEY}" -eq 1 || "${TYPESAFE_FWD_KEY}" -eq 1 || "${WORKSPACE_GRANT_KEY}" -eq 1 || "${GRAPH_TICKET_KEY}" -eq 1 || "${DISABLE_PREVIOUS}" -eq 1 ]]; then
+    die "--github-app-webhook-secret takes only --stdin: the secret is the platform's App's, not a tenant's, a file argument is a path to a plaintext copy, and an old version is disabled by hand once GitHub signs with the new one"
+  fi
+  [[ "${READ_STDIN}" -eq 1 ]] || die "--github-app-webhook-secret reads the value from --stdin and nothing else"
+
+  step "Secret ${WEBHOOK_SECRET_NAME}"
+  WH_DESCRIBE_ERR=""
+  if ! WH_DESCRIBE_ERR="$(gcloud secrets describe "${WEBHOOK_SECRET_NAME}" --project "${PROJECT_ID}" \
+       --format='value(name)' 2>&1 >/dev/null)"; then
+    die_if_auth_failure "${WH_DESCRIBE_ERR}"
+    die "${WEBHOOK_SECRET_NAME} does not exist in ${PROJECT_ID}. terraform creates it with its one reader (terraform/infra/github_hooks.tf, enable_github_hooks = true): apply first, then --github-app-webhook-secret"
+  fi
+
+  WH_TMP="$(mktemp -d "${TMPDIR:-/tmp}/swarm-secret.XXXXXX")"
+  chmod 0700 "${WH_TMP}"
+  # shellcheck disable=SC2064  # expand now: the path is fixed for this run
+  trap "find '${WH_TMP}' -type f -exec rm -f {} + 2>/dev/null || true; rmdir '${WH_TMP}' 2>/dev/null || true" EXIT INT TERM
+  WH_FILE="${WH_TMP}/value"
+  ( umask 077; : >"${WH_FILE}" )
+  if [[ -t 0 ]]; then
+    printf 'Paste the GitHub App webhook secret (input hidden), then press Enter: ' >&2
+    IFS= read -rs WH_VALUE
+    printf '\n' >&2
+    printf '%s' "${WH_VALUE}" >"${WH_FILE}"
+    unset WH_VALUE
+  else
+    cat >"${WH_FILE}"
+  fi
+  # The paste's trailing newline off, and nothing else: GitHub signs with the
+  # secret exactly as typed, so a changed inner character fails every delivery.
+  if [[ -s "${WH_FILE}" ]]; then
+    printf '%s' "$(cat "${WH_FILE}")" >"${WH_FILE}.trimmed"
+    mv "${WH_FILE}.trimmed" "${WH_FILE}"
+    chmod 0600 "${WH_FILE}"
+  fi
+  WH_BYTES="$(wc -c <"${WH_FILE}" | tr -d ' ')"
+  [[ "${WH_BYTES}" -gt 0 ]] || die "refusing to store an empty secret"
+  [[ "${WH_BYTES}" -lt 1024 ]] || die "value is ${WH_BYTES} bytes; that is not a webhook secret. Nothing was stored"
+  if grep -q -- '-----BEGIN' "${WH_FILE}"; then
+    die "that is a PEM block, not a webhook secret; the App's private key goes to --github-app private-key. Nothing was stored"
+  fi
+  info "stored value is ${WH_BYTES} bytes"
+
+  WH_VERSION="$(gcloud secrets versions add "${WEBHOOK_SECRET_NAME}" \
+    --project "${PROJECT_ID}" --data-file="${WH_FILE}" --format='value(name)')"
+  ok "added version ${WH_VERSION##*/} of ${WEBHOOK_SECRET_NAME}; its value was never printed"
+  dim "its one reader is the account swarm-github-hooks runs as (terraform/infra/github_hooks.tf)"
+  dim "the receiver reads it within a minute; next: tick Webhook -> Active in the App (docs/runbooks/github-app.md, Step 9)"
+  dim "rotating: change it at GitHub, store it here, then disable the old version by hand"
+  exit 0
+fi
 
 if [[ "${GRAPH_TICKET_KEY}" -eq 1 ]]; then
   GRAPH_KEY_NAME="swarm-graph-ticket-key"

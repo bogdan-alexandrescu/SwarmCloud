@@ -997,7 +997,50 @@ run "every_project_role_the_verify_identity_holds_is_grantable" {
   }
 }
 
-# The three runs above read grants by name, and a grant nobody named is checked
+# terraform/infra/github_hooks.tf (lane GS-HOOKS, part of #1384) grants the
+# rollup sweeper account roles/datastore.user for the push receiver's delivery
+# dedup, only with enable_github_hooks on -- so it is planned on here, and the
+# grant is held to exist, not passed over an empty count.
+run "the_github_hooks_firestore_role_is_grantable" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    environment = "dev"
+    tenants     = {}
+
+    # GS-HOOKS: the receiver and its grants exist only with this on.
+    enable_github_hooks = true
+
+    # terraform/infra refuses to plan without a digest for every image it
+    # deploys (main, #24: the precondition on google_cloud_run_v2_job.verify).
+    # The same fixture infra_guards.tftest.hcl uses.
+    image_refs = {
+      "swarm-api"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      "swarm-scheduler"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      "swarm-quota-broker"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      "swarm-reconciler"      = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      "swarm-ui"              = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      "swarm-verify"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      "swarm-github-hooks"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-github-hooks@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      "agent-runtime-base"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      "agent-runtime-browser" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      "agent-runtime-indexer" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  }
+
+  assert {
+    condition = length(google_project_iam_member.github_hooks_firestore) == 1 && alltrue([
+      for k, g in google_project_iam_member.github_hooks_firestore : contains(run.every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one.deployer_grantable_project_roles, g.role)
+    ])
+    error_message = "terraform/infra/github_hooks.tf grants a project-level role the scoped projectIamAdmin may not grant; add it to deployer_grantable_project_roles"
+  }
+}
+
+# The runs above read grants by name, and a grant nobody named is checked
 # by none of them. This one reads the files CI applies and this file, as text
 # (./project_iam_inventory), and holds every declaration that writes the
 # project's IAM policy to the grants an assertion above actually passes, by its

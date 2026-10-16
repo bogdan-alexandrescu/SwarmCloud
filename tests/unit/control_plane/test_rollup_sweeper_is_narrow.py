@@ -95,6 +95,14 @@ DECIDED = frozenset({
     # grants nothing, submits nothing, and takes no argument: what it may
     # disable is fixed by the records' own `disable_after`.
     ("POST", "/v1/admin/workspace-secrets/rotation-sweep"),
+    # The GitHub push hint (docs/design/graph-service.md §6.2; owner decision
+    # 2026-10-16 on #1384, lane GS-HOOKS): the public receiver
+    # swarm-github-hooks RUNS AS this account and forwards a verified push's
+    # repository name here. The route reads no payload sha, takes no tenant,
+    # and only polls now what the five-minute poll would poll anyway, each
+    # registration with its own workspace's token. The owner accepted that a
+    # public-facing service then holds every route in this set.
+    ("POST", "/v1/admin/repositories/push"),
 })
 
 REFUSED = [r for r in SWEPT if r not in DECIDED]
@@ -209,6 +217,41 @@ def test_the_sweeper_runs_the_rotation_sweep(db, sweeper_context) -> None:
     assert writer.calls == [("disable_version", f"projects/test/secrets/{secret_id}/versions/1")]
     states = [v["state"] for v in db.docs[f"{SECRETS_COLLECTION}/{secret_id}"]["versions"]]
     assert states == ["disabled", "enabled"]
+
+
+def test_the_sweeper_reaches_the_push_route(db, sweeper_client) -> None:
+    """GS-HOOKS: the receiver calls POST /v1/admin/repositories/push as the
+    sweeper, through the real app's route allow-list (the push route's own
+    tests override the caller and so never met that list). A push for a
+    repository nobody registered polls nothing and answers 200."""
+    response = sweeper_client.post(
+        "/v1/admin/repositories/push",
+        json={"forge": "github", "full_name": "nobody-registered/this-repository"},
+        headers=SWEEPER_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    assert "rollup sweeper may not call" not in response.text
+
+
+def test_the_push_route_is_still_the_sweepers_alone(db, sweeper_client) -> None:
+    """The control: naming the route in the allow-list opened it to the
+    sweeper, not to a member, whose push is refused by the route itself."""
+    response = sweeper_client.post(
+        "/v1/admin/repositories/push",
+        json={"forge": "github", "full_name": "nobody-registered/this-repository"},
+        headers=auth_header("alice"),
+    )
+    assert response.status_code == 403, response.text
+
+
+def test_the_push_route_is_the_only_repository_route_the_sweeper_gained() -> None:
+    """GS-HOOKS added ONE route. Registering, editing, deleting or indexing a
+    repository stays refused to this identity, so the public receiver that
+    holds it can poll now and nothing else on repositories."""
+    reached = {r for r in ROLLUP_SWEEPER_ROUTES if "/repositories" in r[1]}
+    assert reached == {("POST", "/v1/admin/repositories/poll"), ("POST", "/v1/admin/repositories/push")}
+    refused = [r for r in REFUSED if "/repositories" in r[1]]
+    assert len(refused) >= 3, f"the repository routes were not swept: {refused}"
 
 
 def test_the_sweeper_converges_a_workflow_nobody_looked_at(db, sweeper_client) -> None:

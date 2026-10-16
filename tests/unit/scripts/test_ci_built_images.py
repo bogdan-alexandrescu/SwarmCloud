@@ -77,6 +77,9 @@ IMAGES = [
     "swarm-egress",
     "swarm-typesafe-fwd",
     "swarm-graph",
+    # The public GitHub push receiver (GS-HOOKS, part of #1384),
+    # apps/swarm-github-hooks/Dockerfile.
+    "swarm-github-hooks",
     "workspace-apply",
 ]
 

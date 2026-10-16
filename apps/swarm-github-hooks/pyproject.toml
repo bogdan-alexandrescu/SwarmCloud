@@ -1,0 +1,39 @@
+# swarm-github-hooks: the public GitHub push receiver (docs/design/graph-service.md
+# §6.2; lane GS-HOOKS, part of #1384; owner answer Q3). A Cloud Run service with
+# ingress all that accepts only `POST /github/events`, checks the App's
+# X-Hub-Signature-256, dedups X-GitHub-Delivery in Firestore, keeps only a
+# non-deleting push to the default branch, and forwards the repository's name
+# -- nothing else -- to swarm-api's POST /v1/admin/repositories/push.
+#
+# The standard library for the server. google-auth (with requests) to read the
+# webhook secret from Secret Manager, write the delivery to Firestore and mint
+# the ID token, over REST, as swarm-typesafe-fwd and swarm-graph do -- no
+# Firestore SDK, no web framework; swarm-redaction for every log line;
+# swarm-common for the logging setup. The same third-party closure as
+# swarm-typesafe-fwd, so its lock was seeded from that one and no new
+# dependency enters the platform.
+[project]
+name = "swarm-github-hooks"
+version = "0.1.0"
+description = "Public GitHub push receiver: HMAC-checked, delivery-deduped, forwards the repository name to swarm-api."
+requires-python = ">=3.11"
+dependencies = [
+    "swarm-common",
+    "swarm-redaction",
+    "google-auth>=2.29",
+    "requests>=2.32",
+]
+
+[project.scripts]
+swarm-github-hooks = "swarm_github_hooks.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["swarm_github_hooks"]
+
+[tool.uv.sources]
+swarm-common = { path = "../common", editable = true }
+swarm-redaction = { path = "../redaction", editable = true }

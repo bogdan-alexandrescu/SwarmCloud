@@ -1061,6 +1061,17 @@ ROLLUP_SWEEPER_ROUTES: frozenset[tuple[str, str]] = frozenset(
         # grants nothing: what it may disable is fixed by the records' own
         # `disable_after`.
         ("POST", "/v1/admin/workspace-secrets/rotation-sweep"),
+        # The GitHub push hint (docs/design/graph-service.md §6.2, lane
+        # GS-HOOKS of #1384). OWNER DECISION 2026-10-16, recorded on #1384:
+        # the public receiver swarm-github-hooks RUNS AS this account and
+        # forwards a verified push's `{forge, full_name}` here; the design's
+        # own identity for it was declined. The route takes no tenant and no
+        # sha, and only polls now, through the poll's own `_poll_one` and with
+        # each workspace's own token, what the five-minute poll would poll
+        # anyway. THE TRADE-OFF THE OWNER ACCEPTED: a public-facing service
+        # now holds every route in this set, for every tenant
+        # (docs/runbooks/github-app.md, "Step 9").
+        ("POST", "/v1/admin/repositories/push"),
     }
 )
 
