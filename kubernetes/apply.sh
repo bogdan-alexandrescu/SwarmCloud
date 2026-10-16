@@ -26,6 +26,13 @@
 #                         # applied (docs/design/graph-service.md §2.1, §8.2).
 #                         # scripts/roll-graph.sh drives it and waits for the
 #                         # rollout
+#   kubernetes/apply.sh --swarm-typesafe-fwd --confirm   # the TypeSafe forwarder:
+#                         # `terraform output -raw swarm_typesafe_fwd_manifest`
+#                         # (terraform/infra/typesafe_fwd.tf), alone; null
+#                         # until typesafe_forwarder.serve, and then nothing
+#                         # is applied (docs/design/workspace-secrets.md §3.5).
+#                         # scripts/roll-typesafe-fwd.sh drives it and waits
+#                         # for the rollout
 #   kubernetes/apply.sh --tenant eng --spec-verify-keys keys.json --confirm
 #                         # ... with the step-spec public keys ConfigMap, from
 #                         # `terraform output -json spec_verify_keys_configmap`
@@ -190,6 +197,7 @@ while [[ $# -gt 0 ]]; do
     --policies)   MODE="policies"; shift ;;
     --swarm-system) MODE="swarm-system"; shift ;;
     --swarm-graph) MODE="swarm-graph"; shift ;;
+    --swarm-typesafe-fwd) MODE="swarm-typesafe-fwd"; shift ;;
     --confirm|-y) CONFIRM=1; shift ;;
     --server-dry-run) SERVER_DRY_RUN=1; shift ;;
     --context)    CONTEXT="$2"; shift 2 ;;
@@ -256,6 +264,15 @@ if [[ "${MODE}" == "swarm-graph" ]]; then
   [[ -z "${SPEC_VERIFY_KEYS_FILE}" ]] || die "--spec-verify-keys belongs to a tenant's namespace, not to swarm-system"
   [[ -z "${RENDER_ARGS[*]+x}" ]] \
     || die "--swarm-graph takes no render arguments (got: ${RENDER_ARGS[*]}); terraform renders its manifest"
+  tf_initialised \
+    || die "terraform/infra is not initialised for ${ENVIRONMENT} (no $(tf_data_dir)); run: $(tf_init_command)"
+fi
+# --swarm-typesafe-fwd likewise.
+if [[ "${MODE}" == "swarm-typesafe-fwd" ]]; then
+  [[ -z "${TENANT}" ]] || die "--swarm-typesafe-fwd applies swarm-system's TypeSafe forwarder, not a tenant's; drop --tenant"
+  [[ -z "${SPEC_VERIFY_KEYS_FILE}" ]] || die "--spec-verify-keys belongs to a tenant's namespace, not to swarm-system"
+  [[ -z "${RENDER_ARGS[*]+x}" ]] \
+    || die "--swarm-typesafe-fwd takes no render arguments (got: ${RENDER_ARGS[*]}); terraform renders its manifest"
   tf_initialised \
     || die "terraform/infra is not initialised for ${ENVIRONMENT} (no $(tf_data_dir)); run: $(tf_init_command)"
 fi
@@ -757,8 +774,67 @@ elif [[ "${MODE}" == "swarm-graph" ]]; then
   MANIFEST="$(cat "${GRAPH_WORK}/graph.yaml")"
   rm -rf "${GRAPH_WORK}"
   info "rendering the graph service  terraform output swarm_graph_manifest"
+elif [[ "${MODE}" == "swarm-typesafe-fwd" ]]; then
+  # --tenant, --spec-verify-keys and render arguments were refused at 0.
+
+  # THE TYPESAFE FORWARDER, FROM TERRAFORM, ALONE (lane TS-ROLL, part of
+  # #1347; docs/design/workspace-secrets.md §3.5). terraform/infra/
+  # typesafe_fwd.tf's `swarm_typesafe_fwd_manifest`: kubernetes/swarm-system/
+  # swarm-typesafe-fwd.yaml with the image digest, the key's version
+  # reference, the project and the setting filled in. Its own mode, as
+  # --swarm-graph is, rather than a fifth manifest in --swarm-system's stream
+  # (where design §3.5 first placed it): that stream refuses to apply without
+  # the live relay's manifest, and the forwarder does not depend on the live
+  # browser. It carries its own Namespace object, so it needs nothing
+  # --swarm-system applies.
+  #
+  # NULL UNTIL typesafe_forwarder.serve, and then nothing is applied and this
+  # exits 0. Terraform leaves a null output OUT of state, so the named read
+  # fails 'Output "..." not found' exactly as an unreadable state does (PR
+  # 1402); one unnamed `output -json` tells them apart: an object without a
+  # non-null value is off, a state terraform cannot read fails. Read here,
+  # AFTER the context checks above, so nothing below can send it to
+  # agents-staging. To files, not $(...): the status and the error are kept.
+  TSF_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-typesafe-fwd-apply.XXXXXX")"
+  trap 'rm -rf "${TSF_WORK}"' EXIT
+  TF_DIR="$(tf_root)"
+  if ! tf -chdir="${TF_DIR}" output -raw swarm_typesafe_fwd_manifest >"${TSF_WORK}/fwd.yaml" 2>"${TSF_WORK}/fwd.err" \
+      || [[ ! -s "${TSF_WORK}/fwd.yaml" ]]; then
+    if tf -chdir="${TF_DIR}" output -json >"${TSF_WORK}/outputs.json" 2>>"${TSF_WORK}/fwd.err" \
+        && jq -e --arg k swarm_typesafe_fwd_manifest \
+          'type == "object" and ((.[$k].value // null) == null or .[$k].value == "")' \
+          "${TSF_WORK}/outputs.json" >/dev/null 2>&1; then
+      info "no swarm-typesafe-fwd manifest (typesafe_forwarder.serve is off, or no swarm-typesafe-fwd digest); nothing about the TypeSafe forwarder is applied"
+      exit 0
+    fi
+    redact <"${TSF_WORK}/fwd.err" | sed -n '1,5p' | sed 's/^/     /' >&2
+    die "could not read terraform's swarm_typesafe_fwd_manifest output (above); nothing was applied."
+  fi
+  # swarm-egress's checks, and the graph service's: no placeholder left
+  # unfilled, no Kubernetes RBAC (the forwarder calls no Kubernetes API), no
+  # Secret (the key is read from Secret Manager by the pod's own identity,
+  # never shipped in a manifest that is previewed and diffed), and nothing
+  # outside swarm-system.
+  if grep -Eo '__[A-Z0-9_]+__' "${TSF_WORK}/fwd.yaml" >"${TSF_WORK}/fwd-placeholders"; then
+    PLACEHOLDER="$(head -n 1 "${TSF_WORK}/fwd-placeholders")"
+    die "the swarm-typesafe-fwd manifest carries an unrendered placeholder (${PLACEHOLDER}); nothing was applied."
+  fi
+  if grep -Eq '^kind:[[:space:]]*(Cluster)?Role(Binding)?[[:space:]]*$' "${TSF_WORK}/fwd.yaml"; then
+    die "the swarm-typesafe-fwd manifest carries Kubernetes RBAC; the forwarder holds none. Nothing was applied."
+  fi
+  if grep -Eq '^kind:[[:space:]]*Secret[[:space:]]*$' "${TSF_WORK}/fwd.yaml"; then
+    die "the swarm-typesafe-fwd manifest carries a Secret; the key is read from Secret Manager, never shipped in a manifest. Nothing was applied."
+  fi
+  if grep -E '^[[:space:]]+namespace:[[:space:]]' "${TSF_WORK}/fwd.yaml" \
+      | grep -Ev '^[[:space:]]+namespace:[[:space:]]+swarm-system[[:space:]]*$' >"${TSF_WORK}/fwd-foreign"; then
+    redact <"${TSF_WORK}/fwd-foreign" | sed -n '1,5p' | sed 's/^/     /' >&2
+    die "the swarm-typesafe-fwd manifest names a namespace other than swarm-system (above); nothing was applied."
+  fi
+  MANIFEST="$(cat "${TSF_WORK}/fwd.yaml")"
+  rm -rf "${TSF_WORK}"
+  info "rendering the TypeSafe forwarder  terraform output swarm_typesafe_fwd_manifest"
 else
-  [[ -n "${TENANT}" ]] || die "--tenant is required (or pass --policies, --swarm-system or --swarm-graph)"
+  [[ -n "${TENANT}" ]] || die "--tenant is required (or pass --policies, --swarm-system, --swarm-graph or --swarm-typesafe-fwd)"
 
   SCHEDULER_UID="$(uid_of "swarm-scheduler@${PROJECT_ID}.iam.gserviceaccount.com")"
   RECONCILER_UID="$(uid_of "swarm-reconciler@${PROJECT_ID}.iam.gserviceaccount.com")"
@@ -993,6 +1069,10 @@ if [[ "${CONFIRM}" -ne 1 ]]; then
   fi
   if [[ "${MODE}" == "swarm-graph" ]]; then
     dim "  --confirm applies it; scripts/roll-graph.sh --confirm also waits for deploy/swarm-graph"
+    dim "    and checks its pods run the manifest's digest"
+  fi
+  if [[ "${MODE}" == "swarm-typesafe-fwd" ]]; then
+    dim "  --confirm applies it; scripts/roll-typesafe-fwd.sh --confirm also waits for deploy/swarm-typesafe-fwd"
     dim "    and checks its pods run the manifest's digest"
   fi
   ok "dry run only. Re-run with --confirm to apply."
