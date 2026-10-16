@@ -86,7 +86,7 @@ import re
 import tempfile
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -102,7 +102,14 @@ from swarm_common.profiles import (
 )
 
 from .credentials import AccountPool, CredentialSource, credential_for
-from .judgment import DEFAULT_BACKEND, TYPESAFE_BACKEND, jev_dispatch, read_backend
+from .judgment import BACKENDS as JUDGMENT_BACKENDS
+from .judgment import (
+    DEFAULT_BACKEND,
+    SETTINGS_COLLECTION,
+    TYPESAFE_BACKEND,
+    jev_dispatch,
+    read_backend,
+)
 
 log = logging.getLogger(__name__)
 
@@ -790,6 +797,92 @@ def typesafe_forwarder_on(settings: Any, *, tenant_id: str, profile: Any, backen
             and getattr(settings, "live_browser_sidecar", False)):
         return False
     return backend == TYPESAFE_BACKEND
+
+
+#: THE RUNNERS THAT CARRY THE JEV CLIENT (`agent_worker.judge`, registered by
+#: runners/cliagent.py): the worker sets the judge up in `graphstage.prepare`,
+#: which does so only for these runners and never for an index run. RESTATED
+#: from `graphstage.GRAPH_RUNNERS` and `indexrun.INDEXER_PROFILE`, because the
+#: scheduler does not depend on the worker package;
+#: tests/unit/control_plane/test_typesafe_judge_on_gke.py holds them equal.
+JEV_CLIENT_RUNNERS = ("agent_worker.runners.claude_code", "agent_worker.runners.codex")
+JEV_CLIENT_EXCLUDED_PROFILES = ("indexer",)
+#: The worker's reading of the one settings document (`judge.attempt
+#: .judge_settings`): `code_intelligence.judgment_backend` when the block
+#: carries one, else the document's top-level `judgment_backend`.
+CODE_INTELLIGENCE_FIELD = "code_intelligence"
+JUDGMENT_BACKEND_FIELD = "judgment_backend"
+#: The DispatchError code of a TypeSafe judge held off Cloud Run.
+TYPESAFE_JUDGE_NEEDS_GKE = "typesafe_judge_needs_gke"
+
+
+def runs_jev_client(profile: Any) -> bool:
+    """Whether an attempt of `profile` can ask Jev at all."""
+    if str(getattr(profile, "name", "")) in JEV_CLIENT_EXCLUDED_PROFILES:
+        return False
+    argv = tuple(getattr(profile, "runner_argv", ()) or ())
+    return any(module in argv for module in JEV_CLIENT_RUNNERS)
+
+
+def judge_backend(doc: Any) -> str:
+    """The judgment backend the worker's judge will resolve from `doc`, the
+    tenant's `workspace_settings` document, in the worker's precedence. An
+    unknown or missing value is the worker's default, internal-jev."""
+    doc = doc if isinstance(doc, Mapping) else {}
+    block = doc.get(CODE_INTELLIGENCE_FIELD)
+    block = block if isinstance(block, Mapping) else {}
+    value = block.get(JUDGMENT_BACKEND_FIELD) if JUDGMENT_BACKEND_FIELD in block \
+        else doc.get(JUDGMENT_BACKEND_FIELD)
+    return value if isinstance(value, str) and value in JUDGMENT_BACKENDS else DEFAULT_BACKEND
+
+
+def read_judge_backend(db: Any, tenant_id: str) -> str | None:
+    """`judge_backend` of the tenant's stored document; None when unreadable,
+    which `typesafe_judge_needs_gke` treats as TypeSafe (it fails closed)."""
+    try:
+        snap = db.collection(SETTINGS_COLLECTION).document(tenant_id).get()
+        doc = (snap.to_dict() or {}) if snap.exists else {}
+    except Exception as exc:  # noqa: BLE001 - said by type, decided by the caller
+        log.warning("judge backend unreadable for tenant=%s: %s", tenant_id,
+                    type(exc).__name__)
+        return None
+    return judge_backend(doc)
+
+
+def typesafe_judge_needs_gke(settings: Any, *, tenant_id: str, profile: Any,
+                             backend: Backend, judgment: str | None) -> bool:
+    """Whether this attempt must NOT run as a Cloud Run Job, because its judge
+    would answer through TypeSafe (lane JUDGE-GKE, owner decision 2026-10-16
+    on #1347).
+
+    The forwarder that keeps the key out of the pod is an in-cluster Service,
+    so a TypeSafe judgment belongs on GKE. All four, FROM CONFIGURATION AND
+    THE STORED SETTING ONLY (invariant 10):
+
+      * the forwarder's switch family serves the tenant: `typesafe_forwarder_
+        enabled` and the tenant in `typesafe_forwarder_tenants` by exact name.
+        Off, routing is exactly what it was;
+      * the attempt would be a Cloud Run Job (`backend`, the catalogue's);
+      * the profile carries the Jev client (`runs_jev_client`);
+      * the workspace's judgment backend, read as the worker reads it
+        (`judge_backend`), is `typesafe`. `None` -- the document could not be
+        read -- counts as TypeSafe: the worker reads it again at setup, and an
+        unread setting is not evidence that it says otherwise.
+
+    It does not read the code-intelligence opt-in or the repository's
+    override: either can only turn the judge off, so ignoring them can hold
+    back an attempt that would not have judged, never let one through that
+    would.
+    """
+    if not getattr(settings, "typesafe_forwarder_enabled", False):
+        return False
+    if tenant_id not in tuple(getattr(settings, "typesafe_forwarder_tenants", ())):
+        return False
+    if backend is not Backend.CLOUD_RUN_JOB:
+        return False
+    if not runs_jev_client(profile):
+        return False
+    return judgment is None or judgment == TYPESAFE_BACKEND
 
 
 def with_browser_egress(job: dict[str, Any], *, bypass: Any) -> dict[str, Any]:
@@ -2591,10 +2684,26 @@ class BackendRouter:
     """Picks the dispatcher for a profile's resolved backend."""
 
     def __init__(self, *, cloud_run: Dispatcher | None, gke: Dispatcher | None,
-                 settings: Any) -> None:
+                 settings: Any, judgment: Callable[[str], str | None] | None = None) -> None:
         self._cloud_run = cloud_run
         self._gke = gke
         self._settings = settings
+        #: tenant id -> the judgment backend its worker's judge will resolve
+        #: (`read_judge_backend` in a deployment), None when unreadable. Unset
+        #: reads as unreadable: `cloud_run_refused` then fails closed.
+        self._judgment = judgment
+
+    def cloud_run_refused(self, *, tenant_id: str, profile: RunnerProfile,
+                          backend: Backend) -> bool:
+        """`typesafe_judge_needs_gke` for this attempt. The stored setting is
+        read only when everything else already says yes, so with the switch
+        off a dispatch reads nothing it did not read before."""
+        if not typesafe_judge_needs_gke(self._settings, tenant_id=tenant_id, profile=profile,
+                                        backend=backend, judgment=TYPESAFE_BACKEND):
+            return False
+        judgment = self._judgment(tenant_id) if self._judgment is not None else None
+        return typesafe_judge_needs_gke(self._settings, tenant_id=tenant_id, profile=profile,
+                                        backend=backend, judgment=judgment)
 
     def for_backend(self, backend: Backend) -> Dispatcher:
         if backend is Backend.CLOUD_RUN_JOB:
@@ -2617,6 +2726,26 @@ class BackendRouter:
     def dispatch(
         self, *, task: Task, lease: Lease, profile: RunnerProfile, tenant: Tenant, backend: Backend
     ) -> str:
+        # A TYPESAFE JUDGE NEVER RUNS AS A CLOUD RUN JOB (lane JUDGE-GKE). The
+        # scheduler routes by the catalogue's backend and has no runtime
+        # fallback, so a GKE profile reaches Cloud Run only through a rollback
+        # of its catalogue line (terraform/infra/locals.tf
+        # `cloud_run_fallback_profiles` keeps those Jobs), and a CLOUD_RUN_JOB
+        # profile by contract (claude-code-review, contract request 84). Either
+        # way the forwarder, an in-cluster Service, is out of reach. Refused
+        # BEFORE anything is created: the DispatchError returns the lease and
+        # the task to READY, where it holds no capacity (invariant 1) and no
+        # pool stays reserved (2). Each refusal is an attempt, so at the retry
+        # cap the task ends FAILED with this code: loud, never a Cloud Run
+        # judge. Rerouting it to GKE here is not an option: the lease
+        # reserved the Cloud Run backend's pool.
+        if self.cloud_run_refused(tenant_id=tenant.tenant_id, profile=profile, backend=backend):
+            raise DispatchError(
+                f"profile {profile.name} judges with TypeSafe in tenant {tenant.tenant_id} "
+                "and the forwarder serves that tenant, so it does not run as a Cloud Run "
+                "Job: the forwarder is reachable only from GKE (lane JUDGE-GKE)",
+                code=TYPESAFE_JUDGE_NEEDS_GKE,
+            )
         return self.for_backend(backend).dispatch(
             task=task, lease=lease, profile=profile, tenant=tenant
         )
@@ -2683,4 +2812,6 @@ def build_router(settings: Any, *, pool: AccountPool | None = None,
             settings, target=target,
             judgment=(lambda tenant_id: read_backend(db, tenant_id)) if db is not None else None),
         settings=settings,
+        # The same document, read as the worker's judge reads it (JUDGE-GKE).
+        judgment=(lambda tenant_id: read_judge_backend(db, tenant_id)) if db is not None else None,
     )

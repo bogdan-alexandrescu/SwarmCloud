@@ -130,9 +130,31 @@ promoted as the image `swarm-typesafe-fwd`. It spends only the secret the
 ticket names, read from its own project. A tenant-scope ticket that names
 another tenant's key is refused before anything is read. The caller's
 authorization header is replaced, never passed through. Nothing applies it
-to the cluster yet. The worker still reads the key as above until
-SEC-MIGRATE-TYPESAFE switches jev and the judge. The design's §3.5 lists what
-remains.
+to the cluster yet. SEC-MIGRATE-TYPESAFE switches jev and the judge to it on
+GKE, behind `SWARM_TYPESAFE_INJECT` (lanes TS-MIGRATE-POD and
+TS-MIGRATE-WORKER): with the switch on, no key is read or written in the pod,
+and jev and the judge reach TypeSafe through the worker's loopback shim.
+Switched off, the worker reads the key as above.
+
+**A TypeSafe judge runs on GKE only (lane JUDGE-GKE, owner decision
+2026-10-16).** The forwarder is an in-cluster Service, so a Cloud Run Job
+cannot reach it, and a judge there could only read the key file. Moving
+those judgments to GKE is what lets SEC-RETIRE remove every tenant worker's
+`-typesafe` grant. When the forwarder serves a tenant
+(`TYPESAFE_FORWARDER_ENABLED`, and the tenant in
+`TYPESAFE_FORWARDER_TENANTS`), the scheduler's router refuses to dispatch, as
+a Cloud Run Job, any attempt of a profile that carries the Jev client
+(claude-code, codex, claude-code-review, claude-code-browser) whose workspace
+judges with TypeSafe (`scheduler.dispatch.typesafe_judge_needs_gke`). It
+reads the stored backend as the worker's judge reads it, and treats a
+document it cannot read as TypeSafe. No GKE profile reaches Cloud Run today:
+the scheduler routes by the catalogue, and the `cloud_run_fallback_profiles`
+Jobs are idle rollbacks. So the guard holds only for a rollback, and for
+`claude-code-review`, which is CLOUD_RUN_JOB by contract (contract request
+84). A refusal returns the task to READY, holding nothing, and at the retry
+cap it ends FAILED with `typesafe_judge_needs_gke`. A park before the lease
+needs the drain loop, and is a question on the lane's PR. The design's §3.5
+lists what remains.
 
 ## 3. The one-time link
 
