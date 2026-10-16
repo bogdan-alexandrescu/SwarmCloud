@@ -24,12 +24,27 @@
    up a little, and Repository and When share what is left; what still does
    not fit wraps instead of being cut, because a scope or a cadence read in
    half is a wrong one. */
-.sc-table.is-schedules th[data-col='name'] { width: 18%; }
-.sc-table.is-schedules th[data-col='next'] { width: 104px; }
-.sc-table.is-schedules th[data-col='last'] { width: 112px; }
-.sc-table.is-schedules th[data-col='spend'] { width: 96px; }
+/* AND THEY HAD STILL ONLY 87px EACH (visual QA V167, 2026-10-16): at 1440 the
+   table is 1056px, and the sized columns took 692px of it plus the name's
+   18%. "example-org/example" broke mid-word, the cadence took four lines and
+   a row ~100px. Each sized column now holds its own words and no more: Next
+   run "in 3 h", Last run "succeeded / 20 h ago", Approvals "2 waiting", State
+   "auto-paused", Spend "partial $3.10" on its first line, and the actions
+   one "Run now" (a paused row's Resume goes under it). Repository and When
+   get ~155px each. A repository breaks after
+   its `/` (`slashBreaks`), and only a single word wider than the column is
+   broken inside, which is what `break-word` does and `anywhere` did not. */
+.sc-table.is-schedules th[data-col='name'] { width: 16%; }
+.sc-table.is-schedules th[data-col='next'] { width: 88px; }
+.sc-table.is-schedules th[data-col='last'] { width: 88px; }
+.sc-table.is-schedules th[data-col='spend'] { width: 112px; }
+.sc-table.is-schedules th[data-col='approvals'] { width: 80px; }
+.sc-table.is-schedules th[data-col='state'] { width: 104px; }
+.sc-table.is-schedules th[data-col='acts'] { width: 104px; }
 .sc-table.is-schedules td[data-label='Repository'] > .sc-cut,
-.sc-table.is-schedules td[data-label='When'] > .sc-cut { white-space: normal; overflow-wrap: anywhere; }
+.sc-table.is-schedules td[data-label='When'] > .sc-cut { white-space: normal; overflow-wrap: break-word; }
+.sc-table.is-schedules .sc-zone { overflow-wrap: break-word; }
+.sc-part { display: inline-block; max-width: 100%; overflow-wrap: break-word; }
 .sc-row > td {
   padding: 4px 8px; vertical-align: top;
   border-bottom: 1px solid var(--line);
@@ -54,7 +69,13 @@
 .sc-list-field { border: 0; padding: 0; margin: 0; min-width: 0; }
 .ap-filter { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 8px; }
 .ap-linked { margin: 0 0 12px; }
-.sc-spend { white-space: nowrap; }
+/* A SPEND WRAPS; ITS FIGURE DOES NOT (visual QA V166, V168). "partial $3.10 ·
+   2 attempts unreported" was one nowrap line in a 96px column and printed
+   over the State cell; in a firing's Cost cell it was clipped at "unreporte"
+   and pushed the table 7px sideways. The words wrap at their spaces; only
+   the dollar figure is kept whole. */
+.sc-spend { white-space: normal; overflow-wrap: break-word; }
+.sc-usd { white-space: nowrap; }
 .sc-work { display: flex; flex-wrap: wrap; gap: 4px 8px; }
 .sc-h2 { margin: 8px 0 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; }
 .sc-h3 { margin: 12px 0 4px; font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; }
@@ -116,12 +137,28 @@
 .sc-fact > dt { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 .sc-fact > dd { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
 .sc-wide { grid-column: 1 / -1; margin: 0; }
+/* THE HEAD'S ACTIONS AND ITS FACTS ARE APART (visual QA V241): the facts sat
+   flush under the buttons, and on a phone the 44px buttons touched "Type". */
+.sc-facts.sc-head { margin-top: 12px; }
+/* A parameter with structure (a custom-prompt `spec`), one row per key, its
+   text keeping its line breaks (visual QA V171). */
+.sc-pobj { display: grid; gap: 4px; margin: 2px 0 0; padding: 0; min-width: 0; }
+ol.sc-pobj { padding-left: 18px; }
+.sc-pobj > div { display: grid; grid-template-columns: minmax(80px, max-content) minmax(0, 1fr); gap: 8px; align-items: baseline; min-width: 0; }
+.sc-pobj dt { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); font-family: var(--mono); }
+.sc-pobj dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.sc-ptext { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 560px) {
+  .sc-pobj > div { grid-template-columns: minmax(0, 1fr); gap: 0; }
+}
 .sc-tabs { margin-top: 12px; }
 .sc-pane { padding-top: 8px; min-width: 0; }
 .sc-stops { margin: 0; padding-left: 18px; font-size: var(--t-meta); line-height: var(--lh-meta); }
 .sc-audit { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
 .sc-audit > li { font-size: var(--t-meta); line-height: var(--lh-meta); border-bottom: 1px solid var(--line); padding-bottom: 6px; }
 .sc-who { color: var(--text-dim); }
+/* An edit's changes, one line each (visual QA V243), never the raw JSON. */
+.sc-achanges { margin: 2px 0 0; padding-left: 18px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); overflow-wrap: anywhere; }
 
 /* ---- the Automate badge on the spine (§6.1) --------------------------------- */
 /* Where the Capacity dot sits, but a count: how many items wait in the inbox.
@@ -132,7 +169,12 @@
   font: 600 var(--t-micro)/var(--lh-micro) var(--mono); font-style: normal; text-align: center;
   font-variant-numeric: tabular-nums;
 }
-.sk-badge.is-unread { background: none; color: var(--ctl-absent); cursor: help; }
+/* THE RAIL'S INK, NOT THE ABSENT COLOUR (visual QA V236): `--ctl-absent` is a
+   brown-grey made for the page, and on the navy rail it was near-invisible.
+   The dash inherits the rail item's ink (8:1 on the rail's navy, white on a
+   lit item) with a dashed ring, the absent mark's second channel, so it never
+   reads as a count. */
+.sk-badge.is-unread { background: none; color: inherit; box-shadow: none; outline: 1px dashed currentColor; outline-offset: -1px; cursor: help; }
 
 /* ---- Overview's "Waiting on you", drawn only when something waits ---------- */
 .sc-waiting { border-left: 3px solid var(--s-warn); }
@@ -148,13 +190,21 @@
 .ap-inbox.is-split { display: grid; grid-template-columns: minmax(240px, 2fr) minmax(0, 3fr); gap: 16px; align-items: start; min-width: 0; }
 .ap-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; min-width: 0; }
 .ap-item { border-bottom: 1px solid var(--line); min-width: 0; }
-.ap-item.is-on > .ap-pick { background: var(--surface-2); }
+/* THE CHOSEN ITEM IS MARKED TWICE (visual QA V248): `--surface-2` alone was
+   barely a tint in the light theme. An accent bar on its edge and the accent
+   wash, and `aria-current` on the link for anyone not seeing either. */
+.ap-item.is-on > .ap-pick { background: var(--sk-acs); box-shadow: inset 3px 0 0 var(--sk-ac); }
 .ap-pick {
   display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: baseline;
   padding: 6px 4px; min-height: 32px; color: inherit; text-decoration: none;
   font-size: var(--t-meta); line-height: var(--lh-meta);
 }
 .ap-pane, .ap-detail { min-width: 0; display: grid; gap: 8px; align-content: start; }
+/* THE DETAIL STAYS IN VIEW (visual QA V169): with 40 items, choosing item 39
+   drew its detail at the top of the pane, ~575px above the viewport, and the
+   pane looked empty. The pane holds to the top of the scroller as the list
+   scrolls, and scrolls itself when the item is taller than the screen. */
+.ap-inbox.is-split > .ap-pane { position: sticky; top: 8px; max-height: calc(100vh - 16px); overflow-y: auto; overscroll-behavior: contain; }
 .ap-hold { border-left: 3px solid var(--s-warn); padding: 4px 8px; font-size: var(--t-meta); line-height: var(--lh-meta); display: grid; gap: 2px; }
 .ap-text { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
 .ap-files { margin: 0; padding-left: 18px; font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
@@ -197,8 +247,11 @@
      an ellipsis and whole in its title. The name cell gives its children to
      the row's grid; the cells line 2 repeats are not drawn. The built-in rows
      and a schedule's firings stay records, every cell named. */
+  /* THE NAME KEEPS HALF THE LINE (visual QA V235): a disabled row's Run now
+     wears its reason beside it, and the auto columns took everything, so the
+     name shrank to "Sch…". The reason wraps under its button instead. */
   .sc-table.is-schedules .sc-row {
-    display: grid; grid-template-columns: minmax(0, 1fr) auto auto;
+    display: grid; grid-template-columns: minmax(50%, 1fr) auto auto;
     grid-template-areas: 'name state acts' 'line line line';
     column-gap: 8px; align-items: center;
   }
@@ -210,8 +263,12 @@
   .sc-table.is-schedules .sc-c-name > .sc-name { grid-area: name; display: block; min-height: 44px; padding: 12px 0; }
   .sc-table.is-schedules .sc-c-name > .sc-type { display: none; }
   .sc-table.is-schedules .sc-c-state > .sc-why { display: none; }
+  .sc-table.is-schedules .sc-row-acts .c-btn-wrap { flex-direction: column; align-items: flex-end; text-align: right; }
+  /* Line 2 WRAPS (visual QA V173): cut to one line, the next run, the
+     outcome, the spend and what waits sat past the screen's edge, in a title
+     a touch screen cannot open. */
   .sc-table.is-schedules .sc-c-name > .sc-line2 {
-    grid-area: line; display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    grid-area: line; display: block; min-width: 0; white-space: normal; overflow-wrap: anywhere;
     font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim);
   }
   .sc-row-acts .c-btn, .sc-head-row .c-btn { min-height: 44px; }
@@ -276,6 +333,20 @@
 /* Greyed by a dashed edge and the dim ink, never by opacity: the reason on the
    tile is the one thing it says, so it keeps its contrast. */
 .sc-tile.is-off { cursor: not-allowed; border-style: dashed; background: none; color: var(--text-dim); }
+/* READ-ONLY IS DRAWN AS READ-ONLY (visual QA V247): Type on an edit, Plan
+   approval, Merge "auto" and a parameter the form cannot write were boxes
+   exactly like the editable ones. No fill and a dashed edge, the greyed
+   tile's language, and the text keeps its contrast. */
+.sc-form .c-inp[readonly] { background: none; border-style: dashed; cursor: default; }
+/* A shown-only text grows to its WRAPPED lines (`rows` counts the stored
+   ones, so in the 216px column the last line was cut under the edge), to
+   twelve lines, then scrolls. A browser without `field-sizing` keeps `rows`. */
+.sc-form textarea.c-inp[readonly] { padding: 6px 10px; resize: none; font-family: var(--mono); field-sizing: content; max-height: calc(12lh + 14px); }
+/* A refused cadence is the bad ink, not the hint's grey (visual QA V244). */
+.sc-refused { color: var(--bad-ink); font-weight: 600; }
+/* "08:00 AM your time" moves as one piece (visual QA V246). */
+.sc-next .sc-sub.sc-yours { white-space: nowrap; }
+.sc-edit { display: grid; gap: 8px; min-width: 0; }
 .sc-edit-cols { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; align-items: start; min-width: 0; }
 .sc-edit-main { display: grid; gap: 8px; min-width: 0; }
 .sc-edit-side { display: grid; gap: 12px; min-width: 0; position: sticky; top: 0; }
