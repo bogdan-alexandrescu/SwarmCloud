@@ -41,6 +41,7 @@ from .routes import (
     forgeperms,
     gittokens,
     gittools,
+    graph_ticket,
     health,
     issues,
     judgment,
@@ -254,6 +255,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # The TypeSafe forwarder's attempt ticket (docs/design/workspace-secrets.md
     # §3.5, lane SEC-INJECT-A): worker-only, proven and fenced as above.
     app.include_router(typesafe_ticket.router)
+    # The shared graph service's attempt ticket (docs/design/graph-service.md
+    # §3.1, lane GS-TICKET): worker-only, proven and fenced as above.
+    app.include_router(graph_ticket.router)
     # The notification feed (#1206, NOTIF-API; docs/notifications.md): the
     # caller's own items, derived on each read from the records above, and
     # one document of read marks per person.

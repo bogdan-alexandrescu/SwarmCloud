@@ -537,6 +537,19 @@ class ApiSettings:
     #: because a ticket here spends a person's or a workspace's key rather than
     #: platform bandwidth. Clamped to the forwarder's 60-900 s.
     typesafe_ticket_seconds: int = 300
+    #: THE SHARED GRAPH SERVICE (docs/design/graph-service.md §3.2; lane
+    #: GS-TICKET, part of #1384). `swarm-graph-ticket-key`, from
+    #: SWARM_GRAPH_TICKET_KEY by Secret Manager reference: what the attempt
+    #: graph ticket is MAC'd with, its own key so a graph-service compromise
+    #: cannot mint an egress or TypeSafe ticket. Empty means no graph service:
+    #: the route answers 503 and the worker stages as it does today. Excluded
+    #: from the repr, as `typesafe_fwd_key` is.
+    graph_ticket_key: str = field(default="", repr=False)
+    #: A graph ticket's life. Ten minutes, the egress ticket's: a ticket here
+    #: reads only the graph its attempt is already entitled to read (§3.2), so
+    #: it need not be as short as the TypeSafe ticket's. Clamped to the
+    #: service's 60-900 s.
+    graph_ticket_seconds: int = 600
     #: GRANT ATTESTATION (docs/design/workspace-secrets.md, "What
     #: SEC-GRANT-ATTEST built"; owner decision 2026-10-15). `swarm-workspace-
     #: grant-key`, from SWARM_WORKSPACE_GRANT_KEY by Secret Manager reference
@@ -788,6 +801,8 @@ class ApiSettings:
             or "us",
             typesafe_fwd_key=os.environ.get("SWARM_TYPESAFE_FWD_KEY", "").strip(),
             typesafe_ticket_seconds=_int("TYPESAFE_TICKET_SECONDS", 300),
+            graph_ticket_key=os.environ.get("SWARM_GRAPH_TICKET_KEY", "").strip(),
+            graph_ticket_seconds=_int("GRAPH_TICKET_SECONDS", 600),
             workspace_grant_key=os.environ.get("SWARM_WORKSPACE_GRANT_KEY", "").strip(),
             workspace_grant_key_previous=os.environ.get(
                 "SWARM_WORKSPACE_GRANT_KEY_PREVIOUS", "").strip(),
