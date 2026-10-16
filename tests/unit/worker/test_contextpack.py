@@ -19,6 +19,13 @@ What the design's "Tests prove" column asks, each a test below:
   * rows on a path changed since the index are marked stale;
   * CONTEXT.md is outside the checkout and the checkout stays clean.
 
+Over the shared graph service (graph-service.md §7, lane GS-PACK): a pinned
+graph read through `build.ServiceSource` gives the staged pack byte for byte,
+from the `index` tool alone, writing no shard to disk; a shard that cannot
+arrive whole is refused, never read short; the ticket goes as the bearer and
+nowhere else; `arm` is read from the stager's `decision`; and `pack.json`
+counts `shards_read` and `bytes_read` on both deliveries.
+
 MUTATIONS, each turning a named test red: drop the always-section in
 `render.render_markdown` (never-cut); render ranked rows without the budget
 check (cap); skip `_mark_stale` in `build` (stale); resolve the context
@@ -818,9 +825,11 @@ def test_a_refused_ticket_is_one_plain_line_and_never_echoes_the_ticket(
         monkeypatch.delenv(contextpack.CONTEXT_ENV, raising=False)
         monkeypatch.setenv(build.SERVICE_URL_ENV, http.url)
         monkeypatch.setenv(build.TICKET_FILE_ENV, str(ticket_file))
-        line = contextpack.prepare(_ctx(work, tmp_path, {"prompt": "x"}), work / "repo")
+        ctx = _ctx(work, tmp_path, {"prompt": _step_prompt(["src/pkg/store.py"])})
+        line = contextpack.prepare(ctx, work / "repo")
     finally:
         http.close()
+    assert http.headers, "the service was never asked"
     assert line is not None and "could not be built" in line and "\n" not in line
     assert "ticket" in line and ticket not in line
 
@@ -832,7 +841,8 @@ def test_a_service_pin_with_no_ticket_file_named_is_one_plain_line(
     _as_service_pin(work)
     monkeypatch.delenv(contextpack.CONTEXT_ENV, raising=False)
     monkeypatch.delenv(build.TICKET_FILE_ENV, raising=False)
-    line = contextpack.prepare(_ctx(work, tmp_path, {"prompt": "x"}), work / "repo")
+    line = contextpack.prepare(_ctx(work, tmp_path, {"prompt": _step_prompt(["src/pkg/store.py"])}),
+                               work / "repo")
     assert line is not None and "could not be built" in line and "ticket" in line
 
 
