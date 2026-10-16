@@ -386,9 +386,12 @@ In this order:
    registration whose `on_change` is `webhook` ("poll and push");
    `poll` stays poll only, and `off` neither. Set it with the registration's
    `PATCH /v1/repositories/<repo_id>` and the body
-   `{"index": {"on_change": "webhook"}}` (`repositories.IndexSettings`). The
-   console's register form still shows **Webhook** greyed out ("phase 3");
-   enabling it there is a swarm-ui change this lane did not make.
+   `{"index": {"on_change": "webhook"}}` (`repositories.IndexSettings`); a
+   script uses that same call. The console offers it too (HOOKS-UI, PR 1410):
+   the register form's **Change trigger** offers **Webhook · on push to the
+   default branch** at registration, and a repository's settings change it in
+   place with that same PATCH, carrying `index.on_change` alone. Both show the
+   note that the App's webhook must be ticked (this step).
    `min_change_interval_minutes` (default 30) applies to pushes as well, so a
    busy default branch does not queue a run per merge.
 

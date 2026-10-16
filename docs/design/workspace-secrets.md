@@ -562,32 +562,61 @@ change to both, and `swarm_api.typesafe_ticket` is the reference.
 
 **Still to do.**
 
-* **SEC-INJECT-B, what is left:** its apply in `kubernetes/apply.sh
-  --swarm-system` (`terraform output -raw swarm_typesafe_fwd_manifest`, with
-  the placeholder, RBAC and namespace checks swarm-egress's block makes), a
-  roll script like `scripts/roll-egress.sh`, and the release step that runs it.
-  Also `swarm-typesafe-fwd` in `security.yml`'s scheduled image scan. The
-  workflow changes are the owner's (lanes cannot push workflow files); the
-  lines are in SEC-INJECT-B's pull request. The other two were outside the
-  lane's territory and went to the owner as a question. Until they land, the
-  forwarder is built and promoted but nothing applies it.
-* **SEC-MIGRATE-TYPESAFE:** the dispatcher labels a TypeSafe-backed pod
-  `swarm-typesafe: inject`; the tenant-side egress policy
+* **SEC-INJECT-B, what is left:** the release and hotfix step only. Its
+  apply is built (TS-ROLL, PR 1414): `kubernetes/apply.sh --swarm-typesafe-fwd`
+  is its own mode, as `--swarm-graph` is, not part of `--swarm-system`. It
+  reads `terraform output -raw swarm_typesafe_fwd_manifest` and refuses a
+  manifest with a placeholder, RBAC, a Secret or an object outside
+  swarm-system. `scripts/roll-typesafe-fwd.sh`, in the shape of
+  `scripts/roll-graph.sh`, applies through it, waits for the rollout and
+  proves the pods run the rendered digest. While the output is null (until
+  `typesafe_forwarder.serve` is set, which no environment sets today) it
+  prints one notice and exits 0. `swarm-typesafe-fwd` is in `security.yml`'s
+  scheduled image scan. The step that runs the roll script in `release.yml`
+  and `hotfix.yml` is PR 1417, a workflow change the owner pushes (lanes
+  cannot push workflow files). It was not on main when this was written
+  (2026-10-16: neither workflow names `roll-typesafe-fwd.sh`). Until it lands,
+  the forwarder is built and promoted, and nothing but an operator running
+  the roll script by hand applies it.
+* **SEC-MIGRATE-TYPESAFE, what is built:** both halves, behind
+  `SWARM_TYPESAFE_INJECT`, which is **off**. The pod side (TS-MIGRATE-POD, PR
+  1409): the dispatcher labels a TypeSafe-backed pod `swarm-typesafe: inject`
+  and sets the variable on the same pods, so the label and the variable always
+  arrive together. The tenant-side egress policy
   (`network-policies/allow-typesafe-fwd.yaml`, built like
-  `allow-judge-egress.yaml`) joins `render.py`'s `TENANT_FILES` and the
-  workspace deployer's scope policy, and the owner re-applies
-  `kubernetes/apply.sh --policies` before the release that renders it (or the
-  deployer is refused the new policy). The worker asks for and renews the
-  ticket the way it renews the egress ticket. jev-browser reads
-  `TYPESAFE_API_KEY` once at start and a ticket lives minutes, so the ticket
-  must reach jev per request, through a loopback shim in the worker or a file
-  jev re-reads; that is SEC-MIGRATE's decision. The jev wrapper stops
-  dropping `JEV_API_URL` for the TypeSafe backend and points it at the
-  forwarder, and `judge/settings.py`'s `TYPESAFE_URL` follows. The forwarder
-  is reachable only from GKE pods, so a judge running on Cloud Run cannot use
-  it: that needs a decision before the judge moves. `jevkey.prepare` then stops
-  writing the key file, and SEC-RETIRE removes the tenant workers' `-typesafe`
-  grants.
+  `allow-judge-egress.yaml`) is in `render.py`'s `TENANT_FILES` and in the
+  workspace deployer's scope policy
+  (`kubernetes/policies/workspace-provisioner-scope.yaml`). The worker side
+  (TS-MIGRATE-WORKER, PR 1411, `agent_worker.typesafe_shim`): the worker asks
+  swarm-api for the ticket (`POST /v1/attempts/{attempt_id}/typesafe-ticket`)
+  and renews it the way it renews the egress ticket. Because jev-browser reads
+  `TYPESAFE_API_KEY` once at start and a ticket lives minutes, the ticket
+  reaches jev per request through a loopback shim in the worker: jev is handed
+  the shim's URL and a local token the shim checks and replaces, so no
+  TypeSafe key is in its process. The switch is honoured only on GKE; a Cloud
+  Run worker with it set keeps today's key file. Switched off, the key file,
+  the judge's key and `JEV_API_URL` are exactly what they were.
+
+  **What is left**, none of it optional:
+  * The jev wrapper's passthrough, PR 1418. The image's wrapper still drops
+    `JEV_API_URL` for the TypeSafe backend; `runners/jev_launch.py` refuses to
+    start jev against a wrapper that does not carry `SHIM_PASSTHROUGH_MARKER`,
+    rather than let it send to api.typesafe.ai with no key. So until the new
+    wrapper ships, a pod with the switch on gets no TypeSafe judgment at all.
+  * The owner re-applies `kubernetes/apply.sh --policies` before the release
+    that renders `allow-typesafe-fwd.yaml`, or the deployer is refused the
+    new policy.
+  * The owner sets `typesafe_forwarder.serve`, once `swarm-typesafe-fwd-key`
+    has a version and the image a digest (it renders the forwarder's manifest
+    and puts `SWARM_TYPESAFE_FWD_KEY` on swarm-api), then adds the tenant to
+    `typesafe_forwarder.tenants` and sets `enabled`. Before that nothing is
+    forwarded and no pod is labelled: the dispatcher reads the same `enabled`
+    and `tenants`, rendered "false" unless the forwarder is served.
+  * The forwarder is reachable only from GKE pods, so a judge running on
+    Cloud Run cannot use it: that needs a decision before the judge moves.
+  * Only then does `jevkey.prepare` stop writing the key file, and SEC-RETIRE
+    remove the tenant workers' `-typesafe` grants. Until both happen, every
+    tenant worker can still read its TypeSafe key, whatever the switch says.
 
   What the built forwarder asks of that lane:
   * The URL is exactly

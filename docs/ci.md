@@ -3927,12 +3927,14 @@ demonstrate that — not by running the mutation here.
 
 The laptop rule above does not bind an agent in a SwarmCloud container
 (CLAUDE.md, "A SwarmCloud agent is not this machine"): it runs the unit tests
-for its area, then this one command:
+for its area, then this one command (as `--shard` parts when its selection
+is heavy, below):
 
 ```bash
 scripts/changed-guards.sh            # diff = origin/main...HEAD + work tree
 scripts/changed-guards.sh --list     # print the selection, run nothing
 scripts/changed-guards.sh --base <rev> | --files <list>|-
+scripts/changed-guards.sh --shard k/n  # run the k-th of n parts of the selection
 ```
 
 **Why.** On 2026-10-05, 33 of 131 lane PRs (25%) were red on their first CI
@@ -3951,10 +3953,33 @@ text names a changed path by repo-relative path or basename. A generic basename
 half the suite. It runs them in **one** `pytest -q -n auto -p no:warnings` call
 (collecting `tests/unit/scripts` whole costs ~135 s, so files, not
 directories), then `scripts/lib/check-contract-parity.sh`, with 540 s and 60 s
-deadlines so the whole stays under the ten minutes a lane allows a command. It
+deadlines so one call stays under the ten minutes a lane allows a command. It
 prints the last lines of the output and keeps the full log only on failure. An
 empty diff runs nothing and exits 0; a base that does not resolve exits 2
 rather than reading as an empty diff.
+
+**A heavy selection runs in parts, each under the 540 s limit** (#1334, PR
+1415). The 540 s is not raised for a selection that needs longer: lane
+GS-HOOKS's 79 files (2,603 tests) all passed in 595 s on 6 cores, and past
+600 s an agent's own command limit kills the run with no `ran past` line and
+no faulthandler frames to name what held it. So the script weighs its
+selection in CI-seconds from `tests/unit/scripts/unit_test_durations.json` (a
+file with no weight counts at the median) and, past `SHARD_HINT_WEIGHT` (540
+CI-seconds, about 400 s in a 6-core container, measured 2026-10-16 at ~0.73 s
+a CI-second), it does not make one call:
+
+* **Without `--shard`** it warns, then runs the selection as
+  ⌈weight / 540⌉ parts (at least two), **one after another**, each its own
+  pytest call under the 540 s limit, so a hang still ends and a passing
+  selection completes however many files it names. The whole run is then up
+  to parts × 540 s: longer than ten minutes, by design. It exits 1 if any part
+  failed.
+* **`--shard k/n`** runs the k-th of n parts alone. The parts are cut the way
+  CI cuts its unit shards (longest file first onto the lightest part), and the
+  cut is deterministic, so the n commands together run every selected file
+  once; the contract-parity check runs in part 1 only. An agent whose command
+  limit is ten minutes runs the parts this way, as n separate commands: the
+  warning prints the exact `--shard 1/n ... --shard n/n` lines to run.
 
 **When it runs past 540 s it names the test** (box 102 of #888: lanes SPEC-GKE
 and BRIDGE-BACKEND hit the cap on 2026-10-08 and nothing said which test held
