@@ -146,6 +146,15 @@ def env_reads(path):
                 inner = fn.value
                 if fn.attr == "get" and isinstance(inner, ast.Attribute) and inner.attr == "environ":
                     matched = True
+                # `(os.environ if environ is None else environ).get("KEY")`: a
+                # reader that takes an injectable mapping for its tests
+                # (swarm_api.workspaces.gate_from_env, WORKSPACE_GATE). Until
+                # W10 terraform did not set that key, so missing it was silent.
+                elif fn.attr == "get" and isinstance(inner, ast.IfExp) and any(
+                    isinstance(arm, ast.Attribute) and arm.attr == "environ"
+                    for arm in (inner.body, inner.orelse)
+                ):
+                    matched = True
                 elif fn.attr == "getenv":
                     matched = True
             elif isinstance(fn, ast.Name) and fn.id in helpers:

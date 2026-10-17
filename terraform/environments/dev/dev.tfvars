@@ -685,6 +685,24 @@ deployer_service_account = "swarm-tf-deployer@saga-agents-staging.iam.gserviceac
 # dispatches; the sweep and the stuck alert keep reporting waiting records.
 workspace_apply_publish = true
 
+# The personal-workspace submission gate (swarm-api WORKSPACE_GATE, #847 WD8).
+# ON in dev from 2026-10-13 (W10). WD8's precondition, one real approval end
+# to end through the job, was met that morning: devops@saga.xyz requested
+# w-7f9285 (u-devops) 2026-10-12 22:31Z, an admin approved it 2026-10-13
+# 00:02Z, the Cloud Run job swarm-workspace-apply ran A1-A9 05:03-05:05Z and
+# the workspace reached ready at 05:05Z, and eng:devops-main was then lent to
+# it (docs/multi-tenancy.md section 7.5). docs/workspaces.md section 5.5 also
+# asks, in the same step, for a task of that person's to have run and for
+# u-bogdan and every other existing personal tenant with resources to hold a
+# ready record: the owner confirms both before merging this, because on, a
+# personal tenant without a ready record is refused. On, a PERSON's
+# submission into their own tenant is refused until their workspace is ready
+# and has a Claude account (403 WORKSPACE_NOT_READY / NO_CLAUDE_ACCOUNT), and
+# swarm-api no longer writes tenants/u-* on first sight. Group submissions are never gated
+# (WD7). If it refuses people it should not, set false: the next release
+# turns it off, and no workspace record changes.
+workspace_gate = true
+
 # The live browser's search tool (swarm-api SEARCH_TOOL_ENABLED /
 # SEARCH_PROVIDER, docs/search-tool.md, #1030). OFF in dev as of 2026-10-14:
 # the owner chose Brave and "add it (off by default)" on 2026-10-13. It turns on
