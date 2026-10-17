@@ -2329,6 +2329,16 @@ def _bounded_error(error: str | None) -> str | None:
     return error if error is None else error[:_MAX_ERROR_CHARS]
 
 
+def _route_reason(value: str) -> str:
+    """A retry's cause or a release's reason, in the routes' alphabet
+    (`attemptstate._REASON`, `[A-Za-z0-9_.:-]{1,96}`). Every one the worker
+    writes today is already in it; one that is not is written with its other
+    characters as `_` rather than refused, which would end the attempt as a
+    crash on its way out."""
+    cleaned = re.sub(r"[^A-Za-z0-9_.:-]", "_", value)[:96]
+    return cleaned or "unspecified"
+
+
 class _NoTransactions:
     """A `RemoteControlPlane`'s `TransactionRunner`: there is no Firestore
     client to run one on. A caller still reaching into `ControlPlane`'s
@@ -2921,7 +2931,7 @@ class RemoteControlPlane(ControlPlane):
         if self._lease_released:
             return False
         try:
-            answer = self._post("release", {"reason": reason}, call=None)
+            answer = self._post("release", {"reason": _route_reason(reason)}, call=None)
         except FencedWriteRefused as exc:
             self._log.warning("lease not released: it is not this attempt's", reason=str(exc))
             answer = {}
@@ -3066,7 +3076,7 @@ class RemoteControlPlane(ControlPlane):
             "request_id": new_request_id(),
             "exit_code": exit_code,
             "error": _bounded_error(error) or "",
-            "cause": cause,
+            "cause": _route_reason(cause),
             "retry_delay_seconds": max(0, min(int(retry_delay_seconds), 86_400)),
             "detail": dict(detail or {}),
             "end_cause": end_cause.value if end_cause is not None else None,

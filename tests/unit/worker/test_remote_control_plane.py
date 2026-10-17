@@ -528,6 +528,16 @@ def test_fail_retryably_picks_the_state_the_direct_path_picks(api_db, opener, ex
         assert task["completed_at"] is not None
 
 
+def test_a_cause_outside_the_routes_alphabet_is_written_not_refused(api_db, opener):
+    control = _running(api_db, opener)
+
+    target = control.fail_retryably(exit_code=1, error="boom", cause="runner said: no way")
+
+    assert target is TaskState.READY
+    (event,) = events(api_db, kind="retrying")
+    assert event["detail"]["cause"] == "runner_said:_no_way"
+
+
 def test_fetch_task_reads_the_live_fence_over_the_opened_spec(api_db, opener):
     control = _running(api_db, opener, input={"prompt": "2026-01-01T00:00:00+00:00"})
     _task(api_db)["cancel_requested"] = True
