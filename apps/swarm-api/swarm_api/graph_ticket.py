@@ -65,6 +65,7 @@ from .attemptcontext import repository_key
 from .childkey import AttemptTuple, verify_proof
 from .children import ChildService, _lease_is_live, parse_body
 from .codeintel import OFF, CodeIntelligenceStore, effective_context
+from .judgment import settings_mac
 from .errors import ApiError, Conflict, Forbidden, ValidationFailed
 from .live import LiveSessionOpen
 from .repoindex import VERSIONS_COLLECTION
@@ -272,7 +273,8 @@ class GraphTicketService:
         # The fence held, so the task's tenant IS the attempt's.
         tenant_id = attempt.tenant_id
         repo_id, registration = self._registration(tenant_id, task)
-        settings = CodeIntelligenceStore(self._db, now=self._now).get(tenant_id)
+        settings = CodeIntelligenceStore(self._db, now=self._now,
+                                         mac=settings_mac(self._settings)).get(tenant_id)
         if effective_context(settings, registration) == OFF:
             raise Forbidden(
                 "graph context is off for this repository in this workspace's code-intelligence "

@@ -58,7 +58,7 @@ from .childkey import AttemptTuple, verify_proof
 from .children import ChildService, _lease_is_live, parse_body
 from .errors import ApiError, Conflict, Forbidden, ValidationFailed
 from .gittokens import secret_name_for
-from .judgment import TYPESAFE_BACKEND, JudgmentSettings
+from .judgment import TYPESAFE_BACKEND, JudgmentSettings, settings_mac
 from .live import LiveSessionOpen
 from .provider_keys import (
     TENANT,
@@ -307,7 +307,8 @@ class TypesafeTicketService:
         # The backend is the SIGNED choice for a tenant cut over: a worker's
         # forged `typesafe` reads as the default and is refused here.
         tenant_id = attempt.tenant_id
-        backend = JudgmentSettings(self._db, now=self._now).read(tenant_id)["judgment_backend"]
+        backend = JudgmentSettings(self._db, now=self._now, mac=settings_mac(self._settings)).read(
+            tenant_id)["judgment_backend"]
         if backend != TYPESAFE_BACKEND:
             raise _refuse(TypesafeBackendOff(
                 "this workspace's judgment backend is not TypeSafe (or its choice does not carry "

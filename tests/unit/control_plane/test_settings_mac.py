@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import dataclasses
 import hashlib
 import hmac
 import secrets
@@ -62,18 +63,24 @@ def reference_verifies(key: str, tenant_id: str, block: str, fields: dict) -> bo
     return hmac.compare_digest(base64.b64decode(mac["sig"]), want)
 
 
+def configure(ctx, **mac) -> None:
+    """Give the running app these ApiSettings fields (settings_key,
+    settings_key_previous, settings_mac_tenants): the routes build each
+    reader from `ctx.settings` per request, as a deployment's are built from
+    the settings it started with."""
+    ctx.settings = dataclasses.replace(ctx.settings, **mac)
+
+
 @pytest.fixture
-def key(monkeypatch) -> str:
+def key(api_context) -> str:
     value = new_key()
-    monkeypatch.setenv(judgment.SETTINGS_KEY_ENV, value)
-    monkeypatch.delenv(judgment.SETTINGS_KEY_PREVIOUS_ENV, raising=False)
-    monkeypatch.delenv(judgment.SETTINGS_MAC_TENANTS_ENV, raising=False)
+    configure(api_context, settings_key=value)
     return value
 
 
 @pytest.fixture
-def cut_over(monkeypatch, key) -> str:
-    monkeypatch.setenv(judgment.SETTINGS_MAC_TENANTS_ENV, f"{CAROL_TENANT},eng")
+def cut_over(api_context, key) -> str:
+    configure(api_context, settings_mac_tenants=(CAROL_TENANT, "eng"))
     return key
 
 
@@ -174,8 +181,7 @@ def test_all_three_blocks_of_one_document_verify_together(client, seeded, key):
     assert reference_verifies(key, "eng", "code_intelligence", stored["code_intelligence"])
 
 
-def test_with_no_key_a_write_is_what_it_was(client, seeded, monkeypatch):
-    monkeypatch.delenv(judgment.SETTINGS_KEY_ENV, raising=False)
+def test_with_no_key_a_write_is_what_it_was(client, seeded):
     assert put_backend(client, "eng", "typesafe").status_code == 200
     assert put_merge(client, "eng", {"mode": "train"}).status_code == 200
     assert put_ci(client, "eng", {"jev": True}).status_code == 200
@@ -236,9 +242,11 @@ def test_a_tenant_cut_over_reads_a_forged_block_as_unset(client, seeded, cut_ove
     ci = get_ci(client, "eng")
     assert ci["jev"] is False and ci["context"] == "inherit"
     assert ci["graph_delivery"] == "inherit"
-    store = mergesettings.MergeSettingsStore(seeded, now=lambda: None)
+    mac = judgment.SettingsMac(keys=(cut_over,), tenants=("eng",))
+    store = mergesettings.MergeSettingsStore(seeded, now=lambda: None, mac=mac)
     assert store.mode_for("eng", None) == "direct"
-    assert codeintel.CodeIntelligenceStore(seeded, now=lambda: None).get("eng").jev is False
+    assert codeintel.CodeIntelligenceStore(seeded, now=lambda: None, mac=mac).get("eng").jev \
+        is False
 
 
 def test_a_tenant_cut_over_reads_its_signed_settings(client, seeded, cut_over):
@@ -262,18 +270,17 @@ def test_a_signed_value_changed_afterwards_or_copied_from_another_tenant_is_unse
 
 
 def test_a_mac_under_the_previous_key_still_verifies_during_a_rotation(client, seeded, cut_over,
-                                                                     monkeypatch):
+                                                                     api_context):
     assert put_backend(client, "eng", "typesafe").status_code == 200
-    monkeypatch.setenv(judgment.SETTINGS_KEY_PREVIOUS_ENV, cut_over)
-    monkeypatch.setenv(judgment.SETTINGS_KEY_ENV, new_key())
+    configure(api_context, settings_key=new_key(), settings_key_previous=cut_over)
     assert get_backend(client, "eng") == "typesafe"
-    monkeypatch.delenv(judgment.SETTINGS_KEY_PREVIOUS_ENV)
+    configure(api_context, settings_key_previous="")
     assert get_backend(client, "eng") == judgment.DEFAULT_BACKEND
 
 
-def test_a_cut_over_tenant_with_no_key_fails_closed(client, seeded, cut_over, monkeypatch):
+def test_a_cut_over_tenant_with_no_key_fails_closed(client, seeded, cut_over, api_context):
     assert put_backend(client, "eng", "typesafe").status_code == 200
-    monkeypatch.delenv(judgment.SETTINGS_KEY_ENV)
+    configure(api_context, settings_key="")
     assert get_backend(client, "eng") == judgment.DEFAULT_BACKEND
 
 
@@ -286,10 +293,10 @@ def test_a_malformed_mac_never_verifies(key, bad):
 
 
 def test_the_cutover_list_takes_names_or_everyone():
-    assert not judgment.mac_enforced("eng", {})
-    assert not judgment.mac_enforced("eng", {judgment.SETTINGS_MAC_TENANTS_ENV: "research"})
-    assert judgment.mac_enforced("eng", {judgment.SETTINGS_MAC_TENANTS_ENV: "research, eng"})
-    assert judgment.mac_enforced("eng", {judgment.SETTINGS_MAC_TENANTS_ENV: "*"})
+    assert not judgment.mac_enforced("eng", ())
+    assert not judgment.mac_enforced("eng", ("research",))
+    assert judgment.mac_enforced("eng", ("research", " eng "))
+    assert judgment.mac_enforced("eng", ("*",))
 
 
 def test_the_cutover_ships_empty_and_the_key_id_says_nothing_of_the_key(key):
@@ -411,11 +418,10 @@ def test_one_tenant_at_a_time_and_never_without_a_key():
         judgment.resign_workspace_settings(db, "", apply=True)
 
 
-def test_a_resigned_document_reads_the_same_once_cut_over(client, seeded, monkeypatch):
+def test_a_resigned_document_reads_the_same_once_cut_over(client, seeded, api_context):
     key = new_key()
     legacy(seeded)
-    monkeypatch.setenv(judgment.SETTINGS_KEY_ENV, key)
-    monkeypatch.setenv(judgment.SETTINGS_MAC_TENANTS_ENV, "*")
+    configure(api_context, settings_key=key, settings_mac_tenants=("*",))
     assert get_backend(client, "eng") == judgment.DEFAULT_BACKEND  # unsigned: unset
     judgment.resign_workspace_settings(seeded, key, apply=True)
     assert get_backend(client, "eng") == "typesafe"
