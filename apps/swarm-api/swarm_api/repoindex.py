@@ -126,6 +126,7 @@ from .forge import (
     urllib_probe_send,
 )
 from . import indexfailure
+from .forge_installation import InstallationSource, read_token
 from .gittokens import GitTokens
 from .json_masking import redact_json_window
 from .objects import ObjectAbsent, ObjectUnreadable
@@ -884,7 +885,7 @@ _ETAG = re.compile(r'^(W/)?"[\x21\x23-\x7e]{1,128}"$')
 
 def read_head_if_changed(
     record: Mapping[str, Any], tenant: Tenant, *, etag: str | None, known_sha: str | None,
-    tokens: ForgeTokens, forge: GitHubIssues,
+    tokens: ForgeTokens, forge: GitHubIssues, installations: InstallationSource | None = None,
 ) -> HeadRead:
     """The poll's read: `GET /repos/{o}/{r}/commits/{branch}`, conditional on the ETag.
 
@@ -898,13 +899,20 @@ def read_head_if_changed(
     the ETag is a header. The token resolves as `read_head`'s does (R2, with
     no repository token readable by swarm-api yet: the tenant's), goes to the
     one Authorization header, and the header map is cleared after the send.
+
+    `installations` (#1483): when the repository's owner has an App
+    installation, the poll reads as the App, on its quota, rather than as the
+    person whose token the tenant's slot holds. An owner with none, or a
+    mint that failed, keeps the tenant's token.
     """
     branch = record["default_branch"]
     what = f"the head of {record['owner']}/{record['repo']}@{branch}"
     url = f"{_repo_url(record)}/commits/{quote(branch, safe='/')}"
     if not is_pinned_host(url):
         raise IssueReadFailed(f"{what} is not on {GITHUB_API_HOST}; no token is sent there")
-    headers = github_headers(tokens.token_for(tenant))
+    headers = github_headers(
+        read_token(installations, tenant.tenant_id, str(record["owner"]), str(record["repo"]))
+        or tokens.token_for(tenant))
     headers["Accept"] = SHA_MEDIA_TYPE
     if etag and known_sha:
         headers["If-None-Match"] = etag
@@ -2005,8 +2013,10 @@ class RepoIndex:
         tokens: ForgeTokens,
         forge: GitHubIssues,
         now: Callable[[], datetime],
+        installations: InstallationSource | None = None,
     ) -> None:
         self._db = db
+        self._installations = installations
         self._store = store
         self._submissions = submissions
         self._inspection = inspection
@@ -2020,6 +2030,7 @@ class RepoIndex:
         return cls(
             ctx.db, store=ctx.store, submissions=ctx.submissions, inspection=ctx.inspection,
             tokens=ctx.forge_tokens, forge=ctx.forge, now=ctx.now,
+            installations=getattr(ctx, "forge_installations", None),
         )
 
     # -- references --------------------------------------------------------
@@ -2962,7 +2973,7 @@ class RepoIndex:
             etag = index.get("etag") if head and index.get("etag_sha") == head else None
             read = read_head_if_changed(
                 record, tenant, etag=etag, known_sha=head,
-                tokens=self._tokens, forge=self._forge,
+                tokens=self._tokens, forge=self._forge, installations=self._installations,
             )
             self._record_head(tenant_id, repo_id, read)
             report.read += 1

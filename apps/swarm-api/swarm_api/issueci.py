@@ -174,6 +174,7 @@ from .forgechecks import (
     required_status_checks,
 )
 from .forge import NoForgeCredential
+from .forge_installation import read_token
 from .forgewrite import (
     ForgeWriteNotFound,
     GitHubWriter,
@@ -1053,7 +1054,12 @@ def _visit_checking(ctx: Any, tenant_id: str, run: IssueRun, owner_auth: OwnerAu
     try:
         try:
             token = ctx.forge_tokens.token_for(_tenant(ctx, run.tenant_id))
-            pull, reading = _read_ci(writer, run, number, token)
+            # The CI read goes out as the App when the owner has an
+            # installation (#1483), so the read every CI_READ_SECONDS spends
+            # no person's quota; the merge and its gate below keep `token`.
+            pull, reading = _read_ci(writer, run, number, read_token(
+                getattr(ctx, "forge_installations", None), run.tenant_id,
+                run.issue.owner, run.issue.repo) or token)
         except Exception as exc:
             code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
             message = exc.message if isinstance(exc, ApiError) else f"the CI read failed ({code})"

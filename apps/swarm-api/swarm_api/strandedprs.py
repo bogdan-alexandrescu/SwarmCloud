@@ -119,6 +119,7 @@ from swarm_common.states import TERMINAL_STATES
 from .auth import AuthContext
 from .errors import ApiError, NotFound
 from .forge import NoForgeCredential, neutral_line
+from .forge_installation import read_token
 from .forgechecks import GREEN, NONE, RED, evaluate, required_status_checks
 from .forgewrite import GitHubWriter
 from .repositories import Repositories
@@ -809,6 +810,7 @@ def sweep_tenant(
     writer: GitHubWriter | None = getattr(ctx, "forge_writer", None)
     tokens = getattr(ctx, "forge_tokens", None)
     token = ""
+    reading = ""
     try:
         if registrations and (writer is None or tokens is None):
             report.failures.append({"repository": "*", "error": "forge_unconfigured"})
@@ -829,8 +831,13 @@ def sweep_tenant(
                 continue
             urls[repo] = str(registration.get("repository_url") or f"https://github.com/{repo}")
             ref = IssueRef(owner=owner, repo=name, number=1)  # names the repository only
+            # Every read below is the App's when the owner has an
+            # installation (#1483): the sweep spends no person's quota. The
+            # tenant's token is kept for an owner with none.
+            reading = read_token(getattr(ctx, "forge_installations", None), tenant_id,
+                                 owner, name) or token
             try:
-                pulls, pulls_cut = list_open_pulls(writer, ref, token)
+                pulls, pulls_cut = list_open_pulls(writer, ref, reading)
             except Exception as exc:  # noqa: BLE001 -- one repository's failure is its own
                 report.failures.append({"repository": repo, "error": _code(exc)})
                 continue
@@ -855,7 +862,7 @@ def sweep_tenant(
                 }:
                     report.in_flight += 1
                     continue
-                verdict, ci, head = _judge(writer, ref, pull, merges, token, rules_by_base,
+                verdict, ci, head = _judge(writer, ref, pull, merges, reading, rules_by_base,
                                            report, repo)
                 if verdict is None:
                     report.in_flight += 1
@@ -865,14 +872,15 @@ def sweep_tenant(
                     continue
                 report.rows.append(StrandedRow(
                     tenant_id=tenant_id, repo=repo, number=pull.number,
-                    title=neutral_line(pull.title, MAX_TITLE_CHARS, literals=(token,)),
+                    title=neutral_line(pull.title, MAX_TITLE_CHARS, literals=(token, reading)),
                     url=pull.url, opened_at=pull.created_at, reason=verdict.reason,
-                    detail=neutral_line(verdict.detail, MAX_DETAIL_CHARS, literals=(token,)),
+                    detail=neutral_line(verdict.detail, MAX_DETAIL_CHARS,
+                                        literals=(token, reading)),
                     head_sha=head, remedy=verdict.remedy, checks=ci.state,
                     opened_by_task=task_id,
                 ))
     finally:
-        token = ""
+        token = reading = ""
 
     _store_and_log(ctx.db, report, now)
     if redrive:

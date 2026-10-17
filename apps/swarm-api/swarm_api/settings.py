@@ -629,6 +629,17 @@ class ApiSettings:
     #: is offered the tool. A feature flag, not a refusal switch: its off
     #: position is "no such tool", never "let the request through".
     search_tool_enabled: bool = False
+    #: Whether swarm-api's BACKGROUND GitHub reads (the merge wake's CI reads,
+    #: the issue run's CI read, the stranded-PR sweep, the repository index's
+    #: head poll) go out with the App's INSTALLATION token for the
+    #: repository's owner (swarm_api.forge_installation, #1483) instead of the
+    #: tenant's `-git` token. ON by default: on 2026-10-17 those reads, made
+    #: as one person's App user token, spent that person's 5,000 calls an hour
+    #: and every push test and publish acting as them failed. An owner with no
+    #: installation (reached through a person's token) and a failed mint keep
+    #: the tenant's token either way, so on is never less able to read than
+    #: off. FORGE_INSTALLATION_READS=false turns it off.
+    forge_installation_reads: bool = True
     #: Which `swarm_api.search.PROVIDERS` entry answers (SEARCH_PROVIDER).
     #: Brave: the first implementation, pending the owner's choice
     #: (questions.json of lane SEARCH-TOOL).
@@ -809,6 +820,7 @@ class ApiSettings:
             grant_attestation_required=_bool("GRANT_ATTESTATION_REQUIRED", False),
             browser_jev_installed=_bool("BROWSER_JEV_INSTALLED", True),
             search_tool_enabled=_bool("SEARCH_TOOL_ENABLED", False),
+            forge_installation_reads=_bool("FORGE_INSTALLATION_READS", True),
             search_provider=search_provider,
             search_api_key_secret=os.environ.get(
                 "SEARCH_API_KEY_SECRET", "swarm-search-api-key").strip()
