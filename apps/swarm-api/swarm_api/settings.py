@@ -50,6 +50,13 @@ def _int(name: str, default: int) -> int:
         raise ValueError(f"{name} must be an integer, got {raw!r}") from exc
 
 
+def _percent(name: str, default: int) -> int:
+    value = _int(name, default)
+    if not 0 <= value <= 100:
+        raise ValueError(f"{name} must be a percent from 0 to 100, got {value}")
+    return value
+
+
 def _bool(name: str, default: bool) -> bool:
     raw = os.environ.get(name, "").strip().lower()
     if not raw:
@@ -658,6 +665,15 @@ class ApiSettings:
     #: the tenant's token either way, so on is never less able to read than
     #: off. FORGE_INSTALLATION_READS=false turns it off.
     forge_installation_reads: bool = True
+    #: Background GitHub reads (the merge wake, the after-PR gates, the
+    #: stranded-PR sweep, the index poll, forgeperms' cached read) skip a
+    #: tick while their credential has less than this percent of its limit
+    #: left (swarm_api.forge_limits, QUOTA-THROTTLE, #1483). 20: on 2026-10-17
+    #: background reads spent a person's 5,000 calls an hour and their own
+    #: push tests and lane publishes were refused; a fifth of the window is
+    #: what those actions spent in the busiest measured hour, so it is kept
+    #: for them. Actions a person takes are never deferred. 0 turns it off.
+    forge_quota_defer_percent: int = 20
     #: Which `swarm_api.search.PROVIDERS` entry answers (SEARCH_PROVIDER).
     #: Brave: the first implementation, pending the owner's choice
     #: (questions.json of lane SEARCH-TOOL).
@@ -842,6 +858,7 @@ class ApiSettings:
             browser_jev_installed=_bool("BROWSER_JEV_INSTALLED", True),
             search_tool_enabled=_bool("SEARCH_TOOL_ENABLED", False),
             forge_installation_reads=_bool("FORGE_INSTALLATION_READS", True),
+            forge_quota_defer_percent=_percent("FORGE_QUOTA_DEFER_PERCENT", 20),
             search_provider=search_provider,
             search_api_key_secret=os.environ.get(
                 "SEARCH_API_KEY_SECRET", "swarm-search-api-key").strip()

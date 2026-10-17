@@ -1,7 +1,10 @@
 """The access API (docs/onboarding.md §3.2; #780, lane OB4). The logic is
 `swarm_api.access`'s.
 
-    GET    /v1/access                               connection, enabled owners, grants
+    GET    /v1/access                               connection, enabled owners, grants,
+                                                    and `github_quota`: each credential
+                                                    the caller may see, as GitHub last
+                                                    reported its rate limit
     GET    /v1/access/orgs                          reachable owners, install_state, sso
     POST   /v1/access/orgs                          {owner}: enable an installed owner
     DELETE /v1/access/orgs/{owner}                  disable it, and delete its grants (or
@@ -29,17 +32,20 @@ never the body or the path; the bodies forbid every field they do not name.
 
 from __future__ import annotations
 
-from typing import Literal
+from datetime import datetime, timezone
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query, Request
+from google.cloud.firestore_v1.base_query import FieldFilter
 from pydantic import BaseModel, ConfigDict, Field
 
 from swarm_common.models import Tenant
 
+from .. import forge_limits
 from ..access import CHECKS, MAX_PAGES, MAX_QUERY_CHARS, OPT_IN_CHECKS, AccessService
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, tenant_scope
-from ..forgeapp import Caller
+from ..forgeapp import CONNECTIONS, ORGS, Caller, connection_id_for
 
 router = APIRouter(prefix="/v1/access", tags=["access"])
 
@@ -81,13 +87,65 @@ class VerifyBody(_Body):
         default=None, min_length=1, max_length=len(CHECKS) + len(OPT_IN_CHECKS))
 
 
+#: A tenant enables a handful of owners; more than this are not listed.
+_MAX_QUOTA_OWNERS = 200
+
+
+def github_quota(ctx: AppContext, caller: Caller) -> list[dict[str, Any]]:
+    """QUOTA-THROTTLE (#1483): what `forge_limits.QUOTAS` last read for each
+    credential the caller may see -- their own connection, their tenant's
+    `-git` slot, and the App installations their tenant enabled -- with who
+    it is (`kind`, `name`) and `low` under `forge_quota_defer_percent`, the
+    line background reads stop at. Counts and times only: no token, no
+    secret. A credential nothing in this process has read yet is left out:
+    its quota is unknown, not full."""
+    named: list[tuple[str, str, str]] = [
+        (forge_limits.connection_credential(connection_id_for(caller.tenant_id, caller.key)),
+         "connection", "you"),
+        (forge_limits.tenant_credential(caller.tenant_id), "tenant", caller.tenant_id),
+    ]
+    connection = ctx.db.collection(CONNECTIONS).document(
+        connection_id_for(caller.tenant_id, caller.key)).get()
+    doc = connection.to_dict() if connection.exists else None
+    if doc and doc.get("tenant_id") == caller.tenant_id and doc.get("user") == caller.key \
+            and isinstance(doc.get("forge_login"), str) and doc["forge_login"]:
+        named[0] = (named[0][0], "connection", doc["forge_login"])
+    seen: set[int] = set()
+    query = (ctx.db.collection(ORGS)
+             .where(filter=FieldFilter("tenant_id", "==", caller.tenant_id))
+             .limit(_MAX_QUOTA_OWNERS))
+    for snap in query.stream():
+        org = snap.to_dict() or {}
+        installation = org.get("installation_id")
+        # Asked again: only this tenant's installations (invariant 9).
+        if org.get("tenant_id") != caller.tenant_id or not isinstance(installation, int) \
+                or isinstance(installation, bool) or installation in seen:
+            continue
+        seen.add(installation)
+        named.append((forge_limits.installation_credential(installation), "installation",
+                      str(org.get("owner_login") or org.get("owner") or installation)))
+    percent = forge_limits.defer_percent(ctx)
+    now = datetime.now(timezone.utc)
+    found: list[dict[str, Any]] = []
+    for credential, kind, name in named:
+        quota = forge_limits.QUOTAS.quota(credential)
+        if quota is not None:
+            # Low only until it resets: after that GitHub has refilled it.
+            found.append({"kind": kind, "name": name, **quota.to_api(),
+                          "low": quota.below(percent) and quota.until() > now})
+    return found
+
+
 @router.get("")
 def overview(
     tenant_id: str = Depends(tenant_scope),
     auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
     service: AccessService = Depends(get_access),
 ) -> dict:
-    return {**service.overview(_caller(auth, tenant_id)), "tenant_id": tenant_id}
+    caller = _caller(auth, tenant_id)
+    return {**service.overview(caller), "github_quota": github_quota(ctx, caller),
+            "tenant_id": tenant_id}
 
 
 @router.get("/orgs")

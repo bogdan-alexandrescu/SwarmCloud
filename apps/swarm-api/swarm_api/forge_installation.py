@@ -43,6 +43,13 @@ comment, re-run a job, merge, or read as the person: only the background
 reads that switched (mergewake `_read`, issueci's CI read, the stranded-PR
 sweep, the repository index's head poll) ask for one.
 
+WHOSE QUOTA (QUOTA-THROTTLE). `read_credential` answers the token AND the
+identity its quota is kept under in `forge_limits.QUOTAS`,
+`installation:<id>`: the caller reads inside `forge_limits.acting_as(that)`
+so every answer updates the installation's quota, and asks
+`QUOTAS.defer(that)` before a background read. A mint's own answer is the
+App JWT's quota (`forge_limits.APP_CREDENTIAL`).
+
 `FORGE_INSTALLATION_READS` (settings `forge_installation_reads`, ON by
 default) turns the switch off: off, `build_context` wires no source and every
 read is today's.
@@ -60,13 +67,14 @@ from typing import Any, Callable, Mapping, Protocol
 
 from google.cloud.firestore_v1.base_query import FieldFilter
 
+from . import forge_limits
 from .gittokens import redaction_literal
 
 log = logging.getLogger(__name__)
 
 __all__ = [
     "FAILURE_HOLD", "InstallationSource", "InstallationTokens", "READ_PERMISSIONS",
-    "REFRESH_BEFORE", "build_installation_tokens", "read_token",
+    "REFRESH_BEFORE", "build_installation_tokens", "read_credential", "read_token",
 ]
 
 #: The collection access.py writes an enabled owner to (forgeapp.ORGS).
@@ -175,6 +183,12 @@ class InstallationTokens:
     def token_for_repo(self, tenant_id: str, owner: str, repo: str) -> str | None:
         """A read-only token for `owner/repo` as the App, or None: no
         installation for the owner, or the mint failed (logged once)."""
+        found = self.credential_for_repo(tenant_id, owner, repo)
+        return found[0] if found is not None else None
+
+    def credential_for_repo(self, tenant_id: str, owner: str,
+                            repo: str) -> tuple[str, int] | None:
+        """`token_for_repo`'s token and the installation it acts as, or None."""
         key = (owner.lower(), repo.lower())
         now = self._clock()
         with self._lock:
@@ -191,7 +205,7 @@ class InstallationTokens:
         with self._lock:
             held = self._held.get(slot)
             if held is not None and held.use_until > now:
-                return held.token
+                return held.token, installation
         try:
             token, expires = self._mint(installation, repo)
         except _MintFailed as failed:
@@ -208,7 +222,7 @@ class InstallationTokens:
         if recovered:
             log.info("installation token minted again owner=%s repo=%s installation=%s",
                      key[0], key[1], installation)
-        return token
+        return token, installation
 
     def _failed(self, key: tuple[str, str], failed: _MintFailed, now: float) -> None:
         with self._lock:
@@ -242,6 +256,8 @@ class InstallationTokens:
             finally:
                 headers.clear()
                 jwt = ""
+        # The mint spends the App JWT's quota, not the installation's.
+        forge_limits.QUOTAS.observe_answer(answer, credential=forge_limits.APP_CREDENTIAL)
         status = getattr(answer, "status", None)
         if status != 201:
             raise _MintFailed("refused", status if isinstance(status, int) else None)
@@ -268,6 +284,29 @@ def read_token(source: InstallationSource | None, tenant_id: str, owner: str,
         log.warning("installation token source failed owner=%s repo=%s (%s)",
                     owner.lower(), repo.lower(), type(exc).__name__)
         return ""
+
+
+def read_credential(source: InstallationSource | None, tenant_id: str, owner: str,
+                    repo: str) -> tuple[str, str]:
+    """`read_token`, with the identity its quota is kept under: ("", "")
+    when there is no installation token. A source that cannot name its
+    installation (`token_for_repo` only) is keyed by the owner it serves."""
+    if source is None or not owner or not repo:
+        return "", ""
+    named = getattr(source, "credential_for_repo", None)
+    try:
+        if callable(named):
+            found = named(tenant_id, owner, repo)
+            if found is None or not found[0]:
+                return "", ""
+            return found[0], forge_limits.installation_credential(int(found[1]))
+        token = source.token_for_repo(tenant_id, owner, repo) or ""
+    except Exception as exc:
+        log.warning("installation token source failed owner=%s repo=%s (%s)",
+                    owner.lower(), repo.lower(), type(exc).__name__)
+        return "", ""
+    return (token, forge_limits.installation_credential(f"owner/{owner.lower()}")) if token \
+        else ("", "")
 
 
 def build_installation_tokens(db: Any, project_id: str, *,
