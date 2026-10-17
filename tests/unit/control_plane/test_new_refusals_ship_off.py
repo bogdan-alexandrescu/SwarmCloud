@@ -229,6 +229,23 @@ NOT_SWITCHABLE_CODES = frozenset({
     "secrets_release_fenced",
     "secrets_release_spent",
     "secrets_release_spec_unverified",
+    # The worker-only state routes (ISO-WORKER-CORE, docs/design/
+    # tenant-settings-integrity.md §4.2), as the release's codes above:
+    # raised only by the routes that change introduces
+    # (/v1/attempts/{id}/state/...), which nothing calls until a tenant's
+    # SWARM_STATE_VIA_API is on, so no existing caller can be refused by
+    # them. Continuing past any of them is the breach itself (#1457): another
+    # tenant's worker or an agent writing a task's state, a stale generation
+    # writing past its fence (invariant 5), a transition only the scheduler
+    # or reconciler may make, a read of a task not declared upstream, a wake
+    # of another tenant's waiter, or a write over another tenant's document.
+    "attempt_unauthenticated",
+    "attempt_unproven",
+    "attempt_fenced",
+    "transition_refused",
+    "upstream_not_declared",
+    "merge_wake_refused",
+    "state_conflict",
 })
 
 #: What the guard lets through without a switch.

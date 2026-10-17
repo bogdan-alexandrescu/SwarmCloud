@@ -4349,7 +4349,10 @@ def build_parser() -> argparse.ArgumentParser:
             "printed: the answer is `stored: version N`."
         ),
     )
-    kset.add_argument("provider", help=f"one of {', '.join(keys.PROVIDERS)}")
+    # Optional to argparse so a key typed in its place that starts with "-"
+    # (token alphabets include it) is refused by `key_set_refusal` like any
+    # other, instead of argparse stopping first on a "required" provider.
+    kset.add_argument("provider", nargs="?", help=f"one of {', '.join(keys.PROVIDERS)}")
     kset.add_argument("--tenant", action="store_true",
                       help="the selected tenant's key, not your own (admins)")
     kset.add_argument("--stdin", action="store_true",
