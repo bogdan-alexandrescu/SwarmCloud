@@ -43,6 +43,13 @@ name: runner fallback
 #   * never more than one flip per HYSTERESIS_MINUTES, read from the
 #     variable's own updated_at. A held flip is a summary line too.
 #
+#   * a run with ANY job in progress is never cancelled (that would kill a
+#     hosted deploy mid-way); it is a "held" summary line and is looked at
+#     again next tick. One run failing to cancel or re-run is a summary line,
+#     not the end of the loop, and no new run is started after 10 minutes.
+#   * repository variable RUNNER_FALLBACK=manual is a hand-set hold: the judge
+#     reads and reports what it WOULD do and changes nothing.
+#
 # Every flip, and every held flip, is a line in the job summary.
 
 on:
@@ -102,7 +109,9 @@ jobs:
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
           REPOSITORY: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
-        shell: python
+          # `manual` = a hand-set hold: read and report, never act (docs/ci.md).
+          RUNNER_FALLBACK: ${{ vars.RUNNER_FALLBACK }}
+        shell: python3 {0}
         run: |
           import json
           import os
@@ -115,6 +124,16 @@ jobs:
           WORKFLOW_PATH = ".github/workflows/runner-fallback.yml"
           BOT = "github-actions[bot]"
           PROBE_JOB = "probe"
+          MAX_PAGES = 5
+          # Stop starting new re-runs after this long, so the job ends inside its
+          # timeout-minutes (15); a re-run can itself take about 3 minutes.
+          RERUN_BUDGET_SECONDS = 600
+
+
+          class ApiError(Exception):
+              def __init__(self, method, path, status, detail):
+                  super().__init__(f"{method} {path} answered {status}: {detail}")
+                  self.method, self.path, self.status = method, path, status
 
 
           def ts(value):
@@ -172,7 +191,7 @@ jobs:
               datetime or None), jobs (the jobs of other workflows' active
               runs, each with run_id, run_attempt, triggering_actor), probes
               (this workflow's probe jobs, each with run_id).
-              Returns {flip, reason, rerun, cancel_probes, held}.
+              Returns {flip, reason, rerun, held_runs, cancel_probes, held, manual}.
               """
               label = cfg["POOL_LABEL"]
               queued_minutes = int(cfg["QUEUED_MINUTES"])
@@ -210,13 +229,22 @@ jobs:
                       )
                       flip, held = ("on", False) if settled else (None, True)
               off_after = flip == "off" or (is_off and flip != "on")
-              rerun = []
+              rerun, held_runs = [], []
               if off_after:
+                  # A run with any job in progress (a hosted deploy, say) is never
+                  # cancelled: cancelling a run cancels all of it. It is looked at
+                  # again next tick.
+                  busy = {j["run_id"] for j in state["jobs"] if j.get("status") == "in_progress"}
                   for job in pool_jobs:
                       if job.get("status") != "queued" or job.get("runner_name"):
                           continue
-                      ours = int(job.get("run_attempt") or 1) > 1 and job.get("triggering_actor") == BOT
-                      if not ours and job["run_id"] not in rerun:
+                      own = int(job.get("run_attempt") or 1) > 1 and job.get("triggering_actor") == BOT
+                      if own:
+                          continue
+                      if job["run_id"] in busy:
+                          if job["run_id"] not in held_runs:
+                              held_runs.append(job["run_id"])
+                      elif job["run_id"] not in rerun:
                           rerun.append(job["run_id"])
               cancel_probes = sorted({
                   p["run_id"] for p in state["probes"]
@@ -224,11 +252,19 @@ jobs:
                   and not p.get("runner_name")
                   and minutes(now - (queued_since(p) or now)) > queued_minutes
               })
-              return {"flip": flip, "reason": reason, "rerun": rerun, "cancel_probes": cancel_probes, "held": held}
+              return {
+                  "flip": flip,
+                  "reason": reason,
+                  "rerun": rerun,
+                  "held_runs": held_runs,
+                  "cancel_probes": cancel_probes,
+                  "held": held,
+                  "manual": cfg.get("RUNNER_FALLBACK", "") == "manual",
+              }
 
 
           def api(method, path, token, body=None, ok=(200,)):
-              """One REST call. Returns (status, parsed JSON or None)."""
+              """One REST call. Returns (status, parsed JSON or None); ApiError otherwise."""
               url = path if path.startswith("https://") else f"https://api.github.com{path}"
               data = json.dumps(body).encode() if body is not None else None
               request = urllib.request.Request(url, data=data, method=method)
@@ -241,50 +277,76 @@ jobs:
               except urllib.error.HTTPError as error:
                   status, raw = error.code, error.read()
               if status not in ok:
-                  raise SystemExit(f"{method} {path} answered {status}: {raw[:300].decode(errors='replace')}")
+                  raise ApiError(method, path, status, raw[:300].decode(errors="replace"))
               return status, (json.loads(raw) if raw.strip() else None)
 
 
-          def runs(repo, token, query):
-              _, page = api("GET", f"/repos/{repo}/actions/runs?per_page=100&{query}", token)
-              return page.get("workflow_runs") or []
+          def paged(repo, token, path, key):
+              """Every item of a listing, 100 per page, at most MAX_PAGES pages."""
+              sep = "&" if "?" in path else "?"
+              items = []
+              for number in range(1, MAX_PAGES + 1):
+                  _, page = api("GET", f"{path}{sep}per_page=100&page={number}", token)
+                  got = (page or {}).get(key) or []
+                  items += got
+                  if len(got) < 100:
+                      break
+              return items
+
+
+          def ours(run):
+              return str(run.get("path", "")).startswith(WORKFLOW_PATH)
 
 
           def jobs_of(repo, token, run):
-              _, page = api("GET", f"/repos/{repo}/actions/runs/{run['id']}/jobs?filter=latest&per_page=100", token)
               actor = (run.get("triggering_actor") or {}).get("login", "")
               return [
                   dict(job, run_id=run["id"], run_attempt=run.get("run_attempt"), triggering_actor=actor)
-                  for job in page.get("jobs") or []
+                  for job in paged(repo, token, f"/repos/{repo}/actions/runs/{run['id']}/jobs?filter=latest", "jobs")
               ]
 
 
-          def read_state(repo, token, app_token, now):
+          def read_state(repo, token, app_token, now, cfg=os.environ):
+              """What GitHub says, read in the order that costs least.
+
+              The variable and the queued runs come first. A tick with the hatch on and
+              no queued run older than QUEUED_MINUTES ends there (two calls): nothing
+              can be stuck, so no job is listed. Only then are the jobs of every active
+              run read, and the probes only while the hatch is off.
+              """
               status, variable = api(
-                  "GET", f"/repos/{repo}/actions/variables/{os.environ['VARIABLE']}", app_token, ok=(200, 404)
+                  "GET", f"/repos/{repo}/actions/variables/{cfg['VARIABLE']}", app_token, ok=(200, 404)
               )
               variable = variable if status == 200 else {}
-              active = {}
-              for status_filter in ("queued", "in_progress"):
-                  for run in runs(repo, token, f"status={status_filter}"):
-                      active[run["id"]] = run
-              jobs, probes = [], []
-              for run in active.values():
-                  if str(run.get("path", "")).startswith(WORKFLOW_PATH):
-                      continue
-                  jobs += jobs_of(repo, token, run)
-              recent = urllib.parse.quote(">=" + (now - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ"))
-              _, page = api(
-                  "GET", f"/repos/{repo}/actions/workflows/runner-fallback.yml/runs?per_page=30&created={recent}", token
-              )
-              for run in page.get("workflow_runs") or []:
-                  probes += [j for j in jobs_of(repo, token, run) if j.get("name") == PROBE_JOB]
-              return {
-                  "value": str(variable.get("value", "")),
+              value = str(variable.get("value", ""))
+              queued_minutes = int(cfg["QUEUED_MINUTES"])
+              queued = [
+                  r for r in paged(repo, token, "/repos/%s/actions/runs?status=queued" % repo, "workflow_runs")
+                  if not ours(r)
+              ]
+              old = [r for r in queued if minutes(now - (ts(r.get("created_at")) or now)) > queued_minutes]
+              state = {
+                  "value": value,
                   "updated_at": ts(variable.get("updated_at")),
-                  "jobs": jobs,
-                  "probes": probes,
+                  "jobs": [],
+                  "probes": [],
+                  "read_jobs": False,
+                  "queued_runs": len(queued),
               }
+              if value != "off" and not old:
+                  return state
+              active = {r["id"]: r for r in queued}
+              for run in paged(repo, token, "/repos/%s/actions/runs?status=in_progress" % repo, "workflow_runs"):
+                  if not ours(run):
+                      active[run["id"]] = run
+              for run in active.values():
+                  state["jobs"] += jobs_of(repo, token, run)
+              state["read_jobs"] = True
+              if value == "off":
+                  recent = urllib.parse.quote(">=" + (now - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+                  for run in paged(repo, token, f"/repos/{repo}/actions/workflows/runner-fallback.yml/runs?created={recent}", "workflow_runs"):
+                      state["probes"] += [j for j in jobs_of(repo, token, run) if j.get("name") == PROBE_JOB]
+              return state
 
 
           def cancel_and_rerun(repo, token, run_id):
@@ -297,40 +359,85 @@ jobs:
               else:
                   api("POST", f"/repos/{repo}/actions/runs/{run_id}/force-cancel", token, ok=(202, 409))
                   time.sleep(10)
-              api("POST", f"/repos/{repo}/actions/runs/{run_id}/rerun-failed-jobs", token, ok=(201,))
+              # 403 (fork run needing approval), 409 (nothing failed or already
+              # running) and 422 (too old to re-run) all mean there is nothing to re-run.
+              status, _ = api("POST", f"/repos/{repo}/actions/runs/{run_id}/rerun-failed-jobs", token, ok=(201, 403, 409, 422))
+              return "re-ran" if status == 201 else f"nothing to re-run (answered {status})"
 
 
-          def main():
+          def reconcile(run_ids, action, clock, budget_seconds, stamp):
+              """Run action on each run in isolation; one run's failure ends only that run.
+
+              Stops starting new runs once budget_seconds have passed, so the job ends
+              inside its timeout-minutes; the rest wait for the next tick.
+              """
+              lines = []
+              start = clock()
+              for index, run_id in enumerate(run_ids):
+                  if clock() - start >= budget_seconds:
+                      lines.append(f"- {stamp} time budget spent: {len(run_ids) - index} run(s) left for the next tick")
+                      break
+                  try:
+                      outcome = action(run_id)
+                  except ApiError as error:
+                      lines.append(f"- {stamp} run {run_id}: {error.method} {error.path} answered {error.status}, skipped")
+                      continue
+                  lines.append(f"- {stamp} run {run_id}: {outcome}")
+              return lines
+
+
+          def main(now=None):
               repo, token, app_token = os.environ["REPOSITORY"], os.environ["GH_TOKEN"], os.environ["APP_TOKEN"]
               variable = os.environ["VARIABLE"]
-              now = datetime.now(timezone.utc)
+              now = now or datetime.now(timezone.utc)
               state = read_state(repo, token, app_token, now)
               verdict = decide(state, now, os.environ)
+              manual = verdict["manual"]
               lines = []
               stamp = f"{now:%Y-%m-%dT%H:%MZ}"
               current = state["value"] or "unset (on)"
+              if manual:
+                  lines.append(f"- {stamp} RUNNER_FALLBACK=manual: reading only, nothing is flipped, cancelled or re-run")
               if verdict["flip"]:
-                  method = "PATCH" if state["value"] else "POST"
-                  path = f"/repos/{repo}/actions/variables" + (f"/{variable}" if state["value"] else "")
-                  api(method, path, app_token, {"name": variable, "value": verdict["flip"]}, ok=(201, 204))
-                  lines.append(f"- {stamp} **{variable} {current} -> {verdict['flip']}**: {verdict['reason']}")
+                  if manual:
+                      lines.append(f"- {stamp} would set {variable} {current} -> {verdict['flip']}: {verdict['reason']}")
+                  else:
+                      method = "PATCH" if state["value"] else "POST"
+                      path = f"/repos/{repo}/actions/variables" + (f"/{variable}" if state["value"] else "")
+                      api(method, path, app_token, {"name": variable, "value": verdict["flip"]}, ok=(201, 204))
+                      lines.append(f"- {stamp} **{variable} {current} -> {verdict['flip']}**: {verdict['reason']}")
               elif verdict["held"]:
                   lines.append(
                       f"- {stamp} {variable} stays {current}, held by the "
                       f"{os.environ['HYSTERESIS_MINUTES']}-minute hysteresis "
                       f"(last change {state['updated_at']:%H:%MZ}): {verdict['reason']}"
                   )
-              for run_id in verdict["rerun"]:
-                  cancel_and_rerun(repo, token, run_id)
-                  lines.append(f"- {stamp} re-ran run {run_id} off {os.environ['POOL_LABEL']}")
-              for run_id in verdict["cancel_probes"]:
-                  if str(run_id) != os.environ["RUN_ID"]:
-                      api("POST", f"/repos/{repo}/actions/runs/{run_id}/cancel", token, ok=(202, 409))
-              if not lines:
-                  lines.append(
-                      f"- {stamp} {variable} stays {current}: {len(state['jobs'])} job(s) read in active runs, "
-                      f"{len(state['probes'])} probe(s) read"
+              for run_id in verdict["held_runs"]:
+                  lines.append(f"- {stamp} held: run {run_id} has a job in progress")
+              probes = [r for r in verdict["cancel_probes"] if str(r) != os.environ["RUN_ID"]]
+              if manual:
+                  if verdict["rerun"]:
+                      lines.append(f"- {stamp} would re-run run(s) {', '.join(str(r) for r in verdict['rerun'])} off {os.environ['POOL_LABEL']}")
+                  if probes:
+                      lines.append(f"- {stamp} would cancel unserved probe run(s) {', '.join(str(r) for r in probes)}")
+              else:
+                  lines += reconcile(
+                      verdict["rerun"], lambda r: cancel_and_rerun(repo, token, r), time.monotonic, RERUN_BUDGET_SECONDS, stamp
                   )
+                  for run_id in probes:
+                      try:
+                          api("POST", f"/repos/{repo}/actions/runs/{run_id}/cancel", token, ok=(202, 409))
+                      except ApiError as error:
+                          lines.append(f"- {stamp} probe run {run_id}: cancel answered {error.status}, skipped")
+              if not lines:
+                  if state["read_jobs"]:
+                      seen = f"{len(state['jobs'])} job(s) read in active runs, {len(state['probes'])} probe(s) read"
+                  else:
+                      seen = (
+                          f"no queued run older than {os.environ['QUEUED_MINUTES']} min "
+                          f"({state['queued_runs']} queued run(s) read), jobs not read"
+                      )
+                  lines.append(f"- {stamp} {variable} stays {current}: {seen}")
               with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
                   summary.write("\n".join(lines) + "\n")
               print("\n".join(lines))

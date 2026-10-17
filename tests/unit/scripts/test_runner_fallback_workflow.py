@@ -62,7 +62,7 @@ def workflow() -> dict:
 def judge_script(workflow) -> dict:
     """The judge's own Python, executed as a module (main() does not run)."""
     steps = workflow["jobs"]["judge"]["steps"]
-    [step] = [s for s in steps if s.get("shell") == "python"]
+    [step] = [s for s in steps if s.get("shell") == "python3 {0}"]
     namespace: dict = {"__name__": "runner_fallback"}
     exec(compile(step["run"], str(WORKFLOW), "exec"), namespace)
     return namespace
@@ -118,7 +118,7 @@ def test_the_thresholds_are_named_constants(workflow):
 
 
 def test_the_script_reads_the_thresholds_from_env_not_literals(workflow):
-    run = next(s["run"] for s in workflow["jobs"]["judge"]["steps"] if s.get("shell") == "python")
+    run = next(s["run"] for s in workflow["jobs"]["judge"]["steps"] if s.get("shell") == "python3 {0}")
     for name in ("QUEUED_MINUTES", "RECOVER_MINUTES", "HYSTERESIS_MINUTES"):
         assert f'cfg["{name}"]' in run
     assert "decide(state, now, os.environ)" in run
@@ -244,3 +244,182 @@ def test_going_back_on_reruns_nothing(judge_script):
     probes = [_probe(1, 21), _probe(2, 11)]
     verdict = judge_script["decide"](_state("off", updated_ago=60, jobs=[_job(7)], probes=probes), NOW, CFG)
     assert verdict["flip"] == "on" and verdict["rerun"] == []
+
+
+# --- Thresholds, pinned at their edges ----------------------------------------
+
+
+def _at(seconds_ago: int) -> str:
+    return (NOW - timedelta(seconds=seconds_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def test_the_judge_script_runs_under_python3(workflow):
+    [step] = [s for s in workflow["jobs"]["judge"]["steps"] if "run" in s and "def decide" in s["run"]]
+    assert step["shell"] == "python3 {0}"
+
+
+def test_queued_exactly_ten_minutes_is_not_stuck_and_one_second_more_is(judge_script):
+    decide = judge_script["decide"]
+    edge = _job(7, queued_for=10)
+    assert edge["created_at"] == _at(600)
+    assert decide(_state(jobs=[edge]), NOW, CFG)["flip"] is None  # fails if `>` becomes `>=`
+    over = _job(7)
+    over["created_at"] = _at(601)
+    assert decide(_state(jobs=[over]), NOW, CFG)["flip"] == "off"
+
+
+def test_a_variable_updated_exactly_thirty_minutes_ago_is_settled(judge_script):
+    stuck = [_job(7, queued_for=20)]
+    verdict = judge_script["decide"](_state(value="on", updated_ago=30, jobs=stuck), NOW, CFG)
+    assert verdict["flip"] == "off" and verdict["held"] is False  # fails if `>=` becomes `>`
+    verdict = judge_script["decide"](_state(value="on", updated_ago=29.98, jobs=stuck), NOW, CFG)
+    assert verdict["flip"] is None and verdict["held"] is True
+
+
+def _served(run_id, created_ago, started_seconds_ago):
+    probe = _probe(run_id, created_ago)
+    probe["started_at"] = _at(started_seconds_ago)
+    return probe
+
+
+def test_probes_served_for_exactly_fifteen_minutes_flip_back_on(judge_script):
+    decide = judge_script["decide"]
+    probes = [_served(1, 16, 900), _served(2, 6, 300)]
+    assert decide(_state("off", updated_ago=60, probes=probes), NOW, CFG)["flip"] == "on"  # fails on `>=` -> `>`
+    probes = [_served(1, 16, 899), _served(2, 6, 300)]
+    assert decide(_state("off", updated_ago=60, probes=probes), NOW, CFG)["flip"] is None
+
+
+def test_a_pool_job_started_exactly_ten_minutes_ago_still_counts_as_serving(judge_script):
+    decide = judge_script["decide"]
+    stuck = _job(7, queued_for=20)
+    edge = _job(9, status="completed", runner="vm-3", started=10)
+    assert decide(_state(jobs=[stuck, edge]), NOW, CFG)["flip"] is None  # fails if `<=` becomes `<`
+    over = _job(9, status="completed", runner="vm-3", started=10)
+    over["started_at"] = _at(601)
+    assert decide(_state(jobs=[stuck, over]), NOW, CFG)["flip"] == "off"
+
+
+# --- A run with a job in progress is never cancelled --------------------------
+
+
+def test_a_run_with_a_job_in_progress_is_held_not_rerun(judge_script):
+    decide = judge_script["decide"]
+    hosted_deploy = _job(7, labels=["ubuntu-24.04"], status="in_progress", runner="gh-1", started=4)
+    waiting = _job(7, queued_for=3)
+    held = decide(_state("off", updated_ago=5, jobs=[hosted_deploy, waiting]), NOW, CFG)
+    assert held["rerun"] == [] and held["held_runs"] == [7]
+    finished = _job(7, labels=["ubuntu-24.04"], status="completed", runner="gh-1", started=4)
+    free = decide(_state("off", updated_ago=5, jobs=[finished, waiting]), NOW, CFG)
+    assert free["rerun"] == [7] and free["held_runs"] == []
+
+
+# --- One run failing does not end the loop; a time budget ends it -------------
+
+
+def test_each_runs_failure_is_isolated_and_named(judge_script):
+    ApiError = judge_script["ApiError"]
+
+    def action(run_id):
+        if run_id == 8:
+            raise ApiError("POST", "/repos/o/r/actions/runs/8/cancel", 403, "fork")
+        return "re-ran"
+
+    lines = judge_script["reconcile"]([7, 8, 9], action, lambda: 0, 600, "T")
+    assert [l.split(": ")[0] for l in lines] == ["- T run 7", "- T run 8", "- T run 9"]
+    assert "403" in lines[1] and "skipped" in lines[1] and lines[2].endswith("re-ran")
+
+
+def test_no_new_run_is_started_after_the_time_budget(judge_script):
+    ticks = iter([0, 400, 800, 1200])
+    done = []
+    lines = judge_script["reconcile"]([1, 2, 3], lambda r: done.append(r) or "re-ran", lambda: next(ticks), 600, "T")
+    assert done == [1]
+    assert lines[-1] == "- T time budget spent: 2 run(s) left for the next tick"
+
+
+def test_rerun_failed_jobs_403_409_422_mean_nothing_to_rerun(judge_script, monkeypatch):
+    for answered in (403, 409, 422):
+        calls = []
+
+        def fake(method, path, token, body=None, ok=(200,), _answered=answered):
+            calls.append(path)
+            if path.endswith("/rerun-failed-jobs"):
+                assert _answered in ok
+                return _answered, None
+            return 200, {"status": "completed"}
+
+        monkeypatch.setitem(judge_script, "api", fake)
+        outcome = judge_script["cancel_and_rerun"]("o/r", "t", 5)
+        assert outcome == f"nothing to re-run (answered {answered})"
+
+
+# --- Reads are ordered by cost ------------------------------------------------
+
+
+def _fake_api(calls, variable, queued_runs, in_progress_runs=()):
+    def fake(method, path, token, body=None, ok=(200,)):
+        calls.append(path)
+        if "/actions/variables/" in path:
+            return 200, variable
+        if "status=queued" in path:
+            return 200, {"workflow_runs": list(queued_runs)}
+        if "status=in_progress" in path:
+            return 200, {"workflow_runs": list(in_progress_runs)}
+        if path.endswith("/jobs") or "/jobs?" in path:
+            return 200, {"jobs": []}
+        return 200, {"workflow_runs": []}
+
+    return fake
+
+
+def test_the_steady_state_ends_after_the_run_listing(judge_script, monkeypatch):
+    calls = []
+    variable = {"value": "on", "updated_at": _iso(120)}
+    young = {"id": 1, "path": ".github/workflows/x.yml@refs/heads/b", "created_at": _iso(3)}
+    monkeypatch.setitem(judge_script, "api", _fake_api(calls, variable, [young]))
+    state = judge_script["read_state"]("o/r", "t", "a", NOW, CFG | {"VARIABLE": "SELF_HOSTED_CI"})
+    assert len(calls) == 2 and not any("/jobs" in c for c in calls)
+    assert state["read_jobs"] is False
+
+
+def test_an_old_queued_run_makes_the_judge_read_jobs(judge_script, monkeypatch):
+    calls = []
+    variable = {"value": "on", "updated_at": _iso(120)}
+    old = {"id": 1, "path": ".github/workflows/x.yml@refs/heads/b", "created_at": _iso(12)}
+    monkeypatch.setitem(judge_script, "api", _fake_api(calls, variable, [old]))
+    state = judge_script["read_state"]("o/r", "t", "a", NOW, CFG | {"VARIABLE": "SELF_HOSTED_CI"})
+    assert any("/runs/1/jobs" in c for c in calls) and state["read_jobs"] is True
+
+
+# --- RUNNER_FALLBACK=manual: read and report, never act ------------------------
+
+
+def test_manual_is_read_from_runner_fallback_and_defaults_to_automatic(judge_script):
+    decide = judge_script["decide"]
+    jobs = [_job(7, queued_for=20)]
+    manual = decide(_state(jobs=jobs), NOW, CFG | {"RUNNER_FALLBACK": "manual"})
+    assert manual["manual"] is True and manual["flip"] == "off"  # still computes what it would do
+    for value in ("", "auto", "MANUAL"):
+        assert decide(_state(jobs=jobs), NOW, CFG | {"RUNNER_FALLBACK": value})["manual"] is False
+    assert decide(_state(jobs=jobs), NOW, CFG)["manual"] is False
+
+
+def test_manual_never_flips_cancels_or_reruns(judge_script, monkeypatch, tmp_path):
+    summary = tmp_path / "summary.md"
+    env = CFG | {
+        "RUNNER_FALLBACK": "manual", "REPOSITORY": "o/r", "GH_TOKEN": "t", "APP_TOKEN": "a",
+        "VARIABLE": "SELF_HOSTED_CI", "RUN_ID": "99", "GITHUB_STEP_SUMMARY": str(summary),
+    }
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    state = _state(value="off", updated_ago=5, jobs=[_job(7, queued_for=3)],
+                   probes=[_probe(1, 41), _probe(4, 21, served=False)])
+    state.update(read_jobs=True, queued_runs=1)
+    writes = []
+    monkeypatch.setitem(judge_script, "read_state", lambda *a, **k: state)
+    monkeypatch.setitem(judge_script, "api", lambda *a, **k: writes.append(a) or (200, None))
+    judge_script["main"](now=NOW)
+    assert writes == [], "manual must not make any API call after the reads"
+    text = summary.read_text()
+    assert "RUNNER_FALLBACK=manual" in text and "would re-run run(s) 7" in text
