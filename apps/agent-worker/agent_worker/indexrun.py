@@ -339,6 +339,78 @@ def requested_base(task_input: Any) -> str | None:
     return found.pop() if len(found) == 1 else None
 
 
+# --------------------------------------------------------------------------
+# a switched tenant's reads: the state routes (lane ISO-WORKER-READS)
+# --------------------------------------------------------------------------
+
+#: One state-route call's retry budget, in seconds. It is the 30 s a direct
+#: Firestore read retries for, both inside the startup budget
+#: (`startup.FIRESTORE_STARTUP_RETRY_SECONDS`) and in the mid-run `tenant`
+#: budget (`control.MID_RUN_BUDGETS`), so a switched tenant's read waits out
+#: an outage exactly as long as a direct one does. The callers' Firestore
+#: `call_options` mean nothing to a route; `RemoteControlPlane.call_options`
+#: answers {} for that reason.
+STATE_CALL_SECONDS = 30.0
+
+#: The most index versions `state/repository` serves: swarm-api's kept 20
+#: (`swarm_api.repoindex.KEPT_VERSIONS`) and one more, the read's own
+#: `limit(KEPT_VERSIONS + 1)`. An answer this long may have been cut short,
+#: so it is never read as the whole set. tests/unit/worker/test_state_reads.py
+#: holds it to swarm-api's value.
+ROUTE_VERSIONS_SERVED = 21
+
+
+def state_routes(db: Any) -> Any | None:
+    """`db` itself when it is this attempt's state client, else None.
+
+    WHY (docs/design/tenant-settings-integrity.md §4, #1457). A tenant
+    switched to the state routes (`SWARM_STATE_VIA_API`) builds no Firestore
+    client: its worker reaches its documents only through swarm-api's
+    `/v1/attempts/{id}/state/...` routes, which derive every document id from
+    the attempt's tuple and its signed spec. The readers here and in
+    `secrets`, `jevkey`, `inputs`, `graphstage`, `judge.attempt` take that
+    attempt's `statecall.StateCall` where they took the Firestore client, and
+    then make no Firestore call at all. Anything else in `db` is a Firestore
+    client, read exactly as before: the switch defaults off.
+    """
+    from .statecall import StateCall  # lazy: statecall -> children -> inputs
+
+    return db if isinstance(db, StateCall) else None
+
+
+def route_context(state: Any) -> dict[str, Any]:
+    """`GET state/context`: this attempt's OWN tenant's `tenants/<t>`,
+    `workspace_settings/<t>`, `tenant_settings/<t>`, its TypeSafe key records
+    and the submitter's forge grant, each id derived by swarm-api."""
+    return state.get("context", deadline_seconds=STATE_CALL_SECONDS)
+
+
+def route_repository(
+    state: Any, where: "Target"
+) -> tuple[Mapping[str, Any], list[Mapping[str, Any]]] | str:
+    """`GET state/repository`: the registration of the task's SIGNED
+    repository and its kept versions (each with its document `id`), or why
+    there are none.
+
+    swarm-api derives the registration from the task's signed
+    `repository_url`; the worker derived `where` from the same tenant and the
+    URL it was handed. An answer for any other registration is refused, not
+    read. A registration that is absent and one that is another tenant's are
+    the same answer from the route (it serves neither), and the same reason
+    here.
+    """
+    answer = state.get("repository", deadline_seconds=STATE_CALL_SECONDS)
+    if answer.get("repo_id") != where.repo_id:
+        return f"the state route serves no registration {where.repo_id} for this task"
+    registration = answer.get("registration")
+    if not isinstance(registration, Mapping) or registration.get("tenant_id") != where.tenant_id:
+        return f"the registration {where.repo_id} has no document this tenant can read"
+    versions = answer.get("versions")
+    rows = [row for row in versions if isinstance(row, Mapping)] \
+        if isinstance(versions, list) else []
+    return registration, rows
+
+
 @dataclass(frozen=True)
 class BaseVersion:
     """A promoted index version: what produced it, and the digests promotion recorded."""
@@ -358,17 +430,28 @@ def resolve_base(
     Read under the registration the SIGNED spec names (`where.repo_id`), and
     only when that registration is this tenant's.
     """
-    options = dict(call_options or {})
-    registration = db.collection(REPOSITORIES_COLLECTION).document(where.repo_id)
-    snapshot = registration.get(**options)
-    if not snapshot.exists:
-        return f"the registration {where.repo_id} has no document"
-    if (snapshot.to_dict() or {}).get("tenant_id") != tenant_id:
-        return f"the registration {where.repo_id} is not this tenant's"
-    version = registration.collection(VERSIONS_COLLECTION).document(base_sha).get(**options)
-    if not version.exists:
-        return f"no promoted index of {base_sha[:12]} is kept for this repository"
-    data = version.to_dict() or {}
+    state = state_routes(db)
+    if state is not None:
+        # A switched tenant: the versions swarm-api serves, the base among them by id.
+        served = route_repository(state, where)
+        if isinstance(served, str):
+            return served
+        found = [row for row in served[1] if row.get("id") == base_sha]
+        if not found:
+            return f"no promoted index of {base_sha[:12]} is kept for this repository"
+        data = dict(found[0])
+    else:
+        options = dict(call_options or {})
+        registration = db.collection(REPOSITORIES_COLLECTION).document(where.repo_id)
+        snapshot = registration.get(**options)
+        if not snapshot.exists:
+            return f"the registration {where.repo_id} has no document"
+        if (snapshot.to_dict() or {}).get("tenant_id") != tenant_id:
+            return f"the registration {where.repo_id} is not this tenant's"
+        version = registration.collection(VERSIONS_COLLECTION).document(base_sha).get(**options)
+        if not version.exists:
+            return f"no promoted index of {base_sha[:12]} is kept for this repository"
+        data = version.to_dict() or {}
     task_id, digest, graph_digest = data.get("task_id"), data.get("digest"), \
         data.get("graph_digest")
     if not isinstance(task_id, str) or not task_id:
@@ -403,20 +486,36 @@ def kept_commits(
     this tenant's, a version names no sha, or there are more than
     `MAX_KEPT_READ`: the sweep then works as it did before lane IX3.
     """
-    options = dict(call_options or {})
-    registration = db.collection(REPOSITORIES_COLLECTION).document(where.repo_id)
-    snapshot = registration.get(**options)
-    if not snapshot.exists:
-        return f"the registration {where.repo_id} has no document"
-    data = snapshot.to_dict() or {}
-    if data.get("tenant_id") != tenant_id:
-        return f"the registration {where.repo_id} is not this tenant's"
+    state = state_routes(db)
+    if state is not None:
+        # A switched tenant: swarm-api runs the read the worker's role never
+        # could (§1.3), and serves at most ROUTE_VERSIONS_SERVED. That many
+        # may be a cut-short list, and keeping too few would let the sweep
+        # delete a kept commit's objects: so it retires nothing.
+        served = route_repository(state, where)
+        if isinstance(served, str):
+            return served
+        data, listed = dict(served[0]), served[1]
+        if len(listed) >= ROUTE_VERSIONS_SERVED:
+            return (f"the state route serves at most {ROUTE_VERSIONS_SERVED} index versions, "
+                    "and this registration may keep more; none is retired")
+        rows: Any = listed
+    else:
+        options = dict(call_options or {})
+        registration = db.collection(REPOSITORIES_COLLECTION).document(where.repo_id)
+        snapshot = registration.get(**options)
+        if not snapshot.exists:
+            return f"the registration {where.repo_id} has no document"
+        data = snapshot.to_dict() or {}
+        if data.get("tenant_id") != tenant_id:
+            return f"the registration {where.repo_id} is not this tenant's"
+        rows = (row.to_dict() or {} for row in registration.collection(
+            VERSIONS_COLLECTION).limit(MAX_KEPT_READ + 1).stream(**options))
     kept: set[str] = set()
-    rows = registration.collection(VERSIONS_COLLECTION).limit(MAX_KEPT_READ + 1).stream(**options)
     for count, row in enumerate(rows, start=1):
         if count > MAX_KEPT_READ:
             return f"more than {MAX_KEPT_READ} index versions are kept; none is retired"
-        commit = (row.to_dict() or {}).get("commit_sha")
+        commit = row.get("commit_sha")
         if not isinstance(commit, str) or not _SHA.match(commit):
             return "an index version names no commit; none is retired"
         kept.add(commit)

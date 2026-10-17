@@ -589,6 +589,34 @@ def _candidates(registration: Any, index_state: Mapping[str, Any],
     return out + others
 
 
+def _served_candidates(rows: Sequence[Mapping[str, Any]],
+                       index_state: Mapping[str, Any]) -> list[Version]:
+    """`_candidates`, over the versions `state/repository` served (each with
+    its document `id`, the commit): the promoted current one first, by id,
+    then the others, newest first. swarm-api serves at most
+    `indexrun.ROUTE_VERSIONS_SERVED`, which is MAX_VERSIONS_READ."""
+    out: list[Version] = []
+    current = index_state.get("current_sha")
+    if isinstance(current, str) and _SHA.match(current):
+        for row in rows:
+            if row.get("id") == current:
+                found = _version_of(row, current)
+                if found is not None:
+                    out.append(found)
+                break
+    others: list[Version] = []
+    for row in rows[:MAX_VERSIONS_READ]:
+        found = _version_of(row, str(row.get("commit_sha") or ""))
+        if found is not None and found.sha != current:
+            others.append(found)
+    others.sort(key=lambda v: v.built_at, reverse=True)
+    return out + others
+
+
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
 @dataclass
 class StageResult:
     staged: bool
@@ -726,29 +754,53 @@ def _stage(*, db: Any, store: Any, tenant_id: str, repository_url: str | None, t
     where = indexrun.target(tenant_id, repository_url)
     if isinstance(where, str):
         return StageResult(False, where)
-    registration = db.collection(indexrun.REPOSITORIES_COLLECTION).document(where.repo_id)
-    snap = registration.get(**options)
-    data = (snap.to_dict() or {}) if snap.exists else None
-    if data is None:
-        return StageResult(False, "the repository is not registered in this workspace")
-    if data.get("tenant_id") != tenant_id:
-        return StageResult(False, f"the registration {where.repo_id} is not this tenant's")
-    settings_snap = db.collection(SETTINGS_COLLECTION).document(tenant_id).get(**options)
-    settings = (settings_snap.to_dict() or {}) if settings_snap.exists else {}
+    state = indexrun.state_routes(db)
+    candidates_of: Callable[[Mapping[str, Any]], list[Version]]
+    if state is not None:
+        # A switched tenant (`indexrun.state_routes`): the registration and its
+        # versions from `state/repository`, both settings documents from one
+        # `state/context`, every id derived by swarm-api. No Firestore call.
+        served = indexrun.route_repository(state, where)
+        if isinstance(served, str):
+            return StageResult(False, served)
+        data, rows = dict(served[0]), served[1]
+        context = indexrun.route_context(state)
+        settings = _mapping(context.get("tenant_settings"))
+        delivery = delivery_of(_mapping(context.get("workspace_settings")))
+
+        def candidates_of(index_state: Mapping[str, Any]) -> list[Version]:
+            return _served_candidates(rows, index_state)
+    else:
+        registration = db.collection(indexrun.REPOSITORIES_COLLECTION).document(where.repo_id)
+        snap = registration.get(**options)
+        found = (snap.to_dict() or {}) if snap.exists else None
+        if found is None:
+            return StageResult(False, "the repository is not registered in this workspace")
+        if found.get("tenant_id") != tenant_id:
+            return StageResult(False, f"the registration {where.repo_id} is not this tenant's")
+        data = found
+        settings_snap = db.collection(SETTINGS_COLLECTION).document(tenant_id).get(**options)
+        settings = (settings_snap.to_dict() or {}) if settings_snap.exists else {}
+        delivery = None
+
+        def candidates_of(index_state: Mapping[str, Any]) -> list[Version]:
+            return _candidates(registration, index_state, options)
     decision = decide(repository_override=data.get(REPOSITORY_CONTEXT_FIELD),
                       workspace_settings=settings, task_id=task_id)
     if not decision.stage:
         return StageResult(False, decision.reason, decision)
     result = StageResult(False, "", decision)
     # HOW, once WHETHER is settled (§8.1).
-    wants_service = _delivery_setting(db, tenant_id, options) == DELIVERY_SERVICE
+    if delivery is None:
+        delivery = _delivery_setting(db, tenant_id, options)
+    wants_service = delivery == DELIVERY_SERVICE
     if wants_service:
         result.fallback = service.unavailable()
     try:
         if not base_sha or not _SHA.match(base_sha):
             raise StageRefused("the step has no base commit to compare the index with")
         index_state = data.get("index") if isinstance(data.get("index"), Mapping) else {}
-        candidates = _candidates(registration, index_state, options)
+        candidates = candidates_of(index_state)
         if not candidates:
             raise StageRefused("no promoted index with a graph is kept for this repository")
         reasons: list[str] = []

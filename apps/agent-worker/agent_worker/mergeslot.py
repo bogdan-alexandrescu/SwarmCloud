@@ -469,6 +469,107 @@ class FirestoreMergeSlots:
         return bool(self._run(body))
 
 
+#: swarm-api's refusal of a slot or entry document that names another tenant
+#: (`swarm_api.attemptstate.StateConflict`).
+STATE_CONFLICT = "state_conflict"
+
+
+class RemoteMergeSlots:
+    """The slot over swarm-api's `POST state/merge-slot`, for a tenant
+    switched to the state routes (docs/design/tenant-settings-integrity.md
+    §4.2, lane ISO-WORKER-READS). No Firestore call is made.
+
+    WHY NOT `transact`. `FirestoreMergeSlots.transact` runs any function over
+    the document inside the worker's own transaction, which is exactly the
+    power #1457 takes away: a worker that can write any slot document can
+    hold another tenant's slot forever (§1.3, row 16). The route takes NAMED
+    operations instead -- peek, acquire, renew, release, wake -- and runs
+    this module's transitions itself (`swarm_api.attemptstate.slot_acquire`,
+    `slot_renew`, `slot_release`), on the slot of THIS tenant, THIS task's
+    signed repository and the base named here, fenced on this attempt
+    (invariant 5: a 409 is `FencedWriteRefused`, nothing written). Which
+    waiters have ended, and the handoff's wake, are read and written there
+    too, so `SlotUse` hands the whole operation over rather than its parts.
+
+    `state` is the attempt's `statecall.StateCall`.
+    """
+
+    def __init__(self, state: Any, *, tenant_id: str,
+                 clock: Callable[[], datetime] = utcnow,
+                 deadline_seconds: float = 30.0) -> None:
+        self._state = state
+        self.tenant_id = tenant_id
+        self._clock = clock
+        #: `indexrun.STATE_CALL_SECONDS`: the 30 s a direct Firestore call retries for.
+        self._deadline = deadline_seconds
+
+    def now(self) -> datetime:
+        return self._clock()
+
+    def _call(self, op: str, base: str, **fields: Any) -> dict[str, Any]:
+        from .statecall import StateRefused  # lazy: statecall -> children -> inputs
+
+        body = {"op": op, "base": base, **{k: v for k, v in fields.items() if v is not None}}
+        try:
+            return self._state.post("merge-slot", body, deadline_seconds=self._deadline)
+        except StateRefused as refused:
+            if refused.code == STATE_CONFLICT:
+                # The document under this tenant's slot id names another tenant.
+                raise SlotTenantMismatch(str(refused)) from None
+            raise
+
+    def peek(self, base: str) -> Mapping[str, Any] | None:
+        """The slot document of this task's repository and `base`, or None."""
+        document = self._call("peek", base).get("document")
+        if document is None:
+            return None
+        if not isinstance(document, Mapping) or document.get("tenant_id") != self.tenant_id:
+            raise SlotTenantMismatch("the state route served a merge slot of another tenant")
+        return document
+
+    def renew(self, base: str, *, updates: int) -> Held | None:
+        return _held_of(self._call("renew", base, updates=updates).get("held"))
+
+    def acquire(self, base: str, *, updates: int) -> tuple[Held | Waiting, bool | None]:
+        """What `acquire` decided, and whether the waiter it handed the slot to
+        (`Waiting.wake`) was marked; None when there was none."""
+        answer = self._call("acquire", base, updates=updates)
+        held = _held_of(answer.get("held"))
+        if held is not None:
+            return held, None
+        waiting = _mapping(answer.get("waiting"))
+        holder = waiting.get("holder")
+        wake = waiting.get("wake")
+        return Waiting(holder=holder if isinstance(holder, str) else None,
+                       position=_int(waiting.get("position")),
+                       waiters=_int(waiting.get("waiters")),
+                       wake=wake if isinstance(wake, str) else None), _woke(answer)
+
+    def release(self, base: str, *, reason: str,
+                generation: int | None) -> tuple[str | None, bool | None]:
+        """Who the slot was handed to, and whether their park was marked."""
+        answer = self._call("release", base, reason=reason, slot_generation=generation)
+        handed = answer.get("handed_to")
+        return (handed if isinstance(handed, str) else None), _woke(answer)
+
+    def wake(self, base: str, task_id: str) -> bool:
+        """`FirestoreMergeSlots.wake`, refused by swarm-api for any task that is
+        not this tenant's and listed in this slot."""
+        return bool(self._call("wake", base, wake_task_id=task_id).get("woken"))
+
+
+def _held_of(value: Any) -> Held | None:
+    if not isinstance(value, Mapping):
+        return None
+    return Held(generation=_int(value.get("generation")),
+                updates_at_acquire=_int(value.get("updates_at_acquire")))
+
+
+def _woke(answer: Mapping[str, Any]) -> bool | None:
+    woke = answer.get("woke")
+    return None if woke is None else bool(woke)
+
+
 # ---------------------------------------------------------------------------
 # One merge attempt's use of its slot
 # ---------------------------------------------------------------------------
@@ -484,7 +585,7 @@ class SlotUse:
     knows the pull request's base; nothing is read or written before.
     """
 
-    slots: MergeSlots
+    slots: MergeSlots | RemoteMergeSlots
     me: Claimant
     repository: str
     task_state: Callable[[str], TaskState | None]
@@ -503,13 +604,29 @@ class SlotUse:
         state = self.task_state(task_id)
         return state is not None and state in _ENDED
 
+    def _remote(self) -> RemoteMergeSlots | None:
+        """The state-route store, whose operations run whole at swarm-api."""
+        return self.slots if isinstance(self.slots, RemoteMergeSlots) else None
+
+    def _peek(self, slot: str) -> Mapping[str, Any] | None:
+        remote = self._remote()
+        if remote is not None:
+            return remote.peek(self.base or "")
+        assert not isinstance(self.slots, RemoteMergeSlots)
+        return self.slots.peek(slot)
+
     def renew(self, *, updates: int) -> Held | None:
         """Keep the slot if this step holds it (a handoff, or an earlier attempt's)."""
         slot = self.slot
         assert slot is not None
-        now = self.slots.now()
-        self.held = self.slots.transact(
-            slot, lambda doc: renew(doc, self.me, now=now, updates=updates))
+        remote = self._remote()
+        if remote is not None:
+            self.held = remote.renew(self.base or "", updates=updates)
+        else:
+            assert not isinstance(self.slots, RemoteMergeSlots)
+            now = self.slots.now()
+            self.held = self.slots.transact(
+                slot, lambda doc: renew(doc, self.me, now=now, updates=updates))
         if self.held is not None:
             self.record.update(slot=slot, held=True, generation=self.held.generation,
                                updates_at_acquire=self.held.updates_at_acquire)
@@ -518,6 +635,13 @@ class SlotUse:
     def acquire(self, *, updates: int) -> Held | Waiting:
         slot = self.slot
         assert slot is not None
+        remote = self._remote()
+        if remote is not None:
+            # swarm-api reads which holder has ended, and marks the waiter it
+            # hands the slot to, in the same call.
+            taken, woke = remote.acquire(self.base or "", updates=updates)
+            return self._taken(slot, taken, woke=woke)
+        assert not isinstance(self.slots, RemoteMergeSlots)
         peek = self.slots.peek(slot) or {}
         holder = _holder(peek)
         ended: set[str] = set()
@@ -528,6 +652,12 @@ class SlotUse:
         result = self.slots.transact(slot, lambda doc: acquire(
             doc, self.me, tenant_id=self.slots.tenant_id, repository=self.repository,
             base=self.base or "", now=now, updates=updates, ended=ended))
+        return self._taken(slot, result)
+
+    def _taken(self, slot: str, result: Held | Waiting, *,
+               woke: bool | None = None) -> Held | Waiting:
+        """Record what `acquire` decided; wake the waiter it handed the slot to.
+        `woke` is the route's own wake of that waiter, already made."""
         self.record["slot"] = slot
         if isinstance(result, Held):
             self.held = result
@@ -537,7 +667,10 @@ class SlotUse:
         self.record.update(held=False, holder=result.holder, position=result.position,
                            waiters=result.waiters)
         if result.wake is not None:
-            self._wake(result.wake)
+            if self._remote() is not None:
+                self._woken(result.wake, bool(woke))
+            else:
+                self._wake(result.wake)
         return result
 
     def confirm(self) -> None:
@@ -548,7 +681,7 @@ class SlotUse:
         slot = self.slot
         if self.held is None or slot is None:
             raise SlotLost("this attempt does not hold the merge slot")
-        holder = _holder(self.slots.peek(slot) or {})
+        holder = _holder(self._peek(slot) or {})
         if (holder is None or holder["task_id"] != self.me.task_id
                 or _int(holder.get("generation")) != self.held.generation):
             self.held = None
@@ -560,11 +693,20 @@ class SlotUse:
         slot = self.slot
         if slot is None:
             return None
-        peek = self.slots.peek(slot) or {}
+        peek = self._peek(slot) or {}
         holder = _holder(peek)
         if (self.held is None and (holder is None or holder["task_id"] != self.me.task_id)
                 and not any(w["task_id"] == self.me.task_id for w in _waiters(peek))):
             return None  # nothing of this step's to give back: no transaction
+        generation = self.held.generation if self.held is not None else None
+        remote = self._remote()
+        if remote is not None:
+            # swarm-api reads which waiters have ended, hands the slot on and
+            # marks the next waiter's park, in the same call.
+            handed, woke = remote.release(self.base or "", reason=reason,
+                                          generation=generation)
+            return self._released(reason, handed, woke=woke)
+        assert not isinstance(self.slots, RemoteMergeSlots)
         ended: set[str] = set()
         for entry in _live_waiters(peek, now=self.slots.now(), ended=set(),
                                    drop=self.me.task_id)[:HANDOFF_READS]:
@@ -572,18 +714,25 @@ class SlotUse:
                 break
             ended.add(entry["task_id"])
         now = self.slots.now()
-        generation = self.held.generation if self.held is not None else None
         handed = self.slots.transact(slot, lambda doc: release(
             doc, self.me, now=now, reason=reason, ended=ended, generation=generation))
+        return self._released(reason, handed)
+
+    def _released(self, reason: str, handed: str | None, *,
+                  woke: bool | None = None) -> str | None:
         if self.held is not None or handed is not None:
             self.record.update(released=reason)
         self.held = None
         if handed is not None:
             self.record["handed_to"] = handed
-            self._wake(handed)
+            if self._remote() is not None:
+                self._woken(handed, bool(woke))
+            else:
+                self._wake(handed)
         return handed
 
     def _wake(self, task_id: str) -> None:
+        assert not isinstance(self.slots, RemoteMergeSlots)
         try:
             woken = self.slots.wake(task_id)
         except Exception as exc:  # noqa: BLE001 - the fallback instant wakes it anyway
@@ -593,7 +742,10 @@ class SlotUse:
             if self.log is not None:
                 self.log.warning("merge slot handoff wake not written", task=task_id,
                                  error=type(exc).__name__)
-        self.record.setdefault("woke", []).append({"task_id": task_id, "marked": bool(woken)})
+        self._woken(task_id, bool(woken))
+
+    def _woken(self, task_id: str, marked: bool) -> None:
+        self.record.setdefault("woke", []).append({"task_id": task_id, "marked": marked})
 
 
 _ENDED = TERMINAL_STATES
