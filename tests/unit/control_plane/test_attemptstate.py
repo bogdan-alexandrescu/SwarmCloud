@@ -536,6 +536,175 @@ def test_upstream_refuses_a_declared_id_of_another_tenant(client, db):
 
 
 # --------------------------------------------------------------------------
+# upstream: the three reads past the declared set, each id derived server-side
+# (ISO-UPSTREAM, part of #1457)
+# --------------------------------------------------------------------------
+
+WORKFLOW = "wf_state_1"
+BASE_SHA = "b" * 40
+
+
+def _refused(response) -> bool:
+    return response.status_code == 403 and response.json()["code"] == "upstream_not_declared"
+
+
+def _index_run(client, db, worker: Worker, *, version_task: str, registered_by: str = "eng",
+               prompt: str | None = None) -> None:
+    from swarm_api.repoindex import BASE_LINE
+    from swarm_api.repositories import repo_id_for
+
+    opened(client, db, worker,
+           input={"prompt": prompt if prompt is not None else f"index\n{BASE_LINE}{BASE_SHA}\n"})
+    repo_id = repo_id_for("eng", "acme", "widgets")
+    db.docs[f"repositories/{repo_id}"] = {"tenant_id": registered_by, "repo_id": repo_id}
+    db.docs[f"repositories/{repo_id}/index_versions/{BASE_SHA}"] = {"task_id": version_task}
+    db.docs[f"repositories/{repo_id}/index_versions/{'c' * 40}"] = {"task_id": "task_older"}
+
+
+def test_upstream_serves_the_index_runs_base_version_task(client, db):
+    worker = Worker()
+    _index_run(client, db, worker, version_task="task_base")
+    seed_task(db, task_id="task_base", tenant_id="eng", state="SUCCEEDED")
+    response = worker.get(client, "upstream", "upstream_task_id=task_base")
+    assert response.status_code == 200, response.text
+    assert response.json()["task"]["id"] == "task_base"
+
+
+def test_upstream_refuses_a_task_of_a_version_the_prompt_does_not_name(client, db):
+    worker = Worker()
+    _index_run(client, db, worker, version_task="task_base")
+    seed_task(db, task_id="task_older", tenant_id="eng", state="SUCCEEDED")
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_older"))
+
+
+def test_upstream_refuses_the_base_task_with_no_base_line_or_two(client, db):
+    from swarm_api.repoindex import BASE_LINE
+
+    worker = Worker()
+    _index_run(client, db, worker, version_task="task_base",
+               prompt=f"{BASE_LINE}{BASE_SHA}\n{BASE_LINE}{'c' * 40}\n")
+    seed_task(db, task_id="task_base", tenant_id="eng", state="SUCCEEDED")
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_base"))
+
+
+def test_upstream_refuses_a_base_task_of_another_tenant(client, db):
+    worker = Worker()
+    _index_run(client, db, worker, version_task="task_theirs")
+    seed_task(db, task_id="task_theirs", tenant_id="research", state="SUCCEEDED")
+    response = worker.get(client, "upstream", "upstream_task_id=task_theirs")
+    assert _refused(response)
+    assert "research" not in response.text
+
+
+def test_upstream_refuses_a_base_under_another_tenants_registration(client, db):
+    worker = Worker()
+    _index_run(client, db, worker, version_task="task_base", registered_by="research")
+    seed_task(db, task_id="task_base", tenant_id="eng", state="SUCCEEDED")
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_base"))
+
+
+def _step(db, task_id: str, *, builds_on: str | None, tenant: str = "eng",
+          workflow: str = WORKFLOW) -> None:
+    doc = seed_task(db, task_id=task_id, tenant_id=tenant, state="SUCCEEDED")
+    doc["workflow_id"] = workflow
+    doc["metadata"] = {"dispatch": {"builds_on": builds_on} if builds_on else {}}
+
+
+def _chain(client, db, worker: Worker, length: int) -> list[str]:
+    """This task builds on `task_b0`, which builds on `task_b1`, ... `length` steps back."""
+    ids = [f"task_b{i}" for i in range(length)]
+    opened(client, db, worker, workflow_id=WORKFLOW,
+           metadata={"dispatch": {"builds_on": ids[0]}})
+    for i, task_id in enumerate(ids):
+        _step(db, task_id, builds_on=ids[i + 1] if i + 1 < length else None)
+    return ids
+
+
+def test_upstream_serves_every_ancestor_along_builds_on(client, db):
+    worker = Worker()
+    ids = _chain(client, db, worker, 3)
+    for task_id in ids:
+        response = worker.get(client, "upstream", f"upstream_task_id={task_id}")
+        assert response.status_code == 200, (task_id, response.text)
+        assert response.json()["task"]["id"] == task_id
+
+
+def test_upstream_refuses_a_task_off_the_builds_on_chain(client, db):
+    worker = Worker()
+    _chain(client, db, worker, 3)
+    _step(db, "task_sibling", builds_on=None)
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_sibling"))
+
+
+def test_upstream_does_not_follow_builds_on_through_another_tenant(client, db):
+    worker = Worker()
+    opened(client, db, worker, workflow_id=WORKFLOW,
+           metadata={"dispatch": {"builds_on": "task_b0"}})
+    _step(db, "task_b0", builds_on="task_b1", tenant="research")
+    _step(db, "task_b1", builds_on=None)
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_b0"))
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_b1"))
+
+
+def test_upstream_does_not_follow_builds_on_out_of_this_workflow(client, db):
+    worker = Worker()
+    opened(client, db, worker, workflow_id=WORKFLOW,
+           metadata={"dispatch": {"builds_on": "task_b0"}})
+    _step(db, "task_b0", builds_on="task_b1", workflow="wf_other")
+    _step(db, "task_b1", builds_on=None)
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_b1"))
+
+
+def test_upstream_follows_builds_on_to_the_depth_bound_and_no_further(client, db):
+    from swarm_api.attemptstate import BUILDS_ON_MAX_DEPTH
+
+    worker = Worker()
+    ids = _chain(client, db, worker, BUILDS_ON_MAX_DEPTH + 1)
+    last = worker.get(client, "upstream", f"upstream_task_id={ids[BUILDS_ON_MAX_DEPTH - 1]}")
+    assert last.status_code == 200, last.text
+    assert _refused(
+        worker.get(client, "upstream", f"upstream_task_id={ids[BUILDS_ON_MAX_DEPTH]}"))
+
+
+def _gated(client, db, worker: Worker, review: str) -> None:
+    opened(client, db, worker, workflow_id=WORKFLOW, metadata={"dispatch": {
+        "verdict_gate": {"task_id": review, "verdict_in": ["NOT_YET"]}}})
+
+
+def test_upstream_serves_the_verdict_gates_review_task(client, db):
+    worker = Worker()
+    _gated(client, db, worker, "task_review")
+    _step(db, "task_review", builds_on=None)
+    response = worker.get(client, "upstream", "upstream_task_id=task_review")
+    assert response.status_code == 200, response.text
+    assert response.json()["task"]["id"] == "task_review"
+
+
+def test_upstream_refuses_a_gate_review_of_another_workflow(client, db):
+    worker = Worker()
+    _gated(client, db, worker, "task_review")
+    _step(db, "task_review", builds_on=None, workflow="wf_other")
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_review"))
+
+
+def test_upstream_refuses_a_gate_review_of_another_tenant(client, db):
+    worker = Worker()
+    _gated(client, db, worker, "task_review")
+    _step(db, "task_review", builds_on=None, tenant="research")
+    response = worker.get(client, "upstream", "upstream_task_id=task_review")
+    assert _refused(response)
+    assert "research" not in response.text
+
+
+def test_upstream_refuses_a_task_the_gate_does_not_name(client, db):
+    worker = Worker()
+    _gated(client, db, worker, "task_review")
+    _step(db, "task_review", builds_on=None)
+    _step(db, "task_other_review", builds_on=None)
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_other_review"))
+
+
+# --------------------------------------------------------------------------
 # merge slot: a wake only for this tenant's listed waiter
 # --------------------------------------------------------------------------
 
