@@ -24,6 +24,7 @@ WRITTEN TO FAIL BEFORE THE CHANGE: there, attempt 2's push was refused and
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -66,10 +67,13 @@ def _push_onto(origin: Path, tmp: Path, branch: str, *, name: str, email: str, m
     subprocess.run(["git", "clone", "--quiet", "--branch", branch, str(origin), str(clone)],
                    check=True, capture_output=True)
     (clone / "other.txt").write_text("someone else's work\n")
-    ident = ["-c", f"user.name={name}", "-c", f"user.email={email}"]
-    subprocess.run(["git", *ident, "add", "other.txt"], cwd=clone, check=True, capture_output=True)
-    subprocess.run(["git", *ident, "commit", "--quiet", "-m", message], cwd=clone, check=True,
-                   capture_output=True)
+    # In the environment, which outranks any `user.*` an ambient config or
+    # environment of the machine running the test would otherwise supply.
+    env = {**os.environ, "GIT_AUTHOR_NAME": name, "GIT_AUTHOR_EMAIL": email,
+           "GIT_COMMITTER_NAME": name, "GIT_COMMITTER_EMAIL": email}
+    subprocess.run(["git", "add", "other.txt"], cwd=clone, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", message], cwd=clone, check=True,
+                   capture_output=True, env=env)
     subprocess.run(["git", "push", "--quiet", "origin", f"HEAD:{branch}"], cwd=clone, check=True,
                    capture_output=True)
     return refs(origin)[branch]
