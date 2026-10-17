@@ -916,6 +916,12 @@ class AttemptState:
         registered = self.children.register_state_key(
             attempt, nonce=body.nonce, public_key=body.public_key, unprotected=body.unprotected
         )
+        # `search_tool`, from the setting the `child-key` answer reads
+        # (children.py): a switched worker never calls that route, so without
+        # it here the tenant's agents silently lose the search tool. A
+        # state-only key is no child path, as the tombstone there is not.
+        registered = {**registered, "search_tool": not body.unprotected and bool(
+            getattr(self._settings, "search_tool_enabled", False))}
         task = self._read(self._task_ref(attempt))
         lease = self._read(self._ref(LEASES, attempt.lease_id))
         reason = fence_reason(task, lease, attempt)

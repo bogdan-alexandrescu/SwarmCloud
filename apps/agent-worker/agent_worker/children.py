@@ -611,8 +611,9 @@ class ChildPath:
             path, noted as the tombstone is today (`worker_unprotected`);
           * no key at all: no child path, noted `child_key_unregistered`.
 
-        Never raises, as `register` never does. The search tool's flag is not
-        part of `state/open`'s answer, so an adopted key offers no search tool.
+        Never raises, as `register` never does. The search tool's flag rides on
+        `state/open`'s registration as on `child-key`'s answer (`search_tool`,
+        lane ISO-SEARCH), and is read exactly as `register` reads it.
         """
         payload = registration if isinstance(registration, dict) else {}
         purposes = payload.get("purpose")
@@ -627,7 +628,7 @@ class ChildPath:
             return
         self._key = key
         self.unavailable = None
-        self.search_flag = False
+        self.search_flag = payload.get("search_tool") is True
         self.log.info("child path registered for this attempt", registered_by="state/open")
 
     def _note(self, note: Callable[[dict[str, Any]], Any], what: str, why: str) -> None:
