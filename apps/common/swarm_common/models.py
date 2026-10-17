@@ -625,9 +625,16 @@ class Tenant:
     #: Providers this tenant has registered a key for. A runner whose provider
     #: is absent parks as CREDENTIAL_MISSING rather than failing at runtime.
     credentials: list[str] = field(default_factory=list)
-    service_account: str | None = None
-    gcs_prefix: str | None = None
-    namespace: str | None = None
+    #: The three below are RECORDS, not authority (contract request 87,
+    #: docs/design/tenant-settings-integrity.md §5 request C, #1457). A tenant
+    #: identity can rewrite its own `tenants/<id>` document, so a reader that
+    #: dispatched as the stored account or into the stored namespace would run
+    #: one tenant's attempt as another's. Derive them from `tenant_id`.
+    service_account: str | None = None  # RECORD ONLY: dispatch derives it with
+                                        # identity.worker_service_account_id. A
+                                        # tenant identity can rewrite this field.
+    gcs_prefix: str | None = None       # RECORD ONLY: derived from tenant_id.
+    namespace: str | None = None        # RECORD ONLY: derived from the template.
 
     def secret_name(self, provider: str) -> str:
         return f"swarm-tenant-{self.tenant_id}-{provider}"

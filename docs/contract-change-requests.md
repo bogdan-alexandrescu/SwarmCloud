@@ -92,6 +92,9 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 82 | `models.py`: `SECRET_CONSUMER_KINDS`, `PLATFORM_COMPONENTS` and `consumer_name`, one spelling of a secret consumer (workspace secrets request C, part of #1347) | ACCEPTED by the owner 2026-10-14 and APPLIED by the pull request that adds this line (proposed 2026-10-14; accepted on PR #1354) |
 | 83 | `states.py`: no new park reason; a required secret slot with no grant parks `CREDENTIAL_MISSING` (workspace secrets request D, part of #1347) | ACCEPTED by the owner 2026-10-14 and APPLIED by the pull request that adds this line (proposed 2026-10-14; accepted on PR #1354) |
 | 84 | `profiles.py`: `claude-code-review` is the one CLOUD_RUN_JOB profile that carries the Jev client; move it to GKE_AUTOPILOT, or retire it under request 50 (JUDGE-GKE, part of #1347) | ACCEPTED as (b) by the owner 2026-10-16 (on PR 1422): retired under request 50, not moved; nothing to apply |
+| 85 | `states.py`: `WORKER_TRANSITIONS` and `worker_may_transition`, the transitions a tenant worker may request (ISO-CONTRACT, tenant settings integrity request A, part of #1457) | ACCEPTED by the owner 2026-10-17 (PR 1464) and APPLIED by the pull request that adds this line |
+| 86 | `specsign.py`: `canonical_settings_block`, `SETTINGS_MAC_FIELDS` and `SETTINGS_PURPOSE`, the bytes a `workspace_settings` MAC covers (ISO-CONTRACT, tenant settings integrity request B, part of #1457) | ACCEPTED by the owner 2026-10-17 (PR 1464, Q2: the interim MAC) and APPLIED by the pull request that adds this line |
+| 87 | `models.py`: `Tenant.service_account`, `.namespace` and `.gcs_prefix` are records, not authority (ISO-CONTRACT, tenant settings integrity request C, part of #1457) | ACCEPTED by the owner 2026-10-17 (PR 1464) and APPLIED by the pull request that adds this line (comments only) |
 
 ---
 
@@ -12248,3 +12251,214 @@ the lease it returns gives back every pool it reserved. **6** and **7**
 unchanged: GKE runs on demand with `requests == limits`, as every
 GKE_AUTOPILOT profile does. **10** unchanged: the backend stays the
 catalogue's, never a caller's.
+
+## 85. `states.py`: `WORKER_TRANSITIONS`, the transitions a tenant worker may request (ISO-CONTRACT, tenant settings integrity request A)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1464, design B) and APPLIED by the pull request that adds this line. Filed by lane ISO-SETTINGS-DESIGN
+([tenant-settings-integrity.md](design/tenant-settings-integrity.md) §5 request A), applied by lane ISO-CONTRACT, part of #1457.
+The applied set differs from the design's sketch in the way the request
+itself directs ("the building lane reads `control.py` and `handoff.py` again
+and lists exactly the edges they use"); see "The change".
+
+### Why
+
+Design B moves every worker state write behind worker-only swarm-api routes,
+`/v1/attempts/{attempt_id}/state/...`, and each route permits only the
+transitions a worker makes today (design §4.4). The agent can mint its
+worker's ID token, so without that subset the routes would let an agent move
+its own task anywhere `_ALLOWED` permits: back to READY for another attempt,
+or into DEAD_LETTERED. The route, the worker's client and the scheduler and
+reconciler tests all need the subset, and until now it was implied only by
+`control.py`'s call sites. One spelling, in the contract, or each restatement
+drifts.
+
+### The change
+
+```python
+WORKER_TRANSITIONS: frozenset[tuple[TaskState, TaskState]] = frozenset({
+    (TaskState.LEASED, TaskState.DISPATCHED),
+    (TaskState.DISPATCHED, TaskState.STARTING),
+    (TaskState.STARTING, TaskState.RUNNING),
+    *((s, t) for s in (TaskState.LEASED, TaskState.DISPATCHED, TaskState.STARTING)
+             for t in (TaskState.FAILED, TaskState.CANCELLED)),
+    *((TaskState.RUNNING, t) for t in (TaskState.PARKED, TaskState.READY,
+          TaskState.SUCCEEDED, TaskState.FAILED, TaskState.CANCELLED)),
+})
+
+def worker_may_transition(frm: TaskState, to: TaskState) -> bool:
+    return (frm, to) in WORKER_TRANSITIONS and can_transition(frm, to)
+```
+
+Each edge, and the worker code that writes it (read 2026-10-17 at `766b9af`):
+
+* LEASED→DISPATCHED→STARTING→RUNNING: `ControlPlane.advance_to_starting`,
+  `advance_to_running`.
+* LEASED, DISPATCHED or STARTING to FAILED: the crash handler's
+  `_safe_finish` in `lifecycle.py`, for an exception before the walk ends.
+* LEASED, DISPATCHED or STARTING to CANCELLED: `lifecycle._run`'s
+  "cancelled before execution started", at whatever state the worker read. A
+  restarted container of the same generation reads STARTING.
+* RUNNING→PARKED: `park`, `await_park`, the CI park and `handoff`'s human park.
+* RUNNING→READY: `fail_retryably`, and `handoff`'s human park when a person
+  returned control. That park reads RUNNING and writes READY in one fenced
+  transaction. It never writes PARKED→READY.
+* RUNNING to SUCCEEDED, FAILED or CANCELLED: `finish`.
+
+**Where it differs from the design's sketch, and why:**
+
+* **PARKED→READY is not in the set.** The sketch named it for the
+  hand-off's "person returned control". The worker's code makes that edge as
+  RUNNING→READY (`handoff.py`, `assert_transition(current, TaskState.READY)`
+  with `current` the RUNNING task). PARKED→READY is swarm-api's `human-ready`,
+  a person's route, so a worker that asked for it would be re-queueing a task
+  that holds no capacity. That is the scheduler's decision or a person's
+  (invariant 1).
+* **STARTING→READY is not in the set.** No worker path writes it. A worker
+  that cannot start leaves the requeue to the reconciler
+  (`_exit_unavailable_before_runner`, `_exit_interrupted_before_runner`).
+* **STARTING→PARKED, STARTING→SUCCEEDED and both edges into DEAD_LETTERED
+  are not in the set.** `_ALLOWED` refuses them, and the request says such an
+  edge is dropped, not added to `_ALLOWED`.
+* **The pre-running FAILED and CANCELLED edges are in the set.** The sketch
+  did not list them, but the worker writes them.
+
+**Tests:** `tests/unit/common/test_worker_transitions.py`.
+`worker_may_transition(RUNNING, LEASED)` is false. Every edge is in `_ALLOWED`.
+The set equals the edge table above, and the function equals membership and
+legality over all 144 pairs. No edge enters LEASED or DEAD_LETTERED, or leaves
+a state that holds no capacity.
+
+### Rollback
+
+Delete the constant and the function. Nothing reads them until ISO-STATE-API
+builds the routes.
+
+### What it would break
+
+Nothing. Both are new names. **One obligation falls on the build lanes:** a
+worker edge added later (a new park path, say) must join this set in the same
+change, or the state route refuses it once the tenant's cutover switch is on.
+Before the switch nothing reads the set, so what a running worker can do is
+unchanged.
+
+### Invariants
+
+**5**: the routes run the fence on every edge in the set, in the transaction
+that writes. **1**: no edge moves a task that holds no capacity, and every edge
+into PARKED or READY is paired with a release in the same transaction (design
+§4.2). **3**: no edge enters LEASED, which only admission writes. 2, 4 and 6-10
+are untouched.
+
+## 86. `specsign.py`: a canonical form for a `workspace_settings` block (ISO-CONTRACT, tenant settings integrity request B)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1464; owner question Q2 chose phase 0 plus the interim MAC on `workspace_settings`) and APPLIED by the pull request that adds this line. Filed by lane ISO-SETTINGS-DESIGN
+([tenant-settings-integrity.md](design/tenant-settings-integrity.md) §5 request B), applied by lane ISO-CONTRACT, part of #1457.
+
+### Why
+
+#1457: a tenant worker can write `workspace_settings/<B>.judgment_backend`,
+and the scheduler and swarm-api act on it. Until design B removes the
+worker's Firestore access, swarm-api MACs the fields the control plane acts
+on, and every reader verifies the MAC. The scheduler (`judgment.py`,
+`dispatch.py`) and swarm-api (`judgment.py`, `typesafe_ticket.py`,
+`mergesettings.py`, `codeintel.py`) must compute identical bytes, and the only
+code they share is `swarm_common`. `specsign` already owns JCS and purpose
+separation.
+
+### The change
+
+```python
+SETTINGS_PURPOSE = "swarm.settings/v1"
+
+SETTINGS_MAC_FIELDS: Mapping[str, tuple[str, ...]] = MappingProxyType({
+    "top": ("judgment_backend",),
+    "merge": ("mode", "train_size", "max_train_age_minutes"),
+    "code_intelligence": ("jev", "context", "context_ab", "graph_delivery",
+                          "judgment_backend"),
+})
+
+def canonical_settings_block(*, tenant_id: str, block: str,
+                             fields: Mapping[str, Any]) -> bytes:
+    """JCS of {"purpose": "swarm.settings/v1", "tenant_id", "block", "fields"}."""
+```
+
+The function projects `fields` onto the block's list. A listed key that is
+absent is `null`, and any other key is not in the bytes. An unknown block, a
+missing tenant or a `fields` that is not a map is `SpecNotCanonical`. These
+three refusals were added in applying the request: each removes an input no
+writer sends, so no MAC can be computed over an ambiguous tenant or block. The
+purpose was named `SETTINGS_PURPOSE`, as `SPEC_PURPOSE` is named. The mapping
+is read-only (`MappingProxyType`), so no reader can widen another's list at
+runtime.
+
+The MAC is `HMAC-SHA256(swarm-settings-key, canonical_settings_block(...))`.
+It is not in the contract, because its key is not. The field names were
+checked against the writers on 2026-10-17: `mergesettings.py` `as_dict`
+writes `mode`, `train_size` and `max_train_age_minutes`, and `codeintel.py`
+names `jev`, `context`, `context_ab` and `graph_delivery`.
+
+**Tests:** `tests/unit/common/test_settings_block.py`. Two tenants with the
+same fields get different bytes. A key outside the list does not change the
+bytes. A changed covered value does. The block name is inside the bytes. The
+form is JCS with its own purpose, and the lists are the request's and
+read-only.
+
+### Rollback
+
+Delete the function, the constant and the purpose. Readers then fall back to
+"unset".
+
+### What it would break
+
+Nothing until a reader verifies, and no reader does yet: ISO-SCHED and
+ISO-SETTINGS-MAC build them, each behind its tenant's cutover. **Once a reader
+verifies, every unsigned document reads as unset**, so ISO-SETTINGS-MAC runs
+its re-sign pass over `workspace_settings` before switching readers on. A
+change to a block's list changes that block's bytes, and every stored MAC of
+it must be re-signed in the same rollout.
+
+### Invariants
+
+**9** is the point: a block copied from tenant A's document onto B's does not
+verify, because the tenant is inside the bytes. 1-8 and 10 are untouched.
+
+## 87. `models.py`: `Tenant.service_account`, `.namespace` and `.gcs_prefix` are records, not authority (ISO-CONTRACT, tenant settings integrity request C)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1464, phase 0 "derive, don't read") and APPLIED by the pull request that adds this line. Comments only; no field removed or retyped. Filed by lane ISO-SETTINGS-DESIGN
+([tenant-settings-integrity.md](design/tenant-settings-integrity.md) §5 request C), applied by lane ISO-CONTRACT, part of #1457.
+
+### Why
+
+A tenant identity can rewrite its own `tenants/<id>` document. A dispatcher
+that ran the next attempt as the stored `service_account`, or in the stored
+`namespace`, would run tenant A's attempt as tenant B (design §1.3, rows 1-3).
+Phase 0 makes every reader derive these values from `tenant_id`. The frozen
+`Tenant` type is where a future reader learns whether it may trust them;
+contract request 43 made `identity.worker_service_account_id` public for the
+same reason.
+
+### The change
+
+```python
+service_account: str | None = None  # RECORD ONLY: dispatch derives it with
+                                    # identity.worker_service_account_id. A
+                                    # tenant identity can rewrite this field.
+gcs_prefix: str | None = None       # RECORD ONLY: derived from tenant_id.
+namespace: str | None = None        # RECORD ONLY: derived from the template.
+```
+
+A `#:` paragraph above the three says why, in one place.
+
+**Tests:** `tests/unit/common/test_tenant_records.py`. Each field's line
+carries `RECORD ONLY`, and each still defaults to `None`.
+
+### Rollback, what it would break
+
+None. These are comments.
+
+### Invariants
+
+**9**. Nothing else is touched.
+
+**Not requested, and not applied:** a new `identity` function,
+or any change to `admission.py` or `config.py` (design §5, "Not requested").
