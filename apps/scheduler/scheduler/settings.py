@@ -423,6 +423,22 @@ class SchedulerSettings:
     #: (invariant 10).
     typesafe_forwarder_enabled: bool = False
     typesafe_forwarder_tenants: tuple[str, ...] = ()
+    #: THE SETTINGS-MAC SWITCH (docs/design/tenant-settings-integrity.md §4.5,
+    #: interim A; lane ISO-SCHED, part of #1457). On, a `workspace_settings`
+    #: `judgment_backend` -- top level or `code_intelligence.` -- counts only
+    #: when its block's MAC verifies under `settings_mac_key`
+    #: (`judgment.trusted_settings`); a forged or unsigned one reads as the
+    #: default, internal-jev, for the pod (`judgment.read_backend`) and for
+    #: the router (`dispatch.read_judge_backend`) alike. Every tenant's worker
+    #: can write any tenant's settings document today, which is #1457.
+    #: OFF BY DEFAULT, because on it reads every document swarm-api has not
+    #: yet signed as unset: turn it on (SETTINGS_MAC_REQUIRED=true) only after
+    #: lane ISO-SETTINGS-MAC's re-sign job has signed the documents that exist.
+    settings_mac_required: bool = False
+    #: `swarm-settings-key` (SWARM_SETTINGS_KEY), from Secret Manager, held by
+    #: swarm-api, which signs with it, and this service, which verifies. Not in
+    #: the repr, so a logged settings object cannot carry it.
+    settings_mac_key: str = field(default="", repr=False)
     dispatch_topic: str = ""
     #: The step-spec verification settings a worker needs (contract request
     #: 34), passed through VERBATIM onto every Cloud Run Job this scheduler
@@ -489,6 +505,8 @@ class SchedulerSettings:
             browser_egress_bypass=_csv("BROWSER_EGRESS_BYPASS"),
             typesafe_forwarder_enabled=_bool("TYPESAFE_FORWARDER_ENABLED", False),
             typesafe_forwarder_tenants=_csv("TYPESAFE_FORWARDER_TENANTS"),
+            settings_mac_required=_bool("SETTINGS_MAC_REQUIRED", False),
+            settings_mac_key=os.environ.get("SWARM_SETTINGS_KEY", "").strip(),
             dispatch_topic=os.environ.get("DISPATCH_TOPIC", ""),
             spec_verify_keys=os.environ.get("SPEC_VERIFY_KEYS", "").strip(),
             spec_signing_key=os.environ.get("SPEC_SIGNING_KEY", "").strip(),
@@ -523,3 +541,10 @@ class SchedulerSettings:
         check_worker_models(self.worker_models)
         check_spec_settings(self)
         check_internal_decision_api_url(self.internal_decision_api_url)
+        # At START, like the image map: on with no key would read every
+        # workspace's choice as the default without saying why.
+        if self.settings_mac_required and not self.settings_mac_key:
+            raise ValueError(
+                "SETTINGS_MAC_REQUIRED is on and SWARM_SETTINGS_KEY is empty: the "
+                "scheduler cannot verify a workspace_settings MAC without the key"
+            )

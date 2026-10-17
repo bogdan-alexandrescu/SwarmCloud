@@ -1049,13 +1049,17 @@ def test_gke_job_does_not_reference_a_kubernetes_secret_that_nothing_creates(
 
 # -- a tenant with no identity never starts a container ---------------------
 
-def test_neither_backend_will_run_work_for_a_tenant_with_no_service_account(settings):
+def test_neither_backend_will_run_work_for_a_tenant_that_can_have_no_service_account(
+    settings
+):
     """Cloud Run falls back to the project's DEFAULT compute service account
     when a Job names none, which is shared and far more privileged than a
-    worker. A tenant whose infrastructure was never provisioned belongs back in
-    READY with a clear error."""
+    worker. The account is derived from the tenant id (#1457), so what is
+    refused is an id with no valid account -- `swarm-agent-worker-` plus 12
+    characters is over GCP's 30 -- whatever the record says. It belongs back
+    in READY with a clear error."""
     unprovisioned = Tenant(
-        tenant_id="newteam",
+        tenant_id="newteam-long",
         kind="group",
         principal="newteam@saga.xyz",
         created_at=NOW,
