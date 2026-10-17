@@ -2610,6 +2610,26 @@ it in its group, so a burst of finishing runs must not cancel a queued
 dispatch by hand (Actions → auto-merge → *Run workflow*, `pr`) to make it
 look again; it is a request to look, not a `ready`.
 
+### `ready-on-green` is marked `ready` by CI, not by a session
+
+Owner decision, 2026-10-17: on that day an operator's laptop ran ~20 watcher
+loops (`gh pr view` every 60-90 s per pull request) only to add `ready` once
+a pull request went green, spending the owner's personal GitHub quota. A pull
+request labelled `ready-on-green` now gets that from the `ready-on-green` job
+in `auto-merge.yml`. It runs on the events `requeue` runs on (a pull
+request's `workflow_run` finishing, any `check_suite`), for the
+`ready-on-green` pull requests at that head, and every 15 minutes for all of
+them as the backstop. Green is judged at the head GitHub reports for each
+pull request with main's `scripts/merge-train.sh judge`: every required
+check finished well and nothing that ran failed. The head is read again just
+before labelling, so a push since is not promoted. Green adds `ready` and
+removes `ready-on-green` with the merge App's token, never the GITHUB_TOKEN:
+GitHub raises no `labeled` event for a label the GITHUB_TOKEN adds, so the
+`enable` job, and with it auto-merge, would never start. A red head is left
+alone, with one comment per head naming the failing checks; a `[swarm]
+task_` title is skipped, as the gate would refuse it; without the merge App
+the job does not run.
+
 ### Why the merge uses a GitHub App token, not the GITHUB_TOKEN
 
 **A merge performed with the workflow's GITHUB_TOKEN starts no workflow.**
