@@ -888,7 +888,7 @@ print({c.name: _resolve_program(c.argv[0]) for c in GENERIC_COMMANDS.values()})"
 # will run it. A missing or unrunnable tool fails the build and is named; the
 # count is printed so a list that collapsed to one word cannot read as a pass.
 # HOME is a throwaway so `gcloud --version` leaves no config in the image.
-RUN tools="gh gcloud gke-gcloud-auth-plugin kubectl terraform checkov trivy shellcheck make docker jq" \
+RUN tools="gh gcloud gke-gcloud-auth-plugin kubectl terraform checkov trivy shellcheck make docker" \
  && if [ "${INSTALL_TOFU}" = "1" ]; then tools="$tools tofu"; fi \
  && if [ "${INSTALL_TFLINT}" = "1" ]; then tools="$tools tflint"; fi \
  && HOME="$(mktemp -d)" && export HOME \

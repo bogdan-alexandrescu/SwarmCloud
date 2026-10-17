@@ -722,10 +722,10 @@ def test_jq_is_the_pinned_release_not_debians() -> None:
     assert check < install, "jq is installed before its sha256 is checked"
     # The installed binary says the pinned version, or the build fails.
     assert 'test "$(/usr/local/bin/jq --version)" = "jq-${JQ_VERSION}"' in text, text
-    # /usr/local/bin precedes /usr/bin on the runtime PATH, and the agent user
-    # runs it in the smoke step like every other tool.
-    always, _ = _smoke_tool_lists()
-    assert "jq" in always, always
+    # /usr/local/bin precedes /usr/bin on the runtime PATH, so the release is
+    # the jq every caller gets.
+    path = re.search(r'PATH="([^"]+)"', _runtime_env().body).group(1).split(":")
+    assert path.index("/usr/local/bin") < path.index("/usr/bin"), path
     # The tool mirror carries it, at the same sha256 (test_build_mirror_switch
     # holds the whole manifest equal to the Dockerfile's reads).
     row = f"{sha}  github.com/jqlang/jq/releases/download/jq-{JQ_VERSION}/{JQ_ASSET}"
