@@ -47,8 +47,10 @@ is HMAC-SHA256 under the `swarm-settings-key` secret over
 The block is "top" (this module's `judgment_backend`, so the MAC is the
 document's top-level `mac`), "merge" or "code_intelligence" (the map's own
 `mac` key). The key reaches swarm-api as SWARM_SETTINGS_KEY, the one it
-replaced as SWARM_SETTINGS_KEY_PREVIOUS while a rotation re-signs; with no key
-configured nothing is signed, which is what every write did before this.
+replaced as SWARM_SETTINGS_KEY_PREVIOUS while a rotation re-signs, both read
+into `ApiSettings` at start like the rest of its configuration and handed to
+each reader as a `SettingsMac`; with no key configured nothing is signed,
+which is what every write did before this.
 
 A reader acts on a block only when its MAC verifies, for the tenants listed
 in SETTINGS_MAC_TENANTS (comma-separated, or `*`) -- the per-tenant cutover,
@@ -65,8 +67,8 @@ import base64
 import binascii
 import hashlib
 import hmac
-import os
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -131,23 +133,48 @@ MAC_VERSION = 1
 TOP_BLOCK = "top"
 #: The Secret Manager secret (§5 request B), created by
 #: `scripts/create-secrets.sh --settings-mac-key`, and the variables it and
-#: the one it replaced reach swarm-api as.
+#: the one it replaced reach swarm-api as (`ApiSettings.settings_key`,
+#: `settings_key_previous`).
 SETTINGS_KEY_SECRET_ID = "swarm-settings-key"
 SETTINGS_KEY_ENV = "SWARM_SETTINGS_KEY"
 SETTINGS_KEY_PREVIOUS_ENV = "SWARM_SETTINGS_KEY_PREVIOUS"
-#: The per-tenant cutover (owner Q7): who has their settings verified.
-#: Empty by default, so nothing is verified until an operator lists a tenant.
+#: The per-tenant cutover (owner Q7): who has their settings verified
+#: (`ApiSettings.settings_mac_tenants`). Empty by default, so nothing is
+#: verified until an operator lists a tenant.
 SETTINGS_MAC_TENANTS_ENV = "SETTINGS_MAC_TENANTS"
 #: The key id's own domain, so the id is never a MAC of anything a reader acts on.
 _KEY_ID_DOMAIN = b"swarm-settings-key-id/v1\0"
 
 
-def settings_keys(environ: Mapping[str, str] | None = None) -> tuple[str, ...]:
+def settings_keys(current: str, previous: str = "") -> tuple[str, ...]:
     """The key ring, current first: the keys a stored MAC may verify under.
-    Read when asked, never at import, so a test sets it like a deployment."""
-    env = os.environ if environ is None else environ
-    keys = (env.get(SETTINGS_KEY_ENV, "").strip(), env.get(SETTINGS_KEY_PREVIOUS_ENV, "").strip())
+    A blank key is no key."""
+    keys = ((current or "").strip(), (previous or "").strip())
     return tuple(k for k in keys if k)
+
+
+@dataclass(frozen=True)
+class SettingsMac:
+    """What one reader signs and verifies under: the key ring, current first,
+    and the tenants cut over. The default -- no key, nobody cut over -- is
+    every reader as it was before ISO-SETTINGS-MAC. The keys are excluded from
+    the repr, as `ApiSettings` excludes them, so a logged reader cannot carry
+    them."""
+
+    keys: tuple[str, ...] = field(default=(), repr=False)
+    tenants: tuple[str, ...] = ()
+
+
+def settings_mac(settings: Any) -> SettingsMac:
+    """The readers' `SettingsMac` from `ApiSettings` (settings_key,
+    settings_key_previous, settings_mac_tenants). Read with a default, as the
+    services read every setting, so a stand-in settings object without them
+    is a deployment with no key and nobody cut over."""
+    return SettingsMac(
+        keys=settings_keys(getattr(settings, "settings_key", ""),
+                           getattr(settings, "settings_key_previous", "")),
+        tenants=tuple(getattr(settings, "settings_mac_tenants", ()) or ()),
+    )
 
 
 def key_id(key: str) -> str:
@@ -172,10 +199,10 @@ def sign_block(key: str, *, tenant_id: str, block: str,
 
 
 def block_mac(tenant_id: str, block: str, fields: Mapping[str, Any],
-              environ: Mapping[str, str] | None = None) -> dict[str, Any] | None:
-    """The `mac` a writer stores with `fields`, under the current key; None
-    when this deployment has no key, so the write is what it was before."""
-    keys = settings_keys(environ)
+              keys: tuple[str, ...]) -> dict[str, Any] | None:
+    """The `mac` a writer stores with `fields`, under the current key (the
+    ring's first); None when this deployment has no key, so the write is what
+    it was before."""
     return sign_block(keys[0], tenant_id=tenant_id, block=block, fields=fields) if keys else None
 
 
@@ -198,22 +225,22 @@ def block_verifies(tenant_id: str, block: str, fields: Mapping[str, Any] | None,
     return any(hmac.compare_digest(_sig(k, tenant_id, block, fields), presented) for k in keys)
 
 
-def mac_enforced(tenant_id: str, environ: Mapping[str, str] | None = None) -> bool:
-    """`tenant_id` is cut over: its readers act only on signed settings."""
-    env = os.environ if environ is None else environ
-    listed = {t.strip() for t in env.get(SETTINGS_MAC_TENANTS_ENV, "").split(",") if t.strip()}
+def mac_enforced(tenant_id: str, tenants: Iterable[str]) -> bool:
+    """`tenant_id` is cut over: its readers act only on signed settings.
+    `tenants` is the cutover list, names or `*` for everyone."""
+    listed = {t.strip() for t in tenants if t.strip()}
     return "*" in listed or tenant_id in listed
 
 
 def trusted_block(tenant_id: str, block: str, fields: Mapping[str, Any] | None,
-                  environ: Mapping[str, str] | None = None) -> dict[str, Any]:
+                  mac: SettingsMac) -> dict[str, Any]:
     """The block a reader may act on: as stored for a tenant not yet cut over
-    (today's behaviour); for one that is, as stored when its MAC verifies and
-    empty -- every setting its default -- when it does not."""
+    (today's behaviour); for one that is, as stored when its MAC verifies
+    under `mac.keys` and empty -- every setting its default -- when it does not."""
     stored = dict(fields) if isinstance(fields, Mapping) else {}
-    if not mac_enforced(tenant_id, environ):
+    if not mac_enforced(tenant_id, mac.tenants):
         return stored
-    return stored if block_verifies(tenant_id, block, stored, settings_keys(environ)) else {}
+    return stored if block_verifies(tenant_id, block, stored, mac.keys) else {}
 
 
 #: The covered keys each block's swarm-api writer writes: this module's
@@ -394,13 +421,15 @@ def jev_status(backend: str, *, internal_enabled: bool, typesafe_key: bool,
 class JudgmentSettings:
     """`workspace_settings/{tenant}.judgment_backend`, read and audited write."""
 
-    def __init__(self, db: Any, *, now: Any) -> None:
+    def __init__(self, db: Any, *, now: Any, mac: SettingsMac) -> None:
         self._db = db
         self._now = now
+        self._mac = mac
 
     def read(self, tenant_id: str) -> dict[str, Any]:
         snap = self._db.collection(SETTINGS_COLLECTION).document(tenant_id).get()
-        doc = trusted_block(tenant_id, TOP_BLOCK, (snap.to_dict() or {}) if snap.exists else {})
+        doc = trusted_block(tenant_id, TOP_BLOCK, (snap.to_dict() or {}) if snap.exists else {},
+                            self._mac)
         return {
             "judgment_backend": stored_backend(doc),
             "set_at": doc.get("judgment_backend_set_at"),
@@ -419,14 +448,14 @@ class JudgmentSettings:
         def _write(txn: Any) -> None:
             snap = _snapshot(txn.get(ref))
             previous = stored_backend(trusted_block(
-                tenant_id, TOP_BLOCK, snap.to_dict() if snap.exists else None))
+                tenant_id, TOP_BLOCK, snap.to_dict() if snap.exists else None, self._mac))
             written: dict[str, Any] = {
                 "tenant_id": tenant_id,
                 SETTING_FIELD: backend,
                 "judgment_backend_set_at": now,
                 "judgment_backend_set_by": by,
             }
-            mac = block_mac(tenant_id, TOP_BLOCK, written)
+            mac = block_mac(tenant_id, TOP_BLOCK, written, self._mac.keys)
             if mac is not None:
                 written[MAC_FIELD] = mac
             txn.set(ref, written, merge=True)

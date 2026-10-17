@@ -101,6 +101,7 @@ from .errors import Forbidden, NotFound
 from .judgment import (
     MAC_FIELD,
     SETTINGS_COLLECTION,
+    SettingsMac,
     block_mac,
     trusted_block,
     unowned_covered_keys,
@@ -271,9 +272,10 @@ def require_owner_or_admin(auth: AuthContext, tenant: Tenant | None) -> str:
 class CodeIntelligenceStore:
     """`workspace_settings/{tenant}.code_intelligence`, read and audited write."""
 
-    def __init__(self, db: Any, *, now: Callable[[], datetime]) -> None:
+    def __init__(self, db: Any, *, now: Callable[[], datetime], mac: SettingsMac) -> None:
         self._db = db
         self._now = now
+        self._mac = mac
 
     def _ref(self, tenant_id: str) -> Any:
         return self._db.collection(COLLECTION).document(tenant_id)
@@ -285,7 +287,7 @@ class CodeIntelligenceStore:
         value = (snap.to_dict() or {}).get(FIELD) if snap.exists else None
         if not isinstance(value, dict):
             return None
-        return trusted_block(tenant_id, MAC_BLOCK, value) or None
+        return trusted_block(tenant_id, MAC_BLOCK, value, self._mac) or None
 
     def get(self, tenant_id: str) -> CodeIntelligence:
         """The read CTXQ-S's and CTXQ-J's gates make, as swarm-api serves it."""
@@ -318,7 +320,7 @@ class CodeIntelligenceStore:
             whole = (snap.to_dict() or {}) if snap.exists else None
             stored = (whole or {}).get(FIELD)
             stored = dict(stored) if isinstance(stored, dict) else {}
-            before = settings_of(trusted_block(tenant_id, MAC_BLOCK, stored))
+            before = settings_of(trusted_block(tenant_id, MAC_BLOCK, stored, self._mac))
             after = CodeIntelligence(
                 jev=body.jev if body.jev is not None else before.jev,
                 context=_word(body.context, before.context),
@@ -339,7 +341,7 @@ class CodeIntelligenceStore:
             if after.graph_delivery is not None:
                 block[DELIVERY_FIELD] = after.graph_delivery
             block.update({"updated_at": now, "updated_by": by})
-            mac = block_mac(tenant_id, MAC_BLOCK, block)
+            mac = block_mac(tenant_id, MAC_BLOCK, block, self._mac.keys)
             if mac is not None:
                 block[MAC_FIELD] = mac
             if whole is None:

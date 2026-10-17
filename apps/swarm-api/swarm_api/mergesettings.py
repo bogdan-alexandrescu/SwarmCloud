@@ -65,7 +65,7 @@ from swarm_common.models import Tenant
 from .admins import AUDIT_COLLECTION
 from .auth import AuthContext
 from .errors import Forbidden, NotFound
-from .judgment import MAC_FIELD, block_mac, trusted_block
+from .judgment import MAC_FIELD, SettingsMac, block_mac, trusted_block
 from .refusals import refuse
 from .repositories import COLLECTION as REPOSITORIES
 from .schemas import StrictModel
@@ -239,9 +239,10 @@ def can_edit(auth: AuthContext, tenant: Tenant) -> bool:
 class MergeSettingsStore:
     """`workspace_settings/` and the `merge_mode` field of `repositories/`."""
 
-    def __init__(self, db: Any, *, now: Callable[[], datetime]) -> None:
+    def __init__(self, db: Any, *, now: Callable[[], datetime], mac: SettingsMac) -> None:
         self._db = db
         self._now = now
+        self._mac = mac
 
     def _ref(self, tenant_id: str) -> Any:
         return self._db.collection(COLLECTION).document(tenant_id)
@@ -256,7 +257,7 @@ class MergeSettingsStore:
         value = (snap.to_dict() or {}).get(FIELD) if snap.exists else None
         if not isinstance(value, dict):
             return None
-        return trusted_block(tenant_id, MAC_BLOCK, value) or None
+        return trusted_block(tenant_id, MAC_BLOCK, value, self._mac) or None
 
     def registrations(self, tenant_id: str, *, limit: int = 500) -> list[dict[str, Any]]:
         """The tenant's registrations, by id. The filter again in the
@@ -289,7 +290,7 @@ class MergeSettingsStore:
             snap = _snapshot(txn.get(settings_ref))
             whole = (snap.to_dict() or {}) if snap.exists else {}
             stored = whole.get(FIELD) if isinstance(whole.get(FIELD), dict) else None
-            stored = trusted_block(tenant_id, MAC_BLOCK, stored) if stored is not None else None
+            stored = trusted_block(tenant_id, MAC_BLOCK, stored, self._mac) if stored is not None else None
             registrations: dict[str, dict[str, Any]] = {}
             for rid, ref in repo_refs.items():
                 repo_snap = _snapshot(txn.get(ref))
@@ -323,7 +324,7 @@ class MergeSettingsStore:
                 return after
             block: dict[str, Any] = {"tenant_id": tenant_id, **new,
                                      "updated_at": now, "updated_by": by}
-            mac = block_mac(tenant_id, MAC_BLOCK, new)
+            mac = block_mac(tenant_id, MAC_BLOCK, new, self._mac.keys)
             if mac is not None:
                 block[MAC_FIELD] = mac
             txn.set(settings_ref, {FIELD: block}, merge=True)

@@ -550,6 +550,24 @@ class ApiSettings:
     #: it need not be as short as the TypeSafe ticket's. Clamped to the
     #: service's 60-900 s.
     graph_ticket_seconds: int = 600
+    #: SETTINGS INTEGRITY (docs/design/tenant-settings-integrity.md §4.5; #1457,
+    #: lanes ISO-SETTINGS-MAC and ISO-API-SETTINGS). `swarm-settings-key`, from
+    #: SWARM_SETTINGS_KEY by Secret Manager reference: what swarm-api MACs every
+    #: `workspace_settings` block it writes with (`swarm_api.judgment`). Empty
+    #: means nothing is signed, which is every write before ISO-SETTINGS-MAC.
+    #: Excluded from the repr, as `graph_ticket_key` is.
+    settings_key: str = field(default="", repr=False)
+    #: The previous version, accepted when VERIFYING beside the current one
+    #: while `scripts/resign-workspace-settings.sh` re-signs under the new one
+    #: (SWARM_SETTINGS_KEY_PREVIOUS). Empty outside a rotation.
+    settings_key_previous: str = field(default="", repr=False)
+    #: The tenants whose settings are acted on only when their MAC verifies
+    #: (SETTINGS_MAC_TENANTS, comma-separated, or `*` for every tenant): the
+    #: per-tenant cutover, owner decision Q7. EMPTY by default, so every reader
+    #: behaves as before until the stored documents are re-signed and an
+    #: operator lists a tenant; a tenant listed before that reads its unsigned
+    #: settings as unset (fail closed).
+    settings_mac_tenants: tuple[str, ...] = ()
     #: GRANT ATTESTATION (docs/design/workspace-secrets.md, "What
     #: SEC-GRANT-ATTEST built"; owner decision 2026-10-15). `swarm-workspace-
     #: grant-key`, from SWARM_WORKSPACE_GRANT_KEY by Secret Manager reference
@@ -814,6 +832,9 @@ class ApiSettings:
             typesafe_ticket_seconds=_int("TYPESAFE_TICKET_SECONDS", 300),
             graph_ticket_key=os.environ.get("SWARM_GRAPH_TICKET_KEY", "").strip(),
             graph_ticket_seconds=_int("GRAPH_TICKET_SECONDS", 600),
+            settings_key=os.environ.get("SWARM_SETTINGS_KEY", "").strip(),
+            settings_key_previous=os.environ.get("SWARM_SETTINGS_KEY_PREVIOUS", "").strip(),
+            settings_mac_tenants=_csv("SETTINGS_MAC_TENANTS"),
             workspace_grant_key=os.environ.get("SWARM_WORKSPACE_GRANT_KEY", "").strip(),
             workspace_grant_key_previous=os.environ.get(
                 "SWARM_WORKSPACE_GRANT_KEY_PREVIOUS", "").strip(),
