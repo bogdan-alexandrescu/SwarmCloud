@@ -862,6 +862,45 @@ def test_open_refuses_a_bad_nonce(client, db):
     assert not db.paths("child_keys/")
 
 
+def _search_client(db, worker_tokens, group_map, objects, *, enabled: bool) -> TestClient:
+    ctx = build_context(
+        settings=api_settings(child_key=KEY, search_tool_enabled=enabled),
+        db=db,
+        verifier=StaticTokenVerifier(worker_tokens),
+        groups=StaticGroups(group_map),
+        credentials=InMemoryCredentials(),
+        waker=NullWaker(),
+        metrics=ApiMetrics(),
+        objects=objects,
+    )
+    return TestClient(create_app(ctx), raise_server_exceptions=False)
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_open_answers_the_search_flag_as_the_child_key_registration_does(
+        db, worker_tokens, group_map, objects, enabled):
+    """Lane ISO-SEARCH: a switched worker never calls `child-key`, so
+    `state/open`'s registration carries `search_tool` from the same setting,
+    or the tenant's claude-code agents silently lose the search tool."""
+    client = _search_client(db, worker_tokens, group_map, objects, enabled=enabled)
+    worker = Worker()
+    seed_attempt(db, worker)
+    response = worker.open(client)
+    assert response.status_code == 200, response.text
+    assert response.json()["registration"]["search_tool"] is enabled
+
+
+def test_open_offers_no_search_tool_to_an_unprotected_heap(db, worker_tokens, group_map, objects):
+    """A state-only key is no child path, so it signs no search call either:
+    as the tombstone's `child-key` answer, `search_tool` is False."""
+    client = _search_client(db, worker_tokens, group_map, objects, enabled=True)
+    worker = Worker()
+    seed_attempt(db, worker)
+    response = worker.open(client, unprotected=True)
+    assert response.status_code == 200, response.text
+    assert response.json()["registration"]["search_tool"] is False
+
+
 def test_open_refuses_once_the_task_is_running(client, db):
     """The window is LEASED, DISPATCHED or STARTING (§4.3): the agent exists
     only after RUNNING, so it can never be the one that registers."""

@@ -62,3 +62,30 @@ def test_no_key_is_no_child_path_and_says_so():
 
     assert not path.keyed and path.unavailable == "child_key_unregistered"
     assert notes and notes[0]["child_path"] == "child_key_unregistered"
+
+
+def test_adopt_enables_search_when_state_open_says_so():
+    """Lane ISO-SEARCH: `adopt` reads `search_tool` exactly as `register` does."""
+    path = _path()
+
+    path.adopt(AttemptKey(), {"registered": "key", "purpose": ["child", "state"],
+                              "unprotected": False, "search_tool": True}, [].append)
+
+    assert path.keyed and path.search_flag is True
+
+
+def test_adopt_enables_search_only_on_a_literal_true():
+    for answer in ({}, {"search_tool": False}, {"search_tool": "true"}, {"search_tool": 1}):
+        path = _path()
+        path.adopt(AttemptKey(), {"registered": "key", "purpose": ["child", "state"],
+                                  "unprotected": False, **answer}, [].append)
+        assert path.keyed and path.search_flag is False, answer
+
+
+def test_a_tombstone_adopts_no_search_tool_whatever_the_answer_says():
+    path = _path()
+
+    path.adopt(AttemptKey(), {"registered": "key", "purpose": ["state"], "unprotected": True,
+                              "search_tool": True}, [].append)
+
+    assert not path.keyed and path.search_flag is False
