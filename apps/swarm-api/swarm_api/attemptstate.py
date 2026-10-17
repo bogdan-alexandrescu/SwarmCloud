@@ -1054,7 +1054,12 @@ class AttemptState:
         if not _DIGEST.fullmatch(body.archive_sha256):
             raise ValidationFailed("archive_sha256 must be a SHA-256 hex digest (#346)")
         if body.uri.startswith("gs://"):
-            if f"/tenants/{attempt.tenant_id}/tasks/{attempt.task_id}/" not in body.uri:
+            # Anchored at the object path, `gs://<bucket>/tenants/<t>/tasks/<task>/`
+            # (`checkpoint.py`'s layout). The bucket is not pinned -- swarm-api
+            # is not told it -- and restore reads with the tenant's own account,
+            # whose bucket grant is prefix-conditioned.
+            prefix = re.escape(f"/tenants/{attempt.tenant_id}/tasks/{attempt.task_id}/")
+            if not re.match(rf"^gs://[a-z0-9][a-z0-9._-]{{1,221}}[a-z0-9]{prefix}", body.uri):
                 raise ValidationFailed("uri must be under this task's own prefix")
         elif not body.uri.startswith("file:///"):
             raise ValidationFailed("uri must be a gs:// or file:/// URI")
