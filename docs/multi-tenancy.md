@@ -494,7 +494,7 @@ do — so here is what it can do:
   `register-tenant.sh` grants the same role (`scripts/register-tenant.sh`
   (`FIRESTORE_ROLE_ID="swarmTenantWorkerFirestore${ROLE_ID_SUFFIX}"`)). The
   module records the same residual (`terraform/modules/tenancy/main.tf`
-  (`# still holds create/get/update across the database, so it can read a document`)).
+  (`# grant below exists, a worker holds create/get/update across the database, so`)).
   `attempts/<id>` is not guessable, so bumping another attempt's fencing
   `generation` needs an id it was never given. Every document in the table below
   is either guessable or one the worker creates itself.

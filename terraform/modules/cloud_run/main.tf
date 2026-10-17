@@ -1,10 +1,14 @@
 # Cloud Run services: the control plane.
 #
-# min-instances is 0 on every one of them. An idle swarm costs nothing, which is
-# the whole premise -- a backlog of ten thousand QUEUED tasks must produce zero
-# running containers (CONTRACT.md invariant 1). Cold start on the scheduler is
-# paid for by the Pub/Sub wake plus a one-minute safety tick, not by keeping a
-# warm instance burning money.
+# min-instances is 0 unless a service sets `min_instances`. An idle swarm costs
+# nothing, which is the whole premise -- a backlog of ten thousand QUEUED tasks
+# must produce zero running containers (CONTRACT.md invariant 1). Cold start on
+# the scheduler is paid for by the Pub/Sub wake plus a one-minute safety tick,
+# not by keeping a warm instance burning money.
+#
+# The one exception is swarm-api (terraform/infra/main.tf says why): a fixed
+# floor of instances, not demand, so invariant 1 still holds -- a QUEUED task
+# adds nothing to it.
 
 resource "google_cloud_run_v2_service" "this" {
   for_each = var.services
@@ -35,9 +39,10 @@ resource "google_cloud_run_v2_service" "this" {
     labels = var.labels
 
     scaling {
-      # Idle costs nothing. Explicit maximum so a wedged caller cannot turn the
-      # control plane into an unbounded bill.
-      min_instance_count = 0
+      # Idle costs nothing unless the service asks for a warm floor (0 by
+      # default). Explicit maximum so a wedged caller cannot turn the control
+      # plane into an unbounded bill.
+      min_instance_count = each.value.min_instances
       max_instance_count = each.value.max_instances
     }
 
