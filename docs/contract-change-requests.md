@@ -95,6 +95,10 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 85 | `states.py`: `WORKER_TRANSITIONS` and `worker_may_transition`, the transitions a tenant worker may request (ISO-CONTRACT, tenant settings integrity request A, part of #1457) | ACCEPTED by the owner 2026-10-17 (PR 1464) and APPLIED by the pull request that adds this line |
 | 86 | `specsign.py`: `canonical_settings_block`, `SETTINGS_MAC_FIELDS` and `SETTINGS_PURPOSE`, the bytes a `workspace_settings` MAC covers (ISO-CONTRACT, tenant settings integrity request B, part of #1457) | ACCEPTED by the owner 2026-10-17 (PR 1464, Q2: the interim MAC) and APPLIED by the pull request that adds this line |
 | 87 | `models.py`: `Tenant.service_account`, `.namespace` and `.gcs_prefix` are records, not authority (ISO-CONTRACT, tenant settings integrity request C, part of #1457) | ACCEPTED by the owner 2026-10-17 (PR 1464) and APPLIED by the pull request that adds this line (comments only) |
+| 88 | `profiles.py`: `claude-code`, `codex` and `claude-code-browser` declare the input `mcp_servers`, from a dict of its own (MCP-CONTRACT, registered MCP servers request M1, part of #1433) | ACCEPTED by the owner 2026-10-17 (PR 1466) and APPLIED by the pull request that adds this line |
+| 89 | `models.py` / `profiles.py`: `mcp` is a secret-consumer kind, with one slot, `auth` (`MCP_SECRET_SLOTS`) (MCP-CONTRACT, registered MCP servers request M2, part of #1433) | ACCEPTED by the owner 2026-10-17 (PR 1466) and APPLIED by the pull request that adds this line |
+| 90 | `models.py`: `MCP_SERVER_NAME`, `RESERVED_MCP_SERVER_NAMES` and `RESERVED_MCP_SERVER_PREFIX`, one spelling for an MCP server's name (MCP-CONTRACT, registered MCP servers request M3, part of #1433) | ACCEPTED by the owner 2026-10-17 (PR 1466) and APPLIED by the pull request that adds this line |
+| 91 | No new spec format, park reason or event type for registered MCP servers (MCP-CONTRACT, registered MCP servers request M4, part of #1433) | ACCEPTED by the owner 2026-10-17 (PR 1466); requests no change, so nothing to apply |
 
 ---
 
@@ -12462,3 +12466,201 @@ None. These are comments.
 
 **Not requested, and not applied:** a new `identity` function,
 or any change to `admission.py` or `config.py` (design §5, "Not requested").
+
+
+## 88. `profiles.py`: `claude-code`, `codex` and `claude-code-browser` declare the input `mcp_servers` (MCP-CONTRACT, registered MCP servers request M1)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1466) and APPLIED by the
+pull request that adds this line. Filed by lane CALLER-MCP-DESIGN
+([registered-mcp-servers.md](design/registered-mcp-servers.md) §5 request
+M1), applied by lane MCP-CONTRACT, part of #1433.
+
+### Why
+
+A step names the registered MCP servers its agent may call, by name. What a
+caller may send a runner is the catalogue's declaration (request 25), read by
+swarm-api's `check_inputs`, the plugin and the console, and a key inside
+`input` is covered by the spec signature (format 3, request 91), so the
+worker can trust the list it reads from Firestore.
+
+### The change
+
+A dict of its own, `_MCP_SERVER_INPUTS`, holding one key:
+
+```python
+"mcp_servers": RunnerInput(
+    "list", minimum=1, maximum=4,
+    items=RunnerInput("string", maximum=31),
+    means="registered MCP servers, by name, the agent may call during its run; ...",
+)
+```
+
+`_CLI_AGENT_MCP_INPUTS` is `_CLI_AGENT_INPUTS` plus it, and is the `inputs=` of
+`claude-code` and `codex`; `_CLAUDE_CODE_BROWSER_INPUTS` spreads it too.
+`_CLI_AGENT_INPUTS` itself is not edited, so `indexer` and
+`claude-code-review`, which share it, do not gain the key: the indexer runs
+no prompt a caller wrote, and a review step reads the diff it was given. Had
+the key gone into `_CLI_AGENT_INPUTS`, both would have taken it, and an empty
+`allowed_profiles` (design §4.2) would have let them reach a server.
+
+31 is `MCP_SERVER_NAME`'s length (request 90). Membership is checked by
+swarm-api against the tenant's registry, which changes at runtime, so the
+names are not `choices`.
+
+**Tests:** `tests/unit/common/test_mcp_contract.py`: accepted on the three
+profiles; refused on `browser`, `merge`, `indexer` and `claude-code-review`
+as an undeclared key; `issue` still accepted on `indexer` and
+`claude-code-review`, whose inputs stay exactly `{"issue"}`; five names, none,
+a non-string, a bare string and a 32-character name refused for a bound.
+
+### Rollback
+
+Put `inputs=_CLI_AGENT_INPUTS` back on `claude-code` and `codex`, and drop the
+spread from `_CLAUDE_CODE_BROWSER_INPUTS`. A task stored with the key fails
+`check_inputs` on any re-validation, so roll back only with the registry
+disabled.
+
+### What it would break
+
+Nothing that exists: a task without the key is unchanged. Five test files and two
+generated tables restate the old declarations and are updated with it
+(`test_workspace_secret_contract.py`, `test_worker_action_profiles.py`,
+`test_claude_code_browser_profile.py`, `test_issue_input.py`,
+`test_runner_inputs.py`, and the `runner-inputs` tables of
+`docs/workflows.md` and `plugin/README.md`). Until lane MCP-SUBMIT merges,
+swarm-api's `check_inputs` accepts the key on the three profiles and the
+worker does not read it; MCP-SUBMIT refuses every `mcp_servers` with
+`mcp_unavailable` while `SWARM_MCP_SERVERS` is off.
+
+### Invariants
+
+**10** is why it exists: names, never a URL or a command. **5**: the list is
+signed, so a worker never attaches a server a tampered task document added.
+1-4 and 6-9 untouched.
+
+
+## 89. `models.py` / `profiles.py`: `mcp` is a secret-consumer kind with one slot, `auth` (MCP-CONTRACT, registered MCP servers request M2)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1466) and APPLIED by the
+pull request that adds this line. Filed by lane CALLER-MCP-DESIGN (design §5
+request M2), applied by lane MCP-CONTRACT, part of #1433.
+
+### Why
+
+A long-lived MCP credential is a workspace secret granted to the server that
+uses it (design §4.5). Requests 80-82 made a consumer's spelling and slots
+contract, so swarm-api, the worker and the console read one declaration; a
+registered MCP server is a fourth kind of consumer.
+
+### The change
+
+```python
+# models.py
+SECRET_CONSUMER_KINDS: tuple[str, ...] = ("profile", "tool", "component", "mcp")
+
+# profiles.py
+MCP_SECRET_SLOTS: Mapping[str, SecretSlot] = MappingProxyType({
+    "auth": SecretSlot(
+        kinds=("api_key", "bearer_token"),
+        means="the relay adds it as the registered server's auth header; never a file",
+    ),
+})
+```
+
+`consumer_name("mcp", name)` checks `name` against `MCP_SERVER_NAME` and the
+reserved names (request 90), so `parse_consumer` accepts exactly the `mcp:`
+spellings a registration may take. `is_secret_consumer` returns False for
+every `mcp:` consumer: the name is a tenant's registration, not a catalogue
+entry, so the catalogue cannot vouch for it, and swarm-api checks the
+registry itself. Without that branch `mcp:judge` would have fallen through to
+the platform-component check and passed.
+
+**Tests:** `tests/unit/common/test_mcp_contract.py`: `consumer_name("mcp", "kb")`
+round-trips through `parse_consumer`; `is_secret_consumer` is False for
+`mcp:kb`, `mcp:judge` and `mcp:indexer`; the slot is `auth` alone, optional,
+of two kinds, and read-only.
+
+### Rollback
+
+Remove the member and the slots. Grants already written to `mcp:` consumers
+stop parsing and are dropped by the release and the attach as unknown, which
+disables them safely.
+
+### What it would break
+
+`parse_consumer` accepts a fourth prefix; a reader that switched on the three
+kinds exhaustively must handle `mcp` (the release's `attempt_consumers` must
+exclude it, design §4.5, lane MCP-API). Until MCP-API, a grant to an `mcp:`
+consumer is refused on write, because swarm-api's consumer catalogue
+(`workspace_secrets.CONSUMERS_BY_NAME`) lists none.
+
+### Invariants
+
+**9**: a grant is still bounded by its own `tenant_id`. **10**: a consumer is
+still a name. 1-8 untouched.
+
+
+## 90. `models.py`: one spelling for an MCP server's name (MCP-CONTRACT, registered MCP servers request M3)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1466) and APPLIED by the
+pull request that adds this line. Filed by lane CALLER-MCP-DESIGN (design §5
+request M3), applied by lane MCP-CONTRACT, part of #1433.
+
+### Why
+
+The name is written by swarm-api (registration) and read by the worker, where
+it becomes a server key in the CLI's MCP config and a path segment of the
+relay, and by the plugin. It must never collide with a server the worker
+registers itself.
+
+### The change
+
+```python
+MCP_SERVER_NAME = re.compile(r"[a-z][a-z0-9-]{0,30}")
+#: Names the worker registers itself; a registration may not take them.
+RESERVED_MCP_SERVER_NAMES: tuple[str, ...] = ("playwright", "jev")
+RESERVED_MCP_SERVER_PREFIX = "swarm-"
+```
+
+`consumer_name` applies all three to an `mcp:` name (request 89). The
+registration's check (lane MCP-API) applies the same three.
+
+**Tests:** `tests/unit/common/test_mcp_contract.py`: `swarm-git` and
+`swarm-graph` match the pattern and are refused by the reserved prefix;
+`playwright` and `jev` by the list; upper case, a leading digit or hyphen, a
+dot, a slash, an underscore and 32 characters by the pattern.
+
+### Rollback
+
+Remove the constants and the check in `consumer_name`; each reader would then
+restate them, which is the drift the contract exists to stop.
+
+### What it would break
+
+Nothing; new names.
+
+### Invariants
+
+**10**: a server is named, never addressed. 1-9 untouched.
+
+
+## 91. No new spec format, park reason or event type for registered MCP servers (MCP-CONTRACT, registered MCP servers request M4)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1466). Requests no
+change, so nothing is applied; recorded so no lane adds one. Filed by lane
+CALLER-MCP-DESIGN (design §5 request M4), part of #1433.
+
+* **Spec signing:** `input` is already in `canonical_step_spec`, so
+  `mcp_servers` is signed by format 3. The credential is not in the task and
+  must not be signed into it. `SPEC_FORMAT` stays 3. Held by
+  `tests/unit/common/test_mcp_contract.py`: the canonical spec of a task with
+  `mcp_servers` differs from the same task's without, and carries the list.
+* **Park reason:** a disabled registration parks `CREDENTIAL_MISSING`, with
+  code `mcp_server_unavailable`, exactly as request 83 reused it for a missing
+  secret grant.
+* **Event types:** the relay logs `mcp_call` as a structured log line, not a
+  task event; the attach's audit is its own collection. `EventType` is
+  unchanged.
+
+**Not requested:** `Tenant.secret_name` already spells `mcpc-<hex>`; `Task`
+gains no field; `RunnerProfile.secrets` is unchanged.
