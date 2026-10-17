@@ -197,7 +197,10 @@ case "${args}" in
     number="${args#api --paginate repos/${GH_REPO}/issues/}"; number="${number%%/*}"
     jq -r '.[].body' "${FAKE_DIR}/comments-${number}.json" 2>/dev/null || true ;;
   "pr comment "*)
-    cat "$5" >> "${FAKE_DIR}/commented-$3.md" ;;
+    body=""; prev=""
+    for arg in "$@"; do [[ "${prev}" == "--body-file" ]] && body="${arg}"; prev="${arg}"; done
+    [[ -n "${body}" ]] || { echo "fake gh: pr comment without --body-file: $*" >&2; exit 3; }
+    cat "${body}" >> "${FAKE_DIR}/commented-$3.md" ;;
   "api repos/${GH_REPO}/pulls/"*)
     number="${args#api repos/${GH_REPO}/pulls/}"
     cat "${FAKE_DIR}/pull-${number}.json" ;;
