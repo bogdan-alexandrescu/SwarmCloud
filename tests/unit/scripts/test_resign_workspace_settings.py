@@ -23,8 +23,6 @@ from pathlib import Path
 
 import pytest
 
-from swarm_api import judgment
-
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "resign-workspace-settings.sh"
 FAKES_DIR = REPO / "tests" / "unit" / "control_plane"
@@ -150,6 +148,10 @@ def test_the_mac_is_not_restated_in_the_script() -> None:
 
 
 def test_a_dry_run_prints_the_plan_and_writes_nothing(world) -> None:
+    # swarm_api is imported inside the test, not at module top: collection of
+    # tests/unit/scripts must not load it (test_collection_stays_cheap.py).
+    from swarm_api import judgment
+
     before = world.read()
     proc = world.run()
     assert proc.returncode == 0, proc.stderr
@@ -163,6 +165,10 @@ def test_a_dry_run_prints_the_plan_and_writes_nothing(world) -> None:
 
 
 def test_apply_signs_after_the_typed_word_and_a_second_run_writes_nothing(world) -> None:
+    # swarm_api is imported inside the test, not at module top: collection of
+    # tests/unit/scripts must not load it (test_collection_stays_cheap.py).
+    from swarm_api import judgment
+
     proc = world.run("--apply", typed="sign")
     assert proc.returncode == 0, proc.stderr
     docs = world.read()

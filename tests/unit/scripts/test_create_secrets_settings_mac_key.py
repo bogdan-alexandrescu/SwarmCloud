@@ -22,14 +22,16 @@ import subprocess
 
 import pytest
 
-from swarm_api.judgment import SETTINGS_KEY_SECRET_ID
-
 from .test_create_secrets_egress import SCRIPT, _adds, _run, pytestmark  # noqa: F401
 
 KEY = "swarm-settings-key"
 
 
 def test_the_slot_names_the_secret_swarm_api_reads():
+    # Imported here, not at module top: collection of tests/unit/scripts must not
+    # load swarm_api (test_collection_stays_cheap.py).
+    from swarm_api.judgment import SETTINGS_KEY_SECRET_ID
+
     assert SETTINGS_KEY_SECRET_ID == KEY
     assert f'SETTINGS_KEY_NAME="{KEY}"' in SCRIPT.read_text()
 
