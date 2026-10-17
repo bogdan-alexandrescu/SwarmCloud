@@ -264,7 +264,7 @@ def test_a_failed_write_writes_neither_the_setting_nor_its_audit(db, seeded, mon
         return txn
 
     monkeypatch.setattr(db, "transaction", transaction)
-    store = codeintel.CodeIntelligenceStore(db, now=lambda: NOW)
+    store = codeintel.CodeIntelligenceStore(db, now=lambda: NOW, mac=judgment.SettingsMac())
     with pytest.raises(RuntimeError):
         store.put("eng", codeintel.CodeIntelligencePut(jev=True), by="root@saga.xyz")
     assert _document(db, "eng") is None

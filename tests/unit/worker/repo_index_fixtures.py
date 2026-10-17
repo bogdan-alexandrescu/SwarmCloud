@@ -289,6 +289,15 @@ def git_env(home: Path) -> dict[str, str]:
             "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
             "GIT_COMMITTER_NAME": "Fixture",
             "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
+            # No automatic maintenance. After a commit, git may start a
+            # detached `maintenance run --auto` that creates and removes
+            # .git/objects/maintenance.lock while a test copies the repo,
+            # and shutil.copytree then fails on the vanished file.
+            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_KEY_0": "maintenance.auto",
+            "GIT_CONFIG_VALUE_0": "false",
+            "GIT_CONFIG_KEY_1": "gc.auto",
+            "GIT_CONFIG_VALUE_1": "0",
         }
     )
     return env
@@ -333,10 +342,10 @@ def build_repo(
     env = git_env(home)
     write_files(root, files)
     _git(root, env, "init", "-q", "-b", "main")
-    # A commit can start a detached `git maintenance run --auto` that holds
-    # .git/objects/maintenance.lock after this returns; a test that copies
-    # the repo then races its removal (shutil.Error, ENOENT). Copies inherit
-    # this config, so their commits do not start one either.
+    # A commit may start `git maintenance run --auto` detached, which holds
+    # .git/objects/maintenance.lock after the commit returns; a test copying
+    # the repository then meets the lock vanishing mid-copytree (CI, #1477).
+    # Switched off in the repository's own config, so copies inherit it.
     _git(root, env, "config", "maintenance.auto", "false")
     _git(root, env, "config", "gc.auto", "0")
     _git(root, env, "add", "-A")

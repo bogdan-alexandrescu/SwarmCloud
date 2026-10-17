@@ -158,15 +158,49 @@ _GAI_NAMES = {
     if hasattr(socket, name)
 }
 
+#: The class of a relay lookup failure (LB-DNS, part of #1366), said in the
+#: gate's `tunnel_refused` cause and in the worker's retry log. Each calls for
+#: a different manifest fix, which is why the class and not "gaierror" is said:
+#:   resolver_busy  EAI_AGAIN: the resolver did not answer in time -- NodeLocal
+#:                  DNSCache or kube-dns behind it swamped by a burst of pod
+#:                  starts (a fixed-ClusterIP Service pinned through hostAliases
+#:                  takes the lookup away);
+#:   no_address     EAI_NONAME, or EAI_NODATA: the resolver answered, and the
+#:                  name had no address -- swarm-live is a headless Service, so
+#:                  its name has none while its one pod is not ready
+#:                  (publishNotReadyAddresses);
+#:   other          any other getaddrinfo failure, by its EAI name or errno.
+RESOLVER_BUSY = "resolver_busy"
+NO_ADDRESS = "no_address"
+RESOLVER_OTHER = "other"
+
+
+def resolver_class(exc: BaseException) -> str | None:
+    """`RESOLVER_BUSY`, `NO_ADDRESS` or `RESOLVER_OTHER` for a resolver failure; None for anything else."""
+    if not isinstance(exc, socket.gaierror):
+        return None
+    code = _GAI_NAMES.get(exc.errno) if isinstance(exc.errno, int) else None
+    if code == "EAI_AGAIN":
+        return RESOLVER_BUSY
+    if code in ("EAI_NONAME", "EAI_NODATA"):
+        return NO_ADDRESS
+    return RESOLVER_OTHER
+
 
 def unreachable_cause(exc: BaseException) -> str:
     """Why the relay could not be reached: the exception's class, and for a
-    resolver failure its EAI name. Never the message, which can quote the host."""
+    resolver failure its EAI name (or errno) and its `resolver_class`, e.g.
+    `gaierror(EAI_AGAIN, resolver_busy)` -- never a bare "gaierror". Never the
+    message, which can quote the host."""
     name = type(exc).__name__
-    if isinstance(exc, socket.gaierror):
-        code = _GAI_NAMES.get(exc.errno) if isinstance(exc.errno, int) else None
-        return f"{name}({code})" if code else name
-    return name
+    klass = resolver_class(exc)
+    if klass is None:
+        return name
+    errno = getattr(exc, "errno", None)
+    code = _GAI_NAMES.get(errno) if isinstance(errno, int) else None
+    if code is None:
+        code = f"errno {errno}" if isinstance(errno, int) else "no errno"
+    return f"{name}({code}, {klass})"
 
 
 def relay_url(environ: Mapping[str, str]) -> str:

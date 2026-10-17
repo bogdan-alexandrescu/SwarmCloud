@@ -32,7 +32,7 @@ from swarm_common.models import Tenant
 from ..auth import AuthContext, require_admin
 from ..deps import AppContext, current_auth, get_context, tenant_scope
 from ..errors import Forbidden, NotFound
-from ..judgment import JudgmentSettings, check_backend, jev_status
+from ..judgment import JudgmentSettings, check_backend, jev_status, settings_mac
 from ..provider_keys import TYPESAFE, ProviderKeys, own_personal_tenant, resolve_provider_key
 from ..schemas import StrictModel
 
@@ -60,7 +60,7 @@ def typesafe_key_resolves(ctx: AppContext, auth: AuthContext, tenant_id: str) ->
 def jev_for(ctx: AppContext, auth: AuthContext, tenant_id: str, *,
             typesafe_key: bool | None = None) -> dict[str, Any]:
     """The `jev` object for `tenant_id` as this caller sees it."""
-    stored = JudgmentSettings(ctx.db, now=ctx.now).read(tenant_id)
+    stored = JudgmentSettings(ctx.db, now=ctx.now, mac=settings_mac(ctx.settings)).read(tenant_id)
     if typesafe_key is None:
         typesafe_key = typesafe_key_resolves(ctx, auth, tenant_id)
     return jev_status(
@@ -135,5 +135,6 @@ def put_judgment_backend(
         except Forbidden:
             raise Forbidden("only a workspace's owner or a platform admin can choose its "
                             "judgment backend") from None
-    JudgmentSettings(ctx.db, now=ctx.now).set(tenant_id, backend, by=auth.email)
+    JudgmentSettings(ctx.db, now=ctx.now, mac=settings_mac(ctx.settings)).set(
+        tenant_id, backend, by=auth.email)
     return _body(ctx, auth, tenant)
