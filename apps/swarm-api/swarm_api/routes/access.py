@@ -98,7 +98,12 @@ def github_quota(ctx: AppContext, caller: Caller) -> list[dict[str, Any]]:
     it is (`kind`, `name`) and `low` under `forge_quota_defer_percent`, the
     line background reads stop at. Counts and times only: no token, no
     secret. A credential nothing in this process has read yet is left out:
-    its quota is unknown, not full."""
+    its quota is unknown, not full.
+
+    THE CONNECTION LINE IS NOT YET FED. The person's own reads go through
+    `access._AsUser`, outside this lane's territory, and do not record into
+    the ledger, so in a deployed console only the tenant and installation
+    lines appear until they do (the question in this lane's PR, #1483)."""
     named: list[tuple[str, str, str]] = [
         (forge_limits.connection_credential(connection_id_for(caller.tenant_id, caller.key)),
          "connection", "you"),

@@ -217,7 +217,9 @@ def installation_credential(installation_id: int | str) -> str:
 
 
 def connection_credential(connection_id: str) -> str:
-    """The identity of a person's own connection (`forgeapp.connection_id_for`)."""
+    """The identity of a person's own connection (`forgeapp.connection_id_for`).
+    Read by `routes/access.py`; nothing records under it until the person's
+    reads (`access._AsUser`) do -- the open question on #1483."""
     return f"connection:{connection_id}"
 
 
