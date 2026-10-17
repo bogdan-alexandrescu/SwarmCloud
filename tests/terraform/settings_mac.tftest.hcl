@@ -180,7 +180,9 @@ run "default_plan_adds_the_container_two_readers_and_the_env" {
   # resources are not addressable from here, so the hand-off is read from
   # main.tf and the values from the locals.
   assert {
-    condition = (
+    # The variable reference is what makes this a check of the configuration:
+    # terraform test refuses a condition that reads only files.
+    condition = !var.settings_mac_key_ready && (
       can(regex("secret_env\\s*=\\s*local\\.api_secret_env\\n", file("../../terraform/infra/main.tf")))
       && can(regex("secret_env\\s*=\\s*local\\.scheduler_secret_env\\n", file("../../terraform/infra/main.tf")))
     )
