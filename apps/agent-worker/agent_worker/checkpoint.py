@@ -345,13 +345,20 @@ class _BuildDirFilter:
     Out unless a git checkout enclosing it tracks a file under it. The nearest
     enclosing checkout is the nearest ancestor (`work/` included) holding a
     real `.git` directory; its index is read once per checkpoint.
+
+    `also` names `work/`-relative directories left out whole, by exact path
+    and whatever they hold (`CheckpointManager.excluded_dirs`): an index
+    run's read-only checkout (`indexrun.checkpoint_excludes`).
     """
 
-    def __init__(self, source: Path) -> None:
+    def __init__(self, source: Path, also: frozenset[str] = frozenset()) -> None:
         self._source = source
+        self._also = also
         self._tracked: dict[str, frozenset[str] | None] = {}
 
     def excludes(self, rel: str) -> bool:
+        if rel in self._also:
+            return True
         parts = rel.split("/")
         if parts[-1] not in BUILD_DIRS:
             return False
@@ -855,6 +862,12 @@ class CheckpointManager:
         #: once the clone has landed, or once it has been read back from the
         #: checkpoint a resumed attempt restored, so it carries forward.
         self.clone_base: str | None = None
+        #: Directories of `work/`, by exact relative path, left out of every
+        #: checkpoint this manager writes from now on, through the build
+        #: directory filter (`_BuildDirFilter`). Empty unless the lifecycle
+        #: sets it: an index run's checkout (`indexrun.checkpoint_excludes`,
+        #: INDEX-CKPT), which a resumed attempt clones again at `clone_base`.
+        self.excluded_dirs: frozenset[str] = frozenset()
         #: THE CHAIN (#637). What the last committed checkpoint of this
         #: attempt archived, entry by entry (`_signature`), and its id and
         #: digest: the next one archives only what differs. None until this
@@ -969,7 +982,7 @@ class CheckpointManager:
             if ws.is_artifacts_link(path)
         ) | {ws.input_path.relative_to(ws.work).as_posix()}
         self.last_unchanged = False
-        build_dirs = _BuildDirFilter(ws.work)
+        build_dirs = _BuildDirFilter(ws.work, self.excluded_dirs)
         racy_after = time.time_ns() - RACY_WINDOW_NS
         previous = self._index
         base = self._base
