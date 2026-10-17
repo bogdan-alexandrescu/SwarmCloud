@@ -304,7 +304,7 @@ FORGE_ACCESS = ("write", "read")
 #: one of PLATFORM_COMPONENTS. Never an image, a command or a path
 #: (invariant 10).
 #:
-#: Contract request 86 (registered MCP servers, design §5 M2): a fourth
+#: Contract request 89 (registered MCP servers, design §5 M2): a fourth
 #: kind, `mcp:`, names a server the tenant registered. Its name is checked
 #: against MCP_SERVER_NAME and the reserved names here; membership in the
 #: tenant's registry is checked by its reader, as for `profile:`.
@@ -318,7 +318,7 @@ PLATFORM_COMPONENTS: tuple[str, ...] = ("judge", "merge", "indexer", "git")
 
 _CONSUMER_NAME = re.compile(r"[a-z][a-z0-9-]{0,62}")
 
-#: Contract request 87 (registered MCP servers, design §5 M3): the one
+#: Contract request 90 (registered MCP servers, design §5 M3): the one
 #: spelling of a registered MCP server's name. swarm-api writes it at
 #: registration; the worker makes it a server key in the CLI's MCP config and
 #: a path segment of its relay; the plugin reads it. Anchor with `fullmatch`.
@@ -336,7 +336,7 @@ def consumer_name(kind: str, name: str) -> str:
 
     Checks the kind, the name's characters and, for `component`, the closed
     list, and, for `mcp`, MCP_SERVER_NAME and the reserved names (request
-    87). Membership of `profile` and `tool` names is checked against the
+    90). Membership of `profile` and `tool` names is checked against the
     catalogue by its reader (`profiles.py` imports this module, not the
     reverse, so this function cannot see RUNNER_PROFILES), and of `mcp`
     names against the tenant's registry by swarm-api. A consumer

@@ -12480,7 +12480,8 @@ M1), applied by lane MCP-CONTRACT, part of #1433.
 A step names the registered MCP servers its agent may call, by name. What a
 caller may send a runner is the catalogue's declaration (request 25), read by
 swarm-api's `check_inputs`, the plugin and the console, and a key inside
-`input` is covered by the spec signature (format 3, request 91), so the
+`input` is covered by the spec signature (every format since request 34's
+format 1; request 91 records that it stays at format 3), so the
 worker can trust the list it reads from Firestore.
 
 ### The change
@@ -12522,12 +12523,32 @@ disabled.
 
 ### What it would break
 
-Nothing that exists: a task without the key is unchanged. Six test files and
-two generated tables restate the old declarations and are updated with it
-(`test_workspace_secret_contract.py`, `test_worker_action_profiles.py`,
-`test_claude_code_browser_profile.py`, `test_indexer_profile.py`,
-`test_issue_input.py`, `test_runner_inputs.py`, and the `runner-inputs` tables of
-`docs/workflows.md` and `plugin/README.md`). Until lane MCP-SUBMIT merges,
+Nothing that exists: a task without the key is unchanged. Eleven unit tests
+in six files outside this lane's territory restate the old declarations, and
+this pull request does NOT update them (the row says "owner applies"); they
+are red until the operator applies `mcp-contract-operator.patch`, attached to
+this pull request, in the same merge:
+
+* `tests/unit/common/test_workspace_secret_contract.py`
+  `test_consumer_kinds_and_platform_components` (the three kinds, request 89);
+* `tests/unit/common/test_worker_action_profiles.py`
+  `test_claude_code_review_is_claude_code_but_its_name_and_never_restore_checkpoint`;
+* `tests/unit/control_plane/test_claude_code_browser_profile.py`
+  `test_it_accepts_the_issue_input_like_claude_code`;
+* `tests/unit/control_plane/test_indexer_profile.py`
+  `test_the_indexer_profile_is_claude_code_on_the_indexer_image`;
+* `tests/unit/control_plane/test_issue_input.py`
+  `test_the_cli_agent_profiles_declare_issue_and_nothing_else` (claude-code, codex);
+* `tests/unit/mcp/test_runner_inputs.py`
+  `test_the_profiles_view_says_what_each_profile_takes`,
+  `test_the_declaring_profiles_and_no_declaration_names_execution_detail` and
+  `test_every_declared_input_is_one_its_runner_reads` (no runner reads the key
+  until the worker lane; the patch names it as one exemption);
+* `tests/unit/mcp/test_runner_input_prose.py`, twice: the generated
+  `runner-inputs` tables for claude-code, codex and claude-code-browser in
+  `docs/workflows.md` and `plugin/README.md`, which the patch regenerates.
+
+Until lane MCP-SUBMIT merges,
 swarm-api's `check_inputs` accepts the key on the three profiles and the
 worker does not read it; MCP-SUBMIT refuses every `mcp_servers` with
 `mcp_unavailable` while `SWARM_MCP_SERVERS` is off.
