@@ -30,10 +30,12 @@
 #
 # A CLOUD RUN REVISION THAT REFERENCES A SECRET WITH NO VERSION FAILS TO
 # START. Unlike swarm-child-key, the reference here is not behind a switch
-# (owner decision: the key is set on both services). So the first apply that
-# creates this secret must not be the one that rolls the services onto it
-# before `create-secrets.sh --settings-mac-key` has run; the PR that added
-# this file records the order the dev-iam review holds it for.
+# (owner decision: the key is set on both services), so the apply that
+# creates this secret is also the one that rolls both services onto it. The
+# secret and its two members are created first (the services depend on the
+# secret's id); the new revisions then fail to become ready and the apply
+# fails while the previous revisions keep serving. What finishes it:
+# `scripts/create-secrets.sh --settings-mac-key`, then apply again.
 
 resource "google_secret_manager_secret" "settings_mac_key" {
   project   = var.project_id
