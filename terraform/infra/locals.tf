@@ -596,8 +596,15 @@ locals {
   # SWARM_EGRESS_KEY joins them once swarm-egress is deployed (egress.tf), and
   # SWARM_TYPESAFE_FWD_KEY once the TypeSafe forwarder is served (typesafe_fwd.tf),
   # SWARM_WORKSPACE_GRANT_KEY once grant attestation is (workspace_grant_key.tf),
-  # and SWARM_GRAPH_TICKET_KEY once the graph service is (graph_service.tf).
-  api_secret_env = merge(local.child_key_secret_env, local.live_key_secret_env, local.egress_key_secret_env, local.typesafe_fwd_key_secret_env, local.workspace_grant_key_secret_env, local.graph_ticket_key_secret_env)
+  # SWARM_GRAPH_TICKET_KEY once the graph service is (graph_service.tf),
+  # and SWARM_SETTINGS_KEY always (settings_mac.tf).
+  api_secret_env = merge(local.child_key_secret_env, local.live_key_secret_env, local.egress_key_secret_env, local.typesafe_fwd_key_secret_env, local.workspace_grant_key_secret_env, local.graph_ticket_key_secret_env, local.settings_mac_secret_env)
+
+  # The scheduler's Secret Manager references: SWARM_CHILD_KEY once child
+  # tasks are on (child_tasks.tf) and SWARM_SETTINGS_KEY always
+  # (settings_mac.tf). Merged once so main.tf and the settings_mac output
+  # read one value.
+  scheduler_secret_env = merge(local.scheduler_child_key_secret_env, local.settings_mac_secret_env)
 
   # The swarm-api refusal switches (swarm_api.refusals; docs/api-refusals.md).
   # A refusal added to swarm-api ships off; var.api_refusals turns one on.
@@ -612,7 +619,10 @@ locals {
   service_env = {
     # local.api_browser_egress_env: the browser egress switch (egress.tf).
     # local.api_grant_attestation_env: GRANT_ATTESTATION_REQUIRED (workspace_grant_key.tf).
-    "swarm-api" = merge(local.common_env, local.api_refusal_env, local.api_browser_egress_env, local.api_grant_attestation_env, {
+    # local.settings_mac_env / scheduler_settings_mac_env: the one
+    # SETTINGS_MAC_TENANTS cutover list, and the scheduler's
+    # SETTINGS_MAC_REQUIRED (settings_mac.tf).
+    "swarm-api" = merge(local.common_env, local.api_refusal_env, local.api_browser_egress_env, local.api_grant_attestation_env, local.settings_mac_env, {
       # DISPATCH_TOPIC, not WAKE_TOPIC. Both apps read `DISPATCH_TOPIC`
       # (swarm_api.settings, scheduler.settings); terraform set `WAKE_TOPIC`,
       # which nothing has ever read. swarm_api.deps falls back to NullWaker()
@@ -846,7 +856,7 @@ locals {
       # relay is off, which swarm_api.settings reads as "no relay".
       SWARM_LIVE_URL = local.live_relay_url
     })
-    "swarm-scheduler" = merge(local.common_env, local.spec_worker_env, local.scheduler_browser_egress_env, local.scheduler_typesafe_fwd_env, {
+    "swarm-scheduler" = merge(local.common_env, local.spec_worker_env, local.scheduler_browser_egress_env, local.scheduler_typesafe_fwd_env, local.scheduler_settings_mac_env, {
       # local.scheduler_browser_egress_env: the browser egress switch the
       # dispatcher labels and routes a live-browser pod by (egress.tf).
       #
