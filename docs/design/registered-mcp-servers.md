@@ -214,8 +214,10 @@ each option below is judged against them:
 
 ### 2.3 What it needs from `apps/common/swarm_common/`
 
-Four requests, written out in §5: the `mcp_servers` input on
-`_CLI_AGENT_INPUTS` (so on `claude-code`, `codex` and `claude-code-browser`);
+Four requests, written out in §5: the `mcp_servers` input in a dict of its
+own, `_MCP_SERVER_INPUTS`, spread into `claude-code`, `codex` and
+`claude-code-browser` only (not into `_CLI_AGENT_INPUTS`, which `indexer` and
+`claude-code-review` also take);
 `mcp` as a fourth `SECRET_CONSUMER_KINDS` member with its one slot; one
 spelling for a server name; and, recorded so no lane adds them, no new spec
 format, no new park reason and no new event type.
@@ -502,9 +504,16 @@ workspace store of #1347, with no new storage:
 
 The attach route (§4.6), not `secrets:release`, reads such a grant: the
 release writes files the agent can read (workspace-secrets.md §4.1), and an
-MCP credential must never be a file. So the release must **skip** `mcp:`
-grants (a one-line filter in `workspace_secrets.release_plan`, held by a
-test), and the attach must take them. A key granted to `mcp:kb` and also to
+MCP credential must never be a file. So the release must never hand out an
+`mcp:` grant, and the attach must take them. **The held invariant is that
+`workspace_secrets.attempt_consumers` never derives an `mcp:` consumer**
+(request M2 says so): `release_plan` returns only the grants naming the
+`consumers` it is passed, so as long as no `mcp:` name is ever among them it
+cannot release one, and no filter inside `release_plan` is added (it would
+guard a case that cannot arise and be the wrong thing to test). The MCP-API
+lane's test is on `attempt_consumers`: for every profile, with and without
+`mcp_servers` in its signed input, no derived consumer parses as kind
+`mcp`; and, end to end, an `mcp:` grant is not in `secrets:release`'s answer. A key granted to `mcp:kb` and also to
 `profile:claude-code` is released both ways, as the store's own rule says: the
 boundary is the attempt.
 
@@ -797,9 +806,22 @@ format.
 
 #### The change
 
+The input is **not** added to `_CLI_AGENT_INPUTS`. That dict is the `inputs=`
+of four profiles (`claude-code`, `codex`, `claude-code-review`, `indexer`)
+and is spread into `_CLAUDE_CODE_BROWSER_INPUTS`, so a key added there would
+reach `indexer` and `claude-code-review` too, and with them the relay, since
+an empty `allowed_profiles` means "every profile that declares
+`mcp_servers`" (§4.2). Neither should have it: the indexer runs no prompt a
+caller wrote, and a review step reads the diff it was given, not a caller's
+knowledge base; if a review step should call one later, that is one more
+spread and a request of its own. So the input gets its own dict, spread into exactly three
+profiles:
+
 ```python
-_CLI_AGENT_INPUTS: dict[str, RunnerInput] = {
-    "issue": RunnerInput(...),                       # unchanged
+#: Contract request <85>: the registered MCP servers a step may call
+#: (docs/design/registered-mcp-servers.md). Its own dict, NOT a key of
+#: _CLI_AGENT_INPUTS, which indexer and claude-code-review also take.
+_MCP_SERVER_INPUTS: dict[str, RunnerInput] = {
     "mcp_servers": RunnerInput(
         "list",
         minimum=1,
@@ -812,11 +834,29 @@ _CLI_AGENT_INPUTS: dict[str, RunnerInput] = {
         ),
     ),
 }
+
+#: claude-code and codex: the CLI agent inputs plus mcp_servers.
+_CLI_AGENT_MCP_INPUTS: dict[str, RunnerInput] = {
+    **_CLI_AGENT_INPUTS,
+    **_MCP_SERVER_INPUTS,
+}
+
+_CLAUDE_CODE_BROWSER_INPUTS: dict[str, RunnerInput] = {
+    **_CLI_AGENT_INPUTS,
+    **_MCP_SERVER_INPUTS,                             # added
+    "browser_tool": RunnerInput(...),                 # unchanged
+}
 ```
 
-`claude-code`, `codex` and `claude-code-browser` (which spreads
-`_CLI_AGENT_INPUTS`) gain it; no other profile does. Membership is checked by
-swarm-api against the registry, because the registry is per tenant and
+and `"claude-code"` and `"codex"` change `inputs=_CLI_AGENT_INPUTS` to
+`inputs=_CLI_AGENT_MCP_INPUTS`. `claude-code-review` and `indexer` keep
+`inputs=_CLI_AGENT_INPUTS` unchanged, and `_CLI_AGENT_INPUTS` itself is not
+edited.
+
+So `claude-code`, `codex` and `claude-code-browser` gain it; `indexer`,
+`claude-code-review` and every profile without declared inputs (`mock`,
+`generic`, `browser`, `merge`, `post-verdict`) do not. Membership is checked
+by swarm-api against the registry, because the registry is per tenant and
 changes at runtime, so the contract cannot list names as `choices`.
 
 #### Rollback
@@ -944,15 +984,15 @@ applies to MCP-IAM, MCP-API, MCP-SUBMIT and MCP-WORKER.
 
 | order | lane | territory | red-first tests (each fails before the change) |
 |---|---|---|---|
-| 0 | **MCP-CONTRACT** (owner applies) | `apps/common/swarm_common/profiles.py`, `apps/common/swarm_common/models.py`, `docs/contract-change-requests.md`, `tests/unit/common/test_mcp_contract.py` (new) | `check_inputs` accepts `mcp_servers: ["kb"]` on claude-code, codex, claude-code-browser and refuses it on `browser`, `merge`, `indexer`; refuses five names and a non-string; `consumer_name("mcp", "kb")` round-trips through `parse_consumer`; `MCP_SERVER_NAME` refuses `swarm-git`'s prefix use via the reserved list; `canonical_step_spec` of a task with `mcp_servers` differs from the same task without (it is signed) |
+| 0 | **MCP-CONTRACT** (owner applies) | `apps/common/swarm_common/profiles.py`, `apps/common/swarm_common/models.py`, `docs/contract-change-requests.md`, `tests/unit/common/test_mcp_contract.py` (new) | `check_inputs` accepts `mcp_servers: ["kb"]` on claude-code, codex, claude-code-browser and refuses it on `browser`, `merge`, `indexer` and `claude-code-review` (`indexer` and `claude-code-review` share `_CLI_AGENT_INPUTS`, which is why the input has a dict of its own); `check_inputs` still accepts `issue` on `indexer` and `claude-code-review` (their inputs are unchanged); refuses five names and a non-string; `consumer_name("mcp", "kb")` round-trips through `parse_consumer`; `MCP_SERVER_NAME` refuses `swarm-git`'s prefix use via the reserved list; `canonical_step_spec` of a task with `mcp_servers` differs from the same task without (it is signed) |
 | 1 | **MCP-IAM** (owner applies bootstrap) | `terraform/bootstrap/mcp_credentials.tf` (new), `tests/terraform/mcp_credentials.tftest.hcl` (new), `terraform/modules/scheduler/jobs.tf` (the 10-minute sweep job), `tests/terraform/mcp_sweep.tftest.hcl` (new), the NAT-address output in `terraform/infra/outputs.tf` | the access condition admits `swarm-tenant-a-mcpc-<hex>` and its versions; refuses `-wsec-`, `-git`, `-typesafe`, `swarm-github-app-*`, `agents-*`, another project; no grant to a tenant worker admits `-mcpc-`; the sweep job calls only its route as the rollup sweeper; every resource carries `managed-by=swarm-terraform` |
-| 1 | **MCP-API** | `apps/swarm-api/swarm_api/mcp_servers.py` (new), `mcp_credentials.py` (new), `routes/mcp_servers.py` (new, incl. the admin sweep), `routes/attempts_mcp.py` (new), `main.py` (routers, `UNCAPTURED_ROUTES`), `auth.py` (`ROLLUP_SWEEPER_ROUTES`), `workspace_secrets.py` (skip `mcp:` in `release_plan`; list `mcp:` consumers), `tests/unit/control_plane/test_mcp_servers.py`, `test_mcp_attach.py` (new), `test_no_route_serves_credentials.py` (the second carve-out), `test_rollup_sweeper_is_narrow.py` | another tenant's server is 404; a non-admin write is 403; a `http://`, IP-literal, userinfo, non-443 or reserved-name registration is 422; every write has its audit row in the transaction; attach: unsigned or wrongly signed is 403, stale generation 409 with nothing, second call 410, a disabled server is withheld, an `mcp:` grant is attached and never released by `secrets:release`; a runtime-built credential is absent from every log line, Firestore document and non-attach response; the sweep destroys a terminal task's secret and marks the row |
-| 2 | **MCP-SUBMIT** (after MCP-API) | `apps/swarm-api/swarm_api/schemas.py`, `service.py`, `validation.py`, `tests/unit/control_plane/test_mcp_submit.py` (new) | unregistered name 422 before anything is stored; profile not allowed 403; missing, unexpected and malformed credentials 422; a runtime-built credential is in no 4xx body, no task document, no workflow document, no response, and exactly one Secret Manager `add_version` call with a TTL; a workflow's map serves every step; a child cannot add a server; a schedule naming a `dispatch` server is refused at creation |
+| 1 | **MCP-API** | `apps/swarm-api/swarm_api/mcp_servers.py` (new), `mcp_credentials.py` (new), `routes/mcp_servers.py` (new, incl. the admin sweep), `routes/attempts_mcp.py` (new), `main.py` (routers, `UNCAPTURED_ROUTES`), `auth.py` (`ROLLUP_SWEEPER_ROUTES`), `workspace_secrets.py` (list `mcp:` consumers; `attempt_consumers` unchanged and held by a test never to derive one, §4.5), `tests/unit/control_plane/test_mcp_servers.py`, `test_mcp_attach.py` (new), `test_no_route_serves_credentials.py` (the second carve-out), `test_rollup_sweeper_is_narrow.py` | another tenant's server is 404; a non-admin write is 403; a `http://`, IP-literal, userinfo, non-443 or reserved-name registration is 422; every write has its audit row in the transaction; attach: unsigned or wrongly signed is 403, stale generation 409 with nothing, second call 410, a disabled server is withheld, an `mcp:` grant is attached and never released by `secrets:release`; a runtime-built credential is absent from every log line, Firestore document and non-attach response; the sweep destroys a terminal task's secret and marks the row |
+| 2 | **MCP-SUBMIT** (after MCP-API) | `apps/swarm-api/swarm_api/schemas.py`, `service.py`, `validation.py`, `children.py` (`_build_child`: the child's `mcp_servers` must be a subset of the parent's, read through `_read_parent`, and the child's task points at the parent's credential rows, because a child has no `mcp_credentials` of its own), `schedules.py` (`build_schedule` and `apply_edit`: refuse a `dispatch` server at creation and on edit), `tests/unit/control_plane/test_mcp_submit.py` (new) | unregistered name 422 before anything is stored; profile not allowed 403; missing, unexpected and malformed credentials 422; a runtime-built credential is in no 4xx body, no task document, no workflow document, no response, and exactly one Secret Manager `add_version` call with a TTL; a workflow's map serves every step; a child cannot add a server, and a child naming its parent's server is attached with the parent's credential; a schedule naming a `dispatch` server is refused at creation and on edit (a firing goes through `SubmissionService.submit_tasks`/`submit_workflow`, so `schedulefire.py` needs no change: a fire that somehow names one is refused `mcp_credential_missing` by `_build_task` like any submission) |
 | 2 | **MCP-SCHED** (after MCP-CONTRACT) | `apps/scheduler/scheduler/mcp_admission.py` (new), `credentials.py` (its sweep promotes the park), `dispatch.py` (`worker_env`'s attempt-key condition), `tests/unit/scheduler/test_mcp_admission.py` (new) | a disabled registration parks `CREDENTIAL_MISSING` before any lease and is promoted when re-enabled; an expired credential is FAILED with no lease; a task naming a server gets the attempt-key nonce; a task without one is unchanged |
 | 3 | **MCP-WORKER** (after MCP-API) | `apps/agent-worker/agent_worker/mcp_attach.py` (new), `mcp_relay.py` (new), `lifecycle.py` (attach, relay start, fence flag, cleanup step), `tests/unit/worker/test_mcp_relay.py`, `test_mcp_attach.py` (new) | against a loopback fake server: the credential arrives as the registered header and nowhere else; a wrong local token is 401; a non-allowed tool is refused unforwarded; a body carrying a registered secret or a credential-shaped string is refused unforwarded; a 3xx is not followed; a private, loopback or metadata address is refused; size, rate and timeout caps hold; an echoed credential is scrubbed from the answer; after the fence flag nothing is forwarded; after close no reference remains and no file under the workspace holds the value; a 409 attach exits without the agent; a withheld server fails the attempt before the agent |
 | 4 | **MCP-RUNNERS** (after MCP-WORKER) | `apps/agent-worker/agent_worker/runners/claude_code.py` (`write_mcp_config`, the preamble line), `runners/codex.py`, `tests/unit/worker/test_mcp_runner_config.py` (new) | the claude-code config holds the relay URL and local token and never the credential; codex's overrides likewise; the pinned binaries list the fake server's tools through the relay (in the image test, where the binaries exist); a checkpointed `work/` holds no credential; the repository-`.mcp.json` question of §1.2 answered by a test either way |
 | 3 | **MCP-SC** (after MCP-SUBMIT) | `apps/swarm-mcp/swarm_mcp/server.py`, `sc.py`, `workflows.py`, `profiles.py`, `plugin/commands/sc.md` and `plugin/README.md`, `tests/unit/mcp/test_mcp_servers_tool.py` (new) | `swarm_dispatch` and a workflow step pass `mcp_servers` and `mcp_credentials` through; no tool schema accepts a registration or a store value; the plugin's log of a dispatch holds no credential |
-| 3 | **MCP-UI** (after MCP-API) | `apps/swarm-ui/src/McpServers.tsx` (new), its route in `App.tsx`, `paths.ts`, the Submit form's input renderer, vitest files | the credential field is never rendered back after submit; a non-admin sees the list read-only; the NAT addresses are shown; a disabled server is not offered on Submit |
+| 3 | **MCP-UI** (after MCP-API) | `apps/swarm-ui/src/McpServers.tsx` (new), its route in `App.tsx`, `paths.ts`, `apps/swarm-ui/src/Submit.tsx` (an MCP server picker beside the `BrowserToolPicker`, offering the tenant's enabled registrations by name; the `SUGGESTED` table is not where it goes, since that holds free-form keys), vitest files | the credential field is never rendered back after submit; a non-admin sees the list read-only; the NAT addresses are shown; a disabled server is not offered on Submit |
 | 5 | **MCP-ACCEPT** | `scripts/acceptance/groups/mcp.sh` (new), `tests/acceptance/test_caller_mcp.py` (new), a dev-only echo MCP server (where it runs is Q10) | the issue's four checks: the server sees the credential; an unregistered name is refused before admission; a search over every log route, artifact, checkpoint and event of the task finds no credential (control: the same search finds a planted canary); after the attempt the worker has exited and its workspace holds no copy |
 | each | **MCP-DOCS** | this file ("what was built" per lane), `docs/security.md` | the docs guards |
 
