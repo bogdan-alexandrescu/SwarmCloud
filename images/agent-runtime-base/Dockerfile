@@ -203,6 +203,13 @@ ARG CODEX_VERSION=0.154.0
 # the bytes are still pulled), so it has to be left out HERE, by this argument.
 ARG INSTALL_CODEX=1
 
+# PYTHONDONTWRITEBYTECODE=1 stays on, deliberately, now that the build
+# precompiles (the compileall step below): it is about RUNTIME writes. The
+# agent runs as uid 10001 and cannot write the root-owned stdlib or venv
+# anyway, so all it would ever write is a __pycache__ beside a tenant's own
+# code in /workspace -- files that land in the agent's diff and its
+# checkpoint. The bytecode every Python start actually needs is the stdlib's
+# and the venv's, and the build writes that once, as root (#1334).
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -239,7 +246,6 @@ RUN echo "apt layer of ${APT_REFRESH}" \
       curl \
       fd-find \
       git \
-      jq \
       less \
       make \
       openssh-client \
@@ -472,6 +478,32 @@ COPY --from=uvbin /uvx /usr/local/bin/uvx
 RUN /usr/local/bin/python3 -m pip install --no-cache-dir --upgrade \
       "setuptools>=${SETUPTOOLS_VERSION}" "wheel>=${WHEEL_VERSION}"
 COPY --from=builder /opt/venv /opt/venv
+
+# Precompile the stdlib and the venv. The base image deletes every .pyc it
+# ships, and PYTHONDONTWRITEBYTECODE=1 (above) stops one being cached, so
+# without this every Python start in an agent container compiled the stdlib it
+# imported, again: 0.21 s per call of a small Python tool against 0.08 s with
+# a bytecode cache, measured by lane FIX-TESTS (PR 1415, #1334). CI runners
+# never paid it; every lane in this image did.
+#
+# Compiled BY /opt/venv/bin/python, the first python on PATH -- the one the
+# ENTRYPOINT, gcloud's launcher and every agent run -- because a .pyc carries
+# its interpreter's magic number and a cache for another Python is never read.
+# The paths are asked of that interpreter, not spelled out: its stdlib
+# (/usr/local/lib/python3.11, with the base's own site-packages under it,
+# where setuptools and wheel were just upgraded) and its purelib, the venv's
+# site-packages. The builder installed the venv with UV_COMPILE_BYTECODE=1, so
+# compileall finds those up to date and rewrites nothing the COPY already
+# carries. After every install into either tree, and a failed compile fails
+# the build. The last line proves the cache is there for the interpreter that
+# runs, in this RUN (a check-only RUN can write a duplicate layer, PR 1239).
+RUN py=/opt/venv/bin/python \
+ && "$py" -m compileall -q -j 0 \
+      "$("$py" -c 'import sysconfig; print(sysconfig.get_path("stdlib"))')" \
+      "$("$py" -c 'import sysconfig; print(sysconfig.get_path("purelib"))')" \
+ && "$py" -c "import importlib.util, json, os; \
+assert os.path.exists(importlib.util.cache_from_source(json.__file__)), 'no stdlib bytecode for ' + json.__file__; \
+print('stdlib bytecode ok')"
 
 # ---------------------------------------------------------------------------
 # The infrastructure toolbox (docs/BUILD_PROMPT_V2.md §2.12)
@@ -748,6 +780,30 @@ RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
  && install -o root -g root -m 0755 /tmp/toolbox/trivy /usr/local/bin/trivy \
  && rm -rf /tmp/toolbox
 
+# jq 1.7.1, the release's static linux/amd64 binary, in place of Debian
+# bookworm's jq 1.6 (which apt installed above until #1334). Two reasons: an
+# agent running this repository's scripts got 1.6's behaviour where CI's
+# runners have 1.7, and 1.6 takes 27 ms to start (lane FIX-TESTS, PR 1415)
+# on every one of the many jq calls a script makes: 50 calls of `jq .` took
+# 1.39 s with Debian's 1.6 and 0.26 s with this binary, in a SwarmCloud agent
+# container on 2026-10-17. /usr/local/bin precedes /usr/bin on PATH, and nothing
+# installs Debian's jq any more, so there is one jq. Checksum from the
+# vendor's own https://github.com/jqlang/jq/releases/download/jq-1.7.1/sha256sum.txt
+# (jq-linux-amd64), recomputed over the downloaded file on 2026-10-17. A
+# static C binary, which trivy has no analyzer for, as with shellcheck.
+# Read from the tool mirror like the tools above; the build fails if the
+# installed binary does not report the pinned version.
+ARG JQ_VERSION=1.7.1
+ARG JQ_SHA256=5942c9b0934e510ee61eb3e30273f1b3fe2590df93933a93d7c58b81d19c8ff5
+RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
+    mkdir -p /tmp/toolbox \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/jq \
+      "file:///tmp/tool-mirror/github.com/jqlang/jq/releases/download/jq-${JQ_VERSION}/jq-linux-amd64" \
+ && echo "${JQ_SHA256}  /tmp/toolbox/jq" | sha256sum -c - \
+ && install -o root -g root -m 0755 /tmp/toolbox/jq /usr/local/bin/jq \
+ && rm -rf /tmp/toolbox \
+ && test "$(/usr/local/bin/jq --version)" = "jq-${JQ_VERSION}"
+
 # checkov is Python, so it gets its OWN environment (/opt/uv-tools/checkov,
 # entry point in /usr/local/bin) and can never change the worker's /opt/venv
 # or the agent's `pip install` target. 3.3.17 is the version CI's
@@ -832,7 +888,7 @@ print({c.name: _resolve_program(c.argv[0]) for c in GENERIC_COMMANDS.values()})"
 # will run it. A missing or unrunnable tool fails the build and is named; the
 # count is printed so a list that collapsed to one word cannot read as a pass.
 # HOME is a throwaway so `gcloud --version` leaves no config in the image.
-RUN tools="gh gcloud gke-gcloud-auth-plugin kubectl terraform checkov trivy shellcheck make docker" \
+RUN tools="gh gcloud gke-gcloud-auth-plugin kubectl terraform checkov trivy shellcheck make docker jq" \
  && if [ "${INSTALL_TOFU}" = "1" ]; then tools="$tools tofu"; fi \
  && if [ "${INSTALL_TFLINT}" = "1" ]; then tools="$tools tflint"; fi \
  && HOME="$(mktemp -d)" && export HOME \
