@@ -50,6 +50,13 @@ def _int(name: str, default: int) -> int:
         raise ValueError(f"{name} must be an integer, got {raw!r}") from exc
 
 
+def _percent(name: str, default: int) -> int:
+    value = _int(name, default)
+    if not 0 <= value <= 100:
+        raise ValueError(f"{name} must be a percent from 0 to 100, got {value}")
+    return value
+
+
 def _bool(name: str, default: bool) -> bool:
     raw = os.environ.get(name, "").strip().lower()
     if not raw:
@@ -550,6 +557,24 @@ class ApiSettings:
     #: it need not be as short as the TypeSafe ticket's. Clamped to the
     #: service's 60-900 s.
     graph_ticket_seconds: int = 600
+    #: SETTINGS INTEGRITY (docs/design/tenant-settings-integrity.md §4.5; #1457,
+    #: lanes ISO-SETTINGS-MAC and ISO-API-SETTINGS). `swarm-settings-key`, from
+    #: SWARM_SETTINGS_KEY by Secret Manager reference: what swarm-api MACs every
+    #: `workspace_settings` block it writes with (`swarm_api.judgment`). Empty
+    #: means nothing is signed, which is every write before ISO-SETTINGS-MAC.
+    #: Excluded from the repr, as `graph_ticket_key` is.
+    settings_key: str = field(default="", repr=False)
+    #: The previous version, accepted when VERIFYING beside the current one
+    #: while `scripts/resign-workspace-settings.sh` re-signs under the new one
+    #: (SWARM_SETTINGS_KEY_PREVIOUS). Empty outside a rotation.
+    settings_key_previous: str = field(default="", repr=False)
+    #: The tenants whose settings are acted on only when their MAC verifies
+    #: (SETTINGS_MAC_TENANTS, comma-separated, or `*` for every tenant): the
+    #: per-tenant cutover, owner decision Q7. EMPTY by default, so every reader
+    #: behaves as before until the stored documents are re-signed and an
+    #: operator lists a tenant; a tenant listed before that reads its unsigned
+    #: settings as unset (fail closed).
+    settings_mac_tenants: tuple[str, ...] = ()
     #: GRANT ATTESTATION (docs/design/workspace-secrets.md, "What
     #: SEC-GRANT-ATTEST built"; owner decision 2026-10-15). `swarm-workspace-
     #: grant-key`, from SWARM_WORKSPACE_GRANT_KEY by Secret Manager reference
@@ -629,6 +654,26 @@ class ApiSettings:
     #: is offered the tool. A feature flag, not a refusal switch: its off
     #: position is "no such tool", never "let the request through".
     search_tool_enabled: bool = False
+    #: Whether swarm-api's BACKGROUND GitHub reads (the merge wake's CI reads,
+    #: the issue run's CI read, the stranded-PR sweep, the repository index's
+    #: head poll) go out with the App's INSTALLATION token for the
+    #: repository's owner (swarm_api.forge_installation, #1483) instead of the
+    #: tenant's `-git` token. ON by default: on 2026-10-17 those reads, made
+    #: as one person's App user token, spent that person's 5,000 calls an hour
+    #: and every push test and publish acting as them failed. An owner with no
+    #: installation (reached through a person's token) and a failed mint keep
+    #: the tenant's token either way, so on is never less able to read than
+    #: off. FORGE_INSTALLATION_READS=false turns it off.
+    forge_installation_reads: bool = True
+    #: Background GitHub reads (the merge wake, the after-PR gates, the
+    #: stranded-PR sweep, the index poll, forgeperms' cached read) skip a
+    #: tick while their credential has less than this percent of its limit
+    #: left (swarm_api.forge_limits, QUOTA-THROTTLE, #1483). 20: on 2026-10-17
+    #: background reads spent a person's 5,000 calls an hour and their own
+    #: push tests and lane publishes were refused; a fifth of the window is
+    #: what those actions spent in the busiest measured hour, so it is kept
+    #: for them. Actions a person takes are never deferred. 0 turns it off.
+    forge_quota_defer_percent: int = 20
     #: Which `swarm_api.search.PROVIDERS` entry answers (SEARCH_PROVIDER).
     #: Brave: the first implementation, pending the owner's choice
     #: (questions.json of lane SEARCH-TOOL).
@@ -803,12 +848,17 @@ class ApiSettings:
             typesafe_ticket_seconds=_int("TYPESAFE_TICKET_SECONDS", 300),
             graph_ticket_key=os.environ.get("SWARM_GRAPH_TICKET_KEY", "").strip(),
             graph_ticket_seconds=_int("GRAPH_TICKET_SECONDS", 600),
+            settings_key=os.environ.get("SWARM_SETTINGS_KEY", "").strip(),
+            settings_key_previous=os.environ.get("SWARM_SETTINGS_KEY_PREVIOUS", "").strip(),
+            settings_mac_tenants=_csv("SETTINGS_MAC_TENANTS"),
             workspace_grant_key=os.environ.get("SWARM_WORKSPACE_GRANT_KEY", "").strip(),
             workspace_grant_key_previous=os.environ.get(
                 "SWARM_WORKSPACE_GRANT_KEY_PREVIOUS", "").strip(),
             grant_attestation_required=_bool("GRANT_ATTESTATION_REQUIRED", False),
             browser_jev_installed=_bool("BROWSER_JEV_INSTALLED", True),
             search_tool_enabled=_bool("SEARCH_TOOL_ENABLED", False),
+            forge_installation_reads=_bool("FORGE_INSTALLATION_READS", True),
+            forge_quota_defer_percent=_percent("FORGE_QUOTA_DEFER_PERCENT", 20),
             search_provider=search_provider,
             search_api_key_secret=os.environ.get(
                 "SEARCH_API_KEY_SECRET", "swarm-search-api-key").strip()

@@ -130,3 +130,18 @@ def worker_factory(db, store, tmp_path, log_stream):
         return build_worker(db, store, tmp_path, log_stream, **kwargs)
 
     return _factory
+
+
+@pytest.fixture(autouse=True)
+def _the_relay_name_resolves(monkeypatch):
+    """No unit test asks a real resolver for the live relay's name (LB-DNS, part of #1366).
+
+    `HandoffPath`'s first tunnel open asks the pod's resolver for the relay's
+    address when the gate refuses it, and retries with real sleeps while the
+    name does not resolve. Outside a cluster it never resolves, so without
+    this every test whose gate refuses `tunnel_ticket` would retry for 30 s
+    of wall time. A test of the retry passes `resolve=` to `HandoffPath`.
+    """
+    from agent_worker import handoff
+
+    monkeypatch.setattr(handoff, "_resolve_relay", lambda host, port: [("stand-in", host, port)])

@@ -92,7 +92,9 @@ dismissal, and is never overwritten.
 
 A READ THAT DID NOT COME BACK IS NOT AN ANSWER (§2.2, git-tokens.md §5.3):
 a 5xx, a 429 or a network error leaves the step as it was and says
-`FORGE_UNREACHABLE`; it never fails one.
+`FORGE_UNREACHABLE`; it never fails one. Nor does a rate limit, a 403 one
+included (`forge_limits`; #1483): its copy names the reset GitHub gave and
+says nothing about permissions.
 """
 
 from __future__ import annotations
@@ -109,6 +111,7 @@ from swarm_common.models import Tenant
 
 from .errors import NotFound
 from .forge import GIT_PROVIDER
+from .forge_limits import SPENT, copy_in
 from .gittokens import (
     APP_UNKNOWN,
     FINE_GRAINED_UNKNOWN,
@@ -223,9 +226,11 @@ COPY: dict[str, str] = {
 FORGE_UNREACHABLE = "FORGE_UNREACHABLE"
 
 #: The probe's own words for a read that did not come back
-#: (`gittokens._Forge.get`): a 429, a 5xx, a spent rate limit, a transport
-#: error. "Not probed: out of time" is not among them -- nothing was asked.
-_UNANSWERED = re.compile(r"GitHub answered HTTP (?:429|5\d\d)|the read failed \(")
+#: (`gittokens._Forge.get`): a 429, a 5xx, a rate limit (`forge_limits.SPENT`,
+#: a 403 included: #1483), a transport error. "Not probed: out of time" is
+#: not among them -- nothing was asked.
+_UNANSWERED = re.compile(r"GitHub answered HTTP (?:429|5\d\d)|the read failed \(|"
+                         + re.escape(SPENT))
 
 #: The pull-request row GitHub does not expose for these kinds: the role
 #: allows it, so it passes on the push it needs (§2.2, git-tokens.md §5.2).
@@ -301,6 +306,12 @@ def _iso(value: Any) -> Any:
 
 def _unanswered(*texts: Any) -> bool:
     return any(isinstance(t, str) and _UNANSWERED.search(t) for t in texts)
+
+
+def unreachable_copy(*texts: Any) -> str:
+    """FORGE_UNREACHABLE's copy for a read the probe recorded in `texts`: a
+    rate limit's names the reset and nothing about permissions (#1483)."""
+    return copy_in(*texts) or COPY[FORGE_UNREACHABLE]
 
 
 def _older(at: Any, now: datetime) -> bool:
@@ -485,7 +496,7 @@ def _connected_step(caller: Caller, record: GitTokenRecord | None, via: str | No
                      code="REFRESH_FAILED", copy=recovery_copy("REFRESH_FAILED", login=login))
     unanswered = record.probe_complete is not True and _unanswered(record.probe_error)
     code = FORGE_UNREACHABLE if unanswered else None
-    copy = COPY[FORGE_UNREACHABLE] if unanswered else None
+    copy = unreachable_copy(record.probe_error) if unanswered else None
     if record.state is TokenState.ACTIVE:
         state = STALE if _older(_fresh_at(record), now) else DONE
     else:
@@ -680,7 +691,7 @@ def _orgs_step(caller: Caller, record: GitTokenRecord, via: str,
     return _step(ORGS_ENABLED, IN_PROGRESS, evidence=evidence, checked_at=checked,
                  issues=pending,
                  code=FORGE_UNREACHABLE if unanswered else None,
-                 copy=COPY[FORGE_UNREACHABLE] if unanswered else None)
+                 copy=unreachable_copy(record.probe_error) if unanswered else None)
 
 
 # --------------------------------------------------------------------------
@@ -867,6 +878,7 @@ def _verified_step(record: GitTokenRecord, regs: list[dict[str, Any]],
     login = record.forge_login or "the stored token"
     rows, issues = [], []
     pending = unanswered = stale = False
+    unanswered_by: list[Any] = []
     checked: datetime | None = None
     for reg in regs:
         mode = _mode(reg)
@@ -893,6 +905,7 @@ def _verified_step(record: GitTokenRecord, regs: list[dict[str, Any]],
                 result = "pending"
                 if _unanswered((doc or {}).get("error"), cell.get("reason")):
                     unanswered = True
+                    unanswered_by += [(doc or {}).get("error"), cell.get("reason")]
         at = (doc or {}).get("verified_at")
         if isinstance((doc or {}).get("attempted_at"), datetime):
             attempted = doc["attempted_at"]
@@ -911,7 +924,7 @@ def _verified_step(record: GitTokenRecord, regs: list[dict[str, Any]],
     if pending:
         return _step(ACCESS_VERIFIED, IN_PROGRESS, evidence=evidence, checked_at=checked,
                      code=FORGE_UNREACHABLE if unanswered else None,
-                     copy=COPY[FORGE_UNREACHABLE] if unanswered else None)
+                     copy=unreachable_copy(*unanswered_by) if unanswered else None)
     return _step(ACCESS_VERIFIED, STALE if stale else DONE, evidence=evidence,
                  checked_at=checked)
 

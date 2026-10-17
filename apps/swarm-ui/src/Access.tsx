@@ -1434,11 +1434,76 @@ function Choose({ overview, reloadOverview }: { overview: AccessOverview; reload
   )
 }
 
+// ---------------------------------------------------------------------------
+// GitHub quota (QUOTA-THROTTLE, #1483)
+// ---------------------------------------------------------------------------
+
+/**
+ * One credential's GitHub rate limit as swarm-api last read it
+ * (`GET /v1/access` `github_quota`, routes/access.py): who it is, the counts
+ * and the reset. No token, no secret. `low` is the server's: under the
+ * threshold at which background reads wait (`forge_quota_defer_percent`), so
+ * the page never restates the percentage.
+ */
+export interface GitHubQuota {
+  kind: 'connection' | 'tenant' | 'installation'
+  name: string
+  limit: number
+  remaining: number
+  reset_at: string | null
+  resource: string
+  observed_at: string
+  low: boolean
+}
+
+/** Who a quota line is for, in the words a person reads. */
+function quotaFor(q: GitHubQuota): string {
+  if (q.kind === 'connection') return 'you via SwarmCloud'
+  if (q.kind === 'tenant') return `the ${q.name} workspace token`
+  return `the SwarmCloud App on ${q.name}`
+}
+
+function resetsAt(iso: string): string {
+  const at = new Date(iso)
+  const hh = String(at.getUTCHours()).padStart(2, '0')
+  const mm = String(at.getUTCMinutes()).padStart(2, '0')
+  return `${hh}:${mm} UTC`
+}
+
+/**
+ * WHY THIS IS ON THE PAGE (#1483, 2026-10-17). A person's 5,000 calls an hour
+ * were spent by background reads, and their push test then read as a missing
+ * permission. One line per credential says how much is left and when it
+ * resets; amber while it is low, which is when background reads wait and the
+ * rest is kept for what the person does. A credential nothing has read yet is
+ * not drawn: unknown is not full.
+ */
+function GitHubQuotaLines({ quota }: { quota: GitHubQuota[] }) {
+  if (quota.length === 0) return null
+  return (
+    <ul className="ur-small" aria-label="GitHub quota">
+      {quota.map((q) => (
+        <li key={`${q.kind}:${q.name}:${q.resource}`} data-low={q.low ? 'true' : undefined}>
+          <ToneMark tone={q.low ? 'warn' : 'ok'} />
+          GitHub quota for {quotaFor(q)}: <b>{q.remaining.toLocaleString('en-US')}</b> /{' '}
+          {q.limit.toLocaleString('en-US')}
+          {q.reset_at !== null ? ` · resets ${resetsAt(q.reset_at)}` : ''}
+          {q.low ? ' · background reads wait until then' : ''}
+        </li>
+      ))}
+    </ul>
+  )
+}
+
 function Mine({ overview, reloadOverview }: { overview: AccessOverview; reloadOverview: () => void }) {
   const connected = overview.connection !== null && overview.connection.state === 'active'
+  // `github_quota` is read here rather than added to types.ts's
+  // AccessOverview: older servers do not send it, and absent is no lines.
+  const quota = (overview as AccessOverview & { github_quota?: GitHubQuota[] }).github_quota ?? []
   return (
     <>
       <Connection connection={overview.connection} onChange={reloadOverview} />
+      <GitHubQuotaLines quota={quota} />
       {connected && <Choose overview={overview} reloadOverview={reloadOverview} />}
       {(connected || overview.grants.length > 0) && <Grants grants={overview.grants} onChange={reloadOverview} />}
     </>

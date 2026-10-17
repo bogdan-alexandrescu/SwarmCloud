@@ -458,10 +458,12 @@ def test_work_for_a_tenant_with_no_identity_never_starts_a_container(db, make_sc
     identity the backend falls back to."""
     from .conftest import seed_pool, seed_task, seed_tenant
 
-    seed_tenant(db, "eng", max_active=5)
-    db.docs["tenants/eng"]["service_account"] = None
+    # An id too long for any worker account: `swarm-agent-worker-` plus 12
+    # characters is over GCP's 30. The account is derived, never read (#1457),
+    # so the record is no longer what decides.
+    seed_tenant(db, "platform-eng", max_active=5)
     seed_pool(db, "global", hard_limit=5)
-    seed_task(db, task_id="task_homeless", tenant_id="eng")
+    seed_task(db, task_id="task_homeless", tenant_id="platform-eng")
 
     from scheduler.dispatch import BackendRouter, CloudRunJobDispatcher
     from scheduler.loop import Scheduler

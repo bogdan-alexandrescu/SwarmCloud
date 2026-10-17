@@ -18,6 +18,7 @@ locals {
 }
 
 resource "google_compute_network" "this" {
+  # checkov:skip=CKV2_GCP_18:This network's firewall is declared, in firewall.tf beside this file (a lowest-priority deny-all ingress and egress plus narrow allows). A scan of main.tf alone cannot see that file; a scan of the module directory passes.
   project = var.project_id
   name    = "${var.name_prefix}-vpc"
 
@@ -121,6 +122,10 @@ resource "google_compute_router_nat" "this" {
   udp_idle_timeout_sec             = 30
   tcp_established_idle_timeout_sec = 1200
   tcp_transitory_idle_timeout_sec  = 30
+  # 120 s is Google's default today and what swarm-nat already runs (read
+  # 2026-10-16, #1334), so declaring it plans as a no-op. It is declared so a
+  # change to that default shows up in a plan instead of drifting silently.
+  tcp_time_wait_timeout_sec = 120
 
   log_config {
     enable = true

@@ -63,6 +63,18 @@ naming only what changed -- written in the same transaction as the change,
 so the setting and its audit cannot disagree. A PUT that changes nothing
 writes nothing.
 
+SIGNED (#1457). A tenant worker can write this document directly, so every
+write stores `code_intelligence.mac`, swarm-api's MAC over the block's
+covered keys (`swarm_api.judgment.block_mac`, block "code_intelligence"), and
+for a tenant cut over in SETTINGS_MAC_TENANTS a block whose MAC does not
+verify reads as unset: Jev off, everything else inherit. The contract also
+covers `code_intelligence.judgment_backend`, which the scheduler's router
+reads first and which NO swarm-api path writes: the only way it is in a
+stored block is a direct Firestore write, #1457's forgery. A write here
+therefore drops it rather than carrying it over, because carrying it into a
+signed block would sign the forger's value; `judgment_backend` is the
+top-level field `swarm_api.judgment` writes.
+
 INVARIANTS. A setting is a Firestore document: it holds no capacity and
 creates no infrastructure demand (invariant 1). Nothing here accepts an
 image, a command, a URL or a resource spec (invariant 10): the body is one
@@ -86,7 +98,14 @@ from swarm_common.models import Tenant
 from .admins import AUDIT_COLLECTION
 from .auth import AuthContext, require_admin
 from .errors import Forbidden, NotFound
-from .judgment import SETTINGS_COLLECTION
+from .judgment import (
+    MAC_FIELD,
+    SETTINGS_COLLECTION,
+    SettingsMac,
+    block_mac,
+    trusted_block,
+    unowned_covered_keys,
+)
 from .mergesettings import is_member, is_owner
 from .refusals import refuse
 from .repositories import COLLECTION as REPOSITORIES
@@ -102,6 +121,11 @@ CONTEXT_FIELD = "context"
 AB_FIELD = "context_ab"
 #: graph-service.md §8.1. The worker's reader (GS-WORKER) restates it.
 DELIVERY_FIELD = "graph_delivery"
+#: The block name `swarm_common.specsign.SETTINGS_MAC_FIELDS` signs this map under.
+MAC_BLOCK = FIELD
+#: The covered keys this module writes; any other covered key is dropped on a
+#: write (`judgment.unowned_covered_keys`), never signed.
+OWNED_FIELDS = (JEV_FIELD, CONTEXT_FIELD, AB_FIELD, DELIVERY_FIELD)
 
 ON, OFF, AB, INHERIT = "on", "off", "ab", CONTEXT_INHERIT
 CONTEXTS = (ON, OFF)
@@ -248,18 +272,22 @@ def require_owner_or_admin(auth: AuthContext, tenant: Tenant | None) -> str:
 class CodeIntelligenceStore:
     """`workspace_settings/{tenant}.code_intelligence`, read and audited write."""
 
-    def __init__(self, db: Any, *, now: Callable[[], datetime]) -> None:
+    def __init__(self, db: Any, *, now: Callable[[], datetime], mac: SettingsMac) -> None:
         self._db = db
         self._now = now
+        self._mac = mac
 
     def _ref(self, tenant_id: str) -> Any:
         return self._db.collection(COLLECTION).document(tenant_id)
 
     def block(self, tenant_id: str) -> dict[str, Any] | None:
-        """The stored `code_intelligence` map, or None."""
+        """The stored `code_intelligence` map, or None -- also None for a
+        tenant cut over whose block's MAC does not verify."""
         snap = self._ref(tenant_id).get()
         value = (snap.to_dict() or {}).get(FIELD) if snap.exists else None
-        return value if isinstance(value, dict) else None
+        if not isinstance(value, dict):
+            return None
+        return trusted_block(tenant_id, MAC_BLOCK, value, self._mac) or None
 
     def get(self, tenant_id: str) -> CodeIntelligence:
         """The read CTXQ-S's and CTXQ-J's gates make, as swarm-api serves it."""
@@ -292,7 +320,7 @@ class CodeIntelligenceStore:
             whole = (snap.to_dict() or {}) if snap.exists else None
             stored = (whole or {}).get(FIELD)
             stored = dict(stored) if isinstance(stored, dict) else {}
-            before = settings_of(stored)
+            before = settings_of(trusted_block(tenant_id, MAC_BLOCK, stored, self._mac))
             after = CodeIntelligence(
                 jev=body.jev if body.jev is not None else before.jev,
                 context=_word(body.context, before.context),
@@ -303,8 +331,8 @@ class CodeIntelligenceStore:
             changed = [k for k in old if old[k] != new[k]]
             if not changed:
                 return after
-            block = {k: v for k, v in stored.items()
-                     if k not in (JEV_FIELD, CONTEXT_FIELD, AB_FIELD, DELIVERY_FIELD)}
+            dropped = (*OWNED_FIELDS, *unowned_covered_keys(MAC_BLOCK), MAC_FIELD)
+            block = {k: v for k, v in stored.items() if k not in dropped}
             block[JEV_FIELD] = after.jev
             if after.context is not None:
                 block[CONTEXT_FIELD] = after.context
@@ -313,6 +341,9 @@ class CodeIntelligenceStore:
             if after.graph_delivery is not None:
                 block[DELIVERY_FIELD] = after.graph_delivery
             block.update({"updated_at": now, "updated_by": by})
+            mac = block_mac(tenant_id, MAC_BLOCK, block, self._mac.keys)
+            if mac is not None:
+                block[MAC_FIELD] = mac
             if whole is None:
                 txn.set(ref, {"tenant_id": tenant_id, FIELD: block})
             else:

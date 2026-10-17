@@ -125,15 +125,19 @@ def make(ldb, people, groups, objects, clock, relay):
     return _make
 
 
-@pytest.fixture
-def ready(make, ldb):
+def _ready(make, ldb, **settings: Any):
     """A RUNNING attempt in `eng`, which chose TypeSafe and has a tenant key."""
-    client = make(typesafe_fwd_key=FWD_KEY)
+    client = make(typesafe_fwd_key=FWD_KEY, **settings)
     attempt = Attempt(generation=2)
     seed_running(client, ldb, attempt)
     choose_typesafe(ldb)
     set_key(ldb, TENANT_SECRET)
     return client, attempt
+
+
+@pytest.fixture
+def ready(make, ldb):
+    return _ready(make, ldb)
 
 
 # -- the wire ----------------------------------------------------------------
@@ -277,6 +281,61 @@ def test_a_workspace_that_did_not_choose_typesafe_is_refused(ready, ldb, backend
     assert response.status_code == 403, response.text
     assert response.json()["code"] == "typesafe_backend_off"
     assert "ticket" not in response.json()
+
+
+def _cut_over(make, ldb):
+    """eng's settings are verified (ApiSettings.settings_mac_tenants) under a
+    runtime key (ApiSettings.settings_key): the key, and a ready attempt."""
+    key = "settings-" + secrets.token_hex(24)
+    return key, _ready(make, ldb, settings_key=key, settings_mac_tenants=("eng",))
+
+
+@pytest.mark.parametrize("mac", [None, "bad", "other-tenant"])
+def test_a_forged_typesafe_choice_mints_nothing_once_cut_over(make, ldb, mac):
+    # #1457: any tenant's worker can write workspace_settings/eng directly.
+    from swarm_api import judgment
+
+    key, (client, attempt) = _cut_over(make, ldb)
+    stored = ldb.docs["workspace_settings/eng"]
+    assert stored["judgment_backend"] == "typesafe" and "mac" not in stored
+    if mac == "bad":
+        stored["mac"] = {"v": 1, "key": judgment.key_id(key),
+                         "sig": base64.b64encode(secrets.token_bytes(32)).decode()}
+    elif mac == "other-tenant":
+        # A MAC swarm-api really made, for research's identical choice.
+        stored["mac"] = judgment.sign_block(key, tenant_id="research", block="top",
+                                            fields={"judgment_backend": "typesafe"})
+    response = ask(client, attempt)
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == "typesafe_backend_off"
+    assert "ticket" not in response.json()
+
+
+def test_a_signed_typesafe_choice_still_mints_once_cut_over(make, ldb):
+    from swarm_api import judgment
+
+    key, (client, attempt) = _cut_over(make, ldb)
+    ldb.docs["workspace_settings/eng"]["mac"] = judgment.sign_block(
+        key, tenant_id="eng", block="top", fields={"judgment_backend": "typesafe"})
+    response = ask(client, attempt)
+    assert response.status_code == 201, response.text
+    assert verify_typesafe_ticket([FWD_KEY], response.json()["ticket"], now=time.time())
+
+
+def test_before_the_cutover_an_unsigned_choice_mints_as_it_did(make, ldb):
+    client, attempt = _ready(make, ldb, settings_key="settings-" + secrets.token_hex(24))
+    assert ask(client, attempt).status_code == 201
+
+
+def test_the_cutover_in_the_environment_alone_does_not_reach_the_ticket(ready, monkeypatch):
+    # ISO-API-SETTINGS: the cutover is ApiSettings', read once at start; a
+    # variable set on a process whose settings do not list eng changes nothing.
+    from swarm_api import judgment
+
+    monkeypatch.setenv(judgment.SETTINGS_KEY_ENV, "settings-" + secrets.token_hex(24))
+    monkeypatch.setenv(judgment.SETTINGS_MAC_TENANTS_ENV, "eng")
+    client, attempt = ready
+    assert ask(client, attempt).status_code == 201
 
 
 def test_a_stale_generation_is_fenced_and_nothing_is_minted(ready):
