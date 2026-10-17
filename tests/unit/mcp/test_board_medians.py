@@ -22,7 +22,7 @@ red); drop the floor at 0 or count parallel steps twice (the eta tests go red).
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 import pytest
 

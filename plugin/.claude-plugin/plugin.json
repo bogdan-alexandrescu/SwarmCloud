@@ -46,10 +46,10 @@
     "max_live_rows": {
       "type": "number",
       "title": "Live rows followed by /sc attach --all",
-      "description": "How many running SwarmCloud workflows, and how many of your running single tasks, /sc attach --all shows as live rows (each workflow's unfinished steps are one row each). Default 30; any value is held to 1-50. The rest are listed with the command that follows each. Claude Code's /workflows panel is its own UI: the plugin cannot add scrolling to it, so every row is one compact line, newest first, grouped by workspace.",
-      "default": 30,
+      "description": "How many running SwarmCloud workflows, and how many of your running single tasks, /sc attach --all shows as live rows (each workflow's unfinished steps are one row each). Default 100; any value is held to 1-200. The ones a cap leaves out are the ones furthest from finishing, listed with the command that follows each. Claude Code's /workflows panel is its own UI: the plugin cannot add scrolling to it, so every row is one compact line, closest to finish first (steps done of the total, then how long the current step has run), grouped by workspace.",
+      "default": 100,
       "min": 1,
-      "max": 50
+      "max": 200
     }
   },
   "mcpServers": {
