@@ -121,6 +121,10 @@ resource "google_compute_router_nat" "this" {
   udp_idle_timeout_sec             = 30
   tcp_established_idle_timeout_sec = 1200
   tcp_transitory_idle_timeout_sec  = 30
+  # 120 s is Google's default today and what swarm-nat already runs (read
+  # 2026-10-16, #1334), so declaring it plans as a no-op. It is declared so a
+  # change to that default shows up in a plan instead of drifting silently.
+  tcp_time_wait_timeout_sec = 120
 
   log_config {
     enable = true
