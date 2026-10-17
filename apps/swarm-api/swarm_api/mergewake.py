@@ -177,6 +177,7 @@ from .continuation import TASK_ID_RE
 from .errors import ApiError, Forbidden, NotFound, UpstreamUnavailable
 from .forgechecks import GREEN, RED, CiReading, evaluate, required_status_checks
 from .forge import GITHUB_API_HOST
+from .forge_installation import read_token
 from .forgewrite import PULLS_WRITE, ForgeWriteError, GitHubWriter, PullSnapshot
 from .issueci import (
     CI_READ_SECONDS,
@@ -1100,6 +1101,7 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
     docs = [snap.to_dict() or {} for snap in query.stream()]
     report.truncated = len(docs) > limit
     token = ""
+    reading_token = ""
     token_error = ""
     try:
         for doc in docs[:limit]:
@@ -1139,8 +1141,15 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
                     report.fail(task_id, token_error)
                     continue
             patch: dict[str, Any] = {}
+            # The CI read itself goes out as the App when the owner has an
+            # installation (#1483): every park, every CI_READ_SECONDS, was
+            # ~3,450 calls an hour of one person's quota. The tenant's token
+            # stays for what follows a settled reading -- a re-run, a fix
+            # round -- and for an owner with no installation.
+            reading_token = read_token(getattr(ctx, "forge_installations", None),
+                                       tenant_id, ref.owner, ref.repo) or token
             try:
-                read = _read(writer, ref, head, token,
+                read = _read(writer, ref, head, reading_token,
                              update_pending=wait.get("code") == BRANCH_UPDATE_PENDING,
                              queued=wait.get("code") == MERGE_QUEUED)
                 reason = read.reason
@@ -1178,5 +1187,5 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
                 report.woken += 1
                 log.info("merge wake %s tenant=%s: %s", task_id, tenant_id, reason)
     finally:
-        token = ""
+        token = reading_token = ""
     return report
