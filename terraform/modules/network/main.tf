@@ -18,6 +18,7 @@ locals {
 }
 
 resource "google_compute_network" "this" {
+  # checkov:skip=CKV2_GCP_18:This network's firewall is declared, in firewall.tf beside this file (a lowest-priority deny-all ingress and egress plus narrow allows). A scan of main.tf alone cannot see that file; a scan of the module directory passes.
   project = var.project_id
   name    = "${var.name_prefix}-vpc"
 
