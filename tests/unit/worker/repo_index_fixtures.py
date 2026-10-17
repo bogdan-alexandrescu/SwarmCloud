@@ -333,6 +333,12 @@ def build_repo(
     env = git_env(home)
     write_files(root, files)
     _git(root, env, "init", "-q", "-b", "main")
+    # A commit can start a detached `git maintenance run --auto` that holds
+    # .git/objects/maintenance.lock after this returns; a test that copies
+    # the repo then races its removal (shutil.Error, ENOENT). Copies inherit
+    # this config, so their commits do not start one either.
+    _git(root, env, "config", "maintenance.auto", "false")
+    _git(root, env, "config", "gc.auto", "0")
     _git(root, env, "add", "-A")
     stamp = f"@{first_commit_at} +0000"
     _git(
