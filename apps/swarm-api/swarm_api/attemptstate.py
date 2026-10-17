@@ -38,6 +38,7 @@ registration.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import re
@@ -52,6 +53,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from pydantic import AwareDatetime, Field
 
 from swarm_common.admission import AdmissionConfig, _snapshot, release_lease_in_transaction
+from swarm_common.config import Settings
 from swarm_common.models import Attempt, EndCause, Tenant, new_id, retries_exhausted, utcnow
 from swarm_common.states import (
     CONCURRENCY_STATES,
@@ -76,7 +78,7 @@ from .forgeapp import GRANTS
 from .mergesettings import COLLECTION as WORKSPACE_SETTINGS
 from .provider_keys import KEYS_COLLECTION as PROVIDER_KEYS
 from .repositories import parse_repository, repo_id_for
-from .repoindex import KEPT_VERSIONS, VERSIONS_COLLECTION
+from .repoindex import BASE_LINE, KEPT_VERSIONS, VERSIONS_COLLECTION
 from .store import EVENTS, LEASES, TASKS
 from .workspaces import personal_tenant_id
 
@@ -127,6 +129,18 @@ _EVENT_ID = re.compile(r"^evt_[0-9a-f]{20}$")
 _REASON = re.compile(r"^[A-Za-z0-9_.:-]{1,96}$")
 _PROVIDER = re.compile(r"^[a-z0-9-]{1,64}$")
 _GITHUB_URL = re.compile(r"^https://github\.com/([^/\s]+)/([^/\s]+?)(?:\.git)?/?$")
+#: A task id as the worker accepts one in `builds_on` (`lifecycle._TASK_ID_RE`).
+_TASK_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-]{0,127}$")
+#: An incremental index run's base line in its SIGNED prompt
+#: (`indexrun.requested_base`): exactly one, or no base at all.
+_BASE_SHA_LINE = re.compile(r"^" + re.escape(BASE_LINE) + r"([0-9a-f]{40})$", re.MULTILINE)
+#: How far `upstream` follows `builds_on` back from this task's own: the
+#: worker's own bound (`lifecycle._MAX_WORKFLOW_STEPS`, #978), read from the
+#: FROZEN `Settings` default as the worker reads it. Every link is a distinct
+#: step of one workflow, so a longer chain is one no control plane wrote.
+BUILDS_ON_MAX_DEPTH: int = next(
+    f.default for f in dataclasses.fields(Settings) if f.name == "max_workflow_steps"
+)
 
 #: The attempt document's usage fields a worker may write, by `kind` (§4.2):
 #: the frozen `Attempt`'s names, nothing else. `cpu_limit_source` takes the
@@ -511,6 +525,14 @@ class Claimant:
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _builds_on(metadata: Mapping[str, Any]) -> str | None:
+    """The task id a dispatch block's `builds_on` names, or None."""
+    raw = _mapping(metadata.get("dispatch")).get("builds_on")
+    if not isinstance(raw, str) or not _TASK_ID.match(raw.strip()):
+        return None
+    return raw.strip()
 
 
 def _instant(value: Any) -> datetime | None:
@@ -1604,7 +1626,8 @@ class AttemptState:
         declared |= {k for k in _mapping(_mapping(metadata.get("dispatch")).get("input_parents"))
                      if isinstance(k, str)}
         refused = UpstreamNotDeclared("that task is not one this task declares as upstream")
-        if upstream_task_id not in declared:
+        if upstream_task_id not in declared and not self._derived_upstream(
+                attempt, task, upstream_task_id):
             raise refused
         doc = self._read(self._ref(TASKS, upstream_task_id))
         if doc is None:
@@ -1612,6 +1635,76 @@ class AttemptState:
         if doc.get("tenant_id") != attempt.tenant_id:
             raise refused
         return {"ok": True, "task": jsonable(doc)}
+
+    def _derived_upstream(self, attempt: AttemptTuple, task: Mapping[str, Any],
+                          upstream_task_id: str) -> bool:
+        """The three reads a worker makes past its declared set (#1457,
+        owner decision 2026-10-17), each id derived HERE from documents this
+        service reads, never taken from the request:
+
+          * an index run's base version's task: the `task_id` of the
+            `index_versions/<sha>` entry, under this tenant's registration of
+            the signed repository, for the one base line of the signed prompt
+            (`lifecycle._stage_base`);
+          * an ancestor along `builds_on` (`lifecycle._builds_on_base`): from
+            this task's own signed `dispatch.builds_on`, following each
+            ancestor's `builds_on` only through this tenant's tasks of this
+            workflow, at most `BUILDS_ON_MAX_DEPTH` tasks deep;
+          * the verdict gate's review task (`lifecycle._reviewed_patches`):
+            the signed `dispatch.verdict_gate.task_id`, when that task is a
+            step of this task's workflow.
+
+        The caller still refuses a task of another tenant, so a derived id
+        serves only this tenant's document.
+        """
+        return (self._is_index_base(attempt, task, upstream_task_id)
+                or self._is_builds_on_ancestor(attempt, task, upstream_task_id)
+                or self._is_gate_review(attempt, task, upstream_task_id))
+
+    def _is_index_base(self, attempt: AttemptTuple, task: Mapping[str, Any],
+                       upstream_task_id: str) -> bool:
+        prompt = _mapping(task.get("input")).get("prompt")
+        bases = set(_BASE_SHA_LINE.findall(prompt)) if isinstance(prompt, str) else set()
+        repo = owner_repo(task.get("repository_url"))
+        if len(bases) != 1 or repo is None:
+            return False
+        ref = self._ref(REPOSITORIES, repo_id_for(attempt.tenant_id, *repo))
+        registration = self._read(ref)
+        if registration is None or registration.get("tenant_id") != attempt.tenant_id:
+            return False
+        version = self._read(ref.collection(VERSIONS_COLLECTION).document(bases.pop()))
+        return version is not None and version.get("task_id") == upstream_task_id
+
+    def _is_builds_on_ancestor(self, attempt: AttemptTuple, task: Mapping[str, Any],
+                               upstream_task_id: str) -> bool:
+        workflow_id = task.get("workflow_id")
+        current = _builds_on(_mapping(task.get("metadata")))
+        seen: set[str] = {attempt.task_id}
+        for _ in range(BUILDS_ON_MAX_DEPTH):
+            if current is None or current in seen:
+                return False
+            if current == upstream_task_id:
+                return True
+            seen.add(current)
+            doc = self._read(self._ref(TASKS, current))
+            if (doc is None or doc.get("tenant_id") != attempt.tenant_id
+                    or not isinstance(workflow_id, str) or not workflow_id
+                    or doc.get("workflow_id") != workflow_id):
+                return False
+            current = _builds_on(_mapping(doc.get("metadata")))
+        return False
+
+    def _is_gate_review(self, attempt: AttemptTuple, task: Mapping[str, Any],
+                        upstream_task_id: str) -> bool:
+        gate = _mapping(_mapping(_mapping(task.get("metadata")).get("dispatch"))
+                        .get("verdict_gate"))
+        review = gate.get("task_id")
+        workflow_id = task.get("workflow_id")
+        if (not isinstance(review, str) or review.strip() != upstream_task_id
+                or not isinstance(workflow_id, str) or not workflow_id):
+            return False
+        doc = self._read(self._ref(TASKS, upstream_task_id))
+        return doc is None or doc.get("workflow_id") == workflow_id
 
     def repository(self, attempt: AttemptTuple) -> dict[str, Any]:
         """`indexrun.kept_commits` and `graphstage`'s reads: the registration
