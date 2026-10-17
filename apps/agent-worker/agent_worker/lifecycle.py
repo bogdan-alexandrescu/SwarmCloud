@@ -3745,13 +3745,13 @@ class Worker:
         summary["verdict_published"] = {"refused": error}
         self.log.error("the review's verdict was not published", reason=error)
         if retryable:
-            state = self.control.fail_retryably(
+            state = self._fail_retryably_terminal(
                 exit_code=0, error=error, cause="verdict_unpublished",
                 result_summary=summary, end_cause=end_cause,
             )
             return Outcome(exit_code=ExitCode.FAILED, state=state)
-        self.control.finish(state=TaskState.FAILED, exit_code=0, error=error,
-                            result_summary=summary, end_cause=end_cause)
+        self._finish_terminal(state=TaskState.FAILED, exit_code=0, error=error,
+                              result_summary=summary, end_cause=end_cause)
         return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
 
     def _carry_parked_uploads(self, summary: dict[str, Any]) -> None:
@@ -6505,7 +6505,7 @@ class Worker:
         causes = self._missing_causes(summary)
         error = self._scrub(expected_mod.missing_error(missing, causes=causes))
         if not expected_mod.retryable(missing, causes):
-            self.control.finish(
+            self._finish_terminal(
                 state=TaskState.FAILED,
                 exit_code=exit_code,
                 error=error,
@@ -6518,7 +6518,7 @@ class Worker:
                 causes=self._scrub(expected_mod.causes_of(missing, causes)),
             )
             return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
-        state = self.control.fail_retryably(
+        state = self._fail_retryably_terminal(
             exit_code=exit_code,
             error=error,
             cause="expected_outputs_missing",
@@ -6546,7 +6546,7 @@ class Worker:
         the title again.
         """
         error = self._scrub(reason)
-        state = self.control.fail_retryably(
+        state = self._fail_retryably_terminal(
             exit_code=exit_code,
             error=error,
             cause="pull_request_title_refused",
@@ -6574,7 +6574,7 @@ class Worker:
         so the agent's files are there to edit.
         """
         error = self._scrub(reason)
-        state = self.control.fail_retryably(
+        state = self._fail_retryably_terminal(
             exit_code=exit_code,
             error=error,
             cause="final_tree_adds_a_credential",
@@ -6903,7 +6903,7 @@ class Worker:
             f"forge did not answer after {tries} tries: {reason}. The attempt is "
             "retried while the task has attempts left."
         )
-        state = self.control.fail_retryably(
+        state = self._fail_retryably_terminal(
             exit_code=exit_code,
             error=error,
             cause=FORGE_UNREACHABLE,
@@ -7267,7 +7267,7 @@ class Worker:
         )
         summary["forge_check"] = {"cause": cause, "reason": reason}
         if cause == FORGE_GRANT_UNREADABLE:
-            state = self.control.fail_retryably(
+            state = self._fail_retryably_terminal(
                 exit_code=exit_code,
                 error=error,
                 cause=cause,
@@ -7277,7 +7277,7 @@ class Worker:
                 end_cause=EndCause.PUBLISH_REFUSED,
             )
             return Outcome(exit_code=ExitCode.FAILED, state=state)
-        self.control.finish(
+        self._finish_terminal(
             state=TaskState.FAILED,
             exit_code=exit_code,
             error=error,
@@ -12613,15 +12613,73 @@ class Worker:
         refusal of the minimal write too raises the FIRST refusal, as before.
         Logged by type and message only, never the summary.
         """
-        try:
-            self.control.finish(
+        self._write_terminal_once_more_if_refused(
+            lambda summary: self.control.finish(
                 state=state,
                 exit_code=exit_code,
                 error=error,
-                result_summary=result_summary,
+                result_summary=summary,
                 end_cause=end_cause,
-            )
-            return
+            ),
+            decided=state.value,
+            error=error,
+            result_summary=result_summary,
+        )
+
+    def _fail_retryably_terminal(
+        self,
+        *,
+        exit_code: int | None,
+        error: str,
+        cause: str,
+        result_summary: dict[str, Any] | None = None,
+        retry_delay_seconds: int = 0,
+        detail: dict[str, Any] | None = None,
+        end_cause: EndCause | None = None,
+    ) -> TaskState:
+        """`ControlPlane.fail_retryably`, under the same refusal rule as
+        `_finish_terminal` (#1438): the attempt's retryable ends
+        (`_fail_for_missing_outputs`, a refused title, a final-tree leak, an
+        unreachable forge, an unreadable grant, an unpublished verdict) wrote
+        the same summary `finish` did and crashed the same way when Firestore
+        refused it.
+
+        On InvalidArgument, and nothing else, the same transition is written
+        once more -- cause, delay, detail, exit code, error and end cause
+        unchanged -- with the minimal summary. Which state the task lands in
+        (READY, FAILED or CANCELLED) is still decided inside that one fenced
+        transaction, so the minimal summary records `failed_retryably`, what
+        the attempt decided, not a state it cannot know. A FencedError is
+        re-raised, never retried. Returns the state the task was left in.
+        """
+        return self._write_terminal_once_more_if_refused(
+            lambda summary: self.control.fail_retryably(
+                exit_code=exit_code,
+                error=error,
+                cause=cause,
+                result_summary=summary,
+                retry_delay_seconds=retry_delay_seconds,
+                detail=detail,
+                end_cause=end_cause,
+            ),
+            decided=FAILED_RETRYABLY,
+            error=error,
+            result_summary=result_summary,
+        )
+
+    def _write_terminal_once_more_if_refused(
+        self,
+        write: Callable[[dict[str, Any] | None], Any],
+        *,
+        decided: str,
+        error: str | None,
+        result_summary: dict[str, Any] | None,
+    ) -> Any:
+        """Run one terminal write; when Firestore refuses its document, run it
+        once more with `_minimal_terminal_summary`. The mechanics
+        `_finish_terminal` and `_fail_retryably_terminal` share (#1438)."""
+        try:
+            return write(result_summary)
         except FencedError:
             raise
         except Exception as exc:
@@ -12632,32 +12690,27 @@ class Worker:
         self.log.error(
             "the terminal write was refused; writing the same state once more "
             "with a minimal summary",
-            state=state.value,
+            state=decided,
             error_type=type(refused).__name__,
             error=refusal[:SUMMARY_REFUSED_MAX_CHARS],
         )
         try:
-            self.control.finish(
-                state=state,
-                exit_code=exit_code,
-                error=error,
-                result_summary=_minimal_terminal_summary(
-                    state, error, result_summary, refusal
-                ),
-                end_cause=end_cause,
+            written = write(
+                _minimal_terminal_summary(decided, error, result_summary, refusal)
             )
         except FencedError:
             raise
         except Exception as again:
             self.log.error(
                 "the minimal terminal write was refused too",
-                state=state.value,
+                state=decided,
                 error_type=type(again).__name__,
             )
             raise refused from None
         self.log.warning(
-            "the terminal state landed with a minimal summary", state=state.value
+            "the terminal state landed with a minimal summary", state=decided
         )
+        return written
 
     def _safe_finish(
         self,
@@ -14740,6 +14793,12 @@ def _refused_key_names(keys: Sequence[str]) -> str:
 #: form and still bounds a field the next refusal's text fills.
 SUMMARY_REFUSED_MAX_CHARS = 300
 
+#: The minimal summary's `state` when the refused write was `fail_retryably`
+#: (#1438). Which state the task lands in -- READY, FAILED or CANCELLED -- is
+#: picked inside that write's own fenced transaction, after the summary is
+#: built, so the summary records what the attempt decided instead of guessing.
+FAILED_RETRYABLY = "failed_retryably"
+
 
 def _firestore_refused_the_document(exc: BaseException) -> bool:
     """Whether `exc` is Firestore refusing what was written: InvalidArgument,
@@ -14754,7 +14813,7 @@ def _firestore_refused_the_document(exc: BaseException) -> bool:
 
 
 def _minimal_terminal_summary(
-    state: TaskState, error: str | None, summary: dict[str, Any], refusal: str
+    state: str, error: str | None, summary: dict[str, Any], refusal: str
 ) -> dict[str, Any]:
     """What a terminal write carries once Firestore refused its summary (#1438).
 
@@ -14776,7 +14835,7 @@ def _minimal_terminal_summary(
 
     git = summary.get("git") if isinstance(summary.get("git"), dict) else {}
     minimal: dict[str, Any] = {
-        "state": state.value,
+        "state": state,
         "error": error,
         "summary_refused": refusal[:SUMMARY_REFUSED_MAX_CHARS],
     }

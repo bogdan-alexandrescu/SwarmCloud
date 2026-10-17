@@ -36,6 +36,7 @@ from google.api_core import exceptions as core
 
 import fakes
 from agent_worker.errors import ExitCode, FencedWriteRefused
+from swarm_common.models import EndCause
 from swarm_common.states import EventType, TaskState
 
 from worker_seeds import seed_attempt
@@ -253,5 +254,131 @@ def test_nothing_but_invalid_argument_is_written_a_second_time(
     with pytest.raises(type(error)):
         worker._finish_terminal(
             state=TaskState.SUCCEEDED, exit_code=0, result_summary={"prompt": MARKER}
+        )
+    assert len(calls) == 1
+
+
+# --- the retryable ends: `fail_retryably`, refused the same way ------------
+#
+# Review of this lane: only `finish` was wrapped, so every retryable end
+# `_record_finalised` reaches still crashed as "worker crashed" on a refused
+# summary and ended as a lost worker. WRITTEN TO FAIL BEFORE `_fail_retryably_
+# terminal`: there, each call below raised InvalidArgument.
+
+_RETRYABLE_ENDS = {
+    "missing_outputs": (
+        lambda worker, summary: worker._fail_for_missing_outputs(
+            ["pr-title.txt"], summary, exit_code=0
+        ),
+        "expected_outputs_missing",
+    ),
+    "refused_title": (
+        lambda worker, summary: worker._fail_for_refused_title(
+            "the title is empty", summary, exit_code=0
+        ),
+        "pull_request_title_refused",
+    ),
+    "final_tree_leak": (
+        lambda worker, summary: worker._fail_for_final_tree_leak(
+            "notes.txt adds a credential", summary, exit_code=0
+        ),
+        "final_tree_adds_a_credential",
+    ),
+    "publish_unreachable": (
+        lambda worker, summary: worker._fail_for_publish_unreachable(
+            {"reason": "timed out", "tries": 3}, summary, exit_code=0
+        ),
+        "forge_unreachable",
+    ),
+    "forge_grant_unreadable": (
+        lambda worker, summary: worker._fail_for_forge_write_refused(
+            {"cause": "forge_grant_unreadable", "reason": "the grant could not be read"},
+            summary,
+            exit_code=0,
+        ),
+        "forge_grant_unreadable",
+    ),
+    "verdict_unpublished": (
+        lambda worker, summary: worker._fail_verdict_unpublished(
+            "the forge refused the comment", summary, retryable=True,
+            end_cause=EndCause.OUTPUTS_MISSING,
+        ),
+        "verdict_unpublished",
+    ),
+}
+
+
+@pytest.mark.parametrize("end", sorted(_RETRYABLE_ENDS))
+def test_a_refused_retryable_end_still_fails_the_attempt_retryably(
+    db, worker_factory, refusals, log_stream, end
+):
+    """The attempt ends as it decided -- retryably, so the task goes back to
+    READY with attempts left -- through the same fenced `fail_retryably`, with
+    the minimal summary, the lease released once, and no crash."""
+    seed_attempt(db)
+    worker, _, _ = worker_factory()
+    call, cause = _RETRYABLE_ENDS[end]
+    summary = {
+        "runner": {"output": {"prompt": MARKER, "rounds": [[{"check": "ruff"}]]}},
+        "branch": {"name": "swarm/task_1", "head": "b" * 40},
+    }
+
+    outcome = call(worker, summary)
+
+    assert outcome.exit_code == ExitCode.FAILED
+    assert outcome.state is TaskState.READY, outcome.state
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.READY.value
+    stored = task["result_summary"]
+    assert stored["state"] == "failed_retryably"
+    assert stored["summary_refused"] == f"400 {REFUSAL}"
+    assert stored["branch"] == {"name": "swarm/task_1", "head": "b" * 40}
+    assert MARKER not in json.dumps(stored, default=str), "the refused summary was kept"
+    assert refusals.refused == 1
+    assert _lease_releases(db) == 1, "the lease was not released exactly once"
+    retrying = [e for e in db.events("task_1") if e["type"] == EventType.RETRYING.value]
+    assert len(retrying) == 1
+    assert retrying[0]["detail"]["cause"] == cause, "the retry's cause was not kept"
+    logged = _log_lines(log_stream, FELL_BACK)
+    assert len(logged) == 1 and logged[0]["error_type"] == "InvalidArgument"
+    assert logged[0]["state"] == "failed_retryably"
+
+
+def test_a_refused_retryable_end_refused_twice_keeps_todays_behaviour(
+    db, worker_factory, refusals
+):
+    refusals.marker = ""
+    seed_attempt(db)
+    worker, _, _ = worker_factory()
+
+    with pytest.raises(core.InvalidArgument):
+        worker._fail_for_refused_title(
+            "the title is empty", {"prompt": MARKER}, exit_code=0
+        )
+    assert refusals.refused == 2, "the minimal write was not tried exactly once"
+    assert db.doc("tasks/task_1")["state"] != TaskState.READY.value
+    assert _lease_releases(db) == 0
+
+
+@pytest.mark.parametrize(
+    "error",
+    [FencedWriteRefused(1, 2, write="terminal"), RuntimeError("the store is down")],
+    ids=["fenced", "not-a-refusal"],
+)
+def test_nothing_but_invalid_argument_is_written_retryably_a_second_time(
+    db, worker_factory, monkeypatch, error
+):
+    seed_attempt(db)
+    worker, _, _ = worker_factory()
+    calls: list[dict[str, Any]] = []
+
+    def fail_retryably(**kwargs: Any) -> TaskState:
+        calls.append(kwargs)
+        raise error
+
+    monkeypatch.setattr(worker.control, "fail_retryably", fail_retryably)
+    with pytest.raises(type(error)):
+        worker._fail_retryably_terminal(
+            exit_code=0, error="e", cause="c", result_summary={"prompt": MARKER}
         )
     assert len(calls) == 1
