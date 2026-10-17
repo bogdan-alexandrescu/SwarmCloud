@@ -12522,11 +12522,11 @@ disabled.
 
 ### What it would break
 
-Nothing that exists: a task without the key is unchanged. Five test files and two
-generated tables restate the old declarations and are updated with it
+Nothing that exists: a task without the key is unchanged. Six test files and
+two generated tables restate the old declarations and are updated with it
 (`test_workspace_secret_contract.py`, `test_worker_action_profiles.py`,
-`test_claude_code_browser_profile.py`, `test_issue_input.py`,
-`test_runner_inputs.py`, and the `runner-inputs` tables of
+`test_claude_code_browser_profile.py`, `test_indexer_profile.py`,
+`test_issue_input.py`, `test_runner_inputs.py`, and the `runner-inputs` tables of
 `docs/workflows.md` and `plugin/README.md`). Until lane MCP-SUBMIT merges,
 swarm-api's `check_inputs` accepts the key on the three profiles and the
 worker does not read it; MCP-SUBMIT refuses every `mcp_servers` with
