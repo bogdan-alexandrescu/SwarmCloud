@@ -37,6 +37,12 @@ naming only what changed -- written in the same transaction as the change,
 so the settings and their audit cannot disagree. A PUT that changes nothing
 writes nothing.
 
+SIGNED (#1457). A tenant worker can write this document directly, so every
+write stores `merge.mac`, swarm-api's MAC over the three settings
+(`swarm_api.judgment.block_mac`, block "merge"), and for a tenant cut over in
+SETTINGS_MAC_TENANTS a map whose MAC does not verify reads as the defaults:
+direct, which is how every workspace merged before trains existed.
+
 INVARIANTS. A setting is a Firestore document: it holds no capacity and
 creates no infrastructure demand (invariant 1). Nothing here accepts an
 image, a command or a resource spec (invariant 10): the body is three
@@ -59,6 +65,7 @@ from swarm_common.models import Tenant
 from .admins import AUDIT_COLLECTION
 from .auth import AuthContext
 from .errors import Forbidden, NotFound
+from .judgment import MAC_FIELD, block_mac, trusted_block
 from .refusals import refuse
 from .repositories import COLLECTION as REPOSITORIES
 from .schemas import StrictModel
@@ -71,6 +78,8 @@ from .validation import MERGE_MODE_DIRECT, MERGE_MODE_TRAIN
 #: `merge=True` so they never touch another setting's field.
 COLLECTION = "workspace_settings"
 FIELD = "merge"
+#: The block name `swarm_common.specsign.SETTINGS_MAC_FIELDS` signs this map under.
+MAC_BLOCK = FIELD
 #: The override's field on a `repositories/{repo_id}` registration.
 REPO_FIELD = "merge_mode"
 
@@ -241,10 +250,13 @@ class MergeSettingsStore:
         return settings_of(self.document(tenant_id))
 
     def document(self, tenant_id: str) -> dict[str, Any] | None:
-        """The `merge` map of the workspace's settings document, or None."""
+        """The `merge` map of the workspace's settings document, or None --
+        also None for a tenant cut over whose map's MAC does not verify."""
         snap = self._ref(tenant_id).get()
         value = (snap.to_dict() or {}).get(FIELD) if snap.exists else None
-        return value if isinstance(value, dict) else None
+        if not isinstance(value, dict):
+            return None
+        return trusted_block(tenant_id, MAC_BLOCK, value) or None
 
     def registrations(self, tenant_id: str, *, limit: int = 500) -> list[dict[str, Any]]:
         """The tenant's registrations, by id. The filter again in the
@@ -277,6 +289,7 @@ class MergeSettingsStore:
             snap = _snapshot(txn.get(settings_ref))
             whole = (snap.to_dict() or {}) if snap.exists else {}
             stored = whole.get(FIELD) if isinstance(whole.get(FIELD), dict) else None
+            stored = trusted_block(tenant_id, MAC_BLOCK, stored) if stored is not None else None
             registrations: dict[str, dict[str, Any]] = {}
             for rid, ref in repo_refs.items():
                 repo_snap = _snapshot(txn.get(ref))
@@ -308,9 +321,12 @@ class MergeSettingsStore:
                 changed_to["repositories"] = repo_to
             if not changed_to:
                 return after
-            txn.set(settings_ref, {FIELD: {"tenant_id": tenant_id, **new,
-                                           "updated_at": now, "updated_by": by}},
-                    merge=True)
+            block: dict[str, Any] = {"tenant_id": tenant_id, **new,
+                                     "updated_at": now, "updated_by": by}
+            mac = block_mac(tenant_id, MAC_BLOCK, new)
+            if mac is not None:
+                block[MAC_FIELD] = mac
+            txn.set(settings_ref, {FIELD: block}, merge=True)
             for rid, wanted in repo_to.items():
                 txn.update(repo_refs[rid], {REPO_FIELD: wanted, "updated_at": now})
             txn.set(self._db.collection(AUDIT_COLLECTION).document(), {
