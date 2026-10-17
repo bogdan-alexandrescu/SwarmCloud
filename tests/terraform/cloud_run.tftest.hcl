@@ -69,6 +69,64 @@ run "idle_costs_nothing_and_scale_is_bounded" {
   }
 }
 
+# The one warm floor (owner decision Q6(a), #1457): swarm-api asks for two
+# instances and gets them; every service that does not ask still scales to zero.
+run "a_service_that_sets_min_instances_keeps_that_floor_and_no_other_does" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/cloud_run"
+  }
+
+  variables {
+    services = {
+      "swarm-api" = {
+        service_account_email = "swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+        image                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api:test"
+        max_instances         = 20
+        min_instances         = 2
+      }
+      "swarm-scheduler" = {
+        service_account_email = "swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"
+        image                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler:test"
+        max_instances         = 3
+        concurrency           = 1
+      }
+    }
+  }
+
+  assert {
+    condition     = google_cloud_run_v2_service.this["swarm-api"].template[0].scaling[0].min_instance_count == 2
+    error_message = "swarm-api's min_instances must reach the revision: under design B every heartbeat goes through it"
+  }
+
+  assert {
+    condition     = google_cloud_run_v2_service.this["swarm-scheduler"].template[0].scaling[0].min_instance_count == 0
+    error_message = "a service that sets no min_instances must still scale to zero"
+  }
+}
+
+run "a_floor_above_the_ceiling_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/cloud_run"
+  }
+
+  variables {
+    services = {
+      "swarm-api" = {
+        service_account_email = "swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+        image                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api:test"
+        max_instances         = 1
+        min_instances         = 2
+      }
+    }
+  }
+
+  expect_failures = [var.services]
+}
+
 run "the_control_plane_is_not_on_the_internet" {
   command = plan
 
