@@ -110,8 +110,10 @@ from .errors import (
     FencedWriteRefused,
     TenantMismatchError,
 )
+from .hardening import PROTECTED
 from .quota import UNKNOWN_WAIT_SECONDS
 from .startup import StartupInterrupted
+from .statecall import new_request_id
 from .storable import storable
 
 #: The attempt document's map of checkpoint id to the SHA-256 of its archive,
@@ -2265,6 +2267,826 @@ class ControlPlane:
         self.release_lease(
             f"retry:{cause}" if target is TaskState.READY else f"terminal:{target.value}"
         )
+        if target is not TaskState.READY:
+            self._announce_finished(target)
+        return target
+
+
+# ---------------------------------------------------------------------------
+# The same methods, over swarm-api's state routes (#1457)
+# ---------------------------------------------------------------------------
+#
+# docs/design/tenant-settings-integrity.md §3.2, §4: the worker reaches its
+# state only through `/v1/attempts/{id}/state/...`, scoped by its ID token
+# (the tenant) and its attempt key (this attempt's worker, not its agent).
+# `RemoteControlPlane` keeps `ControlPlane`'s public methods and their
+# meaning, so the lifecycle and the runners call the same names; what each
+# wrote in a transaction here, swarm-api now writes in ONE transaction there,
+# behind the same fence (invariant 5) and through the same release function
+# (invariant 2). Chosen in `__main__.build_worker` by `SWARM_STATE_VIA_API`;
+# off, nothing below runs.
+
+#: The budget of a call `ControlPlane` leaves at the library's defaults: the
+#: terminal transitions, the parks and the lease release, each made once on
+#: the way out (`MID_RUN_BUDGETS`). Two minutes of the child path's backoff:
+#: about the time a Firestore transaction's own retries took, and a write
+#: that ends the task is worth that wait over leaving it to the reconciler.
+TERMINAL_CALL_SECONDS = 120.0
+
+#: The instants of each document `state/open` and `state/poll` serve. An
+#: answer carries them as ISO 8601 (`attemptstate.jsonable`); they are made
+#: datetimes again so the lifecycle reads what it read from Firestore. NAMED,
+#: never guessed from a value's shape: an ISO string inside a task's input is
+#: input, and the spec signature covers it as a string.
+_TASK_INSTANTS = ("created_at", "updated_at", "started_at", "completed_at", "next_eligible_at")
+_LEASE_INSTANTS = ("created_at", "acquired_at", "heartbeat_at", "expires_at", "released_at",
+                   "dispatch_deadline")
+_ATTEMPT_INSTANTS = ("created_at", "started_at", "completed_at", "cpu_measured_at")
+
+#: The attempt a checkpoint pointer names (`checkpoint.checkpoint_prefix`):
+#: `.../tenants/<t>/tasks/<task>/attempts/<attempt>/...`.
+_POINTER_ATTEMPT = re.compile(
+    r"/tenants/(?P<tenant>[^/]+)/tasks/(?P<task>[^/]+)/attempts/"
+    r"(?P<attempt>[A-Za-z0-9_-][A-Za-z0-9_.-]*)/"
+)
+
+#: The routes' bound on an error string (`attemptstate.FinishBody.error`).
+_MAX_ERROR_CHARS = 8192
+
+
+def _instants(doc: Mapping[str, Any] | None, names: Sequence[str]) -> dict[str, Any] | None:
+    if not isinstance(doc, Mapping):
+        return None
+    out = dict(doc)
+    for name in names:
+        value = out.get(name)
+        if isinstance(value, str):
+            out[name] = _as_datetime(value)
+    return out
+
+
+def _bounded_error(error: str | None) -> str | None:
+    return error if error is None else error[:_MAX_ERROR_CHARS]
+
+
+def _route_reason(value: str) -> str:
+    """A retry's cause or a release's reason, in the routes' alphabet
+    (`attemptstate._REASON`, `[A-Za-z0-9_.:-]{1,96}`). Every one the worker
+    writes today is already in it; one that is not is written with its other
+    characters as `_` rather than refused, which would end the attempt as a
+    crash on its way out."""
+    cleaned = re.sub(r"[^A-Za-z0-9_.:-]", "_", value)[:96]
+    return cleaned or "unspecified"
+
+
+class _NoTransactions:
+    """A `RemoteControlPlane`'s `TransactionRunner`: there is no Firestore
+    client to run one on. A caller still reaching into `ControlPlane`'s
+    transaction helpers (`_run_transaction`, `_fenced_task`) is a path that
+    has not moved to the state routes, and is refused here, loudly, before
+    any document is named -- never sent to a client that does not exist."""
+
+    def run(self, fn: Callable[[Any], Any], *, call_options: Any = None) -> Any:
+        raise ControlPlaneError(
+            "SWARM_STATE_VIA_API is on: this attempt has no Firestore client, and "
+            "this write has not moved to the state routes"
+        )
+
+
+class RemoteControlPlane(ControlPlane):
+    """`ControlPlane`, over swarm-api's state routes, for exactly one attempt.
+
+    THE FIRST CALL IS `state/open` (§4.3), made by the lifecycle's first
+    control-plane call, `validate_generation`, before the workspace, any
+    credential or the agent exists. It generates the attempt key in this
+    process's heap -- after `make_non_dumpable`, which the entrypoint ran
+    first -- and spends the dispatcher's one-use nonce registering it, so
+    every later call is signed. Nothing else is sent before it: `StateCall`
+    refuses to sign without the key. A heap `make_non_dumpable` could not
+    protect registers its key flagged `unprotected` (owner decision Q4), and
+    that key signs state only: no child path, as today.
+
+    WHAT IS CACHED, AND WHY. The routes serve the task document once, at
+    `state/open` (its signed spec is what the worker verifies; no later write
+    changes a signed field). After it, every answer carries the fence view
+    (`state`, `current_generation`, `current_lease_id`, `cancel_requested`,
+    `next_eligible_at`), and it is laid over the cached copy, so `fetch_task`
+    answers with the live fence and the opened spec.
+
+    A 409 is the fence: `FencedError` at the generation check,
+    `FencedWriteRefused` on a write, nothing written either way, and the
+    caller exits without running or continuing the agent and without a
+    release call (invariant 5). A poll that meets it reads as fenced
+    `ControlSignals`.
+    """
+
+    #: How the lifecycle tells the paths apart where they differ (the key is
+    #: registered by `state/open`, not by the child path).
+    state_via_api = True
+
+    def __init__(
+        self,
+        calls: Any,
+        *,
+        nonce: str,
+        memory_status: str | None,
+        logger: Any,
+        heartbeat_extension_seconds: int = 120,
+        heartbeat_interval_seconds: int | None = None,
+        quota_reporter: QuotaReporter | None = None,
+        finish_announcer: Any | None = None,
+        startup_seconds: float | None = None,
+        key_factory: Callable[[], Any] | None = None,
+    ) -> None:
+        from .startup import FIRESTORE_STARTUP_RETRY_SECONDS
+
+        super().__init__(
+            None,
+            task_id=calls.task_id,
+            attempt_id=calls.attempt_id,
+            lease_id=calls.lease_id,
+            tenant_id=calls.tenant_id,
+            generation=calls.generation,
+            logger=logger,
+            txn_runner=_NoTransactions(),
+            heartbeat_extension_seconds=heartbeat_extension_seconds,
+            heartbeat_interval_seconds=heartbeat_interval_seconds,
+            quota_reporter=quota_reporter,
+            finish_announcer=finish_announcer,
+        )
+        #: `statecall.StateCall`: the tuple, the key and the wire.
+        self._calls = calls
+        # Never logged and never in a repr: spent once, by `state/open`.
+        self._nonce = nonce
+        self._protected = memory_status == PROTECTED
+        if key_factory is None:
+            from .children import AttemptKey
+
+            key_factory = AttemptKey
+        self._key_factory = key_factory
+        # The budget of a call made inside `startup_budget()`: the same
+        # 30 s the direct path gives each Firestore call there.
+        self._startup_seconds = float(
+            FIRESTORE_STARTUP_RETRY_SECONDS if startup_seconds is None else startup_seconds
+        )
+        self._task: dict[str, Any] = {}
+        self._lease: dict[str, Any] | None = None
+        self._attempts: dict[str, dict[str, Any] | None] = {}
+        self._parked: list[tuple[str, list[Any]]] = []
+        #: swarm-api's answer to the key's registration, for the child path.
+        self.registration: dict[str, Any] | None = None
+
+    # -- the key ---------------------------------------------------------------
+
+    @property
+    def opened(self) -> bool:
+        return bool(self._calls.opened)
+
+    @property
+    def attempt_key(self) -> Any:
+        """The key `state/open` registered: the child path signs with it too."""
+        return self._calls.key
+
+    # -- budgets ---------------------------------------------------------------
+
+    def call_options(self, call: str | None = None) -> dict[str, Any]:
+        """No Firestore options: this attempt makes no Firestore call."""
+        return {}
+
+    def _budget(self, call: str | None) -> float:
+        """Seconds one state call may retry for: the startup budget inside
+        `startup_budget()`, else `MID_RUN_BUDGETS[call]` (#70), else the
+        terminal budget -- the same windows the direct path's calls get."""
+        if self._budgeted:
+            return self._startup_seconds
+        if call is None:
+            return TERMINAL_CALL_SECONDS
+        deadline, _timeout = MID_RUN_BUDGETS[call]
+        if call == "heartbeat":
+            deadline = self._heartbeat_deadline(deadline)
+        return deadline
+
+    def _post(self, op: str, fields: Mapping[str, Any], *, call: str | None) -> dict[str, Any]:
+        answer = self._calls.post(op, fields, deadline_seconds=self._budget(call))
+        self._absorb_fence(answer.get("task"))
+        return answer
+
+    def _get(self, op: str, params: Mapping[str, Any] | None, *, call: str | None) -> dict[str, Any]:
+        return self._calls.get(op, params, deadline_seconds=self._budget(call))
+
+    def _absorb_fence(self, view: Any) -> None:
+        """Lay an answer's fence view over the opened task document."""
+        if not isinstance(view, Mapping):
+            return
+        for name in ("state", "current_generation", "current_lease_id", "cancel_requested"):
+            if name in view:
+                self._task[name] = view[name]
+        if "next_eligible_at" in view:
+            value = view["next_eligible_at"]
+            self._task["next_eligible_at"] = (
+                _as_datetime(value) if isinstance(value, str) else value
+            )
+
+    # -- state/open ------------------------------------------------------------
+
+    def _open(self) -> ControlSignals:
+        """`state/open`, the worker's FIRST state call (§4.3).
+
+        Once more, with the same key, when the task's checkpoint pointer names
+        an earlier attempt of this task: `state/open` is the one route that
+        serves an attempt document, the restore's included, and a repeat with
+        the key it registered is answered as the first was.
+        """
+        key = self._key_factory()
+        try:
+            answer = self._calls.open(
+                key, nonce=self._nonce, unprotected=not self._protected,
+                restore_attempt_id=None, deadline_seconds=self._budget("poll"),
+            )
+        except FencedWriteRefused as exc:
+            raise FencedError(self.generation, exc.actual, getattr(exc, "reason", "")) from None
+        self._absorb_open(answer)
+        restore = self._restore_attempt_id()
+        if restore is not None:
+            try:
+                again = self._calls.open(
+                    key, nonce=self._nonce, unprotected=not self._protected,
+                    restore_attempt_id=restore, deadline_seconds=self._budget("poll"),
+                )
+            except FencedWriteRefused as exc:
+                raise FencedError(self.generation, exc.actual, getattr(exc, "reason", "")) from None
+            self._absorb_open(again)
+            self._attempts[restore] = _instants(again.get("restore_attempt"), _ATTEMPT_INSTANTS)
+        if not self._protected:
+            self._log.warning(
+                "attempt key registered from a heap that is NOT protected: it signs "
+                "this attempt's state only, and the attempt has no child path"
+            )
+        self._log.info("state/open: this attempt reaches its state through swarm-api")
+        lease = self._lease or {}
+        return ControlSignals(
+            state=_as_state(self._task.get("state")),
+            generation=int(self._task.get("current_generation", 0)),
+            cancel_requested=bool(self._task.get("cancel_requested")),
+            lease_released=False,
+            lease_expires_at=_as_datetime(lease.get("expires_at")),
+            observed_at=utcnow(),
+        )
+
+    def _absorb_open(self, answer: Mapping[str, Any]) -> None:
+        task = _instants(answer.get("task"), _TASK_INSTANTS)
+        if task is None:
+            raise FencedError(self.generation, -1, "task document no longer exists")
+        # swarm-api serves only this tenant's documents. Checked again here,
+        # as every read on the direct path is: a mismatch writes nothing.
+        self._assert_tenant(task, kind="task", document_id=self.task_id)
+        lease = _instants(answer.get("lease"), _LEASE_INSTANTS)
+        if lease is not None:
+            self._assert_tenant(lease, kind="lease", document_id=self.lease_id)
+        self._task = task
+        self._absorb_fence(answer.get("fence"))
+        self._lease = lease
+        own = _instants(answer.get("attempt"), _ATTEMPT_INSTANTS)
+        if own is not None:
+            self._assert_tenant(own, kind="attempt", document_id=self.attempt_id)
+        self._attempts[self.attempt_id] = own
+        parked: list[tuple[str, list[Any]]] = []
+        for item in answer.get("parked_uploads") or []:
+            if not isinstance(item, Mapping):
+                continue
+            attempt_id, artifacts = item.get("attempt_id"), item.get("artifacts")
+            if (isinstance(attempt_id, str) and _is_carry_attempt_id(attempt_id)
+                    and attempt_id != self.attempt_id and isinstance(artifacts, list)):
+                parked.append((attempt_id, artifacts))
+        self._parked = parked
+        registration = answer.get("registration")
+        self.registration = dict(registration) if isinstance(registration, Mapping) else None
+
+    def _restore_attempt_id(self) -> str | None:
+        """The earlier attempt of THIS task the checkpoint pointer names, or None."""
+        pointer = self._task.get("latest_checkpoint")
+        if not isinstance(pointer, str):
+            return None
+        found = _POINTER_ATTEMPT.search(pointer)
+        if (found is None or found.group("tenant") != self.tenant_id
+                or found.group("task") != self.task_id
+                or found.group("attempt") == self.attempt_id):
+            return None
+        return found.group("attempt")
+
+    def _require_open(self) -> None:
+        if not self.opened:
+            raise ControlPlaneError(
+                "state/open has not been made; it is this attempt's first state call"
+            )
+
+    # -- reads -----------------------------------------------------------------
+
+    def _poll_answer(self, provider: str | None, *, call: str) -> dict[str, Any]:
+        self._require_open()
+        answer = self._get("poll", {"provider": provider}, call=call)
+        self._absorb_fence(answer.get("task"))
+        lease = answer.get("lease")
+        if isinstance(lease, Mapping) and self._lease is not None:
+            self._lease["expires_at"] = _as_datetime(lease.get("expires_at"))
+            if lease.get("released") and self._lease.get("released_at") is None:
+                self._lease["released_at"] = utcnow()
+        return answer
+
+    def fetch_task(self) -> dict[str, Any]:
+        """The opened task document under the live fence view.
+
+        Read through `state/poll`, as the direct path reads the document
+        again: a cancel or a fence that landed since `state/open` is seen.
+        """
+        answer = self._poll_answer(None, call="poll")
+        if answer.get("task") is None:
+            raise FencedError(self.generation, -1, "task document no longer exists")
+        return dict(self._task)
+
+    def fetch_task_snapshot(self) -> tuple[dict[str, Any], Any]:
+        """`fetch_task`, and None for the create time: the routes do not serve
+        Firestore's `create_time`, so contract request 34's legacy window
+        cannot admit an unsigned task on this path (`specverify` refuses one
+        whose create time it cannot read). A signed task is unaffected."""
+        return self.fetch_task(), None
+
+    def fetch_attempt(self, attempt_id: str) -> dict[str, Any] | None:
+        """This attempt's document, or the restore's, as `state/open` served
+        them; None for any other id -- which the restore reads as "no digest
+        recorded" and starts clean (#347)."""
+        self._require_open()
+        if attempt_id in self._attempts:
+            doc = self._attempts[attempt_id]
+            return None if doc is None else dict(doc)
+        self._log.warning(
+            "an attempt document state/open did not serve was asked for; none is read",
+            requested_attempt_id=attempt_id,
+        )
+        return None
+
+    def fetch_parent_states(self, parent_ids: Sequence[str]) -> dict[str, TaskState | None]:
+        """Each signed parent's state, through `state/upstream`, which serves
+        only ids the task's signed spec declares, and only this tenant's."""
+        from .statecall import StateRefused
+
+        self._require_open()
+        states: dict[str, TaskState | None] = {}
+        for parent_id in dict.fromkeys(parent_ids):
+            try:
+                answer = self._get("upstream", {"upstream_task_id": parent_id}, call=None)
+            except StateRefused as exc:
+                if exc.code == "upstream_not_declared":
+                    raise TenantMismatchError(
+                        kind="task", document_id=parent_id, expected=self.tenant_id, actual=None
+                    ) from None
+                raise
+            doc = answer.get("task")
+            if not isinstance(doc, Mapping):
+                states[parent_id] = None
+                continue
+            self._assert_tenant(dict(doc), kind="task", document_id=parent_id)
+            try:
+                states[parent_id] = TaskState(doc.get("state"))
+            except ValueError:
+                states[parent_id] = None
+        return states
+
+    def fetch_lease(self) -> dict[str, Any] | None:
+        self._require_open()
+        return None if self._lease is None else dict(self._lease)
+
+    def parked_uploads(self) -> list[tuple[str, list[Any]]]:
+        """What each earlier PARKED attempt uploaded, oldest first (#166), as
+        `state/open` read it by id under this task."""
+        self._require_open()
+        return [(attempt_id, list(artifacts)) for attempt_id, artifacts in self._parked]
+
+    # -- fencing -----------------------------------------------------------------
+
+    def validate_generation(self) -> ControlSignals:
+        """THE safety gate. The first call is `state/open`; every later one
+        asks `state/poll`, whose `fenced` is swarm-api's reading of the same
+        fence (`attemptstate.fence_reason`). Raises `FencedError`."""
+        if not self.opened:
+            return self._open()
+        answer = self._poll_answer(None, call="poll")
+        view = answer.get("task")
+        if not isinstance(view, Mapping):
+            raise FencedError(self.generation, -1, "task document no longer exists")
+        reason = answer.get("fenced")
+        if reason:
+            raise FencedError(self.generation, int(view.get("current_generation") or -1),
+                              str(reason))
+        lease = answer.get("lease") if isinstance(answer.get("lease"), Mapping) else {}
+        return ControlSignals(
+            state=_as_state(view.get("state")),
+            generation=int(view.get("current_generation") or 0),
+            cancel_requested=bool(view.get("cancel_requested")),
+            lease_released=False,
+            lease_expires_at=_as_datetime(lease.get("expires_at")),
+            observed_at=utcnow(),
+        )
+
+    def ensure_owner(self, *, write: str) -> None:
+        """Refuse, with `FencedWriteRefused`, work this attempt no longer owns.
+        One `state/poll`; it writes nothing."""
+        answer = self._poll_answer(None, call="checkpoint")
+        view = answer.get("task")
+        if not isinstance(view, Mapping):
+            raise FencedWriteRefused(self.generation, -1, "task document no longer exists",
+                                     write=write)
+        if answer.get("fenced"):
+            raise FencedWriteRefused(self.generation, int(view.get("current_generation") or -1),
+                                     str(answer["fenced"]), write=write)
+
+    def poll(self, provider: str | None = None) -> ControlSignals:
+        """One `state/poll`: the fence view, this lease, this tenant's quota.
+
+        Fenced -- a 409, a task that is gone, or swarm-api's `fenced` -- reads
+        as signals `is_fenced` is true for, as the direct poll reads a task
+        that is gone, so the supervision loop stops the agent and leaves the
+        lease alone.
+        """
+        fenced = ControlSignals(state=TaskState.CANCELLED, generation=-1,
+                                cancel_requested=False, lease_released=True,
+                                observed_at=utcnow())
+        try:
+            answer = self._poll_answer(provider, call="poll")
+        except FencedError:
+            return fenced
+        view = answer.get("task")
+        if not isinstance(view, Mapping):
+            return fenced
+        lease = answer.get("lease") if isinstance(answer.get("lease"), Mapping) else None
+        provider_state: ProviderState | None = None
+        provider_paused = False
+        retry_after: int | None = None
+        reset_at: datetime | None = None
+        quota = answer.get("quota")
+        if provider and isinstance(quota, Mapping):
+            try:
+                provider_state = ProviderState(quota.get("state", ProviderState.UNKNOWN.value))
+            except ValueError:
+                provider_state = ProviderState.UNKNOWN
+            provider_paused = provider_state in (
+                ProviderState.EXHAUSTED, ProviderState.COOLDOWN, ProviderState.DISABLED,
+            )
+            raw_retry = quota.get("retry_after_seconds")
+            retry_after = (int(raw_retry) if isinstance(raw_retry, (int, float))
+                           and not isinstance(raw_retry, bool) else None)
+            reset_at = _as_datetime(quota.get("reset_at")) or _as_datetime(
+                quota.get("cooldown_until"))
+            if provider_paused:
+                self._note_rate_limit_known(provider, retry_after_seconds=retry_after,
+                                            reset_at=reset_at)
+        return ControlSignals(
+            state=_as_state(view.get("state")),
+            generation=int(view.get("current_generation") or -1),
+            cancel_requested=bool(view.get("cancel_requested")),
+            # swarm-api's fence covers what these fields cannot say (a task
+            # that points at another lease, a lease of another attempt): it
+            # reads as a lease this attempt no longer holds.
+            lease_released=lease is None or bool(lease.get("released"))
+            or bool(answer.get("fenced")),
+            lease_expires_at=_as_datetime((lease or {}).get("expires_at")),
+            provider_state=provider_state,
+            provider_paused=provider_paused,
+            retry_after_seconds=retry_after,
+            quota_reset_at=reset_at,
+            observed_at=utcnow(),
+        )
+
+    # -- events ----------------------------------------------------------------
+
+    def emit(
+        self,
+        event_type: EventType,
+        detail: dict[str, Any] | None = None,
+        *,
+        at: datetime | None = None,
+    ) -> None:
+        """`state/event`. The id is chosen here, once, so a retry writes it
+        once; the instant is swarm-api's (`at` is not sent)."""
+        event_id = new_id("evt")
+        self._post("event", {"event_id": event_id, "type": event_type.value,
+                             "detail": detail or {}}, call="event")
+        self._log.info("event", event_type=event_type.value, detail=detail or {})
+
+    # -- state transitions -------------------------------------------------------
+
+    def transition(
+        self,
+        to_state: TaskState,
+        *,
+        fields: dict[str, Any] | None = None,
+        events: Sequence[tuple[EventType, dict[str, Any]]] = (),
+        parked_uploads: list[Any] | None = None,
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        """`state/transition`: the walk LEASED -> DISPATCHED -> STARTING ->
+        RUNNING, and nothing else. swarm-api writes `started_at` and the
+        state's own event in the same fenced transaction; a park, a finish
+        and a retry each have their own route. `detail` rides on that event."""
+        walk = (TaskState.DISPATCHED, TaskState.STARTING, TaskState.RUNNING)
+        if to_state not in walk or events or parked_uploads or set(fields or {}) - {"started_at"}:
+            raise ControlPlaneError(
+                f"state/transition walks only to DISPATCHED, STARTING and RUNNING; a move to "
+                f"{to_state.value} carrying fields or events is a park, a finish or a retry"
+            )
+        self._post("transition", {"request_id": new_request_id(), "to": to_state.value,
+                                  "detail": detail or {}}, call=None)
+
+    def advance_to_starting(self, detail: dict[str, Any] | None = None) -> bool:
+        """Walk to STARTING. Returns False: swarm-api wrote the STARTING event
+        with the transition, so the caller owes none."""
+        state = self._current_state()
+        if state is TaskState.LEASED:
+            self.transition(TaskState.DISPATCHED)
+            state = TaskState.DISPATCHED
+        if state is TaskState.DISPATCHED:
+            self.transition(TaskState.STARTING, detail=detail)
+        return False
+
+    def advance_to_running(self, starting_detail: dict[str, Any] | None = None) -> None:
+        """Walk to RUNNING legally. Each step's event is written by the route
+        (`ControlPlane.advance_to_running` emits STARTING and RUNNING itself);
+        `starting_detail` is the STARTING event's, as the lifecycle's one
+        STARTING event carries the key registration's note."""
+        state = self._current_state()
+        if state is TaskState.LEASED:
+            self.transition(TaskState.DISPATCHED)
+            state = TaskState.DISPATCHED
+        if state is TaskState.DISPATCHED:
+            self.transition(TaskState.STARTING, detail=starting_detail)
+            state = TaskState.STARTING
+        if state is TaskState.STARTING:
+            self.transition(TaskState.RUNNING)
+            return
+        if state is TaskState.RUNNING:
+            return
+        raise ControlPlaneError(f"cannot start from state {state.value}")
+
+    # -- attempt bookkeeping -------------------------------------------------------
+
+    def record_attempt_start(self, *, backend: str, execution_name: str | None) -> None:
+        self._post("attempt-start", {"backend": backend, "execution_name": execution_name},
+                   call=None)
+
+    def record_checkpoint(
+        self,
+        *,
+        checkpoint_id: str,
+        uri: str,
+        size_bytes: int,
+        seq: int,
+        archive_sha256: str,
+    ) -> None:
+        """`state/checkpoint`: the record, the pointer and the event in ONE
+        fenced transaction. A superseded attempt records nothing."""
+        if not isinstance(archive_sha256, str) or not ARCHIVE_DIGEST_RE.fullmatch(
+            archive_sha256
+        ):
+            raise ValueError(
+                f"checkpoint {checkpoint_id} has no archive digest to record "
+                "(a SHA-256 hex digest is required)"
+            )
+        self._post("checkpoint", {"checkpoint_id": checkpoint_id, "uri": uri,
+                                  "size_bytes": int(size_bytes), "seq": int(seq),
+                                  "archive_sha256": archive_sha256}, call="checkpoint")
+
+    def _usage(self, kind: str, fields: Mapping[str, Any]) -> None:
+        self._post("usage", {"kind": kind, "fields": dict(fields)}, call="attempt")
+
+    def record_resource_usage(
+        self, *, peak_rss_bytes: int, peak_disk_bytes: int, oom_near_miss: bool
+    ) -> None:
+        self._usage("resource", {"peak_rss_bytes": int(peak_rss_bytes),
+                                 "peak_disk_bytes": int(peak_disk_bytes),
+                                 "oom_near_miss": bool(oom_near_miss)})
+
+    def record_cpu_usage(self, fields: Mapping[str, Any]) -> None:
+        """`ControlPlane.record_cpu_usage`'s figures; `cpu_measured_at` is
+        stamped by swarm-api as it writes them."""
+        from .metrics import ATTEMPT_CPU_FIELDS, CPU_LIMIT_SOURCES
+
+        doc: dict[str, Any] = {
+            key: float(fields[key])
+            for key in ATTEMPT_CPU_FIELDS
+            if isinstance(fields.get(key), (int, float)) and not isinstance(fields.get(key), bool)
+        }
+        if not any(key != "cpu_limit_cores" for key in doc):
+            return
+        source = fields.get("cpu_limit_source")
+        if source in CPU_LIMIT_SOURCES and "cpu_limit_cores" in doc:
+            doc["cpu_limit_source"] = source
+        self._usage("cpu", doc)
+
+    def record_spend(self, usage: dict[str, Any]) -> None:
+        if not usage:
+            return
+        names = ("input_tokens", "output_tokens", "cache_read_input_tokens",
+                 "cache_creation_input_tokens")
+        doc: dict[str, Any] = {
+            key: int(usage[key])
+            for key in names
+            if isinstance(usage.get(key), int) and not isinstance(usage.get(key), bool)
+        }
+        cost = usage.get("total_cost_usd")
+        if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+            doc["cost_usd"] = float(cost)
+        if doc:
+            self._usage("spend", doc)
+
+    def record_attempt_end(self, *, exit_code: int | None, error: str | None) -> None:
+        self._post("attempt-end", {"exit_code": exit_code, "error": _bounded_error(error)},
+                   call="attempt")
+
+    # -- heartbeat -----------------------------------------------------------------
+
+    def heartbeat(self) -> bool:
+        """`state/heartbeat`: extend THIS tuple's lease while this attempt owns
+        its task. A 409 is a refusal with nothing written, returned as False,
+        as the direct beat returns one; the control poll meets the fence."""
+        try:
+            answer = self._post("heartbeat", {}, call="heartbeat")
+        except FencedWriteRefused:
+            self._log.warning(
+                "heartbeat refused: the lease is released, gone, or at another "
+                "generation; nothing was written",
+                lease_id=self.lease_id,
+                generation=self.generation,
+            )
+            return False
+        if self._lease is not None and isinstance(answer.get("expires_at"), str):
+            self._lease["expires_at"] = _as_datetime(answer["expires_at"])
+        return True
+
+    # -- lease release -----------------------------------------------------------------
+
+    def release_lease(self, reason: str) -> bool:
+        """`state/release`: THIS tuple's lease and the pools it names, through
+        swarm-api's one release function. Idempotent, and never called on the
+        fenced path. swarm-api writes the LEASE_RELEASED event."""
+        if self._lease_released:
+            return False
+        try:
+            answer = self._post("release", {"reason": _route_reason(reason)}, call=None)
+        except FencedWriteRefused as exc:
+            self._log.warning("lease not released: it is not this attempt's", reason=str(exc))
+            answer = {}
+        self._lease_released = True
+        return bool(answer.get("released"))
+
+    # -- parks, finishes, retries -------------------------------------------------------
+
+    def _park(
+        self,
+        reason: ParkReason,
+        *,
+        detail: Mapping[str, Any] | None,
+        uploads: list[Any] | None,
+        next_eligible_at: datetime | None = None,
+        announce: Sequence[tuple[EventType, dict[str, Any]]] = (),
+        ci: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """ONE `state/park`: PARKED (or READY on a person's return), the
+        refund where the reason refunds -- bounded by swarm-api, the worker
+        sends no number (§4.4) -- the carry, the attempt's end, the events and
+        the lease release, in one fenced transaction."""
+        body: dict[str, Any] = {
+            "request_id": new_request_id(),
+            "reason": reason.value,
+            "detail": dict(detail or {}),
+            "announce": [{"type": kind.value, "detail": dict(d or {})} for kind, d in announce],
+        }
+        if next_eligible_at is not None:
+            body["next_eligible_at"] = next_eligible_at
+        if uploads:
+            body["uploads"] = list(uploads)
+        if ci is not None:
+            body["ci"] = dict(ci)
+        answer = self._post("park", body, call=None)
+        self._lease_released = True
+        return answer
+
+    def park(
+        self,
+        *,
+        reason: ParkReason,
+        next_eligible_at: datetime,
+        detail: dict[str, Any] | None = None,
+        announce: Sequence[tuple[EventType, dict[str, Any]]] = (),
+    ) -> None:
+        uploads = (detail or {}).get("artifacts")
+        self._park(reason, detail=detail, uploads=uploads if isinstance(uploads, list) else None,
+                   next_eligible_at=next_eligible_at, announce=announce)
+
+    def park_awaiting_children(
+        self,
+        *,
+        max_resumes: int,
+        detail: dict[str, Any] | None = None,
+        uploads: list[Any] | None = None,
+    ) -> bool:
+        """The await park. `max_resumes` is swarm-api's own bound there
+        (`attemptstate.CHILD_AWAIT_MAX_RESUMES`, the worker's default 4)."""
+        answer = self._park(ParkReason.CHILDREN_INCOMPLETE, detail=detail, uploads=uploads)
+        return bool(answer.get("refunded"))
+
+    def park_ci_pending(
+        self,
+        *,
+        code: str,
+        head: str,
+        pull_request: int,
+        pending: Sequence[str],
+        max_wakes: int,
+        fallback_seconds: int,
+        counter: str = "wakes",
+        ci_clock: bool = True,
+    ) -> bool:
+        """A merge step's CI wait. The counter, its bound, the CI clock and
+        the fallback are swarm-api's, chosen from `code` exactly as the merge
+        step chooses them (`attemptstate._park_payload`)."""
+        answer = self._park(
+            ParkReason.CI_PENDING, detail=None, uploads=None,
+            ci={"code": code, "head": head, "pull_request": int(pull_request),
+                "pending": [str(name) for name in pending]},
+        )
+        return bool(answer.get("refunded"))
+
+    def park_human_required(
+        self,
+        *,
+        detail: dict[str, Any] | None = None,
+        uploads: list[Any] | None = None,
+    ) -> tuple[bool, bool]:
+        """`handoff.park_human_required`'s park, as one route call: whether the
+        attempt was refunded, and whether a person's return re-queued the task
+        READY instead of parking it (LB-RETURN; swarm-api reads the mark)."""
+        answer = self._park(ParkReason.HUMAN_REQUIRED, detail=detail, uploads=uploads)
+        view = answer.get("task") if isinstance(answer.get("task"), Mapping) else {}
+        return bool(answer.get("refunded")), view.get("state") == TaskState.READY.value
+
+    def finish(
+        self,
+        *,
+        state: TaskState,
+        exit_code: int | None,
+        error: str | None = None,
+        result_summary: dict[str, Any] | None = None,
+        end_cause: EndCause | None = None,
+    ) -> None:
+        """`state/finish`: the terminal state, the attempt's end, the event and
+        the release in ONE fenced transaction; `FencedWriteRefused` with
+        nothing written for a superseded attempt."""
+        if state not in TERMINAL_STATES:
+            raise ControlPlaneError(f"{state.value} is not terminal")
+        body: dict[str, Any] = {
+            "request_id": new_request_id(),
+            "state": state.value,
+            "exit_code": exit_code,
+            "error": _bounded_error(error),
+            "end_cause": end_cause.value if end_cause is not None else None,
+        }
+        if result_summary is not None:
+            body["result_summary"] = self._storable_summary(result_summary)
+        self._post("finish", body, call=None)
+        self._lease_released = True
+        self._announce_finished(state)
+
+    def fail_retryably(
+        self,
+        *,
+        exit_code: int | None,
+        error: str,
+        cause: str,
+        result_summary: dict[str, Any] | None = None,
+        retry_delay_seconds: int = 0,
+        detail: dict[str, Any] | None = None,
+        end_cause: EndCause | None = None,
+    ) -> TaskState:
+        """`state/retry`: CANCELLED, FAILED or READY, decided by swarm-api in
+        one fenced transaction from the document (`models.retries_exhausted`).
+        `max_attempts` is the stored value, which only the control plane can
+        write once the role is removed; until then the pinned, verified one
+        (#346) is the direct path's guard and not this one's."""
+        body: dict[str, Any] = {
+            "request_id": new_request_id(),
+            "exit_code": exit_code,
+            "error": _bounded_error(error) or "",
+            "cause": _route_reason(cause),
+            "retry_delay_seconds": max(0, min(int(retry_delay_seconds), 86_400)),
+            "detail": dict(detail or {}),
+            "end_cause": end_cause.value if end_cause is not None else None,
+        }
+        if result_summary is not None:
+            body["result_summary"] = self._storable_summary(result_summary)
+        answer = self._post("retry", body, call=None)
+        self._lease_released = True
+        view = answer.get("task") if isinstance(answer.get("task"), Mapping) else {}
+        target = _as_state(view.get("state"))
         if target is not TaskState.READY:
             self._announce_finished(target)
         return target

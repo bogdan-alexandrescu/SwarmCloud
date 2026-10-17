@@ -104,15 +104,17 @@ from swarm_common.config import Settings
 from swarm_common.logging_setup import configure_logging
 
 from . import hardening, startup
+from .children import ChildApi
 from .config import WorkerConfig
-from .control import BrokerQuotaReporter, ControlPlane
-from .errors import ConfigError, ExitCode
+from .control import BrokerQuotaReporter, ControlPlane, RemoteControlPlane
+from .errors import ConfigError, ControlPlaneError, ExitCode
 from .finishwake import PubSubFinishAnnouncer
 from .lifecycle import Worker, WorkerDeps, _execution_name
 from .logs import build_logger
 from .metrics import build_metrics_exporter
 from .objectstore import LocalObjectStore, build_object_store
 from .secrets import SecretManagerClient
+from .statecall import StateCall
 
 
 def _firestore_client(settings: Settings):
@@ -120,6 +122,33 @@ def _firestore_client(settings: Settings):
 
     # The named `swarm` database, never `(default)`: this is a shared project.
     return firestore.Client(project=settings.project_id, database=settings.firestore_database)
+
+
+class _NoDirectFirestore:
+    """The `db` of a worker whose tenant is switched to the state routes.
+
+    That worker builds no Firestore client (§4.6, "no `firestore.Client` when
+    the switch is on"). A module that still reads Firestore directly --
+    `secrets.load_tenant`, `inputs`, `indexrun`, `graphstage`, the merge slot
+    and train, `jevkey`, the judge, until lane ISO-WORKER-READS moves each to
+    `statecall` -- is refused here by name, as a `ControlPlaneError`, before
+    any document is named: a tenant is switched only once every read has
+    moved (§6, order step 4).
+    """
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("__"):
+            raise AttributeError(name)
+        raise ControlPlaneError(
+            f"SWARM_STATE_VIA_API is on: this worker has no Firestore client, and a "
+            f"direct Firestore read or write (`db.{name}`) has not moved to the state routes"
+        )
+
+    def __repr__(self) -> str:
+        return "NO_DIRECT_FIRESTORE"
+
+
+NO_DIRECT_FIRESTORE = _NoDirectFirestore()
 
 
 def firestore_startup_call_options() -> dict[str, Any]:
@@ -179,23 +208,54 @@ def build_worker(
         store = build_object_store(
             bucket=config.artifact_bucket, project_id=config.project_id
         )
-    db = _firestore_client(settings)
-    control = ControlPlane(
-        db,
-        task_id=config.task_id,
-        attempt_id=config.attempt_id,
-        lease_id=config.lease_id,
-        tenant_id=config.tenant_id,
-        generation=config.generation,
-        logger=logger,
-        heartbeat_extension_seconds=settings.lease_timeout_seconds,
-        heartbeat_interval_seconds=config.heartbeat_interval_seconds,
-        startup_call_options=firestore_startup_call_options(),
-        quota_reporter=BrokerQuotaReporter.for_broker(
-            config.quota_broker_url, config.quota_broker_audience
-        ),
-        finish_announcer=PubSubFinishAnnouncer.for_topic(config.project_id, config.wake_topic),
+    quota_reporter = BrokerQuotaReporter.for_broker(
+        config.quota_broker_url, config.quota_broker_audience
     )
+    finish_announcer = PubSubFinishAnnouncer.for_topic(config.project_id, config.wake_topic)
+    child_api = None
+    control: ControlPlane
+    if config.state_via_api:
+        # THE TENANT IS SWITCHED (docs/design/tenant-settings-integrity.md §4):
+        # every state call goes through swarm-api's attempt-signed routes, and
+        # this process builds NO Firestore client, so nothing it runs -- the
+        # agent included -- is handed one by it. `state/open` is the first
+        # call the lifecycle makes (`validate_generation`).
+        db: Any = NO_DIRECT_FIRESTORE
+        child_api = ChildApi(config.swarm_api_url or "", audience=config.swarm_api_audience)
+        calls = StateCall(
+            child_api,
+            tenant_id=config.tenant_id,
+            task_id=config.task_id,
+            attempt_id=config.attempt_id,
+            lease_id=config.lease_id,
+            generation=config.generation,
+        )
+        control = RemoteControlPlane(
+            calls,
+            nonce=config.child_nonce or "",
+            memory_status=getattr(memory, "status", None),
+            logger=logger,
+            heartbeat_extension_seconds=settings.lease_timeout_seconds,
+            heartbeat_interval_seconds=config.heartbeat_interval_seconds,
+            quota_reporter=quota_reporter,
+            finish_announcer=finish_announcer,
+        )
+    else:
+        db = _firestore_client(settings)
+        control = ControlPlane(
+            db,
+            task_id=config.task_id,
+            attempt_id=config.attempt_id,
+            lease_id=config.lease_id,
+            tenant_id=config.tenant_id,
+            generation=config.generation,
+            logger=logger,
+            heartbeat_extension_seconds=settings.lease_timeout_seconds,
+            heartbeat_interval_seconds=config.heartbeat_interval_seconds,
+            startup_call_options=firestore_startup_call_options(),
+            quota_reporter=quota_reporter,
+            finish_announcer=finish_announcer,
+        )
     if phases is not None:
         phases.rebind(logger)
     deps = WorkerDeps(
@@ -214,6 +274,10 @@ def build_worker(
         # None when a caller built a worker without running the entrypoint's
         # `protect_memory`. The lifecycle reads None as FAILED: no git token.
         memory=memory,
+        # The state routes' transport, shared with the child path, whose key
+        # `state/open` registered. None on the direct path: the child path
+        # builds its own from SWARM_API_URL, as before.
+        child_api=child_api,
     )
     return Worker(config, deps)
 
