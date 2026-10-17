@@ -4509,6 +4509,14 @@ class Worker:
             return None
         destination = ws.work / REPO_DIR_NAME
         self._repo_url = url
+        # AN INDEX RUN'S CHECKPOINTS LEAVE ITS CHECKOUT OUT (INDEX-CKPT, owner
+        # decision 2026-10-17): the indexer only reads it, and a resumed
+        # attempt clones it again below, at the manifest's `clone_base`
+        # (`indexrun.resume_clone_ref`). Set before the first checkpoint, so
+        # a chain never changes what it covers. Empty for every other profile.
+        self.checkpoints.excluded_dirs = indexrun_mod.checkpoint_excludes(
+            self.cfg.runner_profile
+        )
         if destination.exists() and any(destination.iterdir()):
             # Restored from a checkpoint that already contains the clone. The
             # base commit is read back from the marker the FIRST attempt wrote,
@@ -4570,8 +4578,17 @@ class Worker:
         carried, carried_head = (
             ("", None) if pr_branch or continued or builds_on else self._carrier_parent(task, url)
         )
+        # A resumed index run whose checkpoint left the checkout out clones
+        # again at the commit its first attempt cloned, by the same call and
+        # with the token read the same way, wherever `repository_ref` has
+        # moved since: the restored graph describes that commit.
+        resumed_at = indexrun_mod.resume_clone_ref(
+            self.cfg.runner_profile,
+            self._restored_from.clone_base if self._restored_from else None,
+        )
         ref = (
-            pr_branch
+            resumed_at
+            or pr_branch
             or continued
             or (f"{self.cfg.git_branch_prefix}{builds_on}" if builds_on else None)
             or (f"{self.cfg.git_branch_prefix}{carried}" if carried else None)
@@ -4586,7 +4603,7 @@ class Worker:
         # pinned. `_upstream_base_pin` reads nothing for a root step or a
         # non-workflow task, which is therefore unchanged.
         pinned_sha: str | None = None
-        if not (pr_branch or continued or builds_on or carried):
+        if not (resumed_at or pr_branch or continued or builds_on or carried):
             pinned_sha, self._base_pin = self._upstream_base_pin(task)
         if carried:
             # THE PARENT'S RECORDED HEAD, NOT THE BRANCH'S TIP (#453). The tip
