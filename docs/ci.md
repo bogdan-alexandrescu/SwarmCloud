@@ -121,6 +121,9 @@ the fork clause back.
   `off` (`gh variable set SELF_HOSTED_CI --body off`) and every guarded job
   goes back to `ubuntu-24.04`. Use it when the pool is down or out of quota.
   Its default is `on`, and an unset variable also means the pool.
+  runner-fallback.yml now sets it both ways on its own, and reverts a
+  hand-set `off` once the pool serves again
+  ([below](#ci-falls-back-to-github-hosted-runners-on-its-own)).
 
 **Secrets on the VMs: the residual risk, accepted.** Two kinds of job hold a
 repository secret and run on the pool all the same:
@@ -159,6 +162,62 @@ aquasecurity/trivy-action: that action restores its binary from a cache at
 the VM has none). It has `gh`, `unzip`, docker with buildx, `jq` and
 `shellcheck`, passwordless sudo, and a writable tool cache. Anything else
 comes from a setup action.
+
+### CI falls back to GitHub-hosted runners on its own
+
+Measured 2026-10-17 (part of #1483): runner-dispatcher registers the pool's
+runners as the owner's GitHub user. When that user's quota ran out
+(`generate-jitconfig` 403 from 02:00 UTC) its sweep read
+`per_target: {swarmcloud: 0}`, and every pull request's checks stayed queued
+for hours until someone set the escape hatch by hand. The hatch is now set by
+`.github/workflows/runner-fallback.yml`, every 10 minutes and on dispatch:
+
+* **Off.** A job of another workflow that asked for `bogdan-ci` has been
+  queued more than 10 minutes, and no `bogdan-ci` job is running or started
+  in that time: the judge sets `SELF_HOSTED_CI=off`, then cancels every run
+  still queued on the pool and re-runs its cancelled jobs, so they land on
+  `ubuntu-24.04`. A run is re-run once: one whose latest attempt
+  `github-actions[bot]` started is not touched again. A job queued on a
+  hosted label never counts, because hosted saturation is why the pool
+  exists.
+* **On again.** While the hatch is off nothing asks the pool for a runner,
+  and the dispatcher starts one VM per queued job, so an empty runner list
+  says nothing. So the workflow's `probe` job, the one job that targets
+  `bogdan-ci` directly, runs only while the hatch is off. When every probe
+  since the flip has been picked up for at least 15 minutes, two probes or
+  more, the judge sets the variable back to `on`. It writes `on`, the
+  default, rather than deleting it, because the variable's `updated_at` is
+  the hysteresis clock. A probe still queued after 10 minutes breaks the
+  streak, and the judge cancels its run. The price: while the hatch is off,
+  each 10-minute tick asks the pool for one VM, the probe's, whether or not
+  the pool is back.
+* **Hysteresis.** The variable never changes more than once per 30 minutes.
+  A flip that is due but held is logged too.
+* **The thresholds** are `QUEUED_MINUTES`, `RECOVER_MINUTES` and
+  `HYSTERESIS_MINUTES` in the workflow's `env`.
+  `tests/unit/scripts/test_runner_fallback_workflow.py` pins them and runs
+  the judge's own decision function against fake GitHub answers.
+
+Every flip, held flip and re-run is a line in the run's job summary.
+
+**The judge never runs on the pool it judges.** It is pinned to
+`ubuntu-24.04` and does not follow the hatch, because a judge queued behind
+the outage could never report it. Hosted minutes are free on a public
+repository.
+
+**Two tokens.** The GITHUB_TOKEN carries `actions: write` and nothing else:
+it reads runs and jobs, cancels and re-runs. It has no `variables` scope, so
+the variable is read and written with the merge App's installation token,
+minted with `permission-variables: write` only. That token draws on the App's
+quota, not a person's. **Owner step, once:** give the merge App the
+repository permission *Variables: Read and write*
+([runbook](runbooks/merge-app.md)). Until then the token mint fails and the
+run is red. A red run is how a missing permission shows itself, and the hatch
+can still be set by hand.
+
+**A hand-set `off` does not stick.** The judge reverts it once the probes
+show 15 minutes of service. To pin the hatch, disable the workflow
+(`gh workflow disable runner-fallback.yml`) and enable it again afterwards.
 
 ## Why terraform does not plan on a pull request
 
