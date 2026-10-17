@@ -310,7 +310,8 @@ def test_other_states_and_park_reasons_are_not_visited(db, wake_client, github):
 def test_a_tenant_with_no_ci_wait_reads_no_token(db, wake_client, tenant_tokens):
     body = _tick(wake_client).json()
     assert body["report"] == {"visited": 0, "woken": 0, "waiting": 0, "skipped": 0,
-                              "failed": 0, "fixing": 0, "rerun": 0, "truncated": False}
+                              "failed": 0, "fixing": 0, "rerun": 0, "deferred": 0,
+                              "truncated": False}
     assert tenant_tokens.asked == []
 
 

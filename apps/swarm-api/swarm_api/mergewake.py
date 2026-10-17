@@ -32,6 +32,18 @@ tenant or the repository; the repository is the task's own
 `repository_url`, on github.com only, and the token is only ever sent to
 api.github.com by the writer.
 
+QUOTA FIRST, AND BACK OFF WHEN REFUSED (QUOTA-THROTTLE, #1483). Each read
+acts as its credential (`forge_limits.acting_as`): the owner's installation
+when it has one, else the tenant's `-git` slot. Before a park is read the
+ledger is asked: under `forge_quota_defer_percent` of the limit left, or
+inside a hold, the park is DEFERRED -- not read and not written, so it stays
+exactly as it was (a park holds no capacity, invariant 1) and is read on the
+first tick after the reset -- and one line names the credential, what is
+left and the reset. The first rate-limited answer of a tick stops the
+tenant's tick and holds it (`forge_limits.sweep_key`) until the reset GitHub
+named: on 2026-10-17 every park was asked again every minute while GitHub
+refused, ~25-50 refused calls a minute that kept the window at zero.
+
 WHAT IS WRITTEN. When nothing the park waits on is still pending -- the
 checks green or red, the head moved, the pull request closed or merged --
 `merge_wait.wake_requested_at` and `merge_wait.wake_reason`, in a
@@ -176,9 +188,12 @@ from .cifix import BRANCH_PREFIX, live_claim
 from .continuation import TASK_ID_RE
 from .errors import ApiError, Forbidden, NotFound, UpstreamUnavailable
 from .forgechecks import GREEN, RED, CiReading, evaluate, required_status_checks
+from . import forge_limits
 from .forge import GITHUB_API_HOST
-from .forge_installation import read_token
-from .forgewrite import PULLS_WRITE, ForgeWriteError, GitHubWriter, PullSnapshot
+from .forge_installation import read_credential
+from .forgewrite import (
+    PULLS_WRITE, ForgeRateLimited, ForgeWriteError, GitHubWriter, PullSnapshot,
+)
 from .issueci import (
     CI_READ_SECONDS,
     LOST_ROUND_SECONDS,
@@ -311,6 +326,9 @@ class WakeReport:
     #: Parks whose failing Actions jobs this tick asked GitHub to re-run
     #: instead of spending a round (SPEED-D2).
     rerun: int = 0
+    #: Due parks not read because their credential's GitHub quota is low or
+    #: held (QUOTA-THROTTLE): left as they were, read after the reset.
+    deferred: int = 0
     truncated: bool = False
     failures: list[dict[str, str]] = field(default_factory=list)
 
@@ -323,6 +341,7 @@ class WakeReport:
             "failed": self.failed,
             "fixing": self.fixing,
             "rerun": self.rerun,
+            "deferred": self.deferred,
             "truncated": self.truncated,
         }
 
@@ -1073,6 +1092,10 @@ def _pushed_by(ctx: Any, tenant_id: str, doc: Mapping[str, Any], head: str) -> s
     return None
 
 
+#: The merge wake's hold key in `forge_limits.QUOTAS` (`sweep_key`).
+MERGE_WAKE_SWEEP = "merge_wake"
+
+
 def _due(wait: Mapping[str, Any], now: datetime) -> bool:
     """Not read in the last CI_READ_SECONDS. A `checked_at` in the future is
     ignored: the document is tenant-writable, and that would stop the reads."""
@@ -1103,6 +1126,16 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
     token = ""
     reading_token = ""
     token_error = ""
+    percent = forge_limits.defer_percent(ctx)
+    sweep = forge_limits.sweep_key(MERGE_WAKE_SWEEP, tenant_id)
+    tenant_credential = forge_limits.tenant_credential(tenant_id)
+    # Held since a refused tick: no park of this tenant is read until the
+    # reset GitHub named.
+    halted = forge_limits.QUOTAS.held(sweep, now=now)
+    if halted is not None:
+        log.info("github quota: merge wake tenant=%s held until %s", tenant_id,
+                 halted.isoformat())
+    logged: set[str] = set()
     try:
         for doc in docs[:limit]:
             # The query filtered on it; asked again, so a task of another
@@ -1121,6 +1154,9 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
                 continue
             if not _due(wait, now):
                 report.skipped += 1
+                continue
+            if halted is not None:
+                report.deferred += 1
                 continue
             report.visited += 1
             target = _target(doc, wait)
@@ -1146,15 +1182,29 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
             # ~3,450 calls an hour of one person's quota. The tenant's token
             # stays for what follows a settled reading -- a re-run, a fix
             # round -- and for an owner with no installation.
-            reading_token = read_token(getattr(ctx, "forge_installations", None),
-                                       tenant_id, ref.owner, ref.repo) or token
+            reading_token, reading_credential = read_credential(
+                getattr(ctx, "forge_installations", None), tenant_id, ref.owner, ref.repo)
+            if not reading_token:
+                reading_token, reading_credential = token, tenant_credential
+            deferral = forge_limits.QUOTAS.defer(reading_credential, percent, now=now)
+            if deferral is not None:
+                # Not read and not written: the park waits as it was.
+                report.visited -= 1
+                report.deferred += 1
+                if deferral.credential not in logged:
+                    logged.add(deferral.credential)
+                    forge_limits.log_deferred("merge wake", tenant_id, deferral)
+                continue
             try:
-                read = _read(writer, ref, head, reading_token,
-                             update_pending=wait.get("code") == BRANCH_UPDATE_PENDING,
-                             queued=wait.get("code") == MERGE_QUEUED)
+                with forge_limits.acting_as(reading_credential):
+                    read = _read(writer, ref, head, reading_token,
+                                 update_pending=wait.get("code") == BRANCH_UPDATE_PENDING,
+                                 queued=wait.get("code") == MERGE_QUEUED)
                 reason = read.reason
                 if reason == "red":
-                    kind, reason = _on_red(ctx, db, tenant, doc, ref, head, read, token, now)
+                    with forge_limits.acting_as(tenant_credential):
+                        kind, reason = _on_red(ctx, db, tenant, doc, ref, head, read, token,
+                                               now)
                     if kind == _FIXING:
                         report.fixing += 1
                         continue
@@ -1162,8 +1212,9 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
                         report.rerun += 1
                         continue
                 elif reason == CONFLICTING:
-                    kind, reason = _on_conflict(ctx, db, tenant, doc, ref, head, read, token,
-                                                now)
+                    with forge_limits.acting_as(tenant_credential):
+                        kind, reason = _on_conflict(ctx, db, tenant, doc, ref, head, read,
+                                                    token, now)
                     if kind == _FIXING:
                         report.fixing += 1
                         continue
@@ -1177,6 +1228,13 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
                             task_id, tenant_id, code)
                 report.fail(task_id, code)
                 _record(db, tenant_id, task_id, head, {"checked_at": now})
+                if isinstance(exc, ForgeRateLimited):
+                    # Refused for quota: no other park of this tenant is
+                    # asked this tick, nor until the reset GitHub named.
+                    halted = exc.reset or now + forge_limits.DEFAULT_HOLD
+                    forge_limits.QUOTAS.hold(sweep, halted)
+                    log.warning("github quota: merge wake tenant=%s rate-limited; held until %s",
+                                tenant_id, halted.isoformat())
                 continue
             if reason is None:
                 report.waiting += 1
