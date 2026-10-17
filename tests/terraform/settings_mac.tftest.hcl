@@ -181,27 +181,25 @@ run "default_plan_adds_the_container_two_readers_and_the_env" {
   # main.tf and the values from the locals.
   assert {
     condition = (
-      contains(keys(local.scheduler_secret_env), "SWARM_SETTINGS_KEY")
-      && can(regex("secret_env\\s*=\\s*local\\.api_secret_env\\n", file("../../terraform/infra/main.tf")))
+      can(regex("secret_env\\s*=\\s*local\\.api_secret_env\\n", file("../../terraform/infra/main.tf")))
       && can(regex("secret_env\\s*=\\s*local\\.scheduler_secret_env\\n", file("../../terraform/infra/main.tf")))
     )
     error_message = "swarm-api's secret_env is local.api_secret_env and the scheduler's is local.scheduler_secret_env (main.tf)"
   }
 
   assert {
-    condition = alltrue([
-      for env in [local.api_secret_env, local.scheduler_secret_env] :
-      env.SWARM_SETTINGS_KEY.secret == "swarm-settings-key" && env.SWARM_SETTINGS_KEY.version == "latest"
-    ])
-    error_message = "both swarm-api and the scheduler read SWARM_SETTINGS_KEY from swarm-settings-key at version latest"
+    condition = (
+      !contains(keys(local.api_secret_env), "SWARM_SETTINGS_KEY")
+      && !contains(keys(local.scheduler_secret_env), "SWARM_SETTINGS_KEY")
+      && !contains(keys(local.api_secret_env), "SWARM_SETTINGS_KEY_PREVIOUS")
+      && !contains(keys(local.scheduler_secret_env), "SWARM_SETTINGS_KEY_PREVIOUS")
+    )
+    error_message = "while settings_mac_key_ready is false (the default) neither service references the key: the secret has no version yet"
   }
 
   assert {
-    condition = (
-      !contains(keys(local.api_secret_env), "SWARM_SETTINGS_KEY_PREVIOUS")
-      && !contains(keys(local.scheduler_secret_env), "SWARM_SETTINGS_KEY_PREVIOUS")
-    )
-    error_message = "outside a rotation no service carries SWARM_SETTINGS_KEY_PREVIOUS"
+    condition     = length(google_secret_manager_secret_iam_member.settings_mac_key_accessor) == 2
+    error_message = "the container and both accessor members exist even while the key is not ready"
   }
 
   assert {
@@ -219,6 +217,34 @@ run "default_plan_adds_the_container_two_readers_and_the_env" {
   }
 }
 
+run "a_ready_key_is_referenced_by_both_services_at_latest" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    settings_mac_key_ready = true
+  }
+
+  assert {
+    condition = alltrue([
+      for env in [local.api_secret_env, local.scheduler_secret_env] :
+      env.SWARM_SETTINGS_KEY.secret == "swarm-settings-key" && env.SWARM_SETTINGS_KEY.version == "latest"
+    ])
+    error_message = "both swarm-api and the scheduler read SWARM_SETTINGS_KEY from swarm-settings-key at version latest once the key is ready"
+  }
+
+  assert {
+    condition = (
+      !contains(keys(local.api_secret_env), "SWARM_SETTINGS_KEY_PREVIOUS")
+      && !contains(keys(local.scheduler_secret_env), "SWARM_SETTINGS_KEY_PREVIOUS")
+    )
+    error_message = "outside a rotation no service carries SWARM_SETTINGS_KEY_PREVIOUS"
+  }
+}
+
 run "one_cutover_list_reaches_both_services_and_a_rotation_both_verifiers" {
   command = plan
 
@@ -227,6 +253,7 @@ run "one_cutover_list_reaches_both_services_and_a_rotation_both_verifiers" {
   }
 
   variables {
+    settings_mac_key_ready            = true
     settings_mac_tenants              = ["eng", "smoke"]
     settings_mac_required             = true
     settings_mac_key_previous_version = "4"

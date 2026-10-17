@@ -18,9 +18,9 @@
 #     NOBODY ELSE: no tenant account, no human, no wildcard. A tenant identity
 #     that could read this key could sign a forged setting for any tenant,
 #     which is the whole attack this closes.
-#   * SWARM_SETTINGS_KEY (version latest) on both services, and, during a
-#     rotation only, SWARM_SETTINGS_KEY_PREVIOUS
-#     (var.settings_mac_key_previous_version).
+#   * SWARM_SETTINGS_KEY (version latest) on both services once
+#     var.settings_mac_key_ready is true, and, during a rotation only,
+#     SWARM_SETTINGS_KEY_PREVIOUS (var.settings_mac_key_previous_version).
 #   * ONE cutover list, var.settings_mac_tenants, rendered into both services
 #     as SETTINGS_MAC_TENANTS, so the signer and the verifiers can never
 #     disagree about which tenants are signed; and the scheduler's
@@ -29,13 +29,12 @@
 #     (ISO-WIRE) has merged.
 #
 # A CLOUD RUN REVISION THAT REFERENCES A SECRET WITH NO VERSION FAILS TO
-# START. Unlike swarm-child-key, the reference here is not behind a switch
-# (owner decision: the key is set on both services), so the apply that
-# creates this secret is also the one that rolls both services onto it. The
-# secret and its two members are created first (the services depend on the
-# secret's id); the new revisions then fail to become ready and the apply
-# fails while the previous revisions keep serving. What finishes it:
-# `scripts/create-secrets.sh --settings-mac-key`, then apply again.
+# START, so the reference is behind var.settings_mac_key_ready (owner
+# decision 2026-10-17, "Gate it"), as swarm-child-key's is behind
+# enable_child_tasks. The first apply creates the secret container, the two
+# members and the cutover env, and no service references the key. Then:
+# `scripts/create-secrets.sh --settings-mac-key`, set
+# `settings_mac_key_ready = true`, apply again.
 
 resource "google_secret_manager_secret" "settings_mac_key" {
   project   = var.project_id
@@ -79,7 +78,7 @@ locals {
   # into api_secret_env (locals.tf) and the scheduler's secret_env (main.tf).
   # Both verify, so both get the previous version during a rotation: a value
   # signed a moment before the rotation must still verify after it.
-  settings_mac_secret_env = merge(
+  settings_mac_secret_env = !var.settings_mac_key_ready ? {} : merge(
     {
       SWARM_SETTINGS_KEY = {
         secret  = google_secret_manager_secret.settings_mac_key.secret_id

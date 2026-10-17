@@ -983,6 +983,21 @@ variable "settings_mac_required" {
   default     = false
 }
 
+variable "settings_mac_key_ready" {
+  description = <<-EOT
+    Whether swarm-settings-key has a version, so swarm-api and the scheduler
+    may reference it as SWARM_SETTINGS_KEY (and, in a rotation,
+    SWARM_SETTINGS_KEY_PREVIOUS). False by default because a Cloud Run
+    revision that references a secret with no version fails to start, and the
+    secret has none until `scripts/create-secrets.sh --settings-mac-key` runs,
+    which needs the container this root creates; the first apply would
+    otherwise take both services down. Set it true in the apply after that
+    script has run (owner decision on #1457, 2026-10-17).
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "settings_mac_key_previous_version" {
   description = <<-EOT
     During a swarm-settings-key rotation only: the version NUMBER the new one
