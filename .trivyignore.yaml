@@ -75,3 +75,26 @@ vulnerabilities:
   - id: CVE-2026-97031
     statement: "Go stdlib crypto/tls DoS (ECH extensions) inside the same vendor-built Go binaries; needs vendor rebuilds."
     expired_at: 2026-10-24
+
+  # golang.org/x/text v0.40.0 inside Google's gke-gcloud-auth-plugin, which the
+  # google-cloud-cli-gke-gcloud-auth-plugin .deb ships prebuilt (agent-runtime-base,
+  # so -browser and -indexer too). Every release of the base image was refused on
+  # this id alone from main's 18:53Z release on 2026-10-17 with no image change
+  # since the 18:03Z one that passed: the DB learned it, the image did not move.
+  # We cannot pin our way out: 589.0.0, the newest plugin in Google's apt index
+  # on 2026-10-17, still carries x/text v0.40.0, and kubectl cannot authenticate
+  # to GKE without the plugin.
+  #
+  # What bounds it, measured rather than assumed: the bug is a panic in the
+  # Nickname profile of golang.org/x/text/secure/precis (GO-2026-6629), and that
+  # package is not linked into the plugin at all -- `strings` over the 587.0.0
+  # and 589.0.0 binaries finds x/text's secure/bidirule, unicode/bidi and
+  # unicode/norm and no secure/precis. Scoped to the plugin's path so the same
+  # id anywhere else still fails. Revisit by bumping GCLOUD_VERSION (and the
+  # pool ids and checksums) in images/agent-runtime-base/Dockerfile once
+  # Google's index carries a plugin built with x/text >= 0.41.0.
+  - id: CVE-2026-56851
+    paths:
+      - "usr/lib/google-cloud-sdk/bin/gke-gcloud-auth-plugin"
+    statement: "x/text precis Nickname-profile panic in Google's prebuilt gke-gcloud-auth-plugin; precis is not linked into it, and no fixed plugin is published."
+    expired_at: 2026-10-31

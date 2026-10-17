@@ -253,6 +253,7 @@ def _main(argv, api, stdin, monkeypatch, capsys):
     ["key", "set", "typesafe", "--api-key", "<key>"],
     ["key", "set", "typesafe", "--key=<key>"],
     ["key", "set", "<key>"],
+    ["key", "set", "-<key>"],
     ["key", "set", "--tenant", "typesafe", "<key>"],
 ])
 def test_a_key_on_the_command_line_is_refused_unsent_and_unrepeated(shape, monkeypatch, capsys):
