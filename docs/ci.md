@@ -121,6 +121,9 @@ the fork clause back.
   `off` (`gh variable set SELF_HOSTED_CI --body off`) and every guarded job
   goes back to `ubuntu-24.04`. Use it when the pool is down or out of quota.
   Its default is `on`, and an unset variable also means the pool.
+  runner-fallback.yml now sets it both ways on its own, and reverts a
+  hand-set `off` once the pool serves again
+  ([below](#ci-falls-back-to-github-hosted-runners-on-its-own)).
 
 **Secrets on the VMs: the residual risk, accepted.** Two kinds of job hold a
 repository secret and run on the pool all the same:
@@ -185,7 +188,9 @@ for hours until someone set the escape hatch by hand. The hatch is now set by
   more, the judge sets the variable back to `on`. It writes `on`, the
   default, rather than deleting it, because the variable's `updated_at` is
   the hysteresis clock. A probe still queued after 10 minutes breaks the
-  streak, and the judge cancels its run.
+  streak, and the judge cancels its run. The price: while the hatch is off,
+  each 10-minute tick asks the pool for one VM, the probe's, whether or not
+  the pool is back.
 * **Hysteresis.** The variable never changes more than once per 30 minutes.
   A flip that is due but held is logged too.
 * **The thresholds** are `QUEUED_MINUTES`, `RECOVER_MINUTES` and
