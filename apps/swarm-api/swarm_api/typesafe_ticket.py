@@ -18,6 +18,14 @@ personal key, else the tenant's. The request names no tenant, no secret and
 no provider: the tenant is the fenced task's, so an attempt of tenant A can
 never be handed a ticket naming tenant B's key.
 
+A FORGED CHOICE MINTS NOTHING (#1457). Any tenant's worker can write
+`workspace_settings/<B>.judgment_backend` directly, so the choice is read
+through `JudgmentSettings.read`, which, for a tenant cut over in
+SETTINGS_MAC_TENANTS, acts on it only when swarm-api's MAC over it verifies
+(`swarm_api.judgment.trusted_block`). An unsigned or badly signed `typesafe`
+reads as the default, `internal-jev`, and the mint is refused
+`typesafe_backend_off` before any key is looked up.
+
 THE TICKET names that secret by id and version, with the attempt, the tenant,
 the generation, the scope and a short expiry, MAC'd under `swarm-typesafe-fwd-key`
 with its own domain. It carries NO VALUE: swarm-api never reads one here, and
@@ -296,12 +304,15 @@ class TypesafeTicketService:
                 "requested; no TypeSafe ticket was minted"), Conflict)
 
         # The fence held, so the task's tenant IS the attempt's (_lease_is_live).
+        # The backend is the SIGNED choice for a tenant cut over: a worker's
+        # forged `typesafe` reads as the default and is refused here.
         tenant_id = attempt.tenant_id
         backend = JudgmentSettings(self._db, now=self._now).read(tenant_id)["judgment_backend"]
         if backend != TYPESAFE_BACKEND:
             raise _refuse(TypesafeBackendOff(
-                "this workspace's judgment backend is not TypeSafe, so its judgments are never "
-                "sent to TypeSafe; no TypeSafe ticket was minted"), Forbidden)
+                "this workspace's judgment backend is not TypeSafe (or its choice does not carry "
+                "swarm-api's signature), so its judgments are never sent to TypeSafe; no "
+                "TypeSafe ticket was minted"), Forbidden)
         scope, secret_id, version = self._key(tenant_id, task.get("submitted_by"))
 
         seconds = ticket_seconds(self._s("typesafe_ticket_seconds", 300))

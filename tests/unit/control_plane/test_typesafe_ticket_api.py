@@ -279,6 +279,59 @@ def test_a_workspace_that_did_not_choose_typesafe_is_refused(ready, ldb, backend
     assert "ticket" not in response.json()
 
 
+def _cut_over(monkeypatch) -> str:
+    """eng's settings are verified (SETTINGS_MAC_TENANTS) under a runtime key."""
+    from swarm_api import judgment
+
+    key = "settings-" + secrets.token_hex(24)
+    monkeypatch.setenv(judgment.SETTINGS_KEY_ENV, key)
+    monkeypatch.setenv(judgment.SETTINGS_MAC_TENANTS_ENV, "eng")
+    return key
+
+
+@pytest.mark.parametrize("mac", [None, "bad", "other-tenant"])
+def test_a_forged_typesafe_choice_mints_nothing_once_cut_over(ready, ldb, monkeypatch, mac):
+    # #1457: any tenant's worker can write workspace_settings/eng directly.
+    from swarm_api import judgment
+
+    key = _cut_over(monkeypatch)
+    client, attempt = ready
+    stored = ldb.docs["workspace_settings/eng"]
+    assert stored["judgment_backend"] == "typesafe" and "mac" not in stored
+    if mac == "bad":
+        stored["mac"] = {"v": 1, "key": judgment.key_id(key),
+                         "sig": base64.b64encode(secrets.token_bytes(32)).decode()}
+    elif mac == "other-tenant":
+        # A MAC swarm-api really made, for research's identical choice.
+        stored["mac"] = judgment.sign_block(key, tenant_id="research", block="top",
+                                            fields={"judgment_backend": "typesafe"})
+    response = ask(client, attempt)
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == "typesafe_backend_off"
+    assert "ticket" not in response.json()
+
+
+def test_a_signed_typesafe_choice_still_mints_once_cut_over(ready, ldb, monkeypatch):
+    from swarm_api import judgment
+
+    key = _cut_over(monkeypatch)
+    client, attempt = ready
+    ldb.docs["workspace_settings/eng"]["mac"] = judgment.sign_block(
+        key, tenant_id="eng", block="top", fields={"judgment_backend": "typesafe"})
+    response = ask(client, attempt)
+    assert response.status_code == 201, response.text
+    assert verify_typesafe_ticket([FWD_KEY], response.json()["ticket"], now=time.time())
+
+
+def test_before_the_cutover_an_unsigned_choice_mints_as_it_did(ready, monkeypatch):
+    from swarm_api import judgment
+
+    monkeypatch.setenv(judgment.SETTINGS_KEY_ENV, "settings-" + secrets.token_hex(24))
+    monkeypatch.delenv(judgment.SETTINGS_MAC_TENANTS_ENV, raising=False)
+    client, attempt = ready
+    assert ask(client, attempt).status_code == 201
+
+
 def test_a_stale_generation_is_fenced_and_nothing_is_minted(ready):
     client, attempt = ready
     response = ask(client, attempt, generation=1)
