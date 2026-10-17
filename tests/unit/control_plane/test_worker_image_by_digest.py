@@ -203,6 +203,8 @@ class ExistingJobsClient:
         # MEMORY tmpfs sized for claude-code's class), so these tests see only
         # the image differ. Without them, the dispatcher's workspace check
         # (gap audit D7) would rightly rebuild the job as a Preview-disk one.
+        # Likewise its service account, the tenant's derived one: a job with
+        # another is rebuilt as its own tenant's (#1457).
         workspace = run_v2.Volume(
             name="workspace",
             empty_dir=run_v2.EmptyDirVolumeSource(
@@ -215,7 +217,8 @@ class ExistingJobsClient:
             launch_stage=launch_stage_pb2.LaunchStage.GA,
             template=run_v2.ExecutionTemplate(
                 template=run_v2.TaskTemplate(
-                    containers=[run_v2.Container(image=image)], volumes=[workspace]
+                    containers=[run_v2.Container(image=image)], volumes=[workspace],
+                    service_account=f"swarm-agent-worker-eng@{PROJECT}.iam.gserviceaccount.com",
                 )
             ),
         )
