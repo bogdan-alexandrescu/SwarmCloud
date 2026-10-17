@@ -460,6 +460,7 @@ SECRETS_ON_VMS = "owner decision 2026-10-14: secrets on ephemeral self-hosted VM
 GUARDED_SECRETS: dict[str, tuple[frozenset[str], str]] = {
     "auto-merge.yml:enable": (frozenset({"MERGE_APP_PRIVATE_KEY"}), SECRETS_ON_VMS),
     "auto-merge.yml:disable": (frozenset({"MERGE_APP_PRIVATE_KEY"}), SECRETS_ON_VMS),
+    "auto-merge.yml:ready-on-green": (frozenset({"MERGE_APP_PRIVATE_KEY"}), SECRETS_ON_VMS),
     "merge-train.yml:tick": (frozenset({"MERGE_APP_PRIVATE_KEY"}), SECRETS_ON_VMS),
     "accept.yml:sandbox": (frozenset({"SWARM_SANDBOX_GITHUB_TOKEN"}), SECRETS_ON_VMS),
     "accept.yml:sandbox-results": (frozenset({"SWARM_SANDBOX_GITHUB_TOKEN"}), SECRETS_ON_VMS),
