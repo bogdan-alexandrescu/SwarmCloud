@@ -817,9 +817,9 @@ class ParkReason(str, Enum):
 UI's exhaustive tables hold every restatement to the enum:
 `apps/swarm-ui/src/types.ts` (the union, `PARK_REASONS`,
 `PARK_NEEDS_A_PERSON`, `REASON_COPY`),
-`apps/swarm-ui/src/components/StatePill.tsx` (`PARK_WORD`),
-`apps/swarm-mcp/swarm_mcp/progress.py` (`_PARKED_BECAUSE`) and
-`apps/swarm-mcp/swarm_mcp/compact.py` (`_WAITS_FOR`).
+`apps/swarm-ui/src/components/StatePill.tsx` (`export const PARK_WORD`),
+`apps/swarm-mcp/swarm_mcp/progress.py::_PARKED_BECAUSE` and
+`apps/swarm-mcp/swarm_mcp/compact.py::_WAITS_FOR`.
 
 **Rollback.** Delete the member and its restatements, but only when no task is
 parked under it, because such a document would decode to an unknown reason.
