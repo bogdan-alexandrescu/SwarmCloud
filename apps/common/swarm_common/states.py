@@ -119,6 +119,54 @@ def assert_transition(frm: TaskState, to: TaskState) -> None:
         raise InvalidTransition(frm, to)
 
 
+#: The edges a tenant worker may ask swarm-api to apply, each also legal in
+#: _ALLOWED. Everything else is the scheduler's, the reconciler's or a person's.
+#:
+#: Contract request 85 (docs/design/tenant-settings-integrity.md §5 request A,
+#: #1457), accepted by the owner 2026-10-17 on PR 1464. The worker's state
+#: routes (design B) refuse every edge outside this set, so an agent holding
+#: its worker's token cannot admit, requeue or dead-letter a task. It is
+#: exactly the edges `agent_worker/control.py` and `handoff.py` write:
+#:
+#: * the walk LEASED -> DISPATCHED -> STARTING -> RUNNING;
+#: * FAILED (the crash handler) and CANCELLED (a cancel read before the runner
+#:   started) from any of the three pre-running states;
+#: * from RUNNING: a park, READY (a retryable failure, or the hand-off's
+#:   "person returned control"), and the terminal SUCCEEDED, FAILED, CANCELLED.
+#:
+#: Not in it: PARKED -> READY, which only a person makes (swarm-api's
+#: `human-ready`); STARTING -> READY, which no worker path writes (a worker
+#: that cannot start leaves the requeue to the reconciler); and the edges into
+#: PARKED, SUCCEEDED or DEAD_LETTERED that `_ALLOWED` refuses.
+WORKER_TRANSITIONS: frozenset[tuple[TaskState, TaskState]] = frozenset(
+    {
+        (TaskState.LEASED, TaskState.DISPATCHED),
+        (TaskState.DISPATCHED, TaskState.STARTING),
+        (TaskState.STARTING, TaskState.RUNNING),
+        *(
+            (s, t)
+            for s in (TaskState.LEASED, TaskState.DISPATCHED, TaskState.STARTING)
+            for t in (TaskState.FAILED, TaskState.CANCELLED)
+        ),
+        *(
+            (TaskState.RUNNING, t)
+            for t in (
+                TaskState.PARKED,
+                TaskState.READY,
+                TaskState.SUCCEEDED,
+                TaskState.FAILED,
+                TaskState.CANCELLED,
+            )
+        ),
+    }
+)
+
+
+def worker_may_transition(frm: TaskState, to: TaskState) -> bool:
+    """Whether a tenant worker may ask for `frm -> to` (contract request 85)."""
+    return (frm, to) in WORKER_TRANSITIONS and can_transition(frm, to)
+
+
 def holds_capacity(state: TaskState) -> bool:
     return state in CONCURRENCY_STATES
 

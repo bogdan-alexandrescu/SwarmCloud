@@ -2379,13 +2379,25 @@ class Worker:
         # §3.2 step 3). swarm-api refuses a registration once it is RUNNING.
         # ONE STARTING event: the walk to STARTING writes none, and the
         # registration's note (no child path, and why) is its detail.
-        if self.cfg.child_nonce:
-            moved = self.control.advance_to_starting()
-            notes: list[dict[str, Any]] = []
-            self.children.register(notes.append)
-            if moved or notes:
-                self.control.emit(EventType.STARTING, notes[-1] if notes else None)
-        self.control.advance_to_running()
+        notes: list[dict[str, Any]] = []
+        if getattr(self.control, "state_via_api", False):
+            # THE TENANT IS SWITCHED TO THE STATE ROUTES (#1457, §4.3). The
+            # key was generated and registered by `state/open`, the first call
+            # this attempt made (STEP 1), so the child path takes that key
+            # rather than spending the nonce again. swarm-api writes each
+            # step's event with its transition, and the ONE STARTING event
+            # carries the registration's note, as below.
+            self.children.adopt(
+                self.control.attempt_key, self.control.registration, notes.append
+            )
+            self.control.advance_to_running(starting_detail=notes[-1] if notes else None)
+        else:
+            if self.cfg.child_nonce:
+                moved = self.control.advance_to_starting()
+                self.children.register(notes.append)
+                if moved or notes:
+                    self.control.emit(EventType.STARTING, notes[-1] if notes else None)
+            self.control.advance_to_running()
         # STEP 2b: the live path (live-browser §3.3, §5.4.2), once RUNNING --
         # the live-session route checks the fence on RUNNING -- and long before
         # the agent exists, so the gate's one registration is this worker's.
