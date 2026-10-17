@@ -16,6 +16,19 @@ variable "scope_firestore_to_database" {
   default = false
 }
 
+# DEFAULTS TRUE: every tenant's worker keeps swarmTenantWorkerFirestore on the
+# database, exactly as before this switch existed, so adding it changes no plan.
+# False creates no worker_firestore binding for any tenant -- the last step of
+# #1457's design B, taken by the owner after every tenant's worker reaches its
+# state through swarm-api (main.tf, "Control-plane state", says why it is safe
+# only then). Never set false in a tfvars ahead of that cutover.
+variable "worker_firestore_access" {
+  description = "Grant each tenant's worker the swarmTenantWorkerFirestore role on the database. True is today's grant; false removes it for every tenant (after the design-B cutover)."
+  type        = bool
+  default     = true
+  nullable    = false
+}
+
 variable "artifact_bucket" {
   type = string
 }

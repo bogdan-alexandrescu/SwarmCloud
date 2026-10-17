@@ -294,8 +294,19 @@ module "cloud_run" {
       service_account_email = module.iam.service_account_emails["swarm-api"]
       image                 = local.image["swarm-api"]
       max_instances         = var.service_max_instances["swarm-api"]
-      cpu                   = "1"
-      memory                = "1Gi"
+      # TWO WARM INSTANCES, ALWAYS (owner decision Q6(a), 2026-10-17, #1457).
+      # Under design B every worker's heartbeat, checkpoint, park and release
+      # goes through swarm-api (docs/design/tenant-settings-integrity.md), so a
+      # cold start or a single instance's restart is a gap in every running
+      # attempt's lease renewal, and a gap past the 120 s lease timeout gets
+      # live attempts fenced. Two, not one, so one instance's replacement never
+      # leaves none; the 30 s / 120 s timings stay as they are. Fixed cost: about
+      # $105 a month per environment at list price (1 vCPU, 1 GiB, CPU always
+      # allocated, ~$53 an instance). A floor, not demand: no QUEUED task adds
+      # to it (invariant 1). Every other service still scales to zero.
+      min_instances = 2
+      cpu           = "1"
+      memory        = "1Gi"
       # The ONLY control-plane service that calls another one. It proxies every
       # account-pool request to the quota broker, whose ingress is
       # internal-and-cloud-load-balancing; under PRIVATE_RANGES_ONLY the
