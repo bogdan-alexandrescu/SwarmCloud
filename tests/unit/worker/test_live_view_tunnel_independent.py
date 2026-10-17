@@ -338,8 +338,8 @@ def test_a_resolver_failure_names_its_eai_code_and_never_the_host():
     from agent_worker.livegate import tunnel
 
     again = socket.gaierror(socket.EAI_AGAIN, "Temporary failure in name resolution swarm-live.example")
-    assert tunnel.unreachable_cause(again) == "gaierror(EAI_AGAIN)"
+    assert tunnel.unreachable_cause(again) == "gaierror(EAI_AGAIN, resolver_busy)"
     noname = socket.gaierror(socket.EAI_NONAME, "Name or service not known")
-    assert tunnel.unreachable_cause(noname) == "gaierror(EAI_NONAME)"
+    assert tunnel.unreachable_cause(noname) == "gaierror(EAI_NONAME, no_address)"
     assert tunnel.unreachable_cause(ConnectionRefusedError(111, "refused")) == "ConnectionRefusedError"
     assert "swarm-live" not in tunnel.unreachable_cause(again)
