@@ -31,9 +31,15 @@ runs as a program, `python3 <this file>`, from any shell inside such a pod.
 
 OPT-IN, either of:
   * `SWARM_ACCEPT_TENANT_ISOLATION=1` in the environment;
-  * this file named on pytest's command line (the generic runner's argv names
-    it by absolute path). A pytest over a directory that holds it -- a root
-    `pytest` in the sandbox clone -- does not opt in, and skips it.
+  * pytest STARTED IN THIS FILE'S OWN DIRECTORY with this file named on its
+    command line: what the acceptance group's generic task does
+    (`working_directory` this directory, `input.paths` this file). The
+    generic runner builds its child's environment and passes nothing of the
+    task's input, so the variable cannot reach it; the directory can.
+    Naming the file alone is not enough: the repository's own checks name
+    every changed test file from the repository root, and a pod running them
+    would otherwise measure (and fail on) the live database. A pytest over a
+    directory that holds it does not opt in either.
 Run as a program it is always explicit.
 
 IT WRITES NOTHING, WHATEVER IAM ANSWERS. Today the role allows both writes, so
@@ -368,10 +374,12 @@ def main(argv: list[str] | None = None) -> int:
 # --------------------------------------------------------------------------
 
 def opted_in(environ: Mapping[str, str], args: list[str], cwd: Path) -> bool:
-    """The env switch, or this file named on pytest's command line."""
+    """The env switch, or pytest started in this file's directory naming this file."""
     if environ.get(OPT_IN_ENV) == "1":
         return True
     here = Path(__file__).resolve()
+    if cwd.resolve() != here.parent:
+        return False
     for arg in args:
         named = Path(arg.split("::", 1)[0])
         if (named if named.is_absolute() else cwd / named).resolve() == here:
@@ -386,8 +394,8 @@ if pytest is not None:
         config = request.config
         if not opted_in(os.environ, list(config.args), Path(config.invocation_params.dir)):
             pytest.skip(
-                f"tenant-isolation probe: set {OPT_IN_ENV}=1 or name this file on pytest's "
-                "command line. It is red until ISO-IAM removes the worker's Firestore role "
+                f"tenant-isolation probe: set {OPT_IN_ENV}=1, or run pytest in this file's "
+                "directory naming this file. It is red until ISO-IAM removes the worker's Firestore role "
                 "(docs/design/tenant-settings-integrity.md §6)"
             )
         try:
