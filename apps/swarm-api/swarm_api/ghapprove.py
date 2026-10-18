@@ -42,6 +42,12 @@ author (docs/schedules.md §0.1, check 6). A comment is accepted only when:
   * it has not been edited (`updated_at == created_at`);
   * the member is still a member of the item's tenant, asked of the
     directory now;
+  * the member's role in that workspace is `member` or above, read fresh
+    (docs/design/workspace-roles.md §4.8, `approvals.require_decider`): a
+    `viewer`'s comment is answered with `role_member_required` once that
+    code's switch is on, and goes through with a report-only log line while
+    it is off. The reply names the code and never the workspace's admins:
+    a GitHub thread is not the roster every member reads;
   * its digest is the item's current digest;
   * the member satisfies §4.6 for the item: the hold's approvers, the
     schedule's approvers and the second-person rule.
@@ -80,7 +86,7 @@ from urllib.parse import quote
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from . import approvals, schedaudit
-from .errors import ApiError, NotFound, UpstreamUnavailable
+from .errors import ApiError, NotFound, RoleMemberRequired, RoleUnavailable, UpstreamUnavailable
 from .forgeapp import ACTIVE, CONNECTIONS
 from .forgewrite import ForgeWriteNotFound, GitHubWriter
 from .issuecomments import APPROVE_COMMAND, neutralise_mentions
@@ -336,6 +342,7 @@ def _verify(ctx: Any, item: Item, comment: Comment, digest: str, own_logins: set
         raise Refused("the member this GitHub account belongs to is no longer a member of the tenant") from None
     except UpstreamUnavailable:
         raise Refused("membership could not be asked of the directory", reply=False, retry=True) from None
+    _require_member(ctx, auth)
     if digest != item.digest:
         raise Refused(f"its digest is not the current one; to approve what waits now, comment "
                       f"`{command_text(item.digest)}`")
@@ -344,6 +351,22 @@ def _verify(ctx: Any, item: Item, comment: Comment, digest: str, own_logins: set
         raise Refused("a one-person workspace approves its own held run only in the console, with a typed "
                       "confirmation naming the matched paths")
     return auth
+
+
+def _require_member(ctx: Any, auth: Any) -> None:
+    """The role floor the console's approve asks (`approvals.require_decider`),
+    for the member the comment resolved to. The reply is constant text with
+    the code in it: the 403's own message names up to three admins by
+    address, which belongs in the console, not on a forge thread."""
+    try:
+        approvals.require_decider(ctx, auth)
+    except RoleMemberRequired as exc:
+        role = (exc.detail or {}).get("role") or "below member"
+        raise Refused(f"{RoleMemberRequired.code}: the member this GitHub account belongs to holds the "
+                      f"role {role} in this workspace, and only a member or above approves; ask an admin "
+                      "of the workspace to change it") from None
+    except RoleUnavailable:
+        raise Refused("the member's role could not be read now", reply=False, retry=True) from None
 
 
 def _audit_detail(item: Item, comment: Comment, email: str) -> dict[str, Any]:

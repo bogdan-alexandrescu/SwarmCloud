@@ -63,7 +63,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from swarm_common.admission import _snapshot
 from swarm_common.states import ParkReason, TaskState
 
-from . import refusals, schedaudit, schedulefire, schedules, scheduletypes
+from . import refusals, roles, schedaudit, schedulefire, schedules, scheduletypes
 from .errors import NotFound
 from .issueruns import (
     APPROVERS_OWNER_ONLY,
@@ -477,6 +477,26 @@ def hold_blocks(hold: Mapping[str, Any] | None) -> bool:
     if not hold:
         return False
     return hold_always_enforced(hold) or refusals.enforced(HoldApproverRequired.code)
+
+
+def require_decider(ctx: Any, auth: Any) -> None:
+    """The role floor under every decision (docs/design/workspace-roles.md
+    §4.1, §4.8): the caller holds `member` or above in the selected
+    workspace, or 403 `role_member_required` through its switch (off:
+    the decision goes ahead and the log names the refusal it would have
+    made).
+
+    Asked BEFORE anything is read or moved, so a refused item stays pending,
+    and read FRESH, past the instance's role cache: a narrowing made on
+    another instance a moment ago already holds here. A platform admin is
+    `admin` in a group workspace (Q5) and passes, and every narrower rule
+    -- a gate's `approvers` list, a hold, the last editor, the `spec` rule
+    -- is still checked after this, on top of it: the role is the floor,
+    never the permission.
+    """
+    store = getattr(ctx, "roles", None)
+    if store is not None:
+        store.require(auth, roles.MEMBER, fresh=True)
 
 
 def check_gate_approver(ctx: Any, tenant_id: str, approvers: Any, *, email: str, is_owner: bool,

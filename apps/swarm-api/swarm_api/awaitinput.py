@@ -23,7 +23,16 @@ its worker -- can answer nothing. Membership is asked of the directory AGAIN
 for this request, past the cache (`Authenticator.is_tenant_member(fresh=True)`),
 because a wait of up to a day must not outlive a removal from the group by
 more than one Cloud Identity round trip. A failed lookup is a 503 and
-nothing is written. There is no admin bypass: `is_admin` is never read.
+nothing is written.
+
+A PLATFORM ADMIN, AND THE ROLE (docs/design/workspace-roles.md §4.2.3, §4.8;
+lane ROLES-GATES-DECIDE). The fresh check is `Authenticator.may_act_in`: a
+member passes as before, and in a GROUP workspace a platform admin passes
+too, member or not (Q5 supersedes §4.2's "no admin bypass" there), while a
+personal workspace is still its person's alone. Then the role floor:
+`member` or above, read fresh past the role cache, else 403
+`role_member_required` through its switch (off: the answer is taken and the
+log names the refusal). A `viewer` reads the step and answers nothing.
 
 ONE WINNER (§4.6). The answer, the expiry and a cancel each end the step in a
 transaction that commits only on PARKED + AWAITING_INPUT + no recorded answer
@@ -70,6 +79,7 @@ from swarm_common.profiles import RUNNER_PROFILES
 from swarm_common.states import EventType, ParkReason, TaskState
 from swarm_redaction import KEY_VALUE, RULES, mask_code_literals, redact
 
+from . import refusals, roles
 from .agent_output import AgentOutputService
 from .agent_questions import read_questions
 from .auth import AuthContext, person_refusal
@@ -80,6 +90,7 @@ from .errors import (
     Forbidden,
     NotFound,
     RateLimited,
+    RoleMemberRequired,
     UpstreamUnavailable,
     ValidationFailed,
 )
@@ -355,12 +366,16 @@ def _closed(step: Step, status: str) -> Conflict:
 # --------------------------------------------------------------------------
 
 def member_refusal(ctx: Any, auth: AuthContext, tenant_id: str) -> None:
-    """Raise unless the caller is a person and, asked freshly, a member of `tenant_id`.
+    """Raise unless the caller is a person, may act in `tenant_id` asked
+    freshly, and holds `member` or above there, read freshly.
 
     A group tenant asks Cloud Identity about its ONE registered group, past
-    the cache; a personal tenant (`u-<slug>`) is its owner's address and
-    nobody else's. 403 `person_required` / `not_a_member`, 503
-    `membership_unavailable`. Nothing is written by any of them.
+    the cache, and admits a platform admin who is not in it
+    (`Authenticator.may_act_in`); a personal tenant (`u-<slug>`) is its
+    owner's address and nobody else's. 403 `person_required` /
+    `not_a_member` / `role_member_required` (the last through its switch),
+    503 `membership_unavailable` / `role_unavailable`. Nothing is written
+    by any of them.
     """
     why = person_refusal(auth)
     if why is not None:
@@ -369,26 +384,32 @@ def member_refusal(ctx: Any, auth: AuthContext, tenant_id: str) -> None:
     if tenant is None:
         raise forbidden("not_a_member", f"you are not a member of tenant {tenant_id!r}")
     try:
-        member = ctx.authenticator.is_tenant_member(auth.email, tenant, fresh=True)
+        how = ctx.authenticator.may_act_in(auth.email, tenant, fresh=True)
     except UpstreamUnavailable:
         raise MembershipUnavailable(
             "your membership of this tenant could not be confirmed just now, so the "
             "answer was not taken; retry shortly",
             detail=_detail("membership_unavailable"),
         ) from None
-    if not member:
+    if not how:
         raise forbidden(
             "not_a_member",
             f"you are not a member of tenant {tenant_id!r}, the step's tenant, so you "
             "may not answer it",
         )
+    store = getattr(ctx, "roles", None)
+    if store is not None:
+        store.require(auth, roles.MEMBER, fresh=True)
 
 
 def may_answer(ctx: Any, auth: AuthContext, tenant_id: str) -> bool:
     """The display's answer to "may I answer?", from the CACHED membership.
 
     The POST decides freshly (`member_refusal`); this only decides whether
-    the console offers the form.
+    the console offers the form: to whoever `may_act_in` admits, unless
+    `role_member_required` is enforced and their cached role is below
+    `member`. With that switch off a viewer's answer is taken, so the form
+    is offered.
     """
     if person_refusal(auth) is not None:
         return False
@@ -396,9 +417,15 @@ def may_answer(ctx: Any, auth: AuthContext, tenant_id: str) -> bool:
     if tenant is None:
         return False
     try:
-        return bool(ctx.authenticator.is_tenant_member(auth.email, tenant))
+        if not ctx.authenticator.may_act_in(auth.email, tenant):
+            return False
     except UpstreamUnavailable:
         return False
+    store = getattr(ctx, "roles", None)
+    if store is not None and refusals.enforced(RoleMemberRequired.code):
+        me = store.try_resolve(auth)
+        return me is not None and roles.at_least(me.role, roles.MEMBER)
+    return True
 
 
 # --------------------------------------------------------------------------

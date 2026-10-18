@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+from dataclasses import replace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -162,8 +163,10 @@ def test_a_platform_admin_still_answers_no_one_elses_personal_workspace(db, api_
 def test_the_form_is_offered_to_the_reach_and_not_to_an_enforced_viewer(
     api_context, waiting, vic_is_viewer, monkeypatch,
 ):
-    ops = _person(OPS, "eng")
-    vic = _person(VIC, "eng")
+    # The group's principal, as `tenant_scope` selects it: without one, a
+    # context reads as the caller's own personal workspace.
+    ops = replace(_person(OPS, "eng"), tenant_principal=ENG_GROUP)
+    vic = replace(_person(VIC, "eng"), tenant_principal=ENG_GROUP)
     assert awaitinput.may_answer(api_context, ops, "eng") is True
     monkeypatch.setenv(MEMBER_SWITCH, "off")
     assert awaitinput.may_answer(api_context, vic, "eng") is True
