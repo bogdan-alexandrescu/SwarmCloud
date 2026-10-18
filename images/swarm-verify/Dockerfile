@@ -109,6 +109,14 @@ COPY tests/acceptance/test_live_browser.py /swarm/tests/acceptance/test_live_bro
 # git-tools check failed "the judge wrote no verdict" with an empty prompt.
 COPY tests/acceptance/test_runner_git_tools.py /swarm/tests/acceptance/test_runner_git_tools.py
 
+# The mcp group's judge (lane MCP-ACCEPT, part of #1433; scripts/acceptance/
+# groups/mcp.sh runs it to mint, build the request bodies and judge), and the
+# echo MCP server the dev-only Cloud Run service swarm-mcp-echo runs FROM THIS
+# IMAGE (terraform/infra/mcp_test_server.tf overrides the entrypoint with
+# python3 and this path): standard library only, both.
+COPY tests/acceptance/test_caller_mcp.py /swarm/tests/acceptance/test_caller_mcp.py
+COPY tests/acceptance/mcp_echo_server/ /swarm/tests/acceptance/mcp_echo_server/
+
 # Fail loudly at build time rather than at 3am if a script lost its bit.
 RUN chmod +x /swarm/scripts/*.sh /swarm/scripts/lib/*.sh 2>/dev/null || true
 
