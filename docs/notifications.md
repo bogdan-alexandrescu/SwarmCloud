@@ -72,7 +72,7 @@ denial, a plan revised, a second hand-off in the same attempt or a later one.
 |---|---|---|---|
 | `admin` | yes, admins only | `workspaces` in `requested`, `loan_requests` in `requested`: what Admin › People lists first | `/admin/people` |
 | `approval` | yes | the tenant's pending `approvals` records (an expired one, or a merge whose run has moved on, is skipped); `schedule_firings` held for approval before the inbox made their record; `issue_runs` in `PLANNED` | `/approvals/<id>` |
-| `task` | yes | "Agent needs you": RUNNING tasks with a live-browser hand-off (`Task.human_wait`) the caller may take control of -- their own, and the tenant's while "Let any member take control" is on (docs/design/live-browser.md §4.1) -- and the caller's PARKED `HUMAN_REQUIRED` tasks; the caller's tasks of the last 7 days whose agent wrote `questions.json` (`result_summary.questions`) | the task's Browser tab; its Artifacts tab |
+| `task` | yes | "Agent needs you": RUNNING tasks with a live-browser hand-off (`Task.human_wait`) the caller may take control of -- their own, and the tenant's while "Let any member take control" is on (docs/design/live-browser.md §4.1) -- and the caller's PARKED `HUMAN_REQUIRED` tasks; the tenant's workflow steps PARKED `AWAITING_INPUT` whose `remind` names the caller (below); the caller's tasks of the last 7 days whose agent wrote `questions.json` (`result_summary.questions`) | the task's Browser tab; the workflow; its Artifacts tab |
 | `account` | yes for GitHub, no for the workspace | the caller's `forge_connections` document in `refresh_failed` (only reconnecting renews it); their own expired user-scope `git_tokens`; their own workspace becoming `ready` or `denied` in the last 7 days; their own Claude-account loan request `declined` in the last 7 days (LOAN-DECLINE) | `/access`; `/setup#workspace`; `/setup#claude-account` |
 | `finished` | no | the caller's own tasks submitted alone, their workflows (stored state), and their issue runs whose pull request merged, all ended in the last 7 days | the agent, workflow or run |
 
@@ -113,6 +113,44 @@ Some notes on what each group deliberately leaves out:
   own stores, so there is nothing to derive an item from. An issue run's IAM
   hard stop is different: it is a hold on the run (`issueruns.STOP_IAM`), so
   it already appears as an `approval` item of kind `hold`.
+
+## A workflow step waiting for a person
+
+A workflow step on the `await-input` profile waits, `PARKED(AWAITING_INPUT)`,
+for any member of its tenant to answer, for at most 24 hours
+(docs/workflows.md, "Waiting for a person"; the design is
+docs/design/human-steps.md §4.5). Two surfaces derive it, and neither stores
+or sends anything (the owner's Q7):
+
+* **The bell rings the step's `remind` list, not the whole tenant**
+  (`apps/swarm-api/swarm_api/notifications.py::awaiting_input`). A reader in
+  the step's tenant whose address is on `remind` (by default the submitter)
+  gets one needs-you item in the `task` group, topic `waiting_step`, linked to
+  the workflow. Its title says what is asked, by the step's form: "A workflow
+  is waiting for a review" (`verdict`), "A workflow is waiting for answers to
+  its questions" (`answers`) or "A workflow is waiting for a written answer"
+  (`text`). Every member being rung for every review would teach people to
+  ignore the bell, and the rest of the tenant sees the wait in the inbox. An
+  address named on `remind` from outside the tenant rings nobody, because the
+  step is read under the tenant the reader acts in. In a personal workspace
+  the reader sees only the steps they submitted, as with hand-offs.
+* **The id carries the reminder period.** It is `task:input:<task>:<k>`, with
+  `k = floor((now - opened_at) / remind_after_seconds)`, or 0 when the author
+  set no period. Each period therefore derives a new id, which is unread, and
+  nothing is written to make the reminder. A step reminding every 4 hours
+  over a full day derives at most six. The person's own reminder choice
+  replaces the author's period (below).
+* **The approvals inbox shows it to every member**, as kind `input` with id
+  `input:<task_id>` (`apps/swarm-api/swarm_api/approvals.py::project_input`),
+  because any member may answer. It is projected on each read from the task
+  and never made a record, and the inbox has no decide path for it: approve
+  or reject on that id is a 404, so the step's own answer route stays its one
+  writer.
+* **Both stop at once when the wait closes.** The open steps are read by
+  `apps/swarm-api/swarm_api/approvals.py::awaiting_input`: PARKED
+  `AWAITING_INPUT` in the reader's tenant, with no recorded answer, no cancel
+  requested and an `expires_at` still ahead. An answered, expired or
+  cancelled step derives nothing on the next read.
 
 ## The person's preferences: topics, muting and reminders
 
@@ -188,7 +226,8 @@ identity and `X-Swarm-Tenant`, never a body). Every tenant-scoped source reads
 under that tenant only, and keeps only the caller's own work: tasks and
 workflows they submitted, runs they created, and their own connection and
 tokens. Approvals belong to the tenant, because any member may decide one by
-default. The admin sources read across tenants and run only when `is_admin`
+default, and so do workflow steps waiting for a person, because any member
+may answer one (the bell still rings only the step's `remind` list). The admin sources read across tenants and run only when `is_admin`
 is true; for anyone else they read nothing, and `admin_pending` is 0. The
 caller's own workspace is theirs whichever tenant they act in.
 

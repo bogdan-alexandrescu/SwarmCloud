@@ -1479,3 +1479,32 @@ verdict inside a zip, so a verdict form with files would lose its gate.
 `WorkflowStep` and every workflow reader), with files declared by name at
 submission. It changes the contract for every workflow to serve this one,
 and the author must guess the names in advance.
+
+---
+
+## 8. What was built
+
+**HW-DOCS (2026-10-18, part of #1436).** `docs/workflows.md` has a section,
+"Waiting for a person: `await-input`", and a row for `await_input` in its
+step-field table; `docs/notifications.md` has "A workflow step waiting for a
+person" and names the source in its `task` row and its tenant-isolation
+section. They describe what was on main at `f696290`: the contract entries
+(HW-CONTRACT), the scheduler's park (HW-SCHED), the submission rules
+(HW-API-SUBMIT), attachment staging (HW-WORKER), the answer, expiry and
+listing routes (HW-API-ANSWER) and the bell and inbox items (HW-NOTIFY).
+`tests/unit/scripts/test_docs_describe_what_was_built.py` reads every bound,
+type and name they state from the code: the 24-hour bound (from both
+swarm-api and the scheduler), the 16 MiB answer, the ten files, the 256 KiB
+form, the closed type list, the three forms with their default artifacts,
+the refusal reasons, the routes and the bell's titles.
+
+Where the build differs from §4 and the docs follow the build: a refusal
+carries the design's name in `detail.reason` under an established `code`
+(`apps/swarm-api/swarm_api/awaitinput.py`, "THE CODES"), and the multipart
+parser is swarm-api's own, bounded one, not `python-multipart`
+(`apps/swarm-api/swarm_api/routes/await_input.py`, "THE MULTIPART PARSER").
+
+Not built when this note was written, and so described in the docs only as
+lanes still to land: the console card (HW-UI) and the plugin's
+`swarm_workflow_input` and `swarm_inputs` (HW-MCP). Their sections in the
+docs are theirs to write when they merge.
