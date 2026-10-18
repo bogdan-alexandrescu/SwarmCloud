@@ -1788,6 +1788,11 @@ export interface AttemptRow {
   cpu_limit_source?: string | null
   cpu_reading_age_seconds?: number | null
   /**
+   * Contract request 103 (#1435): the model ID this attempt's agent was
+   * started with. Null: no model, or not recorded. Absent: an older API.
+   */
+  model?: string | null
+  /**
    * #379. THIS attempt's account and the accounts it gave back. Served beside
    * the rows as `accounts_by_attempt` (so a row stays `GET /v1/attempts`'s
    * shape) and joined on by `loadAgentRun`. Absent: not read.

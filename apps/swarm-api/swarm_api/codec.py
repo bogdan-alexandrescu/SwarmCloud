@@ -210,6 +210,10 @@ def task_from_dict(data: dict[str, Any]) -> Task:
         # Contract request 95 (MR-CONTRACT). Read back so a task this service
         # decodes and writes again keeps the signed list it was submitted with.
         additional_repositories=_additional_repositories(data.get("additional_repositories")),
+        # Contract request 104 (#1435). Read back so a task this service
+        # decodes and writes again keeps the signed class it was submitted
+        # with. None: the profile's default class.
+        model_class=data.get("model_class") or None,
     )
 
 
@@ -534,6 +538,9 @@ def task_to_api(
         "resource_class": task.resource_class,
         "provider": task.provider,
         "model": task.model,
+        # Contract request 104: the stored class, null meaning the profile's
+        # default. Lane MODEL-API serves the resolved class (model-per-step §4).
+        "model_class": task.model_class,
         "priority": task.priority,
         "created_at": task.created_at,
         "updated_at": task.updated_at,
@@ -799,6 +806,10 @@ def attempt_from_dict(data: dict[str, Any]) -> Attempt:
         # from before it, which is read as `not recorded`, never as a guess.
         cpu_measured_at=as_datetime(data.get("cpu_measured_at")),
         cpu_limit_source=data.get("cpu_limit_source"),
+        # Contract request 103 (#1435): the model ID the worker started this
+        # attempt's agent with. Read explicitly, as the spend fields above
+        # were not. None: no model, or an attempt from before the field.
+        model=data.get("model") or None,
     )
 
 
@@ -1095,6 +1106,9 @@ def attempt_to_api(
         "cpu_measured_at": attempt.cpu_measured_at,
         "cpu_limit_source": attempt.cpu_limit_source,
         "cpu_reading_age_seconds": _age_seconds(attempt.cpu_measured_at, read_at),
+        # Contract request 103: the model ID the agent was started with.
+        # Null is not recorded.
+        "model": attempt.model,
     }
 
 
@@ -1239,6 +1253,7 @@ def workflow_from_dict(data: dict[str, Any]) -> Workflow:
                 input_from=dict(s.get("input_from") or {}),
                 timeout_seconds=s.get("timeout_seconds"),
                 task_id=s.get("task_id"),
+                model_class=s.get("model_class") or None,
             )
             for s in (data.get("steps") or [])
         ],
@@ -1374,6 +1389,9 @@ def _step_to_api(
         "input_from": {key: masker.name(value)[0] for key, value in step.input_from.items()},
         "timeout_seconds": step.timeout_seconds,
         "task_id": step.task_id,
+        # Contract request 102: the class the step asked for, null meaning
+        # its profile's default.
+        "model_class": step.model_class,
         "links": {"console": agent_console_url(console_url, step.task_id)},
     }
     if summary:
