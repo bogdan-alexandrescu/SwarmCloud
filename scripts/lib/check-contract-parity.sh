@@ -2003,6 +2003,71 @@ else:
              "the worker, the API models, the jev reasons and the three client tags "
              "match the catalogue choices %s" % " ".join(choices))
 
+# -- 17. the model classes (#1435, docs/design/model-per-step.md §4.2) -----
+# The class vocabulary is the frozen catalogue's (`MODEL_CLASSES`, contract
+# request A) and the ID behind each class is Terraform's (`runner_models` in
+# terraform/infra/locals.tf, keyed by class). A class with no pin there is a
+# step that can never be dispatched; a pin under a name the catalogue does not
+# have is a model nobody can ask for; a pin of the wrong family is a step
+# that quietly runs another model. Each pin is held to its class by the
+# frozen `ModelClass.admits`, not by a rule restated here. And each profile's
+# `model_classes` and `default_model_class` (request B) are mirrored in
+# `runner_profiles`, which the Jobs' MODEL and the derived WORKER_MODELS read.
+locals_tf = TEXT.get("terraform/infra/locals.tf", "")
+model_classes = getattr(frozen_profiles, "MODEL_CLASSES", None)
+pinned = re.search(r"^  runner_models = \{\n(.*?)^  \}", locals_tf, re.M | re.S)
+mirrored = re.search(r"^  runner_profiles = \{\n(.*?)^  \}", locals_tf, re.M | re.S)
+if not model_classes:
+    emit("MISSING", "MODEL_CLASSES",
+         "swarm_common.profiles declares no MODEL_CLASSES, so there is no class "
+         "vocabulary for runner_models to be compared against")
+elif pinned is None or mirrored is None:
+    emit("MISSING", "runner_models",
+         "terraform/infra/locals.tf no longer declares runner_models and "
+         "runner_profiles as two-space-indented maps; point this check at where "
+         "they moved")
+else:
+    pins = dict(re.findall(r"^\s*\"?([a-z0-9-]+)\"?\s*=\s*\"([^\"]+)\"\s*$",
+                           pinned.group(1), re.M))
+    wrong = []
+    for name in sorted(set(model_classes) - set(pins)):
+        wrong.append("class %s has no pin in runner_models" % name)
+    for name in sorted(set(pins) - set(model_classes)):
+        wrong.append("runner_models pins %s, which is not a MODEL_CLASSES name" % name)
+    for name, model_id in sorted(pins.items()):
+        if name in model_classes and not model_classes[name].admits(model_id):
+            wrong.append("runner_models pins %s to %s, which ModelClass.admits refuses"
+                         % (name, model_id))
+    for name, profile in sorted(frozen_profiles.RUNNER_PROFILES.items()):
+        entry = re.search(r"^    \"" + re.escape(name) + r"\" = \{\n(.*?)^    \}",
+                          mirrored.group(1), re.M | re.S)
+        if entry is None:
+            wrong.append("runner_profiles in locals.tf has no entry for %s" % name)
+            continue
+        classes = re.search(r"^\s*model_classes\s*=\s*\[([^\]]*)\]", entry.group(1), re.M)
+        default = re.search(r"^\s*default_model_class\s*=\s*(null|\"[a-z]+\")\s*$",
+                            entry.group(1), re.M)
+        if classes is None or default is None:
+            wrong.append("the mirror of %s states no model_classes or default_model_class" % name)
+            continue
+        listed = tuple(re.findall(r"\"([^\"]+)\"", classes.group(1)))
+        stated = None if default.group(1) == "null" else default.group(1).strip("\"")
+        if listed != tuple(getattr(profile, "model_classes", ())) or stated != getattr(
+            profile, "default_model_class", None
+        ):
+            wrong.append("the mirror of %s accepts %s with default %s; the catalogue %s with default %s"
+                         % (name, list(listed), stated,
+                            list(getattr(profile, "model_classes", ())),
+                            getattr(profile, "default_model_class", None)))
+    if wrong:
+        for line in wrong:
+            emit("DRIFT", "model classes", line)
+    else:
+        emit("OK", "model classes",
+             "runner_models pins exactly %s, each admitted by its class, and the "
+             "%d mirrored profiles state the catalogue's classes and defaults"
+             % (" ".join(model_classes), len(frozen_profiles.RUNNER_PROFILES)))
+
 print("\n".join(REPORT))
 PY
 )"; then

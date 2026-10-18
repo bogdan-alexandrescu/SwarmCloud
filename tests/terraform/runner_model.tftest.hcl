@@ -1,21 +1,30 @@
-# The claude-code profile runs a pinned model, set here and nowhere else (#226).
+# A claude-code step runs a pinned model, set here and nowhere else (#226),
+# and since #1435 it is pinned PER MODEL CLASS.
 #
 # Owner decision of 2026-09-26: every claude-code step runs `claude-opus-5-5`,
 # the model the operator's local lanes run, instead of whatever the CLI
 # defaults to. The QA task that prompted it ran `claude-sonnet-5`, because no
-# Job set MODEL at all. The value lives in ONE place, `local.runner_models` in
-# terraform/infra/locals.tf, and reaches both kinds of Job that run agents:
+# Job set MODEL at all.
 #
-#   * the Jobs Terraform creates, as `MODEL` in their environment
-#     (`output.job_models`, the environment each Job's module entry carries,
-#     not the local echoed back);
-#   * the Jobs the scheduler creates for tenants Terraform does not list, as the
-#     scheduler's `WORKER_MODELS` (`output.worker_models`), which
-#     `CloudRunJobDispatcher._build_job` reads.
+# Owner decisions of 2026-10-17 (#1435, docs/design/model-per-step.md §4.2):
+# a step names a model CLASS from the frozen vocabulary
+# (`swarm_common.profiles.MODEL_CLASSES`), and the ID behind each class lives
+# in ONE place, `local.runner_models` in terraform/infra/locals.tf, keyed by
+# class: opus (the default), fable, sonnet, haiku. It reaches:
+#
+#   * the Jobs Terraform creates, as `MODEL` in their environment: the pin of
+#     the profile's `default_model_class` (`output.job_models`, the
+#     environment each Job's module entry carries, not the local echoed back);
+#   * the scheduler's `WORKER_MODELS`, profile -> the default class's pin,
+#     DERIVED from the class map for one release so that a scheduler image
+#     rolled back alone still finds the map it reads (`output.worker_models`);
+#   * the scheduler's and swarm-api's `WORKER_CLASS_MODELS`, the class map
+#     itself, which each holds to the classes at start (MODEL-SCHED,
+#     MODEL-API).
 #
 # The worker reads MODEL into `WorkerConfig.model` and the runner passes it to
 # the CLI as `--model`. A caller's `input.model` is refused (invariant 10).
-# Changing the model is a change to that local, and a release.
+# Changing a model is a change to that local, and a release.
 
 # source: the shared defaults every suite that plans terraform/infra needs
 # (mocks/google/kms.tfmock.hcl -- the step-spec key's enabled version 1).
@@ -98,8 +107,87 @@ run "the_scheduler_hands_the_same_model_to_the_jobs_it_creates" {
     source = "../../terraform/infra"
   }
 
+  # Exactly today's map, entry for entry: deriving it from the class map
+  # (#1435) must not move a single profile's model.
   assert {
-    condition     = length(output.worker_models) == 4 && output.worker_models["claude-code"] == "claude-opus-5-5" && output.worker_models["claude-code-review"] == "claude-opus-5-5" && output.worker_models["indexer"] == "claude-opus-5-5" && output.worker_models["claude-code-browser"] == "claude-opus-5-5"
+    condition = output.worker_models == {
+      "claude-code"         = "claude-opus-5-5"
+      "claude-code-review"  = "claude-opus-5-5"
+      "indexer"             = "claude-opus-5-5"
+      "claude-code-browser" = "claude-opus-5-5"
+    }
     error_message = "WORKER_MODELS must carry exactly the claude-code model, and claude-code-review's, indexer's and claude-code-browser's (the same: claude-code under its own account, #295; on the indexer image, contract request 48; on the browser image, contract request 67). claude-code, indexer and claude-code-browser run on GKE Autopilot (contract requests 53, 62 and 67), so WORKER_MODELS is the only way their MODEL reaches a pod"
+  }
+}
+
+# #1435: the class map. Four keys, exactly the frozen vocabulary's, and each ID
+# carries its own class's family word, so a `haiku = "claude-opus-5-5"` typo
+# fails here before it quietly bills Opus. The full rule (the family word AND a
+# generation of at least 5) is `ModelClass.admits`, applied to this map by
+# scripts/lib/check-contract-parity.sh and, at start, by the scheduler.
+run "each_model_class_is_pinned_to_an_id_of_its_own_family" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  assert {
+    condition     = sort(keys(local.runner_models)) == ["fable", "haiku", "opus", "sonnet"]
+    error_message = "local.runner_models must be keyed by exactly the four model classes of swarm_common.profiles.MODEL_CLASSES (opus, fable, sonnet, haiku)"
+  }
+
+  assert {
+    condition     = alltrue([for class, id in local.runner_models : startswith(id, "claude-${class}-")])
+    error_message = "every pin in local.runner_models must be claude-<its own class>-...: an ID of another family runs a model nobody asked for"
+  }
+
+  # The owner's pins of 2026-10-17 (Q3).
+  assert {
+    condition = local.runner_models == {
+      opus   = "claude-opus-5-5"
+      fable  = "claude-fable-5-1"
+      sonnet = "claude-sonnet-5-5"
+      haiku  = "claude-haiku-5-5"
+    }
+    error_message = "the class pins are the owner's of 2026-10-17: opus claude-opus-5-5, fable claude-fable-5-1, sonnet claude-sonnet-5-5, haiku claude-haiku-5-5"
+  }
+}
+
+run "the_scheduler_and_swarm_api_read_the_same_class_map" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  assert {
+    condition     = jsondecode(local.service_env["swarm-scheduler"].WORKER_CLASS_MODELS) == local.runner_models
+    error_message = "the scheduler's WORKER_CLASS_MODELS must be local.runner_models: it renders MODEL for a step's class from it"
+  }
+
+  assert {
+    condition     = jsondecode(local.service_env["swarm-api"].WORKER_CLASS_MODELS) == local.runner_models
+    error_message = "swarm-api's WORKER_CLASS_MODELS must be local.runner_models: it fills TaskCreate.model from it and serves the classes"
+  }
+
+  # The Jobs' MODEL is the pin of the profile's default class, read from the
+  # mirror, not a second copy of the ID.
+  assert {
+    condition = alltrue([
+      for profile in ["claude-code", "indexer"] :
+      output.job_models["swarm-job-eng-${profile}"] == local.runner_models[local.runner_profiles[profile].default_model_class]
+    ])
+    error_message = "a classed profile's Cloud Run Job must carry MODEL = runner_models[its default_model_class]"
+  }
+
+  # R4 of the owner's decisions of 2026-10-17: there is NO enablement flag.
+  # Lane order alone keeps the classes unreachable until the scheduler, the
+  # worker and the API have merged, so no service carries one.
+  assert {
+    condition = alltrue([
+      for service, env in local.service_env : !contains(keys(env), "MODEL_CLASSES_ENABLED")
+    ])
+    error_message = "MODEL_CLASSES_ENABLED must not exist (owner decision R4, 2026-10-17: no model_classes_enabled flag)"
   }
 }
