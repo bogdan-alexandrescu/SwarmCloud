@@ -1763,6 +1763,20 @@ async function attachAll(cap) {
 
 const given = readSpec(args)
 
+// THE FALLBACK SAYS WHY (SC-TITLES, #1511). Every launch from the bridge
+// hands its args a `title` (an attach) or `titled_copy` (the copy's path);
+// the copy itself carries `SC · <name> · ...` as its meta.name. So this
+// script running under its own name WITH either argument was launched by
+// name after the titled copy could not be -- and Claude Code labels the run
+// `swarmcloud`. Its first line says so, and where the copy was.
+const launchedArgs = args !== null && typeof args === 'object' && !Array.isArray(args) ? args : {}
+const titledCopy = typeof launchedArgs.titled_copy === 'string' && launchedArgs.titled_copy.trim() ? launchedArgs.titled_copy.trim() : null
+if (typeof meta !== 'undefined' && meta && meta.name === 'swarmcloud' && (titledCopy || flatText(launchedArgs.title))) {
+  log('This run is labelled "swarmcloud" because its titled copy could not be launched' +
+    (titledCopy ? ' -- it would have run from ' + titledCopy : ' -- the launch named no copy') +
+    '. Launch that copy (Workflow {scriptPath, args}) for an SC · <name> row title.')
+}
+
 if (given.attachTasks) {
   phase('Tasks')
   return await attachTasks(given.attachTasks, given.maxRows)

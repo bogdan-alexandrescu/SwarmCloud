@@ -806,133 +806,143 @@ function AgentsBody({
           </span>
         </div>
 
-        <label className="ag-filter">
-          <span className="ag-filter-k">profile:</span>
-          {/* CAPPED, NOT SIZED TO ITS LONGEST OPTION (V061): the whole value is
-              its title. */}
-          <select value={profile} title={profile === '' ? 'all' : profile} onChange={(e) => setProfile(e.target.value)}>
-            <option value="">all</option>
-            {profiles.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
-            ))}
-          </select>
-        </label>
+        {/* THE CONTROLS ARE ONE ITEM OF THE TOOLBAR (V147, VQA2-R13). Each was
+            its own flex item, so at 1440 on Recent the row filled and `Started`
+            alone dropped to a second line -- what the WA-10 rule in
+            agents.css says must not happen. Grouped, they wrap together, and
+            the checkboxes and `Started` are one unbreakable tail inside the
+            group, so a narrow list never strands the last control either. */}
+        <div className="ag-tools">
+          <label className="ag-filter">
+            <span className="ag-filter-k">profile:</span>
+            {/* CAPPED, NOT SIZED TO ITS LONGEST OPTION (V061): the whole value is
+                its title. */}
+            <select value={profile} title={profile === '' ? 'all' : profile} onChange={(e) => setProfile(e.target.value)}>
+              <option value="">all</option>
+              {profiles.map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+            </select>
+          </label>
 
-        {/* RECENT, BY STATE (OV-10): pressed buttons rather than tabs -- it
-            filters the tab it sits beside, it is not a fourth tab. Counts are
-            from the loaded rows, like the tab badges, and DEAD_LETTERED is
-            never offered: nothing writes it (`agentlist.ts`). */}
-        {shown === 'recent' && (
-          <Segmented
-            label="Recent, by state"
-            value={recentState ?? 'all'}
-            // A capped page's count is drawn in the label as `2+` with its
-            // sentence as the title (G2-05): `SegOption.count` is a number.
-            options={(['all', ...RECENT_STATES] as const).map((s) =>
-              bounded
-                ? {
-                    key: s,
-                    label: (
-                      <>
-                        {s}
-                        <em className="is-bound" title={countSay(stateCounts[s])}>
-                          {countText(stateCounts[s])}
-                        </em>
-                      </>
-                    ),
-                  }
-                : { key: s, label: s, count: stateCounts[s] },
+          {/* RECENT, BY STATE (OV-10): pressed buttons rather than tabs -- it
+              filters the tab it sits beside, it is not a fourth tab. Counts are
+              from the loaded rows, like the tab badges, and DEAD_LETTERED is
+              never offered: nothing writes it (`agentlist.ts`). */}
+          {shown === 'recent' && (
+            <Segmented
+              label="Recent, by state"
+              value={recentState ?? 'all'}
+              // A capped page's count is drawn in the label as `2+` with its
+              // sentence as the title (G2-05): `SegOption.count` is a number.
+              options={(['all', ...RECENT_STATES] as const).map((s) =>
+                bounded
+                  ? {
+                      key: s,
+                      label: (
+                        <>
+                          {s}
+                          <em className="is-bound" title={countSay(stateCounts[s])}>
+                            {countText(stateCounts[s])}
+                          </em>
+                        </>
+                      ),
+                    }
+                  : { key: s, label: s, count: stateCounts[s] },
+              )}
+              onChange={(s) => chooseState(s === 'all' ? null : s)}
+            />
+          )}
+
+          {/* OFFERED ONLY WHEN THERE IS A LIVE BROWSER TO SHOW (#139 at 390). With
+              none, `Live 0` can only empty the list, and on a phone the switch
+              is a 44px row of its own that put the first Agents row past the
+              screen's midpoint. Kept while it is on, so the way back to All
+              never disappears under the reader. */}
+          {shown === 'live' && (liveBrowsers > 0 || browsersOnly) && (
+            <Segmented
+              label="All live agents or the browser agents among them"
+              value={browsersOnly ? 'browsers' : 'all'}
+              options={[
+                { key: 'all', label: 'All', title: 'Every agent holding a pool slot' },
+                tabBounded('live')
+                  ? {
+                      key: 'browsers',
+                      label: (
+                        <>
+                          Browsers
+                          <em className="is-bound" title={countSay(liveBrowsers)}>
+                            {countText(liveBrowsers)}
+                          </em>
+                        </>
+                      ),
+                      title: 'Browser agents only: the ones waiting for you first, then running, then starting',
+                    }
+                  : {
+                      key: 'browsers',
+                      label: 'Browsers',
+                      count: liveBrowsers,
+                      title: 'Browser agents only: the ones waiting for you first, then running, then starting',
+                    },
+              ]}
+              onChange={(k) => setBrowsersOnly(k === 'browsers')}
+            />
+          )}
+
+          {/* ⤢ THEATER ALL (§6): the first row's Browser tab in the theater,
+              whose prev and next walk the live browsers from there. The first
+              row is the one waiting for a person, when one is. */}
+          {browsers && rows.length > 0 && (
+            <a className="ag-theater-all" href={theaterPath(rows[0]!.id, null)}>
+              ⤢ theater all
+            </a>
+          )}
+
+          <div className="ag-tools-tail">
+            {shown === 'recent' && (
+              <label className="ag-filter check">
+                <input
+                  type="checkbox"
+                  checked={failedFirst}
+                  onChange={(e) => chooseFailedFirst(e.target.checked)}
+                />
+                Failed first
+              </label>
             )}
-            onChange={(s) => chooseState(s === 'all' ? null : s)}
-          />
-        )}
 
-        {/* OFFERED ONLY WHEN THERE IS A LIVE BROWSER TO SHOW (#139 at 390). With
-            none, `Live 0` can only empty the list, and on a phone the switch
-            is a 44px row of its own that put the first Agents row past the
-            screen's midpoint. Kept while it is on, so the way back to All
-            never disappears under the reader. */}
-        {shown === 'live' && (liveBrowsers > 0 || browsersOnly) && (
-          <Segmented
-            label="All live agents or the browser agents among them"
-            value={browsersOnly ? 'browsers' : 'all'}
-            options={[
-              { key: 'all', label: 'All', title: 'Every agent holding a pool slot' },
-              tabBounded('live')
-                ? {
-                    key: 'browsers',
-                    label: (
-                      <>
-                        Browsers
-                        <em className="is-bound" title={countSay(liveBrowsers)}>
-                          {countText(liveBrowsers)}
-                        </em>
-                      </>
-                    ),
-                    title: 'Browser agents only: the ones waiting for you first, then running, then starting',
-                  }
-                : {
-                    key: 'browsers',
-                    label: 'Browsers',
-                    count: liveBrowsers,
-                    title: 'Browser agents only: the ones waiting for you first, then running, then starting',
-                  },
-            ]}
-            onChange={(k) => setBrowsersOnly(k === 'browsers')}
-          />
-        )}
+            {shown !== 'live' && (
+              <label className="ag-filter check">
+                <input
+                  type="checkbox"
+                  checked={grouped}
+                  onChange={(e) => chooseGrouped(e.target.checked)}
+                />
+                Group by workflow
+              </label>
+            )}
 
-        {/* ⤢ THEATER ALL (§6): the first row's Browser tab in the theater,
-            whose prev and next walk the live browsers from there. The first
-            row is the one waiting for a person, when one is. */}
-        {browsers && rows.length > 0 && (
-          <a className="ag-theater-all" href={theaterPath(rows[0]!.id, null)}>
-            ⤢ theater all
-          </a>
-        )}
-
-        {shown === 'recent' && (
-          <label className="ag-filter check">
-            <input
-              type="checkbox"
-              checked={failedFirst}
-              onChange={(e) => chooseFailedFirst(e.target.checked)}
-            />
-            Failed first
-          </label>
-        )}
-
-        {shown !== 'live' && (
-          <label className="ag-filter check">
-            <input
-              type="checkbox"
-              checked={grouped}
-              onChange={(e) => chooseGrouped(e.target.checked)}
-            />
-            Group by workflow
-          </label>
-        )}
-
-        {/* SORTED BY START (#376): newest start, oldest start, then the
-            list's own order. It was the Started column's head; the compact
-            list has no columns, so it is a control of the list. */}
-        <button
-          type="button"
-          className="ag-sort"
-          aria-pressed={sort.started !== null}
-          aria-label={
-            sort.started === null
-              ? 'Sort by start time'
-              : sort.started === 'desc'
-                ? 'Sorted by start, newest first'
-                : 'Sorted by start, oldest first'
-          }
-          onClick={sort.onStarted}
-        >
-          Started{sort.started === 'desc' ? ' ↓' : sort.started === 'asc' ? ' ↑' : ''}
-        </button>
+            {/* SORTED BY START (#376): newest start, oldest start, then the
+                list's own order. It was the Started column's head; the compact
+                list has no columns, so it is a control of the list. */}
+            <button
+              type="button"
+              className="ag-sort"
+              aria-pressed={sort.started !== null}
+              aria-label={
+                sort.started === null
+                  ? 'Sort by start time'
+                  : sort.started === 'desc'
+                    ? 'Sorted by start, newest first'
+                    : 'Sorted by start, oldest first'
+              }
+              onClick={sort.onStarted}
+            >
+              Started{sort.started === 'desc' ? ' ↓' : sort.started === 'asc' ? ' ↑' : ''}
+            </button>
+          </div>
+        </div>
       </div>
 
       {rows.length === 0 && idQuery !== null ? (

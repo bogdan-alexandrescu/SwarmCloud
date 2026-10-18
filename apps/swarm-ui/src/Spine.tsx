@@ -21,7 +21,7 @@
  * Production draws a red pill and a 3px red bar across the top; the pill shows
  * only what was measured (`classifyEnvironment`), never a hardcoded word.
  */
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
+import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
 import { AGENT_TABS, type AgentTab } from './agentlist'
 import { loadApprovals, loadCapacity, loadMe, loadMyTenants, loadStats, type TenantChoice } from './api'
 import { classifyEnvironment, envTreatment, servedEnvironment, SwarmMark } from './Brand'
@@ -34,7 +34,7 @@ import { shortcut, typedIntoField } from './shortcuts'
 import type { Capacity, Me, Stats, TaskState } from './types'
 import { ThemeToggle } from './ThemeToggle'
 import { SignOutButton, SignedBackIn } from './SignOut'
-import { iapFronted } from './signoutState'
+import { iapFronted, signingOut } from './signoutState'
 import { AppTakeover, OfflineBanner, wholeAppFault, useOnline } from './AppStates'
 import { feedData, notificationsSnapshot, subscribeNotifications } from './notificationFeed'
 
@@ -250,6 +250,20 @@ function subscribeTablet(fn: () => void): () => void {
 /** False where there is no `matchMedia` (jsdom), which is the desktop's answer. */
 function tabletNow(): boolean {
   return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia(TABLET_QUERY).matches
+}
+
+/** The phone band, where the spine becomes the 44px phone header (the same width as Notifications.tsx's). */
+const PHONE_QUERY = '(max-width: 759px)'
+
+function subscribePhone(fn: () => void): () => void {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return () => {}
+  const query = window.matchMedia(PHONE_QUERY)
+  query.addEventListener?.('change', fn)
+  return () => query.removeEventListener?.('change', fn)
+}
+
+function phoneNow(): boolean {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia(PHONE_QUERY).matches
 }
 
 /** The page scroller's id: the skip link's target (CH-15). */
@@ -969,6 +983,15 @@ export interface ShellProps {
   /** The spine's foot: Help and API reads, drawn by App (see `ctl-nav-util`). */
   foot: ReactNode
   /**
+   * THE NOTIFICATION BELL (#1206), drawn by App -- Notifications.tsx imports
+   * from this file, so it is handed in rather than imported. Placed ONCE, in
+   * the shell's own chrome (visual QA V178, 2026-10-16): at the spine's foot
+   * from 760px up, in the phone header below it. It used to be the only thing
+   * in a 48px header bar over every section page -- an empty band above the
+   * title at 1440, a second sticky band under the phone header at 390.
+   */
+  bell?: ReactNode
+  /**
    * The API-reads strip, drawn as the last row of the CONTENT column -- not a
    * full-width bar under the spine and the panel (#503: it cut the spine's
    * avatar off at 1440x900; the V2 frames have no bottom bar).
@@ -1012,6 +1035,7 @@ export function SkyShell({
   onApiFilter,
   missing = false,
   foot,
+  bell = null,
   dock,
   keepOnSwitch = false,
   place = '',
@@ -1057,6 +1081,8 @@ export function SkyShell({
   const [attempt, setAttempt] = useState(0)
 
   const tablet = useSyncExternalStore(subscribeTablet, tabletNow, () => false)
+  const phone = useSyncExternalStore(subscribePhone, phoneNow, () => false)
+  const menuNoteId = useId()
   const [pinned, setPinned] = useState(() => readPref(COLLAPSED_KEY) === '1')
   // The tablet's expand, for this visit and this band only (CH-1).
   const [tabletOpen, setTabletOpen] = useState(false)
@@ -1382,6 +1408,9 @@ export function SkyShell({
   // ---- the tenant switch (intake-tenants.html 2A) --------------------------
   const choices = useMemo(() => nameTenants(dataOf(mine) ?? [], who), [mine, who])
   useEffect(() => {
+    // Not after Sign out: its clear is what made `tenant` null, and the old `me`
+    // would write both stores straight back (signoutState.ts `signingOut`).
+    if (signingOut()) return
     if (who !== null && who.tenant.display_name) learnTenantName(who.tenant.tenant_id, who.tenant.display_name)
     // With no tenant chosen, `me` names the default: Recent keeps its list under the bare key (CH-3).
     if (who !== null && tenant === null) learnDefaultTenant(who.tenant.tenant_id)
@@ -1508,6 +1537,10 @@ export function SkyShell({
           <Icon name="expand" />
         </button>
       )}
+      {/* THE BELL AT THE FOOT, above Help, from 760px up (V178): always on
+          screen, as it was in the sticky bar, and no band over the page. Its
+          drop-down opens beside the spine (styles/notifications.css). */}
+      {!phone && bell !== null && <div className="sk-bell">{bell}</div>}
       {foot}
       {/* Collapsed, the avatar is the person: Sign out sits beside it, as an icon. */}
       {collapsed && !drawer && canSignOut && <SignOutButton email={who.principal.email} compact />}
@@ -1643,8 +1676,31 @@ export function SkyShell({
       </a>
       {t.bar && <div className="sk-prodbar" aria-hidden />}
       <header className="sk-pbar">
-        <button type="button" className="sk-ibtn" aria-label="Open the menu" aria-expanded={drawer} ref={openerRef} onClick={() => setDrawer(true)}>
+        {/* APPROVALS WAITING SHOW ON THE MENU BUTTON (visual QA V237,
+            2026-10-16): the spine's Automate badge is inside the drawer, so
+            on a phone nothing said they waited until the drawer was open.
+            The same count, on the button that opens it; its name stays
+            "Open the menu" and the count is its description. */}
+        <button
+          type="button"
+          className="sk-ibtn"
+          aria-label="Open the menu"
+          aria-describedby={waiting !== null ? menuNoteId : undefined}
+          aria-expanded={drawer}
+          ref={openerRef}
+          onClick={() => setDrawer(true)}
+        >
           <Icon name="menu" />
+          {waiting !== null && (
+            <>
+              <i className={waiting.n === null ? 'sk-badge sk-mbadge is-unread' : 'sk-badge sk-mbadge'} aria-hidden="true">
+                {waiting.n === null ? '—' : waiting.n}
+              </i>
+              <span className="sk-vh" id={menuNoteId}>
+                {waiting.why}
+              </span>
+            </>
+          )}
         </button>
         <SwarmMark size={22} paint="sky" />
         <b>{title}</b>
@@ -1667,6 +1723,9 @@ export function SkyShell({
             hairline tag as the panel's foot, last in the one row, after the
             environment it sits beside. */}
         {admin && <span className="sk-adm">admin</span>}
+        {/* THE BELL JOINS THE PHONE HEADER (V178): one 44px band, not a
+            second sticky one under it. After the tags, before `Top`. */}
+        {phone && bell !== null && <span className="sk-pbell">{bell}</span>}
         {/* A WAY BACK UP, once the page is more than a screen long and the
             reader is past the first screen of it (#139). Drawn below 760px
             only (styles.css): above it the spine never scrolls away.
@@ -2248,6 +2307,16 @@ function PanelPages({
                       {...routed(k.to, () => nav(k.to))}
                     >
                       <span>{k.label}</span>
+                      {/* AND IN WORDS (visual QA V150, 2026-10-16): beside a tab
+                          that says "Recent 17", a bare row read as a count
+                          missing. The tab counts the rows read; nothing
+                          totals the finished. Hidden from a screen reader,
+                          which has the title. */}
+                      {p.key === 'agents' && k.key === 'recent' && (
+                        <small className="sk-knote" aria-hidden="true">
+                          not totalled
+                        </small>
+                      )}
                       {k.admin === true && <span className="sk-adm">admin</span>}
                       {p.key === 'agents' && <CountMark c={counts[k.key]} />}
                     </a>

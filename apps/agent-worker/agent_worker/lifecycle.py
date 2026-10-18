@@ -155,6 +155,7 @@ from . import handoff as handoff_mod
 from . import inputs as inputs_mod
 from . import issue as issue_mod
 from . import jevkey as jevkey_mod
+from . import mcp_attach as mcp_attach_mod
 from . import secretrelease as secretrelease_mod
 from . import typesafe_shim as typesafe_shim_mod
 from . import questions as questions_mod
@@ -225,6 +226,7 @@ from .gitops import (
     GitTransient,
     MergeOutcome,
     PeerPin,
+    PushRejected,
     branch_commits,
     clone_at_commit,
     commit_dirty,
@@ -234,6 +236,7 @@ from .gitops import (
     hide_from_git,
     merge_branches,
     mirror_worktree,
+    own_branch_tip,
     prepare_publish_repo,
     push_branch,
     read_agent_excludes,
@@ -1049,6 +1052,14 @@ class Worker:
         # signed with the child path's attempt key. Inert for a profile whose
         # catalogue entry, and whose launched tools, declare no secret slot.
         self.secret_release = secretrelease_mod.SecretRelease(
+            config, children=self.children, logger=deps.logger
+        )
+        # The caller's registered MCP servers (docs/design/registered-mcp-
+        # servers.md §4.7, lane MCP-WORKER): attached once per attempt, after
+        # the release, and served through a loopback relay that holds the
+        # credentials in this heap. Inert for a task whose signed input names
+        # no server -- which is every task while SWARM_MCP_SERVERS is off.
+        self.mcp = mcp_attach_mod.McpAttachment(
             config, children=self.children, logger=deps.logger
         )
         # The TypeSafe forwarder's ticket and the loopback shim jev and the
@@ -1980,26 +1991,34 @@ class Worker:
             ),
             # The repository's merge slot (merge race, #295): every slot
             # write is fenced on this attempt's task and lease, as the park is.
+            # A tenant switched to the state routes (#1457) holds no Firestore
+            # client: its `db` is the attempt's state client, and swarm-api
+            # fences each slot write on the same tuple.
             merge_slots=(
-                mergeslot_mod.FirestoreMergeSlots(
+                (mergeslot_mod.RemoteMergeSlots(self.db, tenant_id=self.cfg.tenant_id)
+                 if getattr(self.control, "state_via_api", False) else
+                 mergeslot_mod.FirestoreMergeSlots(
                     self.db,
                     tenant_id=self.cfg.tenant_id,
                     run_transaction=self.control._run_transaction,
                     fence=lambda txn: self.control._fenced_task(txn, write="merge slot"),
                     call_options=self.control.call_options,
-                )
+                ))
                 if action is WorkerAction.MERGE else None
             ),
             # The repository's merge train (TRAIN-WS): this step's entry,
             # written only in train mode, fenced on this attempt as the slot is.
             merge_trains=(
-                mergetrain_mod.FirestoreTrainEntries(
+                (mergetrain_mod.RemoteTrainEntries(self.db, tenant_id=self.cfg.tenant_id,
+                                                   task_id=self.cfg.task_id)
+                 if getattr(self.control, "state_via_api", False) else
+                 mergetrain_mod.FirestoreTrainEntries(
                     self.db,
                     tenant_id=self.cfg.tenant_id,
                     run_transaction=self.control._run_transaction,
                     fence=lambda txn: self.control._fenced_task(txn, write="merge train entry"),
                     call_options=self.control.call_options,
-                )
+                ))
                 if action is WorkerAction.MERGE else None
             ),
             # The PR-side CI fixer's tasks for the merged pull request (#1073):
@@ -2379,13 +2398,25 @@ class Worker:
         # §3.2 step 3). swarm-api refuses a registration once it is RUNNING.
         # ONE STARTING event: the walk to STARTING writes none, and the
         # registration's note (no child path, and why) is its detail.
-        if self.cfg.child_nonce:
-            moved = self.control.advance_to_starting()
-            notes: list[dict[str, Any]] = []
-            self.children.register(notes.append)
-            if moved or notes:
-                self.control.emit(EventType.STARTING, notes[-1] if notes else None)
-        self.control.advance_to_running()
+        notes: list[dict[str, Any]] = []
+        if getattr(self.control, "state_via_api", False):
+            # THE TENANT IS SWITCHED TO THE STATE ROUTES (#1457, §4.3). The
+            # key was generated and registered by `state/open`, the first call
+            # this attempt made (STEP 1), so the child path takes that key
+            # rather than spending the nonce again. swarm-api writes each
+            # step's event with its transition, and the ONE STARTING event
+            # carries the registration's note, as below.
+            self.children.adopt(
+                self.control.attempt_key, self.control.registration, notes.append
+            )
+            self.control.advance_to_running(starting_detail=notes[-1] if notes else None)
+        else:
+            if self.cfg.child_nonce:
+                moved = self.control.advance_to_starting()
+                self.children.register(notes.append)
+                if moved or notes:
+                    self.control.emit(EventType.STARTING, notes[-1] if notes else None)
+            self.control.advance_to_running()
         # STEP 2b: the live path (live-browser §3.3, §5.4.2), once RUNNING --
         # the live-session route checks the fence on RUNNING -- and long before
         # the agent exists, so the gate's one registration is this worker's.
@@ -2760,6 +2791,30 @@ class Worker:
             raise FencedWriteRefused(
                 cfg.generation, -1, str(exc), write="typesafe ticket"
             ) from None
+        # STEP 6a'': the caller's registered MCP servers (MCP-WORKER, design
+        # §4.7), ONCE, before the runner's environment: every credential is
+        # registered for redaction as the answer is parsed, and the runner is
+        # handed only the relay file's path (`_build_child_env`). A 409 is the
+        # fence: stand down without the agent, leave the lease (invariant 5).
+        # A withheld server, or an attach that could not be made, fails the
+        # attempt before the agent runs: it was named because it is needed.
+        try:
+            attached = self.mcp.attach(profile=cfg.profile, inputs=task.get("input"))
+        except mcp_attach_mod.McpAttachFenced as exc:
+            raise FencedWriteRefused(
+                cfg.generation, -1, f"mcp attach: {exc.code}", write="mcp attach"
+            ) from None
+        unattached = attached.failure()
+        if unattached is None and attached.servers:
+            try:
+                self.mcp.start(ws.private)
+            except OSError as exc:
+                unattached = (
+                    mcp_attach_mod.UNAVAILABLE, f"relay_not_started:{type(exc).__name__}", True
+                )
+        if unattached is not None:
+            self.mcp.close()
+            return functools.partial(self._fail_mcp_unattached, *unattached)
         try:
             child_env = self._build_child_env()
         except CredentialMissing as exc:
@@ -3375,6 +3430,8 @@ class Worker:
         """
         cfg = self.cfg
         self._fenced_exit = True
+        # Before the runner is stopped: from here the relay forwards nothing.
+        self.mcp.mark_fenced()
         self.log.error(
             "generation fenced mid-run; stopping the runner",
             observed_generation=observed_generation,
@@ -3432,6 +3489,7 @@ class Worker:
             attempt made while it still owned the task.
         """
         self._fenced_exit = True
+        self.mcp.mark_fenced()
         self.log.error(
             "FENCED on the way out: this attempt has been superseded; exiting "
             "without writing the task, the lease or an event",
@@ -3590,7 +3648,7 @@ class Worker:
 
         if result.timed_out:
             error = f"runner exceeded its {self.cfg.timeout_seconds}s timeout and was killed"
-            self.control.finish(
+            self._finish_terminal(
                 state=TaskState.FAILED,
                 exit_code=result.exit_code,
                 error=error,
@@ -3602,7 +3660,7 @@ class Worker:
         if result.exit_code == 0:
             if runner_result is None:
                 error = "runner exited 0 without writing result.json"
-                self.control.finish(
+                self._finish_terminal(
                     state=TaskState.FAILED,
                     exit_code=0,
                     error=error,
@@ -3649,13 +3707,13 @@ class Worker:
             unpublished = self._publish_review_verdict(summary)
             if unpublished is not None:
                 return unpublished
-            self.control.finish(
+            self._finish_terminal(
                 state=TaskState.SUCCEEDED, exit_code=0, result_summary=summary
             )
             return Outcome(exit_code=ExitCode.OK, state=TaskState.SUCCEEDED)
 
         if result.exit_code == EXIT_TERMINATED:
-            self.control.finish(
+            self._finish_terminal(
                 state=TaskState.CANCELLED,
                 exit_code=result.exit_code,
                 error="runner stopped on SIGTERM",
@@ -3664,7 +3722,7 @@ class Worker:
             return Outcome(exit_code=ExitCode.CANCELLED, state=TaskState.CANCELLED)
 
         error = (runner_result or {}).get("error") or _tail_text(ws.stderr_path)
-        self.control.finish(
+        self._finish_terminal(
             state=TaskState.FAILED,
             end_cause=EndCause.RUNNER_ERROR,
             exit_code=result.exit_code,
@@ -3743,13 +3801,13 @@ class Worker:
         summary["verdict_published"] = {"refused": error}
         self.log.error("the review's verdict was not published", reason=error)
         if retryable:
-            state = self.control.fail_retryably(
+            state = self._fail_retryably_terminal(
                 exit_code=0, error=error, cause="verdict_unpublished",
                 result_summary=summary, end_cause=end_cause,
             )
             return Outcome(exit_code=ExitCode.FAILED, state=state)
-        self.control.finish(state=TaskState.FAILED, exit_code=0, error=error,
-                            result_summary=summary, end_cause=end_cause)
+        self._finish_terminal(state=TaskState.FAILED, exit_code=0, error=error,
+                              result_summary=summary, end_cause=end_cause)
         return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
 
     def _carry_parked_uploads(self, summary: dict[str, Any]) -> None:
@@ -3908,6 +3966,7 @@ class Worker:
     def _exit_fenced(self, exc: FencedError) -> int:
         """Emit the event and leave. No workspace, no agent, no lease change."""
         self._fenced_exit = True
+        self.mcp.mark_fenced()
         self.log.error(
             "FENCED: this attempt has been superseded; exiting without running the agent",
             expected_generation=exc.expected,
@@ -4507,6 +4566,14 @@ class Worker:
             return None
         destination = ws.work / REPO_DIR_NAME
         self._repo_url = url
+        # AN INDEX RUN'S CHECKPOINTS LEAVE ITS CHECKOUT OUT (INDEX-CKPT, owner
+        # decision 2026-10-17): the indexer only reads it, and a resumed
+        # attempt clones it again below, at the manifest's `clone_base`
+        # (`indexrun.resume_clone_ref`). Set before the first checkpoint, so
+        # a chain never changes what it covers. Empty for every other profile.
+        self.checkpoints.excluded_dirs = indexrun_mod.checkpoint_excludes(
+            self.cfg.runner_profile
+        )
         if destination.exists() and any(destination.iterdir()):
             # Restored from a checkpoint that already contains the clone. The
             # base commit is read back from the marker the FIRST attempt wrote,
@@ -4568,8 +4635,17 @@ class Worker:
         carried, carried_head = (
             ("", None) if pr_branch or continued or builds_on else self._carrier_parent(task, url)
         )
+        # A resumed index run whose checkpoint left the checkout out clones
+        # again at the commit its first attempt cloned, by the same call and
+        # with the token read the same way, wherever `repository_ref` has
+        # moved since: the restored graph describes that commit.
+        resumed_at = indexrun_mod.resume_clone_ref(
+            self.cfg.runner_profile,
+            self._restored_from.clone_base if self._restored_from else None,
+        )
         ref = (
-            pr_branch
+            resumed_at
+            or pr_branch
             or continued
             or (f"{self.cfg.git_branch_prefix}{builds_on}" if builds_on else None)
             or (f"{self.cfg.git_branch_prefix}{carried}" if carried else None)
@@ -4584,7 +4660,7 @@ class Worker:
         # pinned. `_upstream_base_pin` reads nothing for a root step or a
         # non-workflow task, which is therefore unchanged.
         pinned_sha: str | None = None
-        if not (pr_branch or continued or builds_on or carried):
+        if not (resumed_at or pr_branch or continued or builds_on or carried):
             pinned_sha, self._base_pin = self._upstream_base_pin(task)
         if carried:
             # THE PARENT'S RECORDED HEAD, NOT THE BRANCH'S TIP (#453). The tip
@@ -6503,7 +6579,7 @@ class Worker:
         causes = self._missing_causes(summary)
         error = self._scrub(expected_mod.missing_error(missing, causes=causes))
         if not expected_mod.retryable(missing, causes):
-            self.control.finish(
+            self._finish_terminal(
                 state=TaskState.FAILED,
                 exit_code=exit_code,
                 error=error,
@@ -6516,7 +6592,7 @@ class Worker:
                 causes=self._scrub(expected_mod.causes_of(missing, causes)),
             )
             return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
-        state = self.control.fail_retryably(
+        state = self._fail_retryably_terminal(
             exit_code=exit_code,
             error=error,
             cause="expected_outputs_missing",
@@ -6544,7 +6620,7 @@ class Worker:
         the title again.
         """
         error = self._scrub(reason)
-        state = self.control.fail_retryably(
+        state = self._fail_retryably_terminal(
             exit_code=exit_code,
             error=error,
             cause="pull_request_title_refused",
@@ -6572,7 +6648,7 @@ class Worker:
         so the agent's files are there to edit.
         """
         error = self._scrub(reason)
-        state = self.control.fail_retryably(
+        state = self._fail_retryably_terminal(
             exit_code=exit_code,
             error=error,
             cause="final_tree_adds_a_credential",
@@ -6901,7 +6977,7 @@ class Worker:
             f"forge did not answer after {tries} tries: {reason}. The attempt is "
             "retried while the task has attempts left."
         )
-        state = self.control.fail_retryably(
+        state = self._fail_retryably_terminal(
             exit_code=exit_code,
             error=error,
             cause=FORGE_UNREACHABLE,
@@ -6941,7 +7017,7 @@ class Worker:
         `PUBLISHED_NOTHING`, is contract request 46, not applied.
         """
         error = self._scrub(reason[:4000])
-        self.control.finish(
+        self._finish_terminal(
             state=TaskState.FAILED,
             exit_code=exit_code,
             error=error,
@@ -7265,7 +7341,7 @@ class Worker:
         )
         summary["forge_check"] = {"cause": cause, "reason": reason}
         if cause == FORGE_GRANT_UNREADABLE:
-            state = self.control.fail_retryably(
+            state = self._fail_retryably_terminal(
                 exit_code=exit_code,
                 error=error,
                 cause=cause,
@@ -7275,7 +7351,7 @@ class Worker:
                 end_cause=EndCause.PUBLISH_REFUSED,
             )
             return Outcome(exit_code=ExitCode.FAILED, state=state)
-        self.control.finish(
+        self._finish_terminal(
             state=TaskState.FAILED,
             exit_code=exit_code,
             error=error,
@@ -7479,6 +7555,9 @@ class Worker:
         released = self.secret_release.result
         if released is not None:
             base.update(released.env)
+        # The MCP relay (MCP-WORKER): the relay file's PATH, whose contents
+        # are loopback URLs and the local token -- never a credential.
+        base.update(self.mcp.env)
         return ws.child_env(base)
 
     def _graph_context_env(self, ws: Any, clone_base: str | None) -> dict[str, str]:
@@ -7503,7 +7582,8 @@ class Worker:
                     base_sha=clone_base, call_options=self.control.call_options(),
                     log=self.log, mark=self._mark_graph_ready,
                     graph_ticket=self.graph_ticket, private_dir=ws.private,
-                    backend=self.cfg.backend, service_url=self.cfg.graph_service_url)
+                    backend=self.cfg.backend, service_url=self.cfg.graph_service_url,
+                    secret_env_names=self.cfg.profile.secrets)
             except graph_ticket_mod.GraphTicketFenced as exc:
                 raise FencedWriteRefused(
                     self.cfg.generation, -1, str(exc), write="graph ticket"
@@ -9158,6 +9238,49 @@ class Worker:
             )
         return Outcome(exit_code=ExitCode.FAILED, state=state)
 
+    def _fail_mcp_unattached(self, cause: str, detail: str, retryable: bool) -> Outcome:
+        """The attempt ends before its agent ran: a registered MCP server the
+        task names was withheld, or the attach could not be made (MCP-WORKER,
+        design §4.7 step 2). The caller named the server because the agent
+        needs it; work built without it would rest on knowledge the agent was
+        told it had. Retryable only when a later attempt may get it
+        (`unreadable`, an unreachable swarm-api); `credential_expired` and
+        the other reasons are final. `detail` holds names and reason words,
+        never a value.
+        """
+        error = self._scrub(
+            f"{cause}: the task names registered MCP servers this attempt could not "
+            f"attach ({detail}). The agent was not started"
+            + ("; the attempt is retried while the task has attempts left." if retryable
+               else ".")
+        )
+        self.log.warning(
+            "mcp servers not attached; failing before the agent runs",
+            cause=cause, detail=detail, retryable=retryable,
+        )
+        summary = self._upload_outputs()
+        summary["mcp_check"] = {"cause": cause, "detail": detail, "retryable": retryable}
+        with self._metrics_after_the_record():
+            if not retryable:
+                self.control.finish(
+                    state=TaskState.FAILED,
+                    exit_code=None,
+                    error=error,
+                    result_summary=summary,
+                    end_cause=EndCause.CANNOT_START,
+                )
+                return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
+            state = self.control.fail_retryably(
+                exit_code=None,
+                error=error,
+                cause=cause,
+                result_summary=summary,
+                retry_delay_seconds=FORGE_UNREACHABLE_RETRY_DELAY_SECONDS,
+                detail={"mcp": detail},
+                end_cause=EndCause.CANNOT_START,
+            )
+        return Outcome(exit_code=ExitCode.FAILED, state=state)
+
     def _forge_retry(self) -> forge_mod.RetryPolicy:
         """The bound on retrying a forge call that failed transiently (F1).
 
@@ -9603,6 +9726,8 @@ class Worker:
                 try:
                     signals = self.control.poll()
                     if signals.is_fenced(self.cfg.generation):
+                        # The relay stops forwarding now, not at the next poll.
+                        self.mcp.mark_fenced()
                         self.log.warning(
                             "stopped heartbeating the lease during a long operation: "
                             "the attempt is fenced",
@@ -10584,6 +10709,94 @@ class Worker:
         self._publish_config_seals[str(publish_repo)] = _config_seal(publish_repo)
         return publish_repo
 
+    def _push_over_own_earlier_attempt(
+        self,
+        publish_repo: Path,
+        rejected: PushRejected,
+        *,
+        url: str,
+        token: str,
+        branch: str,
+        protected: tuple[str, ...],
+        author_name: str,
+        author_email: str,
+    ) -> str:
+        """Publish onto this task's branch when only its earlier attempt wrote it (#1438).
+
+        MEASURED 2026-10-16: attempt 1 pushed `swarm/task_<id>`, then crashed
+        before its terminal state landed; the reconciler reclaimed it, and
+        attempts 2 and 3 published from a fresh publish repository at the
+        same clone base, so their pushes were refused as non-fast-forwards
+        against attempt 1's commit and the task failed with no pull request.
+
+        When the refused branch is exactly `<prefix><this task id>` and every
+        commit it adds over the clone base is this task's worker's
+        (`gitops.own_branch_tip`), this attempt's HEAD replaces it with
+        `--force-with-lease` to the sha just verified. Anything else -- a
+        commit someone else wrote, a branch this task continues or amends, a
+        tip that moved after the check -- re-raises, and the attempt fails as
+        it always did.
+
+        FORCE-WITH-LEASE, NOT A COMMIT ON TOP, AND WHY: the branch then holds
+        exactly what a first-attempt push would have left -- this attempt's
+        own history over the clone base, the one its final-tree scan and
+        authorship check just read, its kept commits (a red-first tests
+        commit among them) intact -- so the pull request that follows sees
+        the branch it would have seen. A commit on the fetched head would
+        squash this attempt's history into one commit and stack it on a tree
+        this attempt never scanned. What the lease replaces is only commits
+        proven this task's own, and it is refused if the branch moved since.
+        """
+        cfg = self.cfg
+        ws = self.ws
+        assert ws is not None
+        tip, why = own_branch_tip(
+            repo=publish_repo,
+            url=url,
+            branch=branch,
+            token=token,
+            task_id=cfg.task_id,
+            base=self._publish_base,
+            author_name=author_name,
+            author_email=author_email,
+            also_own=((cfg.git_author_name, cfg.git_author_email),),
+            private_dir=ws.private,
+            logs_dir=ws.logs,
+            timeout_seconds=cfg.git_clone_timeout_seconds,
+            logger=self.log,
+            branch_prefix=cfg.git_branch_prefix,
+        )
+        if tip is None:
+            self.log.warning(
+                "the push was refused and the branch is not this task's own earlier "
+                "push; publishing nothing",
+                branch=branch,
+                reason=str(self._scrub(why)),
+            )
+            raise rejected
+        pushed = push_branch(
+            repo=publish_repo,
+            url=url,
+            branch=branch,
+            token=token,
+            private_dir=ws.private,
+            logs_dir=ws.logs,
+            timeout_seconds=cfg.git_clone_timeout_seconds,
+            logger=self.log,
+            branch_prefix=cfg.git_branch_prefix,
+            protected=protected,
+            lease=tip,
+        )
+        self.log.info(
+            "the task's branch held only its earlier attempt's worker commits; "
+            "replaced them with this attempt's (force-with-lease)",
+            branch=branch,
+            replaced=tip,
+            head=pushed or "unknown",
+            how="force_with_lease",
+        )
+        return pushed
+
     def _publish_git(
         self,
         *,
@@ -11101,18 +11314,24 @@ class Worker:
                 logger=self.log,
             )
 
-            pushed = push_branch(
-                repo=publish_repo,
-                url=url,
-                branch=branch,
-                token=token,
-                private_dir=ws.private,
-                logs_dir=ws.logs,
-                timeout_seconds=cfg.git_clone_timeout_seconds,
-                logger=self.log,
-                branch_prefix=cfg.git_branch_prefix,
-                protected=protected,
-            )
+            try:
+                pushed = push_branch(
+                    repo=publish_repo,
+                    url=url,
+                    branch=branch,
+                    token=token,
+                    private_dir=ws.private,
+                    logs_dir=ws.logs,
+                    timeout_seconds=cfg.git_clone_timeout_seconds,
+                    logger=self.log,
+                    branch_prefix=cfg.git_branch_prefix,
+                    protected=protected,
+                )
+            except PushRejected as rejected:
+                pushed = self._push_over_own_earlier_attempt(
+                    publish_repo, rejected, url=url, token=token, branch=branch,
+                    protected=protected, author_name=author_name, author_email=author_email,
+                )
         except GitError as exc:
             out["published"] = False
             out["auto_committed"] = auto_committed
@@ -12486,6 +12705,136 @@ class Worker:
         finally:
             self._signal_mode = previous
 
+    def _finish_terminal(
+        self,
+        *,
+        state: TaskState,
+        exit_code: int | None,
+        error: str | None = None,
+        result_summary: dict[str, Any] | None = None,
+        end_cause: EndCause | None = None,
+    ) -> None:
+        """`ControlPlane.finish`, written once more with a minimal summary when
+        Firestore refuses the document (#1438).
+
+        MEASURED 2026-10-16: a `result_summary` holding an array inside an
+        array made Firestore answer `400 ... invalid nested entity`
+        (InvalidArgument); it propagated out of `_record_finalised` as
+        "worker crashed", the process exited 1, the lease was released only
+        ~100 s later by the reconciler as a lost worker, and the task was
+        retried -- after an attempt that had decided its own state.
+        `agent_worker.storable` reshapes the known case; this is what holds
+        for the next shape, or a size, nobody has seen yet.
+
+        So on InvalidArgument, and nothing else, the SAME transition is
+        written once more through the same fenced `finish` -- state, exit
+        code, error and end cause unchanged -- with `_minimal_terminal_summary`
+        in place of the summary. The refused write committed nothing (the
+        transition is the first write and is one transaction), so the lease is
+        released once, by that second `finish`. A fenced refusal is never
+        retried here: it is a `FencedError`, re-raised as it was, and a
+        refusal of the minimal write too raises the FIRST refusal, as before.
+        Logged by type and message only, never the summary.
+        """
+        self._write_terminal_once_more_if_refused(
+            lambda summary: self.control.finish(
+                state=state,
+                exit_code=exit_code,
+                error=error,
+                result_summary=summary,
+                end_cause=end_cause,
+            ),
+            decided=state.value,
+            error=error,
+            result_summary=result_summary,
+        )
+
+    def _fail_retryably_terminal(
+        self,
+        *,
+        exit_code: int | None,
+        error: str,
+        cause: str,
+        result_summary: dict[str, Any] | None = None,
+        retry_delay_seconds: int = 0,
+        detail: dict[str, Any] | None = None,
+        end_cause: EndCause | None = None,
+    ) -> TaskState:
+        """`ControlPlane.fail_retryably`, under the same refusal rule as
+        `_finish_terminal` (#1438): the attempt's retryable ends
+        (`_fail_for_missing_outputs`, a refused title, a final-tree leak, an
+        unreachable forge, an unreadable grant, an unpublished verdict) wrote
+        the same summary `finish` did and crashed the same way when Firestore
+        refused it.
+
+        On InvalidArgument, and nothing else, the same transition is written
+        once more -- cause, delay, detail, exit code, error and end cause
+        unchanged -- with the minimal summary. Which state the task lands in
+        (READY, FAILED or CANCELLED) is still decided inside that one fenced
+        transaction, so the minimal summary records `failed_retryably`, what
+        the attempt decided, not a state it cannot know. A FencedError is
+        re-raised, never retried. Returns the state the task was left in.
+        """
+        return self._write_terminal_once_more_if_refused(
+            lambda summary: self.control.fail_retryably(
+                exit_code=exit_code,
+                error=error,
+                cause=cause,
+                result_summary=summary,
+                retry_delay_seconds=retry_delay_seconds,
+                detail=detail,
+                end_cause=end_cause,
+            ),
+            decided=FAILED_RETRYABLY,
+            error=error,
+            result_summary=result_summary,
+        )
+
+    def _write_terminal_once_more_if_refused(
+        self,
+        write: Callable[[dict[str, Any] | None], Any],
+        *,
+        decided: str,
+        error: str | None,
+        result_summary: dict[str, Any] | None,
+    ) -> Any:
+        """Run one terminal write; when Firestore refuses its document, run it
+        once more with `_minimal_terminal_summary`. The mechanics
+        `_finish_terminal` and `_fail_retryably_terminal` share (#1438)."""
+        try:
+            return write(result_summary)
+        except FencedError:
+            raise
+        except Exception as exc:
+            if result_summary is None or not _firestore_refused_the_document(exc):
+                raise
+            refused = exc
+        refusal = str(self._scrub(str(refused)))
+        self.log.error(
+            "the terminal write was refused; writing the same state once more "
+            "with a minimal summary",
+            state=decided,
+            error_type=type(refused).__name__,
+            error=refusal[:SUMMARY_REFUSED_MAX_CHARS],
+        )
+        try:
+            written = write(
+                _minimal_terminal_summary(decided, error, result_summary, refusal)
+            )
+        except FencedError:
+            raise
+        except Exception as again:
+            self.log.error(
+                "the minimal terminal write was refused too",
+                state=decided,
+                error_type=type(again).__name__,
+            )
+            raise refused from None
+        self.log.warning(
+            "the terminal state landed with a minimal summary", state=decided
+        )
+        return written
+
     def _safe_finish(
         self,
         state: TaskState,
@@ -12511,7 +12860,7 @@ class Worker:
             if extra_summary:
                 summary = {**(summary or {}), **extra_summary}
             with self._metrics_after_the_record():
-                self.control.finish(
+                self._finish_terminal(
                     state=state,
                     exit_code=exit_code,
                     error=self._scrub(error[:4000]),
@@ -12560,6 +12909,10 @@ class Worker:
         for step, action in (
             ("terminate_runner", terminate_runner),
             ("remove_released_secrets", remove_released_secrets),
+            # The MCP relay closes, its file goes and every credential
+            # reference is dropped once the runner is gone (MCP-WORKER,
+            # design §4.7 step 6). The bytes go when this process exits.
+            ("close_mcp_relay", self.mcp.close),
             # The TypeSafe shim stops, its file goes and the ticket is dropped
             # once the runner is gone (SEC-MIGRATE-TYPESAFE). A no-op when off.
             ("stop_typesafe_shim", self.typesafe.close),
@@ -14558,6 +14911,70 @@ def _refused_key_names(keys: Sequence[str]) -> str:
     ]
     rest = len(keys) - len(shown)
     return ", ".join(shown) + (f" and {rest} more" if rest > 0 else "")
+
+
+#: How much of Firestore's refusal the minimal summary keeps, as
+#: `summary_refused` (#1438). The refusal measured on 2026-10-16 -- "400
+#: Property result_summary contains an invalid nested entity." -- is under 70
+#: characters; 300 keeps the property and the rule of any refusal of that
+#: form and still bounds a field the next refusal's text fills.
+SUMMARY_REFUSED_MAX_CHARS = 300
+
+#: The minimal summary's `state` when the refused write was `fail_retryably`
+#: (#1438). Which state the task lands in -- READY, FAILED or CANCELLED -- is
+#: picked inside that write's own fenced transaction, after the summary is
+#: built, so the summary records what the attempt decided instead of guessing.
+FAILED_RETRYABLY = "failed_retryably"
+
+
+def _firestore_refused_the_document(exc: BaseException) -> bool:
+    """Whether `exc` is Firestore refusing what was written: InvalidArgument,
+    a document's shape or size (#1438). Imported here, not at module level,
+    as `_is_final_refusal` does: the worker's tests run without the library
+    loaded for anything else."""
+    try:
+        from google.api_core import exceptions as core
+    except ImportError:
+        return False
+    return isinstance(exc, core.InvalidArgument)
+
+
+def _minimal_terminal_summary(
+    state: str, error: str | None, summary: dict[str, Any], refusal: str
+) -> dict[str, Any]:
+    """What a terminal write carries once Firestore refused its summary (#1438).
+
+    The state, the error, the branch and the pull request when the attempt
+    had them -- by their scalar fields only, so this summary holds no value
+    of the shape that was refused -- and `summary_refused`, Firestore's
+    reason cut to `SUMMARY_REFUSED_MAX_CHARS`. The rest of what the attempt
+    produced is still in its artifacts and its final checkpoint."""
+
+    def scalars(value: Any, keys: tuple[str, ...]) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        kept = {
+            key: value[key]
+            for key in keys
+            if isinstance(value.get(key), (str, int, bool))
+        }
+        return kept or None
+
+    git = summary.get("git") if isinstance(summary.get("git"), dict) else {}
+    minimal: dict[str, Any] = {
+        "state": state,
+        "error": error,
+        "summary_refused": refusal[:SUMMARY_REFUSED_MAX_CHARS],
+    }
+    branch = scalars(summary.get("branch"), ("name", "head", "head_sha", "base_sha"))
+    if branch is None and isinstance(git.get("branch"), str):
+        branch = {"name": git["branch"], "head": git.get("pushed_head")}
+    if branch is not None:
+        minimal["branch"] = branch
+    pull_request = scalars(git.get("pull_request"), ("number", "url", "state", "created"))
+    if pull_request is not None:
+        minimal["pull_request"] = pull_request
+    return minimal
 
 
 def _end_cause_of(exc: BaseException) -> EndCause:

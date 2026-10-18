@@ -25,6 +25,7 @@ splice the title between quotes (every quote case goes red).
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -116,6 +117,34 @@ def test_every_hostile_title_round_trips_through_the_copy_exactly(_plugin_root, 
     assert len(got) == len(HOSTILE_TITLES) == 15
 
 
+def test_every_hostile_title_names_a_valid_file_in_the_project_and_a_record_line(_plugin_root, tmp_path, monkeypatch):
+    """SC-TITLES (#1511): each copy is `SC-<slug>-<12 hex>.js` inside the
+    project's `.claude/sc-swarmcloud-runs/`, whatever the title holds -- no
+    separator, dot-dot or non-ASCII character reaches the file name -- and
+    each spec submission's `launched.jsonl` line (written by workflow id when
+    `swarm_workflow` is answered, SC-TITLES-B) is one JSON object that reads
+    back with the title its launch showed."""
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setenv(launch.PROJECT_DIR_ENV, str(project))
+    folder = project / ".claude" / "sc-swarmcloud-runs"
+    scripts = [launch.write_script(title, "about " + title) for title in HOSTILE_TITLES + ["SC · ../../up · 1 step"]]
+    assert len({s.name for s in scripts}) == len(scripts)
+    for script in scripts:
+        assert script.parent == folder
+        assert re.fullmatch(r"SC-[A-Za-z0-9]+(-[A-Za-z0-9]+)*-[0-9a-f]{12}\.js", script.name), script.name
+    got = _read(tmp_path, scripts)
+    assert [m["name"] for m in got] == HOSTILE_TITLES + ["SC · ../../up · 1 step"]
+    replies = []
+    for title in HOSTILE_TITLES:
+        spec = {**_FIXTURE["chain"], "title": title}
+        replies.append(json.loads(server._call(_Recorder(), "swarm_workflow_launch", {"spec": spec})))
+        server._call(_Recorder(), "swarm_workflow", {"spec": spec})
+    lines = (folder / launch.RECORD_FILE).read_text(encoding="utf-8").split("\n")
+    assert lines[-1] == "" and len(lines) == len(HOSTILE_TITLES) + 1, "one line per launch, none split"
+    assert [json.loads(line)["title"] for line in lines[:-1]] == [r["title"] for r in replies]
+
+
 def test_the_meta_lines_hold_no_raw_separator_or_surrogate_and_stay_readable(_plugin_root):
     for title in HOSTILE_TITLES:
         lines = launch.write_script(title, title).read_text(encoding="utf-8").split("\n")
@@ -146,7 +175,7 @@ def test_an_attach_with_a_hostile_stored_title_parses_and_hands_the_name_back_as
     for title, reply, meta in zip(HOSTILE_TITLES, replies, got):
         name = workflows.title_name(stored=title)
         assert meta["parses"] is True, (title, meta["parses"])
-        assert reply["args"] == {"attach": "wf_9", "title": name}
+        assert reply["args"] == {"attach": "wf_9", "title": name, "titled_copy": reply["script_path"]}
         assert meta["name"] == reply["title"] == workflows.workflow_title(name, 2)
 
 
@@ -177,7 +206,7 @@ def test_attach_all_with_hostile_titles_writes_a_parsing_copy_per_workflow(_plug
     for entry, one, meta in zip(entries, launches, got):
         name = workflows.title_name(stored=entry["title"])
         assert meta["parses"] is True, (entry["title"], meta["parses"])
-        assert one["args"] == {"attach": entry["workflow_id"], "title": name}
+        assert one["args"] == {"attach": entry["workflow_id"], "title": name, "titled_copy": one["script_path"]}
         assert meta["name"] == one["title"]
 
 

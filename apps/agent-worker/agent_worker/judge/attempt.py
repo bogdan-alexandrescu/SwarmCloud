@@ -5,12 +5,13 @@ Firestore); the runner makes J1-J5 (it holds the checkout and the agent's
 outputs). So:
 
 * `setup` runs in the WORKER, inside `graphstage.prepare` -- the lifecycle's
-  one existing call at attempt setup, so `lifecycle.py` is not touched. It
+  one existing call at attempt setup, which also hands it the task profile's
+  registered secret NAMES (`RunnerProfile.secrets`, lane JEV-SCRUB). It
   reads the workspace's ONE settings document (`workspace_settings/{tenant}`:
   `code_intelligence.jev`, beside JUDGE-SELECT's `judgment_backend`,
   context-quality.md §4.7) and the repository's registration, and calls
-  `register.prepare`, which writes `<attempt>/judge/config.json` and the
-  shared ledger -- or nothing at all when Jev is off. It returns
+  `register.prepare`, which writes `<attempt>/judge/config.json` (those
+  names among it, never a value) and the shared ledger -- or nothing at all when Jev is off. It returns
   `{CONFIG_ENV: <path>}` for the runner's environment, or `{}`.
 * `load` runs in the RUNNER: the client from that config, or `(None, why)`.
 
@@ -39,7 +40,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from agent_worker.judge import client as client_mod
 from agent_worker.judge import register, settings as settings_mod
@@ -118,18 +119,48 @@ def _registration(db: Any, tenant_id: str, repository_url: str | None,
     return data if data is not None and data.get("tenant_id") == tenant_id else None
 
 
-def setup(*, work: Path, db: Any, tenant_id: str, repository_url: str | None,
-          call_options: Mapping[str, Any] | None = None,
-          environ: Mapping[str, str] | None = None, log: Any = None) -> dict[str, str]:
-    """The worker's half: `{CONFIG_ENV: path}` when this attempt may ask Jev, else {}.
+def _read(db: Any, tenant_id: str, repository_url: str | None,
+          options: Mapping[str, Any]) -> tuple[Mapping[str, Any], Mapping[str, Any] | None]:
+    """`(workspace_settings, registration or None)`, by either path."""
+    from agent_worker import indexrun
 
-    An unregistered repository, or one registered by another tenant, reads as
-    "no override"; the workspace's own opt-in still decides."""
-    try:
-        options = dict(call_options or {})
+    state = indexrun.state_routes(db)
+    if state is None:
         snap = db.collection(WORKSPACE_SETTINGS_COLLECTION).document(tenant_id).get(**options)
         workspace = (snap.to_dict() or {}) if snap.exists else {}
-        registration = _registration(db, tenant_id, repository_url, options)
+        return workspace, _registration(db, tenant_id, repository_url, options)
+    served = indexrun.route_context(state).get("workspace_settings")
+    workspace = served if isinstance(served, Mapping) else {}
+    where = indexrun.target(tenant_id, repository_url)
+    if isinstance(where, str):
+        return workspace, None
+    found = indexrun.route_repository(state, where)
+    return workspace, None if isinstance(found, str) else found[0]
+
+
+def setup(*, work: Path, db: Any, tenant_id: str, repository_url: str | None,
+          call_options: Mapping[str, Any] | None = None,
+          environ: Mapping[str, str] | None = None, log: Any = None,
+          secret_env_names: Iterable[str] = ()) -> dict[str, str]:
+    """The worker's half: `{CONFIG_ENV: path}` when this attempt may ask Jev, else {}.
+
+    `secret_env_names` are the task profile's registered secrets
+    (`RunnerProfile.secrets`), NAMES only: the config carries them, and the
+    runner's client reads their values from its own environment and drops
+    every string holding one (context-quality.md §5.4 step 4). Without them
+    a profile secret that does not look like a credential would be sent.
+
+    An unregistered repository, or one registered by another tenant, reads as
+    "no override"; the workspace's own opt-in still decides.
+
+    A tenant switched to the state routes passes its attempt's state client
+    as `db` (`indexrun.state_routes`): the workspace's settings from
+    `state/context`, the registration from `state/repository`, and no
+    Firestore call.
+    """
+    try:
+        options = dict(call_options or {})
+        workspace, registration = _read(db, tenant_id, repository_url, options)
         given = judge_settings(workspace, registration)
         attempt_dir = Path(work).parent
         private = attempt_dir / register.KEY_DIR
@@ -141,7 +172,7 @@ def setup(*, work: Path, db: Any, tenant_id: str, repository_url: str | None,
             shim_url, key = None, _read_key(private)
         done = register.prepare(attempt_dir=attempt_dir, settings=given, key=key,
                                 environ=environ, hard_stop_paths=_hard_stops(registration),
-                                shim_url=shim_url)
+                                secret_env_names=secret_env_names, shim_url=shim_url)
     except Exception as exc:  # noqa: BLE001 -- Jev is never worth the attempt
         if log is not None:
             log.warning("jev not set up", error=type(exc).__name__)

@@ -31,6 +31,21 @@ to the address the probe proved reachable.
 
 The probe opens a TCP connection and closes it. It sends no byte, so no
 request, header or credential is ever on it.
+
+WHAT A SUCCESSFUL PROBE PROVES, AND WHAT IT DOES NOT (#1334, measured
+2026-10-16 by the #939 investigation over 720 Cloud Run starts): one TCP
+handshake, on the probe's own fresh socket, from this process to ONE address
+the target's name resolved to, completed at `egress_ready_seconds`. It does
+NOT prove a clone can start then. A clone still needs git's own name
+resolution (which may pick another address -- the reason for `peer`), git's
+own TCP connect on its own socket, a TLS handshake, an authenticated HTTP
+request and the forge's answer; the probe exercises none of those past the
+handshake. On GKE the gap is nothing (git connects in 0.026 s once the probe
+has). On Cloud Run it is not: after the probe connected, git's own connect
+(`clone_timed` `try_log[0].connect_seconds`) still stalled p50 11.3 s, over
+3 s in 73 % of starts. Read `egress_ready_seconds` as the earliest a connect
+from this instance was seen to succeed -- a lower bound on when the clone can
+start, never the moment it does.
 """
 
 from __future__ import annotations
@@ -115,6 +130,12 @@ class EgressProbe:
     timeout)` blocks until that target answered, the probe ended, or
     `timeout`; it never raises. `stop` ends the thread and joins it.
     `result()` is what the `egress_ready` mark carries.
+
+    "Answered" means one TCP handshake to one address of the target
+    completed on the probe's own socket -- not that git's connect, TLS or
+    request will now succeed at once. `wait` returning True is a reason to
+    stop holding the clone back, not a promise the clone will not stall (see
+    the module docstring for what Cloud Run measured).
     """
 
     def __init__(

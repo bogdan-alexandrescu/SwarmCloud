@@ -243,7 +243,7 @@ def test_a_task_launch_titles_its_run_and_rows_from_the_labels(_plugin_root):
     assert out["args"] == {"attach_tasks": [
         {"task_id": "task_a", "title": "lane-a", "console": "https://c.test/agents/task_a", "details": none},
         {"task_id": "task_b", "title": "task_b", "details": none},
-    ], "max_rows": launch.MAX_ATTACHED_TASKS}
+    ], "max_rows": launch.MAX_ATTACHED_TASKS, "titled_copy": out["script_path"]}
     assert Path(out["script_path"]).is_file()
     assert launch.for_tasks([{"task_id": "task_a", "label": "lane-a"}])["title"] == "SC · lane-a · task"
 

@@ -106,6 +106,19 @@ def _distinct(annotation: str, name: str, index: int, default: Any) -> Any:
         return "git-u-" + "0123456789abcdef"
     if name == "forge_access":
         return "read"
+    # Contract request 95: entries the model holds to a shape.
+    if name == "additional_repositories":
+        return [{
+            "name": "web",
+            "repo_id": "repo_" + "0123456789abcdef",
+            "repository": "acme/web",
+            "repository_url": "https://github.com/acme/web",
+            "ref": "main",
+            "commit": "a" * 40,
+            "forge_credential": "git",
+            "forge_credential_source": "tenant",
+            "size_kib": 1024,
+        }]
     # Contract request 70: served as its public projection
     # (`codec.HUMAN_WAIT_PUBLIC_KEYS`), so a value holding exactly those keys
     # is served unchanged and the value comparison below still bites.
@@ -257,6 +270,11 @@ CODECS: tuple[Codec, ...] = (
             # submission that writes them.
             "forge_credential": "worker-only: the secret suffix swarm-api resolved, not served",
             "forge_access": "worker-only: the forge mode swarm-api resolved, not served",
+            # Contract request 95 (MR-CONTRACT, part of #1434). Served as its
+            # masked projection (no URL, no slot) by lane MR-API, which owns the
+            # public shape (docs/design/multi-repository-steps.md §4.1); this
+            # entry is the thing that lane deletes.
+            "additional_repositories": "served by lane MR-API as its §4.1 projection; not yet",
         },
         # The input and metadata are served MASKED (owner decision,
         # 2026-09-26), and these say how many masks each took; so, since the

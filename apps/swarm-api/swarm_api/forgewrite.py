@@ -76,6 +76,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 from urllib.parse import quote, urlparse
 
+from . import forge_limits
 from .errors import ApiError
 from .forge import (
     GITHUB_API_HOST,
@@ -141,6 +142,17 @@ class ForgeUnreachable(ForgeWriteError):
     """
 
 
+class ForgeRateLimited(ForgeUnreachable):
+    """GitHub limited the request (`forge_limits.rate_limit`): transient, and
+    `reset` says when GitHub said it may be asked again (None when it did
+    not). QUOTA-THROTTLE: a background sweep stops on the first one and
+    holds itself until `reset` rather than asking again every park."""
+
+    def __init__(self, message: str, *, reset: Any = None) -> None:
+        super().__init__(message)
+        self.reset = reset
+
+
 def is_transient(error: BaseException) -> bool:
     """Whether a later attempt of the same request may work."""
     return isinstance(error, ForgeUnreachable)
@@ -160,12 +172,6 @@ def _transport_name(exc: BaseException) -> str:
     if isinstance(exc, urllib.error.URLError) and isinstance(reason, BaseException):
         return f"{name}: {type(reason).__name__}"
     return name
-
-
-def _rate_limited(raw: bytes) -> bool:
-    """A 403 GitHub sends for its primary or secondary rate limit, read from its
-    answer's text. Only tested, never quoted."""
-    return b"rate limit" in raw[:MAX_RESPONSE_BYTES].lower()
 
 
 #: What each write needs, named in the 403's sentence.
@@ -202,14 +208,24 @@ LOG_HOST_SUFFIXES = (".actions.githubusercontent.com", ".blob.core.windows.net")
 # the wire
 # --------------------------------------------------------------------------
 
-#: `(method, url, headers, body or None, timeout) -> (status, body bytes)`.
-#: Injected by the tests; `_urllib_send` in production.
-WriteSend = Callable[[str, str, dict[str, str], "bytes | None", float], "tuple[int, bytes]"]
+#: `(method, url, headers, body or None, timeout) -> (status, body bytes)` or
+#: `(status, body bytes, response headers)`. Injected by the tests;
+#: `_urllib_send` in production, which answers the headers too: GitHub's
+#: `X-RateLimit-*` are what `forge_limits.QUOTAS` is kept from.
+WriteSend = Callable[[str, str, dict[str, str], "bytes | None", float], "tuple[Any, ...]"]
+
+
+def _response_headers(response: Any) -> dict[str, str]:
+    raw = getattr(response, "headers", None)
+    try:
+        return {str(k): str(v) for k, v in raw.items()} if raw is not None else {}
+    except Exception:
+        return {}
 
 
 def _urllib_send(
     method: str, url: str, headers: dict[str, str], body: bytes | None, timeout: float
-) -> tuple[int, bytes]:
+) -> tuple[int, bytes, dict[str, str]]:
     if not is_pinned_host(url):
         raise ForgeWriteError(
             f"the forge client sends the tenant's credential to {GITHUB_API_HOST} only"
@@ -217,13 +233,14 @@ def _urllib_send(
     request = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
         with _OPENER.open(request, timeout=timeout) as response:
-            return response.status, response.read(MAX_RESPONSE_BYTES + 1)
+            return (response.status, response.read(MAX_RESPONSE_BYTES + 1),
+                    _response_headers(response))
     except urllib.error.HTTPError as answer:
         try:
             raw = answer.read(MAX_RESPONSE_BYTES + 1)
         except Exception:
             raw = b""
-        return answer.code, raw
+        return answer.code, raw, _response_headers(answer)
 
 
 #: `(url, headers, timeout) -> (status, Location or "")`: one authenticated GET
@@ -431,7 +448,7 @@ class GitHubWriter:
             body = json.dumps(payload).encode("utf-8")
             headers["Content-Type"] = "application/json"
         try:
-            status, raw = self._send(method, url, headers, body, self._timeout)
+            sent = self._send(method, url, headers, body, self._timeout)
         except ForgeWriteError:
             raise
         except Exception as exc:
@@ -439,15 +456,22 @@ class GitHubWriter:
             raise ForgeUnreachable(
                 f"{what} could not be sent to GitHub ({_transport_name(exc)})"
             ) from None
+        status, raw = sent[0], sent[1]
+        # QUOTA-THROTTLE: every answer updates the quota of the credential
+        # the caller acts as (`forge_limits.acting_as`); the rate-limit
+        # reading is `forge_limits`', the one place it is made.
+        limited = forge_limits.QUOTAS.observe_answer(forge_limits.Answer(
+            status, sent[2] if len(sent) > 2 and sent[2] else {}, raw))
+        if limited is not None:
+            when = forge_limits.until(limited)
+            raise ForgeRateLimited(
+                f"GitHub's rate limit held back {what} for now (HTTP {status})"
+                + (f"; it resets at {when}" if when else ""), reset=limited.reset)
         if status == 401:
             raise ForgeWriteUnauthorized(
                 f"GitHub refused the tenant's forge credential for {what} (HTTP 401): "
                 "it is invalid or has expired; store a new one with "
                 "scripts/create-secrets.sh --stdin"
-            )
-        if status == 429 or (status == 403 and _rate_limited(raw)):
-            raise ForgeUnreachable(
-                f"GitHub's rate limit held back {what} for now (HTTP {status})"
             )
         if status >= 500:
             raise ForgeUnreachable(f"GitHub answered HTTP {status} for {what}")

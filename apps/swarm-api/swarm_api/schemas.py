@@ -142,6 +142,14 @@ class WorkflowStepCreate(StrictModel):
     #: graph says otherwise, so a chain wired differently from what was meant
     #: is caught at submission rather than at merge time.
     merges: dict[str, str] | None = Field(default=None, max_length=5)
+    #: On an `await-input` step only, and required there: what the person is
+    #: asked to answer, its shape, and when and how the wait ends
+    #: (docs/design/human-steps.md §4.1). A free-form object here, checked by
+    #: `validation.resolve_await_input`, for the same reason as `strategy`:
+    #: every refusal then carries `code` and names its field, `assignees`
+    #: included, which a nested model would answer with pydantic's generic
+    #: shape. Stored normalised in `metadata.dispatch.await_input`, signed.
+    await_input: Any = None
 
 
 class MergePullRequest(StrictModel):

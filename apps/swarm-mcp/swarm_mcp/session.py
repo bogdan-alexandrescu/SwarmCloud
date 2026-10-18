@@ -45,6 +45,20 @@ it onto the planner task, the compiled workflow and every CI-fix and merge
 workflow the run starts; the merge step's conflict-fix and CI-fix rounds copy
 their merge task's. swarm-api serves it back as `claude_session` on a task
 row, a workflow row and a run.
+
+THIS SESSION'S WORK, WITHIN THE PROJECT (SC-TITLES, #1511, owner decision
+2026-10-18). Every workflow submitted or attached and every single task
+dispatched from a project is appended to that project's `launched.jsonl`
+(`swarm_mcp.launch.record`, beside the run copies in
+`<project>/.claude/sc-swarmcloud-runs/`). `/sc check`, `/sc attach --all` and
+the SessionStart attach keep work that is BOTH tagged with this session AND in
+that record (`ownership` with a `record`; a submission is recorded by the
+workflow id SwarmCloud answered with, SC-TITLES-B), so work this project launched
+against another repository is kept although the origin-repository filter
+would drop it. The repository filter stays only as the fallback for this
+session's work the record does not hold -- work launched before the record
+existed -- and a project's record is read only by bridges serving that
+project, so another project's record never attaches anything here.
 """
 
 from __future__ import annotations
@@ -53,6 +67,8 @@ import hashlib
 import json
 import os
 import re
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from . import config
@@ -149,11 +165,102 @@ def owner_of_tasks(tasks: Iterable[Any]) -> str | None:
     return None
 
 
-def ownership(owner: str | None, sid: str | None) -> str:
-    """`own`, `other_session` or `untagged`."""
+@dataclass(frozen=True)
+class Record:
+    """This project's `launched.jsonl`, as `ownership` reads it: the workflow
+    and task ids launched from here, and `(claude_session, name)` for each
+    submission recorded before SwarmCloud named its workflow -- a line only a
+    bridge older than SC-TITLES-B writes: a submission is now recorded by the
+    id SwarmCloud answers with (`server._workflow_created`)."""
+
+    ids: frozenset[str] = frozenset()
+    submitted: frozenset[tuple[str, str]] = frozenset()
+    #: The file read, or None when there is none yet.
+    path: Path | None = None
+    lines: int = 0
+    unreadable: int = field(default=0, compare=False)
+
+
+def project_record(path: Path | None = None) -> Record:
+    """The project's record (`launch.record_path()`, or `path`). A missing
+    file is an empty record; a line that is not a JSON object is skipped and
+    counted, never fatal. Reading creates nothing."""
+    if path is None:
+        from . import launch
+
+        path = launch.record_path()
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return Record()
+    ids: set[str] = set()
+    submitted: set[tuple[str, str]] = set()
+    lines = unreadable = 0
+    for raw in text.splitlines():
+        if not raw.strip():
+            continue
+        lines += 1
+        try:
+            entry = json.loads(raw)
+        except ValueError:
+            unreadable += 1
+            continue
+        if not isinstance(entry, dict):
+            unreadable += 1
+            continue
+        for key in ("workflow_id", "task_id"):
+            if isinstance(entry.get(key), str) and entry[key]:
+                ids.add(entry[key])
+        sid, name = _valid(entry.get(METADATA_KEY)), entry.get("name")
+        if not entry.get("workflow_id") and sid and isinstance(name, str) and name:
+            submitted.add((sid, name))
+    return Record(frozenset(ids), frozenset(submitted), path, lines, unreadable)
+
+
+def stored_name(envelope: Any, ident: Any) -> str:
+    """The name a submission's record line carries, read back off a
+    workflow as `GET /v1/workflows/{id}` served it: its stored title, else
+    its label, else its id (`workflows.title_name`, the one that named it)."""
+    from . import workflows
+
+    stored = workflows.stored_names(envelope) if isinstance(envelope, Mapping) else {}
+    return workflows.title_name(stored=stored.get("title") or stored.get("label"), workflow_id=ident)
+
+
+def recorded(record: Record | None, ident: Any, name: Any, sid: str | None) -> bool:
+    """Is this work in the project's record: by its id first; else -- only
+    for a line written before SC-TITLES-B, when a submission was recorded
+    before SwarmCloud named it -- this session's submission of that `name`.
+    A submission recorded by id adds no name, so a same-named workflow this
+    session did not submit here is not taken for it."""
+    if record is None:
+        return False
+    if ident and str(ident) in record.ids:
+        return True
+    return bool(sid and isinstance(name, str) and name and (sid, name) in record.submitted)
+
+
+def ownership(
+    owner: str | None,
+    sid: str | None,
+    *,
+    record: Record | None = None,
+    ident: Any = None,
+    name: Any = None,
+    in_repository: bool = True,
+) -> str:
+    """`own`, `other_session`, `untagged` -- or, given the project's `record`,
+    `not_this_project`: this session's work that is neither in the record
+    nor, the fallback for work the record does not hold, in the repository
+    the caller scopes to (`in_repository`). Without a record, the session tag
+    alone decides, as before SC-TITLES."""
     if not owner:
         return "untagged"
-    return "own" if sid and owner == sid else "other_session"
+    if not (sid and owner == sid):
+        return "other_session"
+    if record is None or in_repository or recorded(record, ident, name, sid):
+        return "own"
+    return "not_this_project"
 
 
 #: Said beside an empty candidate list when the bridge knows no session id.

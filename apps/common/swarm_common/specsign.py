@@ -21,6 +21,7 @@ import hashlib
 import json
 import math
 from decimal import Decimal
+from types import MappingProxyType
 from typing import Any, Mapping
 
 #: The canonical form's version. A change to the covered fields or the encoding
@@ -36,10 +37,16 @@ from typing import Any, Mapping
 #: the owner 2026-10-07: format 2's fields plus `forge_credential` and
 #: `forge_access`, so a task whose forge secret or access mode was rewritten
 #: fails its worker's check.
-SPEC_FORMAT = 3
+#:
+#: 4 is contract request 96 (MULTI-REPO request B,
+#: docs/design/multi-repository-steps.md §5), accepted by the owner 2026-10-17
+#: on PR 1461: format 3's fields plus `additional_repositories`, so a task
+#: whose list was rewritten -- a commit repointed, a repository added that the
+#: step was never given, a slot swapped -- fails its worker's check.
+SPEC_FORMAT = 4
 
 #: Every format a verifier accepts, oldest first.
-SPEC_FORMATS = (1, 2, 3)
+SPEC_FORMATS = (1, 2, 3, 4)
 
 #: The fields format 2 adds to format 1's projection.
 _FORMAT_2_FIELDS = ("parent_task_id", "parent_attempt_id")
@@ -49,6 +56,11 @@ _FORMAT_2_FIELDS = ("parent_task_id", "parent_attempt_id")
 #: canonical (see `canonical_step_spec`): adding a forge credential to a task
 #: signed without one must fail verification, not slip outside the bytes.
 _FORMAT_3_FIELDS = ("forge_credential", "forge_access")
+
+#: The fields format 4 adds to format 3's projection. Formats 1-3 do not cover
+#: them, so a document at any of those that SETS one (non-None and non-empty)
+#: is not canonical, exactly as a format-3 field below format 3.
+_FORMAT_4_FIELDS = ("additional_repositories",)
 
 #: The top-level fields every writer stores as integers (`Task`'s types).
 #: JCS gives 3600 and 3600.0 the same bytes, so without this a rewrite of one
@@ -62,7 +74,8 @@ def signing_format(doc: Mapping[str, Any]) -> int:
     """The format a signer signs `doc` at: the oldest one that covers every field it sets.
 
     1 when it names no parent and no forge credential, 2 when it names a parent
-    and no forge credential, else 3. Format 2's projection of a task whose
+    and no forge credential, 3 when it has a forge credential or access mode,
+    and 4 when it reads additional repositories (a non-empty list). Format 2's projection of a task whose
     parent fields are both None differs from format 1's only by carrying two
     nulls, so signing such a task at format 1 covers exactly as much -- and
     keeps it verifiable by a worker built before format 2, which knows only
@@ -79,12 +92,25 @@ def signing_format(doc: Mapping[str, Any]) -> int:
     the signature (deferred to #476). A rewrite that adds a forge field does
     NOT: the worker acts on those itself, so `canonical_step_spec` refuses
     them at a format that does not cover them.
+
+    Format 4 follows the same rule (contract request 96): only a task that
+    reads additional repositories is signed at it, so a worker built before
+    format 4 keeps verifying every task that does not. Rollout order: workers
+    first, then swarm-api, as for formats 2 and 3. An empty list is unset: it
+    asks the worker for nothing, and an older format's bytes do not see it.
     """
+    if any(_is_set(doc.get(key)) for key in _FORMAT_4_FIELDS):
+        return 4
     if any(doc.get(key) is not None for key in _FORMAT_3_FIELDS):
         return 3
     if all(doc.get(key) is None for key in _FORMAT_2_FIELDS):
         return 1
     return 2
+
+
+def _is_set(value: Any) -> bool:
+    """A format-4 field is set when it is present, not None and not an empty list."""
+    return value is not None and value != []
 
 
 #: Domain separation. The bytes of a step spec cannot be read as another message.
@@ -123,7 +149,9 @@ def canonical_step_spec(
     A document that sets `forge_credential` or `forge_access` has no
     canonical form at formats 1 and 2, which do not cover them: absent (or
     None) they leave those formats' bytes exactly as they were, present they
-    are refused rather than left outside the signature.
+    are refused rather than left outside the signature. The same holds for a
+    set `additional_repositories` at formats 1-3; at format 4 the list is
+    projected as stored, in submission order, and the order is in the bytes.
     """
     if spec_format not in SPEC_FORMATS or isinstance(spec_format, bool):
         raise SpecNotCanonical(f"spec format {spec_format!r} is not one of {SPEC_FORMATS}")
@@ -135,6 +163,10 @@ def canonical_step_spec(
     if spec_format < 3:
         for key in _FORMAT_3_FIELDS:
             if doc.get(key) is not None:
+                raise SpecNotCanonical(f"{key} is set, and format {spec_format} does not cover it")
+    if spec_format < 4:
+        for key in _FORMAT_4_FIELDS:
+            if _is_set(doc.get(key)):
                 raise SpecNotCanonical(f"{key} is set, and format {spec_format} does not cover it")
     for key in _INTEGER_FIELDS:
         value = doc.get(key)
@@ -166,7 +198,69 @@ def canonical_step_spec(
     if spec_format >= 3:
         for key in _FORMAT_3_FIELDS:
             spec[key] = doc.get(key)
+    if spec_format >= 4:
+        for key in _FORMAT_4_FIELDS:
+            spec[key] = doc.get(key)
     return jcs(spec)
+
+
+#: Domain separation for a `workspace_settings` block (contract request 86).
+#: Its bytes can never be read as a step spec's, or a spec's as a block's.
+SETTINGS_PURPOSE = "swarm.settings/v1"
+
+#: The fields of each `workspace_settings` block that its writer, swarm-api,
+#: MACs and that the control plane acts on (contract request 86,
+#: docs/design/tenant-settings-integrity.md §5 request B, #1457, accepted by the
+#: owner 2026-10-17 on PR 1464). "top" is the document's own top level; "merge"
+#: and "code_intelligence" are its maps of those names. A reader acts on a
+#: field only when it is listed here AND the block's MAC verifies; a field
+#: added to a block without being added here is outside the MAC, so a tenant
+#: worker can forge it. A change to a list is a change to the bytes: every
+#: stored MAC of that block must be re-signed in the same rollout.
+SETTINGS_MAC_FIELDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {
+        "top": ("judgment_backend",),
+        "merge": ("mode", "train_size", "max_train_age_minutes"),
+        "code_intelligence": (
+            "jev",
+            "context",
+            "context_ab",
+            "graph_delivery",
+            "judgment_backend",
+        ),
+    }
+)
+
+
+def canonical_settings_block(
+    *, tenant_id: str, block: str, fields: Mapping[str, Any]
+) -> bytes:
+    """JCS of {"purpose": "swarm.settings/v1", "tenant_id", "block", "fields"}.
+
+    `block` is "top", "merge" or "code_intelligence". `fields` is the block as
+    stored; only the keys SETTINGS_MAC_FIELDS lists for it are projected, a
+    listed key that is absent is null, and any other key is not covered and
+    must not be acted on. The tenant and the block are inside the bytes, so a
+    block copied onto another tenant's document, or into another block, does
+    not verify.
+
+    The MAC is HMAC-SHA256 over these bytes under the `swarm-settings-key`
+    secret. It is not computed here, because its key is not the contract's.
+    """
+    if not isinstance(tenant_id, str) or not tenant_id:
+        raise SpecNotCanonical("a settings block names no tenant")
+    if block not in SETTINGS_MAC_FIELDS:
+        raise SpecNotCanonical(f"settings block {block!r} is not one of {tuple(SETTINGS_MAC_FIELDS)}")
+    if not isinstance(fields, Mapping):
+        raise SpecNotCanonical(f"settings block {block!r} is not a map")
+    return jcs(
+        {
+            "purpose": SETTINGS_PURPOSE,
+            "tenant_id": tenant_id,
+            "block": block,
+            "fields": {key: fields.get(key) for key in SETTINGS_MAC_FIELDS[block]},
+        }
+    )
 
 
 def spec_digest(canonical: bytes) -> bytes:

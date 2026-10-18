@@ -229,6 +229,43 @@ NOT_SWITCHABLE_CODES = frozenset({
     "secrets_release_fenced",
     "secrets_release_spent",
     "secrets_release_spec_unverified",
+    # The worker's state through swarm-api (ISO-STATE-API, docs/design/
+    # tenant-settings-integrity.md §4.2), as the secrets release's codes
+    # above: raised only by the /v1/attempts/{id}/state/... routes that
+    # change introduces, which nothing calls until SWARM_STATE_VIA_API is on
+    # for a tenant, so no existing caller can be refused by them. Continuing
+    # past any of them is the breach itself (#1457): another tenant's worker
+    # account or an agent writing a worker's state, a stale generation
+    # writing past its fence (invariant 5), an agent-chosen transition, a
+    # wake on an upstream the task never declared, or a write over a
+    # document that changed under it.
+    "attempt_unauthenticated",
+    "attempt_unproven",
+    "attempt_fenced",
+    "transition_refused",
+    "upstream_not_declared",
+    "merge_wake_refused",
+    "state_conflict",
+    # The tenant's MCP servers (MCP-API, part of #1433), as the secrets
+    # release's codes above: raised only by the routes that change introduces
+    # (/v1/mcp-servers, POST /v1/attempts/{id}/mcp:attach) and by the sweep's
+    # credential writer, all of which exist only while SWARM_MCP_SERVERS is
+    # on (dark by default), so no existing caller can be refused by them.
+    # Continuing past any of them is the breach itself: an unproven caller or
+    # a stale generation (invariant 5) handed a per-run MCP credential, a
+    # second attach of one attempt, an attach computed from a task document
+    # whose signature does not verify, or a server registered with a URL or
+    # description shaped like a credential or an unregistered, non-public
+    # address. The feature flag is the switch; a REFUSAL_ switch that let
+    # these through would serve credentials unproven.
+    "mcp_credential_shape",
+    "mcp_server_invalid",
+    "mcp_server_not_found",
+    "mcp_server_exists",
+    "mcp_attach_unproven",
+    "mcp_attach_fenced",
+    "mcp_attach_spent",
+    "mcp_attach_spec_unverified",
 })
 
 #: What the guard lets through without a switch.

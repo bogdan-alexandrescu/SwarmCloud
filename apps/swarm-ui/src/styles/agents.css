@@ -81,10 +81,24 @@
    not fit they go to the next line together. Beside an open agent the list is
    380px, so the find group takes the first line to itself. */
 .ag-list-head > .ag-find { flex: 1 1 22em; min-width: min(100%, 16em); }
-.ag-list-head > .ag-filter,
-.ag-list-head > .ag-sort,
-.ag-list-head > .c-seg { flex: none; }
-.app.has-inspector > .work .ag-list-head > .ag-find { flex-basis: 100%; }
+/* THE CONTROLS ARE ONE FLEX ITEM (V147, VQA2-R13). The rule above sized the
+   find group, but every control after it was still its own item, so at 1440
+   on Recent (and with Group by workflow) `Started` dropped alone to a second
+   row all the same. `.ag-tools` is one item whose size is all its controls:
+   it shares the find group's line when they all fit and goes to the next
+   line whole when they do not. Inside it the checkboxes and `Started` are
+   `.ag-tools-tail`, which never breaks, so a list too narrow for the group
+   still ends its last line with company. */
+.ag-tools { flex: 0 1 auto; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); }
+.ag-tools-tail { flex: none; display: flex; align-items: center; gap: var(--ctl-s2); white-space: nowrap; }
+.ag-tools > .ag-filter,
+.ag-tools-tail > .ag-filter,
+.ag-tools-tail > .ag-sort,
+.ag-tools > .c-seg { flex: none; }
+/* BESIDE AN OPEN AGENT the list is 380px: `«` and the find group share the
+   first line and the controls take the next. The find group used to be
+   `flex-basis: 100%`, which left `«` on a row of its own above it (V147). */
+.app.has-inspector > .work .ag-list-head > .ag-tools { flex-basis: 100%; }
 .ag-find > input {
   flex: 1;
   min-width: 0;

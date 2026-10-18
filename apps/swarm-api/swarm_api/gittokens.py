@@ -69,6 +69,7 @@ from swarm_common.states import ParkReason
 from . import forge as _forge
 from .errors import Conflict, NotFound, ValidationFailed
 from .forge import GIT_PROVIDER
+from .forge_limits import rate_limit, spent
 from .redaction import redact, redact_detail
 
 log = logging.getLogger(__name__)
@@ -1093,8 +1094,9 @@ def resolve_r2(
 #
 # ok / missing / unknown, ALWAYS WITH A REASON AND THE EVIDENCE. `unknown` is
 # a measured answer ("fine-grained grants are not readable"), not a failure.
-# A read that did not come back -- a network error, a 5xx, a 429, a 403 with
-# the rate limit spent -- is NOT an answer: the reader returns nothing, the
+# A read that did not come back -- a network error, a 5xx, a rate limit
+# (`forge_limits.rate_limit`: a 429, or a 403 with the limit spent, a
+# Retry-After or GitHub's "rate limit" message; #1483) -- is NOT an answer: the reader returns nothing, the
 # previous row stands, and the probe is partial. `verified_at` is the time of
 # the last COMPLETE probe (§5.3); a partial one moves `attempted_at` only and
 # says why in `error`.
@@ -1374,10 +1376,11 @@ class _Forge:
         remaining = answer_headers.get("x-ratelimit-remaining")
         if remaining is not None and remaining.strip().isdigit():
             self._result.rate_remaining = int(remaining)
-        if status == 429 or status >= 500 or (status == 403 and remaining == "0"):
+        limit = rate_limit(response)
+        if limit is not None or status >= 500:
             raise _Unanswered(
                 f"{label}: GitHub answered HTTP {status}"
-                + (" with the rate limit spent" if remaining == "0" else "")
+                + (f" {spent(limit)}" if limit is not None else "")
             )
         if not git:
             if "x-oauth-scopes" in answer_headers:

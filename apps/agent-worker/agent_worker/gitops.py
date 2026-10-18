@@ -103,6 +103,18 @@ class GitTransient(GitError):
         self.tries = tries
 
 
+class PushRejected(GitError):
+    """The forge refused a push because the branch holds commits HEAD does not
+    descend from: a non-fast-forward, or a `--force-with-lease` whose expected
+    sha was no longer the branch's (#1438).
+
+    A `GitError`, so every `except GitError` still catches it. The publish
+    path is the one caller that tells it apart: a retry whose task branch
+    holds only its own earlier attempt's worker commits publishes onto it
+    (`own_branch_tip`), and anything else fails exactly as before.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Transient or permanent: what git's own words say about a failed clone
 # ---------------------------------------------------------------------------
@@ -3695,6 +3707,7 @@ def push_branch(
     git_binary: str = "git",
     branch_prefix: str = "swarm/",
     protected: tuple[str, ...] = (),
+    lease: str | None = None,
 ) -> str:
     """Push HEAD to `refs/heads/<branch>` on `url`. Returns the pushed sha.
 
@@ -3714,7 +3727,14 @@ def push_branch(
       `main`;
     * the push is never forced. A non-fast-forward means something other than
       this attempt moved the branch, and the correct response to that is to
-      report it, not to win.
+      report it, not to win. It is raised as `PushRejected`.
+
+    `lease` IS THE ONE EXCEPTION, AND IT IS NOT A FORCE (#1438). It is a sha
+    the caller has just proved holds only this task's own earlier worker
+    commits (`own_branch_tip`); the push is `--force-with-lease` to exactly
+    that sha, so the forge replaces the branch only while it still points
+    there. Anything that moved it since is refused, as `PushRejected`, as any
+    non-fast-forward is. The default None pushes as above.
 
     A PUSH THE FORGE DID NOT ANSWER IS TRIED ONCE MORE (G1, #1225). git says
     a reset connection or a 5xx only as text on stderr, so the text is read
@@ -3731,6 +3751,11 @@ def push_branch(
         raise GitError(f"refusing to push to {branch!r}: outside {branch_prefix!r}")
     if branch in protected:
         raise GitError(f"refusing to push to the protected branch {branch!r}")
+    if lease is not None and not _FULL_SHA_RE.match(lease):
+        raise GitError("refusing a leased push without the full sha it replaces")
+    # Never a bare `--force`: with a lease the forge compares the branch with
+    # the sha the caller verified, inside the push itself.
+    lease_args = [f"--force-with-lease=refs/heads/{branch}:{lease}"] if lease else []
 
     url = validate_repository_url(url)
     repo = Path(repo)
@@ -3752,10 +3777,10 @@ def push_branch(
             # would push every annotated tag reachable from it as well, with a
             # tagger and a message the agent chose. A swarm attempt has no tag
             # to publish.
-            code, _ = _git_text(
+            code, status = _git_text(
                 [
                     git_binary, *config_args, "push", "--no-verify", "--no-follow-tags",
-                    "--porcelain", "--", url, f"HEAD:refs/heads/{branch}",
+                    "--porcelain", *lease_args, "--", url, f"HEAD:refs/heads/{branch}",
                 ],
                 repo=repo,
                 private_dir=private_dir,
@@ -3780,7 +3805,10 @@ def push_branch(
                 )
                 time.sleep(PUSH_RETRY_WAIT_SECONDS)
                 continue
-            raise GitError(f"push failed with exit {code}{_withheld_note(url, token)}: {tail}")
+            message = f"push failed with exit {code}{_withheld_note(url, token)}: {tail}"
+            if _PUSH_REJECTED_RE.search(f"{status}\n{tail}"):
+                raise PushRejected(message)
+            raise GitError(message)
     finally:
         # Same discipline as the clone: the credential exists for the length of
         # one git invocation and no longer. The runner has already exited by
@@ -3804,6 +3832,116 @@ def push_branch(
     head = text.strip() if code == 0 else ""
     logger.info("branch pushed", branch=branch, head=head or "unknown")
     return head
+
+
+#: git's words for a push the forge refused because the branch is not an
+#: ancestor of HEAD: the porcelain status line (`[rejected] (fetch first)`,
+#: `(non-fast-forward)`, `(stale info)` for a lease that no longer holds) and
+#: the hint on stderr the 2026-10-16 retries logged ("Updates were rejected
+#: because the remote contains work that you do not have locally"). A
+#: refusal for any other reason -- a protected branch rule, a hook, refused
+#: authentication -- stays a plain `GitError`.
+_PUSH_REJECTED_RE = re.compile(
+    r"\[rejected\]|non-fast-forward|\(fetch first\)|\(stale info\)"
+    r"|remote contains work that you do\s+not have locally"
+)
+
+#: The line `Worker._worker_commit_message` ends every commit the worker makes
+#: with. A commit carrying it for ANOTHER task's id was not made for this one,
+#: whoever's identity it carries.
+_MADE_FOR_TASK_RE = re.compile(r"Made by the worker for task (\S+?)\.?$", re.MULTILINE)
+
+
+def own_branch_tip(
+    *,
+    repo: Path,
+    url: str,
+    branch: str,
+    token: str,
+    task_id: str,
+    base: str | None,
+    author_name: str,
+    author_email: str,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str = "git",
+    branch_prefix: str = "swarm/",
+    also_own: Sequence[tuple[str, str]] = (),
+) -> tuple[str | None, str]:
+    """The tip of this task's own branch on `url`, when only its worker wrote it.
+
+    Returns `(sha, "")` when `branch` is exactly `<branch_prefix><task_id>`,
+    stands on the clone `base`, and every commit its first-parent line adds
+    over `base` is one the worker wrote (`_foreign` finds nothing, the check
+    `verify_worker_authorship` runs before every push) and names no other
+    task. Otherwise `(None, why)`, and the caller fails as it always did.
+
+    WHY (#1438, 2026-10-16): attempt 1 pushed `swarm/task_<id>` and crashed
+    before its terminal write; the reclaimed task's attempt 2 published from
+    a fresh publish repository at the same base, so its push was a
+    non-fast-forward against its own first attempt's commit, and the task
+    failed with its work on the forge and no pull request. A branch whose
+    name is this task's and whose commits are all this task's worker's was
+    written by no one else, so replacing it loses nobody's work.
+
+    The first-parent line, as `verify_worker_authorship` reads it: an
+    integrator's merge commits are on it, and the contributor commits they
+    bring in were checked by their own workers when they pushed. `repo` MUST
+    be the worker-owned publish repository: the fetch carries the token.
+    """
+    if branch != f"{branch_prefix}{task_id}":
+        return None, f"{branch!r} is not this task's own branch"
+    tip = fetch_branch_tip(
+        repo=repo, url=url, branch=branch, token=token, private_dir=private_dir,
+        logs_dir=logs_dir, timeout_seconds=timeout_seconds, logger=logger,
+        git_binary=git_binary, branch_prefix=branch_prefix,
+    )
+    if tip is None:
+        return None, f"could not fetch {branch} to read what it holds"
+    repo = Path(repo)
+    g = [git_binary, *_NO_HOOKS, *_worker_identity(author_name, author_email)]
+
+    def run(argv: list[str], slug: str) -> tuple[int, str]:
+        return _git_text(
+            argv,
+            repo=repo,
+            private_dir=private_dir,
+            logs_dir=logs_dir,
+            slug=slug,
+            timeout_seconds=timeout_seconds,
+            logger=logger,
+        )
+
+    if base == EMPTY_CLONE_BASE:
+        span = tip
+    elif base and _FULL_SHA_RE.match(base.strip()):
+        base = base.strip()
+        code, _ = run([*g, "merge-base", "--is-ancestor", base, tip], "own-branch-ancestor")
+        if code != 0:
+            return None, f"{branch} at {tip[:12]} does not stand on the clone base {base[:12]}"
+        span = f"{base}..{tip}"
+    else:
+        return None, "the clone base is unknown, so the branch's commits cannot be told apart"
+    code, text = run([*g, "rev-list", "--first-parent", span], "own-branch-list")
+    if code != 0:
+        return None, f"could not list the commits on {branch}"
+    author, committer = _worker_idents(run, g)
+    also = [
+        _worker_idents(run, [git_binary, *_NO_HOOKS, *_worker_identity(name, email)])
+        for name, email in also_own
+        if (name, email) != (author_name, author_email)
+    ]
+    for sha in text.split():
+        commit = _read_commit(run, g, sha)
+        problems = _foreign(commit, author, committer, also=also)
+        named = [found for found in _MADE_FOR_TASK_RE.findall(commit.message) if found != task_id]
+        if named:
+            problems.append(f"it was made for task {named[0]}")
+        if problems:
+            return None, f"commit {sha[:12]} on {branch} is not this task's worker's: {'; '.join(problems)}"
+    return tip, ""
 
 
 #: The most commits a pushed branch's record lists (`branch_commits`). A

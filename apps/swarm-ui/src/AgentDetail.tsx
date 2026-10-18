@@ -1,5 +1,5 @@
 import { Button, CIcon, Count, ToneMark } from './components'
-import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { Children, Fragment, cloneElement, createContext, isValidElement, useCallback, useContext, useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   EVENT_PAGE_LIMIT,
   loadAgentRun,
@@ -983,11 +983,45 @@ function DtStatCell({ c }: { c: DtCell }) {
       {c.bar !== undefined && <DtBar pct={c.bar} warn={c.tone === 'alert'} />}
       {c.sub !== undefined && c.sub !== '' && (
         <span className="dt-sc-s" ref={sub}>
-          {c.sub}
+          {glueSeparators(c.sub)}
         </span>
       )}
     </div>
   )
+}
+
+/**
+ * A sub-line with every ` · ` glued to the words before it (V260, VQA2-R13).
+ * `of 4 GiB · peak, written at exit · OOM near miss` wrapped in a ~115px cell
+ * as a line that began with an orphaned `· OOM near miss`. Each separator
+ * becomes `<span class="dt-dot"> ·</span>` -- `white-space: nowrap`
+ * (details.css), so its leading space is no break opportunity -- followed by
+ * a plain space, where the line may break. The text is unchanged, so the
+ * title `DtStatCell` copies from it is too. It walks strings, fragments and
+ * host elements: Cost's sub-line is a node, not a string.
+ */
+export function glueSeparators(node: ReactNode): ReactNode {
+  return Children.map(node, (n): ReactNode => {
+    if (typeof n === 'string') {
+      const parts = n.split(' · ')
+      if (parts.length === 1) return n
+      return parts.flatMap((part, i) =>
+        i === 0
+          ? [part]
+          : [
+              <span className="dt-dot" key={`dot-${i}`}>
+                {' ·'}
+              </span>,
+              ` ${part}`,
+            ],
+      )
+    }
+    if (isValidElement<{ children?: ReactNode }>(n) && (n.type === Fragment || typeof n.type === 'string')) {
+      if (n.props.children === undefined) return n
+      return cloneElement(n, undefined, glueSeparators(n.props.children))
+    }
+    return n
+  })
 }
 
 /** A thin bar against a limit; hatched, never empty, when there is no figure or no ceiling. */
@@ -2107,9 +2141,7 @@ function Alerts({ task }: { task: Task }) {
       {task.park_reason && !handedOff && (
         <div className="bar amber">
           <strong title={task.park_reason}>{parkWord(task.park_reason)}</strong>
-          {task.next_eligible_at && (
-            <> · eligible {new Date(task.next_eligible_at).toLocaleString()}</>
-          )}
+          <ParkEligible iso={task.next_eligible_at} />
           {REASON_COPY[task.park_reason] === undefined && (
             <span className="blocker-copy">{reasonText(task.park_reason)}</span>
           )}
@@ -2200,7 +2232,32 @@ export function parkedSince(task: Task): number | null {
 export function HandoffParkedSince({ task }: { task: Task }) {
   const since = parkedSince(task)
   if (since === null) return null
-  return <span className="ho-since">parked since {new Date(since).toLocaleString()}</span>
+  const at = clockTime(new Date(since).toISOString())!
+  return (
+    <span className="ho-since" title={at.title}>
+      parked since {at.text}
+    </span>
+  )
+}
+
+/**
+ * ` · eligible at <time>` (or `since`, once the instant has passed) on the
+ * park bar, through `clockTime` -- the formatter the Waiting row beside it
+ * uses (V060, VQA2-R13). `toLocaleString()` printed "10/16/2026, 6:28:17 PM"
+ * over a row that said "Eligible again since 18:28:17.": one instant, two
+ * formats, and the American date order read as a different day elsewhere.
+ * Nothing for a missing or unparseable value.
+ */
+export function ParkEligible({ iso, now = Date.now() }: { iso: string | null | undefined; now?: number }) {
+  const at = clockTime(iso, now)
+  if (at === null) return null
+  const word = new Date(iso as string).getTime() > now ? 'at' : 'since'
+  return (
+    <span title={at.title}>
+      {' '}
+      · eligible {word} {at.text}
+    </span>
+  )
 }
 
 /**

@@ -895,17 +895,45 @@ class RunnerProfile:
     #: provider key (`secrets` above, unchanged). Excluded from the hash, as
     #: `inputs` is: a mapping is not hashable.
     secret_slots: Mapping[str, SecretSlot] = field(default_factory=dict, hash=False)
+    #: True when no container ever runs this profile: the control plane
+    #: ends its tasks itself (docs/design/human-steps.md, `await-input`).
+    #: The scheduler never leases one; admission parks it before any
+    #: capacity check. Such a profile has no runner, no worker action, no
+    #: provider, no secrets, no slots, no live browser and no declared
+    #: inputs besides `prompt`, and has no Job or pod (Terraform's
+    #: `profiles_without_a_job`). Contract request 93 (HW-CONTRACT, human
+    #: steps request B), accepted by the owner 2026-10-17.
+    control_plane: bool = False
 
     def __post_init__(self) -> None:
+        if self.control_plane:
+            # Contract request 93: nothing runs this profile, anywhere, so a
+            # field that only means something to a runner, a worker or a pod
+            # is a declaration nobody would honour.
+            for declared, set_ in (
+                ("runner_argv", bool(self.runner_argv)),
+                ("worker_action", self.worker_action is not None),
+                ("provider", self.provider is not None),
+                ("secrets", bool(self.secrets)),
+                ("secret_slots", bool(self.secret_slots)),
+                ("inputs", bool(self.inputs)),
+                ("live_browser", self.live_browser),
+            ):
+                if set_:
+                    raise ValueError(
+                        f"runner {self.name}: a control_plane profile is never run, so it "
+                        f"sets no {declared} (contract request 93)"
+                    )
         if self.worker_action is not None and self.runner_argv:
             raise ValueError(
                 f"runner {self.name}: a worker_action profile starts no runner, so its "
                 "runner_argv must be empty (contract request 33)"
             )
-        if self.worker_action is None and not self.runner_argv:
+        if self.worker_action is None and not self.runner_argv and not self.control_plane:
             raise ValueError(
                 f"runner {self.name}: an empty runner_argv starts nothing; only a "
-                "worker_action profile may have one (contract request 33)"
+                "worker_action or control_plane profile may have one (contract "
+                "requests 33 and 93)"
             )
         if self.worker_action is not None:
             # Contract request 60 (#453): a worker action reads its credential
@@ -1298,6 +1326,35 @@ _CLI_AGENT_INPUTS: dict[str, RunnerInput] = {
     ),
 }
 
+#: CONTRACT REQUEST 88, accepted by the owner 2026-10-17 (design
+#: docs/design/registered-mcp-servers.md §5 M1, part of #1433): the
+#: registered MCP servers a step may call, by name, never a URL or a command
+#: (invariant 10). Inside `input`, so the spec signature covers it (format 3).
+#: Its own dict, NOT a key of _CLI_AGENT_INPUTS, which indexer and
+#: claude-code-review also take: the indexer runs no prompt a caller wrote,
+#: and a review step reads the diff it was given. Membership is checked by
+#: swarm-api against the tenant's registry, which changes at runtime, so the
+#: names cannot be `choices`. 31 is models.MCP_SERVER_NAME's length bound.
+_MCP_SERVER_INPUTS: dict[str, RunnerInput] = {
+    "mcp_servers": RunnerInput(
+        "list",
+        minimum=1,
+        maximum=4,
+        items=RunnerInput("string", maximum=31),
+        means=(
+            "registered MCP servers, by name, the agent may call during its run; "
+            "each must be registered and enabled for the task's workspace and allowed "
+            "for this profile (docs/design/registered-mcp-servers.md)"
+        ),
+    ),
+}
+
+#: claude-code and codex: the CLI agent inputs plus mcp_servers (request 88).
+_CLI_AGENT_MCP_INPUTS: dict[str, RunnerInput] = {
+    **_CLI_AGENT_INPUTS,
+    **_MCP_SERVER_INPUTS,
+}
+
 #: CONTRACT REQUEST 77, accepted by the owner 2026-10-14 ("Picker on Submit,
 #: Auto by default"): which browser tool the live-browser agent is given. A
 #: NAMED option, never a command (invariant 10); the claude-code runner maps
@@ -1306,6 +1363,7 @@ _CLI_AGENT_INPUTS: dict[str, RunnerInput] = {
 #: browser to choose a tool for.
 _CLAUDE_CODE_BROWSER_INPUTS: dict[str, RunnerInput] = {
     **_CLI_AGENT_INPUTS,
+    **_MCP_SERVER_INPUTS,   # contract request 88
     "browser_tool": RunnerInput(
         "string",
         choices=("auto", "playwright", "dev-browser", "jev"),
@@ -1367,7 +1425,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
         secrets_any_of=True,
         timeout_seconds=7200,
-        inputs=_CLI_AGENT_INPUTS,
+        inputs=_CLI_AGENT_MCP_INPUTS,   # contract request 88
         secret_slots={"files": _FILES_SLOT},   # contract request 80
     ),
     "codex": RunnerProfile(
@@ -1383,7 +1441,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         provider="openai",
         secrets=("OPENAI_API_KEY",),
         timeout_seconds=7200,
-        inputs=_CLI_AGENT_INPUTS,
+        inputs=_CLI_AGENT_MCP_INPUTS,   # contract request 88
         # DISABLED 2026-09-23 by the owner's decision: the platform is focusing
         # on Claude, and codex does not currently work here anyway. A twenty-step
         # load test that day dispatched four codex steps and all four failed
@@ -1565,7 +1623,41 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         live_browser=True,
         secret_slots={"files": _FILES_SLOT},   # contract request 80
     ),
+    # CONTRACT REQUEST 94, accepted by the owner 2026-10-17 (HW-CONTRACT,
+    # docs/design/human-steps.md §5 request C): a workflow step that waits for
+    # a tenant member's answer. control_plane (request 93): no container runs
+    # it, swarm-api ends it, and Terraform makes no Job for it
+    # (`profiles_without_a_job`). SHIPPED UNAVAILABLE until every build lane of
+    # the design's §6 has merged and HW-ACCEPT is green on dev; the owner then
+    # applies request D, which is `available=True` and nothing else.
+    "await-input": RunnerProfile(
+        name="await-input",
+        image="agent-runtime-base",   # never pulled: control_plane
+        resource_class="standard",    # never reserved: control_plane
+        backend=Backend.CLOUD_RUN_JOB,
+        runner_argv=(),
+        control_plane=True,
+        provider=None,
+        secrets=(),
+        timeout_seconds=300,          # unused; the wait is await_input's (at most 24 h)
+        inputs={},
+        available=False,
+        disabled_reason="await-input steps are being built (docs/design/human-steps.md)",
+    ),
 }
+
+
+#: CONTRACT REQUEST 89, accepted by the owner 2026-10-17 (design
+#: docs/design/registered-mcp-servers.md §5 M2): the one slot an `mcp:`
+#: consumer (models.SECRET_CONSUMER_KINDS) takes. Optional, as every slot is
+#: unless it says otherwise; a `workspace_secret` server's registration is
+#: what makes swarm-api require its grant.
+MCP_SECRET_SLOTS: Mapping[str, SecretSlot] = MappingProxyType({
+    "auth": SecretSlot(
+        kinds=("api_key", "bearer_token"),
+        means="the relay adds it as the registered server's auth header; never a file",
+    ),
+})
 
 
 #: Contract request 81 (workspace secrets, design §2.3): a program the
@@ -1683,6 +1775,12 @@ def is_secret_consumer(consumer: str) -> bool:
         return name in RUNNER_PROFILES
     if kind == "tool":
         return name in RUNTIME_TOOLS
+    if kind == "mcp":
+        # Contract request 89: an `mcp:` name is a tenant's registration, not
+        # a catalogue entry, so this catalogue cannot vouch for it; swarm-api
+        # checks it against the tenant's registry. Without this branch
+        # `mcp:judge` would fall through to PLATFORM_COMPONENTS below.
+        return False
     return name in PLATFORM_COMPONENTS
 
 

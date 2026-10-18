@@ -193,7 +193,7 @@ describe('V120: at 390 a module\'s purpose is not cut beside its path', () => {
     expect(won(purpose, 'white-space', PHONE)).toBe('normal')
     expect(won(row, 'grid-template-columns', PHONE)).toBe('minmax(0, 1fr) 54px')
     expect(won(purpose, 'grid-column', WIDE)).toBeNull()
-    expect(won(row, 'grid-template-columns', WIDE)).toBe('minmax(0, 180px) minmax(0, 1fr) 54px')
+    expect(won(row, 'grid-template-columns', WIDE)).toBe('fit-content(45%) minmax(0, 1fr) 54px')
   })
 })
 

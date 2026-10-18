@@ -71,8 +71,11 @@ def _reads(name: str) -> set[str]:
 
 
 #: Every profile that starts a runner. A `worker_action` profile (contract
-#: requests 33 and 35) runs none, and a caller sends it `input: {}`.
-RUNNER_STARTING = sorted(n for n, p in RUNNER_PROFILES.items() if p.worker_action is None)
+#: requests 33 and 35) runs none, and a caller sends it `input: {}`; nor does a
+#: `control_plane` profile (contract request 93), which nothing runs at all.
+RUNNER_STARTING = sorted(
+    n for n, p in RUNNER_PROFILES.items() if p.worker_action is None and not p.control_plane
+)
 
 
 def test_the_table_is_read():
@@ -85,7 +88,7 @@ def test_the_table_is_read():
 def test_a_worker_action_is_offered_nothing():
     offers = _offers()
     for name, profile in RUNNER_PROFILES.items():
-        if profile.worker_action is not None:
+        if profile.worker_action is not None or profile.control_plane:
             assert not offers.get(name), f"the form offers the worker action {name} {offers[name]}"
 
 

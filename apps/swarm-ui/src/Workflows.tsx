@@ -2189,7 +2189,12 @@ function WorkflowSteps({
           // THE SAMPLE MARK QUALIFIES THESE FIGURES, SO IT IS IN THIS TABLE'S
           // HEAD ROW, inside the card (walkthrough A, 2026-10-03): it was a
           // chip in a strip above the card, floating apart from what it qualifies.
-          head={usage.kind === 'ready' && usage.usage !== null ? <SampleNote usage={usage.usage} workflow={workflow} /> : null}
+          // CALLED, NOT RENDERED (V203, #1427): `head` is null when every task
+          // was sampled, so the table draws no head row. As a component it was
+          // an element that rendered nothing, and the table drew an empty
+          // 32px row and its margin -- a ~45px band between the facts and
+          // the table, where the Graph has its toolbar.
+          head={usage.kind === 'ready' && usage.usage !== null ? SampleNote(usage.usage, workflow) : null}
         />
         <p className="wf-table-total">
           <span>Total</span> <Spend spend={spend} />
@@ -4910,8 +4915,12 @@ function NodeSource({ f, pending }: { f: StepFigures; pending: boolean }) {
  * contains the words `not zero`: that clause is the entire reason this
  * component exists and it does not get to become implicit just because it
  * stopped being visible ink.
+ *
+ * CALLED, NOT RENDERED (V203, #1427), so the table's `head` is null when it is
+ * silent; it keeps its component's name because
+ * test_workflow_step_measurements.py reads this function by it.
  */
-function SampleNote({ usage, workflow }: { usage: WorkflowUsage; workflow: Workflow }) {
+function SampleNote(usage: WorkflowUsage, workflow: Workflow): ReactNode {
   // THIS WORKFLOW'S TASKS ONLY (QA G3-05). The read is the board's -- every
   // workflow's tasks, this one's first under the ceiling -- and the mark
   // printed `12/296 sampled` over a three-step table whose three steps all
@@ -5884,11 +5893,22 @@ function WorkflowPageSkeleton({ id, query, choose }: { id: string; query: Workfl
     <div className="wfp is-loading" aria-busy="true">
       <div className="wfp-head">
         <div className="wfp-chips" aria-hidden="true">
-          {PAGE_SKELETON_CHIPS.map((w, i) => (
-            <span key={i} className="c-chip">
-              <span className="wfl-skel" style={{ width: `${w}em` }} />
-            </span>
-          ))}
+          {PAGE_SKELETON_CHIPS.map((w, i) => {
+            const chip = (
+              <span key={i} className="c-chip">
+                <span className="wfl-skel" style={{ width: `${w}em` }} />
+              </span>
+            )
+            // THE COST BAR IS IN THE COST'S SLOT (V103, #1427), which a phone
+            // gives a line of its own in both states (styles/workflows.css).
+            return i === PAGE_SKELETON_CHIPS.length - 1 ? (
+              <span key={i} className="wfp-cost">
+                {chip}
+              </span>
+            ) : (
+              chip
+            )
+          })}
         </div>
         <span className="wfp-actions">
           <Button disabled>Copy link</Button>

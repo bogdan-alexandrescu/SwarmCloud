@@ -73,7 +73,7 @@ from .forge import (
 from .forgeapp import GRANTS, ORGS, Caller
 from .gittokens import Scope, owner_suffix, provider_suffix
 from .metrics import ApiMetrics
-from .judgment import TYPESAFE_BACKEND, JudgmentSettings
+from .judgment import TYPESAFE_BACKEND, JudgmentSettings, settings_mac
 from .provider_keys import task_key_scope
 from .repositories import Repositories, merge_policy_of, repo_id_for
 from .mergesettings import MergeSettingsStore
@@ -86,6 +86,7 @@ from .store import Store, derived_service_account
 from .task_accounts import ACCOUNT_TOKEN_ENV
 from .validation import (
     APP_CREDENTIAL_PROVIDERS,
+    AWAIT_STEP_REFUSED_FIELDS,
     BROWSER_TOOL_INPUT_KEY,
     CONFLICT_ROUND_METADATA_KEY,
     TYPESAFE_PROVIDER,
@@ -111,11 +112,14 @@ from .validation import (
     merge_sources,
     merge_step_for,
     plan_merge,
+    refuse_control_plane_integrator,
+    refuse_control_plane_outside_workflow,
     refuse_unmergeable_forge,
     rereview_step_for,
     refuse_worker_action_outside_single_pr,
     reject_non_finite,
     reject_reserved_metadata,
+    resolve_await_input,
     resolve_dispatch_options,
     resolve_input_layout,
     resolve_integrator_step,
@@ -497,6 +501,10 @@ class SubmissionService:
             assert ctx is not None
             submitted_by = ctx.email
         profile = validate_runner_profile(spec.runner_profile)
+        # An `await-input` step only inside a workflow (docs/design/
+        # human-steps.md §4.1): as a task, a batch entry or a child it has no
+        # step to answer and no dependant to hand the answer to.
+        refuse_control_plane_outside_workflow(profile, workflow_id=workflow_id)
         # A worker action (merge, post-verdict) only inside a `single-pr`
         # workflow (#295). A workflow's steps were already checked by
         # `validate_step_routing`; this is what refuses one as a plain task.
@@ -623,7 +631,7 @@ class SubmissionService:
                        "jev-browser; pick auto, playwright or dev-browser")
         else:
             db = getattr(self._store, "db", None)
-            if db is not None and JudgmentSettings(db, now=self._now).read(
+            if db is not None and JudgmentSettings(db, now=self._now, mac=settings_mac(self._settings)).read(
                     tenant_id)["judgment_backend"] != TYPESAFE_BACKEND:
                 return
             scope = task_key_scope(db, self._store, tenant_id, submitted_by, TYPESAFE_PROVIDER,
@@ -827,6 +835,35 @@ class SubmissionService:
             # it was placed (test_merge_chain_profiles_are_refused_on_submission).
             for step in spec.steps:
                 validate_runner_profile(step.runner_profile)
+            # An `await-input` step's block (docs/design/human-steps.md §4.1,
+            # HW-API-SUBMIT), checked and normalised once each profile is
+            # known to be one the platform runs, and BEFORE the routing
+            # checks, so a `when`, `builds_on`, `pr_role` or `merges` on such
+            # a step is refused naming itself for that reason. The profile
+            # ships unavailable (contract request 94), so until request D the
+            # loop above refuses every such step first.
+            await_inputs: dict[str, dict[str, Any]] = {}
+            control_plane_steps: set[str] = set()
+            for step in spec.steps:
+                step_profile = validate_runner_profile(step.runner_profile)
+                if step_profile.control_plane:
+                    control_plane_steps.add(step.step_id)
+                    if step.step_id == integrator_step_id:
+                        refuse_control_plane_integrator(step_profile, step_id=step.step_id)
+                block = resolve_await_input(
+                    step_profile,
+                    step.await_input,
+                    step_id=step.step_id,
+                    container_fields={
+                        name: getattr(step, name) for name in AWAIT_STEP_REFUSED_FIELDS
+                    },
+                    input_from=step.input_from,
+                    submitted_by=ctx.email,
+                    allowed_domains=self._settings.core.allowed_domains,
+                    allowed_users=self._settings.allowed_users,
+                )
+                if block is not None:
+                    await_inputs[step.step_id] = block
             single_pr = validate_step_routing(
                 step_specs,
                 strategy=dispatch.strategy,
@@ -888,9 +925,11 @@ class SubmissionService:
         # would report it "not found" on the pull request -- and if it did edit
         # the repository, those edits are exactly the unreviewed work the gate
         # exists to keep out.
-        not_integrated: frozenset[str] = frozenset()
+        # Nor is an `await-input` step (docs/design/human-steps.md §4.1): it
+        # runs no container, so it pushes no branch to merge.
+        not_integrated: frozenset[str] = frozenset(control_plane_steps)
         if integrator_step_id is not None and by_id[integrator_step_id].when is not None:
-            not_integrated = frozenset({by_id[integrator_step_id].when.step})
+            not_integrated |= {by_id[integrator_step_id].when.step}
         now = self._now()
         workflow_id = new_id("wf")
 
@@ -957,6 +996,10 @@ class SubmissionService:
                 # does; the re-review reads the same verdict and would file
                 # every minor a second time.
                 findings_epic=None if step_id == rereview_step_id else findings_epic,
+            ).with_await_input(
+                # Signed with the rest of the block (§4.1); None on every other
+                # step, which then stores exactly the block it stored before.
+                await_inputs.get(step_id)
             )
             if source.input_from and layout_of[step_id] == INPUT_LAYOUT_BY_PARENT:
                 # Each parent's STEP id beside the task id the worker sees in
@@ -1299,7 +1342,8 @@ class SubmissionService:
     def _merge_mode(self, tenant_id: str, repository_url: str | None) -> str:
         """The mode `tenant_id`'s merge step merges this repository in: the
         registration's override, else the workspace's (TRAIN-WS)."""
-        return MergeSettingsStore(self._store.db, now=self._now).mode_for(
+        return MergeSettingsStore(self._store.db, now=self._now,
+                                  mac=settings_mac(self._settings)).mode_for(
             tenant_id, self._registration(tenant_id, repository_url))
 
     def _registered_base(self, tenant_id: str, repository_url: str | None) -> str | None:

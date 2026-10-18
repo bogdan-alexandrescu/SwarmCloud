@@ -21,7 +21,7 @@ Registering a tenant creates every boundary at once — there is no
 | Boundary | Resource | Enforced by |
 |---|---|---|
 | Identity | `swarm-agent-worker-<id>@<project>.iam.gserviceaccount.com` | IAM |
-| Control-plane data | custom role `swarmTenantWorkerFirestore`, **unconditioned** | IAM, on the shape of the access only — **see the caveat below** |
+| Control-plane data | custom role `swarmTenantWorkerFirestore`, **unconditioned**, across the whole `swarm` database | IAM, on the shape of the access only. **Not a tenant boundary today**: see the caveat below and [section 4](#the-firestore-row-in-full) |
 | Artifacts & checkpoints | GCS prefix `tenants/<id>/`, granted by IAM condition | IAM condition on the binding |
 | Provider keys | `swarm-tenant-<id>-<provider>`, secret-level IAM | Secret Manager resource policy |
 | GKE workloads | namespace `swarm-tenant-<id>` + workload identity binding | Kubernetes RBAC + default-deny NetworkPolicy |
@@ -69,8 +69,13 @@ borrowed: `swarmTenantWorkerFirestore` drops `datastore.entities.delete` (a
 hostile worker cannot destroy another tenant's tasks, leases or the pool
 documents the platform admits against) and `datastore.entities.list` (no
 queries, so no enumerating every tenant's prompts and repository URLs — a
-document can only be fetched by an id already known, and ids are
-`<prefix>_<20 hex>`). The residual is stated in section 4 rather than implied.
+document can only be fetched by an id already known, and task, attempt and
+lease ids are `<prefix>_<20 hex>`). **It keeps `update`, and update does the
+damage delete would have:** a worker that cannot delete `pools/global` can set
+its `active` to 0, and one that cannot delete `tenants/<id>` can rewrite the
+service account that tenant's next attempt runs as. Section 4 lists what a
+worker can write today, what phase 0 of #1457 closes and what design B closes;
+the residual is stated there rather than implied.
 
 ```bash
 ./scripts/register-tenant.sh --group eng@saga.xyz \
@@ -450,15 +455,17 @@ two independent mechanisms to fail together:
 | Read another tenant's checkpoints | GCS binding is conditioned on the tenant prefix, listing included |
 | Hand another task **of the same tenant** a planted checkpoint | **partially.** The bucket grant is per tenant, not per task, so an agent can write under a sibling task's prefix. A first attempt restores nothing, and a retry restores only the checkpoint its earlier attempt recorded, with the archive digest, in Firestore (#347; [checkpointing.md](checkpointing.md#3-restore)). An agent that also writes the task and attempt documents is not stopped: see the Firestore row below, and #342 |
 | Reach another tenant's pod | per-tenant namespace + default-deny NetworkPolicy |
-| Have work dispatched under another tenant's identity | Job resource is per tenant and carries the SA |
+| Have work dispatched under another tenant's identity | **not today.** The Job and the pod take the identity and namespace from the tenant's own `tenants/<id>` document, which that tenant's worker can rewrite: see "Today" below. Phase 0 of #1457 closes it by deriving both from the tenant id |
 | Escalate via a runner profile | callers name profiles; images and commands are catalogue-only |
 | Spoof a tenant claim | tenant is derived from a verified ID token, never from a header or body field |
 | **Read or write another tenant's control-plane documents** | **partially. See below — this row is the one that does not have two mechanisms.** |
 
 ### The Firestore row, in full
 
-Every row above needs two independent mechanisms to fail. This one does not have
-two, and pretending otherwise would be worse than saying so.
+Every other row above needs two independent mechanisms to fail. This one does
+not have two, and pretending otherwise would be worse than saying so. The
+identity row above is open today only because this one is: the dispatcher reads
+the identity from a document this row lets a worker rewrite.
 
 Firestore exposes no collection-level IAM to a server-side service account. The
 smallest resource a binding or a condition can name is the database — and on the
@@ -478,21 +485,130 @@ do — so here is what it can do:
   so there are no queries: no dumping every tenant's prompts, repository URLs and
   artifact paths. A document can only be fetched by an id already known, and
   task, attempt and lease ids are `<prefix>_<20 hex>`.
-* **It CAN read and write a document whose id it can guess.** `pools/global`,
-  `pools/tenant:<victim>`, `tenants/<victim>` and `quota/<provider>:<victim>` are
-  all guessable names. So a hostile worker can disable another tenant's pool,
-  raise its own `hard_limit` past the admin's ceiling, or rewrite a `tenants/<id>`
-  document whose `service_account` and `gcs_prefix` the control plane trusts as
-  configuration. `attempts/<id>` is not guessable, so bumping another attempt's
-  fencing `generation` needs an id it was never given.
+* **It CAN read and write a document whose id it can guess.** The role grants
+  `datastore.entities.get`, `create` and `update` on every document in the
+  database (`terraform/bootstrap/platform_roles.tf` (`worker_firestore = {`),
+  whose permission list ends at `"datastore.entities.update",`), bound once per tenant with no
+  condition (`terraform/modules/tenancy/main.tf`
+  (`resource "google_project_iam_member" "worker_firestore" {`)), and
+  `register-tenant.sh` grants the same role (`scripts/register-tenant.sh`
+  (`FIRESTORE_ROLE_ID="swarmTenantWorkerFirestore${ROLE_ID_SUFFIX}"`)). The
+  module records the same residual (`terraform/modules/tenancy/main.tf`
+  (`# still holds create/get/update across the database, so it can read a document`)).
+  `attempts/<id>` is not guessable, so bumping another attempt's fencing
+  `generation` needs an id it was never given. Every document in the table below
+  is either guessable or one the worker creates itself.
 
-Closing this needs one of two changes, neither expressible in IAM: the worker off
-direct Firestore access entirely, reaching state through a control-plane service
-that scopes by caller identity; or one database per tenant. Until then the honest
-statement is that the Firestore boundary is *narrowed*, not *closed*, and the
-grant is identical whether a tenant was created by Terraform or by
-`register-tenant.sh` — the script refuses to run at all if the custom role is
-missing rather than falling back to `roles/datastore.user`.
+#### Today: what a tenant worker can write, and what the control plane does with it
+
+Read from the source on 2026-10-17 at `766b9af`; not exercised against the live
+database. The full inventory, 30 rows, is
+[the tenant settings integrity design §1.3](design/tenant-settings-integrity.md#13-the-inventory-every-document-the-control-plane-acts-on-that-a-tenant-worker-can-write).
+The worst rows, each with the reader that acts on the forged value:
+
+| document a worker in tenant A writes | what the control plane then does | who acts on it |
+|---|---|---|
+| `tenants/A.service_account` set to tenant B's worker account | **A's next Cloud Run attempt runs as B's account**, with B's secrets and B's GCS prefix. The dispatcher refuses only an empty value and hands the stored one to the Job; the scheduler holds `actAs` on every tenant's worker account. | `apps/scheduler/scheduler/dispatch.py::assert_tenant_identity`, `apps/scheduler/scheduler/dispatch.py::CloudRunJobDispatcher._build_job` |
+| `tenants/A.namespace` set to `swarm-tenant-B` | **A's next GKE pod runs in B's namespace, as B's KSA and so as B's account.** A stored namespace is kept whenever it starts with `swarm-tenant-`, which B's does. The reconciler scans and protects the namespaces the documents record. | `apps/scheduler/scheduler/dispatch.py::verified_namespace`, `apps/scheduler/scheduler/dispatch.py::GkeJobDispatcher.namespace_for`, `apps/reconciler/reconciler/store.py::ControlStore.tenant_namespaces` |
+| `tenants/A.gcs_prefix` set to B's prefix | A's `GCS_PREFIX` names B's. The bucket grant is prefix-conditioned on A's id, so this costs failed writes rather than a leak. | `apps/scheduler/scheduler/dispatch.py::worker_env` |
+| `pools/global.active` set to 0 (or huge) | At 0, admission counts nothing in flight and **the platform admits past its global ceiling**: invariants 2 and 3, and money. Huge, nothing is admitted. A worker writes `active` legitimately on every release, so nothing can tell its write from a forged one. | `apps/common/swarm_common/admission.py::evaluate_capacity`, `apps/common/swarm_common/admission.py::release_lease_in_transaction` |
+| `pools/<any>` `.hard_limit`, `.enabled` | Raise A's own ceiling past the admin's; disable `pools/global` (every tenant parks) or B's pool. | `apps/common/swarm_common/admission.py::evaluate_capacity` |
+| `leases/<new id>` created with chosen `pools[]` and `units`, then released | The release decrements every pool the lease names, so a worker can free capacity other tenants hold. It holds every permission that takes; the reconciler's stale-lease release does it too if the worker leaves it. | `apps/common/swarm_common/admission.py::release_lease_in_transaction` |
+| `control/dispatch` `.dispatch_paused: true` | **All dispatch stops, for every tenant.** | `apps/scheduler/scheduler/store.py::SchedulerStore.dispatch_paused` |
+| `workspace_settings/B.judgment_backend` (#1457) | B's judgments go to TypeSafe on B's key; with B listed in `TYPESAFE_FORWARDER_TENANTS`, B's live-browser pods get the inject label and swarm-api mints B's forwarder ticket. Two readers take the top-level field and one takes `code_intelligence.judgment_backend` first, so a forger can also make them disagree. | `apps/scheduler/scheduler/judgment.py::read_backend`, `apps/scheduler/scheduler/dispatch.py::judge_backend`, `apps/swarm-api/swarm_api/judgment.py::JudgmentSettings.read` (read by `apps/swarm-api/swarm_api/typesafe_ticket.py::TypesafeTicketService.mint`) |
+| `workspace_settings/B` `.merge.*`, `.code_intelligence.*`; `tenant_settings/B` | B's merge mode and train, B's graph tickets, Jev and context delivery. | swarm-api merge and code-intelligence settings; the worker's graph stage |
+
+The same role reads, too: `tenants/<B>` (its principal), `workspace_settings/<B>`,
+`quota/*:<B>`, `accounts/*` and any task whose id leaks are readable today.
+
+**The worker's own tenant checks are not a boundary.**
+`apps/agent-worker/agent_worker/control.py::ControlPlane._assert_tenant` refuses
+a document of another tenant, but it runs in a process the agent shares a uid
+with, and the agent can mint the worker account's token from the metadata
+server ([security.md](security.md#cloud-metadata-abuse)) and call Firestore with
+`curl`. Every write above is a direct Firestore call, not a call through the
+worker.
+
+#### Phase 0 of #1457: what it closes once its lanes merge
+
+**Not built on 2026-10-17.** The owner approved the design on 2026-10-17
+(design B, phase 0 interim). Phase 0 is three lanes, and each changes nothing a
+running worker can do; it changes what the control plane believes:
+
+* **Derived identity, namespace and prefix (lanes ISO-SCHED and ISO-RECON).**
+  The dispatcher takes the service account from
+  `apps/common/swarm_common/identity.py::worker_service_account_id`, the
+  namespace from the template and `GCS_PREFIX` from the tenant id, never from
+  `tenants/<id>`, and logs any disagreement. `verified_namespace` stops keeping a
+  stored namespace that merely starts with the prefix, and the reconciler's
+  `tenant_namespaces` derives too. **This closes the first three rows of the
+  table above for good**: a rewritten `tenants/A` no longer makes A run as B.
+* **A MAC on `workspace_settings` (lane ISO-SETTINGS-MAC).** swarm-api signs the
+  fields the control plane acts on (`judgment_backend`, `merge.*`,
+  `code_intelligence.*`) with a key no worker holds, and the scheduler and
+  swarm-api treat a missing or bad MAC as unset. Unset `judgment_backend` is
+  `internal-jev`, which fails closed. **This closes #1457's instance** and the
+  other `workspace_settings` rows.
+
+**What phase 0 leaves open, stated so nobody reads it as closed:** every other
+row. A worker can still zero `pools/global.active`, raise or disable any pool,
+forge and release a lease, pause all dispatch through `control/dispatch`,
+rewrite `tenants/<B>.enabled`, `.max_active` and `.credentials`, `quota/*:<B>`,
+`accounts/*`, `tenant_settings/<B>`, and read everything it can name. A MAC
+cannot close the pool, lease, task and attempt rows at all: the worker writes
+those legitimately, and a signature cannot tell its write from a forged one.
+
+#### Design B: what it closes, and the cutover order
+
+The worker loses direct Firestore access. It reaches its state only through
+worker-only swarm-api routes, `/v1/attempts/{attempt_id}/state/...`, each
+checked against the caller's ID token (which proves the tenant) and an Ed25519
+proof from the attempt key (which proves the attempt), in fenced transactions
+that permit only the transitions a worker makes today. Reads move too, and the
+`swarmTenantWorkerFirestore` binding is then removed. That closes **every row of
+the inventory**, reads included: no tenant identity can change, or read,
+another tenant's control-plane state.
+
+The cutover is per tenant, and **every switch defaults to today's behaviour**:
+nothing changes for a tenant until the owner switches it.
+
+1. The routes ship in swarm-api, with minimum instances raised to 2, because
+   every heartbeat then goes through it. The worker's remote client ships behind
+   a per-tenant switch that is off.
+2. **Dev's tenants are switched first**, then `make smoke concurrency-test
+   race-test` runs against dev, because the change touches dispatch and
+   reconciliation.
+3. **Every tenant is switched.**
+4. **Only then is the binding removed**: the tenancy module's
+   `worker_firestore_access` defaults on until the last tenant is switched, and
+   `register-tenant.sh` stops granting the role. A worker still on the old path
+   after that fails its first read and its attempt fails retryably.
+5. An acceptance probe, from a tenant-A pod, gets `PermissionDenied` on a direct
+   update of `workspace_settings/<B>`, a get of `tenants/<B>` and a create under
+   `leases/`. It is red until step 4 is applied.
+
+**What design B does not close:**
+
+* **The boundary is the attempt, not the process.** The agent can still mint
+  its worker's ID token. Without the attempt key that token gets
+  `403 attempt_unproven`. Where the worker's heap is not protected
+  (`make_non_dumpable` does not report `PROTECTED`), the attempt still runs with
+  its key flagged `unprotected` (owner decision, 2026-10-17), so its agent could
+  read the key and do what its own worker does, within its own attempt and
+  tenant, and nothing for another tenant. That is today's posture within a
+  tenant, recorded rather than implied.
+* **The four platform services keep database-wide access**, and every swarm
+  identity can read and write any second Firestore database created in this
+  project ([security.md](security.md#firestore-database-scoping-does-not-exist-verified-2026-09-16)).
+* **Admission does not verify a task's spec signature.** The forger loses write
+  access, which is what makes that unnecessary; the worker's spec check still
+  holds invariant 10.
+
+Until step 4 is applied for every tenant, the honest statement is that the
+Firestore boundary is *narrowed*, not *closed*, and the grant is identical
+whether a tenant was created by Terraform or by `register-tenant.sh` — the
+script refuses to run at all if the custom role is missing rather than falling
+back to `roles/datastore.user`.
 
 The one place to be careful when extending the platform: **anything that accepts
 a tenant id as input**. Admin routes do, and they are gated on admin

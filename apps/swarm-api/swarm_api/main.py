@@ -31,6 +31,8 @@ from .routes import (
     approvals,
     attemptcontext,
     attempts,
+    attemptstate,
+    attempts_mcp,
     attempts_secrets,
     browser_logins,
     browser_slots,
@@ -47,6 +49,7 @@ from .routes import (
     judgment,
     leases,
     live,
+    mcp_servers,
     merge_settings,
     notifications,
     onboarding,
@@ -81,7 +84,18 @@ TITLE = "swarm control-plane API"
 #: The release is the one route that serves credential material (owner
 #: decision Q2), so its body and its answer stay out of every log by
 #: construction, not by a reviewer noticing.
-UNCAPTURED_ROUTES = frozenset({attempts_secrets.RELEASE_ROUTE})
+#:
+#: The MCP attach (docs/design/registered-mcp-servers.md §4.6, owner decision
+#: Q9 of #1433) is the second such route. And the three submission routes
+#: join them, because their bodies carry a caller's per-run MCP credentials
+#: (`mcp_credentials`, §4.3): a body capture must skip them too.
+UNCAPTURED_ROUTES = frozenset({
+    attempts_secrets.RELEASE_ROUTE,
+    attempts_mcp.ATTACH_ROUTE,
+    "/v1/tasks",
+    "/v1/tasks/batch",
+    "/v1/workflows",
+})
 
 
 def _forbidden_field_hint(errors: list[dict[str, Any]]) -> str | None:
@@ -235,11 +249,24 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # Layer I, in-flight work (docs/design/context-quality.md §4.2, lane CTXQ-I):
     # worker-only, authenticated and fenced as the git tools are.
     app.include_router(attemptcontext.router)
+    # The worker's state (docs/design/tenant-settings-integrity.md §4, lane
+    # ISO-STATE-API, part of #1457): worker-only, token for the tenant, attempt
+    # key for the worker, fenced in one transaction. Mounted and unused until a
+    # tenant's SWARM_STATE_VIA_API is on (lane ISO-WORKER-CORE).
+    app.include_router(attemptstate.router)
     # The workspace secrets release (docs/design/workspace-secrets.md §3.3,
     # lane SEC-RELEASE, part of #1347): worker-only, signed under its own
     # purpose and fenced; the one route that serves credential material, and
     # in UNCAPTURED_ROUTES.
     app.include_router(attempts_secrets.router)
+    # Registered MCP servers (docs/design/registered-mcp-servers.md, lane
+    # MCP-API, part of #1433): the tenant's registrations, the per-run
+    # credential sweep, and the worker-only attach, the second route that
+    # serves credential material (owner decision Q9), in UNCAPTURED_ROUTES.
+    # Every write and the attach are refused `mcp_unavailable` until
+    # SWARM_MCP_SERVERS=on.
+    app.include_router(mcp_servers.router)
+    app.include_router(attempts_mcp.router)
     # Named browser logins and the workflow carry (docs/design/live-browser.md
     # §5.5.1, lane LB-L9b): the person's own logins, and two worker-only
     # routes that authenticate as the child routes do.

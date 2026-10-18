@@ -727,7 +727,7 @@
   "tests/unit/worker/test_live_resume_view.py": 1.5,
   "tests/unit/worker/test_live_rfb.py": 1.1,
   "tests/unit/worker/test_live_rfb_tunnel_flush.py": 0.1,
-  "tests/unit/worker/test_live_stream_bench.py": 3.4,
+  "tests/unit/worker/test_live_stream_bench.py": 8.6,
   "tests/unit/worker/test_live_stream_smooth.py": 3.8,
   "tests/unit/worker/test_live_stream_stall.py": 13.8,
   "tests/unit/worker/test_live_tunnel_reopens.py": 0.1,

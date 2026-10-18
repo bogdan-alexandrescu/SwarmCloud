@@ -28,7 +28,9 @@ from swarm_common.profiles import RUNNER_PROFILES, Backend, RunnerProfile, Worke
 AGENT_PROFILES = (
     "claude-code", "codex", "browser", "claude-code-review", "indexer", "claude-code-browser",
 )
-NO_SLOT_PROFILES = ("mock", "generic", "merge", "post-verdict")
+# await-input is a control_plane profile (contract request 93), which may not
+# declare a slot at all.
+NO_SLOT_PROFILES = ("mock", "generic", "merge", "post-verdict", "await-input")
 
 
 def _profile(**overrides):
@@ -243,7 +245,8 @@ def test_the_import_time_check_passes_on_the_catalogue():
 
 
 def test_consumer_kinds_and_platform_components():
-    assert models.SECRET_CONSUMER_KINDS == ("profile", "tool", "component")
+    # Contract request 89 added "mcp", a registered MCP server's consumer kind.
+    assert models.SECRET_CONSUMER_KINDS == ("profile", "tool", "component", "mcp")
     assert models.PLATFORM_COMPONENTS == ("judge", "merge", "indexer", "git")
 
 

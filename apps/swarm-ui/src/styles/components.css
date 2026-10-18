@@ -63,19 +63,30 @@
 .c-btn.is-icon { width: var(--h-ctl); padding: 0; }
 .c-btn.is-icon.is-sm { width: var(--h-sm); }
 .c-btn.is-icon.is-lg { width: var(--h-lg); }
-/* ONE disabled treatment (45%, and the reason beside it), replacing five
-   opacities. `aria-disabled` as well as `:disabled`, for a link-button. */
+/* ONE disabled treatment (a token pair, and the reason beside it), replacing
+   five opacities. `aria-disabled` as well as `:disabled`, for a link-button.
+   DRAWN, NOT FADED (V256, #1427). It was `opacity: .45`, which composited a
+   secondary "Read" to 2.95:1 in light and 4.13:1 in dark, beside a disabled
+   primary drawn from tokens at >=5.6:1: two disabled styles on one form. Now
+   every kind is the same pale ground with its label in `--text-dim`, the
+   pairing `.sc-switch-go` (schedules.css) already used, so off reads as off
+   and the words still clear AA (vqa2.r14.test.tsx). After every `:hover`
+   above, so a hover cannot relight it. */
 .c-btn:disabled,
-.c-btn[aria-disabled='true'] { opacity: .45; cursor: not-allowed; }
-/* EXCEPT A FILLED BUTTON, WHOSE LABEL SAYS WHAT THE CLICK WOULD DO (V138,
-   #1038). At 45% the white-on-accent label of a disabled "Submit" sank into
-   the panel in both themes: WCAG exempts a disabled control, but this one's
-   label is still the thing being explained by the reason beside it. So a
-   disabled primary (or filled-danger) button is drawn PALE rather than faded
-   -- the pale accent tint (`--sk-acs`, the pressed toggle's ground), solid,
-   with the label in `--text-dim` -- so it is still the pale accent
-   components.html A asks for, still reads as off, and its words clear AA
-   (vqa.l09.test.tsx). After `:hover` so a hover cannot relight it. */
+.c-btn[aria-disabled='true'] { opacity: 1; background: var(--surface-2); border-color: var(--line); color: var(--text-dim); cursor: not-allowed; }
+/* A ghost has no ground or edge to pale, so it keeps having none. */
+.c-btn.is-ghost:disabled,
+.c-btn.is-ghost[aria-disabled='true'] { background: none; border-color: transparent; color: var(--text-dim); }
+/* A FILLED BUTTON PALES IN ITS OWN HUE, WHOSE LABEL SAYS WHAT THE CLICK
+   WOULD DO (V138, #1038). At the old 45% the white-on-accent label of a
+   disabled "Submit" sank into the panel in both themes: WCAG exempts a
+   disabled control, but this one's label is still the thing being explained
+   by the reason beside it. So a disabled primary (or filled-danger) button
+   is drawn PALE rather than faded -- the pale accent tint (`--sk-acs`, the
+   pressed toggle's ground), solid, with the label in `--text-dim` -- so it
+   is still the pale accent components.html A asks for, still reads as off,
+   and its words clear AA (vqa.l09.test.tsx). After `:hover` so a hover
+   cannot relight it. */
 .c-btn.is-primary:disabled,
 .c-btn.is-primary[aria-disabled='true'] { opacity: 1; background: var(--sk-acs); border-color: var(--sk-acl); color: var(--text-dim); }
 /* The filled danger button the same way, in its own hue's pale tint. */
@@ -152,6 +163,17 @@
 .c-flag svg { width: 12px; height: 12px; }
 .c-park { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .c-until { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); white-space: nowrap; }
+/* THE ABSENT MARK'S HATCH CLEARS THE CORNER, NOT ONLY THE BORDER (V108,
+   #1427). styles.css insets the band 2px from the mark's border (#1038), but
+   the mark is 6px round: inside its 1px border that is a 5px curve, and a
+   band corner at (2px, 2px) sits 0.76px from it, so in dark the first stripe
+   still started on the rounded edge. 4px in and 3px down puts the corner
+   2.8px clear of the curve, and 6px of width shows the hatch as a swatch of
+   strokes rather than one. The mark itself is styles.css's (`.ctl-mark`);
+   only this inset is set here, by the shared-primitives lane, and since
+   styles.css loads after this sheet the `:root` raises it one step over
+   `.ctl-mark.is-absent::before` there (vqa2.r14.test.tsx measures it). */
+:root .ctl-mark.is-absent::before { width: 6px; margin: 3px 0 3px 4px; }
 
 /* ---- chips and tags: one chip shape ----------------------------------- */
 .c-chip {
@@ -266,6 +288,22 @@
 .c-tabs > [aria-selected='true'],
 .c-tabs > [aria-current='page'] { color: var(--sk-ac); border-bottom-color: var(--sk-ac); font-weight: 600; }
 .c-tabs em { font: normal 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+/* ON A PHONE THE STRIP WRAPS, SO NO LABEL IS CUT (V119, #1427). The shade
+   above says there is more, but at 400px the repository's eight tabs still
+   stopped mid-word under it ("Hot-sp", "Se"): a scrolling row ends wherever
+   the viewport does, and no shade makes half a word read as a tab. Below
+   561px the strip wraps instead, every label whole. V148's objection to a
+   wrap -- two ragged rows, the open tab's underline floating between them --
+   is met by each tab drawing its own hairline, with no gap between tabs, so
+   each row sits on a line and the underline lies on its own row's. The
+   agent split keeps its one row and "More" menu (owner decision Q2 of
+   2026-10-16): `.c-tabs.ag-split-tabs` in agents.css outranks this. A strip
+   that wraps has no scroll range, so the shade above draws nothing. */
+@media (max-width: 560px) {
+  .c-tabs { flex-wrap: wrap; gap: 0; }
+  .c-tabs > a,
+  .c-tabs > button { box-shadow: inset 0 -1px 0 var(--line); }
+}
 .c-seg { display: inline-flex; border: 1px solid var(--ctl-bd); border-radius: var(--r-ctl); overflow: hidden; background: var(--surface); height: var(--h-ctl); flex: none; align-self: flex-start; }
 .c-seg > button { padding: 0 12px; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); border: 0; border-right: 1px solid var(--line); display: flex; gap: 6px; align-items: center; white-space: nowrap; background: none; cursor: pointer; }
 .c-seg > button:last-child { border-right: 0; }
@@ -403,7 +441,26 @@
      container; a segment that does not fit starts a second row, and each
      row's top hairline is drawn by its segments, the first row's hidden
      under the control's own border (`overflow: hidden`). */
-  .c-seg { height: auto; flex-wrap: wrap; max-width: 100%; }
+  /* `.c-seg.is-sm` AS WELL (V172, #1427): its `height: var(--h-sm)` is
+     0,2,0 and beat a bare `.c-seg` here, so a small control on a phone drew
+     its 44px segments inside 28px and cut the labels at the foot (Schedules'
+     admin "Mine | All tenants"). */
+  .c-seg,
+  .c-seg.is-sm { height: auto; flex-wrap: wrap; max-width: 100%; }
   .c-seg > button,
   .c-seg > a { min-height: 44px; flex: 1 0 auto; border-top: 1px solid var(--line); margin-top: -1px; }
+  /* NO SEGMENT ALONE ON THE LAST ROW (V207, #1427). Packed by content, Runs'
+     six states put five on the first row and "rejected 0" alone across the
+     second, which reads as a separate control. A control of five or six
+     segments is laid out three to a row (5 = 3+2, 6 = 3+3) and one of seven
+     or eight four to a row (4+3, 4+4): the basis caps the row, the grow
+     fills it, and a label wider than its basis still widens its segment
+     (a flex item never shrinks below its content here). Two to four
+     segments keep packing by content, so a control that fits on one row
+     stays one row. Counted with `:nth-last-child` on the first segment, so
+     no script and no class says how many there are. */
+  .c-seg > :first-child:nth-last-child(n+5),
+  .c-seg > :first-child:nth-last-child(n+5) ~ * { flex-basis: 30%; }
+  .c-seg > :first-child:nth-last-child(n+7),
+  .c-seg > :first-child:nth-last-child(n+7) ~ * { flex-basis: 23%; }
 }

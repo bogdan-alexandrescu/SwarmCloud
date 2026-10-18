@@ -91,6 +91,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE
+from swarm_common.identity import worker_service_account_id
 from swarm_common.models import Lease, Task, Tenant
 from swarm_common.profiles import (
     RESOURCE_CLASSES,
@@ -102,13 +103,15 @@ from swarm_common.profiles import (
 )
 
 from .credentials import AccountPool, CredentialSource, credential_for
+from .mcp_admission import names_mcp_servers
 from .judgment import BACKENDS as JUDGMENT_BACKENDS
 from .judgment import (
     DEFAULT_BACKEND,
-    SETTINGS_COLLECTION,
     TYPESAFE_BACKEND,
     jev_dispatch,
     read_backend,
+    read_settings,
+    settings_mac_key,
 )
 
 log = logging.getLogger(__name__)
@@ -567,6 +570,14 @@ EGRESS_POD_LABEL = ("swarm-egress", "proxy")
 #: manifest) both select: only a pod carrying it reaches swarm-typesafe-fwd on
 #: TCP 8080. Set by `_with_judgment`, only when `typesafe_forwarder_on`.
 TYPESAFE_POD_LABEL = ("swarm-typesafe", "inject")
+#: THE WORKER'S FORWARDER SWITCH (lane TS-INJECT, part of #1347), set on the
+#: worker container by `_with_judgment` with TYPESAFE_POD_LABEL and never
+#: otherwise: a labelled pod whose worker still reads the key file, or a
+#: switched worker the policies do not open the forwarder to, is half a
+#: migration. RESTATED from `agent_worker.typesafe_shim.SWITCH_ENV` and
+#: `SWITCH_ON`, because the scheduler's image does not carry the worker;
+#: tests/unit/control_plane/test_typesafe_switch_parity.py holds them equal.
+TYPESAFE_INJECT_ENV = ("SWARM_TYPESAFE_INJECT", "on")
 
 #: The three volumes both containers mount, and only these (§3.1). All memory,
 #: so inside the pod's memory limit, and none under WORKSPACE_MOUNT, so none
@@ -836,12 +847,18 @@ def judge_backend(doc: Any) -> str:
     return value if isinstance(value, str) and value in JUDGMENT_BACKENDS else DEFAULT_BACKEND
 
 
-def read_judge_backend(db: Any, tenant_id: str) -> str | None:
+def read_judge_backend(db: Any, tenant_id: str, *, mac_key: str | None = None) -> str | None:
     """`judge_backend` of the tenant's stored document; None when unreadable,
-    which `typesafe_judge_needs_gke` treats as TypeSafe (it fails closed)."""
+    which `typesafe_judge_needs_gke` treats as TypeSafe (it fails closed).
+
+    With `mac_key` (`judgment.settings_mac_key`, the SETTINGS_MAC_REQUIRED
+    switch), a block whose MAC does not verify counts as unset
+    (`judgment.trusted_settings`): an unsigned `code_intelligence
+    .judgment_backend` is ignored and the top level decides, and an unsigned
+    top level reads as the default. Read the same way as `read_backend`, so
+    the pod and the router never disagree on a forged value."""
     try:
-        snap = db.collection(SETTINGS_COLLECTION).document(tenant_id).get()
-        doc = (snap.to_dict() or {}) if snap.exists else {}
+        doc = read_settings(db, tenant_id, mac_key=mac_key)
     except Exception as exc:  # noqa: BLE001 - said by type, decided by the caller
         log.warning("judge backend unreadable for tenant=%s: %s", tenant_id,
                     type(exc).__name__)
@@ -1166,6 +1183,8 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
     metadata server's address and nothing else. Anything BOTH backends need
     still belongs here, not there.
     """
+    gcs_prefix = tenant_gcs_prefix(task.tenant_id, settings.core.artifact_bucket)
+    _record_disagrees(task.tenant_id, "gcs_prefix", tenant.gcs_prefix, gcs_prefix)
     env = {
         "TASK_ID": task.id,
         "ATTEMPT_ID": lease.attempt_id,
@@ -1177,7 +1196,8 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
         "REGION": settings.region,
         "FIRESTORE_DATABASE": settings.core.firestore_database,
         "ARTIFACT_BUCKET": settings.core.artifact_bucket,
-        "GCS_PREFIX": tenant.gcs_prefix or "",
+        # DERIVED, never the stored `tenant.gcs_prefix` (#1457, row 3).
+        "GCS_PREFIX": gcs_prefix,
         "CHECKPOINT_INTERVAL_SECONDS": str(
             RUNNER_PROFILES[task.runner_profile].checkpoint_interval_seconds
         ),
@@ -1247,12 +1267,20 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
     # key, so a child whose profile or tools declare a secret slot needs one
     # even with no git tools (a `browser` child): without it the worker cannot
     # ask, a required slot parks it, and an optional one is never delivered.
+    #
+    # AND WHEN ITS SIGNED INPUT NAMES AN MCP SERVER (docs/design/registered-
+    # mcp-servers.md §4.6, lane MCP-SCHED). The attach that hands the worker
+    # each server's URL and credential is signed with the same key, so a child
+    # naming a server needs one whatever else its profile offers: without it
+    # the worker cannot attach, and the attempt fails before its agent runs.
+    # A task naming none is keyed exactly as before.
     child_key = str(getattr(settings, "child_key", "") or "")
     api_url = str(getattr(settings, "swarm_api_url", "") or "").strip()
     keyed = (
         not task.parent_task_id
         or offers_git_tools(task.runner_profile)
         or consumes_workspace_secrets(task.runner_profile, task.input)
+        or names_mcp_servers(task.runner_profile, task.input)
     )
     if child_key and api_url and keyed:
         from .children import registration_nonce
@@ -1390,25 +1418,85 @@ def image_uri(settings: Any, profile: RunnerProfile) -> str:
     return f"{settings.artifact_registry_host}/{profile.image}:{settings.worker_image_tag}"
 
 
-def assert_tenant_identity(tenant: Tenant) -> str:
-    """Refuse to start anything for a tenant with no service account.
+#: GCP's cap on a service account id. A tenant id whose
+#: `worker_service_account_id` is longer has no worker account it could run as
+#: (swarm-api's `store.derived_service_account` records None for it).
+SERVICE_ACCOUNT_ID_MAX = 30
 
-    Cloud Run falls back to the project's DEFAULT compute service account when a
-    Job names none, and that identity is shared and usually far more privileged
-    than a worker -- so a tenant whose infrastructure was never provisioned would
-    run its code as it. Invariant 9 requires the tenant's own identity, and a
-    task that cannot have one belongs back in READY with a clear error, not in a
-    container.
+#: The event logged when a `tenants/<id>` record disagrees with what dispatch
+#: derives. The namespace keeps its own, `TENANT_NAMESPACE_MISMATCH`, which the
+#: monitoring module counts.
+TENANT_RECORD_MISMATCH = "tenant_record_mismatch"
+
+
+def tenant_service_account(tenant_id: str, project_id: str) -> str | None:
+    """`swarm-agent-worker-<tenant>@<project>.iam.gserviceaccount.com`, the one
+    account a tenant's attempt runs as, or None when no such account can exist.
+
+    DERIVED, NEVER READ from `tenants/<id>.service_account` (design
+    tenant-settings-integrity.md §1.3 row 1, #1457): a tenant's worker can
+    rewrite its own tenant document, and this service holds `actAs` on every
+    tenant's worker account, so a Job built from the stored value ran tenant A's
+    next attempt as tenant B. Terraform's tenancy module, register-tenant.sh
+    and swarm-api all name the account by `identity.worker_service_account_id`.
     """
-    if not tenant.service_account:
+    account_id = worker_service_account_id(tenant_id)
+    if not tenant_id or not project_id or len(account_id) > SERVICE_ACCOUNT_ID_MAX:
+        return None
+    return f"{account_id}@{project_id}.iam.gserviceaccount.com"
+
+
+def tenant_gcs_prefix(tenant_id: str, artifact_bucket: str) -> str:
+    """`gs://<bucket>/tenants/<tenant>`, as swarm-api records it when it creates
+    the tenant; derived for the same reason as `tenant_service_account` (row 3).
+    "" when the deployment names no bucket, as an unset record read before."""
+    return f"gs://{artifact_bucket}/tenants/{tenant_id}" if artifact_bucket else ""
+
+
+def _record_disagrees(tenant_id: str, name: str, stored: Any, derived: str) -> None:
+    """Log, once per tenant and field per process per hour, a stored record
+    that is not the derived value. The record is IGNORED either way: a
+    disagreement is a stale document or a forged one, and both are repaired in
+    Firestore, never followed."""
+    stored = str(stored).strip() if stored else ""
+    if not stored or stored.lower() == derived.lower():
+        return
+    if _record_mismatch_due(f"{name}\n{tenant_id}"):
+        log.error(
+            "%s tenant=%s field=%s stored=%r derived=%r: IGNORED, dispatch uses the "
+            "derived value. A tenant's worker can write its own tenant document; "
+            "repair it and find out who wrote it",
+            TENANT_RECORD_MISMATCH, tenant_id, name, stored, derived,
+            extra={"event": TENANT_RECORD_MISMATCH, "tenant_id": tenant_id,
+                   "field": name, "stored": stored, "derived": derived},
+        )
+
+
+def assert_tenant_identity(tenant: Tenant, settings: Any) -> str:
+    """The service account this tenant's attempt runs as: DERIVED from its id.
+
+    `tenant.service_account` is a record, not authority (contract request 87):
+    a stored value that is not the derived one is logged and ignored
+    (`tenant_service_account`, which says why). What is refused is a tenant
+    that can have no account at all -- an id too long for one, or a scheduler
+    with no project -- because Cloud Run falls back to the project's DEFAULT
+    compute service account when a Job names none, and that identity is shared
+    and usually far more privileged than a worker. Invariant 9 requires the
+    tenant's own identity, and a task that cannot have one belongs back in
+    READY with a clear error, not in a container.
+    """
+    project_id = str(getattr(settings, "project_id", "") or "")
+    derived = tenant_service_account(tenant.tenant_id, project_id)
+    if derived is None:
         raise DispatchError(
-            f"tenant {tenant.tenant_id!r} has no service account; its identity has "
-            "not been provisioned (terraform tenants map, or "
-            "scripts/register-tenant.sh) and the platform will not run its work "
-            "under a shared one",
+            f"tenant {tenant.tenant_id!r} has no service account it could run as: "
+            f"{worker_service_account_id(tenant.tenant_id)!r} is not a valid account "
+            f"id in project {project_id!r} (over {SERVICE_ACCOUNT_ID_MAX} characters, "
+            "or no project), and the platform will not run its work under a shared one",
             code="tenant_identity_missing",
         )
-    return tenant.service_account
+    _record_disagrees(tenant.tenant_id, "service_account", tenant.service_account, derived)
+    return derived
 
 
 # --------------------------------------------------------------------------
@@ -1499,7 +1587,7 @@ class CloudRunJobDispatcher:
         from google.cloud import run_v2
         from google.protobuf import duration_pb2
 
-        assert_tenant_identity(tenant)
+        service_account = assert_tenant_identity(tenant, self._settings)
         rc = RESOURCE_CLASSES[resource_class or profile.resource_class]
         env = [
             run_v2.EnvVar(name="RUNNER_PROFILE", value=profile.name),
@@ -1624,7 +1712,7 @@ class CloudRunJobDispatcher:
                             dispatch_timeout_seconds=self._settings.core.dispatch_timeout_seconds,
                         )
                     ),
-                    service_account=tenant.service_account,
+                    service_account=service_account,
                     execution_environment=run_v2.ExecutionEnvironment.EXECUTION_ENVIRONMENT_GEN2,
                 ),
             ),
@@ -1705,6 +1793,18 @@ class CloudRunJobDispatcher:
         storage_drift = _workspace_drift(
             existing, RESOURCE_CLASSES[resource_class or profile.resource_class]
         )
+        # AND ITS IDENTITY (#1457). Until the account was derived, `_build_job`
+        # named whatever `tenants/<id>.service_account` said, and a tenant's
+        # worker can write that. A Job built while the record named another
+        # tenant's account would go on running this tenant's attempts as that
+        # account for as long as it exists, so it is rebuilt as the derived one.
+        wanted_account = assert_tenant_identity(tenant, self._settings)
+        try:
+            current_account = str(existing.template.template.service_account or "")
+        except AttributeError:
+            current_account = ""
+        if current_account.lower() != wanted_account.lower():
+            storage_drift = [*storage_drift, "service_account"]
         if (current == wanted and current_model == wanted_model and not spec_drift
                 and not storage_drift):
             return False
@@ -1723,7 +1823,7 @@ class CloudRunJobDispatcher:
         # needs no more than which settings moved.
         log.info(
             "cloud run job %s moved from %s (MODEL %s) to %s (MODEL %s); SPEC_* changed: %s; "
-            "workspace changed: %s",
+            "workspace or identity changed: %s",
             name, current or "?", current_model or "unset", wanted, wanted_model or "unset",
             ", ".join(spec_drift) or "none", ", ".join(storage_drift) or "none",
         )
@@ -1857,7 +1957,7 @@ class CloudRunJobDispatcher:
 
         # Before any API call: a tenant with no identity is refused here rather
         # than after a round trip that would only be wasted.
-        assert_tenant_identity(tenant)
+        assert_tenant_identity(tenant, self._settings)
         name = self.ensure_job(profile, tenant, resource_class_for(task, profile))
         env = worker_env(task=task, lease=lease, tenant=tenant, settings=self._settings)
         overrides = run_v2.RunJobRequest.Overrides(
@@ -2078,7 +2178,7 @@ def authenticated_identity(credentials: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
-# A stored tenant namespace is VERIFIED, not trusted (owner decision 2026-10-11)
+# A stored tenant namespace is a RECORD, not authority (#1457)
 # ---------------------------------------------------------------------------
 #
 # `tenants/u-bogdan` carried `namespace: swarm-u-bogdan`, the spelling used
@@ -2086,23 +2186,28 @@ def authenticated_identity(credentials: Any) -> str:
 # `namespace_for` preferred the stored value unchecked, so every GKE task for
 # that tenant was created in a namespace that does not exist -- and Kubernetes
 # reports that as `jobs.batch is forbidden`, never as a missing namespace
-# (docs/gke-dispatch-403.md). The data was repaired; this is what stops the
-# next bad value from doing the same.
+# (docs/gke-dispatch-403.md). The owner's 2026-10-11 rule then kept a stored
+# value inside the authority prefix (`swarm-tenant-`) and ignored one outside.
 #
-# THE RULE, identical in `reconciler.backends.GkeBackend.namespace_for` (that
-# image cannot import this one; tests/unit/control_plane/
-# test_reconciler_gke_namespaced.py pins the two together):
+# THAT RULE ACCEPTED ANOTHER TENANT'S NAMESPACE. `swarm-tenant-B` is inside
+# the prefix, and a tenant's worker can write its own `tenants/<id>` document,
+# so tenant A's next GKE pod ran in B's namespace, as B's KSA and so as B's
+# Google account (docs/design/tenant-settings-integrity.md §1.3 row 2). The
+# namespace is therefore DERIVED, always, from the template and the tenant id:
 #
-#   * a stored value OUTSIDE the authority prefix (`swarm-tenant-`) is IGNORED:
-#     the derived name is used, and `tenant_namespace_mismatch` is logged at
-#     ERROR. Nothing outside the prefix is ever ours -- terraform's tenancy
-#     module, `kubernetes/render.py`, the reconciler's GC filter and the
-#     repository's kubectl guard all key on it -- so such a value can only be a
-#     stale spelling or a typo, and dispatching into it can only fail;
-#   * a stored value INSIDE the prefix but not the derived name is KEPT and
-#     logged at WARNING. `kubernetes/render.py --namespace` deliberately allows
-#     a rename within the prefix (a `-canary` namespace), and the objects that
-#     make dispatch work were applied there, so overruling it would break it.
+#   * a stored value that is not the derived name is IGNORED and logged as
+#     `tenant_namespace_mismatch` at ERROR, inside the prefix or not. A rename
+#     within the prefix (`kubernetes/render.py --namespace`'s `-canary`) is
+#     no longer followed by dispatch: that is the price of the fix, and the
+#     derived namespace is the one terraform's tenancy module binds.
+#
+# The reconciler must read where this writes. `reconciler.backends
+# .GkeBackend.namespace_for` (that image cannot import this one) derives the
+# same name when it is handed no recorded value, and still keeps a recorded
+# one inside the prefix; `reconciler.store.tenant_namespaces` is what hands it
+# that value, and lane ISO-RECON (#1457) makes it the derived one. tests/unit/
+# control_plane/test_reconciler_gke_namespaced.py pins the derived names of
+# the two together.
 #
 # Logged at most once per tenant per process per hour: the dispatch loop asks
 # on every dispatch, and the alert (terraform/modules/monitoring,
@@ -2146,41 +2251,38 @@ class _OncePerInterval:
 
 
 _namespace_mismatch_due = _OncePerInterval(TENANT_NAMESPACE_MISMATCH_LOG_INTERVAL_S)
+#: The same, for `tenant_record_mismatch` (service account, GCS prefix).
+_record_mismatch_due = _OncePerInterval(TENANT_NAMESPACE_MISMATCH_LOG_INTERVAL_S)
 
 
 def verified_namespace(tenant_id: str, stored: Any, derived: str, prefix: str) -> str:
-    """`stored` if it is inside `prefix`, else `derived`; logs any disagreement.
+    """`derived`, always; logs a `stored` value that disagrees.
 
     See the block comment above. `prefix` is the authority prefix, the literal
-    part of the namespace template before `{tenant}`.
+    part of the namespace template before `{tenant}`; it only says, in the
+    log, whether the ignored value was inside it -- another tenant's namespace
+    or a rename -- or outside it, a stale spelling.
     """
     stored = str(stored) if stored else ""
     if not stored or stored == derived:
         return derived
-    trusted = bool(prefix) and stored.startswith(prefix) and len(stored) > len(prefix)
     if _namespace_mismatch_due(tenant_id):
-        fields = {
-            "event": TENANT_NAMESPACE_MISMATCH,
-            "tenant_id": tenant_id,
-            "stored": stored,
-            "derived": derived,
-            "used": stored if trusted else derived,
-        }
-        if trusted:
-            log.warning(
-                "%s tenant=%s stored=%r derived=%r: kept, it is inside %r",
-                TENANT_NAMESPACE_MISMATCH, tenant_id, stored, derived, prefix,
-                extra=fields,
-            )
-        else:
-            log.error(
-                "%s tenant=%s stored=%r derived=%r: IGNORED, it is outside %r; "
-                "dispatching to the derived namespace. Repair the tenant document "
-                "(scripts/tenant-namespace-audit.sh)",
-                TENANT_NAMESPACE_MISMATCH, tenant_id, stored, derived, prefix,
-                extra=fields,
-            )
-    return stored if trusted else derived
+        inside = bool(prefix) and stored.startswith(prefix) and len(stored) > len(prefix)
+        log.error(
+            "%s tenant=%s stored=%r derived=%r: IGNORED (%s %r); dispatching to the "
+            "derived namespace. Repair the tenant document "
+            "(scripts/tenant-namespace-audit.sh)",
+            TENANT_NAMESPACE_MISMATCH, tenant_id, stored, derived,
+            "inside" if inside else "outside", prefix,
+            extra={
+                "event": TENANT_NAMESPACE_MISMATCH,
+                "tenant_id": tenant_id,
+                "stored": stored,
+                "derived": derived,
+                "used": derived,
+            },
+        )
+    return derived
 
 
 @dataclass(frozen=True)
@@ -2301,11 +2403,11 @@ class GkeJobDispatcher:
         return self._batch_api
 
     def namespace_for(self, tenant: Tenant) -> str:
-        """The tenant's namespace: derived from the template, a stored one VERIFIED.
+        """The tenant's namespace: DERIVED from the template, never read.
 
-        A stored `tenant.namespace` is used only when it is inside the
-        template's prefix (`verified_namespace`); anything else is a stale
-        spelling that dispatch could only fail in, so the derived name wins.
+        A stored `tenant.namespace` that differs is logged and ignored
+        (`verified_namespace`): a tenant's worker can rewrite it, and any
+        value inside the prefix would run this tenant's pod as another's.
         """
         template = (
             self._target.namespace_template if self._target else "swarm-tenant-{tenant}"
@@ -2333,7 +2435,7 @@ class GkeJobDispatcher:
 
     def _manifest(self, *, task: Task, lease: Lease, profile: RunnerProfile,
                   tenant: Tenant) -> dict[str, Any]:
-        assert_tenant_identity(tenant)
+        assert_tenant_identity(tenant, self._settings)
         rc = RESOURCE_CLASSES[resource_class_for(task, profile)]
         disk = gke_disk(rc)
         # Identifiers only. No provider key is injected: there is no Kubernetes
@@ -2564,7 +2666,8 @@ class GkeJobDispatcher:
         hostAliases entry that resolves the API's tailnet name to the egress
         Service. For the TypeSafe backend with the forwarder serving the
         tenant (`typesafe_forwarder_on`), the `swarm-typesafe: inject` label
-        that opens swarm-typesafe-fwd instead. Only with the live browser:
+        that opens swarm-typesafe-fwd instead, and SWARM_TYPESAFE_INJECT=on on
+        the worker, which turns its forwarder path on. Only with the live browser:
         jev-browser attaches to nothing else."""
         backend = self._judgment(tenant.tenant_id) if self._judgment else DEFAULT_BACKEND
         env, labels, host_aliases = jev_dispatch(
@@ -2572,6 +2675,7 @@ class GkeJobDispatcher:
         if typesafe_forwarder_on(self._settings, tenant_id=tenant.tenant_id,
                                  profile=profile, backend=backend):
             labels[TYPESAFE_POD_LABEL[0]] = TYPESAFE_POD_LABEL[1]
+            env[TYPESAFE_INJECT_ENV[0]] = TYPESAFE_INJECT_ENV[1]
         template = job["spec"]["template"]
         (worker,) = [c for c in template["spec"]["containers"] if c["name"] == "worker"]
         worker["env"].extend({"name": k, "value": v} for k, v in env.items())
@@ -2804,14 +2908,19 @@ def build_router(settings: Any, *, pool: AccountPool | None = None,
             ca_cert_path=ca_path,
             ksa_name=getattr(settings, "worker_ksa_name", "") or "swarm-agent-worker",
         )
+    # None while SETTINGS_MAC_REQUIRED is off; otherwise both readers below
+    # count only a value swarm-api signed (#1457).
+    mac_key = settings_mac_key(settings)
     return BackendRouter(
         cloud_run=CloudRunJobDispatcher(settings, pool=pool),
         # `db` for the workspace's Jev judgment backend (JUDGE-SELECT), one
         # document read per live-browser dispatch; without it, the default.
         gke=GkeJobDispatcher(
             settings, target=target,
-            judgment=(lambda tenant_id: read_backend(db, tenant_id)) if db is not None else None),
+            judgment=(lambda tenant_id: read_backend(db, tenant_id, mac_key=mac_key))
+            if db is not None else None),
         settings=settings,
         # The same document, read as the worker's judge reads it (JUDGE-GKE).
-        judgment=(lambda tenant_id: read_judge_backend(db, tenant_id)) if db is not None else None,
+        judgment=(lambda tenant_id: read_judge_backend(db, tenant_id, mac_key=mac_key))
+        if db is not None else None,
     )

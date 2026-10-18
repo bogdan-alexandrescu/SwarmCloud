@@ -177,6 +177,15 @@ def test_the_server_names_nothing_outside_the_plugin_directory():
             "marketplace install has are the plugin's own"
         )
 
+    # The one exception (SC-TITLES-B, #1511): the session's project handed to
+    # the bridge as an OPTIONAL env entry, empty when Claude Code has none, so
+    # the bridge writes its run copies where the Workflow tool may read them.
+    # It decides nothing about how the server starts or what it installs, and
+    # the bridge treats an empty or unexpanded value as absent.
+    assert env.pop("CLAUDE_PROJECT_DIR", "${CLAUDE_PROJECT_DIR:-}") == "${CLAUDE_PROJECT_DIR:-}", (
+        "CLAUDE_PROJECT_DIR reaches the bridge only as `${CLAUDE_PROJECT_DIR:-}`: optional, "
+        "and only where it writes run copies"
+    )
     values = [str(command), *map(str, args), *map(str, env.values())]
     for value in values:
         assert not _PARENT_SEGMENT.search(value), (

@@ -17,6 +17,7 @@ explicitly.
 from __future__ import annotations
 
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -52,6 +53,10 @@ _DEPLOYMENT_VARS = (
     # every submission a test makes and scope every attach and check to it.
     "CLAUDE_CODE_SESSION_ID",
     "SWARM_SC_SESSION_ID",
+    # The session's project (SC-TITLES): set on the machine, every launch a
+    # test makes would write its run copy and its launched.jsonl line into
+    # the developer's own project.
+    "CLAUDE_PROJECT_DIR",
 )
 
 
@@ -76,6 +81,11 @@ def _isolated_deployment_config(monkeypatch, tmp_path_factory):
     # inference refuses -- so every test starts in an empty directory that is
     # no checkout at all, and the tests about inference build their own.
     monkeypatch.setenv("SWARM_CHECKOUT_DIR", str(tmp_path_factory.mktemp("not-a-checkout")))
+    # With no project known, every launch -- a swarm_dispatch's row included --
+    # writes its run copy and its launched.jsonl line (SC-TITLES) to the
+    # system temp directory. A private one per test, so no test reads
+    # another's record and none is left in the machine's.
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path_factory.mktemp("system-tmp")))
 
 
 @pytest.fixture(autouse=True)

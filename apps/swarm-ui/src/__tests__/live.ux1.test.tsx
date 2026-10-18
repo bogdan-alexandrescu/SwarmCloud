@@ -28,6 +28,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LiveRead, LiveSession } from '../api'
 import type { Result } from '../fetch'
 import type { Task } from '../types'
+import { clockTime } from '../types'
 import { task as runTask } from './runfixture'
 
 const api = vi.hoisted(() => ({
@@ -492,7 +493,7 @@ describe('item 6: one hand-off banner, with Take control and Open in theater', (
     expect(strips()).toHaveLength(1)
     const since = strips()[0]!.querySelector('.ho-since')
     expect(since, 'the banner dropped the park instant').not.toBeNull()
-    expect(since!.textContent).toBe(`parked since ${new Date(NOW - 60_000).toLocaleString()}`)
+    expect(since!.textContent).toBe(`parked since ${clockTime(new Date(NOW - 60_000).toISOString())!.text}`)
   })
 
   it('on a held hand-off, the banner says nothing about being parked', async () => {
