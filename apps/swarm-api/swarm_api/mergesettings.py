@@ -20,13 +20,15 @@ which is swarm-api's own registry (repositories.py), never the frozen
 contract. `Tenant` is frozen and has no field for any of this;
 docs/contract-change-requests.md asks for one rather than adding it.
 
-WHO (docs/merge-trains.md §3.2). A workspace is a tenant. The owner of a
-personal workspace -- `kind: user`, its principal the verified caller -- and a
-platform admin may change it; a group workspace has no admin role of its own
-in this API yet (repositories.py says the same of `readable_by_tasks`), so
-its admins are the platform's. A member who is neither is refused
-`merge_settings_owner_required` (403) through `refusals.refuse`, a SWITCHED
-refusal that ships report-only (refusals.py). A caller who is not a member at
+WHO (docs/merge-trains.md §3.2; docs/design/workspace-roles.md §4.1, Q13). A
+workspace is a tenant. The owner of a personal workspace -- `kind: user`, its
+principal the verified caller -- changes it; in a group workspace its `admin`
+does: a workspace admin (`workspace_secrets.workspace_admin`, read fresh) or a
+platform admin, who holds `admin` in every group workspace (Q5). A member who
+is neither is refused `merge_settings_owner_required` (403) through
+`refusals.refuse`, a SWITCHED refusal that ships report-only (refusals.py):
+merge settings keep their own switch rather than `role_admin_required` (§4.9),
+so a role read that fails is "not an admin" here and meets that switch. A caller who is not a member at
 all is answered the established 404 whatever that switch says: another
 workspace's settings are neither served nor confirmed to exist, and nothing a
 non-member sends is written (invariant 9).
@@ -64,10 +66,11 @@ from swarm_common.models import Tenant
 
 from .admins import AUDIT_COLLECTION
 from .auth import AuthContext
-from .errors import Forbidden, NotFound
+from .errors import Forbidden, NotFound, RoleUnavailable
 from .judgment import MAC_FIELD, SettingsMac, block_mac, trusted_block
 from .refusals import refuse
 from .repositories import COLLECTION as REPOSITORIES
+from .roles import ADMIN, RoleStore, at_least, with_tenant
 from .schemas import StrictModel
 from .validation import MERGE_MODE_DIRECT, MERGE_MODE_TRAIN
 
@@ -207,11 +210,28 @@ def is_member(auth: AuthContext, tenant_id: str) -> bool:
         choice[0] == tenant_id for choice in auth.tenant_choices)
 
 
-def authorize(auth: AuthContext, tenant: Tenant | None, tenant_id: str, *, write: bool) -> Tenant:
+def group_admin(roles: RoleStore | None, auth: AuthContext, tenant: Tenant, *,
+                fresh: bool) -> bool:
+    """The caller holds `admin` in GROUP workspace `tenant`, of which they are
+    a member (Q13). Asked without a refusal of its own -- the caller's gate
+    decides what "no" costs -- and a role that could not be read is "no"."""
+    if roles is None or tenant.kind == "user" or not is_member(auth, tenant.tenant_id):
+        return False
+    if auth.tenant_id != tenant.tenant_id:
+        auth = with_tenant(auth, tenant.tenant_id, tenant.principal or "")
+    try:
+        me = roles.resolve(auth, fresh=fresh)
+    except RoleUnavailable:
+        return False
+    return at_least(me.role, ADMIN)
+
+
+def authorize(auth: AuthContext, tenant: Tenant | None, tenant_id: str, *, write: bool,
+              roles: RoleStore | None = None) -> Tenant:
     """The workspace, when the caller may read it (and, `write`, change it).
 
     Not a member, not the owner, not an admin: the established 404, the same
-    as a workspace that does not exist. A member who may not change it: the
+    as a workspace that does not exist. A member who is not its admin: the
     switched 403, which off lets the change through and logs it."""
     if tenant is None:
         raise NotFound(f"workspace {tenant_id!r} not found")
@@ -219,17 +239,18 @@ def authorize(auth: AuthContext, tenant: Tenant | None, tenant_id: str, *, write
     owner = is_owner(auth, tenant)
     if not (admin or owner or is_member(auth, tenant_id)):
         raise NotFound(f"workspace {tenant_id!r} not found")
-    if write and not (admin or owner):
+    if write and not (admin or owner or group_admin(roles, auth, tenant, fresh=True)):
         refuse(MergeSettingsOwnerRequired(
-            "Only the workspace's owner or a platform admin may change its merge settings. "
-            "Nothing was changed.",
+            "Only the workspace's owner or admin, or a platform admin, may change its "
+            "merge settings. Nothing was changed.",
             detail={"tenant_id": tenant_id},
         ))
     return tenant
 
 
-def can_edit(auth: AuthContext, tenant: Tenant) -> bool:
-    return bool(auth.is_admin) or is_owner(auth, tenant)
+def can_edit(auth: AuthContext, tenant: Tenant, roles: RoleStore | None = None) -> bool:
+    return bool(auth.is_admin) or is_owner(auth, tenant) \
+        or group_admin(roles, auth, tenant, fresh=False)
 
 
 # --------------------------------------------------------------------------

@@ -41,11 +41,12 @@ def _store(ctx: AppContext) -> CodeIntelligenceStore:
     return CodeIntelligenceStore(ctx.db, now=ctx.now, mac=settings_mac(ctx.settings))
 
 
-def _answer(auth: AuthContext, tenant: Tenant, store: CodeIntelligenceStore) -> dict:
+def _answer(ctx: AppContext, auth: AuthContext, tenant: Tenant,
+            store: CodeIntelligenceStore) -> dict:
     tenant_id = tenant.tenant_id
     block = store.block(tenant_id)
     return view(tenant_id, settings_of(block), block, store.registrations(tenant_id),
-                editable=can_edit(auth, tenant))
+                editable=can_edit(auth, tenant, ctx.roles))
 
 
 @router.get("/v1/code-intelligence")
@@ -57,7 +58,7 @@ def get_selected_code_intelligence(
     """The selected workspace's setting: the same answer as the path form
     (`tenant_scope` is the collision-guarded selection, as for the judgment backend)."""
     tenant = authorize(auth, ctx.store.get_tenant(tenant_id), tenant_id, write=False)
-    return _answer(auth, tenant, _store(ctx))
+    return _answer(ctx, auth, tenant, _store(ctx))
 
 
 @router.get("/v1/workspaces/{tenant_id}/code-intelligence")
@@ -67,7 +68,7 @@ def get_code_intelligence(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     tenant = authorize(auth, ctx.store.get_tenant(tenant_id), tenant_id, write=False)
-    return _answer(auth, tenant, _store(ctx))
+    return _answer(ctx, auth, tenant, _store(ctx))
 
 
 @router.put("/v1/workspaces/{tenant_id}/code-intelligence")
@@ -77,7 +78,8 @@ def put_code_intelligence(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    tenant = authorize(auth, ctx.store.get_tenant(tenant_id), tenant_id, write=True)
+    tenant = authorize(auth, ctx.store.get_tenant(tenant_id), tenant_id, write=True,
+                       roles=ctx.roles)
     store = _store(ctx)
     store.put(tenant_id, body, by=(auth.email or "").strip().lower())
-    return _answer(auth, tenant, store)
+    return _answer(ctx, auth, tenant, store)

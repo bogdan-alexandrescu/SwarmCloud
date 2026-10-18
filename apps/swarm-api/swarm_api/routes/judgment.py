@@ -10,8 +10,13 @@ READ: a workspace is read by a caller whose selected tenant it is
 other id is a 404, so the route does not say which workspaces exist.
 
 WRITE: the owner of a personal workspace -- `kind: user`, its principal the
-caller's verified email -- or a platform admin (`require_admin`, which
-answers 503 rather than 403 when the directory could not be asked). Every
+caller's verified email -- or, in a group workspace, its `admin`
+(docs/design/workspace-roles.md §4.1, Q13): a workspace admin who is a member
+of it (`workspace_secrets.workspace_admin`, read fresh) or a platform admin
+(`require_admin`, which answers 503 rather than 403 when the directory could
+not be asked). A member who is neither is refused `role_admin_required`
+through its switch; with it off, the refusal is logged and the member still
+meets the established 403 they met before roles. Every
 write is an `admin_audit` entry in the same transaction. The body forbids
 every field it does not name, so a URL or a key is a 422, never ignored:
 the backend is picked by NAME, and its address is the platform's.
@@ -33,8 +38,10 @@ from ..auth import AuthContext, require_admin
 from ..deps import AppContext, current_auth, get_context, tenant_scope
 from ..errors import Forbidden, NotFound
 from ..judgment import JudgmentSettings, check_backend, jev_status, settings_mac
+from ..mergesettings import group_admin
 from ..provider_keys import TYPESAFE, ProviderKeys, own_personal_tenant, resolve_provider_key
 from ..schemas import StrictModel
+from ..workspace_secrets import workspace_admin
 
 router = APIRouter(tags=["judgment"])
 
@@ -84,7 +91,8 @@ def _body(ctx: AppContext, auth: AuthContext, tenant: Tenant) -> dict[str, Any]:
         "tenant_id": tenant.tenant_id,
         "judgment_backend": jev["backend"],
         "jev": jev,
-        "can_edit": bool(auth.is_admin) or _is_owner(tenant, auth),
+        "can_edit": bool(auth.is_admin) or _is_owner(tenant, auth)
+        or group_admin(ctx.roles, auth, tenant, fresh=False),
     }
 
 
@@ -129,12 +137,13 @@ def put_judgment_backend(
             raise Forbidden("only a workspace's owner or a platform admin can choose its "
                             "judgment backend")
         raise NotFound(f"workspace {tenant_id!r} not found")
-    if not _is_owner(tenant, auth):
+    if not _is_owner(tenant, auth) and not auth.is_admin \
+            and not workspace_admin(ctx.roles, auth, tenant):
         try:
             require_admin(auth)
         except Forbidden:
-            raise Forbidden("only a workspace's owner or a platform admin can choose its "
-                            "judgment backend") from None
+            raise Forbidden("only a workspace's owner or admin, or a platform admin, can "
+                            "choose its judgment backend") from None
     JudgmentSettings(ctx.db, now=ctx.now, mac=settings_mac(ctx.settings)).set(
         tenant_id, backend, by=auth.email)
     return _body(ctx, auth, tenant)
