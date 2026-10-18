@@ -701,6 +701,7 @@ def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: date
                   pulls: _PullStates | None = None) -> dict[str, Any]:
     reads = _Reads(client, MAX_TASK_READS)
     pulls = pulls or _PullStates()
+    record = session.project_record()
     running, recent, notes = _workflow_lists(client)
     # THIS SESSION'S OWN (SC-SESSION-SCOPE): a list row that already names
     # another session, or names none on a deployment that serves the tag, is
@@ -765,14 +766,16 @@ def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: date
         doc = envelope["workflow"]
         tasks = {str(t.get("id")): t for t in envelope.get("tasks") or [] if isinstance(t, dict) and t.get("id")}
         kind = session.ownership(
-            session.owner_of(listed) or session.owner_of(doc) or session.owner_of_tasks(tasks.values()), sid)
+            session.owner_of(listed) or session.owner_of(doc) or session.owner_of_tasks(tasks.values()), sid,
+            record=record, ident=wid, name=session.stored_name(envelope, wid),
+            in_repository=_in_scope(scope, [t.get("repository_url") for t in tasks.values()]))
+        if kind == "not_this_project":
+            if wid in running_ids:
+                out_of_scope["workflows"] += 1
+            continue
         if kind != "own":
             if wid in running_ids:
                 left_out["workflows"][kind] += 1
-            continue
-        if not _in_scope(scope, [t.get("repository_url") for t in tasks.values()]):
-            if wid in running_ids:
-                out_of_scope["workflows"] += 1
             continue
         workspace = workflows.workspace_of(doc, names, fallback=envelope.get("tenant_id") or tenant)
         where = {"workspace": workspace, "workflow_id": wid}
@@ -818,12 +821,13 @@ def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: date
     singles, singles_gap = _single_tasks(client)
     in_scope_singles: list[dict[str, Any]] = []
     for task in singles:
-        kind = session.ownership(session.owner_of(task), sid)
+        kind = session.ownership(session.owner_of(task), sid, record=record, ident=task_id_of(task),
+                                 in_repository=_in_scope(scope, [task.get("repository_url")]))
+        if kind == "not_this_project":
+            out_of_scope["single_tasks"] += 1
+            continue
         if kind != "own":
             left_out["single_tasks"][kind] += 1
-            continue
-        if not _in_scope(scope, [task.get("repository_url")]):
-            out_of_scope["single_tasks"] += 1
             continue
         workspace = workflows.workspace_of(task, names, fallback=tenant)
         entry = {"task_id": task_id_of(task), "workspace": workspace, "state": task.get("state"),
