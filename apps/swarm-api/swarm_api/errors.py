@@ -241,3 +241,90 @@ class DisplayNameTaken(ValidationFailed):
     The message never names the person whose name it collided with."""
 
     code = "display_name_taken"
+
+
+# --------------------------------------------------------------------------
+# Workspace roles (docs/design/workspace-roles.md §4.9; lane ROLES-API-CORE,
+# part of #1518)
+#
+# Two of these are raised on EXISTING routes and are therefore switches,
+# off at ship (`refusals.SWITCHES`, one per code, Q10): `role_member_required`
+# and `role_admin_required`. The role write routes are new and raise
+# `role_admin_required` with `raise`, never `refuse`: letting a non-admin
+# write a role is the breach itself. The rest are raised only by the new
+# routes (`NOT_SWITCHABLE_CODES` in the guard says why), and the 503s are not
+# refusals at all.
+# --------------------------------------------------------------------------
+
+
+class RoleMemberRequired(Forbidden):
+    """A `viewer` asked for something a `member` does (§4.1). A new refusal
+    on existing routes: raised only through `refusals.refuse`, behind its
+    switch."""
+
+    code = "role_member_required"
+
+
+class RoleAdminRequired(Forbidden):
+    """A `viewer` or `member` asked for something only the workspace's
+    `admin` does: its secrets, MCP servers, tenant provider keys, settings,
+    or its people's roles (§4.1, Q6, Q13). Behind its switch on existing
+    routes; raised directly by the role write routes."""
+
+    code = "role_admin_required"
+
+
+class RolePersonRequired(Forbidden):
+    """A role write naming a service account (§4.6): a listed account has its
+    own narrower scope, and a role must not widen it."""
+
+    code = "role_person_required"
+
+
+class PersonalWorkspaceRolesFixed(Conflict):
+    """A role write against a personal (`u-`) workspace: its person is its
+    `admin`, and nobody else holds a role there (§4.5)."""
+
+    code = "personal_workspace_roles_fixed"
+
+
+class DefaultRoleNotAllowed(Conflict):
+    """`PUT …/roles/default {admin}`: the default is `viewer` or `member`,
+    never `admin`, so a workspace has no admin until one is named (§4.6)."""
+
+    code = "default_role_not_allowed"
+
+
+class RoleUnchanged(Conflict):
+    """A role write that would change nothing; nothing is written (§4.3)."""
+
+    code = "role_unchanged"
+
+
+class UnknownRole(ValidationFailed):
+    """A role that is not `viewer`, `member` or `admin`."""
+
+    code = "unknown_role"
+
+
+class RoleUnavailable(UpstreamUnavailable):
+    """A role could not be read -- Firestore failed, or the newest grants did
+    not verify within the bounded read (§4.4) -- at a gate whose switch is
+    on, or on a role route. Never a guess, and never a wider role."""
+
+    code = "role_unavailable"
+
+
+class RoleSigningUnavailable(UpstreamUnavailable):
+    """A role write in an environment with no settings key: an unsigned grant
+    would be skipped by every reader, so nothing is written (§4.13)."""
+
+    code = "role_signing_unavailable"
+
+
+class PlatformAdminAuditUnavailable(UpstreamUnavailable):
+    """A platform admin's request that must be audited (§4.2.4) and whose
+    `admin_audit` row could not be written. The route never runs: an action
+    is never taken unaudited (Q12)."""
+
+    code = "platform_admin_audit_unavailable"

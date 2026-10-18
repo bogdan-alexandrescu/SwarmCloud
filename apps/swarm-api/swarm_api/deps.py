@@ -47,6 +47,7 @@ from .metrics import ApiMetrics
 from .objects import ObjectReader, build_object_reader
 from .outcomes import Outcomes
 from .purge import ArtifactPurger, build_artifact_purger
+from .roles import RoleStore
 from .ratelimit import TokenBucketLimiter
 from .rollup import WorkflowRollups
 from .service import SubmissionService
@@ -117,6 +118,15 @@ class AppContext:
     #: for a few minutes (`swarm_api.startup`). Per app, never at import.
     startup_estimates: StartupEstimates = field(default_factory=StartupEstimates)
     now: Callable[[], Any] = utcnow
+    #: Workspace roles (`swarm_api.roles`, docs/design/workspace-roles.md):
+    #: the grant reader and its 15 s cache, the gate other routes call, and
+    #: the platform-admin audit `current_auth` runs. Per app, so its caches
+    #: are per instance; built from this context when not given.
+    roles: RoleStore | None = None
+
+    def __post_init__(self) -> None:
+        if self.roles is None:
+            self.roles = RoleStore(self.db, self.settings, metrics=self.metrics, now=self.now)
 
     def ready(self) -> tuple[bool, str]:
         """Readiness is a real Firestore round trip, not a hard-coded 200.
@@ -379,6 +389,19 @@ def current_auth(
     # scope until someone adds it to `auth.CONTINUATION_ROUTES`. Before the
     # limiter: a request that was never allowed costs the caller no budget.
     require_continuation_route(auth, route)
+    # THE PLATFORM-ADMIN AUDIT (docs/design/workspace-roles.md §4.2.4, Q12):
+    # here, so every route reaches it -- directly, or through `tenant_scope`/
+    # `admin_auth` -- and a route added tomorrow is covered without anyone
+    # remembering. A platform admin acting in a group workspace they are not a
+    # member of, or one whose own role there is below what the route needs,
+    # has an `admin_audit` row written BEFORE the route body runs; a row that
+    # cannot be written is 503 and the route never runs. Before the limiter,
+    # as the continuation check: a refused request costs no budget.
+    acted = ctx.roles.audit_platform_admin(  # type: ignore[union-attr]
+        auth, method=request.method, route=path, path_params=dict(request.path_params))
+    if acted is not None:
+        # `main.observe` logs the response status on the same request.
+        request.state.platform_admin = (acted, auth.tenant_id, path or "unknown")
     try:
         ctx.limiter.check(auth.principal.email)
     except Exception:

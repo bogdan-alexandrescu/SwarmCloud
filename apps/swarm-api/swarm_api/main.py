@@ -63,6 +63,7 @@ from .routes import (
     people,
     platform,
     repositories,
+    roles,
     runs,
     schedule_tick,
     search,
@@ -216,6 +217,10 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # The caller's own tenant; the App's settings link for admins only.
     app.include_router(forgeperms.router)
     app.include_router(tenants.router)
+    # Workspace roles (docs/design/workspace-roles.md §4.3, lane
+    # ROLES-API-CORE): a workspace's own roster and writes, and a platform
+    # admin's for any registered group workspace.
+    app.include_router(roles.router)
     # Provider keys a person or a tenant admin sets, TypeSafe first
     # (docs/provider-keys.md, lane KEYS-API): write-only, a person's own key in
     # their personal tenant, the tenant key for admins, one-time form links.
@@ -334,6 +339,14 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
                 )
             except Exception:  # pragma: no cover - metrics must never 500 a request
                 log.debug("latency metric failed for %s", route)
+        # A platform admin's audited request (§4.2.4): its row was written
+        # before the route ran, by `deps.current_auth`; the status it ended
+        # with is logged here, on the same request.
+        audited = getattr(request.state, "platform_admin", None)
+        if audited is not None:
+            log.info("platform_admin %s tenant=%s route=%s status=%s",
+                     "acted" if audited[0] == "platform_admin_acted" else "viewed",
+                     audited[1], audited[2], response.status_code)
         try:
             app.state.ctx.metrics.requests.labels(
                 route=_template(request),

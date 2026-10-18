@@ -356,6 +356,28 @@ SWITCHES: dict[str, Switch] = {
         "--model-class has shipped (MODEL-PLUGIN) and the log shows no caller still "
         "sending a model of its own",
     ),
+    # Workspace roles (docs/design/workspace-roles.md §4.9, lane
+    # ROLES-API-CORE, part of #1518): one switch per code (Q10), each on in
+    # dev first, then in prod after a week of report-only lines. Off, the
+    # request goes through and `refusal report-only code=...` names who would
+    # have been refused. The role write routes raise role_admin_required
+    # directly, whatever this switch says: they are new, and a non-admin
+    # writing a role is the breach itself.
+    "role_member_required": Switch(
+        code="role_member_required",
+        why="a viewer is refused 403 on every member route (submit, cancel, decide, answer, "
+        "schedules, repositories, access, accounts, live control, browser logins). On once "
+        "GET /v1/tenants/me carries role, the console disables Submit, Approve and Cancel for "
+        "a viewer, and a week of report-only lines in prod names only people an admin narrowed",
+    ),
+    "role_admin_required": Switch(
+        code="role_admin_required",
+        why="a member who is not the workspace's admin is refused 403 on its secrets, git-token "
+        "tenant and repository slots, MCP servers, tenant provider keys, POST "
+        "/v1/tenants/me/credentials and its settings. On once the report-only log shows no "
+        "member relying on POST /v1/tenants/me/credentials and every group workspace that "
+        "manages secrets has a named admin",
+    ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",
         why="a schedule pauses after N failed or refused firings in a row (§4.4, default "
