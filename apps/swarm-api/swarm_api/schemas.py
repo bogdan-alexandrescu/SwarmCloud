@@ -39,6 +39,38 @@ class StrictModel(BaseModel):
 # Tasks
 # --------------------------------------------------------------------------
 
+#: At most this many per-run MCP credentials in one map: the `mcp_servers`
+#: input names one to four servers (contract request 88), so a fifth entry
+#: could only ever be refused as unexpected.
+MAX_MCP_CREDENTIALS = 4
+
+
+class McpCredentialCreate(BaseModel):
+    """One per-run MCP credential (docs/design/registered-mcp-servers.md §4.3).
+
+    NOT a `StrictModel`: that strips whitespace from every string, and a
+    credential is not a string to tidy. Both fields are `Any` so that their
+    shape is refused by `mcp_credentials.check_credential` with its own code,
+    `mcp_credential_shape`, whose message names the rule and never the value,
+    rather than by a pydantic type error. The value is a local of the
+    submission and goes to exactly one Secret Manager `add_version`
+    (`SubmissionService`); it is in no document, no response and no log.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    value: Any
+    expires_in: Any
+
+
+def _mcp_credentials_field() -> Any:
+    """The request field a per-run credential map arrives in. `exclude=True`:
+    no `model_dump` of a request ever carries a credential, so a spec stored
+    as JSON (a custom-prompt schedule's `params.spec`) or logged whole cannot
+    hold one. `repr=False` keeps it out of a model's repr in a traceback."""
+    return Field(default=None, max_length=MAX_MCP_CREDENTIALS, exclude=True, repr=False)
+
+
 class TaskCreate(StrictModel):
     #: The ONLY execution knob a caller has. Image, command, resource spec and
     #: backend all come from the frozen catalogue keyed by this name.
@@ -64,6 +96,10 @@ class TaskCreate(StrictModel):
     #: gets exactly the dispatch they got before this feature existed.
     strategy: str = Field(default=DEFAULT_STRATEGY, max_length=32)
     carrier: str = Field(default=DEFAULT_CARRIER, max_length=32)
+    #: Per-run credentials for the `dispatch` servers `input.mcp_servers`
+    #: names, by server name (docs/design/registered-mcp-servers.md §4.3):
+    #: beside the task, never in it. Checked and stored by `SubmissionService`.
+    mcp_credentials: dict[str, McpCredentialCreate] | None = _mcp_credentials_field()
 
     @field_validator("repository_url")
     @classmethod
@@ -236,6 +272,10 @@ class WorkflowCreate(StrictModel):
     #: merging fails the workflow. Absent: the workflow starts as it always did.
     after: list[AfterPullRequest] | None = Field(default=None, min_length=1,
                                                  max_length=MAX_AFTER_PRS)
+    #: One per-run credential map for the whole submission (§4.3): the
+    #: credential is the caller's, so every step that names a `dispatch`
+    #: server uses the one stored credential, owned by the workflow.
+    mcp_credentials: dict[str, McpCredentialCreate] | None = _mcp_credentials_field()
 
     @field_validator("after", mode="before")
     @classmethod

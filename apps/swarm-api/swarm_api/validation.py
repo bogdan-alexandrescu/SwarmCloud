@@ -3814,3 +3814,117 @@ def resolve_await_input(
         "remind_after_seconds": remind_after,
         "remind": remind,
     }
+
+
+# --------------------------------------------------------------------------
+# Registered MCP servers (docs/design/registered-mcp-servers.md §4.3,
+# lane MCP-SUBMIT, part of #1433)
+# --------------------------------------------------------------------------
+#
+# A step names servers BY NAME in `input.mcp_servers` (contract request 88),
+# never a URL, a header or a command (invariant 10); a per-run credential for
+# a `dispatch` server travels beside the task in `mcp_credentials`, never in
+# it. The registry reads are `SubmissionService`'s; what is here is pure, so
+# `schedules.py` can hold the same rules with no Firestore client.
+#
+# Every refusal names the field, the rule and the server's NAME, never a
+# credential's value, its length or any part of it.
+
+#: The profile-declared input that names a step's servers.
+MCP_SERVERS_INPUT_KEY = "mcp_servers"
+
+#: `mcp_servers.MODE_DISPATCH`, the one auth mode whose key the caller sends
+#: per run. Restated so this module imports no Firestore client;
+#: tests/unit/control_plane/test_mcp_submit.py holds the two equal.
+MCP_DISPATCH_MODE = "dispatch"
+
+
+class McpServerUnregistered(ValidationFailed):
+    """Not registered for this tenant, or registered and disabled: one code
+    for both, so the answer does not say whether another tenant has the name."""
+
+    code = "mcp_server_unregistered"
+
+
+class McpServerProfileRefused(Forbidden):
+    """Registered, but its `allowed_profiles` does not include this profile."""
+
+    code = "mcp_server_profile_refused"
+
+
+class McpServerNotInherited(ValidationFailed):
+    """A child named a server its parent's signed input does not name (Q7):
+    the agent writing a child's spec is the party a credential is kept from,
+    so it may not widen what its tree reaches."""
+
+    code = "mcp_server_not_inherited"
+
+
+class McpCredentialMissing(ValidationFailed):
+    """A `dispatch` server with no per-run credential to use."""
+
+    code = "mcp_credential_missing"
+
+
+class McpCredentialUnexpected(ValidationFailed):
+    """A credential for a server the submission does not name, or for one
+    whose key is not the caller's to send (`none`, `workspace_secret`)."""
+
+    code = "mcp_credential_unexpected"
+
+
+def mcp_server_names(payload: Mapping[str, Any] | None) -> list[str]:
+    """The servers an input names, in order, once each. Its type and bounds
+    are the catalogue's (`validate_runner_input`), checked before this runs."""
+    raw = (payload or {}).get(MCP_SERVERS_INPUT_KEY)
+    if not isinstance(raw, list):
+        return []
+    return list(dict.fromkeys(n for n in raw if isinstance(n, str)))
+
+
+def _mcp_detail(step_id: str | None, **detail: Any) -> dict[str, Any]:
+    if step_id is not None:
+        detail["step_id"] = step_id
+    return detail
+
+
+def _mcp_where(step_id: str | None) -> str:
+    return f"step {step_id!r}: " if step_id is not None else ""
+
+
+def refuse_unexpected_mcp_credentials(
+    credentials: Mapping[str, Any] | None, modes: Mapping[str, Any],
+) -> None:
+    """Every key of `credentials` is a server the submission names whose
+    auth mode is `dispatch`; `modes` maps every named server to its mode."""
+    unexpected = sorted(k for k in (credentials or {}) if modes.get(k) != MCP_DISPATCH_MODE)
+    if unexpected:
+        raise McpCredentialUnexpected(
+            "mcp_credentials carries a credential for a server the submission does not "
+            "name in input.mcp_servers, or for one whose auth mode is not `dispatch` "
+            "(its key is the workspace's, or it takes none); nothing was stored",
+            detail={"field": "mcp_credentials", "servers": unexpected})
+
+
+def refuse_missing_mcp_credentials(
+    names: Sequence[str], modes: Mapping[str, Any], available: Iterable[str], *,
+    step_id: str | None = None,
+) -> None:
+    """Every `dispatch` server in `names` has a credential in `available`."""
+    have = set(available)
+    missing = [n for n in names if modes.get(n) == MCP_DISPATCH_MODE and n not in have]
+    if missing:
+        raise McpCredentialMissing(
+            f"{_mcp_where(step_id)}input.mcp_servers names a `dispatch` server whose "
+            "per-run credential is the caller's to send in mcp_credentials, and none was "
+            "sent; nothing was stored",
+            detail=_mcp_detail(step_id, field="mcp_credentials", servers=missing))
+
+
+def refuse_uninherited_mcp_servers(names: Sequence[str], parent_names: Sequence[str]) -> None:
+    """A child's servers are a subset of its parent's (Q7)."""
+    added = [n for n in names if n not in set(parent_names)]
+    if added:
+        raise McpServerNotInherited(
+            "a child task may name only MCP servers its parent named; it cannot add one",
+            detail={"field": "input.mcp_servers", "servers": added})

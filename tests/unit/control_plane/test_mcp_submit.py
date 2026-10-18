@@ -448,10 +448,9 @@ def test_a_workflows_map_is_stored_once_and_serves_every_step(client, db, sm):
     # Every step is attached the one stored credential.
     for index, task in enumerate(sorted(tasks(db), key=lambda t: t["step_id"])):
         attempt = Attempt(task=task["id"], attempt=f"att_wf_{index}", lease=f"lease_wf_{index}")
-        doc = db.docs[f"tasks/{task['id']}"]
-        stored_input, stored_wf = dict(doc["input"]), doc["workflow_id"]
-        seed_parent(db, attempt, state="STARTING", runner_profile="claude-code",
-                    input=stored_input, workflow_id=stored_wf, submitted_by=ALICE)
+        stored_input, stored_wf = dict(task["input"]), task["workflow_id"]
+        doc = seed_parent(db, attempt, state="STARTING", runner_profile="claude-code",
+                          input=stored_input, workflow_id=stored_wf, submitted_by=ALICE)
         assert register(client, db, attempt).status_code == 201
         SIGNER.sign_document(doc, task["id"])
         doc["state"] = "RUNNING"
@@ -688,3 +687,24 @@ def test_a_fire_naming_a_dispatch_server_is_refused_by_the_submission(client, db
     assert response.status_code == 422, response.text
     assert response.json()["code"] == "mcp_credential_missing"
     nothing_stored(db, sm)
+
+
+def test_the_pure_dispatch_spelling_is_the_registrys():
+    """`validation` restates `mcp_servers.MODE_DISPATCH` to stay import-free."""
+    from swarm_api.mcp_servers import MODE_DISPATCH
+    from swarm_api.validation import MCP_DISPATCH_MODE
+
+    assert MCP_DISPATCH_MODE == MODE_DISPATCH
+
+
+def test_no_dump_of_a_request_carries_a_credential():
+    """`exclude=True`: a spec stored as JSON or logged whole holds none."""
+    from swarm_api.schemas import TaskCreate, WorkflowCreate
+
+    value = fake_credential()
+    task = TaskCreate.model_validate(task_body(["kb"], {"kb": cred(value)}))
+    flow = WorkflowCreate.model_validate(workflow_body([step("a", ["kb"])], {"kb": cred(value)}))
+    assert task.mcp_credentials["kb"].value == value
+    for model in (task, flow):
+        assert value not in json.dumps(model.model_dump(mode="json"))
+        assert value not in model.model_dump_json() and value not in repr(model)
