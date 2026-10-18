@@ -30,14 +30,17 @@ from typing import Any, Iterable, Iterator, Mapping, Sequence
 from swarm_common.profiles import (
     INT64_MAX,
     INT64_MIN,
+    MODEL_CLASSES,
     RESOURCE_CLASSES,
     RUNNER_PROFILES,
     InputRefused,
     RunnerProfile,
     WorkerAction,
     check_inputs,
+    step_model_class,
 )
 
+from . import refusals
 from .errors import Forbidden, ValidationFailed
 
 #: Fields a caller may never set, no matter how they spell it. The request
@@ -227,6 +230,150 @@ def validate_resource_class_override(profile: RunnerProfile, requested: str | No
             detail={"larger_in": larger},
         )
     return requested
+
+
+class UnknownModelClass(ValidationFailed):
+    """422 `unknown_model_class`: the name is not one of `MODEL_CLASSES`.
+
+    A model ID sent as a class (`"claude-opus-5-5"`) lands here too: a class
+    is a name from the frozen vocabulary, never an ID (invariant 10)."""
+
+    code = "unknown_model_class"
+
+
+class ModelClassNotAccepted(ValidationFailed):
+    """422 `model_class_not_accepted`: a class the profile does not run."""
+
+    code = "model_class_not_accepted"
+
+
+class ModelClassNotYetAvailable(ValidationFailed):
+    """422 `model_class_not_yet_available`: this deployment pins no model for
+    the class (WORKER_CLASS_MODELS is unset), so it cannot be named yet."""
+
+    code = "model_class_not_yet_available"
+
+
+class ModelIsChosenByModelClass(ValidationFailed):
+    """422 `model_is_chosen_by_model_class`: `model` is not the pin of the
+    step's class. The model is the class's, never the caller's (invariant 10,
+    owner's Q4 of #1435); the message names the `model_class` to send."""
+
+    code = "model_is_chosen_by_model_class"
+
+
+def validate_model_class(
+    profile: RunnerProfile, requested: str | None, *, step_id: str | None = None,
+) -> str | None:
+    """The class a step on `profile` runs, by the frozen
+    `profiles.step_model_class` (docs/design/model-per-step.md §4.4): the
+    requested one if the profile accepts it, its default when none is named,
+    None for a profile that runs no Claude model. Refused with a stable code
+    otherwise, and the refusal names what may be sent."""
+    try:
+        return step_model_class(profile, requested)
+    except ValueError:
+        pass
+    where = {"step_id": step_id} if step_id is not None else {}
+    if requested not in MODEL_CLASSES:
+        raise UnknownModelClass(
+            f"unknown model_class {requested!r}: a model class is one of "
+            f"{', '.join(MODEL_CLASSES)}, never a model ID",
+            detail={"model_class": requested, "known_model_classes": list(MODEL_CLASSES),
+                    **where},
+        )
+    if not profile.model_classes:
+        message = (f"runner_profile {profile.name!r} runs no Claude model, so a step on "
+                   "it names no model_class")
+    else:
+        message = (f"runner_profile {profile.name!r} does not accept model_class "
+                   f"{requested!r}; it accepts {', '.join(profile.model_classes)}")
+    raise ModelClassNotAccepted(
+        message,
+        detail={"runner_profile": profile.name, "model_class": requested,
+                "accepted_model_classes": list(profile.model_classes), **where},
+    )
+
+
+def stored_model_class(profile: RunnerProfile, resolved: str | None) -> str | None:
+    """What `Task.model_class` stores: the class only when it differs from the
+    profile's default (§4.3). Naming the default stores nothing, so the task
+    keeps the bytes, and the signing format, it had before classes existed;
+    only a step that asks for another class is signed at the format that
+    covers `model_class`."""
+    if resolved is None or resolved == profile.default_model_class:
+        return None
+    return resolved
+
+
+def check_model_class_available(
+    profile: RunnerProfile, resolved: str | None, class_models: Mapping[str, str], *,
+    step_id: str | None = None,
+) -> None:
+    """A class other than the profile's default only once this deployment pins
+    it (WORKER_CLASS_MODELS). No flag gates the classes (owner decision R4,
+    2026-10-17); what is refused here is a class with no pin to record or
+    serve, which is the local emulator loop's case and a deployment's whose
+    terraform predates `runner_models` by class. The scheduler would refuse
+    such a step at dispatch, after admission took its lease; this refuses it
+    before anything is stored."""
+    if stored_model_class(profile, resolved) is None or resolved in class_models:
+        return
+    raise ModelClassNotYetAvailable(
+        f"model_class {resolved!r} is not available on this deployment yet: no model is "
+        f"pinned for it; a step on {profile.name!r} that names none runs "
+        f"{profile.default_model_class!r}",
+        detail={"runner_profile": profile.name, "model_class": resolved,
+                "default_model_class": profile.default_model_class,
+                **({"step_id": step_id} if step_id is not None else {})},
+    )
+
+
+def resolve_task_model(
+    profile: RunnerProfile, resolved: str | None, requested_model: str | None,
+    class_models: Mapping[str, str], *, step_id: str | None = None,
+) -> str | None:
+    """`Task.model`: the pin of the step's class, at submission (owner's Q4).
+
+    A `model` equal to that pin is accepted; any other value is refused
+    `model_is_chosen_by_model_class` once its refusal switch is on, and the
+    refusal names the `model_class` that would run it, or lists the profile's
+    classes and their models. `Task.model` is a record, not a
+    selector: the scheduler resolves the class's pin again at dispatch and
+    `Attempt.model` records what ran (§4.5, R6).
+
+    A profile with no classes, or a deployment with no class map, has no pin to
+    fill or compare against, so `model` is recorded as sent, as before: it
+    selects nothing on any path (the scheduler never reads it into `MODEL`).
+    """
+    if resolved is None or resolved not in class_models:
+        return requested_model
+    pin = class_models[resolved]
+    if requested_model is None or requested_model == pin:
+        return pin
+    where = {"step_id": step_id} if step_id is not None else {}
+    models = {name: class_models[name] for name in profile.model_classes if name in class_models}
+    named = next((name for name, model_id in models.items() if model_id == requested_model), None)
+    if named is not None:
+        error = ModelIsChosenByModelClass(
+            f"model is chosen by model_class: to run {requested_model}, send "
+            f'model_class: "{named}"',
+            detail={"model": requested_model, "model_class": named,
+                    "runner_profile": profile.name, **where},
+        )
+    else:
+        error = ModelIsChosenByModelClass(
+            f"model is chosen by model_class, and {requested_model!r} is the pin of no class "
+            f"{profile.name!r} runs: send model_class, one of "
+            + ", ".join(f"{name} ({model_id})" for name, model_id in models.items()),
+            detail={"model": requested_model, "runner_profile": profile.name,
+                    "models": models, **where},
+        )
+    # A switch, report-only until turned on (`refusals.SWITCHES`): it can
+    # refuse a caller that sends `model` today. Past it, the caller's string
+    # is recorded as sent, as before this check.
+    refusals.refuse(error)
+    return requested_model
 
 
 def firestore_size(payload: Any) -> int:

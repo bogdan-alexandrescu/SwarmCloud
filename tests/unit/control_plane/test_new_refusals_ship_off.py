@@ -313,6 +313,18 @@ NOT_SWITCHABLE_CODES = frozenset({
     "display_name_invalid",
     "display_name_reserved",
     "display_name_taken",
+    # A step's model class (MODEL-API, docs/design/model-per-step.md §4.4,
+    # part of #1435): raised only for a submission that names `model_class`,
+    # introduced by that change, so no existing caller can be refused by
+    # them. Continuing past any of them is the breach itself: a step stored
+    # with a class that is not in the frozen vocabulary, one its profile does
+    # not run, or one this deployment pins no model for, each of which the
+    # scheduler refuses only at dispatch, after admission has leased it.
+    # `model_is_chosen_by_model_class` is NOT here: it can refuse today's
+    # `model` callers, so it is a switch.
+    "unknown_model_class",
+    "model_class_not_accepted",
+    "model_class_not_yet_available",
 })
 
 #: What the guard lets through without a switch.

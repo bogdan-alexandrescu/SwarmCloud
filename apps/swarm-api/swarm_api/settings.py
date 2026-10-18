@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 
 from swarm_common.config import Settings
 from swarm_common.identity import SERVICE_ACCOUNT_EMAIL, TenantMember
+from swarm_common.profiles import MODEL_CLASSES
 
 from .refusals import validate_environment as validate_refusal_switches
 
@@ -147,6 +148,56 @@ def _tenant_members(
                 )
         result.append(TenantMember(email=email, kind=kind, principal=principal, uid=uid))
     return tuple(result)
+
+
+def parse_worker_class_models(raw: str) -> dict[str, str]:
+    """WORKER_CLASS_MODELS -> {model class: model ID}. Empty means none pinned.
+
+    #1435, docs/design/model-per-step.md §4.2: terraform's
+    `jsonencode(local.runner_models)` (`model_class_env`), the ONE place a
+    class's ID is stated, and the same map the scheduler dispatches with. This
+    service fills `Task.model` from it and serves it on /v1/runtimes. Refused
+    at start, as the scheduler refuses its copy
+    (`scheduler.settings.check_worker_class_models`), against the frozen
+    `ModelClass.admits` rather than a restatement of it: a map whose keys are
+    not exactly the MODEL_CLASSES names, or whose ID is not of its class, would
+    record and serve the wrong model for every step of that class.
+
+    EMPTY IS ALLOWED: the local emulator loop, and a settings object a test
+    builds. Then no class but a profile's default can be named
+    (`validation.check_model_class_available`), and `TaskCreate.model` is
+    recorded as sent, as before this map existed.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return {}
+    try:
+        models = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"WORKER_CLASS_MODELS is not valid JSON: {exc}") from exc
+    if not isinstance(models, dict):
+        raise ValueError(
+            "WORKER_CLASS_MODELS must be a JSON object of model class -> model ID, "
+            f"got {type(models).__name__}"
+        )
+    if not models:
+        return {}
+    missing = sorted(set(MODEL_CLASSES) - set(models))
+    extra = sorted(str(k) for k in set(models) - set(MODEL_CLASSES))
+    if missing or extra:
+        raise ValueError(
+            f"WORKER_CLASS_MODELS must name exactly the model classes "
+            f"{tuple(MODEL_CLASSES)}; missing {missing}, not a class {extra}"
+        )
+    for name, model_id in models.items():
+        if not MODEL_CLASSES[name].admits(model_id):
+            raise ValueError(
+                f"WORKER_CLASS_MODELS[{name!r}] = {model_id!r} is not a {name} model: "
+                f"a pin of this class is claude-{MODEL_CLASSES[name].family}-<major>"
+                f"[-<minor>][-<yyyymmdd>] with major at least "
+                f"{MODEL_CLASSES[name].min_major}"
+            )
+    return dict(models)
 
 
 @dataclass(frozen=True)
@@ -707,6 +758,17 @@ class ApiSettings:
     #: of searches each, so 200 is room for dozens of tasks.
     search_daily_queries_per_tenant: int = 200
 
+    # --- model classes (docs/design/model-per-step.md §4.4, #1435) ---------
+    #: Model class -> the ID a step of that class runs (WORKER_CLASS_MODELS,
+    #: `parse_worker_class_models`). Empty: no class but a profile's default
+    #: may be named, and `TaskCreate.model` is recorded as sent. There is no
+    #: separate enablement flag (owner decision R4, 2026-10-17): this map is
+    #: set by the terraform that already pins the scheduler's, and lane order
+    #: kept the classes unreachable until the scheduler and worker had merged.
+    #: `hash=False`: a dict is unhashable, and the settings are compared, never
+    #: hashed, by this field.
+    worker_class_models: dict[str, str] = field(default_factory=dict, hash=False)
+
     @property
     def project_id(self) -> str:
         return self.core.project_id
@@ -885,4 +947,7 @@ class ApiSettings:
                 "SEARCH_API_KEY_SECRET", "swarm-search-api-key").strip()
             or "swarm-search-api-key",
             search_daily_queries_per_tenant=_int("SEARCH_DAILY_QUERIES_PER_TENANT", 200),
+            worker_class_models=parse_worker_class_models(
+                os.environ.get("WORKER_CLASS_MODELS", "")
+            ),
         )

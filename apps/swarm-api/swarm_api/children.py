@@ -180,6 +180,9 @@ class ChildSpec(_Strict):
     model: str | None = Field(default=None, max_length=128)
     timeout_seconds: int | None = Field(default=None, ge=1, le=86_400)
     repository_ref: str | None = Field(default=None, max_length=256)
+    #: The child's model class, by name, as `TaskCreate.model_class` (#1435).
+    #: None: the CHILD profile's default, never the parent's class (R3).
+    model_class: str | None = Field(default=None, max_length=32)
 
 
 class _AttemptFields(_Strict):
@@ -723,6 +726,7 @@ class ChildService:
             runner_profile=spec.runner_profile,
             input=spec.input,
             model=spec.model,
+            model_class=spec.model_class,
             timeout_seconds=timeout,
         )
         repository_ref = spec.repository_ref or parent.repository_ref

@@ -138,9 +138,19 @@ class TaskCreate(StrictModel):
     #: May only SHORTEN the profile's timeout; a longer value is clamped.
     timeout_seconds: int | None = Field(default=None, ge=1, le=86_400)
     max_attempts: int | None = Field(default=None, ge=1, le=10)
-    #: Provider model name, recorded for attribution and cost reporting. It
-    #: selects nothing about the container.
+    #: The model ID, a RECORD: swarm-api fills it with the pin of the task's
+    #: `model_class` (WORKER_CLASS_MODELS), and a value that is not that pin is
+    #: refused `model_is_chosen_by_model_class` behind its switch
+    #: (`validation.resolve_task_model`, #1435 Q4). It selects nothing: the
+    #: scheduler resolves the class's pin again at dispatch.
     model: str | None = Field(default=None, max_length=128)
+    #: The model class this task runs, BY NAME from the frozen
+    #: `profiles.MODEL_CLASSES` (`opus`, `fable`, `sonnet`, `haiku`), never a
+    #: model ID (invariant 10). None: the profile's `default_model_class`.
+    #: Checked by `validation.validate_model_class`, which names the accepted
+    #: classes in its refusal, rather than declared as a `Literal` here, for
+    #: the same reason as `strategy` below.
+    model_class: str | None = Field(default=None, max_length=32)
     #: How this dispatch's work gets merged, and what carries it between steps.
     #: Validated in `validation.resolve_dispatch_options`, which names the
     #: accepted values in its refusal, rather than declared as a `Literal` here:
@@ -200,6 +210,10 @@ class WorkflowStepCreate(StrictModel):
     #: A NAMED class from the frozen catalogue, and only one no larger than the
     #: profile's own. Not a resource spec.
     resource_class: str | None = Field(default=None, max_length=64)
+    #: The model class this step runs, by name, as `TaskCreate.model_class`
+    #: (#1435). Stored on `WorkflowStep.model_class` and on its task only when
+    #: it differs from the profile's default.
+    model_class: str | None = Field(default=None, max_length=32)
     #: upstream step_id -> artifact filename staged into this step's workspace.
     input_from: dict[str, str] = Field(default_factory=dict)
     timeout_seconds: int | None = Field(default=None, ge=1, le=86_400)

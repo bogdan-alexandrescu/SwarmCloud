@@ -296,7 +296,9 @@ UNDECLARED_BY_DESIGN: dict[str, dict[str, str]] = {
         # Served ahead of the client (contract request 104, #1435); types.ts
         # is lane MODEL-UI's (docs/design/model-per-step.md §6). Remove when
         # types.ts declares it.
-        "model_class": "the task's stored model class (#1435); declared by lane MODEL-UI",
+        "model_class": "the task's resolved model class (#1435); declared by lane MODEL-UI",
+        "model_class_defaulted": "whether model_class is the profile's default because none "
+        "was stored (#1435); declared by lane MODEL-UI",
     },
     # U26, served ahead of the client the same way; remove when types.ts
     # declares them.

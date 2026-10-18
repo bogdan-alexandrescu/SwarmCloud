@@ -124,7 +124,15 @@ class CustomPromptRepositoryOutOfScope(Forbidden):
 
 
 def spec_json(spec: WorkflowCreate) -> dict[str, Any]:
-    return spec.model_dump(mode="json")
+    """The validated spec as JSON. A step's `model_class` (#1435) is left out
+    when it names none, so a spec saved before steps had a class keeps the
+    digest an admin approved; a step that names one has it in the digest, so
+    changing a step's class is a new spec to approve."""
+    data = spec.model_dump(mode="json")
+    for step in data.get("steps") or []:
+        if step.get("model_class") is None:
+            step.pop("model_class", None)
+    return data
 
 
 def spec_digest(spec: WorkflowCreate) -> str:
