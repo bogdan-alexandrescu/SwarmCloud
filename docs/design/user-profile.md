@@ -4,7 +4,7 @@
 2026-10-18 (lane PROFILE-DESIGN-B) for the owner's answers to §7, given on
 2026-10-17/18 in PR 1506's comments.** Nothing here is built. The owner
 approves this revision before any build lane starts. One question the answers
-leave open, Q11, is in §7.2.
+leave open, Q11, and one the review raised, Q12, are in §7.2.
 
 Every file and symbol cited below was read on 2026-10-18 at `6174f32`, and the
 ones this revision added were read at `8ab9f26`. Lines move, so each citation
@@ -179,7 +179,7 @@ is exact: four pages hold four things, and four things have no page.
   `gitidentity.py::clean_name` (no `<`, `>` or control characters, at most
   `NAME_MAX_CHARS` = 100) and recorded in the task's dispatch block, which the
   worker turns into `GIT_AUTHOR_*` and `GIT_COMMITTER_*`. Whether the edited
-  name also names commits is the one question left open (Q11, §7.2). Both
+  name also names commits is left open (Q11, §7.2). Both
   answers fit the rules in §4.4, which are stricter than `clean_name`.
 * **The Settings tabs are not in `SECTIONS`.** They are constants in
   `apps/swarm-ui/src/App.tsx` (`SETTINGS`, `KEYS_TAB`, `WORKSPACE_TAB`).
@@ -316,7 +316,8 @@ beside each email they already serve.
   per instance like `admins.ROLE_CACHE_SECONDS`. One more document in a read
   that already happens adds about a millisecond. That is an estimate,
   measured in PROFILE-DEFAULT's acceptance run. The bell adds no read,
-  because it uses the context authentication already loaded. A page that
+  because it uses the preferences PROFILE-DEFAULT puts on `AuthContext`
+  (`AuthContext.preferences`), which is why PROFILE-BELL follows DEFAULT. A page that
   names people adds one `get_all` over the distinct emails it shows, behind a
   60-second per-instance name cache (§4.4).
 * *Money:* one document read per person per 15 s per instance at most, plus
@@ -756,9 +757,13 @@ reason:
    **folded** form: NFKD, combining marks dropped, case-folded, `.'-` turned
    into spaces, spaces collapsed. The folded name may not equal another
    person's folded name. It may not contain another person's folded name of
-   two or more words as a whole-word run, so "Ada Lovelace Admin" is refused
-   when "Ada Lovelace" exists, while "Bob Smith" is allowed when a "Bob"
-   exists. The check is **platform-wide**, not per workspace: listing a
+   any length as a whole-word run, so "Ada Lovelace Admin" is refused when
+   "Ada Lovelace" exists, and "Bob Smith" is refused when a "Bob" exists.
+   That is the owner's Q5 answer as given ("no name that equals or embeds
+   another member's display name"). It has a cost: the first person to save
+   a one-word name blocks every longer name that contains that word. Whether
+   one-word names should be exempt from the containment half is Q12
+   (§7.2); the rule above stands until it is answered. The check is **platform-wide**, not per workspace: listing a
    group's members is the Cloud Identity call this project cannot make
    (§2.1), and a name unique across the platform is unique in every
    workspace. Code `display_name_taken`.
@@ -818,7 +823,10 @@ it, in the same method or a sibling called from the same place:
 1. When the caller is a person (not `_special`), read
    `user_preferences/<id>` in one `get_all` with `PersonalTenants.ready`'s
    two documents (which that method reads with two `get` calls today),
-   through a 15-second per-instance cache keyed by email.
+   through a 15-second per-instance cache keyed by email. The document read
+   (or `None` when it could not be read) is kept on the context as
+   `AuthContext.preferences`, which the bell reads (§4.6), so no route
+   reads it a second time.
 2. When `default_workspace` is set **and** is in `tenant_choices`, move it to
    the front. Otherwise leave the order alone, and record why on the context
    (`default_source`, `default_ignored`) for `GET /v1/profile` and
@@ -922,11 +930,18 @@ unmuted later shows as unread, which is true. `admin_pending` drives the
 panel's Admin pill, not the bell, so it is computed before the filter: an
 admin who mutes `admin` still sees the pill.
 
-**If the preferences cannot be read, the bell is served unfiltered**, with
-`partial: true`. Muting is a convenience, and over-telling is the safe
-failure. The bell names no workspace's work by a guessed default, so Q9's
-503 does not apply to it: the bell is per person, and `routes/notifications.py`
-is reached with or without a header as today.
+**If the preferences cannot be read, the bell follows Q9 like any other
+route.** `GET /v1/notifications` is tenant-scoped (`routes/notifications.py`
+takes `deps.tenant_scope`, and `notifications.py` derives approvals, tasks
+and workflows from `viewer.tenant_id`), so a headerless bell read would show
+the work of a guessed workspace, which is the silent fallback Q9 forbids. It
+is not in `PREFERENCE_FREE_ROUTES`, so authentication answers a headerless
+bell read with 503 `preferences_unavailable` before the bell runs, and the
+console shows the message beside the switcher (§4.5). When the request named
+its workspace with `X-Swarm-Tenant`, the workspace is known and only the
+mutes and cadence are not: the bell is then served **unfiltered**, at
+`as_set`, with `partial: true`. Muting is a convenience, and over-telling is
+the safe failure once the workspace is the one the person chose.
 
 **Reminders are read marks that age out. Nothing is stored.**
 
@@ -976,7 +991,8 @@ would be stored and sent, and it would be its own design.
 * `apps/swarm-api/swarm_api/routes/profile.py` (new): the two routes.
 * `apps/swarm-api/swarm_api/main.py`: `include_router(profile.router)`.
 * `apps/swarm-api/swarm_api/auth.py`: §4.5 steps 1-2, `PREFERENCE_FREE_ROUTES`,
-  the 503, `default_source` / `default_ignored` on `AuthContext`, and
+  the 503, `preferences`, `default_source` / `default_ignored` on
+  `AuthContext`, and
   `display_name` from the stored name when Q11 is (a).
 * `apps/swarm-api/swarm_api/routes/tenants.py`: `is_default` and
   `default_source` in `_choice`.
@@ -1039,7 +1055,8 @@ reuses an existing key), and `apps/common/swarm_common/`.
 | Preferences unreadable, headerless request | 503 `preferences_unavailable` with how to name a workspace; nothing submitted; never the computed default (Q9) |
 | Preferences unreadable, request names a workspace | served as today |
 | Preferences unreadable, `tenants/me`, `tenants/mine`, `profile` | served, `default_source: "unavailable"`, editors disabled |
-| Preferences unreadable, bell | unfiltered, `partial: true` |
+| Preferences unreadable, headerless bell read | 503 `preferences_unavailable`, like any headerless request (Q9) |
+| Preferences unreadable, bell read that names a workspace | unfiltered, at `as_set`, `partial: true` |
 | Name lookup fails on a page that names people | names `null`, emails shown as today |
 | Broker down | Profile omits `claude_accounts`, names it in `unavailable` |
 | GitHub batch read fails | Profile omits `connections.github`, names `github` in `unavailable`; never "not connected" |
@@ -1094,11 +1111,14 @@ Every fake secret or token in a test is built at runtime.
 **Order:**
 
 1. **PROFILE-STORE** alone. Everything else reads its modules.
-2. Then, in parallel: **PROFILE-API**, **PROFILE-DEFAULT**, **PROFILE-BELL**
-   and **PROFILE-NAMES-API**.
-3. Then **PROFILE-PAGE** (after API, because `test_runtimes_screen.py`
+2. Then, in parallel: **PROFILE-API**, **PROFILE-DEFAULT** and
+   **PROFILE-NAMES-API**.
+3. Then **PROFILE-BELL** (after DEFAULT, which adds `AuthContext.preferences`
+   and answers a headerless read with 503 when they are unreadable; the bell
+   reads the former and its tests rely on the latter).
+4. Then **PROFILE-PAGE** (after API, because `test_runtimes_screen.py`
    requires every `/v1` path the UI calls to be served).
-4. Then, in parallel: **PROFILE-NAV** (after PAGE), **PROFILE-SHELL** (after
+5. Then, in parallel: **PROFILE-NAV** (after PAGE), **PROFILE-SHELL** (after
    PAGE, BELL and DEFAULT), **PROFILE-NAMES-UI** (after PAGE and NAMES-API)
    and **PROFILE-SC** (after DEFAULT).
 
@@ -1138,7 +1158,8 @@ other's state.
     against "Ada Lovelace"), an accented match ("Adá Lovelace"), and a
     containing name ("Ada Lovelace Admin" refused for the containment as
     well as the reserved word, "Ada Lovelace Jr" refused for containment);
-  * "Bob Smith" is accepted when "Bob" exists;
+  * "Bob Smith" is refused with `display_name_taken` when "Bob" exists
+    (Q5 as answered; if Q12 is answered (b), this test flips to accepted);
   * a claim planted at an id that is not its folded name's HMAC is ignored
     by both checks;
   * a claim whose owner no longer holds the name is taken over;
@@ -1192,8 +1213,11 @@ other's state.
     a headerless submission, the store holds no new task, and the message
     names the switcher, `SWARM_TENANT` and `--tenant`;
   * the same document unreadable with a header is served normally;
-  * `PREFERENCE_FREE_ROUTES` is exactly the three routes of §4.5, and each
-    is served with `default_source: "unavailable"`;
+  * `PREFERENCE_FREE_ROUTES` is exactly the three routes of §4.5 (so not
+    `GET /v1/notifications`), and each is served with
+    `default_source: "unavailable"`;
+  * `AuthContext.preferences` holds the document read, and `None` when it
+    could not be read;
   * `tenants/mine`'s first entry equals the headerless tenant in every case
     above;
   * a service identity never reads preferences;
@@ -1212,7 +1236,10 @@ other's state.
   * a muted topic leaves the list and the badge and is counted in `muted`,
     with needs-you items counted under `needs_you`;
   * `admin_pending` ignores muting;
-  * unreadable preferences serve everything with `partial`, and never 503;
+  * unreadable preferences with `X-Swarm-Tenant` serve everything
+    unfiltered with `partial: true`; without the header the bell is 503
+    `preferences_unavailable` from authentication, and no derivation runs
+    (the route is not in `PREFERENCE_FREE_ROUTES`);
   * with `every_4h`, an approval read 5 h ago is unread and one read 3 h ago
     is read;
   * a waiting step uses the person's cadence when it is not `as_set` and the
@@ -1363,3 +1390,21 @@ where it is published on GitHub and cannot be changed afterwards.
 * (b) No: commits keep today's rule (claim, else local part), and the stored
   name is a console label only. Nothing published outside SwarmCloud
   changes, but a person's commits and their console name can differ.
+
+**Q12. Does a one-word name block every longer name that contains it?**
+
+Q5's answer says no name may embed another member's display name. Applied
+to every name, the first person to save "Bob" refuses "Bob Smith" to
+everyone after them, though "Bob Smith" beside its own email cannot pass for
+"Bob" beside his. §4.4 rule 6 enforces the answer as given until this is
+answered.
+
+* (a) **Yes, as Q5 says: containment is checked for names of any length.**
+  Recommended because it is the answer as given and the stricter posture;
+  the cost is that common first names become first-come: a person refused
+  must choose a name that does not contain the earlier one as a word.
+* (b) Only names of two or more words are checked for containment; an exact
+  match is still refused for every name. "Bob Smith" is allowed when "Bob"
+  exists, "Ada Lovelace Admin" is still refused when "Ada Lovelace" exists.
+  Fewer refusals of real names; a one-word name gives no protection against
+  being embedded, which the email beside every name covers.
