@@ -436,8 +436,9 @@ def test_each_runner_module_is_executable_as_the_catalogue_names_it():
     from swarm_common.profiles import RUNNER_PROFILES
 
     for profile in RUNNER_PROFILES.values():
-        if profile.worker_action is not None:
+        if profile.worker_action is not None or profile.control_plane:
             # Contract requests 33 and 35: no runner child, so no module.
+            # Contract request 93: a control_plane profile runs nothing at all.
             assert profile.runner_argv == (), profile.name
             continue
         module = profile.runner_argv[-1]

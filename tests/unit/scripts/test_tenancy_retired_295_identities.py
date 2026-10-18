@@ -148,7 +148,10 @@ def test_the_retired_profiles_get_no_job_and_are_still_disabled():
     m = re.search(r"profiles_without_a_job = \[([^\]]*)\]", text)
     assert m, "terraform/infra declares no profiles_without_a_job list"
     listed = sorted(re.findall(r'"([a-z0-9-]+)"', m.group(1)))
-    assert listed == sorted(RETIRED_PROFILES), listed
+    # Besides the retired two, the list holds every control_plane profile
+    # (contract request 93): nothing runs one, so it gets no Job either.
+    control_plane = [n for n, p in RUNNER_PROFILES.items() if p.control_plane]
+    assert listed == sorted([*RETIRED_PROFILES, *control_plane]), listed
     assert "!contains(local.profiles_without_a_job, profile_name)" in text
     # The premise: the frozen catalogue still holds both, disabled.
     for name in RETIRED_PROFILES:

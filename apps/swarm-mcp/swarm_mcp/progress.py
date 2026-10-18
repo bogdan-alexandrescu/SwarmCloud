@@ -172,6 +172,9 @@ _PARKED_BECAUSE = {
     # Contract request 68 (docs/design/live-browser.md): a hand-off nobody
     # answered within the hold. Only a person promotes it.
     "HUMAN_REQUIRED": "its agent asked a person to sign in; it resumes when someone is ready",
+    # Contract request 92 (docs/design/human-steps.md §4.5): an await-input
+    # step. No agent asked; the workflow did, and any member may answer.
+    "AWAITING_INPUT": "waiting for a member of the tenant to answer; resumes when one does",
 }
 
 
