@@ -407,3 +407,190 @@ def test_ui_audit_attempts_coverage_shape_matches_the_route():
 def test_every_citation_is_a_symbol_or_an_anchor_that_resolves(doc: Path):
     """No `path:N` (a merge above the code moves it); every `path::qualname` and `path` (`text`) resolves."""
     _assert_cites_resolve(doc)
+
+
+# --------------------------------------------------------------------------
+# HW-DOCS (part of #1436): a workflow step waits for a tenant member's answer
+# --------------------------------------------------------------------------
+#
+# docs/workflows.md and docs/notifications.md describe the await-input step
+# that HW-SCHED, HW-API-SUBMIT, HW-WORKER, HW-API-ANSWER and HW-NOTIFY built.
+# Every bound, type and name they state is read from the code here, so a
+# change to the 24-hour bound, the 16 MiB answer, the ten files, the closed
+# type list or the three forms fails until the documents follow.
+
+WORKFLOWS = DOCS / "workflows.md"
+NOTIFICATIONS = DOCS / "notifications.md"
+HUMAN_STEPS = DOCS / "design" / "human-steps.md"
+AWAIT_HEADING = "## Waiting for a person: `await-input`"
+MIB = 1024 * 1024
+KIB = 1024
+
+
+def _await_section() -> str:
+    return _flat(_section(_text(WORKFLOWS), AWAIT_HEADING))
+
+
+def _await_body() -> str:
+    """The workflows section with every subsection under it, up to the next `## `."""
+    text = _text(WORKFLOWS)
+    start = text.index(AWAIT_HEADING)
+    rest = text[start + len(AWAIT_HEADING):]
+    nxt = re.search(r"^## ", rest, flags=re.M)
+    return _flat(rest[: nxt.start()] if nxt else rest)
+
+
+def test_await_input_section_states_the_24_hour_bound_the_code_holds():
+    from scheduler.loop import HUMAN_PARK_MAX_SECONDS
+    from swarm_api.validation import (
+        AWAIT_INPUT_MAX_SECONDS,
+        AWAIT_INPUT_MIN_SECONDS,
+        AWAIT_INPUT_REMIND_MIN_SECONDS,
+    )
+
+    body = _await_body()
+    # The API restates the scheduler's bound; the doc states the one number.
+    assert AWAIT_INPUT_MAX_SECONDS == HUMAN_PARK_MAX_SECONDS
+    assert AWAIT_INPUT_MAX_SECONDS % 3600 == 0
+    assert f"{AWAIT_INPUT_MAX_SECONDS:,}" in body
+    assert f"{AWAIT_INPUT_MAX_SECONDS // 3600} hours" in body
+    assert f"{AWAIT_INPUT_MIN_SECONDS:,} to {AWAIT_INPUT_MAX_SECONDS:,}" in body
+    assert f"{AWAIT_INPUT_REMIND_MIN_SECONDS:,}" in body
+    validation = "apps/swarm-api/swarm_api/validation.py"
+    assert f"`{validation}::AWAIT_INPUT_MAX_SECONDS`" in body
+    assert f"`apps/scheduler/scheduler/loop.py::HUMAN_PARK_MAX_SECONDS`" in body
+    # A wait is free (invariant 1): the doc says the step holds no lease.
+    assert "PARKED(AWAITING_INPUT)" in body
+    assert "no lease" in body
+
+
+def test_await_input_section_states_the_answer_and_file_bounds():
+    from swarm_api import awaitinput
+    from swarm_api.validation import AWAIT_INPUT_MAX_FILES
+
+    body = _await_body()
+    assert awaitinput.MAX_ANSWER_BYTES % MIB == 0
+    assert f"{awaitinput.MAX_ANSWER_BYTES // MIB} MiB" in body
+    assert f"`apps/swarm-api/swarm_api/awaitinput.py::MAX_ANSWER_BYTES`" in body
+    assert f"at most {AWAIT_INPUT_MAX_FILES} files" in body
+    assert f"`max_files` | 0 to {AWAIT_INPUT_MAX_FILES}" in _text(WORKFLOWS)
+    assert f"`apps/swarm-api/swarm_api/validation.py::AWAIT_INPUT_MAX_FILES`" in body
+    assert f"{awaitinput.MAX_FORM_BYTES // KIB} KiB" in body
+    assert f"{awaitinput.MAX_TEXT_BYTES // KIB} KiB" in body
+    assert f"{awaitinput.MAX_CONCURRENT_MULTIPART} multipart answers" in body
+
+
+def test_await_input_section_lists_exactly_the_allowed_types():
+    from swarm_api import awaitinput
+
+    body = _await_body()
+    for extension in awaitinput.TEXT_EXTENSIONS:
+        assert f"`{extension}`" in body, extension
+    for content_type, extensions in awaitinput.BINARY_TYPES:
+        assert f"`{content_type}`" in body, content_type
+        for extension in extensions:
+            assert f"`{extension}`" in body, extension
+    assert f"`{awaitinput.TEXT_CONTENT_TYPE}`" in body
+    assert f"`apps/swarm-api/swarm_api/awaitinput.py::TEXT_EXTENSIONS`" in body
+    assert f"`apps/swarm-api/swarm_api/awaitinput.py::sniff`" in body
+    # The list is closed: the extensions the doc names in its type list are
+    # the code's, no more, so an extension dropped from the code fails here.
+    types = re.search(r"\*\*Allowed types\.\*\*(.*?)Everything else", body)
+    assert types, "the section has no **Allowed types.** paragraph ending in 'Everything else'"
+    named = set(re.findall(r"`(\.[a-z]+)`", types.group(1)))
+    binary = {e for _, exts in awaitinput.BINARY_TYPES for e in exts}
+    assert named == set(awaitinput.TEXT_EXTENSIONS) | binary
+    assert "file_type_refused" in body
+
+
+def test_await_input_section_names_the_forms_and_their_artifacts():
+    from swarm_api import awaitinput
+    from swarm_api.notifications import _INPUT_TITLES
+    from swarm_api.validation import (
+        AWAIT_INPUT_ARTIFACTS,
+        AWAIT_INPUT_FORMS,
+        AWAIT_INPUT_ON_EXPIRE,
+        AWAIT_INPUT_PROFILE,
+        QUESTIONS_FILENAME,
+    )
+
+    text = _text(WORKFLOWS)
+    body = _await_body()
+    assert set(AWAIT_INPUT_FORMS) == set(_INPUT_TITLES)
+    for form in AWAIT_INPUT_FORMS:
+        row = next((ln for ln in text.splitlines() if ln.startswith(f"| `{form}` |")), None)
+        assert row is not None, f"no form row for {form!r}"
+        assert f"`{AWAIT_INPUT_ARTIFACTS[form]}`" in row, row
+    for value in AWAIT_INPUT_ON_EXPIRE:
+        assert f'`"{value}"`' in body, value
+    assert f"`{AWAIT_INPUT_PROFILE}`" in body
+    assert f"`{QUESTIONS_FILENAME}`" in body
+    for via in awaitinput.VIA:
+        assert f'`"{via}"`' in body, via
+    # The routes the section documents are the routes that exist.
+    from swarm_api.routes.await_input import INPUT_ROUTE, INPUTS_ROUTE
+
+    assert f"POST {INPUT_ROUTE}" in body and f"GET {INPUT_ROUTE}" in body
+    assert f"GET {INPUTS_ROUTE}?status=waiting" in body
+    # The reasons a refusal carries, each one the code raises.
+    source = _text(REPO / "apps" / "swarm-api" / "swarm_api" / "awaitinput.py")
+    source += _text(REPO / "apps" / "swarm-api" / "swarm_api" / "routes" / "await_input.py")
+    for reason in ("person_required", "not_a_member", "membership_unavailable", "not_open",
+                   "already_answered", "spec_refused", "too_many_files", "invalid_file_name",
+                   "file_type_refused", "file_contains_credential", "answer_too_large",
+                   "answer_busy", "store_unavailable"):
+        assert f"`{reason}`" in body, reason
+        assert f'"{reason}"' in source, reason
+    assert "await_input_expired" in body and '"await_input_expired: ' in source
+    # The worker stages the files beside the artifact.
+    assert "`review.files/`" in body
+    assert "`apps/agent-worker/agent_worker/inputs.py::attachments_dir`" in body
+
+
+def test_await_input_section_says_the_step_ships_dark_while_unavailable():
+    body = _await_section()
+    assert "request D" in body
+    assert "`apps/common/swarm_common/profiles.py::RUNNER_PROFILES`" in body
+    assert "While the catalogue lists `await-input` as unavailable" in body
+
+
+def test_step_fields_table_names_await_input():
+    fields = _section(_text(WORKFLOWS), "## Step fields")
+    row = next((ln for ln in fields.splitlines() if ln.startswith("| `await_input` |")), None)
+    assert row is not None
+    assert "#waiting-for-a-person-await-input" in row
+
+
+def test_notifications_doc_describes_the_waiting_step_item_and_the_inbox():
+    from swarm_api import approvals
+    from swarm_api.notifications import _INPUT_TITLES, SOURCES
+
+    assert "awaiting_input" in dict(SOURCES)
+    text = _text(NOTIFICATIONS)
+    body = _flat(_section(text, "## A workflow step waiting for a person"))
+    assert "`task:input:<task>:<k>`" in body
+    assert f"`{approvals.INPUT_PREFIX}<task_id>`" in body
+    assert f"kind `{approvals.INPUT}`" in body
+    for title in _INPUT_TITLES.values():
+        assert f"\"{title}\"" in body, title
+    assert "`waiting_step`" in body
+    assert "`remind`" in body
+    for cite in ("apps/swarm-api/swarm_api/notifications.py::awaiting_input",
+                 "apps/swarm-api/swarm_api/approvals.py::project_input",
+                 "apps/swarm-api/swarm_api/approvals.py::awaiting_input"):
+        assert f"`{cite}`" in body, cite
+    # The groups table names the source in the `task` row.
+    task_row = next(ln for ln in text.splitlines() if ln.startswith("| `task` |"))
+    assert "`AWAITING_INPUT`" in task_row
+
+
+def test_human_steps_design_records_what_hw_docs_built():
+    body = _flat(_section(_text(HUMAN_STEPS), "## 8. What was built"))
+    assert "HW-DOCS" in body
+    assert "docs/workflows.md" in body and "docs/notifications.md" in body
+    assert "HW-UI" in body and "HW-MCP" in body
+
+
+@pytest.mark.parametrize("doc", (WORKFLOWS, NOTIFICATIONS), ids=lambda p: p.name)
+def test_await_input_docs_cite_only_what_resolves(doc: Path):
+    _assert_cites_resolve(doc)
