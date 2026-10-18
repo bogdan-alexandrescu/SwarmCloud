@@ -63,7 +63,8 @@ the session's allowed directories, and the session fell back to
 `swarmcloud`. So every bridge now writes into the session's project, as
 `<project>/.claude/sc-swarmcloud-runs/` with the same `.gitignore` of `*`
 (`run_folder`). The project is CLAUDE_PROJECT_DIR when Claude Code hands it
-over, else the repo-local bridge's checkout, else the bridge's own working
+over -- the plugin passes it in its MCP server's env (SC-TITLES-B), and an
+empty or unexpanded `${...}` value counts as not handed over -- else the repo-local bridge's checkout, else the bridge's own working
 directory when that is a git work tree -- Claude Code starts the bridge in the
 session's directory, which `checkout.directory()` already relies on. Never
 its git top level: a top level above the session's directory is outside it,
@@ -81,9 +82,12 @@ repository as `host/owner/repo` and the time -- never a prompt, a spec body or
 anything from a URL's userinfo. `session.ownership` reads it: `/sc check` and
 `/sc attach --all` take work that is this session's AND in this record, and
 fall back to the repository filter only for this session's work the record
-does not hold (older work). A submission is recorded before SwarmCloud has
-named the workflow, so its line carries the spec's `name` and a null id, and
-`session.recorded` matches it to this session's workflow of that name.
+does not hold (older work). A submission is recorded when SwarmCloud has
+answered it, by the workflow id it named (`server._workflow_created`,
+SC-TITLES-B), so two of this session's workflows with one name are told
+apart. A line written before that change carries the spec's `name` and a null
+id; `session.recorded` still matches such a line to this session's workflow
+of that name, and only such a line.
 
 SINGLE TASKS (#830, owner 2026-10-07). A task sent with `swarm_dispatch`
 belongs to no workflow, so it never had a row. `for_tasks` writes ONE copy
@@ -258,6 +262,20 @@ def slug(title: str) -> str:
     return text or "run"
 
 
+def project_dir_given(environ: dict[str, str] | None = None) -> str | None:
+    """CLAUDE_PROJECT_DIR as Claude Code handed it over, or None when it is
+    absent, empty, or still reads `${...}`. The plugin passes it to the bridge
+    as `"${CLAUDE_PROJECT_DIR:-}"` (SC-TITLES-B), and nobody has measured that
+    Claude Code expands it for a plugin's MCP server: an unexpanded value is
+    no directory, and taken as a relative path it would name a folder under
+    the bridge's working directory. So it is absent, and the cwd rule decides."""
+    environ = dict(os.environ) if environ is None else environ
+    given = environ.get(PROJECT_DIR_ENV, "").strip()
+    if not given or "${" in given:
+        return None
+    return given
+
+
 def _project(environ: dict[str, str] | None = None) -> tuple[Path, str] | None:
     """`(directory, where it came from)` for the session's project, or None.
 
@@ -266,7 +284,7 @@ def _project(environ: dict[str, str] | None = None) -> tuple[Path, str] | None:
     git work tree -- a bare working directory may be the home directory, and
     that is no project. The directory itself, never its git top level."""
     environ = dict(os.environ) if environ is None else environ
-    given = environ.get(PROJECT_DIR_ENV, "").strip()
+    given = project_dir_given(environ)
     if given and Path(given).expanduser().is_dir():
         return Path(given).expanduser(), PROJECT_DIR_ENV
     if config.repo_mode(environ):
@@ -336,8 +354,8 @@ def run_folder() -> Path:
             return folder
         why = f"the project's folder {folder} could not be written"
     else:
-        why = (f"no project directory is known ({PROJECT_DIR_ENV} is not set and the bridge's "
-               "working directory is not a git work tree)")
+        why = (f"no project directory is known ({PROJECT_DIR_ENV} is not set, is empty or was not "
+               "expanded, and the bridge's working directory is not a git work tree)")
     folder = Path(tempfile.gettempdir()) / RUN_DIR
     folder.mkdir(parents=True, exist_ok=True)
     _report(folder, f"the system temp directory: {why}")
@@ -540,9 +558,10 @@ def for_spec(document: dict[str, Any], client: SwarmClient | None = None) -> dic
         "by the console's stage, with its console link"
     )
     workspace, submitter = _submitting(client)
-    # Recorded now, before SwarmCloud names the workflow: by its name, which
-    # `session.recorded` matches to this session's workflow of that name.
-    record("submit", title=title, repository=spec.get("repository_url"), name=name)
+    # NOT RECORDED HERE (SC-TITLES-B): no workflow exists yet. `swarm_workflow`
+    # records the submission by the id SwarmCloud answers with
+    # (`server._workflow_created`), so a same-named workflow this session did
+    # not submit here is never taken for it.
     out = _launch(title, description, None, workspace, details.for_spec(spec, submitter))
     out["steps"] = steps
     # Each step row's own line: its profile and browser tool, no account yet.

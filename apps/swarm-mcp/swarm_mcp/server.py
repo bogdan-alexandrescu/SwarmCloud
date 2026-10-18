@@ -3787,13 +3787,14 @@ def _workflow_merge_pr(client: SwarmClient, args: dict[str, Any]) -> str:
         envelope, placed=placed,
         repository={"url": repo, "ref": None,
                     "source": "named" if repo else "the tenant's only registered repository"},
+        name=args.get("title"),
     )
 
 
 def _workflow_created(
     envelope: dict[str, Any], *, placed: dict[str, Any], repository: dict[str, Any],
     digest: str | None = None, expected_digest: Any = None,
-    given: list[str] | None = None,
+    given: list[str] | None = None, name: str | None = None,
 ) -> str:
     """`swarm_workflow`'s answer to an accepted submission, spec or `merge_pr`.
 
@@ -3806,6 +3807,13 @@ def _workflow_created(
     3-step spec came back with 5 and no row started). The comparison is made
     here because this is the one place that holds both the spec submitted and
     the reply; no relay retyped either.
+
+    THE PROJECT RECORD (SC-TITLES-B, part of #1511): the submission is
+    appended to the project's `launched.jsonl` HERE, by the id SwarmCloud
+    just named, so `session.recorded` matches it by id and two of this
+    session's workflows with one `name` are told apart. `name` is the spec's
+    title, else its label; without one, the run is named by its id
+    (`workflows.title_name`).
     """
     workflow = envelope["workflow"]
     workflow_id = workflow.get("workflow_id")
@@ -3831,6 +3839,16 @@ def _workflow_created(
         )
         for step in workflow.get("steps") or []
     ]
+    named = workflows.title_name(title=name, workflow_id=workflow_id)
+    try:
+        from . import launch
+
+        launch.record(
+            "submit", title=workflows.workflow_title(named, len(given) if given is not None else len(steps)),
+            workflow_id=str(workflow_id), repository=repository.get("url"), name=named,
+        )
+    except Exception:  # noqa: BLE001 - the workflow is in SwarmCloud; a lost record line never fails its answer
+        pass
     created: dict[str, Any] = with_console({"workflow_id": workflow_id}, workflow)
     created.update({
         # The workspace it runs in, from the API's document (SC-ROWS): the
@@ -4356,7 +4374,8 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         )
         reply = _workflow_created(envelope, placed=placed, repository=repository.as_dict(),
                                   digest=digest, expected_digest=expected_digest,
-                                  given=[str(step.get("step_id")) for step in fields["steps"]])
+                                  given=[str(step.get("step_id")) for step in fields["steps"]],
+                                  name=fields["title"] or fields["label"])
         if not territory and not checks:
             return reply
         created = json.loads(reply)
