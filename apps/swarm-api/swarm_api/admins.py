@@ -158,8 +158,15 @@ class AdminRoles:
     def _role_ref(self, email: str) -> Any:
         return self._db.collection(ROLES_COLLECTION).document(email)
 
-    def role_of(self, email: str) -> str | None:
+    def role_of(self, email: str, *, fresh: bool = False) -> str | None:
         """The email's role document's role, None when it has none.
+
+        `fresh` reads the document past this instance's cache and refreshes
+        the cache with what it finds, for a decision a removal a moment ago
+        must already change: whether a stored schedule owner or run creator
+        still reaches a workspace as a platform admin
+        (`auth.Authenticator.may_act_in`, docs/design/workspace-roles.md
+        §4.2.3). Without it the answer may be `ROLE_CACHE_SECONDS` old.
 
         Raises whatever Firestore raises: the caller decides what an unknown
         answer means (auth.py turns it into a 503 on admin routes, never a
@@ -170,7 +177,7 @@ class AdminRoles:
             return None
         self.ensure_migrated()
         stamp = self._clock()
-        cached = self._cache.get(email)
+        cached = None if fresh else self._cache.get(email)
         if cached is not None and cached[0] > stamp:
             return cached[1]
         snap = self._role_ref(email).get()
@@ -184,11 +191,13 @@ class AdminRoles:
     def is_owner(self, email: str) -> bool:
         return bool(self.owner) and (email or "").strip().lower() == self.owner
 
-    def holds_admin(self, email: str) -> bool:
-        """True for the configured owner or an email with a role document."""
+    def holds_admin(self, email: str, *, fresh: bool = False) -> bool:
+        """True for the configured owner or an email with a role document.
+
+        `fresh` reads past the cache (`role_of`)."""
         if self.is_owner(email):
             return True
-        return self.role_of(email) is not None
+        return self.role_of(email, fresh=fresh) is not None
 
     def holders(self) -> list[dict[str, Any]]:
         """Every `admin_roles/` holder, the owner first, then by email: what

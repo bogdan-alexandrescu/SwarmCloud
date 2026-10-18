@@ -466,3 +466,56 @@ def test_the_query_parameter_cannot_grant_a_checkpoint(client, db, objects):
     assert client.get(
         checkpoint_url("task_r", tenant="research"), headers=as_("dave", "eng")
     ).status_code == 422
+
+
+# -- a platform admin's reach (docs/design/workspace-roles.md §4.2) ----------
+#
+# `root` is an admin in eng but not in research. With `platform_admin_reach`
+# on, the header may select research for root as its admin; for everyone else,
+# and for every `u-` id, the switcher is exactly what the cases above pin.
+
+def reach_client(db, tokens, group_map, *, reach: bool) -> TestClient:
+    ctx = build_context(
+        settings=api_settings(platform_admin_reach=reach), db=db,
+        verifier=StaticTokenVerifier(tokens), groups=StaticGroups(group_map),
+        credentials=InMemoryCredentials(), waker=NullWaker(), metrics=ApiMetrics(), objects=None,
+    )
+    return TestClient(create_app(ctx), raise_server_exceptions=False)
+
+
+def test_a_platform_admin_submits_into_a_group_they_are_not_in_with_the_reach_on(
+        db, tokens, group_map):
+    client = reach_client(db, tokens, group_map, reach=True)
+    response = submit(client, "root", "research")
+    assert response.status_code == 201, response.text
+    assert response.json()["task"]["tenant_id"] == "research"
+    me = client.get("/v1/tenants/me", headers=as_("root", "research"))
+    assert me.status_code == 200, me.text
+    assert me.json()["tenant"]["tenant_id"] == "research"
+
+
+def test_with_the_reach_off_a_platform_admin_is_refused_a_group_they_are_not_in(
+        db, tokens, group_map):
+    client = reach_client(db, tokens, group_map, reach=False)
+    response = submit(client, "root", "research")
+    assert response.status_code == 403
+    assert response.json()["code"] == "tenant_not_member"
+
+
+def test_the_reach_never_selects_a_personal_tenant_or_widens_a_non_admin(
+        db, tokens, group_map):
+    client = reach_client(db, tokens, group_map, reach=True)
+    for user, tenant in (("root", "u-carol"), ("root", "u-alice"), ("alice", "research"),
+                         ("carol", "eng"), ("dave", "u-root")):
+        response = submit(client, user, tenant)
+        assert response.status_code == 403, (user, tenant, response.text)
+        assert response.json()["code"] == "tenant_not_member", (user, tenant)
+
+
+def test_the_reach_leaves_every_headerless_default_as_it_was(db, tokens, group_map):
+    client = reach_client(db, tokens, group_map, reach=True)
+    for user, expected in (("alice", "eng"), ("bob", "research"), ("carol", "u-carol"),
+                           ("dave", "eng"), ("root", "eng")):
+        response = submit(client, user)
+        assert response.status_code == 201, response.text
+        assert response.json()["task"]["tenant_id"] == expected, user
