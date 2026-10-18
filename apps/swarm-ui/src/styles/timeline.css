@@ -279,6 +279,12 @@
   text-overflow: ellipsis;
 }
 .tl-lab .tl-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* A LONE AGENT KEEPS ITS ID (VQA2 V212, 2026-10-16): `claude-code task ·
+   a073aff5` lost its id to the ellipsis, and the id is all that tells two
+   standalone lanes apart. The kind gives way; the id never wraps or cuts. */
+.tl-lab .tl-name.is-split { display: inline-flex; align-items: baseline; flex: 0 1 auto; }
+.tl-name-k { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tl-name-id { flex: none; white-space: pre; }
 .tl-lab .tl-dur { flex: none; font: var(--t-micro) / var(--lh-micro) var(--mono); font-weight: 400; color: var(--text-dim); white-space: pre; }
 .tl-lab small {
   font: var(--t-micro) / var(--lh-micro) var(--mono);
@@ -406,10 +412,14 @@
    five-minute attempt is a third of a percent of the track, and the bars
    read as nothing but their end marks. A pixel floor keeps the shortest
    attempt a bar, and the fill is the brand's capacity hue (timeline.html A),
-   not a wash too pale to find. */
+   not a wash too pale to find.
+   THE FLOOR IS WHAT IS PAINTED (VQA2 V039, 2026-10-16): 8px here, the 5px
+   padding and the borders painted 12-13px, and the lanes' layout, which
+   keeps bars inside the track and apart, needs the true floor. Equal to
+   `BAR_MIN_PX` in TimelineLanes.tsx. */
 .tl-seg.is-hold,
 .tl-seg.is-cut,
-.tl-seg.is-park { min-width: 8px; }
+.tl-seg.is-park { min-width: 14px; }
 .tl-seg.is-hold {
   height: 20px;
   border-radius: 6px;

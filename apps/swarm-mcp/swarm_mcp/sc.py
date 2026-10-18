@@ -2776,6 +2776,32 @@ KEY_ON_ARGV = (
 KEYS_NOT_SAVABLE = "keys can't be saved yet: {reason}"
 
 
+class KeySetLineRefused(Exception):
+    """`sc key set`'s line did not parse. Carries nothing from the line."""
+
+
+class _KeySetParser(argparse.ArgumentParser):
+    """`sc key set`'s parser, which neither guesses at nor repeats a word.
+
+    A key may start with "-" (base64url's alphabet has it), and argparse then
+    reads it as an option. Two of its readings are closed here (#1499):
+
+      * NO ABBREVIATIONS AND NO BUNDLED SHORT FLAGS. "-h<rest>" was the help
+        switch with the rest as more flags: it printed help and exited 0, as
+        if the line were fine. Only an option's full spelling matches now, so
+        any other "-" word is an extra word, which `main` refuses unsent;
+      * NO ERROR MESSAGE OF ITS OWN. argparse's ("ambiguous option: <word>",
+        "ignored explicit argument <word>") can quote the word, and a "-"-led
+        key in the provider's place left `provider` missing, which exited
+        from inside the parse. `main` refuses instead, with a fixed text."""
+
+    def _get_option_tuples(self, option_string):
+        return []
+
+    def error(self, message):
+        raise KeySetLineRefused()
+
+
 def key_set_refusal(extra: Sequence[str]) -> str | None:
     """Why this `sc key set` line is refused before anything is read or sent,
     or None. Never names what it refuses: a stray word on this line is most
@@ -4337,7 +4363,8 @@ def build_parser() -> argparse.ArgumentParser:
     # KEYS-PLUGIN. NO OPTION AND NO POSITIONAL TAKES THE KEY: anything past the
     # provider and the switches is refused unsent by `main`, unrepeated.
     key = sub.add_parser("key", help="provider keys you set: `key set typesafe`")
-    key_sub = key.add_subparsers(dest="key_command", required=True)
+    key_sub = key.add_subparsers(dest="key_command", required=True,
+                                 parser_class=_KeySetParser)
     kset = key_sub.add_parser(
         "set",
         help="store your TypeSafe key, typed at a hidden prompt or piped with --stdin "
@@ -4577,7 +4604,14 @@ def main(argv: list[str] | None = None, out=None) -> int:
     from . import config
 
     parser = build_parser()
-    args, extra = parser.parse_known_args(argv)
+    try:
+        args, extra = parser.parse_known_args(argv)
+    except KeySetLineRefused:
+        # Nothing has been read or sent, and the line is not repeated.
+        print("sc: sc key set takes a provider, --tenant and --stdin, nothing else; "
+              + KEY_ON_ARGV.format(command=terminal_command("sc key set typesafe")),
+              file=sys.stderr)
+        return EXIT_USAGE
     if getattr(args, "key_set", False):
         # BEFORE any client: a key typed on the line is refused unsent, and
         # argparse's own "unrecognized arguments" would have repeated it.

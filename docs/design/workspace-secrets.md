@@ -805,9 +805,12 @@ from §3.3, and why:
   `component:judge`'s key is the forwarder's (Q8), and `component:git` takes
   no workspace secret, so neither is derived.
 * **The rows** carry §4.4's fields plus `secret_tenant_id`, `name` and
-  `slot`, and an `expire_at` 90 days out. The marks have one too. **The
-  Firestore TTL policy on `expire_at` is not built:** it is a Terraform field
-  on each collection, outside this lane.
+  `slot`, and an `expire_at` 90 days out. The marks have one too. **Both
+  expire by a Firestore TTL policy on `expire_at`:** one
+  `google_firestore_field` per collection, in
+  `terraform/modules/firestore/workspace_secrets_ttl.tf` (SECRETS-RELEASE-TTL),
+  held to swarm_api's collection and field names by
+  `tests/unit/control_plane/test_workspace_secrets_ttl_parity.py`.
 * **Before SEC-IAM is applied** every read is PERMISSION_DENIED. The route
   answers 503 `secrets_release_unavailable` with that reason, and no name
   and no value. The worker treats it as unreachable.

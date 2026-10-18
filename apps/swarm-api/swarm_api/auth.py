@@ -1072,6 +1072,15 @@ ROLLUP_SWEEPER_ROUTES: frozenset[tuple[str, str]] = frozenset(
         # now holds every route in this set, for every tenant
         # (docs/runbooks/github-app.md, "Step 9").
         ("POST", "/v1/admin/repositories/push"),
+        # The per-run MCP credential sweep (docs/design/registered-mcp-
+        # servers.md §4.4, owner decision Q2 of #1433; jobs.tf, lane MCP-IAM,
+        # every 10 minutes). It deletes the Secret Manager secret of a
+        # credential whose task has ended or whose `expires_in` has passed,
+        # and marks its row. It takes no argument, reads no value, submits
+        # nothing and grants nothing: what it may destroy is fixed by each
+        # row's own owner and expiry, and only a `-mcpc-` secret of the row's
+        # own tenant.
+        ("POST", "/v1/admin/mcp-credentials/sweep"),
     }
 )
 

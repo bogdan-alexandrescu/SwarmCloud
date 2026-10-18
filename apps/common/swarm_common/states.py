@@ -205,6 +205,15 @@ class ParkReason(str, Enum):
     #: Contract request 68 (LB-A, docs/design/live-browser.md section 4.3),
     #: accepted by the owner 2026-10-11 (#1030).
     HUMAN_REQUIRED = "HUMAN_REQUIRED"
+    #: A workflow step of a `control_plane` profile (`await-input`) waiting
+    #: for a tenant member's answer (docs/design/human-steps.md). Never
+    #: promoted to READY, and never read by the HUMAN_REQUIRED sweep,
+    #: `human-ready` or the browser bell: swarm-api ends it PARKED ->
+    #: SUCCEEDED on the answer or on its declared default, PARKED ->
+    #: DEAD_LETTERED on expiry (at most 24 hours), PARKED -> CANCELLED on a
+    #: cancel. Holds no capacity (invariant 1). Contract request 92 (HW-CONTRACT,
+    #: human steps request A), accepted by the owner 2026-10-17 (Q1).
+    AWAITING_INPUT = "AWAITING_INPUT"
 
 
 class BlockedReason(str, Enum):

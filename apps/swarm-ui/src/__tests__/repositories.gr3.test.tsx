@@ -397,13 +397,13 @@ describe('the graph after the live QA', () => {
     }
   })
 
-  it('RSA-20: the wheel zooms the drawing, and keys on a focused node zoom, pan and fit', async () => {
+  it('RSA-20: Ctrl + wheel zooms the drawing (V044: a plain wheel is the page\'s), and keys on a focused node zoom, pan and fit', async () => {
     vi.resetModules()
     routes()
     await mount()
     await waitFor(() => expect(nodes()).toHaveLength(4), WAIT)
     const fit = world()
-    fireEvent.wheel(card().querySelector('svg')!, { deltaY: -100, clientX: 0, clientY: 0 })
+    fireEvent.wheel(card().querySelector('svg')!, { deltaY: -100, clientX: 0, clientY: 0, ctrlKey: true })
     expect(world()).toMatch(/scale\(1\.1\)/)
     fireEvent.keyDown(node('src/core/orders.py'), { key: '0' })
     expect(world()).toBe(fit)

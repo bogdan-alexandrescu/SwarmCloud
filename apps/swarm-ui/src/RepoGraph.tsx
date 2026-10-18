@@ -276,7 +276,7 @@ function GraphSurface({ r, g, open: opened }: { r: RepoRecord; g: ModuleGraph; o
         <div className="rg-split">
           <div className="rg-main">
             {canvas}
-            {phone && <PhoneList gv={gv} colour={colour} selected={selected?.id ?? null} onPick={pick} />}
+            {phone && <PhoneList gv={gv} colour={colour} selected={selected} onPick={pick} />}
           </div>
           <Inspector
             r={r}
@@ -591,6 +591,8 @@ const NodeChunk = memo(function NodeChunk({ nodes, plan, colour, selected, onPic
               textAnchor={label?.anchor ?? 'middle'}
               data-label={label?.side ?? 'below'}
               className={label?.side === 'hidden' ? 'is-hidden' : undefined}
+              // Selected, the label is printed on top of every node instead (`SelectedLabel`, V045).
+              style={on && plan.picked.has(n.id) ? { visibility: 'hidden' } : undefined}
             >
               {displayLabel(n)}
             </text>
@@ -600,6 +602,33 @@ const NodeChunk = memo(function NodeChunk({ nodes, plan, colour, selected, onPic
     </>
   )
 })
+
+/**
+ * THE SELECTED LABEL, ON TOP (visual QA V045, 2026-10-16). Inside its node's
+ * group the label was painted before every node that came later in the SVG,
+ * so a neighbouring disc cut it. It is printed once more as the world's last
+ * child, at the place the layout chose for it selected (`plan.picked`: bold,
+ * clear of every other disc), with the halo and colour `.rg-node.is-sel text`
+ * gives it. Out of the accessibility tree: the node's own name says it.
+ */
+function SelectedLabel({ plan, node }: { plan: LayoutPlan; node: ViewNode }) {
+  const p = plan.picked.get(node.id)
+  if (p === undefined) return null
+  return (
+    <text
+      className="rg-toplabel"
+      data-id={node.id}
+      data-label={p.side}
+      x={p.x}
+      y={p.y}
+      textAnchor={p.anchor}
+      aria-hidden="true"
+      style={{ fill: 'var(--sk-ac)', fontWeight: 600, paintOrder: 'stroke', stroke: 'var(--surface)', strokeWidth: 3, strokeLinejoin: 'round', pointerEvents: 'none' }}
+    >
+      {displayLabel(node)}
+    </text>
+  )
+}
 
 const EdgeChunk = memo(function EdgeChunk({ edges, plan, selected, maxWeight }: {
   edges: readonly ViewEdge[]
@@ -658,18 +687,24 @@ function ModuleCanvas({ r, gv, colour, shown, selected, onPick, bar, legend }: {
   latestPick.current = onPick
   const pickNode = useCallback((n: ViewNode) => latestPick.current(n), [])
   const mounting = plan !== null && (mounted < nodeChunks.length || mountedEdges < edgeChunks.length)
+  const selectedNode = selected === null ? undefined : drawnNodes.find((n) => n.id === selected)
 
   function zoomBy(f: number) {
     setZoom((z) => zoomAbout(z, f, W / 2, H / 2))
   }
-  // The wheel zooms about the pointer. A native listener, because React's
-  // wheel handler is passive and the page would scroll under the zoom.
+  // CTRL/⌘ + WHEEL ZOOMS about the pointer; a plain wheel is the page's
+  // (owner decision 2026-10-16, visual QA V044 / Q3). A plain-wheel zoom over
+  // a 590px drawing in a 900px window left the page scrollable only with the
+  // pointer off the drawing; the Network view leaves the wheel to the page
+  // too. A trackpad pinch arrives as a wheel with ctrlKey set, so it zooms.
+  // A native listener, because React's wheel handler is passive and the page
+  // would scroll under the zoom.
   const svg = useRef<SVGSVGElement>(null)
   useEffect(() => {
     const el = svg.current
     if (el === null) return
     const onWheel = (e: WheelEvent) => {
-      if (e.deltaY === 0) return
+      if (e.deltaY === 0 || !(e.ctrlKey || e.metaKey)) return
       e.preventDefault()
       const box = el.getBoundingClientRect()
       const x = box.width > 0 ? ((e.clientX - box.left) / box.width) * W : W / 2
@@ -707,7 +742,7 @@ function ModuleCanvas({ r, gv, colour, shown, selected, onPick, bar, legend }: {
   return (
     <div className="rg-canvas" data-drawing="structure" onKeyDown={keys}>
       <div className="rg-bar">{bar}</div>
-      <div className="rg-zoom" role="group" aria-label="Zoom" title="Wheel to zoom; with a node focused, + and − zoom, the arrows pan, 0 fits">
+      <div className="rg-zoom" role="group" aria-label="Zoom" title="Ctrl or ⌘ and the wheel zoom; with a node focused, + and − zoom, the arrows pan, 0 fits">
         <Button size="sm" aria-label="Zoom out" onClick={() => zoomBy(1 / ZOOM_STEP)}>
           −
         </Button>
@@ -748,6 +783,7 @@ function ModuleCanvas({ r, gv, colour, shown, selected, onPick, bar, legend }: {
             nodeChunks.slice(0, mounted).map((ns, i) => (
               <NodeChunk key={i} nodes={ns} plan={plan} colour={colour} onPick={pickNode} selected={selected !== null && ns.some((n) => n.id === selected) ? selected : null} />
             ))}
+          {plan !== null && selectedNode !== undefined && <SelectedLabel plan={plan} node={selectedNode} />}
         </g>
       </svg>
       {state.status === 'laying' && state.where === 'worker' && (
@@ -853,19 +889,58 @@ function usePhoneWidth(): boolean {
   return on
 }
 
-/** The phone's view (390px): the canvas is hidden there and the inspector reads from this list. */
-function PhoneList({ gv, colour, selected, onPick }: { gv: GraphView; colour: ColourBy; selected: string | null; onPick: (n: ViewNode) => void }) {
+/** The inspector card's id: the phone list's jump target. One graph is on a page at a time. */
+const INSPECTOR_ID = 'rg-inspector'
+
+/** Bring the inspector to the top of the window and put focus on its heading, so a reader (and a screen reader) lands on it. */
+function toInspector(): void {
+  const card = document.getElementById(INSPECTOR_ID)
+  if (card === null) return
+  card.scrollIntoView?.({ block: 'start' })
+  const h = card.querySelector<HTMLElement>('h2')
+  if (h === null) return
+  h.tabIndex = -1
+  h.focus({ preventScroll: true })
+}
+
+/**
+ * The phone's view (390px): the canvas is hidden there and the inspector reads from this list.
+ *
+ * WHAT IS OPEN SAYS SO AT THE TOP (visual QA V225, 2026-10-16). The list of
+ * every module came first and the inspector after it, so at 60 modules the
+ * open module's inspector was ~3,000px down with nothing near the top saying
+ * a module was open. The list now opens with the open module's name and a
+ * button to its inspector, and picking a module in the list goes there.
+ */
+function PhoneList({ gv, colour, selected, onPick }: { gv: GraphView; colour: ColourBy; selected: ViewNode | null; onPick: (n: ViewNode) => void }) {
   const rows = [...gv.nodes].sort((a, b) => (b.hot_spot_changes ?? -1) - (a.hot_spot_changes ?? -1) || a.id.localeCompare(b.id))
+  function choose(n: ViewNode) {
+    onPick(n)
+    // A cluster opens into its modules in this list: the reader's next pick is here, not in the inspector.
+    if (!n.isPackage) requestAnimationFrame(toInspector)
+  }
   return (
-    <div className="rg-phone" role="list" aria-label="Modules">
-      {rows.map((n) => (
-        <button key={n.id} type="button" role="listitem" className="rg-prow" aria-pressed={n.id === selected} onClick={() => onPick(n)}>
-          <i data-heat={heatOf(n, colour)} aria-hidden="true" />
-          <span className="rg-pname">{n.isPackage ? `${n.label} (${n.members} ${n.members === 1 ? 'module' : 'modules'})` : n.id}</span>
-          <small>{n.hot_spot_changes === null ? 'changes not measured' : `${fmt(n.hot_spot_changes)} changes`}</small>
-        </button>
-      ))}
-    </div>
+    <>
+      {selected !== null && (
+        <p className="rg-psel" role="status" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '4px 8px', margin: '0 0 8px' }}>
+          <span style={{ overflowWrap: 'anywhere' }}>
+            Open: <b>{selected.isPackage ? selected.cluster : selected.id}</b>
+          </span>
+          <Button size="sm" onClick={toInspector}>
+            Go to its inspector
+          </Button>
+        </p>
+      )}
+      <div className="rg-phone" role="list" aria-label="Modules">
+        {rows.map((n) => (
+          <button key={n.id} type="button" role="listitem" className="rg-prow" aria-pressed={n.id === selected?.id} onClick={() => choose(n)}>
+            <i data-heat={heatOf(n, colour)} aria-hidden="true" />
+            <span className="rg-pname">{n.isPackage ? `${n.label} (${n.members} ${n.members === 1 ? 'module' : 'modules'})` : n.id}</span>
+            <small>{n.hot_spot_changes === null ? 'changes not measured' : `${fmt(n.hot_spot_changes)} changes`}</small>
+          </button>
+        ))}
+      </div>
+    </>
   )
 }
 
@@ -928,14 +1003,14 @@ function Inspector({ r, gv, node, symbol, onSymbol, depth, depthControl, directi
 }) {
   if (node === null) {
     return (
-      <Card className="rg-inspector" title="Inspector">
+      <Card className="rg-inspector" id={INSPECTOR_ID} title="Inspector">
         <p className="ur-none">Pick a module on the canvas.</p>
       </Card>
     )
   }
   const deg = degree(gv, node.id)
   return (
-    <Card className="rg-inspector" title={node.isPackage ? node.cluster : node.id} action={<Chip>{node.isPackage ? `cluster · ${node.members} modules` : 'module'}</Chip>}>
+    <Card className="rg-inspector" id={INSPECTOR_ID} title={node.isPackage ? node.cluster : node.id} action={<Chip>{node.isPackage ? `cluster · ${node.members} modules` : 'module'}</Chip>}>
       <p className="rg-meta">
         <span>
           {node.symbols === null ? <Dash why="Its symbol count was not served" /> : <b>{fmt(node.symbols)}</b>} symbols
