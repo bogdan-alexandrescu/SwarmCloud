@@ -293,6 +293,10 @@ UNDECLARED_BY_DESIGN: dict[str, dict[str, str]] = {
         "heartbeat": "what the heartbeat reading is (#179); declared by the UI lane after PR #432",
         "claude_session": "the Claude Code session that submitted it (SC-SESSION-SCOPE), read by the "
         "sc plugin's check, attach-all and watch; the console does not scope by it",
+        # Served ahead of the client (contract request 104, #1435); types.ts
+        # is lane MODEL-UI's (docs/design/model-per-step.md §6). Remove when
+        # types.ts declares it.
+        "model_class": "the task's stored model class (#1435); declared by lane MODEL-UI",
     },
     # U26, served ahead of the client the same way; remove when types.ts
     # declares them.

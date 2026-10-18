@@ -40,6 +40,11 @@ locals {
   # a credential: the value is the string "anthropic" or "openai", and the real
   # key lives only in Secret Manager, added out of band. No secret material
   # exists anywhere in this repository.
+  #
+  # `model_classes` and `default_model_class` mirror contract request 101
+  # (#1435): the model classes a step on the profile may name, and the one it
+  # runs when it names none. The IDs are `runner_models` below, by class.
+  # tests/terraform/catalogue.tftest.hcl and check-contract-parity.sh hold them.
   # checkov:skip=CKV_SECRET_6:env-var name to provider id, not a credential -- see above.
   runner_profiles = {
     "mock" = {
@@ -49,6 +54,9 @@ locals {
       provider        = null
       secret_env      = {}
       timeout_seconds = 600
+
+      model_classes       = []
+      default_model_class = null
     }
     # GKE Autopilot since contract request 64 (owner, 2026-10-10, option A of
     # #939): a new Cloud Run instance's internet path opens a median 20.2 s
@@ -61,6 +69,9 @@ locals {
       provider        = null
       secret_env      = {}
       timeout_seconds = 3600
+
+      model_classes       = []
+      default_model_class = null
     }
     "claude-code" = {
       image          = "agent-runtime-base"
@@ -85,6 +96,9 @@ locals {
         CLAUDE_CODE_OAUTH_TOKEN = "anthropic"
       }
       timeout_seconds = 7200
+
+      model_classes       = ["opus", "fable", "sonnet", "haiku"]
+      default_model_class = "opus"
     }
     # GKE Autopilot since contract request 65 (owner, 2026-10-10, option A of
     # #939); its Cloud Run Jobs stay as the rollback, as generic's do.
@@ -95,6 +109,9 @@ locals {
       provider        = "openai"
       secret_env      = { OPENAI_API_KEY = "openai" }
       timeout_seconds = 7200
+
+      model_classes       = []
+      default_model_class = null
     }
     "browser" = {
       image          = "agent-runtime-browser"
@@ -104,6 +121,9 @@ locals {
       provider        = "anthropic"
       secret_env      = { ANTHROPIC_API_KEY = "anthropic" }
       timeout_seconds = 5400
+
+      model_classes       = []
+      default_model_class = null
     }
     # --- #295, contract requests 33, 35, 36 and 47 ---------------------------
     #
@@ -130,6 +150,9 @@ locals {
       provider        = "git"
       secret_env      = {}
       timeout_seconds = 600
+
+      model_classes       = []
+      default_model_class = null
     }
     "post-verdict" = {
       image           = "agent-runtime-base"
@@ -138,6 +161,9 @@ locals {
       provider        = "git-review"
       secret_env      = {}
       timeout_seconds = 300
+
+      model_classes       = []
+      default_model_class = null
     }
     "claude-code-review" = {
       image          = "agent-runtime-base"
@@ -150,6 +176,9 @@ locals {
         CLAUDE_CODE_OAUTH_TOKEN = "anthropic"
       }
       timeout_seconds = 7200
+
+      model_classes       = ["opus"]
+      default_model_class = "opus"
     }
     # Contract request 48, accepted by the owner 2026-10-05 (#625): claude-code
     # on the image that carries the repository index's toolchain, and nothing
@@ -172,6 +201,9 @@ locals {
       # of an assignment of one.
       secret_env      = { for name in ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] : name => "anthropic" }
       timeout_seconds = 7200
+
+      model_classes       = ["opus", "fable", "sonnet", "haiku"]
+      default_model_class = "opus"
     }
     # Contract request 67, accepted by the owner 2026-10-11: claude-code on
     # agent-runtime-browser, so an agent can render and screenshot pages. The
@@ -185,6 +217,9 @@ locals {
       provider        = "anthropic"
       secret_env      = { for name in ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] : name => "anthropic" }
       timeout_seconds = 7200
+
+      model_classes       = ["opus", "fable", "sonnet", "haiku"]
+      default_model_class = "opus"
     }
     # Contract requests 93 and 94 (HW-CONTRACT, docs/design/human-steps.md):
     # a `control_plane` profile that no container ever runs -- swarm-api ends
@@ -198,6 +233,9 @@ locals {
       provider        = null
       secret_env      = {}
       timeout_seconds = 300
+
+      model_classes       = []
+      default_model_class = null
     }
   }
 
@@ -241,44 +279,79 @@ locals {
   # still planned.
   cloud_run_fallback_profiles = ["claude-code", "indexer", "generic", "codex", "merge"]
 
-  # --- the model each profile's agent CLI runs (#226) -----------------------
+  # --- the model each model class runs (#226, #1435) ------------------------
   #
-  # THE ONE PLACE A PROFILE'S MODEL IS STATED. It becomes `MODEL` on the
-  # profile's Cloud Run Jobs below, and the scheduler's `WORKER_MODELS`, which
-  # it sets as `MODEL` on the Jobs it creates for tenants this root does not
-  # list. The worker reads MODEL into `WorkerConfig.model` and the runner
-  # passes it to the CLI as `--model`; a caller's `input.model` is refused
-  # (invariant 10), so changing a model is an edit here and a release.
+  # THE ONE PLACE A MODEL ID IS STATED, keyed by the model CLASS a step names
+  # (`swarm_common.profiles.MODEL_CLASSES`, contract request 100). Owner
+  # decisions of 2026-10-17 (docs/design/model-per-step.md §4.2): the class
+  # names are the frozen catalogue's (Q1 (a)), and the IDs behind them are
+  # here, so a model release is an edit to this map and a release, never a
+  # contract request. A caller names a class, never an ID: `input.model` is
+  # refused (invariant 10).
   #
-  # WHY claude-opus-5-5 (owner decision of 2026-09-26): it is the model the
-  # operator's local Claude Code lanes run, and a SwarmCloud step should behave
-  # like a local lane wherever the difference is a choice. With no MODEL on any
-  # Job the CLI ran its own default instead -- the QA task of that day ran
-  # claude-sonnet-5.
+  # WHY BY CLASS AND NOT BY PROFILE x CLASS: claude-code, indexer and
+  # claude-code-browser run one CLI, pinned once in the base image, so an ID
+  # accepted on one is accepted on all three. A profile x class map would be
+  # twelve lines that must change together at every model release, and the
+  # one thing it could add -- a profile lagging another -- is what #226
+  # removed, so that a review never judges with another model than the one
+  # that wrote the change.
   #
-  # NOT a field of `runner_profiles` above, which mirrors the frozen Python
-  # catalogue field for field (tests/terraform/catalogue.tftest.hcl): the
-  # catalogue has no model, and giving it one is a contract request.
-  # Only claude-code: codex is an OpenAI CLI, where this name would fail every
-  # run, and mock, generic and browser start no model.
-  # claude-code-review is claude-code under another name (contract request
-  # 36), so it names the same model: a review agent on the CLI's default would
-  # judge with a different model than the one that wrote the change. It is
-  # retired and has no Job here (`profiles_without_a_job`); the entry stays
-  # while the frozen catalogue holds the profile (contract request 50).
-  # indexer is claude-code on the indexer image (contract request 48), so an
-  # index run keeps the model it ran with as claude-code.
-  # claude-code runs on GKE Autopilot (contract request 53), and indexer since
-  # contract request 63, where no Job of this root exists to carry MODEL: the
-  # scheduler's WORKER_MODELS sets it on each pod. Their Cloud Run fallback
-  # Jobs (`cloud_run_fallback_profiles`) carry the same model from this map.
-  # claude-code-browser is claude-code on the browser image (contract request
-  # 67), a GKE profile from the start, so WORKER_MODELS is its only path.
+  # WHY claude-opus-5-5 FOR opus, THE DEFAULT (owner decision of 2026-09-26,
+  # kept by R3 of 2026-10-17): it is the model the operator's local Claude
+  # Code lanes run, and a step naming no class should behave like a local
+  # lane. With no MODEL on any Job the CLI ran its own default instead -- the
+  # QA task of that day ran claude-sonnet-5. fable is for planning, sonnet
+  # and haiku for mechanical steps (Q3).
+  #
+  # HELD TO ITS CLASSES three ways: the scheduler and swarm-api refuse at
+  # start a map whose keys are not exactly MODEL_CLASSES or whose IDs a
+  # class's `ModelClass.admits` refuses (MODEL-SCHED, MODEL-API);
+  # tests/terraform/runner_model.tftest.hcl asserts the four keys and each
+  # ID's family word; scripts/lib/check-contract-parity.sh (section 17)
+  # applies `admits` to this map.
   runner_models = {
-    "claude-code"         = "claude-opus-5-5"
-    "claude-code-review"  = "claude-opus-5-5"
-    "indexer"             = "claude-opus-5-5"
-    "claude-code-browser" = "claude-opus-5-5"
+    opus   = "claude-opus-5-5"
+    fable  = "claude-fable-5-1"
+    sonnet = "claude-sonnet-5-5"
+    haiku  = "claude-haiku-5-5"
+  }
+
+  # Profile -> the pin of its `default_model_class` (the mirror above), for
+  # every profile that has one: claude-code, claude-code-review, indexer and
+  # claude-code-browser, all opus, so exactly the map #226 wrote by hand.
+  # codex is an OpenAI CLI, where a Claude name would fail every run, and
+  # mock, generic, browser, merge, post-verdict and await-input start no
+  # model, so none of them has a default and none is listed.
+  #
+  # It is the `MODEL` of each classed profile's Cloud Run Jobs below (the
+  # dispatcher's per-execution override replaces it with the step's class),
+  # and the scheduler's `WORKER_MODELS`. That variable is DERIVED here for
+  # ONE release, so that a scheduler image rolled back alone still finds the
+  # profile-keyed map it reads; a follow-up lane removes it once a release
+  # carrying MODEL-SCHED has applied (docs/design/model-per-step.md §4.2).
+  profile_default_models = {
+    for name, p in local.runner_profiles : name => local.runner_models[p.default_model_class]
+    if p.default_model_class != null
+  }
+
+  # The class map itself, for the services that resolve a step's class to its
+  # pin: the scheduler renders MODEL from it (MODEL-SCHED) and swarm-api fills
+  # TaskCreate.model from it and serves it on /v1/runtimes (MODEL-API). Merged
+  # into both services' environments in service_env below.
+  #
+  # NOT YET READ, BY LANE ORDER: this lane (MODEL-CONTRACT) is order 0 of the
+  # design's build plan, and the scheduler's and swarm-api's readers are the
+  # lanes after it, which hold neither this file nor any other the class map
+  # could be wired from. Until they merge it is configuration nobody reads,
+  # and that is the point of the order (owner decision R4, 2026-10-17: no
+  # enablement flag; lane order alone keeps the classes unreachable).
+  # scripts/lib/check-env-parity.sh's rule 1 reads only the literal
+  # assignments of each service block, so it does not see a merged local and
+  # will not flag that window; once both readers have merged, this can move
+  # inline into both blocks, where it will.
+  model_class_env = {
+    WORKER_CLASS_MODELS = jsonencode(local.runner_models)
   }
 
   backends = ["CLOUD_RUN_JOB", "GKE_AUTOPILOT"]
@@ -460,7 +533,7 @@ locals {
         resource_class  = profile.resource_class
         image           = local.image[profile.image]
         timeout_seconds = profile.timeout_seconds
-        model           = lookup(local.runner_models, profile_name, null)
+        model           = lookup(local.profile_default_models, profile_name, null)
         secret_env = {
           for env_name, provider in profile.secret_env :
           env_name => "swarm-tenant-${tenant_id}-${provider}"
@@ -516,8 +589,10 @@ locals {
         # service URL alone is one its own `aud` check rejects.
         QUOTA_BROKER_AUDIENCE = local.push_audiences["swarm-quota-broker"]
         },
-        # The model the agent CLI runs, from `local.runner_models` -- see why
-        # there. Absent, not empty, on a profile with none: the worker reads an
+        # The model the agent CLI runs when a step names no class: the pin of
+        # the profile's default class (`local.profile_default_models`; see why
+        # at `local.runner_models`). Absent, not empty, on a profile with none:
+        # the worker reads an
         # empty MODEL as "no model", but a Job with no such variable says so.
         { for name, value in { MODEL = job.model } : name => value if value != null },
         # The step-spec verification settings (contract request 34,
@@ -640,7 +715,7 @@ locals {
     # local.settings_mac_env / scheduler_settings_mac_env: the one
     # SETTINGS_MAC_TENANTS cutover list, and the scheduler's
     # SETTINGS_MAC_REQUIRED (settings_mac.tf).
-    "swarm-api" = merge(local.common_env, local.api_refusal_env, local.api_browser_egress_env, local.api_grant_attestation_env, local.settings_mac_env, {
+    "swarm-api" = merge(local.common_env, local.api_refusal_env, local.api_browser_egress_env, local.api_grant_attestation_env, local.settings_mac_env, local.model_class_env, {
       # DISPATCH_TOPIC, not WAKE_TOPIC. Both apps read `DISPATCH_TOPIC`
       # (swarm_api.settings, scheduler.settings); terraform set `WAKE_TOPIC`,
       # which nothing has ever read. swarm_api.deps falls back to NullWaker()
@@ -882,7 +957,7 @@ locals {
       # relay is off, which swarm_api.settings reads as "no relay".
       SWARM_LIVE_URL = local.live_relay_url
     })
-    "swarm-scheduler" = merge(local.common_env, local.spec_worker_env, local.scheduler_browser_egress_env, local.scheduler_typesafe_fwd_env, local.scheduler_settings_mac_env, {
+    "swarm-scheduler" = merge(local.common_env, local.spec_worker_env, local.scheduler_browser_egress_env, local.scheduler_typesafe_fwd_env, local.scheduler_settings_mac_env, local.model_class_env, {
       # local.scheduler_browser_egress_env: the browser egress switch the
       # dispatcher labels and routes a live-browser pod by (egress.tf).
       #
@@ -959,10 +1034,12 @@ locals {
       # digest map removes that failure too: there is no default to fall to.
       WORKER_IMAGE_REFS = jsonencode(local.worker_image_refs)
 
-      # The model each profile's agent runs, for the Jobs this scheduler creates
-      # (tenants this root does not list). The same `local.runner_models` sets
-      # MODEL on this root's own Jobs, so both kinds run one model (#226).
-      WORKER_MODELS = jsonencode(local.runner_models)
+      # The model each profile's agent runs when a step names no class, for
+      # the Jobs this scheduler creates (tenants this root does not list). The
+      # same `local.profile_default_models` sets MODEL on this root's own Jobs,
+      # so both kinds run one model (#226). Derived from the class map for one
+      # release (#1435): see `local.profile_default_models`.
+      WORKER_MODELS = jsonencode(local.profile_default_models)
 
       # Passed THROUGH to each worker by `scheduler.dispatch.worker_env`, which
       # is the single source of a worker's execution environment for both

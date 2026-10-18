@@ -580,6 +580,15 @@ class Task:
     #: signature at format 4 (request 96). None is today's behaviour, and every
     #: document written before it decodes exactly as it did.
     additional_repositories: list[dict[str, Any]] | None = None
+    #: Contract request 102 (#1435): the MODEL_CLASSES name this step asked
+    #: for. None: the profile's default_model_class. Written by swarm-api at
+    #: submission, only when it differs from that default; signed at spec
+    #: format 5 (request 104). Resolved by profiles.step_model_class. A class
+    #: is a name, never a model ID: `model` above is the ID, a record of the
+    #: class's pin at submission. Last in the class, so no positional
+    #: construction of a task changes meaning; every document written before
+    #: it decodes exactly as it did.
+    model_class: str | None = None
 
     def __post_init__(self) -> None:
         # Only the fields of requests 54 and 95: a document decoded before them
@@ -734,6 +743,13 @@ class Attempt:
     cpu_measured_at: datetime | None = None
     cpu_limit_source: str | None = None
 
+    #: Contract request 103 (#1435): the model ID this attempt's agent was
+    #: started with (MODEL), written by the worker at attempt start after its
+    #: generation check. None: no model (mock, generic, browser, worker
+    #: actions) or written before this field existed. At the end of the class
+    #: for the reason given above.
+    model: str | None = None
+
 
 @dataclass
 class TaskEvent:
@@ -839,6 +855,9 @@ class WorkflowStep:
     input_from: dict[str, str] = field(default_factory=dict)
     timeout_seconds: int | None = None
     task_id: str | None = None
+    #: Contract request 102 (#1435): the MODEL_CLASSES name this step asks
+    #: for, carried to its task's `model_class`. None: its profile's default.
+    model_class: str | None = None
 
 
 @dataclass

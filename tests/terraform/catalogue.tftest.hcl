@@ -494,3 +494,54 @@ run "the_terraform_mirror_matches_the_python_catalogue" {
     error_message = "the provider or the secret env-var names in terraform/infra/locals.tf no longer match swarm_common/profiles.py: a Job would be created for a tenant holding no key, or wired to the wrong secret"
   }
 }
+
+# #1435 (contract request B of docs/design/model-per-step.md): each profile's
+# `model_classes` and `default_model_class`, mirrored in local.runner_profiles
+# so the Jobs' MODEL and the scheduler's derived WORKER_MODELS read the default
+# class from the mirror and not from a second table. Hand-written, like the
+# runs at the top of this file: ./catalogue_mirror does not parse these two
+# fields, so the Python-against-Terraform comparison of them is
+# scripts/lib/check-contract-parity.sh (section 17), which imports the frozen
+# catalogue instead of parsing it.
+run "the_mirror_carries_each_profiles_model_classes" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  # Q3: the three claude-code-family profiles accept all four, opus by default.
+  assert {
+    condition = alltrue([
+      for name in ["claude-code", "claude-code-browser", "indexer"] :
+      local.runner_profiles[name].model_classes == ["opus", "fable", "sonnet", "haiku"]
+      && local.runner_profiles[name].default_model_class == "opus"
+    ])
+    error_message = "claude-code, claude-code-browser and indexer must accept opus, fable, sonnet and haiku, opus by default (owner decision Q3, 2026-10-17)"
+  }
+
+  # Retired under contract request 50: it keeps the pin it has and gains nothing.
+  assert {
+    condition     = local.runner_profiles["claude-code-review"].model_classes == ["opus"] && local.runner_profiles["claude-code-review"].default_model_class == "opus"
+    error_message = "claude-code-review must accept opus only, by default"
+  }
+
+  # Every other profile starts no Claude model: no classes, no default. The
+  # count is the control that this statement is about seven profiles.
+  assert {
+    condition = length([
+      for name, p in local.runner_profiles : name
+      if length(p.model_classes) == 0 && p.default_model_class == null
+    ]) == 7
+    error_message = "mock, generic, codex, browser, merge, post-verdict and await-input must carry no model class and no default"
+  }
+
+  # A default is always one of the profile's own classes.
+  assert {
+    condition = alltrue([
+      for name, p in local.runner_profiles :
+      p.default_model_class == null ? length(p.model_classes) == 0 : contains(p.model_classes, p.default_model_class)
+    ])
+    error_message = "a profile's default_model_class must be one of its own model_classes, and a profile with classes must name a default"
+  }
+}
