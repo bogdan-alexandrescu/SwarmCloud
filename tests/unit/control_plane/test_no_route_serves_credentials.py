@@ -28,11 +28,15 @@ THREE SENTINELS, three different claims:
     since the PR #229 review not through `last_error` or `result_summary`
     either: both are masked by the input's masker, with their counts.
 
-ONE CARVE-OUT, NAMED (owner decision Q2, docs/design/workspace-secrets.md
+TWO CARVE-OUTS, NAMED. Owner decision Q2 (docs/design/workspace-secrets.md
 §10): `POST /v1/attempts/{attempt_id}/secrets:release` hands an attempt its
 granted workspace secrets, signed by its worker's attempt key and fenced by its
-generation. It is outside the GET sweep because it is a POST, and that is a
-reason to name it rather than to rely on the sweep missing it. So the last
+generation. Owner decision Q9 of #1433 (docs/design/registered-mcp-servers.md
+§4.6): `POST /v1/attempts/{attempt_id}/mcp:attach` hands an attempt its
+registered MCP servers' credentials, signed under its own purpose, fenced and
+once, through the same reader. Both are outside the GET sweep because they
+are POSTs, and that is a reason to name them rather than to rely on the sweep
+missing them. So the last
 tests below find every mounted route that can read a workspace secret's value
 (it depends on `attempts_secrets.secret_reader`, the one place a reader is
 made) and every module that reads any Secret Manager payload, and require each
@@ -418,12 +422,16 @@ def test_no_response_carries_a_key_named_like_a_secret(leaky):
 
 
 # --------------------------------------------------------------------------
-# The one carve-out (owner decision Q2): the workspace secrets release
+# The two carve-outs (owner decisions Q2 of #1347 and Q9 of #1433)
 # --------------------------------------------------------------------------
 
-#: Every route that may serve credential material, by (method, path). ONE,
-#: and only by an owner's decision: docs/design/workspace-secrets.md §10 Q2.
-CREDENTIAL_SERVING_ROUTES = {("POST", "/v1/attempts/{attempt_id}/secrets:release")}
+#: Every route that may serve credential material, by (method, path). Each
+#: only by an owner's decision: docs/design/workspace-secrets.md §10 Q2 for
+#: the release, docs/design/registered-mcp-servers.md §7 Q9 for the MCP attach.
+CREDENTIAL_SERVING_ROUTES = {
+    ("POST", "/v1/attempts/{attempt_id}/secrets:release"),
+    ("POST", "/v1/attempts/{attempt_id}/mcp:attach"),
+}
 
 #: Every module that reads a Secret Manager PAYLOAD, and what it does with it.
 #: Only the release's serves one; the others use the value inside swarm-api.
@@ -463,7 +471,7 @@ def _depends_on(dependant: Any, target: Any) -> bool:
     return False
 
 
-def test_exactly_one_route_can_read_a_workspace_secrets_value():
+def test_only_the_named_routes_can_read_a_workspace_secrets_value():
     from swarm_api.main import create_app
     from swarm_api.routes import attempts_secrets
 
@@ -490,8 +498,9 @@ def test_exactly_one_route_can_read_a_workspace_secrets_value():
     }
     assert len(routes) > 100, f"the walk reached only {len(routes)} routes"
     assert serving == CREDENTIAL_SERVING_ROUTES, (
-        f"routes that can read a workspace secret's value: {sorted(serving)}. Exactly one "
-        "may, by the owner's decision Q2; a second needs its own decision, named here."
+        f"routes that can read a workspace secret's value: {sorted(serving)}. Only the "
+        "release (owner decision Q2 of #1347) and the MCP attach (Q9 of #1433) may; "
+        "another needs its own decision, named here."
     )
 
 

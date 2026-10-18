@@ -9,7 +9,7 @@ import {
   verdictCopy,
   verdictNeedsAPerson,
 } from './Blockers'
-import { DispatchChoice, DispatchFacts, REPOSITORY_SCHEMES, repositorySchemeRefused, type DispatchDraft } from './Dispatch'
+import { DispatchChoice, DispatchFacts, REPOSITORY_SCHEMES, refusedSayId, repositorySchemeRefused, type DispatchDraft } from './Dispatch'
 import { WorkspaceRefusalBanner, workspaceRefusal } from './WorkspaceRefusal'
 import { apiHeaders, chosenTenant, classifyFailure, dropRefusedTenant, isPaused, type ApiError } from './fetch'
 import { HELP } from './help'
@@ -95,8 +95,10 @@ type Field = (typeof FIELDS)[number]
 type Outcome =
   | { kind: 'idle' | 'sending' }
   | { kind: 'created'; task: Task; woke: boolean }
-  /** A 422, on the field that caused it. Never a page-level error. */
-  | { kind: 'refused'; fields: Partial<Record<Field, string>>; unattributed: string | null }
+  /** A 422, on the field that caused it. Never a page-level error. `sent`
+   *  tells the API's refusal from this form's own "Not sent": only the first
+   *  went anywhere, and only the first is refused again by the same click. */
+  | { kind: 'refused'; sent: boolean; fields: Partial<Record<Field, string>>; unattributed: string | null }
   | { kind: 'failed'; error: ApiError }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -144,7 +146,7 @@ export async function postTask(body: Record<string, unknown>): Promise<Outcome> 
     // `=== true`, not `?? false`: only an explicit true means it was woken.
     return { kind: 'created', task, woke: env.scheduler_woken === true }
   }
-  if (res.status === 422) return { kind: 'refused', ...attribute(env, message) }
+  if (res.status === 422) return { kind: 'refused', sent: true, ...attribute(env, message) }
 
   // THE ONE CLASSIFIER (fetch.ts `classifyFailure`). This used to restate a
   // piece of it and map every 503 to upstream_degraded, so a submit refused
@@ -931,14 +933,23 @@ export function Move({ n, title, aside, dim = false, children }: {
  * screen at the place the click was made. `at` is the outcome itself: a new
  * one is brought into view once -- on a phone the panel can sit at a scroll's
  * end -- and typing into the form afterwards does not scroll anything.
+ *
+ * AND THE KEYBOARD GOES WITH IT (VQA V255): the click that caused it left
+ * focus on a button that is now disabled or replaced, so it fell to `<body>`
+ * and the next Tab started at the top of the page. The slot takes focus
+ * (`tabIndex={-1}`: reachable by script, not a stop of its own), so the next
+ * Tab is the outcome's own link or button. `preventScroll`: the scroll above
+ * already chose the nearest edge.
  */
 export function OutcomeSlot({ at, shown, children }: { at: unknown; shown: boolean; children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    if (shown) ref.current?.scrollIntoView?.({ block: 'nearest' })
+    if (!shown) return
+    ref.current?.scrollIntoView?.({ block: 'nearest' })
+    ref.current?.focus({ preventScroll: true })
   }, [at, shown])
   if (!shown) return null
-  return <div ref={ref} className="sbf-outcome">{children}</div>
+  return <div ref={ref} className="sbf-outcome" tabIndex={-1}>{children}</div>
 }
 
 /** The task form's field-id prefix: the editor and the panel's buttons share it. */
@@ -1046,6 +1057,11 @@ function Form({ capacity }: { capacity: Capacity }) {
   const draftKey = JSON.stringify([chosen, built.ok ? built.input : null, dispatch.strategy, dispatch.carrier, repo])
   const [sentKey, setSentKey] = useState<string | null>(null)
   const justSent = outcome.kind === 'created' && sentKey === draftKey
+  // AND A 422 IS NOT "READY TO SEND" (VQA V002): the panel said so over a live
+  // button after the API had refused exactly what the form still held, and the
+  // same click would be refused the same way. Held until any edit.
+  const [refusedKey, setRefusedKey] = useState<string | null>(null)
+  const refusedAsIs = outcome.kind === 'refused' && outcome.sent && refusedKey === draftKey
   const inFlight = useRef(false)
   // "Submit another" starts a blank form: the task just created is one click
   // away from its own card until then.
@@ -1056,6 +1072,7 @@ function Form({ capacity }: { capacity: Capacity }) {
     setDispatch({ strategy: DEFAULT_STRATEGY, carrier: DEFAULT_CARRIER, repositoryUrl: '' })
     setOutcome({ kind: 'idle' })
     setSentKey(null)
+    setRefusedKey(null)
     setRestarted((n) => n + 1)
   }
   // AND THE KEYBOARD STARTS AGAIN AT THE TOP (live QA SUB-16): the button
@@ -1072,6 +1089,21 @@ function Form({ capacity }: { capacity: Capacity }) {
     const f = fields.find((x) => x.name.trim() === key)
     if (f) document.getElementById(inputFieldId(TASK_FIELDS, f.key))?.focus()
   }
+  // The refusal card's way to the field a 422 named (VQA V002): its control
+  // where it has one that takes focus, else the sentence printed under it --
+  // the carrier's select is disabled, and an input with no setting yet has
+  // no field to land in.
+  const toRefused = (f: Field) => {
+    const form = formRef.current
+    const control =
+      f === 'runner_profile' ? form?.querySelector<HTMLElement>('input[name="runner-profile"]:checked')
+        ?? form?.querySelector<HTMLElement>('input[name="runner-profile"]:not(:disabled)')
+      : f === 'input' ? (fields[0] === undefined ? null : document.getElementById(inputFieldId(TASK_FIELDS, fields[0].key)))
+      : f === 'strategy' ? form?.querySelector<HTMLElement>('input[name="dispatch-strategy"]:checked')
+      : f === 'repository_url' ? document.getElementById('dsp-repo')
+      : null
+    ;(control ?? document.getElementById(refusedSayId(f)))?.focus()
+  }
 
   async function submit(e?: FormEvent) {
     e?.preventDefault()
@@ -1081,35 +1113,35 @@ function Form({ capacity }: { capacity: Capacity }) {
     // still an implicit submission, and it posted the same task again. The
     // guard is here, not on the button: a request in flight, or the one that
     // was just created and is still what the form says, is never sent twice.
-    if (inFlight.current || outcome.kind === 'sending' || justSent) return
+    if (inFlight.current || outcome.kind === 'sending' || justSent || refusedAsIs) return
     // The button is disabled with no runner; this holds the same rule for any
     // other way a form can be submitted, so nothing is posted without a name.
     if (chosen === '') {
-      setOutcome({ kind: 'refused', fields: { runner_profile: 'Not sent — no runner chosen.' }, unattributed: null })
+      setOutcome({ kind: 'refused', sent: false, fields: { runner_profile: 'Not sent — no runner chosen.' }, unattributed: null })
       return
     }
     if (!built.ok) {
       // Labelled "not sent": a refusal phrased like the API's sends someone
       // looking at the platform for a typo that is in this form.
-      setOutcome({ kind: 'refused', fields: { input: `Not sent — ${built.message}.` }, unattributed: null })
+      setOutcome({ kind: 'refused', sent: false, fields: { input: `Not sent — ${built.message}.` }, unattributed: null })
       return
     }
     if (missing.length > 0) {
       // A CLICK'S RESULT, so it is the one place "Not sent" belongs (TS-15).
       // The keys as the API named them, without its `input.` prefix or its
       // "as a non-empty string".
-      setOutcome({ kind: 'refused', unattributed: null, fields: { input:
+      setOutcome({ kind: 'refused', sent: false, unattributed: null, fields: { input:
         `Not sent — ${chosen} will not start without ${missing.join(', ')}.` } })
       return
     }
     // The button is off for both; this keeps them for Enter as well.
     if (badRepo) {
-      setOutcome({ kind: 'refused', unattributed: null, fields: { repository_url:
+      setOutcome({ kind: 'refused', sent: false, unattributed: null, fields: { repository_url:
         `Not sent — the API accepts only a URL starting with ${REPOSITORY_SCHEMES.join(', ')}.` } })
       return
     }
     if (tooBig !== null) {
-      setOutcome({ kind: 'refused', unattributed: null, fields: { input: `Not sent — ${tooBig}.` } })
+      setOutcome({ kind: 'refused', sent: false, unattributed: null, fields: { input: `Not sent — ${tooBig}.` } })
       return
     }
     setOutcome({ kind: 'sending' })
@@ -1133,6 +1165,7 @@ function Form({ capacity }: { capacity: Capacity }) {
       })
     inFlight.current = false
     if (result.kind === 'created') setSentKey(sending)
+    if (result.kind === 'refused') setRefusedKey(sending)
     setOutcome(result)
   }
 
@@ -1154,7 +1187,7 @@ function Form({ capacity }: { capacity: Capacity }) {
               control both Submit forms draw. */}
           <RunnerPicker group="runner-profile" label="runner" profiles={catalogue} chosen={chosen}
             keys={keys} onPick={pick} />
-          {bad.runner_profile && <p className="warn-text" role="alert">{bad.runner_profile}</p>}
+          {bad.runner_profile && <p id={refusedSayId('runner_profile')} tabIndex={-1} className="warn-text" role="alert">{bad.runner_profile}</p>}
           {profile && <ProfileFacts name={chosen} profile={profile} pools={capacity.pools} />}
         </Move>
 
@@ -1175,7 +1208,7 @@ function Form({ capacity }: { capacity: Capacity }) {
               <InputFields profile={chosen} fields={fields} required={required} onChange={setFields} idPrefix={TASK_FIELDS} />
             </>
           )}
-          {bad.input && <p className="warn-text" role="alert">{bad.input}</p>}
+          {bad.input && <p id={refusedSayId('input')} tabIndex={-1} className="warn-text" role="alert">{bad.input}</p>}
         </Move>
 
         {/* `steps={1}`: a standalone task IS one step, and that is the number the
@@ -1205,7 +1238,7 @@ function Form({ capacity }: { capacity: Capacity }) {
               heading said `Ready to send` over a greyed-out button with no
               runner chosen and an empty prompt -- the panel's title and its
               only control disagreeing about the one thing the panel is for. */}
-          <h2>{justSent ? 'Sent' : blocked ? 'Not ready to send' : 'Ready to send'}</h2>
+          <h2>{justSent ? 'Sent' : refusedAsIs ? 'Refused' : blocked ? 'Not ready to send' : 'Ready to send'}</h2>
           <ul className="ctl-facts">
             <li className={chosen === '' ? 'ctl-fact is-absent' : 'ctl-fact'}>
               <b>runner</b>
@@ -1291,19 +1324,22 @@ function Form({ capacity }: { capacity: Capacity }) {
           {justSent ? (
             <Button key="another" type="button" kind="primary" full onClick={another}>Submit another</Button>
           ) : (
-            <Button key="submit" type="submit" kind="primary" full disabled={outcome.kind === 'sending' || blocked}>
+            <Button key="submit" type="submit" kind="primary" full disabled={outcome.kind === 'sending' || blocked || refusedAsIs}>
               {outcome.kind === 'sending' ? 'Submitting…' : submitAs === null ? 'Submit one task' : `Submit as ${submitAs}`}
             </Button>
           )}
           <p className="sb-note">Nothing runs until the scheduler admits it into every pool it needs.</p>
-          {outcome.kind === 'refused' && outcome.unattributed && (
-            <p className="warn-text" role="alert">The API refused this and did not say which field: {outcome.unattributed}</p>
-          )}
           {/* THE OUTCOME IS DRAWN BESIDE THE BUTTON THAT CAUSED IT (VQA V002,
               owner decision Q1 on #1038), as the issue form draws it. It was
               at the top of the build column, ~1,400px above the button at
-              400px, so a failed write looked like nothing had happened. */}
-          <OutcomeSlot at={outcome} shown={outcome.kind === 'created' || outcome.kind === 'failed'}>
+              400px, so a failed write looked like nothing had happened.
+              A REFUSAL TOO (VQA2 V002): a 422 naming a field was drawn only
+              under that field, ~1,000px above the button at 400, and one
+              naming none under the note, outside this slot. The field keeps
+              its sentence; this card says the click was refused, and names
+              each field with a way to it. */}
+          <OutcomeSlot at={outcome} shown={outcome.kind === 'created' || outcome.kind === 'failed' || outcome.kind === 'refused'}>
+            {outcome.kind === 'refused' && <Refused outcome={outcome} onField={toRefused} />}
             {outcome.kind === 'created' && <Created task={outcome.task} woke={outcome.woke} />}
             {/* The submission gate's refusal (#847): why, in the API's words, and the
                 setup step that fixes it. It is the one failure that proves nothing
@@ -1450,6 +1486,43 @@ export function ProfileFacts({ name, profile, pools }: { name: string; profile: 
       {room.missing.length > 0 && (
         <p className="muted small">Not in the response, so not counted: {room.missing.join(', ')}.</p>
       )}
+    </div>
+  )
+}
+
+/** What the panel calls each field a refusal can name: its facts' own keys. */
+const FIELD_WORD: Record<Field, string> = {
+  runner_profile: 'runner', input: 'input', strategy: 'result', carrier: 'carrier', repository_url: 'repository',
+}
+
+/**
+ * A REFUSED CLICK, IN THE SEND PANEL (VQA V002). The API's 422 or this form's
+ * own "Not sent": what was refused, each named field a button to the field
+ * (where its sentence stays), and the invariant -- nothing was created.
+ */
+function Refused({ outcome, onField }: {
+  outcome: Extract<Outcome, { kind: 'refused' }>
+  onField: (f: Field) => void
+}) {
+  const named = FIELDS.filter((f) => outcome.fields[f] !== undefined)
+  return (
+    // `alert`, as the field's own sentence is: a refusal, not a record of something made.
+    <div className="state failed" role="alert">
+      <h3>{outcome.sent ? 'The API refused this task' : 'Not sent'}</h3>
+      {outcome.unattributed !== null && <p>It did not say which field: {outcome.unattributed}</p>}
+      {named.length > 0 && (
+        <ul className="sbf-refused">
+          {named.map((f) => (
+            <li key={f}>
+              <button type="button" className="c-link is-sm" onClick={() => onField(f)}>{FIELD_WORD[f]}</button>
+              {' — '}
+              {/* The field's own sentence opens "Not sent —"; the heading says it here. */}
+              {outcome.fields[f]!.replace(/^Not sent — /, '')}
+            </li>
+          ))}
+        </ul>
+      )}
+      <p>{outcome.sent ? 'Nothing was created. Change what it names and submit again.' : 'Nothing was sent, so nothing was created.'}</p>
     </div>
   )
 }

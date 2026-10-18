@@ -192,6 +192,24 @@
   overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
 }
 .ctl-toolbar > .hold-tenants > button { flex: none; }
+/* ABOVE A PHONE IT WRAPS INSTEAD (visual QA V179, 2026-10-16). Held to one
+   row at 1440, 12 tenants made a 1,551px control in a 1,046px box: the last
+   showed only as a cut segment, its scrollbar hidden, and a vertical-wheel
+   mouse could not reach them at all. The segments now take as many rows as
+   they need inside the one box; the hairline between segments is a shadow
+   on each segment's right and foot, so the rows are ruled from each other
+   and the last row's foot falls on the box's own edge. A phone keeps
+   the one scrolling row (V006): it swipes, and six rows of tenants would
+   push the table off the screen. */
+@media (min-width: 561px) {
+  .ctl-toolbar > .hold-tenants {
+    flex-wrap: wrap; height: auto; overflow-x: hidden; overflow-y: hidden;
+  }
+  .ctl-toolbar > .hold-tenants > button {
+    min-height: var(--h-ctl);
+    border-right: 0; box-shadow: 1px 0 0 var(--line), 0 1px 0 var(--line);
+  }
+}
 .hold-callout {
   display: flex;
   gap: 10px;
@@ -224,14 +242,24 @@
    pushed past the card's edge; the pool name is the one long value, and it
    ellipsizes with its whole name in its title. */
 .quota-table > table { table-layout: fixed; width: 100%; }
-.quota-table col.quota-c-tenant { width: 11%; }
-.quota-table col.quota-c-state { width: 15%; }
-.quota-table col.quota-c-cap { width: 14%; }
-.quota-table col.quota-c-feeds { width: 17%; }
-.quota-table col.quota-c-left { width: 11%; }
-.quota-table col.quota-c-429s { width: 13%; }
-.quota-table col.quota-c-last { width: 9%; }
-.quota-table col.quota-c-rep { width: 10%; }
+/* THE WIDTHS FOLLOW WHAT EACH COLUMN HOLDS (visual QA V005, V013, V156,
+   2026-10-16). Tenant had 11% -- `cu… tomation`, no tenant recognisable --
+   while State and Quota cap had room to spare, and Last 429 was too narrow
+   for `time not recorded` on one line. Measured at 1440 with the nav open
+   (a ~1054px table): Quota cap's nowrap head is ~110px, `available · 14m
+   old` ~150px and `throttled` with its age ~165px, `9 (at last report)`
+   ~120px, `time not recorded` 112px as a pill (its outline and padding;
+   rendered, 11% gave it 96px inside the cell's gutters and clipped its right
+   border), `17m ago` ~70px. Feeds pool gives up the 2% Last 429 needs: its
+   name is cut in the middle (V020) and keeps the tenant's last eight. */
+.quota-table col.quota-c-tenant { width: 16%; }
+.quota-table col.quota-c-state { width: 16%; }
+.quota-table col.quota-c-cap { width: 11%; }
+.quota-table col.quota-c-feeds { width: 15%; }
+.quota-table col.quota-c-left { width: 10%; }
+.quota-table col.quota-c-429s { width: 12%; }
+.quota-table col.quota-c-last { width: 13%; }
+.quota-table col.quota-c-rep { width: 7%; }
 .quota-table thead th { white-space: normal; }
 .quota-feeds a {
   display: block;
@@ -242,7 +270,7 @@
 /* CUT IN THE MIDDLE (visual QA V005, V020; QuotaDetail.tsx `MiddleCut`): the
    head of an id shrinks first and the tail -- the pool's `tenant:<id>`, a
    tenant's last eight -- is kept, the `.cap-sub` pattern. The tenant row
-   head clips inside its 11% column instead of printing over State. */
+   head clips inside its column instead of printing over State. */
 .quota-cut { display: flex; min-width: 0; max-width: 100%; overflow: hidden; white-space: nowrap; }
 /* The head's box ends where its ellipsis does (`text-align: end`): cut at a
    glyph boundary it is up to one character wider than what it prints, and
@@ -250,18 +278,40 @@
    at all until it alone is wider than the column (`max-width`). */
 .quota-cut > .quota-cut-head { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; text-align: end; }
 .quota-cut > .quota-cut-tail { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+/* A TAIL WIDER THAN THE COLUMN GIVES WAY IN ITS MIDDLE (V020, 2026-10-16):
+   `tenant:customer-succ…tomation`, never `tenant:customer-succes…`. The id's
+   last eight never shrink; the head is gone by then, down to its `…`. */
+.quota-cut > .quota-cut-tail.is-split { display: flex; min-width: 0; }
+.quota-cut-tail.is-split > .quota-cut-mid { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+.quota-cut-tail.is-split > .quota-cut-end { flex: none; white-space: pre; }
+/* THE FEEDS POOL IS ONE LINK WITH ONE UNDERLINE (V020). Underlined per
+   fragment, the head and the tail read as two links with a gap that changed
+   row to row. The line is the cut box's edge, as wide as the name drawn;
+   the head keeps its END (`…anthropic:`) by ellipsizing at its start, so no
+   slack falls between the halves. The inner span keeps the id's own order. */
+.quota-feeds a.ctl-link { text-decoration: none; }
+.quota-feeds a > .quota-cut { display: inline-flex; vertical-align: top; border-bottom: 1px solid currentColor; }
+.quota-feeds .quota-cut > .quota-cut-head { direction: rtl; text-align: start; min-width: 1em; }
+.quota-feeds .quota-cut > .quota-cut-head > span { direction: ltr; unicode-bidi: isolate; }
+.quota-feeds .quota-cut > .quota-cut-tail { max-width: calc(100% - 1em); }
 .quota-table tbody th.quota-tenant { overflow: hidden; }
-/* "TIME NOT RECORDED" WRAPS IN ITS COLUMN (visual QA V013): one line, it was
-   27px wider than Last 429's 9% and printed over Reported. The mark keeps its
-   words and its outline and takes two lines; the cell clips as a backstop. */
-.quota-table td[data-label='Last 429'] { white-space: normal; overflow: hidden; }
-.quota-table td[data-label='Last 429'] > .ctl-mark { white-space: normal; }
+/* "TIME NOT RECORDED" HOLDS ONE LINE (visual QA V013, 2026-10-16). In 9% it
+   printed over Reported; wrapped, it made its row ~12px taller than the rest.
+   The column is now as wide as the mark (above), which stays one line; the
+   cell clips as a backstop. */
+.quota-table td[data-label='Last 429'] { white-space: nowrap; overflow: hidden; }
+.quota-table td[data-label='Last 429'] > .ctl-mark { white-space: nowrap; }
 /* The fed pool's ceiling, under its name (G5-02). The ` · ` is for text and
    screen readers; the line break already separates the two on screen. */
 .quota-ceiling { display: block; font-size: var(--t-meta); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .quota-ceiling .quota-sep { display: none; }
-/* `(at last report)` on a stale document's 429 count (G5-03). */
-.quota-basis { font-size: var(--t-meta); color: var(--text-dim); }
+/* `(at last report)` on a stale document's 429 count (G5-03), in the text
+   face (V156): in the figures' mono `9 (at last report)` was wider than its
+   column and printed into Last 429. */
+.quota-basis { font-family: var(--font); font-size: var(--t-meta); color: var(--text-dim); }
+/* A cell of several parts is ONE element (V180), so a phone record keeps
+   the state and its age, or a count and its basis, on one value line. */
+.quota-val { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; max-width: 100%; }
 .quota-state { display: inline-flex; align-items: center; gap: 7px; font-size: var(--t-micro); color: var(--text); }
 @media (max-width: 899px) {
   .quota-table > table { table-layout: auto; width: max-content; min-width: 100%; }
@@ -299,9 +349,12 @@
 .acct-link:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 2px; }
 
 .acct-split {
-  display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; align-items: stretch;
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; align-items: start;
   border: 1px solid var(--line); border-radius: 10px;
-  background: var(--surface); overflow: hidden;
+  /* `clip`, NOT `hidden` (visual QA V157): `hidden` made the card a scroll
+     container, and a sticky pane sticks to its nearest one -- the card, which
+     never scrolls -- instead of the page. The corners clip the same. */
+  background: var(--surface); overflow: clip;
 }
 @media (min-width: 901px) {
   .acct-split { grid-template-columns: minmax(0, 380px) minmax(0, 1fr); min-height: 560px; }
@@ -312,8 +365,22 @@
   display: flex; flex-direction: column; min-width: 0;
   margin: 0; padding: 0; border: 0; border-radius: 0; background: none;
 }
+/* EACH HALF IS AS TALL AS WHAT IT HOLDS (visual QA V068, V157; 2026-10-16).
+   Stretched to the taller half, the list ran ~320px of empty rows under its
+   last account -- ~1,300px with the Add form open -- and with 40 accounts the
+   pane drew its detail at the top of a 3,000px column, ~1,600px above the row
+   just chosen, so the click looked like it did nothing. Now neither half
+   stretches; the divider is both halves' edge (the pane overlaps the list's
+   by 1px), so it runs as far as the longer one. On a desktop the pane sticks
+   under the page head while the list scrolls past, and a detail taller than
+   the window scrolls inside it -- the chosen account is always in view. */
 @media (min-width: 901px) {
   .acct-split > .acct-list { border-right: 1px solid var(--line); }
+  .acct-split > .acct-pane {
+    position: sticky; top: 0; max-height: calc(100vh - 48px); overflow-y: auto;
+    overscroll-behavior: contain;
+    margin-left: -1px; border-left: 1px solid var(--line);
+  }
 }
 .acct-list-head {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
@@ -465,6 +532,54 @@
 .section > .acct-action { margin-top: 16px; }
 .acct-action > .acct-action { margin-top: 8px; }
 
+/* AN ID'S CONTAINERS GIVE IT A WIDTH TO BE CUT AT (visual QA V153, V154,
+   V155, V184; 2026-10-16). `.acct-id` never breaks (V070) and is cut at
+   `max-width: 100%` -- of a box that grew to fit it: the detail and every
+   panel in it are grids whose one implicit column is as wide as its widest
+   word. A 39-character label widened the pane past its card at 400 (the
+   tiles went to three columns, Clears cut, the card's right edge gone),
+   Lending's `serves` list and Holding now's tenant list ran off the card,
+   and the same `width: 100%` field was 309px in a re-auth and 420px in Add
+   account. One column, as wide as the pane, and the facts that hold ids
+   shrink to it. */
+.acct-split .acct-detail,
+.acct-split .acct-action { grid-template-columns: minmax(0, 1fr); }
+/* `justify-items: start` sizes a panel's children to their content, and an
+   unbreakable id makes that wider than the column; capped at it. */
+.acct-split .acct-action > *,
+.acct-split .acct-add-form > * { max-width: min(620px, 100%); }
+/* THE PASTE FIELD IS ONE WIDTH WHEREVER THE SIGN-IN RUNS (V184): a re-auth's
+   steps are a panel inside a panel, and `justify-items: start` shrank the
+   inner one -- and the `width: 100%` field in it -- to 309px, where Add
+   account's is 420px. The inner panel takes the outer's width; every wide
+   field is `.acct-wide`'s 420px at most. */
+.acct-split .acct-action > .acct-action { justify-self: stretch; }
+.acct-split .acct-action > input.acct-wide,
+.acct-split .acct-add-form > input.acct-wide { max-width: min(420px, 100%); }
+/* styles.css's `.muted.small` measure loads later at the same weight. */
+.acct-split .acct-action > p.muted.small { max-width: min(var(--measure), 100%); }
+/* `remove <label>` is one line while it fits; a label too long for the
+   pane takes a second line rather than pushing the button off the card. */
+.acct-split .acct-action > .limit-edit > .c-btn {
+  max-width: 100%; height: auto; min-height: var(--h-ctl); padding-block: 4px;
+  white-space: normal; overflow-wrap: anywhere;
+}
+.acct-split .acct-action .ctl-fact { max-width: 100%; }
+.acct-split .acct-action .ctl-fact > .acct-ids { min-width: 0; }
+.acct-holder-tenants > li { max-width: 100%; }
+/* THE TENANT IN A HOLDER CELL IS CUT IN ITS MIDDLE (V155): end-cut, the
+   phone's Agent cell kept `data-platform-in…`, the part every team's ids
+   share. Its last eight stay, as a task reference's do; whole in the title. */
+.acct-cut { display: inline-flex; min-width: 0; max-width: 100%; overflow: hidden; white-space: nowrap; }
+.acct-cut > .acct-cut-head { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+.acct-cut > .acct-cut-tail { flex: none; white-space: pre; }
+@media (max-width: 560px) {
+  /* THE FIELD TAKES ITS OWN LINE ON A PHONE (V154, V181): beside `save
+     lending` it was ~230px, its placeholder cut mid-word and the button
+     clipped at the card's edge. */
+  .acct-split .acct-action > .limit-edit > input.acct-wide { flex: 1 1 100%; max-width: none; }
+}
+
 /* The phone: the list is the page; a chosen account is a page (frame 10). An
    add form that is open shows under the list, so the list keeps its button. */
 @media (max-width: 560px) {
@@ -494,10 +609,15 @@
 .acct-hist th[data-col='since'] { width: 120px; }
 /* A phone keeps the Holder readable: tighter figures, and the When bar --
    a picture of the times beside it -- is not drawn. */
+/* THE FIGURES AS WIDE AS THEIR LONGEST VALUE (visual QA V004, 2026-10-16):
+   at 400 Holder kept ~100px and cut the already middle-cut `task_…12e9…`
+   again while Held and Ended had room to spare. Started is `MM-DD HH:MM`,
+   Held `23h 59m`, Ended `unusable` -- each at the 13px scale plus the cell's
+   10px gutter -- and Holder takes the ~20px they gave back. */
 @media (max-width: 699px) {
-  .acct-hist th[data-col='started'] { width: 88px; }
-  .acct-hist th[data-col='held'] { width: 64px; }
-  .acct-hist th[data-col='ended'] { width: 80px; }
+  .acct-hist th[data-col='started'] { width: 84px; }
+  .acct-hist th[data-col='held'] { width: 62px; }
+  .acct-hist th[data-col='ended'] { width: 64px; }
   .acct-hist th[data-col='when'],
   .acct-hist td.acct-hist-when { display: none; }
 }

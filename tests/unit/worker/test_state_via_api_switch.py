@@ -23,7 +23,8 @@ import pytest
 import agent_worker.__main__ as entrypoint
 from agent_worker.config import WorkerConfig
 from agent_worker.control import ControlPlane, RemoteControlPlane
-from agent_worker.errors import ConfigError, ControlPlaneError, ExitCode
+from agent_worker.errors import ConfigError, ExitCode
+from agent_worker.statecall import StateCall
 from swarm_common.config import Settings
 
 from fakes import FakeFirestore
@@ -124,9 +125,11 @@ def test_on_builds_no_firestore_client_at_all(worker_env, monkeypatch, clients):
     assert clients == []
     assert isinstance(worker.control, RemoteControlPlane)
     assert not worker.control.opened  # nothing is called until the lifecycle's gate
-    assert worker.db is entrypoint.NO_DIRECT_FIRESTORE
-    with pytest.raises(ControlPlaneError):
-        worker.db.collection("workspace_settings")
+    # The property, not a shape: every module that took the Firestore client
+    # is handed this attempt's own state client, the one the control plane
+    # calls through, which has no Firestore surface to reach a document by.
+    assert isinstance(worker.db, StateCall) and worker.db is worker.control._calls
+    assert not hasattr(worker.db, "collection")
     # The child path signs with the key state/open registers, over one transport.
     assert worker.children._api is worker.control._calls._api
     assert NONCE not in repr(worker.db) and NONCE not in repr(config)
