@@ -64,7 +64,13 @@ PENDING_STATES: frozenset[TaskState] = frozenset(
 
 _ALLOWED: dict[TaskState, frozenset[TaskState]] = {
     TaskState.SUBMITTED: frozenset({TaskState.QUEUED, TaskState.CANCELLED}),
-    TaskState.QUEUED: frozenset({TaskState.READY, TaskState.PARKED, TaskState.CANCELLED}),
+    # QUEUED -> FAILED: a task that can never run ends at admission with no
+    # lease, as registered-mcp-servers.md §4.10 says of a per-run MCP
+    # credential that expired in the queue (contract request 98, accepted by
+    # the owner 2026-10-18). It held nothing, so there is nothing to release.
+    TaskState.QUEUED: frozenset(
+        {TaskState.READY, TaskState.PARKED, TaskState.CANCELLED, TaskState.FAILED}
+    ),
     # PARKED -> SUCCEEDED: a step the control plane finishes without a worker
     # (#748, contract request 52). It held no lease, so there is nothing to
     # release; only swarm-api writes it, guarded on its own claim.

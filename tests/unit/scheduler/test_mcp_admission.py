@@ -50,7 +50,7 @@ from control_plane.fakes import FakeFirestore  # noqa: E402
 
 from swarm_common.models import Lease, Task, Tenant  # noqa: E402
 from swarm_common.profiles import RUNNER_PROFILES  # noqa: E402
-from swarm_common.states import TaskState  # noqa: E402
+from swarm_common.states import TaskState, can_transition  # noqa: E402
 
 from scheduler import dispatch as dispatch_mod  # noqa: E402
 from scheduler import loop as loop_mod  # noqa: E402
@@ -352,14 +352,16 @@ def test_another_tenants_row_is_no_credential(db, make_scheduler, dispatcher):
     ],
 )
 def test_an_expired_credential_is_never_leased(db, make_scheduler, dispatcher, why, row):
-    """§4.10 and the brief say FAILED with no lease. The frozen state machine
-    has no QUEUED/READY -> FAILED edge and admission's park is `loop.py`'s,
-    outside this lane, so what holds today is pinned exactly: PARKED
-    CREDENTIAL_MISSING with the terminal code, no lease, and the same state
-    after every later drain. Which terminal state it should end in
-    (DEAD_LETTERED via `loop.py`, or FAILED via a contract change) is the
-    owner's question in the MCP-SCHED pull request; this test changes with
-    that answer."""
+    """§4.10 says FAILED with no lease, and the owner chose FAILED over a
+    dead-letter (2026-10-18). Contract request 98 added QUEUED -> FAILED, but
+    admission reads this task READY and the sweep reads it PARKED, and neither
+    may reach FAILED (request 99 asks for both edges). So what holds today is
+    pinned exactly: PARKED CREDENTIAL_MISSING with the terminal code, no lease,
+    no reservation, and the same state after every later drain. The first two
+    assertions are the tripwire: the day either edge exists, this test goes
+    red and admission must fail the task instead."""
+    assert not can_transition(TaskState.READY, TaskState.FAILED)
+    assert not can_transition(TaskState.PARKED, TaskState.FAILED)
     world(db)
     register(db)
     if row is not None:
