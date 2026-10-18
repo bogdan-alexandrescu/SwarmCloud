@@ -32,6 +32,12 @@ NOTHING HERE CREATES DEMAND (invariants 1-3). A decision moves a document:
 a firing gains its `run_approval`, a run its `merge_approved`, a plan its
 approval -- whose workflow `_approve` submits through `SubmissionService`,
 QUEUED until admission leases it, exactly as an approval in Work › Runs.
+
+NAMES BESIDE EMAILS (docs/design/user-profile.md §4.4). Each item served
+gains `decided_by_name` beside `decided_by` and `approver_names` beside
+`approvers` (index for index when `approvers` is a list of members, null when
+it is a rule such as `members`), from one lookup per response
+(`people.add_names`). A name is a label: who may decide is still the email.
 """
 
 from __future__ import annotations
@@ -50,6 +56,7 @@ from ..deps import AppContext, current_auth, get_context, tenant_scope
 from ..errors import ApiError, NotFound
 from ..issueruns import InvalidRunTransition, IssueRuns, RunState
 from ..issuesync import sync_issue
+from ..people import add_names, name_lookup
 from ..schedules import GateIn, ScheduleConflict, ScheduleForbidden, ScheduleInvalid
 from . import runs as run_routes
 from . import schedules as schedule_routes
@@ -113,6 +120,15 @@ def _audit_run(ctx: AppContext, run: Any, action: str, by: str, detail: Mapping[
 # --------------------------------------------------------------------------
 
 
+#: The email fields of an approval that are served with a name beside them.
+NAMED_FIELDS = ("decided_by", "approvers")
+
+
+def _named(ctx: AppContext, item: dict) -> dict:
+    add_names(name_lookup(ctx), [item], NAMED_FIELDS)
+    return item
+
+
 @router.get("/v1/approvals")
 def list_approvals(
     kind: str | None = Query(default=None, max_length=20),
@@ -121,8 +137,9 @@ def list_approvals(
 ) -> dict:
     if kind is not None and kind not in approvals.KINDS:
         raise ScheduleInvalid("unknown_kind", f"kind is one of {', '.join(approvals.KINDS)}")
-    items = approvals.inbox(ctx, tenant_id, kind=kind)
-    return {"approvals": [approvals.to_api(i) for i in items], "tenant_id": tenant_id}
+    items = [approvals.to_api(i) for i in approvals.inbox(ctx, tenant_id, kind=kind)]
+    add_names(name_lookup(ctx), items, NAMED_FIELDS)
+    return {"approvals": items, "tenant_id": tenant_id}
 
 
 @router.get("/v1/approvals/{item_id}")
@@ -136,9 +153,10 @@ def get_approval(
         if run.state != RunState.PLANNED:
             raise NotFound(f"approval {item_id[:80]!r} not found")
         schedule = approvals.read_schedule(ctx.db, tenant_id, (run.schedule or {}).get("schedule_id"))
-        return {"approval": approvals.to_api(approvals.project_run(run, schedule)), "run": run.to_api()}
+        return {"approval": _named(ctx, approvals.to_api(approvals.project_run(run, schedule))),
+                "run": run.to_api()}
     doc = approvals.get(ctx.db, tenant_id, item_id)
-    out: dict[str, Any] = {"approval": approvals.to_api(doc)}
+    out: dict[str, Any] = {"approval": _named(ctx, approvals.to_api(doc))}
     run_id = (doc.get("subject") or {}).get("run_id")
     if doc.get("kind") == approvals.MERGE and run_id:
         run = IssueRuns(ctx.db, now=ctx.now).get(tenant_id, str(run_id))

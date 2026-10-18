@@ -552,6 +552,50 @@ carries the same trust requirement.
 
 ---
 
+## A display name is a label, never an identity
+
+A person may choose a display name on Settings › Profile
+([user-profile.md §4.4](design/user-profile.md#44-the-display-name-q5)), and
+other people see it on Admin › People, approvals, task pages and workflow
+pages. A chosen name is the one thing on those pages that someone else picked.
+So it is treated as untrusted text that can only ever *add* to an email, never
+stand in for one.
+
+* **The email is always beside it.** A name is served only as a sibling of an
+  email field the response already serves: `submitted_by_name`,
+  `decided_by_name`, `approver_names` (index for index with a listed
+  `approvers`) and a People row's `display_name`
+  (`swarm_api.people.add_names`). No response carries a name without its
+  email, and no route looks anyone up by name. Every check that decides what a
+  person may do (who may approve, whose tasks a submitter filter returns) keeps
+  using the verified email.
+* **Nothing else from the preferences document is served to anyone else.** A
+  People row carries the name and no default workspace, mute or reminder: those
+  are the person's own, and no admin route reads them (Q8).
+* **A failed lookup degrades to emails.** `display_names.DisplayNames.names_for`
+  reads a page's names in one `get_all`, and when that read fails every name is
+  `null` and the page is still served: a name is never a reason a page fails.
+* **The rules stop a name from passing for something it is not**
+  (`display_names.check`): 1-64 characters of letters, marks, spaces and
+  `.'-`, so no digit and no `@` (a name cannot embed an email), no brackets (no
+  `[admin]` tag), no format character (no bidi override or zero-width joiner,
+  which render differently from their bytes); one script, so a Cyrillic `а` in
+  a Latin name is refused; no reserved word (`admin`, `owner`, `system`,
+  `bot`...); and not another person's name, nor a name that contains another
+  person's name of two or more words, compared after folding case and accents.
+* **The uniqueness check is platform-wide, not per workspace**, because
+  listing a group's members is the Cloud Identity call this project cannot
+  make (`searchTransitiveGroups` 403s here). A name unique across the platform
+  is unique in every workspace.
+* **A worker cannot squat a name.** The claim documents that make names unique
+  are addressed by an HMAC under `swarm-child-key`, which only swarm-api and the
+  scheduler hold, and a claim whose id is not the HMAC of its own name is
+  ignored. Every change of name writes an `admin_audit` entry in the save's
+  transaction, so admins see each person's name history in the audit they
+  already read.
+
+---
+
 ## Reporting and review
 
 * `make security` runs checkov over Terraform and trivy over the repo.
