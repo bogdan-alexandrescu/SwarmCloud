@@ -18,7 +18,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass, replace
-from typing import Any, Callable, Mapping, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol
 
 from swarm_common.identity import (
     AuthError,
@@ -30,14 +30,36 @@ from swarm_common.identity import (
     tenant_member_for,
 )
 
-from .errors import Forbidden, Unauthenticated, UpstreamUnavailable
+from .errors import Forbidden, PreferencesUnavailable, Unauthenticated, UpstreamUnavailable
 from .gitidentity import clean_name, is_service_account
 from .groups import GroupLookupError, MembershipResolver
 from .settings import ApiSettings
 from .store import TENANTS
 from .workspaces import READY, WORKSPACES, is_service_identity, state_of
 
+if TYPE_CHECKING:  # the context only carries what `preferences` read
+    from .preferences import Preferences, StoredPreferences
+
 log = logging.getLogger(__name__)
+
+
+#: The routes that act in no workspace, as (HTTP method, route template), and
+#: so are served when the caller's preferences cannot be read and the request
+#: names no workspace (docs/design/user-profile.md §4.5, Q9). They are what a
+#: person needs to see their choices and pick one; on them `default_source` is
+#: "unavailable" and `tenant_choices` keeps today's order. Every other route
+#: answers that request 503 `preferences_unavailable` (`require_known_default`).
+#:
+#: A CLOSED LIST, held equal to these three by
+#: tests/unit/control_plane/test_default_workspace.py: a route that acts in a
+#: workspace -- the bell's `GET /v1/notifications` among them, whose items are
+#: a workspace's -- must not join it by accident, because joining it is
+#: running in a guessed workspace.
+PREFERENCE_FREE_ROUTES: frozenset[tuple[str, str]] = frozenset({
+    ("GET", "/v1/tenants/me"),
+    ("GET", "/v1/tenants/mine"),
+    ("GET", "/v1/profile"),
+})
 
 
 #: The request header a caller uses to pick ONE of its verified tenant
@@ -160,15 +182,41 @@ class AuthContext:
     #: sweeper's (one named tenant), so it is a different account on a
     #: different list, and the sweeper's route set is not widened.
     is_schedule_tick: bool = False
-    #: The verified token's `name` claim, cleaned for a commit identity
-    #: (`gitidentity.clean_name`); "" when the token carries none -- an IAP
-    #: assertion never does. Read from claims already verified, never asked of
-    #: a directory: what a person's commits are named (`gitidentity`).
+    #: What a person's commits are named (`gitidentity`), and the name the
+    #: platform calls them by (docs/design/user-profile.md §4.4, Q11 (a)): the
+    #: name stored in their preferences when they set one, else the verified
+    #: token's `name` claim -- which an IAP assertion never carries -- else
+    #: the email's local part. Cleaned for a commit identity
+    #: (`gitidentity.clean_name`). Never asked of a directory. A task keeps
+    #: the name recorded at admission, so a later rename rewrites no commit.
     display_name: str = ""
     #: The caller is `ApiSettings.platform_owner` (docs/workspaces.md §6.5).
     #: Always also `is_admin`. Read by the admin-role routes, which let only
     #: the owner change the owner's role.
     is_owner: bool = False
+    #: The caller's own `user_preferences` document as authentication read it
+    #: (`preferences.StoredPreferences`; the defaults when they have none), so
+    #: no route reads it a second time -- the bell's mutes and reminder come
+    #: from here (§4.6). None when it could not be read, and for every caller
+    #: that is not a person, which never reads it.
+    preferences: "StoredPreferences | None" = None
+    #: Why the first entry of `tenant_choices` is first (§4.5), for
+    #: `GET /v1/tenants/mine` and `GET /v1/profile`: "profile" (the stored
+    #: default), "personal" (the caller's own ready workspace), "first_group"
+    #: (the first confirmed group in admin order), "unavailable" (the
+    #: preferences could not be read, so today's order stands and is not the
+    #: person's known default), or "" when there is no choice at all.
+    default_source: str = ""
+    #: Why a stored default was NOT applied, or "": "not_a_member" (a group
+    #: the caller is no longer confirmed in) or "not_ready" (their own
+    #: personal workspace, while it is not ready). The stored value is kept;
+    #: it applies again as soon as it is one of `tenant_choices`.
+    default_ignored: str = ""
+    #: The request names no workspace AND the preferences could not be read,
+    #: so its default workspace is not known (Q9). Every route except
+    #: `PREFERENCE_FREE_ROUTES` then answers 503 `preferences_unavailable`
+    #: (`require_known_default`); it never runs in the computed default.
+    default_unknown: bool = False
 
     @property
     def email(self) -> str:
@@ -433,6 +481,16 @@ def _principal(doc: Mapping[str, Any]) -> str:
     return str(doc.get("principal") or "").strip().lower()
 
 
+def _computed_source(ctx: AuthContext) -> str:
+    """Why `tenant_choices`' first entry is first when no stored default
+    applies (§4.5): the caller's own ready workspace, else the first confirmed
+    group in admin order. "" when there is no choice. The personal entry is
+    the one whose principal is the caller (`_with_own_workspace` makes it)."""
+    if not ctx.tenant_choices:
+        return ""
+    return "personal" if ctx.tenant_choices[0][1] == ctx.email else "first_group"
+
+
 class Authenticator:
     """Turns an Authorization header into an AuthContext."""
 
@@ -444,6 +502,7 @@ class Authenticator:
         iap: Any = None,
         admin_roles: Any = None,
         personal: "PersonalTenants | None" = None,
+        preferences: "Preferences | None" = None,
     ) -> None:
         self._settings = settings
         self._verifier = verifier
@@ -457,6 +516,11 @@ class Authenticator:
         # hand-built authenticator in a test) offers no personal tenant, which
         # is exactly the behaviour before #1200.
         self._personal = personal
+        # A person's `user_preferences` document (docs/design/user-profile.md
+        # §4.5): their stored default workspace and name. None (a hand-built
+        # authenticator in a test) reads nothing and applies no stored
+        # default, which is exactly the behaviour before the profile.
+        self._preferences = preferences
         # Read once, here, at process start: an address on two lists is
         # refused before the service takes a request (`schedule_tick_users`).
         self._schedule_tick_users = frozenset(schedule_tick_users(settings))
@@ -479,9 +543,72 @@ class Authenticator:
         It is applied AFTER the identity is verified and its memberships
         resolved, and can only narrow the result to one of them -- see
         `_select_tenant`. A refusal raises before any route body runs.
+
+        Between the two, `_with_default` applies the person's stored default
+        workspace (docs/design/user-profile.md §4.5). `_select_tenant` is
+        unchanged by it: a request that names a tenant acts in that tenant,
+        one that names none acts in the first choice, as before.
         """
         ctx = self._authenticate(authorization, iap_assertion)
-        return self._select_tenant(self._with_own_workspace(ctx, tenant), tenant)
+        ctx = self._with_default(self._with_own_workspace(ctx, tenant), tenant)
+        return self._select_tenant(ctx, tenant)
+
+    def _with_default(self, ctx: AuthContext, requested: str | None) -> AuthContext:
+        """Put the person's stored default workspace first (§4.5 steps 1-2).
+
+        Only a person (`_special` is false): a service identity, a listed
+        account and the platform's jobs never read preferences, and keep
+        today's default. The read goes through `Preferences.cached` (15
+        seconds per instance, keyed by email; a failure is never cached).
+
+        The stored default applies only when it is one of `tenant_choices`,
+        which this request's verified identity produced: a preference SELECTS
+        exactly as `X-Swarm-Tenant` does and never grants (invariant 9). A
+        group the person has left is ignored (`not_a_member`), and so is their
+        own workspace while it is not ready (`not_ready`); the stored value is
+        left as it is, and nothing here writes.
+
+        AN UNREADABLE DOCUMENT IS NEVER A GUESS (Q9). The order is left as it
+        is and `default_source` says "unavailable"; when the request names no
+        workspace, `default_unknown` makes every route outside
+        `PREFERENCE_FREE_ROUTES` a 503 (`require_known_default`), so nothing
+        runs in the computed default the person may have moved away from. A
+        request that names a workspace does not need the default and is
+        served, with `preferences` None.
+
+        A header naming a tenant outside `tenant_choices` is refused by
+        `_select_tenant` without this reading anything, as before.
+        """
+        if self._preferences is None or self._special(ctx):
+            return replace(ctx, default_source=_computed_source(ctx))
+        if requested and requested not in {t for t, _ in ctx.tenant_choices}:
+            return ctx
+        try:
+            stored = self._preferences.cached(ctx.email)
+        except Exception as exc:  # noqa: BLE001 - PreferencesUnavailable or any Firestore failure
+            log.warning("preferences unreadable (%s)", type(exc).__name__)
+            return replace(
+                ctx, preferences=None, default_source="unavailable",
+                default_unknown=not requested,
+            )
+        ctx = replace(
+            ctx, preferences=stored,
+            display_name=clean_name(stored.display_name) or ctx.display_name,
+        )
+        chosen = stored.default_workspace
+        if not chosen:
+            return replace(ctx, default_source=_computed_source(ctx))
+        entry = next((c for c in ctx.tenant_choices if c[0] == chosen), None)
+        if entry is None:
+            ignored = "not_ready" if chosen == tenant_id_for_user(ctx.email) else "not_a_member"
+            return replace(ctx, default_source=_computed_source(ctx), default_ignored=ignored)
+        return replace(
+            ctx,
+            tenant_id=entry[0],
+            tenant_principal=entry[1],
+            tenant_choices=(entry, *(c for c in ctx.tenant_choices if c != entry)),
+            default_source="profile",
+        )
 
     def _with_own_workspace(self, ctx: AuthContext, requested: str | None) -> AuthContext:
         """Put the caller's OWN ready personal workspace first, as the default (#1200).
@@ -853,7 +980,9 @@ class Authenticator:
             admin_unresolved=(admin_unresolved or roles_unresolved) and not is_admin,
             is_pool_admin=email.lower() in admin_pool_users,
             tenant_choices=self._tenant_choices(member_groups),
-            display_name=clean_name(claims.get("name")),
+            # Q11 (a): the token's name claim, else the email's local part.
+            # `_with_default` puts a stored name in front of both.
+            display_name=clean_name(claims.get("name")) or clean_name(email.split("@", 1)[0]),
             is_owner=is_owner,
         )
 
@@ -1244,9 +1373,11 @@ def require_continuation_route(
     that is not admin-gated never reaches `require_admin`, so that gate alone
     would leave the sweeper an ordinary member everywhere else.
 
-    An ordinary member (`member_scope == ""`, not the sweeper) returns
-    immediately. `route=None` (no route matched) fails closed, same as
-    `require_admin`.
+    An ordinary member (`member_scope == ""`, not the sweeper) passes, unless
+    `require_known_default` refuses the request: this is the per-route gate
+    every authenticated request reaches (`deps.current_auth`, the live
+    socket), which is why that check is made here too. `route=None` (no route
+    matched) fails closed, same as `require_admin`.
     """
     if ctx.is_schedule_tick:
         if route is not None and route in SCHEDULE_TICK_ROUTES:
@@ -1259,11 +1390,31 @@ def require_continuation_route(
         method, path = route if route else ("?", "unmatched")
         raise Forbidden(f"the rollup sweeper may not call {method} {path}")
     if not ctx.member_scope:
-        return ctx
+        return require_known_default(ctx, route)
     if route is not None and route in CONTINUATION_ROUTES:
         return ctx
     method, path = route if route else ("?", "unmatched")
     raise Forbidden(f"a continuation-scoped account may not call {method} {path}")
+
+
+def require_known_default(
+    ctx: AuthContext, route: tuple[str, str] | None
+) -> AuthContext:
+    """A request that names no workspace, whose default workspace could not
+    be read, is 503 `preferences_unavailable` (docs/design/user-profile.md
+    §4.5, Q9) on every route outside `PREFERENCE_FREE_ROUTES`.
+
+    Raised before the route body runs, so nothing is submitted, read in a
+    guessed workspace or queued. The message says how to name a workspace:
+    the console's switcher, SWARM_TENANT or the plugin's tenant option, or
+    `--tenant`. It never falls back to the computed default, for the reason
+    `_with_own_workspace` gives a failed personal-workspace read: that is
+    the misfiling the default exists to prevent. `route=None` (no route
+    matched) is not on the list, so it fails closed.
+    """
+    if ctx.default_unknown and (route is None or route not in PREFERENCE_FREE_ROUTES):
+        raise PreferencesUnavailable()
+    return ctx
 
 
 def require_admin(

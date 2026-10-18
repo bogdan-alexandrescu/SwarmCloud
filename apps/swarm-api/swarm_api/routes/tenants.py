@@ -74,17 +74,39 @@ def get_mine(auth: AuthContext = Depends(current_auth)) -> list[dict]:
     it is unique where the tenant id is not, and it needs no read.
 
     Empty for a caller in no registered group without a ready workspace.
+
+    EXCEPT THAT A STORED DEFAULT GOES FIRST (docs/design/user-profile.md
+    §4.5): the workspace the person chose on Settings › Profile, when it is
+    one of these, is moved to the front by `Authenticator._with_default`, so
+    the first entry is still the tenant a headerless request acts in. That
+    entry carries `is_default: true` and `default_source` -- "profile",
+    "personal", "first_group", or "unavailable" when the preferences could
+    not be read (this route is in `auth.PREFERENCE_FREE_ROUTES`, so it is
+    still served, in today's order) -- and, when a stored default was not
+    applied, `default_ignored` ("not_a_member" or "not_ready"). Every other
+    entry carries `is_default: false`. The entries and their order are
+    otherwise exactly `tenant_choices`.
     """
-    return [_choice(auth, tenant_id, principal) for tenant_id, principal in auth.tenant_choices]
+    return [
+        _choice(auth, tenant_id, principal, first=index == 0)
+        for index, (tenant_id, principal) in enumerate(auth.tenant_choices)
+    ]
 
 
-def _choice(auth: AuthContext, tenant_id: str, principal: str) -> dict:
+def _choice(auth: AuthContext, tenant_id: str, principal: str, *, first: bool) -> dict:
     # The personal entry is the one whose principal is the caller themselves;
     # `_with_own_workspace` is the only place such an entry is made.
     if principal == auth.email:
-        return {"tenant_id": tenant_id, "display_name": f"Your workspace ({tenant_id})",
-                "kind": "user"}
-    return {"tenant_id": tenant_id, "display_name": principal, "kind": "group"}
+        entry = {"tenant_id": tenant_id, "display_name": f"Your workspace ({tenant_id})",
+                 "kind": "user"}
+    else:
+        entry = {"tenant_id": tenant_id, "display_name": principal, "kind": "group"}
+    entry["is_default"] = first
+    if first:
+        entry["default_source"] = auth.default_source
+        if auth.default_ignored:
+            entry["default_ignored"] = auth.default_ignored
+    return entry
 
 
 @router.post("/me/credentials", status_code=status.HTTP_201_CREATED)
