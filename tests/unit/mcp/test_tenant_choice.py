@@ -334,10 +334,52 @@ def test_swarm_tenants_output_marks_the_current_tenant():
     reply = json.loads(server._call(client, "swarm_tenants", {}))
     assert reply["current"] == "team-a" and reply["chosen"] is None
     assert reply["tenants"] == [
-        {"tenant_id": "team-a", "display_name": "team-a@example.com", "current": True},
-        {"tenant_id": "team-b", "display_name": "team-b@example.com", "current": False},
+        {"tenant_id": "team-a", "display_name": "team-a@example.com", "current": True,
+         "is_default": True},
+        {"tenant_id": "team-b", "display_name": "team-b@example.com", "current": False,
+         "is_default": False},
     ]
     assert all(method == "GET" for method, _ in client.sent), "read-only"
+
+
+#: `GET /v1/tenants/mine` as PROFILE-DEFAULT's API answers a person whose
+#: Settings › Profile default is their second choice (docs/design/user-profile.md
+#: §4.5): the default goes first and carries `is_default` and `default_source`.
+MINE_WITH_DEFAULT = [
+    {"tenant_id": "team-b", "display_name": "team-b@example.com",
+     "is_default": True, "default_source": "profile"},
+    {"tenant_id": "team-a", "display_name": "team-a@example.com", "is_default": False},
+]
+
+
+def test_swarm_tenants_marks_the_default_and_says_why(monkeypatch):
+    """`is_default` is the API's, not the first row's: with a tenant CHOSEN the
+    current row and the default row differ, and both are marked."""
+    client = _ToolClient("team-a")
+    monkeypatch.setattr(client, "tenants_mine", lambda: MINE_WITH_DEFAULT)
+    reply = json.loads(server._call(client, "swarm_tenants", {}))
+    assert reply["default"] == "team-b"
+    assert reply["default_source"] == "profile"
+    assert [(t["tenant_id"], t["current"], t["is_default"]) for t in reply["tenants"]] == [
+        ("team-b", False, True), ("team-a", True, False),
+    ]
+
+
+def test_swarm_tenants_marks_no_source_an_older_api_never_gave():
+    """An API older than PROFILE-DEFAULT marks no entry: its first one is the
+    headerless default by the route's documented order, and why is not said."""
+    reply = json.loads(server._call(_ToolClient(), "swarm_tenants", {}))
+    assert reply["default"] == "team-a"
+    assert reply["default_source"] is None
+
+
+def test_swarm_tenants_says_when_the_default_is_unknown(monkeypatch):
+    unreadable = [dict(entry) for entry in MINE_WITH_DEFAULT]
+    unreadable[0]["default_source"] = "unavailable"
+    client = _ToolClient()
+    monkeypatch.setattr(client, "tenants_mine", lambda: unreadable)
+    reply = json.loads(server._call(client, "swarm_tenants", {}))
+    assert reply["default_source"] == "unavailable"
 
 
 def test_swarm_tenants_output_with_a_chosen_tenant():
