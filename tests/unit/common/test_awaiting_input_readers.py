@@ -73,9 +73,10 @@ MUST_IGNORE: dict[str, str] = {
         "`_expire_human_waits` must leave AWAITING_INPUT alone (held below); the "
         "step's own expiry, which honours on_expire, is lane HW-SCHED's awaitinput.py",
     "apps/swarm-api/swarm_api/attemptstate.py":
-        "the worker's park route; its refund rule is the hand-off's. A worker "
-        "never parks AWAITING_INPUT; refusing one from a worker token is a "
-        "question in the HW-CONTRACT pull request, outside its territory",
+        "the worker's park route; its refund rule is the hand-off's. No worker "
+        "code parks AWAITING_INPUT, but the route accepts one from a worker "
+        "token today (with next_eligible_at); its refusal is outside "
+        "HW-CONTRACT's territory and is the PR's question 2, with a tested patch",
     "apps/swarm-api/swarm_api/codec.py":
         "a comment on a PARKED(HUMAN_REQUIRED) task's human_wait; the park "
         "reason itself is decoded through the enum, which carries the new member",
