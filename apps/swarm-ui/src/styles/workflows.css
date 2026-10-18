@@ -270,8 +270,10 @@
    and the tabs moved by 3px each time. It takes the figure's line less
    the 1px of its own dashed underline: the chip is inline-flex, so the cell
    is a block whose border adds to its height, and at the full line the
-   chip came out 28.4px (measured in Chromium, 2026-10-16). */
-.wfp-head .wfp-cost .wf-cell.is-absent { line-height: calc(var(--lh-micro) * 1em - 1px); }
+   chip came out 28.4px (measured in Chromium, 2026-10-16). The line stays a
+   `--lh-` token (typescale.test.ts allows no raw line-height), so the 1px
+   comes off as a negative bottom margin instead. */
+.wfp-head .wfp-cost .wf-cell.is-absent { line-height: var(--lh-micro); margin-bottom: -1px; }
 /* At a phone's column the loaded census is two lines (~90 characters at 12px
    in ~350px), so the placeholder is too; wider, it is one. */
 .wfp-skel-sum > .wfp-skel-sum-2 { display: none; margin-top: calc(var(--lh-micro) * 1em - 1em); }

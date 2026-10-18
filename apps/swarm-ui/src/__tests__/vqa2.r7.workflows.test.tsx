@@ -243,8 +243,10 @@ describe('V103: the page head is the same height while it reads as when it has r
   it('sets "cost not reported" in the cost chip on the figure’s own line', () => {
     const host = html('<div class="wfp"><div class="wfp-head"><div class="wfp-chips"><span class="wfp-cost"><span class="c-chip"><span class="wf-cell is-absent">cost not reported</span></span></span></div></div></div>')
     const absent = host.querySelector('.wf-cell.is-absent')!
-    expect(painted(absent, 'line-height', { width: 400 })).toBe('calc(var(--lh-micro) * 1em - 1px)')
-    expect(painted(absent, 'line-height', { width: 1440 })).toBe('calc(var(--lh-micro) * 1em - 1px)')
+    for (const width of [400, 1440]) {
+      expect(painted(absent, 'line-height', { width })).toBe('var(--lh-micro)')
+      expect(painted(absent, 'margin-bottom', { width })).toBe('-1px')
+    }
   })
 })
 
