@@ -46,8 +46,22 @@ CONSOLE = "https://console.example.test"
 
 def _key() -> str:
     """A fake TypeSafe key, unique per test so a leak is unambiguous.
-    TypeSafe documents no prefix, so none is assumed."""
+    TypeSafe documents no prefix, so none is assumed.
+
+    NEVER "-"-LEADING. base64url's alphabet has "-", so about one key in 64
+    started with it, argparse read it as an option, and a command-line shape
+    failed for that reason rather than the one it pins (#1499). The "-"-led
+    shapes are spelled out in the refusal test instead, where they are always
+    exercised."""
     return secrets.token_urlsafe(30)
+
+
+def test_a_fake_key_never_starts_with_a_dash(monkeypatch):
+    leading = "-" + secrets.token_hex(20)
+    monkeypatch.setattr(secrets, "token_urlsafe", lambda *_a, **_k: leading)
+    value = _key()
+    assert not value.startswith("-")
+    assert value[1:] == leading[1:], "still the random value, one character changed"
 
 
 def _pieces(value: str, width: int = 8) -> list[str]:
@@ -254,6 +268,18 @@ def _main(argv, api, stdin, monkeypatch, capsys):
     ["key", "set", "typesafe", "--key=<key>"],
     ["key", "set", "<key>"],
     ["key", "set", "--tenant", "typesafe", "<key>"],
+    # A KEY CAN START WITH "-" (base64url's alphabet has it), and argparse then
+    # reads it as an option: in the provider's place it left `provider`
+    # missing, and as "-h<rest>" it was the help switch with the rest as
+    # bundled flags, which printed help and exited 0. Each is refused like
+    # any other key on the line (#1499).
+    ["key", "set", "typesafe", "-<key>"],
+    ["key", "set", "-<key>"],
+    ["key", "set", "--tenant", "typesafe", "-<key>"],
+    ["key", "set", "typesafe", "-h<key>"],
+    ["key", "set", "-h<key>"],
+    ["key", "set", "typesafe", "--<key>"],
+    ["key", "set", "--<key>"],
 ])
 def test_a_key_on_the_command_line_is_refused_unsent_and_unrepeated(shape, monkeypatch, capsys):
     value = _key()
