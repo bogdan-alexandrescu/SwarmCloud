@@ -1750,7 +1750,21 @@ def park_human_required(
     lease attempt N+1 of N, and the scheduler dead-letters it instead.
 
     Returns whether the attempt was refunded and who re-queued it, if anyone.
+
+    A TENANT SWITCHED TO THE STATE ROUTES (`control.state_via_api`,
+    docs/design/tenant-settings-integrity.md §4.2) has no transaction to run
+    this in: `RemoteControlPlane.park_human_required` sends ONE `state/park`,
+    and swarm-api writes everything above -- the fence, the bounded refund,
+    the person's re-queue, the carry, the attempt's end, the event and the
+    lease release -- in one transaction there. No Firestore call is made
+    here. The answer says whether a person's return re-queued the task, not
+    who: their name is in the READY event and `human_ready` swarm-api wrote,
+    so `returned_by` is "" then, as it is on this path for a mark that names
+    nobody.
     """
+    if getattr(control, "state_via_api", False):
+        refunded, requeued = control.park_human_required(detail=detail, uploads=uploads)
+        return HumanPark(bool(refunded), "" if requeued else None)
     reason = ParkReason.HUMAN_REQUIRED
     now = utcnow()
     returned: dict[str, Any] = {}
