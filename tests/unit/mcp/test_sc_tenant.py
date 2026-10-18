@@ -16,6 +16,16 @@ These hold:
 * The SessionStart hook's `sc workflows` runs in that same tenant.
 * The plugin's version moved, so the change reaches installed sessions.
 
+And, since the default became the person's own (PROFILE-SC,
+docs/design/user-profile.md §4.5 and Q9):
+
+* with no SWARM_TENANT, `sc whoami` / `sc config` say which default applied,
+  from the `default_source` `GET /v1/tenants/mine` reports on its default
+  entry -- Settings › Profile, the personal workspace, or "your preferences
+  could not be read; name a workspace";
+* a 503 `preferences_unavailable` is printed with the API's message and a
+  non-zero exit, and nothing is retried in another workspace.
+
 Offline: the transport is `client._open`, replaced; nothing leaves the process.
 """
 
@@ -27,6 +37,7 @@ import re
 import shutil
 import stat
 import subprocess
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -40,9 +51,9 @@ _PLUGIN = _REPO / "plugin"
 _MANIFEST = _PLUGIN / ".claude-plugin" / "plugin.json"
 _HOOK = _PLUGIN / "hooks" / "session-start.sh"
 
-#: The version main carried before this change (#1204's tree). A plugin change
+#: The version main carried before this change (PROFILE-SC). A plugin change
 #: that leaves the version where it was never reaches an installed session.
-_VERSION_BEFORE = (0, 5, 30)
+_VERSION_BEFORE = (0, 5, 43)
 
 
 class _Response:
@@ -79,10 +90,49 @@ def wire(monkeypatch):
         if "/v1/tenants/me" in req.full_url:
             chosen = headers.get("x-swarm-tenant") or "personal-dev"
             return _Response({"tenant": {"tenant_id": chosen}, "principal": {"email": "dev@example.com"}})
+        if "/v1/tenants/mine" in req.full_url and _MINE in wire_state:
+            return _Response(wire_state[_MINE])
+        if _REFUSE in wire_state and "x-swarm-tenant" not in headers:
+            # What PROFILE-DEFAULT's API answers a headerless request whose
+            # preferences it could not read: every route but the three exempt.
+            raise _http_error(req.full_url, 503, wire_state[_REFUSE])
         return _Response({"items": [], "tasks": [], "next_page_token": None})
 
+    wire_state.clear()
     monkeypatch.setattr(mcp_client, "_open", _opener)
     return sent
+
+
+#: What the `wire` fixture serves beyond its defaults, set by a test before it
+#: runs `sc`: `_MINE` is the `GET /v1/tenants/mine` body, `_REFUSE` the message
+#: of a 503 `preferences_unavailable` for every headerless non-exempt request.
+wire_state: dict[str, object] = {}
+_MINE = "mine"
+_REFUSE = "refuse"
+
+#: The API's own sentence (swarm_api/errors.py PREFERENCES_UNAVAILABLE_MESSAGE),
+#: which `sc` must print word for word.
+_PREFS_MESSAGE = (
+    "Your SwarmCloud preferences could not be read, so your default workspace is "
+    "not known and nothing was submitted. Name a workspace and retry: choose one "
+    "in the console's workspace switcher, set SWARM_TENANT or the /sc plugin's "
+    "tenant option, or pass --tenant to swarm."
+)
+
+
+def _http_error(url: str, status: int, message: str) -> urllib.error.HTTPError:
+    body = json.dumps({"code": "preferences_unavailable", "message": message}).encode()
+    return urllib.error.HTTPError(url, status, "unavailable", {}, io.BytesIO(body))
+
+
+def _mine(source: str) -> list[dict]:
+    """A `tenants/mine` body as PROFILE-DEFAULT's API answers it."""
+    return [
+        {"tenant_id": "personal-dev", "display_name": "Your workspace (personal-dev)",
+         "kind": "user", "is_default": True, "default_source": source},
+        {"tenant_id": "eng", "display_name": "eng@example.com", "kind": "group",
+         "is_default": False},
+    ]
 
 
 def _run(argv) -> tuple[int, str]:
@@ -163,6 +213,96 @@ def test_config_prints_the_tenant_and_which_setting_chose_it(wire, monkeypatch):
 
 
 # --------------------------------------------------------------------------
+# Which default applied (PROFILE-SC)
+# --------------------------------------------------------------------------
+
+
+def _tenant_line(text: str) -> str:
+    return next(row for row in text.splitlines() if row.startswith("tenant "))
+
+
+def test_whoami_says_the_default_came_from_settings_profile(wire, monkeypatch):
+    monkeypatch.delenv("SWARM_TENANT", raising=False)
+    wire_state[_MINE] = _mine("profile")
+    code, text = _run(["whoami"])
+    assert code == sc.EXIT_OK, text
+    line = _tenant_line(text)
+    assert "personal-dev" in line and "your default, from Settings › Profile" in line, text
+
+
+@pytest.mark.parametrize("source", ["personal", None])
+def test_whoami_says_the_personal_workspace_otherwise(wire, monkeypatch, source):
+    """`personal`, and an API that reports no `default_source` at all."""
+    monkeypatch.delenv("SWARM_TENANT", raising=False)
+    mine = _mine(source or "personal")
+    if source is None:
+        for entry in mine:
+            entry.pop("is_default"), entry.pop("default_source", None)
+    wire_state[_MINE] = mine
+    code, text = _run(["whoami"])
+    assert code == sc.EXIT_OK, text
+    line = _tenant_line(text)
+    assert "personal workspace" in line, text
+    if source is not None:
+        assert "from Settings › Profile" not in line, text
+
+
+def test_whoami_says_unreadable_preferences_mean_name_a_workspace(wire, monkeypatch):
+    monkeypatch.delenv("SWARM_TENANT", raising=False)
+    wire_state[_MINE] = _mine("unavailable")
+    _, text = _run(["whoami"])
+    assert "your preferences could not be read; name a workspace" in _tenant_line(text), text
+    _, text = _run(["whoami", "--json"])
+    shown = json.loads(text)
+    assert shown["default_source"] == "unavailable"
+    assert "your preferences could not be read; name a workspace" in shown["tenant_source"]
+
+
+def test_config_says_which_default_applied(wire, monkeypatch):
+    monkeypatch.delenv("SWARM_TENANT", raising=False)
+    wire_state[_MINE] = _mine("profile")
+    _, text = _run(["config", "--json"])
+    tenant = json.loads(text)["tenant"]
+    assert tenant["value"] == "personal-dev"
+    assert "your default, from Settings › Profile" in tenant["source"], tenant
+
+
+def test_swarm_tenant_still_wins_over_a_profile_default(wire, monkeypatch):
+    monkeypatch.setenv("SWARM_TENANT", "eng")
+    wire_state[_MINE] = _mine("profile")
+    code, text = _run(["whoami"])
+    assert code == sc.EXIT_OK, text
+    line = _tenant_line(text)
+    assert "eng" in line and "chosen by SWARM_TENANT" in line, text
+    assert "Settings › Profile" not in line, text
+
+
+@pytest.mark.parametrize("argv", [["runs"], ["agents"]], ids=" ".join)
+def test_preferences_unavailable_is_the_apis_message_and_a_failure(wire, monkeypatch, capsys, argv):
+    monkeypatch.delenv("SWARM_TENANT", raising=False)
+    wire_state[_REFUSE] = _PREFS_MESSAGE
+    code, out = _run(argv)
+    err = capsys.readouterr().err
+    assert code != sc.EXIT_OK, (out, err)
+    # A screen view wraps its lines; the words, in order, are the API's.
+    assert _PREFS_MESSAGE in " ".join((out + err).split()), (out, err)
+    assert "swarm doctor" not in err, "the API answered; this is no connection failure"
+    refused = [s for s in wire if "/v1/tenants/" not in s["url"]]
+    assert refused, "nothing was asked, so this proved nothing"
+    # NEVER RETRIED IN ANOTHER WORKSPACE: no request named one.
+    assert not [s["url"] for s in wire if "x-swarm-tenant" in s["headers"]]
+
+
+def test_the_refusal_is_printed_as_the_gate_prints_its_own(wire, monkeypatch, capsys):
+    monkeypatch.delenv("SWARM_TENANT", raising=False)
+    wire_state[_REFUSE] = _PREFS_MESSAGE
+    code, _ = _run(["runs"])
+    err = capsys.readouterr().err
+    assert code == sc.EXIT_FAIL
+    assert err.strip() == f"✕ 503 preferences_unavailable: {_PREFS_MESSAGE}", err
+
+
+# --------------------------------------------------------------------------
 # The plugin: userConfig.tenant -> SWARM_TENANT, the environment winning
 # --------------------------------------------------------------------------
 
@@ -194,7 +334,9 @@ def test_the_plugin_offers_a_tenant_option():
     assert option.get("sensitive") is False
     described = option["description"]
     assert "the tenant every call acts in" in described.lower()
-    assert "empty uses your default, which is your personal workspace when it is ready" in described
+    assert "empty uses your default" in described
+    assert "Settings › Profile" in described, "the default is the person's own now (PROFILE-SC)"
+    assert "personal workspace" in described
     assert "SWARM_TENANT" in described and "wins" in described
 
 

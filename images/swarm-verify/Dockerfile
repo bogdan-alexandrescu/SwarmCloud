@@ -103,6 +103,11 @@ COPY tests/acceptance/fixtures/ /swarm/tests/acceptance/fixtures/
 # live-browser.sh runs it with python3): standard library only, so it needs
 # nothing the image does not already carry.
 COPY tests/acceptance/test_live_browser.py /swarm/tests/acceptance/test_live_browser.py
+# The git-tools group's prompts and judge (scripts/acceptance/groups/
+# git-tools.sh runs it with python3 for every prompt and verdict): standard
+# library only. Missing from the image from PR 1269 until 2026-10-15, every
+# git-tools check failed "the judge wrote no verdict" with an empty prompt.
+COPY tests/acceptance/test_runner_git_tools.py /swarm/tests/acceptance/test_runner_git_tools.py
 
 # Fail loudly at build time rather than at 3am if a script lost its bit.
 RUN chmod +x /swarm/scripts/*.sh /swarm/scripts/lib/*.sh 2>/dev/null || true

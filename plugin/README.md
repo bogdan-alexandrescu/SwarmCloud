@@ -506,9 +506,11 @@ ends with can only have been carried from the parked attempt (contract
 request 56, #166; the recipe is in docs/workflows.md). `exit_code` refuses the codes the worker reads as a success, a rate
 limit, a refused credential and a cancellation. Every key's kind and bounds
 are in the table below, which is generated from the catalogue rather than
-restated here. `claude-code` and `codex` declare one input, `issue`: the
+restated here. `claude-code` and `codex` declare `issue`: the
 number of a GitHub issue in the repository the step clones (contract request
-28). The worker fetches its title, body and comments read-only into
+28). They also declare `mcp_servers` (contract request 88), the registered MCP
+servers the agent may call, by name; see
+[Registered MCP servers](#registered-mcp-servers-by-name-and-a-per-run-credential-the-agent-never-sees). The worker fetches its title, body and comments read-only into
 `issue.md` in the workspace, beside the checkout and never among the
 artifacts, and names that file in the prompt, so a prompt need not restate
 the issue. A step that sends it with no repository is refused by the API.
@@ -585,12 +587,14 @@ What `claude-code` and `codex` declare, as `swarm_profiles` lists it:
 | input | kind and bounds | what the claude-code runner does with it |
 |---|---|---|
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
 <!-- /runner-inputs:claude-code -->
 
 <!-- runner-inputs:codex generated from RUNNER_PROFILES["codex"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
 | input | kind and bounds | what the codex runner does with it |
 |---|---|---|
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
 <!-- /runner-inputs:codex -->
 
 `claude-code-review` is `claude-code` under its own Job and service account,
@@ -622,6 +626,8 @@ class and runs on GKE Autopilot; it declares what `claude-code` does:
 | input | kind and bounds | what the claude-code-browser runner does with it |
 |---|---|---|
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
+| `browser_tool` | string, one of auto \| playwright \| dev-browser \| jev | the live browser's tool: auto (every tool available; the default), playwright (the Playwright MCP tools only), dev-browser (the dev-browser CLI first, Playwright as fallback) or jev (the jev MCP tools, which send page text to TypeSafe and need a TypeSafe key; Playwright as fallback) |
 <!-- /runner-inputs:claude-code-browser -->
 
 `--input issue=<number>` on `swarm dispatch`, or `"inputs": {"issue": <number>}`
@@ -863,15 +869,29 @@ pieces do it, and none of them submits anything.
   stays a cap. The bridge reads the option and hands it to each run as
   `max_rows`. The rest are logged and returned as `not_followed`, each with
   its `workspace` and the `/sc attach` that follows it.
-* **Every row names its workspace.** Run titles are `SC · <name> · N steps`
-  and `SC · <label> · task` (the name is cut to 150, never the count), and
-  each run's description starts with `Workspace: <workspace> (<tenant>) · `
-  (`Workspace: not reported` when the API names none) — the workspace moved
-  out of the run's name into its description in SC-WS-DESC, owner
-  2026-10-14; rows inside the run are `[SwarmCloud] [<workspace>] <name> · stage <n> · <step>`
-  and `[SwarmCloud] [<workspace>] <label> · task`, and every result object and
-  summary line carries `workspace` — from the API's workflow and task
-  documents, so one attach can cover several workspaces correctly.
+* **No name carries a workspace; every expanded run and row says whose,
+  where and on which LLM** (SC-DESC-DETAILS, owner 2026-10-14: "workflows in
+  here should not have the [Engineering] or [eng@saga.xyz] prefix in front of
+  the names"). Run titles are `SC · <name> · N steps` and `SC · <label> ·
+  task` (the name is cut to 150, never the count); rows inside the run are
+  `[SwarmCloud] <name> · stage <n> · <step>` and `[SwarmCloud] <label> ·
+  task`. Each run's description starts with its DETAILS, one line, six
+  fields in this order: `Workspace: <workspace> (<tenant>) · Started by:
+  <submitted_by> · Profiles: <runner profiles> · LLM: <pool account>
+  (<provider>), model <model> · Browser tool: <browser_tool> · Session:
+  <claude_session>` — each `not reported` when the API serves none, the
+  workspace first so the 300-character clip takes the end, the account by the
+  label `GET /v1/accounts` gives it, and anything credential-shaped shown as
+  `withheld`. Each row's prompt ends with ITS OWN `details:` line, which is
+  what Claude Code shows when the row is expanded: `swarm_workflow_launch`
+  writes them into an attach's args (`details.steps`) and an `attach_tasks`
+  entry (`details`), and hands a spec's back as `row_details` for the args;
+  a run launched without them says what run.js knows and `not reported` for
+  the rest. A run started before its account was assigned says `LLM: not
+  assigned yet`, and each of its rows says `LLM: <account>` once, on the first
+  progress line after the assignment. Every result object and listing line
+  still carries `workspace` — from the API's workflow and task documents, so
+  one attach can cover several workspaces correctly.
 * **Scrolling is Claude Code's.** `/workflows` is Claude Code's panel; the
   plugin cannot make it scroll. It keeps 30 rows scannable instead: one
   compact line per row, newest first, grouped by workspace, in a stable
@@ -924,7 +944,7 @@ never lists it: five lanes dispatched that day ran with no row at all. So:
   by `swarm_workflow_launch` — which starts one `[SwarmCloud] <label> · task`
   row per running single task, titled from the task's label (else its id), at
   most **30** (`max_live_rows`), the same row cap as workflows for the same
-  reason, each labelled `[SwarmCloud] [<workspace>] <label> · task`. Launched by
+  reason, each labelled `[SwarmCloud] <label> · task` with its details line. Launched by
   name with `{attach: "all"}`, the run returns those args as `task_call`.
 * **`swarm_dispatch` starts its own rows.** Every dispatch reply (one task or
   `tasks`) carries `rows`: a titled copy of the run script whose args are
@@ -943,6 +963,37 @@ never lists it: five lanes dispatched that day ran with no row at all. So:
   **`/sc attach --all`**: it covers workflows and single tasks alike. A task
   this session dispatches needs nothing — its reply starts the row.
 
+### A workflow step that waits for a person (HW-MCP)
+
+docs/design/human-steps.md §4.2, §4.5 and §4.8. An `await-input` step parks
+`AWAITING_INPUT`, holds no lease and no capacity, and waits up to 24 hours
+for any member of its tenant to answer. Ships dark: until the owner makes the
+`await-input` profile available (contract request D), no such step can be
+submitted and these tools find nothing.
+
+* **`swarm_inputs`** (`/sc inputs`) lists the tenant's waiting steps
+  (`GET /v1/inputs?status=waiting`), each with the call that answers it.
+* **`swarm_workflow_input`** (`/sc answer <wf_id> <step_id> [file ...]`)
+  answers one. **The person types the answer, never the agent**: the tool
+  takes only `workflow_id`, `step_id` and `files`, and refuses any other
+  argument before it reads or sends anything. It reads the step (`GET
+  .../steps/{step}/input`), shows its prompt and what it stages in the
+  host's MCP elicitation, and sends only what the person typed there --
+  Approve or Request changes plus findings, an answer per upstream question,
+  or a text -- as `via: "mcp"`. A host that cannot elicit is refused with
+  the step's console link. `files` are local paths the agent may propose;
+  the elicitation lists each one's name, bytes and sha256 under the
+  console's warning ("Files go to the next agent byte for byte..."), and
+  they are sent, as one multipart answer, only when the person ticks "Send
+  the files". More than 10 files or 16 MiB is refused before anything is
+  read from the API; more than the step's own `max_files` before the person
+  is asked. The form waits up to 30 minutes for the person.
+* **`swarm_workflow_status`** rows carry `awaiting` (tenant, window, form,
+  artifact, max_files, remind) on a waiting step and `answered` (who, when,
+  via, files) once it is answered.
+* A `swarm_workflow` spec step may carry `await_input`; the bridge checks
+  only that it is an object and swarm-api checks the rest.
+
 ### Stuck or stale work, checked on an interval (SC-WATCH)
 
 Owner request 2026-10-14: a check every set interval (default 30 minutes)
@@ -957,7 +1008,10 @@ of the project running at the time.
   CI_PENDING past 90 minutes or on a dependency that failed, a merge step
   refused with `head_moved`, `merge_conflict` or `checks_failed`, and a
   workflow whose stored state disagrees with its derived state about whether
-  it is finished. Each comes with the evidence the API served, its console
+  it is finished. A step waiting for a person (`AWAITING_INPUT`) is listed
+  apart, under `awaiting_input`, as information and not as stuck; it is
+  flagged STUCK only when it is still parked more than two ticks of the
+  one-minute expiry sweep past its `expires_at`. Each comes with the evidence the API served, its console
   link and the next command; it acts on none of them. The API serves no pull
   request state, so a refused merge's PR is linked, not read. Then it calls
   `swarm_workflow_launch {attach: "all", repository, new_only: true}`: rows
@@ -970,12 +1024,83 @@ of the project running at the time.
   expression can say), and remembers it for the project in
   `<config dir>/sc-watch/<sha256 of the project directory>.json`, never in
   the repository. Where CronCreate is not available, `/loop 30m /sc check`
-  does the same. **`/sc watch off`** cancels it and forgets it.
+  does the same. **`/sc watch off`** cancels it and saves "off" for the
+  project.
 * CronCreate's jobs end with the session (and a recurring one after 7 days),
   so the **SessionStart hook** reads the saved preference — locally, before
   and without the bridge — and asks each new session in the project to run
   `/sc watch <N>m` first, beside the attach or on its own, even with
   `auto_attach` off.
+
+### The watch arms itself (SC-AUTO-WATCH)
+
+Owner request 2026-10-14: "/sc watch should automatically be set if there is
+at least one workflow being worked on in sc that is attached here or if and
+when we start a new workflow ... Also this should run when we attach manually
+either one or --all".
+
+* `/sc run` (a spec submitted), `/sc run --issue` once its workflow exists,
+  `/sc attach <wf_id>`, `/sc attach --all` and a `/sc check` that attached
+  something each END by arming the watch. The tools say so themselves:
+  `swarm_workflow_launch` (spec and attach), `swarm_workflow` and the issue-run
+  tools answer `arm_watch` — the CronCreate call at the project's saved
+  interval, else 30 minutes, with the `swarm_check_schedule` call that
+  remembers it. The skill runs CronList first and makes no call when a
+  `/sc check` job exists, so a session never holds two watches.
+* `arm_watch` is null when nothing was attached, when no workflow exists yet,
+  and when the project's watch was turned off: **an explicit `/sc watch off`
+  is saved** (`"watch": "off"` in the same file) and wins until `/sc watch`
+  again, so an attach does not undo it.
+* At session start, when the bridge finds running workflows or single tasks
+  of yours and no interval was ever saved, its context asks the session to
+  arm the watch beside the attach; the hook hands an explicit off over as
+  `SWARM_SC_WATCH_MINUTES=off` and then nothing is asked. Nothing running,
+  nothing asked.
+* `/sc check` that finds nothing running for the project says so
+  (`nothing_running`) and leaves the job armed: one read per interval is
+  cheap, and the next workflow is watched without re-arming.
+* A task sent with `swarm_dispatch` (one or `tasks`) arms it too, and so does
+  `/sc attach <wf_id>` of a workflow that has already finished, and a `/sc
+  run` that ended `SUBMISSION_UNKNOWN` or `SUBMITTED_UNVERIFIED` (work may be
+  running; its result carries `arm_watch`). Only `NOT_SUBMITTED` sent nothing.
+
+### Only this session's work (SC-SESSION-SCOPE)
+
+Owner decision 2026-10-14: "only the tasks related to the work this claude
+code session is doing should pass as valid candidates to attach if not
+attached already. Same goes for watching and checking for staleness" -- even
+when several sessions share one tenant or workspace.
+
+* **The session id.** Claude Code starts the plugin's MCP server, and its
+  hooks, with `CLAUDE_CODE_SESSION_ID` in the environment (measured
+  2026-10-14 on Claude Code 2.1.283: the swarm-mcp process carried the same
+  id as the session's transcript). /compact and `claude --resume <id>` keep
+  it; a new `claude` gets a new one. `/clear` moves the session to a new id
+  while the server keeps running, so the SessionStart hook (its matcher now
+  includes `clear`) records the id it gets on stdin under `<config
+  dir>/sc-session/<sha256 of the starting id>.json`, and the bridge reads
+  that record first (`swarm_mcp.session`).
+* **The tag.** Every submission carries the id as `metadata.claude_session`:
+  `swarm_dispatch` (one and `tasks`), `swarm_workflow` (`spec`, `spec_path`,
+  `spec_ref`, `merge_pr`) and `swarm_run_issue` (as the run's
+  `claude_session`, which swarm-api copies onto the planner, the compiled
+  workflow, every CI-fix round and the merge workflow). The merge step's
+  conflict-fix and CI-fix rounds copy their merge task's tag, so a session's
+  own fix rounds are its own. swarm-api serves it back as `claude_session` on
+  task rows (the summary view too), workflow rows and runs.
+* **The scope.** `/sc check`, `/sc attach --all` (and the check's `new_only`
+  attach), the SessionStart hook's "attach and arm" context, and so the watch
+  consider ONLY work tagged with this session's id. Another session's work,
+  and untagged work (submitted before this change, or by another client),
+  are never automatic candidates; each answer counts them in
+  `session.left_out`. With no session id known, nothing is a candidate and
+  the answer says why.
+* **By hand, anything.** `/sc attach <wf_id>` still attaches any workflow the
+  tenant may read, and says (`not_this_session`) when it is not this
+  session's. `/sc workflows` keeps listing the whole tenant and marks this
+  session's `[this session]` (`this_session` in JSON, and in `swarm_workflows`,
+  whose marks are what `/sc:swarmcloud {attach: "all"}` keeps when it is the
+  fallback).
 
 ### What a row shows, and what it costs
 
@@ -1296,6 +1421,50 @@ the onboarding tools, by name. Disabling an org
 `uv run sc access disconnect` revokes SwarmCloud's access at GitHub: both have no tool, take a typed
 confirmation and ignore `SWARM_ASSUME_YES`. `tests/unit/mcp/test_setup_and_access.py`
 holds the flow against a fake API, including that no secret is printed.
+
+## Registered MCP servers: by name, and a per-run credential the agent never sees
+
+A workspace can register its own MCP server (a knowledge base, a decision log)
+so a task's agent queries it during its run and writes back through it
+([docs/design/registered-mcp-servers.md](../docs/design/registered-mcp-servers.md),
+#1433). **Until the deployment sets `SWARM_MCP_SERVERS=on`, SwarmCloud refuses
+every `mcp_servers` with `mcp_unavailable`**; nothing below changes a dispatch
+that names none.
+
+* **Which servers exist:** `swarm_mcp_servers`, or `/sc mcp-servers` (`uv run
+  sc mcp-servers [--json]`). Each server's name, URL, auth mode, allowed
+  profiles and tools (none listed means every tool), whether it is enabled, and
+  the egress addresses its operator allowlists. Read-only.
+* **Naming one:** a claude-code or codex task or workflow step puts the names in
+  its declared input, `"inputs": {"mcp_servers": ["kb"]}`. Never a URL, a header
+  or a command: those come from the registration (invariant 10).
+* **A per-run credential:** a server registered with auth `dispatch` needs one,
+  minted by your application for this run, in the call's top-level
+  `mcp_credentials`, `{"kb": {"value": "<credential>", "expires_in": 3600}}`:
+  `swarm_dispatch` takes it beside `prompt`, each entry of `tasks` takes its
+  own, and `swarm_workflow` takes ONE map, beside `steps` or the spec, for
+  every step naming that server. SwarmCloud stores it in Secret Manager,
+  destroys it when the task ends, and hands it only to the worker's relay,
+  never to the agent.
+* **Never in a spec.** A spec is written to disk, held by `spec_ref` and copied
+  into a run script, so a spec carrying `mcp_credentials` is refused, without
+  repeating it. A workflow that needs a credential is submitted with
+  `swarm_workflow` and the map beside the spec, then given rows with
+  `/sc attach`.
+* **Nothing here registers a server or stores a long-lived credential.** An admin
+  registers a server in the console (Settings › Workspace › MCP servers), and a
+  `workspace_secret` server's key is a workspace secret granted to `mcp:<name>`.
+  No tool's schema has a field either would fit in.
+* **No log of this plugin holds a credential:** not a reply, a refusal, the
+  dispatch signature, a run copy or `launched.jsonl`. Every answer is cut to
+  `{server, expires_at}` per credential before anything reads it, whatever the
+  API sent, and a refusal names the field and the rule, never the value: a
+  credential pasted into `mcp_servers` by mistake is refused without being
+  repeated.
+
+`tests/unit/mcp/test_mcp_servers_tool.py` holds all of this against a fake API
+that echoes every body back, searching every reply and every file a dispatch
+wrote for a credential built at runtime.
 
 ## Your TypeSafe key: set it without Claude seeing it
 

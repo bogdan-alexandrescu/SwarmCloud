@@ -10,6 +10,14 @@ address, and admin items are derived only when `is_admin` says so. Not in
 `auth.CONTINUATION_ROUTES`, so a continuation-scoped account, the rollup
 sweeper and the schedule tick are refused: they are not people. Nothing here
 takes or returns a credential, an image, a command or a resource spec.
+
+The person's mutes and reminder (docs/design/user-profile.md §4.6, PROFILE-BELL)
+are the ones authentication already read, `AuthContext.preferences`: no route
+here reads the preferences document a second time. When they could not be
+read, a request that named no workspace never reaches these routes (it is 503
+`preferences_unavailable` from `auth.require_known_default`, because the bell's
+items are a workspace's and that workspace is not known), and one that named
+its workspace is served unfiltered, at `as_set`, with `partial: true`.
 """
 
 from __future__ import annotations
@@ -22,6 +30,7 @@ from pydantic import Field, StringConstraints
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, tenant_scope
 from ..notifications import MAX_ID_CHARS, MAX_IDS, Notifications, Viewer
+from ..preferences import DEFAULT_REMINDER
 from ..schemas import StrictModel
 
 router = APIRouter(prefix="/v1/notifications", tags=["notifications"])
@@ -38,8 +47,15 @@ def _service(ctx: AppContext) -> Notifications:
 
 
 def _viewer(auth: AuthContext, tenant_id: str) -> Viewer:
+    prefs = auth.preferences
     return Viewer(email=auth.email, tenant_id=tenant_id, is_admin=auth.is_admin,
-                  is_owner=auth.is_owner, member_scope=bool(auth.member_scope))
+                  is_owner=auth.is_owner, member_scope=bool(auth.member_scope),
+                  muted=frozenset(prefs.muted) if prefs else frozenset(),
+                  reminder=prefs.reminder if prefs else DEFAULT_REMINDER,
+                  # None also for a caller whose preferences are never read (no
+                  # key configured, a service identity): only "unavailable" is
+                  # a read that failed.
+                  preferences_unread=prefs is None and auth.default_source == "unavailable")
 
 
 @router.get("")
@@ -49,7 +65,8 @@ def get_notifications(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     """Needs-you items oldest first, then at most 50 updates of the last 7
-    days newest first; `partial: true` when a source could not be read."""
+    days newest first, less the caller's muted topics (counted in `muted`);
+    `partial: true` when a source or the preferences could not be read."""
     return _service(ctx).feed(_viewer(auth, tenant_id))
 
 

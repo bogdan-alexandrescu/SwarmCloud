@@ -387,7 +387,10 @@ def test_a_launch_writes_a_copy_of_run_js_named_after_the_workflow(_plugin_root,
     meta = _meta_of(script)
     assert meta["name"] == reply["title"] == workflows.workflow_title(workflows.title_name(label=_LONG_LABEL), 3)
     assert len(meta["name"]) <= workflows.TITLE_CHARS
-    assert meta["name"] in meta["description"]
+    # SC-DESC-DETAILS: the description leads with the run's details, then
+    # the name, clipped from the end at DESCRIPTION_CHARS.
+    assert meta["description"].startswith("Workspace: ")
+    assert meta["name"][:60] in meta["description"]
     assert meta["phases"] == _meta_of(_RUN_JS)["phases"]
     # Everything but the name and the description is run.js, byte for byte.
     copy, original = script.read_text().splitlines(), _RUN_JS.read_text().splitlines()
@@ -438,7 +441,7 @@ def test_an_attach_launch_takes_the_stored_title_else_the_unit_else_the_id(_plug
                          (_stored(), "wf_9")):
         reply = json.loads(server._call(_Recorder(stored), "swarm_workflow_launch", {"attach": "wf_9"}))
         assert reply["title"] == f"SC · {name} · 2 steps"
-        assert reply["args"] == {"attach": "wf_9", "title": name}
+        assert reply["args"] == {"attach": "wf_9", "title": name, "titled_copy": reply["script_path"]}
         assert _meta_of(Path(reply["script_path"]))["name"] == reply["title"]
 
 
@@ -454,8 +457,10 @@ def test_the_status_read_carries_the_stored_title_and_label():
 
 def test_attach_all_in_run_js_lists_and_hands_back_one_attach_call_per_workflow(tmp_path):
     listed = {"count": 2, "error": None, "workflows": [
-        {"workflow_id": "wf_a", "label": "alpha", "title": None, "state": "RUNNING", "console": None},
-        {"workflow_id": "wf_b", "label": "beta", "title": "Beta!", "state": "RUNNING", "console": None},
+        {"workflow_id": "wf_a", "label": "alpha", "title": None, "state": "RUNNING", "console": None,
+         "this_session": True},
+        {"workflow_id": "wf_b", "label": "beta", "title": "Beta!", "state": "RUNNING", "console": None,
+         "this_session": True},
     ]}
     got = _run(tmp_path, {"attach": "all"}, {"LIST": listed})
     assert [c["prompt"] for c in got["calls"]] == ["LIST"], "no workflow is attached inside this one run"
@@ -464,17 +469,33 @@ def test_attach_all_in_run_js_lists_and_hands_back_one_attach_call_per_workflow(
     assert result["attach_calls"] == [{"attach": "wf_a", "title": "alpha"}, {"attach": "wf_b", "title": "Beta!"}]
 
 
-def test_attach_all_through_the_bridge_writes_one_run_per_workflow(_plugin_root, monkeypatch):
+#: The Claude Code session these listings were submitted by: `/sc attach
+#: --all` attaches only that session's work (SC-SESSION-SCOPE; the scope
+#: itself is held in tests/unit/mcp/test_sc_session_scope.py).
+SESSION = "11111111-2222-4333-8444-555555555555"
+
+
+@pytest.fixture
+def _this_session(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", SESSION)
+
+
+def test_attach_all_through_the_bridge_writes_one_run_per_workflow(_plugin_root, monkeypatch, _this_session):
     from swarm_mcp import sc
 
     listing = {"count": 2, "complete": True, "workflows": [
-        {"workflow_id": "wf_a", "label": "alpha", "title": None, "steps_total": 3, "console": None},
-        {"workflow_id": "wf_b", "label": "beta", "title": "Beta!", "steps_total": 2, "console": None},
+        {"workflow_id": "wf_a", "label": "alpha", "title": None, "steps_total": 3, "console": None,
+         "claude_session": SESSION},
+        {"workflow_id": "wf_b", "label": "beta", "title": "Beta!", "steps_total": 2, "console": None,
+         "claude_session": SESSION},
     ]}
     monkeypatch.setattr(sc, "running_workflows", lambda client: listing)
     reply = json.loads(server._call(_Recorder(), "swarm_workflow_launch", {"attach": "all"}))
     launches = reply["launches"]
-    assert [l["args"] for l in launches] == [{"attach": "wf_a", "title": "alpha"}, {"attach": "wf_b", "title": "Beta!"}]
+    assert [l["args"] for l in launches] == [
+        {"attach": "wf_a", "title": "alpha", "titled_copy": launches[0]["script_path"]},
+        {"attach": "wf_b", "title": "Beta!", "titled_copy": launches[1]["script_path"]},
+    ]
     assert [l["title"] for l in launches] == ["SC · alpha · 3 steps", "SC · Beta! · 2 steps"]
     paths = {l["script_path"] for l in launches}
     assert len(paths) == 2, "two runs, two scripts: never one counter over both"

@@ -57,6 +57,8 @@ APPLY = KUBERNETES / "apply.sh"
 LIVE_EGRESS_FILE = "network-policies/allow-live-egress.yaml"
 PROXY_EGRESS_FILE = "network-policies/allow-egress-proxy.yaml"
 JUDGE_EGRESS_FILE = "network-policies/allow-judge-egress.yaml"
+GRAPH_EGRESS_FILE = "network-policies/allow-graph-service.yaml"
+TYPESAFE_FWD_FILE = "network-policies/allow-typesafe-fwd.yaml"
 SYSTEM_FILE = "network-policies/swarm-system-live.yaml"
 
 #: A swarm-api subnet range that appears nowhere in the repository, so a
@@ -212,7 +214,9 @@ PRE_L6_DIGESTS = {
     "network-policies/default-deny.yaml": "3cafd43f2f6c5412cc53eeb2f222bd4d9a5f84c688bfaa79f027125bc33bbb68",
     "network-policies/allow-egress.yaml": "0a3754646d11bba7a0abb3961b8f9c3ac698f7ae1ca19f2b1d95cc0d26382d28",
 }
-PRE_L6_TENANT_RENDER = "91fad5854e2d1cc9ad0fac3a528641350ef75184a866538a20de7e80b8f66ad8"
+#: Re-read for CACHE-PVC (2026-10-15): the tenant ResourceQuota admits one cache
+#: PVC per Job on the cache's StorageClass, where it held PVCs at 0.
+PRE_L6_TENANT_RENDER = "6619902dc7ca4e4ca2b94d16bfd9334b225864f24b11789e00bb803ac73de23f"
 
 
 def _tenant_values() -> dict[str, str]:
@@ -234,10 +238,13 @@ def test_the_live_policy_is_purely_appended_to_the_tenant_render():
     values = _tenant_values()
     files = _render().TENANT_FILES
     at = files.index(LIVE_EGRESS_FILE)
-    # Only browser egress's policy (docs/browser-egress.md §2.5) and the
-    # internal judge's (lane JUDGE-NET) may follow it, appended the same way,
-    # so everything before the live path still renders as it did before L6.
-    assert files[at + 1:] == (PROXY_EGRESS_FILE, JUDGE_EGRESS_FILE)
+    # Only browser egress's policy (docs/browser-egress.md §2.5), the
+    # internal judge's (lane JUDGE-NET), the graph service's (lane GS-INFRA)
+    # and the TypeSafe forwarder's (lane TS-MIGRATE-POD) may follow it,
+    # appended the same way, so everything before the live path still renders
+    # as it did before L6.
+    assert files[at + 1:] == (PROXY_EGRESS_FILE, JUDGE_EGRESS_FILE, GRAPH_EGRESS_FILE,
+                              TYPESAFE_FWD_FILE)
     before = _render().render_files(files[:at], values)
     assert hashlib.sha256(before.encode()).hexdigest() == PRE_L6_TENANT_RENDER
     with_live = _render().render_files(files[:at + 1], values)
@@ -246,9 +253,15 @@ def test_the_live_policy_is_purely_appended_to_the_tenant_render():
     with_proxy = _render().render_files(files[:at + 2], values)
     proxy = _render().render_files((PROXY_EGRESS_FILE,), values)
     assert with_proxy == with_live.rstrip("\n") + "\n---\n" + proxy
-    after = _render().render_files(files, values)
+    with_judge = _render().render_files(files[:at + 3], values)
     judge = _render().render_files((JUDGE_EGRESS_FILE,), values)
-    assert after == with_proxy.rstrip("\n") + "\n---\n" + judge
+    assert with_judge == with_proxy.rstrip("\n") + "\n---\n" + judge
+    with_graph = _render().render_files(files[:at + 4], values)
+    graph = _render().render_files((GRAPH_EGRESS_FILE,), values)
+    assert with_graph == with_judge.rstrip("\n") + "\n---\n" + graph
+    after = _render().render_files(files, values)
+    typesafe = _render().render_files((TYPESAFE_FWD_FILE,), values)
+    assert after == with_graph.rstrip("\n") + "\n---\n" + typesafe
 
 
 def test_the_workspace_deployer_may_write_the_new_tenant_policy():

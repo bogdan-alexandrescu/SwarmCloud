@@ -39,7 +39,7 @@ const { Run } = await import('../AgentDetail')
 
 const CLASSES: ResourceClasses = {
   standard: { name: 'standard', cpu: 4, memory_gib: 8, disk_gib: 4, units: 1 },
-  browser: { name: 'browser', cpu: 8, memory_gib: 16, disk_gib: 8, units: 2 },
+  browser: { name: 'browser', cpu: 4, memory_gib: 8, disk_gib: 4, units: 1 },
   large: { name: 'large', cpu: 8, memory_gib: 32, disk_gib: 16, units: 4 },
 }
 

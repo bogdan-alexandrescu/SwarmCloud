@@ -24,8 +24,9 @@ Three reasons, in the order they cost the most:
    client silently drops manifest fields — and a Homebrew checkov 3.3.10 that
    raises on import and shadows the 3.3.17 the checks need. `common.sh` carries
    `kubectl_bin` and `prefer_local_bin` precisely because of those two. The
-   runner is pinned to `ubuntu-24.04` with a pinned tool version per job; the
-   laptop is whatever it has drifted into since the last `brew upgrade`.
+   runner is a known image (the `bogdan-ci` VM image, or GitHub-hosted
+   `ubuntu-24.04`; see [Where jobs run](#where-jobs-run)) with a pinned tool
+   version per job; the laptop is whatever it has drifted into since the last `brew upgrade`.
 2. **A gate that runs in one place can be believed by everyone.** A mutation
    proven in CI is proven for every future reader of the branch. A mutation
    proven on a laptop is proven once, to one person, and the proof is a sentence
@@ -63,6 +64,184 @@ Three details in that table are easy to misread and each has bitten someone:
 * **`security.yml` has no path filter at all**, so it runs on every pull
   request. It is the one workflow that cannot be avoided by touching the wrong
   directory, which is deliberate for a security gate.
+
+## Where jobs run
+
+Owner decision, 2026-10-14: *"make sure we use CI runners for all jobs moving
+forward if capacity allows"*. GitHub-hosted `ubuntu-24.04` had saturated (76
+jobs queued at 13:05Z) while the self-hosted pool had room. That pool is
+ephemeral GCE VMs with the `bogdan-ci` label (e2-standard-8, one VM per job,
+image built by sagaxyz/ai-studio `deploy/ci-runners/vm/provision-image.sh`).
+
+**Every job runs on the pool except one class: jobs that hold a Google cloud
+identity through workload identity** (`id-token: write` with
+`google-github-actions/auth`). Those are the release, hotfix and acceptance
+jobs that deploy or touch the cloud, `build images`, `terraform plan`, the
+IAM refusal probe, the CI fixer and the scheduled image scan. They stay
+GitHub-hosted, the rule PR 1184 set for release.yml.
+
+Every other job spells `runs-on` as one guarded expression:
+
+```
+${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+```
+
+* **A fork's pull request never reaches the VMs** (owner decision 2026-10-12).
+  The repository is public, and a returning contributor's fork PR runs
+  without approval.
+**The short form, for three workflows no fork can start.** accept.yml,
+auto-merge.yml and merge-train.yml (schedule, `workflow_run` of a `train/`
+branch, dispatch; no `pull_request`) spell `runs-on` without the fork clause:
+
+```
+${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+```
+
+The long form's text cannot sit in those files: test_auto_merge_workflow.py
+forbids `pull_request.head.repo` in auto-merge.yml (the workflow must never
+touch a pull request's code, so it must not even read the fork's repository),
+and test_acceptance_target.py forbids `github.repository` anywhere in
+accept.yml (it must not name the public repository). The clause is dead weight
+there anyway, because of the triggers:
+
+* accept.yml starts from `workflow_run` (a completed release on main) and
+  `workflow_dispatch` only, never from a pull request.
+* auto-merge.yml runs on `pull_request_target` (the base branch's own workflow
+  file, with no checkout of the pull request), `workflow_run`, `check_suite`
+  and dispatch. It has no `pull_request` trigger, the only event that runs a
+  fork's copy of a workflow file.
+
+Every other workflow can be started by a fork's `pull_request`, so it keeps the
+long form. The short form is accepted only for a file listed in
+`SHORT_FORM_WORKFLOWS` in the test, and only while that file's `on:` has no
+`pull_request`: adding one makes the test fail, which is the reminder to put
+the fork clause back.
+
+* **The capacity escape hatch.** Set the repo variable `SELF_HOSTED_CI` to
+  `off` (`gh variable set SELF_HOSTED_CI --body off`) and every guarded job
+  goes back to `ubuntu-24.04`. Use it when the pool is down or out of quota.
+  Its default is `on`, and an unset variable also means the pool.
+
+**Secrets on the VMs: the residual risk, accepted.** Two kinds of job hold a
+repository secret and run on the pool all the same:
+
+* auto-merge.yml `enable` and `disable`, and merge-train.yml `tick`, hold the
+  merge App's private key (`secrets.MERGE_APP_PRIVATE_KEY`, with
+  `vars.MERGE_APP_ID`);
+* accept.yml `sandbox` and `sandbox-results` hold `SWARM_SANDBOX_GITHUB_TOKEN`.
+
+While such a job runs, its secret is in the VM's memory and on its disk.
+Anyone with IAP SSH (the VMs' one ingress rule) or disk-snapshot rights in
+saga-ci-runners could read it there. The VM is single-use and is deleted
+afterwards, but that window is real. The owner accepted it on 2026-10-14. No
+other secret may go on a guarded job.
+
+`tests/unit/scripts/test_fork_prs_off_self_hosted.py` holds all of this:
+
+* every job is either on the guarded expression or listed as hosted, with a
+  reason the test checks against the job;
+* no guarded job has `id-token: write`;
+* no guarded job holds a secret beyond its `GUARDED_SECRETS` entry;
+* the expression is evaluated for push, same-repository and fork pull
+  requests, with the hatch on and off;
+* the short form is accepted only for the `SHORT_FORM_WORKFLOWS` files, whose
+  triggers it reads from the workflow itself.
+
+A new job that silently uses a hosted image fails CI, and so does one that
+puts a credential on the pool.
+
+What the VM image differs in: `/usr/local/bin` is not writable by the
+runner user, so a job installs a tool into `$RUNNER_TEMP` (security.yml does
+this for trivy, which is installed by an explicit pinned step rather than
+aquasecurity/trivy-action: that action restores its binary from a cache at
+`/home/runner/.local/bin`, which the VM does not have, so the scan found no
+`trivy`; and the shell job installs kubectl with azure/setup-kubectl, since
+the VM has none). It has `gh`, `unzip`, docker with buildx, `jq` and
+`shellcheck`, passwordless sudo, and a writable tool cache. Anything else
+comes from a setup action.
+
+### CI falls back to GitHub-hosted runners on its own
+
+Measured 2026-10-17 (part of #1483): runner-dispatcher registers the pool's
+runners as the owner's GitHub user. When that user's quota ran out
+(`generate-jitconfig` 403 from 02:00 UTC) its sweep read
+`per_target: {swarmcloud: 0}`, and every pull request's checks stayed queued
+for hours until someone set the escape hatch by hand. The hatch is now set by
+`.github/workflows/runner-fallback.yml`, every 10 minutes and on dispatch:
+
+* **Off.** A job of another workflow that asked for `bogdan-ci` has been
+  queued more than 10 minutes, and no `bogdan-ci` job is running or started
+  in that time: the judge sets `SELF_HOSTED_CI=off`, then cancels every run
+  still queued on the pool and re-runs its cancelled jobs, so they land on
+  `ubuntu-24.04`. **A run with any job in progress is never cancelled**
+  (cancelling a run cancels all of it, and a release, accept or hotfix run
+  can have a hosted deploy running while a later job waits for the pool): it
+  is a "held: run N has a job in progress" summary line and is reconsidered
+  next tick. One run that cannot be cancelled or re-run (finished meanwhile,
+  needs fork approval, too old; `rerun-failed-jobs` answering 403, 409 or
+  422 is "nothing to re-run") is a summary line naming the run and the
+  status, and the loop goes on. No new run is started after 10 minutes, so
+  the job ends inside its 15-minute timeout; the summary says how many were
+  left for the next tick. A run is re-run once: one whose latest attempt
+  `github-actions[bot]` started is not touched again. A job queued on a
+  hosted label never counts, because hosted saturation is why the pool
+  exists.
+* **On again.** While the hatch is off nothing asks the pool for a runner,
+  and the dispatcher starts one VM per queued job, so an empty runner list
+  says nothing. So the workflow's `probe` job, the one job that targets
+  `bogdan-ci` directly, runs only while the hatch is off. When every probe
+  since the flip has been picked up for at least 15 minutes, two probes or
+  more, the judge sets the variable back to `on`. It writes `on`, the
+  default, rather than deleting it, because the variable's `updated_at` is
+  the hysteresis clock. A probe still queued after 10 minutes breaks the
+  streak, and the judge cancels its run.
+* **Hysteresis.** The variable never changes more than once per 30 minutes.
+  A flip that is due but held is logged too.
+* **The thresholds** are `QUEUED_MINUTES`, `RECOVER_MINUTES` and
+  `HYSTERESIS_MINUTES` in the workflow's `env`.
+  `tests/unit/scripts/test_runner_fallback_workflow.py` pins them and runs
+  the judge's own decision function against fake GitHub answers.
+
+Every flip, held flip and re-run is a line in the run's job summary.
+
+**Calls per tick.** The reads are ordered by cost. The judge reads the
+variable and the queued runs first (2 calls, plus one per extra 100 runs, up
+to 5 pages). With the hatch on and no queued run older than 10 minutes, which
+is the steady state, the tick ends there: **2 calls**, no job listed. The
+price of that is that a pool job queued inside a run that is already in
+progress is only seen once some queued run is older than 10 minutes. In an
+outage (hatch off, or a queued run older than 10 minutes) it also lists the
+in-progress runs (1 call) and the jobs of every active run (1 call each),
+and while off the probe runs of the last 2 hours and their jobs (1 + up to
+30 calls); each re-run is then about 3 calls plus up to 24 status polls. All
+of it is the workflow's GITHUB_TOKEN, not a person's quota.
+
+**The judge never runs on the pool it judges.** It is pinned to
+`ubuntu-24.04` and does not follow the hatch, because a judge queued behind
+the outage could never report it. Hosted minutes are free on a public
+repository.
+
+**Two tokens.** The GITHUB_TOKEN carries `actions: write` and nothing else:
+it reads runs and jobs, cancels and re-runs. It has no `variables` scope, so
+the variable is read and written with the merge App's installation token,
+minted with `permission-variables: write` only. That token draws on the App's
+quota, not a person's. **Owner step, once:** give the merge App the
+repository permission *Variables: Read and write*
+([runbook](runbooks/merge-app.md)). Until then the token mint fails and the
+run is red. A red run is how a missing permission shows itself, and the hatch
+can still be set by hand.
+
+**A hand-set `off` does not stick.** The judge reverts it once the probes
+show 15 minutes of service. To pin the hatch, set the repository variable
+`RUNNER_FALLBACK` to `manual`: the judge still reads and writes its summary,
+saying what it *would* do, but never flips `SELF_HOSTED_CI`, never cancels a
+run and never re-runs one. Unset, or any other value, is automatic. The
+reason it exists: an operator holding CI on hosted runners on purpose, for
+example while the dispatcher is being replaced, must not be flipped back
+because the old pool happens to answer a probe. Delete the variable (or set
+it to `auto`) to hand the hatch back to the judge. Disabling the workflow
+(`gh workflow disable runner-fallback.yml`) also stops it, but loses the
+summary.
 
 ## Why terraform does not plan on a pull request
 
@@ -1026,8 +1205,10 @@ held the lock, and every later push queued behind it. `release-dev` is
   whose `verify` did not succeed starts nothing that promotes, applies or
   deploys. On a push, the plugin tag waits for `images and scan`, which found
   CI's record.
-* **C. The five groups run in parallel**, as matrix jobs with `fail-fast:
-  false`, one swarm-verify execution each.
+* **C. The groups run in parallel**, as matrix jobs with `fail-fast:
+  false`, one swarm-verify execution each. There were five when this was
+  measured; six run now (git-tools joined, and live-browser left for its own
+  schedule), in the two waves below.
 
 ### Six at once does not fit, so it is two waves
 
@@ -1055,8 +1236,8 @@ run in **two waves**:
   when wave 1 ends, whatever wave 1 concluded.
 
 `test_each_wave_fits_the_smoke_tenant_s_ceiling` reads the ceiling from
-`dev.tfvars`. It fails if a wave's peaks exceed it, and also if all five
-would fit in one wave.
+`dev.tfvars`. It fails if a wave's peaks exceed it, and also if all six
+groups would fit in one wave.
 
 ### live-browser runs on a schedule
 
@@ -1620,7 +1801,7 @@ exercised, and this is what was found, not proof that there is nothing else.
 | 3 | `roles/iam.serviceAccountAdmin` (unscopable) carries `iam.serviceAccounts.setIamPolicy`. CI can grant itself `serviceAccountTokenCreator` on an account that reads logs (the compute account above, or `209012342332@cloudbuild`, which holds `roles/cloudbuild.builds.builder`) and act as it. | **not by a condition, which cannot scope IAM resources; closed by granting the role per account** (#334, owner decision 2026-09-29): only on the accounts `terraform/infra` manages, none of which reads logs ([below](#the-deployers-service-account-grants)). **Closed once applied.** |
 | 4 | `roles/logging.configWriter` keeps sinks and exclusions project-wide even when scoped. A sink can route every log to a `swarm-` bucket (`storage.admin`) or a Pub/Sub topic (`pubsub.admin`) that CI reads. | **no** |
 | 5 | `roles/logging.configWriter` unconditioned holds `logging.views.update`: CI can rewrite this view's filter, or make another view, and read the result through the grant. | yes, once `roles/logging.configWriter` is in `deployer_scoped_roles` |
-| 6 | `roles/resourcemanager.projectIamAdmin` unconditioned lets CI grant itself `roles/logging.viewer`, or any other role that reads logs. Scoped, it may modify only the roles terraform/infra grants: 14 since 2026-09-25, when `swarmSecretLister` left the list (#69) because its project-wide `secrets.setIamPolicy` reaches the other team's secrets and `terraform/bootstrap` now makes the broker's grant of it. None of the 14 reads a log entry: the nine predefined ones are absent from [`log-reading-roles.json`](../terraform/bootstrap/log-reading-roles.json), and the five custom ones carry no `logging.` permission ([`platform_roles.tf`](../terraform/bootstrap/platform_roles.tf)). | yes, once `roles/resourcemanager.projectIamAdmin` is in `deployer_scoped_roles` **and** route 2 is closed. Before route 2 closes, `roleAdmin` could widen one of the grantable custom roles, or add `resourcemanager.projects.setIamPolicy` to a role CI holds unconditioned, and the condition would never be evaluated. Route 2 closed with the owner's bootstrap apply of 2026-09-28 in [the runbook](runbooks/custom-roles-to-bootstrap.md#what-actually-happened-dates). |
+| 6 | `roles/resourcemanager.projectIamAdmin` unconditioned lets CI grant itself `roles/logging.viewer`, or any other role that reads logs. Scoped, it may modify only the roles terraform/infra grants: 15 since #1430 turned `swarmGithubHooksDedup` on (14 from 2026-09-25, when `swarmSecretLister` left the list (#69) because its project-wide `secrets.setIamPolicy` reaches the other team's secrets and `terraform/bootstrap` now makes the broker's grant of it). None of the 15 reads a log entry: the nine predefined ones are absent from [`log-reading-roles.json`](../terraform/bootstrap/log-reading-roles.json), the five custom ones carry no `logging.` permission ([`platform_roles.tf`](../terraform/bootstrap/platform_roles.tf)), and `swarmGithubHooksDedup` holds `datastore.entities.create` alone ([`github_hooks_role.tf`](../terraform/bootstrap/github_hooks_role.tf)). | yes, once `roles/resourcemanager.projectIamAdmin` is in `deployer_scoped_roles` **and** route 2 is closed. Before route 2 closes, `roleAdmin` could widen one of the grantable custom roles, or add `resourcemanager.projects.setIamPolicy` to a role CI holds unconditioned, and the condition would never be evaluated. Route 2 closed with the owner's bootstrap apply of 2026-09-28 in [the runbook](runbooks/custom-roles-to-bootstrap.md#what-actually-happened-dates). |
 
 What bounds routes 1 and 4 today is the ref pin, not IAM: only a workflow
 on `refs/heads/main` can mint the deployer's token, so each route has to be
@@ -1807,8 +1988,8 @@ Once PR #73's targeted apply lands, the deployer's `projectIamAdmin` carries the
 `modifiedGrantsByRole` condition in
 [`deployer_conditions.tf`](../terraform/bootstrap/deployer_conditions.tf) --
 as of #275, chunked into two bindings rather than one: `hasOnly()` refuses a
-list over 10 elements, and the 14 grantable roles (15 until #150 took
-`swarmSecretLister` off) do not fit in a single call. Every chunk still authorises only a `setIamPolicy` whose modified
+list over 10 elements, and the 15 grantable roles (14 until #1430 turned
+`swarmGithubHooksDedup` on, and 15 until #150 took `swarmSecretLister` off) do not fit in a single call. Every chunk still authorises only a `setIamPolicy` whose modified
 roles stay inside it, which is what each Terraform-issued call already does.
 
 **The live project also still holds the deployer's UNCONDITIONED
@@ -1893,7 +2074,7 @@ whole expression is matched, and the list is parsed, for that reason. Before
   show that the route is shut: what shuts it is the binding's absence, since
   the owner's bootstrap apply of 2026-09-28 destroyed it.
 * **Who a listed role goes to.** `hasOnly` limits which roles change, not whose
-  grant changes. CI can still grant any of the 14, unconditioned, to
+  grant changes. CI can still grant any of the 15, unconditioned, to
   anyone.
 * **Routes through other identities.** Routes 1 and 3 in
   [the table above](#what-the-view-does-not-bound-the-deployer-can-reach-every-log)
@@ -2428,6 +2609,26 @@ it in its group, so a burst of finishing runs must not cancel a queued
 `synchronize` run of the `disable` job. An operator can send the same
 dispatch by hand (Actions → auto-merge → *Run workflow*, `pr`) to make it
 look again; it is a request to look, not a `ready`.
+
+### `ready-on-green` is marked `ready` by CI, not by a session
+
+Owner decision, 2026-10-17: on that day an operator's laptop ran ~20 watcher
+loops (`gh pr view` every 60-90 s per pull request) only to add `ready` once
+a pull request went green, spending the owner's personal GitHub quota. A pull
+request labelled `ready-on-green` now gets that from the `ready-on-green` job
+in `auto-merge.yml`. It runs on the events `requeue` runs on (a pull
+request's `workflow_run` finishing, any `check_suite`), for the
+`ready-on-green` pull requests at that head, and every 15 minutes for all of
+them as the backstop. Green is judged at the head GitHub reports for each
+pull request with main's `scripts/merge-train.sh judge`: every required
+check finished well and nothing that ran failed. The head is read again just
+before labelling, so a push since is not promoted. Green adds `ready` and
+removes `ready-on-green` with the merge App's token, never the GITHUB_TOKEN:
+GitHub raises no `labeled` event for a label the GITHUB_TOKEN adds, so the
+`enable` job, and with it auto-merge, would never start. A red head is left
+alone, with one comment per head naming the failing checks; a `[swarm]
+task_` title is skipped, as the gate would refuse it; without the merge App
+the job does not run.
 
 ### Why the merge uses a GitHub App token, not the GITHUB_TOKEN
 
@@ -3875,12 +4076,14 @@ demonstrate that — not by running the mutation here.
 
 The laptop rule above does not bind an agent in a SwarmCloud container
 (CLAUDE.md, "A SwarmCloud agent is not this machine"): it runs the unit tests
-for its area, then this one command:
+for its area, then this one command (as `--shard` parts when its selection
+is heavy, below):
 
 ```bash
 scripts/changed-guards.sh            # diff = origin/main...HEAD + work tree
 scripts/changed-guards.sh --list     # print the selection, run nothing
 scripts/changed-guards.sh --base <rev> | --files <list>|-
+scripts/changed-guards.sh --shard k/n  # run the k-th of n parts of the selection
 ```
 
 **Why.** On 2026-10-05, 33 of 131 lane PRs (25%) were red on their first CI
@@ -3899,10 +4102,33 @@ text names a changed path by repo-relative path or basename. A generic basename
 half the suite. It runs them in **one** `pytest -q -n auto -p no:warnings` call
 (collecting `tests/unit/scripts` whole costs ~135 s, so files, not
 directories), then `scripts/lib/check-contract-parity.sh`, with 540 s and 60 s
-deadlines so the whole stays under the ten minutes a lane allows a command. It
+deadlines so one call stays under the ten minutes a lane allows a command. It
 prints the last lines of the output and keeps the full log only on failure. An
 empty diff runs nothing and exits 0; a base that does not resolve exits 2
 rather than reading as an empty diff.
+
+**A heavy selection runs in parts, each under the 540 s limit** (#1334, PR
+1415). The 540 s is not raised for a selection that needs longer: lane
+GS-HOOKS's 79 files (2,603 tests) all passed in 595 s on 6 cores, and past
+600 s an agent's own command limit kills the run with no `ran past` line and
+no faulthandler frames to name what held it. So the script weighs its
+selection in CI-seconds from `tests/unit/scripts/unit_test_durations.json` (a
+file with no weight counts at the median) and, past `SHARD_HINT_WEIGHT` (540
+CI-seconds, about 400 s in a 6-core container, measured 2026-10-16 at ~0.73 s
+a CI-second), it does not make one call:
+
+* **Without `--shard`** it warns, then runs the selection as
+  ⌈weight / 540⌉ parts (at least two), **one after another**, each its own
+  pytest call under the 540 s limit, so a hang still ends and a passing
+  selection completes however many files it names. The whole run is then up
+  to parts × 540 s: longer than ten minutes, by design. It exits 1 if any part
+  failed.
+* **`--shard k/n`** runs the k-th of n parts alone. The parts are cut the way
+  CI cuts its unit shards (longest file first onto the lightest part), and the
+  cut is deterministic, so the n commands together run every selected file
+  once; the contract-parity check runs in part 1 only. An agent whose command
+  limit is ten minutes runs the parts this way, as n separate commands: the
+  warning prints the exact `--shard 1/n ... --shard n/n` lines to run.
 
 **When it runs past 540 s it names the test** (box 102 of #888: lanes SPEC-GKE
 and BRIDGE-BACKEND hit the cap on 2026-10-08 and nothing said which test held

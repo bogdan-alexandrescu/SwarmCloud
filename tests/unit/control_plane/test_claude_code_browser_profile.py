@@ -90,15 +90,19 @@ def test_the_profile_is_claude_code_on_the_browser_image():
         if getattr(profile, f.name) != getattr(claude, f.name)
     )
     # `live_browser` is contract request 71 (LB-D, #1030): the one live profile.
-    assert differ == ["image", "live_browser", "name", "resource_class"], (
+    # `inputs` is contract request 77 (BSTATUS-API): claude-code's plus `browser_tool`.
+    assert differ == ["image", "inputs", "live_browser", "name", "resource_class"], (
         f"the owner's decision was claude-code with its name, image and class changed, "
-        f"and live_browser set (request 71); {differ} differ"
+        f"live_browser set (request 71) and browser_tool declared (request 77); {differ} differ"
     )
+    extra = dict(profile.inputs)
+    assert extra.pop("browser_tool").choices == ("auto", "playwright", "dev-browser", "jev")
+    assert extra == dict(claude.inputs)
     assert profile.live_browser is True
     assert profile.image == "agent-runtime-browser"
     assert profile.image == RUNNER_PROFILES["browser"].image
     assert profile.resource_class == "browser"
-    assert RESOURCE_CLASSES["browser"].units == 2
+    assert RESOURCE_CLASSES["browser"].units == 1  # contract request 79
     assert profile.runner_argv == ("python", "-m", "agent_worker.runners.claude_code")
     assert profile.available
     assert DOCKERFILE.is_file()
@@ -122,8 +126,10 @@ def test_it_is_selectable_by_name():
 
 
 def test_it_accepts_the_issue_input_like_claude_code():
-    assert set(RUNNER_PROFILES[PROFILE].inputs) == {"issue"}
-    assert RUNNER_PROFILES[PROFILE].inputs == RUNNER_PROFILES["claude-code"].inputs
+    # And `browser_tool` besides, by contract request 77 (BSTATUS-API), and
+    # `mcp_servers`, by contract request 88 (MCP-CONTRACT).
+    assert set(RUNNER_PROFILES[PROFILE].inputs) == {"issue", "browser_tool", "mcp_servers"}
+    assert RUNNER_PROFILES[PROFILE].inputs["issue"] == RUNNER_PROFILES["claude-code"].inputs["issue"]
     assert check_inputs(RUNNER_PROFILES[PROFILE], {"issue": 42}) == {"issue": 42}
     assert check_inputs(RUNNER_PROFILES[PROFILE], {"issue": 42.0}) == {"issue": 42}
     with pytest.raises(InputRefused):
@@ -240,7 +246,7 @@ def test_the_agents_bash_tool_inherits_swarm_handoff_and_the_cdp_endpoint(monkey
     monkeypatch.setenv("SWARM_BROWSER_UPLOADS", "/run/swarm/uploads")
     # JUDGE-SELECT's two, so every name the hand-off passes is present.
     monkeypatch.setenv("SWARM_JEV_BACKEND", "internal-laya")
-    monkeypatch.setenv("JEV_API_URL", "http://decision-api.swarm-system.svc.cluster.local/laya/v1/decide")
+    monkeypatch.setenv("JEV_API_URL", "https://decision-api-staging.taile0bda9.ts.net/laya/v1/decide")
     seen = _run_body(monkeypatch, tmp_path, "/opt/playwright")
     assert seen["env"]["SWARM_HANDOFF"] == str(spool)
     assert seen["env"]["SWARM_CDP_ENDPOINT"] == "http://127.0.0.1:9223"
@@ -252,12 +258,12 @@ def test_the_agents_bash_tool_inherits_swarm_handoff_and_the_cdp_endpoint(monkey
 def test_the_judgment_backend_and_its_url_reach_the_cli_and_no_typesafe_key(monkeypatch, tmp_path):
     """JUDGE-SELECT (owner decision 2026-10-14). The dispatcher names the
     workspace's judgment backend (SWARM_JEV_BACKEND) and, for an internal one,
-    the in-cluster JEV_API_URL; the CLI's environment is what its MCP servers
+    the decision API's tailnet JEV_API_URL; the CLI's environment is what its MCP servers
     inherit, so jev-browser-mcp reads both there. Nothing here hands the CLI a
     TypeSafe key: an internal backend needs none."""
     from agent_worker import handoff
 
-    url = "http://decision-api.swarm-system.svc.cluster.local/jev/v1/decide"
+    url = "https://decision-api-staging.taile0bda9.ts.net/jev/v1/decide"
     monkeypatch.setenv(handoff.HANDOFF_ENV, str(tmp_path / ".swarm-handoff"))
     monkeypatch.setenv("SWARM_CDP_ENDPOINT", "http://127.0.0.1:9223")
     monkeypatch.setenv("SWARM_JEV_BACKEND", "internal-jev")
@@ -361,8 +367,15 @@ def test_the_terraform_mirror_carries_it_and_its_model():
     assert re.search(r'^\s*backend\s*=\s*"GKE_AUTOPILOT"$', body, re.M), body
     assert re.search(r'^\s*provider\s*=\s*"anthropic"$', body, re.M), body
     assert re.search(r"^\s*timeout_seconds\s*=\s*7200$", body, re.M), body
-    models = dict(re.findall(r'^\s*"([a-z-]+)"\s*=\s*"(claude-[a-z0-9-]+)"$', text, re.M))
-    assert models.get(PROFILE) == models["claude-code"], models
+    # runner_models is keyed by model class (#1435); a profile's model is the
+    # pin of its default_model_class, so it runs claude-code's model when the
+    # two name the same default class.
+    claude_code = re.search(r'^    "claude-code" = \{\n(.*?)^    \}\n', text, re.M | re.S)
+    assert claude_code, 'terraform/infra/locals.tf runner_profiles has no "claude-code" entry'
+    default = r'^\s*default_model_class\s*=\s*"([a-z]+)"$'
+    classes = [re.search(default, b, re.M) for b in (body, claude_code.group(1))]
+    assert all(classes), classes
+    assert classes[0].group(1) == classes[1].group(1), classes
 
 
 def test_the_parity_checked_ui_tables_carry_it():

@@ -100,16 +100,19 @@ from .cdppolicy import PolicyPaths
 from .cdpproxy import AgentConnection, AgentLink, CdpError, CdpProxy, PipeTransport, serve_agents
 from .ctl import DEFAULT_MARKER, CtlServer
 from .device import WINDOW_OVERHANG, DeviceController, XRandrDisplay, captured
-from .egress import EgressConfigError, EgressSettings, LocalForwarder, chromium_proxy_args, notice_url
+from .. import browser_tools
+from .egress import EgressConfigError, EgressSettings, LocalForwarder, chromium_proxy_args, describe, notice_url
 from .inject import InjectError, XInjector, display_socket
 from .mask import REASON_SWITCHING, MaskCdp, MaskState
 from .pointer import css_to_frame
 from .presets import DEFAULT_PRESET, MAX_DISPLAY_HEIGHT, MAX_DISPLAY_WIDTH, Device, UnknownPreset, resolve
-from .report import agent_report, device_report, encode_report, page_origin
+from .report import agent_report, browser_report, device_report, egress_report, encode_report, page_origin
 from .rfb import ControlState, FrameHub, RfbSession, masked
 from .rfb import metrics_log as rfb_metrics_log
 from .session import OPS as SESSION_OPS
 from .session import SessionCarry
+from .tabs import OPS as TABS_OPS
+from .tabs import TabKeeper
 from .touch import TouchInjector
 from .tunnel import StreamMux, Tunnel, TunnelError, TunnelWriter, relay_url
 
@@ -173,6 +176,17 @@ MAX_CONTROL_CAUSE = 32
 
 #: How long reading a page's URL and title may take when control ends.
 PAGE_INFO_SECONDS = 2.0
+
+#: How long a CANCELLED tunnel task may spend ending the episode a person
+#: holds (HANG-LEASE; part of #1335). The gate's own stop never cancels it
+#: first: it closes the tunnel, and the task ends control with Chromium's
+#: pipe still read. A cancel from outside -- the event loop shutting down --
+#: cancels the pipe's reader with it, so the release's reads (the page's
+#: title, the agent's resume) are answered by nobody, and the resume was
+#: unbounded: MEASURED 2026-10-14, run 38633285923, `asyncio.run` waited on
+#: the task in `_cancel_all_tasks` until the job's 30-minute timeout. Under
+#: one `PAGE_INFO_SECONDS` read, because nothing is going to answer.
+CANCELLED_RELEASE_SECONDS = 1.0
 
 #: Between the page follower's attempts to attach to the agent's page again
 #: (`PageFollower._reconnect`), the last repeated: fast at first, because the
@@ -579,8 +593,8 @@ class GateProxy(CdpProxy):
     on_tab_switch: Callable[[], None] | None = None
     on_tab_switched: Callable[[], None] | None = None
 
-    async def connect_agent(self, link: AgentLink) -> AgentConnection | None:
-        connection = await super().connect_agent(link)
+    async def connect_agent(self, link: AgentLink, client: str | None = None) -> AgentConnection | None:
+        connection = await super().connect_agent(link, client)
         if connection is not None:
             self.agent_seen = True
         return connection
@@ -831,7 +845,18 @@ class PageFollower:
 
         mask = MaskCdp(self._state, send, child=True)
         self._masks[child] = mask
-        self._spawn_quiet(mask.install())
+        self._spawn_quiet(self._install_child(mask))
+
+    async def _install_child(self, mask: MaskCdp) -> None:
+        """The observer on an out-of-process frame's session, then its link.
+
+        A frame out of process before this page was followed never attached
+        on the page's session, so nothing there linked it: every session's
+        mask links what it can place once the frame is known (#1344).
+        """
+        await mask.install()
+        for other in list(self._masks.values()):
+            await other.relink()
 
     def tab_switching(self) -> None:
         """Another tab may be about to be shown: hold the mask and look. Never waits."""
@@ -1166,7 +1191,8 @@ class LiveGate:
         #: which launches no browser.
         self.startup: dict[str, float] = {}
         self.desktop = resolve(DEFAULT_PRESET)
-        self.mask_state = MaskState()
+        #: The event log hears of every challenge frame shown in a hand-off (mask.py SHOWN_IN_CONTROL).
+        self.mask_state = MaskState(record=self.record)
         self.hub = FrameHub(self.desktop.display_width, self.desktop.display_height)
         #: Set once ctl.sock listens: the dispatcher's startup probe condition.
         self.ready = asyncio.Event()
@@ -1179,6 +1205,8 @@ class LiveGate:
         self.touch: TouchInjector | None = None
         self.control: ControlState | None = None
         self.carry: SessionCarry | None = None
+        #: The tab list a park keeps and a resumed attempt reopens (tabs.py, §5.5.2).
+        self.tabs: TabKeeper | None = None
         self.pages: PageFollower | None = None
         self.cdp_server: Any = None
         self.ctl: CtlServer | None = None
@@ -1216,6 +1244,9 @@ class LiveGate:
         self._lease_until: float | None = None
         self._had_control = False
         self._self_paused = False
+        #: The worker's hand-off (`pause`) holds the agent for a person,
+        #: until `resume`, `end_control` or a wipe.
+        self._handed_off = False
         self._fresh_target: str | None = None
         self._watching = asyncio.Event()
         #: Set when control is granted or released: the capture loop's rate changed.
@@ -1232,6 +1263,12 @@ class LiveGate:
         #: `agent_connected` has been put on the timeline, which happens once.
         self.agent_connected_at: float | None = None
         self._agent_connected_told = False
+        #: WHICH BROWSER TOOL (BSTATUS-API; part of #1030): what the runner
+        #: registered, as the worker forwarded it (`browser_tools`), and the
+        #: tool whose tagged connection sent the last command, by any proxy
+        #: this gate has run (cdpproxy `split_client`). Both None until known.
+        self.browser_tools: dict[str, Any] | None = None
+        self.tool_last_used: tuple[str, float] | None = None
         #: One relay device choice applied at a time. Latest wins: a choice
         #: still waiting when a newer one arrives is dropped (`_device_seq`),
         #: so a burst of switches cannot apply one after another in turn.
@@ -1273,7 +1310,7 @@ class LiveGate:
         """
         if not self.cfg.egress.proxy:
             return
-        self.egress = await self.deps.start_egress(self.cfg, self.record, self._egress_unavailable)
+        self.egress = await self.deps.start_egress(self.cfg, self._egress_record, self._egress_unavailable)
         port = getattr(self.egress, "port", None)
         if not isinstance(port, int) or port <= 0:
             raise SetupError("the egress forwarder is not listening; Chromium is not started without the proxy")
@@ -1288,8 +1325,14 @@ class LiveGate:
         self.control = ControlState(self.touch)
         current = self._current
         self.carry = SessionCarry(current.call, record=self.record, agent_connected=self._agent_connected)
+        self.tabs = TabKeeper(current.call, record=self.record, agent_connected=self._agent_connected,
+                              shown=self._shown_target)
         await self._launch()
         log.info("live gate: chromium up; CDP proxy on %s:%d", self.cfg.cdp_host, self.cfg.cdp_port)
+
+    def _shown_target(self) -> str | None:
+        """The tab the page follower shows: the one a park records as active."""
+        return self.pages.current if self.pages is not None else None
 
     def _agent_connected(self) -> bool:
         return self._agent_seen_before or bool(self.proxy is not None and self.proxy.agent_seen)
@@ -1318,6 +1361,26 @@ class LiveGate:
             return
         self._agent_connected_told = True
         self._queue_action({"kind": "control", "event": "agent_connected"})
+
+    def _tool_used(self, tool: str, at: float) -> None:
+        """The CDP proxy's `on_tool`: a tagged tool sent a command (BSTATUS-API)."""
+        self.tool_last_used = (tool, at)
+        self._report_due.set()
+
+    def egress_report(self) -> dict[str, Any]:
+        """The report's `browser.egress`: the forwarder's state, or `off`."""
+        if not self.cfg.egress.proxy:
+            return egress_report(proxied=False, ok=True, error=None)
+        forwarder = self.egress
+        if forwarder is None:
+            return egress_report(proxied=True, ok=False, error=describe("forwarder_unreachable"))
+        ok, cause = forwarder.healthy()
+        return egress_report(proxied=True, ok=ok, error=None if ok else describe(cause or ""))
+
+    def browser_report(self) -> dict[str, Any]:
+        """The report's `browser` (report.py `browser_report`)."""
+        return browser_report(tools=self.browser_tools, last_used=self.tool_last_used,
+                              egress=self.egress_report())
 
     def agent_report(self) -> dict[str, Any]:
         """The report's `agent` (report.py `agent_report`)."""
@@ -1351,6 +1414,7 @@ class LiveGate:
             on_action=self._queue_action,
             on_pointer=self._agent_pointer,
             on_agents=self._agents_changed,
+            on_tool=self._tool_used,
             wall=self._wall,
         )
         # A refused agent connection says when the gate takes control back.
@@ -1578,6 +1642,9 @@ class LiveGate:
             device = self.devices.device if self.devices is not None else self.desktop
             try:
                 frame = await asyncio.to_thread(self._grab, device)
+                # Read after the grab, as the mask is applied: a resume in
+                # between is the agent driving again.
+                self.mask_state.set_in_control(self.person_in_control)
                 published = masked(frame, self.mask_state)
             except Exception as exc:  # noqa: BLE001 -- see below
                 # NOTHING IS SENT FOR THIS FRAME, AND THE LOOP GOES ON
@@ -1610,15 +1677,32 @@ class LiveGate:
         """Wait for `until` on the loop's clock, or for control to change hands."""
         delay = until - asyncio.get_running_loop().time()
         if delay > 0:
+            # Not `wait_for`: on 3.11 a cancel that lands as the event is set
+            # -- the tunnel's cleanup releasing control as the gate is torn
+            # down -- returns the wait's result and drops the cancel, and the
+            # capture loop runs on after everything else has finished.
             try:
-                await asyncio.wait_for(self._rate_changed.wait(), delay)
-            except asyncio.TimeoutError:
+                async with asyncio.timeout(delay):
+                    await self._rate_changed.wait()
+            except TimeoutError:
                 pass
         self._rate_changed.clear()
 
     def control_changed(self) -> None:
         """Control was granted or released: the capture rate follows at once."""
         self._rate_changed.set()
+
+    @property
+    def person_in_control(self) -> bool:
+        """A person holds control -- a hand-off, or take-control -- and the agent is held.
+
+        The mask shows a challenge frame unchecked only then (mask.py
+        `SHOWN_IN_CONTROL`, issue #1340): never while the agent drives, so
+        never once `resume` has begun handing the agent its page back.
+        """
+        if self.proxy is None or not self.proxy.paused:
+            return False
+        return self._handed_off or self._episode is not None
 
     def _agent_pointer(self, x: float, y: float) -> None:
         """The agent's `Input.dispatchMouseEvent`, in CSS pixels: where watchers see the pointer (pointer.py)."""
@@ -1685,9 +1769,11 @@ class LiveGate:
             await self._report_due.wait()
             self._report_due.clear()
             try:
-                payload = encode_report(self.origin, self.device_reported, self.agent_report())
+                payload = encode_report(self.origin, self.device_reported, self.agent_report(),
+                                        self.browser_report())
             except ValueError:  # cannot happen within report.py's limits; never send a part
-                payload = encode_report(None, self.device_reported, self.agent_report())
+                payload = encode_report(None, self.device_reported, self.agent_report(),
+                                        self.browser_report())
             await tunnel.report(payload)
 
     # -- ctl.sock -------------------------------------------------------------
@@ -1697,6 +1783,8 @@ class LiveGate:
             return self.status()
         if op in SESSION_OPS:
             return await self._need(self.carry).handle(op, args)
+        if op in TABS_OPS:
+            return await self._need(self.tabs).handle(op, args)
         if op == "tunnel_ticket":
             return await self.open_tunnel(args)
         if op == "pause":
@@ -1709,7 +1797,23 @@ class LiveGate:
             return await self._need(self.devices).handle_ctl(args)
         if op == "egress_ticket":
             return await self.egress_ticket(args)
+        if op == browser_tools.CTL_OP:
+            return self.set_browser_tools(args)
         raise ValueError("not an operation of the gate")
+
+    def set_browser_tools(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        """The worker's `browser_tools`: what the runner registered (BSTATUS-API).
+
+        Checked again here (`browser_tools.clean_state`): it came from a file
+        in the agent's reach. Reported on the next report; refused when it
+        does not hold together."""
+        state = browser_tools.clean_state(args)
+        if state is None:
+            raise ValueError("not a browser tool state")
+        if state != self.browser_tools:
+            self.browser_tools = state
+            self._report_due.set()
+        return {"browser_tools": "recorded"}
 
     # -- proxied egress (egress.py) ---------------------------------------------
 
@@ -1732,11 +1836,18 @@ class LiveGate:
             forwarder.fail(str(failed))
             return {"egress": "failed", "cause": forwarder.cause}
         forwarder.set_ticket(args.get("ticket"), args.get("expires_in"))
+        self._report_due.set()
         if not await forwarder.probe():
+            forwarder.unreachable()
             self.record("egress_refused", {"cause": "forwarder_unreachable"})
             self._egress_unavailable("forwarder_unreachable")
             return {"egress": "failed", "cause": "forwarder_unreachable"}
         return {"egress": "ready"}
+
+    def _egress_record(self, event: str, fields: Mapping[str, Any]) -> None:
+        """The forwarder's records, and a report: its state may have changed."""
+        self.record(event, fields)
+        self._report_due.set()
 
     def _egress_unavailable(self, cause: str) -> None:
         """Proxied egress is unavailable: put a page on screen that says why.
@@ -1825,15 +1936,30 @@ class LiveGate:
 
     async def _run_tunnel(self, tunnel: Tunnel, mux: StreamMux) -> None:
         code: int | None = None
+        cancelled = False
         try:
             code = await tunnel.run(mux.on_frame)
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
         finally:
             reporter = self._tasks.get("report")
             if reporter is not None:
                 reporter.cancel()
             await mux.close()
             if self._episode is not None:
-                await self._release("tunnel_closed")
+                if cancelled:
+                    # Bounded, and the cancel still propagates (HANG-LEASE):
+                    # see CANCELLED_RELEASE_SECONDS. Cut short, the release
+                    # skips what waits on Chromium or the relay (the lift,
+                    # the page read, the action, the resume); the proxy's
+                    # `resume`, once started, leaves its hold in its `finally`.
+                    try:
+                        await asyncio.wait_for(self._release("tunnel_closed"), CANCELLED_RELEASE_SECONDS)
+                    except asyncio.TimeoutError:
+                        self.record("release_degraded", {"step": "cancelled", "cause": "TimeoutError"})
+                else:
+                    await self._release("tunnel_closed")
             self.record("tunnel_closed", {"code": code})
 
     async def _serve_rfb(self, conn_id: str, reader: asyncio.StreamReader, writer: TunnelWriter) -> None:
@@ -2105,6 +2231,7 @@ class LiveGate:
         proxy = self._need(self.proxy)
         self._self_paused = False
         await proxy.pause()
+        self._handed_off = True
         expect = args.get("expect")
         if (args.get("fresh_page") is True and isinstance(expect, str) and expect
                 and _HOST.fullmatch(expect)):
@@ -2130,6 +2257,7 @@ class LiveGate:
         proxy = self.proxy
         if proxy is None or self.wiped:
             raise RuntimeError("the browser is not running")
+        self._handed_off = False
         target = self._episode.target if self._episode is not None else (
             self._fresh_target or (self.pages.current if self.pages else None))
         await self._release("returned")
@@ -2142,6 +2270,7 @@ class LiveGate:
     async def end_control(self, args: Mapping[str, Any]) -> dict[str, Any]:
         """§4.3, §4.4, §5.5: control ends; with `wipe`, Chromium closes and the profile goes."""
         cause = str(args.get("cause") or "ended")[:64]
+        self._handed_off = False
         await self._release(cause)
         wipe = args.get("wipe") is True
         if wipe:
@@ -2153,6 +2282,7 @@ class LiveGate:
         if self.wiped:
             return
         self.wiped = True
+        self._handed_off = False
         relaunch = self._tasks.pop("relaunch", None)
         if relaunch is not None:
             relaunch.cancel()

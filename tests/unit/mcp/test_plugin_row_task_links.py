@@ -303,7 +303,8 @@ def test_attach_all_lists_every_followed_workflows_link(tmp_path):
     ids = ["wf_a", "wf_b"]
     answers = {
         "LIST": {"count": 2, "error": None, "workflows": [
-            {"workflow_id": i, "label": None, "state": "RUNNING", "console": _served_workflow(i)} for i in ids
+            {"workflow_id": i, "label": None, "state": "RUNNING", "console": _served_workflow(i),
+             "this_session": True} for i in ids
         ]},
         "STATUS": {"state": "SUCCEEDED", "state_note": None, "console": None, "steps": []},
     }

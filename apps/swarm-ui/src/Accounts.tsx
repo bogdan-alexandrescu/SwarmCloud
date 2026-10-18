@@ -371,7 +371,7 @@ function Body({
   const linked = useLinkedParam('account')
   const choose = (id: string | null) => {
     patch((p) => ({ ...p, chosen: id, adding: p.signin.kind === 'idle' ? false : p.adding }))
-    if (typeof window !== 'undefined') window.location.hash = paneHref('capacity/accounts', { account: id })
+    if (typeof window !== 'undefined') followHash(paneHref('capacity/accounts', { account: id }))
   }
   const view = linked !== null ? { ...ui, chosen: linked } : ui
   return (
@@ -578,6 +578,21 @@ function Broken({
 // The list and the chosen account, side by side (capacity.html A1)
 // ---------------------------------------------------------------------------
 
+/**
+ * THE ADDRESS FOLLOWS A CHOICE WITHOUT CLAIMING TO BE BACK OR FORWARD (visual
+ * QA V158, 2026-10-16). Assigning `location.hash` fires `popstate` as well as
+ * `hashchange`, and the shell reads a `popstate` as a history traversal and
+ * puts the page back at the scroll it last recorded for the address -- for
+ * three seconds, over the scroll that brings a phone's chosen account into
+ * view. A pushed entry plus the `hashchange` the router follows is the same
+ * navigation (Back still returns to the list) without the restore.
+ */
+function followHash(hash: string): void {
+  const oldURL = window.location.href
+  window.history.pushState(window.history.state, '', hash)
+  window.dispatchEvent(new HashChangeEvent('hashchange', { oldURL, newURL: window.location.href }))
+}
+
 function Pool({
   board,
   accounts,
@@ -612,6 +627,28 @@ function Pool({
     const row = [...document.querySelectorAll<HTMLButtonElement>('.acct-open')].find((b) => b.dataset.account === id)
     row?.focus()
   })
+  // A CHOSEN ACCOUNT OPENS AT ITS TITLE (visual QA V157, V158; 2026-10-16).
+  // On a phone the list -> detail switch kept the list's scroll offset, so a
+  // row chosen low in a long list landed the reader at the bottom of the
+  // shorter detail -- State, Replace, Remove's typed confirmation -- not its
+  // name; focus fell to <body> with the row it was on. The page is scrolled
+  // to the pane and focus goes to `‹ Accounts`, its first control. On a
+  // desktop the pane sticks in view and scrolls itself (styles/capacity.css
+  // `.acct-split > .acct-pane`), so it is put back at its top -- the next
+  // account starts at its head, not at the previous one's scroll position --
+  // and the page moves the least that shows all of it: near the list's end
+  // the card's foot holds a sticky pane partly above the window.
+  const paneRef = useRef<HTMLDivElement | null>(null)
+  const opened = shown !== null && shown.explicit ? shown.account.account_id : null
+  useEffect(() => {
+    const pane = paneRef.current
+    if (opened === null || pane === null) return
+    pane.scrollTop = 0
+    pane.scrollIntoView?.({ block: phone ? 'start' : 'nearest' })
+    if (phone) pane.querySelector<HTMLButtonElement>('.acct-back')?.focus({ preventScroll: true })
+    // Only when the choice changes: a poll's re-render must not move the page.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opened])
 
   if (shown === null) {
     return (
@@ -736,7 +773,7 @@ function Pool({
           the same component the expanded row drew -- facts, controls, and PR
           #413's Holding now | History switch -- so nothing it said or guarded
           changed by moving. */}
-      <div className="acct-pane">
+      <div className="acct-pane" ref={paneRef}>
         <button
           type="button"
           className="acct-back"
@@ -1307,10 +1344,14 @@ function PoolFindings({
  * a line-break opportunity, so `u-bogdan` wrapped to `u-` and `bogdan`. One
  * longer than its line is cut with an ellipsis, whole in its title.
  */
-function Id({ children, className }: { children: string; className?: string }) {
+function Id({ children, className, after }: { children: string; className?: string; after?: string }) {
+  // `after` -- a list's comma -- rides INSIDE the id's box (visual QA V154,
+  // 2026-10-16). Beside it, the line could break between the id and its comma
+  // and start the next line with an orphaned `,`.
   return (
     <span className={className === undefined ? 'acct-id' : `acct-id ${className}`} title={children}>
       {children}
+      {after}
     </span>
   )
 }
@@ -1833,7 +1874,7 @@ function HoldingNow({ account, now, fixture }: { account: Account; now: number; 
               <tr key={i}>
                 <td className="acct-hist-who" title={[h.task_id, h.tenant].filter(Boolean).join(' · ') || undefined}>
                   <span className="acct-hist-whoin">
-                    {h.tenant !== undefined && <span className="mono">{h.tenant}</span>}
+                    {h.tenant !== undefined && <TenantCut id={h.tenant} />}
                     {h.task_id ? <HolderAgent taskId={h.task_id} verified={h.verified} /> : <HoldWork h={h} />}
                   </span>
                 </td>
@@ -1862,6 +1903,32 @@ function HoldingNow({ account, now, fixture }: { account: Account; now: number; 
       )}
       {b.others > 0 && b.by_tenant === undefined && <p className="muted small">+{b.others} held by other tenants</p>}
     </div>
+  )
+}
+
+/**
+ * A tenant in a holder cell, cut in its middle (visual QA V155, 2026-10-16).
+ * End-cut, a phone's Agent cell kept `data-platform-in…` -- the part many
+ * teams' ids share -- and lost the part that names the team. An id longer
+ * than the cell keeps its last eight, as a task reference does; the cell's
+ * title holds it whole. A short one is one box, as it was.
+ */
+function TenantCut({ id, lead }: { id: string; lead?: string }) {
+  if (id.length <= 16) {
+    return (
+      <span className="mono">
+        {lead}
+        {id}
+      </span>
+    )
+  }
+  const cut = id.length - 8
+  return (
+    <span className="mono acct-cut">
+      {lead}
+      <span className="acct-cut-head">{id.slice(0, cut)}</span>
+      <span className="acct-cut-tail">{id.slice(cut)}</span>
+    </span>
   )
 }
 
@@ -1949,8 +2016,8 @@ function HoldingHistory({ account, now, fixture }: { account: Account; now: numb
                         cell. The link and the tenant shrink, each cut with
                         an ellipsis; "attempt N" and a mark never do. */}
                     <span className="acct-hist-whoin">
-                      {s.mine ? <HoldWork h={s} /> : <span className="mono">{s.tenant}</span>}
-                      {s.mine && s.tenant !== undefined && <span className="mono"> {s.tenant}</span>}
+                      {s.mine ? <HoldWork h={s} /> : <TenantCut id={s.tenant ?? ''} />}
+                      {s.mine && s.tenant !== undefined && <TenantCut id={s.tenant} lead=" " />}
                       {!s.mine && h?.viewer === 'platform' && s.task_id && <HoldWork h={s} />}
                     </span>
                   </td>
@@ -2496,11 +2563,11 @@ function Lending({
       <ul className="ctl-facts">
         <li className="ctl-fact">
           <b>serves</b>
-          <span className="mono">
-            {[owner, ...account.lend_to].map((t, i) => (
+          <span className="mono acct-ids">
+            {[owner, ...account.lend_to].map((t, i, all) => (
               <span key={t}>
-                {i > 0 && ', '}
-                <Id>{t}</Id>
+                {i > 0 && ' '}
+                <Id after={i < all.length - 1 ? ',' : undefined}>{t}</Id>
               </span>
             ))}
           </span>
@@ -2512,7 +2579,11 @@ function Lending({
           className="mono acct-wide"
           value={draft}
           disabled={busy}
-          placeholder="tenant ids, comma separated; empty means no lending"
+          // THE ADD FORM'S WORDS (visual QA V181, 2026-10-16): at 400 the
+          // longer `…; empty means no lending` was cut mid-word. What an
+          // empty list does is the confirmation's title, `Stop lending …?`,
+          // before anything is sent.
+          placeholder="tenant ids, comma separated"
           aria-label={`Tenants ${account.account_id} is lent to`}
           list={board.tenants ? 'acct-tenant-ids' : undefined}
           onChange={(e) => {
@@ -2785,7 +2856,8 @@ function StateControls({ account, reload }: { account: Account; reload: () => vo
               {asked.to === 'DRAINING'
                 ? `${agents} on it now will be moved off.`
                 : `${agents} on it now keep running; no new ones start on it.`}{' '}
-              Every agent in {account.owner_tenant}
+              {/* AN ID IS ONE WORD (V070): "loses it u-⏎bogdan". */}
+              Every agent in <Id>{account.owner_tenant}</Id>
               {account.lend_to.length > 0 ? ` and the tenants it is lent to` : ''} loses it for new work.
             </p>
           )}
@@ -3915,18 +3987,29 @@ function AddAccount({
         </li>
       </ul>
 
+      {/* THE RECEIPT IS THE PANEL'S ANSWER, AND THE FORM IS DONE (visual QA
+          V182, 2026-10-16). The empty form stayed open under it, Start
+          disabled, so the receipt sat between owner and provider as if it
+          were one of the form's fields. `done` closes the panel and the new
+          account is in the list beside it; Add account opens a fresh form. */}
       {state.kind === 'done' && (
         <SignInDone
           state={state}
           onAgain={() => {
-            set({ kind: 'idle' })
+            patch((p) => ({ ...p, adding: false, signin: { kind: 'idle' } }))
             setLabel('')
             setLend('')
+            // Back to Add account -- once the render has enabled it: it is
+            // disabled while a sign-in is not idle, and a disabled button
+            // takes no focus.
+            if (typeof window !== 'undefined') {
+              window.setTimeout(() => document.querySelector<HTMLButtonElement>('.acct-add')?.focus(), 0)
+            }
           }}
         />
       )}
 
-      {state.kind === 'open' ? (
+      {state.kind === 'done' ? null : state.kind === 'open' ? (
         <>
           <div className="acct-action">
             <h4>
@@ -4347,11 +4430,12 @@ function Reauth({
         {broken ? (
           <>
             <strong>Only a person can replace this.</strong> The refresh token
-            behind <code>{account.account_id}</code> is gone or unreadable.
+            behind <Id className="mono">{account.account_id}</Id> is gone or unreadable.
           </>
         ) : (
           <>
-            Replaces the credential behind <code>{account.account_id}</code>.
+            {/* The full stop rides inside the id's box (V154's comma). */}
+            Replaces the credential behind <Id className="mono" after=".">{account.account_id}</Id>{' '}
             Nothing here needs doing on a healthy account.
           </>
         )}

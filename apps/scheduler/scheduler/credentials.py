@@ -124,6 +124,30 @@ The document shapes are OB3's (`swarm_api.forgeapp`) and §3.1's, read by id
 and never written. The id recipes are RESTATED below because the scheduler's
 image does not carry swarm-api; tests/unit/control_plane/
 test_forge_connection_admission.py holds them to swarm-api's own functions.
+
+A WORKSPACE SECRET A SLOT REQUIRES (docs/design/workspace-secrets.md §4.2;
+lane SEC-ADMIT-PARK, #1347). The last half of the same question, asked only
+by admission and the sweep, and only once the provider and the connection
+have said yes: does the profile, or a tool its `browser_tool` launches,
+declare a `required` slot that no enabled grant fills? `secret_slots.py`
+states that rule and reads the grants. A no parks CREDENTIAL_MISSING before
+any lease, its event naming each `{consumer, slot}` under `workspace_secrets`
+and never a secret id. The sweep asks it of EVERY CREDENTIAL_MISSING park,
+the worker's backstop park (`workspace-secret:<slots>`) included, so a task
+is promoted only when its key, its connection and its grants all answer yes.
+
+THE MCP SERVERS A TASK NAMES (docs/design/registered-mcp-servers.md §4.10;
+lane MCP-SCHED, part of #1433). The last half again, asked only by admission
+and the sweep, and only once the grants have said yes: may the task use every
+server its signed `mcp_servers` input names? `mcp_admission.py` states that
+rule and reads the registrations and credential rows. A disabled or refused
+server parks CREDENTIAL_MISSING, code `mcp_server_unavailable`, its event
+naming each server by name only; the sweep promotes it once every server says
+yes. A per-run credential that expired or was destroyed is TERMINAL
+(`CredentialAnswer.terminal`): it never turns runnable, so the sweep never
+promotes it. A task that names no server reads nothing and records nothing
+new. The reader is built over the database the workspace grants already read
+(`_mcp_reader`), so admission and the sweep ask it with no new argument.
 """
 
 from __future__ import annotations
@@ -131,6 +155,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from typing import Any, Callable, Sequence
 from urllib.parse import urlsplit
@@ -139,6 +164,9 @@ from quota_broker.accounts import Account, Unavailable, accounts_serving
 from quota_broker.accountstore import AccountStore
 from swarm_common.models import Task, Tenant
 from swarm_common.profiles import RunnerProfile
+
+from .mcp_admission import McpAnswer, McpRegistrations
+from .secret_slots import MissingSlot, WorkspaceGrants
 
 #: The variable a pool account's token fills.
 #:
@@ -217,11 +245,29 @@ class CredentialAnswer:
     source: CredentialSource
     pool: PoolAnswer
     forge: ForgeAnswer = ForgeAnswer.NOT_ASKED
+    #: None when the grants were not asked (no task, an earlier half said no,
+    #: or nothing is required); else the required slots no enabled grant
+    #: fills, empty when every one is.
+    workspace_secrets: tuple[MissingSlot, ...] | None = None
+    #: None when the MCP servers were not asked (no task, an earlier half
+    #: said no, or the task names none); else what every named server said.
+    mcp: McpAnswer | None = None
 
     @property
     def runnable(self) -> bool:
         """THE PREDICATE: may this task be admitted at all."""
-        return self.source is not CredentialSource.MISSING and self.forge in _FORGE_RUNNABLE
+        return (
+            self.source is not CredentialSource.MISSING
+            and self.forge in _FORGE_RUNNABLE
+            and not self.workspace_secrets
+            and (self.mcp is None or self.mcp.runnable)
+        )
+
+    @property
+    def terminal(self) -> bool:
+        """No change anyone can make will make this task runnable: a per-run
+        MCP credential expired or was destroyed (`McpAnswer.terminal`)."""
+        return self.mcp is not None and self.mcp.terminal
 
     def park_detail(self) -> dict[str, Any]:
         """What a CREDENTIAL_MISSING park records in its `parked` event.
@@ -235,6 +281,10 @@ class CredentialAnswer:
         detail: dict[str, Any] = {"provider": self.provider, "account_pool": self.pool.value}
         if self.forge is not ForgeAnswer.NOT_ASKED:
             detail["forge_connection"] = self.forge.value
+        if self.workspace_secrets:
+            detail["workspace_secrets"] = [m.to_detail() for m in self.workspace_secrets]
+        if self.mcp is not None and not self.mcp.runnable:
+            detail.update(self.mcp.to_detail())
         return detail
 
     def promote_detail(self) -> dict[str, Any]:
@@ -246,6 +296,10 @@ class CredentialAnswer:
         }
         if self.forge is not ForgeAnswer.NOT_ASKED:
             detail["forge_connection"] = self.forge.value
+        if self.workspace_secrets is not None:
+            detail["workspace_secrets"] = "granted"
+        if self.mcp is not None:
+            detail["mcp_servers"] = "available"
         return detail
 
 
@@ -522,17 +576,51 @@ def credential_for(
     *,
     task: Task | None = None,
     forge: ForgeConnections | None = None,
+    secrets: WorkspaceGrants | None = None,
+    tenant_of: Callable[[str], Tenant | None] | None = None,
+    mcp: McpRegistrations | None = None,
+    now: datetime | None = None,
 ) -> CredentialAnswer:
     """THE RULE. See the module docstring for where each condition comes from.
 
-    `task` and `forge` are passed by admission and the credential sweep, and
-    by nobody else: the GitHub connection is asked about only when both are
-    given, and only once the provider half has said yes.
+    `task`, `forge`, `secrets` and `tenant_of` are passed by admission and the
+    credential sweep, and by nobody else: the GitHub connection is asked about
+    only when `task` and `forge` are given, and only once the provider half
+    has said yes; the workspace grants only when `secrets` is given too, and
+    only once the connection has said yes. `tenant_of` reads a personal
+    tenant for Q3 (`secret_slots.WorkspaceGrants._personal`). The MCP
+    servers are asked only when `secrets` is given, and only once the grants
+    have said yes, through `mcp` or, absent it, a reader over the grants'
+    own database; `now` is the clock a per-run credential's expiry is read
+    against.
     """
     answer = _provider_answer(profile, tenant, pool)
     if task is None or forge is None or not answer.runnable:
         return answer
-    return CredentialAnswer(answer.provider, answer.source, answer.pool, forge_answer(task, forge))
+    answer = CredentialAnswer(
+        answer.provider, answer.source, answer.pool, forge_answer(task, forge)
+    )
+    if secrets is None or not answer.runnable:
+        return answer
+    missing = secrets.missing(task, profile, tenant, tenant_of or (lambda _tenant_id: None))
+    answer = CredentialAnswer(answer.provider, answer.source, answer.pool, answer.forge, missing)
+    if not answer.runnable:
+        return answer
+    servers = (mcp or _mcp_reader(secrets)).answer(task, profile, now=now)
+    return CredentialAnswer(
+        answer.provider, answer.source, answer.pool, answer.forge, missing, servers
+    )
+
+
+def _mcp_reader(secrets: WorkspaceGrants) -> McpRegistrations:
+    """The MCP reader over the database the grants read.
+
+    Admission and the sweep (`loop.py`) build one `WorkspaceGrants` over the
+    scheduler's Firestore client and pass it to every `credential_for`; the
+    registrations live in the same database. Built per call: it caches
+    nothing, so there is nothing to forget between passes.
+    """
+    return McpRegistrations(secrets._db)
 
 
 def _provider_answer(profile: RunnerProfile, tenant: Tenant, pool: AccountPool) -> CredentialAnswer:

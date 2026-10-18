@@ -157,7 +157,8 @@ pool_limits = {
   # GKE_AUTOPILOT 40 -> 100: owner, 2026-10-07, accepting contract request 53
   # (claude-code moves to GKE Autopilot). At 40 the backend pool would bind
   # before claude-code's own ceiling (runner:claude-code 80), shared with
-  # browser at 2 units a task, and halve claude-code's concurrency on the
+  # browser at 2 units a task (1 since contract request 79, 2026-10-14),
+  # and halve claude-code's concurrency on the
   # move. 100 is claude-code's 80 plus browser headroom. It fits the quota:
   # us-central1 regional CPUS read 2,990 of 3,000 free on 2026-10-07, and
   # 100 x 4 vCPU = 400.
@@ -710,3 +711,100 @@ workspace_gate = true
 # every search answers 503 search_unconfigured. search_provider stays at
 # its default, "brave".
 search_tool_enabled = false
+
+# Workspace-secret grant attestation (SEC-GRANT-ATTEST, PR 1377;
+# terraform/infra/workspace_grant_key.tf,
+# docs/runbooks/workspace-grant-attestation.md). Step 2, served in dev as of
+# 2026-10-16 (owner chose "mint, serve, sign; required off" ~02:50 PDT):
+# version 1 of swarm-workspace-grant-key was added with
+# `scripts/create-secrets.sh --workspace-grant-key` before this was set, so
+# swarm-api's reference resolves. From this revision on, every grant a manager
+# ticks or unticks is signed. `required` stays false, the owner's "warn first,
+# flip later": with it on, every grant written before this revision would be
+# dropped at release until the attest route has signed it.
+workspace_grant_attestation = {
+  serve = true
+}
+
+# The decision-api tailnet egress (terraform/infra/tailscale.tf,
+# docs/runbooks/tailscale-egress.md). ON in dev as of 2026-10-15 (~04:25 PDT):
+# the owner stored the tag:swarmcloud OAuth client as swarm-tailscale-oauth
+# version 2 and saved the tailnet policy grant (tag:swarmcloud ->
+# decision-api-staging tcp:443). internal_decision_api_enabled follows once the
+# egress is applied with kubernetes/apply.sh --swarm-system and reaches the API.
+enable_tailscale_egress = true
+
+# The internal Jev and Laya judgment backends (JUDGE-SELECT), ON in dev as of
+# 2026-10-15 ~17:20 PDT (2026-10-16 00:20Z). Verified before switching: the egress joined the
+# tailnet (version 3 of swarm-tailscale-oauth, stored 2026-10-15 19:32Z), and
+# after JEV-URL (PR 1382) a `swarm-judge: internal` pod with the scheduler's
+# hostAliases entry got HTTP 400 for the empty probe from
+# https://decision-api-staging.taile0bda9.ts.net/{jev,laya}/v1/decide, while
+# an unlabelled pod timed out. Off renders no URL, and an internal choice
+# leaves Jev unavailable instead of sending page text to TypeSafe.
+internal_decision_api_enabled = true
+
+# The TypeSafe forwarder (SEC-INJECT-A/B, #1347; terraform/infra/typesafe_fwd.tf,
+# docs/design/workspace-secrets.md section 3.5). Step 1 of 3, ON in dev as of
+# 2026-10-16 (owner decision ~03:45 PDT): creates swarm-typesafe-fwd-key with
+# no version and its two readers, swarm-api and the swarm-typesafe-fwd KSA --
+# the IAM row held at the release's dev-iam gate. The bootstrap half
+# (enable_typesafe_forwarder_read: the forwarder's conditioned
+# secretmanager.versions.access on swarm-tenant-<t>-typesafe versions) was
+# applied the same morning. typesafe_forwarder.serve is a separate change made
+# only after `scripts/create-secrets.sh --typesafe-fwd-key` has written a
+# version: a Cloud Run reference to a secret with no version stops swarm-api
+# starting. Nothing forwards until typesafe_forwarder.enabled names tenants,
+# and no agent pod reaches the forwarder before SEC-MIGRATE-TYPESAFE.
+enable_typesafe_forwarder = true
+
+# Step 2 of 3, 2026-10-16 (owner: "mint the key, then a serve PR"). Version 1
+# of swarm-typesafe-fwd-key was added at 19:00Z with
+# `scripts/create-secrets.sh --typesafe-fwd-key` (generated, never shown), so
+# swarm-api's reference resolves. `serve` puts SWARM_TYPESAFE_FWD_KEY on
+# swarm-api and renders swarm_typesafe_fwd_manifest, which the release's
+# "roll swarm-typesafe-fwd" step (PR 1417, scripts/roll-typesafe-fwd.sh)
+# applies to swarm-system. `enabled` stays false and `tenants` empty: the
+# forwarder forwards nothing until the owner names tenants (step 3), and pods
+# reach it only once SWARM_TYPESAFE_INJECT is set and the owner has re-applied
+# `kubernetes/apply.sh --policies` for allow-typesafe-fwd (PR 1409).
+typesafe_forwarder = {
+  serve   = true
+  enabled = false
+}
+
+# The shared graph service (#1384, docs/design/graph-service.md;
+# terraform/infra/graph_service.tf). Step 1 of 3, ON in dev as of 2026-10-16
+# (owner decision ~02:20 PDT, recorded on #1384): creates the
+# swarm-graph-ticket-key container (no version), its two readers (swarm-api
+# and the swarm-graph KSA) and swarm-graph's read of
+# tenants/<t>/repos/<r>/graph/** -- the IAM rows held at the release's dev-iam
+# gate. graph_service.serve (step 3) is a separate change made only after
+# `scripts/create-secrets.sh --graph-ticket-key` has written a version:
+# serving references the key from swarm-api, and a reference to a secret with
+# no version stops swarm-api starting.
+enable_graph_service = true
+
+# Step 3 of 3 (owner decision 2026-10-16, "run dark", recorded on #1384):
+# serve, but do not answer. `serve` puts SWARM_GRAPH_TICKET_KEY on swarm-api
+# by reference and renders the swarm-graph manifest the release's "roll
+# swarm-graph" step applies (two pods, 1 CPU / 3 GiB each, requests == limits).
+# It merges only after `scripts/create-secrets.sh --graph-ticket-key` has
+# written the key's first version (version 1, 2026-10-16 ~12:03Z): a Cloud
+# Run reference to a secret with no version stops swarm-api starting.
+# `enabled` stays false, so swarm-api mints
+# no graph ticket and no workspace uses the service until the owner turns it
+# on and a workspace's code_intelligence.graph_delivery is `service`.
+#
+# ENABLED 2026-10-16 (owner: "enable a workspace"). The service answers and
+# swarm-api mints graph tickets, but only a workspace whose
+# code_intelligence.graph_delivery is `service` uses it. Every other workspace
+# keeps `staged`, its default, and so does any attempt where the service is
+# unreachable (the worker falls back to staging). The first workspace switched
+# is u-bogdan, by PUT /v1/workspaces/u-bogdan/code-intelligence after this
+# release. Kill switch: enabled = false and release; the pods keep serving
+# nothing and every workspace stages again.
+graph_service = {
+  serve   = true
+  enabled = true
+}

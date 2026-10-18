@@ -80,11 +80,13 @@ from swarm_common.states import (
     PENDING_STATES,
     TERMINAL_STATES,
     EventType,
+    InvalidTransition,
     ParkReason,
     TaskState,
     assert_transition,
 )
 
+from .awaitinput import AWAIT_INPUT_KEY, wait_window
 from .children import cancel_end_cause
 from .codec import (
     as_datetime,
@@ -681,7 +683,81 @@ class SchedulerStore:
             self.append_event(task, EventType.PARKED, {"reason": reason.value, **(detail or {})})
         return outcome
 
+    def park_awaiting_input(self, task: Task, *, max_seconds: int) -> GuardedWrite:
+        """READY -> PARKED(AWAITING_INPUT), with the wait's window, in one guarded write.
+
+        The await-input step's park (docs/design/human-steps.md §4.4). Guarded
+        like every transition here on the state the caller read, which is READY:
+        the promotion `Scheduler._resolve_dependency` has just written, or the
+        READY task admission was handed. A READY -> PARKED write is the only
+        way in, because PARKED -> PARKED is refused by `assert_transition`.
+
+        `next_eligible_at` is the park instant, as HUMAN_REQUIRED and
+        CHILDREN_INCOMPLETE record theirs. `metadata.await_input` gets
+        `opened_at` and `expires_at` (`awaitinput.wait_window`), computed from
+        the stored metadata inside the transaction, so the window is read and
+        written in the same commit and no reader re-derives it. Nothing is
+        reserved or released: the task holds no lease in READY or PARKED
+        (invariant 1).
+        """
+        assert_transition(task.state, TaskState.PARKED)
+        task_ref = self._db.collection(TASKS).document(task.id)
+        expected = task.state.value
+        transaction = self._db.transaction()
+        written: dict[str, Any] = {}
+
+        @firestore.transactional
+        def _apply(txn: Any) -> GuardedWrite:
+            snap = _snapshot(txn.get(task_ref))
+            stored = (snap.to_dict() or {}) if snap.exists else None
+            found = stored.get("state") if stored is not None else None
+            if stored is None:
+                return GuardedWrite("park", False, expected, found, TASK_MISSING)
+            if found != expected:
+                return GuardedWrite("park", False, expected, found, STATE_CHANGED)
+            now = self._now()
+            metadata = dict(stored.get("metadata") or {})
+            window = wait_window(metadata, now, max_seconds=max_seconds)
+            metadata[AWAIT_INPUT_KEY] = window
+            patch = {
+                "state": TaskState.PARKED.value,
+                "park_reason": ParkReason.AWAITING_INPUT.value,
+                "next_eligible_at": now,
+                "blocked_by": [],
+                "metadata": metadata,
+                "updated_at": now,
+            }
+            txn.update(task_ref, patch)
+            written.clear()
+            written.update(window)
+            return GuardedWrite("park", True, expected, found, None, TaskState.PARKED.value)
+
+        outcome = _apply(transaction)
+        if not outcome.applied:
+            self._log_skip(outcome, task)
+            return outcome
+        self.append_event(
+            task,
+            EventType.PARKED,
+            {
+                "reason": ParkReason.AWAITING_INPUT.value,
+                "opened_at": written["opened_at"].isoformat(),
+                "expires_at": written["expires_at"].isoformat(),
+            },
+        )
+        return outcome
+
     def promote_to_ready(self, task: Task, *, detail: dict[str, Any] | None = None) -> GuardedWrite:
+        """PARKED -> READY, guarded on the state and the park reason read.
+
+        PARKED ONLY. The table also allows FAILED -> READY, and this guard
+        would happily match a FAILED snapshot (its park reason is None both
+        sides), so a FAILED task handed here would be retried. Nothing the
+        scheduler ends FAILED before a lease may be (`fail_before_lease`), so
+        the edge is refused here rather than trusted to every caller.
+        """
+        if task.state is not TaskState.PARKED:
+            raise InvalidTransition(task.state, TaskState.READY)
         assert_transition(task.state, TaskState.READY)
         outcome = self._write_if_unchanged(
             "promote",
@@ -707,8 +783,9 @@ class SchedulerStore:
         For a park whose task has used its last attempt. Returning it to READY
         would lease attempt N+1 of N, because admission does not check the
         retry cap (`swarm_common.models.retries_exhausted` says why the rule
-        lives where it does). PARKED -> FAILED is not a legal transition;
-        DEAD_LETTERED is.
+        lives where it does). PARKED -> FAILED exists (contract request 99)
+        but only for a task that can never run (`fail_before_lease`); a spent
+        retry has always ended DEAD_LETTERED, and still does.
 
         Guarded exactly as `promote_to_ready` is, on the state AND the park
         reason the caller read. The task holds no capacity in PARKED, so there
@@ -734,6 +811,55 @@ class SchedulerStore:
         )
         if outcome.applied:
             self.append_event(task, EventType.DEAD_LETTERED, {"reason": reason, **(detail or {})})
+        return outcome
+
+    def fail_before_lease(
+        self, task: Task, error: str, *, detail: dict[str, Any] | None = None
+    ) -> GuardedWrite:
+        """End a READY or PARKED task that can never run: -> FAILED, no lease.
+
+        Contract request 99 (accepted by the owner 2026-10-18), for
+        registered-mcp-servers.md §4.10: a per-run MCP credential that expired
+        or was revoked cannot be replaced, because the caller who supplied it
+        is not online to supply another. Admission holds such a task READY and
+        the credential sweep holds it PARKED, so those are the two sources.
+
+        ONE GUARDED WRITE, AND NOTHING ELSE. The task holds no lease in READY
+        or PARKED (invariant 1), so there is none to release and none is
+        taken; no pool is read or moved, so no reservation is half-made
+        (invariant 2); it never passes through LEASED, so concurrency never
+        counts it (invariant 3). Guarded on the state AND the park reason the
+        caller read, as `promote_to_ready` is: if another scheduler leased it
+        meanwhile, FAILED over LEASED would be a terminal task holding a lease.
+
+        NEVER RETRIED. `error` is the terminal code (`mcp_credential_expired`
+        or `mcp_credential_missing`), and `attempt_count` is left alone: no
+        attempt ran. `promote_to_ready` refuses a FAILED task, and no other
+        writer reads one back to READY. `end_cause` is None: no `EndCause`
+        value names this ending, and the contract says such a writer writes
+        None.
+        """
+        if task.state not in (TaskState.READY, TaskState.PARKED):
+            raise InvalidTransition(task.state, TaskState.FAILED)
+        assert_transition(task.state, TaskState.FAILED)
+        now = self._now()
+        outcome = self._write_if_unchanged(
+            "fail_before_lease",
+            task,
+            {
+                "state": TaskState.FAILED.value,
+                "park_reason": None,
+                "next_eligible_at": None,
+                "blocked_by": [],
+                "completed_at": now,
+                "last_error": error[:1000],
+                "end_cause": None,
+                "updated_at": now,
+            },
+            same_park_reason=True,
+        )
+        if outcome.applied:
+            self.append_event(task, EventType.FAILED, {"reason": error, **(detail or {})})
         return outcome
 
     def mark_dispatched(

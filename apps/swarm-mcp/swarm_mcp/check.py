@@ -6,9 +6,11 @@ workflows or tasks that are stuck or stale and to attach all workflows for a
 given claude code session running at the time for that project". This module
 is the check; `watch` is the interval, and `launch.for_all` the attach.
 
-READ-ONLY, AND ONLY THROUGH THE API. Every read below is a GET the bridge
+READ-ONLY, AND THROUGH THE API. Every read below is a GET the bridge
 already makes somewhere else -- the workflow list and one workflow, the task
-list, one task, a task's events, `/v1/capacity`, `/v1/tenants/mine`. Nothing
+list, one task, a task's events, `/v1/capacity`, `/v1/tenants/mine` -- and
+one more, outside it: a refused merge step's pull request state, from
+GitHub's public REST API, unauthenticated (rule d). Nothing
 is cancelled, retried, released or re-dispatched: the answer names the item,
 why it was flagged, the evidence the API served for it, its console link and
 the next command for a person to run.
@@ -38,15 +40,29 @@ THE RULES, each with the control that is NOT flagged:
     -- a provider quota window, a retry backoff -- is the platform waiting by
     design, and is not flagged.
 (d) `merge_refused` (STUCK): a `merge` step FAILED with `head_moved`,
-    `merge_conflict` or `checks_failed`. The API serves no pull request
-    state, so whether the PR is still open is NOT read: the answer says so,
-    and hands over the PR link to look.
+    `merge_conflict` or `checks_failed`, and its pull request is still
+    OPEN. The API serves no pull request state, so it is read from
+    GitHub's public REST API (`github_pull_state`: unauthenticated, no
+    token is ever sent), once per PR per check. A PR that has since MERGED
+    or CLOSED is not flagged (epic #1334: four merged PRs stayed flagged
+    `head_moved` for good). When that read fails the flag stays, and its
+    evidence says "PR state not read" and why.
 (e) `state_disagrees` (STALE): a workflow whose stored state and derived
     state disagree about whether it is finished -- the stale RUNNING cache
     (stored RUNNING, every step done) or the reverse -- or one the API served
     without deriving at all. A stored QUEUED under a derived RUNNING is the
     cache lagging between two reads (`workflows.state_of`), and is not
     flagged.
+(f) `awaiting_input`: PARKED with AWAITING_INPUT, a workflow step waiting for
+    a member of its tenant to answer (docs/design/human-steps.md §4.5). It is
+    INFORMATION, not a flag: listed under `awaiting_input` with its tenant,
+    its window and how to answer it, never under `flagged`, because a person
+    who has not answered yet is the step working as designed and it holds
+    nothing (invariant 1). It is flagged STUCK only once `expires_at` has
+    passed by more than `EXPIRY_TICKS` ticks of the expiry sweep: the
+    schedule tick ends an overdue wait within one, so a wait still parked
+    after two means the sweep is not running. HUMAN_REQUIRED stays STUCK
+    under (c), as before.
 
 Every age is measured from evidence and says which: the event that entered
 the state when the newest page of events holds it, else a LOWER BOUND from
@@ -57,8 +73,11 @@ the scheduler rewrites it on every pass that records `blocked_by`.
 from __future__ import annotations
 
 import copy
+import json
 import threading
+import urllib.error
 import urllib.parse
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -66,7 +85,7 @@ from urllib.parse import urlsplit
 
 from swarm_common.states import TERMINAL_STATES
 
-from . import checkout, render, workflows
+from . import awaitinput, checkout, render, session, workflows
 from .client import SwarmClient, SwarmError, task_id_of
 from .follow import console_link
 
@@ -93,6 +112,13 @@ SINGLE_TASK_PAGES = 3
 #: told which were not checked rather than made to wait.
 MAX_TASK_READS = 80
 
+#: GitHub's public REST API, read for a refused merge step's PR state. The
+#: repository is public, so the read is unauthenticated: no token is sent.
+GITHUB_API = "https://api.github.com"
+#: Seconds one PR-state read may take. A check runs every 30 minutes; a slow
+#: GitHub costs this much per PR, and the flag stays (unread) rather than wait.
+PULL_STATE_TIMEOUT = 5
+
 MERGE_PROFILE = "merge"
 MERGE_CODES = ("head_moved", "merge_conflict", "checks_failed")
 
@@ -103,9 +129,18 @@ _FAILED_DEPENDENCY = frozenset({"FAILED", "CANCELLED", "DEAD_LETTERED"})
 
 STALE = "STALE"
 STUCK = "STUCK"
+#: (f)'s kind: a wait for a person, reported apart from what is flagged.
+AWAITING_INPUT = "awaiting_input"
+#: How often the schedule tick runs its expiry sweep
+#: (`terraform/modules/scheduler/variables.tf`, `schedule_tick_schedule`:
+#: every minute), and how many of them an overdue wait may outlive before it
+#: is STUCK. One tick can miss a wait that expired just after it read; two
+#: cannot, unless the sweep is not running.
+EXPIRY_TICK_SECONDS = 60
+EXPIRY_TICKS = 2
 
 #: The order flagged items are reported in: what needs a person first.
-_RULE_ORDER = {"merge_refused": 0, "parked": 1, "no_heartbeat": 2, "state_disagrees": 3,
+_RULE_ORDER = {"merge_refused": 0, "parked": 1, AWAITING_INPUT: 1, "no_heartbeat": 2, "state_disagrees": 3,
                "waiting_for_capacity": 4}
 
 ALL = ("all", "*")
@@ -124,7 +159,13 @@ def repo_key(url: Any) -> str | None:
     if not text:
         return None
     if "://" not in text and "@" not in text and ":" not in text:
-        text = f"https://github.com/{text}"
+        # `host/owner/repo` (`github.com/acme/app`, what this check's own
+        # answer prints) already names its host; only a bare `owner/repo` is
+        # GitHub's. A GitHub owner never holds a dot, a host always does.
+        # Prefixing both read `github.com/acme/app` as owner `github.com`
+        # (epic #1334).
+        first = text.strip("/").split("/", 1)[0]
+        text = f"https://{text}" if "." in first else f"https://github.com/{text}"
     try:
         parts = urlsplit(checkout.https_url(text))
     except SwarmError:
@@ -181,6 +222,63 @@ def pull_request_link(repository_url: Any, number: Any) -> str | None:
     if key is None or not isinstance(number, int) or isinstance(number, bool) or number <= 0:
         return None
     return f"https://{key}/pull/{number}"
+
+
+def github_pull_state(key: str, number: int) -> str:
+    """`OPEN`, `MERGED` or `CLOSED`: pull request `number` of repository
+    `key` (`github.com/owner/repo`), from GitHub's public REST API.
+
+    UNAUTHENTICATED, ALWAYS. The request carries no Authorization header and
+    no credential of any kind is read to build it: the repositories this
+    platform merges into are public, and a token sent here would be a token
+    sent somewhere the platform never needed it. Raises SwarmError when the
+    state could not be read -- another forge, a rate limit, a timeout."""
+    host, _, path = str(key).partition("/")
+    owner, _, repo = path.partition("/")
+    if host != "github.com" or not owner or not repo:
+        raise SwarmError(f"{key} is not a GitHub repository, and GitHub is the only forge read")
+    url = f"{GITHUB_API}/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/pulls/{int(number)}"
+    request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json",
+                                                   "User-Agent": "swarm-mcp-check"})
+    try:
+        with urllib.request.urlopen(request, timeout=PULL_STATE_TIMEOUT) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise SwarmError(f"GitHub answered HTTP {exc.code} for {url}") from None
+    except (OSError, ValueError) as exc:
+        raise SwarmError(f"GitHub could not be read for {url}: {type(exc).__name__}") from None
+    if not isinstance(data, dict):
+        raise SwarmError(f"GitHub served no pull request at {url}")
+    if data.get("merged") is True or data.get("merged_at"):
+        return "MERGED"
+    state = str(data.get("state") or "").lower()
+    if state in ("open", "closed"):
+        return state.upper()
+    raise SwarmError(f"GitHub served pull request state {data.get('state')!r} at {url}")
+
+
+class _PullStates:
+    """The PR states one check reads: each `(repository, number)` at most
+    once, whatever its outcome, however many steps or tenants name it.
+    Thread-safe."""
+
+    def __init__(self, reader: Callable[[str, int], str] | None = None) -> None:
+        self.reader = reader
+        self.lock = threading.Lock()
+        self.seen: dict[tuple[str, int], tuple[str | None, str | None]] = {}
+
+    def read(self, key: str, number: int) -> tuple[str | None, str | None]:
+        """`(state, None)`, or `(None, why it was not read)`."""
+        with self.lock:
+            if (key, number) not in self.seen:
+                # Looked up at call time, so the module's reader is the one a
+                # test (or a caller) put there.
+                reader = self.reader or github_pull_state
+                try:
+                    self.seen[(key, number)] = (reader(key, number), None)
+                except SwarmError as exc:
+                    self.seen[(key, number)] = (None, str(exc))
+            return self.seen[(key, number)]
 
 
 # --------------------------------------------------------------------------
@@ -426,8 +524,11 @@ def _waiting(task: dict[str, Any], reads: _Reads, now: datetime, window: int) ->
 
 def _parked(task: dict[str, Any], reads: _Reads, now: datetime,
             dependencies: dict[str, Any] | None) -> dict[str, Any] | None:
-    """(c): HUMAN_REQUIRED, CI_PENDING past 90 min, or a dependency that failed."""
+    """(c): HUMAN_REQUIRED, CI_PENDING past 90 min, or a dependency that failed.
+    (f): AWAITING_INPUT, as information, or STUCK once its sweep is overdue."""
     reason = task.get("park_reason")
+    if reason == "AWAITING_INPUT":
+        return _awaiting(task, now)
     if reason == "DEPENDENCY_INCOMPLETE":
         failed = {k: v for k, v in (dependencies or {}).items() if v in _FAILED_DEPENDENCY}
         if not failed:
@@ -457,6 +558,54 @@ def _parked(task: dict[str, Any], reads: _Reads, now: datetime,
     return {"kind": STUCK, "rule": "parked", "reason": text, "evidence": evidence}
 
 
+def _clock(value: datetime | None) -> str:
+    return value.strftime("%H:%M UTC") if value else "an unrecorded time"
+
+
+def _span(seconds: float) -> str:
+    minutes = _minutes(abs(seconds))
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours} h {minutes} m" if hours else f"{minutes} m"
+
+
+def _awaiting(task: dict[str, Any], now: datetime) -> dict[str, Any]:
+    """(f): a wait for a person -- information, or STUCK when the sweep is overdue."""
+    held = awaitinput.window(task)
+    block = awaitinput.declaration(task)
+    opened = render.parse_time(held.get("opened_at"))
+    expires = render.parse_time(held.get("expires_at"))
+    evidence = {
+        "park_reason": "AWAITING_INPUT",
+        "tenant": task.get("tenant_id"),
+        "opened_at": _iso(opened),
+        "expires_at": _iso(expires),
+        "form": block.get("form"),
+        "on_expire": block.get("on_expire"),
+    }
+    grace = EXPIRY_TICKS * EXPIRY_TICK_SECONDS
+    if expires is not None and (now - expires).total_seconds() > grace:
+        evidence["overdue_minutes"] = _minutes((now - expires).total_seconds())
+        return {
+            "kind": STUCK, "rule": AWAITING_INPUT,
+            "reason": (f"waiting for a member since {_clock(opened)}, but it expired "
+                       f"{_span((now - expires).total_seconds())} ago and is still parked: the "
+                       f"expiry sweep (every {EXPIRY_TICK_SECONDS}s) has not ended it in "
+                       f"{EXPIRY_TICKS} ticks, so it is not running"),
+            "evidence": evidence,
+        }
+    if expires is None:
+        until = "no expiry was served"
+    elif expires >= now:
+        until = f"expires in {_span((expires - now).total_seconds())}"
+    else:
+        until = f"expired {_span((now - expires).total_seconds())} ago; the next sweep ends it"
+    return {
+        "kind": AWAITING_INPUT, "rule": AWAITING_INPUT,
+        "reason": f"waits for a member of {task.get('tenant_id')} since {_clock(opened)}, {until}",
+        "evidence": evidence,
+    }
+
+
 def _refusal_code(task: dict[str, Any]) -> tuple[str | None, str | None]:
     summary = task.get("result_summary") if isinstance(task.get("result_summary"), dict) else {}
     refusal = summary.get("refusal") if isinstance(summary.get("refusal"), dict) else {}
@@ -470,8 +619,10 @@ def _refusal_code(task: dict[str, Any]) -> tuple[str | None, str | None]:
     return (str(code) if code else None), (str(message) if message else None)
 
 
-def _merge(task: dict[str, Any], step: dict[str, Any]) -> dict[str, Any] | None:
-    """(d): a merge step FAILED on head_moved, merge_conflict or checks_failed."""
+def _merge(task: dict[str, Any], step: dict[str, Any],
+           pulls: _PullStates | None = None) -> dict[str, Any] | None:
+    """(d): a merge step FAILED on head_moved, merge_conflict or checks_failed,
+    and its PR is not known to have MERGED or CLOSED since."""
     if task.get("state") != "FAILED":
         return None
     code, message = _refusal_code(task)
@@ -483,17 +634,25 @@ def _merge(task: dict[str, Any], step: dict[str, Any]) -> dict[str, Any] | None:
         given = (step.get("input") or {}).get("pull_request") if isinstance(step.get("input"), dict) else None
         number = given if isinstance(given, int) else None
     link = pull_request_link(task.get("repository_url"), number)
+    state: str | None = None
+    if link is None:
+        why = "the step names no pull request it could be read for"
+    else:
+        state, why = (pulls or _PullStates()).read(str(repo_key(task.get("repository_url"))), number)
+    if state in ("MERGED", "CLOSED"):
+        # The refusal is history: the PR it refused has since been settled.
+        return None
     evidence = {
         "refusal": code,
         "message": message or task.get("last_error"),
         "pull_request": number,
         "pull_request_url": link,
-        "pull_request_state": None,
-        "pull_request_state_unread_because": (
-            "the API serves no pull request state, so whether the PR is still open was not "
-            "read: open the link to see"
-        ),
+        "pull_request_state": state,
     }
+    if state is None:
+        evidence["pull_request_state_unread_because"] = (
+            f"PR state not read: {why}. Whether the PR is still open is unknown: open the link to see"
+        )
     return {
         "kind": STUCK,
         "rule": "merge_refused",
@@ -608,9 +767,32 @@ def _single_tasks(client: SwarmClient) -> tuple[list[dict[str, Any]], str | None
 
 
 def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: datetime,
-                  names: dict[str, str]) -> dict[str, Any]:
+                  names: dict[str, str], sid: str | None = None,
+                  pulls: _PullStates | None = None) -> dict[str, Any]:
     reads = _Reads(client, MAX_TASK_READS)
+    pulls = pulls or _PullStates()
+    record = session.project_record()
     running, recent, notes = _workflow_lists(client)
+    # THIS SESSION'S OWN (SC-SESSION-SCOPE): a list row that already names
+    # another session, or names none on a deployment that serves the tag, is
+    # never read step by step; the rest are decided off their step tasks.
+    left_out = {"workflows": session.counts(), "single_tasks": session.counts()}
+
+    def foreign(row: dict[str, Any]) -> str | None:
+        if session.METADATA_KEY not in row:
+            return None
+        kind = session.ownership(session.owner_of(row), sid)
+        return None if kind == "own" else kind
+
+    kept_running = []
+    for row in running:
+        kind = foreign(row)
+        if kind:
+            left_out["workflows"][kind] += 1
+        else:
+            kept_running.append(row)
+    running = kept_running
+    recent = [w for w in recent if not foreign(w)]
     tenant = notes.get("tenant_id")
     running_ids = {str(w.get("workflow_id")) for w in running}
 
@@ -653,9 +835,17 @@ def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: date
         listed = wanted[wid]
         doc = envelope["workflow"]
         tasks = {str(t.get("id")): t for t in envelope.get("tasks") or [] if isinstance(t, dict) and t.get("id")}
-        if not _in_scope(scope, [t.get("repository_url") for t in tasks.values()]):
+        kind = session.ownership(
+            session.owner_of(listed) or session.owner_of(doc) or session.owner_of_tasks(tasks.values()), sid,
+            record=record, ident=wid, name=session.stored_name(envelope, wid),
+            in_repository=_in_scope(scope, [t.get("repository_url") for t in tasks.values()]))
+        if kind == "not_this_project":
             if wid in running_ids:
                 out_of_scope["workflows"] += 1
+            continue
+        if kind != "own":
+            if wid in running_ids:
+                left_out["workflows"][kind] += 1
             continue
         workspace = workflows.workspace_of(doc, names, fallback=envelope.get("tenant_id") or tenant)
         where = {"workspace": workspace, "workflow_id": wid}
@@ -677,7 +867,7 @@ def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: date
                 continue
             step_where = {**where, "step_id": step.get("step_id")}
             if step.get("runner_profile") == MERGE_PROFILE and doc.get("state") != "SUCCEEDED":
-                merged = _merge(task, step)
+                merged = _merge(task, step, pulls)
                 if merged:
                     extra = merged.pop("pull_request", None)
                     item = _item(merged["kind"], merged["rule"], merged["reason"], merged["evidence"], task, step_where)
@@ -701,8 +891,13 @@ def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: date
     singles, singles_gap = _single_tasks(client)
     in_scope_singles: list[dict[str, Any]] = []
     for task in singles:
-        if not _in_scope(scope, [task.get("repository_url")]):
+        kind = session.ownership(session.owner_of(task), sid, record=record, ident=task_id_of(task),
+                                 in_repository=_in_scope(scope, [task.get("repository_url")]))
+        if kind == "not_this_project":
             out_of_scope["single_tasks"] += 1
+            continue
+        if kind != "own":
+            left_out["single_tasks"][kind] += 1
             continue
         workspace = workflows.workspace_of(task, names, fallback=tenant)
         entry = {"task_id": task_id_of(task), "workspace": workspace, "state": task.get("state"),
@@ -726,19 +921,28 @@ def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: date
                                   "why": f"could not be read: {exc}"})
         if flag is None:
             return None
-        return ("flagged", _item(flag["kind"], flag["rule"], flag["reason"], flag["evidence"], task, where))
+        item = _item(flag["kind"], flag["rule"], flag["reason"], flag["evidence"], task, where)
+        if flag["kind"] == AWAITING_INPUT:
+            item["next"] = (f"swarm_workflow_input {{workflow_id: {where.get('workflow_id')!r}, "
+                            f"step_id: {where.get('step_id')!r}}}, or its console link")
+            return (AWAITING_INPUT, item)
+        return ("flagged", item)
 
+    awaiting: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=max(1, min(8, len(jobs)))) as pool:
         for outcome in pool.map(run, jobs):
             if outcome is None:
                 continue
-            (flagged if outcome[0] == "flagged" else unchecked).append(outcome[1])
+            bucket = {"flagged": flagged, AWAITING_INPUT: awaiting}.get(outcome[0], unchecked)
+            bucket.append(outcome[1])
 
     out: dict[str, Any] = {
         "tenant_id": tenant,
         "flagged": flagged,
+        "awaiting_input": awaiting,
         "running": {"workflows": in_scope_running, "single_tasks": in_scope_singles},
         "out_of_scope": out_of_scope,
+        "other_sessions": left_out,
         "unchecked": unchecked,
     }
     for key in ("reconciler_stalled_workflows", "running_incomplete_because"):
@@ -788,11 +992,13 @@ def run(
                          f"not {stale_minutes!r}. Nothing was read")
     now = now or datetime.now(timezone.utc)
     scope = resolve_scope(repository)
+    sid = session.current()
     shown = (names or workflows.workspace_names)(client)
     seen_tenants: list[Any] = []
     per_tenant: list[dict[str, Any]] = []
+    pulls = _PullStates()  # one cache for the whole check, across tenants
     for reader in _readers(client, tenants):
-        result = _check_tenant(reader, scope["key"], window, now, shown)
+        result = _check_tenant(reader, scope["key"], window, now, shown, sid, pulls)
         if result["tenant_id"] in seen_tenants:
             continue
         seen_tenants.append(result["tenant_id"])
@@ -811,6 +1017,9 @@ def run(
                   "stuck": sum(1 for i in flagged if i["kind"] == STUCK),
                   "stale": sum(1 for i in flagged if i["kind"] == STALE)},
         "flagged": flagged,
+        # (f): steps waiting for a person, as information -- never counted
+        # as stuck or stale, and never a reason for the watch to alarm.
+        "awaiting_input": [i for r in per_tenant for i in r["awaiting_input"]],
         "running": {
             "workflows": [w for r in per_tenant for w in r["running"]["workflows"]],
             "single_tasks": [t for r in per_tenant for t in r["running"]["single_tasks"]],
@@ -818,6 +1027,16 @@ def run(
         "out_of_scope": {
             "workflows": sum(r["out_of_scope"]["workflows"] for r in per_tenant),
             "single_tasks": sum(r["out_of_scope"]["single_tasks"] for r in per_tenant),
+        },
+        # What was left out for being another session's or untagged
+        # (SC-SESSION-SCOPE): counted, never checked, never attached.
+        "session": {
+            **session.describe(sid),
+            "left_out": {
+                group: {kind: sum(r["other_sessions"][group][kind] for r in per_tenant)
+                        for kind in ("other_session", "untagged")}
+                for group in ("workflows", "single_tasks")
+            },
         },
         "unchecked": [u for r in per_tenant for u in r["unchecked"]],
         "attach_with": (
@@ -827,6 +1046,15 @@ def run(
     }
     if scope.get("note"):
         out["repository_note"] = scope["note"]
+    if not out["running"]["workflows"] and not out["running"]["single_tasks"]:
+        # Said, not acted on (SC-AUTO-WATCH, owner 2026-10-14): an armed watch
+        # with nothing to watch costs one read per interval, so the check
+        # leaves it armed for the next workflow rather than cancelling it.
+        where = f"in {scope['key']}" if scope["key"] else "in any repository"
+        out["nothing_running"] = (
+            f"nothing this session started is running in SwarmCloud {where}; the watch stays armed "
+            "for the next workflow (`/sc watch off` cancels it)"
+        )
     for r in per_tenant:
         for key in ("reconciler_stalled_workflows", "running_incomplete_because",
                     "single_tasks_incomplete_because"):

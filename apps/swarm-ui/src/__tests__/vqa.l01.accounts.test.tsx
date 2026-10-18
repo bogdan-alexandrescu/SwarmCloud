@@ -11,7 +11,9 @@
 //              Try again 12px under it.
 //   V010       A write's failure is not drawn as a read's; Add account's 422
 //              is a line at the form.
-//   V013       `time not recorded` wraps inside Last 429.
+//   V013       `time not recorded` stays inside Last 429 -- since the
+//              2026-10-16 re-run on one line, in a column as wide as it
+//              (vqa2.r2.capacity.test.tsx); wrapped, its row was taller.
 //   V015       The phone hides History's When cell by name, not Since.
 //   V016       Two Sign in again links are separated.
 //   V017       Holding now / History answer from the development fixture.
@@ -457,7 +459,7 @@ function quota(over: Partial<QuotaState> = {}): QuotaState {
   }
 }
 
-describe('V005/V020/V013: Provider quota cuts ids in the middle and wraps the 429 mark', () => {
+describe('V005/V020/V013: Provider quota cuts ids in the middle and keeps the 429 mark in its column', () => {
   const LONG = 'u-bogdan-alexandrescu-research'
 
   async function quotaRow(): Promise<HTMLElement> {
@@ -491,12 +493,13 @@ describe('V005/V020/V013: Provider quota cuts ids in the middle and wraps the 42
     expect(link.querySelector('.quota-cut-head')!.textContent).toBe('provider:anthropic:')
   })
 
-  it('wraps `time not recorded` inside Last 429', async () => {
+  it('keeps `time not recorded` inside Last 429, on one line', async () => {
     const row = await quotaRow()
     const cell = row.querySelector('td[data-label="Last 429"]')!
     const mark = cell.querySelector('.ctl-mark')!
     expect(mark.textContent).toBe('time not recorded')
-    expect(painted(mark, 'white-space', WIDE)).toBe('normal')
-    expect(painted(cell, 'white-space', WIDE)).toBe('normal')
+    expect(painted(mark, 'white-space', WIDE)).toBe('nowrap')
+    // The cell still clips, the backstop if a mark ever outgrows the column.
+    expect(painted(cell, ['overflow-x', 'overflow'], WIDE)).toBe('hidden')
   })
 })

@@ -268,7 +268,8 @@ def test_a_failed_job_with_no_eviction_is_a_lost_worker_not_a_missing_execution(
     kinds = [o.kind for o in report.outcomes]
     assert "missing_execution" not in kinds, report.as_dict()
     assert kinds == ["stale_lease"], report.as_dict()
-    assert "its execution has ended (failed)" in db.doc(f"tasks/{TASK}")["last_error"]
+    # A known non-zero exit is named as a crash (#1438), not "the worker is lost".
+    assert "its execution ended with exit code 137" in db.doc(f"tasks/{TASK}")["last_error"]
 
 
 # ---------------------------------------------------------------------------

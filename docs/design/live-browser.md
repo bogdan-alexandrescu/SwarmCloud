@@ -305,9 +305,17 @@ Kubernetes operator in `swarm-system` with ONE egress Service to
 `decision-api-staging`, its OAuth client (`tag:swarmcloud`, ACL limited to
 `decision-api-staging:443`) in Secret Manager as `swarm-tailscale-oauth`, stored
 by the owner and never in the repository, a tfvars file, an environment or a log.
-A pod reaches it as `http://decision-api.swarm-system.svc.cluster.local`.
-`terraform/infra` `internal_decision_api_enabled` (off by default) renders that
-address as `INTERNAL_DECISION_API_URL` onto swarm-api and the scheduler.
+A pod reaches it **by the decision API's tailnet name**,
+`https://decision-api-staging.taile0bda9.ts.net`, which its `hostAliases`
+entry pins to the egress Service's fixed clusterIP (`10.48.6.120`, stated once
+as `terraform/infra/tailscale.tf` `local.decision_api_cluster_ip`). The Service
+passes raw TLS through to the tailnet, so the pod verifies the API's real
+certificate end to end (owner decision 2026-10-15, #1380). The in-cluster name
+it replaced, `http://decision-api.swarm-system.svc.cluster.local`, never
+worked: the Service has no port 80, and over https the certificate is the
+tailnet name's. `terraform/infra` `internal_decision_api_enabled` (off by
+default) renders the tailnet origin as `INTERNAL_DECISION_API_URL` onto
+swarm-api and the scheduler, which accept no other value.
 
 **The setting** is per workspace: `workspace_settings/{tenant}.judgment_backend`,
 read and written with `GET`/`PUT /v1/workspaces/{id}/judgment-backend` by the
@@ -321,16 +329,17 @@ the browser strip; Settings › API keys has the radio.
 
 **What a pod gets** (`scheduler/judgment.py`, live-browser pods only):
 `SWARM_JEV_BACKEND`, always; for an internal backend with the egress on,
-`JEV_API_URL` (the Service's `/jev` or `/laya` `/v1/decide`) and the pod label
-`swarm-judge: internal`, which JUDGE-NET's NetworkPolicy keys the decision API's
-egress on. The worker passes both variables to the CLI
+`JEV_API_URL` (`https://decision-api-staging.taile0bda9.ts.net/jev/v1/decide`
+or `/laya/v1/decide`), the pod label `swarm-judge: internal`, which JUDGE-NET's
+NetworkPolicy keys the decision API's egress on, and the `hostAliases` entry
+that resolves that name to the egress Service -- the three together or none. The worker passes both variables to the CLI
 (`handoff.AGENT_PASSTHROUGH_ENV`), whose MCP servers inherit them.
 
 **No fallback, in either direction.** An internal choice with the egress off is
 *unavailable*, not TypeSafe: the pod gets no URL, and `jev-browser-mcp` refuses
 to start rather than let jev-browser use its TypeSafe default. The wrapper
-passes `JEV_API_URL` through only when it is exactly the egress Service's path
-for the chosen backend, and sets `JEV_API_COMPAT=internal` with it, so the
+passes `JEV_API_URL` through only when it is exactly the decision API's
+tailnet path for the chosen backend, and sets `JEV_API_COMPAT=internal` with it, so the
 patched jev-browser reshapes each request for the internal API (§3.2.3). For an
 internal backend it sends **no TypeSafe key**: upstream jev-browser 0.2.0
 refuses to start without `TYPESAFE_API_KEY` and sends it as a Bearer token, so
@@ -427,6 +436,224 @@ and values, not bodies. The self-test checks that a one-stage and a two-stage
 pick both come back as numeric element indexes, that the TypeSafe path is
 unchanged, and that `internal` with no key does not throw.
 
+### 3.2.4 Choosing and seeing the browser tool (BSTATUS-API)
+
+Owner decision 2026-10-14 (BSTATUS-API, part of #1030): "Picker on Submit,
+Auto by default". A `claude-code-browser` task names its tool in
+`input.browser_tool`, one of four names the frozen catalogue declares
+(contract request 77): `auto` (the default), `playwright`, `dev-browser` or
+`jev`. A NAME, never a command, an MCP config or a URL (invariant 10): the
+runner and the image's wrappers own what each name runs.
+
+**What each name registers** (`agent_worker/browser_tools.py`, `choose`):
+
+| `browser_tool` | registered | note names first |
+|---|---|---|
+| `auto` | Playwright MCP, dev-browser, and jev when it can run | every tool, each with its strength |
+| `playwright` | Playwright MCP only | Playwright |
+| `dev-browser` | dev-browser first, Playwright MCP as fallback | dev-browser |
+| `jev` | jev MCP first, Playwright MCP as fallback | jev |
+
+Playwright MCP is registered on every choice because it is the one tool
+that has worked through the gate since L2: a choice must never leave the
+agent with no working tool. Jev runs only when the image carries its
+wrapper and the runner has a TypeSafe key; otherwise the attempt runs
+without it and says why (`no_key`, `not_installed`). It does not fail: a
+key deleted between submission and run must not cost the attempt.
+
+**The API refuses what cannot run.** A `jev` submission with no TypeSafe key
+for its submitter or its tenant (the resolution `GET
+/v1/provider-keys/typesafe` serves), or on a deployment whose image has no
+jev (`BROWSER_JEV_INSTALLED=false`), is refused 422
+`browser_tool_unavailable`. It is a new refusal, so it ships switched off
+(`REFUSAL_BROWSER_TOOL_UNAVAILABLE`): until the Submit form disables Jev when
+no key resolves, the refusal is logged and the task runs on Playwright.
+
+**How the console learns which tool is in use.** Three parties each know
+one part, and none can see the others' part:
+
+* the RUNNER knows what it registered. It writes `browser.json` to the
+  hand-off spool before the CLI starts;
+* the WORKER's hand-off poll forwards that file to the gate over ctl.sock
+  (`browser_tools`), checked again, because the spool is in the agent's
+  reach. The spool's copy is removed at every attempt's start, so a restored
+  checkpoint never speaks for a new attempt;
+* the GATE knows which tool drove the browser last. Each tool connects with
+  a CLIENT TAG on the endpoint, `http://127.0.0.1:9222/client/<tool>`: the
+  runner gives Playwright MCP its tag in `--cdp-endpoint`, and the dev-browser
+  and jev wrappers add theirs. The tag is a path segment, not a query,
+  because a client that builds `/json/version` by string concatenation turns
+  `?client=x` into `?client=x/json/version/`. The CDP proxy reads the tag,
+  echoes it into the websocket URL it hands back, and STRIPS it: nothing of
+  it reaches Chromium. An untagged connection, such as `swarm_browser.live()`
+  from the agent's Python, works as before and is attributed to no tool.
+
+The gate puts it all in its report as `browser`: the registration, the last
+tool and when, and the egress. The relay passes the key on, and swarm-api
+checks it key by key (`clean_browser`): an unknown key anywhere in it drops
+the whole of it.
+
+**The egress state** is the forwarder's (§ "browser egress",
+docs/browser-egress.md): `residential` or `direct`; `ok`, `failing` or `off`;
+and `last_error`, one of the gate's FIXED sentences for the forwarder's
+cause word. The forwarder never reads a vendor's answer past its status and
+a cause word, so no vendor's text can reach the console. A refusal of one
+request (a destination the policy refuses, a rate) does not make the path
+`failing`; a refusal of the path (the vendor unreachable, a budget used up)
+does, until the next connection is served. The exit country is not the
+gate's to know: swarm-api adds it from `BROWSER_EGRESS_COUNTRY`, the setting
+that mints the ticket.
+
+**What the console reads** is `browser` on `GET
+/v1/tasks/{id}/live/session`, beside `live_browser`, served for a live-browser
+task before, during and after its session:
+
+```json
+{"tool_selected": "auto",
+ "tools_available": ["playwright", "dev-browser", "jev"],
+ "tool_last_used": {"name": "dev-browser", "at": "2026-10-14T15:02:11+00:00"},
+ "jev": {"enabled": true, "reason": null, "key_scope": "user"},
+ "egress": {"mode": "residential", "country": "us", "state": "ok", "last_error": null}}
+```
+
+`tool_selected` is the task's own input, so it is there from submission.
+`tools_available` is empty and `egress` null until the current attempt's gate
+reports them: never invented. `jev.key_scope` says whose TypeSafe key jev runs
+on while it is registered, and is null otherwise.
+
+**Not verified here.** That dev-browser's `--connect` and jev's
+`connectOverCDP` keep the path of a tagged endpoint was not run against the
+real binaries, nor was Playwright MCP's: recent Playwright appends
+`json/version/` to the endpoint URL's path, which keeps the tag, but that was
+not checked against the pinned 1.63 here. A tool that drops the path still
+connects, untagged, and is attributed to nothing; the proxy also reads a
+`client=` query, for a client that keeps a query and not a path.
+
+### 3.2.5 jev-browser: which backend, which key, how the key arrives (JEV-RUNNER)
+
+Owner decision 2026-10-14 (JEV-RUNNER, part of #1030): a live-browser task
+also gets [jev-browser](https://github.com/ying-kai-liao/jev-browser)'s MCP
+tools, beside Playwright MCP and dev-browser, **according to the workspace's
+judgment backend (§3.2.2, JUDGE-SELECT, PR 1312) and the task's `browser_tool` (§3.2.4) and, for TypeSafe, when its
+submitter or its tenant has a TypeSafe key**. jev-browser 0.2.0 (MIT) is a Node MCP server over
+Playwright. Its `browser_do(goal, values)` and `browser_read(question)` hand
+a goal-driven step, or a question about a long page, to TypeSafe's Jev
+models. That means it **sends the page's text and labels to TypeSafe
+(`api.typesafe.ai`)**. The owner accepted that. A TypeSafe-backend task with no key never
+loads it, and the prompt says nothing about it. jev-ultrafast stays out.
+
+**The gate is two conditions**, both required: (a) the task's `browser_tool`
+(§3.2.4) is `jev` or `auto`, never `playwright` or `dev-browser`; and (b) the
+workspace's backend allows it. Condition (b) is the backend, not the key (`SWARM_JEV_BACKEND`, set by the
+scheduler's `judgment.py` and passed to the worker and the runner):
+
+| `SWARM_JEV_BACKEND` (with `browser_tool` jev or auto) | key | `jev` registered | key file |
+|---|---|---|---|
+| `internal-jev` or `internal-laya` | not needed | yes | never written |
+| `typesafe` | resolved | yes | yes (below) |
+| `typesafe` | none | no | none |
+| unset (an old pod) | resolved | yes | yes |
+| unset (an old pod) | none | no | none |
+
+An internal backend starts `jev-browser-mcp` directly: no `jev_launch.py`,
+no `TYPESAFE_API_KEY`, and `jevkey.prepare` returns before it reads a
+secret. The wrapper refuses by itself when the egress URL is absent, and the
+runner does not repeat that check. Its note leaves out the sentence about
+TypeSafe, because nothing goes there. The key path below applies to the
+`typesafe` backend only; the per-key paragraphs that follow describe it.
+
+**Why per key, and which key** (the `typesafe` backend). jev-browser does nothing without
+`TYPESAFE_API_KEY`, and the keys are the ones docs/provider-keys.md stores.
+The worker resolves the key with swarm-api's rule (`resolve_provider_key`): the
+submitter's own key, `swarm-tenant-u-<user>-typesafe`, wins, else the task
+tenant's, else none. "The submitter's own" means their confirmed personal
+tenant, whose document names their email. A namesake on another domain
+derives the same `u-` id, so the id alone is not enough.
+`agent_worker/jevkey.py` restates the order, and
+`tests/unit/worker/test_jev_runner.py` holds it to swarm-api's function over
+every combination. The worker reads the secret as its own service account,
+the same way it reads every tenant credential. Nothing asks swarm-api for the
+value, because no route serves a credential.
+
+**A personal key on a group task needs a grant.** A task bogdan submits in
+`eng` runs as eng's worker account. swarm-api's write granted
+`swarm-tenant-u-bogdan-typesafe` to u-bogdan's worker only, so eng's worker
+gets PERMISSION_DENIED. It logs `jev_key_unreadable` (the secret id and the
+error type) and uses eng's key if eng has one.
+`terraform/bootstrap/typesafe_user_keys.tf` grants one group's worker read
+on one person's key, one row at a time (`typesafe_user_key_readers`; the
+owner applies it). **A row lets every task in that group read that person's
+key**, because every member runs as the same account in the same container.
+It is the same trade as the GitHub user slots (#780 D7 U1), so a person is
+listed only by consent.
+
+**How the key reaches only the jev server.** This is the narrowest path that
+works:
+
+1. The worker process (`lifecycle._build_child_env` → `jevkey.prepare`), only
+   when `SWARM_CDP_ENDPOINT` is set, writes the key to
+   `<attempt>/private/jev-typesafe.key`: mode 0600, created afresh
+   (`O_EXCL`, `O_NOFOLLOW`), and registered for log redaction before
+   anything else. `private/` is never checkpointed and never uploaded
+   (workspace.py). The runner is given the file's **path**,
+   `SWARM_JEV_KEY_FILE`, and never the key.
+2. The claude-code runner registers an MCP server `jev` whose command is
+   `jev_launch.py` (in the runner package, run by absolute path with `-I`)
+   with the key file and `/opt/swarm/jev-browser/bin/jev-browser-mcp` as
+   arguments. The MCP config therefore holds a path, not the key. The CLI's
+   environment, and so the agent's Bash tool, never gets the key or the
+   variable.
+3. `jev_launch.py` reads the file and execs the server with
+   `TYPESAFE_API_KEY` set in that one process's environment. It also sets
+   `JEV_BROWSER_NO_INSTALL=1` (from the config's `env`), so jev-browser never
+   downloads a Chromium of its own. It does **not** delete the file. The CLI
+   is launched more than once in one attempt (a pending-work resume, a repair
+   turn, an account move), and each launch starts its MCP servers again. A
+   file deleted on first read would leave every later turn without jev. The
+   runner deletes it when the agent has finished, and it is gone with the
+   workspace anyway.
+
+**Claude Code's `${VAR}` expansion in MCP configs was not used.** It expands
+from the CLI's own environment, so the key would have to sit in the
+environment every Bash command inherits. Writing the key into the config's
+`env` would put it in `work/`, which is checkpointed to GCS.
+
+**What this does not stop.** The agent runs as the same uid in the same
+container. It can read the MCP config, find the path and read the file
+while the attempt runs. That is the same trust level as every in-pod
+credential, including the provider key already in the CLI's environment.
+The pod is the boundary, as §3.2 says of `executable_path=`. What this path
+does guarantee is that the key is in no log, no checkpoint, no artifact, no
+environment dump of the agent's shell, and no file under `work/`.
+
+**Attach, not launch.** jev-browser 0.2.0 only launches a browser of its own
+(`chromium.launch` / `launchPersistentContext`, a new context at 1280×800).
+It has no CDP-connect option, and with the agent's `PLAYWRIGHT_BROWSERS_PATH`
+on the stub (§3.2) that launch fails. The image lane (JEV-IMAGE) installs
+`/opt/swarm/jev-browser/bin/jev-browser-mcp` as the variant that attaches to
+`$SWARM_CDP_ENDPOINT` with `viewport: null` and the browser's **existing**
+default context. The gate refuses `Emulation.setDeviceMetricsOverride` and
+the cookie methods, so `newContext` cannot be used. The runner passes the
+endpoint in the server's `env`. If the binary is absent from the image, the
+runner skips the registration and logs `jev_unavailable`, and the attempt
+runs with Playwright MCP and dev-browser.
+
+**The note** is §3.2.4's: the selected tool first, then each registered
+tool's strength line. The `jev` line says it sends page text to TypeSafe,
+which is true only on the `typesafe` backend (`BROWSER_TOOL_STRENGTH`); on an
+internal backend the runner uses `BROWSER_TOOL_STRENGTH_JEV_INTERNAL`, which
+says nothing is sent to TypeSafe.
+
+**The benchmark** (scripts/browser-bench.sh, docs/browser-bench.md) has a
+third arm, `jev`, chosen by its own sentence in front of the prompt like the
+other two. It is opt-in (`--tools playwright-mcp,dev-browser,jev`) because
+its tools exist only for a keyed submitter and each run spends TypeSafe
+credits too. Each challenger gets its own verdict against Playwright MCP.
+
+swarm-api's `browser_tool_unavailable` refusal of `browser_tool: jev` for a
+missing key applies only when the workspace's backend is `typesafe`; Internal
+Jev and Internal Laya need no key, so they are never refused for its absence.
+
 ### 3.3 The path to the console: outbound only, through a relay
 
 No inbound port on the pod and no public endpoint: the gate **dials out**.
@@ -465,6 +692,65 @@ gate --(WS, TCP 8080, in-cluster)--> swarm-live <--(WS, TCP 8080, internal LB)--
    websocket to `swarm-live` as plain ws over the internal load balancer
    (`SWARM_LIVE_URL`, `ws://<reserved internal address>:8080`, + `/v1/view`),
    presenting the viewer ticket as the relay's first message.
+
+#### The agent's browser does not wait on the view (NOLIVE-GUARD, #1366)
+
+The tunnel is the **human's** view. The agent's browser is the gate's CDP
+proxy on the pod's loopback, up before ctl.sock is served, and it needs
+nothing from the relay. Until 2026-10-15 the worker treated the two as one
+"live path": measured on benchmark devb-1015, 8 of 60 claude-code-browser
+attempts logged `tunnel_refused {"cause": "relay unreachable: gaierror"}`
+about 4 s after `worker registered`, then "no live path for this attempt",
+and their agents started with no `SWARM_CDP_ENDPOINT` and no Playwright MCP
+entry -- half fell back to the image's headless Python Playwright. So
+(`agent_worker.handoff.HandoffPath`):
+
+* **The browser follows the gate.** Once the gate took the worker's
+  registration (`browser_ready`), the agent gets `SWARM_CDP_ENDPOINT` and the
+  runner wires Playwright MCP / dev-browser on it, whatever happened to the
+  tunnel, the attempt key or the heap check. Those decide only the view and
+  the hand-off.
+* **A tunnel that failed costs the view, and says so.** The attempt's events
+  carry `cause: live_browser_unavailable`, `phase: live_view`, `message: "live
+  view unavailable: <code>; ..."`; the console's tile reads "live view
+  unavailable". A hand-off is still offered: its own poll retries the tunnel,
+  which is exactly when a person needs it, and a hold nobody could open ends
+  as any unwatched hold does.
+* **The tunnel is retried for the attempt's life.** A refused ticket
+  (`tunnel_refused`, the gate's relay did not answer) or a swarm-api error is
+  tried again past a backoff of 5 s doubling to 60 s, jittered to 75-125 % so
+  a burst of pods that met the same DNS failure does not knock again in the
+  same instant. Each retry logs `live view not open; retrying` with its code
+  and count, never a ticket; the first open after failures logs `live view
+  opened`. Only swarm-api's ended codes (`live_session_closed`,
+  `live_fenced`, `live_not_available`) stop it.
+* **A gate that is not ready never starts the agent.** No ctl.sock, or a
+  registration refused (a restarted gate refuses every one), means no CDP
+  proxy: `Worker._prepare` fails the ATTEMPT retryably with
+  `live_gate_unavailable` before the agent runs -- the start-failure path an
+  unreachable forge takes. Its lease and capacity are released at once
+  (invariant 1), the task goes back to READY 30 s later while it has attempts
+  left, and ends CANNOT_START when they are spent. Not a park: nothing about
+  this pod's sidecar improves by waiting, only a new pod brings a new one, and
+  a SCHEDULED_RETRY park is promoted by nothing.
+
+**The DNS side, read from the manifests (2026-10-15).** The gate dials
+`ws://swarm-live.swarm-system.svc.cluster.local:8080` (`livegate.tunnel.
+DEFAULT_RELAY_URL`, or `SWARM_LIVE_URL`). Every GKE worker pod already runs
+`dnsPolicy: None` with `searches: []`, `ndots:1` and NodeLocal DNSCache
+(169.254.20.10) as its only nameserver (`scheduler.dispatch.
+GKE_POD_DNS_CONFIG`, mirrored in `kubernetes/worker-templates/
+worker-job-browser.yaml`), so that name is already queried once, absolute,
+with no search-path expansion: a trailing dot or a lower `ndots` would change
+nothing. The cluster is Cloud DNS (cluster scope) behind NodeLocal DNSCache.
+The failures came only inside a burst of ~60 pod starts, and the worker in
+the same pod had just resolved its own hosts; what is not yet measured is
+whether node-local-dns answered SERVFAIL/timeout under that burst (EAI_AGAIN)
+or the Service name was briefly absent (EAI_NONAME). The worker's retry
+covers either. From this change the gate's record names which
+(`tunnel_refused {"cause": "relay unreachable: gaierror(EAI_AGAIN)"}`,
+`livegate.tunnel.unreachable_cause`); a manifest change waits for that
+reading rather than guessing at one.
 
 #### The relay's wire: owner decisions 2026-10-11
 
@@ -770,9 +1056,10 @@ owner decision 2026-10-13, replacing Q3's flat 10 minutes).** The browser and
 its half-finished state are alive, which is the whole point of the feature: a
 sign-in has to happen in the browser that will use the session. Capacity is
 exactly what it is for any `RUNNING` browser task: the lease holds the
-`browser` resource class's 2 units and the backend and provider pools
-(`apps/common/swarm_common/profiles.py::RESOURCE_CLASSES`), and the pod costs 8
-vCPU and 16 GiB per minute, idle or not, because `requests == limits`
+`browser` resource class's 1 unit (2 until contract request 79) and the
+backend and provider pools
+(`apps/common/swarm_common/profiles.py::RESOURCE_CLASSES`), and the pod costs 4
+vCPU and 8 GiB per minute (8 and 16 until request 79), idle or not, because `requests == limits`
 (invariant 7).
 
 *Why the flat 10 minutes went.* Measured over 26 live-browser tasks
@@ -851,8 +1138,11 @@ it clears (`Scheduler._promote_manual_pauses`,
 `apps/scheduler/scheduler/loop.py::Scheduler._promote_manual_pauses`), so a hand-off parked under it
 would be re-admitted with nobody there to sign in. So it is a new `ParkReason` (contract request LB-A, section 8).
 
-**What the park costs.** The browser is gone: its session, its tabs, its
-history (section 5.5 says why they are not checkpointed). The claude-code
+**What the park costs.** The browser is wiped: its pod, its profile, its
+history (section 5.5 says why the profile is never checkpointed). What comes
+back is what §5.5.2 keeps: the open tabs, reopened before the next agent
+starts, and -- in a personal tenant only -- their cookies and local storage,
+through the saved-logins route. The claude-code
 agent has no conversation resume (`docs/design/child-tasks.md` (`the CLI runners have no conversation resume`)), so the next attempt starts the agent again on
 the restored `work/`. And the person waits for a cold start
 -- admission plus a GKE pod start -- before the browser is back. That is the
@@ -1082,10 +1372,115 @@ So the gate **fails closed**:
 * a frame is masked only with a report taken after the last layout-changing
   event (scroll, resize, navigation, a mutation inside a tracked element);
   otherwise the whole page area below the address bar is painted out for that
-  frame. Scrolling flickers. That is the cost;
+  frame -- after the short hold below, and only for a layout change. Scrolling
+  flickers. That is the cost;
 * while the gate's CDP session is down, or no report has arrived since a
   navigation, every frame is a blank "masking unavailable" frame;
 * every box is dilated by 8 pixels.
+
+**Three amendments, issue #1340 (owner decisions 2026-10-14).** MEASURED
+2026-10-15 on task_2ac5d7e22a51460995a2, release b93ad6cb: the gate logged
+`live mask: frame owner unresolved (CdpError)` twice at attempt start. Linking
+an iframe to the element box its parent reports (`MaskCdp.link`) had failed for
+both reCAPTCHA frames, and the only retry was a re-created parent observer
+world, which never came. So both frames stayed covered for the whole hand-off
+("Part of this page is covered: an embedded frame on it cannot be checked"),
+and the person asked to solve the challenge could not see it. On the same
+page, the whole page area went PAGE_BLANKED for 0.3-1.2 s in every metrics
+window while the page kept changing.
+
+* **A failed link is retried** on the parent frame's next fresh report and on
+  the child's next navigation. Each retry waits at least a backoff after the
+  last failure, 250 ms doubling to 2 s, and there are at most 5 tries in all.
+  After that the frame stays covered as before. The log line carries the CDP
+  error's message as well as its class (`CdpError: No frame for given id
+  found`). That message is Chromium's protocol text and never page content;
+  any other exception is still logged by class alone. Why: one transient
+  failure at attempt start should not decide a whole hand-off. Bounded,
+  because a frame that never links must still fail closed.
+* **Challenge frames are shown while a person holds control.** Holding control
+  means a `human_wait` hand-off (`pause` until `resume` or `end_control`) or
+  take-control, and in either case the agent is held. During that time, a
+  child frame whose URL is on an exact allowlist is not covered when it cannot
+  vouch for itself. The allowlist (`mask.SHOWN_IN_CONTROL`) is `https`, an
+  exact host and a path prefix, with no port and no userinfo:
+  `www.google.com/recaptcha/`, `www.recaptcha.net/recaptcha/`,
+  `*.hcaptcha.com/` (a subdomain, not `hcaptcha.com` itself) and
+  `challenges.cloudflare.com/`. A lookalike stays covered: `recaptcha.evil.com`,
+  `www.google.com.evil.com`, `www.google.com@evil.com`, or another path on an
+  allowlisted host. Whenever the frame has reported on its current document,
+  that last report's password and credential fields stay masked, and so does
+  any of its text a redaction rule matches. The top
+  frame is never shown this way, and nothing is shown this way while the agent
+  drives: the gate reads `Gate.person_in_control` as each frame is masked, and
+  a resume clears it before the agent's held commands are released. Each frame
+  shown this way is recorded once per hand-off in the gate's event log as
+  `mask_frame_shown`, carrying the host (never the path, the query or the
+  content) and the reason `REASON_SHOWN_IN_CONTROL`. Why: a challenge is the
+  thing the person was handed the page to do. It is a third party's widget,
+  not the site's content, and while a person holds control what it shows is
+  for that person. The frame's own content, including any frame inside it, is
+  shown unchecked. That is the trade the owner chose, and §5.3.4 lists it.
+* **Fewer whole-page blanks.** When the top frame's report is stale only
+  because its observer announced a layout change (`REASON_CHANGING`), the gate
+  keeps sending the last frame it masked from a fresh report, for up to 300 ms
+  from the first announcement (`HOLD_CHANGING_SECONDS`), before it blanks.
+  Further announcements do not extend the hold. A navigation (cross-document
+  or same-document), a tab switch, a hidden tab, a session loss, a device
+  change or a change of who drives drops the held frame, and each one blanks
+  or goes UNAVAILABLE at once, as before. Why this keeps the rule: the held
+  pixels were vouched for when they were first sent, so holding them sends
+  nothing the mask has not checked. The viewer sees a page up to 300 ms old
+  instead of a grey flash.
+
+**Pages dev-browser opens, and iframe pages, issue #1344.** MEASURED
+2026-10-15 by visual QA on release b93ad6cb. On task_f7ff5ae0d8ac4612b0ff
+(browser tool dev-browser) the live view stayed the grey "masking
+unavailable" frame for minutes, also while a person held control, with
+"Can't show this page safely: the page on screen has not reported its layout
+yet". Its timeline shows dev-browser opening a new page for every navigation.
+On https://the-internet.herokuapp.com/iframe, a TinyMCE editor in an iframe,
+the whole page area was blanked for all three browser tools. Two causes, both
+in the mask's install on a newly followed page (`MaskCdp.install`), and one
+rule:
+
+* **The install's frame tree is not a navigation.** The install read
+  `Page.getFrameTree` last and told the state every frame in it had just
+  navigated. Puppeteer's `newPage()` is followed at once by its `goto()`, so
+  the page often committed while the install was under way. Its observer had
+  already reported on the new document, and that "navigation" retired it:
+  every later report from the live document was dropped as one from a page
+  navigated away from, until the next navigation. A person holding control
+  makes no navigation, so the grey stayed. Now a frame the gate already heard
+  of during the install keeps its document; a different URL only makes its
+  report stale until the next one (at most the observer's one-second
+  heartbeat).
+* **The children the tree lists are linked.** A child frame was linked to its
+  iframe element only when it attached, or when its parent's observer world
+  was created, and the install creates that world before it reads the tree.
+  So an iframe already on the page when the gate followed it stayed unlinked
+  for good: a page loaded before a tab switch, a reconnect or a device change,
+  and every page dev-browser opened. The same was true of an out-of-process
+  frame open before the follow, which the page's session never sees attach.
+  Now the install links every unlinked child of a frame it has a world for,
+  and the follower does it again once each out-of-process frame's session is
+  installed. The retries and their bound are unchanged.
+* **An unlinked child covers the box left for it.** The rule above said that
+  only a child the gate cannot place blanks the page area; an unlinked child
+  was such a child. Now an unlinked child (its link not yet answered, or
+  failed for good) whose parent's fresh report has an iframe box that no
+  linked child claims, one box for every unlinked child, covers those boxes
+  and the page is shown. Why this still fails closed: a frame's content is
+  clipped to its element's box. The observer reports the box of every iframe
+  and frame element it walks. The gate hears every child frame attach, on the
+  parent's session, before the report that measured its element. So those
+  unclaimed boxes are the unlinked children's boxes. With fewer unclaimed
+  boxes than unlinked children, one child is drawn where no report places it,
+  and the page area is blanked as before. The page area is also still blanked
+  for a child linked to an element the report does not have (one in a closed
+  shadow root, an `<object>`), and for two children linked to one element.
+  Every other rule in this section is unchanged: the top frame unreported,
+  stale or truncated, the session down, the tab not on screen.
 
 **The mask is applied once, at the source.** The relay, the recorder and the
 viewers all receive the masked frames; there is no unmasked stream anywhere to
@@ -1106,8 +1501,21 @@ pointer events", never which keys.
   is not text and is not masked.
 * A secret in a canvas or a closed shadow root is not visible to the isolated
   world and is not masked.
+* An unlinked child frame is matched to the iframe boxes its parent reports by
+  count (§5.3.2, issue #1344), which assumes the gate has heard every child
+  frame attach. One gap remains: an out-of-process frame already open when
+  the page was followed is unknown until Chromium auto-attaches its session.
+  If, in that window, another child is unlinked and held by an element the
+  observer cannot see (a closed shadow root), the out-of-process frame's
+  unclaimed box can stand in for it, and that child is shown unchecked until
+  the auto-attach lands.
 * An ordinary field the person types a secret into, which is not a password
   field, shows what they type. The console's take-control dialog says so.
+* A challenge frame on the allowlist (`SHOWN_IN_CONTROL`, §5.3.2) is shown
+  unchecked while a person holds control, when it cannot vouch for itself.
+  Its last report on its current document is still applied: its password and
+  credential fields, and any text a redaction rule matches. Whatever it drew
+  after that report, or before it ever reported, is not checked.
 * A viewer can photograph their screen. Masking reduces what a viewer sees; it
   is not DRM.
 
@@ -1143,7 +1551,9 @@ STARTING, at this lease and generation, the lease unreleased, the slot unused.
 Whatever still refuses the live path is never silent: the worker writes a
 RUNNING event with `cause: live_browser_unavailable`, the code, the reason and
 `message: "live browser unavailable: <reason>"`, which the console's event list
-shows.
+shows A refused key or heap costs the view and
+the hand-off only: the gate is up, so the agent keeps its browser (§3.3,
+NOLIVE-GUARD).
 
 #### 5.4.2 The worker talks to the gate on a channel the agent cannot use
 
@@ -1334,7 +1744,8 @@ the attempt ends."
   hidden.
 * **The checkpoint still never holds a session.** LB-7 reuses sessions
   through the gate and Secret Manager (§5.5.1), never through `work/`, the
-  checkpoint or the outputs. The two bullets above hold unchanged.
+  checkpoint or the outputs, and so does a park's (§5.5.2). The two bullets
+  above hold unchanged.
 * **Encrypting the session into the checkpoint, so it survives a park, is the
   option turned down for phase 1 (Q7).** It would make a park cheap -- no
   second sign-in -- at the price of a long-lived session stored in the tenant's
@@ -1488,6 +1899,111 @@ create with that resource type.
 
 User-scoped forge tokens and provider keys are a separate question (they are
 per tenant today), filed on its own issue.
+
+### 5.5.2 The browser across a park: tabs, and storage under LB-7 (issue #1362)
+
+MEASURED 2026-10-15 (QA batch full-1015, `u-bogdan`): S5-resume failed 6 of 6,
+three on Playwright MCP and three on dev-browser. Part one opened
+`https://example.com/?qa=<nonce>`, set `localStorage.qa_state`, asked for a
+hand-off and parked; the task resumed as attempt 2 from `ckpt-00001`, and the
+new browser had only `about:blank`.
+
+**Why nothing came back.** Not Chromium's session files, and not the restore
+order: there was nothing to restore. The profile directory is
+`SWARM_BROWSER_PROFILE_DIR` on a sidecar-only memory `emptyDir` of the pod
+(§3.1). The park sends `end_control` with `wipe` before its checkpoint
+(`HandoffPath.end`, `LiveGate.wipe`), which closes Chromium and empties that
+directory, and the checkpoint archives only `work/`
+(`CheckpointManager.create`). The resumed attempt is a new pod whose volume
+starts empty, and the gate launches Chromium with
+`--user-data-dir=<that volume>` and `about:blank` and no
+`--restore-last-session` (`livegate/__main__.py::chromium_args`). Chromium's
+`Sessions/` files, `Current Session` and `restore_on_startup` were therefore
+never in play. Making them so would mean checkpointing the profile, and the
+profile IS the session that §5.5 keeps out of every checkpoint. So the platform
+keeps what a resumed agent needs itself, and Chromium's own session restore is
+not used.
+
+**What a park keeps.** In `HandoffPath.end`, when a hold ends with
+`expired` (the park of §4.3), before the wipe, and only on a gate this worker
+registered with a protected heap (`agent_worker/browser_resume.py`):
+
+* **The tabs, in every tenant.** The gate's `tabs_export`
+  (`livegate/tabs.py`) lists the page targets in the order Chromium lists
+  them, each `{url, active}`. The active one is the tab the page follower
+  shows. The worker writes the list to `$SWARM_HANDOFF/browser-tabs.json`, so
+  it travels in the checkpoint with `work/`. A URL is the agent's own working
+  state: it navigated there, and the list goes back to nobody but the same
+  task's next attempt. That Chromium lists pages in tab-strip order is not
+  measured. A tab dragged elsewhere comes back where Chromium lists it.
+* **The site storage, in a personal tenant only, under LB-7's rules.** The
+  gate's `session_export` with `scope: park` covers cookies of every context,
+  plus the local storage of the open https origins. Unlike a carry, it needs
+  no returned hand-off: the jar goes only to the same task's resumed
+  attempt. The worker asks swarm-api for the slot
+  `swarm-tenant-u-<user>-browser-park-<task>` (`browser_slots.py`: this task's
+  own name only, 24-hour TTL, granted to that tenant's worker alone) and adds a
+  version. The TTL is its only delete. A hand-off park is dead-lettered after
+  `human_park_max_seconds` (24 hours by default), so the secret outlives no
+  park that could still resume. A group tenant keeps its tabs and no storage,
+  for §5.5.1's reason.
+
+**What is not kept or reopened** (`livegate/tabs.py::refusal`, applied by the
+gate at export and again by the worker and the gate on the way back, since
+the file is in the agent's reach):
+
+* anything but http(s);
+* a URL with userinfo, or one over 2,048 characters;
+* a URL whose query or fragment names a credential or a sign-in's state
+  (`token`, `code`, `state`, `session`, ...), or that the redaction filter
+  would change;
+* any URL on a host of the mask's challenge list (`mask.SHOWN_IN_CONTROL`:
+  reCAPTCHA, hCaptcha, Cloudflare's challenge), at any path. A challenge is a
+  person's to solve, and a stale one reopened would only fail.
+
+A sign-in page is reopened like any other page. Nothing here forbids it: it is
+the page the agent was on, the mask still covers its credential fields, and
+the hand-off ledger tells the agent its sign-in was NOT DONE.
+
+**What a resumed attempt gets.** In `HandoffPath.prepare`, after the gate's
+registration and before the runner starts, on an attempt whose spool holds an
+EARLIER attempt's tab list:
+
+1. the park secret's cookies go to `session_import`;
+2. `tabs_restore` opens each tab in order and brings the active one to the
+   front. It closes the `about:blank` Chromium started on.
+
+Both are refused by the gate once an agent has connected. The platform opening
+a URL here is not the agent navigating: the agent does not exist yet. Local
+storage goes WITH ITS TAB. Chromium's `DOMStorage` writes an origin's storage
+only through a frame of that origin, so a blank page cannot take it.
+For the first tab of each origin with carried storage, the gate therefore opens
+the tab on `about:blank`. It adds a script to every new document in an
+isolated world of its own session, then navigates. The script writes the
+items when the URL's document is created, before any of the page's scripts
+run. The gate's session is then detached, which removes the script, so a
+later navigation of the agent's is untouched. The whole restore fits in one
+`ctl.sock` call (7 s of the client's 10). A tab still loading at the end keeps
+its page and loses its storage, recorded as `storage_skipped`.
+
+The tab list is removed once read, so a later retry does not reopen a park it
+did not make. The resume summary (`resumed.md`, §4.3) names the tabs that came
+back, in order, marks the one in front, and says whether sign-ins and storage
+came back.
+
+**IndexedDB is not carried.** CDP's `IndexedDB` domain reads and deletes but
+cannot write. A restore would mean replaying object stores from a page script
+before the page's own scripts open the database, and that cannot be ordered
+reliably. It is left for the owner to decide, not done quietly.
+
+**Artifacts are not part of this, by design.** A parked attempt uploads its
+`$SWARM_ARTIFACTS_DIR` at the park, and the attempt that finishes lists those
+files by reference (`carried_from`; [workflows.md](../workflows.md), #166).
+The artifacts directory is not checkpointed, so a resumed attempt starts with
+an empty one ([checkpointing.md](../checkpointing.md)). The S5 run's
+`qa-phase1.txt` missing from attempt 2's disk is that rule working, not a
+lost file. The resume summary now says so, so an agent does not take the
+empty directory for lost work.
 
 ### 5.6 Keyboard, clipboard and the browser itself
 
@@ -1946,7 +2462,10 @@ What ships, and why each piece is the way it is:
 
 ### 8.2 Resource class
 
-`browser`: 8 vCPU, 16 GiB, 2 units
+`browser`: 8 vCPU, 16 GiB, 2 units when this was written; 4 vCPU, 8 GiB,
+1 unit since contract request 79 (owner, 2026-10-14), which also replaced the
+starting split below with display 3 vCPU / 5 GiB and worker 1 vCPU / 3 GiB
+(`apps/scheduler/scheduler/dispatch.py::LIVE_DISPLAY_SHARE`)
 (`apps/common/swarm_common/profiles.py::RESOURCE_CLASSES`). **The class does not change;
 it is split between the containers**, each with `requests == limits`
 (invariant 7), summing to the class, so admission's unit arithmetic is

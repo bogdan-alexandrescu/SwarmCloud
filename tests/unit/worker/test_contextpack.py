@@ -19,6 +19,13 @@ What the design's "Tests prove" column asks, each a test below:
   * rows on a path changed since the index are marked stale;
   * CONTEXT.md is outside the checkout and the checkout stays clean.
 
+Over the shared graph service (graph-service.md §7, lane GS-PACK): a pinned
+graph read through `build.ServiceSource` gives the staged pack byte for byte,
+from the `index` tool alone, writing no shard to disk; a shard that cannot
+arrive whole is refused, never read short; the ticket goes as the bearer and
+nowhere else; `arm` is read from the stager's `decision`; and `pack.json`
+counts `shards_read` and `bytes_read` on both deliveries.
+
 MUTATIONS, each turning a named test red: drop the always-section in
 `render.render_markdown` (never-cut); render ranked rows without the budget
 check (cap); skip `_mark_stale` in `build` (stale); resolve the context
@@ -530,3 +537,316 @@ def test_the_cli_runner_appends_the_context_line_before_the_platform_s(
                                    / contextpack.CONTEXT_FILE)
     assert line in stdin
     assert stdin.index(line) < stdin.index(cliagent.PUBLISH_PARAGRAPH)
+
+
+# --- the arm, and what the pack read (graph-service.md §7; lane GS-PACK) -------
+
+def test_the_arm_is_read_from_the_stager_s_decision_where_stage_json_nests_it(work):
+    # `graphstage.StageResult.record` writes `arm` inside `decision`; reading
+    # only the top level made every pack's `arm` None (graph-service.md §7).
+    _stage(work, staged=True, delivery="staged",
+           decision={"stage": True, "context": "on", "source": "workspace", "ab": True,
+                     "arm": "B", "reason": "A/B arm B: graph context staged"})
+    pack = _pack(work, {"prompt": _step_prompt(["src/pkg/store.py"])})
+    assert pack["arm"] == "B"
+    assert pack["summary"].startswith("Context pack: arm B, ")
+
+
+def test_a_staged_pack_counts_the_shards_and_the_bytes_it_read(work):
+    snapshot = work / contextpack.CONTEXT_DIR_NAME / contextpack.SNAPSHOT_DIR
+    blobs = {p.name.split(".")[0]: p.stat().st_size for p in (snapshot / "blobs").iterdir()}
+    pack = _pack(work, {"prompt": _step_prompt(["src/pkg/store.py"])})
+    assert pack["delivery"] == "staged"
+    assert 0 < pack["shards_read"] <= len(blobs)
+    assert 0 < pack["bytes_read"] <= sum(blobs.values())
+
+
+# --- the pack over the shared graph service -------------------------------------
+
+def _as_service_pin(work: Path) -> tuple[Path, Path]:
+    """The context directory as GS-WORKER's pin leaves it: stage.json says
+    `service`, pin.json and the pinned manifest, and NO snapshot. Returns
+    (context dir, the snapshot moved out of `work/`, which the fake serves)."""
+    from agent_worker.contextpack import build
+
+    where = work / contextpack.CONTEXT_DIR_NAME
+    served = work.parent / "served-snapshot"
+    shutil.move(str(where / contextpack.SNAPSHOT_DIR), served)
+    raw = (served / "manifest.json").read_bytes()
+    digest = "sha256:" + __import__("hashlib").sha256(raw).hexdigest()
+    sha = json.loads(raw)["commit_sha"]
+    (where / build.PIN_MANIFEST_FILE).write_bytes(raw)
+    (where / contextpack.PIN_FILE).write_text(json.dumps({
+        "index_sha": sha, "manifest_digest": digest, "base_sha": sha, "behind_by": 0,
+        "basis": "staged", "changed": []}))
+    _stage(work, staged=False, delivery="service", decision={"arm": None})
+    return where, served
+
+
+class _FakeService:
+    """swarm-graph as GS-SVC serves it: `GraphServer`'s tools/call over the
+    snapshot under the EMPTY observation (graph-service.md §4.4)."""
+
+    def __init__(self, snapshot: Path) -> None:
+        from agent_worker.graphmcp.snapshot import Snapshot
+
+        self.snap = Snapshot(snapshot)
+        self.calls: list[dict] = []
+        self.bytes_sent = 0
+
+    def answer(self, name: str, arguments: dict) -> tuple[str, bool]:
+        from agent_worker.graphmcp import tools
+        from agent_worker.graphmcp.freshness import Observation
+
+        return tools.call(self.snap, Observation.empty(self.snap.commit_sha), name, arguments)
+
+    def __call__(self, message: dict) -> dict:
+        self.calls.append(message)
+        params = message["params"]
+        text, failed = self.answer(params["name"], params["arguments"])
+        self.bytes_sent += len(text.encode())
+        return {"jsonrpc": "2.0", "id": message["id"],
+                "result": {"content": [{"type": "text", "text": text}], "isError": failed}}
+
+
+def test_a_service_pack_is_the_staged_pack_read_through_the_index_tool(work, tmp_path):
+    payload = {"prompt": _step_prompt(["src/pkg/store.py"])}
+    staged = _pack(work, payload)
+    staged_text = (work / contextpack.CONTEXT_DIR_NAME / contextpack.CONTEXT_FILE).read_text()
+    where, served = _as_service_pin(work)
+    service = _FakeService(served)
+    pack = _pack(work, payload, service=service)
+    measured = ("delivery", "shards_read", "bytes_read")
+    assert {k: v for k, v in pack.items() if k not in measured} == \
+        {k: v for k, v in staged.items() if k not in measured}
+    assert (where / contextpack.CONTEXT_FILE).read_text() == staged_text
+    assert pack["delivery"] == "service"
+    assert pack["shards_read"] == staged["shards_read"]
+    assert pack["bytes_read"] == service.bytes_sent > 0
+    assert {c["method"] for c in service.calls} == {"tools/call"}
+    assert {c["params"]["name"] for c in service.calls} == {"index"}
+    assert all(set(c["params"]["arguments"]) <= {"layer", "key", "cursor"}
+               for c in service.calls)
+    # Only the shards the seeds touch, and nothing written to disk.
+    assert pack["shards_read"] < len(list((served / "blobs").iterdir()))
+    assert not (where / contextpack.SNAPSHOT_DIR).exists()
+    assert not list(where.rglob("*.jsonl.gz"))
+
+
+def test_a_shard_is_paged_whole_and_its_rows_counted_against_the_manifest(work):
+    from agent_worker.contextpack.build import ServiceSource
+    from agent_worker.graphmcp.snapshot import Snapshot, blob_hexdigest
+
+    _where, served = _as_service_pin(work)
+    service = _FakeService(served)
+    snap = service.snap
+    layer, key, entry = max(((layer, key, snap.entry(layer, key)) for layer in ("symbols",)
+                             for key in snap.keys(layer)),
+                            key=lambda t: t[2].get("records") or 0)
+    raw = (served / "manifest.json").read_bytes()
+    source = ServiceSource(service)
+    over = Snapshot.from_manifest(raw, manifest_digest=None, source=source)
+    source.name_blobs(over.manifest)
+    rows = over.shard(layer, key).rows
+    assert rows == snap.shard(layer, key).rows
+    assert source.shards_read == 1 and source.bytes_read == service.bytes_sent > 0
+    # A second read is the worker's memory, not another round trip.
+    before = len(service.calls)
+    over.shard(layer, key)
+    assert len(service.calls) == before
+    assert blob_hexdigest(entry)
+
+
+def test_a_row_the_service_cannot_page_whole_is_refused_never_dropped(work):
+    from agent_worker.contextpack.build import ServiceSource
+    from agent_worker.graphmcp import tools
+    from agent_worker.graphmcp.snapshot import Snapshot, SnapshotError
+
+    _where, served = _as_service_pin(work)
+
+    class Oversized(_FakeService):
+        def answer(self, name, arguments):
+            text, failed = super().answer(name, arguments)
+            answer = json.loads(text)
+            answer["rows"] = [tools.ONE_ROW_OVER, *answer["rows"][1:]]
+            return tools.dumps(answer), failed
+
+    source = ServiceSource(Oversized(served))
+    snap = Snapshot.from_manifest((served / "manifest.json").read_bytes(),
+                                  manifest_digest=None, source=source)
+    source.name_blobs(snap.manifest)
+    with pytest.raises(SnapshotError, match="4 KiB"):
+        snap.shard("symbols", snap.keys("symbols")[0])
+
+
+def test_a_shard_short_of_its_manifest_count_is_refused(work):
+    from agent_worker.contextpack.build import ServiceSource
+    from agent_worker.graphmcp import tools
+    from agent_worker.graphmcp.snapshot import Snapshot, SnapshotError
+
+    _where, served = _as_service_pin(work)
+
+    class Short(_FakeService):
+        def answer(self, name, arguments):
+            text, failed = super().answer(name, arguments)
+            answer = json.loads(text)
+            answer["rows"], answer["total"] = answer["rows"][:-1], answer["total"] - 1
+            return tools.dumps(answer), failed
+
+    source = ServiceSource(Short(served))
+    snap = Snapshot.from_manifest((served / "manifest.json").read_bytes(),
+                                  manifest_digest=None, source=source)
+    source.name_blobs(snap.manifest)
+    key = next(k for k in snap.keys("symbols") if (snap.entry("symbols", k) or {}).get("records"))
+    with pytest.raises(SnapshotError, match="records"):
+        snap.shard("symbols", key)
+
+
+def test_a_service_error_is_said_plainly_and_fails_the_pack_not_the_step(work, tmp_path):
+    where, served = _as_service_pin(work)
+
+    class Refusing(_FakeService):
+        def __call__(self, message):
+            return {"jsonrpc": "2.0", "id": message["id"],
+                    "error": {"code": -32603, "message": "store unreachable"}}
+
+    from agent_worker.graphmcp.snapshot import SnapshotError
+
+    with pytest.raises(SnapshotError, match="store unreachable"):
+        _pack(work, {"prompt": _step_prompt(["src/pkg/store.py"])},
+              service=Refusing(served))
+    assert not (where / contextpack.CONTEXT_FILE).exists()
+
+
+def test_a_pinned_manifest_that_does_not_match_the_pin_is_never_read(work):
+    from agent_worker.contextpack import build
+    from agent_worker.graphmcp.snapshot import SnapshotError
+
+    where, served = _as_service_pin(work)
+    manifest = json.loads((where / build.PIN_MANIFEST_FILE).read_text())
+    manifest["commit_sha"] = "e" * 40
+    (where / build.PIN_MANIFEST_FILE).write_text(json.dumps(manifest))
+    service = _FakeService(served)
+    with pytest.raises(SnapshotError, match="digest"):
+        _pack(work, {"prompt": _step_prompt(["src/pkg/store.py"])}, service=service)
+    assert service.calls == []
+
+
+def test_the_delivery_names_are_graphstage_s(work):
+    from agent_worker import graphstage
+    from agent_worker.contextpack import build
+
+    assert contextpack.DELIVERY_SERVICE == graphstage.DELIVERY_SERVICE
+    assert contextpack.CONTEXT_DIR_NAME == graphstage.CONTEXT_DIR_NAME
+    assert build.DEFAULT_SERVICE_URL.endswith(":8080/mcp")
+
+
+class _HttpService:
+    """A local HTTP server speaking the service's protocol (§2.2): bearer
+    ticket, one JSON-RPC request per POST. Loopback only, no cloud."""
+
+    def __init__(self, fake: _FakeService, ticket: str, status: int = 200) -> None:
+        import http.server
+        import threading
+
+        outer = self
+        self.headers: list[str] = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):  # noqa: N802 -- http.server's name
+                outer.headers.append(self.headers.get("Authorization") or "")
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if status != 200 or outer.headers[-1] != f"Bearer {ticket}":
+                    self.send_response(status if status != 200 else 401)
+                    self.end_headers()
+                    return
+                data = json.dumps(fake(body)).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *args):
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}/mcp"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
+def _ticket_file(tmp_path: Path) -> tuple[Path, str]:
+    import secrets
+
+    ticket = "gt1." + secrets.token_urlsafe(24)
+    path = tmp_path / "private" / "graph-ticket"
+    path.parent.mkdir()
+    path.write_text(ticket + "\n")
+    path.chmod(0o600)
+    return path, ticket
+
+
+def test_prepare_builds_the_pack_from_the_service_with_the_attempt_s_ticket(
+        work, tmp_path, monkeypatch):
+    from agent_worker.contextpack import build
+
+    _where, served = _as_service_pin(work)
+    ticket_file, ticket = _ticket_file(tmp_path)
+    http = _HttpService(_FakeService(served), ticket)
+    try:
+        monkeypatch.delenv(contextpack.CONTEXT_ENV, raising=False)
+        monkeypatch.setenv(build.SERVICE_URL_ENV, http.url)
+        monkeypatch.setenv(build.TICKET_FILE_ENV, str(ticket_file))
+        monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")  # never through a proxy
+        ctx = _ctx(work, tmp_path, {"prompt": _step_prompt(["src/pkg/store.py"])})
+        line = contextpack.prepare(ctx, work / "repo")
+    finally:
+        http.close()
+    context_file = work / contextpack.CONTEXT_DIR_NAME / contextpack.CONTEXT_FILE
+    assert line == contextpack.prompt_line(context_file)
+    artifact = json.loads((ctx.artifacts_dir / contextpack.ARTIFACT_NAME).read_text())
+    assert artifact["delivery"] == "service" and artifact["shards_read"] > 0
+    assert http.headers and set(http.headers) == {f"Bearer {ticket}"}
+    assert ticket not in json.dumps(artifact) and ticket not in context_file.read_text()
+
+
+def test_a_refused_ticket_is_one_plain_line_and_never_echoes_the_ticket(
+        work, tmp_path, monkeypatch):
+    from agent_worker.contextpack import build
+
+    _where, served = _as_service_pin(work)
+    ticket_file, ticket = _ticket_file(tmp_path)
+    http = _HttpService(_FakeService(served), ticket, status=401)
+    try:
+        monkeypatch.delenv(contextpack.CONTEXT_ENV, raising=False)
+        monkeypatch.setenv(build.SERVICE_URL_ENV, http.url)
+        monkeypatch.setenv(build.TICKET_FILE_ENV, str(ticket_file))
+        ctx = _ctx(work, tmp_path, {"prompt": _step_prompt(["src/pkg/store.py"])})
+        line = contextpack.prepare(ctx, work / "repo")
+    finally:
+        http.close()
+    assert http.headers, "the service was never asked"
+    assert line is not None and "could not be built" in line and "\n" not in line
+    assert "ticket" in line and ticket not in line
+
+
+def test_a_service_pin_with_no_ticket_file_named_is_one_plain_line(
+        work, tmp_path, monkeypatch):
+    from agent_worker.contextpack import build
+
+    _as_service_pin(work)
+    monkeypatch.delenv(contextpack.CONTEXT_ENV, raising=False)
+    monkeypatch.delenv(build.TICKET_FILE_ENV, raising=False)
+    line = contextpack.prepare(_ctx(work, tmp_path, {"prompt": _step_prompt(["src/pkg/store.py"])}),
+                               work / "repo")
+    assert line is not None and "could not be built" in line and "ticket" in line
+
+
+def test_the_default_context_directory_is_found_by_its_pin(work, monkeypatch):
+    monkeypatch.delenv(contextpack.CONTEXT_ENV, raising=False)
+    _as_service_pin(work)
+    assert contextpack.context_dir(work) == work / contextpack.CONTEXT_DIR_NAME

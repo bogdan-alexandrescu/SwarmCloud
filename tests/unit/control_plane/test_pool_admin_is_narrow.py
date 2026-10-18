@@ -45,6 +45,7 @@ from __future__ import annotations
 import importlib
 import pkgutil
 import re
+import secrets
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -266,7 +267,13 @@ def _gate_context(db, tokens, groups: MembershipResolver, objects) -> AppContext
         # The gate is admitted as a caller through allowed_users, and given the
         # narrow capability through admin_pool_users -- the same two lists the
         # deployment sets for swarm-verify. It is NOT in admin_users.
-        settings=api_settings(allowed_users=(GATE,), admin_pool_users=(GATE,)),
+        #
+        # A grant key is configured so that the full-admin sweep reaches the
+        # handler of POST /v1/admin/workspace-secrets/attest-grants, which
+        # answers 503 by design on a deployment that has none. Built at
+        # runtime: nothing credential-shaped is committed.
+        settings=api_settings(allowed_users=(GATE,), admin_pool_users=(GATE,),
+                              workspace_grant_key=secrets.token_hex(32)),
         db=db,
         verifier=StaticTokenVerifier(tokens),
         groups=groups,

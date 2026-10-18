@@ -76,6 +76,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 from urllib.parse import quote, urlparse
 
+from . import forge_limits
 from .errors import ApiError
 from .forge import (
     GITHUB_API_HOST,
@@ -141,6 +142,17 @@ class ForgeUnreachable(ForgeWriteError):
     """
 
 
+class ForgeRateLimited(ForgeUnreachable):
+    """GitHub limited the request (`forge_limits.rate_limit`): transient, and
+    `reset` says when GitHub said it may be asked again (None when it did
+    not). QUOTA-THROTTLE: a background sweep stops on the first one and
+    holds itself until `reset` rather than asking again every park."""
+
+    def __init__(self, message: str, *, reset: Any = None) -> None:
+        super().__init__(message)
+        self.reset = reset
+
+
 def is_transient(error: BaseException) -> bool:
     """Whether a later attempt of the same request may work."""
     return isinstance(error, ForgeUnreachable)
@@ -160,12 +172,6 @@ def _transport_name(exc: BaseException) -> str:
     if isinstance(exc, urllib.error.URLError) and isinstance(reason, BaseException):
         return f"{name}: {type(reason).__name__}"
     return name
-
-
-def _rate_limited(raw: bytes) -> bool:
-    """A 403 GitHub sends for its primary or secondary rate limit, read from its
-    answer's text. Only tested, never quoted."""
-    return b"rate limit" in raw[:MAX_RESPONSE_BYTES].lower()
 
 
 #: What each write needs, named in the 403's sentence.
@@ -202,14 +208,24 @@ LOG_HOST_SUFFIXES = (".actions.githubusercontent.com", ".blob.core.windows.net")
 # the wire
 # --------------------------------------------------------------------------
 
-#: `(method, url, headers, body or None, timeout) -> (status, body bytes)`.
-#: Injected by the tests; `_urllib_send` in production.
-WriteSend = Callable[[str, str, dict[str, str], "bytes | None", float], "tuple[int, bytes]"]
+#: `(method, url, headers, body or None, timeout) -> (status, body bytes)` or
+#: `(status, body bytes, response headers)`. Injected by the tests;
+#: `_urllib_send` in production, which answers the headers too: GitHub's
+#: `X-RateLimit-*` are what `forge_limits.QUOTAS` is kept from.
+WriteSend = Callable[[str, str, dict[str, str], "bytes | None", float], "tuple[Any, ...]"]
+
+
+def _response_headers(response: Any) -> dict[str, str]:
+    raw = getattr(response, "headers", None)
+    try:
+        return {str(k): str(v) for k, v in raw.items()} if raw is not None else {}
+    except Exception:
+        return {}
 
 
 def _urllib_send(
     method: str, url: str, headers: dict[str, str], body: bytes | None, timeout: float
-) -> tuple[int, bytes]:
+) -> tuple[int, bytes, dict[str, str]]:
     if not is_pinned_host(url):
         raise ForgeWriteError(
             f"the forge client sends the tenant's credential to {GITHUB_API_HOST} only"
@@ -217,13 +233,14 @@ def _urllib_send(
     request = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
         with _OPENER.open(request, timeout=timeout) as response:
-            return response.status, response.read(MAX_RESPONSE_BYTES + 1)
+            return (response.status, response.read(MAX_RESPONSE_BYTES + 1),
+                    _response_headers(response))
     except urllib.error.HTTPError as answer:
         try:
             raw = answer.read(MAX_RESPONSE_BYTES + 1)
         except Exception:
             raw = b""
-        return answer.code, raw
+        return answer.code, raw, _response_headers(answer)
 
 
 #: `(url, headers, timeout) -> (status, Location or "")`: one authenticated GET
@@ -282,6 +299,27 @@ class IssueCreated:
 
     number: int
     url: str
+
+
+@dataclass(frozen=True)
+class BranchMerge:
+    """GitHub's answer to merging a commit into a branch (`POST /merges`).
+
+    `sha` the merge commit it made; None with `conflict` False when the
+    branch already contained the commit (204); `conflict` True on a 409."""
+
+    sha: str | None
+    conflict: bool = False
+    message: str = ""
+
+
+@dataclass(frozen=True)
+class PullMerge:
+    """GitHub's answer to merging a pull request: merged, or why not."""
+
+    merged: bool
+    sha: str | None = None
+    message: str = ""
 
 
 @dataclass(frozen=True)
@@ -410,7 +448,7 @@ class GitHubWriter:
             body = json.dumps(payload).encode("utf-8")
             headers["Content-Type"] = "application/json"
         try:
-            status, raw = self._send(method, url, headers, body, self._timeout)
+            sent = self._send(method, url, headers, body, self._timeout)
         except ForgeWriteError:
             raise
         except Exception as exc:
@@ -418,15 +456,22 @@ class GitHubWriter:
             raise ForgeUnreachable(
                 f"{what} could not be sent to GitHub ({_transport_name(exc)})"
             ) from None
+        status, raw = sent[0], sent[1]
+        # QUOTA-THROTTLE: every answer updates the quota of the credential
+        # the caller acts as (`forge_limits.acting_as`); the rate-limit
+        # reading is `forge_limits`', the one place it is made.
+        limited = forge_limits.QUOTAS.observe_answer(forge_limits.Answer(
+            status, sent[2] if len(sent) > 2 and sent[2] else {}, raw))
+        if limited is not None:
+            when = forge_limits.until(limited)
+            raise ForgeRateLimited(
+                f"GitHub's rate limit held back {what} for now (HTTP {status})"
+                + (f"; it resets at {when}" if when else ""), reset=limited.reset)
         if status == 401:
             raise ForgeWriteUnauthorized(
                 f"GitHub refused the tenant's forge credential for {what} (HTTP 401): "
                 "it is invalid or has expired; store a new one with "
                 "scripts/create-secrets.sh --stdin"
-            )
-        if status == 429 or (status == 403 and _rate_limited(raw)):
-            raise ForgeUnreachable(
-                f"GitHub's rate limit held back {what} for now (HTTP {status})"
             )
         if status >= 500:
             raise ForgeUnreachable(f"GitHub answered HTTP {status} for {what}")
@@ -648,7 +693,8 @@ class GitHubWriter:
         return _pull(ref, entries[0], what) if entries else None
 
     def open_pull(
-        self, ref: IssueRef, *, head: str, base: str, title: str, body: str, token: str
+        self, ref: IssueRef, *, head: str, base: str, title: str, body: str, token: str,
+        draft: bool = False,
     ) -> tuple[PullSnapshot, bool]:
         """Open a pull request from `head` into `base`: `(it, True)`, or
         `(the open one already there, False)` when GitHub refuses a second.
@@ -661,7 +707,7 @@ class GitHubWriter:
             data = self._call(
                 "POST", self._url(ref, "pulls"), token, what, needs=PULLS_WRITE,
                 payload={"title": title, "head": head, "base": base, "body": body,
-                         "draft": False},
+                         "draft": draft},
                 ok=(201,),
             )
         except (ForgeWriteForbidden, ForgeWriteUnauthorized):
@@ -756,6 +802,81 @@ class GitHubWriter:
             if len(data) < PAGE_SIZE:
                 break
         return names
+
+    # -- a merge train's branch and landings (TRAIN-WS, docs/merge-trains.md §4) --
+
+    def merge_into_branch(
+        self, ref: IssueRef, *, branch: str, head: str, message: str, token: str
+    ) -> BranchMerge:
+        """Merge commit `head` into `branch` on GitHub (`POST /merges`)."""
+        what = f"a merge of {head[:12]} into {branch} of {ref.repository}"
+        data = self._call(
+            "POST", self._url(ref, "merges"), token, what, needs=CONTENTS_WRITE,
+            payload={"base": branch, "head": head, "commit_message": message},
+            ok=(201, 204, 409),
+        )
+        if data is None:
+            return BranchMerge(sha=None)
+        sha = data.get("sha") if isinstance(data, dict) else None
+        if isinstance(sha, str) and sha:
+            return BranchMerge(sha=sha)
+        text = data.get("message") if isinstance(data, dict) else None
+        return BranchMerge(sha=None, conflict=True,
+                           message=text if isinstance(text, str) else "merge conflict")
+
+    def merge_pull(
+        self, ref: IssueRef, number: int, *, sha: str, title: str, message: str, token: str
+    ) -> PullMerge:
+        """Squash-merge pull request `number`, pinned to head `sha`.
+
+        GitHub's refusals (405 not mergeable, 409 head moved, 422 invalid)
+        are answers, returned unmerged with GitHub's message; anything else
+        raises as every call here does."""
+        what = f"the merge of {ref.repository}#{int(number)}"
+        data = self._call(
+            "PUT", self._url(ref, f"pulls/{int(number)}/merge"), token, what,
+            needs=CONTENTS_WRITE,
+            payload={"merge_method": "squash", "sha": sha, "commit_title": title,
+                     "commit_message": message},
+            ok=(200, 405, 409, 422),
+        )
+        data = data if isinstance(data, dict) else {}
+        text = data.get("message")
+        merged_sha = data.get("sha")
+        return PullMerge(merged=data.get("merged") is True,
+                         sha=merged_sha if isinstance(merged_sha, str) else None,
+                         message=text if isinstance(text, str) else "")
+
+    def commit_tree(self, ref: IssueRef, sha: str, token: str) -> str:
+        """The tree commit `sha` points at (`git/commits/{sha}`)."""
+        what = f"the commit {sha[:12]} of {ref.repository}"
+        data = self._call(
+            "GET", self._url(ref, f"git/commits/{quote(sha, safe='')}"), token, what,
+            needs=PULLS_WRITE,
+        )
+        tree = data.get("tree") if isinstance(data, dict) else None
+        tree_sha = tree.get("sha") if isinstance(tree, dict) else None
+        if not isinstance(tree_sha, str) or not tree_sha:
+            raise ForgeWriteError(f"GitHub's answer for {what} names no tree")
+        return tree_sha
+
+    def close_pull(self, ref: IssueRef, number: int, token: str) -> None:
+        self._call(
+            "PATCH", self._url(ref, f"pulls/{int(number)}"), token,
+            f"closing {ref.repository}#{int(number)}", needs=PULLS_WRITE,
+            payload={"state": "closed"},
+        )
+
+    def delete_branch(self, ref: IssueRef, branch: str, token: str) -> bool:
+        """Delete `branch`; False when it was already gone."""
+        try:
+            self._call(
+                "DELETE", self._url(ref, f"git/refs/heads/{quote(branch, safe='/')}"), token,
+                f"the branch {branch} of {ref.repository}", needs=CONTENTS_WRITE, ok=(204,),
+            )
+        except ForgeWriteNotFound:
+            return False
+        return True
 
     def compare_files(self, ref: IssueRef, base: str, head: str, token: str) -> list[str]:
         """The paths changed from the merge base of `base` and `head` to `head`.

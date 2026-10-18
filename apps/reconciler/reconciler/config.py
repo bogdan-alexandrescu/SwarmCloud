@@ -157,9 +157,9 @@ class ReconcilerConfig:
     #: and long enough that the verdict rests on a dozen consecutive CPU
     #: measurements (the worker emits one every fifth 30s heartbeat, so every
     #: 150s) rather than on one. It must also be well short of the profile's
-    #: own 5400s timeout, or it saves nothing: a browser attempt costs 2
-    #: capacity units and an 8 vCPU / 16 GiB pod that the autoscaler may not
-    #: touch, and at 30 minutes an attempt that wedged early gives back at
+    #: own 5400s timeout, or it saves nothing: a browser attempt costs a
+    #: capacity unit and a 4 vCPU / 8 GiB pod (contract request 79; 2 units
+    #: and 8 / 16 before) that the autoscaler may not touch, and at 30 minutes an attempt that wedged early gives back at
     #: least an hour of it.
     stuck_after_seconds: int = 1800
 

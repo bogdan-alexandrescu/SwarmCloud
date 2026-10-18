@@ -75,6 +75,11 @@ IMAGES = [
     "swarm-verify",
     "swarm-live",
     "swarm-egress",
+    "swarm-typesafe-fwd",
+    "swarm-graph",
+    # The public GitHub push receiver (GS-HOOKS, part of #1384),
+    # apps/swarm-github-hooks/Dockerfile.
+    "swarm-github-hooks",
     "workspace-apply",
 ]
 
@@ -908,3 +913,20 @@ def test_previous_takes_no_if_absent(tmp_path):
         env=env, capture_output=True, text=True, timeout=60, check=False,
     )
     assert proc.returncode == 1 and "--if-absent" in proc.stderr
+
+
+def test_main_builds_even_when_a_needed_check_was_skipped_by_its_paths():
+    """`build images` needs python, shell and manifests, and shell and manifests
+    are skipped on a commit that touches no shell or Kubernetes file. Without
+    `!cancelled() && !failure()` GitHub skips a job whose needs were skipped, so
+    on 2026-10-14 main commit adc51c0f built nothing and every release after it
+    refused it ("CI never built adc51c0f ... its 'build images' job was
+    skipped"). A skipped check is not a failed one; a failed one must still stop
+    the build. MUTATION: drop either guard from the job's `if:`."""
+    jobs = _workflow("application.yml")["jobs"]
+    builds = [job for job in jobs.values() if job.get("name") == "build images"]
+    assert len(builds) == 1, [job.get("name") for job in jobs.values()]
+    condition = str(builds[0].get("if", ""))
+    assert "!cancelled()" in condition and "!failure()" in condition, condition
+    # Still never on a pull request: a PR builds without pushing in its own job.
+    assert "github.event_name != 'pull_request'" in condition, condition

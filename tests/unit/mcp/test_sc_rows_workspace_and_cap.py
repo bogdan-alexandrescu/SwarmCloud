@@ -1,32 +1,36 @@
-"""Thirty live rows, and the workspace on every one of them (SC-ROWS).
+"""A hundred live rows, and the workspace on every one of them (SC-ROWS, BOARD-ORDER).
 
 Owner request, 2026-10-14: "increase live rows to 30 but allow scrolling and
 also include the workspace where the workflow or task is running in the info
 that is easily displayed to the user via the sc plugin output on each
 workflow or task line in the details". Held here:
 
-* THE CAP. `/sc attach --all` follows up to 30 workflows and 30 single tasks
-  (10 each before), the plugin's `max_live_rows` option moves it within 1..50,
+* THE CAP. `/sc attach --all` follows up to 100 workflows and 100 single
+  tasks (owner 2026-10-16, BOARD-ORDER; 30 each since SC-ROWS, 10 before),
+  the plugin's `max_live_rows` option moves it within 1..200 (1..50 before),
   and everything past it stays in `not_followed`. The bridge reads the option
   (`config.max_live_rows`) and hands it to run.js as each copy's `max_rows`;
-  run.js clamps it the same way and defaults to the same 30.
-* THE WORKSPACE. run.js's Result title is `SC · [<workspace>] <name> · N
-  steps` (the name is cut, never the workspace or the count, at most 150) --
-  the launched copy's meta.name has no workspace since SC-WS-DESC, its
-  description leads with it (test_sc_workspace_in_description) -- every
-  row label is `[SwarmCloud] [<workspace>] ...`, and every result object and
-  summary line carries it -- read off the API's workflow and task documents
-  (`tenant_id`), never off the session's configured tenant.
-* THE ORDER. Newest first, grouped by workspace, stably.
+  run.js clamps it the same way and defaults to the same 100.
+* THE WORKSPACE. Every result object carries it, and every narrator line
+  that lists or ends a workflow or task names it at its END
+  (` · workspace: <workspace>`) -- read off the API's workflow and task
+  documents (`tenant_id`), never off the session's configured tenant. Since
+  SC-DESC-DETAILS (owner 2026-10-14: no `[Engineering]` or `[eng@saga.xyz]`
+  in front of any name) no title or row label carries `[<workspace>]`: the
+  run's description and each row's details line lead with it instead
+  (test_sc_desc_details).
+* THE ORDER. Closest to finish first, grouped by workspace (BOARD-ORDER,
+  2026-10-16, replacing SC-ROWS' newest first; held in test_board_order.py).
 * `/sc workflows` and `/sc status` print the workspace first on each line.
 
 Scrolling is Claude Code's: /workflows is its panel, not the plugin's. The
 skill doc says so, and that each row is one compact line.
 
-THE MUTATIONS THESE CATCH: put either cap back to 10 (the cap tests go red);
+THE MUTATIONS THESE CATCH: put either cap back to 10 or 30 (the cap tests go red);
 read the workspace from SWARM_TENANT instead of the document (the
-several-workspace tests go red); cut the workspace to fit the title (the
-truncation test goes red); drop the grouping (the order tests go red).
+several-workspace tests go red); put it back in front of a title or label
+(the title and label tests go red); drop the grouping (the order tests go
+red).
 """
 
 from __future__ import annotations
@@ -80,11 +84,11 @@ def _run(tmp_path, args, answers) -> dict:
 
 
 @pytest.mark.parametrize(("given", "cap"), [
-    (None, 30), ("", 30), ("${user_config.max_live_rows}", 30), ("lots", 30), ("nan", 30),
-    ("12", 12), ("30", 30), ("50", 50), ("51", 50), ("1000", 50), ("1", 1), ("0", 1), ("-4", 1),
-    ("7.9", 7),
+    (None, 100), ("", 100), ("${user_config.max_live_rows}", 100), ("lots", 100), ("nan", 100),
+    ("12", 12), ("30", 30), ("51", 51), ("200", 200), ("201", 200), ("1000", 200), ("1", 1), ("0", 1),
+    ("-4", 1), ("7.9", 7),
 ])
-def test_the_bridge_reads_max_live_rows_and_clamps_it_to_1_through_50(given, cap):
+def test_the_bridge_reads_max_live_rows_and_clamps_it_to_1_through_200(given, cap):
     environ = {} if given is None else {"SWARM_PLUGIN_MAX_LIVE_ROWS": given}
     assert config.max_live_rows(environ) == cap
 
@@ -95,12 +99,12 @@ def test_the_hook_reads_the_same_option_under_its_hook_name():
                                  "CLAUDE_PLUGIN_OPTION_MAX_LIVE_ROWS": "8"}) == 9
 
 
-def test_the_manifest_declares_max_live_rows_defaulting_to_30_within_1_to_50():
+def test_the_manifest_declares_max_live_rows_defaulting_to_100_within_1_to_200():
     manifest = json.loads(_MANIFEST.read_text())
     option = manifest["userConfig"]["max_live_rows"]
     assert option["type"] == "number"
-    assert option["default"] == config.DEFAULT_MAX_LIVE_ROWS == 30
-    assert (option["min"], option["max"]) == (1, config.MAX_LIVE_ROWS_LIMIT) == (1, 50)
+    assert option["default"] == config.DEFAULT_MAX_LIVE_ROWS == 100
+    assert (option["min"], option["max"]) == (1, config.MAX_LIVE_ROWS_LIMIT) == (1, 200)
     env = manifest["mcpServers"]["swarmcloud"]["env"]
     assert env["SWARM_PLUGIN_MAX_LIVE_ROWS"] == "${user_config.max_live_rows}"
 
@@ -110,7 +114,7 @@ def test_run_js_restates_the_bridges_default_and_limit():
     assert f"const MAX_ATTACHED_WORKFLOWS = {launch.MAX_ATTACHED_WORKFLOWS}" in text
     assert f"const MAX_ATTACHED_TASKS = {launch.MAX_ATTACHED_TASKS}" in text
     assert f"const MAX_LIVE_ROWS_LIMIT = {config.MAX_LIVE_ROWS_LIMIT}" in text
-    assert launch.MAX_ATTACHED_WORKFLOWS == launch.MAX_ATTACHED_TASKS == 30
+    assert launch.MAX_ATTACHED_WORKFLOWS == launch.MAX_ATTACHED_TASKS == 100
 
 
 def test_the_plugin_version_moved_past_the_release_before_sc_rows():
@@ -126,22 +130,22 @@ def test_the_plugin_version_moved_past_the_release_before_sc_rows():
 # --------------------------------------------------------------------------
 
 
-def test_a_title_starts_with_the_workspace_after_the_prefix():
-    assert workflows.workflow_title("DEVB-GATE: ship it", 5, "u-bogdan") == "SC · [u-bogdan] DEVB-GATE: ship it · 5 steps"
-    assert workflows.workflow_title("ship it", 1) == "SC · ship it · 1 step", "no workspace known, as before"
+def test_a_title_carries_no_workspace():
+    assert workflows.workflow_title("DEVB-GATE: ship it", 5) == "SC · DEVB-GATE: ship it · 5 steps"
+    assert workflows.workflow_title("ship it", 1) == "SC · ship it · 1 step"
 
 
-def test_a_long_title_cuts_the_name_never_the_workspace_or_the_step_count():
+def test_a_long_title_cuts_the_name_never_the_step_count():
     name = "word " * 60
-    title = workflows.workflow_title(name, 12, "u-bogdan")
+    title = workflows.workflow_title(name, 12)
     assert len(title) <= workflows.TITLE_CHARS
-    assert title.startswith("SC · [u-bogdan] word")
+    assert title.startswith("SC · word")
     assert title.endswith("… · 12 steps")
 
 
 def test_the_run_js_title_is_the_bridges_title(tmp_path):
-    """run.js's Result title is workflow_title's, workspace and cut included
-    (the launched copy's meta.name drops the workspace: SC-WS-DESC)."""
+    """run.js's Result title is workflow_title's, cut included, with no
+    workspace in it (SC-DESC-DETAILS); the result still carries it."""
     name = "a very long workflow name " * 8
     got = _run(tmp_path, {"attach": "wf_a", "title": name, "workspace": "u-bogdan"}, {
         "ATTACH\nworkflow_id: wf_a": {
@@ -153,7 +157,7 @@ def test_the_run_js_title_is_the_bridges_title(tmp_path):
         "STATUS": {"state": "SUCCEEDED", "state_note": None, "console": None, "steps": []},
     })
     result = got["result"]
-    assert result["title"] == workflows.workflow_title(workflows.title_name(stored=name), 1, "u-bogdan")
+    assert result["title"] == workflows.workflow_title(workflows.title_name(stored=name), 1)
     assert result["workspace"] == "u-bogdan"
 
 
@@ -162,7 +166,7 @@ def test_the_run_js_title_is_the_bridges_title(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def test_every_step_row_and_setup_row_is_labelled_with_the_workspace(tmp_path):
+def test_no_step_row_or_setup_row_label_carries_the_workspace(tmp_path):
     link = "https://c.test/agents/t1"
     got = _run(tmp_path, {"attach": "wf_a", "title": "gate"}, {
         "ATTACH\nworkflow_id: wf_a": {
@@ -174,18 +178,19 @@ def test_every_step_row_and_setup_row_is_labelled_with_the_workspace(tmp_path):
         "STATUS": {"state": "SUCCEEDED", "state_note": None, "console": None, "steps": []},
     })
     labels = [c["label"] for c in got["calls"]]
-    assert labels[0] == "[SwarmCloud] gate · setup · attach", "the launch gave no workspace; the read had not answered"
-    assert labels[1] == f"[SwarmCloud] [u-bogdan] gate · stage 1 · implement · {link}"
-    assert labels[2] == "[SwarmCloud] [u-bogdan] gate · 1 step · wf_a · setup · result"
-    assert any(line.startswith("[u-bogdan] implement SUCCEEDED") for line in got["logs"]), got["logs"]
-    assert any(line.startswith("[u-bogdan] wf_a SUCCEEDED") for line in got["logs"]), got["logs"]
+    assert labels[0] == "[SwarmCloud] gate · setup · attach"
+    assert labels[1] == f"[SwarmCloud] gate · stage 1 · implement · {link}"
+    assert labels[2] == "[SwarmCloud] gate · 1 step · wf_a · setup · result"
+    assert any(line.startswith("implement SUCCEEDED") for line in got["logs"]), got["logs"]
+    assert any(line.startswith("wf_a SUCCEEDED") and "· workspace: u-bogdan" in line for line in got["logs"]), got["logs"]
+    assert not any(line.startswith("[u-bogdan]") for line in got["logs"]), got["logs"]
 
 
 def test_the_attach_row_carries_the_workspace_the_launch_read(tmp_path):
     got = _run(tmp_path, {"attach": "wf_a", "title": "gate", "workspace": "eng"}, {
         "ATTACH\nworkflow_id: wf_a": {"__throw": "boom"},
     })
-    assert got["calls"][0]["label"] == "[SwarmCloud] [eng] gate · setup · attach"
+    assert got["calls"][0]["label"] == "[SwarmCloud] gate · setup · attach"
     assert got["result"]["workspace"] == "eng" and got["result"]["state"] == "NOT_ATTACHED"
 
 
@@ -204,9 +209,9 @@ def test_a_submitted_workflows_rows_carry_the_workspace_the_reply_names(tmp_path
     })
     step_rows = [c["label"] for c in got["calls"] if c["agentType"] == "sc:step"]
     assert got["result"]["state"] == "SUCCEEDED", got["result"]
-    assert step_rows == ["[SwarmCloud] [u-bogdan] gate · stage 1 · implement"]
+    assert step_rows == ["[SwarmCloud] gate · stage 1 · implement"]
     assert got["result"]["workspace"] == "u-bogdan"
-    assert got["result"]["title"] == "SC · [u-bogdan] gate · 1 step"
+    assert got["result"]["title"] == "SC · gate · 1 step"
 
 
 def _tasks(count: int, workspace: str = "eng") -> list[dict]:
@@ -217,28 +222,31 @@ def _task_answers(entries: list[dict]) -> dict:
     return {f"task_id: {e['task_id']}": _step("SUCCEEDED") for e in entries}
 
 
-@pytest.mark.parametrize(("max_rows", "followed"), [(None, 30), (5, 5), (99, 35), ("12", 12), (0, 1)])
+@pytest.mark.parametrize(("max_rows", "followed"), [(None, 100), (5, 5), (999, 105), ("12", 12), (0, 1)])
 def test_attach_tasks_follows_up_to_the_cap_it_is_handed_clamped(tmp_path, max_rows, followed):
-    entries = _tasks(35)
+    entries = _tasks(105)
     args = {"attach_tasks": entries}
     if max_rows is not None:
         args["max_rows"] = max_rows
     got = _run(tmp_path, args, _task_answers(entries))
     rows = [c for c in got["calls"] if c["agentType"] == "sc:task"]
-    assert len(rows) == min(followed, 50)
-    assert len(got["result"]["not_followed"]) == 35 - len(rows)
+    assert len(rows) == min(followed, 200)
+    assert len(got["result"]["not_followed"]) == 105 - len(rows)
     assert all(n["workspace"] == "eng" for n in got["result"]["not_followed"])
 
 
-def test_a_task_row_is_labelled_with_its_workspace_and_its_result_carries_it(tmp_path):
+def test_a_task_rows_details_and_result_carry_its_workspace_and_its_label_does_not(tmp_path):
     entries = [{"task_id": "task_a", "title": "lane-a", "workspace": "u-bogdan"}]
     got = _run(tmp_path, {"attach_tasks": entries}, _task_answers(entries))
-    assert got["calls"][0]["label"] == "[SwarmCloud] [u-bogdan] lane-a · task"
+    assert got["calls"][0]["label"] == "[SwarmCloud] lane-a · task"
+    assert "details: Workspace: u-bogdan · " in got["calls"][0]["prompt"]
     assert got["result"]["tasks"][0]["workspace"] == "u-bogdan"
-    assert got["logs"][-1].startswith("[u-bogdan] lane-a SUCCEEDED")
+    assert got["logs"][-1].startswith("lane-a SUCCEEDED") and got["logs"][-1].endswith("· workspace: u-bogdan")
 
 
-def test_task_rows_are_grouped_by_workspace_newest_first_within_each(tmp_path):
+def test_task_rows_are_grouped_by_workspace_in_the_bridges_order_within_each(tmp_path):
+    """attach_tasks rows carry no progress: the order the bridge handed them
+    (its board order, by state age) is kept inside each workspace block."""
     entries = [
         {"task_id": "t1", "title": "a1", "workspace": "a"},
         {"task_id": "t2", "title": "b1", "workspace": "b"},
@@ -251,36 +259,54 @@ def test_task_rows_are_grouped_by_workspace_newest_first_within_each(tmp_path):
 
 def _listed_workflows(count: int, workspaces=("eng",)) -> dict:
     flows = [{"workflow_id": f"wf_{n:02d}", "workspace": workspaces[n % len(workspaces)], "title": f"flow {n:02d}",
-              "label": None, "state": "RUNNING", "console": None} for n in range(count)]
+              "label": None, "state": "RUNNING", "console": None, "this_session": True} for n in range(count)]
     return {"count": count, "error": None, "workflows": flows, "single_tasks": [], "single_tasks_error": None}
 
 
-@pytest.mark.parametrize(("max_rows", "followed"), [(None, 30), (12, 12), (70, 35)])
+@pytest.mark.parametrize(("max_rows", "followed"), [(None, 100), (12, 12), (170, 105)])
 def test_attach_all_hands_back_up_to_the_cap_and_lists_the_rest(tmp_path, max_rows, followed):
     args = {"attach": "all"}
     if max_rows is not None:
         args["max_rows"] = max_rows
-    got = _run(tmp_path, args, {"LIST": _listed_workflows(35)})
+    got = _run(tmp_path, args, {"LIST": _listed_workflows(105)})
     result = got["result"]
     assert len(result["attach_calls"]) == followed
-    assert len(result["not_followed"]) == 35 - followed
+    assert len(result["not_followed"]) == 105 - followed
     assert all(call["workspace"] == "eng" for call in result["attach_calls"])
     assert all(entry["workspace"] == "eng" for entry in result["workflows"] + result["not_followed"])
 
 
-def test_attach_all_groups_by_workspace_keeping_newest_first(tmp_path):
-    got = _run(tmp_path, {"attach": "all"}, {"LIST": _listed_workflows(6, ("u-bogdan", "eng"))})
+def test_attach_all_groups_by_workspace_closest_to_finish_first(tmp_path):
+    """Listed newest first, `eng` holding the workflow closest to finish
+    (wf_03, 3 of 4): the eng block comes first, and each block runs closest
+    first, a tie in steps going to the step that has run longer (wf_01 before
+    wf_05, wf_00 before wf_04) -- whatever order the relay passed it on in."""
+    listed = _listed_workflows(6, ("u-bogdan", "eng"))
+    for n, entry in enumerate(listed["workflows"]):
+        entry["progress"] = {"done": n % 4, "total": 4, "age_seconds": 60 * (6 - n)}
+    got = _run(tmp_path, {"attach": "all"}, {"LIST": listed})
     calls = got["result"]["attach_calls"]
     assert [(c["workspace"], c["attach"]) for c in calls] == [
-        ("u-bogdan", "wf_00"), ("u-bogdan", "wf_02"), ("u-bogdan", "wf_04"),
-        ("eng", "wf_01"), ("eng", "wf_03"), ("eng", "wf_05"),
+        ("eng", "wf_03"), ("eng", "wf_01"), ("eng", "wf_05"),
+        ("u-bogdan", "wf_02"), ("u-bogdan", "wf_00"), ("u-bogdan", "wf_04"),
     ]
-    assert any(line.startswith("[eng] wf_01 flow 01 RUNNING") for line in got["logs"]), got["logs"]
+    assert any(line.startswith("wf_01 flow 01 RUNNING") and "· workspace: eng" in line for line in got["logs"]), got["logs"]
 
 
 # --------------------------------------------------------------------------
 # The bridge: launch(all), titles, workspace from the documents
 # --------------------------------------------------------------------------
+
+
+#: The Claude Code session these listings were submitted by: `/sc attach
+#: --all` attaches only that session's work (SC-SESSION-SCOPE; the scope
+#: itself is held in tests/unit/mcp/test_sc_session_scope.py).
+SESSION = "11111111-2222-4333-8444-555555555555"
+
+
+@pytest.fixture(autouse=True)
+def _this_session(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", SESSION)
 
 
 class _NoTenants:
@@ -293,32 +319,34 @@ class _NoTenants:
 
 def _running(count: int, workspaces=("eng",)) -> dict:
     return {"count": count, "complete": True, "workflows": [
-        {"workflow_id": f"wf_{n:02d}", "workspace": workspaces[n % len(workspaces)], "title": f"flow {n:02d}",
-         "label": None, "steps_total": 3, "console": None}
+        {"workflow_id": f"wf_{n:03d}", "workspace": workspaces[n % len(workspaces)], "title": f"flow {n:03d}",
+         "label": None, "steps_total": 3, "console": None, "claude_session": SESSION}
         for n in range(count)
     ]}
 
 
-def test_launch_all_honours_the_30_cap_and_names_each_workspace(_plugin_root, monkeypatch):
-    monkeypatch.setattr(sc, "running_workflows", lambda client: _running(35))
+def test_launch_all_honours_the_100_cap_and_names_each_workspace(_plugin_root, monkeypatch):
+    monkeypatch.setattr(sc, "running_workflows", lambda client: _running(105))
     monkeypatch.setattr(sc, "running_tasks", lambda client: {"count": 0, "tasks": []})
     out = launch.for_all(_NoTenants())
-    assert out["max_live_rows"] == 30
-    assert len(out["launches"]) == 30 and len(out["not_followed"]) == 5
+    assert out["max_live_rows"] == 100
+    assert len(out["launches"]) == 100 and len(out["not_followed"]) == 5
     first = out["launches"][0]
     # SC-WS-DESC: the run's name has no workspace; its description leads with it.
-    assert first["title"] == "SC · flow 00 · 3 steps"
+    assert first["title"] == "SC · flow 000 · 3 steps"
     assert first["workspace"] == "eng"
-    assert first["args"] == {"attach": "wf_00", "title": "flow 00", "workspace": "eng"}
-    assert out["not_followed"][0] == {"workflow_id": "wf_30", "workspace": "eng", "title": "flow 30",
-                                      "attach_with": "/sc attach wf_30"}
+    assert first["args"] == {"attach": "wf_000", "title": "flow 000", "workspace": "eng",
+                             "titled_copy": first["script_path"]}
+    assert out["not_followed"][0] == {"workflow_id": "wf_100", "workspace": "eng", "title": "flow 100",
+                                      "attach_with": "/sc attach wf_100"}
 
 
 def test_launch_all_honours_the_plugin_option(_plugin_root, monkeypatch):
     monkeypatch.setenv("SWARM_PLUGIN_MAX_LIVE_ROWS", "4")
     monkeypatch.setattr(sc, "running_workflows", lambda client: _running(6))
     monkeypatch.setattr(sc, "running_tasks", lambda client: {"count": 7, "tasks": [
-        {"task_id": f"task_{n}", "label": f"lane {n}", "workspace": "eng"} for n in range(7)]})
+        {"task_id": f"task_{n}", "label": f"lane {n}", "workspace": "eng", "claude_session": SESSION}
+        for n in range(7)]})
     out = launch.for_all(_NoTenants())
     workflow_launches = [l for l in out["launches"] if "workflow_id" in l]
     task_launch = [l for l in out["launches"] if "task_ids" in l][0]
@@ -338,15 +366,17 @@ def test_launch_all_groups_several_workspaces_and_uses_display_names(_plugin_roo
     ])
     out = launch.for_all(client)
     assert [(l["workspace"], l["workflow_id"]) for l in out["launches"]] == [
-        ("u-bogdan", "wf_00"), ("u-bogdan", "wf_02"), ("Engineering", "wf_01"), ("Engineering", "wf_03"),
+        ("u-bogdan", "wf_000"), ("u-bogdan", "wf_002"), ("Engineering", "wf_001"), ("Engineering", "wf_003"),
     ], "a display name too long to fit is not used: the tenant id is"
 
 
-def test_for_tasks_follows_30_and_lists_the_rest_with_their_workspace(_plugin_root):
-    entries = [{"task_id": f"task_{n:02d}", "label": f"lane {n}", "workspace": "u-bogdan"} for n in range(33)]
+def test_for_tasks_follows_100_and_lists_the_rest_with_their_workspace(_plugin_root):
+    entries = [{"task_id": f"task_{n:03d}", "label": f"lane {n}", "workspace": "u-bogdan"} for n in range(103)]
     out = launch.for_tasks(entries)
-    assert len(out["args"]["attach_tasks"]) == 30 and out["args"]["max_rows"] == 30
-    assert out["args"]["attach_tasks"][0] == {"task_id": "task_00", "title": "lane 0", "workspace": "u-bogdan"}
+    assert len(out["args"]["attach_tasks"]) == 100 and out["args"]["max_rows"] == 100
+    first = dict(out["args"]["attach_tasks"][0])
+    assert first.pop("details").startswith("Workspace: u-bogdan · ")
+    assert first == {"task_id": "task_000", "title": "lane 0", "workspace": "u-bogdan"}
     assert [n["workspace"] for n in out["not_followed"]] == ["u-bogdan"] * 3
 
 
@@ -417,19 +447,28 @@ def test_the_session_start_notice_names_the_workspace_and_the_cap(monkeypatch):
         {"workflows": [{"workflow_id": "wf_1", "workspace": "u-bogdan", "state": "RUNNING", "current_steps": []}]},
         {"tasks": [{"task_id": "task_a", "workspace": "eng", "state": "RUNNING"}]},
     )
-    assert "[u-bogdan] wf_1" in text and "[eng] task_a" in text
-    assert "at most 30 workflows and 30 single tasks" in text
+    # SC-DESC-DETAILS: named after the id, never `[<workspace>]` in front.
+    assert "wf_1 (RUNNING;" in text and "workspace u-bogdan)" in text
+    assert "task_a (RUNNING;" in text and "workspace eng)" in text
+    assert "[u-bogdan]" not in text and "[eng]" not in text
+    assert "at most 100 workflows and 100 single tasks" in text
 
 
-def test_the_group_order_is_stable_and_newest_first_within_each_workspace():
+def test_entries_with_nothing_to_order_by_keep_their_order_within_each_workspace():
+    """No progress and no age: every key ties, and the grouping is stable --
+    the blocks in the order of their first entry. The order itself is held
+    in test_board_order.py."""
     entries = [{"id": 1, "workspace": "a"}, {"id": 2, "workspace": "b"}, {"id": 3, "workspace": "a"},
                {"id": 4, "workspace": None}, {"id": 5, "workspace": "b"}]
     assert [e["id"] for e in sc.group_by_workspace(entries)] == [1, 3, 2, 5, 4]
 
 
-def test_the_skill_doc_says_30_and_that_scrolling_is_claude_codes():
+def test_the_skill_doc_says_100_and_that_scrolling_is_claude_codes():
+    import re
+
     text = " ".join(_SKILL.read_text().split())
-    assert "at most 10" not in text and "past 10 workflows" not in text
-    assert "max_live_rows" in text and "30" in text
+    assert not re.search(r"at most (10|30)\b", text) and "past 10 workflows" not in text
+    assert "max_live_rows" in text and "at most 100" in text and "1-200" in text and "1-50" not in text
+    assert "newest first, grouped by workspace" not in text and "closest to finish first" in text
     assert "cannot add scrolling" in text
     assert "[<workspace>]" in text

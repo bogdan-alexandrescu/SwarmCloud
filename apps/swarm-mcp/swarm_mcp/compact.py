@@ -59,6 +59,7 @@ from typing import Any, Callable
 
 from swarm_common.states import CONCURRENCY_STATES
 
+from . import details
 from .client import TERMINAL, SwarmClient, SwarmError
 from .follow import console_link, event_type
 from .progress import (
@@ -119,6 +120,19 @@ SILENT_MAX_WAIT_SECONDS = 1200
 #: How often a running task is re-read inside a window. One small read.
 POLL_SECONDS = 10.0
 
+#: The status a reader that is being rate limited is answered with. A 429 is
+#: NOT a failed read: the API will answer the same read once the reader slows
+#: down. So it never counts toward `READ_FAILURE_LIMIT`, and a call that met
+#: one waits and reads again -- RATE_LIMIT_BACKOFF_SECONDS, doubled each time,
+#: up to RATE_LIMIT_BACKOFF_CAP_SECONDS -- inside its own window instead of
+#: returning (epic #1334: a second attach of one workflow minutes after the
+#: first hit a 429, and its rows ended UNKNOWN). A call whose window ends
+#: while still limited says so: its task's `read` is `rate_limited`, which a
+#: row repeats the call on and never counts as a failure.
+RATE_LIMITED_STATUS = 429
+RATE_LIMIT_BACKOFF_SECONDS = 15.0
+RATE_LIMIT_BACKOFF_CAP_SECONDS = 120.0
+
 #: The `since` token's format marker. A `lines` token carries none, and is
 #: read here as no token: those positions are byte offsets this format does
 #: not use.
@@ -140,6 +154,7 @@ _WAITS_FOR = {
     "BUDGET_EXHAUSTED": "budget",
     "CREDENTIAL_MISSING": "credential",
     "HUMAN_REQUIRED": "a person",
+    "AWAITING_INPUT": "a person's answer",   # contract request 92
 }
 
 
@@ -147,8 +162,11 @@ _WAITS_FOR = {
 # The token
 # --------------------------------------------------------------------------
 
-def encode_since(states: dict[str, Any], keys: dict[str, str], failures: dict[str, int]) -> str:
-    """States last reported, each task's last line key, and the read-failure streaks.
+def encode_since(
+    states: dict[str, Any], keys: dict[str, str], failures: dict[str, int], llm_said: set[str] | None = None,
+) -> str:
+    """States last reported, each task's last line key, the read-failure
+    streaks, and the tasks whose `LLM: <account>` was already said.
 
     The same envelope as `progress.encode_since` -- base64url JSON, a dot, a
     CRC-32 -- so a relay that changes one character is refused, not resumed
@@ -161,6 +179,8 @@ def encode_since(states: dict[str, Any], keys: dict[str, str], failures: dict[st
         "k": keys,
         "f": {k: int(v) for k, v in failures.items() if v},
     }
+    if llm_said:
+        payload["l"] = sorted(llm_said)
     raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     body = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
     return f"{body}.{_checksum(body)}"
@@ -184,6 +204,15 @@ def decode_since(token: Any) -> tuple[dict[str, Any], dict[str, str], dict[str, 
         if isinstance(v, int) and not isinstance(v, bool) and v > 0
     }
     return dict(_dict("s")), {str(k): str(v) for k, v in _dict("k").items()}, failures
+
+
+def llm_said(token: Any) -> set[str]:
+    """The tasks whose `LLM: <account>` a row already wrote (SC-DESC-DETAILS);
+    empty for no token, one of another format, or one from before it."""
+    payload = _payload(token)
+    if payload is None or payload.get("fmt") != _FORMAT or not isinstance(payload.get("l"), list):
+        return set()
+    return {str(t) for t in payload["l"]}
 
 
 # --------------------------------------------------------------------------
@@ -500,6 +529,10 @@ def _no_null_question(question: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _rate_limited(read: dict[str, Any]) -> bool:
+    return read.get("read") == "failed" and read.get("http_status") == RATE_LIMITED_STATUS
+
+
 def watch_progress(
     client: SwarmClient,
     task_ids: list[str],
@@ -538,6 +571,7 @@ def watch_progress(
             "given; follow one task with it, or pass no `step_id`"
         )
     states, keys, failures = decode_since(since)
+    said_llm = llm_said(since)
     first_call = since in (None, "")
     wait = max(0.0, min(float(wait_seconds or 0), max_wait, MAX_WAIT_SECONDS))
     deadline = clock() + wait
@@ -546,6 +580,7 @@ def watch_progress(
     read_ok: set[str] = set()
     wake_before = {t: (keys.get(t) or "").rsplit("|", 1)[0] for t in task_ids}
     parent_states: dict[str, Any] = {}
+    backoff = RATE_LIMIT_BACKOFF_SECONDS
 
     while True:
         for task_id in task_ids:
@@ -554,11 +589,13 @@ def watch_progress(
             if task["read"] == "ok":
                 read_ok.add(task_id)
         held_by_parents = False
+        limited = any(_rate_limited(latest[t]) for t in task_ids)
         if parents:
             parent_states = {}
             unfinished = False
             for parent in parents:
                 seen = _read(client, parent)
+                limited = limited or (_rate_limited(seen) and _waits_on_parents(latest[task_ids[0]]))
                 if seen["read"] == "ok":
                     parent_states[parent] = seen.get("state")
                     unfinished = unfinished or not seen["terminal"]
@@ -583,6 +620,16 @@ def watch_progress(
         # A step row's merge parked on its pull request's CI ends the hold:
         # the row answers PARKED rather than waiting the CI out (`ci_park_result`).
         ci_parked = step_id is not None and _parked_on_ci(latest[task_ids[0]])
+        if limited:
+            # Rate limited: wait and read again, the first call too, rather
+            # than hand the row a failed read (RATE_LIMITED_STATUS).
+            remaining = deadline - clock()
+            if remaining <= 0:
+                break
+            sleep(min(backoff, remaining))
+            backoff = min(backoff * 2, RATE_LIMIT_BACKOFF_CAP_SECONDS)
+            continue
+        backoff = RATE_LIMIT_BACKOFF_SECONDS
         if parents:
             if settled or ci_parked or not held_by_parents:
                 break
@@ -631,6 +678,11 @@ def watch_progress(
             )
         elif task_id in read_ok:
             failures.pop(task_id, None)
+        elif _rate_limited(task):
+            # Not a failure: the streak stays where it was, and the row asks
+            # again (RATE_LIMITED_STATUS).
+            row["read"] = "rate_limited"
+            row["read_error"] = clip(task.get("error") or "", 200)
         else:
             failures[task_id] = failures.get(task_id, 0) + 1
             row["read_error"] = clip(task.get("error") or "", 200)
@@ -667,7 +719,17 @@ def watch_progress(
                 # the person looked. Not part of `key`, so a link never makes
                 # an unchanged line news: a row still writes only on a change.
                 line = f"{line} · console: {link}"
-            if key != keys.get(task_id) or first_call:
+            # WHICH LLM, ONCE (SC-DESC-DETAILS): a run started before its
+            # account was assigned said `LLM: not assigned yet` in its
+            # details, so the first line after the assignment says which
+            # account and model -- on that line, even when nothing else on
+            # it is news, and never again for this task.
+            held = details.llm_line(task) if task["read"] == "ok" else None
+            fresh_llm = bool(held) and task_id not in said_llm
+            if fresh_llm:
+                line = f"{line} · LLM: {held}"
+                said_llm.add(task_id)
+            if key != keys.get(task_id) or first_call or fresh_llm:
                 progress.append(line)
             keys[task_id] = key
             if task["read"] == "ok" and task.get("terminal"):
@@ -688,7 +750,7 @@ def watch_progress(
         "changed": bool(progress),
         "transitions": transitions,
         "stop": stop,
-        "since": encode_since(states, keys, failures),
+        "since": encode_since(states, keys, failures, said_llm),
         "tasks": rows,
     }
     if parents:

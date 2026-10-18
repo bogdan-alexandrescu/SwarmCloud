@@ -209,6 +209,146 @@ NOT_SWITCHABLE_CODES = frozenset({
     "search_unproven",
     "search_fenced",
     "search_refused",
+    # The workspace secrets store (SEC-STORE-API, docs/design/
+    # workspace-secrets.md §5), as the search tool's codes above: raised only
+    # by the management routes that change introduces, when a secrets-form
+    # link is presented, so no existing caller can be refused by it.
+    # Continuing past it is the breach itself: an unknown, used or expired
+    # link, or one minted for another person, workspace, action or secret,
+    # accepted as authority to add or rotate a secret.
+    "SECRET_LINK_INVALID",
+    # The workspace secrets release (SEC-RELEASE, docs/design/
+    # workspace-secrets.md §3.3), as the store's code above: raised only by
+    # the route that change introduces (POST /v1/attempts/{id}/secrets:release),
+    # so no existing caller can be refused by them. Continuing past any of
+    # them is the breach itself: an unproven caller handed a workspace's
+    # secrets, a stale generation holding them past its fence (invariant 5),
+    # a second release of one attempt, or a release computed from a task
+    # document whose signature does not verify.
+    "secrets_release_unproven",
+    "secrets_release_fenced",
+    "secrets_release_spent",
+    "secrets_release_spec_unverified",
+    # The worker's state through swarm-api (ISO-STATE-API, docs/design/
+    # tenant-settings-integrity.md §4.2), as the secrets release's codes
+    # above: raised only by the /v1/attempts/{id}/state/... routes that
+    # change introduces, which nothing calls until SWARM_STATE_VIA_API is on
+    # for a tenant, so no existing caller can be refused by them. Continuing
+    # past any of them is the breach itself (#1457): another tenant's worker
+    # account or an agent writing a worker's state, a stale generation
+    # writing past its fence (invariant 5), an agent-chosen transition, a
+    # wake on an upstream the task never declared, or a write over a
+    # document that changed under it.
+    "attempt_unauthenticated",
+    "attempt_unproven",
+    "attempt_fenced",
+    "transition_refused",
+    "upstream_not_declared",
+    "merge_wake_refused",
+    "state_conflict",
+    # The tenant's MCP servers (MCP-API, part of #1433), as the secrets
+    # release's codes above: raised only by the routes that change introduces
+    # (/v1/mcp-servers, POST /v1/attempts/{id}/mcp:attach) and by the sweep's
+    # credential writer, all of which exist only while SWARM_MCP_SERVERS is
+    # on (dark by default), so no existing caller can be refused by them.
+    # Continuing past any of them is the breach itself: an unproven caller or
+    # a stale generation (invariant 5) handed a per-run MCP credential, a
+    # second attach of one attempt, an attach computed from a task document
+    # whose signature does not verify, or a server registered with a URL or
+    # description shaped like a credential or an unregistered, non-public
+    # address. The feature flag is the switch; a REFUSAL_ switch that let
+    # these through would serve credentials unproven.
+    "mcp_credential_shape",
+    "mcp_server_invalid",
+    "mcp_server_not_found",
+    "mcp_server_exists",
+    "mcp_attach_unproven",
+    "mcp_attach_fenced",
+    "mcp_attach_spent",
+    "mcp_attach_spec_unverified",
+    # The submission's MCP checks (MCP-SUBMIT, docs/design/
+    # registered-mcp-servers.md §4.3, part of #1433), as MCP-API's codes
+    # above: raised only for a submission that names a server in
+    # `input.mcp_servers` or carries `mcp_credentials`, both introduced by
+    # that change, and after `require_enabled` while SWARM_MCP_SERVERS is off
+    # (dark by default), so no existing caller can be refused by them.
+    # Continuing past any of them is the breach itself: a run attached to a
+    # server its tenant never registered or its profile is not allowed, a
+    # child widening what its tree reaches past its parent's signed input, a
+    # `dispatch` server run with no credential, or a credential stored for a
+    # server whose key is not the caller's to send.
+    "mcp_server_unregistered",
+    "mcp_server_profile_refused",
+    "mcp_server_not_inherited",
+    "mcp_credential_missing",
+    "mcp_credential_unexpected",
+    # A step's additional repositories (MR-API, docs/design/
+    # multi-repository-steps.md §4.1, part of #1434), as MCP-SUBMIT's codes
+    # above: raised only for a submission that names an entry in
+    # `additional_repositories`, introduced by that change, and only while
+    # ADDITIONAL_REPOSITORIES_ENABLED is on (off by default; off, any entry is
+    # `additional_repositories_disabled`), so no existing caller can be
+    # refused by them. Continuing past any of them is the breach itself: a
+    # task cloning a repository its tenant never registered or an admin never
+    # let its tasks read, one its slot cannot read, past the platform's count
+    # or size limits, or on a profile whose backend cannot clone it. The
+    # feature flag is the switch.
+    "additional_repositories_disabled",
+    "repository_not_registered",
+    "repository_not_readable_by_tasks",
+    "additional_repository_unreadable",
+    "additional_repository_duplicate",
+    "too_many_additional_repositories",
+    "additional_repositories_too_large",
+    "additional_repositories_unsupported_profile",
+    # The preferences store (PROFILE-STORE, docs/design/user-profile.md §4.2,
+    # §4.4, part of #1505), as MCP-API's codes above: raised only by
+    # `preferences.save` and `display_names`, which that change introduces and
+    # no existing route calls (the routes are PROFILE-API's), so no existing
+    # caller can be refused by them. Continuing past any of them is the
+    # breach itself: a save that silently overwrites another tab's, or a
+    # display name that breaks §4.4's format rules, reads as a platform role,
+    # or impersonates another person.
+    "preferences_changed",
+    "display_name_invalid",
+    "display_name_reserved",
+    "display_name_taken",
+    # A step's model class (MODEL-API, docs/design/model-per-step.md §4.4,
+    # part of #1435): raised only for a submission that names `model_class`,
+    # introduced by that change, so no existing caller can be refused by
+    # them. Continuing past any of them is the breach itself: a step stored
+    # with a class that is not in the frozen vocabulary, one its profile does
+    # not run, or one this deployment pins no model for, each of which the
+    # scheduler refuses only at dispatch, after admission has leased it.
+    # `model_is_chosen_by_model_class` is NOT here: it can refuse today's
+    # `model` callers, so it is a switch.
+    # An issue run's planner class (MODEL-RUNS, same section) raises the
+    # first two as well: only for a POST /v1/runs body that names
+    # `model_class`, a field `RunCreate` gains in lane MODEL-API. Continuing
+    # past either is not the request let through: an unknown class, or one
+    # the planner's profile does not run, has no model to run, and
+    # `submit_tasks` would refuse it later as a schema error, after the
+    # issue's open work was read.
+    "unknown_model_class",
+    "model_class_not_accepted",
+    "model_class_not_yet_available",
+    # Workspace roles (ROLES-API-CORE, docs/design/workspace-roles.md §4.9,
+    # part of #1518): raised only by the role write routes in
+    # `routes/roles.py`, which that change introduces, so no existing caller
+    # can be refused by them. Continuing past any of them is the breach
+    # itself: a grant to a service account would widen the scope its listing
+    # gives it, a role written in a personal workspace would let someone
+    # else hold one there, an `admin` default would make every member an
+    # admin, a write that changes nothing would append a grant and an audit
+    # row for no change, and a role outside the ladder would be stored as a
+    # grant every reader skips. `role_member_required` and
+    # `role_admin_required` are NOT here: they gate existing routes and are
+    # switches (refusals.SWITCHES).
+    "role_person_required",
+    "personal_workspace_roles_fixed",
+    "default_role_not_allowed",
+    "role_unchanged",
+    "unknown_role",
 })
 
 #: What the guard lets through without a switch.

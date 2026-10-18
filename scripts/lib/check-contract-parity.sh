@@ -1937,6 +1937,137 @@ else:
         emit("OK", "cloud_run_fallback_profiles",
              "names none of the live-browser profiles %s" % " ".join(live_profiles))
 
+# -- 16. the browser tool names (contract request 77, BSTATUS-API) --------
+# `claude-code-browser` declares `browser_tool` with four choices: auto and
+# three tools. Each tool name is restated where Python cannot import the
+# catalogue or must not: the worker module that maps a name to what is
+# registered (agent_worker/browser_tools.py `TOOLS`), the API models the
+# console reads (apps/swarm-api/swarm_api/live.py, `LiveToolUse.name` and
+# `LiveBrowserTool.tool_selected`), the client tag each wrapper puts on the
+# CDP endpoint (images/agent-runtime-browser/dev-browser and
+# jev-browser/bin/jev-browser-mcp), and the tag the runner gives Playwright
+# MCP (runners/claude_code.py). A name renamed in one place and not the
+# others is a tool the gate never attributes, or a choice the API serves and
+# the console cannot draw. The jev reasons are restated by swarm-api from
+# the worker module, and compared here too.
+# Parentheses in patterns are built from chr, for the reason section 13 gives.
+LP, RP = re.escape(chr(40)), re.escape(chr(41))
+declared_inputs = getattr(frozen_profiles.RUNNER_PROFILES.get("claude-code-browser"), "inputs", {}) or {}
+browser_tool = declared_inputs.get("browser_tool")
+if browser_tool is None:
+    emit("MISSING", "browser_tool choices",
+         "claude-code-browser declares no browser_tool input, so there is nothing "
+         "for the runner, the API or the wrappers to be compared against")
+else:
+    choices = tuple(browser_tool.choices)
+    tools = [c for c in choices if c != "auto"]
+    wrong = []
+    worker = TEXT.get("apps/agent-worker/agent_worker/browser_tools.py", "")
+    found = re.search(r"^TOOLS = " + LP + r"([^\n]*)" + RP + r"\s*$", worker, re.M)
+    worker_tools = re.findall(r"\"([^\"]+)\"", found.group(1)) if found else None
+    if worker_tools is None:
+        wrong.append("agent_worker/browser_tools.py no longer declares TOOLS as a one-line tuple")
+    elif worker_tools != tools:
+        wrong.append("agent_worker/browser_tools.py TOOLS is %s, the catalogue offers %s"
+                     % (worker_tools, tools))
+    reasons = dict(re.findall(r"^(NO_KEY|NOT_INSTALLED|NOT_SELECTED|NO_ROUTE) = \"([a-z_]+)\"", worker, re.M))
+    api = TEXT.get("apps/swarm-api/swarm_api/live.py", "")
+    api_reasons = re.search(r"^JEV_REASONS: [^=]+= " + LP + r"([^\n]*)" + RP, api, re.M)
+    listed = re.findall(r"\"([^\"]+)\"", api_reasons.group(1)) if api_reasons else None
+    if len(reasons) != 4 or listed is None:
+        wrong.append("the jev reasons are no longer where this scan reads them")
+    elif sorted(reasons.values()) != sorted(listed):
+        wrong.append("swarm_api.live JEV_REASONS is %s, the worker sends %s"
+                     % (sorted(listed), sorted(reasons.values())))
+    for model, field, expected in (("LiveToolUse", "name", tools),
+                                   ("LiveBrowserTool", "tool_selected", list(choices))):
+        block = re.search(r"^class " + model + LP + r"_Wire" + RP + r":\n(.*?)\n\n\n", api, re.M | re.S)
+        literal = re.search(r"^    " + field + r": Literal\[([^\]]*)\]", block.group(1), re.M) if block else None
+        names = re.findall(r"\"([^\"]+)\"", literal.group(1)) if literal else None
+        if names != expected:
+            wrong.append("swarm_api.live %s.%s offers %s, the catalogue %s" % (model, field, names, expected))
+    for rel, tool in (("images/agent-runtime-browser/dev-browser", "dev-browser"),
+                      ("images/agent-runtime-browser/jev-browser/bin/jev-browser-mcp", "jev"),
+                      ("apps/agent-worker/agent_worker/runners/claude_code.py", "playwright")):
+        text = TEXT.get(rel, "")
+        tagged = ("/client/" + tool + chr(34)) in text or ("tag_endpoint" + chr(40) + "endpoint, \"" + tool + "\"") in text
+        if tool not in tools:
+            wrong.append("%s tags its connection %s, which the catalogue does not offer" % (rel, tool))
+        elif not tagged:
+            wrong.append("%s no longer tags its CDP connection as %s" % (rel, tool))
+    if wrong:
+        for line in wrong:
+            emit("DRIFT", "browser_tool names", line)
+    else:
+        emit("OK", "browser_tool names",
+             "the worker, the API models, the jev reasons and the three client tags "
+             "match the catalogue choices %s" % " ".join(choices))
+
+# -- 17. the model classes (#1435, docs/design/model-per-step.md §4.2) -----
+# The class vocabulary is the frozen catalogue's (`MODEL_CLASSES`, contract
+# request A) and the ID behind each class is Terraform's (`runner_models` in
+# terraform/infra/locals.tf, keyed by class). A class with no pin there is a
+# step that can never be dispatched; a pin under a name the catalogue does not
+# have is a model nobody can ask for; a pin of the wrong family is a step
+# that quietly runs another model. Each pin is held to its class by the
+# frozen `ModelClass.admits`, not by a rule restated here. And each profile's
+# `model_classes` and `default_model_class` (request B) are mirrored in
+# `runner_profiles`, which the Jobs' MODEL and the derived WORKER_MODELS read.
+locals_tf = TEXT.get("terraform/infra/locals.tf", "")
+model_classes = getattr(frozen_profiles, "MODEL_CLASSES", None)
+pinned = re.search(r"^  runner_models = \{\n(.*?)^  \}", locals_tf, re.M | re.S)
+mirrored = re.search(r"^  runner_profiles = \{\n(.*?)^  \}", locals_tf, re.M | re.S)
+if not model_classes:
+    emit("MISSING", "MODEL_CLASSES",
+         "swarm_common.profiles declares no MODEL_CLASSES, so there is no class "
+         "vocabulary for runner_models to be compared against")
+elif pinned is None or mirrored is None:
+    emit("MISSING", "runner_models",
+         "terraform/infra/locals.tf no longer declares runner_models and "
+         "runner_profiles as two-space-indented maps; point this check at where "
+         "they moved")
+else:
+    pins = dict(re.findall(r"^\s*\"?([a-z0-9-]+)\"?\s*=\s*\"([^\"]+)\"\s*$",
+                           pinned.group(1), re.M))
+    wrong = []
+    for name in sorted(set(model_classes) - set(pins)):
+        wrong.append("class %s has no pin in runner_models" % name)
+    for name in sorted(set(pins) - set(model_classes)):
+        wrong.append("runner_models pins %s, which is not a MODEL_CLASSES name" % name)
+    for name, model_id in sorted(pins.items()):
+        if name in model_classes and not model_classes[name].admits(model_id):
+            wrong.append("runner_models pins %s to %s, which ModelClass.admits refuses"
+                         % (name, model_id))
+    for name, profile in sorted(frozen_profiles.RUNNER_PROFILES.items()):
+        entry = re.search(r"^    \"" + re.escape(name) + r"\" = \{\n(.*?)^    \}",
+                          mirrored.group(1), re.M | re.S)
+        if entry is None:
+            wrong.append("runner_profiles in locals.tf has no entry for %s" % name)
+            continue
+        classes = re.search(r"^\s*model_classes\s*=\s*\[([^\]]*)\]", entry.group(1), re.M)
+        default = re.search(r"^\s*default_model_class\s*=\s*(null|\"[a-z]+\")\s*$",
+                            entry.group(1), re.M)
+        if classes is None or default is None:
+            wrong.append("the mirror of %s states no model_classes or default_model_class" % name)
+            continue
+        listed = tuple(re.findall(r"\"([^\"]+)\"", classes.group(1)))
+        stated = None if default.group(1) == "null" else default.group(1).strip("\"")
+        if listed != tuple(getattr(profile, "model_classes", ())) or stated != getattr(
+            profile, "default_model_class", None
+        ):
+            wrong.append("the mirror of %s accepts %s with default %s; the catalogue %s with default %s"
+                         % (name, list(listed), stated,
+                            list(getattr(profile, "model_classes", ())),
+                            getattr(profile, "default_model_class", None)))
+    if wrong:
+        for line in wrong:
+            emit("DRIFT", "model classes", line)
+    else:
+        emit("OK", "model classes",
+             "runner_models pins exactly %s, each admitted by its class, and the "
+             "%d mirrored profiles state the catalogue's classes and defaults"
+             % (" ".join(model_classes), len(frozen_profiles.RUNNER_PROFILES)))
+
 print("\n".join(REPORT))
 PY
 )"; then

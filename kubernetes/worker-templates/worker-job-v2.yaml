@@ -178,6 +178,11 @@ spec:
               value: __ARTIFACT_BUCKET__
             - name: WORKSPACE_ROOT
               value: /workspace
+            # The pod's `cache` volume (CACHE-SCRATCH): where the worker puts
+            # the agent's tool caches and TMPDIR, off the workspace volume.
+            # GkeJobDispatcher's CACHE_MOUNT / CACHE_ROOT_ENV.
+            - name: SWARM_CACHE_ROOT
+              value: /cache
             # INERT UNDER THE WORKER LIFECYCLE, and kept only as a fallback.
             #
             # CORRECTED 2026-09-24 (incident wf_ebb3ab2d65664707a559). This note
@@ -250,6 +255,8 @@ spec:
               mountPath: /work
             - name: tmp
               mountPath: /tmp
+            - name: cache
+              mountPath: /cache
       volumes:
         # Ephemeral, per BUILD_PROMPT_V2 §2.3: no volume to provision, leak or
         # pay for, and a restart resumes from the GCS checkpoint instead.
@@ -263,6 +270,21 @@ spec:
         - name: work
           emptyDir:
             sizeLimit: __HOME_DISK__
+        # The agent's tool caches and TMPDIR, on a NETWORK DISK of their own
+        # (CACHE-PVC, owner decision 2026-10-15): a generic ephemeral volume,
+        # created with the pod and deleted with it by the ephemeral-volume
+        # controller. The 2 GiB emptyDir it replaces evicted
+        # task_247c87a8714c4977921a twice, and Autopilot's 10 GiB had no more
+        # to give it. NOT counted in __EPHEMERAL__; never checkpointed.
+        - name: cache
+          ephemeral:
+            volumeClaimTemplate:
+              spec:
+                accessModes: ["ReadWriteOnce"]
+                storageClassName: __CACHE_STORAGE_CLASS__
+                resources:
+                  requests:
+                    storage: __CACHE_DISK__
         - name: tmp
           emptyDir:
             sizeLimit: __TMP_DISK__

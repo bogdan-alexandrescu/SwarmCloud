@@ -98,7 +98,7 @@ peak disk per runner profile so the numbers get corrected from production.
 | class | vCPU | memory | workspace (inside memory) |
 |---|---|---|---|
 | `standard` | 4 | 8 GiB | ~4 GiB |
-| `browser` | 8 | 16 GiB | ~8 GiB |
+| `browser` | 4 | 8 GiB | ~4 GiB |
 | `large` | 8 | 32 GiB | ~16 GiB |
 
 **Workspaces are memory-backed tmpfs, carved out of the class's memory — not

@@ -100,7 +100,7 @@ from typing import Any, Callable, Sequence
 
 from swarm_common.states import CONCURRENCY_STATES, PENDING_STATES, TERMINAL_STATES, TaskState
 
-from . import keys, render
+from . import board, keys, render, session
 from .client import SwarmClient, SwarmError, chosen_tenant, outputs_of
 from .follow import with_console
 from .invocation import help_command, terminal_command
@@ -721,13 +721,13 @@ _TERMINAL_VALUES = frozenset(s.value for s in TERMINAL_STATES)
 WORKFLOW_LIST_PAGES = 4
 WORKFLOW_PAGE_SIZE = 50
 
-#: Running workflows read in detail (one `GET /v1/workflows/{id}` each, for the
-#: label and the current steps). Beyond this many the list still names them,
-#: says they were not read, and costs nothing more. 30 (20 before SC-ROWS):
-#: `/sc attach --all` follows up to `max_live_rows`, 30 unless set, and a
-#: workflow followed without its detail read is titled by its id instead of
-#: its name. A `max_live_rows` above 30 follows the rest titled that way.
-WORKFLOW_DETAIL_READS = 30
+#: How many workflow detail reads (`GET /v1/workflows/{id}`) run at once.
+#: EVERY running workflow is read (BOARD-ORDER, owner 2026-10-16): its
+#: progress -- steps done of the total, and how long its current step has run
+#: -- is what orders the list, and a workflow left unread could not be placed.
+#: Eight at a time, as `launch._read_workflows` reads, so 60 running workflows
+#: are 8 rounds of reads, not 60 requests in one burst.
+WORKFLOW_DETAIL_CONCURRENCY = 8
 
 #: How many workflows the session-start context names one by one.
 SESSION_START_NAMED = 10
@@ -761,15 +761,16 @@ def pull_request_wait(workflow: dict[str, Any]) -> str | None:
 
 
 def group_by_workspace(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """`entries` (newest first) grouped by their `workspace`, STABLY: each
-    workspace's entries keep their newest-first order, and the workspaces come
-    in the order of their newest entry. So a list of 30 rows reads as one
-    block per workspace without a row moving within its block between two
-    reads (SC-ROWS, owner 2026-10-14: "stable order: newest first, grouped by
-    workspace"). plugin/workflows/run.js's `groupByWorkspace` is the same."""
+    """`entries` closest to finish first (`board.order`), grouped by their
+    `workspace`: one block per workspace, the blocks in the order of each
+    block's closest-to-finish entry, and `board.order` inside each block
+    (BOARD-ORDER, owner 2026-10-16: "keep the workspace groups", replacing
+    the "newest first" half of SC-ROWS). The order is total, so two reads of
+    the same state list the same order. plugin/workflows/run.js's
+    `groupByWorkspace` is the same."""
     order: list[Any] = []
     groups: dict[Any, list[dict[str, Any]]] = {}
-    for entry in entries:
+    for entry in board.order(entries):
         key = entry.get("workspace")
         if key not in groups:
             order.append(key)
@@ -793,13 +794,20 @@ def _running_entry(workflow: dict[str, Any], now: datetime, tenant: Any = None) 
         "age_seconds": max(0, int((now - created).total_seconds())) if created else None,
         "steps_total": len(workflow.get("steps") or []),
         "current_steps": None,
+        # Steps done of the total and the current steps' ages (`board.progress`),
+        # from the detail read; None until it is read.
+        "progress": None,
         "waiting_for": pull_request_wait(workflow),
+        # The Claude Code session that started it (SC-SESSION-SCOPE), as
+        # swarm-api serves it off the step tasks; the detail read fills it
+        # in from the tasks themselves for a deployment that serves none.
+        "claude_session": session.owner_of(workflow),
     }
     return with_console(entry, workflow)
 
 
-def _read_detail(client: SwarmClient, entry: dict[str, Any]) -> dict[str, Any]:
-    """The label and the unfinished steps, from one workflow read."""
+def _read_detail(client: SwarmClient, entry: dict[str, Any], now: datetime | None = None) -> dict[str, Any]:
+    """The label, the unfinished steps and the progress, from one workflow read."""
     from . import workflows
 
     try:
@@ -812,6 +820,8 @@ def _read_detail(client: SwarmClient, entry: dict[str, Any]) -> dict[str, Any]:
         entry["state"] = workflow["state"]
     entry["waiting_for"] = pull_request_wait(workflow)
     entry["label"] = _label_of(envelope)
+    entry["claude_session"] = (entry.get("claude_session") or session.owner_of(workflow)
+                               or session.owner_of_tasks(envelope.get("tasks") or []))
     # The repository its steps clone (SC-WATCH): the frozen `Workflow` has
     # none of its own, so `/sc check` scopes a project's workflows by this.
     entry["repository_url"] = next(
@@ -836,6 +846,7 @@ def _read_detail(client: SwarmClient, entry: dict[str, Any]) -> dict[str, Any]:
             step["park_reason"] = row["park_reason"]
         current.append(with_console(step, links.get(row.get("step_id"))))
     entry["current_steps"] = current
+    entry["progress"] = board.progress(envelope, now or datetime.now(timezone.utc))
     return entry
 
 
@@ -844,9 +855,19 @@ def running_workflows(
     *,
     now: datetime | None = None,
     pages: int = WORKFLOW_LIST_PAGES,
-    detail_reads: int = WORKFLOW_DETAIL_READS,
+    detail_reads: int | None = None,
 ) -> dict[str, Any]:
-    """The caller's tenant's workflows that are not over, newest first.
+    """The caller's tenant's workflows that are not over, CLOSEST TO FINISH
+    FIRST in workspace blocks (`group_by_workspace`, `board.order`).
+
+    EVERY one is read in detail (`detail_reads` None), at most
+    `WORKFLOW_DETAIL_CONCURRENCY` at a time: its progress is what orders it.
+    `detail_reads` caps that for a caller that needs no order (a test); the
+    rest say they were not read and sort below every read one. Each read
+    entry carries `progress` (`board.progress`) with the historical medians
+    beside it (`board.annotate`), and the listing says what the medians
+    cost under `medians` -- one shared read per 15 minutes, never one per
+    workflow; a median that could not be read leaves them out and says so.
 
     The tenant is the API's: `GET /v1/workflows` answers for the caller's own
     tenant (`tenant_scope`), and nothing here names one. The route is asked for
@@ -896,13 +917,13 @@ def running_workflows(
         if token is None or full_page:
             break
 
-    detailed = found[: max(0, detail_reads)]
+    detailed = found if detail_reads is None else found[: max(0, detail_reads)]
     if detailed:
-        with ThreadPoolExecutor(max_workers=min(8, len(detailed))) as pool:
-            list(pool.map(lambda entry: _read_detail(client, entry), detailed))
+        with ThreadPoolExecutor(max_workers=min(WORKFLOW_DETAIL_CONCURRENCY, len(detailed))) as pool:
+            list(pool.map(lambda entry: _read_detail(client, entry, now), detailed))
     for entry in found[len(detailed):]:
         entry["steps_unread_because"] = (
-            f"only the newest {detail_reads} running workflows are read step by step"
+            f"only {detail_reads} running workflows were asked to be read step by step"
         )
     listed = group_by_workspace([entry for entry in found if entry.get("state") not in _TERMINAL_VALUES])
     out: dict[str, Any] = {
@@ -911,6 +932,17 @@ def running_workflows(
         "complete": token is None,
         "workflows": listed,
     }
+    if any(isinstance(entry.get("progress"), dict) for entry in listed):
+        found_medians = board.medians(client, now=now)
+        for entry in listed:
+            board.annotate(entry, found_medians)
+        out["medians"] = {
+            key: found_medians[key]
+            for key in ("window_days", "requests", "tasks_read", "read_at", "reused",
+                        "unavailable_because")
+            if key in found_medians
+        }
+        out["medians"]["steps_with_history"] = len(found_medians.get("by_step") or {})
     if token is not None:
         out["incomplete_because"] = (
             f"a page of {WORKFLOW_PAGE_SIZE} unfinished workflows was full; read "
@@ -966,8 +998,16 @@ def _single_task_entry(task: dict[str, Any], now: datetime, tenant: Any = None) 
         "runner_profile": task.get("runner_profile"),
         "created_at": task.get("created_at"),
         "age_seconds": max(0, int((now - created).total_seconds())) if created else None,
+        # How long it has been in its run (its last attempt's start, else its
+        # creation): what orders it among single tasks (`board.order`).
+        "state_age_seconds": (
+            max(0, int((now - since).total_seconds()))
+            if (since := render.parse_time(task.get("started_at")) or created) else None
+        ),
         # What it clones (SC-WATCH): `/sc check` attaches only this project's.
         "repository_url": task.get("repository_url"),
+        # The Claude Code session that dispatched it (SC-SESSION-SCOPE).
+        "claude_session": session.owner_of(task),
     }
     if task.get("park_reason"):
         entry["park_reason"] = task["park_reason"]
@@ -998,8 +1038,9 @@ def running_tasks(
     now: datetime | None = None,
     pages: int = SINGLE_TASK_PAGES,
 ) -> dict[str, Any]:
-    """The caller's running SINGLE tasks, newest first: not finished, in no
-    workflow, and submitted by the caller.
+    """The caller's running SINGLE tasks, the longest-running first
+    (`board.order`, by state age): not finished, in no workflow, and
+    submitted by the caller.
 
     One `GET /v1/tasks?state=<s>&submitted_by=me` walk per unfinished state
     (`_live_states`, read from the frozen contract), in parallel. The route
@@ -1074,11 +1115,38 @@ def _steps_text(entry: dict[str, Any]) -> str:
     return ", ".join(f"{s.get('step_id')} {s.get('state') or 'state not read'}" for s in steps)
 
 
+def _minutes(seconds: Any) -> str:
+    return f"{max(0, round(seconds / 60))}m"
+
+
+def _board_text(entry: dict[str, Any]) -> str:
+    """`  3/5  now: review 12m +1  p50 20m  eta ~30m`: where the workflow
+    stands (`board.progress`), its longest-running current step and that
+    step's age, and the historical medians beside them where they are known.
+    '' for a workflow whose progress was not read."""
+    p = entry.get("progress")
+    if not isinstance(p, dict):
+        return ""
+    text = f"  {p.get('done')}/{p.get('total')}"
+    current = sorted(p.get("current") or [], key=lambda s: -(s.get("age_seconds") or -1))
+    if current:
+        first = current[0]
+        age = f" {_minutes(first['age_seconds'])}" if isinstance(first.get("age_seconds"), int) else ""
+        more = f" +{len(current) - 1}" if len(current) > 1 else ""
+        text += f"  now: {first.get('step_id')}{age}{more}"
+        if isinstance(first.get("median_seconds"), int):
+            text += f"  p50 {_minutes(first['median_seconds'])}"
+    if isinstance(p.get("eta_seconds"), int):
+        text += f"  eta ~{_minutes(p['eta_seconds'])}"
+    return text
+
+
 def session_start_context(
     listing: dict[str, Any] | None,
     tasks: dict[str, Any] | None = None,
     *,
     watch_minutes: int | None = None,
+    watch_off: bool = False,
 ) -> str | None:
     """What the SessionStart hook tells the session, or None when nothing runs.
 
@@ -1091,6 +1159,11 @@ def session_start_context(
     interval, handed over by the hook. Claude Code's scheduled prompts end
     with a session, so the context also asks for `/sc watch <N>m` -- and says
     so even when nothing runs.
+
+    `watch_off` (SC-AUTO-WATCH): the hook found an explicit `/sc watch off`
+    for the project. Otherwise, when something runs and no interval was ever
+    saved, the context asks the session to arm the watch at the default --
+    CronList first, so a session that already has one makes no second.
     """
     from . import watch
 
@@ -1108,8 +1181,8 @@ def session_start_context(
         for entry in running[:SESSION_START_NAMED]:
             label = f' "{entry["label"]}"' if entry.get("label") else ""
             named.append(
-                f"{_workspace_tag(entry)}{entry.get('workflow_id')}{label} ({entry.get('state')}; {_steps_text(entry)}; "
-                f"{_age_text(entry.get('age_seconds'))})"
+                f"{entry.get('workflow_id')}{label} ({entry.get('state')}; {_steps_text(entry)}; "
+                f"{_age_text(entry.get('age_seconds'))}{_workspace_clause(entry)})"
             )
         if count > SESSION_START_NAMED:
             named.append(f"and {count - SESSION_START_NAMED} more")
@@ -1125,8 +1198,8 @@ def session_start_context(
         for entry in singles[:SESSION_START_TASKS_NAMED]:
             label = f' "{entry["label"]}"' if entry.get("label") else ""
             named.append(
-                f"{_workspace_tag(entry)}{entry.get('task_id')}{label} ({entry.get('state')}; "
-                f"{_age_text(entry.get('age_seconds'))})"
+                f"{entry.get('task_id')}{label} ({entry.get('state')}; "
+                f"{_age_text(entry.get('age_seconds'))}{_workspace_clause(entry)})"
             )
         if count > SESSION_START_TASKS_NAMED:
             named.append(f"and {count - SESSION_START_TASKS_NAMED} more")
@@ -1139,6 +1212,8 @@ def session_start_context(
     cap = config.max_live_rows()
     text = (
         " ".join(parts)
+        + " Each was started by this Claude Code session (SC-SESSION-SCOPE): other sessions' work "
+        "in the tenant, and untagged work, is not named."
         + " Before anything else, run `/sc attach --all` to show them as live "
         "[SwarmCloud] rows: it submits nothing, starts one slim row per unfinished "
         f"workflow step and one per single task, and follows at most {cap} workflows "
@@ -1148,7 +1223,42 @@ def session_start_context(
     )
     if watch_minutes:
         text += " Then: " + watch.rearm_sentence(watch_minutes)
+    elif not watch_off:
+        text += " " + watch.arm_sentence()
     return text
+
+
+def own_only(listing: dict[str, Any] | None, key: str, sid: str | None) -> dict[str, Any] | None:
+    """`listing` (`running_workflows` or `running_tasks`) with only the
+    entries under `key` tagged with session `sid`: none when `sid` is None."""
+    if listing is None:
+        return None
+    kept = [e for e in listing.get(key) or []
+            if isinstance(e, dict) and session.ownership(session.owner_of(e), sid) == "own"]
+    return {**listing, key: kept, "count": len(kept)}
+
+
+def mark_session(entries: list[dict[str, Any]], sid: str | None) -> list[dict[str, Any]]:
+    """`/sc workflows` lists the whole tenant and marks which entries are this
+    session's (`this_session`), in place."""
+    for entry in entries:
+        entry["this_session"] = session.ownership(session.owner_of(entry), sid) == "own"
+    return entries
+
+
+def _session_mark(entry: dict[str, Any]) -> str:
+    return "  [this session]" if entry.get("this_session") else ""
+
+
+def _workspace_clause(entry: dict[str, Any]) -> str:
+    """`; workspace <workspace>` for an entry the SessionStart notice names,
+    "" when the API named none. Inside the entry's parentheses, never
+    `[<workspace>]` in front of its id (SC-DESC-DETAILS, owner 2026-10-14:
+    no workspace prefix in front of a workflow's or task's name)."""
+    from .workflows import _flat
+
+    workspace = _flat(entry.get("workspace"))
+    return f"; workspace {workspace}" if workspace else ""
 
 
 def _workspace_tag(entry: dict[str, Any]) -> str:
@@ -1178,10 +1288,17 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
             with ThreadPoolExecutor(max_workers=2) as pool:
                 workflows_read = pool.submit(_quietly, lambda: running_workflows(client))
                 tasks_read = pool.submit(_quietly, lambda: running_tasks(client))
-                from .watch import rearm_minutes
+                from .watch import handed_off, rearm_minutes
 
+                # ONLY THIS SESSION'S (SC-SESSION-SCOPE, owner 2026-10-14): the
+                # hook hands over the session id it read on stdin, and work
+                # another session started -- or nobody tagged -- is not named.
+                sid = session.current()
                 context = session_start_context(
-                    workflows_read.result(), tasks_read.result(), watch_minutes=rearm_minutes(),
+                    own_only(workflows_read.result(), "workflows", sid),
+                    own_only(tasks_read.result(), "tasks", sid),
+                    watch_minutes=rearm_minutes(),
+                    watch_off=handed_off(),
                 )
         except Exception:  # noqa: BLE001 - nothing may stop a session starting
             return EXIT_OK
@@ -1208,12 +1325,16 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
     singles, singles_failure = _attempt(lambda: running_tasks(client))
     # Each workspace by its display name where the API gives one (SC-ROWS).
     names = workspace_names(client) if listing is not None or singles is not None else {}
+    sid = session.current()
     if listing is not None:
         named_workspaces(listing["workflows"], names)
+        mark_session(listing["workflows"], sid)
     if singles is not None:
         named_workspaces(singles["tasks"], names)
+        mark_session(singles["tasks"], sid)
     if args.json:
         payload = dict(listing) if listing is not None else {"error": str(failure)}
+        payload["session"] = session.describe(sid)
         if singles is not None:
             payload["single_tasks"] = singles
         else:
@@ -1228,11 +1349,13 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
     lines = [render.section("workflows", f"{len(running)} running", style)]
     if not running:
         lines.append("  none running")
+    # Closest to finish first, in workspace blocks (BOARD-ORDER): the order
+    # `running_workflows` answers in, printed as it came.
     for entry in running:
         label = f"  {entry['label']}" if entry.get("label") else ""
         lines.append(
-            f"  {_workspace_tag(entry)}{entry.get('workflow_id')}{label}  {entry.get('state')}  "
-            f"{_age_text(entry.get('age_seconds'))}"
+            f"  {_workspace_tag(entry)}{entry.get('workflow_id')}{label}  {entry.get('state')}"
+            f"{_board_text(entry)}  {_age_text(entry.get('age_seconds'))}{_session_mark(entry)}"
         )
         lines.append(f"    now: {_steps_text(entry)}")
         if entry.get("waiting_for"):
@@ -1250,6 +1373,8 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
             )
     if not listing.get("complete"):
         lines.append(f"  {listing.get('incomplete_because')}")
+    if (listing.get("medians") or {}).get("unavailable_because"):
+        lines.append(f"  {listing['medians']['unavailable_because']}; p50 and eta are left out")
     if singles is None:
         lines.append(render.section("single tasks", "", style))
         lines.append(f"  could not be read: {singles_failure}")
@@ -1263,12 +1388,14 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
             link = f"  console: {entry['console']}" if entry.get("console") else ""
             lines.append(
                 f"  {_workspace_tag(entry)}{entry.get('task_id')}{label}  {entry.get('state')}  "
-                f"{_age_text(entry.get('age_seconds'))}{link}"
+                f"{_age_text(entry.get('age_seconds'))}{_session_mark(entry)}{link}"
             )
         if not singles.get("complete"):
             lines.append(f"  {singles.get('incomplete_because')}")
     if running or (singles and singles["tasks"]):
         lines.append("  show them as live rows in Claude Code: /sc attach --all")
+        lines.append("  [this session] marks what this Claude Code session started: only those are "
+                     "attached by /sc attach --all; /sc attach <wf_id> attaches any other by hand")
     _emit(lines, out)
     return EXIT_OK if singles is not None else EXIT_FAIL
 
@@ -1968,6 +2095,22 @@ def workspace_refusal_text(exc: SwarmError, setup_command: str) -> str | None:
     if exc.status != 403 or exc.code not in WORKSPACE_REFUSALS:
         return None
     return f"✕ 403 {exc.code}: {api_message(exc)}\n  Finish setup with {setup_command}."
+
+
+def preferences_refusal_text(exc: SwarmError) -> str | None:
+    """A 503 `preferences_unavailable` as `sc` prints it, or None for any other
+    error (docs/design/user-profile.md §4.5, Q9):
+
+        ✕ 503 preferences_unavailable: <the API's message, word for word>
+
+    The API answered, so this is not a connection failure and `swarm doctor`
+    is no answer to it; its message already says how to name a workspace.
+    Nothing is retried in another workspace: the request named none, and
+    picking one here is the guess the API refused to make.
+    """
+    if exc.status != 503 or exc.code != "preferences_unavailable":
+        return None
+    return f"✕ 503 {exc.code}: {api_message(exc)}"
 
 
 def _workspace_shown(record: Any) -> dict[str, Any]:
@@ -2712,6 +2855,32 @@ KEY_ON_ARGV = (
 KEYS_NOT_SAVABLE = "keys can't be saved yet: {reason}"
 
 
+class KeySetLineRefused(Exception):
+    """`sc key set`'s line did not parse. Carries nothing from the line."""
+
+
+class _KeySetParser(argparse.ArgumentParser):
+    """`sc key set`'s parser, which neither guesses at nor repeats a word.
+
+    A key may start with "-" (base64url's alphabet has it), and argparse then
+    reads it as an option. Two of its readings are closed here (#1499):
+
+      * NO ABBREVIATIONS AND NO BUNDLED SHORT FLAGS. "-h<rest>" was the help
+        switch with the rest as more flags: it printed help and exited 0, as
+        if the line were fine. Only an option's full spelling matches now, so
+        any other "-" word is an extra word, which `main` refuses unsent;
+      * NO ERROR MESSAGE OF ITS OWN. argparse's ("ambiguous option: <word>",
+        "ignored explicit argument <word>") can quote the word, and a "-"-led
+        key in the provider's place left `provider` missing, which exited
+        from inside the parse. `main` refuses instead, with a fixed text."""
+
+    def _get_option_tuples(self, option_string):
+        return []
+
+    def error(self, message):
+        raise KeySetLineRefused()
+
+
 def key_set_refusal(extra: Sequence[str]) -> str | None:
     """Why this `sc key set` line is refused before anything is read or sent,
     or None. Never names what it refuses: a stray word on this line is most
@@ -3386,12 +3555,51 @@ def cmd_login(_client, args, out) -> int:
     return EXIT_OK
 
 
-#: Said when no SWARM_TENANT is set: the API picks, and since #1204 its pick is
-#: the caller's personal workspace when that is ready.
+#: Said when no SWARM_TENANT is set and `GET /v1/tenants/mine` did not say
+#: which default applied (an API older than PROFILE-DEFAULT, or the listing
+#: could not be read): the API picks, by the rule of
+#: docs/design/user-profile.md §4.5.
 _DEFAULT_TENANT_SOURCE = (
     "SWARM_TENANT is not set, so the API chose your default: "
-    "your personal workspace when it is ready"
+    "the one in Settings › Profile, else your personal workspace"
 )
+
+#: What each `default_source` the API reports on `tenants/mine`'s default
+#: entry is said as when no SWARM_TENANT is set (user-profile.md §4.5).
+#: "unavailable" is not a default at all: a headerless request is then 503
+#: `preferences_unavailable`, so it says to name a workspace.
+_DEFAULT_SOURCES = {
+    "profile": "SWARM_TENANT is not set, so the API used your default, from Settings › Profile",
+    "personal": (
+        "SWARM_TENANT is not set, so the API chose your default: your personal "
+        "workspace (no default is set in Settings › Profile)"
+    ),
+    "first_group": (
+        "SWARM_TENANT is not set, so the API chose your default: your first "
+        "group (no default is set in Settings › Profile)"
+    ),
+    "unavailable": (
+        "SWARM_TENANT is not set and your preferences could not be read; name a "
+        "workspace: set SWARM_TENANT or the plugin's tenant option"
+    ),
+}
+
+
+def default_source(client: SwarmClient) -> str | None:
+    """The `default_source` of `GET /v1/tenants/mine`'s default entry, or None.
+
+    None when the listing could not be read or names none -- an API older
+    than PROFILE-DEFAULT -- and the caller then says the general rule
+    (`_DEFAULT_TENANT_SOURCE`) rather than guessing which part of it applied.
+    """
+    try:
+        mine = client.tenants_mine()
+    except SwarmError:
+        return None
+    for entry in mine:
+        if entry.get("is_default") and isinstance(entry.get("default_source"), str):
+            return entry["default_source"]
+    return None
 
 
 def tenant_choice() -> tuple[str | None, str]:
@@ -3432,7 +3640,7 @@ def read_whoami(args) -> tuple[dict[str, Any], int]:
         "context": None, "url": None, "source": None, "current": None,
         "tier": None, "credential_store": None, "principal": None,
         "tenant": None, "tenant_chosen": chosen, "tenant_source": chosen_by,
-        "error": None,
+        "default_source": None, "error": None,
     }
     code = EXIT_OK
     try:
@@ -3448,6 +3656,12 @@ def read_whoami(args) -> tuple[dict[str, Any], int]:
             shown["principal"] = signin.SignedIn(deployment).claims().get("email")
         with SwarmClient(deployment=deployment, tenant=chosen) as api:
             me = api.request("GET", "/v1/tenants/me") or {}
+            if chosen is None:
+                # WHICH DEFAULT APPLIED (PROFILE-SC): read only when nothing was
+                # chosen, because a SWARM_TENANT wins whatever the default is.
+                source = default_source(api)
+                shown["default_source"] = source
+                shown["tenant_source"] = _DEFAULT_SOURCES.get(source or "", chosen_by)
         # Nested under `tenant` and `principal`, which the flat reads missed
         # (#88, SC-F3) -- through the one reader `render` keeps for it.
         shown["tenant"] = render.tenant_of(me)
@@ -3850,6 +4064,88 @@ def cmd_plan_reject(client: SwarmClient, args, out) -> int:
 
 def _json_out(value: Any, out) -> int:
     out.write(json.dumps(value, indent=2, default=str) + "\n")
+    return EXIT_OK
+
+
+# -- registered MCP servers (docs/design/registered-mcp-servers.md §4.11) ---
+#
+# READ-ONLY, BY DESIGN. Registering a server is an admin act in the console,
+# and a long-lived credential goes to the workspace secret store, which no
+# tool or command here writes: a session that could register a URL could
+# point the platform's relay anywhere, and one that took a store value would
+# hold a secret in its transcript. So this is the one place the package names
+# the registry's route, and only in a GET (tests/unit/mcp/test_mcp_servers_tool.py).
+
+#: What one listing entry carries: the registration's NAMES and rules, never
+#: its header or scheme, which only the worker's relay needs.
+_MCP_SERVER_FIELDS = ("name", "url", "description", "allowed_profiles", "enabled", "last_attached_at")
+
+
+def mcp_servers(client: SwarmClient) -> dict[str, Any]:
+    """`GET /v1/mcp-servers`, shaped for a session: each server's name, URL,
+    auth mode, whether a dispatch must bring a credential for it, the profiles
+    and tools allowed, and whether it is enabled; and the egress addresses its
+    operator allowlists. An empty `allowed_tools` means every tool (owner
+    decision Q4), and says so rather than reading as none."""
+    listing = client.request("GET", "/v1/mcp-servers")
+    if not isinstance(listing, dict):
+        raise SwarmError("GET /v1/mcp-servers answered no object: this deployment predates MCP servers")
+    servers = []
+    for entry in listing.get("servers") or []:
+        if not isinstance(entry, dict):
+            continue
+        mode = (entry.get("auth") or {}).get("mode") if isinstance(entry.get("auth"), dict) else None
+        tools = entry.get("allowed_tools")
+        servers.append({
+            **{key: entry.get(key) for key in _MCP_SERVER_FIELDS},
+            "enabled": entry.get("enabled") is True,
+            "auth_mode": mode or "none",
+            "needs_credential": mode == "dispatch",
+            "allowed_tools": list(tools) if tools else "every tool",
+        })
+    return {
+        "tenant_id": listing.get("tenant_id"),
+        "servers": servers,
+        "egress_addresses": list(listing.get("egress_addresses") or []),
+        "can_manage": listing.get("can_manage") is True,
+        "use": (
+            "name servers in a claude-code or codex step's `inputs.mcp_servers`; a "
+            "`dispatch` server also needs that call's `mcp_credentials` entry, "
+            "{\"<name>\": {\"value\": ..., \"expires_in\": seconds}}. Registering a server "
+            "is done in the console (Settings > Workspace > MCP servers)"
+        ),
+    }
+
+
+def mcp_servers_lines(view: dict[str, Any]) -> list[str]:
+    """The listing as text: one line per server, then the addresses."""
+    servers = view.get("servers") or []
+    lines = [f"MCP SERVERS  {view.get('tenant_id') or ''}  {len(servers)} registered".rstrip()]
+    if not servers:
+        lines.append("  none registered for this workspace")
+    for server in servers:
+        tools = server["allowed_tools"]
+        lines.append(
+            f"  {server.get('name')}  {'enabled' if server['enabled'] else 'disabled'}  "
+            f"auth {server['auth_mode']}"
+            + ("  (needs mcp_credentials)" if server["needs_credential"] else "")
+        )
+        lines.append(f"    {server.get('url')}")
+        lines.append(
+            f"    profiles {', '.join(server.get('allowed_profiles') or []) or '-'}; tools "
+            + (tools if isinstance(tools, str) else ", ".join(tools))
+        )
+    addresses = view.get("egress_addresses") or []
+    lines.append(f"egress addresses to allowlist: {', '.join(addresses) if addresses else '- (not set)'}")
+    lines.append(f"use: {view['use']}")
+    return lines
+
+
+def cmd_mcp_servers(client: SwarmClient, args, out) -> int:
+    view = mcp_servers(client)
+    if args.json:
+        return _json_out(view, out)
+    _emit(mcp_servers_lines(view), out)
     return EXIT_OK
 
 
@@ -4273,7 +4569,8 @@ def build_parser() -> argparse.ArgumentParser:
     # KEYS-PLUGIN. NO OPTION AND NO POSITIONAL TAKES THE KEY: anything past the
     # provider and the switches is refused unsent by `main`, unrepeated.
     key = sub.add_parser("key", help="provider keys you set: `key set typesafe`")
-    key_sub = key.add_subparsers(dest="key_command", required=True)
+    key_sub = key.add_subparsers(dest="key_command", required=True,
+                                 parser_class=_KeySetParser)
     kset = key_sub.add_parser(
         "set",
         help="store your TypeSafe key, typed at a hidden prompt or piped with --stdin "
@@ -4452,6 +4749,10 @@ def build_parser() -> argparse.ArgumentParser:
     _common(shp, root=False)
     shp.set_defaults(func=cmd_schedules_preview)
 
+    ms = sub.add_parser("mcp-servers", help="your workspace's registered MCP servers (read-only)")
+    _common(ms, root=False)
+    ms.set_defaults(func=cmd_mcp_servers)
+
     ap_ = sub.add_parser("approvals", help="the approval inbox; then approve|reject <id>")
     ap_.add_argument("--kind", default=None, choices=("run", "plan", "merge", "proposal", "spec", "hold"))
     _common(ap_, root=False)
@@ -4513,7 +4814,14 @@ def main(argv: list[str] | None = None, out=None) -> int:
     from . import config
 
     parser = build_parser()
-    args, extra = parser.parse_known_args(argv)
+    try:
+        args, extra = parser.parse_known_args(argv)
+    except KeySetLineRefused:
+        # Nothing has been read or sent, and the line is not repeated.
+        print("sc: sc key set takes a provider, --tenant and --stdin, nothing else; "
+              + KEY_ON_ARGV.format(command=terminal_command("sc key set typesafe")),
+              file=sys.stderr)
+        return EXIT_USAGE
     if getattr(args, "key_set", False):
         # BEFORE any client: a key typed on the line is refused unsent, and
         # argparse's own "unrecognized arguments" would have repeated it.
@@ -4550,10 +4858,13 @@ def main(argv: list[str] | None = None, out=None) -> int:
         with SwarmClient(context=args.context, tenant=tenant_choice()[0]) as client:
             return args.func(client, args, stream)
     except SwarmError as exc:
-        # THE SUBMISSION GATE'S REFUSAL (#847): the API answered, so this is
+        # THE SUBMISSION GATE'S REFUSAL (#847), OR AN UNKNOWN DEFAULT (503
+        # `preferences_unavailable`, PROFILE-SC): the API answered, so this is
         # not a connection failure and `swarm doctor` is no answer to it. Its
         # message, word for word, and the command that fixes it.
-        refused = workspace_refusal_text(exc, f"`{terminal_command('sc setup')}`")
+        refused = workspace_refusal_text(
+            exc, f"`{terminal_command('sc setup')}`"
+        ) or preferences_refusal_text(exc)
         if refused is not None:
             print(refused, file=sys.stderr)
             return EXIT_FAIL

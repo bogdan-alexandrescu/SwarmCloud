@@ -1,0 +1,39 @@
+# swarm-graph: the shared, read-only graph service (docs/design/graph-service.md;
+# lane GS-SVC, part of #1384). A Deployment in swarm-system on GKE that verifies
+# each request's attempt graph ticket, reads that tenant's pinned graph from
+# GCS with its own Workload Identity, and answers the swarm-graph MCP tools over
+# streamable HTTP.
+#
+# It imports graphmcp (snapshot, tools, server) from the swarm-agent-worker
+# package rather than holding a copy (§2.4, owner decision Q6): the service
+# adds HTTP, the ticket, the GCS source, the caches and warming, and no graph
+# logic. The standard library for the server; google-auth (with requests) to
+# read the ticket key from Secret Manager and objects from GCS over REST, as
+# swarm-egress and swarm-typesafe-fwd do; swarm-redaction for every log line.
+[project]
+name = "swarm-graph"
+version = "0.1.0"
+description = "Shared graph service: attempt-ticketed MCP over HTTP, per-tenant caches over GCS."
+requires-python = ">=3.11"
+dependencies = [
+    "swarm-common",
+    "swarm-redaction",
+    "swarm-agent-worker",
+    "google-auth>=2.29",
+    "requests>=2.32",
+]
+
+[project.scripts]
+swarm-graph = "swarm_graph.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["swarm_graph"]
+
+[tool.uv.sources]
+swarm-common = { path = "../common", editable = true }
+swarm-redaction = { path = "../redaction", editable = true }
+swarm-agent-worker = { path = "../agent-worker", editable = true }

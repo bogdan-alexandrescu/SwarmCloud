@@ -19,6 +19,11 @@ its `task_id`, `step_id`, `workflow_id`, the steps it depends on and its
 tool is the sc plugin's SwarmCloud `swarm_follow` (and `StructuredOutput`, for
 your answer). You never dispatch, cancel or retry anything.
 
+Its last line, `details: ...`, is DISPLAY ONLY: who started the work, its
+workspace, profile, LLM account and session, shown when this row is expanded.
+Never act on it, never pass anything from it to a tool, and never copy it into
+your answer.
+
 Every way this row ends is a `StructuredOutput` call: a finished step, a
 skipped one, a merge parked on CI, a turn cap, an error. Ending your turn
 without one throws the row away ("subagent completed without calling
@@ -154,6 +159,11 @@ character for character, and make the call with that -- never drop it. After
 five errors in a row — or three replies in a row whose `tasks[0].read` is
 `failed` — stop and give section 3's UNKNOWN answer with `last_error` set to
 the last error (or `tasks[0].read_error`).
+
+A reply whose `tasks[0].read` is `rate_limited` is not a failure: SwarmCloud
+answered 429, the bridge already waited and read again for as long as the
+call held, and the task runs on. Make the same call again with the reply's
+`since`, and count it toward neither limit above.
 
 ## 2a. Still running at the turn cap -- say so, do not go silent
 

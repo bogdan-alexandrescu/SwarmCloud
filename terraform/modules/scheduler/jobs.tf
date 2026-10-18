@@ -141,12 +141,12 @@ module "service_account_ids" {
 # NO create_ignore_already_exists, for the reason modules/iam gives for
 # swarm-tick (#334): a release that meets a 409 should fail rather than adopt
 # an account somebody else made under this name, with their keys and policy.
-# The provider caps description at 256 characters; this one is at 237.
+# The provider caps description at 256 characters; this one is at 252.
 resource "google_service_account" "rollup_sweeper" {
   project      = var.project_id
   account_id   = module.service_account_ids.rollup_sweeper_id
   display_name = "Swarm Workflow Rollup Sweeper"
-  description  = "managed-by=swarm-terraform; OIDC identity of the workflow-rollup, issue-run-advance, stranded-pr-sweep, repo-index-poll, merge-wake, forge-refresh, workspace-sweep jobs and task_finished push; those eight /v1/admin routes only. No roles."
+  description  = "managed-by=swarm-terraform; OIDC id of workflow-rollup, issue-run-advance, stranded-pr-sweep, repo-index-poll, merge-wake, forge-refresh, workspace-sweep, secrets-rotation-sweep, mcp-credentials-sweep, task_finished push; 10 /v1/admin routes. No roles."
 }
 
 locals {
@@ -648,6 +648,167 @@ resource "google_cloud_scheduler_job" "workspace_sweep" {
     precondition {
       condition     = var.api_endpoint != ""
       error_message = "enable_workspace_sweep needs api_endpoint: the job POSTs swarm-api's dispatch sweep."
+    }
+  }
+}
+
+# --- The workspace secrets rotation sweep (#1347, owner decision Q5) --------
+#
+# POST /v1/admin/workspace-secrets/rotation-sweep (apps/swarm-api/swarm_api/
+# routes/workspace_secrets.py, SEC-STORE-API) disables every rotated-out
+# version of a workspace secret whose 24-hour grace has passed
+# (workspace_secrets.ROTATION_GRACE), with one audit row each, and never
+# destroys one: only a delete destroys. Rotation keeps the previous version
+# ENABLED for exactly that grace, so a run already holding it finishes; until
+# this job nothing called the sweep, and a rotated-out value stayed readable
+# for ever (docs/design/workspace-secrets.md §4.3).
+#
+# HOURLY, AT :41 (var.secrets_rotation_sweep_schedule): a version is disabled
+# at most an hour after its grace ends, which a 24-hour grace does not need
+# finer. :41 is clear of :00 and :30, where schedules bunch, and of the other
+# sweeps' minutes. An idle sweep reads the active records and writes nothing.
+#
+# ONE JOB, NOT ONE PER TENANT: the route takes no tenant_id and walks every
+# active record, a personal workspace's among them.
+#
+# SAME IDENTITY as workspace_sweep: the rollup-sweeper account, which swarm-api
+# admits to this one route by name (swarm_api.auth.ROLLUP_SWEEPER_ROUTES) and
+# whose run.invoker on swarm-api is the edge grant, so this job adds no IAM
+# member. The disable itself runs as swarm-api, under swarmProviderKeyWriter's
+# secretmanager.versions.disable (terraform/bootstrap/provider_keys.tf, which
+# the owner applies). Until that permission is applied each due disable fails,
+# is counted in the response's `failed`, and is retried by the next hour's run;
+# the version stays enabled, never destroyed.
+#
+# The count is a bool for enable_workspace_sweep's reason: api_endpoint is
+# unknown at plan in the root, so it cannot gate a count.
+resource "google_cloud_scheduler_job" "secrets_rotation_sweep" {
+  count = var.enable_secrets_rotation_sweep ? 1 : 0
+
+  project = var.project_id
+  region  = var.region
+  name    = "${var.name_prefix}-workspace-secrets-rotation-sweep"
+
+  description = "managed-by=swarm-terraform; disables rotated-out workspace secret versions once their 24-hour grace has passed (#1347, Q5); never destroys"
+  schedule    = var.secrets_rotation_sweep_schedule
+  time_zone   = var.time_zone
+  paused      = var.paused
+
+  # One Secret Manager call and one transaction per due version, the same
+  # budget as the other sweeps.
+  attempt_deadline = "300s"
+
+  http_target {
+    http_method = "POST"
+    uri         = "${trimsuffix(var.api_endpoint, "/")}${var.secrets_rotation_sweep_path}"
+
+    oidc_token {
+      service_account_email = local.rollup_sweeper_email
+      audience              = coalesce(var.api_audience, trimsuffix(var.api_endpoint, "/"))
+    }
+  }
+
+  # No retry: the next hour IS the retry, and the sweep is idempotent -- a
+  # version already disabled is skipped.
+  retry_config {
+    retry_count = 0
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.api_endpoint != ""
+      error_message = "enable_secrets_rotation_sweep needs api_endpoint: the job POSTs swarm-api's workspace secrets rotation sweep."
+    }
+  }
+}
+
+# --- The per-run MCP credential sweep (#1433, owner decision Q2) -----------
+#
+# POST /v1/admin/mcp-credentials/sweep (apps/swarm-api/swarm_api/routes/
+# mcp_servers.py, lane MCP-API) deletes the Secret Manager secret
+# (swarm-tenant-<t>-mcpc-<hex>) of every mcp_dispatch_credentials row whose
+# task -- every task, for a workflow's map -- is terminal or whose expires_at
+# has passed, and marks the row destroyed (docs/design/registered-mcp-
+# servers.md §4.4). Not at each attempt's end: a retry is an attempt of the
+# same task and needs the credential (Q2). Each secret also carries Secret
+# Manager's own ttl, expires_in plus 5 minutes, so a sweep that never runs
+# still cannot leave one behind; this job is what makes "dies at task end"
+# true rather than "dies at expires_in".
+#
+# EVERY 10 MINUTES, AT :03, :13, ... (local.mcp_credentials_sweep_schedule):
+# a caller's credential outlives its task by at most ten minutes. :03 is clear
+# of :00 and :30, where schedules bunch, and of the other sweeps' minutes
+# (:07/:37, :19/:49, :41). An idle sweep reads the live rows and writes
+# nothing.
+#
+# ONLY ITS ROUTE. The path is a constant, not a variable: the job may call
+# this one route and nothing else, no tenant and no query, and
+# tests/terraform/mcp_sweep.tftest.hcl holds the exact URI. ONE JOB, NOT ONE
+# PER TENANT: the route walks every tenant's rows, a personal workspace's
+# among them.
+#
+# SAME IDENTITY as secrets_rotation_sweep: the rollup-sweeper account, which
+# swarm-api admits to this one route by name (swarm_api.auth.
+# ROLLUP_SWEEPER_ROUTES, MCP-API) and whose run.invoker on swarm-api is the
+# edge grant, so this job adds no IAM member. The delete itself runs as
+# swarm-api, under swarmMcpCredentialAccessor's secretmanager.secrets.delete
+# (terraform/bootstrap/mcp_credentials.tf, which the owner applies). Until
+# that is applied each due delete fails and is retried by the next tick; the
+# secret's own ttl still removes it.
+#
+# OFF BY DEFAULT, and the root does not set it yet: until MCP-API serves the
+# route and names it in ROLLUP_SWEEPER_ROUTES, every call would be refused,
+# and the feature ships dark. The count is a bool for enable_workspace_sweep's
+# reason: api_endpoint is unknown at plan in the root, so it cannot gate a
+# count.
+variable "enable_mcp_credentials_sweep" {
+  description = "Create swarm-mcp-credentials-sweep, the 10-minute caller of swarm-api's per-run MCP credential sweep (#1433, owner decision Q2). A bool, not derived from api_endpoint, for enable_task_finished_push's reason. Off until swarm-api serves POST /v1/admin/mcp-credentials/sweep (lane MCP-API)."
+  type        = bool
+  default     = false
+}
+
+locals {
+  # Constants, not variables (the header): the job calls this route only.
+  mcp_credentials_sweep_path     = "/v1/admin/mcp-credentials/sweep"
+  mcp_credentials_sweep_schedule = "3-59/10 * * * *"
+}
+
+resource "google_cloud_scheduler_job" "mcp_credentials_sweep" {
+  count = var.enable_mcp_credentials_sweep ? 1 : 0
+
+  project = var.project_id
+  region  = var.region
+  name    = "${var.name_prefix}-mcp-credentials-sweep"
+
+  description = "managed-by=swarm-terraform; deletes per-run MCP credentials (swarm-tenant-<t>-mcpc-*) once their task has ended or expires_at has passed (#1433, Q2)"
+  schedule    = local.mcp_credentials_sweep_schedule
+  time_zone   = var.time_zone
+  paused      = var.paused
+
+  # One Secret Manager delete and one transaction per due row, the same
+  # budget as the other sweeps.
+  attempt_deadline = "300s"
+
+  http_target {
+    http_method = "POST"
+    uri         = "${trimsuffix(var.api_endpoint, "/")}${local.mcp_credentials_sweep_path}"
+
+    oidc_token {
+      service_account_email = local.rollup_sweeper_email
+      audience              = coalesce(var.api_audience, trimsuffix(var.api_endpoint, "/"))
+    }
+  }
+
+  # No retry: the next tick, ten minutes on, IS the retry, and the sweep is
+  # idempotent -- a row already destroyed is skipped.
+  retry_config {
+    retry_count = 0
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.api_endpoint != ""
+      error_message = "enable_mcp_credentials_sweep needs api_endpoint: the job POSTs swarm-api's MCP credential sweep."
     }
   }
 }

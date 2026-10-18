@@ -19,13 +19,14 @@
  */
 import STYLES from '../styles.css?raw'
 import WF_CSS from '../styles/workflows.css?raw'
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Result } from '../fetch'
 import type { WorkflowBoard, WorkflowRead, WorkflowUsage } from '../api'
 import type { AttemptRow, Task, TaskState, Workflow, WorkflowPage, WorkflowStep } from '../types'
 import { cascade } from './cssgate'
+import { painted } from './marks'
 import { ownFromBoard } from './workflowsById'
 
 const api = vi.hoisted(() => ({
@@ -185,6 +186,12 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  // Unmount BEFORE the mocks are restored. In vitest 3.2 `restoreAllMocks`
+  // also resets every `vi.fn()` above to return undefined, and this hook runs
+  // before setup.ts's `cleanup()` (hooks stack), so a render still landing
+  // in between -- a tab click's re-render, a read resolving late on a loaded
+  // runner -- called `loadWorkflowUsage(...).then` on undefined (CI, PR #1375).
+  cleanup()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
@@ -402,7 +409,22 @@ describe('WF-6: the attempt stepper and the table count the same thing, or say w
     })
     // Not "attempt 5 of 5" beside a table saying "1 of 10".
     expect(pos.textContent).not.toMatch(/^attempt 5 of 5$/)
-    expect(pos.textContent).toBe('run 5 of 5 · 1 of 10 counted')
+    expect(pos.textContent).toBe('run 5 of 5')
+    // V200 (#1427): ◀ position ▶ is one unit that never wraps -- at 400 the
+    // whole sentence filled the line and ▶ wrapped alone -- and the counted
+    // figure is after it, outside it, where it may wrap on its own.
+    // MUTATION: put the counted figure back inside the position, or the
+    // buttons back outside `.wf-scrub-nav`.
+    const scrub = document.querySelector<HTMLElement>('[data-scrub="attempt"]')!
+    const nav = pos.parentElement!
+    expect(nav.classList.contains('wf-scrub-nav')).toBe(true)
+    expect(within(nav).getByRole('button', { name: 'Previous attempt' })).toBeTruthy()
+    expect(within(nav).getByRole('button', { name: 'Next attempt' })).toBeTruthy()
+    const counted = scrub.querySelector<HTMLElement>(':scope > .wf-scrub-counted')!
+    expect(counted.textContent).toBe('1 of 10 counted')
+    expect(nav.nextElementSibling).toBe(counted)
+    expect(counted.title).toMatch(/a wait for CI is refunded and not counted/)
+    expect(painted(nav, 'white-space', { width: 400 })).toBe('nowrap')
     // WF-20: a park is not filed under `error`. Step back to a CI park.
     fireEvent.click(within(document.querySelector<HTMLElement>('[data-scrub="attempt"]')!).getByRole('button', { name: 'Previous attempt' }))
     const keys = [...document.querySelectorAll('[data-scrub="attempt"] .ctl-fact > b')].map((b) => b.textContent)

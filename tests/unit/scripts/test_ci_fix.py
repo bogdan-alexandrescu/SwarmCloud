@@ -478,6 +478,83 @@ def test_a_refused_submission_is_reported_on_the_pr_and_fails_the_run(fake):
     assert "abc123secret" not in comment
 
 
+LIVE_TASK = "task_cccccccccccccccccccc"
+LIVE_WORKFLOW = "wf_dddddddddddddddddddd"
+
+
+def _in_flight(code: str = "ci_fix_in_flight") -> str:
+    """The API's 409 when this failure already has a live fix (cifix.CiFixInFlight)."""
+    return json.dumps({
+        "code": code,
+        "message": f"pull request #{PR}'s red run already has a live CI-fix task token=abc123secret",
+        "detail": {"metadata": "ci_fix", "task_id": LIVE_TASK, "workflow_id": LIVE_WORKFLOW,
+                   "pull_request": int(PR), "head_sha": HEAD, "run_id": int(RUN_ID)},
+    })
+
+
+def test_a_failure_with_a_live_fix_is_logged_with_no_comment_and_passes(fake):
+    """409 `ci_fix_in_flight` (FIX-MERGE-2, epic #1334): the failure is being
+    handled by the named task, so the run names it and passes, and the pull
+    request gets no "not submitted" comment -- nothing failed."""
+    _, state = fake
+    (state / "api_status").write_text("409")
+    (state / "api_response").write_text(_in_flight())
+
+    out = _run(fake, "run")
+
+    assert out.returncode == 0, out.stderr
+    assert _comments(state) == []
+    logged = out.stdout + out.stderr
+    assert LIVE_TASK in logged and LIVE_WORKFLOW in logged
+    # The ids, never the body wholesale.
+    assert "abc123secret" not in logged and "live CI-fix task" not in logged
+
+
+def test_a_live_fix_still_being_submitted_is_logged_without_a_task_id(fake):
+    _, state = fake
+    body = json.loads(_in_flight())
+    body["detail"]["task_id"] = None
+    body["detail"]["workflow_id"] = None
+    (state / "api_status").write_text("409")
+    (state / "api_response").write_text(json.dumps(body))
+
+    out = _run(fake, "run")
+
+    assert out.returncode == 0, out.stderr
+    assert _comments(state) == []
+
+
+def test_an_id_in_the_answer_that_is_not_an_id_is_not_logged(fake):
+    _, state = fake
+    body = json.loads(_in_flight())
+    body["detail"]["task_id"] = "task_x $(whoami) token=abc123secret"
+    (state / "api_status").write_text("409")
+    (state / "api_response").write_text(json.dumps(body))
+
+    out = _run(fake, "run")
+
+    assert out.returncode == 0, out.stderr
+    assert "abc123secret" not in out.stdout + out.stderr
+
+
+@pytest.mark.parametrize("status,body", [
+    ("409", _in_flight(code="conflict")),
+    ("500", json.dumps({"code": "internal", "message": "boom"})),
+    ("500", _in_flight()),
+])
+def test_any_other_refusal_is_still_reported_on_the_pr_and_fails_the_run(fake, status, body):
+    _, state = fake
+    (state / "api_status").write_text(status)
+    (state / "api_response").write_text(body)
+
+    out = _run(fake, "run")
+
+    assert out.returncode != 0
+    (comment,) = _comments(state)
+    assert "<!-- swarm-ci-fix:refused -->" in comment and status in comment
+    assert "<!-- swarm-ci-fix:attempt -->" not in comment
+
+
 def test_an_unconfigured_fixer_says_so_on_the_pr_once_and_submits_nothing(fake):
     _, state = fake
     out = _run(fake, "run", SWARM_IMPERSONATE_SA="")

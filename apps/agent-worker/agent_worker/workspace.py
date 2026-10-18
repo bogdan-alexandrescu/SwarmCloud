@@ -12,6 +12,10 @@ One attempt, one directory tree, created empty and destroyed at the end:
         artifacts/     files the runner wants kept; uploaded on exit
         logs/          stdout.log, stderr.log
         tmp/           TMPDIR for the child, so a stray temp file cannot escape
+                       (on GKE it is `<cache>/tmp` instead, on the cache volume)
+        cache/         the agent's tool caches, on Cloud Run only; on GKE they are
+                       `<SWARM_CACHE_ROOT>/<attempt_id>/`, a volume of their own
+                       (`cachedirs`). Never checkpointed, never uploaded.
         restore/       staging for a downloaded checkpoint archive (never checkpointed)
         private/       the WORKER's own scratch: git credentials during a clone,
                        and the one-file-at-a-time copy a standalone task's
@@ -57,6 +61,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
+from .cachedirs import CACHE_DIR_NAME, CACHE_SUBDIRS, cache_env
 from .errors import WorkspaceError
 
 def walk_tree(root: Path) -> Iterator[tuple[Path, list[str], list[str]]]:
@@ -118,6 +123,14 @@ def walk_tree(root: Path) -> Iterator[tuple[Path, list[str], list[str]]]:
 #: archived either (`checkpoint.CheckpointManager.create`).
 REPO_DIR_NAME = "repo"
 
+#: `work/repos/`: one link per additional repository a task reads beside its
+#: own (docs/design/multi-repository-steps.md §4.4, #1434), each to its
+#: read-only checkout on the cache volume (`extrarepos`). Beside
+#: `REPO_DIR_NAME` and never under it, which is what keeps the harvest of
+#: `work/repo` from ever carrying an additional checkout back. Left out of
+#: the checkpoint and the standalone upload when the task has any.
+REPOS_DIR_NAME = "repos"
+
 
 @dataclass(frozen=True)
 class Workspace:
@@ -128,6 +141,13 @@ class Workspace:
     tmp: Path
     restore: Path
     private: Path
+    #: The agent's tool caches (`cachedirs`). None only for a Workspace built
+    #: by hand rather than by `create`; such a child gets no cache variables.
+    cache: Path | None = None
+
+    def cache_on_own_volume(self) -> bool:
+        """True when `cache` is outside the attempt tree: the GKE cache volume."""
+        return self.cache is not None and not self.cache.is_relative_to(self.root)
 
     @property
     def stdout_path(self) -> Path:
@@ -280,6 +300,10 @@ class Workspace:
                 "PWD": str(self.work),
             }
         )
+        # THE AGENT'S CACHES AND TMPDIR, OFF THE WORKSPACE VOLUME (CACHE-SCRATCH):
+        # set here, by the worker, before any runner starts. See `cachedirs`.
+        if self.cache is not None:
+            env.update(cache_env(self.cache, self.tmp, own_volume=self.cache_on_own_volume()))
         # NEVER A DISPLAY (docs/design/live-browser.md §3.2). The live browser
         # is the gate's, on a display in the sidecar the agent cannot open; a
         # headed Chromium the agent launched itself would draw where nobody
@@ -288,28 +312,39 @@ class Workspace:
         return env
 
 
-def create(root: Path, attempt_id: str) -> Workspace:
-    """Create a guaranteed-empty workspace for this attempt."""
+def create(root: Path, attempt_id: str, *, cache_root: Path | None = None) -> Workspace:
+    """Create a guaranteed-empty workspace for this attempt.
+
+    `cache_root` is the GKE pod's cache volume (`SWARM_CACHE_ROOT`): the
+    attempt's caches and TMPDIR go to `<cache_root>/<attempt_id>/`, emptied
+    here exactly as the tree is. None (Cloud Run) puts them in the tree.
+    """
     base = Path(root) / attempt_id
-    if base.exists():
-        # Not an error: a retried execution of the same Cloud Run Job can land
-        # on a sandbox that still holds the previous run's tree.
-        shutil.rmtree(base, ignore_errors=True)
-    if base.exists():
-        raise WorkspaceError(f"could not clear existing workspace at {base}")
+    cache = Path(cache_root) / attempt_id if cache_root is not None else base / CACHE_DIR_NAME
+    for tree in (base, cache):
+        if tree.exists():
+            # Not an error: a retried execution of the same Cloud Run Job can
+            # land on a sandbox that still holds the previous run's tree, and
+            # a cache is never carried from one attempt into the next.
+            shutil.rmtree(tree, ignore_errors=True)
+        if tree.exists():
+            raise WorkspaceError(f"could not clear existing workspace at {tree}")
 
     ws = Workspace(
         root=base,
         work=base / "work",
         artifacts=base / "artifacts",
         logs=base / "logs",
-        tmp=base / "tmp",
+        tmp=cache / "tmp" if cache_root is not None else base / "tmp",
         restore=base / "restore",
         private=base / "private",
+        cache=cache,
     )
-    for path in (ws.root, ws.work, ws.artifacts, ws.logs, ws.tmp, ws.restore, ws.private):
+    for path in (ws.root, ws.work, ws.artifacts, ws.logs, cache, ws.tmp, ws.restore, ws.private):
         path.mkdir(parents=True, exist_ok=False)
         os.chmod(path, 0o700)
+    for sub in CACHE_SUBDIRS.values():
+        (cache / sub).mkdir(mode=0o700)
     return ws
 
 
@@ -357,8 +392,13 @@ def destroy(ws: Workspace) -> None:
     level, and `ignore_errors` swallows only `OSError`: a tree about 1,000
     folders deep raised `RecursionError` out of `_cleanup`, after the task
     had SUCCEEDED, and the container exited 1. `_remove_tree` is the same
-    best-effort removal from an explicit stack. Never raises `OSError`."""
+    best-effort removal from an explicit stack. Never raises `OSError`.
+
+    The attempt's cache goes too, when it is on a volume of its own: caches are
+    per attempt (`cachedirs`), and the tree's removal does not reach it."""
     _remove_tree(ws.root)
+    if ws.cache is not None and ws.cache_on_own_volume():
+        _remove_tree(ws.cache)
 
 
 #: How `_remove_tree` opens a folder: never through a link (`O_NOFOLLOW` makes

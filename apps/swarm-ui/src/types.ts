@@ -21,8 +21,9 @@ export interface Pool {
   effective_limit: number | null
   /**
    * WEIGHTED UNITS IN USE, NOT AGENTS. Admission increments by the resource
-   * class's `units` -- standard 1, browser 2, large 4 -- so `active: 8` may be
-   * two large agents or eight standard ones. Never label this "agents".
+   * class's `units` -- standard 1, browser 1 (2 until contract request 79),
+   * large 4 -- so `active: 8` may be two large agents or eight standard ones.
+   * Never label this "agents".
    */
   active: number
   available: number | null
@@ -585,6 +586,18 @@ export interface StartProblem {
   seen_at: string | null
 }
 
+/** One entry of `Task.additional_repositories`, as `additional_repositories_to_api` serves it. */
+export interface TaskAdditionalRepository {
+  name: string
+  repository: string
+  repo_id: string
+  ref: string
+  commit: string
+  /** Where the agent finds it, relative to its own checkout. */
+  path: string
+  forge_credential_source: string
+}
+
 export interface Task {
   id: string
   tenant_id: string
@@ -598,6 +611,8 @@ export interface Task {
   started_at: string | null
   completed_at: string | null
   submitted_by: string | null
+  /** The submitter's display name (`people.add_names`); null when none is set. */
+  submitted_by_name?: string | null
   attempt_count: number
   max_attempts: number
   park_reason: ParkReason | string | null
@@ -620,6 +635,12 @@ export interface Task {
   forge_access?: 'read' | 'write' | null
   /** "the submitter's GitHub credential", "tenant token, service submission", "owner's GitHub connection, service submission" (INDEX-CRED), or null. */
   forge_credential_source?: string | null
+  /**
+   * Contract request 95 (docs/design/multi-repository-steps.md §4.1): the
+   * repositories this task reads beside its own, each pinned to a commit.
+   * Null when it reads none. OPTIONAL: an older API does not send it.
+   */
+  additional_repositories?: TaskAdditionalRepository[] | null
   cancel_requested: boolean
   repository_url: string | null
 
@@ -1787,6 +1808,11 @@ export interface AttemptRow {
   cpu_limit_source?: string | null
   cpu_reading_age_seconds?: number | null
   /**
+   * Contract request 103 (#1435): the model ID this attempt's agent was
+   * started with. Null: no model, or not recorded. Absent: an older API.
+   */
+  model?: string | null
+  /**
    * #379. THIS attempt's account and the accounts it gave back. Served beside
    * the rows as `accounts_by_attempt` (so a row stays `GET /v1/attempts`'s
    * shape) and joined on by `loadAgentRun`. Absent: not read.
@@ -1908,6 +1934,19 @@ export interface Runtime {
   secrets_any_of: boolean
   timeout_seconds: number
   resource_class: string
+  /**
+   * The model classes a step on this profile may send as `model_class`, BY
+   * NAME (docs/design/model-per-step.md §4.4, #1435). `[]` on a profile that
+   * runs no Claude model. Optional only until lane MODEL-UI renders them.
+   */
+  model_classes?: string[]
+  /** What a step naming no class runs; null when `model_classes` is empty. */
+  default_model_class?: string | null
+  /**
+   * Class -> the model ID it runs, from the deployment's terraform pin. `{}`
+   * on a classless profile, and on a deployment that pins none yet.
+   */
+  models?: Record<string, string>
   /**
    * The class resolved inline. Field-identical to a `/v1/resource-classes`
    * entry, and `test_sizing_agrees_with_the_resource_classes_route` asserts the
@@ -2532,15 +2571,17 @@ export const END_CAUSES: readonly EndCause[] = [
  * step waiting for its pull request's checks (docs/merge-step.md, 2026-10-06).
  * HUMAN_REQUIRED is contract request 68: a live-browser hand-off whose hold
  * expired with nobody in control (docs/design/live-browser.md section 4.3).
+ * AWAITING_INPUT is contract request 92: an `await-input` workflow step
+ * waiting for an answer from a tenant member (docs/design/human-steps.md).
  */
 export type ParkReason =
   | 'PROVIDER_QUOTA_EXHAUSTED' | 'PROVIDER_COOLDOWN' | 'PROVIDER_OUTAGE'
   | 'SCHEDULED_RETRY' | 'DEPENDENCY_INCOMPLETE' | 'MANUAL_PAUSE'
   | 'BUDGET_EXHAUSTED' | 'CREDENTIAL_MISSING' | 'CHILDREN_INCOMPLETE'
-  | 'CI_PENDING' | 'HUMAN_REQUIRED'
+  | 'CI_PENDING' | 'HUMAN_REQUIRED' | 'AWAITING_INPUT'
 
 /**
- * The same eleven as a value, so a test can compare the list against
+ * The same twelve as a value, so a test can compare the list against
  * `swarm_common.states.ParkReason` and the three sets below can be checked for
  * covering it. A union type erases at build time and can be checked against
  * nothing.
@@ -2563,6 +2604,7 @@ export const PARK_REASONS = [
   'CHILDREN_INCOMPLETE',
   'CI_PENDING',
   'HUMAN_REQUIRED',
+  'AWAITING_INPUT',
 ] as const
 
 /**
@@ -2592,6 +2634,12 @@ export const PARK_NEEDS_A_PERSON: ReadonlySet<string> = new Set<ParkReason>([
   // 68). Only a person promotes it, from the console, when they are ready to
   // sign in; no sweep or timer does, and past a day it is dead-lettered.
   'HUMAN_REQUIRED',
+  // An `await-input` workflow step waiting for an answer from a member of
+  // its tenant (contract request 92, docs/design/human-steps.md §4.5). Only
+  // an answer moves it on; its declared expiry (at most a day) ends it, and
+  // never resumes the work a person was asked about. No apostrophes in this
+  // comment: test_overview_workflow_checks.py reads the quoted names.
+  'AWAITING_INPUT',
 ])
 
 /**
@@ -2637,7 +2685,7 @@ export const PARK_WAITS_ON_A_STEP: ReadonlySet<string> = new Set<ParkReason>([
 
 /**
  * Copy for every reason that is ever actually written -- the seven from
- * admission plus the eleven ParkReasons.
+ * admission plus the twelve ParkReasons.
  *
  * `BlockedReason.BUDGET_LIMIT`, `QUOTA_EXHAUSTED`, `COOLDOWN`, `DEPENDENCY`
  * and `SCHEDULED_RETRY` are members of the enum that nothing ever writes as a
@@ -2667,6 +2715,7 @@ export const REASON_COPY: Readonly<Record<string, string>> = {
   BUDGET_EXHAUSTED: 'The budget for this work is spent.',
   CREDENTIAL_MISSING: 'No provider key is registered for this tenant.',
   HUMAN_REQUIRED: 'The agent asked for a person and nobody came in time. Holds no capacity until someone says they are ready.',
+  AWAITING_INPUT: 'A workflow step waits for a member of its tenant to answer. Holds no capacity; it ends on the first answer or at its declared expiry.',
   POOL_LIMIT_UNSET: 'This pool has no limit set, so it admits nothing. Nobody set it to 0: somebody has to set a limit.',
 }
 
@@ -2711,9 +2760,10 @@ export function reasonCopy(reason: string): string {
  *
  *  - `below-units`: a limit above 0 and below one task's `units`, on a pool
  *    only a person writes. Admission refuses when `active + units > limit`,
- *    so a browser task (2 units) under a limit of 1 is refused at 0 of 1 in
- *    use, on every drain, forever -- the fact `set-to-zero` is, arriving with
- *    the full pool's reason and a positive limit.
+ *    so a large task (4 units) under a limit of 1 is refused at 0 of 1 in
+ *    use, on every drain, forever (#66 found it on a browser task, which
+ *    weighed 2 until contract request 79) -- the fact `set-to-zero` is,
+ *    arriving with the full pool's reason and a positive limit.
  *  - `below-units-quota`: the same on a `provider:` pool, whose limit the
  *    quota broker also moves. The task still cannot be admitted at this
  *    limit, but nobody is named, for the reason `zero` names nobody.
@@ -2870,7 +2920,7 @@ export interface TaskPage {
  */
 export const RESOURCE_UNITS: Readonly<Record<string, number>> = {
   standard: 1,
-  browser: 2,
+  browser: 1,
   large: 4,
 }
 
@@ -3265,6 +3315,8 @@ export interface Workflow {
    */
   updated_at: string
   submitted_by: string | null
+  /** The submitter's display name (`people.add_names`); null when none is set. */
+  submitted_by_name?: string | null
   priority: number
   on_step_failure: string
   cancel_requested: boolean
@@ -5744,4 +5796,169 @@ export interface AccessMember {
 export interface AccessMembers {
   members: AccessMember[]
   tenant_id: string
+}
+
+// ---------------------------------------------------------------------------
+// Settings › Profile (docs/design/user-profile.md §4.1, §4.2; lane
+// PROFILE-PAGE, part of #1505). `GET /v1/profile` is ONE read for the page,
+// and each section fails alone: a section the API could not read is ABSENT
+// and named in `unavailable`, so the page says "could not be read" for it
+// rather than drawing an empty one. `api.ts::normProfile` copies every field
+// by name, so a field a source gains by mistake (a secret's name, a token id)
+// never reaches a screen.
+// ---------------------------------------------------------------------------
+
+/** A bell topic (`preferences.TOPICS`). Every one may be muted (Q3). */
+export type NotificationTopic = 'approval' | 'waiting_step' | 'question' | 'failed' | 'finished' | 'account' | 'admin'
+
+/** `preferences.REMINDERS`: how often a read needs-you item rings again (§4.6). */
+export type ReminderCadence = 'as_set' | 'every_4h' | 'daily' | 'never'
+
+/** A section of `GET /v1/profile` that can fail alone. */
+export type ProfileSection = 'preferences' | 'github' | 'typesafe' | 'claude_accounts'
+
+/**
+ * A person's role in one workspace, from `workspace_role.py::role_in` ONLY
+ * (Q7). `name` is drawn as given and nothing branches on it: the roles build
+ * (#1518) may serve any name with `source: "assigned"`, and needs no page
+ * change to do so. `via` is the group that confers it, when there is one.
+ */
+export interface WorkspaceRole {
+  name: string
+  source: string
+  via: string | null
+}
+
+export interface ProfileIdentity {
+  email: string
+  /** The stored name, or null: others then see the email alone. */
+  display_name: string | null
+  /** The token's name claim after the §4.4 rules, only while no name is stored: the editor's initial value. */
+  display_name_suggested: string | null
+  domain: string | null
+  /** `owner`, `admin` or null. Shown once, here, never as a workspace role. */
+  platform_role: string | null
+  is_admin: boolean
+  is_admin_unresolved: boolean
+}
+
+export interface ProfileWorkspace {
+  tenant_id: string
+  display_name: string
+  /** `user` (the personal workspace) or `group`. */
+  kind: string
+  role: WorkspaceRole
+  /** The personal workspace's state (`requested`, `applying`, `ready`...); null for a group. */
+  state: string | null
+  /** False for a personal workspace that is not ready yet: shown, never chosen. */
+  selectable: boolean
+  is_acting: boolean
+  is_default: boolean
+}
+
+export interface ProfileDefault {
+  tenant_id: string | null
+  /** `profile`, `personal`, `first_group`, `unavailable`, or null with no workspace at all. */
+  source: string | null
+  /** Why a stored default was not honoured: `not_a_member`, `not_ready`, `unknown`. */
+  ignored: string | null
+}
+
+/** One workspace's GitHub connection (Q10). `not_connected` carries the tenant and nothing else. */
+export interface ProfileGitHub {
+  tenant_id: string
+  state: string | null
+  forge_login: string | null
+  method: string | null
+  access_expires_at: string | null
+  refreshed_at: string | null
+  failure: { code: string | null; recovery: string | null } | null
+}
+
+/** A key's status: never a value, never a secret's id. */
+export interface ProfileKeyStatus {
+  set: boolean
+  set_at: string | null
+  set_by: string | null
+  version: string | null
+}
+
+export interface ProfileTypeSafe {
+  /** Null when the caller has no ready personal workspace to keep a key in. */
+  personal: ProfileKeyStatus | null
+  acting_workspace: ProfileKeyStatus & { tenant_id: string }
+  /** Which key a task the caller submits in the acting workspace would use. */
+  uses: 'user' | 'tenant' | 'none'
+}
+
+/** Section 2 has exactly these two (Q6: SwarmCloud has no personal API keys). */
+export interface ProfileConnections {
+  github?: ProfileGitHub[]
+  typesafe?: ProfileTypeSafe
+}
+
+export interface Preferences {
+  muted: NotificationTopic[]
+  reminder: ReminderCadence
+}
+
+export interface ProfileNotifications {
+  preferences: Preferences
+  /** Every topic the bell knows, each of which may be muted. */
+  topics: NotificationTopic[]
+}
+
+export interface ProfileQuotaWindow {
+  utilization: number | null
+  resets_at: string | null
+}
+
+export interface ProfileClaudeAccount {
+  account_id: string | null
+  label: string | null
+  /** `own` (your personal workspace owns it) or `borrowed` (lent to it). */
+  relation: 'own' | 'borrowed'
+  state: string | null
+  windows: { five_hour?: ProfileQuotaWindow; seven_day?: ProfileQuotaWindow }
+  /** How many workspaces you lend it to; null on a borrowed account. */
+  lent_to_count: number | null
+  stale: boolean
+}
+
+export interface ProfileClaudeAccounts {
+  /** Null when you have no ready personal workspace. */
+  personal_workspace: string | null
+  accounts: ProfileClaudeAccount[]
+  /** Pool documents the broker could not read: a short list is not the whole pool. */
+  unreadable_document_count: number
+}
+
+/** `GET /v1/profile`. */
+export interface Profile {
+  identity: ProfileIdentity
+  workspaces: ProfileWorkspace[]
+  default_workspace: ProfileDefault
+  connections: ProfileConnections
+  /** Absent when `preferences` is in `unavailable`. */
+  notifications?: ProfileNotifications
+  claude_accounts?: ProfileClaudeAccounts
+  /** The preferences document's revision, which a save echoes; null when it could not be read. */
+  revision: number | null
+  unavailable: ProfileSection[]
+}
+
+/** `PUT /v1/profile/preferences`: the whole set, at the revision last read. */
+export interface PreferencesWrite {
+  display_name: string | null
+  default_workspace: string | null
+  notifications: Preferences
+  revision: number
+}
+
+/** What a save answers: the GET's sections the save can change. */
+export interface PreferencesSaved {
+  identity: Pick<ProfileIdentity, 'display_name' | 'display_name_suggested'>
+  default_workspace: ProfileDefault
+  notifications: ProfileNotifications
+  revision: number
 }

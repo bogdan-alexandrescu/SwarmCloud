@@ -655,3 +655,63 @@ def test_the_poll_runs_full_when_the_weekly_full_run_is_due(
     assert task["metadata"]["index_kind"] == "full"
     run = db.docs[f"repo_index_runs/{task['id']}"]
     assert "due every 7" in run["kind_reason"]
+
+
+# --------------------------------------------------------------------------
+# lane GS-PUSHAPI: `webhook` is "poll and push" (graph-service.md §6.2)
+# --------------------------------------------------------------------------
+
+def test_webhook_is_an_on_change_value_and_poll_stays_the_default():
+    from swarm_api import repositories
+
+    assert repositories.ON_CHANGE_VALUES == ("poll", "webhook", "off")
+    # `webhook` becomes the default only once the receiver is live (§6.2).
+    assert repositories.ON_CHANGE_DEFAULT == "poll"
+
+
+def test_a_registration_may_ask_for_webhook(client, db, repo_id):
+    patched = client.patch(
+        f"/v1/repositories/{repo_id}", json={"index": {"on_change": "webhook"}},
+        headers=auth_header("alice"),
+    )
+    assert patched.status_code == 200, patched.text
+    assert _index(db, repo_id)["on_change"] == "webhook"
+    created = client.post(
+        "/v1/repositories",
+        json={"repository": OTHER, "index": {"on_change": "webhook"}},
+        headers=auth_header("alice"),
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["repository"]["index"]["on_change"] == "webhook"
+
+
+def test_a_webhook_registration_is_still_polled_on_change(
+    client, db, repo_id, github, polls, clock
+):
+    """`webhook` means poll AND push: the five-minute poll is the fallback for
+    a missed delivery (owner decision 2), so it reads and queues as `poll` does."""
+    client.patch(f"/v1/repositories/{repo_id}", json={"index": {"on_change": "webhook"}},
+                 headers=auth_header("alice"))
+    _indexed(db, repo_id, ONE, clock() - timedelta(hours=2))
+    github.heads["main"] = TWO
+
+    report = _poll(client).json()["report"]
+
+    assert report["read"] == 1 and report["submitted"] == 1
+    [task] = _tasks(db)
+    assert task["repository_ref"] == TWO
+    assert db.docs[f"repo_index_runs/{task['id']}"]["trigger"] == "change"
+
+
+@pytest.mark.parametrize("on_change, expected", [
+    ("poll", ("change", "change")),
+    ("webhook", ("change", "change")),
+    ("off", (None, "on_change_off")),
+])
+def test_poll_decision_reads_webhook_as_a_change_trigger(on_change, expected):
+    now = datetime(2026, 10, 11, 18, 10, tzinfo=timezone.utc)
+    index = {"on_change": on_change, "current_sha": ONE,
+             "last_indexed_at": now - timedelta(hours=1)}
+    decision = repoindex.poll_decision(index, TWO, newest_run=None,
+                                       created_at=now - timedelta(days=3), now=now)
+    assert (decision.trigger, decision.reason) == expected

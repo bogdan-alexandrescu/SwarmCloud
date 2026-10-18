@@ -109,13 +109,16 @@ FROM ${MIRROR_DOCKER_HUB}/${NGINX_IMAGE}
 # pcre2 10.48-r0 (CVE-2026-103111, HIGH, fixed in 10.49-r0); same reason, same fix.
 # Releases 37812320090 and 37816339298 (2026-10-08) refused it over tiff 4.7.1-r0
 # (CVE-2026-4775, HIGH, fixed in 4.7.2-r0), holding every merge since 09:37Z.
+# Releases 39158785934, 39161799433 and 39162254559 (2026-10-18) refused it over
+# libx11 1.8.13-r0 (CVE-2026-88806, HIGH, fixed in 1.8.14-r0), holding every merge
+# since 17:33Z.
 USER root
 # APT_REFRESH: the build scripts/build-images.sh makes this layer in (every
 # main build and release), so the upgrade below is never an older build's
 # (owner decision 2026-10-14).
 ARG APT_REFRESH=unset
 RUN echo "apk layer of ${APT_REFRESH}" \
- && apk upgrade --no-cache libexpat pcre2 tiff
+ && apk upgrade --no-cache libexpat pcre2 tiff libx11
 USER 101
 
 COPY images/swarm-ui/nginx.conf /etc/nginx/conf.d/default.conf

@@ -13,7 +13,11 @@ ONLY A HAND-OFF'S SESSION IS EXPORTED. The design exports "a session its
 hand-off produced": the gate calls `note_returned` when a person returns
 control, and `export` answers None until then. A step that only used a carried
 or named session writes nothing back, so it cannot overwrite a good jar with
-whatever the agent did to it since.
+whatever the agent did to it since. THE ONE EXCEPTION IS A PARK
+(`{"scope": "park"}`, §5.5.2, issue #1362): the jar then goes to the same
+task's own resumed attempt, never to a workflow carry or a login, so the
+browser it describes is exactly what that attempt should get back -- with or
+without a hand-off that returned.
 
 THE IMPORT IS REFUSED ONCE AN AGENT HAS CONNECTED. The worker sends it after
 registering on ctl.sock and before it spawns the agent (Worker._prepare), so a
@@ -55,6 +59,8 @@ from urllib.parse import urlsplit
 EXPORT_OP = "session_export"
 IMPORT_OP = "session_import"
 OPS = frozenset({EXPORT_OP, IMPORT_OP})
+#: `session_export`'s scope for a park's capture (§5.5.2).
+PARK_SCOPE = "park"
 
 #: The stored jar's format version.
 JAR_VERSION = 1
@@ -175,16 +181,19 @@ class SessionCarry:
     async def handle(self, op: str, args: Mapping[str, Any]) -> dict[str, Any]:
         """Answer one ctl.sock operation. The jar travels only on this MAC'd channel."""
         if op == EXPORT_OP:
-            return {"jar": await self.export()}
+            return {"jar": await self.export(park=args.get("scope") == PARK_SCOPE)}
         if op == IMPORT_OP:
             return await self.import_jar(args.get("jar"))
         raise SessionRefused(f"not a session operation: {op}")
 
     # -------------------------------------------------------------- export
 
-    async def export(self) -> dict[str, Any] | None:
-        """The session a hand-off produced, or None (no hand-off, or too large)."""
-        if not self._returned:
+    async def export(self, *, park: bool = False) -> dict[str, Any] | None:
+        """The session a hand-off produced, or None (no hand-off, or too large).
+
+        `park`: the browser's session for the same task's resumed attempt,
+        whether or not a hand-off produced it (§5.5.2)."""
+        if not self._returned and not park:
             return None
         now = self._now()
         contexts: list[str | None] = [None]

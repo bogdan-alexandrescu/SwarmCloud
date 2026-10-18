@@ -26,8 +26,13 @@ verifies a tenant or repository slot; a user slot is verified by its user
 or an admin, since the probe acts as that user on the forge. A tenant or
 repository slot is registered and revoked by an admin. A user slot is always
 the caller's own -- the body has no user field -- and is revoked by that
-user or an admin. "Admin" is the platform's `is_admin`: there is no
-per-tenant admin role to ask instead.
+user or an admin. "Admin" of a tenant or repository slot is the group
+workspace's `admin` (docs/design/workspace-roles.md §4.8, Q6: a forge token
+is a secret), a workspace admin or a platform admin; a caller the role does
+not let through meets the platform's `is_admin`, as before roles, so the
+`role_admin_required` switch, off, reports a member and never admits one.
+Another user's slot stays the platform's: its probe acts as that user on the
+forge, which no workspace role reaches.
 
 The tenant comes from `tenant_scope`, never from the body, and another
 tenant's token id is the same 404 as a missing one.
@@ -44,6 +49,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, tenant_scope
 from ..errors import Forbidden, ValidationFailed
+from ..workspace_secrets import workspace_admin
 from .. import forge
 from ..gittokens import (
     REPO_ID,
@@ -108,9 +114,16 @@ def _viewer(auth: AuthContext) -> Viewer:
     return Viewer(email=auth.email, is_admin=auth.is_admin)
 
 
-def _require_admin(auth: AuthContext, what: str) -> None:
+def _require_admin(auth: AuthContext, what: str, ctx: AppContext | None = None,
+                   tenant_id: str = "") -> None:
+    """A platform admin; with `ctx`, for a tenant or repository slot, also the
+    admin of `tenant_id`, the selected group workspace (`workspace_admin`)."""
     if auth.is_admin:
         return
+    if ctx is not None and tenant_id:
+        tenant = ctx.store.get_tenant(tenant_id)
+        if tenant is not None and workspace_admin(ctx.roles, auth, tenant):
+            return
     if auth.admin_unresolved:
         raise Forbidden(
             f"{what} needs an admin, and the directory could not say whether you are one; "
@@ -143,9 +156,9 @@ def _slot_from(body: GitTokenSlot, tenant_id: str, auth: AuthContext, ctx: AppCo
             if not REPO_ID.match(repo_id or ""):
                 raise ValidationFailed("repo_id must be repo_<16 hex>",
                                        detail={"field": "repo_id"})
-        _require_admin(auth, "registering a repository's git token")
+        _require_admin(auth, "registering a repository's git token", ctx, tenant_id)
     elif scope is Scope.TENANT:
-        _require_admin(auth, "registering the tenant's git token")
+        _require_admin(auth, "registering the tenant's git token", ctx, tenant_id)
     return record_for_slot(
         tenant_id, scope,
         repo_id=repo_id,
@@ -250,9 +263,12 @@ def revoke_git_token(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     def allowed(record: GitTokenRecord) -> None:
-        if record.scope is Scope.USER and record.user == auth.email.strip().lower():
+        if record.scope is Scope.USER:
+            if record.user == auth.email.strip().lower():
+                return
+            _require_admin(auth, "revoking a user git token")
             return
-        _require_admin(auth, f"revoking a {record.scope.value} git token")
+        _require_admin(auth, f"revoking a {record.scope.value} git token", ctx, tenant_id)
 
     record = _tokens(ctx).revoke(tenant_id, token_id, by=auth.email, allowed=allowed)
     return {

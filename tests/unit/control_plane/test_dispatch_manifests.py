@@ -19,6 +19,7 @@ are the contract rules that are invisible until production breaks:
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -428,10 +429,12 @@ def test_gke_job_has_no_spot_selector_and_no_backend_retries(settings, tenant):
 
 ALL_PROFILES = sorted(RUNNER_PROFILES)
 #: The profiles that start a runner child. A `worker_action` profile (contract
-#: requests 33 and 35) has an empty `runner_argv` by contract, so there is no
-#: runner for the lifecycle to resolve and no command a pre-fix Job could carry.
+#: requests 33 and 35) and a `control_plane` profile (contract request 93) have
+#: an empty `runner_argv` by contract, so there is no runner for the lifecycle
+#: to resolve and no command a pre-fix Job could carry.
 RUNNER_STARTING_PROFILES = sorted(
-    name for name, profile in RUNNER_PROFILES.items() if profile.worker_action is None
+    name for name, profile in RUNNER_PROFILES.items()
+    if profile.worker_action is None and not profile.control_plane
 )
 
 
@@ -878,8 +881,11 @@ def make_overridden_task(profile_name: str, resource_class: str) -> Task:
 def test_cloud_run_sizes_the_container_from_the_task_not_the_profile(settings, tenant):
     client = FakeJobsClient()
     dispatcher = CloudRunJobDispatcher(settings, client=client)
-    profile = RUNNER_PROFILES["browser"]                     # browser: 8 cpu / 16 GiB
-    task = make_overridden_task("browser", "standard")       # standard: 4 cpu / 8 GiB
+    # Since contract request 79 `browser` is standard's size, so the profile is
+    # given `large` (8 cpu / 32 GiB / 16 GiB) here: a container sized from the
+    # profile would then differ from one sized from the task in every field.
+    profile = dataclasses.replace(RUNNER_PROFILES["browser"], resource_class="large")
+    task = make_overridden_task("browser", "standard")       # standard: 4 cpu / 8 GiB / 4 GiB
 
     dispatcher.dispatch(task=task, lease=make_lease(task), profile=profile, tenant=tenant)
 
@@ -1045,13 +1051,17 @@ def test_gke_job_does_not_reference_a_kubernetes_secret_that_nothing_creates(
 
 # -- a tenant with no identity never starts a container ---------------------
 
-def test_neither_backend_will_run_work_for_a_tenant_with_no_service_account(settings):
+def test_neither_backend_will_run_work_for_a_tenant_that_can_have_no_service_account(
+    settings
+):
     """Cloud Run falls back to the project's DEFAULT compute service account
     when a Job names none, which is shared and far more privileged than a
-    worker. A tenant whose infrastructure was never provisioned belongs back in
-    READY with a clear error."""
+    worker. The account is derived from the tenant id (#1457), so what is
+    refused is an id with no valid account -- `swarm-agent-worker-` plus 12
+    characters is over GCP's 30 -- whatever the record says. It belongs back
+    in READY with a clear error."""
     unprovisioned = Tenant(
-        tenant_id="newteam",
+        tenant_id="newteam-long",
         kind="group",
         principal="newteam@saga.xyz",
         created_at=NOW,

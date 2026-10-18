@@ -645,14 +645,62 @@ KG5 was waiting on request A′, a `repo_index` runner input in
 | `context` (local pack and MCP) | **on** for every registered repository with a format-3 index | Nothing leaves the platform |
 | `code_intelligence.jev` (sending code to Jev) | **off** for every workspace; **on** for SwarmCloud's own repository, per the owner's decision | Whether Jev ever sees code |
 
-**Where the workspace setting lives.** In a swarm-api-owned
-`tenant_settings/{tenant_id}` document, not on `swarm_common.models.Tenant`,
-which is frozen. The per-repository override goes on the registration
-(`RepositoryPatch`), as `merge_policy` already does, with `inherit` clearing
-it.
+**Where the workspace setting lives (decided, owner 2026-10-14).** In the
+workspace's ONE settings document, `workspace_settings/{tenant_id}`, as the
+field `code_intelligence` -- beside JUDGE-SELECT's `judgment_backend` and
+TRAIN-WS's `merge`, one field per feature. There is no `tenant_settings`
+collection, and nothing goes on `swarm_common.models.Tenant`, which is
+frozen. The field is a map:
 
-That is a **new Firestore document shape**. Per CLAUDE.md "Issues", it gets its
-own issue before CTXQ-S builds it.
+| Key | Values | Unset means | Read by |
+|---|---|---|---|
+| `jev` | `true` / `false` | `false`: Jev sees no code | `agent_worker.judge.settings` |
+| `context` | `on` / `off` | the platform default, `on` | `agent_worker.graphstage.decide` |
+| `context_ab` | `ab` / `on` / `off` | the platform default, `ab` | `agent_worker.graphstage.decide` |
+
+A write changes that one field and nothing else, so it never touches the
+other features' fields, and keeps keys of the map it does not own. The
+per-repository override goes on the registration (`RepositoryPatch`,
+field `context`: `on`, `off`, or `inherit`, which clears it to null), as
+`merge_policy` already does.
+
+Only the workspace's owner (a personal workspace's principal) or a platform
+admin changes either, exactly as for `judgment_backend`: a member is 403, a
+caller outside the workspace 404. Every change is one `admin_audit` row
+written in the same Firestore transaction as the change. CTXQ-SET built it:
+`GET`/`PUT /v1/workspaces/{tenant_id}/code-intelligence`
+(`swarm_api/codeintel.py`) and `PATCH /v1/repositories/{repo_id}`.
+
+**Not yet read from there by staging.** CTXQ-S, built before this decision,
+reads `tenant_settings/{tenant_id}` (`agent_worker.graphstage.SETTINGS_COLLECTION`,
+and `tests/unit/worker/test_graphstage.py` seeds that path). Until that one
+constant moves to `workspace_settings`, a workspace's `context` and
+`context_ab` written here do not reach staging; a repository's override
+does, because it is read from the registration. The move is outside
+CTXQ-SET's territory and is a follow-up.
+
+Because the shape was decided this way -- a field of an existing document,
+not a new collection -- it needs no separate issue.
+
+**What the console offers (CTXQ-UI).** Settings › Workspace
+(`/settings/workspace`) shows the Jev switch, off by default, with what is
+sent when it is on (§5.4), what never is, and where it goes: the workspace's
+judgment backend, by name (Settings › API keys). Only the workspace's owner or
+a platform admin sees it enabled. A repository's Settings tab offers `context`
+as Inherit, On or Off, and says local context sends nothing off the platform.
+The client calls are all in `apps/swarm-ui/src/api.ts` and follow the API's
+shape (`swarm_api/codeintel.py` `view`): `GET /v1/code-intelligence` (the
+selected workspace; the same answer as the path form `GET
+/v1/workspaces/{tenant_id}/code-intelligence`: `tenant_id`, `can_edit`, `jev`,
+`context`, `context_ab`, `defaults`, `updated_at`, `updated_by`,
+`repositories`), `PUT /v1/workspaces/{tenant_id}/code-intelligence` with
+`{jev: true | false}`, and `PATCH /v1/repositories/{repo_id}` with
+`{context: on | off | inherit}`. **One implementation serves these routes.**
+CTXQ-UI first shipped a minimal self-contained backend
+(a nested `{code_intelligence: {...}}` body);
+CTXQ-SET's designed version replaced it and the client was moved to CTXQ-SET's
+flat shape, so two routers never register the same path.
+
 
 ---
 
@@ -761,16 +809,33 @@ built at runtime.
    PATs, Slack, AWS access keys, HTTP authorization). These are the same rules
    `redact()` in `scripts/lib/common.sh` mirrors, held in step by
    `tests/fixtures/redaction-parity.json`.
-4. **The task's registered secrets** are scrubbed with
-   `agent_worker.redact.scrub_text`.
+4. **The task's registered secrets** -- the values `agent_worker.redact.scrub_text`
+   scrubs -- are removed. The names are the task profile's `RunnerProfile.secrets`,
+   which the lifecycle hands to `graphstage.prepare`, which hands them to
+   `judge.attempt.setup` and into the attempt's Jev config (names only, never
+   a value); the runner's client reads the values from its own environment.
+   Stricter than scrubbing: a string holding a registered value is **dropped
+   whole**, as in step 2, not sent with the value masked. This step is the
+   one that catches a profile secret that does not look like a credential,
+   which steps 2 and 3 would pass.
 5. **What is never sent:**
    * issue or PR author identities and emails;
    * another repository's content;
    * anything from the in-flight view beyond titles and file paths;
    * the agent's transcript;
    * environment variables.
-6. **Audit.** Each call records `{call_id, kind (J0-J5), bytes, input_tokens,
-   ms, outcome}` in `context-pack.json`. The payload is never recorded.
+6. **Audit.** Each call -- sent, failed, malformed or skipped -- appends one
+   row `{call_id, kind (J0-J5, or agent for the jev_decide tool), backend,
+   bytes, input_tokens, ms, outcome}` to the attempt's ledger,
+   `<attempt>/judge/ledger.json`. `backend` is the backend's name
+   (`internal-jev`, `internal-laya` or `typesafe`), never its URL or key. The
+   payload, the questions, the answer and the key are never recorded.
+   `context-pack.json` carries only J1's totals, `jev_calls` and
+   `jev_input_tokens`, and **not** the per-call rows, on purpose: §5.6 keeps
+   the pack byte-identical to the local-only run when Jev fails, and a pack
+   that held a row for every failed call would differ from it.
+
+Each rule's enforcing code and the test that fails without it: [docs/jev-data-flow.md](../jev-data-flow.md).
 
 ### 5.5 Failure modes: never block
 
@@ -784,6 +849,73 @@ built at runtime.
 
 **In every case the attempt proceeds.** A Jev problem can make a pack less well
 ordered; it cannot fail, park or delay a task beyond the per-call timeout.
+
+### 5.6 What lane CTXQ-JW built: J1-J5 in the pipeline
+
+**Built 2026-10-15 (owner decision ~04:30 PDT: "Build CTXQ-JW now").** Jev
+was unreachable that day (the internal-jev backend has no tailnet route), so
+every piece is held by fake-Jev tests in `tests/unit/worker/test_jev_wiring.py`
+and `tests/unit/control_plane/test_issue_run_jev_hold.py`, not by a live call.
+
+**Set-up, once per attempt.** `agent_worker.judge.attempt.setup` runs inside
+`graphstage.prepare`, the lifecycle's one existing setup call, so
+`lifecycle.py` is unchanged. It reads `workspace_settings/{tenant}`
+(`code_intelligence.jev`, and `judgment_backend` beside it) and the
+repository's registration (its `jev` override, else its `context` override),
+then `register.prepare` writes `<attempt>/judge/config.json` and the ledger.
+The runner gets `SWARM_JUDGE_CONFIG` (a path, never a key) and
+`judge.attempt.load` builds its client from it. No config, no client, no call.
+
+* **Internal backends** need `SWARM_JUDGE_INTERNAL_URL` in the worker's
+  environment. Nothing sets it yet: the scheduler sends `JEV_API_URL` to
+  live-browser attempts only. Until a deployment sets it, an opted-in
+  workspace reads `no_internal_url` and makes no call.
+* **TypeSafe** uses only a key the worker already wrote to
+  `private/jev-typesafe.key` (a live-browser attempt). Any other attempt
+  reads `no_key` and makes no call. Resolving the key for every attempt is a
+  lifecycle change and was left out of this lane.
+
+**Where each J runs.** All of them run in the runner process, after the agent
+or before it, and all share the attempt's one ledger:
+
+| J | Call site | What it changes when Jev answers |
+|---|---|---|
+| J1 | `contextpack.prepare` → `build_pack` → `rank.rerank` | The sent rows (the top 60 local rows; in-flight and cannot-push never) score `0.5 · local/best + 0.5 · p`. A row under p 0.15 goes after every other row and fills no quota minimum: it is paged, never deleted. The header says `jev: on`, and `jev_calls` / `jev_input_tokens` count the call |
+| J4 | `prepublish.Gate._advise` → `jev_test_gap` | "Advisory signals (Jev, not a gate)" in the advisory section, listing the changed symbols for which Jev chose `none`. Also `jev_test_gap` in the gate's record |
+| J3 | `runners/cliagent._jev_post_steps` → `judge.poststeps.review_post_step`, for a review step | `p_real` on each finding in `verdict.json` (`verdict.annotate_findings`). Under 0.15 the finding also carries `"triage": "verify before acting"`, and `verdict.read_verdict` prefixes its text with that mark. It still reaches the fixer, because nothing is dropped. At most 5 findings are asked about |
+| J2, J5 | the same post-step → `plan_post_step`, for a planner step | `plan-advisory.json` beside `plan.json`, which is never touched. It holds the requirements whose best step is under p 0.5 or `none`, and the in-flight lane J5 picked at p ≥ 0.85. swarm-api's planner post-step (`routes/runs.py::_from_planner`) reads the file. On a hold, it sets an `auto` run's `plan_approval` to `required`, so a person approves the plan (§8 Q5 A) |
+
+**§5.4 at the call site, not only in the client.** The client's sanitizer
+reduces only an object that carries a `path` or `file` key. J3's `diff_hunk`
+is a top-level string, and J4's `changed` rows carry only `{symbol, hunk}`.
+So `review_post_step` and `jev_test_gap` send an empty hunk themselves for
+any path `is_denied_path` holds, the client's `hard_stop_paths` included.
+
+**Advisory outputs never decide.**
+* `verdict` is never read, written or reordered by any of this.
+* Auto-merge, the review gate and the requirements read what they read
+  before.
+* The J5 hold only makes a person look.
+
+**All or nothing, and identical when Jev fails.** Each of these makes an
+output byte-identical to the local-only run (`judge=None`):
+* a skipped call (breaker or budget);
+* a failed call, a timeout, a 429 or a 5xx;
+* a malformed answer, or one missing any question.
+
+That covers the pack, CONTEXT.md, the advisory section, the gate's record,
+`verdict.json` and the planner's artifacts. One J3 finding that fails leaves
+every finding unannotated. **This differs from §5.5's "the pack says so" for
+an exhausted budget:** the reason is in the attempt's ledger audit
+(`<attempt>/judge/ledger.json`, `outcome: skipped:<reason>`), not in the
+pack, because a pack that changed whenever Jev failed would not be the
+local-only pack.
+
+**Not built here:**
+* the coverage flags on the plan approval screen and in `swarm_runs`. They
+  are in the planner's `plan-advisory.json` artifact only, because showing
+  them needs an `IssueRun` field and console work;
+* `register_jev_tool` (the agent's `jev_decide` MCP tool) in the runners.
 
 ---
 
@@ -902,8 +1034,8 @@ that reopen a file run only after the earlier lane has merged.
 | **CTXQ-I** | 2 | in-flight route and the `in_flight` remote tool | new `swarm_api/attemptcontext.py`, new `swarm_api/routes/attemptcontext.py`, `swarm_api/main.py` (router line), `agent_worker/graphmcp/remote.py` (new) | unproven is 403; fenced is 409; another tenant's lane is never listed; no network gives `UNKNOWN` |
 | **CTXQ-PL** | 2 | planner: layer I and H in `plancontext`; a NOT_READY `duplicate` kind | `swarm_api/plancontext.py`, `swarm_api/issueruns.py` | #1094, #1136 and #1080 replayed as fixtures: the planner prompt lists the colliding lane; the 24 KiB allowance holds |
 | **CTXQ-RV** | 2 | review and fix: callers and tests outside the diff, the sibling idiom, earlier fixes of the same test (H) | `swarm_api/reviewcontext.py`, `swarm_api/issueci.py` | #1181's sibling sort is listed; the second time-bomb fixer is shown the first fix |
-| **CTXQ-SET** | 3 | settings API: `tenant_settings` code intelligence, repository `context` override | new `swarm_api/codeintel.py`, `swarm_api/repositories.py` (`RepositoryPatch`), `swarm_api/routes/repositories.py` | off by default; only an admin sets the workspace default; `inherit` clears; an audit row is written in the same transaction |
-| **CTXQ-UI** | 3 | Settings › Workspace › Code intelligence, and the repository Settings tab override | `apps/swarm-ui/src/` (new `CodeIntelligence.tsx`, `RepositoriesDetail.tsx`, `api.ts`, `paths.ts`) | vitest: the toggle shows off by default and says what leaves the platform; the issue-forms test follows if a nav entry changes |
+| **CTXQ-SET** | 3 | settings API: `workspace_settings/{tenant}.code_intelligence` (owner decision 2026-10-14, §4.7), repository `context` override | new `swarm_api/codeintel.py`, new `swarm_api/routes/codeintel.py`, `swarm_api/main.py` (router line), `swarm_api/repositories.py` (`RepositoryPatch`), `swarm_api/routes/repositories.py` | off by default; only the owner or an admin sets the workspace default (a member 403, another workspace 404); `inherit` clears; an audit row is written in the same transaction, and a failed write writes neither; `judgment_backend` and `merge` are unchanged by a write |
+| **CTXQ-UI** | 3 | Settings › Workspace › Code intelligence, and the repository Settings tab override | `apps/swarm-ui/src/` (new `CodeIntelligence.tsx`, `RepositoriesDetail.tsx`, `api.ts`, `paths.ts`; `App.tsx` and `Spine.tsx` for the new `/settings/workspace` page and its link), the issue forms' "Where" list and `test_issue_forms.py` | vitest: the toggle shows off by default and says what leaves the platform; only an owner or admin sees it enabled; the repository tab writes on/off/inherit; the issue-forms test follows the new nav entry |
 | **CTXQ-J** | 3 | Jev client in the worker: §5.2 shapes, §5.4 redaction, §5.5 breaker, budget, audit | new `agent_worker/judge/` package | fake Jev: timeout, 429 and malformed answers fall back; a credential-shaped excerpt (built at runtime) is dropped, not masked; the denied paths send names only; no key, no call |
 | **CTXQ-JW** | 4 | J1 into the pack, J2 and J5 into the planner post-step, J3 into the review post-step, J4 into the gate | `contextpack/rank.py`, `prepublish.py`, `agent_worker/verdict.py` (annotation only) | advisory outputs never change `verdict`; auto-merge ignores them; a Jev outage leaves every output identical to the local-only run |
 | **CTXQ-E** | 4 | replay harness and scoring workflow | new `scripts/ctxq-replay.sh`, new `scripts/lib/ctxq_replay.py`, new `tests/unit/scripts/test_ctxq_replay.py` | branches are `replay/*` only, with no PR opened; scoring reads historic-red tests from a fixture body; the pairing is stable |
@@ -923,7 +1055,10 @@ option B), A′ is filed as written in knowledge-graph.md §7.4, and CTXQ-S wait
 on it.
 
 **Separate issues this design needs before building**, per CLAUDE.md "Issues":
-* the `tenant_settings` Firestore document shape (CTXQ-SET);
+* ~~the `tenant_settings` Firestore document shape (CTXQ-SET)~~ -- decided by
+  the owner on 2026-10-14 instead: the setting is the `code_intelligence`
+  field of the existing `workspace_settings/{tenant_id}` document (§4.7), so
+  no new document shape and no issue;
 * the Jev data-flow decision record (what §5.4 sends) for the security epic
   #476's review, because credentials and tenant isolation get a review.
 

@@ -973,3 +973,61 @@ variable "mirror_kms_key_name" {
   type        = string
   default     = ""
 }
+
+variable "settings_mac_tenants" {
+  description = <<-EOT
+    The tenants whose workspace_settings are signed and verified
+    (settings_mac.tf; docs/design/tenant-settings-integrity.md). ONE list,
+    rendered into swarm-api and the scheduler alike as SETTINGS_MAC_TENANTS,
+    so the signer and the verifiers never disagree about who is cut over.
+    Empty by default: no tenant is switched before the worker wiring
+    (ISO-WIRE) has merged (owner decision on #1457, 2026-10-17).
+  EOT
+  type        = list(string)
+  default     = []
+}
+
+variable "settings_mac_required" {
+  description = <<-EOT
+    The scheduler's SETTINGS_MAC_REQUIRED: whether it refuses to act on an
+    unsigned or badly signed workspace_settings value for a tenant in
+    settings_mac_tenants. Off by default, because turning it on before every
+    listed tenant's document has been re-signed would make the scheduler
+    ignore settings that are genuine.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "settings_mac_key_ready" {
+  description = <<-EOT
+    Whether swarm-settings-key has a version, so swarm-api and the scheduler
+    may reference it as SWARM_SETTINGS_KEY (and, in a rotation,
+    SWARM_SETTINGS_KEY_PREVIOUS). False by default because a Cloud Run
+    revision that references a secret with no version fails to start, and the
+    secret has none until `scripts/create-secrets.sh --settings-mac-key` runs,
+    which needs the container this root creates; the first apply would
+    otherwise take both services down. Set it true in the apply after that
+    script has run (owner decision on #1457, 2026-10-17).
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "settings_mac_key_previous_version" {
+  description = <<-EOT
+    During a swarm-settings-key rotation only: the version NUMBER the new one
+    replaced, read by both services as SWARM_SETTINGS_KEY_PREVIOUS so a value
+    signed under the old key still verifies until it is re-signed. Set it in
+    the apply that follows `create-secrets.sh --settings-mac-key`, clear it
+    once re-signing is done, then disable the old version. null outside a
+    rotation, and then no service carries the variable at all.
+  EOT
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.settings_mac_key_previous_version == null || can(regex("^[0-9]+$", var.settings_mac_key_previous_version))
+    error_message = "settings_mac_key_previous_version must be a version NUMBER, or null; never a value."
+  }
+}

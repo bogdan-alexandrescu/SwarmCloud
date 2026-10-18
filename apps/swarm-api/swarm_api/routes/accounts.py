@@ -81,6 +81,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request, status
 
+from .. import roles
 from ..accountholds import (
     EVERY_ACCOUNT,
     OWN_CURSOR_MARK,
@@ -158,6 +159,20 @@ def _tenant_id(ctx: AppContext, auth: AuthContext) -> str:
     anywhere.
     """
     return ctx.submissions.tenant_for(auth).tenant_id
+
+
+def _writer_tenant_id(ctx: AppContext, auth: AuthContext) -> str:
+    """`_tenant_id`, and then the role gate every write here passes
+    (docs/design/workspace-roles.md §4.1, §4.8; lane ROLES-GATES-AUTOMATE):
+    the role `member` in the selected workspace. A `viewer` is
+    `role_member_required`, through its switch -- BEFORE any broker call, so a
+    refused viewer's pasted credential is forwarded nowhere and no account is
+    registered, re-lent, paused, refreshed or removed. The tenant guards run
+    first, so a collision or a disabled tenant keeps its own answer."""
+    tenant_id = _tenant_id(ctx, auth)
+    if ctx.roles is not None:
+        ctx.roles.require(auth, roles.MEMBER)
+    return tenant_id
 
 
 def _owned(pool: AccountPool, tenant_id: str, account_id: str) -> dict[str, Any]:
@@ -245,7 +260,7 @@ def register_account(
     paste time -- with a 422 that says so -- rather than becoming a pool entry
     that looks healthy and dies silently at its first expiry.
     """
-    tenant_id = _tenant_id(ctx, auth)
+    tenant_id = _writer_tenant_id(ctx, auth)
     if body.owner_tenant is not None:
         # Compared, never used. A caller that names its own tenant is simply
         # agreeing with the token and is let through; one that names another is
@@ -305,7 +320,7 @@ def begin_sign_in(
     owner_tenant field at all.
     """
     return pool.begin_sign_in(
-        owner_tenant=_tenant_id(ctx, auth),
+        owner_tenant=_writer_tenant_id(ctx, auth),
         label=body.label,
         provider=SUBSCRIPTION_PROVIDER,
         lend_to=list(body.lend_to),
@@ -341,7 +356,7 @@ def finish_sign_in(
     refuses a tenant id collision (409) and a disabled tenant (403) before any
     credential is redeemed.
     """
-    tenant_id = _tenant_id(ctx, auth)
+    tenant_id = _writer_tenant_id(ctx, auth)
     result = pool.finish_sign_in(
         state=body.state, code=body.code, expected_owner=tenant_id
     )
@@ -366,7 +381,7 @@ def refresh_account(
     without waiting an unknown number of minutes -- and it goes through the
     broker for the same reason everything else here does.
     """
-    _owned(pool, _tenant_id(ctx, auth), account_id)
+    _owned(pool, _writer_tenant_id(ctx, auth), account_id)
     return pool.refresh(account_id)
 
 
@@ -379,7 +394,7 @@ def set_lending(
     pool: AccountPool = Depends(account_pool),
 ) -> dict:
     """Replace the list of tenants this account lends to. Owner only."""
-    _owned(pool, _tenant_id(ctx, auth), account_id)
+    _owned(pool, _writer_tenant_id(ctx, auth), account_id)
     return pool.set_lending(account_id, lend_to=list(body.lend_to))
 
 
@@ -397,7 +412,7 @@ def set_account_state(
     answers an unknown value with a 422 listing what it accepts. A second copy
     of that list in this service would be one more thing to drift.
     """
-    _owned(pool, _tenant_id(ctx, auth), account_id)
+    _owned(pool, _writer_tenant_id(ctx, auth), account_id)
     return pool.set_state(account_id, state=body.state, reason=body.reason)
 
 
@@ -415,7 +430,7 @@ def remove_account(
     and takes its version history with it, so an account removed by mistake
     stays re-registerable.
     """
-    _owned(pool, _tenant_id(ctx, auth), account_id)
+    _owned(pool, _writer_tenant_id(ctx, auth), account_id)
     return pool.remove(account_id)
 
 

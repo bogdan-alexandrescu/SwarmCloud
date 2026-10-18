@@ -255,3 +255,13 @@ def test_the_prompts_say_what_to_paste_and_where_it_comes_from(key):
     assert len(description) > 40, key
     if key != "deployment_url":
         assert "desktop" in description, f"{key} must say it is the Desktop app client"
+
+
+def test_the_tenant_option_says_where_the_default_it_falls_back_to_is_set():
+    """Empty is not "the personal workspace" any more: it is the default the
+    person chose in Settings › Profile, else that (PROFILE-SC,
+    docs/design/user-profile.md §4.5). A prompt that names the wrong fallback
+    sends someone to the wrong screen to change it."""
+    described = _user_config()[_TENANT_OPTION]["description"]
+    assert "Settings › Profile" in described, described
+    assert _TENANT_ENV in described, described

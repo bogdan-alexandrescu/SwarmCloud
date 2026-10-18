@@ -1,0 +1,38 @@
+# swarm-typesafe-fwd: the TypeSafe forwarder (docs/design/workspace-secrets.md
+# §3.5, the `inject` delivery mode; lane SEC-INJECT-B, part of #1347). A
+# one-replica Deployment in swarm-system on GKE that verifies each request's
+# attempt TypeSafe ticket, reads the key the ticket names with its own
+# Workload Identity, and forwards the request to https://api.typesafe.ai with
+# that key, so the key never enters the agent pod.
+#
+# The standard library for the server and the upstream call (http.server,
+# http.client, ssl). google-auth (with requests) only to read secrets from
+# Secret Manager over REST, as swarm-egress and swarm-live do;
+# swarm-redaction for every log line; swarm-common for the logging setup.
+# The same third-party closure as swarm-egress, so its lock was seeded from
+# that one and no new dependency enters the platform.
+[project]
+name = "swarm-typesafe-fwd"
+version = "0.1.0"
+description = "TypeSafe forwarder: attempt-ticketed POST /v1/systemone with the platform-held key."
+requires-python = ">=3.11"
+dependencies = [
+    "swarm-common",
+    "swarm-redaction",
+    "google-auth>=2.29",
+    "requests>=2.32",
+]
+
+[project.scripts]
+swarm-typesafe-fwd = "swarm_typesafe_fwd.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["swarm_typesafe_fwd"]
+
+[tool.uv.sources]
+swarm-common = { path = "../common", editable = true }
+swarm-redaction = { path = "../redaction", editable = true }

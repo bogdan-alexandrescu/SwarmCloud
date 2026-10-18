@@ -30,6 +30,18 @@ output "nat_egress_addresses" {
   value       = module.network.nat_addresses
 }
 
+# The addresses a caller allowlists on its registered MCP server
+# (docs/design/registered-mcp-servers.md §4.9, lane MCP-IAM, part of #1433).
+# The same reserved NAT addresses as above, named for that reader: a GKE pod
+# and a Cloud Run Job (vpc_access egress ALL_TRAFFIC) both leave through
+# google_compute_router_nat.this, MANUAL_ONLY, so an MCP call has no other
+# source address. The console's registration page shows them once swarm-api's
+# settings carry them (lane MCP-UI).
+output "mcp_egress_addresses" {
+  description = "Give these to the owner of a registered MCP server to allow-list: every worker's MCP call leaves through these NAT addresses."
+  value       = module.network.nat_addresses
+}
+
 # --- data ------------------------------------------------------------------
 
 output "firestore_database" {

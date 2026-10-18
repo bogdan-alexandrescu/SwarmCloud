@@ -62,15 +62,15 @@ run "resource_classes_match_the_frozen_catalogue" {
     source = "../../terraform/infra"
   }
 
-  # RESOURCE_CLASSES: standard 4/8/20, browser 8/16/40, large 8/32/100.
+  # RESOURCE_CLASSES: standard 4/8/4, browser 4/8/4 (contract request 79), large 8/32/16.
   assert {
     condition     = output.resource_classes["standard"].cpu == 4 && output.resource_classes["standard"].memory_gib == 8 && output.resource_classes["standard"].disk_gib == 4
     error_message = "the standard class is 4 vCPU / 8 GiB / 20 GiB"
   }
 
   assert {
-    condition     = output.resource_classes["browser"].cpu == 8 && output.resource_classes["browser"].memory_gib == 16 && output.resource_classes["browser"].disk_gib == 8
-    error_message = "the browser class is 8 vCPU / 16 GiB / 40 GiB"
+    condition     = output.resource_classes["browser"].cpu == 4 && output.resource_classes["browser"].memory_gib == 8 && output.resource_classes["browser"].disk_gib == 4
+    error_message = "the browser class is 4 vCPU / 8 GiB / 4 GiB (contract request 79)"
   }
 
   assert {
@@ -78,10 +78,11 @@ run "resource_classes_match_the_frozen_catalogue" {
     error_message = "the large class is 8 vCPU / 32 GiB / 100 GiB"
   }
 
-  # units: 1, 2, 4 -- heavier classes cost more scheduling budget.
+  # units: 1, 1, 4 -- heavier classes cost more scheduling budget; browser
+  # dropped from 2 to 1 with contract request 79 (owner, 2026-10-14).
   assert {
-    condition     = output.resource_classes["standard"].units == 1 && output.resource_classes["browser"].units == 2 && output.resource_classes["large"].units == 4
-    error_message = "capacity units must match RESOURCE_CLASSES: 1, 2 and 4"
+    condition     = output.resource_classes["standard"].units == 1 && output.resource_classes["browser"].units == 1 && output.resource_classes["large"].units == 4
+    error_message = "capacity units must match RESOURCE_CLASSES: 1, 1 and 4"
   }
 
   assert {
@@ -156,8 +157,17 @@ run "runner_backends_match_resolve_backend" {
   }
 
   assert {
-    condition     = length(output.runner_backends) == 10
-    error_message = "ten runner profiles: mock, generic, claude-code, codex, browser, #295's merge, post-verdict, claude-code-review, contract request 48's indexer and contract request 67's claude-code-browser"
+    condition     = length(output.runner_backends) == 11
+    error_message = "eleven runner profiles: mock, generic, claude-code, codex, browser, #295's merge, post-verdict, claude-code-review, contract request 48's indexer, contract request 67's claude-code-browser and contract request 94's await-input"
+  }
+
+  # Contract request 94: await-input is a control_plane profile (request 93)
+  # that nothing runs. Its backend is the catalogue's CLOUD_RUN_JOB, which is
+  # why `profiles_without_a_job` must name it: the Job loop below would
+  # otherwise make one for every tenant, since it needs no provider.
+  assert {
+    condition     = output.runner_backends["await-input"] == "CLOUD_RUN_JOB"
+    error_message = "await-input states CLOUD_RUN_JOB in the catalogue (contract request 94); it is never run there or anywhere"
   }
 }
 
@@ -195,7 +205,7 @@ run "every_pool_name_the_contract_can_produce_is_materialised" {
       for r in [
         "runner:mock", "runner:generic", "runner:claude-code", "runner:codex", "runner:browser",
         "runner:merge", "runner:post-verdict", "runner:claude-code-review",
-        "runner:indexer", "runner:claude-code-browser",
+        "runner:indexer", "runner:claude-code-browser", "runner:await-input",
       ] :
       contains(output.pool_names, r)
     ])
@@ -325,6 +335,17 @@ run "jobs_exist_only_where_a_credential_does" {
     error_message = "a retired #295 profile, or merge for a tenant without git, got a Cloud Run Job"
   }
 
+  # Contract requests 93 and 94: await-input is a control_plane profile, and
+  # nothing runs one, so no tenant gets a Job for it -- not eng, which holds
+  # keys, and not smoke, which holds none (await-input needs no provider, so
+  # only `profiles_without_a_job` keeps the Job loop off it).
+  assert {
+    condition = !anytrue([
+      for name in output.job_names : endswith(name, "-await-input")
+    ])
+    error_message = "await-input is a control_plane profile (contract request 93); no tenant may get a Cloud Run Job for it"
+  }
+
   # Cloud Run only exposes memory-medium ephemeral volumes, so a workspace sized
   # at the full memory limit would OOM-kill the agent instead of failing a write.
   assert {
@@ -402,8 +423,8 @@ run "the_python_catalogue_is_readable" {
   }
 
   assert {
-    condition     = length(output.runner_profiles) == 10
-    error_message = "expected 10 runner profiles in profiles.py (mock, generic, claude-code, codex, browser, merge, post-verdict, claude-code-review, indexer, claude-code-browser); the parser read a different number"
+    condition     = length(output.runner_profiles) == 11
+    error_message = "expected 11 runner profiles in profiles.py (mock, generic, claude-code, codex, browser, merge, post-verdict, claude-code-review, indexer, claude-code-browser, await-input); the parser read a different number"
   }
 
   # claude-code's and indexer's entries carry a comment above their backend;
@@ -413,6 +434,14 @@ run "the_python_catalogue_is_readable" {
   assert {
     condition     = output.runner_profiles["claude-code"].backend == "GKE_AUTOPILOT" && output.runner_profiles["indexer"].backend == "GKE_AUTOPILOT" && output.runner_profiles["merge"].backend == "GKE_AUTOPILOT" && output.runner_profiles["post-verdict"].backend == "CLOUD_RUN_JOB" && output.runner_profiles["claude-code-browser"].image == "agent-runtime-browser" && output.runner_profiles["claude-code-browser"].resource_class == "browser"
     error_message = "the parser misread profiles.py: claude-code (contract request 53), indexer (63) and merge (66) must read GKE_AUTOPILOT, post-verdict must keep CLOUD_RUN_JOB, and claude-code-browser (67) must read the browser image and class"
+  }
+
+  # await-input (contract request 94) is now the dict's last entry: the parser
+  # must read its own timeout and its absent provider, and not run on past
+  # the dict into the statements after it.
+  assert {
+    condition     = output.runner_profiles["await-input"].timeout_seconds == 300 && output.runner_profiles["await-input"].provider == "" && length(output.runner_profiles["await-input"].secret_env_names) == 0
+    error_message = "the parser misread await-input (contract request 94): timeout 300, no provider and no secrets"
   }
 
   assert {
@@ -463,5 +492,56 @@ run "the_terraform_mirror_matches_the_python_catalogue" {
       && output.runner_profiles[name].secret_env_names == rp.secret_env_names
     ])
     error_message = "the provider or the secret env-var names in terraform/infra/locals.tf no longer match swarm_common/profiles.py: a Job would be created for a tenant holding no key, or wired to the wrong secret"
+  }
+}
+
+# #1435 (contract request B of docs/design/model-per-step.md): each profile's
+# `model_classes` and `default_model_class`, mirrored in local.runner_profiles
+# so the Jobs' MODEL and the scheduler's derived WORKER_MODELS read the default
+# class from the mirror and not from a second table. Hand-written, like the
+# runs at the top of this file: ./catalogue_mirror does not parse these two
+# fields, so the Python-against-Terraform comparison of them is
+# scripts/lib/check-contract-parity.sh (section 17), which imports the frozen
+# catalogue instead of parsing it.
+run "the_mirror_carries_each_profiles_model_classes" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  # Q3: the three claude-code-family profiles accept all four, opus by default.
+  assert {
+    condition = alltrue([
+      for name in ["claude-code", "claude-code-browser", "indexer"] :
+      local.runner_profiles[name].model_classes == ["opus", "fable", "sonnet", "haiku"]
+      && local.runner_profiles[name].default_model_class == "opus"
+    ])
+    error_message = "claude-code, claude-code-browser and indexer must accept opus, fable, sonnet and haiku, opus by default (owner decision Q3, 2026-10-17)"
+  }
+
+  # Retired under contract request 50: it keeps the pin it has and gains nothing.
+  assert {
+    condition     = local.runner_profiles["claude-code-review"].model_classes == ["opus"] && local.runner_profiles["claude-code-review"].default_model_class == "opus"
+    error_message = "claude-code-review must accept opus only, by default"
+  }
+
+  # Every other profile starts no Claude model: no classes, no default. The
+  # count is the control that this statement is about seven profiles.
+  assert {
+    condition = length([
+      for name, p in local.runner_profiles : name
+      if length(p.model_classes) == 0 && p.default_model_class == null
+    ]) == 7
+    error_message = "mock, generic, codex, browser, merge, post-verdict and await-input must carry no model class and no default"
+  }
+
+  # A default is always one of the profile's own classes.
+  assert {
+    condition = alltrue([
+      for name, p in local.runner_profiles :
+      p.default_model_class == null ? length(p.model_classes) == 0 : contains(p.model_classes, p.default_model_class)
+    ])
+    error_message = "a profile's default_model_class must be one of its own model_classes, and a profile with classes must name a default"
   }
 }

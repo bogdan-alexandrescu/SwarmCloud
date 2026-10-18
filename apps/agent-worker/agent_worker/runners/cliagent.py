@@ -35,6 +35,7 @@ Two properties that are load-bearing rather than incidental:
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import re
@@ -50,6 +51,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .. import expected_outputs as expected_mod
 from .. import issue as issue_mod
+from ..cachedirs import AGENT_CACHE_ENV
 from ..gitidentity import GIT_IDENTITY_ENV
 from ..logs import StructuredLogger
 from ..procman import TRUNCATION_MARK, ChildProcess, ChildResult, run_child
@@ -81,12 +83,24 @@ TRANSCRIPT_MAX_CHARS = 4_000_000
 #: harmless. `NO_PROXY` and `NODE_EXTRA_CA_CERTS` are a host list and a path,
 #: never a secret, so they are passed through without being redacted -- a path
 #: appearing in output is diagnostic information worth keeping readable.
-_SENSITIVE_PASSTHROUGH: tuple[str, ...] = ("HTTPS_PROXY", "HTTP_PROXY")
+#: TYPESAFE_API_KEY is the jev-browser MCP server's key (BSTATUS-API; the
+#: server inherits the CLI's environment, and no key is written into its MCP
+#: config). Present only when the worker was given one; redacted like the rest.
+_SENSITIVE_PASSTHROUGH: tuple[str, ...] = ("HTTPS_PROXY", "HTTP_PROXY", "TYPESAFE_API_KEY")
 #: GIT_AUTHOR_* and GIT_COMMITTER_* name the person who dispatched the task
 #: (P37, `agent_worker.gitidentity`): the worker sets them from the task
 #: document, so an agent's `git commit` names that person instead of failing
 #: for want of an identity. A name and an address, never a secret.
-_PLAIN_PASSTHROUGH: tuple[str, ...] = ("NO_PROXY", "NODE_EXTRA_CA_CERTS", *GIT_IDENTITY_ENV)
+#: The cache variables (`cachedirs.AGENT_CACHE_ENV`, CACHE-SCRATCH) are the
+#: worker's paths for the agent's tool caches, off the workspace volume, and
+#: the switches that keep them small on Cloud Run. TMPDIR is set above with
+#: the platform's own values, so it is not repeated here.
+_PLAIN_PASSTHROUGH: tuple[str, ...] = (
+    "NO_PROXY",
+    "NODE_EXTRA_CA_CERTS",
+    *GIT_IDENTITY_ENV,
+    *(name for name in AGENT_CACHE_ENV if name != "TMPDIR"),
+)
 
 #: Substrings that mean "the provider said no, try later".
 _RATE_LIMIT_MARKERS = (
@@ -1230,10 +1244,14 @@ def run_cli_agent(
     # so, and the agent starts all the same (`contextpack.prepare` never
     # raises). Not on a resume: the session already holds the line, and the
     # file is still where it said.
+    # JEV (lane CTXQ-JW): the attempt's client when the worker set Jev up
+    # (`judge.attempt`, the workspace opted in), else None and no call is ever
+    # made. One ledger file under it holds J1-J5's shared budget.
+    jev = _jev_client(spec)
     if cwd != ctx.work_dir and not os.environ.get(RESUME_SESSION_ENV, "").strip():
         from .. import contextpack  # lazy: most starts have nothing staged
 
-        context_line = contextpack.prepare(ctx, cwd)
+        context_line = contextpack.prepare(ctx, cwd, judge=jev)
         if context_line:
             prompt = f"{prompt}\n\n{context_line}"
     # A RESUMED SESSION (S13/S14). The worker moved this attempt to another
@@ -1745,6 +1763,16 @@ def run_cli_agent(
                 "credential_lines": flagged[:REPAIR_LIST_CAP],
             }
 
+    # JEV'S POST-STEPS (lane CTXQ-JW; `judge.poststeps`). The planner's plan
+    # gets J2 coverage and J5 duplicate in `plan-advisory.json`; the review's
+    # verdict.json gets J3's `p_real` on its findings. Advisory: `verdict`
+    # and plan.json are never changed, and with Jev unreachable nothing is.
+    if jev is not None:
+        jev_done = _jev_post_steps(ctx, jev, cwd, log)
+        if any(v is not None for v in jev_done.values()):
+            # Only what Jev answered: a failed call leaves the local result.
+            ctx.report["jev"] = jev_done
+
     # THE PRE-PUBLISH GATE (SPEED-D1; `agent_worker.prepublish`). After the
     # repair turns, so the checks read the tree they left. A task with no
     # checkout has nothing to publish.
@@ -1776,7 +1804,7 @@ def run_cli_agent(
 
         prepublish_record = run_prepublish_gate(
             ctx, cwd=cwd, env=env, credential_env=credential_env, secrets=secrets,
-            log=log, resume=resume_for_gate, remaining=gate_remaining,
+            log=log, resume=resume_for_gate, remaining=gate_remaining, judge=jev,
         )
 
     # WHOLE OR NOT AT ALL -- see TRANSCRIPT_MAX_CHARS. The stdout capture above
@@ -1875,6 +1903,7 @@ def run_prepublish_gate(
     log: StructuredLogger,
     resume: Callable[[str], bool],
     remaining: Callable[[], float],
+    judge: Any = None,
 ) -> dict[str, Any]:
     """The pre-publish gate over the checkout (`agent_worker.prepublish.Gate`).
 
@@ -1915,7 +1944,7 @@ def run_prepublish_gate(
     gate = prepublish.Gate(
         repo=Path(cwd), env=check_env, secrets=secrets, resume=turn, remaining=remaining,
         log=log, artifacts_dir=Path(ctx.artifacts_dir), submit=submit,
-        python=sys.executable or "python3", record=record,
+        python=sys.executable or "python3", record=record, judge=judge,
     )
     try:
         return gate.run()
@@ -1926,6 +1955,49 @@ def run_prepublish_gate(
                   error=type(exc).__name__)
         record["error"] = type(exc).__name__
         return record
+
+
+def _jev_client(spec: CliAgentSpec) -> Any:
+    """This attempt's Jev client (`judge.attempt.load`), scrubbing this
+    runner's own secrets too (§5.4 step 4), or None. Never raises."""
+    try:
+        from ..judge import attempt as judge_attempt
+
+        client, _why = judge_attempt.load()
+        if client is None:
+            return None
+        own = collect_secrets(os.environ.get(name) for name in
+                              (spec.key_env, *spec.alt_key_envs, *_SENSITIVE_PASSTHROUGH))
+        return dataclasses.replace(client, secrets=tuple(client.secrets) + tuple(own))
+    except Exception:  # noqa: BLE001 -- Jev is never worth the step
+        return None
+
+
+def _jev_post_steps(ctx: RunnerContext, jev: Any, cwd: Path, log: StructuredLogger
+                    ) -> dict[str, Any]:
+    """J2/J5 for a planner, J3 for a review; what each did. Never raises."""
+    from ..contextpack import context_dir
+    from ..contextpack.tasktype import classify
+    from ..judge import poststeps
+
+    out: dict[str, Any] = {}
+    try:
+        kind = classify(ctx.payload, ctx.work_dir)
+        checkout = cwd if cwd != ctx.work_dir else None
+        if kind == "plan":
+            advisory = poststeps.plan_post_step(jev, Path(ctx.artifacts_dir),
+                                                context_dir(ctx.work_dir))
+            out["plan"] = None if advisory is None else {
+                "coverage_flagged": len((advisory.get("coverage") or {}).get("flagged") or []),
+                "hold_for_human": advisory.get("hold_for_human")}
+        elif kind == "review":
+            out["review"] = poststeps.review_post_step(jev, Path(ctx.artifacts_dir), checkout,
+                                                       Path(ctx.work_dir), ctx.payload)
+    except Exception as exc:  # noqa: BLE001 -- advisory: never the step's failure
+        log.warning("a Jev post-step failed; its outputs are the local-only ones",
+                    error=type(exc).__name__)
+        out["error"] = type(exc).__name__
+    return out
 
 
 def _parse_cli_output(raw_stdout: str) -> Any:

@@ -42,6 +42,10 @@ _SKILL = _PLUGIN / "skills" / "sc" / "SKILL.md"
 _MANIFEST = _PLUGIN / ".claude-plugin" / "plugin.json"
 
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
+#: The Claude Code session every fixture here was submitted by: the check and
+#: the attach consider only that session's work (SC-SESSION-SCOPE,
+#: tests/unit/mcp/test_sc_session_scope.py holds the scope itself).
+SESSION = "11111111-2222-4333-8444-555555555555"
 APP = "https://github.com/acme/app"
 OTHER = "https://github.com/acme/other"
 
@@ -50,7 +54,13 @@ def ago(minutes: float) -> str:
     return (NOW - timedelta(minutes=minutes)).isoformat().replace("+00:00", "Z")
 
 
-def task(task_id: str, state: str, *, repo: str | None = APP, created: float = 180, **extra) -> dict:
+@pytest.fixture(autouse=True)
+def _this_session(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", SESSION)
+
+
+def task(task_id: str, state: str, *, repo: str | None = APP, created: float = 180,
+         session: str | None = SESSION, **extra) -> dict:
     doc = {
         "id": task_id,
         "tenant_id": "eng",
@@ -65,6 +75,8 @@ def task(task_id: str, state: str, *, repo: str | None = APP, created: float = 1
         "heartbeat_at": None,
         "heartbeat": None,
         "links": {"console": f"https://console.test/agents/{task_id}"},
+        "metadata": {"claude_session": session} if session else {},
+        "claude_session": session,
     }
     doc.update(extra)
     return doc
@@ -75,8 +87,10 @@ def event(kind: str, minutes: float) -> dict:
 
 
 def workflow(wid: str, steps: list[tuple[str, str, str, list[str]]], *, state: str = "RUNNING",
-             stored: str | None = None, drift: dict | None = None) -> dict:
+             stored: str | None = None, drift: dict | None = None,
+             session: str | None = SESSION) -> dict:
     doc = {
+        "claude_session": session,
         "workflow_id": wid,
         "tenant_id": "eng",
         "state": state,
@@ -362,6 +376,115 @@ def test_every_named_merge_refusal_is_flagged_from_last_error_alone(code):
     assert set(flagged(run(Api(recent=[doc], tasks=[refused])))) == {"task_m"}
 
 
+#: The real GitHub reader, kept before the suite's offline stub replaces it
+#: (tests/unit/mcp/conftest.py `_no_github_reads`).
+_REAL_PULL_STATE = getattr(check, "github_pull_state", None)
+
+
+def _refused_merges(*numbers: int) -> Api:
+    docs, tasks = [], []
+    for n, number in enumerate(numbers):
+        docs.append(workflow(f"wf_m{n}", [("merge", f"task_m{n}", "merge", [])], state="FAILED"))
+        tasks.append(task(f"task_m{n}", "FAILED", runner_profile="merge", last_error="head_moved: moved",
+                          result_summary={"pull_request": number,
+                                          "refusal": {"code": "head_moved", "message": "moved"}}))
+    return Api(recent=docs, tasks=tasks)
+
+
+def _answer_github(monkeypatch, states: dict[int, str]) -> list[tuple[str, int]]:
+    asked: list[tuple[str, int]] = []
+
+    def reader(key, number):
+        asked.append((key, number))
+        return states[number]
+
+    monkeypatch.setattr(check, "github_pull_state", reader)
+    return asked
+
+
+@pytest.mark.parametrize("settled", ["MERGED", "CLOSED"])
+def test_a_refused_merge_whose_pr_has_since_settled_is_not_flagged(monkeypatch, settled):
+    # Epic #1334: PRs 1328, 1317, 1312, 1316 were MERGED and stayed flagged.
+    asked = _answer_github(monkeypatch, {41: settled, 42: "OPEN"})
+
+    got = flagged(run(_refused_merges(41, 42)))
+
+    assert set(got) == {"task_m1"}, got  # the OPEN one is the control
+    assert got["task_m1"]["evidence"]["pull_request_state"] == "OPEN"
+    assert "pull_request_state_unread_because" not in got["task_m1"]["evidence"]
+    assert sorted(asked) == [("github.com/acme/app", 41), ("github.com/acme/app", 42)]
+
+
+def test_a_pr_named_by_two_merge_steps_is_read_once_per_check(monkeypatch):
+    asked = _answer_github(monkeypatch, {41: "OPEN"})
+    assert set(flagged(run(_refused_merges(41, 41)))) == {"task_m0", "task_m1"}
+    assert asked == [("github.com/acme/app", 41)]
+
+
+def test_a_failed_pr_read_keeps_the_flag_and_says_the_state_was_not_read(monkeypatch):
+    def refused(key, number):
+        raise SwarmError("GitHub answered HTTP 403")
+
+    monkeypatch.setattr(check, "github_pull_state", refused)
+
+    item = flagged(run(_refused_merges(41)))["task_m0"]
+
+    assert item["rule"] == "merge_refused"
+    assert item["evidence"]["pull_request_state"] is None
+    why = item["evidence"]["pull_request_state_unread_because"]
+    assert why.startswith("PR state not read") and "HTTP 403" in why
+
+
+class _Response:
+    def __init__(self, body: dict):
+        self.body = json.dumps(body).encode()
+
+    def read(self):
+        return self.body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+@pytest.mark.parametrize(("body", "state"), [
+    ({"state": "closed", "merged": True, "merged_at": "2026-10-15T00:30:00Z"}, "MERGED"),
+    ({"state": "closed", "merged": False, "merged_at": None}, "CLOSED"),
+    ({"state": "open", "merged": False, "merged_at": None}, "OPEN"),
+])
+def test_the_pr_state_is_read_from_githubs_public_api_with_no_credential(monkeypatch, body, state):
+    sent = []
+
+    def urlopen(request, timeout=None):
+        sent.append(request)
+        return _Response(body)
+
+    monkeypatch.setattr(check.urllib.request, "urlopen", urlopen)
+
+    assert _REAL_PULL_STATE("github.com/acme/app", 41) == state
+
+    (request,) = sent
+    assert request.full_url == "https://api.github.com/repos/acme/app/pulls/41"
+    assert request.get_method() == "GET"
+    headers = {k.lower() for k, _ in request.header_items()}
+    assert "authorization" not in headers, headers
+
+
+def test_a_pr_read_that_fails_or_names_another_forge_raises(monkeypatch):
+    import urllib.error
+
+    def refused(request, timeout=None):
+        raise urllib.error.HTTPError(request.full_url, 403, "rate limited", {}, None)
+
+    monkeypatch.setattr(check.urllib.request, "urlopen", refused)
+    with pytest.raises(SwarmError, match="HTTP 403"):
+        _REAL_PULL_STATE("github.com/acme/app", 41)
+    with pytest.raises(SwarmError, match="not a GitHub repository"):
+        _REAL_PULL_STATE("gitlab.com/acme/app", 41)
+
+
 # --------------------------------------------------------------------------
 # (e) stored state disagrees with derived state
 # --------------------------------------------------------------------------
@@ -433,6 +556,41 @@ def test_all_repositories_drops_the_scope():
 def test_every_spelling_of_one_repository_is_one_scope(spelling):
     assert check.repo_key(spelling) == "github.com/acme/app"
     assert check.repo_key(OTHER) != check.repo_key(spelling)
+
+
+#: Every form a person or the check's own answer writes one repository in
+#: (epic #1334: `github.com/owner/repo` reached the API as
+#: `github.com/github.com/owner`).
+_FORMS = [
+    "acme/app",
+    "github.com/acme/app",
+    "github.com/acme/app.git",
+    "https://github.com/acme/app",
+    "https://github.com/acme/app.git",
+    "https://github.com/acme/app/",
+    "git@github.com:acme/app.git",
+    "ssh://git@github.com/acme/app.git",
+]
+
+
+@pytest.mark.parametrize("form", _FORMS + ["origin"])
+def test_every_accepted_repository_form_scopes_the_check_to_one_repository(form, tmp_path, monkeypatch):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "remote", "add", "origin", "https://github.com/acme/app.git"],
+                   check=True)
+    monkeypatch.setenv("SWARM_CHECKOUT_DIR", str(tmp_path))
+    assert check.resolve_scope(form)["key"] == "github.com/acme/app"
+    result = run(_two_projects(), repository=form)
+    assert result["repository"] == "github.com/acme/app"
+    assert set(flagged(result)) == {"task_ours"}
+
+
+@pytest.mark.parametrize("form", _FORMS)
+def test_every_accepted_repository_form_attaches_the_same_workflows(form, launcher):
+    reply = json.loads(server._call(_project_api(), "swarm_workflow_launch",
+                                    {"attach": "all", "repository": form, "new_only": True}))
+    assert reply["repository"] == "github.com/acme/app"
+    assert _launched(reply) == (["wf_ours"], ["task_mine"])
 
 
 def test_the_default_scope_is_this_checkouts_origin(tmp_path, monkeypatch):
@@ -544,7 +702,10 @@ def test_a_row_the_session_already_shows_is_excluded_by_id(launcher):
 def test_attach_by_hand_still_attaches_after_a_check(launcher):
     launch.for_all(_project_api(), repository=APP, new_only=True)
     again = launch.for_all(_project_api())  # `/sc attach --all`, unfiltered: unchanged
-    assert _launched(again) == (["wf_ours", "wf_theirs"], ["task_mine", "task_elsewhere"])
+    launched, tasks = _launched(again)
+    # Both, in the board order (BOARD-ORDER): two tasks of the same age are
+    # ordered by id, which is not what this test is about.
+    assert (launched, sorted(tasks)) == (["wf_ours", "wf_theirs"], ["task_elsewhere", "task_mine"])
     assert "already_attached" not in again
 
 

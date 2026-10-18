@@ -1,5 +1,5 @@
 import { useEffect, useId, useState, type MouseEvent } from 'react'
-import { loadProviderKeys, type ProviderKeys } from './api'
+import { loadJudgment, loadProviderKeys, type JevStatus, type ProviderKeys } from './api'
 import { routedClick } from './components'
 import { addressToPath } from './paths'
 import type { RunnerProfile } from './types'
@@ -21,12 +21,21 @@ import type { RunnerProfile } from './types'
  * say so by not carrying it. Auto is drawn first whether or not the
  * declaration lists it.
  *
- * JEV SENDS PAGE TEXT TO TYPESAFE, under the key `GET
- * /v1/provider-keys/typesafe` says a task here would use. With no key, or
- * before that read answers, it cannot run, so it is disabled with where to
- * add one -- never enabled on a guess. Picked, the data notice is printed
- * inline beside the control rather than behind a modal: it is a fact about
- * the pick, read while making it.
+ * WHETHER JEV CAN RUN IS THE WORKSPACE'S JUDGMENT BACKEND'S QUESTION (lane
+ * JEV-OFF, part of #1345). `GET /v1/judgment` says which backend this
+ * workspace judges with and whether it can run: an internal backend needs
+ * the tailnet route to Saga's decision API and no key; TypeSafe needs a key.
+ * Measured 2026-10-15: with the route off, this picker offered Jev, and the
+ * task silently ran on Playwright. So Jev is disabled, with the API's own
+ * reason, whenever the backend cannot run -- and before the read answers, or
+ * when it fails, never enabled on a guess.
+ *
+ * ON THE TYPESAFE BACKEND JEV SENDS PAGE TEXT TO TYPESAFE, under the key `GET
+ * /v1/provider-keys/typesafe` says a task here would use. With no key it is
+ * disabled with where to add one. Picked, the data notice is printed inline
+ * beside the control rather than behind a modal: it is a fact about the
+ * pick, read while making it. An internal backend needs no key, so it is
+ * never asked for one.
  *
  * THE NETWORK ROW IS READ-ONLY and drawn only from what the API serves on
  * the profile (`egress`: `{mode, country}`, the live session's own shape).
@@ -116,9 +125,50 @@ export function useTypesafeKey(wanted: boolean): TypesafeKey {
   return key
 }
 
-/** Whether Jev may be picked under this key read. */
-export function jevAllowed(key: TypesafeKey): boolean {
-  return key.kind === 'read' && key.uses !== 'none'
+/** What `GET /v1/judgment` said about this workspace's Jev backend. */
+export type JevJudgment =
+  | { kind: 'reading' }
+  | { kind: 'unread'; detail: string }
+  | { kind: 'read'; jev: JevStatus }
+
+/** One read of the workspace's judgment backend, made only while `wanted`. */
+export function useJevJudgment(wanted: boolean): JevJudgment {
+  const [judgment, setJudgment] = useState<JevJudgment>({ kind: 'reading' })
+  useEffect(() => {
+    if (!wanted) return
+    let live = true
+    Promise.resolve()
+      .then(() => loadJudgment())
+      .then(
+        (r) => {
+          if (!live) return
+          if (r.status === 'ok' || r.status === 'stale') setJudgment({ kind: 'read', jev: r.data.jev })
+          else if (r.status === 'error') setJudgment({ kind: 'unread', detail: r.error.message })
+          else setJudgment({ kind: 'unread', detail: 'The judgment backend read did not answer.' })
+        },
+        (err: unknown) => {
+          if (live) setJudgment({ kind: 'unread', detail: err instanceof Error ? err.message : 'The read did not complete.' })
+        },
+      )
+    return () => {
+      live = false
+    }
+  }, [wanted])
+  return judgment
+}
+
+function onTypesafe(judgment: JevJudgment): boolean {
+  return judgment.kind === 'read' && judgment.jev.backend === 'typesafe'
+}
+
+/**
+ * Whether Jev may be picked: the backend read answered and it can run -- for
+ * TypeSafe, a key resolves; for an internal backend, the API says available.
+ */
+export function jevAllowed(key: TypesafeKey, judgment: JevJudgment): boolean {
+  if (judgment.kind !== 'read') return false
+  if (onTypesafe(judgment)) return key.kind === 'read' && key.uses !== 'none'
+  return judgment.jev.available
 }
 
 /** The task input with the pick in it: nothing added for Auto. */
@@ -143,7 +193,24 @@ function KeysLink() {
   return <a href={addressToPath(KEYS_ADDRESS)} onClick={go}>Settings › API keys</a>
 }
 
-function JevOff({ typesafe }: { typesafe: TypesafeKey }) {
+function JevOff({ typesafe, judgment }: { typesafe: TypesafeKey; judgment: JevJudgment }) {
+  if (judgment.kind === 'reading') return <p className="btp-jev-off">Checking whether Jev can run…</p>
+  if (judgment.kind === 'unread') {
+    return (
+      <p className="btp-jev-off" title={judgment.detail}>
+        Which judgment backend this workspace uses could not be read, so Jev is off.
+      </p>
+    )
+  }
+  if (!onTypesafe(judgment)) {
+    const why = judgment.jev.reason ?? 'the API gave no reason'
+    return (
+      <p className="btp-jev-off">
+        Jev is unavailable: this workspace judges with {judgment.jev.label}, and {why}. A task that asks for it runs on
+        Playwright.
+      </p>
+    )
+  }
   if (typesafe.kind === 'reading') return <p className="btp-jev-off">Checking for a TypeSafe key…</p>
   if (typesafe.kind === 'unread') {
     return (
@@ -155,16 +222,21 @@ function JevOff({ typesafe }: { typesafe: TypesafeKey }) {
   return <p className="btp-jev-off">Add a TypeSafe key in <KeysLink /></p>
 }
 
-export function BrowserToolPicker({ tools, value, onChange, typesafe, egress }: {
+const JEV_INTERNAL_HINT = 'goal-driven clicks and reading long pages — judged inside Saga'
+
+export function BrowserToolPicker({ tools, value, onChange, typesafe, judgment, egress }: {
   tools: readonly string[]
   value: string
   onChange: (tool: string) => void
   typesafe: TypesafeKey
+  judgment: JevJudgment
   egress: BrowserEgress | null
 }) {
   const id = useId()
   const [pointed, setPointed] = useState<string | null>(null)
-  const jevOn = jevAllowed(typesafe)
+  const jevOn = jevAllowed(typesafe, judgment)
+  const internal = judgment.kind === 'read' && !onTypesafe(judgment)
+  const hint = (t: string) => (t === JEV && internal ? JEV_INTERNAL_HINT : HINT[t])
   const shown = pointed ?? value
   const whose = typesafe.kind === 'read' && typesafe.uses === 'tenant' ? 'the tenant key' : 'your key'
   return (
@@ -176,21 +248,23 @@ export function BrowserToolPicker({ tools, value, onChange, typesafe, egress }: 
             const off = t === JEV && !jevOn
             return (
               <label key={t} className={`btp-opt${t === value ? ' is-on' : ''}${off ? ' is-off' : ''}`}
-                title={HINT[t]} onMouseEnter={() => setPointed(t)}>
+                title={hint(t)} onMouseEnter={() => setPointed(t)}>
                 <input type="radio" name={`${id}-tool`} value={t} checked={t === value} disabled={off}
-                  aria-describedby={HINT[t] === undefined ? undefined : `${id}-${t}`}
+                  aria-describedby={hint(t) === undefined ? undefined : `${id}-${t}`}
                   onChange={() => onChange(t)} onFocus={() => setPointed(t)} onBlur={() => setPointed(null)} />
                 <span>{LABEL[t] ?? t}</span>
-                {HINT[t] !== undefined && <span hidden id={`${id}-${t}`}>{HINT[t]}</span>}
+                {hint(t) !== undefined && <span hidden id={`${id}-${t}`}>{hint(t)}</span>}
               </label>
             )
           })}
         </div>
       </div>
-      <p className="btp-hint" aria-hidden="true">{HINT[shown] ?? ''}</p>
-      {tools.includes(JEV) && !jevOn && <JevOff typesafe={typesafe} />}
-      {value === JEV && jevOn && (
-        <p className="btp-notice">Jev sends the text of the pages it reads to TypeSafe, using {whose}.</p>
+      <p className="btp-hint" aria-hidden="true">{hint(shown) ?? ''}</p>
+      {tools.includes(JEV) && !jevOn && <JevOff typesafe={typesafe} judgment={judgment} />}
+      {value === JEV && jevOn && judgment.kind === 'read' && (
+        internal
+          ? <p className="btp-notice">Jev judges pages with {judgment.jev.label}: their text stays inside Saga.</p>
+          : <p className="btp-notice">Jev sends the text of the pages it reads to TypeSafe, using {whose}.</p>
       )}
       {egress !== null && (
         <p className="btp-net">

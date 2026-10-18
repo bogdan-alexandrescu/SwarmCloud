@@ -6,11 +6,13 @@ UX/UI and in the claude code plugin /sc in a safe way"*. This document covers
 the API half (lane KEYS-API). The console form (`apps/swarm-ui`) and the `/sc`
 command (`apps/swarm-mcp`, `plugin/`) are follow-on lanes.
 
-**Nothing uses these keys yet.** Jev itself is not being built (owner: later,
-gated). No runner profile names `typesafe`, no secret here is mounted into any
-runner, and nothing sends page content anywhere. The API stores a key, says
-whether one is set, and says which one a task *would* use. `GET` status
-answers `consumed_by: []` so nobody reads the resolution as a live wiring.
+**What uses these keys (JEV-RUNNER, 2026-10-14).** A live-browser task's
+`jev` MCP server (jev-browser, which sends page text and labels to
+`api.typesafe.ai`; the owner accepted that). The worker resolves the key by
+the order in §2 and hands it to that one server process
+([design/live-browser.md §3.2.2](design/live-browser.md)). No runner
+profile names `typesafe` and no Job mounts the secret. `GET` status answers
+`consumed_by: ["jev"]`.
 
 **A TypeSafe key is needed only when a workspace judges with TypeSafe**
 (JUDGE-SELECT, owner decisions 2026-10-14). Each workspace chooses Jev's
@@ -20,6 +22,11 @@ decision API, which needs no TypeSafe key and is never sent one -- or TypeSafe.
 `label`, `available`, `reason`, every option); TypeSafe is `available` exactly
 when the resolution below finds a key. See
 [design/live-browser.md §3.2.2](design/live-browser.md#322-judgment-backends-judge-select).
+
+**A workspace secrets store is proposed, not built** (#1347):
+[design/workspace-secrets.md](design/workspace-secrets.md) designs any
+credential kept per workspace and granted by checkbox to named consumers, and
+§6.1 there moves this key into it without breaking the readers below.
 
 Code: `apps/swarm-api/swarm_api/provider_keys.py` (record, audit, links,
 resolution) and `apps/swarm-api/swarm_api/routes/provider_keys.py` (routes).
@@ -93,11 +100,61 @@ frozen slug drops the domain: `alice@partner.com` derives `u-alice` too. `DELETE
 name this email: a person whose workspace has left `ready` can still destroy
 their own key.
 
-**What a future consumer must not do.** A task alice submits in a group tenant
+**A personal key on a group task.** A task alice submits in a group tenant
 runs as the group's account, which cannot read `swarm-tenant-u-alice-*`. The
-fix is **not** to grant the group account on alice's secret; that would give her
-key to every member. The consumer lane has to fetch it through a path that acts
-for the submitter. That design is still open and belongs to that lane.
+worker then logs `jev_key_unreadable` and uses the tenant key if one is set.
+Granting the group account on alice's secret gives her key to **every**
+member's tasks, so it is never a prefix and never a default. It is one row
+per (group, person) in `terraform/bootstrap/typesafe_user_keys.tf`
+(`typesafe_user_key_readers`), applied by the owner, and the row is the
+person's consent: the same trade the owner accepted for GitHub user slots
+(#780 D7 U1). A path that acts only for the submitter, with swarm-api reading
+the key on their behalf, would need a route that serves a credential, which
+`test_no_route_serves_credentials.py` forbids. That is still open.
+
+**The `inject` delivery mode (SEC-INJECT-A, 2026-10-15, part of #1347).**
+Owner decision Q8 of [the workspace secrets design](design/workspace-secrets.md#35-option-d-the-secret-never-enters-the-pod-inject-first-for-typesafe)
+moves the TypeSafe key out of the agent pod: a platform forwarder in
+swarm-system adds it to jev's and the judge's requests to api.typesafe.ai. The
+same order picks the key. `POST /v1/attempts/{id}/typesafe-ticket` runs
+`resolve_provider_key` for the fenced task's tenant and its submitter's
+confirmed personal tenant, and puts only the chosen secret's id and version in
+a short-lived ticket MAC'd under `swarm-typesafe-fwd-key`. The forwarder reads
+that version with its own identity
+(`terraform/bootstrap/typesafe_forwarder.tf`), so no worker account needs to
+read the key. That also covers a personal key on a group task without a
+`typesafe_user_keys.tf` row, once jev uses the forwarder. The route, the
+Kubernetes objects and the Terraform exist, all off by default. The forwarder
+itself, `apps/swarm-typesafe-fwd/` (SEC-INJECT-B, 2026-10-16), is built and
+promoted as the image `swarm-typesafe-fwd`. It spends only the secret the
+ticket names, read from its own project. A tenant-scope ticket that names
+another tenant's key is refused before anything is read. The caller's
+authorization header is replaced, never passed through. Nothing applies it
+to the cluster yet. SEC-MIGRATE-TYPESAFE switches jev and the judge to it on
+GKE, behind `SWARM_TYPESAFE_INJECT` (lanes TS-MIGRATE-POD and
+TS-MIGRATE-WORKER): with the switch on, no key is read or written in the pod,
+and jev and the judge reach TypeSafe through the worker's loopback shim.
+Switched off, the worker reads the key as above.
+
+**A TypeSafe judge runs on GKE only (lane JUDGE-GKE, owner decision
+2026-10-16).** The forwarder is an in-cluster Service, so a Cloud Run Job
+cannot reach it, and a judge there could only read the key file. Moving
+those judgments to GKE is what lets SEC-RETIRE remove every tenant worker's
+`-typesafe` grant. When the forwarder serves a tenant
+(`TYPESAFE_FORWARDER_ENABLED`, and the tenant in
+`TYPESAFE_FORWARDER_TENANTS`), the scheduler's router refuses to dispatch, as
+a Cloud Run Job, any attempt of a profile that carries the Jev client
+(claude-code, codex, claude-code-review, claude-code-browser) whose workspace
+judges with TypeSafe (`scheduler.dispatch.typesafe_judge_needs_gke`). It
+reads the stored backend as the worker's judge reads it, and treats a
+document it cannot read as TypeSafe. No GKE profile reaches Cloud Run today:
+the scheduler routes by the catalogue, and the `cloud_run_fallback_profiles`
+Jobs are idle rollbacks. So the guard holds only for a rollback, and for
+`claude-code-review`, which is CLOUD_RUN_JOB by contract (contract request
+84). A refusal returns the task to READY, holding nothing, and at the retry
+cap it ends FAILED with `typesafe_judge_needs_gke`. A park before the lease
+needs the drain loop, and is a question on the lane's PR. The design's §3.5
+lists what remains.
 
 ## 3. The one-time link
 
@@ -186,13 +243,21 @@ owner applies it; CI cannot (below).
 | `add_secret_version` | `secretmanager.versions.add` |
 | `list_secret_versions` | `secretmanager.versions.list` |
 | `destroy_secret_version` | `secretmanager.versions.destroy` |
+| `disable_secret_version` (`workspace_secrets.py`) | `secretmanager.versions.disable` |
 
-Not `secrets.get`: the module never reads a secret's metadata. Storing a second
+The last row is the workspace secrets store's rotation sweep
+(`SecretManagerWorkspaceSecrets`, #1347, owner decision Q5). It runs as the
+same swarm-api account on the same `swarm-tenant-*` names. It disables a
+rotated-out version after its 24-hour grace and never destroys one
+(docs/design/workspace-secrets.md §4.3). Its other calls are a subset of the
+rows above.
+
+Not `secrets.get`: neither module reads a secret's metadata. Storing a second
 key is `create_secret` answering `ALREADY_EXISTS`, which `create` authorises on
 the project. Not `versions.access`: there is no read path (the module
 docstring, point 3). Not `secrets.delete`: delete destroys versions and keeps
 the secret (§5). `tests/terraform/provider_keys.tftest.hcl` reads
-`credentials.py` and fails when a Secret Manager call is added or removed there
+`credentials.py` and `workspace_secrets.py` and fails when a Secret Manager call is added or removed there
 without the role following. So a new call cannot ship and then 403 in
 production.
 
@@ -264,6 +329,15 @@ Then plan and apply `terraform/bootstrap`. The plan is **2 to add, 0 to change,
 output shows the condition to read the plan against. After applying, the check
 is a live `PUT /v1/provider-keys/typesafe/user` that answers 200 instead of
 503.
+
+Where the role is already applied, the rotation sweep's permission (#1347) is
+**0 to add, 1 to change, 0 to destroy**. The one change is
+`google_project_iam_custom_role.provider_key_writer[0]`, updated in place, and
+its only differing attribute is `permissions` gaining
+`+ "secretmanager.versions.disable"`. Nothing is removed, the grant and its
+condition are unchanged, and no principal is added. After applying, the check
+is the rotation sweep's response reporting `failed: []` for a version past its
+grace.
 
 **Not verified live:** how IAM evaluates the name forms and the create
 resource type (the header of `provider_keys.tf`). The unit tests run against

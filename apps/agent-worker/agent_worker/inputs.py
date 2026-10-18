@@ -56,6 +56,23 @@ twice for the same reason: once to the sizes the upstream manifests declare, so
 an oversized set never starts, and again to the bytes that actually arrive,
 because a manifest is a claim about the object and only the download measures
 it.
+
+**An answer's files come with its form (Q12, docs/design/human-steps.md
+§4.3).** `input_from` names one file per parent, and the files a person
+attached to an `await-input` answer are named by that person, after
+submission. So the answer's manifest entry lists them under `attachments`,
+and staging the entry stages each of them into `<artifact stem>.files/` beside
+it:
+
+    {"name": "review.json", ..., "attachments": [{"name": "review.files/draft.md", ...}]}
+      -> <workspace>/work/review.json
+      -> <workspace>/work/review.files/draft.md
+
+Every attachment is held to exactly what the entry is: its URI through
+`artifact_key` (this tenant, this upstream task, one attempt's `artifacts/`),
+its destination through `destination_for`, a whole `bytes` that the cap
+counts, and the bytes that arrive re-counted. An entry with no `attachments`
+key -- every entry a worker's own upload writes -- stages exactly as before.
 """
 
 from __future__ import annotations
@@ -63,11 +80,12 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Mapping
 
 from swarm_common.states import TaskState
 
 from . import expected_outputs as expected_mod
+from . import indexrun
 from .errors import InputUnavailable
 from .objectstore import ObjectStore, validate_key
 
@@ -89,6 +107,27 @@ METADATA_KEY = "input_from"
 #: module on what the API stores, so the two cannot drift apart.
 DISPATCH_KEY = "dispatch"
 PARENTS_KEY = "input_parents"
+
+#: The manifest entry key that lists an answer's files (Q12). Written only by
+#: swarm-api's answer route (lane HW-API-ANSWER); `lifecycle._upload_outputs`
+#: never writes it, so no existing manifest changes meaning.
+ATTACHMENTS_KEY = "attachments"
+
+#: The directory an artifact's attachments sit in, beside it: `review.json`
+#: -> `review.files/`. A suffix the API's filename pattern cannot end a stem
+#: with ambiguously, since the stem is everything before the LAST dot.
+ATTACHMENTS_DIR_SUFFIX = ".files"
+
+
+def attachments_dir(filename: str) -> str:
+    """Where `filename`'s attachments are named, relative to the artifacts root.
+
+    `review.json` -> `review.files`; `reports/out.json` -> `reports/out.files`.
+    The answer route builds attachment names under it, and the worker refuses
+    an attachment named anywhere else.
+    """
+    path = PurePosixPath(filename)
+    return str(path.with_name(f"{path.stem}{ATTACHMENTS_DIR_SUFFIX}"))
 
 
 @dataclass(frozen=True)
@@ -112,12 +151,26 @@ class DeclaredInput:
 
 
 @dataclass(frozen=True)
+class AttachmentReference:
+    """One file an answer carried, per the answer's manifest entry (Q12)."""
+
+    #: Its name in the manifest: `<artifact stem>.files/<file>`.
+    name: str
+    key: str
+    uri: str
+    size_bytes: int
+
+
+@dataclass(frozen=True)
 class ArtifactReference:
     """Where a declared input actually lives, per the upstream's own manifest."""
 
     key: str
     uri: str
     size_bytes: int
+    #: The answer's files, when the entry lists any; empty for every entry a
+    #: worker's own upload wrote.
+    attachments: tuple[AttachmentReference, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -140,6 +193,10 @@ class StagedInput:
     #: patch it read, and this is how the console tells that patch from the
     #: one it is showing (`verdict.reviewed_patches`, diff viewer variant 3).
     sha256: str | None = None
+    #: For an answer's file, the declared artifact it came with
+    #: (`review.json` for `review.files/draft.md`); None for the artifact
+    #: itself, so a staged list with no attachments is unchanged.
+    attachment_of: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         record: dict[str, Any] = {
@@ -154,6 +211,8 @@ class StagedInput:
             record["sha256"] = self.sha256
         if self.from_checkpoint:
             record["from_checkpoint"] = True
+        if self.attachment_of:
+            record["attachment_of"] = self.attachment_of
         return record
 
 
@@ -379,14 +438,27 @@ def fetch_upstream_task(
 
     `call_options` is the read's `retry` and `timeout`: the lifecycle's
     startup budget, since staging runs before the runner starts.
+
+    A tenant switched to the state routes passes its attempt's state client
+    as `db` (`indexrun.state_routes`): the document is `GET state/upstream`'s,
+    and no Firestore call is made. swarm-api serves only an id this task
+    DECLARES -- its signed `depends_on`, `metadata.input_from` or dispatch
+    block's `input_parents` -- and only one of this tenant; any other id is
+    the same refusal, raised here as this module's InputUnavailable.
     """
-    snapshot = db.collection("tasks").document(upstream_task_id).get(**dict(call_options or {}))
-    if not snapshot.exists:
+    state = indexrun.state_routes(db)
+    if state is not None:
+        found = _route_upstream(state, upstream_task_id)
+    else:
+        snapshot = db.collection("tasks").document(upstream_task_id).get(
+            **dict(call_options or {}))
+        found = (snapshot.to_dict() or {}) if snapshot.exists else None
+    if found is None:
         raise InputUnavailable(
             f"upstream task {upstream_task_id} has no task document, so the "
             "artifact it was to supply cannot be located"
         )
-    document = snapshot.to_dict() or {}
+    document = found
     actual = document.get("tenant_id")
     if actual != tenant_id:
         raise InputUnavailable(
@@ -394,6 +466,29 @@ def fetch_upstream_task(
             f"{tenant_id!r}; refusing to stage another tenant's artifact"
         )
     return document
+
+
+#: `state/upstream`'s refusal of an id this task does not declare
+#: (`swarm_api.attemptstate.UpstreamNotDeclared`).
+UPSTREAM_NOT_DECLARED = "upstream_not_declared"
+
+
+def _route_upstream(state: Any, upstream_task_id: str) -> dict[str, Any] | None:
+    """`GET state/upstream`: the declared upstream's document, None when it has none."""
+    from .statecall import StateRefused  # lazy: statecall -> children -> inputs
+
+    try:
+        answer = state.get("upstream", {"upstream_task_id": upstream_task_id},
+                           deadline_seconds=indexrun.STATE_CALL_SECONDS)
+    except StateRefused as refused:
+        if refused.code != UPSTREAM_NOT_DECLARED:
+            raise
+        raise InputUnavailable(
+            f"upstream task {upstream_task_id} is not one this task declares as "
+            "upstream, so the state routes refuse to read it"
+        ) from None
+    document = answer.get("task")
+    return dict(document) if isinstance(document, Mapping) else None
 
 
 def find_ci_fix_tasks(
@@ -416,7 +511,27 @@ def find_ci_fix_tasks(
 
     What comes back are CLAIMS: `merge._ci_fixer_heads` holds each to its
     signed spec before its pushed head counts for anything.
+
+    A tenant switched to the state routes passes its attempt's state client
+    as `db` (`indexrun.state_routes`): swarm-api runs the same query,
+    restricted to this attempt's tenant (`POST state/ci-fix-tasks`), and no
+    Firestore call is made. The tenant is still asked of every document here.
     """
+    state = indexrun.state_routes(db)
+    if state is not None:
+        answer = state.post(
+            "ci-fix-tasks",
+            {"pull_request": pull_request, "root_task_id": root_task_id, "limit": limit},
+            deadline_seconds=indexrun.STATE_CALL_SECONDS,
+        )
+        rows = answer.get("tasks")
+        out: list[tuple[str, dict[str, Any]]] = []
+        for row in rows if isinstance(rows, list) else []:
+            document = row.get("task") if isinstance(row, Mapping) else None
+            if (isinstance(document, Mapping) and isinstance(row.get("id"), str)
+                    and document.get("tenant_id") == tenant_id):
+                out.append((row["id"], dict(document)))
+        return out
     from google.cloud.firestore_v1.base_query import FieldFilter  # lazy: grpc
 
     query = (
@@ -509,6 +624,12 @@ def artifact_reference(
             ),
             uri=uri,
             size_bytes=size,
+            attachments=_attachment_references(
+                entry,
+                tenant_id=tenant_id,
+                upstream_task_id=upstream_task_id,
+                filename=filename,
+            ),
         )
 
     # A skipped artifact is a different fault with a different remedy: the file
@@ -536,6 +657,102 @@ def artifact_reference(
         f"{filename!r}; it uploaded "
         + (", ".join(repr(n) for n in sorted(names)) if names else "nothing")
     )
+
+
+def _attachment_references(
+    entry: dict[str, Any], *, tenant_id: str, upstream_task_id: str, filename: str
+) -> tuple[AttachmentReference, ...]:
+    """The files an answer's manifest entry lists, each checked as the entry is.
+
+    ABSENT is every entry a worker wrote and returns `()`, so staging is
+    unchanged. PRESENT BUT MALFORMED RAISES, as a malformed `input_from`
+    does: the dependant's prompt was written to read `review.files/`, and
+    staging the form without the files it lists hands the agent a review of
+    a draft it cannot see.
+
+    Each attachment must be named `<artifact stem>.files/<one file>`, carry a
+    whole `bytes` (refused when absent, for the reason the entry's is: the
+    cap is a sum), and have a URI that `artifact_key` accepts with its own
+    name -- this tenant, this upstream task, one attempt's `artifacts/`. A
+    URI anywhere else is refused here, in pass 3, before anything downloads.
+    """
+    raw = entry.get(ATTACHMENTS_KEY)
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise InputUnavailable(
+            f"upstream task {upstream_task_id} recorded {filename!r} with "
+            f"{ATTACHMENTS_KEY} that are not a list ({type(raw).__name__}); "
+            "refusing to stage it without the files it says it carries"
+        )
+    directory = attachments_dir(filename)
+    references: list[AttachmentReference] = []
+    seen: set[str] = set()
+    for item in raw:
+        # Every refusal OPENS "upstream task <id>": the outcome classifier
+        # reads the opening of `last_error` (`swarm_api.outcomes`), and that
+        # is an opening it files under "inputs unavailable".
+        if not isinstance(item, dict):
+            raise InputUnavailable(
+                f"upstream task {upstream_task_id} recorded an attachment of "
+                f"{filename!r} that is a {type(item).__name__}, not an entry; refusing "
+                "to stage it"
+            )
+        name = item.get("name")
+        if not isinstance(name, str) or not name:
+            raise InputUnavailable(
+                f"upstream task {upstream_task_id} recorded an attachment of "
+                f"{filename!r} with no name; refusing to stage it"
+            )
+        parent, separator, leaf = name.rpartition("/")
+        if (
+            not separator
+            or parent != directory
+            or leaf in ("", ".", "..")
+            or "\\" in leaf
+            or "\x00" in leaf
+        ):
+            raise InputUnavailable(
+                f"upstream task {upstream_task_id} recorded an attachment of "
+                f"{filename!r} named {name!r}, where one file under "
+                f"{directory + '/'!r} was required; refusing to stage it"
+            )
+        if name in seen:
+            raise InputUnavailable(
+                f"upstream task {upstream_task_id} recorded an attachment of "
+                f"{filename!r} named {name!r} twice; one would overwrite the other"
+            )
+        seen.add(name)
+        uri = item.get("uri")
+        if not isinstance(uri, str) or not uri:
+            raise InputUnavailable(
+                f"upstream task {upstream_task_id} recorded an attachment of "
+                f"{filename!r}, {name!r}, with no location, so it cannot be fetched"
+            )
+        size = item.get("bytes")
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            recorded = "no size" if size is None else f"a size of {size!r}"
+            raise InputUnavailable(
+                f"upstream task {upstream_task_id} recorded an attachment of "
+                f"{filename!r}, {name!r}, with {recorded}, where a whole "
+                "number of bytes was required; that number is what bounds how "
+                "much one attempt may stage into a memory-backed workspace, so "
+                "the input is refused rather than fetched uncounted"
+            )
+        references.append(
+            AttachmentReference(
+                name=name,
+                key=artifact_key(
+                    uri,
+                    tenant_id=tenant_id,
+                    upstream_task_id=upstream_task_id,
+                    filename=name,
+                ),
+                uri=uri,
+                size_bytes=size,
+            )
+        )
+    return tuple(references)
 
 
 #: A recorded skip cause (an `artifacts_skipped` entry's `cause`), as a
@@ -608,6 +825,9 @@ def stage_inputs(
     """Put every declared input on disk, or fail the attempt trying.
 
     `call_options` goes on each upstream task read (`fetch_upstream_task`).
+    An input whose manifest entry lists `attachments` brings them along
+    (Q12): each is resolved and refused with the inputs in pass 3, counted in
+    the cap, fetched and re-counted in pass 4, and staged beside its artifact.
     """
     if not declared:
         return []
@@ -641,6 +861,7 @@ def stage_inputs(
                     sha256=_sha256(destination),
                 )
             )
+            staged.extend(_checkpointed_attachments(item, destination, work))
             logger.info(
                 "declared input already present from the checkpoint; not re-fetching",
                 upstream_task=item.upstream_task_id,
@@ -650,7 +871,10 @@ def stage_inputs(
         pending.append(item)
 
     # Pass 3: resolve every remaining input BEFORE downloading any of them.
+    # An answer's attachments are resolved here too, so one forged URI among
+    # them refuses the whole set before a single byte moves.
     references: dict[DeclaredInput, ArtifactReference] = {}
+    attachment_destinations: dict[tuple[DeclaredInput, str], Path] = {}
     documents: dict[str, dict[str, Any]] = {}
     for item in pending:
         if item.upstream_task_id not in documents:
@@ -666,17 +890,34 @@ def stage_inputs(
             upstream_task_id=item.upstream_task_id,
             filename=item.filename,
         )
+        # `<step>/` for a `by_parent` step, `""` otherwise: an attachment
+        # lands beside its artifact, wherever the artifact lands.
+        prefix = item.destination[: len(item.destination) - len(item.filename)]
+        for attachment in references[item].attachments:
+            attachment_destinations[(item, attachment.name)] = destination_for(
+                work, prefix + attachment.name, reserved=reserved
+            )
+    _assert_attachments_land_alone(destinations, attachment_destinations)
 
     # The workspace is memory-backed tmpfs, so inputs are charged against the
     # attempt's RAM. One artifact cannot exceed `max_artifact_bytes` -- the cap
     # was applied when it was uploaded -- but ten of them together can, and an
     # OOM kill several minutes into an agent run is a far worse diagnosis than a
     # refusal at setup. The same cap bounds what one attempt may move either way.
-    total = sum(reference.size_bytes for reference in references.values())
+    # An answer's attachments count: up to 16 MiB of them per answer, and
+    # this cap, not a new one, is what bounds them (design §4.3).
+    total = sum(
+        reference.size_bytes
+        + sum(attachment.size_bytes for attachment in reference.attachments)
+        for reference in references.values()
+    )
     if total > max_total_bytes:
+        files = sum(len(reference.attachments) for reference in references.values())
+        carrying = f" (carrying {files} attached files)" if files else ""
         raise InputUnavailable(
-            f"the {len(references)} declared inputs total {total} bytes, over the "
-            f"{max_total_bytes} byte cap for one attempt; refusing to stage them"
+            f"the {len(references)} declared inputs total {total} bytes{carrying}, "
+            f"over the {max_total_bytes} byte cap for one attempt; refusing to "
+            "stage them"
         )
 
     # Pass 4: fetch, re-checking the cap against what actually arrives.
@@ -688,16 +929,16 @@ def stage_inputs(
     # spent. A perfect type on the manifest entry would not close this; the
     # manifest is a claim, and the claim is checkable only here.
     downloaded = 0
-    for item in pending:
-        reference = references[item]
-        destination = destinations[item]
+
+    def fetch(item: DeclaredInput, name: str, key: str, uri: str, destination: Path) -> int:
+        nonlocal downloaded
         destination.parent.mkdir(parents=True, exist_ok=True)
         try:
-            size = store.download_file(reference.key, destination)
+            size = store.download_file(key, destination)
         except Exception as exc:
             raise InputUnavailable(
-                f"could not stage {item.filename!r} from upstream task "
-                f"{item.upstream_task_id} ({reference.uri}): {exc}"
+                f"could not stage {name!r} from upstream task "
+                f"{item.upstream_task_id} ({uri}): {exc}"
             ) from exc
         downloaded += size
         if downloaded > max_total_bytes:
@@ -710,13 +951,19 @@ def stage_inputs(
             except OSError:  # pragma: no cover - best effort on a doomed attempt
                 pass
             raise InputUnavailable(
-                f"staging {item.filename!r} from upstream task "
+                f"staging {name!r} from upstream task "
                 f"{item.upstream_task_id} brought the declared inputs to "
                 f"{downloaded} bytes actually downloaded, over the "
                 f"{max_total_bytes} byte cap for one attempt; the upstream "
                 f"manifests declared {total} bytes in total, so at least one of "
                 "them under-reported what it had stored"
             )
+        return size
+
+    for item in pending:
+        reference = references[item]
+        destination = destinations[item]
+        size = fetch(item, item.filename, reference.key, reference.uri, destination)
         staged.append(
             StagedInput(
                 upstream_task_id=item.upstream_task_id,
@@ -733,6 +980,92 @@ def stage_inputs(
             filename=item.filename,
             bytes=size,
         )
+        for attachment in reference.attachments:
+            target = attachment_destinations[(item, attachment.name)]
+            size = fetch(item, attachment.name, attachment.key, attachment.uri, target)
+            staged.append(
+                StagedInput(
+                    upstream_task_id=item.upstream_task_id,
+                    filename=attachment.name,
+                    path=target.relative_to(work).as_posix(),
+                    size_bytes=size,
+                    uri=attachment.uri,
+                    sha256=_sha256(target),
+                    attachment_of=item.filename,
+                )
+            )
+            logger.info(
+                "staged an attachment of a declared input",
+                upstream_task=item.upstream_task_id,
+                filename=attachment.name,
+                bytes=size,
+            )
 
-    staged.sort(key=lambda item: (item.upstream_task_id, item.filename))
+    # Each upstream's declared artifact before its attachments: a `when` gate
+    # reads the FIRST staged entry of its upstream as the verdict
+    # (`lifecycle._evaluate_verdict_gate`), and `review.files/...` sorts
+    # before `review.json` by name. With no attachments this is the old order.
+    staged.sort(
+        key=lambda item: (item.upstream_task_id, item.attachment_of is not None, item.filename)
+    )
     return staged
+
+
+def _assert_attachments_land_alone(
+    destinations: Mapping[DeclaredInput, Path],
+    attachment_destinations: Mapping[tuple[DeclaredInput, str], Path],
+) -> None:
+    """Refuse an attachment that would land on another staged file.
+
+    `review.json` and `review.md` from two upstreams both name their files
+    under `review.files/`, so two answers can each carry a `draft.md`, and an
+    upstream's own artifact may be named `review.files/draft.md`. Either way
+    one file would overwrite another, so the attempt is refused, for the
+    reason `_assert_distinct_destinations` refuses two inputs of one name.
+    """
+    claimed: dict[Path, str] = {
+        path: f"{item.filename!r} from upstream task {item.upstream_task_id}"
+        for item, path in destinations.items()
+    }
+    for (item, name), path in attachment_destinations.items():
+        mine = f"{name!r} attached to {item.filename!r} from upstream task {item.upstream_task_id}"
+        if path in claimed:
+            raise InputUnavailable(
+                f"upstream task {item.upstream_task_id} attached {name!r} to "
+                f"{item.filename!r}, which would be staged over {claimed[path]}; "
+                "one would silently overwrite the other, so the attempt is refused"
+            )
+        claimed[path] = mine
+
+
+def _checkpointed_attachments(
+    item: DeclaredInput, destination: Path, work: Path
+) -> list[StagedInput]:
+    """The attachments a restored checkpoint carried beside `destination`.
+
+    A resumed attempt does not re-read the upstream's manifest for an input
+    the checkpoint already holds (pass 2), so the attachments are not
+    re-fetched either: they were staged with the artifact, in the same pass,
+    before the first checkpoint, and the agent may since have edited them.
+    What `<stem>.files/` holds now is what the agent is told about; each
+    regular file in it, never a link, is reported as from the checkpoint.
+    """
+    directory = destination.parent / PurePosixPath(attachments_dir(destination.name)).name
+    if directory.is_symlink() or not directory.is_dir():
+        return []
+    found: list[StagedInput] = []
+    for path in sorted(directory.iterdir()):
+        if path.is_symlink() or not path.is_file():
+            continue
+        found.append(
+            StagedInput(
+                upstream_task_id=item.upstream_task_id,
+                filename=f"{attachments_dir(item.filename)}/{path.name}",
+                path=path.relative_to(work).as_posix(),
+                size_bytes=path.stat().st_size,
+                from_checkpoint=True,
+                sha256=_sha256(path),
+                attachment_of=item.filename,
+            )
+        )
+    return found

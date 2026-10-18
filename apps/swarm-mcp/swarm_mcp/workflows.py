@@ -50,8 +50,9 @@ import re
 import threading
 from typing import Any, Callable
 
+from . import awaitinput
 from . import profiles as catalogue
-from .client import SwarmClient, SwarmError
+from .client import SwarmClient, SwarmError, session_tag
 from .follow import follow_command
 from .patches import masked_counts
 from .progress import questions_count
@@ -94,6 +95,10 @@ _STEP_KEYS = frozenset(
         # A step that may end SUCCEEDED with no change (#644): the API has taken
         # it since then; until 2026-10-07 this list refused it at the keyboard.
         "allow_empty_diff",
+        # A step that waits for a person (docs/design/human-steps.md §4.1):
+        # sent as given; swarm-api checks the block and its profile, and
+        # refuses it while `await-input` is unavailable.
+        "await_input",
     }
 )
 
@@ -108,6 +113,10 @@ _STEP_KEYS = frozenset(
 #: workflow` alike -- and named here, so it is the one key this module drops
 #: knowingly.
 DISPLAY_ONLY_STEP_KEYS = frozenset({"stage"})
+
+#: The request field a per-run MCP credential map travels in
+#: (docs/design/registered-mcp-servers.md §4.3): beside a spec, never in one.
+PER_RUN_FIELD = "mcp_credentials"
 
 #: The top-level keys a `swarm workflow` spec may carry -- the file the
 #: terminal command reads and the object `swarm_workflow`'s `spec` takes. One
@@ -354,6 +363,16 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
                 )
             if raw["allow_empty_diff"]:
                 step["allow_empty_diff"] = True
+        if raw.get("await_input") is not None:
+            # THE SHAPE ONLY: an object. Its fields, their bounds and which
+            # profile may carry it are `swarm_api.validation`'s rules
+            # (`resolve_await_input`) and are not restated here.
+            if not isinstance(raw["await_input"], dict):
+                raise SwarmError(
+                    f"{where}: await_input must be an object -- the form a person answers, "
+                    'e.g. {"form": "verdict", "expires_after_seconds": 86400, "on_expire": "fail"}'
+                )
+            step["await_input"] = dict(raw["await_input"])
         if raw.get("stage") is not None and not isinstance(raw.get("stage"), str):
             raise SwarmError(f"{where}: stage must be a string -- a note for the spec's reader, never sent")
         steps.append(step)
@@ -439,6 +458,18 @@ def read_spec(document: Any, *, where: str = "the workflow spec") -> dict[str, A
     """
     if not isinstance(document, dict):
         raise SwarmError(f"{where} must be an object with a `steps` list")
+    if PER_RUN_FIELD in document:
+        # Named, because the generic refusal below would read as "not yet
+        # supported". A spec is a file: it is digested, held by `spec_ref`,
+        # copied into a run script and reread, and a credential in it would
+        # be in every one of those (docs/design/registered-mcp-servers.md
+        # §4.11). The value is never repeated.
+        raise SwarmError(
+            f"{where} carries `{PER_RUN_FIELD}`, and a per-run credential is never part of a "
+            "spec, which is written to disk, held and copied into a run script. Pass the "
+            f"spec without it and give `{PER_RUN_FIELD}` to swarm_workflow beside the spec. "
+            "Nothing was sent"
+        )
     unknown = sorted(set(document) - SPEC_KEYS)
     if unknown:
         raise SwarmError(
@@ -478,8 +509,16 @@ def submit(
     merge_pr: dict[str, Any] | None = None,
     merge: str | None = None,
     after: list[dict[str, int]] | None = None,
+    mcp_credentials: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """`POST /v1/workflows`. Returns the route's envelope, not just the workflow.
+
+    `mcp_credentials` is the caller's per-run credential map for the
+    registered MCP servers its steps name (`server.check_mcp_credentials` has
+    checked its shape): ONE map for the whole submission, top-level beside
+    `steps` as `WorkflowCreate` takes it, never inside a step's `input`.
+    Sent only when given, so a workflow naming none sends what it always
+    did; the envelope comes back through `server.without_credentials`.
 
     The envelope is kept whole because its second half is the part a caller
     cannot get anywhere else: `dispatch` echoes the strategy and carrier that
@@ -491,6 +530,9 @@ def submit(
         "steps": steps,
         "metadata": {
             "origin": "swarm-mcp",
+            # The Claude Code session that sent it (SC-SESSION-SCOPE); swarm-api
+            # writes the workflow's metadata onto every step task.
+            **session_tag(),
             **({"unit": label} if label else {}),
             **({"title": title} if title else {}),
             **({"merge": merge} if merge is not None else {}),
@@ -512,6 +554,8 @@ def submit(
         body["merge_pr"] = merge_pr
     if after:
         body["after"] = after
+    if mcp_credentials:
+        body[PER_RUN_FIELD] = mcp_credentials
     envelope = _envelope(client.request("POST", "/v1/workflows", payload=body), "submitting")
     _remember_launch(envelope["workflow"])
     return envelope
@@ -692,23 +736,25 @@ def workspace_tag(workspace: Any) -> str:
     return f"[{flat}] " if flat else ""
 
 
-def workflow_title(name: str, steps: int, workspace: str | None = None) -> str:
-    """`SC · [<workspace>] <name> · N steps`, at most TITLE_CHARS characters
-    (`SC · <name> · N steps` when no workspace is known).
+def workflow_title(name: str, steps: int) -> str:
+    """`SC · <name> · N steps`, at most TITLE_CHARS characters.
 
-    The NAME is cut, never the workspace or the step count: at the last word
-    boundary that fits, with `…`; a single word longer than the room is cut
-    inside it."""
+    No workspace: SC-ROWS put `[<workspace>] ` after the prefix, SC-WS-DESC
+    moved it to the run's description, and SC-DESC-DETAILS (owner 2026-10-14:
+    no `[Engineering]` or `[eng@saga.xyz]` in front of any name) took the
+    parameter away, so no caller can put it back.
+
+    The NAME is cut, never the step count: at the last word boundary that
+    fits, with `…`; a single word longer than the room is cut inside it."""
     tail = " · " + _steps_text(steps)
-    tag = workspace_tag(workspace)
-    room = max(1, TITLE_CHARS - len(TITLE_PREFIX) - len(tag) - len(tail))
+    room = max(1, TITLE_CHARS - len(TITLE_PREFIX) - len(tail))
     flat = _flat(name) or "workflow"
     if len(flat) > room:
         head = flat[: room - 1]
         if flat[room - 1] != " " and " " in head:
             head = head[: head.rindex(" ")]
         flat = head.rstrip() + "…"
-    return TITLE_PREFIX + tag + flat + tail
+    return TITLE_PREFIX + flat + tail
 
 
 def stored_names(envelope: dict[str, Any]) -> dict[str, str | None]:
@@ -946,6 +992,9 @@ def step_rows(
             row["cancel_requested"] = True
         if task.get("park_reason"):
             row["park_reason"] = task["park_reason"]
+        # A step waiting for a person: its window, or once answered who
+        # answered (docs/design/human-steps.md §4.5). Nothing for any other.
+        row.update(awaitinput.row_fields(task, envelope.get("tenant_id")))
         if task.get("blocked_by"):
             row["blocked_by"] = task["blocked_by"]
         if task.get("last_error"):

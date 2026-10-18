@@ -497,37 +497,45 @@ export function StopRun({
       >
         <li className="ctl-fact">
           <b>stops</b>
-          <code>{task.id}</code>
-          {step !== null && (
-            <>
-              {' '}
-              step <code>{step.step_id}</code>
-            </>
-          )}
+          <span className="stop-val">
+            <code>{task.id}</code>
+            {step !== null && (
+              <>
+                {' '}
+                step <code>{step.step_id}</code>
+              </>
+            )}
+          </span>
         </li>
         {task.attempt_count > 0 && (
           <li className="ctl-fact">
             <b>attempt</b>
-            {task.attempt_count} of {task.max_attempts}, not resumed
+            <span className="stop-val">
+              {task.attempt_count} of {task.max_attempts}, not resumed
+            </span>
           </li>
         )}
         <li className="ctl-fact">
           <b>work so far</b>
-          {earlier
-            ? earlierWorkFact
-            : !live
-              ? 'none to harvest'
-              : started
-                ? 'kept — checkpoint, artifacts and logs are uploaded first'
-                : 'none — no worker has ever started this task'}
+          <span className="stop-val">
+            {earlier
+              ? earlierWorkFact
+              : !live
+                ? 'none to harvest'
+                : started
+                  ? 'kept — checkpoint, artifacts and logs are uploaded first'
+                  : 'none — no worker has ever started this task'}
+          </span>
         </li>
         <li className="ctl-fact">
           <b>takes effect</b>
-          {!live
-            ? 'at once'
-            : started
-              ? "at the worker's next heartbeat, not now"
-              : 'when a worker starts, or when the reconciler finishes it — not now'}
+          <span className="stop-val">
+            {!live
+              ? 'at once'
+              : started
+                ? "at the worker's next heartbeat, not now"
+                : 'when a worker starts, or when the reconciler finishes it — not now'}
+          </span>
         </li>
       </ul>
 
@@ -540,16 +548,16 @@ export function StopRun({
         <ul className="ctl-facts stop-facts stop-blast">
           <li className={doomed.length > 0 ? 'ctl-fact' : 'ctl-fact is-absent'}>
             <b>once stopped, also cancels</b>
-            {doomed.length === 0 ? (
-              'nothing — no other step depends on this one'
-            ) : (
-              <StepIdList steps={doomed} />
-            )}
+            <span className="stop-val">
+              {doomed.length === 0 ? 'nothing — no other step depends on this one' : <StepIdList steps={doomed} />}
+            </span>
           </li>
           {survivors.length > 0 && (
             <li className="ctl-fact">
               <b>keeps running</b>
-              <StepIdList steps={survivors} />
+              <span className="stop-val">
+                <StepIdList steps={survivors} />
+              </span>
             </li>
           )}
         </ul>

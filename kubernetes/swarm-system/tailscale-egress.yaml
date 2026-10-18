@@ -3,18 +3,22 @@
 # backends call (owner decisions 2026-10-14; lane JUDGE-NET;
 # docs/runbooks/tailscale-egress.md).
 #
-# A pod labelled `swarm-judge: internal` connects to
+# A pod labelled `swarm-judge: internal` connects to the Service below,
 #
-#   decision-api.swarm-system.svc.cluster.local:443
+#   __DECISION_API_CLUSTER_IP__:443  (decision-api.swarm-system.svc.cluster.local)
 #
 # and gets a raw TCP stream to __TAILNET_FQDN__:443 on the tailnet. TLS is
 # end to end, between the caller and the decision API: nothing here
 # terminates it, holds a certificate or sees a request. The certificate is
 # the tailnet name's, so a caller connects to the in-cluster Service and
-# verifies (and sends SNI and Host for) the tailnet name -- curl spells that
-# `--connect-to`; the runbook has the command.
+# verifies (and sends SNI and Host for) the tailnet name. The scheduler does
+# that for a judging pod with a hostAliases entry pinning __TAILNET_FQDN__ to
+# the Service's FIXED clusterIP (owner decision 2026-10-15, #1380), so its
+# JEV_API_URL is https://__TAILNET_FQDN__/...; curl by hand spells it
+# `--connect-to`. The runbook has both.
 #
-# A TEMPLATE, with ONE placeholder (the tailnet name), filled by
+# A TEMPLATE, with TWO placeholders (the tailnet name and the Service's
+# clusterIP, terraform's local.decision_api_cluster_ip), filled by
 # terraform/infra/tailscale.tf and served as its `tailscale_egress_manifest`
 # output; `kubernetes/apply.sh --swarm-system` applies it after the relay and
 # swarm-egress, and then syncs the Tailscale OAuth client secret into the
@@ -149,6 +153,10 @@ spec:
 # A ClusterIP Service, not headless, so callers use 443 as the brief names it;
 # Dataplane V2 enforces NetworkPolicy after the Service's DNAT, so the
 # policies above and in the tenant namespace judge the pod and its 8443.
+# The clusterIP is FIXED: every judging pod pins the tailnet name to it in
+# /etc/hosts (hostAliases), so a recreated Service with a new address would
+# strand them. It is terraform/infra/tailscale.tf local.decision_api_cluster_ip,
+# stated there once.
 apiVersion: v1
 kind: Service
 metadata:
@@ -161,6 +169,7 @@ metadata:
     swarm.saga.xyz/tailnet-fqdn: __TAILNET_FQDN__
 spec:
   type: ClusterIP
+  clusterIP: __DECISION_API_CLUSTER_IP__
   selector:
     app.kubernetes.io/name: decision-api-egress
   ports:

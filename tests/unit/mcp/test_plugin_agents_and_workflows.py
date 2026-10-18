@@ -555,7 +555,10 @@ def test_run_js_uses_only_the_workflow_globals():
     tokens = _tokens(_RUN_JS.read_text())
     _, end = _meta_span(tokens)
     body = tokens[end:]
-    declared: set[str] = set()
+    # `meta` is the script's own `export const meta`, in scope for the body
+    # (the harnesses below run it as `const meta`); run.js reads its name to
+    # tell a launch by name from a titled copy (SC-TITLES).
+    declared: set[str] = {"meta"}
     for index, (kind, text) in enumerate(body):
         if kind != "ident":
             continue
@@ -772,8 +775,8 @@ def test_run_js_submits_once_then_starts_one_step_row_per_step(tmp_path):
         "sc:workflow", "Submit", "[SwarmCloud] scan · 4 steps · setup · submit")
     lines = submit["prompt"].split("\n")
     assert lines[:3] == ["SUBMIT", "spec_digest: " + workflows.spec_digest(_SPEC), "BEGIN SPEC"]
-    assert lines[-1] == "END SPEC"
-    assert json.loads("\n".join(lines[3:-1])) == _SPEC, "the spec must reach the submitting agent verbatim"
+    assert lines[-2] == "END SPEC" and lines[-1].startswith("request: ")
+    assert json.loads("\n".join(lines[3:-2])) == _SPEC, "the spec must reach the submitting agent verbatim"
 
     # One row per step, labelled `[SwarmCloud] <workflow> · stage <n> · <step>`
     # (owner decision, 2026-10-01) with the CONSOLE'S stage, the DAG level plus
@@ -1004,7 +1007,8 @@ def test_run_js_takes_a_spec_files_path_and_submits_what_the_bridge_read(tmp_pat
         "sc:workflow", "Submit", "[SwarmCloud] specs/scan.json · setup · read spec")
     assert read["prompt"] == "READ SPEC\npath: specs/scan.json"
     # By the ref the bridge holds: the submit row never sees the spec.
-    assert submit["prompt"] == "SUBMIT\nspec_digest: " + workflows.spec_digest(_SPEC) + "\nspec_ref: spec_00112233aabbccdd"
+    assert submit["prompt"].split("\n")[:3] == ["SUBMIT", "spec_digest: " + workflows.spec_digest(_SPEC),
+                                                "spec_ref: spec_00112233aabbccdd"]
     assert got["result"]["workflow_id"] == "wf_1"
     assert "read the spec from /work/widgets/specs/scan.json" in got["logs"][0], got["logs"]
 

@@ -90,9 +90,17 @@
 .live-screen {
   flex: 1; min-width: 0; min-height: 0; border-radius: var(--radius);
   border: 1px solid var(--line); background: var(--bg); overflow: hidden;
+  /* Holds .live-type-hint (KEYS-FOCUS). */
+  position: relative;
 }
 .live-screen.is-control { border-color: var(--warn); }
 .live-screen.is-control:focus-within { outline: 2px solid var(--warn); outline-offset: 1px; }
+/* KEYS-FOCUS: in control, over the screen while its canvas has no focus. Clicks go through to it. */
+.live-type-hint {
+  position: absolute; top: 8px; left: 50%; transform: translateX(-50%); pointer-events: none;
+  padding: 2px 8px; border-radius: var(--radius); background: var(--warn); color: var(--bg);
+  font-size: var(--t-meta); white-space: nowrap;
+}
 .live-screen-say { color: var(--text-dim); font-size: var(--t-meta); }
 
 .live-control { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; position: relative; }
@@ -170,6 +178,8 @@
 /* LIVE-UNUSED (#1030): a RUNNING agent that has not connected to this browser
    a minute after its first frame. Its own line in the strip, never the verdict's. */
 .live-strip-unused { flex-basis: 100%; color: var(--text); }
+/* The gate's reason that part of the page is painted over (STRIP-LABEL): a line of its own, above the browser. */
+.live-strip-cover { flex-basis: 100%; color: var(--warn-ink); }
 .live-strip-unused strong { color: var(--warn-ink); }
 
 /* BSTATUS-STRIP (#1030): the browser tool, egress and Jev badges, the strip's

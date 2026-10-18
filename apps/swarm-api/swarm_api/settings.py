@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 
 from swarm_common.config import Settings
 from swarm_common.identity import SERVICE_ACCOUNT_EMAIL, TenantMember
+from swarm_common.profiles import MODEL_CLASSES
 
 from .refusals import validate_environment as validate_refusal_switches
 
@@ -48,6 +49,13 @@ def _int(name: str, default: int) -> int:
         return int(raw)
     except ValueError as exc:  # pragma: no cover - misconfiguration
         raise ValueError(f"{name} must be an integer, got {raw!r}") from exc
+
+
+def _percent(name: str, default: int) -> int:
+    value = _int(name, default)
+    if not 0 <= value <= 100:
+        raise ValueError(f"{name} must be a percent from 0 to 100, got {value}")
+    return value
 
 
 def _bool(name: str, default: bool) -> bool:
@@ -142,6 +150,56 @@ def _tenant_members(
     return tuple(result)
 
 
+def parse_worker_class_models(raw: str) -> dict[str, str]:
+    """WORKER_CLASS_MODELS -> {model class: model ID}. Empty means none pinned.
+
+    #1435, docs/design/model-per-step.md §4.2: terraform's
+    `jsonencode(local.runner_models)` (`model_class_env`), the ONE place a
+    class's ID is stated, and the same map the scheduler dispatches with. This
+    service fills `Task.model` from it and serves it on /v1/runtimes. Refused
+    at start, as the scheduler refuses its copy
+    (`scheduler.settings.check_worker_class_models`), against the frozen
+    `ModelClass.admits` rather than a restatement of it: a map whose keys are
+    not exactly the MODEL_CLASSES names, or whose ID is not of its class, would
+    record and serve the wrong model for every step of that class.
+
+    EMPTY IS ALLOWED: the local emulator loop, and a settings object a test
+    builds. Then no class but a profile's default can be named
+    (`validation.check_model_class_available`), and `TaskCreate.model` is
+    recorded as sent, as before this map existed.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return {}
+    try:
+        models = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"WORKER_CLASS_MODELS is not valid JSON: {exc}") from exc
+    if not isinstance(models, dict):
+        raise ValueError(
+            "WORKER_CLASS_MODELS must be a JSON object of model class -> model ID, "
+            f"got {type(models).__name__}"
+        )
+    if not models:
+        return {}
+    missing = sorted(set(MODEL_CLASSES) - set(models))
+    extra = sorted(str(k) for k in set(models) - set(MODEL_CLASSES))
+    if missing or extra:
+        raise ValueError(
+            f"WORKER_CLASS_MODELS must name exactly the model classes "
+            f"{tuple(MODEL_CLASSES)}; missing {missing}, not a class {extra}"
+        )
+    for name, model_id in models.items():
+        if not MODEL_CLASSES[name].admits(model_id):
+            raise ValueError(
+                f"WORKER_CLASS_MODELS[{name!r}] = {model_id!r} is not a {name} model: "
+                f"a pin of this class is claude-{MODEL_CLASSES[name].family}-<major>"
+                f"[-<minor>][-<yyyymmdd>] with major at least "
+                f"{MODEL_CLASSES[name].min_major}"
+            )
+    return dict(models)
+
+
 @dataclass(frozen=True)
 class ApiSettings:
     """Everything the API needs at process start."""
@@ -185,6 +243,25 @@ class ApiSettings:
     #: (`swarm_api.admins`) and keeps granting admin as the fallback until the
     #: operator trims it to this one address.
     platform_owner: str = ""
+    #: Whether a platform admin (`AuthContext.is_admin`) may select a
+    #: registered GROUP workspace they are not a member of, as that
+    #: workspace's admin (docs/design/workspace-roles.md §4.2, owner answer
+    #: Q5, 2026-10-18). Never anyone else's personal (`u-`) workspace, on or
+    #: off. OFF by default (PLATFORM_ADMIN_REACH): it widens who may enter a
+    #: tenant (invariant 9), so it goes on in dev first, is exercised by the
+    #: acceptance probe, and only then goes on in prod -- the same order as
+    #: the refusal switches (§4.7). Off, `AuthContext.platform_reach` is
+    #: empty and `Authenticator.may_act_in` never answers "platform_admin",
+    #: which is the behaviour before roles exactly.
+    platform_admin_reach: bool = False
+    #: How long one instance trusts a workspace role it read
+    #: (ROLE_CACHE_SECONDS; `swarm_api.roles`, docs/design/workspace-roles.md
+    #: §4.12). 15: the same bound `admins.ROLE_CACHE_SECONDS` puts on a
+    #: removed platform admin, so a person narrowed by a workspace admin
+    #: keeps their old role on another instance for no longer than a demoted
+    #: platform admin keeps theirs. A decision that must see a change made a
+    #: moment ago (an approval, an answer) reads past it, fresh.
+    role_cache_seconds: float = 15.0
     #: A NARROWER capability than admin, by email: these callers may call the
     #: admin routes in `auth.POOL_ADMIN_ROUTES` -- today only
     #: `PUT /v1/admin/limits/runner/{runner_profile}` -- and no other.
@@ -526,6 +603,80 @@ class ApiSettings:
     #: The exit country (owner decision Q6: US), returned with the ticket so
     #: the take-control dialog can say where sites see the browser from.
     browser_egress_country: str = "us"
+    #: THE TYPESAFE FORWARDER (docs/design/workspace-secrets.md §3.5; lane
+    #: SEC-INJECT-A). `swarm-typesafe-fwd-key`, from SWARM_TYPESAFE_FWD_KEY by
+    #: Secret Manager reference (terraform/infra/typesafe_fwd.tf): what the
+    #: attempt TypeSafe ticket is MAC'd with. Empty means no forwarder: the
+    #: route answers 503. Excluded from the repr, as `egress_key` is.
+    typesafe_fwd_key: str = field(default="", repr=False)
+    #: A TypeSafe ticket's life: how long one copied out of a compromised pod
+    #: can spend its key. Five minutes, shorter than the egress ticket's ten,
+    #: because a ticket here spends a person's or a workspace's key rather than
+    #: platform bandwidth. Clamped to the forwarder's 60-900 s.
+    typesafe_ticket_seconds: int = 300
+    #: THE SHARED GRAPH SERVICE (docs/design/graph-service.md §3.2; lane
+    #: GS-TICKET, part of #1384). `swarm-graph-ticket-key`, from
+    #: SWARM_GRAPH_TICKET_KEY by Secret Manager reference: what the attempt
+    #: graph ticket is MAC'd with, its own key so a graph-service compromise
+    #: cannot mint an egress or TypeSafe ticket. Empty means no graph service:
+    #: the route answers 503 and the worker stages as it does today. Excluded
+    #: from the repr, as `typesafe_fwd_key` is.
+    graph_ticket_key: str = field(default="", repr=False)
+    #: A graph ticket's life. Ten minutes, the egress ticket's: a ticket here
+    #: reads only the graph its attempt is already entitled to read (§3.2), so
+    #: it need not be as short as the TypeSafe ticket's. Clamped to the
+    #: service's 60-900 s.
+    graph_ticket_seconds: int = 600
+    #: SETTINGS INTEGRITY (docs/design/tenant-settings-integrity.md §4.5; #1457,
+    #: lanes ISO-SETTINGS-MAC and ISO-API-SETTINGS). `swarm-settings-key`, from
+    #: SWARM_SETTINGS_KEY by Secret Manager reference: what swarm-api MACs every
+    #: `workspace_settings` block it writes with (`swarm_api.judgment`). Empty
+    #: means nothing is signed, which is every write before ISO-SETTINGS-MAC.
+    #: Excluded from the repr, as `graph_ticket_key` is.
+    settings_key: str = field(default="", repr=False)
+    #: The previous version, accepted when VERIFYING beside the current one
+    #: while `scripts/resign-workspace-settings.sh` re-signs under the new one
+    #: (SWARM_SETTINGS_KEY_PREVIOUS). Empty outside a rotation.
+    settings_key_previous: str = field(default="", repr=False)
+    #: The tenants whose settings are acted on only when their MAC verifies
+    #: (SETTINGS_MAC_TENANTS, comma-separated, or `*` for every tenant): the
+    #: per-tenant cutover, owner decision Q7. EMPTY by default, so every reader
+    #: behaves as before until the stored documents are re-signed and an
+    #: operator lists a tenant; a tenant listed before that reads its unsigned
+    #: settings as unset (fail closed).
+    settings_mac_tenants: tuple[str, ...] = ()
+    #: The NAT addresses every worker's MCP call leaves through, which a
+    #: registered MCP server's operator allowlists (docs/design/registered-
+    #: mcp-servers.md §4.9). MCP_EGRESS_ADDRESSES, comma-separated, rendered
+    #: by terraform/infra/locals.tf from the NAT's reserved addresses (the
+    #: resource the `mcp_egress_addresses` output reads). Empty serves `[]`
+    #: on GET /v1/mcp-servers, and the console says so in words.
+    mcp_egress_addresses: tuple[str, ...] = ()
+    #: GRANT ATTESTATION (docs/design/workspace-secrets.md, "What
+    #: SEC-GRANT-ATTEST built"; owner decision 2026-10-15). `swarm-workspace-
+    #: grant-key`, from SWARM_WORKSPACE_GRANT_KEY by Secret Manager reference
+    #: (terraform/infra/workspace_grant_key.tf): what swarm-api MACs every
+    #: workspace-secret grant with (`swarm_api.grant_attest`). Empty means
+    #: grants are written unattested. Excluded from the repr, as `live_key` is.
+    workspace_grant_key: str = field(default="", repr=False)
+    #: The previous version, accepted when VERIFYING beside the current one
+    #: during a rotation; never used to sign. Empty outside one.
+    workspace_grant_key_previous: str = field(default="", repr=False)
+    #: OFF by default, because grants written before SEC-GRANT-ATTEST carry no
+    #: attestation: switched on before `POST /v1/admin/workspace-secrets/
+    #: attest-grants` has re-signed them, every such grant would stop being
+    #: released and a required slot would park CREDENTIAL_MISSING across
+    #: every workspace at once. While off, an UNATTESTED grant is released
+    #: with a `grant_attestation_missing` warning; a grant whose attestation is
+    #: present but wrong is dropped either way. docs/runbooks/
+    #: workspace-grant-attestation.md is the order to turn it on in.
+    grant_attestation_required: bool = False
+    #: Whether agent-runtime-browser carries jev-browser (JEV-IMAGE, #1296).
+    #: ON by default because the image does; a deployment rolled back to an
+    #: image without it sets BROWSER_JEV_INSTALLED=false, and a `browser_tool:
+    #: jev` submission is then refused (`browser_tool_unavailable`) rather than
+    #: run without the tool it named (BSTATUS-API).
+    browser_jev_installed: bool = True
 
     # --- stopping a cancelled task's execution (#627) ----------------------
     #: Whether the cancel routes ask for the execution to be stopped
@@ -548,6 +699,18 @@ class ApiSettings:
     #: the owner says otherwise. A service submission is never refused either
     #: way. This default stays off so a test or a local run refuses nothing.
     repository_grants_enforced: bool = False
+
+    # --- a step's additional repositories (#1434, MR-API) ------------------
+    #: Whether a submission may name `additional_repositories`. OFF by
+    #: default (docs/design/multi-repository-steps.md §6, "Feature flag"):
+    #: while off, a submission that names any is refused
+    #: `additional_repositories_disabled` and nothing is stored, so a
+    #: swarm-api deployed ahead of the workers that clone them writes no task
+    #: those workers would fail. The operator turns it on
+    #: (ADDITIONAL_REPOSITORIES_ENABLED) after workers with lane MR-WORKER
+    #: are deployed. Its limits are not here: they are platform settings an
+    #: admin edits at run time (`store.PLATFORM_SETTINGS_DEFAULTS`).
+    additional_repositories_enabled: bool = False
 
     #: The topic the reconciler stops executions from (EXECUTION_CANCEL_TOPIC,
     #: terraform's `<prefix>-execution-cancel`). The reconciler, not this
@@ -580,6 +743,26 @@ class ApiSettings:
     #: is offered the tool. A feature flag, not a refusal switch: its off
     #: position is "no such tool", never "let the request through".
     search_tool_enabled: bool = False
+    #: Whether swarm-api's BACKGROUND GitHub reads (the merge wake's CI reads,
+    #: the issue run's CI read, the stranded-PR sweep, the repository index's
+    #: head poll) go out with the App's INSTALLATION token for the
+    #: repository's owner (swarm_api.forge_installation, #1483) instead of the
+    #: tenant's `-git` token. ON by default: on 2026-10-17 those reads, made
+    #: as one person's App user token, spent that person's 5,000 calls an hour
+    #: and every push test and publish acting as them failed. An owner with no
+    #: installation (reached through a person's token) and a failed mint keep
+    #: the tenant's token either way, so on is never less able to read than
+    #: off. FORGE_INSTALLATION_READS=false turns it off.
+    forge_installation_reads: bool = True
+    #: Background GitHub reads (the merge wake, the after-PR gates, the
+    #: stranded-PR sweep, the index poll, forgeperms' cached read) skip a
+    #: tick while their credential has less than this percent of its limit
+    #: left (swarm_api.forge_limits, QUOTA-THROTTLE, #1483). 20: on 2026-10-17
+    #: background reads spent a person's 5,000 calls an hour and their own
+    #: push tests and lane publishes were refused; a fifth of the window is
+    #: what those actions spent in the busiest measured hour, so it is kept
+    #: for them. Actions a person takes are never deferred. 0 turns it off.
+    forge_quota_defer_percent: int = 20
     #: Which `swarm_api.search.PROVIDERS` entry answers (SEARCH_PROVIDER).
     #: Brave: the first implementation, pending the owner's choice
     #: (questions.json of lane SEARCH-TOOL).
@@ -593,6 +776,17 @@ class ApiSettings:
     #: most $1 a day, and the 26 analysed browser tasks made at most a handful
     #: of searches each, so 200 is room for dozens of tasks.
     search_daily_queries_per_tenant: int = 200
+
+    # --- model classes (docs/design/model-per-step.md §4.4, #1435) ---------
+    #: Model class -> the ID a step of that class runs (WORKER_CLASS_MODELS,
+    #: `parse_worker_class_models`). Empty: no class but a profile's default
+    #: may be named, and `TaskCreate.model` is recorded as sent. There is no
+    #: separate enablement flag (owner decision R4, 2026-10-17): this map is
+    #: set by the terraform that already pins the scheduler's, and lane order
+    #: kept the classes unreachable until the scheduler and worker had merged.
+    #: `hash=False`: a dict is unhashable, and the settings are compared, never
+    #: hashed, by this field.
+    worker_class_models: dict[str, str] = field(default_factory=dict, hash=False)
 
     @property
     def project_id(self) -> str:
@@ -680,6 +874,8 @@ class ApiSettings:
             admin_groups=_csv("ADMIN_GROUPS"),
             admin_users=admin_users,
             platform_owner=platform_owner,
+            platform_admin_reach=_bool("PLATFORM_ADMIN_REACH", False),
+            role_cache_seconds=float(_int("ROLE_CACHE_SECONDS", 15)),
             admin_pool_users=admin_pool_users,
             rollup_sweeper_users=rollup_sweeper_users,
             schedule_tick_users=_csv("SCHEDULE_TICK_USERS"),
@@ -690,6 +886,7 @@ class ApiSettings:
             dispatch_topic=os.environ.get("DISPATCH_TOPIC", "").strip(),
             execution_cancel_enabled=_bool("EXECUTION_CANCEL_ENABLED", True),
             repository_grants_enforced=_bool("REPOSITORY_GRANTS_ENFORCED", False),
+            additional_repositories_enabled=_bool("ADDITIONAL_REPOSITORIES_ENABLED", False),
             execution_cancel_topic=os.environ.get("EXECUTION_CANCEL_TOPIC", "").strip(),
             workspace_apply_topic=os.environ.get(
                 "WORKSPACE_APPLY_TOPIC", "swarm-workspace-apply"
@@ -750,10 +947,28 @@ class ApiSettings:
             browser_egress_profiles=_csv("BROWSER_EGRESS_PROFILES", "claude-code-browser"),
             browser_egress_country=os.environ.get("BROWSER_EGRESS_COUNTRY", "us").strip().lower()
             or "us",
+            typesafe_fwd_key=os.environ.get("SWARM_TYPESAFE_FWD_KEY", "").strip(),
+            typesafe_ticket_seconds=_int("TYPESAFE_TICKET_SECONDS", 300),
+            graph_ticket_key=os.environ.get("SWARM_GRAPH_TICKET_KEY", "").strip(),
+            graph_ticket_seconds=_int("GRAPH_TICKET_SECONDS", 600),
+            settings_key=os.environ.get("SWARM_SETTINGS_KEY", "").strip(),
+            settings_key_previous=os.environ.get("SWARM_SETTINGS_KEY_PREVIOUS", "").strip(),
+            settings_mac_tenants=_csv("SETTINGS_MAC_TENANTS"),
+            mcp_egress_addresses=_csv("MCP_EGRESS_ADDRESSES"),
+            workspace_grant_key=os.environ.get("SWARM_WORKSPACE_GRANT_KEY", "").strip(),
+            workspace_grant_key_previous=os.environ.get(
+                "SWARM_WORKSPACE_GRANT_KEY_PREVIOUS", "").strip(),
+            grant_attestation_required=_bool("GRANT_ATTESTATION_REQUIRED", False),
+            browser_jev_installed=_bool("BROWSER_JEV_INSTALLED", True),
             search_tool_enabled=_bool("SEARCH_TOOL_ENABLED", False),
+            forge_installation_reads=_bool("FORGE_INSTALLATION_READS", True),
+            forge_quota_defer_percent=_percent("FORGE_QUOTA_DEFER_PERCENT", 20),
             search_provider=search_provider,
             search_api_key_secret=os.environ.get(
                 "SEARCH_API_KEY_SECRET", "swarm-search-api-key").strip()
             or "swarm-search-api-key",
             search_daily_queries_per_tenant=_int("SEARCH_DAILY_QUERIES_PER_TENANT", 200),
+            worker_class_models=parse_worker_class_models(
+                os.environ.get("WORKER_CLASS_MODELS", "")
+            ),
         )

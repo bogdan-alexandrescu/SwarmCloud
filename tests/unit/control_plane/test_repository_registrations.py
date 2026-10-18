@@ -190,7 +190,7 @@ def test_a_repository_that_is_not_owner_slash_repo_is_refused(make, repository):
     {"index": {"interval_hours": 0}},
     {"index": {"interval_hours": 169}},
     {"index": {"interval_hours": "sometimes"}},
-    {"index": {"on_change": "webhook"}},
+    {"index": {"on_change": "push"}},  # `webhook` is accepted since GS-PUSHAPI
     {"index": {"min_change_interval_minutes": 5}},
     {"index": {"full_every_days": 31}},
     {"index": {"current_sha": "f" * 40}},

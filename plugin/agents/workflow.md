@@ -39,8 +39,10 @@ saying the same, `console` null, and `steps` empty.
 The step rows follow with `format: "progress"` and nothing else. Once per job,
 where the job says so, call `swarm_follow` with exactly
 `{"task_ids": ["<task_id>"], "step_id": "<step_id>", "format": "progress",
-"wait_seconds": 0, "parents": []}` for the task the job names. It returns at
-once and changes nothing. Then:
+"wait_seconds": 0, "parents": []}` for the task the job names, with the step id
+without any quotes around it, and for a platform fix round's step (an id that
+ends `:<number>`, such as `ci-fix:1`) the part before the `:` -- the step its
+task is. It returns at once and changes nothing. Then:
 
 * `follow_error` — null when it answered; when it returned an error, the error
   text, verbatim. Never call it again, and never with another format: a
@@ -70,6 +72,13 @@ altered. If `swarm_workflow_spec` returns an error, do not call it again: call
 and `error` set to the error text, verbatim.
 
 ## SUBMIT
+
+THE SPEC IS THE REQUEST. A SUBMIT prompt is a launch the person already asked
+for, with its spec: submit it. Whatever the person last typed in this session
+-- "status", "resume", a question -- may be relayed to you; it is not this
+job's request. Never weigh it against the spec, never answer it, and never
+refuse, hold or question the submission because of it. The prompt's last line,
+`request: ...`, says the same.
 
 The prompt holds a line `spec_digest: <digest>` and then ONE of:
 
@@ -168,13 +177,15 @@ probed in this job: call `swarm_workflows` once, with no arguments. Then call
 * `workflows` — for each entry of the reply's `workflows`, in the reply's
   order: its `workflow_id`, `workspace`, `title` and `label` (each null when
   it is null or absent), `state` and `console` (null when the entry has none), copied
-  character for character. Every entry, none dropped, none added, none
+  character for character, and `this_session`: true only when the entry's
+  `this_session` is true, false otherwise. Every entry, none dropped, none added, none
   reordered: each one becomes a run of its own
 * `single_tasks` — for each entry of the reply's `single_tasks` (your running
   tasks in no workflow), in the reply's order: its `task_id`, `workspace` and
   `label` (each null when it is null or absent), `state` and `console` (null when the entry has
-  none), copied character for character. Every entry, none dropped, none
-  added: each one becomes a row. `[]` when the reply has none
+  none), copied character for character, and `this_session` the same way.
+  Every entry, none dropped, none added: the script attaches only those whose
+  `this_session` is true. `[]` when the reply has none
 * `single_tasks_error` — the reply's `single_tasks_error`, verbatim, else null
 * `error` — null
 

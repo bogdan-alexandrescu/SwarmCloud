@@ -35,6 +35,9 @@ import type {
   AdminGrantAnswer, AdminRemoveAnswer, LoanDeclineAnswer, LoanRequestAnswer, PeopleDoc, WorkspaceActionAnswer, WorkspaceLimitsAnswer, WorkspaceLoanAnswer, WorkspaceView,
   AccessCheckName, AccessDisableResponse, AccessEnableResponse, AccessGrantResponse, AccessMembers, AccessMode, AccessOverview,
   AccessOwners, AccessRepositoryPage, AccessRevokeResponse, AccessVerifyResponse,
+  NotificationTopic, Preferences, PreferencesSaved, PreferencesWrite, Profile, ProfileClaudeAccount, ProfileClaudeAccounts, ProfileDefault,
+  ProfileGitHub, ProfileIdentity, ProfileKeyStatus, ProfileNotifications, ProfileQuotaWindow, ProfileSection, ProfileTypeSafe, ProfileWorkspace,
+  ReminderCadence, WorkspaceRole,
 } from './types'
 
 // The fetch contract lives in fetch.ts. This file is only the list of reads
@@ -1837,7 +1840,7 @@ async function fixtureResourceClasses(): Promise<Result<{ resource_classes: Reso
     data: {
       resource_classes: {
         standard: { name: 'standard', cpu: 4, memory_gib: 8, disk_gib: 4, units: 1 },
-        browser: { name: 'browser', cpu: 8, memory_gib: 16, disk_gib: 8, units: 2 },
+        browser: { name: 'browser', cpu: 4, memory_gib: 8, disk_gib: 4, units: 1 },
         large: { name: 'large', cpu: 8, memory_gib: 32, disk_gib: 16, units: 4 },
       },
     },
@@ -3096,6 +3099,10 @@ export async function setPoolLimit(poolName: string, limit: number): Promise<Res
  * pools tied at 15 and `codex` by two tied at 10, so every single-ceiling
  * counterfactual on them reads zero. Those zeros are the shape an operator has
  * to recognise, and they are real numbers off the dev platform, not staged ones.
+ *
+ * `browser` was regenerated at 1 unit when contract request 79 dropped the
+ * class from 2; test_blocker_ui_surface.py's `FIXTURE_PROFILES` carries the
+ * weight it is generated with, so change both in one commit.
  */
 const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
   "mock": {
@@ -3410,7 +3417,7 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
     "uncapped": []
   },
   "browser": {
-    "units": 2,
+    "units": 1,
     "headroom": 0,
     "basis": "measured",
     "blockers": [
@@ -3489,14 +3496,13 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
       {
         "pool": "provider:anthropic:tenant:u-bogdan",
         "action": "raise",
-        "headroom_after": 2,
+        "headroom_after": 4,
         "basis_after": "measured",
-        "delta": 2,
+        "delta": 4,
         "next_binding": [
           "resource:browser",
           "runner:browser",
-          "backend:GKE_AUTOPILOT",
-          "provider:anthropic"
+          "backend:GKE_AUTOPILOT"
         ]
       }
     ],
@@ -3554,7 +3560,8 @@ const FIXTURE_INPUT_CONTRACTS: Record<string, RunnerInputContract> = {
   "post-verdict": {"required_keys": []},
   "claude-code-review": {"required_keys": ["prompt"]},
   "indexer": {"required_keys": ["prompt"]},
-  "claude-code-browser": {"required_keys": ["prompt"]}
+  "claude-code-browser": {"required_keys": ["prompt"]},
+  "await-input": {"required_keys": []}
 }
 
 /**
@@ -3587,7 +3594,8 @@ const FIXTURE_AVAILABILITY: Record<string, FixtureAvailability> = {
   "post-verdict": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."},
   "claude-code-review": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."},
   "indexer": {"available": true, "disabled_reason": ""},
-  "claude-code-browser": {"available": true, "disabled_reason": ""}
+  "claude-code-browser": {"available": true, "disabled_reason": ""},
+  "await-input": {"available": false, "disabled_reason": "await-input steps are being built (docs/design/human-steps.md)"}
 }
 
 async function fixtureCapacity(): Promise<Result<Capacity>> {
@@ -3661,7 +3669,7 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
           input_contract: FIXTURE_INPUT_CONTRACTS.codex,
         },
         browser: {
-          resource_class: 'browser', backend: 'GKE_AUTOPILOT', provider: 'anthropic', units: 2,
+          resource_class: 'browser', backend: 'GKE_AUTOPILOT', provider: 'anthropic', units: 1,
           ...FIXTURE_AVAILABILITY.browser,
           pools: [
             'global', 'tenant:u-bogdan', 'resource:browser', 'runner:browser',
@@ -3671,10 +3679,11 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
           input_contract: FIXTURE_INPUT_CONTRACTS.browser,
         },
         // Contract request 67: claude-code on the browser image, so it costs a
-        // browser class (2 units) and runs where the browser image must. No
-        // admission row: the panel reads a missing one as not measured.
+        // browser class (1 unit since contract request 79; 2 before) and runs
+        // where the browser image must. No admission row: the panel reads a
+        // missing one as not measured.
         'claude-code-browser': {
-          resource_class: 'browser', backend: 'GKE_AUTOPILOT', provider: 'anthropic', units: 2,
+          resource_class: 'browser', backend: 'GKE_AUTOPILOT', provider: 'anthropic', units: 1,
           ...FIXTURE_AVAILABILITY['claude-code-browser'],
           pools: [
             'global', 'tenant:u-bogdan', 'resource:browser', 'runner:claude-code-browser',
@@ -5532,13 +5541,13 @@ export function normRepoHardStops(raw: unknown): RepoHardStops | null {
 }
 
 /** A registration's detail with its hard-stop fields, read from the one answer. */
-export type RepoDetailRead = RepoDetail & { hard_stops: RepoHardStops | null }
+export type RepoDetailRead = RepoDetail & { hard_stops: RepoHardStops | null; context: RepoContext }
 
 /** `GET /v1/repositories/{repo_id}`: one registration, its last index runs, who used its index, and its hard stops. */
 export async function loadRepository(repoId: string): Promise<Result<RepoDetailRead | null>> {
   return readAs(route('/v1/repositories/{repo_id}', { repo_id: repoId }), (raw) => {
     const d = normRepoDetail(raw)
-    return d === null ? null : { ...d, hard_stops: normRepoHardStops(raw) }
+    return d === null ? null : { ...d, hard_stops: normRepoHardStops(raw), context: normRepoContext(raw) }
   })
 }
 
@@ -5659,7 +5668,7 @@ export interface RegisterRepositoryBody {
   repository: string
   default_branch?: string
   allowed_profiles?: string[]
-  /** repo-index.md §3.3: 1-168 or `'off'`; `poll`, `webhook` (phase 3) or `off`. */
+  /** repo-index.md §3.3: 1-168 or `'off'`; `poll`, `webhook` (poll and push, graph-service.md §6.2) or `off`. */
   index?: { interval_hours: number | 'off'; on_change: 'poll' | 'webhook' | 'off' }
 }
 
@@ -5782,6 +5791,215 @@ export async function deleteProviderKey(provider: string, scope: ProviderKeyScop
 }
 
 // ---------------------------------------------------------------------------
+// Settings › Profile (docs/design/user-profile.md §4.2; PROFILE-API, PR #1544).
+// Profile.tsx is the only caller. Every field is copied BY NAME from an
+// allow-list, as the API builds it, so a field a response carries by mistake
+// -- a secret's name, a token id, a raw document -- is never drawn. A section
+// the response leaves out stays out (it is named in `unavailable`), and is
+// never filled in with an empty default that would read as "you have none".
+// ---------------------------------------------------------------------------
+
+/** `preferences.TOPICS`, in the API's order. */
+export const NOTIFICATION_TOPICS: readonly NotificationTopic[] = ['approval', 'waiting_step', 'question', 'failed', 'finished', 'account', 'admin']
+
+/** `preferences.REMINDERS`, in the API's order. */
+export const REMINDER_CADENCES: readonly ReminderCadence[] = ['as_set', 'every_4h', 'daily', 'never']
+
+const PROFILE_SECTIONS: readonly ProfileSection[] = ['preferences', 'github', 'typesafe', 'claude_accounts']
+
+function pfObj(v: unknown): Record<string, unknown> | null {
+  return typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null
+}
+
+function pfStr(v: unknown): string | null {
+  return typeof v === 'string' && v !== '' ? v : null
+}
+
+function pfStrOrNum(v: unknown): string | null {
+  return typeof v === 'number' && Number.isFinite(v) ? String(v) : pfStr(v)
+}
+
+function pfNum(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+function normRole(raw: unknown): WorkspaceRole {
+  const r = pfObj(raw) ?? {}
+  return { name: pfStr(r.name) ?? '', source: pfStr(r.source) ?? '', via: pfStr(r.via) }
+}
+
+function normIdentity(raw: unknown): ProfileIdentity {
+  const r = pfObj(raw) ?? {}
+  return {
+    email: pfStr(r.email) ?? '',
+    display_name: pfStr(r.display_name),
+    display_name_suggested: pfStr(r.display_name_suggested),
+    domain: pfStr(r.domain),
+    platform_role: pfStr(r.platform_role),
+    is_admin: r.is_admin === true,
+    is_admin_unresolved: r.is_admin_unresolved === true,
+  }
+}
+
+function normWorkspace(raw: unknown): ProfileWorkspace | null {
+  const r = pfObj(raw)
+  const tenantId = r === null ? null : pfStr(r.tenant_id)
+  if (r === null || tenantId === null) return null
+  return {
+    tenant_id: tenantId,
+    display_name: pfStr(r.display_name) ?? tenantId,
+    kind: pfStr(r.kind) ?? '',
+    role: normRole(r.role),
+    state: pfStr(r.state),
+    selectable: r.selectable !== false,
+    is_acting: r.is_acting === true,
+    is_default: r.is_default === true,
+  }
+}
+
+function normDefault(raw: unknown): ProfileDefault {
+  const r = pfObj(raw) ?? {}
+  return { tenant_id: pfStr(r.tenant_id), source: pfStr(r.source), ignored: pfStr(r.ignored) }
+}
+
+function normGitHub(raw: unknown): ProfileGitHub | null {
+  const r = pfObj(raw)
+  const tenantId = r === null ? null : pfStr(r.tenant_id)
+  if (r === null || tenantId === null) return null
+  const f = pfObj(r.failure)
+  return {
+    tenant_id: tenantId,
+    state: pfStr(r.state),
+    forge_login: pfStr(r.forge_login),
+    method: pfStr(r.method),
+    access_expires_at: pfStr(r.access_expires_at),
+    refreshed_at: pfStr(r.refreshed_at),
+    failure: f === null ? null : { code: pfStr(f.code), recovery: pfStr(f.recovery) },
+  }
+}
+
+function normProfileKey(raw: unknown): ProfileKeyStatus {
+  const r = pfObj(raw) ?? {}
+  return { set: r.set === true, set_at: pfStr(r.set_at), set_by: pfStr(r.set_by), version: pfStrOrNum(r.version) }
+}
+
+function normTypeSafe(raw: unknown): ProfileTypeSafe {
+  const r = pfObj(raw) ?? {}
+  const acting = pfObj(r.acting_workspace) ?? {}
+  return {
+    personal: pfObj(r.personal) === null ? null : normProfileKey(r.personal),
+    acting_workspace: { ...normProfileKey(acting), tenant_id: pfStr(acting.tenant_id) ?? '' },
+    uses: r.uses === 'user' || r.uses === 'tenant' ? r.uses : 'none',
+  }
+}
+
+function normTopics(raw: unknown): NotificationTopic[] {
+  const given = Array.isArray(raw) ? raw : []
+  return NOTIFICATION_TOPICS.filter((t) => given.includes(t))
+}
+
+function normPreferencesSet(raw: unknown): Preferences {
+  const r = pfObj(raw) ?? {}
+  const reminder = REMINDER_CADENCES.find((c) => c === r.reminder) ?? 'as_set'
+  return { muted: normTopics(r.muted), reminder }
+}
+
+function normNotifications(raw: unknown): ProfileNotifications {
+  const r = pfObj(raw) ?? {}
+  const topics = normTopics(r.topics)
+  return { preferences: normPreferencesSet(r.preferences), topics: topics.length === 0 ? [...NOTIFICATION_TOPICS] : topics }
+}
+
+function normWindow(raw: unknown): ProfileQuotaWindow | undefined {
+  const r = pfObj(raw)
+  return r === null ? undefined : { utilization: pfNum(r.utilization), resets_at: pfStr(r.resets_at) }
+}
+
+function normAccount(raw: unknown): ProfileClaudeAccount | null {
+  const r = pfObj(raw)
+  if (r === null || (r.relation !== 'own' && r.relation !== 'borrowed')) return null
+  const w = pfObj(r.windows) ?? {}
+  const windows: ProfileClaudeAccount['windows'] = {}
+  const five = normWindow(w.five_hour)
+  const seven = normWindow(w.seven_day)
+  if (five !== undefined) windows.five_hour = five
+  if (seven !== undefined) windows.seven_day = seven
+  return {
+    account_id: pfStr(r.account_id),
+    label: pfStr(r.label),
+    relation: r.relation,
+    state: pfStr(r.state),
+    windows,
+    lent_to_count: pfNum(r.lent_to_count),
+    // An account with no freshness flag is not claimed fresh.
+    stale: r.stale !== false,
+  }
+}
+
+function normClaudeAccounts(raw: unknown): ProfileClaudeAccounts {
+  const r = pfObj(raw) ?? {}
+  const list = Array.isArray(r.accounts) ? r.accounts : []
+  return {
+    personal_workspace: pfStr(r.personal_workspace),
+    accounts: list.map(normAccount).filter((a): a is ProfileClaudeAccount => a !== null),
+    unreadable_document_count: pfNum(r.unreadable_document_count) ?? 0,
+  }
+}
+
+function pfPresent<T>(v: T | null): v is T {
+  return v !== null
+}
+
+export function normProfile(raw: unknown): Profile {
+  const r = pfObj(raw) ?? {}
+  const unavailable = Array.isArray(r.unavailable) ? PROFILE_SECTIONS.filter((s) => (r.unavailable as unknown[]).includes(s)) : []
+  const c = pfObj(r.connections) ?? {}
+  const connections: Profile['connections'] = {}
+  if (Array.isArray(c.github)) connections.github = c.github.map(normGitHub).filter(pfPresent)
+  if (pfObj(c.typesafe) !== null) connections.typesafe = normTypeSafe(c.typesafe)
+  const profile: Profile = {
+    identity: normIdentity(r.identity),
+    workspaces: Array.isArray(r.workspaces) ? r.workspaces.map(normWorkspace).filter(pfPresent) : [],
+    default_workspace: normDefault(r.default_workspace),
+    connections,
+    revision: pfNum(r.revision),
+    unavailable,
+  }
+  if (pfObj(r.notifications) !== null) profile.notifications = normNotifications(r.notifications)
+  if (pfObj(r.claude_accounts) !== null) profile.claude_accounts = normClaudeAccounts(r.claude_accounts)
+  return profile
+}
+
+function normPreferencesSaved(raw: unknown): PreferencesSaved {
+  const r = pfObj(raw) ?? {}
+  const id = pfObj(r.identity) ?? {}
+  return {
+    identity: { display_name: pfStr(id.display_name), display_name_suggested: pfStr(id.display_name_suggested) },
+    default_workspace: normDefault(r.default_workspace),
+    notifications: normNotifications(r.notifications),
+    revision: pfNum(r.revision) ?? 0,
+  }
+}
+
+/** `GET /v1/profile`: the signed-in person's own profile, each section failing alone. */
+export async function loadProfile(): Promise<Result<Profile>> {
+  return readAs(route('/v1/profile'), normProfile)
+}
+
+/**
+ * `PUT /v1/profile/preferences`: replace the whole set at `body.revision`. A
+ * stale revision is a 409 `preferences_changed` (another tab saved first); a
+ * refused name is a 422 with its `display_name_*` code and a message that names
+ * the rule.
+ */
+export async function putPreferences(body: PreferencesWrite): Promise<Result<PreferencesSaved>> {
+  const r = await writeTo(route('/v1/profile/preferences'), 'PUT', body)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normPreferencesSaved(r.data) }
+  if (r.status === 'empty') return { status: 'error', error: { kind: 'server_error', httpStatus: null, code: null, message: 'The save answered with nothing to read back. Reload to see what was stored.', method: 'PUT' } }
+  return r
+}
+
+// ---------------------------------------------------------------------------
 // The workspace's Jev judgment backend (JUDGE-SELECT; swarm_api/judgment.py).
 // Internal Jev is the default; Internal Laya and TypeSafe are the others. The
 // backend is chosen BY NAME: no URL or key goes in the PUT body.
@@ -5853,6 +6071,86 @@ export async function loadJudgment(): Promise<Result<Judgment>> {
 /** `PUT /v1/workspaces/{tenant_id}/judgment-backend`: the owner's or an admin's choice. */
 export async function putJudgmentBackend(tenantId: string, backend: JevBackend): Promise<Result<unknown>> {
   return writeTo(route('/v1/workspaces/{tenant_id}/judgment-backend', { tenant_id: tenantId }), 'PUT', { judgment_backend: backend })
+}
+
+// ---------------------------------------------------------------------------
+// Code intelligence (CTXQ-UI over CTXQ-SET; docs/design/context-quality.md
+// §4.7). The workspace's switch is ONE FIELD of `workspace_settings/{tenant_id}`
+// (`code_intelligence`, beside `judgment_backend` and `merge`), written by
+// swarm-api (`swarm_api/codeintel.py`); the API answers and takes the flat
+// shape: `{jev, context, context_ab, defaults, updated_at, updated_by,
+// can_edit, repositories}` and a PUT body of `{jev}`. `jev` -- whether Jev is ever sent code -- is OFF unless
+// the API says, explicitly, `true`: an answer without the field is a workspace
+// that never turned it on. A repository's `context` override is
+// `on | off`, or absent for inherit, and travels on `PATCH
+// /v1/repositories/{repo_id}` as `merge_policy` does, `inherit` clearing it.
+// These shapes follow CTXQ-SET's API; a fix to them is here.
+// ---------------------------------------------------------------------------
+
+export interface CodeIntelligence {
+  tenant_id: string
+  /** The workspace's owner or a platform admin; the API is the gate. */
+  can_edit: boolean
+  /** Whether Jev is sent excerpts of this workspace's code. Off by default. */
+  jev: boolean
+  /** The local context default (pack and graph tools); nothing leaves the platform. On by default. */
+  context: boolean
+  set_at: string | null
+  set_by: string | null
+}
+
+function normCodeIntelligence(raw: unknown): CodeIntelligence {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  const defaults = (typeof r.defaults === 'object' && r.defaults !== null ? r.defaults : {}) as Record<string, unknown>
+  // `context` is `on | off | inherit`; inherit is the platform default.
+  const context = r.context === 'on' || r.context === 'off' ? r.context : defaults.context
+  return {
+    tenant_id: keyField(r.tenant_id) ?? '',
+    can_edit: r.can_edit === true,
+    jev: r.jev === true,
+    context: context !== 'off',
+    set_at: keyField(r.updated_at),
+    set_by: keyField(r.updated_by),
+  }
+}
+
+/** `GET /v1/code-intelligence`: the selected workspace's Code intelligence setting. */
+export async function loadCodeIntelligence(): Promise<Result<CodeIntelligence>> {
+  return readAs(route('/v1/code-intelligence'), normCodeIntelligence)
+}
+
+/** `PUT /v1/workspaces/{tenant_id}/code-intelligence`: the owner's or an admin's switch. */
+export async function putCodeIntelligence(tenantId: string, jev: boolean): Promise<Result<unknown>> {
+  return writeTo(route('/v1/workspaces/{tenant_id}/code-intelligence', { tenant_id: tenantId }), 'PUT', { jev })
+}
+
+/** A repository's `context` override; `inherit` is the absent field. */
+export type RepoContext = 'on' | 'off' | 'inherit'
+
+/** The registration's `context`, `inherit` when absent or unknown. */
+export function normRepoContext(raw: unknown): RepoContext {
+  if (typeof raw !== 'object' || raw === null) return 'inherit'
+  const outer = raw as Record<string, unknown>
+  const rec = (typeof outer.repository === 'object' && outer.repository !== null ? outer.repository : outer) as Record<string, unknown>
+  return rec.context === 'on' || rec.context === 'off' ? rec.context : 'inherit'
+}
+
+/** `PATCH /v1/repositories/{repo_id}` with `context`: on, off, or inherit to clear it. */
+export async function patchRepositoryContext(repoId: string, context: RepoContext): Promise<Result<unknown>> {
+  const target = route('/v1/repositories/{repo_id}', { repo_id: repoId })
+  if (USE_FIXTURES) return repoNotServed<unknown>(target)
+  return write(target, 'PATCH', { context })
+}
+
+/**
+ * `PATCH /v1/repositories/{repo_id}` with `index.on_change` alone: the API
+ * merges `index` field by field (`Repositories.patch`), so the interval and
+ * the throttle are left as they are. Any member of the workspace may send it.
+ */
+export async function patchRepositoryTrigger(repoId: string, onChange: 'poll' | 'webhook' | 'off'): Promise<Result<unknown>> {
+  const target = route('/v1/repositories/{repo_id}', { repo_id: repoId })
+  if (USE_FIXTURES) return repoNotServed<unknown>(target)
+  return write(target, 'PATCH', { index: { on_change: onChange } })
 }
 
 // ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@ import {
   useState,
   type ClipboardEvent,
   type KeyboardEvent,
+  type MouseEvent,
   type ReactNode,
   type RefObject,
   type SyntheticEvent,
@@ -76,6 +77,19 @@ import './styles/live.css'
  * the canvas, so the console's own shortcuts (Escape closes the split, `[`
  * folds the list) do not fire under someone typing into the agent's browser.
  *
+ * THE KEYS FOLLOW THE PERSON IN CONTROL BACK TO THE CANVAS (KEYS-FOCUS; part
+ * of #1030). MEASURED 2026-10-14 on task_84cb2038aa704c829d48 generation 5:
+ * the owner switched iphone-15 -> desktop twice and typed into the form; the
+ * gate counted keys=0 pointer=87 for that connection. Pressing a device chip
+ * leaves focus on the chip, so every key went to the console; a reconnect
+ * replaces noVNC's canvas, and the theater moves it, without a blur, so the
+ * line under the canvas went on saying the keys went to the agent's browser.
+ * So: a device switch in control hands focus back to the canvas, a canvas
+ * that replaces a focused one takes its focus, a press anywhere on the
+ * screen focuses the canvas, whether the canvas has focus is read from the
+ * document rather than remembered, and "Click to type" sits on the screen
+ * -- in the tab and in the theater -- whenever it does not.
+ *
  * THE POINTER MOVES WITHOUT A CLICK FIRST (LB-CURSOR2; part of #1030). Input
  * used to open only once the canvas also had focus, so every move before the
  * first click was dropped by noVNC itself: MEASURED 2026-10-13 on
@@ -107,8 +121,14 @@ import './styles/live.css'
  * to noVNC, which sends it as ClientCutText for the gate to type as keys.
  */
 
-/** How often an open session is read again: the controller, the origin and the hand-off move under the viewer. */
-export const LIVE_POLL_MS = 2000
+/**
+ * How often an open session is read again: the controller, the origin, the
+ * device and the hand-off move under the viewer. ~3 s (#1343): often enough
+ * that a reported device or address shows before the person looks for it,
+ * and over the fetch layer's 2 s reuse window (`REUSE_SETTLED_MS`), so the
+ * task re-read on the same clock is never handed its own last answer.
+ */
+export const LIVE_POLL_MS = 3000
 
 /**
  * The controller's console renews this often. Control ends 60 seconds after
@@ -217,19 +237,69 @@ function browserOfRead(read: LiveRead): unknown {
 export type LiveReload = (answer?: unknown) => void
 
 /**
+ * The Browser tab (or its theater) on screen: the session and the task are
+ * read again every `LIVE_POLL_MS` until the task is finished (LIVE-POLL, part
+ * of #1343). `onTask` reads the task again; the agent view owns that read.
+ */
+export interface LiveWatch {
+  on: boolean
+  finished: boolean
+  onTask?: () => void
+}
+
+const NOT_WATCHING: LiveWatch = { on: false, finished: false }
+
+/** The longest wait between re-reads after failures. */
+const LIVE_POLL_MAX_MS = 30_000
+
+/**
+ * The wait before the next re-read after `failures` failed reads in a row:
+ * a poll, doubling per failure, never past `LIVE_POLL_MAX_MS`. A failure
+ * slows the reads; it never ends them.
+ */
+export function liveRereadDelay(failures: number): number {
+  return Math.min(LIVE_POLL_MAX_MS, LIVE_POLL_MS * 2 ** Math.min(Math.max(failures, 0), 4))
+}
+
+function pageHidden(): boolean {
+  return typeof document !== 'undefined' && document.visibilityState === 'hidden'
+}
+
+/**
  * The live session of one agent, read while its attempt is in flight and
- * again every `LIVE_POLL_MS` while its profile is a live-browser one. An
- * agent whose profile is not is read once: a catalogue property does not
- * change under a running task.
+ * again every `LIVE_POLL_MS` while its profile is a live-browser one, or
+ * while `watch.on`. An agent whose profile is not, and nobody is watching,
+ * is read once: a catalogue property does not change under a running task.
+ *
+ * WHILE WATCHED (LIVE-POLL, part of #1343), the reads do not depend on what
+ * the last one said. MEASURED 2026-10-15 (release b93ad6cb): the tab read the
+ * session at load and never again; the header said "dispatched", the strip
+ * said no address had been reported and the device bar stayed disabled while
+ * the API already served all three. The poll ran only while the last read
+ * had said `live_browser`, so a read that failed at load ended the reads for
+ * good, and the task was read on the drawer's 10 s clock. Now a failure backs
+ * off (`liveRereadDelay`), the task is read with the session, and the reads
+ * stop once the task is finished -- the tab then says so.
+ *
+ * NOTHING IS READ WHILE THE PAGE IS HIDDEN; showing it reads at once, rather
+ * than drawing a minutes-old session for one more poll.
  *
  * `reload(answer)` DRAWS A CONTROL ROUTE'S ANSWER BEFORE THE NEXT READ
  * (QA12-22): after Return control the banner kept offering Take control
  * until a poll caught up. The answer is the session as the change left it,
  * so the tab draws that, and reads again behind it.
  */
-export function useLiveSession(taskId: string, inFlight: boolean): { live: LiveState; reload: LiveReload } {
+export function useLiveSession(
+  taskId: string,
+  inFlight: boolean,
+  watch: LiveWatch = NOT_WATCHING,
+): { live: LiveState; reload: LiveReload } {
   const [got, setGot] = useState<{ taskId: string; state: LiveState } | null>(null)
   const [tick, setTick] = useState(0)
+  // Failed reads in a row, for the backoff.
+  const failures = useRef(0)
+  const onTask = useRef(watch.onTask)
+  onTask.current = watch.onTask
   const reload = useCallback(
     (answer?: unknown) => {
       const read = liveReadOf(answer)
@@ -240,19 +310,16 @@ export function useLiveSession(taskId: string, inFlight: boolean): { live: LiveS
     },
     [taskId],
   )
-  const liveBrowser = got !== null && got.taskId === taskId && got.state.status === 'ok' && got.state.liveBrowser
-
-  useEffect(() => {
-    if (!inFlight) return
-    let gone = false
-    void loadLiveSession(taskId).then((r) => {
-      if (gone) return
+  const draw = useCallback(
+    (r: Awaited<ReturnType<typeof loadLiveSession>>) => {
       if (r.status === 'ok' || r.status === 'stale') {
+        failures.current = 0
         setGot({
           taskId,
           state: { status: 'ok', liveBrowser: r.data.live_browser === true, session: r.data.session ?? null, browser: browserOfRead(r.data) },
         })
       } else if (r.status === 'error') {
+        failures.current += 1
         // A failed re-read keeps the session it had: a blip must not tear the
         // canvas down under someone typing into it.
         setGot((was) =>
@@ -261,20 +328,58 @@ export function useLiveSession(taskId: string, inFlight: boolean): { live: LiveS
             : { taskId, state: { status: 'error', message: r.error.message } },
         )
       }
+    },
+    [taskId],
+  )
+  const liveBrowser = got !== null && got.taskId === taskId && got.state.status === 'ok' && got.state.liveBrowser
+
+  // The read at load, and after every `reload`.
+  useEffect(() => {
+    if (!inFlight) return
+    let gone = false
+    void loadLiveSession(taskId).then((r) => {
+      if (!gone) draw(r)
     })
     return () => {
       gone = true
     }
-  }, [taskId, inFlight, tick])
+  }, [taskId, inFlight, tick, draw])
 
+  // THE RE-READS: one at a time, each scheduled when the last has landed, so
+  // a slow API is never asked twice at once and an answer is never dropped
+  // for the next tick's.
+  const watching = watch.on && !watch.finished
+  const looping = watching || (inFlight && liveBrowser)
   useEffect(() => {
-    if (!inFlight || !liveBrowser) return
-    const id = setInterval(() => {
-      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
-      setTick((n) => n + 1)
-    }, LIVE_POLL_MS)
-    return () => clearInterval(id)
-  }, [inFlight, liveBrowser])
+    if (!looping) return
+    let stopped = false
+    let busy = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const run = async (): Promise<void> => {
+      timer = null
+      if (stopped || busy || pageHidden()) return // a hidden page is resumed by `onVisible`
+      busy = true
+      if (watching) onTask.current?.()
+      if (inFlight) {
+        const r = await loadLiveSession(taskId)
+        if (!stopped) draw(r)
+      }
+      busy = false
+      if (!stopped) timer = setTimeout(() => void run(), liveRereadDelay(failures.current))
+    }
+    const onVisible = () => {
+      if (pageHidden() || busy) return
+      if (timer !== null) clearTimeout(timer)
+      void run()
+    }
+    timer = setTimeout(() => void run(), liveRereadDelay(failures.current))
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      stopped = true
+      if (timer !== null) clearTimeout(timer)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [looping, watching, inFlight, taskId, draw])
 
   const live: LiveState = !inFlight
     ? { status: 'idle' }
@@ -646,8 +751,19 @@ export function LiveBrowserPane({
   const [logs, setLogs] = useState(false)
   // The element noVNC draws into, for the theater to borrow; null until LiveScreen has mounted it.
   const [screenNode, setScreenNode] = useState<HTMLElement | null>(null)
+  // The gate's reason the page is not (all) shown, while its desktop name carries one (`gateReason`).
+  const [cover, setCover] = useState<string | null>(null)
+  // The frame noVNC draws (`LiveScreen`'s `onFrame`): what the caption checks the gate's report against.
+  const [frame, setFrame] = useState<FrameSize | null>(null)
+  // The device the person in control last asked for, on the session they asked on (`LiveDevice`'s `onAsked`).
+  const [asked, setAsked] = useState<DeviceAsk | null>(null)
   const session = live.status === 'ok' ? live.session : null
   const open = session !== null && session.state === 'open' ? session : null
+  // A CHANGE IS WAITED ON UNTIL THE GATE REPORTS IT (LIVE-POLL, #1343): read
+  // again every `DEVICE_CONFIRM_MS` meanwhile, and rotate and touch held, so
+  // neither acts on the device from before the change.
+  const unapplied = asked !== null && open !== null && asked.sessionId === open.session_id && !deviceApplied(open.device, asked.body)
+  const waiting = useDeviceReport(unapplied ? asked : null, reload)
   const returned = useControlReturned(open?.session_id ?? null, open !== null && isController(open), open?.controller ?? null)
   const unused = useAgentUnused(open, task.state)
 
@@ -710,6 +826,16 @@ export function LiveBrowserPane({
 
   const mine = isController(session)
   const verdict = stripVerdict(session)
+  // A PRESET ASKED FOR IS SAID UNTIL THE GATE REPORTS IT (STRIP-LABEL, part of
+  // #1341). `session.device` is what the gate last REPORTED (swarm-api
+  // live.py `set_device`): the device route answers with the session as it
+  // was before the switch, and the device changes only when the gate's report
+  // reaches a later read. Until then the caption said the old preset ("iPad")
+  // with nothing of the Desktop the person had just chosen. It goes when the
+  // gate reports the preset asked for, or the session is another.
+  const pending =
+    asked !== null && asked.sessionId === session.session_id && session.device?.preset !== asked.body.preset ? asked.body.preset : null
+  const onAsked = (body: DeviceBody) => setAsked({ sessionId: session.session_id, body, at: Date.now() })
   const o = session.origin
   // The tool, egress and Jev badges (BSTATUS-STRIP): the API may serve the
   // object on the session or beside it; either, and none from an older one.
@@ -740,6 +866,15 @@ export function LiveBrowserPane({
           )}
         </span>
         <span className="live-strip-say">{verdict.say}</span>
+        {/* THE COVER REASON IS IN THE STRIP (STRIP-LABEL, part of #1341).
+            MEASURED 2026-10-15: under the screen, it sat below the fold
+            behind the theater, and the strip above the browser said nothing
+            of a page partly painted over. The strip is drawn in both. */}
+        {cover !== null && (
+          <span className="live-strip-cover" data-testid="live-cover">
+            {cover}.
+          </span>
+        )}
         <span className="live-strip-who">
           {session.controller === null
             ? 'Nobody is in control: the agent is driving.'
@@ -758,7 +893,7 @@ export function LiveBrowserPane({
       strip={strip}
       handoff={handoff}
       logs={<AgentLogs task={task} />}
-      device={<LiveDevice taskId={task.id} session={session} reload={reload} />}
+      device={<LiveDevice taskId={task.id} session={session} reload={reload} onAsked={onAsked} waiting={waiting} />}
       control={<LiveControl taskId={task.id} session={session} reload={reload} />}
       take={<LiveControl taskId={task.id} session={session} reload={reload} takeOnly />}
     >
@@ -776,6 +911,8 @@ export function LiveBrowserPane({
           logs={logs}
           onLogs={() => setLogs((v) => !v)}
           reload={reload}
+          onAsked={onAsked}
+          waiting={waiting}
         />
         <SaveAsLoginOffer taskId={task.id} tenantId={task.tenant_id} site={o?.origin ?? null} controlReturned={returned} />
         {/* LOGS ON THE LEFT, THE DEVICE ON THE RIGHT (the mockup's ◫ logs). */}
@@ -792,8 +929,19 @@ export function LiveBrowserPane({
             control={mine}
             touch={mine && session.device !== null && session.device.touch}
             onScreen={setScreenNode}
+            onGateSays={setCover}
+            onFrame={setFrame}
             device={deviceSize(session)}
-            caption={<span className="live-caption">{deviceCaption(session)}</span>}
+            caption={
+              <span className="live-caption">
+                {deviceCaption(session, frame)}
+                {pending !== null && (
+                  <span className="live-caption-asked" data-testid="live-device-asked">
+                    {` · ${presetLabel(pending)} asked for; the browser has not applied it yet`}
+                  </span>
+                )}
+              </span>
+            }
             onControlChange={reload}
             onSessionMoved={reload}
           />
@@ -882,17 +1030,49 @@ export function deviceSize(
  * path reported it still says so rather than print one nobody measured, and
  * a device the gate has not reported is said the same way (LB-SEAM).
  */
-export function deviceCaption(session: Pick<LiveSession, 'device' | 'presets' | 'origin'>): string {
+export function deviceCaption(
+  session: Pick<LiveSession, 'device' | 'presets' | 'origin'>,
+  frame: FrameSize | null = null,
+): string {
   const d = session.device
   const size = deviceSize(session)
+  const seen = size === null ? null : frameContradicts(size, frame)
   const device =
     d === null
       ? 'Device not reported'
-      : size === null
-        ? presetLabel(d.preset)
-        : `${presetLabel(d.preset)} · ${size.width}×${size.height}`
+      : seen !== null
+        ? `Device not confirmed: the gate reported ${presetLabel(d.preset)} (${d.orientation}), but the screen it sends is ${seen}`
+        : size === null
+          ? presetLabel(d.preset)
+          : `${presetLabel(d.preset)} · ${size.width}×${size.height}`
   const path = session.origin?.path
   return `${device} · ${typeof path === 'string' && path !== '' ? path : 'path not reported'}`
+}
+
+/** The framebuffer noVNC draws, in the gate's screen pixels (`LiveScreen`'s `onFrame`). */
+export interface FrameSize {
+  width: number
+  height: number
+}
+
+/**
+ * A REPORT THE SCREEN CONTRADICTS IS NOT THE DEVICE (LB-GREY; part of #1341).
+ * MEASURED 2026-10-15 on task_2ac5d7e22a51460995a2: the caption read "iPad ·
+ * 810×1080" under a session whose person in control had Desktop. Every device
+ * label here is `session.device`, which swarm-api writes from the gate's
+ * report alone (live.py `record_report`): this file does not derive a preset,
+ * it prints the one reported. The session's own device is the frame the gate
+ * sends, cropped to the device's display (livegate/device.py `captured`), so
+ * the two are compared by the one thing that survives the browser's band and
+ * the screen scale: which way round they are. The frame's orientation
+ * ("landscape" or "portrait") when it is the other way from the reported
+ * device's, else null -- also with no frame yet, or a square one.
+ */
+export function frameContradicts(device: { width: number; height: number }, frame: FrameSize | null): string | null {
+  if (frame === null || frame.width <= 0 || frame.height <= 0 || frame.width === frame.height) return null
+  if (device.width === device.height) return null
+  const wide = frame.width > frame.height
+  return wide === device.width > device.height ? null : wide ? 'landscape' : 'portrait'
 }
 
 /**
@@ -934,17 +1114,21 @@ function LiveToolbar({
   logs,
   onLogs,
   reload,
+  onAsked,
+  waiting = false,
 }: {
   taskId: string
   session: LiveSession
   logs: boolean
   onLogs: () => void
   reload: LiveReload
+  onAsked?: (body: DeviceBody) => void
+  waiting?: boolean
 }) {
   return (
     <div className="live-toolbar" role="toolbar" aria-label="Browser view">
       <LiveToolMenu>
-        <LiveDevice taskId={taskId} session={session} reload={reload} />
+        <LiveDevice taskId={taskId} session={session} reload={reload} onAsked={onAsked} waiting={waiting} />
         <Button size="sm" aria-pressed={logs} onClick={onLogs} title={logs ? 'Hide the logs' : 'Show the logs beside the browser'}>
           ◫ logs
         </Button>
@@ -1018,6 +1202,63 @@ function MemberControl({ taskId, session, reload }: { taskId: string; session: L
 }
 
 const DEVICE_WHY = 'Only the person in control can change the device.'
+const DEVICE_WAIT_WHY = 'Waiting for the browser to report the device just chosen.'
+
+/** What the device route is asked for: a preset by name, and an orientation or touch when turned. */
+type DeviceBody = Parameters<typeof setLiveDevice>[1]
+
+/** A device change the route accepted, on the session it was asked on, and when. */
+interface DeviceAsk {
+  sessionId: string
+  body: DeviceBody
+  at: number
+}
+
+/** True when the reported device is what was asked for: the preset, and the orientation and touch when asked. */
+export function deviceApplied(device: LiveSession['device'], body: DeviceBody): boolean {
+  return (
+    device !== null &&
+    device.preset === body.preset &&
+    (body.orientation === undefined || device.orientation === body.orientation) &&
+    (body.touch === undefined || device.touch === body.touch)
+  )
+}
+
+/** How often a device change is read again until the gate reports it. */
+export const DEVICE_CONFIRM_MS = 1000
+/**
+ * How long a change is waited on. A gate that never reports it must not hold
+ * rotate and touch for good: after this they act on the device reported.
+ */
+export const DEVICE_CONFIRM_FOR_MS = 15_000
+
+/**
+ * While `ask` is set (a change not yet reported), the session is read every
+ * `DEVICE_CONFIRM_MS` for up to `DEVICE_CONFIRM_FOR_MS`; true while it is.
+ */
+function useDeviceReport(ask: DeviceAsk | null, reload: LiveReload): boolean {
+  const [lapsed, setLapsed] = useState<number | null>(null)
+  const reread = useRef(reload)
+  reread.current = reload
+  const at = ask?.at ?? null
+  useEffect(() => {
+    if (at === null) return
+    const left = at + DEVICE_CONFIRM_FOR_MS - Date.now()
+    if (left <= 0) {
+      setLapsed(at)
+      return
+    }
+    const id = setInterval(() => {
+      if (!pageHidden()) reread.current()
+    }, DEVICE_CONFIRM_MS)
+    const end = setTimeout(() => setLapsed(at), left)
+    return () => {
+      clearInterval(id)
+      clearTimeout(end)
+    }
+  }, [at])
+  return at !== null && lapsed !== at
+}
 
 /** The orientation a rotate asks for. */
 type Orientation = NonNullable<LiveSession['device']>['orientation']
@@ -1026,8 +1267,25 @@ function rotated(orientation: Orientation): Orientation {
   return orientation === 'portrait' ? 'landscape' : 'portrait'
 }
 
-/** The device chips, rotate and touch: the toolbar's, and the same component in the theater's device slot. */
-function LiveDevice({ taskId, session, reload }: { taskId: string; session: LiveSession; reload: LiveReload }) {
+/**
+ * The device chips, rotate and touch: the toolbar's, and the same component in the theater's device slot.
+ * Each is marked `data-live-device`: a switch it asked for hands the keys back to the canvas (KEYS-FOCUS).
+ */
+function LiveDevice({
+  taskId,
+  session,
+  reload,
+  onAsked,
+  waiting = false,
+}: {
+  taskId: string
+  session: LiveSession
+  reload: LiveReload
+  /** Told what a switch the route accepted asked for: the caption says it, and the pane waits, until the gate reports it. */
+  onAsked?: (body: DeviceBody) => void
+  /** A change is not reported yet: rotate and touch would act on the device from before it, so they wait. */
+  waiting?: boolean
+}) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const whyId = useId()
@@ -1043,15 +1301,24 @@ function LiveDevice({ taskId, session, reload }: { taskId: string; session: Live
       : [device.preset, ...session.presets.map((p) => p.name)]
   const can = session.state === 'open' && session.you.can_switch_device && device !== null
   const why = device === null ? 'The gate has not reported which device it applied.' : can ? undefined : DEVICE_WHY
+  // Rotate and touch turn the REPORTED device (#1343): before the gate has
+  // reported a change, that is the device from before it, so they wait.
+  const turnWhy = why ?? (waiting ? DEVICE_WAIT_WHY : undefined)
   const mobile = device === null ? false : (session.presets.find((p) => p.name === device.preset)?.mobile ?? device.touch)
   // The why, said to a screen reader as each disabled control's description.
   const describedBy = why === undefined ? undefined : whyId
-  const send = (body: Parameters<typeof setLiveDevice>[1]) => {
+  const turnDescribedBy = turnWhy === undefined ? undefined : whyId
+  const send = (body: DeviceBody) => {
     setBusy(true)
     void setLiveDevice(taskId, body).then((r) => {
       setBusy(false)
       setError(r.status === 'error' ? r.error.message : null)
-      reload()
+      // The answer is drawn as every other control route's is (QA12-22), but
+      // its `device` is still the one the gate last reported, from before
+      // this switch (swarm-api live.py `set_device`): what was asked for is
+      // told to the pane instead, which says it until the gate reports it.
+      if (r.status === 'ok') onAsked?.(body)
+      reload(r.status === 'ok' ? r.data : undefined)
     })
   }
   return (
@@ -1061,6 +1328,7 @@ function LiveDevice({ taskId, session, reload }: { taskId: string; session: Live
           <Button
             key={n}
             size="sm"
+            data-live-device=""
             className="live-chip"
             aria-pressed={device !== null && device.preset === n}
             disabled={!can || busy}
@@ -1076,30 +1344,32 @@ function LiveDevice({ taskId, session, reload }: { taskId: string; session: Live
       </span>
       <Button
         size="sm"
-        disabled={!can || busy}
-        title={why}
-        aria-describedby={describedBy}
+        data-live-device=""
+        disabled={!can || busy || waiting}
+        title={turnWhy}
+        aria-describedby={turnDescribedBy}
         onClick={() => {
-          if (device !== null) send({ preset: device.preset, orientation: rotated(device.orientation) })
+          if (device !== null && !waiting) send({ preset: device.preset, orientation: rotated(device.orientation) })
         }}
       >
         ⟲ rotate
       </Button>
       <Button
         size="sm"
+        data-live-device=""
         aria-pressed={device?.touch ?? false}
-        disabled={!can || busy || !mobile}
-        title={can && !mobile ? 'This preset has no touch.' : why}
-        aria-describedby={describedBy}
+        disabled={!can || busy || !mobile || waiting}
+        title={can && !mobile ? 'This preset has no touch.' : turnWhy}
+        aria-describedby={turnDescribedBy}
         onClick={() => {
-          if (device !== null) send({ preset: device.preset, orientation: device.orientation, touch: !device.touch })
+          if (device !== null && !waiting) send({ preset: device.preset, orientation: device.orientation, touch: !device.touch })
         }}
       >
         {device?.touch === true ? 'touch: on' : 'touch: off'}
       </Button>
-      {why !== undefined && (
+      {turnWhy !== undefined && (
         <span id={whyId} className="sk-vh">
-          {why}
+          {turnWhy}
         </span>
       )}
       {error !== null && (
@@ -1127,6 +1397,14 @@ export interface Rfb {
   disconnect(): void
   clipboardPasteFrom(text: string): void
   addEventListener(type: 'connect' | 'disconnect' | 'securityfailure' | 'desktopname', listener: (e: Event) => void): void
+  /**
+   * The framebuffer's size, as ServerInit and every resize set it (noVNC
+   * 1.4.0 `_resize`). Not public API: noVNC exposes no getter and fires no
+   * resize event, and the version is pinned in package.json. Absent (an
+   * older or a test RFB), the caption is the gate's report unchecked.
+   */
+  readonly _fbWidth?: number
+  readonly _fbHeight?: number
 }
 
 /**
@@ -1220,14 +1498,21 @@ export function stageFloor(
   return Math.max(STAGE_MIN, Math.min(want, most))
 }
 
+/** Focus is on no control at all: the page's body, as after the focused element left the page. */
+function nowhere(): boolean {
+  return document.activeElement === null || document.activeElement === document.body
+}
+
 function LiveScreen({
   taskId,
   sessionId,
   control,
   touch,
   onScreen,
+  onGateSays,
   device = null,
   caption,
+  onFrame,
   onControlChange,
   onSessionMoved,
 }: {
@@ -1241,10 +1526,14 @@ function LiveScreen({
   touch: boolean
   /** Told the element noVNC draws into, and null when it goes: the theater borrows it. */
   onScreen?: (node: HTMLElement | null) => void
+  /** Told the gate's reason the page is not (all) shown (`gateReason`), and null when it has none: the strip draws it. */
+  onGateSays?: (reason: string | null) => void
   /** The device as turned (`deviceSize`): the frame is fitted to its proportions, in an outline when it is mobile. */
   device?: { width: number; height: number; mobile: boolean } | null
   /** Under the device frame: what it is, its size and the page's path. */
   caption?: ReactNode
+  /** Told the framebuffer's size when it connects and whenever noVNC rescales it, and null when it goes (`frameContradicts`). */
+  onFrame?: (frame: FrameSize | null) => void
   /** Called when swarm-api's status frames say control or the session changed: the pane re-reads the session. */
   onControlChange?: () => void
   /**
@@ -1256,18 +1545,25 @@ function LiveScreen({
 }) {
   const host = useRef<HTMLDivElement>(null)
   const rfb = useRef<Rfb | null>(null)
-  const focused = useRef(false)
+  /**
+   * The person's keys were last in this screen: it took focus, and nothing
+   * outside it has taken focus since. A canvas noVNC removes takes no blur
+   * with it, so this outlives a reconnect, for the new canvas to take over.
+   */
+  const keysHere = useRef(false)
   const controlRef = useRef(control)
   controlRef.current = control
   const changedRef = useRef(onControlChange)
   changedRef.current = onControlChange
   const movedRef = useRef(onSessionMoved)
   movedRef.current = onSessionMoved
+  const saysRef = useRef(onGateSays)
+  saysRef.current = onGateSays
+  const frameRef = useRef(onFrame)
+  frameRef.current = onFrame
   const [conn, setConn] = useState<Conn>('connecting')
   const [why, setWhy] = useState<string | null>(null)
   const [refused, setRefused] = useState<string | null>(null)
-  // The gate's reason the page is not (all) shown, while it names one (`gateReason`).
-  const [gateSays, setGateSays] = useState<string | null>(null)
   const [hasFocus, setHasFocus] = useState(false)
   const stage = useRef<HTMLDivElement>(null)
   const below = useRef<HTMLDivElement>(null)
@@ -1325,6 +1621,42 @@ function LiveScreen({
     return () => onScreen?.(null)
   }, [onScreen])
 
+  // WHETHER THE CANVAS HAS FOCUS IS READ, NOT REMEMBERED (KEYS-FOCUS). A
+  // canvas that is removed or moved takes focus with it and fires no blur.
+  const typing = useCallback(() => {
+    const at = document.activeElement
+    return at !== null && host.current !== null && host.current.contains(at)
+  }, [])
+  /** Give noVNC's canvas the keys, for the person in control only. */
+  const focusCanvas = useCallback(() => {
+    const canvas = host.current?.querySelector('canvas')
+    if (!controlRef.current || canvas === null || canvas === undefined) return
+    canvas.focus({ preventScroll: true })
+    setHasFocus(typing())
+  }, [typing])
+  useEffect(() => {
+    const moved = (e: FocusEvent) => {
+      const inside = e.target instanceof Node && host.current !== null && host.current.contains(e.target)
+      keysHere.current = inside
+      setHasFocus(inside)
+    }
+    document.addEventListener('focusin', moved)
+    return () => document.removeEventListener('focusin', moved)
+  }, [])
+
+  // A DEVICE SWITCH IN CONTROL HANDS THE KEYS BACK. The chip that asked for it
+  // (or the page, once a busy chip let go of focus) holds them otherwise, and
+  // the person types on into the console. Once the switched device is drawn.
+  const shape = device === null ? null : `${device.width}x${device.height}:${device.mobile}:${touch}`
+  const drawn = useRef(shape)
+  useEffect(() => {
+    const was = drawn.current
+    drawn.current = shape
+    if (was === null || was === shape) return
+    const at = document.activeElement
+    if (nowhere() || (at instanceof Element && at.closest('[data-live-device]') !== null)) focusCanvas()
+  }, [shape, focusCanvas])
+
   // VIEW-ONLY UNLESS IN CONTROL. Set on the RFB object directly, not through
   // a render, so the connection's first moment in control already sends. Not
   // gated on focus: keys need it anyway (noVNC hears them on its canvas) and
@@ -1340,12 +1672,21 @@ function LiveScreen({
     let tries = 0
     let timer: ReturnType<typeof setTimeout> | null = null
     // swarm-api's status frames (LB-STREAM): never noVNC's, which reads only
-    // the binary RFB stream. The first one the tab sees is the state the
-    // session read already drew; a later change of controller, of whether
-    // this viewer holds control, or of the session closing re-reads it.
+    // the binary RFB stream. A change of controller, of whether this viewer
+    // holds control, or of the session closing re-reads the session.
+    //
+    // THE FIRST FRAME IS CHECKED, NOT ASSUMED (STRIP-LABEL, part of #1341).
+    // It was taken as the state the session read already drew, so a read
+    // older than the connection -- drawn before a take that the relay
+    // already knew of -- was never read again by a frame: the screen said
+    // "View only." under a header that said "You are in control". The
+    // first frame now re-reads when it disagrees with the control drawn.
     let seen: LiveStatus | null = null
     const onStatus = (s: LiveStatus) => {
-      const changed = seen !== null && (s.in_control !== seen.in_control || s.controller !== seen.controller || s.open !== seen.open)
+      const changed =
+        seen === null
+          ? s.in_control !== controlRef.current
+          : s.in_control !== seen.in_control || s.controller !== seen.controller || s.open !== seen.open
       seen = s
       if (changed && !stopped) changedRef.current?.()
     }
@@ -1440,10 +1781,20 @@ function LiveScreen({
           r.qualityLevel = 9
           r.compressionLevel = 1
           const canvas = host.current.querySelector('canvas')
+          // The frame the gate sends: noVNC rescales its canvas when it
+          // changes size, so the observer below hears every resize too.
+          const sized = () => {
+            const [width, height] = [r._fbWidth, r._fbHeight]
+            if (!stopped && typeof width === 'number' && typeof height === 'number') {
+              frameRef.current?.(width > 0 && height > 0 ? { width, height } : null)
+            }
+          }
+          r.addEventListener('connect', sized)
           if (canvas !== null && typeof ResizeObserver !== 'undefined') {
             const sharpen = () => {
               const crisp = crispAt(canvas.getBoundingClientRect().width, canvas.width, window.devicePixelRatio || 1)
               canvas.style.imageRendering = crisp ? 'pixelated' : ''
+              sized()
             }
             const sizes = new ResizeObserver(sharpen)
             sizes.observe(canvas)
@@ -1466,13 +1817,18 @@ function LiveScreen({
             setWhy(null)
             setRefused(null)
             setConn('connected')
+            // A canvas that replaces the one the keys were in takes them (KEYS-FOCUS).
+            if (keysHere.current && nowhere()) focusCanvas()
+            else setHasFocus(typing())
           })
           r.addEventListener('desktopname', (e) => {
-            setGateSays(gateReason((e as CustomEvent<{ name?: unknown }>).detail?.name))
+            if (!stopped) saysRef.current?.(gateReason((e as CustomEvent<{ name?: unknown }>).detail?.name))
           })
           r.addEventListener('disconnect', () => {
+            setHasFocus(typing())
             if (rfb.current === r) rfb.current = null
-            setGateSays(null)
+            if (!stopped) saysRef.current?.(null)
+            if (!stopped) frameRef.current?.(null)
             if (closeCode === LIVE_RESTART_CODE) retry('The live relay restarted. Reconnecting.', true)
             else retry('The live connection closed. Reconnecting with a new ticket.')
           })
@@ -1488,28 +1844,40 @@ function LiveScreen({
       const r = rfb.current
       rfb.current = null
       r?.disconnect()
+      // A reason belongs to this connection: the next one starts with none.
+      saysRef.current?.(null)
+      // So does its frame.
+      frameRef.current?.(null)
     }
-  }, [taskId, sessionId, applyInput])
+  }, [taskId, sessionId, applyInput, focusCanvas, typing])
 
   const onFocus = () => {
-    focused.current = true
+    keysHere.current = true
     setHasFocus(true)
   }
   const onBlur = (e: { currentTarget: HTMLElement; relatedTarget: EventTarget | null }) => {
     if (e.relatedTarget instanceof Node && e.currentTarget.contains(e.relatedTarget)) return
-    focused.current = false
     setHasFocus(false)
+  }
+  // A PRESS ANYWHERE ON THE SCREEN TAKES THE KEYS. noVNC focuses its canvas
+  // only for a press on the canvas itself, and stops that press there, so
+  // this listens in the capture phase; a press beside a canvas scaled to fit
+  // would otherwise leave focus on the page.
+  const pressToType = (e: MouseEvent<HTMLDivElement>) => {
+    if (!controlRef.current) return
+    if (!(e.target instanceof HTMLCanvasElement)) e.preventDefault()
+    focusCanvas()
   }
   // A key typed into the agent's browser is the agent's browser's, not the console's.
   const keepKey = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (controlRef.current && focused.current) e.stopPropagation()
+    if (controlRef.current && typing()) e.stopPropagation()
   }
   const gateTouch = (e: SyntheticEvent) => {
     if (!(controlRef.current && touch)) e.stopPropagation()
   }
   const onPaste = (e: ClipboardEvent<HTMLDivElement>) => {
     const r = rfb.current
-    if (r === null || !controlRef.current || !focused.current) return
+    if (r === null || !controlRef.current || !typing()) return
     const text = e.clipboardData.getData('text/plain')
     e.preventDefault()
     if (text !== '') r.clipboardPasteFrom(text)
@@ -1539,6 +1907,7 @@ function LiveScreen({
             aria-label={control ? 'The agent’s browser. Click it to type into it.' : 'The agent’s browser, view only.'}
             onFocus={onFocus}
             onBlur={onBlur}
+            onMouseDownCapture={pressToType}
             onKeyDown={keepKey}
             onKeyUp={keepKey}
             onPaste={onPaste}
@@ -1546,7 +1915,14 @@ function LiveScreen({
             onTouchMoveCapture={gateTouch}
             onTouchEndCapture={gateTouch}
             onTouchCancelCapture={gateTouch}
-          />
+          >
+            {/* Inside the screen, so it goes with it into the theater. Clicks go through it. */}
+            {control && conn === 'connected' && !hasFocus && (
+              <span className="live-type-hint" aria-hidden="true">
+                Click to type
+              </span>
+            )}
+          </div>
         </div>
         <div ref={below} className="live-stage-caption">
           {caption}
@@ -1556,11 +1932,6 @@ function LiveScreen({
         {conn === 'connecting' && <StartupProgress taskId={taskId} overlay hideWhenDone />}
       </div>
       <p className="live-screen-say" role="status">
-        {conn === 'connected' && gateSays !== null && (
-          <>
-            <span className="live-screen-why">{gateSays}.</span>{' '}
-          </>
-        )}
         {conn === 'connecting'
           ? 'Connecting to the agent’s browser.'
           : conn === 'connected'

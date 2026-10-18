@@ -676,7 +676,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'the-platform',
     title: 'Capacity is counted in units, not agents',
     short:
-      'Each size has a weight, and admission adds that weight to every pool the task has to clear. A pool showing eight in use may be four agents of a size that weighs two, so a ceiling is a ceiling on units and headroom converts back through the weight.',
+      'Each size has a weight, and admission adds that weight to every pool the task has to clear. A pool showing eight in use may be two agents of a size that weighs four, so a ceiling is a ceiling on units and headroom converts back through the weight.',
     long: [
       'A pool counter is a sum of weights, not a count of workloads. The weight is the size’s own, published by the catalogue, and it is the same number in every pool the task touches.',
       'So "units in use" and "how many more agents could start" are different questions with different answers, and this app never prints one under the other’s label.',

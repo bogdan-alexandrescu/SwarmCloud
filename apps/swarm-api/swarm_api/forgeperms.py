@@ -45,6 +45,16 @@ CACHED per tenant for `CACHE_SECONDS`; `refresh=true` reads again. The cache
 holds the admin form; `serve` drops `settings_url` per caller, so a member
 served from an admin's read still never sees it.
 
+QUOTA (QUOTA-THROTTLE, #1483). Every answer updates `forge_limits.QUOTAS`:
+the App JWT's reads as `app`, the tenant token's probes as the tenant's
+`-git` slot. A rate-limited 403 or 429 is GitHub not answering -- null,
+never a measured refusal. The cached read, which the console makes on its
+own, is background: when the cache is stale and the tenant token's quota is
+under `forge_quota_defer_percent` (or held), the last answer is served
+again (`deferred: true`), or, with none, the token probes are not made and
+their rows say why. `refresh=true` is a person pressing Refresh and is never
+deferred.
+
 INVARIANTS. A read holds no capacity and creates no infrastructure demand
 (invariant 1); it stores nothing in Firestore.
 """
@@ -56,7 +66,7 @@ import threading
 import time
 from contextlib import ExitStack
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Mapping
 from urllib.parse import quote, urlparse
 
@@ -68,6 +78,7 @@ from .auth import AuthContext
 from .deps import AppContext, current_auth, get_context, tenant_scope
 from .errors import ApiError
 from .forge import NoForgeCredential
+from . import forge_limits
 from .forgeapp import APP_URL, AppNotConfigured, ForgeApp, HttpAnswer, HttpSend
 from .gittokens import redaction_literal, token_kind
 from .repositories import Repositories
@@ -202,7 +213,8 @@ class _Reader:
         self._send = send
         self._timeout = timeout
 
-    def get(self, path: str, bearer: str) -> HttpAnswer:
+    def get(self, path: str, bearer: str, credential: str = forge_limits.APP_CREDENTIAL,
+            ) -> HttpAnswer:
         url = f"https://{API_HOST}{path}"
         if urlparse(url).hostname != API_HOST:  # pragma: no cover - built from constants
             raise _Unanswered("refused host")
@@ -212,6 +224,12 @@ class _Reader:
             answer = self._send("GET", url, headers, None, self._timeout)
         except Exception as exc:
             raise _Unanswered(f"no answer ({type(exc).__name__})") from None
+        limited = forge_limits.QUOTAS.observe_answer(answer, credential=credential)
+        if limited is not None:
+            # GitHub limiting requests is not GitHub refusing them (#1483).
+            when = forge_limits.until(limited)
+            raise _Unanswered(f"GitHub is limiting requests (HTTP {answer.status})"
+                              + (f" until {when}" if when else ""))
         if answer.status >= 500 or answer.status == 429:
             raise _Unanswered(f"GitHub answered HTTP {answer.status}")
         return answer
@@ -252,12 +270,14 @@ def _token_gap(capabilities: list[str], reason: str) -> dict[str, Any]:
             "needed_for": reason, "capabilities": capabilities}
 
 
-def probe_token(reader: _Reader, token: str, r: Registered) -> dict[str, Any]:
+def probe_token(reader: _Reader, token: str, r: Registered,
+                credential: str = "") -> dict[str, Any]:
     """Two read-only GETs: the repository (the token's role on it) and the
     combined status of the default branch's head. Null wherever neither
-    tells; false only where GitHub refused."""
+    tells; false only where GitHub refused. `credential`: whose quota the
+    answers update (the tenant's `-git` slot)."""
     try:
-        answer = reader.get(_repo_path(r.owner, r.repo), token)
+        answer = reader.get(_repo_path(r.owner, r.repo), token, credential)
     except _Unanswered as exc:
         return {"capabilities": _none(), "blocked_by": [], "error": f"repository read: {exc}"}
     if answer.status in (401, 403, 404):
@@ -278,7 +298,7 @@ def probe_token(reader: _Reader, token: str, r: Registered) -> dict[str, Any]:
     ci: bool | None
     try:
         status = reader.get(_repo_path(r.owner, r.repo, f"/commits/{quote(branch, safe='')}/status"),
-                            token)
+                            token, credential)
         # 404 with the repository readable is a missing branch, not a refusal.
         ci = True if status.status == 200 else False if status.status in (401, 403) else None
     except _Unanswered:
@@ -342,13 +362,28 @@ class ForgePermissions:
         now: datetime,
         is_admin: bool,
         refresh: bool = False,
+        defer_percent: float | None = None,
     ) -> dict[str, Any]:
+        """`defer_percent`: the console's own read is background, and waits
+        under this percent of the tenant token's quota; None (a person's
+        `refresh=true`) never waits."""
         at = self._clock()
         with self._lock:
             held = None if refresh else self._cache.get(tenant_id)
         if held is not None and at - held[0] < self._ttl:
             return serve(held[1], is_admin=is_admin, cached=True)
-        answer = self.compute(tenant_id, repositories(), token=token, now=now)
+        deferral = None
+        if not refresh and defer_percent is not None:
+            deferral = forge_limits.QUOTAS.defer(forge_limits.tenant_credential(tenant_id),
+                                                 defer_percent, now=now)
+        if deferral is not None:
+            forge_limits.log_deferred("forge permissions", tenant_id, deferral)
+            if held is not None:
+                # The last answer again, said to be old, rather than spending
+                # what is left of the tenant token's quota.
+                return {**serve(held[1], is_admin=is_admin, cached=True), "deferred": True}
+        answer = self.compute(tenant_id, repositories(), token=token, now=now,
+                              deferral=deferral)
         with self._lock:
             self._cache[tenant_id] = (at, answer)
         return serve(answer, is_admin=is_admin, cached=False)
@@ -356,13 +391,15 @@ class ForgePermissions:
     # -- one fresh answer -----------------------------------------------------
 
     def compute(self, tenant_id: str, repositories: list[Registered], *,
-                token: Callable[[], str], now: datetime) -> dict[str, Any]:
+                token: Callable[[], str], now: datetime,
+                deferral: forge_limits.Deferral | None = None) -> dict[str, Any]:
         with ExitStack() as held:
             jwt, app = self._app(held)
             requested = app.get("requested")
             lookups = self._installations(jwt, repositories)
             orgs = self._orgs(jwt, lookups, requested)
-            rows = self._repositories(held, repositories, lookups, orgs, token)
+            rows = self._repositories(held, repositories, lookups, orgs, token,
+                                      tenant_id=tenant_id, deferral=deferral)
         log.info("forge permissions tenant=%s repositories=%d orgs=%d app_missing=%s",
                  tenant_id, len(rows), len(orgs), len(app.get("missing") or []))
         return {
@@ -472,8 +509,10 @@ class ForgePermissions:
     def _repositories(self, held: ExitStack, repositories: list[Registered],
                       lookups: Mapping[str, Mapping[str, Any]],
                       orgs: Mapping[int, Mapping[str, Any]],
-                      token: Callable[[], str]) -> list[dict[str, Any]]:
+                      token: Callable[[], str], *, tenant_id: str = "",
+                      deferral: forge_limits.Deferral | None = None) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
+        credential = forge_limits.tenant_credential(tenant_id) if tenant_id else ""
         value: str | None = None
         token_error: str | None = None
         for r in repositories:
@@ -498,6 +537,11 @@ class ForgePermissions:
                 row["capabilities"], row["blocked_by"] = _capabilities_from(org["granted"])
                 continue
             row["credential"] = "token"
+            if deferral is not None:
+                # Not measured, so null: never false for a read not made.
+                row["error"] = ("not read: the tenant token's GitHub quota is low until "
+                                + deferral.until.astimezone(timezone.utc).strftime("%H:%M UTC"))
+                continue
             if value is None and token_error is None:
                 try:
                     value = token()
@@ -510,7 +554,7 @@ class ForgePermissions:
             if token_error is not None or not value:
                 row["error"] = token_error or "the tenant token is empty"
                 continue
-            row.update(probe_token(self._reader, value, r))
+            row.update(probe_token(self._reader, value, r, credential))
         return rows
 
 
@@ -576,4 +620,5 @@ def get_permissions(
         return ctx.forge_tokens.token_for(tenant)
 
     return service.read(tenant_id, repositories=lambda: _registered(ctx, tenant_id),
-                        token=token, now=ctx.now(), is_admin=auth.is_admin, refresh=refresh)
+                        token=token, now=ctx.now(), is_admin=auth.is_admin, refresh=refresh,
+                        defer_percent=forge_limits.defer_percent(ctx))

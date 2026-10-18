@@ -23,7 +23,7 @@ import { render, waitFor } from '@testing-library/react'
 
 import type { AgentRun } from '../api'
 import type { AttemptRow, Task } from '../types'
-import { REASON_COPY } from '../types'
+import { REASON_COPY, clockTime } from '../types'
 import { at, attempt, ev, task } from './runfixture'
 
 const api = vi.hoisted(() => ({
@@ -49,7 +49,7 @@ function run(t: Task, attempts: AttemptRow[]): AgentRun {
     attemptsDetail: null,
     classes: {
       standard: { name: 'standard', cpu: 2, memory_gib: 8, disk_gib: 4, units: 1 },
-      browser: { name: 'browser', cpu: 8, memory_gib: 16, disk_gib: 8, units: 2 },
+      browser: { name: 'browser', cpu: 4, memory_gib: 8, disk_gib: 4, units: 1 },
     },
     classesDetail: null,
     classesRouteMissing: false,
@@ -118,7 +118,9 @@ describe('U1: a parked hand-off says so once, in the banner', () => {
     const t = parked('HUMAN_REQUIRED')
     expect(parkedSince(t)).toBe(Date.parse(PARKED_AT))
     const { container } = render(<HandoffParkedSince task={t} />)
-    expect(container.textContent).toBe(`parked since ${new Date(PARKED_AT).toLocaleString()}`)
+    // V060 (VQA2-R13): the Waiting row's clock, never `toLocaleString()`.
+    expect(container.textContent).toBe(`parked since ${clockTime(PARKED_AT)!.text}`)
+    expect(container.textContent).not.toContain(new Date(PARKED_AT).toLocaleString())
   })
 
   it('falls back to updated_at when the park wrote no instant', () => {

@@ -31,7 +31,7 @@ later, and the scheduler's credential sweep re-readies it.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Callable, Mapping, Sequence
 
@@ -59,7 +59,9 @@ from .continuation import (
     with_merge_pr_label,
 )
 from .access import MODES, grant_id_for, org_id_for, via_token
-from .errors import Forbidden, NotFound, ValidationFailed
+from .extrarepos import Limits, Resolver, refuse_unless_enabled, requested_any, runs_an_agent
+from . import refusals
+from .errors import ApiError, BrowserToolUnavailable, Forbidden, NotFound, ValidationFailed
 from .browser_logins import refuse_unless_personal
 from .expected_outputs import expected_outputs_by_step, record_expected_outputs
 from .forge import (
@@ -71,8 +73,28 @@ from .forge import (
 )
 from .forgeapp import GRANTS, ORGS, Caller
 from .gittokens import Scope, owner_suffix, provider_suffix
+from .mcp_credentials import (
+    OWNER_TASK,
+    OWNER_WORKFLOW,
+    McpCredentials,
+    RowKeys,
+    SecretManagerMcpCredentials,
+    check_credential,
+    credential_for,
+)
+from .mcp_servers import (
+    McpUnavailable,
+    enabled_names,
+    profile_allowed,
+    read_registration,
+    require_enabled as require_mcp_enabled,
+    server_id as mcp_server_id,
+)
 from .metrics import ApiMetrics
+from .judgment import TYPESAFE_BACKEND, JudgmentSettings, settings_mac
+from .provider_keys import task_key_scope
 from .repositories import Repositories, merge_policy_of, repo_id_for
+from .mergesettings import MergeSettingsStore
 from .runnerinputs import input_contract
 from .schemas import TaskCreate, WorkflowCreate, WorkflowStepCreate
 from .served_limits import configured_limits
@@ -82,7 +104,10 @@ from .store import Store, derived_service_account
 from .task_accounts import ACCOUNT_TOKEN_ENV
 from .validation import (
     APP_CREDENTIAL_PROVIDERS,
+    AWAIT_STEP_REFUSED_FIELDS,
+    BROWSER_TOOL_INPUT_KEY,
     CONFLICT_ROUND_METADATA_KEY,
+    TYPESAFE_PROVIDER,
     DISPATCH_METADATA_KEY,
     FORGE_SOURCE_METADATA_KEY,
     INPUT_FROM_METADATA_KEY,
@@ -95,6 +120,8 @@ from .validation import (
     SINGLE_PR,
     DispatchOptionError,
     DispatchOptions,
+    McpServerProfileRefused,
+    McpServerUnregistered,
     MergePlan,
     SinglePrPlan,
     StepSpec,
@@ -104,12 +131,19 @@ from .validation import (
     merge_repository,
     merge_sources,
     merge_step_for,
+    mcp_server_names,
     plan_merge,
+    refuse_control_plane_integrator,
+    refuse_control_plane_outside_workflow,
+    refuse_missing_mcp_credentials,
+    refuse_uninherited_mcp_servers,
+    refuse_unexpected_mcp_credentials,
     refuse_unmergeable_forge,
     rereview_step_for,
     refuse_worker_action_outside_single_pr,
     reject_non_finite,
     reject_reserved_metadata,
+    resolve_await_input,
     resolve_dispatch_options,
     resolve_input_layout,
     resolve_integrator_step,
@@ -123,6 +157,10 @@ from .validation import (
     validate_batch_size,
     validate_dag,
     validate_input_size,
+    check_model_class_available,
+    resolve_task_model,
+    stored_model_class,
+    validate_model_class,
     validate_resource_class_override,
     validate_runner_input,
     validate_runner_profile,
@@ -141,6 +179,10 @@ log = logging.getLogger(__name__)
 class SubmissionResult:
     tasks: list[Task]
     woke_scheduler: bool
+    #: Per task id, each per-run MCP credential stored for it, as
+    #: `{"server", "expires_at"}` (docs/design/registered-mcp-servers.md
+    #: §4.3): never the value, its length, a prefix or a hash.
+    mcp_credentials: Mapping[str, list[dict[str, Any]]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -159,6 +201,20 @@ class WorkflowSubmission:
     #: The step that integrates the others, or None when the strategy is not
     #: `integrate`.
     integrator_step_id: str | None
+    #: The workflow's stored per-run MCP credentials, as `SubmissionResult`'s.
+    mcp_credentials: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class McpInheritance:
+    """What a child may use of its parent's MCP servers (Q7 of #1433): only
+    the servers its parent's SIGNED input names, with the credential rows its
+    parent's submission stored (the parent's own, or its workflow's). A child
+    has no `mcp_credentials` of its own: the agent writing its spec is the
+    party the credential is kept from."""
+
+    servers: tuple[str, ...]
+    owners: tuple[str, ...]
 
 
 class SubmissionService:
@@ -196,6 +252,10 @@ class SubmissionService:
         self.workspaces = workspaces if workspaces is not None else Workspaces(
             getattr(store, "db", None), now=now,
             console_url=getattr(settings, "console_url", ""))
+        #: The per-run MCP credential's Secret Manager writer (docs/design/
+        #: registered-mcp-servers.md §4.4), built on first use so constructing
+        #: the service opens no connection; a test substitutes one.
+        self.mcp_credential_writer: Any = None
 
     def _sign(self, tasks: Sequence[Task]) -> None:
         """After every write to the tasks, immediately before the store call.
@@ -298,6 +358,64 @@ class SubmissionService:
                 f"{'it' if len(names) == 1 else 'them'}; nothing was queued.",
                 detail={"repositories": names},
             )
+
+    def _resolve_additional(
+        self, tenant: Tenant, asked: Sequence[tuple[Task, Sequence[Any] | None]], *,
+        service: bool, also_named: Sequence[Sequence[Any] | None] = (),
+    ) -> None:
+        """Set `additional_repositories` on every task that names some (#1434).
+
+        AFTER `_resolve_forge` and BEFORE `_sign`, so the signature covers the
+        list (format 4, contract request 96) and a task that names none keeps
+        the bytes and format it had. `asked` pairs each task with the list
+        that applies to it -- a workflow step's own, else the workflow's --
+        and `also_named` is any list that applies to no task (a workflow's,
+        when no step runs an agent), which the flag still refuses. One
+        `Resolver` serves the whole submission, so each (repository, ref)
+        pins to one commit for every step. Every refusal is counted like
+        every other and leaves nothing stored (`extrarepos`).
+        """
+        lists = [items for _, items in asked] + list(also_named)
+        if not requested_any(lists):
+            return
+        try:
+            refuse_unless_enabled(
+                bool(getattr(self._settings, "additional_repositories_enabled", False)), lists)
+            if self._forge_tokens is None or self._forge_writer is None:
+                raise ValidationFailed(
+                    "additional_repositories are pinned from GitHub at submission, and this "
+                    "deployment has no forge reader configured",
+                    detail={"field": "additional_repositories"},
+                )
+            # Read at THIS submission (owner, 2026-10-17): an admin's change to
+            # either limit applies to the next one, with no deploy.
+            limits = Limits.from_settings(self._store.get_platform_settings())
+            index = FirestoreSlotIndex(self._store.db)
+            # One per submitter, which every task of one submission shares:
+            # the slot, and so the pin, is the submitter's.
+            resolvers: dict[str, Resolver] = {}
+            for task, items in asked:
+                if not items:
+                    continue
+                submitter = task.submitted_by or ""
+                if submitter not in resolvers:
+                    resolvers[submitter] = Resolver(
+                        db=self._store.db, now=self._now, tenant=tenant,
+                        submitter=submitter, service=service,
+                        grants_enforced=bool(getattr(self._settings,
+                                                     "repository_grants_enforced", False)),
+                        limits=limits, tokens=self._forge_tokens, writer=self._forge_writer,
+                        grant_mode=self._grant_mode, person_slot=self._person_slot,
+                        service_slot=lambda: service_slot(tenant, index),
+                    )
+                task.additional_repositories = resolvers[submitter].resolve(
+                    task, items, step_id=task.step_id)
+        except ApiError as exc:
+            if exc.status_code < 500:
+                self._metrics.tasks_rejected.labels(reason=exc.code).inc()
+                log.info("submission refused tenant=%s code=%s field=additional_repositories",
+                         tenant.tenant_id, exc.code)
+            raise
 
     def _registered_private(self, tenant_id: str, owner: str, repo: str) -> bool:
         """Whether the tenant registered `owner/repo` and its registration
@@ -483,6 +601,9 @@ class SubmissionService:
         repository_ref: str | None = None,
         submitted_by: str | None = None,
         git_identity: dict[str, str] | None = None,
+        mcp_credentials: Mapping[str, Any] | None = None,
+        mcp_whole_submission: bool = True,
+        mcp_inherited: McpInheritance | None = None,
     ) -> Task:
         # `submitted_by` is set only by the child route (swarm_api.children),
         # which has no person on the call: a child's submitter is its parent's,
@@ -491,6 +612,10 @@ class SubmissionService:
             assert ctx is not None
             submitted_by = ctx.email
         profile = validate_runner_profile(spec.runner_profile)
+        # An `await-input` step only inside a workflow (docs/design/
+        # human-steps.md §4.1): as a task, a batch entry or a child it has no
+        # step to answer and no dependant to hand the answer to.
+        refuse_control_plane_outside_workflow(profile, workflow_id=workflow_id)
         # A worker action (merge, post-verdict) only inside a `single-pr`
         # workflow (#295). A workflow's steps were already checked by
         # `validate_step_routing`; this is what refuses one as a plain task.
@@ -511,6 +636,22 @@ class SubmissionService:
             profile, spec.input, step_id=step_id,
             repository_url=repository_url or spec.repository_url,
         )
+        # The browser tool it names can run for it (BSTATUS-API): after the
+        # declaration, which has already refused a name outside the enum.
+        self._refuse_unavailable_browser_tool(
+            profile, spec.input, tenant.tenant_id, submitted_by, step_id=step_id,
+        )
+        # The MCP servers it names are this tenant's, enabled, allowed for the
+        # profile, and each `dispatch` one has a credential to use (docs/
+        # design/registered-mcp-servers.md §4.3): after the declaration, which
+        # has refused a wrong-typed or over-long list, and before anything is
+        # stored. A workflow step's map is the workflow's (passed in); a
+        # task's is its own. Storing it is the caller's, after the signature.
+        self.check_mcp_servers(
+            profile, spec.input, tenant.tenant_id,
+            credentials=mcp_credentials if mcp_credentials is not None else spec.mcp_credentials,
+            whole_submission=mcp_whole_submission, inherited=mcp_inherited, step_id=step_id,
+        )
         # After the declaration, so a declared key out of range is refused
         # naming its bound; this is the store's own limit, for every profile.
         validate_storable(spec.input, step_id=step_id)
@@ -524,6 +665,15 @@ class SubmissionService:
         validate_storable(spec.metadata, label="metadata")
         resource_class = validate_resource_class_override(profile, resource_class_override)
         timeout = validate_timeout(profile, spec.timeout_seconds)
+        # The model class, by name, and `Task.model` from its pin (#1435,
+        # docs/design/model-per-step.md §4.4). For a task, a batch entry, a
+        # workflow step and a child alike: each reaches here with its own
+        # `model_class`, and a child naming none runs its OWN profile's
+        # default, never its parent's (owner's R3).
+        class_models = self._settings.worker_class_models
+        model_class = validate_model_class(profile, spec.model_class, step_id=step_id)
+        check_model_class_available(profile, model_class, class_models, step_id=step_id)
+        model = resolve_task_model(profile, model_class, spec.model, class_models, step_id=step_id)
 
         # `dispatch` is resolved by the CALLER of this method, because the rules
         # differ by scale: a standalone task may not ask for `integrate`, and a
@@ -571,7 +721,7 @@ class SubmissionService:
             input=dict(spec.input),
             submitted_by=submitted_by,
             provider=profile.provider,
-            model=spec.model,
+            model=model,
             priority=spec.priority if priority is None else priority,
             metadata=metadata,
             # Exactly one of these two is ever set. A standalone task carries
@@ -586,7 +736,186 @@ class SubmissionService:
             workflow_id=workflow_id,
             step_id=step_id,
             depends_on=list(depends_on),
+            # Only a class other than the profile's default is stored, so a
+            # default step keeps the bytes and the signing format it had
+            # before classes existed; a stored class is signed at the format
+            # that covers it (`specsign.signing_format`).
+            model_class=stored_model_class(profile, model_class),
         )
+
+    # -- registered MCP servers (docs/design/registered-mcp-servers.md) --------
+
+    def check_mcp_servers(
+        self, profile: Any, payload: Mapping[str, Any], tenant_id: str, *,
+        credentials: Mapping[str, Any] | None,
+        whole_submission: bool = True,
+        inherited: McpInheritance | None = None,
+        step_id: str | None = None,
+    ) -> dict[str, Any]:
+        """§4.3's refusals for one task or step, in the table's order; the
+        auth mode of every server `payload` names, by name.
+
+        `whole_submission` is False for a workflow's step: the map is the
+        workflow's, so a key one step does not name is not unexpected there
+        (`submit_workflow` checks the map once, over every step). Reads the
+        tenant's registrations and nothing else: the value is not stored here.
+
+        DARK UNTIL SWARM_MCP_SERVERS=on: off, a submission naming a server or
+        carrying a credential is refused `mcp_unavailable` and one naming
+        neither is exactly what it was. Without the child key no attempt can
+        register the key an attach is signed with (§4.6), so a server is
+        refused at submission rather than admitted to fail.
+        """
+        names = mcp_server_names(payload)
+        if not names and not credentials:
+            return {}
+        require_mcp_enabled()
+        keys = RowKeys.from_settings(self._settings)
+        if not keys.configured:
+            raise McpUnavailable(
+                "this deployment has no swarm-child-key, so no attempt can register the key "
+                "an MCP attach is signed with; nothing was stored")
+        if inherited is not None:
+            refuse_uninherited_mcp_servers(names, inherited.servers)
+        db = getattr(self._store, "db", None)
+        where = f"step {step_id!r}: " if step_id is not None else ""
+        modes: dict[str, Any] = {}
+        for name in names:
+            registration = read_registration(db, tenant_id, name) if db is not None else None
+            detail: dict[str, Any] = {"field": "input.mcp_servers", "server": name}
+            if step_id is not None:
+                detail["step_id"] = step_id
+            if registration is None or registration.get("enabled") is not True:
+                raise McpServerUnregistered(
+                    f"{where}input.mcp_servers names a server that is not an enabled MCP "
+                    "server registered in this workspace; nothing was stored", detail=detail)
+            if not profile_allowed(registration, profile.name):
+                raise McpServerProfileRefused(
+                    f"{where}this MCP server's registration does not allow runner_profile "
+                    f"{profile.name!r}; nothing was stored",
+                    detail={**detail, "runner_profile": profile.name})
+            modes[name] = (registration.get("auth") or {}).get("mode")
+        if whole_submission:
+            self.check_mcp_credential_map(credentials, modes)
+        available = set(credentials or {})
+        if inherited is not None:
+            available |= self._inherited_mcp_credentials(tenant_id, names, inherited, keys)
+        refuse_missing_mcp_credentials(names, modes, available, step_id=step_id)
+        return modes
+
+    def mcp_auth_modes(self, tenant_id: str) -> dict[str, Any]:
+        """The tenant's enabled MCP registrations by name, each its auth mode:
+        what `schedules.build_schedule` and `apply_edit` take as `mcp_modes`,
+        so a schedule naming a `dispatch` server is refused when it is saved."""
+        db = getattr(self._store, "db", None)
+        if db is None:
+            return {}
+        modes: dict[str, Any] = {}
+        for name in enabled_names(db, tenant_id):
+            registration = read_registration(db, tenant_id, name)
+            if registration is not None and registration.get("enabled") is True:
+                modes[name] = (registration.get("auth") or {}).get("mode")
+        return modes
+
+    @staticmethod
+    def check_mcp_credential_map(credentials: Mapping[str, Any] | None,
+                                 modes: Mapping[str, Any]) -> None:
+        """Every key a named `dispatch` server, every value the right shape.
+        `check_credential`'s refusal names the rule, never the value."""
+        refuse_unexpected_mcp_credentials(credentials, modes)
+        for name in sorted(credentials or {}):
+            entry = (credentials or {})[name]
+            check_credential(getattr(entry, "value", None), getattr(entry, "expires_in", None))
+
+    def _inherited_mcp_credentials(self, tenant_id: str, names: Sequence[str],
+                                   inherited: McpInheritance, keys: RowKeys) -> set[str]:
+        """The servers a live, attested credential row of the parent's
+        submission serves: the attach reads the same rows, by the same rule."""
+        db = getattr(self._store, "db", None)
+        if db is None:
+            return set()
+        now = self._now()
+        return {
+            name for name in names
+            if credential_for(db, tenant_id=tenant_id, server_id=mcp_server_id(tenant_id, name),
+                              owner_ids=inherited.owners, now=now, keys=keys)[0] is not None
+        }
+
+    def _store_mcp_credentials(
+        self, tenant_id: str, *, owner_id: str, owner_kind: str,
+        credentials: Mapping[str, Any] | None, by: str,
+    ) -> list[dict[str, Any]]:
+        """Store each per-run credential, AFTER every check and the signature,
+        immediately before the write that creates the documents: the value
+        goes to one Secret Manager `add_version` under a TTL, the row holds
+        its secret's name (`McpCredentials.store`). A row whose task is not
+        written yet is not swept as done; a failed write leaves secrets the
+        TTL removes. Answers `{"server", "expires_at"}` per credential."""
+        if not credentials:
+            return []
+        db = getattr(self._store, "db", None)
+        if self.mcp_credential_writer is None:
+            self.mcp_credential_writer = SecretManagerMcpCredentials(self._settings.project_id)
+        store = McpCredentials(db, self.mcp_credential_writer, now=self._now,
+                               keys=RowKeys.from_settings(self._settings))
+        stored: list[dict[str, Any]] = []
+        for name in sorted(credentials):
+            registration = read_registration(db, tenant_id, name)
+            if registration is None or registration.get("enabled") is not True:
+                # Disabled since the check above: refused as it would have been.
+                raise McpServerUnregistered(
+                    "a server mcp_credentials names stopped being an enabled MCP server "
+                    "registered in this workspace during the submission; nothing was written",
+                    detail={"field": "mcp_credentials", "server": name})
+            entry = credentials[name]
+            stored.append(store.store(
+                tenant_id=tenant_id, owner_id=owner_id, owner_kind=owner_kind,
+                registration=registration, value=entry.value, expires_in=entry.expires_in,
+                by=by))
+        return stored
+
+    def _refuse_unavailable_browser_tool(
+        self, profile: Any, payload: Mapping[str, Any], tenant_id: str,
+        submitted_by: str | None, *, step_id: str | None = None,
+    ) -> None:
+        """`browser_tool: jev` with nothing to run it on: refused through its
+        switch (`browser_tool_unavailable`, default off), never silently.
+
+        Jev needs the image to carry it (`browser_jev_installed`) and, ONLY
+        when the workspace's judgment backend is `typesafe` (JUDGE-SELECT,
+        `judgment.JudgmentSettings`), a TypeSafe key for the submitter or the
+        tenant -- the resolution `GET /v1/provider-keys/typesafe` serves
+        (`task_key_scope`). The default backend, Internal Jev, and Internal
+        Laya need no key, so they are never refused for its absence. Every
+        other name runs on what every live-browser attempt has. Off, the
+        task is admitted and the runner falls back to Playwright, saying why.
+        """
+        if payload.get(BROWSER_TOOL_INPUT_KEY) != "jev" or BROWSER_TOOL_INPUT_KEY not in profile.inputs:
+            return
+        if not getattr(self._settings, "browser_jev_installed", True):
+            reason = "not_installed"
+            message = ("browser_tool 'jev' cannot run: this deployment's browser image has no "
+                       "jev-browser; pick auto, playwright or dev-browser")
+        else:
+            db = getattr(self._store, "db", None)
+            if db is not None and JudgmentSettings(db, now=self._now, mac=settings_mac(self._settings)).read(
+                    tenant_id)["judgment_backend"] != TYPESAFE_BACKEND:
+                return
+            scope = task_key_scope(db, self._store, tenant_id, submitted_by, TYPESAFE_PROVIDER,
+                                   now=self._now) if db is not None else None
+            if scope is not None:
+                return
+            reason = "no_key"
+            message = ("browser_tool 'jev' needs a TypeSafe key because this workspace's "
+                       "judgment backend is TypeSafe, and none is set for you or for this "
+                       "tenant: add one on the console's key page, choose Internal Jev as "
+                       "the backend, or pick auto, playwright or dev-browser")
+        detail: dict[str, Any] = {"runner_profile": profile.name, "key": BROWSER_TOOL_INPUT_KEY,
+                                  "browser_tool": "jev", "reason": reason}
+        if step_id is not None:
+            detail["step_id"] = step_id
+            message = f"step {step_id!r}: {message}"
+        refusals.refuse(BrowserToolUnavailable(message, detail=detail))
 
     def submit_tasks(
         self, ctx: AuthContext, specs: Sequence[TaskCreate], *, service_submission: bool = False
@@ -629,15 +958,30 @@ class SubmissionService:
             tenant, tasks,
             service=service_submission or is_service_submitter(ctx.email),
         )
+        # #1434: the repositories each task reads beside its own, gated and
+        # pinned, before the signature so it covers them.
+        self._resolve_additional(
+            tenant, [(task, spec.additional_repositories) for task, spec in zip(tasks, specs)],
+            service=service_submission or is_service_submitter(ctx.email),
+        )
         # Contract request 34: signed over the task as it will be stored.
         self._sign(tasks)
+        # Each task's per-run MCP credentials, after every check and the
+        # signature, before the write (§4.4): owned by the task.
+        mcp_stored: dict[str, list[dict[str, Any]]] = {}
+        for spec, task in zip(specs, tasks):
+            stored = self._store_mcp_credentials(
+                tenant.tenant_id, owner_id=task.id, owner_kind=OWNER_TASK,
+                credentials=spec.mcp_credentials, by=ctx.email)
+            if stored:
+                mcp_stored[task.id] = stored
         self._store.create_tasks(tasks, tenant_member=ctx.tenant_member)
         for task in tasks:
             self._metrics.tasks_submitted.labels(
                 tenant=task.tenant_id, runner_profile=task.runner_profile
             ).inc()
         woke = self._wake("task_submitted", tenant_id=tenant.tenant_id, count=str(len(tasks)))
-        return SubmissionResult(tasks=tasks, woke_scheduler=woke)
+        return SubmissionResult(tasks=tasks, woke_scheduler=woke, mcp_credentials=mcp_stored)
 
     # -- workflows --------------------------------------------------------
 
@@ -773,6 +1117,35 @@ class SubmissionService:
             # it was placed (test_merge_chain_profiles_are_refused_on_submission).
             for step in spec.steps:
                 validate_runner_profile(step.runner_profile)
+            # An `await-input` step's block (docs/design/human-steps.md §4.1,
+            # HW-API-SUBMIT), checked and normalised once each profile is
+            # known to be one the platform runs, and BEFORE the routing
+            # checks, so a `when`, `builds_on`, `pr_role` or `merges` on such
+            # a step is refused naming itself for that reason. The profile
+            # ships unavailable (contract request 94), so until request D the
+            # loop above refuses every such step first.
+            await_inputs: dict[str, dict[str, Any]] = {}
+            control_plane_steps: set[str] = set()
+            for step in spec.steps:
+                step_profile = validate_runner_profile(step.runner_profile)
+                if step_profile.control_plane:
+                    control_plane_steps.add(step.step_id)
+                    if step.step_id == integrator_step_id:
+                        refuse_control_plane_integrator(step_profile, step_id=step.step_id)
+                block = resolve_await_input(
+                    step_profile,
+                    step.await_input,
+                    step_id=step.step_id,
+                    container_fields={
+                        name: getattr(step, name) for name in AWAIT_STEP_REFUSED_FIELDS
+                    },
+                    input_from=step.input_from,
+                    submitted_by=ctx.email,
+                    allowed_domains=self._settings.core.allowed_domains,
+                    allowed_users=self._settings.allowed_users,
+                )
+                if block is not None:
+                    await_inputs[step.step_id] = block
             single_pr = validate_step_routing(
                 step_specs,
                 strategy=dispatch.strategy,
@@ -794,6 +1167,7 @@ class SubmissionService:
             # refusal. The size first, as `_build_task` orders them, which
             # checks each step again; by then neither can fail.
             merge_metadata: Mapping[str, Any] = spec.metadata
+            mcp_modes: dict[str, Any] = {}
             for step in spec.steps:
                 profile = validate_runner_profile(step.runner_profile)
                 validate_input_size(step.input, self._settings.core.max_input_bytes)
@@ -803,6 +1177,11 @@ class SubmissionService:
                     profile, step.input, step_id=step.step_id,
                     repository_url=spec.repository_url,
                 )
+                # Its MCP servers, against the workflow's one map (§4.3).
+                mcp_modes.update(self.check_mcp_servers(
+                    profile, step.input, tenant.tenant_id, credentials=spec.mcp_credentials,
+                    whole_submission=False, step_id=step.step_id,
+                ))
                 validate_storable(step.input, step_id=step.step_id)
                 # The step's own metadata, merged as `_build_task` will store
                 # it, under the same rules as any task's metadata.
@@ -822,6 +1201,10 @@ class SubmissionService:
                 spec.fix_rounds, merge_metadata, merge_step=merge_plan is not None,
                 named_pull=named_pull is not None,
             )
+            # The workflow's map, once, over every step's servers: a key no
+            # step names, or one for a server whose key is not the caller's,
+            # is unexpected; every value is the right shape (§4.3).
+            self.check_mcp_credential_map(spec.mcp_credentials, mcp_modes)
         except ValidationFailed as exc:
             self._metrics.tasks_rejected.labels(reason=exc.code).inc()
             raise
@@ -834,9 +1217,11 @@ class SubmissionService:
         # would report it "not found" on the pull request -- and if it did edit
         # the repository, those edits are exactly the unreviewed work the gate
         # exists to keep out.
-        not_integrated: frozenset[str] = frozenset()
+        # Nor is an `await-input` step (docs/design/human-steps.md §4.1): it
+        # runs no container, so it pushes no branch to merge.
+        not_integrated: frozenset[str] = frozenset(control_plane_steps)
         if integrator_step_id is not None and by_id[integrator_step_id].when is not None:
-            not_integrated = frozenset({by_id[integrator_step_id].when.step})
+            not_integrated |= {by_id[integrator_step_id].when.step}
         now = self._now()
         workflow_id = new_id("wf")
 
@@ -845,6 +1230,8 @@ class SubmissionService:
         # Topological order, so a child task document is never written before
         # the parent it names in `depends_on`.
         step_task_id: dict[str, str] = {}
+        # Each step's stored model class, copied to its `WorkflowStep` (#1435).
+        step_model_class: dict[str, str | None] = {}
         # Read once, at submission (#638): the gated step files its review's
         # minors on this issue, and a later change reaches later workflows.
         findings_epic = self._store.get_findings_epic(tenant.tenant_id)
@@ -853,6 +1240,14 @@ class SubmissionService:
         # refuses any other base against (`base_not_default`, MS3).
         merge_base = (
             self._registered_base(tenant.tenant_id, repository_url)
+            if merge_plan is not None else None
+        )
+        # TRAIN-WS, read once at submission like the base: the workspace's
+        # merge mode for this repository, its registration's override first
+        # (docs/merge-trains.md §5.1). Signed into the merge step's target;
+        # a setting changed later reaches later workflows.
+        merge_mode = (
+            self._merge_mode(tenant.tenant_id, repository_url)
             if merge_plan is not None else None
         )
         # Every step's commits name the workflow's submitter (P37). A
@@ -875,6 +1270,7 @@ class SubmissionService:
                 single_pr=single_pr,
                 merge_plan=merge_plan,
                 merge_base=merge_base,
+                merge_mode=merge_mode,
                 named_pull=named_pull,
                 continued_workflow=continuation.workflow_id if continuation else None,
             ).with_routing(
@@ -894,6 +1290,10 @@ class SubmissionService:
                 # does; the re-review reads the same verdict and would file
                 # every minor a second time.
                 findings_epic=None if step_id == rereview_step_id else findings_epic,
+            ).with_await_input(
+                # Signed with the rest of the block (§4.1); None on every other
+                # step, which then stores exactly the block it stored before.
+                await_inputs.get(step_id)
             )
             if source.input_from and layout_of[step_id] == INPUT_LAYOUT_BY_PARENT:
                 # Each parent's STEP id beside the task id the worker sees in
@@ -916,6 +1316,7 @@ class SubmissionService:
                            and step_id == merge_plan.merge_step else {}),
                     },
                     timeout_seconds=source.timeout_seconds,
+                    model_class=source.model_class,
                     # A merge step waits for CI by failing its attempt while a
                     # required check runs, so it gets more attempts than an
                     # agent step (`MERGE_STEP_MAX_ATTEMPTS`, contract request 47).
@@ -935,6 +1336,9 @@ class SubmissionService:
                 repository_url=repository_url,
                 repository_ref=spec.repository_ref,
                 git_identity=git_identity,
+                # The workflow's map serves every step (§4.3); checked whole above.
+                mcp_credentials=spec.mcp_credentials,
+                mcp_whole_submission=False,
             )
             if after_prs and not source.depends_on:
                 # SPEED-D3: a root step waits for the pull requests to merge,
@@ -954,6 +1358,7 @@ class SubmissionService:
                     step_task_id[src]: filename for src, filename in source.input_from.items()
                 }
             step_task_id[step_id] = task.id
+            step_model_class[step_id] = task.model_class
             tasks.append(task)
 
         for source in spec.steps:
@@ -967,6 +1372,8 @@ class SubmissionService:
                     input_from=dict(source.input_from),
                     timeout_seconds=source.timeout_seconds,
                     task_id=step_task_id[source.step_id],
+                    # Its task's stored class: None for the profile's default.
+                    model_class=step_model_class[source.step_id],
                 )
             )
 
@@ -1000,7 +1407,22 @@ class SubmissionService:
         # and the whole workflow refused when any step's repository is not
         # granted to the person.
         self._resolve_forge(tenant, tasks, service=is_service_submitter(ctx.email))
+        # #1434: each step's additional repositories -- its own list, which
+        # REPLACES the workflow's (`[]` is none), else the workflow's for a
+        # step that runs an agent -- pinned once per submission, signed.
+        self._resolve_additional(
+            tenant,
+            [(task, self._step_additional(by_id[task.step_id or ""], spec)) for task in tasks],
+            service=is_service_submitter(ctx.email),
+            also_named=[spec.additional_repositories],
+        )
         self._sign(tasks)
+        # The workflow's per-run MCP credentials, after every check and the
+        # signature, before the write (§4.4): owned by the workflow, so every
+        # step that names the server is attached the one stored credential.
+        mcp_stored = self._store_mcp_credentials(
+            tenant.tenant_id, owner_id=workflow_id, owner_kind=OWNER_WORKFLOW,
+            credentials=spec.mcp_credentials, by=ctx.email)
         self._store.create_workflow(workflow, tasks, tenant_member=ctx.tenant_member)
         self._metrics.workflows_submitted.labels(tenant=tenant.tenant_id).inc()
         self._wake("workflow_submitted", tenant_id=tenant.tenant_id, workflow_id=workflow_id)
@@ -1009,7 +1431,22 @@ class SubmissionService:
             tasks=tasks,
             dispatch=dispatch,
             integrator_step_id=integrator_step_id,
+            mcp_credentials=mcp_stored,
         )
+
+    @staticmethod
+    def _step_additional(step: WorkflowStepCreate, spec: WorkflowCreate) -> list[Any] | None:
+        """The additional repositories a workflow step reads (owner's Q6): its
+        own list when it names one, `[]` included, else the workflow's -- but
+        only for a step that runs an agent. A worker action (merge,
+        post-verdict, including one swarm-api appended) and an `await-input`
+        step read no repository, so the workflow's default is not theirs; a
+        list a step names itself is still checked, and refused there."""
+        if step.additional_repositories is not None:
+            return list(step.additional_repositories)
+        if runs_an_agent(validate_runner_profile(step.runner_profile)):
+            return list(spec.additional_repositories or []) or None
+        return None
 
     @staticmethod
     def _step_specs(spec: WorkflowCreate) -> list[StepSpec]:
@@ -1233,6 +1670,13 @@ class SubmissionService:
         None when it is unregistered or set none (the platform default then)."""
         return merge_policy_of(self._registration(tenant_id, repository_url))
 
+    def _merge_mode(self, tenant_id: str, repository_url: str | None) -> str:
+        """The mode `tenant_id`'s merge step merges this repository in: the
+        registration's override, else the workspace's (TRAIN-WS)."""
+        return MergeSettingsStore(self._store.db, now=self._now,
+                                  mac=settings_mac(self._settings)).mode_for(
+            tenant_id, self._registration(tenant_id, repository_url))
+
     def _registered_base(self, tenant_id: str, repository_url: str | None) -> str | None:
         """The default branch `tenant_id` registered this repository with, or None.
 
@@ -1254,6 +1698,7 @@ class SubmissionService:
         single_pr: SinglePrPlan | None = None,
         merge_plan: MergePlan | None = None,
         merge_base: str | None = None,
+        merge_mode: str | None = None,
         named_pull: NamedPull | None = None,
         continued_workflow: str | None = None,
     ) -> DispatchOptions:
@@ -1305,6 +1750,7 @@ class SubmissionService:
                 # caller named, as `resolve_merge_pr` checked them.
                 return dispatch.with_merge_target(
                     number=named_pull.number, head_sha=named_pull.head_sha, base=merge_base,
+                    merge_mode=merge_mode,
                 )
             return dispatch.with_merge_target(
                 pull_request=(
@@ -1320,6 +1766,7 @@ class SubmissionService:
                 pull_request_workflow=(
                     (continued_workflow or None) if sources.continued else None
                 ),
+                merge_mode=merge_mode,
             )
         if integrator_step_id is None:
             return dispatch

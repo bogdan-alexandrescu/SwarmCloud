@@ -39,6 +39,7 @@ from .executioncancel import (
     PubSubExecutionCanceller,
 )
 from .forge import FirestoreSlotIndex, ForgeTokens, GitHubIssues, SecretManagerForgeTokens
+from .forge_installation import InstallationSource, build_installation_tokens
 from .forgewrite import GitHubWriter
 from .groups import CloudIdentityGroups, MembershipResolver
 from .inspect import InspectionService
@@ -46,6 +47,7 @@ from .metrics import ApiMetrics
 from .objects import ObjectReader, build_object_reader
 from .outcomes import Outcomes
 from .purge import ArtifactPurger, build_artifact_purger
+from .roles import RoleStore
 from .ratelimit import TokenBucketLimiter
 from .rollup import WorkflowRollups
 from .service import SubmissionService
@@ -98,6 +100,13 @@ class AppContext:
     #: its pull request's keyword block (`issuesync`) -- with the same
     #: tenant token, the same pinned host and no redirects.
     forge_writer: GitHubWriter | None = None
+    #: The App's installation tokens for BACKGROUND reads (#1483,
+    #: swarm_api.forge_installation): the merge wake, the issue run's CI read,
+    #: the stranded-PR sweep and the index's head poll read with one when the
+    #: repository's owner has an installation, so they spend the App's quota
+    #: rather than a person's. None when `forge_installation_reads` is off;
+    #: every read then uses `forge_tokens`. Writes always use `forge_tokens`.
+    forge_installations: InstallationSource | None = None
     #: Asks the reconciler to stop a cancelled task's execution (#627). Builds
     #: no client until a cancel needs it; tests inject a recorder.
     executions: ExecutionCanceller = NoExecutionCanceller()
@@ -109,6 +118,15 @@ class AppContext:
     #: for a few minutes (`swarm_api.startup`). Per app, never at import.
     startup_estimates: StartupEstimates = field(default_factory=StartupEstimates)
     now: Callable[[], Any] = utcnow
+    #: Workspace roles (`swarm_api.roles`, docs/design/workspace-roles.md):
+    #: the grant reader and its 15 s cache, the gate other routes call, and
+    #: the platform-admin audit `current_auth` runs. Per app, so its caches
+    #: are per instance; built from this context when not given.
+    roles: RoleStore | None = None
+
+    def __post_init__(self) -> None:
+        if self.roles is None:
+            self.roles = RoleStore(self.db, self.settings, metrics=self.metrics, now=self.now)
 
     def ready(self) -> tuple[bool, str]:
         """Readiness is a real Firestore round trip, not a hard-coded 200.
@@ -161,6 +179,10 @@ def build_context(
     forge_tokens: ForgeTokens | None = None,
     forge: GitHubIssues | None = None,
     forge_writer: GitHubWriter | None = None,
+    # The background reads' installation tokens (#1483). `_MISSING` means
+    # "from the settings": built over the App's key when
+    # `forge_installation_reads` is on (it builds no client), None when off.
+    forge_installations: InstallationSource | None | object = _MISSING,
     executions: ExecutionCanceller | None = None,
     # The purge's bucket deleter (purge.py). `_MISSING` means "from the
     # settings", as for `objects`; tests inject an in-memory one.
@@ -253,6 +275,12 @@ def build_context(
         forge_tokens=forge_tokens,
         forge=forge or GitHubIssues(),
         forge_writer=forge_writer,
+        forge_installations=(
+            (build_installation_tokens(db, settings.project_id, now=now)
+             if settings.forge_installation_reads else None)
+            if forge_installations is _MISSING
+            else forge_installations  # type: ignore[arg-type]
+        ),
         executions=executions or _execution_canceller(settings),
         artifact_purger=(
             build_artifact_purger(
@@ -361,6 +389,19 @@ def current_auth(
     # scope until someone adds it to `auth.CONTINUATION_ROUTES`. Before the
     # limiter: a request that was never allowed costs the caller no budget.
     require_continuation_route(auth, route)
+    # THE PLATFORM-ADMIN AUDIT (docs/design/workspace-roles.md §4.2.4, Q12):
+    # here, so every route reaches it -- directly, or through `tenant_scope`/
+    # `admin_auth` -- and a route added tomorrow is covered without anyone
+    # remembering. A platform admin acting in a group workspace they are not a
+    # member of, or one whose own role there is below what the route needs,
+    # has an `admin_audit` row written BEFORE the route body runs; a row that
+    # cannot be written is 503 and the route never runs. Before the limiter,
+    # as the continuation check: a refused request costs no budget.
+    acted = ctx.roles.audit_platform_admin(  # type: ignore[union-attr]
+        auth, method=request.method, route=path, path_params=dict(request.path_params))
+    if acted is not None:
+        # `main.observe` logs the response status on the same request.
+        request.state.platform_admin = (acted, auth.tenant_id, path or "unknown")
     try:
         ctx.limiter.check(auth.principal.email)
     except Exception:

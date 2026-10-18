@@ -309,7 +309,8 @@ module "cloud_run" {
       # SWARM_CHILD_KEY (and, during a rotation, SWARM_CHILD_KEY_PREVIOUS) by
       # Secret Manager reference, only once enable_child_tasks is on
       # (child_tasks.tf); and SWARM_LIVE_KEY, the live relay's ticket key,
-      # only once the relay is on (locals.tf `live_key_secret_env`, live.tf).
+      # only once the relay is on (locals.tf `live_key_secret_env`, live.tf);
+      # and SWARM_SETTINGS_KEY always (settings_mac.tf).
       secret_env = local.api_secret_env
       # The audience a worker mints its ID token for when it calls the child
       # routes (SWARM_API_AUDIENCE): a constant, because the worker cannot be
@@ -355,10 +356,12 @@ module "cloud_run" {
       # The drain loop is a single serialised pass over admissible work.
       # Concurrent requests on one instance would have them contend on the same
       # Firestore documents and abort each other.
-      concurrency      = 1
-      request_timeout  = "540s"
-      env              = local.service_env["swarm-scheduler"]
-      secret_env       = local.scheduler_child_key_secret_env
+      concurrency     = 1
+      request_timeout = "540s"
+      env             = local.service_env["swarm-scheduler"]
+      # SWARM_CHILD_KEY once child tasks are on, and SWARM_SETTINGS_KEY
+      # (settings_mac.tf): locals.tf `scheduler_secret_env`.
+      secret_env       = local.scheduler_secret_env
       custom_audiences = [local.push_audiences["swarm-scheduler"]]
       invokers         = { tick = module.iam.tick_member }
     }
@@ -515,6 +518,12 @@ module "scheduler" {
   # tfvars variable: it runs even while var.workspace_apply_publish is off,
   # which is exactly when an approved workspace waits (2026-10-09).
   enable_workspace_sweep = true
+
+  # #1347 (owner decision Q5): swarm-workspace-secrets-rotation-sweep, the
+  # hourly caller that ends a rotated-out workspace secret's 24-hour grace.
+  # A literal, like the workspace sweep: an environment without it keeps
+  # every rotated-out value enabled for ever.
+  enable_secrets_rotation_sweep = true
 
   # The API publishes a wake message on submission; the reconciler republishes
   # when it returns reclaimed work to READY.

@@ -111,7 +111,7 @@ spec:
         {"/serviceaccounts": ["swarm-agent-worker", "default", "swarm-worker"],
         "/resourcequotas": ["swarm-tenant-quota"],
         "/limitranges": ["swarm-worker-limits"],
-        "networking.k8s.io/networkpolicies": ["swarm-default-deny", "swarm-deny-cross-tenant-ingress", "swarm-allow-worker-egress", "swarm-allow-live-egress", "swarm-allow-egress-proxy", "swarm-allow-judge-egress"],
+        "networking.k8s.io/networkpolicies": ["swarm-default-deny", "swarm-deny-cross-tenant-ingress", "swarm-allow-worker-egress", "swarm-allow-live-egress", "swarm-allow-egress-proxy", "swarm-allow-judge-egress", "swarm-allow-graph-service", "swarm-allow-typesafe-fwd"],
         "rbac.authorization.k8s.io/roles": ["swarm-worker", "swarm-dispatcher", "swarm-reaper"],
         "rbac.authorization.k8s.io/rolebindings": ["swarm-worker", "swarm-worker-legacy", "swarm-dispatcher", "swarm-reaper"]}
   validations:

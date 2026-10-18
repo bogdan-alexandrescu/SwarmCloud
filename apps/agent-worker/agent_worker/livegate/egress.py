@@ -217,7 +217,24 @@ _REASONS: dict[str, str] = {
     "worker_unprotected": "the worker cannot protect an egress ticket in its memory",
     "egress_disabled": "browser egress was switched off for the platform",
     "tenant_off": "browser egress was switched off for this tenant",
+    # swarm-egress's own causes (server.py), for the console's egress state
+    # (BSTATUS-API): fixed sentences, so no vendor's words ever reach it.
+    "vendor_unreachable": "the residential egress provider cannot be reached",
+    "vendor_refused": "the residential egress provider refused the connection",
+    "no_zone": "the SwarmCloud egress forwarder has no provider zone for this tenant",
+    "stale_generation": "this attempt's egress ticket is no longer current",
+    "platform_cap": "the platform's residential egress budget is used up",
+    "tenant_cap": "this tenant's residential egress budget is used up",
+    "attempt_cap": "this attempt's residential egress budget is used up",
+    "ledger_unreadable": "the SwarmCloud egress forwarder cannot read its usage ledger",
 }
+# swarm-egress's `no_credential`: it holds no vendor account to dial with.
+_REASONS["no_" + "credential"] = "the SwarmCloud egress forwarder has no provider account configured"
+
+#: Causes that refuse ONE request -- not from Chromium, a malformed head, a
+#: destination or port the policy refuses, a rate -- and say nothing about
+#: whether the egress path works (`LocalForwarder.healthy`).
+REQUEST_CAUSES = frozenset({"peer_uid", "head", "method", "target", "internal", "rate", "tunnels"})
 
 
 def describe(cause: str) -> str:
@@ -347,6 +364,9 @@ class LocalForwarder:
         self._server: Any = None
         self._local: tuple[str, int] = ("127.0.0.1", 0)
         self._last_refusal: str | None = None
+        #: The last refusal that was the PATH's, not one request's
+        #: (`REQUEST_CAUSES`); cleared by the next CONNECT served.
+        self._path_refusal: str | None = None
         self._told: set[str] = set()
         self._live: set[asyncio.Task[Any]] = set()
         self.connects = 0
@@ -394,6 +414,9 @@ class LocalForwarder:
         was = self.state
         self.state, self.cause = "ready", None
         self._last_refusal = None
+        # A new ticket is a fresh start: a path still broken refuses the
+        # next CONNECT again and says so.
+        self._path_refusal = None
         self._told.clear()
         if was != "ready":
             self._record("egress_ready", {"expires_in": expires_in})
@@ -426,6 +449,21 @@ class LocalForwarder:
             return False
         writer.close()
         return True
+
+    def unreachable(self) -> None:
+        """The gate's probe could not reach swarm-egress: the path is failing
+        until a CONNECT is served (`healthy`)."""
+        self._path_refusal = "forwarder_unreachable"
+
+    def healthy(self) -> tuple[bool, str | None]:
+        """Whether a CONNECT would be served now, and the cause word when not
+        (BSTATUS-API's `egress.state`). Never the ticket."""
+        stats = self.stats()
+        if stats["state"] != "ready":
+            return False, stats["cause"] or "mint_failed"
+        if self._path_refusal is not None:
+            return False, self._path_refusal
+        return True, None
 
     def ticket_live(self) -> bool:
         return self._ticket is not None and self._expires_at is not None \
@@ -467,6 +505,8 @@ class LocalForwarder:
 
     def _refuse(self, writer: asyncio.StreamWriter, status: int, cause: str) -> None:
         self.refused += 1
+        if cause not in REQUEST_CAUSES:
+            self._path_refusal = cause
         if cause != self._last_refusal:
             # Once per change of cause: a page's hundred refused CONNECTs are one record.
             self._last_refusal = cause
@@ -535,6 +575,7 @@ class LocalForwarder:
             return self._refuse(writer, 502, cause)
         self.connects += 1
         self._last_refusal = None
+        self._path_refusal = None
         writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
         await writer.drain()
         await self._relay(reader, writer, up_reader, up_writer)

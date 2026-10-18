@@ -8,9 +8,11 @@
 # Autopilot, where an `emptyDir` with `medium: Memory` mounted at /dev/shm can
 # be sized directly.
 #
-# That emptyDir counts against the container's memory limit, which is why the
-# `browser` resource class is 16 GiB rather than 8: 2 GiB of it is shared memory
-# before Chromium has allocated a single tab.
+# That emptyDir counts against the container's memory limit: 2 GiB of the
+# `browser` class's 8 GiB is shared memory before Chromium has allocated a
+# single tab. The class was 16 GiB for that reason until contract request 79
+# (2026-10-14) measured four browser pods at a 1.85 GiB peak, shm included
+# (docs/browser-startup-speed.md §11). The numbers come from the catalogue.
 #
 # Chromium's own sandbox stays OFF, and the runner passes
 # `chromium_sandbox=False`. It needs user namespaces and CAP_SYS_ADMIN, and this
@@ -184,6 +186,11 @@ spec:
               value: __ARTIFACT_BUCKET__
             - name: WORKSPACE_ROOT
               value: /workspace
+            # The pod's `cache` volume (CACHE-SCRATCH): where the worker puts
+            # the agent's tool caches and TMPDIR, off the workspace volume.
+            # GkeJobDispatcher's CACHE_MOUNT / CACHE_ROOT_ENV.
+            - name: SWARM_CACHE_ROOT
+              value: /cache
             - name: CHECKPOINT_INTERVAL_SECONDS
               value: "__CHECKPOINT_INTERVAL_SECONDS__"
             - name: MAX_IN_WORKER_RETRY_DELAY_SECONDS
@@ -225,6 +232,8 @@ spec:
               mountPath: /dev/shm
             - name: tmp
               mountPath: /tmp
+            - name: cache
+              mountPath: /cache
             - name: home
               mountPath: /home/swarm
             # The step-spec public keys (contract request 34): terraform's
@@ -248,6 +257,21 @@ spec:
             sizeLimit: 2Gi
         # /tmp and HOME from the dispatcher's GkeDisk, like the workspace: the
         # three sizeLimits add up to the pod's ephemeral-storage, never past it.
+        # The agent's tool caches and TMPDIR, on a NETWORK DISK of their own
+        # (CACHE-PVC, owner decision 2026-10-15): a generic ephemeral volume,
+        # created with the pod and deleted with it by the ephemeral-volume
+        # controller. The 2 GiB emptyDir it replaces evicted
+        # task_247c87a8714c4977921a twice, and Autopilot's 10 GiB had no more
+        # to give it. NOT counted in __EPHEMERAL__; never checkpointed.
+        - name: cache
+          ephemeral:
+            volumeClaimTemplate:
+              spec:
+                accessModes: ["ReadWriteOnce"]
+                storageClassName: __CACHE_STORAGE_CLASS__
+                resources:
+                  requests:
+                    storage: __CACHE_DISK__
         - name: tmp
           emptyDir:
             sizeLimit: __TMP_DISK__

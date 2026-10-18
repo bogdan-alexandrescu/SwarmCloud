@@ -80,7 +80,7 @@ def test_required_pools_are_pool_names_for_and_units_are_the_tasks_class():
     t = task(runner_profile="browser", resource_class="browser", provider="anthropic")
     required, units = required_pools(t)
     assert required == required_for(t)
-    assert units == RESOURCE_CLASSES["browser"].units == 2
+    assert units == RESOURCE_CLASSES["browser"].units == 1  # contract request 79
 
 
 def test_units_follow_the_tasks_resource_class_as_admission_does():

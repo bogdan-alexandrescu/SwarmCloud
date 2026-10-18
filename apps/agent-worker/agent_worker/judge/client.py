@@ -24,6 +24,7 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass, field
@@ -76,11 +77,21 @@ class Decision:
         return self.outcome == "ok"
 
 
+#: The worker's TypeSafe shim is on loopback: never through a proxy the
+#: environment names (urllib reads HTTP_PROXY for http:// with no NO_PROXY).
+_DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _opener(url: str) -> Callable[..., Any]:
+    return _DIRECT.open if urllib.parse.urlsplit(url).hostname == "127.0.0.1" \
+        else urllib.request.urlopen
+
+
 def urllib_transport(url: str, body: bytes, headers: Mapping[str, str],
                      timeout: float) -> tuple[int, bytes]:
     request = urllib.request.Request(url, data=body, headers=dict(headers), method="POST")
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 -- a fixed https URL or the deployment's Internal URL
+        with _opener(url)(request, timeout=timeout) as response:  # noqa: S310 -- a fixed https URL, the deployment's Internal URL or the worker's loopback shim
             return response.status, response.read(4 * 1024 * 1024)
     except urllib.error.HTTPError as exc:
         return exc.code, b""

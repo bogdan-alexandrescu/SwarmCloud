@@ -96,6 +96,21 @@ locals {
   tailscale_k8s_object      = "operator-oauth"
   tailscale_egress_enabled  = var.enable_tailscale_egress && var.enable_gke_autopilot
   tailscale_secret_accessor = local.tailscale_egress_enabled ? compact([local.deployer_member]) : []
+
+  # The `decision-api` Service's clusterIP, FIXED, and stated here ONCE. A
+  # judging pod reaches the decision API by its tailnet name, which the
+  # cluster's DNS does not know: the scheduler gives exactly those pods a
+  # hostAliases entry pinning var.tailscale_egress_target to this address
+  # (owner decision 2026-10-15, #1380), so TLS verifies the API's own
+  # certificate end to end. A Service that came back with another address
+  # would leave every such pod dialling nothing, so it may not get one.
+  # 10.48.6.120 is the address Kubernetes gave it on swarm-autopilot, read
+  # 2026-10-15, so pinning it changed nothing live; it is inside dev's
+  # services_cidr (10.48.0.0/20) and the precondition below refuses a
+  # render whose range does not hold it. scheduler.judgment
+  # DECISION_API_CLUSTER_IP restates it; tests/unit/control_plane/
+  # test_dispatch_judgment.py holds the two equal.
+  decision_api_cluster_ip = "10.48.6.120"
 }
 
 resource "google_secret_manager_secret" "tailscale_oauth" {
@@ -155,13 +170,21 @@ output "tailscale_egress" {
   }
 }
 
-# kubernetes/swarm-system/tailscale-egress.yaml with the tailnet name filled
-# in. Null while the switch is off, so apply.sh applies nothing about the
-# tailnet and syncs no secret.
+# kubernetes/swarm-system/tailscale-egress.yaml with the tailnet name and the
+# Service's fixed clusterIP filled in. Null while the switch is off, so
+# apply.sh applies nothing about the tailnet and syncs no secret.
 output "tailscale_egress_manifest" {
   description = "The decision-api tailnet egress, rendered. Apply to swarm-autopilot only (never agents-staging), with kubernetes/apply.sh --swarm-system. Null while enable_tailscale_egress is off."
-  value = local.tailscale_egress_enabled ? replace(
+  value = local.tailscale_egress_enabled ? replace(replace(
     file("${path.module}/../../kubernetes/swarm-system/tailscale-egress.yaml"),
-    "__TAILNET_FQDN__", var.tailscale_egress_target
+    "__TAILNET_FQDN__", var.tailscale_egress_target),
+    "__DECISION_API_CLUSTER_IP__", local.decision_api_cluster_ip
   ) : null
+
+  precondition {
+    # cidrsubnet(x, 0, 0) is the network x's address lies in, at the
+    # services range's prefix length.
+    condition     = !local.tailscale_egress_enabled || cidrsubnet("${local.decision_api_cluster_ip}/${split("/", var.services_cidr)[1]}", 0, 0) == var.services_cidr
+    error_message = "local.decision_api_cluster_ip is not inside var.services_cidr, so Kubernetes would refuse the decision-api Service's fixed clusterIP. Pick a free address in this cluster's services range and change it, and scheduler.judgment DECISION_API_CLUSTER_IP with it."
+  }
 }

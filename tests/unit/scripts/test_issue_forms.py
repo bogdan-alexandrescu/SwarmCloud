@@ -438,6 +438,15 @@ def _nav_options() -> dict[str, str]:
     # link and the page title use.
     keys = f"{_const(app, 'SETTINGS')}/{_const(app, 'KEYS_TAB')}"
     out[paths[keys]] = f"{UI}{_const(app, 'SETTINGS_LABEL')} › {_const(app, 'KEYS_LABEL')} ({paths[keys]})"
+    # Settings › Workspace (CTXQ-UI): the workspace's own settings, beside API
+    # keys at the panel's foot. The same constants, for the same reason.
+    workspace = f"{_const(app, 'SETTINGS')}/{_const(app, 'WORKSPACE_TAB')}"
+    out[paths[workspace]] = f"{UI}{_const(app, 'SETTINGS_LABEL')} › {_const(app, 'WORKSPACE_LABEL')} ({paths[workspace]})"
+    # Settings › MCP servers (MCP-UI-NAV): the workspace's registered MCP
+    # servers, beside Workspace at the panel's foot (registered-mcp-servers.md
+    # §4.11). The same constants, for the same reason.
+    mcp = f"{_const(app, 'SETTINGS')}/{_const(app, 'MCP_TAB')}"
+    out[paths[mcp]] = f"{UI}{_const(app, 'SETTINGS_LABEL')} › {_const(app, 'MCP_LABEL')} ({paths[mcp]})"
     return out
 
 

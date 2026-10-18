@@ -71,9 +71,11 @@ A PULL REQUEST THAT CONFLICTS WITH ITS BASE is never waited on for checks
 a conflict parks for a conflict fix round -- a claude-code continuation of the
 branch that merges the base in, submitted by swarm-api's wake tick as a CI-fix
 round is -- at most MERGE_CONFLICT_ROUNDS_MAX of them, then `merge_conflict`.
-A round's pushed head, and one the PR-side CI fixer recorded for this pull
-request (#1073, `_ci_fixer_heads`), is accepted as a fix round's head is:
-from the platform's records and signed specs, never from the commit.
+A round's pushed head, one the PR-side CI fixer recorded for this pull
+request (#1073, `_ci_fixer_heads`), and one swarm-api's tick recorded for
+this pull request from a fix round of ANY workflow (epic #1334,
+`_recorded_fix_heads`), is accepted as a fix round's head is: from the
+platform's records and signed specs, never from the commit.
 
 THE GITHUB SPECIFICS ARE BEHIND `ForgeMerger`, with `GitHubMerger` its only
 implementation. swarm-api refuses a repository whose host has no merger at
@@ -90,7 +92,7 @@ from one table of cases (§8) until that workflow is retired.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Mapping, Protocol
 from urllib.parse import quote
@@ -100,6 +102,7 @@ from swarm_common.states import TERMINAL_STATES, TaskState
 
 from . import forge as forge_mod
 from . import mergeslot
+from . import mergetrain
 from . import verdict as verdict_mod
 from .errors import ExitCode, FencedError, InputUnavailable
 from .post_verdict import (
@@ -252,6 +255,18 @@ CI_FIX_POSTBACK_STATES = frozenset({"pending", "posted", "gave_up"})
 #: by hand before it existed; past it the newest are not looked at, and an
 #: unmatched head is `head_moved` as before.
 CI_FIXER_TASKS_READ = 10
+
+#: swarm-api's record of every platform fix round's pushed head, against the
+#: PULL REQUEST (repository + number), on the task whose `swarm/<id>` branch
+#: it is on (epic #1334: HANG-LEASE's merge refused PR 1338 at the head a fix
+#: task of another workflow pushed, 2026-10-15 02:16Z). Written by
+#: `swarm_api.cifix.record_fix_heads`; restated because the worker image
+#: carries no control plane, held equal by
+#: tests/unit/worker/test_merge_recorded_fix_heads.py.
+PR_FIX_HEADS_FIELD = "pull_request_fix_heads"
+#: How many of its entries are read, newest first: all that swarm-api keeps
+#: (`cifix.FIX_HEADS_KEPT`), each one a task read and a signature check.
+PR_FIX_HEADS_READ = 20
 
 #: The park code after an update-branch whose new head GitHub had not made
 #: within the bounded re-read: the call is asynchronous. swarm-api's tick
@@ -897,6 +912,11 @@ class MergeTarget:
     #: THIS workflow, not the merge's own; None for a merge inside the
     #: workflow that opened the pull request.
     pull_request_workflow: str | None = None
+    #: How this step lands its pull request (TRAIN-WS): `direct`, the merge
+    #: call below, or `train`, registered for the repository's merge train
+    #: (`mergetrain`). Signed by swarm-api from the workspace's settings at
+    #: submission; absent is direct.
+    merge_mode: str = mergetrain.DIRECT
 
 
 class TargetInvalid(ValueError):
@@ -904,6 +924,15 @@ class TargetInvalid(ValueError):
 
 
 def parse_merge_target(dispatch: Mapping[str, Any]) -> MergeTarget:
+    target = _parse_merge_target(dispatch)
+    raw = dispatch.get(MERGE_TARGET_FIELD)
+    mode = raw.get("merge_mode", mergetrain.DIRECT) if isinstance(raw, Mapping) else None
+    if mode not in (mergetrain.DIRECT, mergetrain.TRAIN):
+        raise TargetInvalid(f"{MERGE_TARGET_FIELD}.merge_mode is not direct or train")
+    return replace(target, merge_mode=mode) if mode != target.merge_mode else target
+
+
+def _parse_merge_target(dispatch: Mapping[str, Any]) -> MergeTarget:
     raw = dispatch.get(MERGE_TARGET_FIELD)
     if not isinstance(raw, Mapping):
         raise TargetInvalid(
@@ -913,7 +942,7 @@ def parse_merge_target(dispatch: Mapping[str, Any]) -> MergeTarget:
     unknown = sorted(
         str(k) for k in raw
         if k not in ("pull_request", "review", "verdict_file", "base", "number", "head_sha",
-                     "pull_request_workflow")
+                     "pull_request_workflow", "merge_mode")
     )
     if unknown:
         raise TargetInvalid(f"{MERGE_TARGET_FIELD} names {', '.join(unknown)}")
@@ -1080,8 +1109,9 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
     # The step's own record of its CI-fix rounds, and the heads they pushed:
     # task-store reads that need no credential, so before the token.
     own = _own_doc(ctx)
-    fix_heads = (_fix_round_heads(ctx, own, opener, target.pull_request)
-                 + _ci_fixer_heads(ctx, opener, target.pull_request, number))
+    fix_heads = _distinct(_fix_round_heads(ctx, own, opener, target.pull_request)
+                          + _ci_fixer_heads(ctx, opener, target.pull_request, number)
+                          + _recorded_fix_heads(ctx, opener, target.pull_request, number))
     return _merge_with_token(
         run, number=number, pinned=pinned,
         branch=f"{ctx.branch_prefix}{_branch_task(opener, target.pull_request)}",
@@ -1245,6 +1275,21 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         if pr.head_sha is not None and _accept(
             merger, head=pr.head_sha, pinned=pinned, fix_heads=fix_heads, base=default
         ) is not None:
+            landed = _landed_by_train(ctx, own, head=pr.head_sha)
+            if landed is not None:
+                # The repository's merge train landed what this step
+                # registered (TRAIN-WS): this step's merge, recorded as the
+                # direct merge's is.
+                summary["merged_by_this_task"] = True
+                summary["merged_through_train"] = True
+                summary["merge_train"] = {"entry": landed.get("entry_id"),
+                                          "train": landed.get("train_id")}
+                summary["merge_commit"] = pr.merge_commit_sha or landed.get("merge_commit")
+                _record(summary, merger, number,
+                        train_provenance(ctx, merger, number=number, head=pr.head_sha,
+                                         base=default, train=landed.get("train_id")))
+                _close_issues(run, merger, number)
+                return _outcome(TaskState.SUCCEEDED, None, summary, "")
             if _queued_by_this_step(own):
                 # The merge queue merged what this step enqueued (C3H): this
                 # step's merge, recorded as the direct merge's is.
@@ -1362,6 +1407,14 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     if pending:
         return wait("checks_pending", f"at {head}: " + ", ".join(sorted(pending)), pending)
 
+    # Green at this step's own head. In a workspace that merges in trains
+    # (TRAIN-WS) the step lands nothing itself: it registers the pull request
+    # for the repository's train and parks, and takes no merge slot -- the
+    # train coordinator is the repository's one merger. Everything above,
+    # conflicts and fix rounds included, ran exactly as in direct mode.
+    if parse_merge_target(ctx.dispatch).merge_mode == mergetrain.TRAIN:
+        return _train(run, merger, title=pr.title, number=number, head=head, base=default)
+
     # Green: from here on this step updates and merges, which only the
     # holder of the repository's merge slot may do. Waiting is a park.
     if slot is not None and slot.held is None:
@@ -1445,6 +1498,76 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     _record(summary, merger, number, message)
     _close_issues(run, merger, number)
     return _outcome(TaskState.SUCCEEDED, None, summary, "")
+
+
+def _train(run: _Run, merger: ForgeMerger, *, title: str, number: int, head: str,
+           base: str) -> ActionOutcome:
+    """Register the pull request for the repository's merge train, then park.
+
+    Behind the fencing and cancel recheck, as every write is: a superseded
+    attempt registers nothing (invariant 5). An entry the train EJECTED ends
+    the step `train_ejected`, with the train's reason; any other state parks
+    on `TRAIN_WAITING` until the coordinator marks the park or the fallback
+    instant passes. A RETURNED entry, or one at an older head, is queued
+    again by `mergetrain.register_entry`, keeping its place.
+    """
+    ctx, summary = run.ctx, run.summary
+    trains = ctx.merge_trains
+    if trains is None:
+        return run.refuse("merge_train_unavailable",
+                          "this step merges through the repository's merge train, and the "
+                          "worker was given no train store to register it in")
+    if ctx.recheck():
+        return cancelled(summary)
+    entry = trains.register({
+        "task_id": ctx.task_id,
+        "repository": merger.full_name,
+        "repository_url": ctx.repository_url or "",
+        "base": base,
+        "number": number,
+        "head": head,
+        "title": title,
+        "message": provenance(ctx, merger, number=number, pinned=head),
+    })
+    state = str(entry.get("state") or mergetrain.QUEUED)
+    summary["merge_train"] = {"entry": entry.get("entry_id"), "state": state,
+                              "train": entry.get("train_id")}
+    if state == mergetrain.EJECTED:
+        reason = str(entry.get("reason") or "no reason recorded")
+        detail = str(entry.get("detail") or "")
+        return run.refuse("train_ejected",
+                          f"pull request #{number} was ejected from {base}'s merge train at "
+                          f"{head}: {reason}" + (f": {detail}" if detail else ""))
+    return run.wait(mergetrain.TRAIN_WAITING,
+                    f"pull request #{number} is {state} in {base}'s merge train at {head}",
+                    head=head, pull_request=number, pending=[])
+
+
+def _landed_by_train(ctx: ActionContext, own: Mapping[str, Any], *,
+                     head: str) -> Mapping[str, Any] | None:
+    """This step's entry, when its last park was on the train and the train
+    recorded it LANDED at `head`; None otherwise (then a merged pull request
+    is `already_merged`, as before). The entry is tenant-writable: a forged
+    one can at worst credit this step with a merge GitHub already shows."""
+    wait = _mapping(_mapping(own.get("metadata")).get(MERGE_WAIT_METADATA_KEY))
+    if wait.get("code") != mergetrain.TRAIN_WAITING or ctx.merge_trains is None:
+        return None
+    entry = ctx.merge_trains.peek(ctx.task_id)
+    if entry is None or entry.get("state") != mergetrain.LANDED or entry.get("head") != head:
+        return None
+    return entry
+
+
+def train_provenance(ctx: ActionContext, merger: ForgeMerger, *, number: int, head: str,
+                     base: str, train: Any) -> str:
+    """The pull request comment for a merge the train made (§5.4). No attribution."""
+    return "\n".join([
+        f"Merged by SwarmCloud task {ctx.task_id} (workflow {ctx.workflow_id}, "
+        f"attempt {ctx.attempt_id}) into {merger.full_name}#{number},",
+        f"through {base}'s merge train{f' {train}' if train else ''}, squashed at {head}, "
+        "the head this task registered, after the base's required checks were green on "
+        "the train's composed head.",
+    ])
 
 
 def _record(summary: dict[str, Any], merger: ForgeMerger, number: int, message: str) -> None:
@@ -1902,24 +2025,101 @@ def _ci_fixer_heads(ctx: ActionContext, opener: Mapping[str, Any], target: str,
             continue
         if record.get(CI_FIX_POSTBACK_FIELD) not in CI_FIX_POSTBACK_STATES:
             continue
-        block = _mapping(_mapping(doc.get("metadata")).get("dispatch"))
-        if _task_id(block.get("continues")) != root:
-            continue
-        theirs = mergeable_repository(doc.get("repository_url")
-                                      if isinstance(doc.get("repository_url"), str) else None)
-        if theirs is None or theirs.lower() != repository.lower():
-            continue
-        workflow = _task_id(doc.get("workflow_id"))
-        if workflow is None:
-            continue
-        try:
-            ctx.verify_upstream(task_id, doc, of_workflow=workflow)
-        except Exception:  # noqa: BLE001 - unsigned or edited: not the fixer's head
-            continue
-        pushed = _pushed_head(doc)
+        pushed = _fixer_head(ctx, task_id, doc, root=root, repository=repository)
         if pushed is not None:
             heads.append((task_id, pushed))
     return heads
+
+
+def _fixer_head(ctx: ActionContext, task_id: str, doc: Mapping[str, Any], *,
+                root: str, repository: str) -> str | None:
+    """The head fix task `task_id` pushed to `root`'s branch of `repository`, or None.
+
+    The facts no tenant-writable record can forge, shared by every fixer a
+    record names (`_ci_fixer_heads`, `_recorded_fix_heads`): the task is this
+    tenant's; its SIGNED dispatch block `continues` the root whose branch the
+    pull request is on; its SIGNED `repository_url` is this merge's
+    repository; its signed spec verifies, against its own signed workflow;
+    and it recorded a pushed head.
+    """
+    if doc.get("tenant_id") != ctx.tenant_id:
+        return None
+    block = _mapping(_mapping(doc.get("metadata")).get("dispatch"))
+    if _task_id(block.get("continues")) != root:
+        return None
+    theirs = mergeable_repository(doc.get("repository_url")
+                                  if isinstance(doc.get("repository_url"), str) else None)
+    if theirs is None or theirs.lower() != repository.lower():
+        return None
+    workflow = _task_id(doc.get("workflow_id"))
+    if workflow is None:
+        return None
+    try:
+        ctx.verify_upstream(task_id, doc, of_workflow=workflow)
+    except Exception:  # noqa: BLE001 - unsigned or edited: not the fixer's head
+        return None
+    return _pushed_head(doc)
+
+
+def _recorded_fix_heads(ctx: ActionContext, opener: Mapping[str, Any], target: str,
+                        number: int) -> list[tuple[str, str]]:
+    """(task, pushed head) of each fix round swarm-api recorded for THIS pull request
+    (epic #1334), newest first, whichever workflow the round ran in.
+
+    HANG-LEASE's merge step refused PR 1338 `head_moved` at 34ce829e
+    (2026-10-15 02:16Z), the head fix task task_fcdff76b pushed from its own
+    workflow wf_87a59d23: this step's `merge_fix` record never named it.
+    swarm-api's merge-wake tick now appends every terminal fix round's
+    pushed head -- a PR-side CI fix, a merge step's CI-fix round, a conflict
+    fix round -- to `PR_FIX_HEADS_FIELD` on the task whose `swarm/<id>`
+    branch the pull request is on, keyed by the repository and the pull
+    request's number (`swarm_api.cifix.record_fix_heads`). That task is read
+    through the tenant-gated upstream read.
+
+    An entry only NAMES a task: it counts when it is for this repository
+    and this pull request, and the task it names passes `_fixer_head` and
+    pushed the head the entry says. Anything else is still `head_moved`.
+    """
+    root = _branch_task(opener, target)
+    repository = mergeable_repository(ctx.repository_url)
+    if repository is None:
+        return []
+    try:
+        branch_doc = opener if root == target else _mapping(ctx.fetch_upstream(root))
+    except Exception:  # noqa: BLE001 - an unreadable branch task records no round
+        return []
+    if branch_doc.get("tenant_id") != ctx.tenant_id:
+        return []
+    entries = _mapping(branch_doc.get("metadata")).get(PR_FIX_HEADS_FIELD)
+    if not isinstance(entries, list):
+        return []
+    heads: list[tuple[str, str]] = []
+    for entry in [e for e in reversed(entries) if isinstance(e, Mapping)][:PR_FIX_HEADS_READ]:
+        task_id = _task_id(entry.get("task_id"))
+        if task_id is None or task_id in (target, root, ctx.task_id):
+            continue
+        if _int(entry.get("pull_request")) != number:
+            continue
+        recorded = entry.get("repository")
+        if not isinstance(recorded, str) or recorded.lower() != repository.lower():
+            continue
+        try:
+            doc = _mapping(ctx.fetch_upstream(task_id))
+        except Exception:  # noqa: BLE001 - unreadable: not a round's head
+            continue
+        pushed = _fixer_head(ctx, task_id, doc, root=root, repository=repository)
+        if pushed is not None and pushed == entry.get("head"):
+            heads.append((task_id, pushed))
+    return heads
+
+
+def _distinct(heads: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """`heads` in order, each (task, head) once: two records may name one round."""
+    distinct: list[tuple[str, str]] = []
+    for head in heads:
+        if head not in distinct:
+            distinct.append(head)
+    return distinct
 
 
 def conflicting(pr: PullRequestFacts) -> bool:

@@ -25,6 +25,11 @@
 #   scripts/create-secrets.sh --egress-key [--overwrite swarm-egress-key]
 #   scripts/create-secrets.sh --egress-credential --stdin [--overwrite swarm-egress-credential] < credential.json
 #   scripts/create-secrets.sh --tailscale-oauth --stdin
+#   scripts/create-secrets.sh --typesafe-fwd-key [--overwrite swarm-typesafe-fwd-key]
+#   scripts/create-secrets.sh --workspace-grant-key [--overwrite swarm-workspace-grant-key]
+#   scripts/create-secrets.sh --graph-ticket-key [--overwrite swarm-graph-ticket-key]
+#   scripts/create-secrets.sh --github-app-webhook-secret --stdin
+#   scripts/create-secrets.sh --settings-mac-key [--overwrite swarm-settings-key]
 #
 # The forge token (`--provider git`, stored as swarm-tenant-<tenant>-git) is
 # read by the tenant's workers AND by swarm-api, which writes an issue run's
@@ -79,6 +84,50 @@
 # copy of it, for the reason at the top of this file. swarm-api reads it only
 # while SEARCH_TOOL_ENABLED is on, so storing it changes nothing by itself.
 #
+# --typesafe-fwd-key adds a version to `swarm-typesafe-fwd-key`, the PLATFORM
+# key swarm-api mints attempt TypeSafe tickets with and the TypeSafe forwarder
+# verifies them with (docs/design/workspace-secrets.md §3.5). Generated and
+# added exactly as --egress-key's is, never read and never shown; terraform
+# (terraform/infra/typesafe_fwd.tf) owns the container and its two readers,
+# and an enabled version is replaced only after the same typed confirmation.
+#
+# --graph-ticket-key adds a version to `swarm-graph-ticket-key`, the PLATFORM
+# key swarm-api mints attempt graph tickets with and the shared graph service
+# (swarm-graph) verifies them with (docs/design/graph-service.md §3.2).
+# Generated and added exactly as --typesafe-fwd-key's is, never read and never
+# shown; terraform (terraform/infra/graph_service.tf, enable_graph_service)
+# owns the container and its two readers, and an enabled version is replaced
+# only after the same typed confirmation. Add it after that apply and before
+# graph_service.serve: swarm-api's reference to a versionless secret would
+# stop it starting.
+#
+# --github-app-webhook-secret adds a version to
+# `swarm-github-app-webhook-secret`, the GitHub App's WEBHOOK secret: the HMAC
+# key GitHub signs every delivery's X-Hub-Signature-256 with and the public
+# receiver swarm-github-hooks verifies it with (docs/design/graph-service.md
+# §6.2; docs/runbooks/github-app.md, "Step 9"). The value is GitHub's: the
+# owner types it into the App's settings and here, so it is NEVER generated,
+# and it is read from stdin ONLY, for the reasons --github-app gives. Inner
+# characters are kept exactly (GitHub signs with the secret as typed); only
+# the paste's trailing newline is dropped. Terraform owns the container and
+# its one reader, the account the receiver runs as
+# (terraform/infra/github_hooks.tf, enable_github_hooks); this never creates
+# it, so a typo cannot make an unbound twin. The receiver re-reads `latest` on
+# a signature mismatch at most once a minute, so a rotation is: change it at
+# GitHub, store it here, and the next delivery after a minute verifies.
+#
+# --workspace-grant-key adds a version to `swarm-workspace-grant-key`, the
+# PLATFORM key swarm-api MACs every workspace-secret grant with and verifies
+# it with at release (docs/design/workspace-secrets.md, SEC-GRANT-ATTEST;
+# docs/runbooks/workspace-grant-attestation.md). Generated and added exactly
+# as --typesafe-fwd-key's is, never read and never shown; terraform
+# (terraform/infra/workspace_grant_key.tf) owns the container and its one
+# reader, swarm-api, and an enabled version is replaced only after the same
+# typed confirmation. A rotation is the runbook's: the replaced version goes to
+# workspace_grant_attestation.previous_version (the tfvars object
+# terraform/infra/workspace_grant_key.tf declares) until the attest route has
+# re-signed every grant under the new one.
+#
 # --egress-key adds a version to `swarm-egress-key`, the PLATFORM key swarm-api
 # mints browser egress tickets with and swarm-egress verifies them with
 # (docs/browser-egress.md §9). Generated and added exactly as --live-key's is,
@@ -110,6 +159,20 @@
 # cannot make an unbound twin. `kubernetes/apply.sh --swarm-system --confirm`
 # copies it into the cluster, so storing it changes nothing by itself.
 #
+# --settings-mac-key adds a version to `swarm-settings-key`, the PLATFORM key
+# swarm-api MACs every `workspace_settings` block it writes with, and swarm-api
+# and the scheduler verify it with before acting on one (#1457;
+# docs/design/tenant-settings-integrity.md §5 request B). Generated and added
+# exactly as --typesafe-fwd-key's is: written to a private 0600 file, added as
+# a version and removed, never read back, never shown and never accepted on
+# the command line. Its container and its two readers (swarm-api, the
+# scheduler, and nobody a tenant runs as) are terraform's; this never creates
+# it, so a typo cannot make an unbound twin. A NEW version invalidates every
+# stored MAC until scripts/resign-workspace-settings.sh --apply re-signs them,
+# so replacing an enabled one needs the same typed confirmation; keep the
+# replaced version as SWARM_SETTINGS_KEY_PREVIOUS on both readers until the
+# re-sign has run.
+#
 # A tenant credential's NAME is never an input. It is always
 # swarm-tenant-<tenant>-<provider>, which is what swarm_common.models.Tenant's
 # secret_name() returns and what the worker asks Secret Manager for.
@@ -133,6 +196,11 @@ GITHUB_APP_SLOT=""
 SEARCH_API_KEY=0
 EGRESS_KEY=0
 EGRESS_CREDENTIAL=0
+TYPESAFE_FWD_KEY=0
+WORKSPACE_GRANT_KEY=0
+GRAPH_TICKET_KEY=0
+GITHUB_APP_WEBHOOK_SECRET=0
+SETTINGS_MAC_KEY=0
 OVERWRITE=""
 TAILSCALE_OAUTH=0
 
@@ -151,11 +219,16 @@ while [[ $# -gt 0 ]]; do
     --search-api-key)   SEARCH_API_KEY=1; shift ;;
     --egress-key)       EGRESS_KEY=1; shift ;;
     --egress-credential) EGRESS_CREDENTIAL=1; shift ;;
+    --typesafe-fwd-key) TYPESAFE_FWD_KEY=1; shift ;;
+    --workspace-grant-key) WORKSPACE_GRANT_KEY=1; shift ;;
+    --graph-ticket-key) GRAPH_TICKET_KEY=1; shift ;;
+    --github-app-webhook-secret) GITHUB_APP_WEBHOOK_SECRET=1; shift ;;
+    --settings-mac-key) SETTINGS_MAC_KEY=1; shift ;;
     --overwrite)        [[ $# -ge 2 ]] || die "--overwrite takes the name of the secret to add a version to"
                         OVERWRITE="$2"; shift 2 ;;
     # A value glued to a flag is a value on the command line, which argv
     # exposes through ps and shell history. Refused without repeating it.
-    --egress-key=*|--egress-credential=*)
+    --egress-key=*|--egress-credential=*|--typesafe-fwd-key=*|--workspace-grant-key=*|--graph-ticket-key=*|--github-app-webhook-secret=*|--settings-mac-key=*)
       die "${1%%=*} takes no value on the command line: the key is generated, and the credential is read from --stdin only. Nothing was stored." ;;
     --tailscale-oauth)  TAILSCALE_OAUTH=1; shift ;;
     # The header above `set -euo pipefail`, however long it grows; a fixed
@@ -255,20 +328,152 @@ confirm_overwrite() {
   if [[ -n "${OVERWRITE}" ]]; then
     [[ "${OVERWRITE}" == "${name}" ]] \
       || die "--overwrite names '${OVERWRITE}', not ${name}; nothing was stored"
-    warn "${name} has an enabled version; adding a new one, which swarm-egress reads as latest (--overwrite ${name})"
+    warn "${name} has an enabled version; adding a new one, which its reader takes as latest (--overwrite ${name})"
     return 0
   fi
   if { exec 3</dev/tty; } 2>/dev/null; then
-    printf '%s already has an enabled version, and swarm-egress reads the latest.\n' "${name}" >/dev/tty
+    printf '%s already has an enabled version, and its reader takes the latest.\n' "${name}" >/dev/tty
     printf 'Type %s to add a new one: ' "${name}" >/dev/tty
     read -r answer <&3 || answer=""
     exec 3<&-
     [[ "${answer}" == "${name}" ]] || die "confirmation did not match; nothing was stored"
     return 0
   fi
-  die "${name} already has an enabled version and swarm-egress reads the latest. Confirm by typing its name:
+  die "${name} already has an enabled version and its reader takes the latest. Confirm by typing its name:
      --overwrite ${name}   (SWARM_ASSUME_YES is not a confirmation). Nothing was stored."
 }
+
+if [[ "${SETTINGS_MAC_KEY}" -eq 1 ]]; then
+  # The secret's name is fixed: swarm_api.judgment.SETTINGS_KEY_SECRET_ID reads
+  # it; tests/unit/scripts/test_create_secrets_settings_mac_key.py holds the
+  # two spellings equal.
+  SETTINGS_KEY_NAME="swarm-settings-key"
+  if [[ -n "${TENANT}${PROVIDER}${FROM_FILE}${GITHUB_APP_SLOT}" || "${READ_STDIN}" -eq 1 || "${SUBSCRIPTION}" -eq 1 || "${CHILD_KEY}" -eq 1 || "${LIVE_KEY}" -eq 1 || "${EGRESS_KEY}" -eq 1 || "${EGRESS_CREDENTIAL}" -eq 1 || "${TAILSCALE_OAUTH}" -eq 1 || "${SEARCH_API_KEY}" -eq 1 || "${TYPESAFE_FWD_KEY}" -eq 1 || "${WORKSPACE_GRANT_KEY}" -eq 1 || "${GRAPH_TICKET_KEY}" -eq 1 || "${GITHUB_APP_WEBHOOK_SECRET}" -eq 1 || "${DISABLE_PREVIOUS}" -eq 1 ]]; then
+    die "--settings-mac-key takes no --stdin, --tenant, --provider, --from-file, --subscription, other key or --disable-previous: the key is the platform's and is generated here, and an old version is disabled by hand once every stored MAC is re-signed under the new one"
+  fi
+  # Exists first: terraform creates it with its two readers.
+  SETTINGS_KEY_ERR=""
+  if ! SETTINGS_KEY_ERR="$(gcloud secrets describe "${SETTINGS_KEY_NAME}" --project "${PROJECT_ID}" \
+       --format='value(name)' 2>&1 >/dev/null)"; then
+    die_if_auth_failure "${SETTINGS_KEY_ERR}"
+    die "${SETTINGS_KEY_NAME} does not exist in ${PROJECT_ID}. terraform creates it with its two readers, swarm-api and the scheduler (the ISO-SETTINGS-MAC question on #1457): apply that first, then this"
+  fi
+  confirm_overwrite "${SETTINGS_KEY_NAME}"
+  add_generated_platform_key "${SETTINGS_KEY_NAME}" "terraform (the ISO-SETTINGS-MAC question on #1457)" "--settings-mac-key"
+  dim "swarm-api and the scheduler read it as SWARM_SETTINGS_KEY when an instance starts. On a rotation, give both the replaced version as SWARM_SETTINGS_KEY_PREVIOUS, then run scripts/resign-workspace-settings.sh --apply, then disable the old version by hand"
+  exit 0
+fi
+
+if [[ "${GITHUB_APP_WEBHOOK_SECRET}" -eq 1 ]]; then
+  # The secret's name is fixed: terraform/infra/github_hooks.tf creates it and
+  # swarm_github_hooks.main.SECRET_ID reads it;
+  # tests/unit/hooks/test_hooks_create_secret.py holds the three spellings equal.
+  WEBHOOK_SECRET_NAME="swarm-github-app-webhook-secret"
+  if [[ -n "${TENANT}${PROVIDER}${FROM_FILE}${GITHUB_APP_SLOT}${OVERWRITE}" || "${SUBSCRIPTION}" -eq 1 || "${CHILD_KEY}" -eq 1 || "${LIVE_KEY}" -eq 1 || "${EGRESS_KEY}" -eq 1 || "${EGRESS_CREDENTIAL}" -eq 1 || "${TAILSCALE_OAUTH}" -eq 1 || "${SEARCH_API_KEY}" -eq 1 || "${TYPESAFE_FWD_KEY}" -eq 1 || "${WORKSPACE_GRANT_KEY}" -eq 1 || "${GRAPH_TICKET_KEY}" -eq 1 || "${DISABLE_PREVIOUS}" -eq 1 ]]; then
+    die "--github-app-webhook-secret takes only --stdin: the secret is the platform's App's, not a tenant's, a file argument is a path to a plaintext copy, and an old version is disabled by hand once GitHub signs with the new one"
+  fi
+  [[ "${READ_STDIN}" -eq 1 ]] || die "--github-app-webhook-secret reads the value from --stdin and nothing else"
+
+  step "Secret ${WEBHOOK_SECRET_NAME}"
+  WH_DESCRIBE_ERR=""
+  if ! WH_DESCRIBE_ERR="$(gcloud secrets describe "${WEBHOOK_SECRET_NAME}" --project "${PROJECT_ID}" \
+       --format='value(name)' 2>&1 >/dev/null)"; then
+    die_if_auth_failure "${WH_DESCRIBE_ERR}"
+    die "${WEBHOOK_SECRET_NAME} does not exist in ${PROJECT_ID}. terraform creates it with its one reader (terraform/infra/github_hooks.tf, enable_github_hooks = true): apply first, then --github-app-webhook-secret"
+  fi
+
+  WH_TMP="$(mktemp -d "${TMPDIR:-/tmp}/swarm-secret.XXXXXX")"
+  chmod 0700 "${WH_TMP}"
+  # shellcheck disable=SC2064  # expand now: the path is fixed for this run
+  trap "find '${WH_TMP}' -type f -exec rm -f {} + 2>/dev/null || true; rmdir '${WH_TMP}' 2>/dev/null || true" EXIT INT TERM
+  WH_FILE="${WH_TMP}/value"
+  ( umask 077; : >"${WH_FILE}" )
+  if [[ -t 0 ]]; then
+    printf 'Paste the GitHub App webhook secret (input hidden), then press Enter: ' >&2
+    IFS= read -rs WH_VALUE
+    printf '\n' >&2
+    printf '%s' "${WH_VALUE}" >"${WH_FILE}"
+    unset WH_VALUE
+  else
+    cat >"${WH_FILE}"
+  fi
+  # The paste's trailing newline off, and nothing else: GitHub signs with the
+  # secret exactly as typed, so a changed inner character fails every delivery.
+  if [[ -s "${WH_FILE}" ]]; then
+    printf '%s' "$(cat "${WH_FILE}")" >"${WH_FILE}.trimmed"
+    mv "${WH_FILE}.trimmed" "${WH_FILE}"
+    chmod 0600 "${WH_FILE}"
+  fi
+  WH_BYTES="$(wc -c <"${WH_FILE}" | tr -d ' ')"
+  [[ "${WH_BYTES}" -gt 0 ]] || die "refusing to store an empty secret"
+  [[ "${WH_BYTES}" -lt 1024 ]] || die "value is ${WH_BYTES} bytes; that is not a webhook secret. Nothing was stored"
+  if grep -q -- '-----BEGIN' "${WH_FILE}"; then
+    die "that is a PEM block, not a webhook secret; the App's private key goes to --github-app private-key. Nothing was stored"
+  fi
+  info "stored value is ${WH_BYTES} bytes"
+
+  WH_VERSION="$(gcloud secrets versions add "${WEBHOOK_SECRET_NAME}" \
+    --project "${PROJECT_ID}" --data-file="${WH_FILE}" --format='value(name)')"
+  ok "added version ${WH_VERSION##*/} of ${WEBHOOK_SECRET_NAME}; its value was never printed"
+  dim "its one reader is the account swarm-github-hooks runs as (terraform/infra/github_hooks.tf)"
+  dim "the receiver reads it within a minute; next: tick Webhook -> Active in the App (docs/runbooks/github-app.md, Step 9)"
+  dim "rotating: change it at GitHub, store it here, then disable the old version by hand"
+  exit 0
+fi
+
+if [[ "${GRAPH_TICKET_KEY}" -eq 1 ]]; then
+  GRAPH_KEY_NAME="swarm-graph-ticket-key"
+  if [[ -n "${TENANT}${PROVIDER}${FROM_FILE}${GITHUB_APP_SLOT}" || "${READ_STDIN}" -eq 1 || "${SUBSCRIPTION}" -eq 1 || "${CHILD_KEY}" -eq 1 || "${LIVE_KEY}" -eq 1 || "${EGRESS_KEY}" -eq 1 || "${EGRESS_CREDENTIAL}" -eq 1 || "${TAILSCALE_OAUTH}" -eq 1 || "${SEARCH_API_KEY}" -eq 1 || "${TYPESAFE_FWD_KEY}" -eq 1 || "${WORKSPACE_GRANT_KEY}" -eq 1 || "${DISABLE_PREVIOUS}" -eq 1 ]]; then
+    die "--graph-ticket-key takes no --stdin, --tenant, --provider, --from-file, --subscription, other key or --disable-previous: the key is the platform's and is generated here, and an old version is disabled by hand once swarm-api and swarm-graph run on the new one"
+  fi
+  # Exists first: terraform/infra/graph_service.tf creates it with its readers.
+  GRAPH_KEY_ERR=""
+  if ! GRAPH_KEY_ERR="$(gcloud secrets describe "${GRAPH_KEY_NAME}" --project "${PROJECT_ID}" \
+       --format='value(name)' 2>&1 >/dev/null)"; then
+    die_if_auth_failure "${GRAPH_KEY_ERR}"
+    die "${GRAPH_KEY_NAME} does not exist in ${PROJECT_ID}. terraform creates it with its readers (terraform/infra/graph_service.tf, enable_graph_service): apply that first, then this"
+  fi
+  confirm_overwrite "${GRAPH_KEY_NAME}"
+  add_generated_platform_key "${GRAPH_KEY_NAME}" "terraform/infra/graph_service.tf" "--graph-ticket-key"
+  dim "swarm-api reads it when an instance starts; swarm-graph re-reads it on its own timer and keeps the previous key for a ticket's life. Disable the old version by hand once both use the new one"
+  exit 0
+fi
+
+if [[ "${WORKSPACE_GRANT_KEY}" -eq 1 ]]; then
+  GRANT_KEY_NAME="swarm-workspace-grant-key"
+  if [[ -n "${TENANT}${PROVIDER}${FROM_FILE}${GITHUB_APP_SLOT}" || "${READ_STDIN}" -eq 1 || "${SUBSCRIPTION}" -eq 1 || "${CHILD_KEY}" -eq 1 || "${LIVE_KEY}" -eq 1 || "${EGRESS_KEY}" -eq 1 || "${EGRESS_CREDENTIAL}" -eq 1 || "${TAILSCALE_OAUTH}" -eq 1 || "${SEARCH_API_KEY}" -eq 1 || "${TYPESAFE_FWD_KEY}" -eq 1 || "${DISABLE_PREVIOUS}" -eq 1 ]]; then
+    die "--workspace-grant-key takes no --stdin, --tenant, --provider, --from-file, --subscription, other key or --disable-previous: the key is the platform's and is generated here, and an old version is disabled by hand once every grant is re-signed under the new one (docs/runbooks/workspace-grant-attestation.md)"
+  fi
+  # Exists first: terraform/infra/workspace_grant_key.tf creates it with its reader.
+  GRANT_KEY_ERR=""
+  if ! GRANT_KEY_ERR="$(gcloud secrets describe "${GRANT_KEY_NAME}" --project "${PROJECT_ID}" \
+       --format='value(name)' 2>&1 >/dev/null)"; then
+    die_if_auth_failure "${GRANT_KEY_ERR}"
+    die "${GRANT_KEY_NAME} does not exist in ${PROJECT_ID}. terraform creates it with its reader (terraform/infra/workspace_grant_key.tf): run 'make apply' first, then this"
+  fi
+  confirm_overwrite "${GRANT_KEY_NAME}"
+  add_generated_platform_key "${GRANT_KEY_NAME}" "terraform/infra/workspace_grant_key.tf" "--workspace-grant-key"
+  dim "swarm-api reads it when an instance starts. On a rotation, set workspace_grant_attestation.previous_version in terraform/environments/<env>/<env>.tfvars to the replaced version, apply, run the attest route, then clear it (docs/runbooks/workspace-grant-attestation.md)"
+  exit 0
+fi
+
+if [[ "${TYPESAFE_FWD_KEY}" -eq 1 ]]; then
+  TS_FWD_NAME="swarm-typesafe-fwd-key"
+  if [[ -n "${TENANT}${PROVIDER}${FROM_FILE}${GITHUB_APP_SLOT}" || "${READ_STDIN}" -eq 1 || "${SUBSCRIPTION}" -eq 1 || "${CHILD_KEY}" -eq 1 || "${LIVE_KEY}" -eq 1 || "${EGRESS_KEY}" -eq 1 || "${EGRESS_CREDENTIAL}" -eq 1 || "${TAILSCALE_OAUTH}" -eq 1 || "${SEARCH_API_KEY}" -eq 1 || "${DISABLE_PREVIOUS}" -eq 1 ]]; then
+    die "--typesafe-fwd-key takes no --stdin, --tenant, --provider, --from-file, --subscription, other key or --disable-previous: the key is the platform's and is generated here, and an old version is disabled by hand once swarm-api and the forwarder run on the new one"
+  fi
+  # Exists first: terraform/infra/typesafe_fwd.tf creates it with its readers.
+  TS_FWD_ERR=""
+  if ! TS_FWD_ERR="$(gcloud secrets describe "${TS_FWD_NAME}" --project "${PROJECT_ID}" \
+       --format='value(name)' 2>&1 >/dev/null)"; then
+    die_if_auth_failure "${TS_FWD_ERR}"
+    die "${TS_FWD_NAME} does not exist in ${PROJECT_ID}. terraform creates it with its readers (terraform/infra/typesafe_fwd.tf, enable_typesafe_forwarder): apply that first, then this"
+  fi
+  confirm_overwrite "${TS_FWD_NAME}"
+  add_generated_platform_key "${TS_FWD_NAME}" "terraform/infra/typesafe_fwd.tf" "--typesafe-fwd-key"
+  dim "swarm-api reads it when an instance starts; the forwarder keeps the previous key for a ticket's life. Disable the old version by hand once both use the new one"
+  exit 0
+fi
 
 if [[ "${EGRESS_KEY}" -eq 1 || "${EGRESS_CREDENTIAL}" -eq 1 ]]; then
   if [[ "${EGRESS_KEY}" -eq 1 && "${EGRESS_CREDENTIAL}" -eq 1 ]]; then
@@ -350,7 +555,7 @@ PYEOF2
 fi
 
 if [[ -n "${OVERWRITE}" ]]; then
-  die "--overwrite confirms a new version of swarm-egress-key or swarm-egress-credential only"
+  die "--overwrite confirms a new version of swarm-egress-key, swarm-egress-credential, swarm-typesafe-fwd-key, swarm-graph-ticket-key or swarm-settings-key only"
 fi
 
 if [[ "${CHILD_KEY}" -eq 1 && "${LIVE_KEY}" -eq 1 ]]; then

@@ -17,6 +17,27 @@ THE GRAPH TOOLS (docs/design/context-quality.md §4.4, lane CTXQ-S). When the
 worker staged the repository's graph snapshot it sets `SWARM_GRAPH_SNAPSHOT`,
 and `swarm-graph` is named the same way, as `-c mcp_servers.swarm-graph.*`.
 `SWARM_GRAPH_UNSTAGED` adds the one prompt line claude-code adds.
+
+SERVED INSTEAD OF STAGED (docs/design/graph-service.md §4.2, lane GS-WORKER).
+With `SWARM_GRAPH_PIN` and `SWARM_GRAPH_TICKET_FILE` set, the same keys name
+the pod's shim (`graphstage.shim_argv`), plus
+`-c mcp_servers.swarm-graph.env={"SWARM_GRAPH_URL" = …}`: a TOML inline table,
+because codex parses every `-c` value as TOML (the design's sketch wrote it
+as JSON, which TOML does not read as a table).
+
+THE CALLER'S MCP SERVERS (docs/design/registered-mcp-servers.md §4.7, lane
+MCP-RUNNERS, part of #1433). When the worker serves its relay and sets
+`SWARM_MCP_RELAY`, each attached server is named as
+`-c mcp_servers.<name>.url=<the relay's loopback URL>` and
+`-c mcp_servers.<name>.bearer_token_env_var="SWARM_MCP_RELAY_TOKEN"`, the
+per-attempt LOCAL token in the CLI's environment only, never in the argv or a
+file; the caller's credential is in neither (the relay adds it on the way
+out). The prompt gains claude-code's line per server
+(`claude_code.mcp_servers_note`). Measured against the pinned 0.154.0 with a
+loopback fake (tests/unit/worker/test_mcp_runner_config.py): both keys are
+accepted and the CLI initializes and lists the server's tools through the
+relay. 0.154.0 offers MCP tools to the model as deferred nested tools of its
+`exec` tool (found through `ALL_TOOLS`), not in the first request's tool list.
 """
 
 from __future__ import annotations
@@ -33,7 +54,12 @@ from ..children import git_shim_argv
 from ..gitmcp.server import SERVER_NAME as GIT_MCP_SERVER_NAME
 from ..gitmcp.server import SPOOL_ENV as GIT_SPOOL_ENV
 from .base import RunnerContext, run_runner
+from .claude_code import RelayServer, mcp_servers_note, relay_servers
 from .cliagent import CliAgentSpec, run_cli_agent
+
+#: The CLI child's variable holding the relay's LOCAL token, named by every
+#: relay server's `bearer_token_env_var` (never the caller's credential).
+MCP_RELAY_TOKEN_ENV = "SWARM_MCP_RELAY_TOKEN"
 
 #: `$HOME/.codex/sessions/YYYY/MM/DD/rollout-<local time>-<session uuid>.jsonl`,
 #: one per session, appended to as it runs and again when it is resumed.
@@ -115,6 +141,27 @@ def graph_tools_args(snapshot: str, workdir: str | None) -> list[str]:
             "-c", f"{key}.args={json.dumps(args)}"]
 
 
+def graph_shim_args(pin: str, ticket_file: str, url: str, workdir: str | None) -> list[str]:
+    """`-c` overrides registering the graph shim as `swarm-graph`, its URL in `env`."""
+    command, *args = graphstage.shim_argv(pin, ticket_file, workdir)
+    key = f"mcp_servers.{graphstage.SERVER_NAME}"
+    env = "{" + f"{json.dumps(graphstage.URL_ENV)} = {json.dumps(url)}" + "}"
+    return ["-c", f"{key}.command={json.dumps(command)}",
+            "-c", f"{key}.args={json.dumps(args)}",
+            "-c", f"{key}.env={env}"]
+
+
+def relay_tools_args(servers: list[RelayServer]) -> list[str]:
+    """`-c` overrides naming each of the caller's servers at the relay's
+    loopback URL, its bearer token read from MCP_RELAY_TOKEN_ENV."""
+    args: list[str] = []
+    for server in servers:
+        key = f"mcp_servers.{server.name}"
+        args += ["-c", f"{key}.url={json.dumps(server.url)}",
+                 "-c", f"{key}.bearer_token_env_var={json.dumps(MCP_RELAY_TOKEN_ENV)}"]
+    return args
+
+
 def body(ctx: RunnerContext) -> dict[str, Any]:
     spool = os.environ.get(GIT_SPOOL_ENV, "").strip()
     extra_args: list[str] = []
@@ -123,16 +170,30 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         extra_args += git_tools_args(spool)
         extra_env[GIT_SPOOL_ENV] = spool
     snapshot = os.environ.get(graphstage.SNAPSHOT_ENV, "").strip()
-    if snapshot:
-        extra_args += graph_tools_args(snapshot, str(ctx.repo_dir) if ctx.repo_dir else None)
+    served = graphstage.served_env(os.environ)
+    workdir = str(ctx.repo_dir) if ctx.repo_dir else None
+    if served:
+        extra_args += graph_shim_args(*served, workdir)
+    elif snapshot:
+        extra_args += graph_tools_args(snapshot, workdir)
+    if served or snapshot:
         context = os.environ.get(graphstage.CONTEXT_ENV, "").strip()
         if context:
             extra_env[graphstage.CONTEXT_ENV] = context
+    # The caller's registered MCP servers, through the worker's relay
+    # (MCP-RUNNERS): loopback URLs in the argv, the local token in the env.
+    token, attached = relay_servers()
+    if attached:
+        extra_args += relay_tools_args(attached)
+        extra_env[MCP_RELAY_TOKEN_ENV] = token
     unstaged = graphstage.unstaged_note(os.environ)
     prompt = ctx.payload.get("prompt")
     if unstaged and isinstance(prompt, str) and prompt.strip():
         # A new dict on the same context: `run_runner` holds this object.
-        ctx.payload = {**ctx.payload, "prompt": f"{prompt.rstrip()}\n\n{unstaged}"}
+        prompt = f"{prompt.rstrip()}\n\n{unstaged}"
+        ctx.payload = {**ctx.payload, "prompt": prompt}
+    if attached and isinstance(prompt, str) and prompt.strip():
+        ctx.payload = {**ctx.payload, "prompt": f"{prompt.rstrip()}\n\n{mcp_servers_note(attached)}"}
     if not extra_args and not extra_env:
         return run_cli_agent(ctx, SPEC)
     return run_cli_agent(ctx, SPEC, extra_args=extra_args, extra_env=extra_env)

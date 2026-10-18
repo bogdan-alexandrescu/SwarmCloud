@@ -4,7 +4,7 @@
 # part of #1030).
 #
 #   scripts/browser-bench.sh [--batch NAME] [--repeats 3] [--prompts a,b]
-#                            [--tools playwright-mcp,dev-browser]
+#                            [--tools playwright-mcp,dev-browser[,jev]]
 #                            [--usd-per-task 0.66] [--dry-run]
 #   scripts/browser-bench.sh --collect NAME
 #
@@ -12,6 +12,10 @@
 # default; this benchmark is what decides any flip. docs/browser-bench.md has
 # the ten prompts, each one's machine-checkable success criterion, the pass
 # bar, what a batch costs and why egress must not change between the arms.
+#
+# jev (JEV-RUNNER) is a third arm, chosen by its own sentence the same way and
+# only when named in --tools: its tools exist only for a submitter or tenant
+# with a TypeSafe key, and each run also spends TypeSafe credits.
 #
 # SUBMIT (the default). One `claude-code-browser` task per run -- 10 prompts x
 # 2 tools x 3 repeats = 60 by default, arms interleaved -- through the same
@@ -32,6 +36,13 @@
 # scripts/browser_bench.py writes results.tsv, results-<tool>.tsv and
 # summary.md there and prints the summary. Every number is made by the helper,
 # which is unit-tested offline (tests/unit/scripts/test_browser_bench.py).
+#
+# CREDENTIAL. Both modes read the API through api_request only. From a laptop,
+# sign in once with `uv run sc login`: at the IAP front door api_request
+# presents that sign-in (scripts/lib/common.sh api_auth_header), because IAP
+# refuses a gcloud user token with 401 / error 900 -- what the first run of
+# batch devb-1015 met, 2026-10-15 (#1334). SWARM_IMPERSONATE_SA still selects
+# a service account's token instead, for CI.
 #
 # EXIT. 0 submitted or collected; 1 a request failed or was refused; 2 nothing
 # to read or a usage error. Reading nothing is never a result (CLAUDE.md, rule
@@ -61,7 +72,7 @@ while [[ $# -gt 0 ]]; do
     --usd-per-task) USD_PER_TASK="${2:?--usd-per-task needs a number}"; shift 2 ;;
     --dry-run)      DRY_RUN=1; shift ;;
     --collect)      COLLECT="${2:?--collect needs a batch name}"; shift 2 ;;
-    -h|--help)      sed -n '2,40p' "$0"; exit 0 ;;
+    -h|--help)      awk 'NR > 1 && /^set -euo pipefail$/ { exit } NR > 1 { print }' "$0"; exit 0 ;;
     *) err "unknown argument: $1 (see --help)"; exit 2 ;;
   esac
 done

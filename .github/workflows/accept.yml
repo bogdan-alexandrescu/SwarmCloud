@@ -132,6 +132,15 @@ env:
   REGION: ${{ vars.GCP_REGION }}
   TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
 
+# RUNNERS (owner decision 2026-10-14). A job that holds no cloud identity
+# (id-token) runs on the self-hosted `bogdan-ci` VMs through the one guarded
+# `runs-on` expression, in its SHORT form: only the repo variable
+# SELF_HOSTED_CI set to `off` (the capacity escape hatch) sends it to
+# GitHub-hosted ubuntu-24.04. The fork-PR clause the other workflows carry is
+# left out on purpose: this workflow starts only from a completed release on
+# main or by hand, never from a pull request, so no fork's code can reach it
+# (test_fork_prs_off_self_hosted.py checks the triggers). Every job that stays
+# hosted is listed, with why, in that test.
 jobs:
   # -------------------------------------------------------------------------
   # What dev runs, and whether this run should judge it.
@@ -361,7 +370,7 @@ jobs:
   # -------------------------------------------------------------------------
   sandbox:
     name: put the deployed commit's fixtures on the sandbox
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     needs: [target, quiesce]
     if: needs.target.outputs.accept == 'true'
     concurrency:
@@ -517,7 +526,7 @@ jobs:
   # -------------------------------------------------------------------------
   sandbox-results:
     name: read back and sweep the sandbox
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     needs: [target, sandbox, acceptance, acceptance-2]
     if: ${{ !cancelled() && needs.sandbox.result == 'success' }}
     concurrency:
@@ -675,7 +684,7 @@ jobs:
   # says nothing about the group.
   live-browser-report:
     name: report the scheduled live-browser group
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     needs: [live-browser]
     if: ${{ !cancelled() && needs.live-browser.result != 'skipped' }}
     concurrency:

@@ -58,14 +58,44 @@ WHAT IS WRITTEN on the task: `metadata.ci_fix.postback` and its record
 (`posted_at`, `comment_id`, or `postback_code` and the failure count), in a
 transaction guarded on the task still being this tenant's and still
 `pending`. Nothing else, and the task never moves.
+
+ONE LIVE FIX PER FAILURE (epic #1334). Measured 2026-10-15 ~01:50Z on PR
+1338: two of the script's fix tasks ran for one red run at one head
+(task_fcdff76b, then task_41ae250f as "attempt 2"), because the cap counts
+attempts and a second delivery of one failure is simply the next attempt.
+So `stamp` takes a CLAIM on (tenant, repository, pull request, head, run) in
+`CLAIMS`, in ONE Firestore transaction with the read of the claim already
+there. While the task holding it is not terminal -- found by
+`metadata.ci_fix.claim`, or, for a claim whose task is not written yet (the
+submission is still being built, or was refused after `stamp`), for
+`CLAIM_GRACE_SECONDS` -- the request is answered 409 `ci_fix_in_flight`
+naming the live task and its workflow, and no task is made. The claim
+document is the serialisation point: two requests racing through `stamp`
+both read it in a transaction, and only one writes it.
+
+EVERY FIX ROUND'S HEAD, AGAINST ITS PULL REQUEST (epic #1334). Measured
+2026-10-15 02:16Z: HANG-LEASE's merge step refused PR 1338 `head_moved` at
+the head a fix task of ANOTHER workflow pushed; a merge step knew only its
+own rounds and the `ci_fix` query. `stamp` marks each fix round it sees --
+`metadata.ci_fix`, a merge step's `merge_fix_round`, a conflict fix round's
+`merge_conflict_round`, each beside `continues_task` -- with
+`FIX_HEAD_FIELD`, `pending`. The same tick, once that task is terminal,
+appends what it pushed to `FIX_HEADS_FIELD` on the task whose
+`swarm/<id>` branch the pull request is on (its signed `continues`), keyed
+by the repository and the pull request's number, never by a workflow; the
+merge step (`agent_worker.merge._recorded_fix_heads`) reads it there and
+holds every task it names to its signed spec before its head counts. The
+record is an index, never the proof.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
+import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
 from google.cloud import firestore
@@ -76,14 +106,20 @@ from swarm_common.states import TERMINAL_STATES
 
 from .codec import agent_console_url
 from .continuation import TASK_ID_RE, Continuation
-from .errors import ApiError, NotFound
+from .errors import ApiError, Conflict, NotFound
 from .forgewrite import GitHubWriter
 from .issueci import NO_CHANGE_MARKER
 from .issuecomments import bounded, neutral
+from .refusals import refuse
 from .repositories import parse_repository
 from .rollup import SKIPPED_SUMMARY_KEY
 from .schemas import WorkflowCreate
-from .validation import DISPATCH_METADATA_KEY, DispatchOptionError, IssueRef
+from .validation import (
+    CONFLICT_ROUND_METADATA_KEY,
+    DISPATCH_METADATA_KEY,
+    DispatchOptionError,
+    IssueRef,
+)
 
 log = logging.getLogger(__name__)
 
@@ -132,6 +168,44 @@ MAX_ERROR_CHARS = 400
 
 TASKS = "tasks"
 
+#: One document per failure a PR-side fix claimed (see the module docstring):
+#: `{tenant, repository, pull request, head, run}` hashed into the id.
+CLAIMS = "ci_fix_claims"
+#: Where the claim's id rides on the fix task: `metadata.ci_fix.claim`, the
+#: field the liveness read asks for. Never a caller's (`CALLER_FIELDS`).
+CLAIM_FIELD = "claim"
+#: How long a claim whose task is not written yet counts as live. A
+#: submission builds and writes its tasks in well under a second after
+#: `stamp`; two minutes covers a slow one, and a submission refused after
+#: `stamp` (a grant, the graph check) holds its failure no longer than that.
+CLAIM_GRACE_SECONDS = 120
+
+#: The marker `stamp` puts on a fix round's task: `{kind, pull_request,
+#: state}`, `state` `pending` until the tick records what it pushed.
+FIX_HEAD_FIELD = "pr_fix_head"
+#: The record on the task whose `swarm/<id>` branch the pull request is on:
+#: a list of `{repository, pull_request, task_id, workflow_id, head, kind,
+#: recorded_at}`, oldest first. Restated as
+#: `agent_worker.merge.PR_FIX_HEADS_FIELD`, held equal by
+#: tests/unit/worker/test_merge_recorded_fix_heads.py.
+FIX_HEADS_FIELD = "pull_request_fix_heads"
+#: The marker's states after `pending`.
+RECORDED = "recorded"
+NOTHING_PUSHED = "nothing_pushed"
+UNADDRESSABLE = "unaddressable"
+#: Entries kept per branch task, newest last. A branch sees at most
+#: MAX_ATTEMPTS_CEILING PR-side fixes and the merge step's own rounds
+#: (two conflict, a few CI); twenty is all of them with room, and the merge
+#: reads no more than `merge.PR_FIX_HEADS_READ` of them.
+FIX_HEADS_KEPT = 20
+#: The metadata keys that make a `continues_task` workflow a fix round: the
+#: PR-side fixer's, and the merge step's CI-fix and conflict rounds
+#: (`mergewake._on_red` / `_on_conflict`; `merge_fix_round` is written there
+#: as a literal).
+ROUND_KINDS = (CI_FIX_METADATA_FIELD, "merge_fix_round", CONFLICT_ROUND_METADATA_KEY)
+#: Keys only this module writes; refused from any caller.
+API_KEYS = (FIX_HEAD_FIELD, FIX_HEADS_FIELD)
+
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _GITHUB_REPOSITORY = re.compile(
     r"^(?:https://(?:www\.)?github\.com/|git@github\.com:)([^/\s]+)/([^/\s]+?)(?:\.git)?/?$"
@@ -157,6 +231,20 @@ def _positive_int(value: Any) -> int | None:
     if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
         return value
     return None
+
+
+def _repository(url: Any) -> str | None:
+    """`owner/repo`, lowercased, of a GitHub repository URL; None otherwise."""
+    matched = _GITHUB_REPOSITORY.match(url) if isinstance(url, str) else None
+    if matched is None:
+        return None
+    return f"{matched.group(1)}/{matched.group(2)}".lower()
+
+
+class CiFixInFlight(Conflict):
+    """409: this failure already has a live CI-fix task; `detail` names it."""
+
+    code = "ci_fix_in_flight"
 
 
 # --------------------------------------------------------------------------
@@ -227,12 +315,176 @@ def _attempts_made(db: Any, tenant_id: str, root: str, pull_request: int, ceilin
     return len(workflows)
 
 
+def _refuse_api_keys(metadata: Mapping[str, Any], **where: Any) -> None:
+    sent = [key for key in API_KEYS if key in metadata]
+    if sent:
+        raise _refuse(
+            "metadata.pr_fix_head and metadata.pull_request_fix_heads are the API's "
+            "record of what a fix round pushed; a caller never sends them.",
+            keys=sent, **where,
+        )
+
+
+def _fix_head_marker(metadata: Mapping[str, Any], continuation: Continuation | None,
+                     ci_fix_pull_request: int | None = None) -> dict[str, Any] | None:
+    """The `FIX_HEAD_FIELD` marker for a fix round's workflow, or None for any other."""
+    if continuation is None:
+        return None
+    for kind in ROUND_KINDS:
+        if kind not in metadata:
+            continue
+        number = (ci_fix_pull_request if kind == CI_FIX_METADATA_FIELD
+                  else _positive_int(_mapping(metadata[kind]).get("pull_request")))
+        if number is not None:
+            return {"kind": kind, "pull_request": number, "state": PENDING}
+    return None
+
+
+def _claim_key(tenant_id: str, repository: str, record: Mapping[str, Any]) -> str:
+    raw = "\n".join([tenant_id, repository, str(record["pull_request"]),
+                      str(record["head_sha"]), str(record["run_id"])])
+    return hashlib.sha256(raw.encode()).hexdigest()[:40]
+
+
+def _live_holder(txn: Any, db: Any, tenant_id: str, held: Mapping[str, Any],
+                 now: datetime) -> dict[str, Any] | None:
+    """The task holding claim `held` while it is live, as `{task_id, workflow_id}`; else None."""
+    holder = held.get("claim_id")
+    if not isinstance(holder, str) or not holder:
+        return None
+    query = (
+        db.collection(TASKS)
+        .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        .where(filter=FieldFilter(f"metadata.{CI_FIX_METADATA_FIELD}.{CLAIM_FIELD}", "==", holder))
+        .limit(5)
+    )
+    terminal = {s.value for s in TERMINAL_STATES}
+    found = [snap.to_dict() or {} for snap in txn.get(query)]
+    found = [doc for doc in found if doc.get("tenant_id") == tenant_id]
+    for doc in found:
+        if doc.get("state") not in terminal:
+            return {"task_id": doc.get("id"), "workflow_id": doc.get("workflow_id")}
+    if found:
+        return None
+    # No task yet: the claimant is still submitting, or was refused after
+    # `stamp`. Live for the grace window only; a future stamp is not honoured.
+    claimed = held.get("claimed_at")
+    if isinstance(claimed, datetime) and timedelta(0) <= now - claimed < timedelta(
+        seconds=CLAIM_GRACE_SECONDS
+    ):
+        return {"task_id": None, "workflow_id": None}
+    return None
+
+
+def _claim_repository(url: str) -> str:
+    """The `repository` a claim is written and read under."""
+    return _repository(url) or url.lower()
+
+
+class _Reads:
+    """`_live_holder`'s reads outside a transaction: `get(query)` is the query's own."""
+
+    @staticmethod
+    def get(query: Any) -> Any:
+        return query.get()
+
+
+#: The most claims one (pull request, head) is read for: one per red run at
+#: that head, and a head is red in a handful of runs at most.
+LIVE_CLAIMS_READ = 10
+
+
+def live_claim(db: Any, tenant_id: str, repository_url: str, pull_request: int,
+               head_sha: str, now: datetime) -> dict[str, Any] | None:
+    """The live PR-side fix holding a claim on (repository, pull request, head),
+    of any run, as `{task_id, workflow_id}`; None when there is none.
+
+    The claim's liveness is `stamp`'s own (`_live_holder`): its task is not
+    terminal, or no task is written yet and the claim is inside
+    `CLAIM_GRACE_SECONDS`. Read with equality filters on the claim's fields,
+    never by rebuilding its id. For the merge step's own CI-fix round
+    (`mergewake._on_red`), which must not start a second agent on a failure
+    a PR-side fix is already on.
+    """
+    query = (
+        db.collection(CLAIMS)
+        .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        .where(filter=FieldFilter("repository", "==", _claim_repository(repository_url)))
+        .where(filter=FieldFilter("pull_request", "==", pull_request))
+        .where(filter=FieldFilter("head_sha", "==", head_sha))
+        .limit(LIVE_CLAIMS_READ)
+    )
+    for snap in query.stream():
+        held = snap.to_dict() or {}
+        if held.get("tenant_id") != tenant_id:
+            continue
+        live = _live_holder(_Reads(), db, tenant_id, held, now)
+        if live is not None:
+            return live
+    return None
+
+
+def _claim(store: Any, tenant_id: str, continuation: Continuation,
+           record: Mapping[str, Any]) -> str | None:
+    """Take this failure's claim, or refuse `CiFixInFlight` naming the live fix
+    (through `refusals.refuse`: switched off, None and no claim is taken).
+
+    None when the record names no head or no run: then nothing says two
+    requests are the same failure, and only the per-PR cap applies.
+    """
+    if "head_sha" not in record or "run_id" not in record:
+        return None
+    db = store.db
+    clock = getattr(store, "_now", None)
+    now = clock() if callable(clock) else datetime.now(timezone.utc)
+    repository = _claim_repository(continuation.repository_url)
+    ref = db.collection(CLAIMS).document(_claim_key(tenant_id, repository, record))
+    claim_id = uuid.uuid4().hex
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _apply(txn: Any) -> dict[str, Any] | None:
+        snap = _snapshot(txn.get(ref))
+        held = snap.to_dict() if snap.exists else None
+        if held is not None and held.get("tenant_id") == tenant_id:
+            live = _live_holder(txn, db, tenant_id, held, now)
+            if live is not None:
+                return live
+        txn.set(ref, {
+            "tenant_id": tenant_id, "repository": repository,
+            "pull_request": record["pull_request"], "head_sha": record["head_sha"],
+            "run_id": record["run_id"], "root_task_id": continuation.root_task_id,
+            "claim_id": claim_id, "claimed_at": now,
+        })
+        return None
+
+    live = _apply(transaction)
+    if live is not None:
+        task = live.get("task_id")
+        # A new refusal ships report-only (refusals.py): off, the request goes
+        # on as it did before the claim existed, holding no claim of its own.
+        refuse(CiFixInFlight(
+            f"pull request #{record['pull_request']}'s red run {record['run_id']} at "
+            f"{str(record['head_sha'])[:12]} already has a live CI-fix task"
+            + (f" ({task})" if task else ", still being submitted")
+            + "; this request is answered with that one, and no second task is made.",
+            detail={"metadata": CI_FIX_METADATA_FIELD, "task_id": task,
+                    "workflow_id": live.get("workflow_id"),
+                    "pull_request": record["pull_request"], "head_sha": record["head_sha"],
+                    "run_id": record["run_id"]},
+        ))
+        return None
+    return claim_id
+
+
 def stamp(store: Any, tenant_id: str, spec: WorkflowCreate,
           continuation: Continuation | None) -> WorkflowCreate:
-    """`spec` with `metadata.ci_fix` checked, counted and stamped `pending`.
+    """`spec` with `metadata.ci_fix` checked, counted, claimed and stamped `pending`,
+    and any fix round marked for the head record (`FIX_HEAD_FIELD`).
 
-    Unchanged when there is no `ci_fix`. Raises `DispatchOptionError` (422
-    `invalid_dispatch`) for every refusal, before anything is written.
+    Unchanged when there is neither. Raises `DispatchOptionError` (422
+    `invalid_dispatch`) for every refusal, before anything is written, and
+    `CiFixInFlight` (409) when the failure already has a live fix.
     """
     for step in spec.steps:
         if CI_FIX_METADATA_FIELD in (step.metadata or {}):
@@ -241,8 +493,13 @@ def stamp(store: Any, tenant_id: str, spec: WorkflowCreate,
                 "pull request the one fix step pushes to.",
                 step_id=step.step_id,
             )
+        _refuse_api_keys(step.metadata or {}, step_id=step.step_id)
+    _refuse_api_keys(spec.metadata)
     if CI_FIX_METADATA_FIELD not in spec.metadata:
-        return spec
+        marker = _fix_head_marker(spec.metadata, continuation)
+        if marker is None:
+            return spec
+        return spec.model_copy(update={"metadata": {**spec.metadata, FIX_HEAD_FIELD: marker}})
     if continuation is None:
         raise _refuse(
             "metadata.ci_fix records a fix for a red pull request's branch, which "
@@ -258,10 +515,16 @@ def stamp(store: Any, tenant_id: str, spec: WorkflowCreate,
             f"is {record['max_attempts']}. A person has to look at it now.",
             attempts=made, max_attempts=record["max_attempts"],
         )
+    # After the cap, so a request the cap refuses holds no claim.
+    claim = _claim(store, tenant_id, continuation, record)
+    if claim is not None:
+        record[CLAIM_FIELD] = claim
     record[POSTBACK_FIELD] = PENDING
-    return spec.model_copy(
-        update={"metadata": {**spec.metadata, CI_FIX_METADATA_FIELD: record}}
-    )
+    metadata = {**spec.metadata, CI_FIX_METADATA_FIELD: record}
+    marker = _fix_head_marker(metadata, continuation, record["pull_request"])
+    if marker is not None:
+        metadata[FIX_HEAD_FIELD] = marker
+    return spec.model_copy(update={"metadata": metadata})
 
 
 # --------------------------------------------------------------------------
@@ -355,6 +618,8 @@ class PostbackReport:
     skipped: int = 0
     failed: int = 0
     truncated: bool = False
+    #: Fix rounds whose pushed head this tick recorded against their pull request.
+    heads_recorded: int = 0
     failures: list[dict[str, str]] = field(default_factory=list)
 
     def to_api(self) -> dict[str, Any]:
@@ -364,6 +629,7 @@ class PostbackReport:
             "skipped": self.skipped,
             "failed": self.failed,
             "truncated": self.truncated,
+            "heads_recorded": self.heads_recorded,
         }
 
     def fail(self, task_id: str, code: str) -> None:
@@ -424,6 +690,84 @@ def _record(db: Any, tenant_id: str, task_id: str, patch: dict[str, Any]) -> boo
         return True
 
     return bool(_apply(transaction))
+
+
+def _record_head(db: Any, tenant_id: str, task_id: str, now: datetime) -> str | None:
+    """Record terminal fix round `task_id`'s pushed head on its branch's task; the
+    marker's new state, or None when there was nothing to do. One transaction,
+    guarded on both documents being this tenant's and the marker `pending`."""
+    ref = db.collection(TASKS).document(task_id)
+    terminal = {s.value for s in TERMINAL_STATES}
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _apply(txn: Any) -> str | None:
+        snap = _snapshot(txn.get(ref))
+        data = snap.to_dict() if snap.exists else None
+        if data is None or data.get("tenant_id") != tenant_id or data.get("state") not in terminal:
+            return None
+        metadata = dict(_mapping(data.get("metadata")))
+        marker = dict(_mapping(metadata.get(FIX_HEAD_FIELD)))
+        if marker.get("state") != PENDING:
+            return None
+        root = _mapping(metadata.get(DISPATCH_METADATA_KEY)).get("continues")
+        number = _positive_int(marker.get("pull_request"))
+        repository = _repository(data.get("repository_url"))
+        pushed = _mapping(_mapping(data.get("result_summary")).get("git")).get("pushed_head")
+        root_ref = root_data = None
+        if isinstance(root, str) and TASK_ID_RE.match(root) and root != task_id:
+            root_ref = db.collection(TASKS).document(root)
+            root_snap = _snapshot(txn.get(root_ref))
+            root_data = root_snap.to_dict() if root_snap.exists else None
+        if (root_ref is None or root_data is None or root_data.get("tenant_id") != tenant_id
+                or number is None or repository is None):
+            state = UNADDRESSABLE
+        elif not isinstance(pushed, str) or not _SHA.fullmatch(pushed):
+            state = NOTHING_PUSHED
+        else:
+            state = RECORDED
+            root_metadata = dict(_mapping(root_data.get("metadata")))
+            existing = root_metadata.get(FIX_HEADS_FIELD)
+            heads = [entry for entry in (existing if isinstance(existing, list) else [])
+                     if isinstance(entry, Mapping) and entry.get("task_id") != task_id]
+            heads.append({
+                "repository": repository, "pull_request": number, "task_id": task_id,
+                "workflow_id": data.get("workflow_id"), "head": pushed,
+                "kind": marker.get("kind"), "recorded_at": now,
+            })
+            root_metadata[FIX_HEADS_FIELD] = heads[-FIX_HEADS_KEPT:]
+            txn.update(root_ref, {"metadata": root_metadata})
+        marker["state"] = state
+        marker["checked_at"] = now
+        metadata[FIX_HEAD_FIELD] = marker
+        txn.update(ref, {"metadata": metadata})
+        return state
+
+    return _apply(transaction)
+
+
+def record_fix_heads(db: Any, tenant_id: str, *, limit: int, now: datetime,
+                     report: PostbackReport) -> None:
+    """One pass over `tenant_id`'s fix rounds marked `pending`: each terminal one's
+    pushed head recorded against its pull request (module docstring)."""
+    query = (
+        db.collection(TASKS)
+        .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        .where(filter=FieldFilter(f"metadata.{FIX_HEAD_FIELD}.state", "==", PENDING))
+        .limit(limit + 1)
+    )
+    snaps = list(query.stream())
+    if len(snaps) > limit:
+        report.truncated = True
+    terminal = {s.value for s in TERMINAL_STATES}
+    for snap in snaps[:limit]:
+        doc = snap.to_dict() or {}
+        # Asked again: another tenant's round is never written about.
+        if doc.get("tenant_id") != tenant_id or doc.get("state") not in terminal:
+            continue
+        if _record_head(db, tenant_id, snap.id, now) == RECORDED:
+            report.heads_recorded += 1
+            log.info("ci-fix head record %s tenant=%s: recorded", snap.id, tenant_id)
 
 
 def _post(writer: GitHubWriter, doc: Mapping[str, Any], record: Mapping[str, Any],
@@ -518,4 +862,6 @@ def postback_tenant(ctx: Any, tenant_id: str, *, limit: int) -> PostbackReport:
                 log.info("ci-fix post-back %s tenant=%s: posted", task_id, tenant_id)
     finally:
         token = ""
+    # No token: the record is the platform's own, read and written in Firestore.
+    record_fix_heads(db, tenant_id, limit=limit, now=now, report=report)
     return report

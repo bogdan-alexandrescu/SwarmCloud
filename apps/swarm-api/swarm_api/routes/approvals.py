@@ -12,9 +12,22 @@ reject is the run's own transition to REJECTED. So the inbox, Work › Runs and
 `sc plan approve` are one approval with one source of truth.
 
 TENANT-SCOPED (§5.1, invariant 9). The tenant is `tenant_scope`'s, never the
-body's. Another tenant's item answers the 404 a missing one does. A platform
-admin decides nothing of another tenant's by being an admin (§4.6, §5.3):
-an `owner_only` item exists only in a tenant the owner is a member of.
+body's. Another tenant's item answers the 404 a missing one does. An
+`owner_only` item exists only in a tenant the owner is a member of.
+
+THE ROLE IS THE FLOOR (docs/design/workspace-roles.md §4.1, §4.8; lane
+ROLES-GATES-DECIDE). Every decision here -- approve, reject, the merge
+switch, a projected plan's approve and reject -- first asks
+`approvals.require_decider`: `member` or above in the selected workspace,
+read fresh, else 403 `role_member_required` through its switch, asked before
+the item is read so a refused one stays pending. A `viewer` reads the inbox
+and decides nothing. A platform admin is `admin` in every GROUP workspace,
+member or not (Q5, which supersedes this file's earlier "a platform admin
+decides nothing of another tenant's"): they reach a group workspace they are
+not in only through `platform_admin_reach`, each decision audited before it
+runs (`deps.current_auth`), and never anyone's personal workspace. The rules
+below are unchanged and still apply on top of the role, to them as to anyone:
+a gate's `approvers` list, a hold, the last-editor rule and the `spec` rule.
 
 THE MERGE SWITCH (SD3) is an audited edit of `gate.merge`, the one way to
 `merge: auto`, which `PATCH /v1/schedules/{id}` refuses with 422
@@ -32,6 +45,12 @@ NOTHING HERE CREATES DEMAND (invariants 1-3). A decision moves a document:
 a firing gains its `run_approval`, a run its `merge_approved`, a plan its
 approval -- whose workflow `_approve` submits through `SubmissionService`,
 QUEUED until admission leases it, exactly as an approval in Work › Runs.
+
+NAMES BESIDE EMAILS (docs/design/user-profile.md §4.4). Each item served
+gains `decided_by_name` beside `decided_by` and `approver_names` beside
+`approvers` (index for index when `approvers` is a list of members, null when
+it is a rule such as `members`), from one lookup per response
+(`people.add_names`). A name is a label: who may decide is still the email.
 """
 
 from __future__ import annotations
@@ -50,6 +69,7 @@ from ..deps import AppContext, current_auth, get_context, tenant_scope
 from ..errors import ApiError, NotFound
 from ..issueruns import InvalidRunTransition, IssueRuns, RunState
 from ..issuesync import sync_issue
+from ..people import add_names, name_lookup
 from ..schedules import GateIn, ScheduleConflict, ScheduleForbidden, ScheduleInvalid
 from . import runs as run_routes
 from . import schedules as schedule_routes
@@ -113,6 +133,15 @@ def _audit_run(ctx: AppContext, run: Any, action: str, by: str, detail: Mapping[
 # --------------------------------------------------------------------------
 
 
+#: The email fields of an approval that are served with a name beside them.
+NAMED_FIELDS = ("decided_by", "approvers")
+
+
+def _named(ctx: AppContext, item: dict) -> dict:
+    add_names(name_lookup(ctx), [item], NAMED_FIELDS)
+    return item
+
+
 @router.get("/v1/approvals")
 def list_approvals(
     kind: str | None = Query(default=None, max_length=20),
@@ -121,8 +150,9 @@ def list_approvals(
 ) -> dict:
     if kind is not None and kind not in approvals.KINDS:
         raise ScheduleInvalid("unknown_kind", f"kind is one of {', '.join(approvals.KINDS)}")
-    items = approvals.inbox(ctx, tenant_id, kind=kind)
-    return {"approvals": [approvals.to_api(i) for i in items], "tenant_id": tenant_id}
+    items = [approvals.to_api(i) for i in approvals.inbox(ctx, tenant_id, kind=kind)]
+    add_names(name_lookup(ctx), items, NAMED_FIELDS)
+    return {"approvals": items, "tenant_id": tenant_id}
 
 
 @router.get("/v1/approvals/{item_id}")
@@ -136,9 +166,10 @@ def get_approval(
         if run.state != RunState.PLANNED:
             raise NotFound(f"approval {item_id[:80]!r} not found")
         schedule = approvals.read_schedule(ctx.db, tenant_id, (run.schedule or {}).get("schedule_id"))
-        return {"approval": approvals.to_api(approvals.project_run(run, schedule)), "run": run.to_api()}
+        return {"approval": _named(ctx, approvals.to_api(approvals.project_run(run, schedule))),
+                "run": run.to_api()}
     doc = approvals.get(ctx.db, tenant_id, item_id)
-    out: dict[str, Any] = {"approval": approvals.to_api(doc)}
+    out: dict[str, Any] = {"approval": _named(ctx, approvals.to_api(doc))}
     run_id = (doc.get("subject") or {}).get("run_id")
     if doc.get("kind") == approvals.MERGE and run_id:
         run = IssueRuns(ctx.db, now=ctx.now).get(tenant_id, str(run_id))
@@ -197,6 +228,7 @@ def approve(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     verb: ApproveIn = _verb(ApproveIn, body)
+    approvals.require_decider(ctx, auth)
     if item_id.startswith(approvals.PROJECTED_PREFIX):
         return _approve_projected(ctx, auth, tenant_id, item_id, verb)
     doc = approvals.get(ctx.db, tenant_id, item_id)
@@ -251,8 +283,10 @@ def reject(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    """Anyone in the tenant may reject (§4.5): a rejection ends a hold, it never opens one."""
+    """Any member of the tenant may reject (§4.5): a rejection ends a hold, it never opens one.
+    A `viewer` may not (workspace-roles §4.1)."""
     verb: RejectIn = _verb(RejectIn, body)
+    approvals.require_decider(ctx, auth)
     if item_id.startswith(approvals.PROJECTED_PREFIX):
         run = _projected_run(ctx, tenant_id, item_id)
         try:
@@ -289,6 +323,8 @@ def merge_mode(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     verb: MergeModeIn = _verb(MergeModeIn, body)
+    # Either direction is a decision (workspace-roles §4.1): `member` first.
+    approvals.require_decider(ctx, auth)
     stored = schedule_routes._read(ctx, tenant_id, schedule_id)
     entry = scheduletypes.get(str(stored.get("type")))
     if entry is None:

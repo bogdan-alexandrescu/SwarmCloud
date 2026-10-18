@@ -13,6 +13,11 @@ and `eng@partner.com` both derive `eng`, and a registered group `u-eng@saga.xyz`
 derives what the personal tenant of `eng@saga.xyz` derives. Submitting was
 already refused by `ensure_tenant`; listing, reading and CANCELLING were not.
 `tenant_scope` applies that same principal check before any store call here.
+
+NAMES BESIDE EMAILS (docs/design/user-profile.md §4.4). The two task reads
+serve `submitted_by_name` beside `submitted_by`, from one lookup per page
+(`people.add_names`): ten tasks by three people read three names once. A name
+is a label; the submitter filter and every check here keep using the email.
 """
 
 from __future__ import annotations
@@ -49,6 +54,7 @@ from ..errors import Forbidden, ValidationFailed
 from ..handoff import HandoffService
 from .children import child_service
 from ..heartbeats import heartbeats_for_page
+from ..people import add_names, name_lookup
 from ..schemas import TaskBatchCreate, TaskCreate
 from ..startup import startup_of
 from ..task_accounts import accounts_for, accounts_for_attempts
@@ -261,6 +267,7 @@ def list_tasks(
         "next_page_token": page.next_page_token,
         "tenant_id": tenant_id,
     }
+    add_names(name_lookup(ctx), payload["tasks"], ("submitted_by",))
     if summary:
         payload["view"] = "summary"
     return payload
@@ -281,18 +288,18 @@ def get_task(
     # 2026-10-05, lane review P1): the task document describes only the attempt
     # that ended last. One attempt query; see `swarm_api.attempt_totals`.
     totals = totals_for(ctx.db, tenant_id, [task.id])
-    return {
-        "task": with_totals(
-            task_to_api(
-                task,
-                waiting.get(task.id),
-                account=accounts.get(task.id),
-                console_url=ctx.settings.console_url,
-                heartbeat=beats.get(task.id),
-            ),
-            totals,
-        )
-    }
+    served = with_totals(
+        task_to_api(
+            task,
+            waiting.get(task.id),
+            account=accounts.get(task.id),
+            console_url=ctx.settings.console_url,
+            heartbeat=beats.get(task.id),
+        ),
+        totals,
+    )
+    add_names(name_lookup(ctx), [served], ("submitted_by",))
+    return {"task": served}
 
 
 @router.post("/{task_id}/cancel")
@@ -353,13 +360,14 @@ def cancel_task(
     # A task cancelled between attempts has already spent: the response
     # carries every attempt's totals, as `get_task` does (P1 follow-up).
     totals = totals_for(ctx.db, tenant_id, [task.id])
+    served = with_totals(
+        task_to_api(task, account=accounts.get(task.id), console_url=ctx.settings.console_url),
+        totals,
+    )
+    # `submitted_by_name` beside `submitted_by`, as `get_task` serves it.
+    add_names(name_lookup(ctx), [served], ("submitted_by",))
     return {
-        "task": with_totals(
-            task_to_api(
-                task, account=accounts.get(task.id), console_url=ctx.settings.console_url
-            ),
-            totals,
-        ),
+        "task": served,
         # A task holding capacity stays in its state until the worker or the
         # reconciler releases the lease; decrementing the pool from here would
         # free a slot that a live container still occupies.

@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from swarm_common.config import Settings
 from swarm_common.models import Tenant
 
+from swarm_api import forge_limits
 from swarm_api.auth import StaticTokenVerifier
 from swarm_api.credentials import InMemoryCredentials
 from swarm_api.deps import build_context
@@ -81,6 +82,16 @@ def api_settings(**overrides: Any) -> ApiSettings:
     )
     base.update(overrides)
     return ApiSettings(**base)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_quota_ledger():
+    """`forge_limits.QUOTAS` is the process's one ledger (QUOTA-THROTTLE): a
+    hold one test's rate-limited answer set must not defer the next test's
+    reads."""
+    forge_limits.QUOTAS.clear()
+    yield
+    forge_limits.QUOTAS.clear()
 
 
 @pytest.fixture

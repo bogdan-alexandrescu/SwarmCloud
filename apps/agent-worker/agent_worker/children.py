@@ -80,7 +80,7 @@ REQUEST_ID = re.compile(r"^[a-z0-9-]{1,64}$")
 #: and by the route's strict model.
 CHILD_FIELDS = frozenset(
     {"runner_profile", "resource_class", "input", "provider", "model", "timeout_seconds",
-     "repository_ref"}
+     "repository_ref", "model_class"}
 )
 #: `swarm_api.childkey.REQUEST_PURPOSE` and the proof headers, restated.
 REQUEST_PURPOSE = "swarm-child-req/v1"
@@ -121,9 +121,12 @@ writing the same id again never makes a second child.
 
 `runner_profile` is required and names a profile, never an image or a
 command. `input` is the child's input, `{"prompt": ...}` for the CLI agents.
-`resource_class`, `provider`, `model`, `timeout_seconds` and `repository_ref`
-are optional; nothing else is accepted. A child works on this task's
-repository, runs no longer than this task, and is at most 256 KiB as a file.
+`resource_class`, `provider`, `model`, `timeout_seconds`, `repository_ref`
+and `model_class` are optional; nothing else is accepted. `model_class` names
+the model a claude-code child runs, `opus`, `fable`, `sonnet` or `haiku`;
+without it the child runs its own profile's default, never this task's. A
+child works on this task's repository, runs no longer than this task, and is
+at most 256 KiB as a file.
 
 ## Read the answer
 
@@ -339,8 +342,17 @@ class AttemptKey:
 
     def headers(self, method: str, path: str, body: bytes, *, now: float) -> dict[str, str]:
         timestamp = str(int(now))
-        signature = self._private.sign(request_message(method, path, body, timestamp))
-        return {PROOF_HEADER: _b64url(signature), TIMESTAMP_HEADER: timestamp}
+        return {
+            PROOF_HEADER: self.sign(request_message(method, path, body, timestamp)),
+            TIMESTAMP_HEADER: timestamp,
+        }
+
+    def sign(self, message: bytes) -> str:
+        """`message`'s Ed25519 signature, base64url. The caller builds the
+        message under its own purpose: `request_message` here, and
+        `statecall.state_request_message` for the state routes, whose prefix
+        keeps either proof from being replayed as the other."""
+        return _b64url(self._private.sign(message))
 
     def __repr__(self) -> str:  # never the key, whatever logs this object
         return "AttemptKey(<heap only>)"
@@ -579,6 +591,48 @@ class ChildPath:
         payload = answer[1] if isinstance(answer, tuple) and len(answer) == 2 else None
         self.search_flag = isinstance(payload, dict) and payload.get("search_tool") is True
         self.log.info("child path registered for this attempt")
+
+    def adopt(
+        self,
+        key: AttemptKey | None,
+        registration: Any,
+        note: Callable[[dict[str, Any]], Any],
+    ) -> None:
+        """Use the key `state/open` registered, instead of registering one here.
+
+        With the tenant switched to the state routes (`SWARM_STATE_VIA_API`,
+        docs/design/tenant-settings-integrity.md §4.3), the control plane's
+        `state/open` is the worker's FIRST call: it spends the nonce on ONE
+        key per attempt, which signs both kinds of request. `register` would
+        find that slot taken. So the child path takes the same key, and is
+        offered exactly as a registration here would have offered it:
+
+          * a key swarm-api registered for the `child` purpose: the child
+            path, the git tools and every relay signed with it;
+          * a key from a heap `make_non_dumpable` could not protect, which
+            swarm-api registers for `state` only (owner decision Q4): no child
+            path, noted as the tombstone is today (`worker_unprotected`);
+          * no key at all: no child path, noted `child_key_unregistered`.
+
+        Never raises, as `register` never does. The search tool's flag rides on
+        `state/open`'s registration as on `child-key`'s answer (`search_tool`,
+        lane ISO-SEARCH), and is read exactly as `register` reads it.
+        """
+        payload = registration if isinstance(registration, dict) else {}
+        purposes = payload.get("purpose")
+        purposes = purposes if isinstance(purposes, list) else []
+        if key is None:
+            self.unavailable = "child_key_unregistered"
+            self._note(note, "child_key_unregistered", "state/open registered no key")
+            return
+        if payload.get("unprotected") is True or "child" not in purposes:
+            self.unavailable = WORKER_UNPROTECTED
+            self._note(note, "child_key_tombstone", WORKER_UNPROTECTED)
+            return
+        self._key = key
+        self.unavailable = None
+        self.search_flag = payload.get("search_tool") is True
+        self.log.info("child path registered for this attempt", registered_by="state/open")
 
     def _note(self, note: Callable[[dict[str, Any]], Any], what: str, why: str) -> None:
         self.unavailable_reason = why

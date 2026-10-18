@@ -64,14 +64,33 @@ PENDING_STATES: frozenset[TaskState] = frozenset(
 
 _ALLOWED: dict[TaskState, frozenset[TaskState]] = {
     TaskState.SUBMITTED: frozenset({TaskState.QUEUED, TaskState.CANCELLED}),
-    TaskState.QUEUED: frozenset({TaskState.READY, TaskState.PARKED, TaskState.CANCELLED}),
+    # QUEUED -> FAILED: a task that can never run ends at admission with no
+    # lease, as registered-mcp-servers.md §4.10 says of a per-run MCP
+    # credential that expired in the queue (contract request 98, accepted by
+    # the owner 2026-10-18). It held nothing, so there is nothing to release.
+    TaskState.QUEUED: frozenset(
+        {TaskState.READY, TaskState.PARKED, TaskState.CANCELLED, TaskState.FAILED}
+    ),
     # PARKED -> SUCCEEDED: a step the control plane finishes without a worker
     # (#748, contract request 52). It held no lease, so there is nothing to
     # release; only swarm-api writes it, guarded on its own claim.
+    # READY -> FAILED and PARKED -> FAILED: the same ending in the two states
+    # admission and the credential sweep actually hold a task in (contract
+    # request 99, accepted by the owner 2026-10-18). Only the scheduler writes
+    # them, for a per-run MCP credential that expired or was revoked; the task
+    # holds no lease in either, so nothing is reserved or released.
     TaskState.PARKED: frozenset(
-        {TaskState.READY, TaskState.CANCELLED, TaskState.DEAD_LETTERED, TaskState.SUCCEEDED}
+        {
+            TaskState.READY,
+            TaskState.CANCELLED,
+            TaskState.DEAD_LETTERED,
+            TaskState.SUCCEEDED,
+            TaskState.FAILED,
+        }
     ),
-    TaskState.READY: frozenset({TaskState.LEASED, TaskState.PARKED, TaskState.CANCELLED}),
+    TaskState.READY: frozenset(
+        {TaskState.LEASED, TaskState.PARKED, TaskState.CANCELLED, TaskState.FAILED}
+    ),
     # A lease can be lost before dispatch (reconciler reclaim, limit reduction,
     # cancellation) which returns the task to READY without an attempt.
     TaskState.LEASED: frozenset(
@@ -119,6 +138,54 @@ def assert_transition(frm: TaskState, to: TaskState) -> None:
         raise InvalidTransition(frm, to)
 
 
+#: The edges a tenant worker may ask swarm-api to apply, each also legal in
+#: _ALLOWED. Everything else is the scheduler's, the reconciler's or a person's.
+#:
+#: Contract request 85 (docs/design/tenant-settings-integrity.md §5 request A,
+#: #1457), accepted by the owner 2026-10-17 on PR 1464. The worker's state
+#: routes (design B) refuse every edge outside this set, so an agent holding
+#: its worker's token cannot admit, requeue or dead-letter a task. It is
+#: exactly the edges `agent_worker/control.py` and `handoff.py` write:
+#:
+#: * the walk LEASED -> DISPATCHED -> STARTING -> RUNNING;
+#: * FAILED (the crash handler) and CANCELLED (a cancel read before the runner
+#:   started) from any of the three pre-running states;
+#: * from RUNNING: a park, READY (a retryable failure, or the hand-off's
+#:   "person returned control"), and the terminal SUCCEEDED, FAILED, CANCELLED.
+#:
+#: Not in it: PARKED -> READY, which only a person makes (swarm-api's
+#: `human-ready`); STARTING -> READY, which no worker path writes (a worker
+#: that cannot start leaves the requeue to the reconciler); and the edges into
+#: PARKED, SUCCEEDED or DEAD_LETTERED that `_ALLOWED` refuses.
+WORKER_TRANSITIONS: frozenset[tuple[TaskState, TaskState]] = frozenset(
+    {
+        (TaskState.LEASED, TaskState.DISPATCHED),
+        (TaskState.DISPATCHED, TaskState.STARTING),
+        (TaskState.STARTING, TaskState.RUNNING),
+        *(
+            (s, t)
+            for s in (TaskState.LEASED, TaskState.DISPATCHED, TaskState.STARTING)
+            for t in (TaskState.FAILED, TaskState.CANCELLED)
+        ),
+        *(
+            (TaskState.RUNNING, t)
+            for t in (
+                TaskState.PARKED,
+                TaskState.READY,
+                TaskState.SUCCEEDED,
+                TaskState.FAILED,
+                TaskState.CANCELLED,
+            )
+        ),
+    }
+)
+
+
+def worker_may_transition(frm: TaskState, to: TaskState) -> bool:
+    """Whether a tenant worker may ask for `frm -> to` (contract request 85)."""
+    return (frm, to) in WORKER_TRANSITIONS and can_transition(frm, to)
+
+
 def holds_capacity(state: TaskState) -> bool:
     return state in CONCURRENCY_STATES
 
@@ -157,6 +224,15 @@ class ParkReason(str, Enum):
     #: Contract request 68 (LB-A, docs/design/live-browser.md section 4.3),
     #: accepted by the owner 2026-10-11 (#1030).
     HUMAN_REQUIRED = "HUMAN_REQUIRED"
+    #: A workflow step of a `control_plane` profile (`await-input`) waiting
+    #: for a tenant member's answer (docs/design/human-steps.md). Never
+    #: promoted to READY, and never read by the HUMAN_REQUIRED sweep,
+    #: `human-ready` or the browser bell: swarm-api ends it PARKED ->
+    #: SUCCEEDED on the answer or on its declared default, PARKED ->
+    #: DEAD_LETTERED on expiry (at most 24 hours), PARKED -> CANCELLED on a
+    #: cancel. Holds no capacity (invariant 1). Contract request 92 (HW-CONTRACT,
+    #: human steps request A), accepted by the owner 2026-10-17 (Q1).
+    AWAITING_INPUT = "AWAITING_INPUT"
 
 
 class BlockedReason(str, Enum):

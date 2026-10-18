@@ -30,11 +30,14 @@ from swarm_common.models import (
     Tenant,
     Workflow,
     WorkflowStep,
+    check_additional_repositories,
 )
+from swarm_common.profiles import RUNNER_PROFILES, step_model_class
 from swarm_common.states import BlockedReason, EventType, ParkReason, TaskState
 from swarm_common.models import ProviderState
 
 from .prgate import wait_for_api
+from . import sessiontag
 from .task_input import TaskMasking, masking_for
 from .validation import (
     DEFAULT_CARRIER,
@@ -149,6 +152,25 @@ def _end_cause(value: Any) -> EndCause | None:
         return None
 
 
+def served_model_class(runner_profile: str, stored: str | None) -> dict[str, Any]:
+    """`model_class` as served: the stored class, or the profile's default
+    when none is stored (`model_class_defaulted: true`), by the frozen
+    `profiles.step_model_class` the scheduler and the worker resolve with.
+
+    Never raises: a document written past the API with a class its profile
+    does not accept, or naming a profile this image does not know, is served
+    as stored, not defaulted, so a reader sees what the scheduler will refuse.
+    """
+    profile = RUNNER_PROFILES.get(runner_profile)
+    if profile is None:
+        return {"model_class": stored, "model_class_defaulted": False}
+    try:
+        resolved = step_model_class(profile, stored)
+    except ValueError:
+        return {"model_class": stored, "model_class_defaulted": False}
+    return {"model_class": resolved, "model_class_defaulted": stored is None and resolved is not None}
+
+
 def task_to_firestore(task: Task) -> dict[str, Any]:
     return task.to_firestore()
 
@@ -205,6 +227,13 @@ def task_from_dict(data: dict[str, Any]) -> Task:
         # and writes again never clears a live hand-off; anything but a dict
         # is no wait.
         human_wait=_human_wait(data.get("human_wait")),
+        # Contract request 95 (MR-CONTRACT). Read back so a task this service
+        # decodes and writes again keeps the signed list it was submitted with.
+        additional_repositories=_additional_repositories(data.get("additional_repositories")),
+        # Contract request 104 (#1435). Read back so a task this service
+        # decodes and writes again keeps the signed class it was submitted
+        # with. None: the profile's default class.
+        model_class=data.get("model_class") or None,
     )
 
 
@@ -242,6 +271,44 @@ def _forge_credential(value: Any) -> str | None:
 def _forge_access(value: Any) -> str | None:
     """A stored forge access mode, or None -- as `_forge_credential`."""
     return value if isinstance(value, str) and value in FORGE_ACCESS else None
+
+
+def _additional_repositories(value: Any) -> list[dict[str, Any]] | None:
+    """A stored additional-repository list, or None -- as `_forge_credential`:
+    a malformed one must not make the task unreadable here, and the worker
+    verifies the signed document itself."""
+    try:
+        check_additional_repositories(value)
+    except ValueError:
+        return None
+    return value
+
+
+#: Where the agent finds an additional repository, relative to its own
+#: checkout `work/repo`: the worker links `work/repos/<name>` (#1434).
+ADDITIONAL_REPOSITORIES_PATH = "../repos"
+
+
+def additional_repositories_to_api(value: Any) -> list[dict[str, Any]] | None:
+    """What a caller is served of `Task.additional_repositories`
+    (docs/design/multi-repository-steps.md §4.1): each entry's name,
+    repository, registration, ref as asked, pinned commit, where the agent
+    finds it, and whose credential clones it, by kind. Never the URL
+    (derivable, and the primary's is masked for a reason) and never the slot
+    suffix (the primary's `forge_credential` is not public either). None for
+    a task that reads none, and for a stored list of the wrong shape."""
+    entries = _additional_repositories(value)
+    if not entries:
+        return None
+    return [{
+        "name": entry["name"],
+        "repository": entry["repository"],
+        "repo_id": entry["repo_id"],
+        "ref": entry["ref"],
+        "commit": entry["commit"],
+        "path": f"{ADDITIONAL_REPOSITORIES_PATH}/{entry['name']}",
+        "forge_credential_source": entry["forge_credential_source"],
+    } for entry in entries]
 
 
 #: What `task_to_api` says a task's `forge_credential` is, by its prefix.
@@ -305,6 +372,33 @@ def dispatch_of(task: Task) -> dict[str, Any]:
     if block.get("allow_empty_diff") is True:
         out["allow_empty_diff"] = True
     return out
+
+
+def claude_session_of(task: Task, masking: TaskMasking) -> str | None:
+    """The Claude Code session the task was tagged with (SC-SESSION-SCOPE,
+    `sessiontag`), or None: `metadata.claude_session`, lifted out as
+    `dispatch` is so a list in the summary view -- which drops `metadata` --
+    still says whose the task is. Caller-written, so masked by the task's
+    masker like every other caller string."""
+    raw = sessiontag.of(task.metadata)
+    if raw is None:
+        return None
+    masked, count = masking.text(raw)
+    return masked if count == 0 else None
+
+
+def workflow_claude_session(step_tasks: Mapping[str, Task]) -> dict[str, Any]:
+    """`{claude_session}` for a workflow, off its step tasks (the frozen
+    `Workflow` has no metadata; every step task carries the workflow's): the
+    key only when a step task was read, null when none is tagged, so a reader
+    tells "untagged" from "not read"."""
+    if not step_tasks:
+        return {}
+    for task in step_tasks.values():
+        found = claude_session_of(task, masking_for(task, warm=False))
+        if found:
+            return {sessiontag.KEY: found}
+    return {sessiontag.KEY: None}
 
 
 def start_problem_to_api(task: Task, masking: TaskMasking) -> dict[str, Any] | None:
@@ -491,6 +585,11 @@ def task_to_api(
         "resource_class": task.resource_class,
         "provider": task.provider,
         "model": task.model,
+        # Contract request 104 (#1435, model-per-step §4.4): the class this
+        # task runs, RESOLVED -- the stored one, or its profile's default when
+        # none is stored -- and whether it was defaulted. Null on a profile
+        # that runs no Claude model.
+        **served_model_class(task.runner_profile, task.model_class),
         "priority": task.priority,
         "created_at": task.created_at,
         "updated_at": task.updated_at,
@@ -558,6 +657,9 @@ def task_to_api(
         # that predates the feature and has no block -- without knowing the
         # encoding.
         "dispatch": dispatch_of(task),
+        # SC-SESSION-SCOPE: the Claude Code session that submitted it, lifted
+        # out of `metadata` (and kept in the summary view, which drops it).
+        "claude_session": claude_session_of(task, masking),
         # F1-POD: why the pod is not starting, in the summary view too -- the
         # list is where a stuck "dispatched" row is first seen. Null when the
         # reconciler recorded nothing. Also inside `metadata`, masked there too.
@@ -570,6 +672,10 @@ def task_to_api(
         "repository_url": repository_url,
         "repository_url_redaction_count": repository_url_count,
         "repository_ref": task.repository_ref,
+        # #1434 (MR-API): the repositories it reads beside its own, each at
+        # the commit swarm-api pinned at submission; no URL and no slot.
+        "additional_repositories": additional_repositories_to_api(
+            task.additional_repositories),
         "input": masked_input,
         "input_redaction_count": input_count,
         "last_error": last_error,
@@ -753,6 +859,10 @@ def attempt_from_dict(data: dict[str, Any]) -> Attempt:
         # from before it, which is read as `not recorded`, never as a guess.
         cpu_measured_at=as_datetime(data.get("cpu_measured_at")),
         cpu_limit_source=data.get("cpu_limit_source"),
+        # Contract request 103 (#1435): the model ID the worker started this
+        # attempt's agent with. Read explicitly, as the spend fields above
+        # were not. None: no model, or an attempt from before the field.
+        model=data.get("model") or None,
     )
 
 
@@ -1049,6 +1159,9 @@ def attempt_to_api(
         "cpu_measured_at": attempt.cpu_measured_at,
         "cpu_limit_source": attempt.cpu_limit_source,
         "cpu_reading_age_seconds": _age_seconds(attempt.cpu_measured_at, read_at),
+        # Contract request 103: the model ID the agent was started with.
+        # Null is not recorded.
+        "model": attempt.model,
     }
 
 
@@ -1193,6 +1306,7 @@ def workflow_from_dict(data: dict[str, Any]) -> Workflow:
                 input_from=dict(s.get("input_from") or {}),
                 timeout_seconds=s.get("timeout_seconds"),
                 task_id=s.get("task_id"),
+                model_class=s.get("model_class") or None,
             )
             for s in (data.get("steps") or [])
         ],
@@ -1266,6 +1380,8 @@ def workflow_to_api(
         "on_step_failure": workflow.on_step_failure,
         "cancel_requested": workflow.cancel_requested,
         **({"after_pull_requests": after} if after is not None else {}),
+        # SC-SESSION-SCOPE: the Claude Code session that submitted it.
+        **workflow_claude_session(step_tasks or {}),
         "steps": [
             _step_to_api(
                 s, _step_masking(workflow, s, step_tasks or {}), console_url, summary=summary
@@ -1326,6 +1442,9 @@ def _step_to_api(
         "input_from": {key: masker.name(value)[0] for key, value in step.input_from.items()},
         "timeout_seconds": step.timeout_seconds,
         "task_id": step.task_id,
+        # Contract request 102: the class the step runs, resolved as its
+        # task's is (`served_model_class`).
+        **served_model_class(step.runner_profile, step.model_class),
         "links": {"console": agent_console_url(console_url, step.task_id)},
     }
     if summary:

@@ -68,8 +68,15 @@ WORKER = {"agent-runtime-base", "agent-runtime-base-nocodex", "agent-runtime-bro
 # and the two ignore files reach it.
 # swarm-live (LB-L8e) is the one recipe under apps/ rather than images/
 # (apps/swarm-live/Dockerfile); find_recipe() accepts both. swarm-egress
-# (EGRESS-BUILD) sits beside its app the same way (apps/swarm-egress/Dockerfile).
-ALL = PYTHON_SERVICES | WORKER | {"swarm-ui", "swarm-verify", "swarm-live", "swarm-egress", "workspace-apply"}
+# (EGRESS-BUILD) sits beside its app the same way (apps/swarm-egress/Dockerfile),
+# and so does swarm-typesafe-fwd (SEC-INJECT-B, apps/swarm-typesafe-fwd/Dockerfile),
+# and swarm-graph (GS-INFRA, apps/swarm-graph/Dockerfile), which also copies
+# the worker package in (docs/design/graph-service.md §2.4), and
+# swarm-github-hooks (GS-HOOKS, apps/swarm-github-hooks/Dockerfile), which
+# copies only the contract and redaction in.
+ALL = PYTHON_SERVICES | WORKER | {"swarm-ui", "swarm-verify", "swarm-live", "swarm-egress",
+                                  "swarm-typesafe-fwd", "swarm-graph", "swarm-github-hooks",
+                                  "workspace-apply"}
 
 
 def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
@@ -147,7 +154,8 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         (["apps/scheduler/scheduler/dispatch.py"], {"swarm-scheduler", "workspace-apply"}),
         # COPY'd files outside images/.
         (["apps/common/swarm_common/models.py"],
-         PYTHON_SERVICES | WORKER | {"swarm-live", "swarm-egress", "workspace-apply"}),
+         PYTHON_SERVICES | WORKER | {"swarm-live", "swarm-egress", "swarm-typesafe-fwd",
+                                     "swarm-graph", "swarm-github-hooks", "workspace-apply"}),
         # The live relay: its recipe beside it, and its own lock.
         (["apps/swarm-live/swarm_live/main.py"], {"swarm-live"}),
         (["apps/swarm-live/uv.lock"], {"swarm-live"}),
@@ -158,8 +166,24 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         (["apps/swarm-egress/swarm_egress/server.py"], {"swarm-egress"}),
         (["apps/swarm-egress/uv.lock"], {"swarm-egress"}),
         (["apps/swarm-egress/Dockerfile"], {"swarm-egress"}),
-        (["apps/redaction/redaction/scan.py"], WORKER | {"swarm-api", "swarm-egress"}),
-        (["apps/agent-worker/worker/main.py"], WORKER),
+        # The TypeSafe forwarder (SEC-INJECT-B): the same shape again.
+        (["apps/swarm-typesafe-fwd/swarm_typesafe_fwd/forwarder.py"], {"swarm-typesafe-fwd"}),
+        (["apps/swarm-typesafe-fwd/uv.lock"], {"swarm-typesafe-fwd"}),
+        (["apps/swarm-typesafe-fwd/Dockerfile"], {"swarm-typesafe-fwd"}),
+        # The graph service (GS-INFRA): the same shape again, and it imports
+        # graphmcp from the worker package, so a worker change reaches it too.
+        (["apps/swarm-graph/swarm_graph/server.py"], {"swarm-graph"}),
+        (["apps/swarm-graph/uv.lock"], {"swarm-graph"}),
+        (["apps/swarm-graph/Dockerfile"], {"swarm-graph"}),
+        # The GitHub push receiver (GS-HOOKS): the same shape again, with no
+        # worker package, so a worker change does not reach it.
+        (["apps/swarm-github-hooks/swarm_github_hooks/receiver.py"], {"swarm-github-hooks"}),
+        (["apps/swarm-github-hooks/uv.lock"], {"swarm-github-hooks"}),
+        (["apps/swarm-github-hooks/Dockerfile"], {"swarm-github-hooks"}),
+        (["apps/redaction/redaction/scan.py"],
+         WORKER | {"swarm-api", "swarm-egress", "swarm-typesafe-fwd", "swarm-graph",
+                   "swarm-github-hooks"}),
+        (["apps/agent-worker/worker/main.py"], WORKER | {"swarm-graph"}),
         (["apps/quota-broker/quota_broker/app.py"], {"swarm-quota-broker", "swarm-scheduler", "workspace-apply"}),
         (["apps/swarm-ui/src/App.tsx"], {"swarm-ui"}),
         # `COPY apps/swarm-ui/package-lock.json*`: a glob source.
@@ -499,7 +523,7 @@ def test_mains_build_and_push_is_unchanged():
     build = _jobs()["build"]
     # ...and not on a merge queue entry, whose ref the pool rejects as it
     # rejects a pull request's (test_merge_queue_workflows.py).
-    assert build["if"] == "github.event_name != 'pull_request' && github.event_name != 'merge_group'"
+    assert build["if"] == "${{ !cancelled() && !failure() && github.event_name != 'pull_request' && github.event_name != 'merge_group' }}"
     runs = [str(s.get("run", "")) for s in build["steps"] if s.get("run")]
     # Main builds and pushes: incrementally since observer proposal H
     # (test_build_images_incremental.py), never without pushing.

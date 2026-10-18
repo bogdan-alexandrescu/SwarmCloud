@@ -510,23 +510,26 @@ def test_the_listed_accounts_integrator_fix_is_capped_and_stamped_for_the_post_b
     integrator continuation as for a `direct-pr` one: both key on the root."""
     integrator = _submit_integrate_workflow(fixer_client, ALICE)["publish"]
 
-    def red_run(attempt: int) -> dict:
+    def red_run(attempt: int, run_id: int) -> dict:
+        # One red run per attempt: a run whose fix is still live gets no
+        # second task at all (test_cifix_one_live_fix.py, epic #1334).
         return {
             **_fix_workflow(integrator),
             "metadata": {"ci_fix": {
-                "pull_request": 740, "run_id": 1, "head_sha": "a" * 40,
+                "pull_request": 740, "run_id": run_id, "head_sha": "a" * 40,
                 "attempt": attempt, "max_attempts": 2,
             }},
         }
 
     for attempt in (1, 2):
-        response = fixer_client.post("/v1/workflows", headers=FIXER_HEADERS, json=red_run(attempt))
+        response = fixer_client.post("/v1/workflows", headers=FIXER_HEADERS,
+                                     json=red_run(attempt, run_id=attempt))
         assert response.status_code == 201, response.text
         fix_task_id = response.json()["workflow"]["steps"][0]["task_id"]
         assert db.docs[f"tasks/{fix_task_id}"]["metadata"]["ci_fix"]["postback"] == "pending"
     # Numbered 2 again: only the API's own count of the pull request's fix
     # workflows can refuse it, not the record's attempt <= max_attempts check.
-    third = fixer_client.post("/v1/workflows", headers=FIXER_HEADERS, json=red_run(2))
+    third = fixer_client.post("/v1/workflows", headers=FIXER_HEADERS, json=red_run(2, run_id=3))
     assert third.status_code == 422, third.text
     assert third.json()["code"] == "invalid_dispatch"
     assert "the cap is 2" in third.json()["message"]

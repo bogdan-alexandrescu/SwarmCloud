@@ -18,6 +18,7 @@ past `specsign.MAX_DEPTH` is `SpecNotCanonical`, never `RecursionError`.
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,7 @@ from swarm_common.specsign import SIGNED_METADATA_KEYS, SpecNotCanonical, canoni
 
 import agent_worker
 from agent_worker import expected_outputs, inputs
+from swarm_common.models import Task
 
 WORKER = Path(agent_worker.__file__).resolve().parent
 
@@ -231,7 +233,29 @@ _DOCS_BY_FORMAT: dict[int, dict[str, Any]] = {
     1: _DOC,
     2: {**_DOC, "parent_task_id": "task_parent", "parent_attempt_id": "att_parent"},
     3: {**_DOC, "forge_credential": "git-u-" + "0" * 16, "forge_access": "read"},
+    4: {
+        **_DOC,
+        "additional_repositories": [
+            {
+                "name": "web",
+                "repo_id": "repo_" + "0" * 16,
+                "repository": "acme/web",
+                "repository_url": "https://github.com/acme/web",
+                "ref": "main",
+                "commit": "0" * 40,
+                "forge_credential": "git",
+                "forge_credential_source": "tenant",
+                "size_kib": 0,
+            }
+        ],
+    },
+    5: {**_DOC, "model_class": "sonnet"},
 }
+
+
+def test_every_format_has_a_document_here():
+    """A format added without a document here escapes every test below."""
+    assert sorted(_DOCS_BY_FORMAT) == list(specsign.SPEC_FORMATS)
 
 
 def test_each_document_is_signed_at_its_format():
@@ -328,3 +352,52 @@ def test_a_stored_document_20_deep_still_has_its_bytes():
     doc = {**_DOC, "input": _maps(19)}
     canonical = canonical_step_spec(doc, task_id="task_1")
     assert canonical.count(b'{"a":') == 19
+
+
+# ---------------------------------------------------------------------------
+# Every Task field is signed or named as unsigned (contract request 96)
+# ---------------------------------------------------------------------------
+
+#: The `Task` fields outside the signature, each for a reason: the document's
+#: own `id` (the signature binds the id the worker READ BY, see
+#: `canonical_step_spec`), the signature's own three fields, and attempt or
+#: lifecycle state that changes after submission and so cannot be inside a
+#: signature made at it. A new field lands in one of the two sets in the same
+#: change: signed with a format bump, or here with its reason.
+UNSIGNED_TASK_FIELDS = {
+    "id",
+    "created_at",
+    "updated_at",
+    "state",
+    "priority",
+    "attempt_count",
+    "next_eligible_at",
+    "park_reason",
+    "blocked_by",
+    "current_lease_id",
+    "current_generation",
+    "cancel_requested",
+    "started_at",
+    "completed_at",
+    "last_error",
+    "result_summary",
+    "latest_checkpoint",
+    "end_cause",
+    "spec_signature",
+    "spec_key_version",
+    "spec_format",
+    "human_wait",
+}
+
+
+def test_every_task_field_is_signed_or_named_unsigned():
+    newest = canonical_step_spec({}, task_id="t", spec_format=max(specsign.SPEC_FORMATS))
+    projected = set(json.loads(newest)) - {"purpose", "format", "task_id"}
+    fields = set(Task.__dataclass_fields__)
+    assert "additional_repositories" in projected
+    assert projected <= fields, sorted(projected - fields)
+    assert not projected & UNSIGNED_TASK_FIELDS, sorted(projected & UNSIGNED_TASK_FIELDS)
+    assert fields - projected == UNSIGNED_TASK_FIELDS, (
+        f"Task fields neither signed nor named unsigned: {sorted(fields - projected - UNSIGNED_TASK_FIELDS)}; "
+        f"named unsigned but no Task field: {sorted(UNSIGNED_TASK_FIELDS - fields)}"
+    )

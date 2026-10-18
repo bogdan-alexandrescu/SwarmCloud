@@ -1184,12 +1184,130 @@ api_url() {
 # Nothing is lost by sending an access token: IAP sends the backend NO
 # Authorization header of its own and swarm-api authenticates the caller from
 # `X-Goog-IAP-JWT-Assertion` instead (apps/swarm-api/swarm_api/deps.py:198).
+#
+# A LAPTOP AT THE FRONT DOOR PRESENTS ITS `sc login` SIGN-IN, not the
+# operator's gcloud access token (#1334). That token is the third row above --
+# 401, error 900 -- and it is what this function handed out until 2026-10-16,
+# so scripts/startup-measure.sh and scripts/browser-bench.sh failed their first
+# request from a laptop while the same bodies went through `SwarmClient`, 60/60.
+# A Google-managed IAP client admits a program only through an allow-listed
+# client; the Desktop client `sc login` signs in with is that client
+# (apps/swarm-mcp/swarm_mcp/signin.py, terraform/bootstrap/
+# iap_programmatic_clients.tf), and IAP forwards the operator's OWN identity,
+# so the API files the work under their tenant. SWARM_IMPERSONATE_SA (CI, and
+# an operator acting for the verification tenants) and Cloud Run's metadata
+# server keep the access-token path above, unchanged.
+#
+# Prefer api_auth_header, which hands curl a header FILE; this prints the bare
+# token for the callers that still build an auth_config from it.
 api_credential() {
   if api_is_front_door; then
-    access_token
+    if _api_uses_signin; then
+      local file line=""
+      file="$(mktemp "${TMPDIR:-/tmp}/swarm-auth.XXXXXX")"
+      api_auth_header "${file}" || { rm -f "${file}"; return 1; }
+      IFS= read -r line <"${file}" || true
+      rm -f "${file}"
+      printf '%s' "${line#"${_API_AUTH_PREFIX} "}"
+    else
+      access_token
+    fi
   else
     id_token
   fi
+}
+
+# True when this shell reaches the front door as a signed-in person: not CI's
+# impersonated service account, not a Cloud Run service account.
+_api_uses_signin() {
+  [[ -z "${SWARM_IMPERSONATE_SA:-}${K_SERVICE:-}${CLOUD_RUN_JOB:-}" ]] && api_is_front_door
+}
+
+# _signin_mint FILE -- write the Authorization header (Bearer scheme, the ID
+# token) for this front door into FILE, mode 0600, from the sign-in `sc login` cached. Returns 3 when
+# there is none. Prints nothing: the token goes from swarm_mcp's refresh
+# straight into the file, and never into argv, stdout or a log.
+#
+# SWARM_URL is the address the API is reached at, so swarm_mcp's resolver
+# (config.resolve, layer 2) picks the context signed in to THIS deployment --
+# a token minted for one front door is never sent to another.
+_signin_mint() {
+  local file="$1" rc=0 errors
+  local py=()
+  read -r -a py <<<"$(swarm_python)"
+  [[ "${#py[@]}" -gt 0 ]] || return 4
+  errors="$(mktemp "${TMPDIR:-/tmp}/swarm-signin.XXXXXX")"
+  SWARM_URL="$(api_url)" "${py[@]}" - "${file}" 2>"${errors}" <<'PY' || rc=$?
+import os
+import sys
+
+path = sys.argv[1]
+try:
+    from swarm_mcp import config, signin
+except ImportError as exc:
+    print(f"swarm_mcp is not importable ({type(exc).__name__}); run: uv sync", file=sys.stderr)
+    sys.exit(4)
+try:
+    deployment = config.resolve()
+    if deployment is None or not deployment.client_id:
+        sys.exit(3)
+    token = signin.SignedIn(deployment).id_token()
+except signin.SignInRequired:
+    sys.exit(3)
+except Exception as exc:  # noqa: BLE001 - reported by type and message, never by value
+    print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
+    sys.exit(4)
+fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w") as fh:
+    fh.write("Authorization: Bearer " + token + "\n")
+PY
+  [[ ! -s "${errors}" ]] || redact <"${errors}" >&2 || true
+  rm -f "${errors}"
+  return "${rc}"
+}
+
+# api_auth_header FILE -- the Authorization header for the API, in FILE (0600),
+# for `curl -H @FILE`; the caller removes FILE when the request returns.
+#
+# The sign-in is minted once per shell and re-minted after _SIGNIN_TTL
+# seconds, inside the ID token's hour: one browser-bench batch is 60 requests,
+# and each mint is a Python start and a round trip to Google. Like
+# _ACCESS_TOKEN, the cache lives in this shell's memory; a $(...) caller mints
+# its own.
+_SIGNIN_HEADER=""
+_SIGNIN_AT=0
+#: The header line's name and scheme; the credential follows one space.
+_API_AUTH_PREFIX="Authorization: Bearer"
+#: 45 minutes: swarm_mcp refreshes 5 minutes before expiry, so a header this
+#: old still has at least 10 minutes left on it.
+_SIGNIN_TTL=2700
+api_auth_header() {
+  local file="$1" token rc=0
+  : >"${file}"
+  chmod 600 "${file}"
+  if _api_uses_signin; then
+    if [[ -n "${_SIGNIN_HEADER}" && $((SECONDS - _SIGNIN_AT)) -lt ${_SIGNIN_TTL} ]]; then
+      printf '%s\n' "${_SIGNIN_HEADER}" >"${file}"
+      return 0
+    fi
+    _signin_mint "${file}" || rc=$?
+    if [[ "${rc}" -eq 3 ]]; then
+      err "no sign-in for $(api_url): its front door (IAP) refuses a gcloud user token (401, error 900)."
+      err "Sign in as yourself once, then re-run -- run: uv run sc login"
+      err "(CI and the verification tenants use SWARM_IMPERSONATE_SA instead; .env.example says which.)"
+      return 1
+    elif [[ "${rc}" -ne 0 ]]; then
+      err "could not read the \`sc login\` sign-in for $(api_url) (see above); run: uv run sc login"
+      return 1
+    fi
+    IFS= read -r _SIGNIN_HEADER <"${file}" || true
+    [[ -n "${_SIGNIN_HEADER}" ]] || { err "the sign-in helper wrote no header; run: uv run sc login"; return 1; }
+    _SIGNIN_AT=${SECONDS}
+    return 0
+  fi
+  token="$(api_credential)" || return 1
+  [[ -n "${token}" ]] || return 1
+  printf '%s %s\n' "${_API_AUTH_PREFIX}" "${token}" >"${file}"
 }
 
 # Turn IAP's refusal into the sentence that names the fix.
@@ -1226,24 +1344,28 @@ _api_explain_iap() {
 API_STATUS=0
 api_request() {
   local method="$1" path="$2" body="${3:-}"
-  local url token response
+  local url response header
   local tenant_header=()
   url="$(api_url)${path}"
-  token="$(api_credential)"
   [[ -z "${SWARM_API_TENANT:-}" ]] || tenant_header=(-H "X-Swarm-Tenant: ${SWARM_API_TENANT}")
 
-  # -K - : the Authorization header arrives on stdin, never in argv. See
-  # auth_config above for why that distinction matters for an ID token.
+  # -H @file: the Authorization header arrives from a 0600 file, never in
+  # argv (see auth_config above for why that matters), and the file is gone
+  # when the request returns. api_auth_header says why a credential is missing;
+  # without one there is no request to make.
+  header="$(mktemp "${TMPDIR:-/tmp}/swarm-auth.XXXXXX")"
+  api_auth_header "${header}" || { rm -f "${header}"; API_STATUS=0; exit 1; }
   if [[ -n "${body}" ]]; then
-    response="$(auth_config "${token}" | curl -sS -m "${HTTP_TIMEOUT}" -K - \
+    response="$(curl -sS -m "${HTTP_TIMEOUT}" -H @"${header}" \
       -w $'\n%{http_code}' -X "${method}" \
       -H "Content-Type: application/json" ${tenant_header[@]+"${tenant_header[@]}"} \
-      --data-binary "${body}" "${url}")" || { API_STATUS=0; return 1; }
+      --data-binary "${body}" "${url}")" || { rm -f "${header}"; API_STATUS=0; return 1; }
   else
-    response="$(auth_config "${token}" | curl -sS -m "${HTTP_TIMEOUT}" -K - \
+    response="$(curl -sS -m "${HTTP_TIMEOUT}" -H @"${header}" \
       -w $'\n%{http_code}' -X "${method}" ${tenant_header[@]+"${tenant_header[@]}"} \
-      "${url}")" || { API_STATUS=0; return 1; }
+      "${url}")" || { rm -f "${header}"; API_STATUS=0; return 1; }
   fi
+  rm -f "${header}"
 
   API_STATUS="${response##*$'\n'}"
   local payload="${response%$'\n'*}"
@@ -1272,8 +1394,13 @@ api_reachable() {
   # The header goes in through `-K -`, not argv, for the reason auth_config
   # explains: this line used to interpolate the token straight into curl's
   # command line, where every process on the box can read it out of ps.
-  auth_config "$(api_credential)" | curl -sS -m 10 -K - -o /dev/null -w '%{http_code}' \
-    "$(api_url)/readyz" 2>/dev/null | grep -q '^2'
+  local header rc=0
+  header="$(mktemp "${TMPDIR:-/tmp}/swarm-auth.XXXXXX")"
+  api_auth_header "${header}" || { rm -f "${header}"; return 1; }
+  curl -sS -m 10 -H @"${header}" -o /dev/null -w '%{http_code}' \
+    "$(api_url)/readyz" 2>/dev/null | grep -q '^2' || rc=$?
+  rm -f "${header}"
+  return "${rc}"
 }
 
 # ---------------------------------------------------------------------------

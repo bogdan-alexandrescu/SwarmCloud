@@ -64,7 +64,20 @@ vi.mock('../api', async (importOriginal) => {
 const rfb = vi.hoisted(() => {
   class FakeRfb {
     static made: FakeRfb[] = []
-    viewOnly = true
+    /**
+     * KeyEvents noVNC sent (`sendKey`). Like noVNC 1.4.0's Keyboard, keys are heard only on
+     * its own canvas -- so only while that canvas has DOM focus -- and sent only while connected
+     * and not view-only.
+     */
+    readonly sentKeys: [string, boolean][] = []
+    private state: 'connecting' | 'connected' | 'disconnected' = 'connecting'
+    private only = true
+    get viewOnly() {
+      return this.only
+    }
+    set viewOnly(v: boolean) {
+      this.only = v
+    }
     scaleViewport = false
     resizeSession = true
     focusOnClick = false
@@ -97,6 +110,18 @@ const rfb = vi.hoisted(() => {
       this.canvas.addEventListener('touchstart', () => {
         this.touches += 1
       })
+      // noVNC's `_focusCanvas` and `_handleMouse`: a press on its canvas focuses it (with
+      // `focusOnClick`), and is stopped there, so nothing above the canvas hears it bubble.
+      this.canvas.addEventListener('mousedown', (e) => {
+        if (this.focusOnClick) this.canvas.focus({ preventScroll: true })
+        e.stopPropagation()
+        e.preventDefault()
+      })
+      const key = (down: boolean) => (e: KeyboardEvent) => {
+        if (this.state === 'connected' && !this.only) this.sentKeys.push([e.key, down])
+      }
+      this.canvas.addEventListener('keydown', key(true))
+      this.canvas.addEventListener('keyup', key(false))
       target.appendChild(this.canvas)
       FakeRfb.made.push(this)
     }
@@ -104,6 +129,12 @@ const rfb = vi.hoisted(() => {
       this.listeners.set(type, [...(this.listeners.get(type) ?? []), fn])
     }
     emit(type: string) {
+      if (type === 'connect') this.state = 'connected'
+      if (type === 'disconnect') {
+        // noVNC's `_disconnect` takes its screen out of the target before it says so.
+        this.state = 'disconnected'
+        this.canvas.remove()
+      }
       for (const fn of this.listeners.get(type) ?? []) fn(new Event(type))
     }
     disconnect() {}
@@ -663,6 +694,130 @@ describe('keys are captured only with canvas focus', () => {
     } finally {
       window.removeEventListener('keydown', onKey)
     }
+  })
+})
+
+// KEYS-FOCUS (part of #1030). MEASURED 2026-10-14 on task_84cb2038aa704c829d48 generation 5:
+// the owner took control, switched iphone-15 -> desktop twice and typed into the form; the gate's
+// summary for that connection read keys=0 pointer=87 and the agent read the field back empty.
+// noVNC hears keys only on its own canvas, so a key typed while a device chip, the theater or a
+// canvas noVNC has since replaced holds focus never becomes a KeyEvent -- and the line under the
+// canvas went on saying the keys went to the agent's browser. The gate side of the same path is
+// tests/unit/worker/test_live_rfb.py::test_the_controllers_keys_are_injected_and_counted_after_a_device_switch.
+describe('every key typed in control reaches the agent’s page (KEYS-FOCUS)', () => {
+  /** A press with the mouse: down, then up, where the browser would deliver them. */
+  const press = (el: Element) => {
+    fireEvent.mouseDown(el)
+    fireEvent.mouseUp(el)
+  }
+  /** A key, typed the way a browser delivers one: to whatever holds focus. */
+  const type = (key: string) => {
+    const at = document.activeElement ?? document.body
+    fireEvent.keyDown(at, { key })
+    fireEvent.keyUp(at, { key })
+  }
+  /** A button pressed with the mouse: the browser focuses it, then clicks it. */
+  const clickButton = (b: HTMLElement) => {
+    act(() => b.focus())
+    fireEvent.click(b)
+  }
+  const both = (key: string): [string, boolean][] => [
+    [key, true],
+    [key, false],
+  ]
+  const at = (preset: string) =>
+    mine({ device: { preset, orientation: preset === 'desktop' ? 'landscape' : 'portrait', touch: false } })
+  const live = (s: LiveSession) => <LiveBrowserPane task={agent()} live={{ status: 'ok', liveBrowser: true, session: s }} reload={() => {}} />
+
+  it('sends the keys typed after a device switch, with no second click on the canvas', async () => {
+    const view = render(live(at('iphone-15')))
+    const r = await connected()
+    press(r.canvas)
+    type('a')
+    expect(r.sentKeys).toEqual(both('a'))
+
+    for (const [chip, preset, key] of [['Desktop', 'desktop', 'b'], ['iPhone 15', 'iphone-15', 'c']] as const) {
+      api.setLiveDevice.mockClear()
+      clickButton(screen.getByRole('button', { name: chip }))
+      await waitFor(() => expect(api.setLiveDevice).toHaveBeenCalledWith(ID, { preset }))
+      // The re-read after the switch: the gate applied the preset and the canvas is redrawn to it.
+      view.rerender(live(at(preset)))
+      await waitFor(() => expect(document.activeElement, `focus stayed on the ${chip} chip`).toBe(r.canvas))
+      type(key)
+    }
+    expect(r.sentKeys).toEqual([...both('a'), ...both('b'), ...both('c')])
+    expect(rfb.FakeRfb.made, 'a device switch is not a reconnect').toHaveLength(1)
+    expect(screen.getByText('Your keys go to the agent’s browser. Click outside it to use the console.')).toBeTruthy()
+  })
+
+  it('gives the new canvas the keys after a reconnect, rather than saying they go to the one noVNC removed', async () => {
+    api.loadLiveSession.mockResolvedValue(ok<LiveRead>({ live_browser: true, session: mine() }))
+    pane(mine())
+    const first = await connected()
+    press(first.canvas)
+    type('a')
+    expect(first.sentKeys).toEqual(both('a'))
+
+    act(() => first.emit('disconnect'))
+    const second = await waitFor(
+      () => {
+        expect(rfb.FakeRfb.made).toHaveLength(2)
+        return rfb.FakeRfb.made[1]!
+      },
+      { timeout: 4000 },
+    )
+    act(() => second.emit('connect'))
+    expect(document.activeElement, 'the keys were left on a canvas that is no longer in the page').toBe(second.canvas)
+    type('b')
+    expect(second.sentKeys).toEqual(both('b'))
+  }, 10_000)
+
+  it('sends keys in the theater and back in the tab, and says “Click to type” wherever the canvas has no focus', async () => {
+    pane(mine())
+    const r = await connected()
+    const hint = () => screen.queryByText('Click to type')
+    expect(hint(), 'in control with no focus on the canvas, and no hint').not.toBeNull()
+    press(r.canvas)
+    expect(hint()).toBeNull()
+
+    clickButton(screen.getByRole('button', { name: 'Open theater (T)' }))
+    const theater = screen.getByRole('dialog', { name: /^Theater/ })
+    expect(theater.contains(r.canvas)).toBe(true)
+    expect(hint(), 'the theater took focus and the hint did not say so').not.toBeNull()
+    expect(theater.contains(hint())).toBe(true)
+    press(r.canvas)
+    type('a')
+    expect(r.sentKeys).toEqual(both('a'))
+    expect(hint()).toBeNull()
+
+    clickButton(within(theater).getByRole('button', { name: /back to tab/ }))
+    expect(screen.queryByRole('dialog', { name: /^Theater/ })).toBeNull()
+    expect(document.querySelector('.live-body')!.contains(r.canvas)).toBe(true)
+    expect(hint(), 'back in the tab with no focus on the canvas, and no hint').not.toBeNull()
+    expect(screen.queryByText(/Your keys go to the agent’s browser/)).toBeNull()
+    press(r.canvas)
+    type('b')
+    expect(r.sentKeys).toEqual([...both('a'), ...both('b')])
+  })
+
+  it('takes the keys for a click anywhere on the screen, not only on the drawn canvas', async () => {
+    pane(mine())
+    const r = await connected()
+    // The screen around a canvas scaled to fit (a letterbox, the frame's edge): noVNC hears no press there.
+    const screenNode = document.querySelector<HTMLElement>('.live-screen')!
+    press(screenNode)
+    expect(document.activeElement).toBe(r.canvas)
+    type('a')
+    expect(r.sentKeys).toEqual(both('a'))
+  })
+
+  it('sends no key for a viewer, and offers a viewer no “Click to type”', async () => {
+    pane(viewer())
+    const r = await connected()
+    press(r.canvas)
+    type('a')
+    expect(r.sentKeys).toEqual([])
+    expect(screen.queryByText('Click to type')).toBeNull()
   })
 })
 

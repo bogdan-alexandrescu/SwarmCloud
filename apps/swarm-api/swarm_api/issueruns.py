@@ -25,8 +25,10 @@
       NOT_READY  the planner found the issue not ready to work on and said why
                  (`NotReadyVerdict`) instead of writing a plan: already done on
                  main, an owner decision, blocked by other work, too vague,
-                 deferred security work, or an epic. Terminal, holds nothing,
-                 and the status comment carries the reason and what it needs.
+                 deferred security work, an epic, or (lane CTXQ-PL) a
+                 `duplicate` of a lane already in flight, which it names in
+                 `lane`. Terminal, holds nothing, and the status comment
+                 carries the reason and what it needs.
 
 WHY A WAITING RUN COSTS NOTHING (invariant 1). The planner is a task like any
 other; once it has ended, a PLANNED run is a Firestore document and nothing
@@ -83,6 +85,17 @@ it, and the module communities it sits in), sharing one 24 KiB allowance.
 The run records `index_sha` and `index_digest`, so a plan says which index it
 was made from, and `index_context` says why there was none. A planner never
 waits for an index and is never refused for one.
+
+THE PLANNER SEES THE WORK IN FLIGHT (lane CTXQ-PL, context-quality.md §3
+class P, §4.5). `plancontext` adds an IN FLIGHT section, between delimiter
+lines carrying the run id, inside the same 24 KiB allowance: other live runs,
+live workflows and open pull requests on the same issue; live runs and open
+pull requests on the files the issue lands on; and the merges the index's
+history holds for those files. Each names its lane by an id the planner can
+copy, and the planner may answer NOT_READY with kind `duplicate` and that
+`lane` (`NotReadyVerdict`). With nothing in flight the section, and the
+paragraph telling the planner how to use it (`_INFLIGHT_USE`), are absent,
+so the prompt is the one a run made before.
 
 PARALLEL STEPS NEVER SHARE A FILE (§4.9, owner decision 2026-10-08). Two steps
 not on one dependency line whose `files` meet -- the same path, or a directory
@@ -147,6 +160,18 @@ the chain above, so its plan reads back, and digests, as it did before.
 A step that joins several dependencies starts from the last one's branch with
 the others' diffs applied, so it may add code using their work but must not
 edit it -- see `_compile_staged` for why, and for what would lift the limit.
+
+MODEL CLASSES (#1435, docs/design/model-per-step.md §4.11, owner decisions
+2026-10-17). `RunCreate.model_class` is the PLANNER's class; absent, the
+planner runs its profile's default (`opus`). The planner may write a
+`model_class` on each plan step (R1 (a)): it is part of the plan, so it is
+inside `plan_digest` and the person approving the plan approves it, and it is
+copied onto that step's workflow step. A step that names none, and the
+compiled review and fix, carry no class and run the profile's default,
+`opus`: a `haiku` plan never makes a `haiku` review. Until the submission
+schemas carry the field (lane MODEL-API, `model_classes_carried`) the planner
+is not told about it and a plan naming one is refused, so no approved plan
+can compile to a workflow the schema refuses (R4: lane order, no flag).
 """
 
 from __future__ import annotations
@@ -175,8 +200,9 @@ from swarm_common.models import utcnow
 from .errors import Conflict, Forbidden, NotFound, ValidationFailed
 from .redaction import redact_detail
 from .schemas import TaskCreate, WorkflowCreate, WorkflowStepCreate
-from swarm_common.profiles import RUNNER_PROFILES
+from swarm_common.profiles import MODEL_CLASSES, RUNNER_PROFILES, step_model_class
 
+from . import sessiontag
 from .validation import (
     INPUT_LAYOUT_BY_PARENT,
     INPUT_LAYOUT_METADATA_KEY,
@@ -379,6 +405,16 @@ class AutoMergeUnavailable(ValidationFailed):
     code = "auto_merge_unavailable"
 
 
+class UnknownModelClass(ValidationFailed):
+    """A class not in `MODEL_CLASSES` (docs/design/model-per-step.md §4.4)."""
+    code = "unknown_model_class"
+
+
+class ModelClassNotAccepted(ValidationFailed):
+    """A class the planner's profile does not run (§4.4)."""
+    code = "model_class_not_accepted"
+
+
 def assert_run_transition(frm: RunState, to: RunState) -> None:
     if to not in RUN_TRANSITIONS[frm]:
         raise InvalidRunTransition(
@@ -440,6 +476,20 @@ class PlanOverlap(_PlanModel):
         return self
 
 
+def model_classes_carried() -> bool:
+    """Whether the submission schemas carry `model_class` onto a task and a
+    workflow step (lane MODEL-API of docs/design/model-per-step.md §6).
+
+    Read at call time from the schemas themselves, not a flag (owner decision
+    R4: lane order alone keeps the classes unreachable). Until both carry it,
+    a class written on a plan step would compile to a workflow the schema
+    refuses after a person approved it, so the planner is not offered the key
+    and a plan naming one is refused while it is still being shown.
+    """
+    return "model_class" in TaskCreate.model_fields and (
+        "model_class" in WorkflowStepCreate.model_fields)
+
+
 class PlanStep(_PlanModel):
     step_id: str = Field(min_length=1, max_length=40, pattern=r"^[a-z0-9][a-z0-9-]*$")
     title: str = Field(min_length=1, max_length=200)
@@ -454,6 +504,29 @@ class PlanStep(_PlanModel):
     #: Ids of EARLIER steps of this plan whose code or files this one needs.
     #: Absent on every step means today's chain; see `plan_stages`.
     depends_on: list[str] | None = Field(default=None, max_length=MAX_PLAN_STEPS)
+    #: The model class this step runs (#1435, R1 (a)): one of the
+    #: `STEP_PROFILE`'s classes, written by the planner. Inside the digest, so
+    #: approved with the plan. Absent: the profile's default (`opus`).
+    model_class: str | None = Field(default=None, min_length=1, max_length=32)
+
+    @field_validator("model_class")
+    @classmethod
+    def _accepted_class(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value is None:
+            return value
+        if not model_classes_carried() and not (info.context or {}).get(_STORED):
+            raise ValueError(
+                "model_class is not yet accepted on a plan step: workflow steps do not "
+                "carry it yet; leave it out and the step runs the default class"
+            )
+        try:
+            step_model_class(RUNNER_PROFILES[STEP_PROFILE], value)
+        except ValueError:
+            raise ValueError(
+                f"model_class {value!r} is not one of "
+                f"{list(RUNNER_PROFILES[STEP_PROFILE].model_classes or MODEL_CLASSES)}"
+            ) from None
+        return value
 
     @field_validator("step_id")
     @classmethod
@@ -763,10 +836,19 @@ def parse_edited_plan(value: Any, stored_plan: Any) -> dict[str, Any]:
 
 #: Why a planner may find an issue not ready. The owner's list (2026-10-08);
 #: `other` is for a reason the planner can state but the list does not name.
+#: `duplicate` (lane CTXQ-PL, context-quality.md §4.5): another lane is
+#: already doing this issue -- a live run, a workflow or an open pull request
+#: the IN FLIGHT section lists, or a merge that already did it -- and the
+#: verdict must name it in `lane`.
 NOT_READY_KINDS = (
     "already_done", "owner_decision", "blocked", "too_vague", "security_deferred", "epic",
-    "other",
+    "duplicate", "other",
 )
+NOT_READY_DUPLICATE = "duplicate"
+#: A lane's id: a run id, a workflow id or `owner/repo#N`, as the IN FLIGHT
+#: section prints it. Bounded, not pattern-checked: refusing a lane written
+#: "run_x (step impl-1)" would turn a right answer into a FAILED run (#977).
+MAX_NOT_READY_LANE_CHARS = 200
 MAX_NOT_READY_NEEDS = 20
 #: A NOT_READY reason is bounded by TRUNCATION, never refused. The reason is
 #: the planner's answer: refusing a long one turned a correct NOT_READY into a
@@ -788,12 +870,25 @@ class NotReadyVerdict(_PlanModel):
     on #N"), one per entry, and may be empty only when `reason` says it all.
     A long `reason` is accepted and truncated by `parse_planner_output` to
     MAX_NOT_READY_REASON_CHARS with a marker, not refused (#977).
+
+    `lane` names the work this issue collides with, as the IN FLIGHT section
+    lists it. Kind `duplicate` must carry one: a duplicate nobody can find is
+    a guess, and the sweep's cooldown would hold the issue on it.
     """
 
     ready: Literal[False]
     kind: Literal[NOT_READY_KINDS] | None = None  # type: ignore[valid-type]
     reason: str = Field(min_length=1)
     needs: list[_Line] = Field(default_factory=list, max_length=MAX_NOT_READY_NEEDS)
+    lane: str | None = Field(default=None, min_length=1, max_length=MAX_NOT_READY_LANE_CHARS)
+
+    @model_validator(mode="after")
+    def _duplicate_names_its_lane(self) -> "NotReadyVerdict":
+        if self.kind == NOT_READY_DUPLICATE and not self.lane:
+            raise ValueError('a "duplicate" verdict names the colliding lane in "lane": '
+                             "the run id, workflow id or owner/repo#N the IN FLIGHT "
+                             "section lists")
+        return self
 
 
 def parse_planner_output(value: Any) -> tuple[str, dict[str, Any]]:
@@ -826,13 +921,22 @@ def parse_planner_output(value: Any) -> tuple[str, dict[str, Any]]:
                 "the not-ready verdict does not match its schema: " + "; ".join(problems),
                 detail={"errors": problems},
             ) from None
-        return "not_ready", {
+        found: dict[str, Any] = {
             "kind": verdict.kind,
             # Agent text, shown in the console and quoted on the issue:
             # masked here, once, as a run's error is (`failure_text`).
             "reason": _not_ready_reason(verdict.reason),
             "needs": [redact_detail(need, limit=500) for need in verdict.needs],
         }
+        if verdict.lane is not None:
+            # Kept only when given, so every other verdict stores as before.
+            lane = redact_detail(verdict.lane, limit=MAX_NOT_READY_LANE_CHARS)
+            found["lane"] = lane
+            if lane not in found["reason"]:
+                # The issue's status comment quotes the reason, not the lane:
+                # a duplicate that does not say of what helps nobody.
+                found["reason"] = _not_ready_reason(f"Duplicates {lane}: {verdict.reason}")
+        return "not_ready", found
     return "plan", parse_plan(value)
 
 
@@ -1209,6 +1313,38 @@ _PLAN_SHAPE = (
 )
 
 
+#: The step key `_PLAN_SHAPE` gains once the schemas carry a class
+#: (`model_classes_carried`), and what the planner is told about it (#1435,
+#: R1 (a)). Absent until then, so the prompt is byte for byte today's.
+_PLAN_SHAPE_LAST = '              "depends_on": ["<step_id of an earlier step>"]}]}\n'
+_PLAN_SHAPE_CLASS = (
+    '              "depends_on": ["<step_id of an earlier step>"],\n'
+    '              "model_class": "<one of the classes below, or leave it out>"}]}\n'
+)
+
+
+def _plan_shape() -> str:
+    if not model_classes_carried():
+        return _PLAN_SHAPE
+    return _PLAN_SHAPE.replace(_PLAN_SHAPE_LAST, _PLAN_SHAPE_CLASS)
+
+
+def _model_class_rules() -> str:
+    """The paragraph on `model_class`, or nothing while it is not carried."""
+    if not model_classes_carried():
+        return ""
+    profile = RUNNER_PROFILES[STEP_PROFILE]
+    return (
+        '"model_class" picks the model a step runs, one of '
+        + ", ".join(f'"{name}"' for name in profile.model_classes)
+        + ". Leave it out for coding and implementation, which run "
+        + f'"{profile.default_model_class}"; name "sonnet" or "haiku" only for a mechanical '
+        "step -- reformatting, summarizing, classifying -- that needs no deep reasoning. "
+        "The person approving the plan sees each step's class. The review and the fix "
+        "always run the default.\n\n"
+    )
+
+
 def _utf8(text: str) -> int:
     return len(text.encode("utf-8"))
 
@@ -1313,6 +1449,34 @@ _CONTEXT_USE = (
 )
 
 
+#: The IN FLIGHT section's delimiters (lane CTXQ-PL): `plancontext` writes
+#: them, `planner_prompt` looks for the opening one to add `_INFLIGHT_USE`.
+#: The run id is in both, which no listed title can know.
+def inflight_markers(run_id: str) -> tuple[str, str]:
+    rid = run_id or "snapshot"
+    return f"=== IN FLIGHT {rid} ===", f"=== END IN FLIGHT {rid} ==="
+
+
+def _index_marker(run_id: str) -> str:
+    return f"=== REPO INDEX {run_id or 'snapshot'} "
+
+
+#: What the planner is told about the IN FLIGHT section, only when it has one
+#: (context-quality.md §4.5): a duplicate plan in a sweep is approved
+#: automatically, so the planner is the one place it can be stopped.
+_INFLIGHT_USE = (
+    "\nUse the IN FLIGHT section: if a lane under SAME ISSUE is already doing this issue, "
+    "or a merge under RECENT MERGES already did it, do NOT plan it again -- answer "
+    f"NOT_READY (the shape below) with \"kind\": \"{NOT_READY_DUPLICATE}\" and "
+    '"lane": "<the lane\'s id exactly as listed: run_..., the workflow id, or '
+    'owner/repo#N>", and say in "reason" what that lane does. A plan you still write '
+    "names every SAME FILES lane in \"overlaps\" with its action, and keeps its steps "
+    "off files a live lane declares unless a step depends on that lane landing first. "
+    "Only if the issue was split on purpose and the lanes do different parts, plan your "
+    "part and say so in the overlaps.\n\n"
+)
+
+
 def planner_prompt(
     ref: IssueRef, *, run_id: str = "", open_work: Mapping[str, Any] | None = None,
     context: str | None = None,
@@ -1342,7 +1506,7 @@ def planner_prompt(
     )
     instructions = (
         f"Write exactly one file, $SWARM_ARTIFACTS_DIR/{PLAN_FILE}, holding a JSON object:\n"
-        + _PLAN_SHAPE
+        + _plan_shape()
         + '"requirements" lists every requirement the issue states, one short sentence '
         "each: the review checks the change against it, and the pull request closes the "
         'issue only if every one is delivered. "mode" is "single" when one engineer can '
@@ -1374,11 +1538,15 @@ def planner_prompt(
         "without it starts at once. "
         'If you leave "depends_on" out of every step, the steps run one after '
         "another, each starting from the previous step's work.\n\n"
-        "No other keys. A person reads this plan and approves it before any step runs."
+        + _model_class_rules()
+        + "No other keys. A person reads this plan and approves it before any step runs."
         + _READINESS
     )
-    use = _CONTEXT_USE if context else ""
     context = context or ""
+    # Each paragraph only with its section: a prompt without one is the
+    # prompt a run made before the section existed.
+    use = (_CONTEXT_USE if _index_marker(run_id) in context else "") + (
+        _INFLIGHT_USE if inflight_markers(run_id)[0] in context else "")
     if open_work is None:
         return lead + context + use + instructions
     budget = (MAX_PLANNER_PROMPT_BYTES - _utf8(lead) - _utf8(context) - _utf8(use)
@@ -1389,14 +1557,20 @@ def planner_prompt(
 
 def planner_task(
     ref: IssueRef, run_id: str, open_work: Mapping[str, Any] | None = None,
-    context: str | None = None,
+    context: str | None = None, claude_session: str | None = None,
+    model_class: str | None = None,
 ) -> TaskCreate:
     """The planner: an ordinary task, signed by `submit_tasks` like any other.
 
     The index sections are in the prompt, not a runner input: `issue` is the
     only input `claude-code` declares, and the profiles are frozen (request A
     of repo-index.md §6.3 is unfiled, owner decision Q7).
+
+    `model_class` is `RunCreate.model_class` (#1435): set only when the caller
+    named one, so a run that names none submits exactly today's planner, which
+    runs the profile's default (`opus`) and signs at its old format.
     """
+    classed = {"model_class": model_class} if model_class is not None else {}
     return TaskCreate(
         runner_profile=PLANNER_PROFILE,
         input={
@@ -1404,7 +1578,8 @@ def planner_task(
             "issue": ref.number,
         },
         repository_url=ref.repository_url,
-        metadata={"issue_run": run_id},
+        metadata={"issue_run": run_id, **sessiontag.tag(claude_session)},
+        **classed,
     )
 
 
@@ -1456,6 +1631,29 @@ def auto_merge_availability(default: bool = False) -> dict[str, Any]:
     reason = _auto_merge_refusal()
     return {"available": reason is None, "requires": AUTO_MERGE_REQUIRES, "reason": reason,
             "default": bool(default) and reason is None}
+
+
+def refuse_planner_model_class(model_class: str | None) -> None:
+    """`RunCreate.model_class` refused with §4.4's codes before anything is
+    created, rather than as a schema error inside `submit_tasks` after the
+    open work was read. None (the profile's default) is always accepted.
+    """
+    if model_class is None:
+        return
+    profile = RUNNER_PROFILES[PLANNER_PROFILE]
+    if model_class not in MODEL_CLASSES:
+        raise UnknownModelClass(
+            f"model_class {model_class!r} is not one of {list(MODEL_CLASSES)}",
+            detail={"model_classes": list(MODEL_CLASSES)},
+        )
+    try:
+        step_model_class(profile, model_class)
+    except ValueError:
+        raise ModelClassNotAccepted(
+            f"the planner ({PLANNER_PROFILE}) does not run model_class {model_class!r}; "
+            f"it runs {list(profile.model_classes)}",
+            detail={"model_classes": list(profile.model_classes)},
+        ) from None
 
 
 def refuse_auto_merge(auto_merge: bool) -> None:
@@ -1775,6 +1973,7 @@ def compile_plan(run: "IssueRun", review_context: str | None = None) -> Workflow
             # `empty_diff` failure. Only the build steps: the review and the
             # integrator keep the default.
             "allow_empty_diff": True,
+            **_step_class(step),
         }
         if previous is not None:
             spec["depends_on"] = [previous]
@@ -1820,6 +2019,16 @@ def compile_plan(run: "IssueRun", review_context: str | None = None) -> Workflow
         },
     })
     return _workflow(run, steps)
+
+
+def _step_class(step: Mapping[str, Any]) -> dict[str, Any]:
+    """`{"model_class": ...}` when the plan step named one, else nothing (#1435).
+
+    Only implementer steps: the review and the fix are compiled with no
+    class, so they run the profile's default (`opus`) whatever the plan's
+    steps named (docs/design/model-per-step.md §4.11).
+    """
+    return {"model_class": step["model_class"]} if step.get("model_class") else {}
 
 
 def _step_prompt(ref: IssueRef, plan: Mapping[str, Any], index: int, step: Mapping[str, Any],
@@ -1885,6 +2094,7 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
             "step_id": _impl_id(sid), "runner_profile": STEP_PROFILE,
             # #646, as in the chain: an empty diff is the step's answer.
             "allow_empty_diff": True,
+            **_step_class(step),
         }
         if not deps:
             context = (
@@ -2011,6 +2221,8 @@ def _workflow(run: "IssueRun", steps: list[dict[str, Any]]) -> WorkflowCreate:
             # merge here: an `auto_merge` run merges from the CI loop, once CI
             # is green and its keyword block is written (`issueci._merge`).
             MERGE_METADATA_KEY: "off",
+            # The session that asked for the run (SC-SESSION-SCOPE).
+            **sessiontag.tag(getattr(run, "claude_session", None)),
             "issue_run": {
                 "run_id": run.id,
                 "issue": ref.short,
@@ -2203,6 +2415,10 @@ class IssueRun:
     #: (§2.7): `{schedule_id, firing_id, slot, type}`. Stored under
     #: `metadata.schedule`, the path `IssueRuns.for_firing` queries.
     schedule: dict[str, Any] | None = None
+    #: The Claude Code session that asked for the run (SC-SESSION-SCOPE,
+    #: `sessiontag`), stored as `metadata.claude_session` beside the
+    #: schedule's mark, and copied onto every task and workflow it starts.
+    claude_session: str | None = None
 
     def to_firestore(self) -> dict[str, Any]:
         return {
@@ -2267,7 +2483,10 @@ class IssueRun:
             "approval_hold": dict(self.approval_hold) if self.approval_hold is not None else None,
             "merge_approval": self.merge_approval,
             "merge_approved": dict(self.merge_approved) if self.merge_approved is not None else None,
-            "metadata": {"schedule": dict(self.schedule)} if self.schedule is not None else {},
+            "metadata": {
+                **({"schedule": dict(self.schedule)} if self.schedule is not None else {}),
+                **sessiontag.tag(self.claude_session),
+            },
         }
 
     @classmethod
@@ -2358,6 +2577,7 @@ class IssueRun:
                 else None
             ),
             schedule=_schedule_mark(data.get("metadata")),
+            claude_session=sessiontag.of(data.get("metadata")),
         )
 
     def to_api(self) -> dict[str, Any]:
@@ -2479,6 +2699,7 @@ class IssueRun:
                     "kind": _opt_str(self.not_ready.get("kind")),
                     "reason": _opt_str(self.not_ready.get("reason")),
                     "needs": [str(n) for n in self.not_ready.get("needs") or []],
+                    "lane": _opt_str(self.not_ready.get("lane")),
                 }
             ),
             "hold": self.hold,
@@ -2498,6 +2719,8 @@ class IssueRun:
                 }
             ),
             "schedule": None if self.schedule is None else dict(self.schedule),
+            # SC-SESSION-SCOPE: the Claude Code session that asked, or null.
+            "claude_session": self.claude_session,
         }
 
 

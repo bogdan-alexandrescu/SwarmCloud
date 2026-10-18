@@ -20,7 +20,7 @@
  *
  * A waiting item holds no capacity (invariant 1): nothing here is running.
  */
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { approveApproval, loadApproval, loadApprovals, rejectApproval, type ApprovalDetail, type ApprovalItem } from './api'
 import { usePhoneTables } from './capacityPoll'
 import { Button } from './components'
@@ -333,6 +333,36 @@ function Decide({ d, onDecided }: { d: ApprovalDetail; onDecided: (word: string)
   const [confirm, setConfirm] = useState<{ expected: string; typed: string } | null>(null)
   const [rejecting, setRejecting] = useState(false)
   const [reason, setReason] = useState('')
+  // WHERE FOCUS GOES (visual QA V249). Reject… opened the form with focus on
+  // "Keep it waiting" instead of the reason it requires; Escape did nothing;
+  // and a `hold_approver_required` refusal disabled Approve under the cursor,
+  // dropping focus to <body>. Each now lands on the control that comes next.
+  const decide = useRef<HTMLDivElement>(null)
+  const reasonField = useRef<HTMLTextAreaElement>(null)
+  const confirmField = useRef<HTMLInputElement>(null)
+  const back = useRef(false)
+  const asking = confirm !== null
+  useEffect(() => {
+    if (rejecting) reasonField.current?.focus()
+    else if (back.current) {
+      back.current = false
+      decide.current?.querySelector<HTMLButtonElement>('[data-ap-reject-open]')?.focus()
+    }
+  }, [rejecting])
+  useEffect(() => {
+    if (asking) confirmField.current?.focus()
+  }, [asking])
+  const stopRejecting = () => {
+    back.current = true
+    setRejecting(false)
+  }
+  const onKey = (ev: KeyboardEvent) => {
+    if (ev.key === 'Escape' && rejecting) {
+      ev.preventDefault()
+      ev.stopPropagation()
+      stopRejecting()
+    }
+  }
 
   const approve = async () => {
     setBusy('approve')
@@ -366,20 +396,20 @@ function Decide({ d, onDecided }: { d: ApprovalDetail; onDecided: (word: string)
   const head = a.kind === 'merge' ? mergeDigest(d).head : null
   const approveWord = a.kind !== 'merge' ? 'Approve' : head === null ? 'Approve merge' : `Approve merge at ${short(head)}`
   return (
-    <div className="ap-decide">
+    <div className="ap-decide" ref={decide} onKeyDown={onKey}>
       <p className="sb-note">{APPROVE_DOES[a.kind] ?? 'Approving lets this go ahead.'}</p>
       {confirm !== null && (
         <label className="c-field">
           <span className="c-lbl">
             You are the only person in this tenant, so no second member can approve this hold. Type <code>{confirm.expected}</code> to approve it yourself.
           </span>
-          <input className="c-inp is-mono" value={confirm.typed} autoComplete="off" spellCheck={false} onChange={(e) => setConfirm({ ...confirm, typed: e.target.value })} />
+          <input ref={confirmField} className="c-inp is-mono" value={confirm.typed} autoComplete="off" spellCheck={false} onChange={(e) => setConfirm({ ...confirm, typed: e.target.value })} />
         </label>
       )}
       {rejecting && (
         <label className="c-field">
           <span className="c-lbl">Why it is rejected</span>
-          <textarea className="c-inp" rows={2} maxLength={1000} value={reason} onChange={(e) => setReason(e.target.value)} />
+          <textarea ref={reasonField} className="c-inp" rows={2} maxLength={1000} value={reason} onChange={(e) => setReason(e.target.value)} />
         </label>
       )}
       {refused !== null && !(confirm !== null && confirm.typed === '' && confirmationOf(refused) !== null) && (
@@ -390,7 +420,7 @@ function Decide({ d, onDecided }: { d: ApprovalDetail; onDecided: (word: string)
       <div className="c-acts">
         {rejecting ? (
           <>
-            <Button kind="ghost" onClick={() => setRejecting(false)}>
+            <Button kind="ghost" onClick={stopRejecting}>
               Keep it waiting
             </Button>
             <Button kind="danger" busy={busy === 'reject' ? 'Rejecting…' : false} disabledReason={reason.trim() === '' ? 'Say why it is rejected.' : undefined} onClick={() => void reject()}>
@@ -399,7 +429,7 @@ function Decide({ d, onDecided }: { d: ApprovalDetail; onDecided: (word: string)
           </>
         ) : (
           <>
-            <Button onClick={() => { setRejecting(true); setRefused(null) }}>Reject…</Button>
+            <Button data-ap-reject-open onClick={() => { setRejecting(true); setRefused(null) }}>Reject…</Button>
             <Button kind="primary" busy={busy === 'approve' ? 'Approving…' : false} disabledReason={confirmOk ? undefined : 'Type the words shown exactly.'} onClick={() => void approve()}>
               {approveWord}
             </Button>
@@ -485,7 +515,7 @@ function Inbox({
           const on = item.approval_id === selected
           return (
             <li key={item.approval_id} className={on ? 'ap-item is-on' : 'ap-item'} data-approval={item.approval_id}>
-              <InApp go={go} to={on ? approvalsAddress(kind) : approvalAddress(item.approval_id, kind)} className="ap-pick">
+              <InApp go={go} to={on ? approvalsAddress(kind) : approvalAddress(item.approval_id, kind)} className="ap-pick" current={on}>
                 <span className="sc-kind">{APPROVAL_KIND[item.kind] ?? item.kind}</span>
                 <span className="sc-cut" title={item.summary}>{item.summary}</span>
                 {item.requested_at !== null && <span className="sc-sub" title={item.requested_at}>{timeAgo(item.requested_at, now)}</span>}

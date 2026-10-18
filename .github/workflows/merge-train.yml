@@ -69,7 +69,12 @@ permissions: {}
 jobs:
   tick:
     name: run the merge train
-    runs-on: ubuntu-24.04
+    # Self-hosted pool, SHORT form (owner decision 2026-10-14; the merge App's
+    # key rides the VM as for auto-merge.yml). No fork clause: this workflow
+    # starts only on schedule, workflow_run of a train/ branch, or dispatch,
+    # never `pull_request` (test_fork_prs_off_self_hosted.py checks the
+    # triggers). SELF_HOSTED_CI=off sends it back to ubuntu-24.04.
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # A tick normally takes under a minute; landing four pull requests and
     # starting the next train, a few. Twenty is the backstop for a gh call
     # that hangs, not a budget anything is expected to use.

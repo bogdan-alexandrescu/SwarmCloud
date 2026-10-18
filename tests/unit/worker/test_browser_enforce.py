@@ -190,6 +190,10 @@ def _run_body(monkeypatch, tmp_path, *, browsers: str | None, endpoint: str | No
         return {}
 
     monkeypatch.setattr(claude_code, "run_cli_agent", fake_run)
+    # The runner git tools register an MCP server of their own when the
+    # attempt has `SWARM_GIT`, which a SwarmCloud container running these
+    # tests does: these cases are about the browser tools alone.
+    monkeypatch.delenv(claude_code.GIT_SPOOL_ENV, raising=False)
     for name, value in ((claude_code.BROWSERS_PATH_ENV, browsers), ("SWARM_CDP_ENDPOINT", endpoint)):
         if value is None:
             monkeypatch.delenv(name, raising=False)
@@ -216,7 +220,8 @@ def test_the_runner_registers_playwright_mcp_on_the_live_browser(monkeypatch, tm
             "playwright": {
                 "type": "stdio",
                 "command": claude_code.PLAYWRIGHT_MCP_BIN,
-                "args": ["--cdp-endpoint", ENDPOINT],
+                # The client tag (BSTATUS-API): the gate attributes and strips it.
+                "args": ["--cdp-endpoint", ENDPOINT + "/client/playwright"],
             }
         }
     }

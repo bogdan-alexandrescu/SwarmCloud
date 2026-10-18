@@ -12,6 +12,7 @@ prints the selection and runs nothing.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -210,3 +211,102 @@ def test_an_overrun_names_the_test_that_was_still_running(tmp_path: Path):
     # 25-line tail; the script must print it by name anyway.
     assert "test_slow_thing.py" in out
     assert "test_waits_forever" in out
+
+
+# THE SPLIT (#1334, finding 4). A selection over SHARD_HINT_WEIGHT CI-seconds
+# runs as parts, each its own pytest call under the 540 s limit, so a passing
+# heavy selection completes and a hang still ends. These hold that against a
+# fake repository: five readers of the changed path weigh 300 CI-seconds each,
+# 1,500 in all, which is three parts of 540.
+HEAVY = tuple(f"tests/unit/scripts/test_heavy_{n}.py" for n in range(5))
+
+
+def _fake_repo(tmp_path: Path, python_body: str) -> tuple[Path, dict[str, str]]:
+    (tmp_path / "scripts" / "lib").mkdir(parents=True)
+    shutil.copy(SCRIPT, tmp_path / "scripts" / "changed-guards.sh")
+    shutil.copy(REPO / "scripts" / "lib" / "common.sh", tmp_path / "scripts" / "lib" / "common.sh")
+    (tmp_path / "scripts" / "lib" / "check-contract-parity.sh").write_text(
+        "#!/usr/bin/env bash\necho parity >> \"$CALLS\"\n")
+    for guard in GUARDS:
+        (tmp_path / guard).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / guard).write_text("")
+    weights = {guard: 0.1 for guard in GUARDS}
+    for heavy in HEAVY:
+        (tmp_path / heavy).write_text('PATH = "docs/x.md"\n')
+        weights[heavy] = 300
+    (tmp_path / "tests" / "unit" / "scripts" / "unit_test_durations.json").write_text(
+        json.dumps(weights))
+    python = tmp_path / ".venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("#!/usr/bin/env bash\nprintf 'pytest %s\\n' \"$*\" >> \"$CALLS\"\n" + python_body)
+    python.chmod(0o755)
+    # A fake `timeout` records its limit and runs the command it guards, so
+    # the test sees which calls ran under which limit.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "timeout").write_text(
+        "#!/usr/bin/env bash\nprintf 'timeout %s\\n' \"$1\" >> \"$CALLS\"\nshift\nexec \"$@\"\n")
+    (bin_dir / "timeout").chmod(0o755)
+    env = {k: v for k, v in os.environ.items()
+           if k not in {"PROJECT_ID", "IMAGE_REPO", "ENVIRONMENT", "REPO_ROOT", "SWARM_CLONE_BASE"}}
+    env.update(NO_COLOR="1", SWARM_ENV_FILE=str(tmp_path / "no.env"),
+               CALLS=str(tmp_path / "calls"), PATH=f"{bin_dir}:{env.get('PATH', '')}")
+    return tmp_path, env
+
+
+def _run_fake(root: Path, env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", str(root / "scripts" / "changed-guards.sh"), "--files", "-", *args],
+        cwd=root, env=env, input="docs/x.md\n", capture_output=True, text=True, timeout=120,
+    )
+
+
+def test_the_shards_of_a_selection_hold_every_file_exactly_once(tmp_path: Path):
+    root, env = _fake_repo(tmp_path, "")
+    whole = _run_fake(root, env, "--list")
+    assert whole.returncode == 0, whole.stderr
+    expected = sorted(_selected(whole.stdout))
+    assert expected == sorted(GUARDS + HEAVY)
+    parts = []
+    for k in (1, 2, 3):
+        part = _run_fake(root, env, "--list", "--shard", f"{k}/3")
+        assert part.returncode == 0, part.stderr
+        parts.append(_selected(part.stdout))
+        # The parity check belongs to part 1 alone.
+        assert ("check-contract-parity.sh" in part.stdout) == (k == 1), k
+    assert all(parts), parts
+    flat = [path for part in parts for path in part]
+    assert sorted(flat) == expected
+    assert len(flat) == len(set(flat))
+    assert _run_fake(root, env, "--list", "--shard", "4/3").returncode == 2
+
+
+def test_a_heavy_selection_runs_as_parts_each_under_the_540_s_limit(tmp_path: Path):
+    root, env = _fake_repo(tmp_path, "")
+    result = _run_fake(root, env)
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    calls = (root / "calls").read_text().splitlines()
+    pytest_calls = [line for line in calls if line.startswith("pytest ")]
+    assert len(pytest_calls) == 3, calls
+    # Every pytest call is preceded by its own `timeout 540`: a hang in any
+    # part still ends.
+    for i, line in enumerate(calls):
+        if line.startswith("pytest "):
+            assert calls[i - 1] == "timeout 540", calls
+    ran = [word for line in pytest_calls for word in line.split() if word.startswith("tests/")]
+    assert sorted(ran) == sorted(GUARDS + HEAVY)
+    assert calls.count("parity") == 1
+    assert "all 3 parts" in out
+
+
+def test_a_failing_part_fails_the_whole_run(tmp_path: Path):
+    # The part holding test_heavy_4.py fails; the parts after it still run.
+    root, env = _fake_repo(tmp_path, 'case "$*" in *test_heavy_4.py*) exit 1 ;; esac\n')
+    result = _run_fake(root, env)
+    out = result.stdout + result.stderr
+    assert result.returncode == 1, out
+    pytest_calls = [line for line in (root / "calls").read_text().splitlines()
+                    if line.startswith("pytest ")]
+    assert len(pytest_calls) == 3, pytest_calls
+    assert "a part failed" in out

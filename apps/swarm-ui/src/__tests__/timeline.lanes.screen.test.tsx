@@ -31,7 +31,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { TimelineLanesScreen, STRIP_DEADLINE_MS, MARK_GAP_PX, MARK_PX, SPAN_PAGES_READ, markLefts } = await import('../TimelineLanes')
+const { TimelineLanesScreen, STRIP_DEADLINE_MS, MARK_GAP_PX, MARK_PX, SPAN_PAGES_READ, BAR_MIN_PX, BAR_WORDS_MIN_PX, laneLayout, markLefts } = await import('../TimelineLanes')
 
 // jsdom has no PointerEvent, and without one a pointer event carries no
 // clientX: a MouseEvent with a pointerId is what a browser hands the axis.
@@ -549,5 +549,121 @@ describe('VQA-L13: the marks at now, the filter row and the counts strip', () =>
     }
     // Every separator ends a part: none can start a line or stand on its own.
     expect(parts.filter((p) => p.textContent!.includes('·')).map((p) => /^\S.*\S ·$/.test(p.textContent!))).toEqual([true, true])
+  })
+})
+
+
+// VQA2-R9 (#1427): the Timeline lanes at 1440.
+describe('VQA2-R9: the bars at now and the standalone lane names', () => {
+  // V039: the marks were kept inside the track and apart, but the bars were
+  // not: three attempts in the last half hour of a 24h span painted three
+  // floor-width bars over each other, past the track's right edge and under
+  // the end mark.
+  // MUTATION: draw the bars at their instants (drop `box` from `Seg`), put
+  // `.tl-seg.is-hold`'s min-width back to 8px, or print words at any width.
+  it('V039: draws a lane’s last attempts inside the track at now, apart from each other and from the end mark', async () => {
+    const px = 600
+    const realRect = Element.prototype.getBoundingClientRect
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      return this.classList.contains('tl-trk') ? ({ ...realRect.call(this), width: px } as DOMRect) : realRect.call(this)
+    })
+    const hadObserver = 'ResizeObserver' in globalThis
+    const RealObserver = globalThis.ResizeObserver
+    globalThis.ResizeObserver = class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    } as unknown as typeof ResizeObserver
+    try {
+      api.loadTasks.mockResolvedValue(ok({ tasks: [task('task_solo', { attempt_count: 3, current_generation: 3, completed_at: ago(2) })] } as TaskPage))
+      api.loadAttemptsPage.mockResolvedValue(
+        ok(page([attempt('task_solo', 3, 9, 2), attempt('task_solo', 2, 20, 14, { exit_code: 1 }), attempt('task_solo', 1, 30, 25, { exit_code: 1 })])),
+      )
+      api.loadTaskEventsPage.mockImplementation(async () => ok(eventsPage([ev('task_solo', 'succeeded', 2, 3)])))
+      render(<TimelineLanesScreen view={null} onView={() => {}} />)
+      const row = await waitFor(() => {
+        const r = lane('task_solo')
+        expect(r?.querySelectorAll('.tl-seg.is-hold')).toHaveLength(3)
+        expect(r?.querySelector('.tl-mkr.is-end')).not.toBeNull()
+        return r!
+      })
+      // The floor the layout takes is the floor that is painted.
+      const bar = row.querySelector('.tl-seg.is-hold')!
+      expect(painted(bar, 'min-width', { width: 1440 }), 'the CSS floor is not the layout’s').toBe(`${BAR_MIN_PX}px`)
+      const pctOf = (v: string) => Number(/^(-?[\d.e+-]+)%$/.exec(v)![1])
+      const boxes: { what: string; from: number; to: number }[] = []
+      for (const seg of row.querySelectorAll<HTMLElement>('.tl-seg.is-hold')) {
+        const from = (pctOf(seg.style.left) / 100) * px
+        const width = Math.max((pctOf(seg.style.width) / 100) * px, BAR_MIN_PX)
+        boxes.push({ what: seg.title, from, to: from + width })
+        // A floor-width bar has no room for `gen 2`: its clipped first letter
+        // read as a glyph. Its title says it.
+        if (width < BAR_WORDS_MIN_PX) expect(seg.querySelector('.tl-seg-t'), `${seg.title} prints a clipped word`).toBeNull()
+        expect(seg.title).toMatch(/^gen \d: held capacity/)
+      }
+      const mark = row.querySelector<HTMLElement>('.tl-mkr.is-end')!
+      const markFrom = (pctOf(mark.style.left) / 100) * px + 2
+      boxes.push({ what: mark.title, from: markFrom, to: markFrom + MARK_PX })
+      boxes.sort((a, b) => a.from - b.from)
+      for (const b of boxes) {
+        expect(b.from, `${b.what} starts before the track`).toBeGreaterThanOrEqual(0)
+        expect(b.to, `${b.what} is cut by the track’s right edge`).toBeLessThanOrEqual(px + 1e-9)
+      }
+      for (let i = 1; i < boxes.length; i++) {
+        expect(boxes[i]!.from - boxes[i - 1]!.to, `${boxes[i - 1]!.what} and ${boxes[i]!.what} are drawn as one`).toBeGreaterThanOrEqual(MARK_GAP_PX - 1e-9)
+      }
+    } finally {
+      if (hadObserver) globalThis.ResizeObserver = RealObserver
+      else delete (globalThis as { ResizeObserver?: unknown }).ResizeObserver
+    }
+  })
+
+  // MUTATION: move a long bar rather than trim it (`left = right - width`).
+  it('V039: trims a long bar at its end and keeps its start; moves only what has to move; unmeasured, the instants', () => {
+    const px = 1000
+    const out = laneLayout(
+      [
+        { from: 60, to: 99.9 },
+        { from: 30, to: 30.1 },
+      ],
+      [{ pct: 99.9, end: true }],
+      px,
+    )
+    expect(out.bars[0]!.left, 'a long bar’s start is its instant').toBeCloseTo(60, 9)
+    expect((out.marks[0]! / 100) * px + 2 + MARK_PX).toBeLessThanOrEqual(px + 1e-9)
+    expect(((out.bars[0]!.left + out.bars[0]!.width) / 100) * px).toBeLessThanOrEqual((out.marks[0]! / 100) * px + 2 - MARK_GAP_PX + 1e-9)
+    // A short bar with room keeps its instant and takes the painted floor.
+    expect(out.bars[1]!.left).toBeCloseTo(30, 9)
+    expect((out.bars[1]!.width / 100) * px).toBeCloseTo(BAR_MIN_PX, 9)
+    // A mid-lane mark (a cancel request) is drawn over its bar and moves no bar.
+    const mid = laneLayout([{ from: 40, to: 60 }], [{ pct: 50, end: false }], px)
+    expect(mid.bars[0]).toEqual({ left: 40, width: 20 })
+    expect(mid.marks[0]).toBeCloseTo(50, 9)
+    expect(laneLayout([{ from: 99, to: 99.5 }], [{ pct: 99.5, end: true }], null)).toEqual({ bars: [{ left: 99, width: 0.5 }], marks: [99.5] })
+  })
+
+  // V212: `claude-code task · a073aff5` was ellipsized from its end, so the
+  // short id -- the only part that tells two standalone lanes apart -- was
+  // the part cut: "claude-code task · a0…".
+  // MUTATION: render the name as one text node, or drop `.tl-name-id`'s flex: none.
+  it('V212: keeps a standalone lane’s short id whole and lets the kind give way', async () => {
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    await waitFor(() => expect(lane('task_solo')?.querySelector('.tl-name')).toBeTruthy())
+    const name = lane('task_solo').querySelector<HTMLElement>('.tl-name')!
+    expect(name.textContent).toBe('claude-code task · solo')
+    const kind = name.querySelector('.tl-name-k')
+    const id = name.querySelector('.tl-name-id')
+    expect(kind?.textContent).toBe('claude-code task')
+    expect(id?.textContent, 'the id is not a part of its own').toBe(' · solo')
+    expect(painted(name, 'display', { width: 1440 })).toBe('inline-flex')
+    expect(painted(id!, 'flex', { width: 1440 }), 'the id can shrink').toBe('none')
+    expect(painted(id!, 'white-space', { width: 1440 })).toBe('pre')
+    expect(painted(kind!, 'text-overflow', { width: 1440 })).toBe('ellipsis')
+    expect(painted(kind!, 'overflow', { width: 1440 })).toBe('hidden')
+    expect(painted(kind!, 'min-width', { width: 1440 })).toBe('0')
+    // A workflow step is named by its step alone: nothing to split.
+    const step = lane('task_plan').querySelector<HTMLElement>('.tl-name')!
+    expect(step.querySelector('.tl-name-id')).toBeNull()
+    expect(step.textContent).toBe('plan')
   })
 })

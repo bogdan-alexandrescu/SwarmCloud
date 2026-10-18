@@ -1,9 +1,9 @@
 {
-  "description": "sc: at session start, name the SwarmCloud workflows still running for your tenant, and your running single tasks (in no workflow), so the session's first action is /sc attach --all. Read-only, silent when none run or anything fails; off when the plugin's auto_attach option is off. Claude Code has no hook event for /reload-plugins, so after a reload run /sc attach --all by hand. When /sc watch was turned on for this project (a preference saved under the bridge's config directory, read locally), it also asks the session to run /sc watch <N>m to re-arm the recurring /sc check, even with auto_attach off.",
+  "description": "sc: at session start, name the SwarmCloud workflows and single tasks (in no workflow) that THIS Claude Code session started and that are still running -- each submission is tagged with the session id the hook reads on stdin, and other sessions' work in the same tenant, and untagged work, is never named -- so the session's first action is /sc attach --all. Read-only, silent when none run or anything fails; off when the plugin's auto_attach option is off. Claude Code has no hook event for /reload-plugins, so after a reload run /sc attach --all by hand. When work of yours is running and no watch was ever set for this project, it also asks the session to arm the /sc watch (CronList first, never a second job), unless /sc watch off was saved for the project. It also records the session id after /clear, so the plugin's MCP server tags and scopes by the session's current id. When /sc watch was turned on for this project (a preference saved under the bridge's config directory, read locally), it also asks the session to run /sc watch <N>m to re-arm the recurring /sc check, even with auto_attach off.",
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "startup|resume",
+        "matcher": "startup|resume|clear",
         "hooks": [
           {
             "type": "command",

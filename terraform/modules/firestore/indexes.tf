@@ -447,6 +447,54 @@ locals {
         { field_path = "requested_at", order = "ASCENDING" },
       ]
     }
+
+    # Settings > MCP servers' last attach (docs/design/registered-mcp-servers.md
+    # §4.11): GET /v1/mcp-servers runs one query per request,
+    #     mcp_attach_releases where tenant_id == T order by at DESC limit N
+    # An equality on one field and the order on another, so Firestore serves
+    # it only from this index. Without it the query answers
+    # FAILED_PRECONDITION and the whole list, egress addresses included, is a
+    # 500. tenant_id leads (invariant 9).
+    "mcp-attach-releases-tenant-at" = {
+      collection  = "mcp_attach_releases"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "tenant_id", order = "ASCENDING" },
+        { field_path = "at", order = "DESCENDING" },
+      ]
+    }
+
+    # Per-workspace roles (docs/design/workspace-roles.md §4.4): a person's
+    # role is the newest grant that verifies, read in pages of 20 with
+    #     workspace_role_grants where tenant_id == T and subject in (E, "*")
+    #       order by granted_at DESC
+    # Grants are append-only with auto-ids, so ordering is the only way to
+    # find the current one. Without this index the read answers
+    # FAILED_PRECONDITION and every role check that reads a grant is
+    # role_unavailable. tenant_id leads (invariant 9).
+    "workspace-role-grants-tenant-subject-granted" = {
+      collection  = "workspace_role_grants"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "tenant_id", order = "ASCENDING" },
+        { field_path = "subject", order = "ASCENDING" },
+        { field_path = "granted_at", order = "DESCENDING" },
+      ]
+    }
+
+    # A workspace's audit list, newest first (the same design, §4.4):
+    #     admin_audit where target_tenant_id == T order by at DESC limit N
+    # Role grants and platform-admin actions in a workspace are admin_audit
+    # rows carrying target_tenant_id; an equality on one field and the order
+    # on another is served only from a composite index.
+    "admin-audit-target-tenant-at" = {
+      collection  = "admin_audit"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "target_tenant_id", order = "ASCENDING" },
+        { field_path = "at", order = "DESCENDING" },
+      ]
+    }
   }
 }
 
@@ -567,4 +615,39 @@ resource "google_firestore_field" "schedule_records_ttl" {
   # Never queried on. The default single-field index would be a write
   # amplification on every firing and every tick.
   index_config {}
+}
+
+# A workflow step waiting for a tenant member's answer expires on the schedule
+# tick (docs/design/human-steps.md §4.6, §4.7; lane HW-IAM, part of #1436).
+# swarm-api's awaitinput.expire_due reads
+#
+#     tasks where state == PARKED and park_reason == AWAITING_INPUT
+#           and metadata.await_input.expires_at <= now
+#           order by metadata.await_input.expires_at
+#
+# Two equalities then a range, which Firestore serves only from a composite
+# index with the range field last; without it the query fails with
+# FAILED_PRECONDITION and no wait ever expires. A resource of its own rather
+# than an entry in local.indexes so the lane that owns the sweep's index is
+# the only one that names it. Indexes take no labels
+# (scripts/lib/unlabelable-types.json).
+resource "google_firestore_index" "await_input_expiry" {
+  project     = var.project_id
+  database    = google_firestore_database.this.name
+  collection  = "tasks"
+  query_scope = "COLLECTION"
+  api_scope   = "ANY_API"
+
+  fields {
+    field_path = "state"
+    order      = "ASCENDING"
+  }
+  fields {
+    field_path = "park_reason"
+    order      = "ASCENDING"
+  }
+  fields {
+    field_path = "metadata.await_input.expires_at"
+    order      = "ASCENDING"
+  }
 }

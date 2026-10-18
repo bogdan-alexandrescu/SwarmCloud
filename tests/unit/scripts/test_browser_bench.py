@@ -112,6 +112,58 @@ def test_arms_alternate_so_egress_and_time_of_day_are_shared():
         assert first.tool != second.tool
 
 
+
+# ---------------------------------------------------------------------------
+# The jev arm (JEV-RUNNER): a third sentence, opt-in.
+
+
+def test_jev_is_a_third_arm_chosen_by_its_sentence_alone():
+    assert set(bb.TOOLS) == {"playwright-mcp", "dev-browser", "jev"}
+    assert bb.TOOLS["jev"].startswith("Use the jev browser tools")
+    assert "browser_do" in bb.TOOLS["jev"] and "browser_read" in bb.TOOLS["jev"]
+    runs = bb.plan("b1", tools=["playwright-mcp", "jev"], repeats=1)
+    assert len(runs) == 2 * len(bb.PROMPTS)
+    by_key: dict = {}
+    for run in runs:
+        by_key.setdefault(run.prompt_id, {})[run.tool] = run.body
+    for prompt_id, arms in by_key.items():
+        mcp_rest = arms["playwright-mcp"]["input"]["prompt"].removeprefix(bb.TOOLS["playwright-mcp"])
+        jev_rest = arms["jev"]["input"]["prompt"].removeprefix(bb.TOOLS["jev"])
+        assert jev_rest != arms["jev"]["input"]["prompt"], prompt_id
+        assert mcp_rest == jev_rest, prompt_id
+        assert arms["jev"]["runner_profile"] == "claude-code-browser"
+        assert set(arms["jev"]["input"]) == {"prompt"}
+        assert arms["jev"]["metadata"]["bench"]["tool"] == "jev"
+
+
+def test_jev_is_not_in_a_default_plan():
+    assert "jev" not in {r.tool for r in bb.plan("b1", repeats=1)}
+    assert bb.DEFAULT_TOOLS == ("playwright-mcp", "dev-browser")
+
+
+def test_the_tools_flag_parses_three_arms_and_refuses_a_misspelling():
+    assert bb._csv("playwright-mcp,dev-browser,jev") == ["playwright-mcp", "dev-browser", "jev"]
+    runs = bb.plan("b1", tools=bb._csv("playwright-mcp,dev-browser,jev"), repeats=1)
+    assert len(runs) == 3 * len(bb.PROMPTS)
+    for i in range(0, len(runs), 3):
+        assert [r.tool for r in runs[i:i + 3]] == ["playwright-mcp", "dev-browser", "jev"]
+    with pytest.raises(ValueError):
+        bb.plan("b1", tools=["jev-browser"])
+
+
+def test_each_challenger_gets_its_own_verdict_against_playwright_mcp():
+    def arm(cost: float, turns: float, rate: float) -> dict:
+        return {"runs": 10, "prompts_seen": len(bb.PROMPTS), "prompts_passed": 10,
+                "success_rate": rate, "median_cost_usd": cost, "median_turns": turns}
+
+    summary = {"playwright-mcp": arm(1.0, 10, 0.9), "dev-browser": arm(2.0, 12, 0.9),
+               "jev": arm(0.5, 5, 0.95)}
+    assert bb.verdict(summary, "jev").startswith("BAR MET: jev")
+    assert bb.verdict(summary).startswith("KEEP PLAYWRIGHT MCP: dev-browser")
+    assert bb.challengers(summary) == ["dev-browser", "jev"]
+    assert bb.challengers({"playwright-mcp": arm(1, 1, 1)}) == ["dev-browser"]
+
+
 # ---------------------------------------------------------------------------
 # The dry run.
 
@@ -352,3 +404,15 @@ def test_doc_lists_every_prompt_and_the_pass_bar():
     assert "0.66" in text and "39.60" in text
     assert "egress" in text.lower()
     assert "scripts/browser-bench.sh" in text
+
+
+def test_pypi_license_accepts_how_pypi_writes_it_now():
+    # Batch devb-1015 (2026-10-15): four agents read the requests page correctly
+    # and answered "Apache Software License (Apache-2.0)", which PyPI's sidebar
+    # shows today; the pattern's fullmatch refused the trailing SPDX id.
+    prompt = next(p for p in bb.PROMPTS if p.id == "pypi-requests-license")
+    for answer in ("Apache Software License (Apache-2.0)", "Apache-2.0", "Apache 2.0",
+                   "License: Apache Software License"):
+        assert bb.check(prompt, f"RESULT: {answer}"), answer
+    for wrong in ("MIT", "Apache Software License (MIT)", "page could not be opened"):
+        assert not bb.check(prompt, f"RESULT: {wrong}"), wrong

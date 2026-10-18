@@ -720,7 +720,9 @@ describe('visual QA (VQA-L06)', () => {
     const step = [...rowOf('fay@example.com').querySelectorAll<HTMLElement>('.ob-ws-steps li')].find((li) => li.textContent?.includes('Checking the name is free'))
     expect(step, 'the A2 step was not drawn').toBeDefined()
     expect(painted(step!, 'display', WIDE)).toBe('grid')
-    expect(painted(step!, 'grid-template-columns', WIDE)).toBe('auto minmax(0, 1fr) auto')
+    // `min-content`, not `0` (VQA2-R4, 2026-10-16): at 0 a squeezed 1440
+    // table let "Namespace" run into "not started" (people.vqa2r4.test.tsx).
+    expect(painted(step!, 'grid-template-columns', WIDE)).toBe('auto minmax(min-content, 1fr) auto')
     expect(painted(step!.querySelector('.ob-state')!, 'white-space', WIDE)).toBe('nowrap')
     const rid = [...rowOf('gil@example.com').querySelectorAll<HTMLElement>('.pp-ws code')].find((c) => c.textContent === 'req-w-61000a')
     expect(rid, 'the request id was not drawn').toBeDefined()

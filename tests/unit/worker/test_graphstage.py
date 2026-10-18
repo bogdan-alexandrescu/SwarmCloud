@@ -510,3 +510,425 @@ def test_the_configured_command_answers_mcp_over_the_staged_snapshot(db, store, 
     answer = json.loads(done.stdout.decode().splitlines()[0])
     text = answer["result"]["content"][0]["text"]
     assert first in text
+
+
+# --------------------------------------------------------------------------
+# the timer and the facts the `graph_ready` mark carries (lane GS-MEASURE,
+# docs/design/graph-service.md §9.1 and §9.3)
+# --------------------------------------------------------------------------
+
+
+class _Clock:
+    """A monotonic clock that advances `step` seconds per reading."""
+
+    def __init__(self, start: float = 100.0, step: float = 2.5) -> None:
+        self.now, self.step, self.readings = start, step, 0
+
+    def __call__(self) -> float:
+        value = self.now
+        self.now += self.step
+        self.readings += 1
+        return value
+
+
+def test_staging_is_timed_around_the_whole_decision(db, store, clone):
+    checkout, first, second = clone
+    _no_ab(db)
+    _promote(db, store, first)
+    clock = _Clock(step=2.5)
+
+    result = graphstage.stage(db=db, store=store, tenant_id=TENANT, repository_url=URL,
+                              task_id="task_b", checkout=checkout, base_sha=second,
+                              context_dir=checkout.parent / graphstage.CONTEXT_DIR_NAME,
+                              clock=clock)
+
+    assert result.staged, result.reason
+    # One reading before, one after: the seconds are exactly their difference.
+    assert clock.readings == 2
+    assert result.seconds == 2.5
+    assert result.delivery == graphstage.DELIVERY_STAGED == "staged"
+
+
+def test_the_facts_count_every_byte_and_blob_downloaded(db, store, clone):
+    checkout, first, second = clone
+    _no_ab(db)
+    _promote(db, store, first)
+
+    result = _stage(db, store, checkout, second)
+
+    assert result.staged, result.reason
+    snapshot = checkout.parent / graphstage.CONTEXT_DIR_NAME / graphstage.SNAPSHOT_DIR_NAME
+    on_disk = (snapshot / "manifest.json").stat().st_size + sum(
+        p.stat().st_size for p in (snapshot / "blobs").iterdir())
+    assert result.facts["blobs"] == 1
+    assert result.facts["bytes"] == on_disk
+    assert isinstance(result.seconds, float) and result.seconds >= 0.0
+
+
+def test_stage_json_records_the_delivery_and_the_seconds(db, store, clone):
+    checkout, first, second = clone
+    _no_ab(db)
+    _promote(db, store, first)
+    graphstage.prepare(checkout.parent, profile_name="claude-code",
+                       runner_argv=["python", "-m", "agent_worker.runners.claude_code"],
+                       db=db, store=store, tenant_id=TENANT, repository_url=URL,
+                       task_id="task_b", checkout=checkout, base_sha=second)
+    record = json.loads((checkout.parent / graphstage.CONTEXT_DIR_NAME /
+                         graphstage.STAGE_RECORD_NAME).read_text())
+    assert record["delivery"] == "staged"
+    assert isinstance(record["seconds"], float) and record["seconds"] >= 0.0
+    assert record["blobs"] == 1 and record["bytes"] > 0
+
+
+def test_a_staging_that_delivered_nothing_is_timed_and_says_none(db, clone):
+    checkout, first, second = clone
+    _no_ab(db)
+    _promote(db, _store_for_seed(checkout), first)
+    clock = _Clock(step=0.75)
+
+    result = graphstage.stage(db=db, store=_BrokenStore(), tenant_id=TENANT,
+                              repository_url=URL, task_id="task_b", checkout=checkout,
+                              base_sha=second,
+                              context_dir=checkout.parent / graphstage.CONTEXT_DIR_NAME,
+                              clock=clock)
+
+    assert not result.staged and "OSError" in result.reason
+    assert result.seconds == 0.75
+    assert result.delivery == graphstage.DELIVERY_NONE == "none"
+    assert result.record()["delivery"] == "none" and result.record()["seconds"] == 0.75
+
+
+def test_a_failure_outside_the_decision_is_timed_too(clone):
+    checkout, _first, second = clone
+    clock = _Clock(step=1.25)
+    result = graphstage.stage(db=_Unreachable(), store=None, tenant_id=TENANT,
+                              repository_url=URL, task_id="task_b", checkout=checkout,
+                              base_sha=second,
+                              context_dir=checkout.parent / graphstage.CONTEXT_DIR_NAME,
+                              clock=clock)
+    assert not result.staged and result.reason == "staging failed (RuntimeError)"
+    assert result.seconds == 1.25 and result.delivery == "none"
+
+
+# --------------------------------------------------------------------------
+# GS-WORKER: pin, ticket, probe, and the fallback to staging
+# (docs/design/graph-service.md §4.1, §8; lane GS-WORKER, part of #1384)
+# --------------------------------------------------------------------------
+
+CLAUDE = ["python", "-m", "agent_worker.runners.claude_code"]
+GKE, CLOUD_RUN_JOB = "GKE_AUTOPILOT", "CLOUD_RUN_JOB"
+SERVICE_URL = "http://swarm-graph.swarm-system.svc.cluster.local:8080/mcp"
+
+
+class _FakeTicket:
+    """`graph_ticket.GraphTicket`'s two calls graphstage makes, recorded."""
+
+    def __init__(self, outcome: str | None = None, error: Exception | None = None) -> None:
+        self.outcome, self.error = outcome, error
+        self.started: list[str] = []
+        self.discarded = 0
+        self.path: Path | None = None
+
+    def start(self, private_dir: Path, index_sha: str) -> str | None:
+        self.started.append(index_sha)
+        if self.error is not None:
+            raise self.error
+        if self.outcome is None:
+            self.path = Path(private_dir) / "graph-ticket"
+            self.path.write_text("t." + "x" * 8)
+        return self.outcome
+
+    def discard(self) -> None:
+        self.discarded += 1
+        if self.path is not None:
+            self.path.unlink(missing_ok=True)
+
+
+def _deliver(db: Any, value: Any) -> None:
+    """The workspace's stored `graph_delivery`, where swarm-api writes it."""
+    db.seed(f"workspace_settings/{TENANT}", {"code_intelligence": {"graph_delivery": value}})
+
+
+def _prepare(db: Any, store: Any, checkout: Path, base: str, *, ticket: Any,
+             probe: Any = None, backend: str = GKE, mark: Any = None) -> dict[str, str]:
+    private = checkout.parent.parent / "private"
+    private.mkdir(mode=0o700, exist_ok=True)
+    return graphstage.prepare(
+        checkout.parent, profile_name="claude-code", runner_argv=CLAUDE, db=db, store=store,
+        tenant_id=TENANT, repository_url=URL, task_id="task_b", checkout=checkout,
+        base_sha=base, graph_ticket=ticket, private_dir=private, backend=backend,
+        service_url=SERVICE_URL, probe=probe or (lambda url, path: None), mark=mark)
+
+
+def _context(checkout: Path) -> Path:
+    return checkout.parent / graphstage.CONTEXT_DIR_NAME
+
+
+def _record(checkout: Path) -> dict[str, Any]:
+    return json.loads((_context(checkout) / graphstage.STAGE_RECORD_NAME).read_text())
+
+
+def test_the_names_are_the_ones_swarm_api_and_the_pack_use():
+    from agent_worker import contextpack
+    from agent_worker.contextpack import build as pack_build
+    from agent_worker.graphmcp import shim
+    from swarm_api import codeintel
+
+    assert graphstage.DELIVERY_FIELD == codeintel.DELIVERY_FIELD
+    assert graphstage.DEFAULT_GRAPH_DELIVERY == codeintel.DEFAULT_GRAPH_DELIVERY == "staged"
+    assert (graphstage.DELIVERY_STAGED, graphstage.DELIVERY_SERVICE) == codeintel.DELIVERIES
+    assert graphstage.DELIVERY_SETTINGS_COLLECTION == codeintel.COLLECTION
+    assert graphstage.PIN_NAME == contextpack.PIN_FILE
+    assert graphstage.PIN_MANIFEST_NAME == contextpack.PIN_MANIFEST_FILE
+    assert graphstage.DELIVERY_SERVICE == contextpack.DELIVERY_SERVICE
+    assert graphstage.TICKET_FILE_ENV == pack_build.TICKET_FILE_ENV
+    assert graphstage.URL_ENV == pack_build.SERVICE_URL_ENV == shim.URL_ENV
+
+
+@pytest.mark.parametrize("stored", [None, "staged", "inherit", "SERVICE ", 7])
+def test_the_default_stages_exactly_as_before_and_never_asks_for_a_ticket(
+        db, store, clone, stored):
+    """THE GUARD: `graph_delivery` unset, `staged` or malformed is today's path."""
+    checkout, first, second = clone
+    _no_ab(db)
+    _promote(db, store, first)
+    if stored is not None:
+        _deliver(db, stored)
+    ticket = _FakeTicket()
+    probes: list[Any] = []
+
+    env = _prepare(db, store, checkout, second, ticket=ticket,
+                   probe=lambda *a: probes.append(a))
+
+    context = _context(checkout)
+    assert env == {graphstage.CONTEXT_ENV: str(context),
+                   graphstage.SNAPSHOT_ENV: str(context / graphstage.SNAPSHOT_DIR_NAME)}
+    assert ticket.started == [] and probes == []
+    assert not (context / graphstage.PIN_NAME).exists()
+    assert list((checkout.parent.parent / "private").iterdir()) == []
+    record = _record(checkout)
+    assert record["delivery"] == "staged" and record["staged"] is True
+    assert "fallback" not in record
+
+
+def test_the_default_record_is_the_one_staging_wrote_before_this_lane(db, store, clone):
+    """Byte for byte, the default's stage.json and env are those of a prepare
+    that was never handed a ticket, a backend or a URL."""
+    checkout, first, second = clone
+    _no_ab(db)
+    _promote(db, store, first)
+    before = graphstage.prepare(checkout.parent, profile_name="claude-code", runner_argv=CLAUDE,
+                                db=db, store=store, tenant_id=TENANT, repository_url=URL,
+                                task_id="task_b", checkout=checkout, base_sha=second)
+    old = _record(checkout)
+    after = _prepare(db, store, checkout, second, ticket=_FakeTicket())
+    new = _record(checkout)
+    old.pop("seconds"), new.pop("seconds")
+    assert before == after and old == new
+
+
+def test_service_pins_instead_of_copying_and_hands_the_runner_the_shims_variables(
+        db, store, clone):
+    checkout, first, second = clone
+    _no_ab(db)
+    digest = _promote(db, store, first)
+    _deliver(db, "service")
+    ticket = _FakeTicket()
+    probes: list[tuple[str, Path]] = []
+    marks: list[dict[str, Any]] = []
+
+    env = _prepare(db, store, checkout, second, ticket=ticket,
+                   probe=lambda url, path: probes.append((url, path)), mark=marks.append)
+
+    context = _context(checkout)
+    pin = context / graphstage.PIN_NAME
+    assert env == {graphstage.CONTEXT_ENV: str(context), graphstage.PIN_ENV: str(pin),
+                   graphstage.TICKET_FILE_ENV: str(ticket.path),
+                   graphstage.URL_ENV: SERVICE_URL}
+    assert graphstage.SNAPSHOT_ENV not in env
+    assert ticket.started == [first]
+    assert probes == [(SERVICE_URL, ticket.path)]
+    # Nothing downloaded but the manifest: no snapshot, no blob.
+    assert not (context / graphstage.SNAPSHOT_DIR_NAME).exists()
+    record = json.loads(pin.read_text())
+    assert record == {"index_sha": first, "base_sha": second, "behind_by": 1,
+                      "manifest_digest": digest, "basis": "git", "changed": ["b.py"]}
+    manifest = (context / graphstage.PIN_MANIFEST_NAME).read_bytes()
+    assert "sha256:" + hashlib.sha256(manifest).hexdigest() == digest
+    # The pin holds no credential: the ticket is in private/, never in work/.
+    assert checkout.parent not in ticket.path.parents
+    stage = _record(checkout)
+    assert stage["delivery"] == "service" and stage["pin"] == str(pin)
+    assert stage["blobs"] == 0 and stage["bytes"] == len(manifest)
+    assert marks == [{"graph": {"delivery": "service", "seconds": stage["seconds"],
+                                "bytes": len(manifest), "blobs": 0,
+                                "reason": stage["reason"]}}]
+
+
+def test_the_pin_is_what_the_shim_and_the_pack_open(db, store, clone):
+    from agent_worker.contextpack.build import _open
+    from agent_worker.graphmcp import shim
+
+    checkout, first, second = clone
+    _no_ab(db)
+    digest = _promote(db, store, first)
+    _deliver(db, "service")
+    _prepare(db, store, checkout, second, ticket=_FakeTicket())
+    context = _context(checkout)
+    assert shim.load_pin(context / graphstage.PIN_NAME)["index_sha"] == first
+    snap, pin, _source, delivery = _open(context, _record(checkout),
+                                         lambda message: {"jsonrpc": "2.0", "id": 1})
+    assert delivery == "service" and pin["manifest_digest"] == digest
+    assert snap.commit_sha == first
+
+
+@pytest.mark.parametrize("why", ["HTTP 503", "timed out"])
+def test_a_failed_probe_stages_exactly_as_today_and_says_why(db, store, clone, why):
+    checkout, first, second = clone
+    _no_ab(db)
+    _promote(db, store, first)
+    _deliver(db, "service")
+    ticket = _FakeTicket()
+    marks: list[dict[str, Any]] = []
+
+    env = _prepare(db, store, checkout, second, ticket=ticket,
+                   probe=lambda url, path: why, mark=marks.append)
+
+    context = _context(checkout)
+    assert env == {graphstage.CONTEXT_ENV: str(context),
+                   graphstage.SNAPSHOT_ENV: str(context / graphstage.SNAPSHOT_DIR_NAME)}
+    # No pin left for the pack to prefer, no ticket left to renew.
+    assert not (context / graphstage.PIN_NAME).exists()
+    assert not (context / graphstage.PIN_MANIFEST_NAME).exists()
+    assert ticket.discarded == 1 and not ticket.path.exists()
+    record = _record(checkout)
+    assert record["delivery"] == "staged" and record["staged"] is True
+    assert why in record["fallback"] and why in record["reason"]
+    assert marks[0]["graph"]["delivery"] == "staged" and why in marks[0]["graph"]["reason"]
+
+
+def test_a_mint_that_fails_stages_without_a_probe(db, store, clone):
+    checkout, first, second = clone
+    _no_ab(db)
+    _promote(db, store, first)
+    _deliver(db, "service")
+    probes: list[Any] = []
+    env = _prepare(db, store, checkout, second, ticket=_FakeTicket("graph_ticket_unavailable"),
+                   probe=lambda *a: probes.append(a))
+    assert graphstage.SNAPSHOT_ENV in env and probes == []
+    assert "graph_ticket_unavailable" in _record(checkout)["fallback"]
+
+
+def test_a_cloud_run_job_step_keeps_staging_and_mints_nothing(db, store, clone):
+    """Owner Q2: a CLOUD_RUN_JOB step cannot reach the headless in-cluster Service."""
+    checkout, first, second = clone
+    _no_ab(db)
+    _promote(db, store, first)
+    _deliver(db, "service")
+    ticket = _FakeTicket()
+    env = _prepare(db, store, checkout, second, ticket=ticket, backend=CLOUD_RUN_JOB)
+    assert graphstage.SNAPSHOT_ENV in env and graphstage.PIN_ENV not in env
+    assert ticket.started == []
+    record = _record(checkout)
+    assert record["delivery"] == "staged" and "CLOUD_RUN_JOB" in record["fallback"]
+
+
+def test_without_an_upkeep_or_a_url_the_service_is_not_tried(db, store, clone):
+    checkout, first, second = clone
+    _no_ab(db)
+    _promote(db, store, first)
+    _deliver(db, "service")
+    env = _prepare(db, store, checkout, second, ticket=None)
+    assert graphstage.SNAPSHOT_ENV in env
+    assert _record(checkout)["fallback"]
+
+
+def test_a_forbidden_ticket_registers_no_server_and_stages_nothing(db, store, clone):
+    """§10 'context disabled': swarm-api's 403 is the stored setting saying no;
+    staging behind its back would hand the agent what the setting refused."""
+    from agent_worker import graph_ticket
+
+    checkout, first, second = clone
+    _no_ab(db)
+    _promote(db, store, first)
+    _deliver(db, "service")
+    ticket = _FakeTicket(error=graph_ticket.GraphTicketForbidden("refused (forbidden)"))
+    env = _prepare(db, store, checkout, second, ticket=ticket)
+    assert set(env) == {graphstage.UNSTAGED_ENV}
+    assert "forbidden" in env[graphstage.UNSTAGED_ENV]
+    context = _context(checkout)
+    assert not (context / graphstage.SNAPSHOT_DIR_NAME).exists()
+    assert not (context / graphstage.PIN_NAME).exists()
+    assert _record(checkout)["delivery"] == "none"
+
+
+def test_a_fenced_mint_is_raised_through_prepare_for_the_lifecycle(db, store, clone):
+    """Invariant 5: every other failure is a reason; a 409 is the fence."""
+    from agent_worker import graph_ticket
+
+    checkout, first, second = clone
+    _no_ab(db)
+    _promote(db, store, first)
+    _deliver(db, "service")
+    ticket = _FakeTicket(error=graph_ticket.GraphTicketFenced("graph ticket: 409 conflict"))
+    with pytest.raises(graph_ticket.GraphTicketFenced):
+        _prepare(db, store, checkout, second, ticket=ticket)
+
+
+def test_a_restored_pin_is_not_this_attempts_when_it_stages(db, store, clone):
+    checkout, first, second = clone
+    _no_ab(db)
+    _promote(db, store, first)
+    context = _context(checkout)
+    context.mkdir()
+    (context / graphstage.PIN_NAME).write_text("{}")
+    (context / graphstage.PIN_MANIFEST_NAME).write_text("{}")
+    _prepare(db, store, checkout, second, ticket=_FakeTicket())
+    assert not (context / graphstage.PIN_NAME).exists()
+    assert not (context / graphstage.PIN_MANIFEST_NAME).exists()
+
+
+def test_a_restored_snapshot_is_not_this_attempts_when_it_is_served(db, store, clone):
+    checkout, first, second = clone
+    _no_ab(db)
+    _promote(db, store, first)
+    _deliver(db, "service")
+    stale = _context(checkout) / graphstage.SNAPSHOT_DIR_NAME
+    stale.mkdir(parents=True)
+    (stale / "manifest.json").write_text("{}")
+    env = _prepare(db, store, checkout, second, ticket=_FakeTicket())
+    assert graphstage.PIN_ENV in env and not stale.exists()
+
+
+def test_a_rewritten_manifest_is_never_pinned_and_falls_back_to_a_refusal(db, store, clone):
+    checkout, first, second = clone
+    _no_ab(db)
+    _promote(db, store, first)
+    _deliver(db, "service")
+    store.upload_bytes(f"{ROOT}/{first}/manifest.json", b'{"rewritten": true}\n')
+    ticket = _FakeTicket()
+    env = _prepare(db, store, checkout, second, ticket=ticket)
+    # The same check staging makes refuses the manifest before any ticket is asked.
+    assert ticket.started == []
+    assert set(env) == {graphstage.UNSTAGED_ENV}
+    assert "no longer matches" in env[graphstage.UNSTAGED_ENV]
+
+
+def test_an_unreadable_delivery_setting_is_the_default(db, store, clone):
+    checkout, first, second = clone
+    _no_ab(db)
+    _promote(db, store, first)
+
+    class _Settings:
+        def __init__(self, inner: Any) -> None:
+            self.inner = inner
+
+        def collection(self, name: str) -> Any:
+            if name == graphstage.DELIVERY_SETTINGS_COLLECTION:
+                raise RuntimeError("unreachable")
+            return self.inner.collection(name)
+
+    ticket = _FakeTicket()
+    env = _prepare(_Settings(db), store, checkout, second, ticket=ticket)
+    assert graphstage.SNAPSHOT_ENV in env and ticket.started == []
+    assert "fallback" not in _record(checkout)

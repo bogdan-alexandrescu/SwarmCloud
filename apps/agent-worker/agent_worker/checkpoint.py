@@ -61,7 +61,7 @@ from typing import Any, Callable
 from . import artifact_manifest
 from .errors import CheckpointError
 from .objectstore import ObjectStore
-from .workspace import Workspace, walk_tree
+from .workspace import REPOS_DIR_NAME, Workspace, walk_tree
 
 
 class RestoreResourceError(CheckpointError):
@@ -175,6 +175,18 @@ TOOL_CACHES: tuple[str, ...] = (
     ".yarn/cache",
     "**/node_modules",
 )
+
+
+#: `work/repos`, the links to a task's additional repositories (MULTI-REPO,
+#: docs/design/multi-repository-steps.md §4.6, #1434): left out of every
+#: checkpoint of a task that has any (`CheckpointManager.leaves_out_extra_repos`).
+#: Each link resolves onto the cache volume, so the walk would archive the
+#: link entries only and a restore would remove them as links out of `work/`
+#: -- noise, never content. A resumed attempt clones the same signed commits
+#: again, so a checkpoint never carries several codebases and never restores
+#: one an agent edited. Only for such a task: a task with none whose agent
+#: made its own `repos/` folder has made its own work, which is kept.
+EXTRA_REPOS_DIR = REPOS_DIR_NAME
 
 
 def _is_tool_cache(rel: str) -> bool:
@@ -345,13 +357,20 @@ class _BuildDirFilter:
     Out unless a git checkout enclosing it tracks a file under it. The nearest
     enclosing checkout is the nearest ancestor (`work/` included) holding a
     real `.git` directory; its index is read once per checkpoint.
+
+    `also` names `work/`-relative directories left out whole, by exact path
+    and whatever they hold (`CheckpointManager.excluded_dirs`): an index
+    run's read-only checkout (`indexrun.checkpoint_excludes`).
     """
 
-    def __init__(self, source: Path) -> None:
+    def __init__(self, source: Path, also: frozenset[str] = frozenset()) -> None:
         self._source = source
+        self._also = also
         self._tracked: dict[str, frozenset[str] | None] = {}
 
     def excludes(self, rel: str) -> bool:
+        if rel in self._also:
+            return True
         parts = rel.split("/")
         if parts[-1] not in BUILD_DIRS:
             return False
@@ -855,6 +874,16 @@ class CheckpointManager:
         #: once the clone has landed, or once it has been read back from the
         #: checkpoint a resumed attempt restored, so it carries forward.
         self.clone_base: str | None = None
+        #: Directories of `work/`, by exact relative path, left out of every
+        #: checkpoint this manager writes from now on, through the build
+        #: directory filter (`_BuildDirFilter`). Empty unless the lifecycle
+        #: sets it: an index run's checkout (`indexrun.checkpoint_excludes`,
+        #: INDEX-CKPT), which a resumed attempt clones again at `clone_base`.
+        self.excluded_dirs: frozenset[str] = frozenset()
+        #: True once the lifecycle has linked a task's additional repositories
+        #: under `work/repos` (`EXTRA_REPOS_DIR`): every checkpoint from then on
+        #: leaves that folder out, whatever it holds.
+        self.leaves_out_extra_repos: bool = False
         #: THE CHAIN (#637). What the last committed checkpoint of this
         #: attempt archived, entry by entry (`_signature`), and its id and
         #: digest: the next one archives only what differs. None until this
@@ -968,8 +997,10 @@ class CheckpointManager:
             for path in (ws.artifacts_link(), ws.artifacts_link(ws.checkout()))
             if ws.is_artifacts_link(path)
         ) | {ws.input_path.relative_to(ws.work).as_posix()}
+        if self.leaves_out_extra_repos:
+            skip |= {EXTRA_REPOS_DIR}
         self.last_unchanged = False
-        build_dirs = _BuildDirFilter(ws.work)
+        build_dirs = _BuildDirFilter(ws.work, self.excluded_dirs)
         racy_after = time.time_ns() - RACY_WINDOW_NS
         previous = self._index
         base = self._base

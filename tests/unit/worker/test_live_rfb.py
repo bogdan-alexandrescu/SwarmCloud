@@ -522,6 +522,41 @@ def test_a_display_resize_is_announced_with_desktop_size() -> None:
     asyncio.run(main())
 
 
+def test_the_controllers_keys_are_injected_and_counted_after_a_device_switch() -> None:
+    """KEYS-FOCUS (part of #1030). MEASURED 2026-10-14 on task_84cb2038aa704c829d48
+    generation 5: after two device switches the gate's summary for the controller
+    read keys=0 pointer=87. A device switch is a resize the viewer is told of with
+    DesktopSize; the connection, its control and its key path all outlive it."""
+    async def main() -> None:
+        gate = Gate(width=64, height=40)
+        person = await gate.connect("person-1", encodings=(0, rfb.ENCODING_DESKTOP_SIZE))
+        await gate.control.grant("person-1")
+        person.key(0x61, True)
+        person.key(0x61, False)
+        await person.flush()
+
+        # iphone-15 -> desktop: the display changes shape under the open connection.
+        gate.hub.publish(rfb.masked(_frame(48, 32), MaskState()))
+        person.request(incremental=True)
+        await person.flush()
+        [(_x, _y, w, h, enc, _)] = await person.read_update()
+        assert (w, h, enc) == (48, 32, rfb.ENCODING_DESKTOP_SIZE)
+
+        person.key(0x62, True)
+        person.key(0x62, False)
+        person.pointer(0, 5, 6)
+        await person.flush()
+
+        assert gate.injector.keys == [(0x61, True), (0x61, False), (0x62, True), (0x62, False)]
+        counts = gate.sessions["person-1"].counts
+        assert counts.key_events == 4
+        assert counts.pointer_events == 1
+        assert counts.dropped == 0
+        await gate.close()
+
+    asyncio.run(main())
+
+
 def _unmasking() -> MaskState:
     """A mask that paints nothing: stands in for a clean report in a test
     about encoding, which is not the mask's test."""

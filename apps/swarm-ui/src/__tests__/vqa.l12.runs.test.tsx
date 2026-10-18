@@ -18,7 +18,7 @@
  * MUTATIONS: put `className="rn-cut"` back on the Run `<td>`; set the fold's
  * summary back to `list-style: revert` with no `::before`; drop the
  * `rows.length === 0` branch or the `shown.length > 0` guard on the table;
- * drop `.rn-tabs`'s margin; give the title its 100% basis again; drop
+ * drop `.rn-tabs`'s margin; give the title its 1 1 0 flex again; drop
  * `ISSUE_REF_BREAKS` from IssueLink; restore the stacked phone rows -- each
  * turns a case red.
  */
@@ -179,20 +179,20 @@ describe('V095: the run page leaves the workflow page\'s gap under its tabs', ()
   })
 })
 
+// V096's second half (the head's actions, and a reference on a phone) moved
+// with V208 on 2026-10-16: vqa2.r8.runs.test.tsx holds the head as it is now.
 describe('V096: the head\'s `?` shares the title\'s row', () => {
   for (const env of [DESKTOP, PHONE]) {
-    it(`gives the title what the \`?\` leaves, and the actions the next row, at ${env.width}px`, async () => {
+    it(`keeps the \`?\` beside the title at ${env.width}px`, async () => {
       const { container } = await mountRun()
       const head = container.querySelector('.rn-run .c-phead')!
       const block = head.querySelector(':scope > div.head')!
       const h1 = block.querySelector('h1')!
-      expect(painted(h1, 'flex', env)).toBe('1 1 0')
+      expect(painted(h1, 'flex', env)).toBe('0 1 auto')
       // The section's `?` is whatever the shell puts after the h1.
       const help = document.createElement('button')
       block.appendChild(help)
       expect(painted(help, 'flex', env)).toBe('none')
-      const acts = head.querySelector(':scope > .c-acts')!
-      expect(painted(acts, 'flex', env)).toBe('1 0 100%')
     })
   }
 })
@@ -214,16 +214,16 @@ describe('V112: a phone draws each run as one compact card', () => {
     const { container } = await mountList({ runs: [run()], next_page_token: null })
     await waitFor(() => expect(container.querySelector('.rn-row')).not.toBeNull(), WAIT)
     const row = container.querySelector('.rn-row')!
-    expect(painted(row, 'display', PHONE)).toBe('grid')
-    expect(painted(row, 'grid-template-columns', PHONE)).toBe('repeat(4, minmax(0, 1fr))')
+    // A wrapping row since V206 (vqa2.r8.runs.test.tsx): the id and state
+    // share the first line, the issue takes the second whole, the facts follow.
+    expect(painted(row, 'display', PHONE)).toBe('flex')
     expect(painted(row, ['border', 'border-top'], PHONE)).toMatch(/1px solid/)
     expect(painted(container.querySelector('.rn-table tbody')!, 'gap', PHONE)).toBe('8px')
     const cell = (label: string) => row.querySelector(`td[data-label="${label}"]`)!
-    expect(painted(cell('Run'), 'grid-row', PHONE)).toBe('1')
-    expect(painted(cell('State'), 'grid-row', PHONE)).toBe('1')
-    expect(painted(cell('Issue'), 'grid-row', PHONE)).toBe('2')
+    expect(painted(cell('Run'), 'flex', PHONE)).toBe('1 1 0')
+    expect(painted(cell('State'), 'flex', PHONE)).toBe('none')
+    expect(painted(cell('Issue'), 'flex', PHONE)).toBe('0 0 100%')
     for (const label of ['Plan approval', 'Workflow', 'Created', 'By']) {
-      expect(painted(cell(label), 'grid-row', PHONE), label).toBe('3')
       expect(painted(cell(label), 'content', PHONE, 'before'), label).toBe('attr(data-label)')
     }
     for (const label of ['Run', 'State', 'Issue']) {
