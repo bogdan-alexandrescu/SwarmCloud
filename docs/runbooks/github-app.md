@@ -21,7 +21,8 @@ registration is by hand. Everything around it is code:
 | the refresh sweep, `swarm-forge-refresh`, every 15 minutes | `terraform/modules/scheduler/jobs.tf` (`forge_refresh`), switched on by `enable_forge_refresh` | the release, once lane OB3 ships |
 | the `forge_grants` and `forge_orgs` indexes on (`tenant_id`, `user_hash`) | `terraform/modules/firestore/indexes.tf` | the release |
 | the values of the client secret and the private key | Secret Manager only, by `scripts/create-secrets.sh --github-app <slot> --stdin` | the owner, from a terminal |
-| the push receiver `swarm-github-hooks`, its webhook secret's container and reader, its Firestore role and the delivery TTL | `terraform/infra/github_hooks.tf`, switched on by `enable_github_hooks` ([Step 9](#step-9-the-push-webhook)) | the release, held at `dev-iam` |
+| the push receiver's create-only Firestore role `swarmGithubHooksDedup` (`datastore.entities.create`) and the deployer's right to grant it | `terraform/bootstrap/github_hooks_role.tf` and `deployer_conditions.tf`, switched on by `enable_github_hooks_dedup_role` ([Step 9](#step-9-the-push-webhook), step 2) | the owner, `scripts/bootstrap.sh` |
+| the push receiver `swarm-github-hooks`, its webhook secret's container and reader, its binding to that role and the delivery TTL | `terraform/infra/github_hooks.tf`, switched on by `enable_github_hooks` ([Step 9](#step-9-the-push-webhook), step 3) | the release, held at `dev-iam` |
 | the webhook secret's value | Secret Manager only, by `scripts/create-secrets.sh --github-app-webhook-secret --stdin` | the owner, from a terminal |
 
 ## The rule this page exists to keep
@@ -310,11 +311,13 @@ declined. So a **compromised receiver -- a public-facing service -- holds every
 route the sweeper holds, for every tenant**: the workflow rollup, the run
 advance, the repository poll and push, the merge wake, the GitHub user-token
 refresh sweep, the workspace dispatch sweep, the `task_finished` push, the
-stranded-PR sweep and the workspace-secrets rotation sweep. It also holds
-`roles/datastore.user`, read-write on the platform's Firestore, which the
-dedup's `create()` needs and which the sweeper did not hold before: Firestore
-does not evaluate IAM conditions on documents, so no condition narrows it to
-`github_deliveries`. None of those routes accepts an image, a command or a
+stranded-PR sweep and the workspace-secrets rotation sweep. For the dedup's
+`create()` it also holds the custom role `swarmGithubHooksDedup`, which grants
+`datastore.entities.create` and nothing else (HOOKS-ROLE, PR 1423; owner
+decision 2026-10-16, which replaced `roles/datastore.user`). Firestore
+evaluates no IAM condition on documents, so the role's single permission is
+what narrows it: it may create a document in any collection, and it can read,
+query, update or delete none. None of those routes accepts an image, a command or a
 secret value, and none makes the caller an admin or a member; that is the
 whole of the mitigation. If the receiver is ever suspected, set
 `enable_github_hooks = false` and release: the service, its public invoker,
@@ -327,7 +330,16 @@ In this order:
    (`scripts/build-images.sh`, `scripts/push-images.sh`), so `image_refs`
    carries its digest from the first release after GS-HOOKS merged.
 
-2. **The receiver and its IAM (a release, held at dev-iam).** Set in
+2. **The dedup role (the bootstrap, which the owner applies).** Set
+   `enable_github_hooks_dedup_role = true` in
+   `terraform/bootstrap/terraform.tfvars`, plan, read the rows and apply with
+   `scripts/bootstrap.sh`. The plan adds `swarmGithubHooksDedup`
+   (`datastore.entities.create` only; `terraform/bootstrap/github_hooks_role.tf`)
+   and adds it to the deployer's grantable project roles
+   (`terraform/bootstrap/deployer_conditions.tf`). Do this first: step 3's
+   binding names the role, and the deployer may grant only what that list holds.
+
+3. **The receiver and its IAM (a release, held at dev-iam).** Set in
    `dev.tfvars`:
 
    ```hcl
@@ -336,15 +348,15 @@ In this order:
 
    The plan adds the service, `allUsers` → `roles/run.invoker` on it, the
    webhook secret's container (no version) with the sweeper account as its one
-   accessor, `roles/datastore.user` for the sweeper account, and the TTL policy
+   accessor, the sweeper account's binding to `swarmGithubHooksDedup`, and the TTL policy
    on `github_deliveries.expires_at`. The IAM rows wait at the `dev-iam` gate
    for the owner. The service starts without the secret's value: it reads it
-   at run time, so until step 3 every signed delivery is a 503, not a revision
+   at run time, so until step 4 every signed delivery is a 503, not a revision
    that fails to start. `terraform -chdir=terraform/infra output github_hooks`
    then names the secret (`webhook_secret`: `swarm-github-app-webhook-secret`,
    declared in `terraform/infra/github_hooks.tf`) and the URL (`webhook_url`).
 
-3. **Store the webhook secret.** Choose it on the App's settings page, in the
+4. **Store the webhook secret.** Choose it on the App's settings page, in the
    **Webhook secret** field (a long random string; GitHub never shows it again
    once saved), and paste the same value at the hidden prompt:
 
@@ -366,7 +378,7 @@ In this order:
    The first prints one version; the second prints the rollup sweeper account
    alone.
 
-4. **Tick the webhook at GitHub.** On the App's settings page:
+5. **Tick the webhook at GitHub.** On the App's settings page:
 
    | field | value |
    |---|---|
@@ -382,7 +394,7 @@ In this order:
    two secrets differ: store it again) or a 503 (the receiver has not read the
    secret yet: it re-reads at most once a minute; wait one and redeliver).
 
-5. **A registration opts in.** A push is read only for a repository
+6. **A registration opts in.** A push is read only for a repository
    registration whose `on_change` is `webhook` ("poll and push");
    `poll` stays poll only, and `off` neither. Set it with the registration's
    `PATCH /v1/repositories/<repo_id>` and the body

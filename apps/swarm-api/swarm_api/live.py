@@ -121,7 +121,13 @@ from .childkey import AttemptTuple, verify_proof
 from .children import ChildService, _AttemptFields, _lease_is_live, parse_body
 from .codec import event_to_firestore
 from .errors import ApiError, NotFound, ValidationFailed
-from .judgment import DEFAULT_BACKEND, TYPESAFE_BACKEND, JudgmentSettings, unavailable_code
+from .judgment import (
+    DEFAULT_BACKEND,
+    TYPESAFE_BACKEND,
+    JudgmentSettings,
+    settings_mac,
+    unavailable_code,
+)
 from .provider_keys import task_key_scope
 from .validation import BROWSER_TOOL_INPUT_KEY, TYPESAFE_PROVIDER
 from .handoff import (
@@ -1802,7 +1808,8 @@ class LiveService:
         with no key for the submitter or the tenant, else None. The backend
         is read as the dispatcher reads it -- unreadable is the default."""
         try:
-            backend = JudgmentSettings(self._db, now=self._now).read(task.tenant_id)["judgment_backend"]
+            judgment = JudgmentSettings(self._db, now=self._now, mac=settings_mac(self._settings))
+            backend = judgment.read(task.tenant_id)["judgment_backend"]
         except Exception:  # noqa: BLE001 - a read never fails on this, as dispatch does not
             backend = DEFAULT_BACKEND
         key = backend == TYPESAFE_BACKEND and task_key_scope(

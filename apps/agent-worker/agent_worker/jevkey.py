@@ -66,6 +66,8 @@ from typing import Any, Collection, Mapping
 from swarm_common.identity import tenant_id_for_user
 from swarm_common.models import Tenant, utcnow
 
+from . import indexrun
+
 #: The provider-key provider (swarm_api.validation.TYPESAFE_PROVIDER).
 PROVIDER = "typesafe"
 
@@ -138,6 +140,29 @@ def is_set(db: Any, secret: str, *, call_options: Mapping[str, Any] | None = Non
     return bool(snap.exists and (snap.to_dict() or {}).get("set") is True)
 
 
+def _route_present(state: Any, tenant_id: str, submitted_by: Any) -> tuple[str | None, set[str]]:
+    """`(confirmed personal tenant, secret ids set)` from `GET state/context`.
+
+    swarm-api confirms the personal tenant by the rule
+    `confirmed_personal_tenant` applies (`kind: user`, the principal the
+    signed submitter) and serves the `provider_keys` records of this tenant
+    and of that one only. The personal id is still re-derived here from the
+    submitter, so an answer naming any other tenant's key is not read.
+    """
+    context = indexrun.route_context(state)
+    email = submitted_by.strip().lower() if isinstance(submitted_by, str) else ""
+    served = context.get("personal_tenant_id")
+    personal = served if "@" in email and served == tenant_id_for_user(email) else None
+    records = context.get("provider_keys")
+    records = records if isinstance(records, Mapping) else {}
+    ids = {secret_id(tenant_id)}
+    if personal:
+        ids.add(secret_id(personal))
+    present = {s for s in ids
+               if isinstance(records.get(s), Mapping) and records[s].get("set") is True}
+    return personal, present
+
+
 def _key_from(payload: str) -> str:
     text = payload.strip()
     if text.startswith("{"):
@@ -153,12 +178,22 @@ def _key_from(payload: str) -> str:
 def resolve(*, db: Any, client: Any, tenant_id: str, submitted_by: Any, logger: Any,
             call_options: Mapping[str, Any] | None = None) -> tuple[str, str, str] | None:
     """`(key, scope, secret id)` for this task, or None. The key is registered
-    for redaction before it is returned; it is never logged."""
-    personal = confirmed_personal_tenant(db, submitted_by, call_options=call_options)
-    ids = {secret_id(tenant_id)}
-    if personal:
-        ids.add(secret_id(personal))
-    present = {s for s in ids if is_set(db, s, call_options=call_options)}
+    for redaction before it is returned; it is never logged.
+
+    A tenant switched to the state routes passes its attempt's state client
+    as `db` (`indexrun.state_routes`): which keys are set, and the confirmed
+    personal tenant, come from one `GET state/context`, and no Firestore call
+    is made. The key itself is still read from Secret Manager, as this
+    worker's own account: no route serves a credential."""
+    state = indexrun.state_routes(db)
+    if state is not None:
+        personal, present = _route_present(state, tenant_id, submitted_by)
+    else:
+        personal = confirmed_personal_tenant(db, submitted_by, call_options=call_options)
+        ids = {secret_id(tenant_id)}
+        if personal:
+            ids.add(secret_id(personal))
+        present = {s for s in ids if is_set(db, s, call_options=call_options)}
     for scope, secret in candidates(tenant_id, personal, present):
         try:
             key = _key_from(client.access(secret))

@@ -40,6 +40,8 @@ from swarm_common.states import (
     can_transition,
 )
 
+from .backends import TENANT_NAMESPACE_MISMATCH, _namespace_mismatch_due, sanitize_name
+from .config import ReconcilerConfig
 from .model import (
     DISK_EVICTIONS_KEY,
     STARTUP_REFUNDS_KEY,
@@ -188,9 +190,14 @@ class ControlStore:
         logger: Any,
         txn_runner: Any | None = None,
         filter_factory: Callable[[str, str, Any], Any] | None = None,
+        namespace_prefix: str = ReconcilerConfig.namespace_prefix,
     ) -> None:
         self._db = db
         self._log = logger
+        # The class default rather than a second literal: `ReconcilerConfig`
+        # reads no override for it, and check-contract-parity.sh section 6
+        # holds that one spelling to the dispatcher's template.
+        self._namespace_prefix = namespace_prefix
         self._txn = txn_runner or FirestoreTransactionRunner(db)
         self._filter = filter_factory or _field_filter
 
@@ -800,29 +807,83 @@ class ControlStore:
         return set(self.tenant_namespaces())
 
     def tenant_namespaces(self) -> dict[str, str | None]:
-        """Every registered tenant, and the Kubernetes namespace it RECORDS.
+        """Every registered tenant, and the Kubernetes namespace DERIVED for it.
 
-        None where the document records no namespace. The value is carried
-        rather than re-derived because the dispatcher reads it first
-        (`GkeJobDispatcher.namespace_for` prefers `tenant.namespace` over its own
-        template when it is inside `swarm-tenant-`), so it is where that
-        tenant's Jobs actually are. It is carried UNCHECKED: this is the raw
-        document value, and `GkeBackend.namespace_for` applies the same
-        precedence and the same verification to this pair -- a value outside
-        the prefix is ignored there and logged as `tenant_namespace_mismatch`.
+        `sanitize_name(<prefix><tenant id>)`, the dispatcher's own naming,
+        whatever `tenants/<id>.namespace` says. That field is a record, not
+        authority: a tenant's own worker can write its tenant document today
+        (docs/design/tenant-settings-integrity.md §1.3 row 2), and carrying the
+        value on let tenant A, by recording `swarm-tenant-B`, move what this
+        reconciler reads, protects and attributes for A into B's namespace --
+        `GkeBackend.namespace_for` keeps any stored value inside the prefix.
+        Handing the backend the derived name makes its check a no-op here. A
+        stored value that disagrees is logged once per tenant
+        (`_checked_namespace`). None only for an id that names nothing, where
+        `namespace_for` raises as it did before.
 
         This is how the reconciler learns which namespaces to read without a
         cluster-scope list: it asks the control plane which tenants exist rather
         than asking the cluster which namespaces do.
         """
-        tenants: dict[str, str | None] = {}
+        recorded: dict[str, Any] = {}
         for doc in self._db.collection("tenants").stream():
             data = doc.to_dict() or {}
             tenant_id = data.get("tenant_id") or doc.id
             if tenant_id:
-                recorded = data.get("namespace")
-                tenants[str(tenant_id)] = str(recorded) if recorded else None
-        return tenants
+                recorded[str(tenant_id)] = data.get("namespace")
+        derived = {tenant: self._derived_namespace(tenant) for tenant in recorded}
+        owners = {namespace: tenant for tenant, namespace in derived.items() if namespace}
+        return {
+            tenant: self._checked_namespace(tenant, recorded[tenant], derived[tenant], owners)
+            for tenant in recorded
+        }
+
+    def _derived_namespace(self, tenant_id: str) -> str | None:
+        try:
+            return sanitize_name(f"{self._namespace_prefix}{tenant_id}")
+        except ValueError:
+            return None
+
+    def _checked_namespace(
+        self, tenant_id: str, stored: Any, derived: str | None, owners: dict[str, str]
+    ) -> str | None:
+        """`derived`, always; a stored value that disagrees is logged once per tenant.
+
+        The event and its once-per-tenant-per-hour dedupe are the backend's
+        (`reconciler.backends`), so the monitoring module's
+        `tenant_namespace_mismatch` metric counts it with no change. ERROR,
+        which that alert pages on, when the stored value is another registered
+        tenant's namespace or lies outside the prefix; WARNING for any other
+        rename inside it (a `-canary` namespace `kubernetes/render.py
+        --namespace` allows), which is counted, not paged on.
+        """
+        stored = str(stored) if stored else ""
+        if not stored or derived is None or stored == derived:
+            return derived
+        if not _namespace_mismatch_due(tenant_id):
+            return derived
+        prefix = self._namespace_prefix
+        names_tenant = owners.get(stored)
+        outside = not (stored.startswith(prefix) and len(stored) > len(prefix))
+        fields = {
+            "event": TENANT_NAMESPACE_MISMATCH,
+            "tenant_id": tenant_id,
+            "stored": stored,
+            "derived": derived,
+            "used": derived,
+            "names_tenant": names_tenant,
+        }
+        message = (
+            f"{TENANT_NAMESPACE_MISMATCH} tenant={tenant_id} stored={stored!r} "
+            f"derived={derived!r}: IGNORED, the reconciler reads the derived namespace. "
+            "Repair the tenant document (scripts/tenant-namespace-audit.sh)"
+        )
+        if names_tenant or outside:
+            reason = f"tenant {names_tenant!r}'s namespace" if names_tenant else f"outside {prefix!r}"
+            self._log.error(f"{message}; it is {reason}", **fields)
+        else:
+            self._log.warning(message, **fields)
+        return derived
 
     # -- writes ----------------------------------------------------------
     def invalidate_generation(

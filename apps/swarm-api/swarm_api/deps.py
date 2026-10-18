@@ -39,6 +39,7 @@ from .executioncancel import (
     PubSubExecutionCanceller,
 )
 from .forge import FirestoreSlotIndex, ForgeTokens, GitHubIssues, SecretManagerForgeTokens
+from .forge_installation import InstallationSource, build_installation_tokens
 from .forgewrite import GitHubWriter
 from .groups import CloudIdentityGroups, MembershipResolver
 from .inspect import InspectionService
@@ -98,6 +99,13 @@ class AppContext:
     #: its pull request's keyword block (`issuesync`) -- with the same
     #: tenant token, the same pinned host and no redirects.
     forge_writer: GitHubWriter | None = None
+    #: The App's installation tokens for BACKGROUND reads (#1483,
+    #: swarm_api.forge_installation): the merge wake, the issue run's CI read,
+    #: the stranded-PR sweep and the index's head poll read with one when the
+    #: repository's owner has an installation, so they spend the App's quota
+    #: rather than a person's. None when `forge_installation_reads` is off;
+    #: every read then uses `forge_tokens`. Writes always use `forge_tokens`.
+    forge_installations: InstallationSource | None = None
     #: Asks the reconciler to stop a cancelled task's execution (#627). Builds
     #: no client until a cancel needs it; tests inject a recorder.
     executions: ExecutionCanceller = NoExecutionCanceller()
@@ -161,6 +169,10 @@ def build_context(
     forge_tokens: ForgeTokens | None = None,
     forge: GitHubIssues | None = None,
     forge_writer: GitHubWriter | None = None,
+    # The background reads' installation tokens (#1483). `_MISSING` means
+    # "from the settings": built over the App's key when
+    # `forge_installation_reads` is on (it builds no client), None when off.
+    forge_installations: InstallationSource | None | object = _MISSING,
     executions: ExecutionCanceller | None = None,
     # The purge's bucket deleter (purge.py). `_MISSING` means "from the
     # settings", as for `objects`; tests inject an in-memory one.
@@ -253,6 +265,12 @@ def build_context(
         forge_tokens=forge_tokens,
         forge=forge or GitHubIssues(),
         forge_writer=forge_writer,
+        forge_installations=(
+            (build_installation_tokens(db, settings.project_id, now=now)
+             if settings.forge_installation_reads else None)
+            if forge_installations is _MISSING
+            else forge_installations  # type: ignore[arg-type]
+        ),
         executions=executions or _execution_canceller(settings),
         artifact_purger=(
             build_artifact_purger(

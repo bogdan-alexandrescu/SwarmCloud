@@ -118,18 +118,41 @@ def _registration(db: Any, tenant_id: str, repository_url: str | None,
     return data if data is not None and data.get("tenant_id") == tenant_id else None
 
 
+def _read(db: Any, tenant_id: str, repository_url: str | None,
+          options: Mapping[str, Any]) -> tuple[Mapping[str, Any], Mapping[str, Any] | None]:
+    """`(workspace_settings, registration or None)`, by either path."""
+    from agent_worker import indexrun
+
+    state = indexrun.state_routes(db)
+    if state is None:
+        snap = db.collection(WORKSPACE_SETTINGS_COLLECTION).document(tenant_id).get(**options)
+        workspace = (snap.to_dict() or {}) if snap.exists else {}
+        return workspace, _registration(db, tenant_id, repository_url, options)
+    served = indexrun.route_context(state).get("workspace_settings")
+    workspace = served if isinstance(served, Mapping) else {}
+    where = indexrun.target(tenant_id, repository_url)
+    if isinstance(where, str):
+        return workspace, None
+    found = indexrun.route_repository(state, where)
+    return workspace, None if isinstance(found, str) else found[0]
+
+
 def setup(*, work: Path, db: Any, tenant_id: str, repository_url: str | None,
           call_options: Mapping[str, Any] | None = None,
           environ: Mapping[str, str] | None = None, log: Any = None) -> dict[str, str]:
     """The worker's half: `{CONFIG_ENV: path}` when this attempt may ask Jev, else {}.
 
     An unregistered repository, or one registered by another tenant, reads as
-    "no override"; the workspace's own opt-in still decides."""
+    "no override"; the workspace's own opt-in still decides.
+
+    A tenant switched to the state routes passes its attempt's state client
+    as `db` (`indexrun.state_routes`): the workspace's settings from
+    `state/context`, the registration from `state/repository`, and no
+    Firestore call.
+    """
     try:
         options = dict(call_options or {})
-        snap = db.collection(WORKSPACE_SETTINGS_COLLECTION).document(tenant_id).get(**options)
-        workspace = (snap.to_dict() or {}) if snap.exists else {}
-        registration = _registration(db, tenant_id, repository_url, options)
+        workspace, registration = _read(db, tenant_id, repository_url, options)
         given = judge_settings(workspace, registration)
         attempt_dir = Path(work).parent
         private = attempt_dir / register.KEY_DIR

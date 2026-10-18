@@ -328,9 +328,13 @@ def test_the_declaring_profiles_and_no_declaration_names_execution_detail():
     # indexer is claude-code on the indexer image (contract request 48), and
     # claude-code-browser on the browser image (contract request 67), which
     # also declares the live browser's tool by name (contract request 77).
-    for name in ("claude-code", "claude-code-review", "codex", "indexer"):
+    # Contract request 88 gave claude-code, codex and claude-code-browser the
+    # registered MCP servers by name, and the review and indexer profiles not.
+    for name in ("claude-code-review", "indexer"):
         assert set(_declared(name)) == {"issue"}, (name, _declared(name))
-    assert set(_declared("claude-code-browser")) == {"issue", "browser_tool"}
+    for name in ("claude-code", "codex"):
+        assert set(_declared(name)) == {"issue", "mcp_servers"}, (name, _declared(name))
+    assert set(_declared("claude-code-browser")) == {"issue", "browser_tool", "mcp_servers"}
     for name in RUNNER_PROFILES:
         named = set(_declared(name)) & set(_NEVER)
         if name == "generic":
@@ -375,7 +379,13 @@ def test_every_declared_input_is_one_its_runner_reads():
     """A declared key the runner never reads is accepted and then ignored, which
     is the silent drop the refusals above exist to prevent. The runner is found
     from the catalogue's own `runner_argv` (`python -m agent_worker.runners.X`),
-    and its source is read, never imported."""
+    and its source is read, never imported.
+
+    ONE NAMED EXEMPTION: `mcp_servers` (contract request 88) is declared ahead
+    of the worker lane that reads it (request 88's "What it would break": lane
+    MCP-SUBMIT refuses it with `mcp_unavailable` while `SWARM_MCP_SERVERS` is
+    off). Delete the exemption when the worker reads it."""
+    unread_until_the_worker_lane = {"mcp_servers"}
     checked = 0
     for name in RUNNER_PROFILES:
         declared = _declared(name)
@@ -392,6 +402,8 @@ def test_every_declared_input_is_one_its_runner_reads():
         # which reads the four limits by name (`runners/limits.py`).
         limits = _limit_keys() if "resolve_limits(payload" in source else set()
         for key in declared:
+            if key in unread_until_the_worker_lane:
+                continue
             checked += 1
             assert key in limits or re.search(
                 rf"""payload(\.get\(|\[)\s*["']{re.escape(key)}["']""", source
@@ -404,7 +416,7 @@ def test_the_profiles_view_says_what_each_profile_takes():
     from a sentence of prose that can go stale."""
     entries = {entry["name"]: entry for entry in catalogue.catalogue()}
     assert set(entries["mock"]["inputs"]) == set(_declared("mock"))
-    assert set(entries["claude-code"]["inputs"]) == {"issue"}
+    assert set(entries["claude-code"]["inputs"]) == {"issue", "mcp_servers"}
 
 
 def test_swarm_profiles_prints_the_declared_inputs(capsys):

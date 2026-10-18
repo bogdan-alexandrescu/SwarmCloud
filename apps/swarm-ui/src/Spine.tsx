@@ -34,7 +34,7 @@ import { shortcut, typedIntoField } from './shortcuts'
 import type { Capacity, Me, Stats, TaskState } from './types'
 import { ThemeToggle } from './ThemeToggle'
 import { SignOutButton, SignedBackIn } from './SignOut'
-import { iapFronted } from './signoutState'
+import { iapFronted, signingOut } from './signoutState'
 import { AppTakeover, OfflineBanner, wholeAppFault, useOnline } from './AppStates'
 import { feedData, notificationsSnapshot, subscribeNotifications } from './notificationFeed'
 
@@ -1382,6 +1382,9 @@ export function SkyShell({
   // ---- the tenant switch (intake-tenants.html 2A) --------------------------
   const choices = useMemo(() => nameTenants(dataOf(mine) ?? [], who), [mine, who])
   useEffect(() => {
+    // Not after Sign out: its clear is what made `tenant` null, and the old `me`
+    // would write both stores straight back (signoutState.ts `signingOut`).
+    if (signingOut()) return
     if (who !== null && who.tenant.display_name) learnTenantName(who.tenant.tenant_id, who.tenant.display_name)
     // With no tenant chosen, `me` names the default: Recent keeps its list under the bare key (CH-3).
     if (who !== null && tenant === null) learnDefaultTenant(who.tenant.tenant_id)

@@ -68,6 +68,16 @@ A READ THAT DID NOT COME BACK IS NOT AN ANSWER: a 5xx, a 429 or a network
 error is FORGE_UNREACHABLE (503), a check it decides stays `unknown`, and
 nothing is recorded as failed because of it.
 
+A RATE LIMIT IS NOT A REFUSAL (#1483). GitHub answers a spent primary or
+secondary limit with 403 -- its "you may not" status -- or 429, with
+`X-RateLimit-Remaining: 0`, `Retry-After` or a "rate limit" message. On
+2026-10-17 the push test read one as PERMISSION_MISSING and told the owner
+to ask for write access to a repository they administer. Every answer is
+now read by `forge_limits.rate_limit` (the one classification `gittokens`
+uses too) before its status decides anything: a limited one is
+FORGE_UNREACHABLE and `unknown`, and its copy names the reset as a UTC time
+and says nothing about permissions.
+
 AN OWNER REACHED THROUGH A TOKEN (D5). An org whose admin will not install
 the App is enabled by the person's fallback token for it
 (`ForgeApp.store_owner_token`): its `forge_orgs` document says `method: pat`.
@@ -116,6 +126,7 @@ from swarm_common.models import Tenant, utcnow
 
 from .errors import ApiError, Conflict, Forbidden, NotFound, UpstreamUnavailable, ValidationFailed
 from .forge import ForgeTokens, git_basic_headers, repository_from
+from .forge_limits import RateLimit, copy_for, rate_limit
 from .forgeapp import (
     ACTIVE,
     CONNECTIONS,
@@ -258,8 +269,27 @@ class NotConnected(ApiError):
                          "(POST /v1/onboarding/github/authorize) first")
 
 
-def _unreachable(what: str) -> AccessRefused:
-    refused = AccessRefused("FORGE_UNREACHABLE", f"GitHub did not answer {what}", status=503)
+class _RateLimited(_Unanswered):
+    """GitHub answered, but to say it is limiting this account's requests
+    (#1483): a 429, or a 403 `forge_limits.rate_limit` reads as a limit. It
+    IS an `_Unanswered` -- every check it reaches is FORGE_UNREACHABLE and
+    `unknown`, never `missing` -- carrying the reset for the copy."""
+
+    def __init__(self, limit: RateLimit) -> None:
+        super().__init__(f"GitHub answered HTTP {limit.status}: rate limited")
+        self.limit = limit
+
+
+def _unreachable(what: str, unanswered: Exception | None = None) -> AccessRefused:
+    limit = unanswered.limit if isinstance(unanswered, _RateLimited) else None
+    if limit is not None:
+        refused = AccessRefused("FORGE_UNREACHABLE",
+                                f"GitHub is limiting requests for this account, so {what} "
+                                "was not read", status=503)
+        refused.detail["recovery"] = copy_for(limit)
+    else:
+        refused = AccessRefused("FORGE_UNREACHABLE", f"GitHub did not answer {what}",
+                                status=503)
     refused.code = "forge_unreachable"
     return refused
 
@@ -361,22 +391,52 @@ class _AsUser:
 
     A 401 is GitHub saying the token in hand has ended -- a refresh elsewhere
     replaced it. `renew` is asked ONCE per request for a usable one, and the
-    read is made again with it; a second 401 is the answer."""
+    read is made again with it; a second 401 is the answer.
+
+    A RATE LIMIT IS ASKED FIRST (#1483). Every answer is read by
+    `forge_limits.rate_limit` before any caller sees its status, and a
+    limited one raises `_RateLimited`, so no check here can read GitHub's
+    "slow down" 403 as "you may not". `rate_limit` keeps the last limit seen,
+    for the copy. The transport is observed here, not in `_GitHub._call`,
+    because `_call` turns a 429 into an `_Unanswered` without its headers."""
 
     def __init__(self, github: _GitHub, token: str,
                  renew: Callable[[], str | None] | None = None) -> None:
-        self._github = github
+        self._transport = github._send
+        self._github = _GitHub(self._observe, github._timeout)
         self._token = token
         self._renew = renew
+        self._limited: RateLimit | None = None
+        self.rate_limit: RateLimit | None = None
+
+    def _observe(self, method: str, url: str, headers: dict[str, str], body: bytes | None,
+                 timeout: float) -> HttpAnswer:
+        answer = self._transport(method, url, headers, body, timeout)
+        self._limited = rate_limit(answer)
+        return answer
+
+    def _answer(self, make: Callable[[str], HttpAnswer], token: str) -> HttpAnswer:
+        self._limited = None
+        try:
+            answer = make(token)
+        except _Unanswered:
+            if self._limited is None:
+                raise
+            self.rate_limit = self._limited
+            raise _RateLimited(self._limited) from None
+        if self._limited is not None:
+            self.rate_limit = self._limited
+            raise _RateLimited(self._limited)
+        return answer
 
     def _send(self, make: Callable[[str], HttpAnswer]) -> HttpAnswer:
-        answer = make(self._token)
+        answer = self._answer(make, self._token)
         if answer.status == 401 and self._renew is not None:
             renew, self._renew = self._renew, None
             fresh = renew()
             if fresh:
                 self._token = fresh
-                answer = make(fresh)
+                answer = self._answer(make, fresh)
         return answer
 
     def get(self, path: str) -> HttpAnswer:
@@ -469,6 +529,16 @@ def _installation_owner(item: Any) -> _Owner | None:
                   repository_selection=selection if selection in ("all", "selected") else None,
                   pull_requests=permissions.get("pull_requests")
                   if isinstance(permissions.get("pull_requests"), str) else None)
+
+
+def _limited_refusal(answer: HttpAnswer, owner: str, repo: str) -> AccessRefused | None:
+    """FORGE_UNREACHABLE for a rate-limited answer, before any reading of
+    its 403 as a refusal (#1483); None for any other answer."""
+    limit = rate_limit(answer)
+    if limit is None:
+        return None
+    what = f"{owner}/{repo}" if repo else f"the list of {owner}'s repositories"
+    return _unreachable(what, _RateLimited(limit))
 
 
 def _sso_owner(answer: HttpAnswer) -> str | None:
@@ -816,8 +886,8 @@ class AccessService:
             try:
                 installed = github.installations()
                 orgs = github.orgs()
-            except _Unanswered:
-                raise _unreachable("the list of your installations") from None
+            except _Unanswered as unanswered:
+                raise _unreachable("the list of your installations", unanswered) from None
             except _Refused as refused:
                 raise AccessRefused("REFRESH_FAILED", "GitHub refused the list of your "
                                     f"installations ({refused.error})", login=own_login,
@@ -922,8 +992,8 @@ class AccessService:
         with self._as_user(caller) as (github, _held):
             try:
                 installed = github.installations()
-            except _Unanswered:
-                raise _unreachable("the list of your installations") from None
+            except _Unanswered as unanswered:
+                raise _unreachable("the list of your installations", unanswered) from None
             except _Refused as refused:
                 raise AccessRefused("REFRESH_FAILED", "GitHub refused the list of your "
                                     f"installations ({refused.error})", status=502) from None
@@ -1164,8 +1234,8 @@ class AccessService:
                         capped = True
                     window = matched[(page - 1) * PAGE_SIZE: page * PAGE_SIZE]
                     more = len(matched) > page * PAGE_SIZE
-            except _Unanswered:
-                raise _unreachable(f"the list of {owner}'s repositories") from None
+            except _Unanswered as unanswered:
+                raise _unreachable(f"the list of {owner}'s repositories", unanswered) from None
         entries = self._entries(caller, owner, window)
         self._db.collection(ORGS).document(org_id_for(caller.tenant_id, caller.key, owner)) \
             .update({"sso": "ok", "checked_at": self._now()})
@@ -1186,6 +1256,9 @@ class AccessService:
 
     def _refusal(self, answer: HttpAnswer, owner: str, repo: str,
                  installation_id: int | None) -> AccessRefused:
+        limited = _limited_refusal(answer, owner, repo)
+        if limited is not None:
+            return limited
         sso = _sso_owner(answer)
         if sso is not None:
             org = sso or owner
@@ -1206,7 +1279,11 @@ class AccessService:
         """`_refusal` for an owner reached through the App; for one reached
         through the person's token (D5), §2.3's token causes instead: SSO,
         the classic-token policy, a fine-grained token not yet approved, and
-        otherwise the token's own lack of access to what was read."""
+        otherwise the token's own lack of access to what was read. A rate
+        limit is none of those, and is asked first (#1483)."""
+        limited = _limited_refusal(answer, owner, repo)
+        if limited is not None:
+            return limited
         if not via_token(org):
             return self._refusal(answer, owner, repo, (org or {}).get("installation_id"))
         sso = _sso_owner(answer)
@@ -1276,8 +1353,8 @@ class AccessService:
         with self._as_owner(caller, org) as (github, held):
             try:
                 answer = github.get(f"/repos/{quote(owner, safe='')}/{quote(repo, safe='')}")
-            except _Unanswered:
-                raise _unreachable(f"the read of {owner}/{repo}") from None
+            except _Unanswered as unanswered:
+                raise _unreachable(f"the read of {owner}/{repo}", unanswered) from None
             # Names only: the credential, value and all, stays inside the `with`.
             secret_name, login = held.secret_name, held.login or ""
         if answer.status != 200:
@@ -1408,8 +1485,10 @@ class AccessService:
             elif read is None:
                 refusal = self._owner_refusal(answer, owner, repo, org)
                 code = refusal.detail["failure_code"]
+                # Only a refusal is `missing`; a rate limit is not one (#1483).
+                state = UNKNOWN if code == "FORGE_UNREACHABLE" else MISSING
                 for name in wanted:
-                    results[name] = {"state": MISSING, "code": code, "checked_at": now}
+                    results[name] = {"state": state, "code": code, "checked_at": now}
                 failures.append({"check": "repository", "code": code,
                                  "copy": refusal.detail["recovery"],
                                  "url": refusal.detail.get("url")})
@@ -1455,6 +1534,13 @@ class AccessService:
                     pushed = self._push_test(caller, repo_id, github, owner, repo,
                                              read.default_branch, now, results, failures,
                                              login=login)
+            limit = github.rate_limit
+        if limit is not None:
+            # GitHub limited this request's reads (#1483): what it left
+            # unknown says so, with the reset, and nothing about permissions.
+            for failure in failures:
+                if failure.get("code") == "FORGE_UNREACHABLE":
+                    failure["copy"] = copy_for(limit)
         stored = {**(doc.get("checks") or {}), **results}
         update = {"checks": stored, "verified_at": now}
         self._db.collection(GRANTS).document(
@@ -1481,7 +1567,9 @@ class AccessService:
         whether it was left behind, or None when nothing was created.
 
         A 403 or 404 on create is `missing` (PERMISSION_MISSING); a 5xx, a
-        429 or no answer is FORGE_UNREACHABLE and `unknown`, never `missing`.
+        rate limit (a 429, or a 403 `forge_limits.rate_limit` reads as one:
+        `_AsUser` raises it before any status here is read; #1483) or no
+        answer is FORGE_UNREACHABLE and `unknown`, never `missing`.
         A delete that fails leaves the push proven (`ok`) and answers
         `leftover: true` with the branch, so the person can delete it."""
         full = f"{owner}/{repo}"
