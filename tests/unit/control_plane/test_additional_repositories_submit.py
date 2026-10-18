@@ -258,7 +258,9 @@ def test_a_persons_task_pins_each_repository_with_their_slot_and_signs_it_at_for
     assert set(forge_tokens.reads) == {alice_slot}
     assert {token for _, token in github.calls} == {forge_tokens.values[alice_slot]}
     # Signed over the list (contract request 96): a rewritten commit fails.
-    assert doc["spec_format"] == SPEC_FORMAT == 4
+    # At 4, the oldest format that covers the list, not at SPEC_FORMAT: a
+    # later format (5, contract request 104) adds fields this task does not set.
+    assert doc["spec_format"] == 4 <= SPEC_FORMAT
     assert signer.verifies(doc, task_id)
     doc["additional_repositories"][0]["commit"] = _sha("f")
     assert not signer.verifies(doc, task_id)
