@@ -160,6 +160,18 @@ the chain above, so its plan reads back, and digests, as it did before.
 A step that joins several dependencies starts from the last one's branch with
 the others' diffs applied, so it may add code using their work but must not
 edit it -- see `_compile_staged` for why, and for what would lift the limit.
+
+MODEL CLASSES (#1435, docs/design/model-per-step.md §4.11, owner decisions
+2026-10-17). `RunCreate.model_class` is the PLANNER's class; absent, the
+planner runs its profile's default (`opus`). The planner may write a
+`model_class` on each plan step (R1 (a)): it is part of the plan, so it is
+inside `plan_digest` and the person approving the plan approves it, and it is
+copied onto that step's workflow step. A step that names none, and the
+compiled review and fix, carry no class and run the profile's default,
+`opus`: a `haiku` plan never makes a `haiku` review. Until the submission
+schemas carry the field (lane MODEL-API, `model_classes_carried`) the planner
+is not told about it and a plan naming one is refused, so no approved plan
+can compile to a workflow the schema refuses (R4: lane order, no flag).
 """
 
 from __future__ import annotations
@@ -188,7 +200,7 @@ from swarm_common.models import utcnow
 from .errors import Conflict, Forbidden, NotFound, ValidationFailed
 from .redaction import redact_detail
 from .schemas import TaskCreate, WorkflowCreate, WorkflowStepCreate
-from swarm_common.profiles import RUNNER_PROFILES
+from swarm_common.profiles import MODEL_CLASSES, RUNNER_PROFILES, step_model_class
 
 from . import sessiontag
 from .validation import (
@@ -393,6 +405,16 @@ class AutoMergeUnavailable(ValidationFailed):
     code = "auto_merge_unavailable"
 
 
+class UnknownModelClass(ValidationFailed):
+    """A class not in `MODEL_CLASSES` (docs/design/model-per-step.md §4.4)."""
+    code = "unknown_model_class"
+
+
+class ModelClassNotAccepted(ValidationFailed):
+    """A class the planner's profile does not run (§4.4)."""
+    code = "model_class_not_accepted"
+
+
 def assert_run_transition(frm: RunState, to: RunState) -> None:
     if to not in RUN_TRANSITIONS[frm]:
         raise InvalidRunTransition(
@@ -454,6 +476,20 @@ class PlanOverlap(_PlanModel):
         return self
 
 
+def model_classes_carried() -> bool:
+    """Whether the submission schemas carry `model_class` onto a task and a
+    workflow step (lane MODEL-API of docs/design/model-per-step.md §6).
+
+    Read at call time from the schemas themselves, not a flag (owner decision
+    R4: lane order alone keeps the classes unreachable). Until both carry it,
+    a class written on a plan step would compile to a workflow the schema
+    refuses after a person approved it, so the planner is not offered the key
+    and a plan naming one is refused while it is still being shown.
+    """
+    return "model_class" in TaskCreate.model_fields and (
+        "model_class" in WorkflowStepCreate.model_fields)
+
+
 class PlanStep(_PlanModel):
     step_id: str = Field(min_length=1, max_length=40, pattern=r"^[a-z0-9][a-z0-9-]*$")
     title: str = Field(min_length=1, max_length=200)
@@ -468,6 +504,29 @@ class PlanStep(_PlanModel):
     #: Ids of EARLIER steps of this plan whose code or files this one needs.
     #: Absent on every step means today's chain; see `plan_stages`.
     depends_on: list[str] | None = Field(default=None, max_length=MAX_PLAN_STEPS)
+    #: The model class this step runs (#1435, R1 (a)): one of the
+    #: `STEP_PROFILE`'s classes, written by the planner. Inside the digest, so
+    #: approved with the plan. Absent: the profile's default (`opus`).
+    model_class: str | None = Field(default=None, min_length=1, max_length=32)
+
+    @field_validator("model_class")
+    @classmethod
+    def _accepted_class(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value is None:
+            return value
+        if not model_classes_carried() and not (info.context or {}).get(_STORED):
+            raise ValueError(
+                "model_class is not yet accepted on a plan step: workflow steps do not "
+                "carry it yet; leave it out and the step runs the default class"
+            )
+        try:
+            step_model_class(RUNNER_PROFILES[STEP_PROFILE], value)
+        except ValueError:
+            raise ValueError(
+                f"model_class {value!r} is not one of "
+                f"{list(RUNNER_PROFILES[STEP_PROFILE].model_classes or MODEL_CLASSES)}"
+            ) from None
+        return value
 
     @field_validator("step_id")
     @classmethod
@@ -1254,6 +1313,38 @@ _PLAN_SHAPE = (
 )
 
 
+#: The step key `_PLAN_SHAPE` gains once the schemas carry a class
+#: (`model_classes_carried`), and what the planner is told about it (#1435,
+#: R1 (a)). Absent until then, so the prompt is byte for byte today's.
+_PLAN_SHAPE_LAST = '              "depends_on": ["<step_id of an earlier step>"]}]}\n'
+_PLAN_SHAPE_CLASS = (
+    '              "depends_on": ["<step_id of an earlier step>"],\n'
+    '              "model_class": "<one of the classes below, or leave it out>"}]}\n'
+)
+
+
+def _plan_shape() -> str:
+    if not model_classes_carried():
+        return _PLAN_SHAPE
+    return _PLAN_SHAPE.replace(_PLAN_SHAPE_LAST, _PLAN_SHAPE_CLASS)
+
+
+def _model_class_rules() -> str:
+    """The paragraph on `model_class`, or nothing while it is not carried."""
+    if not model_classes_carried():
+        return ""
+    profile = RUNNER_PROFILES[STEP_PROFILE]
+    return (
+        '"model_class" picks the model a step runs, one of '
+        + ", ".join(f'"{name}"' for name in profile.model_classes)
+        + ". Leave it out for coding and implementation, which run "
+        + f'"{profile.default_model_class}"; name "sonnet" or "haiku" only for a mechanical '
+        "step -- reformatting, summarizing, classifying -- that needs no deep reasoning. "
+        "The person approving the plan sees each step's class. The review and the fix "
+        "always run the default.\n\n"
+    )
+
+
 def _utf8(text: str) -> int:
     return len(text.encode("utf-8"))
 
@@ -1415,7 +1506,7 @@ def planner_prompt(
     )
     instructions = (
         f"Write exactly one file, $SWARM_ARTIFACTS_DIR/{PLAN_FILE}, holding a JSON object:\n"
-        + _PLAN_SHAPE
+        + _plan_shape()
         + '"requirements" lists every requirement the issue states, one short sentence '
         "each: the review checks the change against it, and the pull request closes the "
         'issue only if every one is delivered. "mode" is "single" when one engineer can '
@@ -1447,7 +1538,8 @@ def planner_prompt(
         "without it starts at once. "
         'If you leave "depends_on" out of every step, the steps run one after '
         "another, each starting from the previous step's work.\n\n"
-        "No other keys. A person reads this plan and approves it before any step runs."
+        + _model_class_rules()
+        + "No other keys. A person reads this plan and approves it before any step runs."
         + _READINESS
     )
     context = context or ""
@@ -1466,13 +1558,19 @@ def planner_prompt(
 def planner_task(
     ref: IssueRef, run_id: str, open_work: Mapping[str, Any] | None = None,
     context: str | None = None, claude_session: str | None = None,
+    model_class: str | None = None,
 ) -> TaskCreate:
     """The planner: an ordinary task, signed by `submit_tasks` like any other.
 
     The index sections are in the prompt, not a runner input: `issue` is the
     only input `claude-code` declares, and the profiles are frozen (request A
     of repo-index.md §6.3 is unfiled, owner decision Q7).
+
+    `model_class` is `RunCreate.model_class` (#1435): set only when the caller
+    named one, so a run that names none submits exactly today's planner, which
+    runs the profile's default (`opus`) and signs at its old format.
     """
+    classed = {"model_class": model_class} if model_class is not None else {}
     return TaskCreate(
         runner_profile=PLANNER_PROFILE,
         input={
@@ -1481,6 +1579,7 @@ def planner_task(
         },
         repository_url=ref.repository_url,
         metadata={"issue_run": run_id, **sessiontag.tag(claude_session)},
+        **classed,
     )
 
 
@@ -1532,6 +1631,29 @@ def auto_merge_availability(default: bool = False) -> dict[str, Any]:
     reason = _auto_merge_refusal()
     return {"available": reason is None, "requires": AUTO_MERGE_REQUIRES, "reason": reason,
             "default": bool(default) and reason is None}
+
+
+def refuse_planner_model_class(model_class: str | None) -> None:
+    """`RunCreate.model_class` refused with §4.4's codes before anything is
+    created, rather than as a schema error inside `submit_tasks` after the
+    open work was read. None (the profile's default) is always accepted.
+    """
+    if model_class is None:
+        return
+    profile = RUNNER_PROFILES[PLANNER_PROFILE]
+    if model_class not in MODEL_CLASSES:
+        raise UnknownModelClass(
+            f"model_class {model_class!r} is not one of {list(MODEL_CLASSES)}",
+            detail={"model_classes": list(MODEL_CLASSES)},
+        )
+    try:
+        step_model_class(profile, model_class)
+    except ValueError:
+        raise ModelClassNotAccepted(
+            f"the planner ({PLANNER_PROFILE}) does not run model_class {model_class!r}; "
+            f"it runs {list(profile.model_classes)}",
+            detail={"model_classes": list(profile.model_classes)},
+        ) from None
 
 
 def refuse_auto_merge(auto_merge: bool) -> None:
@@ -1851,6 +1973,7 @@ def compile_plan(run: "IssueRun", review_context: str | None = None) -> Workflow
             # `empty_diff` failure. Only the build steps: the review and the
             # integrator keep the default.
             "allow_empty_diff": True,
+            **_step_class(step),
         }
         if previous is not None:
             spec["depends_on"] = [previous]
@@ -1896,6 +2019,16 @@ def compile_plan(run: "IssueRun", review_context: str | None = None) -> Workflow
         },
     })
     return _workflow(run, steps)
+
+
+def _step_class(step: Mapping[str, Any]) -> dict[str, Any]:
+    """`{"model_class": ...}` when the plan step named one, else nothing (#1435).
+
+    Only implementer steps: the review and the fix are compiled with no
+    class, so they run the profile's default (`opus`) whatever the plan's
+    steps named (docs/design/model-per-step.md §4.11).
+    """
+    return {"model_class": step["model_class"]} if step.get("model_class") else {}
 
 
 def _step_prompt(ref: IssueRef, plan: Mapping[str, Any], index: int, step: Mapping[str, Any],
@@ -1961,6 +2094,7 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
             "step_id": _impl_id(sid), "runner_profile": STEP_PROFILE,
             # #646, as in the chain: an empty diff is the step's answer.
             "allow_empty_diff": True,
+            **_step_class(step),
         }
         if not deps:
             context = (
