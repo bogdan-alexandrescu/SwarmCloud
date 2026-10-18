@@ -206,9 +206,14 @@ exit 127
 
 def _catalogue() -> dict:
     """GET /v1/runtimes, as the production route builds it."""
+    from types import SimpleNamespace
+
     from swarm_api.routes.platform import runtimes
 
-    return runtimes(auth=None)
+    # Called directly, not through FastAPI, so the `ctx` dependency is passed by
+    # hand: a deployment that pins no model per class, the route's only read of it.
+    ctx = SimpleNamespace(settings=SimpleNamespace(worker_class_models={}))
+    return runtimes(auth=None, ctx=ctx)
 
 
 def _run(tmp: Path, *, pools: dict | None = None, catalogue: dict | None = None,
