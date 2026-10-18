@@ -14,6 +14,10 @@ token. These pin, with no deployment and no network:
   with the token's own remaining life, and nowhere the agent reads;
 * a call without the token is judged by who refused it: Cloud Run's 403
   passes, the echo server's own 401 means the service is public;
+* Cloud Run hands the container a Google-signed token without its signature,
+  which the relay cannot scrub, so the echo server withholds that echo, and
+  the judge neither calls an echo of it scrubbed nor counts any masked JWT
+  as this credential's unless it sits where only this credential goes;
 * mcp.sh lists the judge's checks in its order, mints before it submits and
   submits nothing without a token;
 * Terraform names no public member for the echo server, and its invoker,
@@ -26,6 +30,7 @@ like a credential").
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import re
@@ -156,3 +161,83 @@ def test_the_echo_server_is_not_public_and_its_invoker_is_the_acceptance_account
     # mcp.sh mints as that same account by default.
     assert re.search(r'^MCP_INVOKER="\$\{SWARM_ACCEPTANCE_MCP_INVOKER:-swarm-accept@\$\{PROJECT_ID\}'
                      r'\.iam\.gserviceaccount\.com\}"$', GROUP.read_text(), re.M)
+
+
+#: Cloud Run's marker for the signature of a Google-signed token its IAM
+#: check admitted (the echo server's REMOVED_SIGNATURES).
+REMOVED = "SIGNATURE_REMOVED_BY_GOOGLE"
+
+
+def _stripped(token: str) -> str:
+    return token.rsplit(".", 1)[0] + "." + REMOVED
+
+
+def test_the_echo_server_withholds_a_token_cloud_run_stripped_of_its_signature() -> None:
+    server = mcp._load_server()
+    signed = mcp.fake_id_token(AUD, INVOKER)
+    claims = hashlib.sha256(signed.split(".")[1].encode()).hexdigest()
+    report = server.whoami(signed, {}, {})
+    assert report["credential_echo"] == signed and report["signature_removed"] is False
+    for unsigned in (_stripped(signed), signed.rsplit(".", 1)[0] + "."):
+        report = server.whoami(unsigned, {}, {})
+        assert report["credential_echo"] is None and report["signature_removed"] is True
+        assert report["jwt_claims_sha256"] == claims
+        assert signed.split(".")[1] not in json.dumps(report)
+
+
+def _evidence(tmp_path: Path, echo_of) -> tuple[dict, dict]:
+    """A working platform's evidence (the selftest's), with the answer's
+    credential fields as the deployed server reports them for `echo_of`."""
+    server = mcp._load_server()
+    values: dict = mcp.mint(tmp_path / "mint")
+    values["credential"] = mcp.fake_id_token(AUD, INVOKER)
+    values["credential_expires_in"] = 3599
+    received = echo_of(values["credential"])
+    report = server.whoami(received, {"nonce": "n-1"}, {
+        server.TASK_HEADER: "task_" + "a" * 20, server.ATTEMPT_HEADER: "att_" + "b" * 20})
+    report["credential_sha256"] = hashlib.sha256(received.encode()).hexdigest()
+    base = tmp_path / "run"
+    base.mkdir()
+    mcp._evidence(base, values, report)
+    for name in ("answer.txt", "0.bin"):
+        (base / "artifacts" / name).write_text(json.dumps(report))
+    return values, {v.check: v for v in mcp.judge(str(base))}
+
+
+def test_a_withheld_echo_of_a_stripped_token_passes_and_is_named_withheld(tmp_path: Path) -> None:
+    _, got = _evidence(tmp_path, _stripped)
+    assert got["credential_seen"].verdict == "PASS"
+    assert "withheld" in got["credential_seen"].reason
+    assert "scrubbed" not in got["credential_seen"].reason
+    assert got["no_leak"].verdict == "PASS", got["no_leak"].reason
+
+
+def test_an_echo_of_the_stripped_token_is_a_leak_and_never_called_scrubbed(tmp_path: Path) -> None:
+    values, _ = _evidence(tmp_path, _stripped)
+    for echo in (_stripped(values["credential"]), values["credential"][:mcp.JWT_KEPT] + mcp.MASK):
+        base = tmp_path / "run"
+        for name in ("answer.txt", "0.bin"):
+            path = base / "artifacts" / name
+            path.write_text(json.dumps({**json.loads(path.read_text()), "credential_echo": echo}))
+        got = {v.check: v for v in mcp.judge(str(base))}
+        assert got["credential_seen"].verdict == "PASS"
+        assert "NOT scrubbed" in got["credential_seen"].reason
+        assert got["no_leak"].verdict == "FAIL"
+
+
+def test_only_a_masked_jwt_where_only_this_credential_goes_is_counted_as_it() -> None:
+    credential = mcp.fake_id_token(AUD, INVOKER)
+    masked = credential[:mcp.JWT_KEPT] + mcp.MASK
+    # Every Google ID token's header starts the same, so its masked form is
+    # every such token's: on its own it names no credential.
+    assert mcp.fake_id_token(AUD, "other@x.iam.gserviceaccount.com")[:mcp.JWT_KEPT] \
+        == credential[:mcp.JWT_KEPT]
+    loose = [f"Authorization: Bearer {masked}", f'{{"token": "{masked}"}}']
+    tied = [f'{{"mcp_credentials": {{"acc-echo": "{masked}"}}}}',
+            f'{{"acc-echo":{{"value":"{masked}"}}}}',
+            f'{{"credential_echo": "{masked}"}}',
+            json.dumps({"content": f'{{"credential_echo": "{masked}"}}'})]
+    blobs = [mcp.Blob("logs", f"item {i}", t.encode()) for i, t in enumerate(loose + tied)]
+    held = mcp._holding(blobs, credential, "acc-echo")
+    assert held == [f"logs item {i} (its masked JWT form)"
+                    for i in range(len(loose), len(loose) + len(tied))]

@@ -12,7 +12,9 @@
 #     from the swarm-verify image, which carries it, on that image's promoted
 #     digest -- no new image, no new build. The server holds nothing: no
 #     store, no secret, and it answers any bearer with only that bearer's own
-#     hash (and the bearer itself, on purpose, for the relay to scrub);
+#     hash (and the bearer itself, on purpose, for the relay to scrub --
+#     except a token Cloud Run handed it without its signature, which the
+#     relay could not scrub, so the server withholds that echo);
 #   * run.invoker on THIS service for the ACCEPTANCE IDENTITY ALONE: the
 #     account terraform/bootstrap/acceptance.tf creates and accept.yml
 #     federates as (vars.GCP_ACCEPT_SA). NOTHING HERE IS PUBLIC (owner

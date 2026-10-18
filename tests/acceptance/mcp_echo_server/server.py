@@ -26,7 +26,16 @@ WHAT IT ANSWERS. MCP streamable HTTP (Q5), stateless, JSON answers only:
                       echoes a credential is the case the relay scrubs
                       (§4.8, "Answers"), so the agent must receive a mask
                       here, and the leak search over every log, artifact,
-                      checkpoint and event must not find the value;
+                      checkpoint and event must not find the value. NULL
+                      for a JWT that came without its signature: Cloud Run's
+                      IAM check hands the container a Google-signed token as
+                      `header.claims.SIGNATURE_REMOVED_BY_GOOGLE`, which is
+                      not the value the relay registered, so the relay
+                      cannot scrub it -- echoing it would hand the agent the
+                      token's claims, and a redacted read would serve them
+                      as a masked JWT;
+  signature_removed   true when that is why the echo is null, so the judge
+                      can tell a withheld echo from a missing one;
   task, attempt       the relay's X-Swarm-Task / X-Swarm-Attempt, so the
                       judge knows which attempt's relay made the call;
   nonce               the argument the agent passed, bounded.
@@ -102,6 +111,18 @@ def jwt_claims_sha256(value: str) -> str | None:
     return hashlib.sha256(parts[1].encode("ascii")).hexdigest()
 
 
+#: What a JWT's signature segment is when the container did not get the
+#: signature: Cloud Run's marker for a Google-signed token its IAM check
+#: admitted, or nothing at all.
+REMOVED_SIGNATURES = ("SIGNATURE_REMOVED_BY_GOOGLE", "")
+
+
+def signature_removed(value: str) -> bool:
+    """True for a compact JWT whose signature the container never received."""
+    parts = value.split(".")
+    return len(parts) == 3 and bool(parts[1]) and parts[2] in REMOVED_SIGNATURES
+
+
 def bearer(header: str | None) -> str | None:
     """The bearer value of one Authorization header, or None when it is not one."""
     if not header:
@@ -125,7 +146,8 @@ def whoami(credential: str, arguments: Any, headers: dict[str, str | None]) -> d
         "server": SERVER_NAME,
         "credential_sha256": credential_sha256(credential),
         "jwt_claims_sha256": jwt_claims_sha256(credential),
-        "credential_echo": credential,
+        "credential_echo": None if signature_removed(credential) else credential,
+        "signature_removed": signature_removed(credential),
         "task": _header_id(headers.get(TASK_HEADER)),
         "attempt": _header_id(headers.get(ATTEMPT_HEADER)),
         "nonce": nonce if isinstance(nonce, str) and NONCE.match(nonce) else None,

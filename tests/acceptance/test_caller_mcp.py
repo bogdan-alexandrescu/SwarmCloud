@@ -29,7 +29,10 @@ on it is what admits the call.
                         Cloud Run hand the container the token without its
                         signature, the sha256 of its claims segment), which
                         the agent cannot compute because it never holds the
-                        value. The answer names this task and one of its
+                        value. A stripped token is not the value the relay
+                        registered, so the relay could not scrub an echo of
+                        it: the server withholds that echo and says so
+                        (`signature_removed`). The answer names this task and one of its
                         attempts (the relay's own headers), the relay logged
                         `mcp_call tools/call whoami` with status 200, and
                         swarm-api recorded the attach.
@@ -41,8 +44,9 @@ on it is what admits the call.
                         nothing is created either way.
   no_leak               the credential -- whole, its signature or its claims
                         segment, or the masked form a JWT takes on a redacted
-                        read -- is in no log route (the runner's and
-                        the agent's four streams of every attempt, and the
+                        read where only this credential goes -- is in no log
+                        route (the runner's and the agent's four streams of
+                        every attempt, and the
                         transcript), no artifact, no checkpoint archive, and
                         no event or Firestore document of the task. CONTROL:
                         a canary minted exactly as the credential is, which
@@ -70,10 +74,14 @@ swarm-api. The canary is `secrets.token_hex(24)`, which no redaction rule
 matches, so finding it through a route proves the route was read and shows
 what was stored. A JWT is not so lucky: the `jwt` rule serves it as its first
 ten characters and a mask, so a token stored in the clear reads back masked.
-The search therefore also looks for that masked form. On a working platform
-it is never there: the worker redacts the per-run credential as a literal,
-which leaves a bare mask and nothing of the token. A route that shows the
-masked form held the token in a path the literal missed.
+The search therefore also looks for that masked form -- but only where
+nothing but this credential goes, under its server's name and in the echo
+server's `credential_echo`. The ten characters kept are the header's, the
+same `eyJhbGciOi` for every Google ID token, so anywhere else the masked
+form names no credential at all. On a working platform it is never there:
+the worker redacts the per-run credential as a literal, which leaves a bare
+mask and nothing of the token. A route that shows the masked form in one of
+those places held the token in a path the literal missed.
 What this does NOT read: Cloud Logging (swarm-verify holds no logging read in
 a project it shares with another team), and Secret Manager (the credential is
 meant to be there until the sweep, §4.4).
@@ -587,27 +595,55 @@ def _found(blobs: Iterable[Blob], value: str) -> list[Blob]:
     return [b for b in blobs if needle in b.data]
 
 
-def credential_needles(credential: str) -> list[tuple[str, bytes]]:
-    """(what, bytes) for every form of the credential a store could hold: the
-    whole value; for a JWT also its signature and its claims segment (each is
-    the token's own, and neither is anything else's), and the masked form a
-    redacted read serves for it, which a literal redaction never leaves."""
-    out = [("the credential", credential.encode("ascii"))]
+#: The JSON key under which only this run's credential is ever stored or
+#: echoed, besides its server's name: the echo server's field for its bearer.
+ECHO_FIELD = "credential_echo"
+#: Cloud Run's signature segment on a Google-signed token its IAM check
+#: admitted: the container gets `header.claims.SIGNATURE_REMOVED_BY_GOOGLE`.
+SIGNATURE_REMOVED = "SIGNATURE_REMOVED_BY_GOOGLE"
+
+
+def _keyed(key: str, value: str) -> re.Pattern[bytes]:
+    """`"<key>": "<value>"` or `"<key>": {"value": "<value>"`, compact or
+    spaced, and as it reads inside a JSON string (a log page's content)."""
+    quote, colon = rb'\\*"', rb"\s*:\s*"
+    inner = quote + rb"value" + quote + colon
+    return re.compile(quote + re.escape(key.encode("ascii")) + quote + colon
+                      + rb"(?:\{\s*" + inner + rb")?" + quote
+                      + re.escape(value.encode("ascii")) + quote)
+
+
+def credential_needles(credential: str, server: str) -> list[tuple[str, re.Pattern[bytes]]]:
+    """(what, pattern) for every form of the credential a store could hold:
+    the whole value; for a JWT also its signature and its claims segment
+    (each is the token's own, and neither is anything else's); and the masked
+    form a redacted read serves for it, which a literal redaction never
+    leaves. The `jwt` rule keeps only the first ten characters, the header's,
+    which every Google ID token shares (`eyJhbGciOi`): on its own that form
+    names no credential. It counts as this one's only where nothing but this
+    credential goes -- the value stored under its server's name (the task's
+    `mcp_credentials`) and the echo server's report of its bearer."""
+    out = [("the credential", re.compile(re.escape(credential.encode("ascii"))))]
     parts = jwt_parts(credential)
     if parts is not None:
         if len(parts[2]) >= 16:
-            out.append(("its signature", parts[2].encode("ascii")))
-        out.append(("its claims", parts[1].encode("ascii")))
-        out.append(("its masked JWT form", (credential[:JWT_KEPT] + MASK).encode("ascii")))
+            out.append(("its signature", re.compile(re.escape(parts[2].encode("ascii")))))
+        out.append(("its claims", re.compile(re.escape(parts[1].encode("ascii")))))
+        masked = credential[:JWT_KEPT] + MASK
+        out.extend(("its masked JWT form", _keyed(key, masked)) for key in (server, ECHO_FIELD))
     return out
 
 
-def _holding(blobs: Iterable[Blob], credential: str) -> list[str]:
+def _holds(data: bytes, needles: list[tuple[str, re.Pattern[bytes]]]) -> list[str]:
+    return list(dict.fromkeys(what for what, needle in needles if needle.search(data)))
+
+
+def _holding(blobs: Iterable[Blob], credential: str, server: str) -> list[str]:
     """`<surface> <item> (<what>)` for every blob holding a form of it."""
-    needles = credential_needles(credential)
+    needles = credential_needles(credential, server)
     out = []
     for blob in blobs:
-        found = [what for what, needle in needles if needle in blob.data]
+        found = _holds(blob.data, needles)
         if found:
             out.append(f"{blob.surface} {blob.item} ({', '.join(found)})")
     return out
@@ -789,11 +825,27 @@ def check_credential_seen(run: Run) -> Verdict:
             return Verdict(key, "FAIL", f"swarm-api recorded no mcp_attach_releases row for "
                            f"{run.server!r} on this task")
         attach = f"{len(mine)} attach row(s), auth_mode {mine[0].get('auth_mode')}"
-    echo = report.get("credential_echo")
-    scrubbed = "scrubbed" if echo != run.values["credential"] else "NOT scrubbed"
     return Verdict(key, "PASS", f"{run.server} saw the dispatched credential ({seen}) on "
                    f"{TOOL} from attempt {report.get('attempt')} through the relay "
-                   f"(mcp_call 200; {attach}); its echo of the value reached the agent {scrubbed}")
+                   f"(mcp_call 200; {attach}); {_echo(report, credential, run.server)}")
+
+
+def _echo(report: dict[str, Any], credential: str, server: str) -> str:
+    """What became of the server's echo of its bearer. Scrubbed means the
+    agent got it holding no form of the credential at all -- not merely
+    something other than the signed token, which a token Cloud Run stripped
+    of its signature also is."""
+    echo = report.get(ECHO_FIELD)
+    if echo is None and report.get("signature_removed") is True:
+        return ("the server withheld its echo: Cloud Run removed the token's signature, so the "
+                "relay had no registered value to scrub and its scrub was not exercised")
+    if not isinstance(echo, str):
+        return "the server reported no echo of the value"
+    held = _holds(json.dumps({ECHO_FIELD: echo}).encode("utf-8"),
+                  credential_needles(credential, server))
+    if held:
+        return f"its echo of the value reached the agent NOT scrubbed ({', '.join(held)})"
+    return "its echo of the value reached the agent scrubbed"
 
 
 def check_unregistered_refused(run: Run) -> Verdict:
@@ -836,7 +888,8 @@ def check_no_leak(run: Run) -> Verdict:
     if refused:
         return Verdict(key, "FAIL", refused.reason)
     surfaces, _ = _search(run)
-    leaks = [hit for s in surfaces.values() for hit in _holding(s.blobs, run.values["credential"])]
+    leaks = [hit for s in surfaces.values() for hit in _holding(s.blobs, run.values["credential"],
+                                                                     run.server)]
     if leaks:
         return Verdict(key, "FAIL", "the per-run credential is stored in: " + "; ".join(leaks[:8]))
     unread = [u for s in surfaces.values() for u in s.unread]
@@ -881,8 +934,8 @@ def check_worker_gone(run: Run) -> Verdict:
     final = max(mine, key=lambda cp: cp.order)
     if final.members is None:
         return Verdict(key, "FAIL", f"checkpoint {final.checkpoint_id}: {final.problem}")
-    held = [n for n, d in final.members.items()
-            if any(needle in d for _, needle in credential_needles(run.values["credential"]))]
+    needles = credential_needles(run.values["credential"], run.server)
+    held = [n for n, d in final.members.items() if _holds(d, needles)]
     if held:
         return Verdict(key, "FAIL", f"the final checkpoint {final.checkpoint_id} holds the "
                        "credential in: " + ", ".join(held[:8]))
@@ -1126,13 +1179,20 @@ def _selftest_server(problems: list[str]) -> dict[str, Any]:
         claims_hash = hashlib.sha256(value.split(".")[1].encode()).hexdigest()
         if report.get("jwt_claims_sha256") != claims_hash:
             problems.append("server: whoami did not report the JWT bearer's claims hash")
-        unsigned = value.rsplit(".", 1)[0] + "."
-        status, called = _post(url, {"jsonrpc": "2.0", "id": 5, "method": "tools/call",
-                                     "params": {"name": TOOL, "arguments": {}}},
-                               {**auth, "Authorization": "Bearer " + unsigned})
-        stripped = json.loads(called["result"]["content"][0]["text"]) if status == 200 else {}
-        if stripped.get("jwt_claims_sha256") != claims_hash:
-            problems.append("server: the claims hash changed when the token came without its signature")
+        if report.get(ECHO_FIELD) != value or report.get("signature_removed") is not False:
+            problems.append("server: whoami did not echo a signed bearer for the relay to scrub")
+        for unsigned in (value.rsplit(".", 1)[0] + ".",
+                         value.rsplit(".", 1)[0] + "." + SIGNATURE_REMOVED):
+            status, called = _post(url, {"jsonrpc": "2.0", "id": 5, "method": "tools/call",
+                                         "params": {"name": TOOL, "arguments": {}}},
+                                   {**auth, "Authorization": "Bearer " + unsigned})
+            stripped = json.loads(called["result"]["content"][0]["text"]) if status == 200 else {}
+            if stripped.get("jwt_claims_sha256") != claims_hash:
+                problems.append("server: the claims hash changed when the token came without "
+                                "its signature")
+            if stripped.get(ECHO_FIELD) is not None or stripped.get("signature_removed") is not True:
+                problems.append("server: whoami echoed a token without its signature, which the "
+                                "relay cannot scrub")
         status, other = _post(url, {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
                                     "params": {"name": "rm", "arguments": {}}}, auth)
         if status != 200 or "error" not in other:
@@ -1240,14 +1300,33 @@ def _mutations(values: dict[str, str]) -> list[tuple[str, str, str, Any]]:
             (base / "artifacts" / "answer.txt").write_text(json.dumps(report))
         return apply
 
+    def answer_field(field: str, value: Any, **more: Any):
+        """The answer as the agent saved it: the judge's copy and the artifact."""
+        def apply(base: Path) -> None:
+            for rel in ("artifacts/answer.txt", "artifacts/0.bin"):
+                report = json.loads((base / rel).read_text())
+                report.update({field: value, **more})
+                (base / rel).write_text(json.dumps(report))
+        return apply
+
+    stripped = cred.rsplit(".", 1)[0] + "." + SIGNATURE_REMOVED
+    masked = cred[:JWT_KEPT] + MASK
     good_cp = {f"work/repo/{CANARY_FILE}": (canary + "\n").encode()}
     return [
         ("the server saw another credential", "credential_seen", "FAIL",
          lambda base: [report_field("credential_sha256", hashlib.sha256(b"other").hexdigest())(base),
                        report_field("jwt_claims_sha256", hashlib.sha256(b"other").hexdigest())(base)]),
         ("Cloud Run handed the container the token without its signature", "credential_seen",
-         "PASS", report_field("credential_sha256",
-                              hashlib.sha256(cred.rsplit(".", 1)[0].encode() + b".").hexdigest())),
+         "PASS", answer_field("credential_sha256", hashlib.sha256(stripped.encode()).hexdigest(),
+                              credential_echo=None, signature_removed=True)),
+        ("the server withheld its echo of the token Cloud Run stripped", "no_leak", "PASS",
+         answer_field("credential_sha256", hashlib.sha256(stripped.encode()).hexdigest(),
+                      credential_echo=None, signature_removed=True)),
+        ("the server echoed the token Cloud Run stripped of its signature", "no_leak", "FAIL",
+         answer_field("credential_sha256", hashlib.sha256(stripped.encode()).hexdigest(),
+                      credential_echo=stripped, signature_removed=False)),
+        ("the server's echo reached the agent as the credential's masked JWT form", "no_leak",
+         "FAIL", answer_field(ECHO_FIELD, masked)),
         ("the server saw an unsigned token with other claims", "credential_seen", "FAIL",
          lambda base: [report_field("credential_sha256", hashlib.sha256(b"x.y.").hexdigest())(base),
                        report_field("jwt_claims_sha256", hashlib.sha256(b"y").hexdigest())(base)]),
@@ -1278,8 +1357,17 @@ def _mutations(values: dict[str, str]) -> list[tuple[str, str, str, Any]]:
          edit_json("doc.json", lambda d: {**d, "result_summary": {"x": cred}})),
         ("the credential is in the checkpoint", "no_leak", "FAIL",
          checkpoint({**good_cp, "work/.mcp.json": cred.encode()})),
-        ("the credential's masked JWT form is in the agent's stdout", "no_leak", "FAIL",
-         log_line("agent_stdout", "Authorization: Bearer " + cred[:JWT_KEPT] + MASK + "\n")),
+        ("a masked JWT tied to no credential is in the agent's stdout", "no_leak", "PASS",
+         log_line("agent_stdout", "Authorization: Bearer " + masked + "\n")),
+        ("the credential's masked JWT form is stored under its server's name", "no_leak", "FAIL",
+         edit_json("doc.json", lambda d: {**d, "mcp_credentials": {
+             "acc-echo": {"value": masked, "expires_in": 3599}}})),
+        ("the credential's masked JWT form is under its server's name in a log line", "no_leak",
+         "FAIL", log_line("stdout", json.dumps({"message": "x", "credentials": {
+             "acc-echo": masked}}) + "\n")),
+        ("the final checkpoint holds the echo as the credential's masked JWT form",
+         "worker_gone", "FAIL",
+         checkpoint({**good_cp, "work/answer.json": json.dumps({ECHO_FIELD: masked}).encode()})),
         ("the credential's signature alone is in an artifact", "no_leak", "FAIL",
          lambda base: (base / "artifacts" / "0.bin").write_text(signature)),
         ("the credential's claims are in an event", "no_leak", "FAIL",
