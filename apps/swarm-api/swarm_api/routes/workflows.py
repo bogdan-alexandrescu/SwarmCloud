@@ -18,6 +18,11 @@ and the disagreement is counted and logged BEFORE the repair (`rollup._record`)
 so nothing is resolved without a trace. The alternative -- a background sweep as
 the only writer -- would leave every workflow nobody had swept unqueryable, which
 is the half of the owner's decision the write exists to satisfy.
+
+NAMES BESIDE EMAILS (docs/design/user-profile.md §4.4). Every workflow and
+step task these reads serve carries `submitted_by_name` beside
+`submitted_by`, from one lookup per response (`_named`). A name is a label;
+the submitter filter keeps using the email.
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ from ..children import PARENT_CANCELLED, ChildService
 from ..codec import task_to_api, workflow_dispatch, workflow_to_api
 from ..task_accounts import accounts_for
 from ..errors import ValidationFailed
+from ..people import add_names, name_lookup
 from ..deps import (
     AppContext,
     current_auth,
@@ -216,9 +222,16 @@ def list_workflows(
         # the check's result is not known -- never zero (swarm_api.stalls).
         "stalled_workflows": stalled_workflows(ctx.store.db, tenant_id),
     }
+    _named(ctx, payload["workflows"], [])
     if summary:
         payload["view"] = "summary"
     return payload
+
+
+def _named(ctx: AppContext, workflows: list[dict], tasks: list[dict]) -> None:
+    """`submitted_by_name` on every workflow and step task served, from ONE
+    lookup for the whole response."""
+    add_names(name_lookup(ctx), [*workflows, *tasks], ("submitted_by",))
 
 
 def _by_ids(
@@ -284,6 +297,7 @@ def _by_ids(
         "rollup_report": report.to_api(),
         "stalled_workflows": stalled_workflows(ctx.store.db, tenant_id),
     }
+    _named(ctx, payload["workflows"], payload["tasks"])
     if summary:
         payload["view"] = "summary"
     return payload
@@ -315,7 +329,7 @@ def get_workflow(
     accounts = accounts_for(ctx.db, tenant_id, tasks.items)
     totals = totals_for(ctx.db, tenant_id, [t.id for t in tasks.items])
 
-    return {
+    payload = {
         # The step copies of each input are masked by the tasks' own maskers,
         # so `workflow.steps[i].input` and `tasks[i].input` agree (the PR #229
         # review), from the tasks this route already loaded.
@@ -341,6 +355,8 @@ def get_workflow(
             for t in tasks.items
         ],
     }
+    _named(ctx, [payload["workflow"]], payload["tasks"])
+    return payload
 
 
 @router.post("/{workflow_id}/cancel")

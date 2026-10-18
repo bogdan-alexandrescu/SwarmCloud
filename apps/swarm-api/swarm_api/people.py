@@ -84,6 +84,18 @@ A TENANT THAT PREDATES THE WORKSPACE JOB IS NEVER APPROVED HERE (§3.3).
 squat check would fail with IDENTITY_NOT_OURS. A manual approval of it is
 refused `WORKSPACE_MIGRATING` through `refusals.refuse`: a new refusal, so it
 ships report-only until its switch is on (refusals.py).
+
+A NAME IS SERVED ONLY BESIDE THE EMAIL IT BELONGS TO (docs/design/user-profile.md
+§4.4, Q5; lane PROFILE-NAMES-API). A People row's `email` gains
+`display_name`; the approval, task and workflow reads gain a `*_name` sibling
+of each email field they serve, through `add_names`. A name is a label the
+person chose, never an identity: nothing here or there decides anything by
+it. One page asks for its names once (`display_names.DisplayNames.names_for`:
+one `get_all`, a 60-second cache), and a lookup that fails serves every name
+as null, so the page shows emails, as it did before, and is never failed by a
+name. A row carries the name and NOTHING ELSE from the person's preferences:
+their default workspace, mutes and reminder cadence are theirs alone, and no
+admin route reads them (Q8).
 """
 
 from __future__ import annotations
@@ -91,7 +103,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime, timedelta
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -105,6 +117,7 @@ from . import workspaces as ws
 from .admins import AUDIT_COLLECTION
 from .errors import ApiError, Conflict, NotFound, ValidationFailed, WorkspaceMigrating
 from .gittokens import COLLECTION as GIT_TOKENS
+from .preferences import Preferences, key_versions
 from .publish_workspace import MODE_CREATE, MODE_LIMITS, WorkspacePublisher
 from .store import TENANTS
 
@@ -193,6 +206,71 @@ LOAN_PENDING = "pending"
 LOAN_RECLAIMED = "reclaimed"
 
 
+#: A lookup of display names: emails in, each email's name (or None) out.
+NameLookup = Callable[[Iterable[str]], Mapping[str, "str | None"]]
+
+#: Where an app context keeps its one `Preferences` for the name lookup, so
+#: the 60-second name cache is per process, not per request.
+_NAMES_ATTR = "_person_names"
+
+#: The email fields whose sibling is a LIST of names, index for index, and
+#: what the sibling is called. Every other field `f` gains `f + "_name"`.
+LIST_SIBLINGS = {"approvers": "approver_names"}
+
+
+def _no_names(emails: Iterable[str]) -> dict[str, str | None]:
+    return {email: None for email in emails}
+
+
+def name_lookup(ctx: Any) -> NameLookup:
+    """The app context's display-name lookup.
+
+    No `swarm-child-key` configured means no preference id can be derived,
+    so every name is null and nothing is read: the pages show emails, as
+    they did before names existed."""
+    prefs = getattr(ctx, _NAMES_ATTR, None)
+    if prefs is None:
+        prefs = Preferences(ctx.db, key_versions(ctx.settings))
+        setattr(ctx, _NAMES_ATTR, prefs)
+    return prefs.names.names_for if prefs.configured else _no_names
+
+
+def _is_email(value: Any) -> bool:
+    # `decided_by` is also `approval-expiry`, and `approvers` also `members`:
+    # neither is a person, and neither is looked up.
+    return isinstance(value, str) and "@" in value
+
+
+def add_names(lookup: NameLookup, rows: Iterable[dict[str, Any]], fields: Iterable[str]) -> None:
+    """Give each row's email `fields` their name siblings, from ONE lookup.
+
+    A field the row does not serve gains no sibling, so no name is ever
+    served for an email the response does not carry. A value that is not an
+    email (a role word, the expiry actor) gets a null name."""
+    rows = list(rows)
+    fields = tuple(fields)
+    emails: list[str] = []
+    for row in rows:
+        for f in fields:
+            value = row.get(f)
+            values = value if isinstance(value, list) else [value]
+            emails.extend(v for v in values if _is_email(v))
+    names = lookup(emails) if emails else {}
+
+    def name(value: Any) -> str | None:
+        return names.get(value) if _is_email(value) else None
+
+    for row in rows:
+        for f in fields:
+            if f not in row:
+                continue
+            value = row[f]
+            if f in LIST_SIBLINGS:
+                row[LIST_SIBLINGS[f]] = [name(v) for v in value] if isinstance(value, list) else None
+            else:
+                row[f + "_name"] = name(value)
+
+
 def worker_member(tenant_id: str, project_id: str) -> str:
     """The IAM member the broker grants for a borrower: its worker account."""
     account = worker_service_account_id(tenant_id)
@@ -273,12 +351,15 @@ class People:
         now: Callable[[], datetime],
         console_url: str = "",
         project_id: str = "",
+        names: NameLookup | None = None,
     ) -> None:
         self._db = db
         self._publisher = publisher
         self._now = now
         self._console_url = console_url
         self._project_id = project_id
+        # Each row's display name (`name_lookup`). None: every name is null.
+        self._names = names or _no_names
 
     # -- addressing ------------------------------------------------------------
 
@@ -1095,8 +1176,11 @@ class People:
         rows.sort(key=lambda r: (pending_first.get(r["workspace"]["state"], 1),
                                  -(r["_last"].timestamp() if r["_last"] else 0.0),
                                  r["email"]))
+        # Every row's name from one lookup; null for all when it fails.
+        names = self._names([row["email"] for row in rows]) if rows else {}
         for row in rows:
             row.pop("_last")
+            row["display_name"] = names.get(row["email"])
         approved = sum(1 for r in rows if r["workspace"]["state"] == ws.APPROVED)
         return {
             "people": rows,

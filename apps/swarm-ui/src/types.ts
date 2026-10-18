@@ -599,6 +599,8 @@ export interface Task {
   started_at: string | null
   completed_at: string | null
   submitted_by: string | null
+  /** The submitter's display name (`people.add_names`); null when none is set. */
+  submitted_by_name?: string | null
   attempt_count: number
   max_attempts: number
   park_reason: ParkReason | string | null
@@ -3282,6 +3284,8 @@ export interface Workflow {
    */
   updated_at: string
   submitted_by: string | null
+  /** The submitter's display name (`people.add_names`); null when none is set. */
+  submitted_by_name?: string | null
   priority: number
   on_step_failure: string
   cancel_requested: boolean
