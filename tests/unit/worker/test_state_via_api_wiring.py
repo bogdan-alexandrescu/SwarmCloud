@@ -14,8 +14,9 @@ than over `ControlPlane`'s transaction helpers.
     attempt's own state client; with the switch off it is handed the
     Firestore ones, as before.
 
-MUTATIONS: leave `db = NO_DIRECT_FIRESTORE` in `build_worker` -- the attempt
-meets a named ControlPlaneError at the tenant read and FAILS. Build the
+MUTATIONS: leave `db = NO_DIRECT_FIRESTORE` in `build_worker` -- the tenant
+read meets a named ControlPlaneError, and the attempt's modules are handed
+something that is not its state client. Build the
 Firestore slot or train regardless of the switch -- the merge test reads the
 wrong type.
 """

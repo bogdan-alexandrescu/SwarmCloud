@@ -2,8 +2,8 @@
 
 Lane ISO-WORKER-READS (docs/design/tenant-settings-integrity.md §4.2, §6;
 part of #1457). A tenant switched to the state routes builds no Firestore
-client (`__main__.NO_DIRECT_FIRESTORE`); the modules that still read or
-wrote Firestore directly -- `secrets`, `jevkey`, `inputs`, `indexrun`,
+client (`__main__.build_worker` hands its modules the `StateCall` as `db`,
+lane ISO-WIRE); the modules that still read or wrote Firestore directly -- `secrets`, `jevkey`, `inputs`, `indexrun`,
 `graphstage`, `judge.attempt`, the merge slot and train, the human park --
 take the attempt's `statecall.StateCall` in its place and then make no
 Firestore call. The red-first rules this file holds:
