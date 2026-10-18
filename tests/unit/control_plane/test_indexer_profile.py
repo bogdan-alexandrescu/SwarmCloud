@@ -50,9 +50,12 @@ def test_the_indexer_profile_is_claude_code_on_the_indexer_image():
     # Contract request 53 (applied 2026-10-08) moved claude-code to GKE
     # Autopilot, and request 63 (owner, 2026-10-10, #939's canary) moved
     # indexer after it: the two share a backend again.
-    assert differ == ["image", "name"], (
+    # Contract request 88 (MCP-CONTRACT) gave claude-code `mcp_servers` and
+    # left the indexer without it: the indexer runs no prompt a caller wrote.
+    assert differ == ["image", "inputs", "name"], (
         f"the owner's decision was claude-code with only its name and image changed; {differ} differ"
     )
+    assert dict(indexer.inputs) == {k: v for k, v in claude.inputs.items() if k != "mcp_servers"}
     assert indexer.backend.value == "GKE_AUTOPILOT" and claude.backend.value == "GKE_AUTOPILOT"
 
 
