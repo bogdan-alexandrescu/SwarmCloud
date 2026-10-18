@@ -396,6 +396,76 @@ def test_a_narrowed_member_platform_admins_audit_failure_is_503(client, db, prob
     assert probe_calls == [] and db.paths("tasks/") == tasks_before
 
 
+@pytest.fixture
+def admin_probe(monkeypatch):
+    """`POST /v1/probe/{thing_id}` counted as an admin-level write, the way
+    `/v1/workspace/secrets` or `/v1/tenants/me/credentials` is."""
+    monkeypatch.setattr(roles, "ADMIN_WRITES",
+                        roles.ADMIN_WRITES | {("POST", "/v1/probe/{thing_id}")})
+
+
+def test_a_member_platform_admin_with_no_grant_makes_admin_writes_unaudited(
+        client, db, admin_probe, probe_calls):
+    """No override and no default grant: everyone is `member` and nobody
+    `admin`, so this is how admin-level writes are made today (§4.2.1)."""
+    assert client.post("/v1/probe/p-1", headers=h("root"), json={}).status_code == 200
+    assert audit_rows(db, "platform_admin_acted") == []
+
+
+@pytest.mark.parametrize("held_by", ["override", "default"])
+def test_a_member_platform_admin_a_grant_holds_at_member_is_audited_on_admin_writes(
+        client, db, clock, admin_probe, probe_calls, held_by):
+    """A grant -- their own override, or the workspace's `*` default -- holds
+    root at `member`: an admin-level write passes only because root is a
+    platform admin, so it is a `platform_admin_acted` row before the route
+    runs (§4.2.4: "the grant alone would have refused this route")."""
+    if held_by == "override":
+        narrow(client, "root@saga.xyz", "member")
+    else:
+        # A `*` grant of `member` (written as viewer then back: `member` on
+        # no grant at all is 409 role_unchanged).
+        for role in ("viewer", "member"):
+            clock.tick(seconds=1)
+            response = client.put("/v1/admin/workspaces/eng/roles/default", headers=h("ops"),
+                                  json={"role": role})
+            assert response.status_code == 200, response.text
+    clock.tick(seconds=1)
+    response = client.post("/v1/probe/p-1", headers=h("root"), json={"x": SENTINEL})
+    assert response.status_code == 200, response.text
+    (row,) = [r for r in audit_rows(db, "platform_admin_acted") if r["by"] == "root@saga.xyz"]
+    assert probe_calls == [[r for r in db.dump("admin_audit/").values()
+                            if r["action"].startswith("platform_admin_")]]
+    assert row["target_tenant_id"] == "eng"
+    assert row["detail"]["reach"] == "role_below"
+    assert row["detail"]["route"] == "/v1/probe/{thing_id}"
+    # Held at `member`, a member write and a read are their own role's: no row.
+    assert client.post("/v1/tasks", headers=h("root"),
+                       json={"runner_profile": "mock", "input": {"prompt": "hi"}}
+                       ).status_code in (200, 201, 202)
+    assert client.get("/v1/probe/p-1", headers=h("root")).status_code == 200
+    assert [r for r in db.dump("admin_audit/").values()
+            if r["action"].startswith("platform_admin_") and r["by"] == "root@saga.xyz"] \
+        == [row]
+    assert SENTINEL not in repr(db.dump("admin_audit/"))
+
+
+def test_a_member_platform_admin_held_at_member_whose_audit_fails_is_503(
+        client, db, admin_probe, probe_calls):
+    narrow(client, "root@saga.xyz", "member")
+    db.broken.add("admin_audit")
+    response = client.post("/v1/probe/p-1", headers=h("root"), json={})
+    assert response.status_code == 503
+    assert response.json()["code"] == "platform_admin_audit_unavailable"
+    assert probe_calls == []
+
+
+def test_a_member_platform_admin_granted_admin_writes_none(client, db, admin_probe, probe_calls):
+    narrow(client, "root@saga.xyz", "admin")
+    assert client.post("/v1/probe/p-1", headers=h("root"), json={}).status_code == 200
+    assert [r for r in audit_rows(db, "platform_admin_acted")
+            if r["by"] == "root@saga.xyz"] == []
+
+
 def test_a_route_naming_its_workspace_is_audited_against_that_workspace(client, db):
     """root's selected tenant is eng, where its own role (member) is enough
     for a member write; research it is not in; u-carol is no group."""

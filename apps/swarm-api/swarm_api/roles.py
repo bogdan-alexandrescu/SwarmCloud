@@ -691,14 +691,16 @@ class RoleStore:
         * a non-member (`tenant_via == "platform_admin"`): every write a
           `platform_admin_acted` row, every read one `platform_admin_viewed`
           row per (admin, tenant, UTC hour) on this instance;
-        * a member whom a grant has narrowed below `member` (to `viewer`),
-          for a write their own role cannot make and so passes only as a
-          platform admin: the same, and the hourly row for reads (Q12) -- so
-          being added to the group as a viewer is never a way out of the
-          audit;
-        * a member whose own role is enough, a member at the default
-          `member` (no grant narrowed them, §4.2.1), and a personal
-          workspace: none.
+        * a member whom a grant (their override or the workspace's `*`
+          default) holds below the role a write needs -- `viewer` for a
+          member write, `viewer` or `member` for an admin-level one -- so
+          the write passes only as a platform admin: the same; and, once a
+          grant holds them below `member`, the hourly row for reads (Q12) --
+          so being added to the group as a viewer, or held at `member`, is
+          never a way out of the audit;
+        * a member whose own role is enough, a member with no grant at all
+          (everyone is `member` then and nobody `admin`, §4.2.1), and a
+          personal workspace: none.
 
         A grant read that fails is treated as "would have refused": the row
         is written, so an unknown answer costs a row, never the audit.
@@ -716,18 +718,30 @@ class RoleStore:
             needed = required_role(method, route)
             if needed is None:
                 return None
-            # Audited only once a GRANT has narrowed them below `member`,
-            # the role everyone holds with no grant (§4.2.1: "no, unless a
-            # grant narrowed them below what the action needs"). A member
-            # platform admin at the default `member` doing an admin-level
-            # write is how such writes are made today, and each carries its
-            # own audit row; one narrowed to `viewer` is recorded for every
-            # write their own role cannot make and, hourly, for reads.
-            floor = (needed if rank(needed) < RANK[MEMBER] else MEMBER) if write else MEMBER
+            # Audited when a GRANT holds them below what the action needs
+            # (§4.2.1: "no, unless a grant narrowed them below what the
+            # action needs"; §4.2.4: "the grant alone would have refused
+            # this route"). With no grant at all -- no override and no
+            # default grant -- everyone holds `member` and nobody `admin`,
+            # so an admin-level write by a member platform admin is how such
+            # writes are made today and is measured against `member`; once
+            # an override or a `*` default decides their role, it is
+            # measured against the role the route needs, so a grant holding
+            # them at `member` makes every admin-level write a row. Reads:
+            # the hourly row once a grant puts them below `member`.
             try:
-                own = self.person_role(tenant_id, auth.email).role
+                mine = self.person_role(tenant_id, auth.email)
+                granted = mine.source == SOURCE_OVERRIDE \
+                    or self.default_role(tenant_id)[1] is not None
+                own: str | None = mine.role
             except RoleUnavailable:
-                own = None
+                granted, own = True, None
+            if not write:
+                floor = MEMBER
+            elif granted or rank(needed) < RANK[MEMBER]:
+                floor = needed
+            else:
+                floor = MEMBER
             if at_least(own, floor):
                 return None
             reach = "role_below"
