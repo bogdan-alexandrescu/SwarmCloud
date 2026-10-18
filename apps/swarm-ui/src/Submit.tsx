@@ -11,13 +11,14 @@ import {
 } from './Blockers'
 import { DispatchChoice, DispatchFacts, REPOSITORY_SCHEMES, refusedSayId, repositorySchemeRefused, type DispatchDraft } from './Dispatch'
 import { WorkspaceRefusalBanner, workspaceRefusal } from './WorkspaceRefusal'
-import { apiHeaders, chosenTenant, classifyFailure, dropRefusedTenant, isPaused, type ApiError } from './fetch'
+import { apiHeaders, chosenTenant, classifyFailure, dropRefusedTenant, isPaused, type ApiError, type Result } from './fetch'
 import { HELP } from './help'
 import { HelpCard } from './HelpCard'
 import { clearTaskPrefill, peekTaskPrefill } from './submitPrefill'
 import { Mark } from './primitives'
 import { RoomFact, RunnerPicker, useProviderKeys } from './RunnerPicker'
 import { AUTO, BROWSER_TOOL_KEY, BrowserToolPicker, declaredBrowserTools, jevAllowed, profileEgress, useJevJudgment, useTypesafeKey, withBrowserTool } from './BrowserToolPicker'
+import { MCP_SERVERS_KEY, McpServerPicker, clearCredentials, declaredMcpServers, loadMcpServers, offeredMcpServers, readCredentials, withMcpServers, type McpServerList } from './McpServers'
 import { FailedPanel, Screen, useSubmitAs } from './Shell'
 import {
   DEFAULT_CARRIER,
@@ -1013,19 +1014,66 @@ function Form({ capacity }: { capacity: Capacity }) {
   const judgment = useJevJudgment(tools !== null)
   const tool = tools !== null && tools.includes(browserTool) && (browserTool !== 'jev' || jevAllowed(typesafe, judgment)) ? browserTool : AUTO
 
+  // THE MCP SERVERS (MCP-UI; docs/design/registered-mcp-servers.md §4.3):
+  // drawn only for a profile that declares `mcp_servers`, offering the
+  // workspace's enabled registrations that profile may use. A pick the list no
+  // longer offers -- another runner, a server disabled since -- is dropped, so
+  // the button never sends a name the picker is not showing as picked. A
+  // `dispatch` server's credential stays in its field's DOM node (`mcpFields`),
+  // never in state, and leaves only in the POST's `mcp_credentials`.
+  const mcpMax = declaredMcpServers(profile)
+  const [mcpList, setMcpList] = useState<Result<McpServerList> | null>(null)
+  const mcpDeclared = mcpMax !== null
+  useEffect(() => {
+    if (!mcpDeclared) return
+    let live = true
+    void loadMcpServers().then((r) => {
+      if (live) setMcpList(r)
+    })
+    return () => {
+      live = false
+    }
+  }, [mcpDeclared])
+  const mcpOffered = mcpMax !== null && mcpList !== null && (mcpList.status === 'ok' || mcpList.status === 'stale')
+    ? offeredMcpServers(mcpList.data, chosen) : []
+  const [mcpPicked, setMcpPicked] = useState<string[]>([])
+  const mcpNames = mcpPicked.filter((n) => mcpOffered.some((s) => s.name === n))
+  const mcpFields = useRef(new Map<string, HTMLInputElement>())
+  const [mcpFilled, setMcpFilled] = useState<ReadonlySet<string>>(() => new Set())
+  const [mcpLifetimes, setMcpLifetimes] = useState<Record<string, number>>({})
+  const mcpUnfilled = mcpOffered.filter((s) => mcpNames.includes(s.name) && s.auth.mode === 'dispatch' && !mcpFilled.has(s.name)).map((s) => s.name)
+  const onMcpFilled = (name: string, on: boolean) =>
+    setMcpFilled((was) => {
+      const next = new Set(was)
+      if (on) next.add(name)
+      else next.delete(name)
+      return next
+    })
+  const forgetCredentials = () => {
+    clearCredentials(mcpFields)
+    setMcpFilled(new Set())
+  }
+
   const pick = (name: string) => {
     setChosen(name)
     setBrowserTool(AUTO)
+    setMcpPicked([])
+    forgetCredentials()
     setFields((prev) => seedFields(prev, requiredInputKeys(capacity.runner_profiles[name] ?? undefined)))
   }
 
   const typed = buildInput(fields)
   // The picker's key beside the typed ones: a `browser_tool` typed as a
   // setting of one's own as well is the same one-value-per-key refusal.
-  const built: BuiltInput = !typed.ok || tool === AUTO ? typed
+  const withTool: BuiltInput = !typed.ok || tool === AUTO ? typed
     : Object.prototype.hasOwnProperty.call(typed.input, BROWSER_TOOL_KEY)
       ? { ok: false, message: `the setting ${BROWSER_TOOL_KEY} is set twice and an object has one value per key` }
       : { ok: true, input: withBrowserTool(typed.input, tool) }
+  // The MCP picks the same way: a typed `mcp_servers` beside them is set twice.
+  const built: BuiltInput = !withTool.ok || mcpNames.length === 0 ? withTool
+    : Object.prototype.hasOwnProperty.call(withTool.input, MCP_SERVERS_KEY)
+      ? { ok: false, message: `the setting ${MCP_SERVERS_KEY} is set twice and an object has one value per key` }
+      : { ok: true, input: withMcpServers(withTool.input, mcpNames) }
   const missing = missingRequired(fields, required)
   // THE REPOSITORY THE CLICK PUSHES TO, from the draft `submit` sends: the
   // trimmed URL, and only while the chosen strategy pushes at all (#115).
@@ -1046,6 +1094,7 @@ function Form({ capacity }: { capacity: Capacity }) {
   const inputLimit = useInputLimit()
   const tooBig = built.ok ? inputSizeProblem(built.input, inputLimit) : null
   const blocked = chosen === '' || !built.ok || missing.length > 0 || (pushes && repo === '') || badRepo || tooBig !== null
+    || mcpUnfilled.length > 0
   // WHAT THIS CLICK WOULD SEND, as one comparable value. After a 201 the
   // button is "Submit another" for as long as the form still says exactly
   // what was sent (VQA V048, owner decision Q1 on #1038): one more click on an
@@ -1064,6 +1113,9 @@ function Form({ capacity }: { capacity: Capacity }) {
   const another = () => {
     setChosen('')
     setBrowserTool(AUTO)
+    setMcpPicked([])
+    setMcpLifetimes({})
+    forgetCredentials()
     setFields([])
     setDispatch({ strategy: DEFAULT_STRATEGY, carrier: DEFAULT_CARRIER, repositoryUrl: '' })
     setOutcome({ kind: 'idle' })
@@ -1140,6 +1192,13 @@ function Form({ capacity }: { capacity: Capacity }) {
       setOutcome({ kind: 'refused', sent: false, unattributed: null, fields: { input: `Not sent — ${tooBig}.` } })
       return
     }
+    if (mcpUnfilled.length > 0) {
+      setOutcome({ kind: 'refused', sent: false, unattributed: null, fields: { input:
+        `Not sent — ${mcpUnfilled.join(', ')} ${mcpUnfilled.length === 1 ? 'needs its' : 'need their'} credential for this run.` } })
+      return
+    }
+    // Read once, here, from the fields; never held in state.
+    const credentials = readCredentials(mcpFields, mcpOffered, mcpNames, mcpLifetimes)
     setOutcome({ kind: 'sending' })
     // A REF, NOT THE STATE ABOVE: two Enters inside one render both read
     // `outcome` as it was before the first, so only this sees the second.
@@ -1158,8 +1217,14 @@ function Form({ capacity }: { capacity: Capacity }) {
         // validator, and `""` fails it with a message about URL schemes rather
         // than about the field being empty.
         ...(repo === '' ? {} : { repository_url: repo }),
+        // BESIDE `input`, never in it: `input` is stored and shown, and the
+        // credential is neither (§4.3). Omitted when no `dispatch` server is picked.
+        ...(Object.keys(credentials).length === 0 ? {} : { mcp_credentials: credentials }),
       })
     inFlight.current = false
+    // NEVER RENDERED BACK: whatever the answer, the field is emptied. A second
+    // send needs the credential typed again.
+    forgetCredentials()
     if (result.kind === 'created') setSentKey(sending)
     if (result.kind === 'refused') setRefusedKey(sending)
     setOutcome(result)
@@ -1200,6 +1265,11 @@ function Form({ capacity }: { capacity: Capacity }) {
               {tools !== null && (
                 <BrowserToolPicker tools={tools} value={tool} onChange={setBrowserTool} typesafe={typesafe} judgment={judgment}
                   egress={profileEgress(profile)} />
+              )}
+              {mcpMax !== null && (
+                <McpServerPicker list={mcpList} profile={chosen} max={mcpMax} picked={mcpNames} onPick={setMcpPicked}
+                  fields={mcpFields} filled={mcpFilled} onFilled={onMcpFilled}
+                  lifetimes={mcpLifetimes} onLifetime={(name, seconds) => setMcpLifetimes((was) => ({ ...was, [name]: seconds }))} />
               )}
               <InputFields profile={chosen} fields={fields} required={required} onChange={setFields} idPrefix={TASK_FIELDS} />
             </>
