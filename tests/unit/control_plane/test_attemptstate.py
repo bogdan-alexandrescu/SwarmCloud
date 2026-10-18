@@ -39,12 +39,12 @@ from swarm_api.metrics import ApiMetrics
 from swarm_api.waker import NullWaker
 
 from .conftest import PROJECT, api_settings, seed_pool, seed_task, seed_tenant
+from .fakes import FakeTransaction
 from .spec_signer import KEY_VERSION, LocalSpecSigner
 
 #: Every attempt's task is signed as submission signs it: the child route
 #: builds a child only from a parent whose signature verifies (#1041).
 SIGNER = LocalSpecSigner()
-from .fakes import FakeTransaction
 
 #: Built at runtime, never one literal (CLAUDE.md, "Nothing you add may look
 #: like a credential").

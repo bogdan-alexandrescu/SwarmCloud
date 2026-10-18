@@ -95,48 +95,54 @@ must show exactly, with `<n>` the project number and `<t>` each tenant in
   binding exists before the old one goes. Until this is applied swarm-api
   falls back to refreshing per call, as before.
 
-No grant to the tenant's worker. `forge_slot_reader["<t>"]`, its
-`secretAccessor` on that prefix, was removed by the owner's 2026-10-11
-decision that secrets are user-scoped (#1041): the worker obtains a user slot
-only from swarm-api's broker, `POST /v1/attempts/forge-credential`
-([design/user-scoped-secrets.md](../design/user-scoped-secrets.md)). On a
-project where it was applied, the plan shows it **destroyed** for each tenant.
+And the tenant's worker: `forge_slot_reader["<t>"]`, `secretAccessor` on
+that prefix's BASE slots, never a `-refresh` twin (decision D7/U1). The
+owner's 2026-10-11 decision that secrets are user-scoped (#1041) supersedes
+it: swarm-api's broker, `POST /v1/attempts/forge-credential`
+([design/user-scoped-secrets.md](../design/user-scoped-secrets.md)), is built
+behind the `forge_broker` switch (FORGE_BROKER), off by default and off in
+dev. **The binding stays in this root until the broker has been on in dev
+and a live run passed**; while it is off, it is how every user-slot task
+clones. A plan of this root shows it unchanged.
 
-**Apply that destroy only once the broker is ON in that environment -- a
-release is not enough.** The broker needs the attempt key, and the attempt
-key exists only where child tasks are on. Before this apply, check each of
-these for the environment, and stop at the first that fails:
+**Removing it is a later, separate owner change, never part of the change
+that ships or turns on the broker.** Before writing that change, check each
+of these for the environment, and stop at the first that fails:
 
 1. **The nonce measurement has been made** (design §5, "The precondition
    this rests on"; [child-tasks.md §9](../design/child-tasks.md#9-phase-2)
-   item 2, deferred to #476): a tenant service account cannot read a Cloud
-   Run execution's overrides or a GKE pod spec in its namespace. Not made
-   means the broker is not a guarantee and is not switched on: keep the
-   binding, and stop here.
+   item 2): a tenant service account cannot read a Cloud Run execution's
+   overrides or a GKE pod spec in its namespace. Made in dev on 2026-10-11
+   (recorded in `dev.tfvars`); not made in prod. Not made means the broker
+   is not a guarantee and is not switched on: keep the binding, and stop
+   here.
 2. **`swarm-child-key` has a version** (`scripts/create-secrets.sh --child-key`).
 3. **`enable_child_tasks = true` and `swarm_api_url`** are set in
    `terraform/environments/<env>/<env>.tfvars` and applied by a release
-   (`terraform/infra/child_tasks.tf` gives the order; neither is set in any
-   environment as of 2026-10-11).
-4. **That release carries the worker's broker client**
-   (`apps/agent-worker/agent_worker/forgebroker.py`) and the scheduler's
-   nonce for user-slot attempts -- read the running worker image's commit
-   off the release.
+   (`terraform/infra/child_tasks.tf` gives the order; set in dev since
+   2026-10-11, in prod not at all).
+4. **`forge_broker = true`** is set in that tfvars and applied by a release
+   carrying the worker's broker client
+   (`apps/agent-worker/agent_worker/forgebroker.py`) -- read the running
+   worker image's commit off the release, and `FORGE_BROKER=true` off
+   swarm-api's and the scheduler's environment.
+5. **A live run passed with it on**: a user-slot task and a user-slot child
+   of one clone and push through the broker, and another member's task is
+   refused that slot.
 
-Without the broker, the worker reads a person's slot with its own account,
-as before #1041, so a release alone changes nothing for Alice's task.
-Destroy the binding before the broker is on, and that read is
-`PERMISSION_DENIED`: every task that resolved to a person's slot fails
-closed until the broker is on. Turning `enable_child_tasks` off or rolling
-the worker back after the apply has the same effect; re-adding the binding
-is the undo.
+With the broker off, the worker reads a person's slot with its own account,
+as before #1041. Destroy the binding before the broker is on, and that read
+is `PERMISSION_DENIED`: every task that resolved to a person's slot fails
+closed until the broker is on. Turning `forge_broker` off or rolling the
+worker back after the removal has the same effect; re-adding the binding is
+the undo.
 
 These are bootstrap's, not the release's, on purpose: a project-level
 `secretAccessor` grant made by CI would have to be on the deployer's
 grantable list, and that list limits which roles CI grants, never to whom --
 CI could then grant itself read of every secret in `saga-agents-staging`, the
 other team's included. `terraform/bootstrap/forge_user_slots.tf` has the full
-reasoning. A tenant added later gets its three per-tenant
+reasoning. A tenant added later gets its four per-tenant
 grants from the same bootstrap apply that grants the deployer on its worker
 account ([docs/ci.md](../ci.md), "A new account exists before the release that
 adds it").
@@ -303,15 +309,22 @@ gcloud policy-intelligence troubleshoot-policy iam \
   --permission=secretmanager.versions.access
 ```
 
-Expected: for `swarm-agent-worker-eng@`, access **denied** for both `<slot>`
-and `<slot>-refresh` (#1041: no worker reads a user slot); for `swarm-api@`,
-**granted** for both. A worker granted is a binding the removal missed: find it
-with `gcloud projects get-iam-policy` and remove it before anything else.
-swarm-api denied means its condition does not match the resource-name form
-IAM evaluates: set `enable_forge_user_slots = false` and apply bootstrap.
-Then submit a task as that user in a group tenant: it clones and pushes
-through the broker, and swarm-api logs `forge credential released decision=released`
-with the secret's name and no value.
+Expected, while `forge_slot_reader` stands (the broker off, step 2): for
+`swarm-agent-worker-eng@`, access **granted** for `<slot>` and **denied** for
+`<slot>-refresh` (the worker never reads a refresh token); for `swarm-api@`,
+**granted** for both. A worker granted `<slot>-refresh` means the base-only
+condition does not match the resource-name form IAM evaluates for a version:
+set `enable_forge_user_slots = false` and apply bootstrap before anything
+else. swarm-api denied means its condition does not match: the same.
+
+After the later removal of `forge_slot_reader` (step 2's checklist, with the
+broker on): `swarm-agent-worker-eng@` **denied** for both (#1041: no worker
+reads a user slot), `swarm-api@` still granted for both. A worker granted is a
+binding the removal missed: find it with `gcloud projects get-iam-policy` and
+remove it. Then submit a task as that user in a group tenant: it clones and
+pushes through the broker, and swarm-api logs
+`forge credential released decision=released` with the secret's name and no
+value.
 
 ## Step 9: the push webhook
 

@@ -64,12 +64,17 @@ Both names fall under the one prefix-conditioned grant per tenant in
 IAM change and no frozen-contract change: `Task.forge_credential` already
 accepts `git-u-<hex>`.
 
-**Readers, as built since 2026-10-11 (#1041): swarm-api alone.** The owner
-decided that secrets are user-scoped, not tenant-scoped, superseding U1 (D7).
-Under U1 the tenant's worker account read every member's slot, so an agent in
-Bob's task could mint its worker's token and read Alice's slot by name, and
-only the worker's code kept the two apart. Now
-([design/user-scoped-secrets.md](design/user-scoped-secrets.md), built):
+**Readers: the tenant's worker account and swarm-api, until the broker is
+on (#1041).** The owner decided on 2026-10-11 that secrets are user-scoped,
+not tenant-scoped, superseding U1 (D7). Under U1 the tenant's worker account
+reads every member's slot, so an agent in Bob's task can mint its worker's
+token and read Alice's slot by name, and only the worker's code keeps the two
+apart. **That is still how every environment runs:** the fix below is built
+behind `forge_broker` (FORGE_BROKER, `terraform/infra/child_tasks.tf`), which
+is off by default and off in dev, and the worker's binding stays until it has
+been on in dev and a live run passed
+([design/user-scoped-secrets.md](design/user-scoped-secrets.md), built,
+switched off). With the switch on:
 
 * swarm-api releases a user slot only to the current attempt of a task that
   slot's owner submitted, through `POST /v1/attempts/forge-credential`
@@ -80,24 +85,30 @@ only the worker's code kept the two apart. Now
   (`apps/swarm-api/swarm_api/credbroker.py::decide_slot`);
 * the scheduler issues the key's nonce to every attempt whose signed
   `forge_credential` is a user slot, children included
-  (`apps/scheduler/scheduler/dispatch.py::worker_env`);
+  (`apps/scheduler/scheduler/dispatch.py::worker_env`), and a child's slot is
+  its parent's only when the parent's signature verifies
+  (`apps/swarm-api/swarm_api/children.py::ChildService._read_parent`);
 * the worker reads a `git-u-` slot only through that broker
   (`apps/agent-worker/agent_worker/forgebroker.py::ForgeBroker.fetch`, called
   from `apps/agent-worker/agent_worker/secrets.py::resolve_git_token`), and
   fails closed, never falling back to the tenant token;
-* the worker's own read, `forge_slot_reader`, is removed from
+* then, as a later and separate owner step, the worker's own read,
+  `forge_slot_reader`, is removed from
   `terraform/bootstrap/forge_user_slots.tf`, so swarm-api's
   `forge_refresh_reader` is the slot's only reader and IAM, not the resolver,
-  keeps Alice's slot from Bob's attempt.
+  keeps Alice's slot from Bob's attempt. Not done: it stays while the switch
+  is off.
 
 The tests that hold each of these are listed in
 [design/user-scoped-secrets.md §9](design/user-scoped-secrets.md#9-as-built-where-each-guarantee-lives);
 Bob's refusal is
 `tests/unit/control_plane/test_forge_credential_broker.py::test_bobs_attempt_is_refused_alices_slot_and_reads_no_secret`,
-and the IAM half is `tests/terraform/forge_app.tftest.hcl`, run
-`no_tenant_worker_holds_secret_accessor_on_a_user_slot`. The IAM removal
-reaches a project by the owner's bootstrap apply, made only once the broker
-is on in that environment (`enable_child_tasks`, after the nonce measurement
+and, until the removal, `tests/terraform/forge_app.tftest.hcl`, run
+`the_tenant_worker_reads_only_its_tenants_base_user_slots`, holds the
+worker's read to its tenant's base slots. The IAM removal reaches a project
+by the owner's bootstrap apply, made only once the broker has been on in
+that environment and a live run passed (`forge_broker`, which needs
+`enable_child_tasks`, after the nonce measurement
 the guarantee rests on; design §5,
 [runbooks/github-app.md](runbooks/github-app.md), step 2). Until the broker is
 on, the worker reads a person's slot with the read it still holds.
