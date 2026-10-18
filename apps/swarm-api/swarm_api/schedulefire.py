@@ -61,7 +61,7 @@ import os
 import time
 import uuid
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
@@ -71,10 +71,18 @@ from swarm_common.admission import _snapshot
 from swarm_common.identity import Principal
 from swarm_common.states import TaskState
 
-from . import cronexpr, refusals, schedaudit, scheduletypes, schedules
+from . import cronexpr, refusals, roles, schedaudit, scheduletypes, schedules
 from .attempt_totals import totals_for
 from .auth import AuthContext
-from .errors import ApiError, Conflict, Forbidden, NotFound, UpstreamUnavailable
+from .errors import (
+    ApiError,
+    Conflict,
+    Forbidden,
+    NotFound,
+    RoleMemberRequired,
+    RoleUnavailable,
+    UpstreamUnavailable,
+)
 from .issueruns import TERMINAL_RUN_STATES, IssueRuns, RunState, planning_refusal
 from .repoindex import POLL_BUDGET_SECONDS
 from .repositories import Repositories
@@ -155,6 +163,11 @@ OVERLAP = "OVERLAP"
 BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
 MISSED_SLOT = "MISSED_SLOT"
 OWNER_NOT_MEMBER = "OWNER_NOT_MEMBER"
+#: The owner is still a member, and a grant holds them at `viewer`
+#: (docs/design/workspace-roles.md §4.8): a firing submits as its owner, and
+#: a viewer submits nothing. Raised as `role_member_required` behind its
+#: switch; this is the skip and auto-pause code it leaves on the schedule.
+OWNER_ROLE_NARROWED = "OWNER_ROLE_NARROWED"
 REPOSITORY_NOT_GRANTED = "REPOSITORY_NOT_GRANTED"
 SCHEDULES_DISABLED = "SCHEDULES_DISABLED"
 DRY_RUN = "DRY_RUN"
@@ -168,6 +181,13 @@ CONSECUTIVE_FAILURES = "CONSECUTIVE_FAILURES"
 #: none. Without it a firing whose every repository read failed looked
 #: exactly like one with nothing due.
 NOTHING_STARTED = "NOTHING_STARTED"
+
+#: The `schedule_audit` action written when the tick pauses a schedule whose
+#: owner a grant narrowed to `viewer` (workspace-roles.md §4.8).
+AUTO_PAUSED = "auto_paused"
+#: `platform_admin_acted`'s `route` for a firing whose owner acts only as a
+#: platform admin (workspace-roles.md §4.2.4): a template no HTTP route has.
+FIRING_ROUTE = "schedule_firing"
 
 #: The `schedule_audit` action written when an approved firing is held back
 #: because its approval does not release it, once per approval and digest.
@@ -183,6 +203,8 @@ APPROVAL_CHANGED = "approval_changed"
 #: What a person reads for each auto-pause (§1.3).
 PAUSE_COPY = {
     OWNER_NOT_MEMBER: "Paused: its owner is no longer a member of this tenant; take ownership to resume",
+    OWNER_ROLE_NARROWED: "Paused: its owner's role in this workspace is viewer; a member can take "
+                         "ownership to resume",
     RUN_OVER_BUDGET: "Paused: a run cost more than its per-run budget",
     CONSECUTIVE_FAILURES: "Paused after {n} failed runs in a row",
     TYPE_UNAVAILABLE: "Disabled: its type is no longer in the catalogue",
@@ -238,6 +260,7 @@ def member_auth(
     email: str,
     subject: str,
     not_member: Callable[[str], Exception],
+    reach: bool = False,
 ) -> AuthContext:
     """The AuthContext of a stored member, in a stored tenant, NOW a member.
 
@@ -253,12 +276,25 @@ def member_auth(
     (`Authenticator.is_tenant_member`). Not a member: `not_member(message)`
     is raised. The lookup failing: `UpstreamUnavailable`, untouched, so the
     caller retries rather than deciding either way.
+
+    `reach` asks `Authenticator.may_act_in` instead (docs/design/
+    workspace-roles.md §4.2.3): a platform admin who is not in a GROUP
+    tenant's group still acts there (Q5), and the context comes back with
+    `tenant_via == "platform_admin"` so the caller writes the audit row
+    §4.2.4 requires. Nothing else widens: `is_admin` stays False, a personal
+    tenant is never reached, and losing the platform role is `not_member` at
+    the next call. Off (the default), membership is asked exactly as before,
+    so a caller that has not opted in is unchanged.
     """
     tenant = ctx.store.get_tenant(tenant_id)
     if tenant is None:
         raise NotFound(f"tenant {tenant_id!r} not found")
     email = (email or "").strip().lower()
-    if not ctx.authenticator.is_tenant_member(email, tenant):
+    if reach:
+        via = ctx.authenticator.may_act_in(email, tenant)
+    else:
+        via = "member" if ctx.authenticator.is_tenant_member(email, tenant) else ""
+    if not via:
         raise not_member(
             f"{email or '(not recorded)'} is no longer a member of tenant {tenant_id!r}, "
             "so nothing is submitted on their behalf"
@@ -274,18 +310,71 @@ def member_auth(
         tenant_id=tenant_id,
         is_admin=False,
         tenant_principal=tenant.principal,
+        tenant_via=roles.VIA_PLATFORM_ADMIN if via == "platform_admin" else "",
     )
 
 
 def schedule_owner_auth(ctx: Any, schedule: Mapping[str, Any]) -> AuthContext:
-    """§2.7: the schedule's stored `owner`, in its stored `tenant_id`, while a member."""
+    """§2.7: the schedule's stored `owner`, in its stored `tenant_id`, while a
+    member -- or, in a group tenant, while a platform admin (workspace-roles.md
+    §4.2.3, Q5), with `tenant_via == "platform_admin"`."""
     return member_auth(
         ctx,
         tenant_id=str(schedule["tenant_id"]),
         email=str(schedule.get("owner") or ""),
         subject=f"schedule:{schedule['schedule_id']}",
         not_member=ScheduleOwnerNotMember,
+        reach=True,
     )
+
+
+def owner_acts_as(ctx: Any, owner: AuthContext, schedule: Mapping[str, Any]) -> str:
+    """Whether the stored owner may submit NOW, by their role in the
+    schedule's workspace (docs/design/workspace-roles.md §4.8): "" as an
+    ordinary member, "platform_admin" when only their platform role lets the
+    firing through (so it must be audited, §4.2.4), and `RoleMemberRequired`
+    raised -- through its switch -- when a grant holds them at `viewer`.
+
+    * Reached as a non-member platform admin (`tenant_via`): `admin` by rule
+      (Q5), no grant read.
+    * Otherwise the role is read FRESH: a narrowing made a minute ago must
+      stop the next firing, and the tick has no caller to retry for.
+    * Below `member`, a platform admin still passes (Q5: a grant naming them
+      is inert while they are one), asked of every admin source past its
+      cache; one lookup, only after a grant has said no.
+    * The switch off: the firing goes ahead and `refusal report-only
+      code=role_member_required` names the owner, the tenant and the role.
+    * A role that cannot be read: with the switch on, `RoleUnavailable`
+      (503) propagates and the firing stays claimed for the next tick; off,
+      the firing goes ahead as it did before roles existed.
+    """
+    if owner.tenant_via == roles.VIA_PLATFORM_ADMIN:
+        return roles.VIA_PLATFORM_ADMIN
+    store = getattr(ctx, "roles", None)
+    if store is None:
+        return ""
+    code = RoleMemberRequired.code
+    try:
+        me = store.resolve(owner, fresh=True)
+    except RoleUnavailable:
+        if refusals.enforced(code):
+            raise
+        log.warning("role unavailable report-only code=%s tenant=%s email=%s schedule=%s",
+                    code, owner.tenant_id, owner.email, schedule.get("schedule_id"))
+        return ""
+    if roles.at_least(me.role, roles.MEMBER):
+        return ""
+    if not roles.is_personal(owner) and ctx.authenticator.holds_platform_admin(owner.email, fresh=True):
+        return roles.VIA_PLATFORM_ADMIN
+    enforced = refusals.enforced(code)
+    ctx.metrics.role_refusals.labels(code=code, enforced=str(enforced).lower()).inc()
+    refusals.refuse(RoleMemberRequired(
+        f"The owner of schedule {schedule.get('schedule_id')} ({owner.email}) holds "
+        f"{me.role} in {owner.tenant_id}; a firing needs member or above. Nothing was submitted.",
+        detail={"tenant_id": owner.tenant_id, "role": me.role, "required": roles.MEMBER,
+                "source": me.source, "admins": []},
+    ))
+    return ""
 
 
 # --------------------------------------------------------------------------
@@ -1055,6 +1144,19 @@ class Ticker:
                       detail={"owner": schedule.get("owner")}, schedule=schedule)
             self.pause(schedule["schedule_id"], OWNER_NOT_MEMBER, now)
             return SKIPPED
+        # And by their role there NOW (workspace-roles.md §4.8): a viewer
+        # submits nothing, so neither does a firing they own.
+        try:
+            acts_as = owner_acts_as(self.ctx, owner, schedule)
+        except RoleMemberRequired as refused:
+            role = (refused.detail or {}).get("role")
+            self._end(fid, now, report, state=SKIPPED, code=OWNER_ROLE_NARROWED,
+                      detail={"owner": schedule.get("owner"), "role": role}, schedule=schedule)
+            self.pause(schedule["schedule_id"], OWNER_ROLE_NARROWED, now, audit={
+                "code": OWNER_ROLE_NARROWED, "owner": schedule.get("owner"), "role": role,
+                "firing_id": fid,
+            })
+            return SKIPPED
         # Work already carrying this firing's mark (§2.2): adopted, never
         # created twice.
         adopted = self._adopt(schedule, fid)
@@ -1116,6 +1218,12 @@ class Ticker:
             # and its inbox are lane S5's; nothing is submitted here.
             report.held += 1
             return self._move(fid, now, report, AWAITING_APPROVAL, {"params_digest": digest})
+        if acts_as == roles.VIA_PLATFORM_ADMIN:
+            # §4.2.4: an owner who acts here only as a platform admin has a
+            # `platform_admin_acted` row written BEFORE anything is submitted.
+            # A row that cannot be written is a 503 that propagates: the
+            # firing stays claimed, and the work is never created unaudited.
+            self._audit_platform_admin(owner, schedule, fid)
         try:
             work = executor.create(handle) or []
         except ApiError as exc:
@@ -1334,10 +1442,23 @@ class Ticker:
             except ConsecutiveFailures:
                 self.pause(schedule_id, CONSECUTIVE_FAILURES, now, n=pause_after[0])
 
+    def _audit_platform_admin(self, owner: AuthContext, schedule: Mapping[str, Any], fid: str) -> None:
+        store = getattr(self.ctx, "roles", None)
+        if store is None:
+            return
+        # The owner's context is never an admin's (`member_auth`); the audit
+        # asks `is_admin` only to know a platform admin is acting, which
+        # `owner_acts_as` has just established with a fresh lookup.
+        store.audit_platform_admin(
+            replace(owner, is_admin=True), method="POST", route=FIRING_ROUTE,
+            path_params={"schedule_id": str(schedule["schedule_id"]), "firing_id": fid})
+
     def pause(self, schedule_id: str, code: str, now: datetime, *, state: str = "auto_paused",
-              n: int | None = None) -> bool:
+              n: int | None = None, audit: Mapping[str, Any] | None = None) -> bool:
         """§1.3: `auto_paused` (or `disabled`) with its code. Only an ENABLED
-        schedule moves: a person's pause is not overwritten by the tick's."""
+        schedule moves: a person's pause is not overwritten by the tick's.
+        `audit`, when given, is the detail of an `auto_paused` entry in
+        `schedule_audit`, written in the same transaction as the pause."""
         ref = self._schedule_ref(schedule_id)
         reason = PAUSE_COPY[code].format(n=n if n is not None else CONSECUTIVE_FAILURES_DEFAULT)
 
@@ -1356,6 +1477,10 @@ class Ticker:
                 "updated_by": TICK_ACTOR,
                 "updated_at": now,
             })
+            if audit is not None:
+                schedaudit.append(txn, self.db, schedule_id=schedule_id,
+                                  tenant_id=str(doc.get("tenant_id") or ""), action=AUTO_PAUSED,
+                                  by=TICK_ACTOR, at=now, detail={**dict(audit), "reason": reason})
             return True
 
         moved = _apply(self.db.transaction())
@@ -1674,6 +1799,7 @@ __all__ = [
     "firing_id",
     "load_executor",
     "nothing_started",
+    "owner_acts_as",
     "member_auth",
     "params_digest",
     "plan_slots",
