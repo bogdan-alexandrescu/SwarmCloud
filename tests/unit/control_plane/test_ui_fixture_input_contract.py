@@ -53,12 +53,31 @@ def _fixture_table() -> object:
 
 @needs_ui
 def test_the_fixture_table_is_the_apis_contract_for_every_profile():
-    expected = {name: input_contract(profile) for name, profile in RUNNER_PROFILES.items()}
-    assert _fixture_table() == expected, (
-        "the UI fixture's input contract disagrees with swarm_api.runnerinputs over the "
-        "frozen catalogue; a screen verified against it is verified against a rule "
-        "production does not apply. Regenerate the literal from input_contract()."
+    """Every key the fixture serves is the API's value for it, for every profile.
+
+    The fixture may leave `inputs` out (MCP-INPUTS, part of #1433): the API
+    serves each profile's declared inputs since then, and a fixture without
+    them reads as an API too old to serve them, which draws no MCP or browser
+    tool picker -- a true statement about such an API, and the fixture's state
+    until the UI lane decides to draw the pickers in fixture sessions. A key
+    the fixture DOES serve must equal the API's, so an `inputs` added there is
+    held to `input_contract()` exactly as `required_keys` is.
+    """
+    table = _fixture_table()
+    assert isinstance(table, dict)
+    assert set(table) == set(RUNNER_PROFILES), (
+        "the UI fixture's input contract lists a different set of profiles from the frozen catalogue"
     )
+    for name, profile in RUNNER_PROFILES.items():
+        served = input_contract(profile)
+        fixture = table[name]
+        assert "required_keys" in fixture, f"{name}: the fixture serves no required_keys"
+        assert set(fixture) <= set(served), f"{name}: the fixture serves keys the API does not"
+        assert {k: served[k] for k in fixture} == fixture, (
+            f"{name}: the UI fixture's input contract disagrees with swarm_api.runnerinputs over "
+            "the frozen catalogue; a screen verified against it is verified against a rule "
+            "production does not apply. Regenerate the literal from input_contract()."
+        )
 
 
 @needs_ui
