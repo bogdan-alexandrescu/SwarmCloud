@@ -860,6 +860,13 @@ locals {
       WORKSPACE_APPLY_TOPIC   = "swarm-workspace-apply"
       WORKSPACE_APPLY_PUBLISH = var.workspace_apply_publish ? "true" : "false"
 
+      # The submission gate (swarm_api.workspaces.gate_from_env, WD8). "on" and
+      # "off" are its words; anything else stops swarm-api at start rather than
+      # being guessed at. Off unless the environment's tfvars sets
+      # var.workspace_gate (W10: dev, 2026-10-13). Before W10 it reached
+      # swarm-api only by hand, and the next apply would have put it back off.
+      WORKSPACE_GATE = var.workspace_gate ? "on" : "off"
+
       # The step-spec key version every submission is signed with (contract
       # request 34). A full version name, because an asymmetric key has no
       # primary version: local.spec_signing_key_version, derived in
@@ -889,7 +896,17 @@ locals {
       # This widens WHICH verified identities are admitted, never whether an
       # identity was verified: auth.py:331 consults this only after the token
       # has been checked, and the address it compares comes from that token.
-      ALLOWED_USERS = google_service_account.verify.email
+      #
+      # oracle-api, by owner decision 2026-10-18 (#1568), signed off at merge:
+      # the orchestrating client application submits workflows as its own
+      # tenant, u-or-9a0792 (dev.tfvars), and never as a member of eng. It is
+      # in no registered group, so once admitted here it resolves to that
+      # tenant alone. A literal, not derived: the account is not this root's,
+      # and the owner's decision names this exact address.
+      ALLOWED_USERS = join(",", [
+        google_service_account.verify.email,
+        "oracle-api@saga-agents-staging.iam.gserviceaccount.com",
+      ])
 
       # The same principals terraform already refuses to let own a DECLARED
       # tenant, handed to the runtime so it can refuse the ones terraform

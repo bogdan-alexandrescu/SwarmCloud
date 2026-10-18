@@ -75,8 +75,8 @@ run "dev_tfvars_names_no_u_bogdan_and_bootstrap_grants_it_nothing" {
   }
 
   assert {
-    condition     = toset(local.infra_tenant_ids) == toset(["eng", "smoke", "u-sw-c90291"])
-    error_message = "dev.tfvars' tenants are not eng, smoke and u-sw-c90291: update this run and the infra run below together, so the infra plan is still the one dev.tfvars makes"
+    condition     = toset(local.infra_tenant_ids) == toset(["eng", "smoke", "u-sw-c90291", "u-or-9a0792"])
+    error_message = "dev.tfvars' tenants are not eng, smoke, u-sw-c90291 and u-or-9a0792: update this run and the infra run below together, so the infra plan is still the one dev.tfvars makes"
   }
 
   assert {
@@ -209,6 +209,15 @@ run "infra_plans_nothing_for_u_bogdan_and_still_plans_eng" {
         max_active      = 4
         capacity_units  = 8
       }
+      u-or-9a0792 = {
+        kind            = "user"
+        principal       = "oracle-api@saga-agents-staging.iam.gserviceaccount.com"
+        display_name    = "Oracle API"
+        directory_group = false
+        providers       = []
+        max_active      = 4
+        capacity_units  = 8
+      }
     }
   }
 
@@ -243,8 +252,8 @@ run "infra_plans_nothing_for_u_bogdan_and_still_plans_eng" {
   }
 
   assert {
-    condition     = toset(keys(output.tenant_namespaces)) == toset(["eng", "smoke", "u-sw-c90291"])
-    error_message = "the tenants planned are not dev.tfvars' three"
+    condition     = toset(keys(output.tenant_namespaces)) == toset(["eng", "smoke", "u-sw-c90291", "u-or-9a0792"])
+    error_message = "the tenants planned are not dev.tfvars' four"
   }
 }
 
@@ -281,6 +290,15 @@ run "infra_forgets_every_instance_it_made_for_u_bogdan" {
         kind            = "user"
         principal       = "swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
         display_name    = "Verification gate"
+        directory_group = false
+        providers       = []
+        max_active      = 4
+        capacity_units  = 8
+      }
+      u-or-9a0792 = {
+        kind            = "user"
+        principal       = "oracle-api@saga-agents-staging.iam.gserviceaccount.com"
+        display_name    = "Oracle API"
         directory_group = false
         providers       = []
         max_active      = 4

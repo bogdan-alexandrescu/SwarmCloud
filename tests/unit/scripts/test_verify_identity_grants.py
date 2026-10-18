@@ -131,9 +131,11 @@ def test_the_derived_identity_is_the_one_swarm_api_admits() -> None:
         _strip_comments(DEV_TFVARS.read_text()),
         re.M,
     ), f"no tenant in dev.tfvars has the derived identity {email} as its principal"
+    # A join since 2026-10-18, when the owner admitted oracle-api beside the
+    # gate (#1568); the gate must still be its first element.
     assert re.search(
-        r"ALLOWED_USERS\s*=\s*google_service_account\.verify\.email",
-        LOCALS_TF.read_text(),
+        r'ALLOWED_USERS\s*=\s*(?:join\(\s*",",\s*\[\s*)?google_service_account\.verify\.email\b',
+        _strip_comments(LOCALS_TF.read_text()),
     ), "swarm-api no longer admits google_service_account.verify through ALLOWED_USERS"
 
 

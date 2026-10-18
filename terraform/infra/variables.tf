@@ -372,7 +372,8 @@ variable "tenants" {
   # the workspace job and live outside Terraform state, so a plan can never
   # change or destroy one; a person in this map would be in state, and in a
   # public tfvars file besides (§2.6). So a `kind = "user"` tenant must be a
-  # SERVICE account's -- swarm-verify's u-sw-c90291 is the one there is.
+  # SERVICE account's -- swarm-verify's u-sw-c90291 and, since 2026-10-18
+  # (#1568), oracle-api's u-or-9a0792.
   validation {
     condition = alltrue([
       for t, v in var.tenants :
@@ -899,6 +900,22 @@ variable "workspace_apply_publish" {
     release as that apply. Off, nothing is silent: the swarm-workspace-sweep
     job still runs, and every approved record is logged as workspace_stuck
     (reason publishing_off), which pages through the workspace-stuck alert.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "workspace_gate" {
+  description = <<-EOT
+    swarm-api's WORKSPACE_GATE (swarm_api.workspaces.gate_from_env, #847 WD8;
+    docs/workspaces.md §5.5): whether a person's task or workflow submission
+    into their own personal tenant is refused until their workspace is `ready`
+    (403 WORKSPACE_NOT_READY) and has a Claude account (403 NO_CLAUDE_ACCOUNT),
+    and whether swarm-api stops writing tenants/u-* on first sight. A group
+    submission is never gated (WD7). OFF by default, as gate_from_env is: on
+    refuses every person without a `ready` workspace record, so an environment
+    turns it on only after one real approval has gone end to end through the
+    swarm-workspace-apply job.
   EOT
   type        = bool
   default     = false
