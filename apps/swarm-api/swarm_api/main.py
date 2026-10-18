@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from typing import Any
 
@@ -24,6 +25,8 @@ from .deps import AppContext, build_context
 from .errors import ApiError, Conflict, RateLimited, Unauthenticated
 from .forgeapp import ForgeApp, build_forge_app
 from .forgeperms import build_forge_permissions
+from .awaitinput import MAX_CONCURRENT_MULTIPART
+from .inputwriter import InputWriter, build_input_writer
 from .routes import (
     access,
     accounts,
@@ -34,6 +37,7 @@ from .routes import (
     attemptstate,
     attempts_mcp,
     attempts_secrets,
+    await_input,
     browser_logins,
     browser_slots,
     checkpoints,
@@ -95,6 +99,9 @@ UNCAPTURED_ROUTES = frozenset({
     "/v1/tasks",
     "/v1/tasks/batch",
     "/v1/workflows",
+    # An await-input answer (docs/design/human-steps.md §4.6): a person's
+    # form and up to 16 MiB of their files.
+    await_input.INPUT_ROUTE,
 })
 
 
@@ -119,7 +126,8 @@ def _forbidden_field_hint(errors: list[dict[str, Any]]) -> str | None:
 
 
 def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = None,
-               access_service: AccessService | None = None) -> FastAPI:
+               access_service: AccessService | None = None,
+               input_writer: InputWriter | None = None) -> FastAPI:
     # FIRST, before anything else can log. Nothing configured the root logger
     # previously, so every log.info() in this package was discarded and an
     # operator debugging a refused request saw the request and not the reason.
@@ -146,6 +154,17 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # GitHub permissions health (#1086, PERM-1): read-only, over the App's
     # JWT and transport above; cached per tenant for a minute.
     app.state.forge_perms = build_forge_permissions(app.state.forge_app)
+
+    # The await-input answer's create-only writer (docs/design/human-steps.md
+    # §4.3, swarm_api.inputwriter): the one thing here that writes to the
+    # artifact bucket. Builds no client until an answer arrives; None when no
+    # bucket is configured, which the answer route says by name. A test
+    # injects one over the in-memory reader.
+    app.state.input_writer = input_writer if input_writer is not None else build_input_writer(
+        bucket=app.state.ctx.settings.core.artifact_bucket,
+        project_id=app.state.ctx.settings.project_id)
+    # Multipart answers this instance holds at once (§4.3 step 3): a fifth is 429.
+    app.state.answer_slots = threading.BoundedSemaphore(MAX_CONCURRENT_MULTIPART)
 
     app.include_router(health.router)
     app.include_router(tasks.router)
@@ -289,6 +308,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # caller's own items, derived on each read from the records above, and
     # one document of read marks per person.
     app.include_router(notifications.router)
+    # Await-input steps (docs/design/human-steps.md §4.6, lane HW-API-ANSWER):
+    # a person answers a workflow step; the card and the bridge read it.
+    app.include_router(await_input.router)
 
     @app.middleware("http")
     async def observe(request: Request, call_next):

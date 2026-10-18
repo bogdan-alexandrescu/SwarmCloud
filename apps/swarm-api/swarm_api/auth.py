@@ -31,7 +31,7 @@ from swarm_common.identity import (
 )
 
 from .errors import Forbidden, Unauthenticated, UpstreamUnavailable
-from .gitidentity import clean_name
+from .gitidentity import clean_name, is_service_account
 from .groups import GroupLookupError, MembershipResolver
 from .settings import ApiSettings
 from .store import TENANTS
@@ -857,8 +857,15 @@ class Authenticator:
             is_owner=is_owner,
         )
 
-    def is_tenant_member(self, email: str, tenant: Any) -> bool:
+    def is_tenant_member(self, email: str, tenant: Any, *, fresh: bool = False) -> bool:
         """Whether `email` belongs to `tenant` NOW, asked of the directory again.
+
+        `fresh` skips the resolver's per-(caller, group) cache
+        (`groups.CloudIdentityGroups.is_member(fresh=True)`), for a decision
+        that a removal from the group a minute ago must already change: an
+        await-input answer (docs/design/human-steps.md §4.2). Without it the
+        answer may be up to `group_cache_ttl_seconds` old, which is right for
+        the ordinary request path and nothing else.
 
         For work submitted on a member's behalf with nobody on the call -- an
         issue run's auto approval and its CI fix rounds (`routes.runs.
@@ -875,7 +882,13 @@ class Authenticator:
         if getattr(tenant, "kind", "") != "group":
             return principal == email
         try:
-            held = self._groups.groups_for(email, (principal,))
+            # Only a fresh question passes the keyword, so every resolver
+            # written before it -- the tests' fakes included -- is called as
+            # it always was.
+            held = (
+                self._groups.groups_for(email, (principal,), fresh=True)
+                if fresh else self._groups.groups_for(email, (principal,))
+            )
         except GroupLookupError as exc:
             log.warning("tenant membership unresolved for %s: %s", email, exc)
             raise UpstreamUnavailable(
@@ -956,6 +969,30 @@ class Authenticator:
             if group.lower() in member_of:
                 return group.lower()
         return email
+
+
+def person_refusal(auth: AuthContext) -> str | None:
+    """Why this caller is not a PERSON, or None when it is one.
+
+    For the routes only a person may call: an await-input answer
+    (docs/design/human-steps.md §4.2 step 1, `routes.await_input`). A
+    verified human ID token is the only thing that passes. Refused: any
+    `*.gserviceaccount.com` principal (`gitidentity.is_service_account`) or
+    other service identity (`workspaces.is_service_identity`) -- a tenant's
+    worker GSA, the scheduler, a CI identity, one admitted through
+    ALLOWED_USERS and confirmed in a tenant's group -- and the platform's own
+    jobs and listed accounts, whatever their address: the schedule tick, the
+    rollup sweeper, a listed service account (contract request 30). Admin
+    status is not read: it is about the caller, and confers no exemption.
+    """
+    email = auth.email
+    if auth.is_schedule_tick or auth.is_rollup_sweeper:
+        return "the platform's scheduled jobs answer for no person"
+    if auth.member_scope or auth.tenant_member:
+        return "a listed service account answers for no person"
+    if not email or is_service_account(email) or is_service_identity(email):
+        return "a service account answers for no person; only a person signed in as themselves may"
+    return None
 
 
 #: Every admin route a POOL ADMIN (`ApiSettings.admin_pool_users`) may call, as
