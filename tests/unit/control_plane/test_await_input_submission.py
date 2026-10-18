@@ -117,7 +117,7 @@ def _docs(db, body) -> dict[str, dict[str, Any]]:
     return {s["step_id"]: db.docs[f"tasks/{s['task_id']}"] for s in body["workflow"]["steps"]}
 
 
-def _refused(client, db, spec, field: str, *, code: str = "invalid_await_input") -> dict:
+def _refused(client, db, spec, field: str, *, code: str = "validation_failed") -> dict:
     before = {k for k in db.docs if k.startswith("tasks/")}
     response = _post(client, spec)
     assert response.status_code == 422, response.text

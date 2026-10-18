@@ -3509,13 +3509,14 @@ AWAIT_STEP_REFUSED_FIELDS = (
 
 
 class AwaitInputRefused(ValidationFailed):
-    """422 `invalid_await_input`: an `await-input` step, or its block, refused.
+    """422 `validation_failed`: an `await-input` step, or its block, refused.
 
     `detail.field` names what was refused (`await_input.<key>` inside the
     block, the step's own field otherwise), and `detail.step_id` the step.
+    The established code, not a new one: a new 4xx code ships behind a
+    switch (`swarm_api.refusals`, test_new_refusals_ship_off.py), and the
+    field is what a caller branches on here.
     """
-
-    code = "invalid_await_input"
 
 
 def _await_refused(step_id: str | None, field_name: str, message: str) -> AwaitInputRefused:
@@ -3659,7 +3660,7 @@ def resolve_await_input(
     Returns the block as `metadata.dispatch.await_input` stores it --
     every key present, defaults filled in, `remind` lower-cased -- or None
     for a step of any other profile, which may not carry one. Every refusal
-    is a 422 `invalid_await_input` whose `detail.field` names the field.
+    is a 422 `validation_failed` whose `detail.field` names the field.
 
     `container_fields` is the step's own `AWAIT_STEP_REFUSED_FIELDS`, by
     name; `allowed_domains` and `allowed_users` are who may sign in at all,
