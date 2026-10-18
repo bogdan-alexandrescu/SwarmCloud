@@ -34,6 +34,7 @@ import { GITHUB_CALLBACK_ADDRESS, KEY_LINK_ADDRESS, SUBMIT_ADDRESS, addressToPat
 import { GitHubCallbackScreen } from './GitHubConnect'
 import { ProviderKeysScreen } from './ProviderKeys'
 import { WorkspaceSettingsScreen } from './CodeIntelligence'
+import { McpServersScreen } from './McpServers'
 import { NotFound, nearestPath } from './NotFound'
 import { fmtLatency } from './panes'
 import { Icon, SkyShell, type SpineSection } from './Spine'
@@ -557,6 +558,15 @@ const KEYS_LABEL = 'API keys'
 const WORKSPACE_TAB = 'workspace'
 /** The page's `<h1>` and the second half of its name in the issue forms. */
 const WORKSPACE_LABEL = 'Workspace'
+/**
+ * SETTINGS › MCP SERVERS (MCP-UI; docs/design/registered-mcp-servers.md
+ * §4.11): the workspace's registered MCP servers, which a task names on
+ * Submit. A sibling of Workspace and not a section, for the same reason. One
+ * exact address: `#settings/<anything else>` still lands on Pool limits.
+ */
+const MCP_TAB = 'mcp-servers'
+/** The page's `<h1>` and the head's crumb. */
+const MCP_LABEL = 'MCP servers'
 
 /**
  * The utility button's label AND the heading of the screen it opens. One
@@ -915,6 +925,7 @@ export function fromAddress(full: string): Route {
   // as the eleven-item nav's Pool limits. Only the link's scope is kept.
   if (hash === `${SETTINGS}/${KEYS_TAB}`) return { sectionId: SETTINGS, tab: KEYS_TAB, ...blank }
   if (hash === `${SETTINGS}/${WORKSPACE_TAB}`) return { sectionId: SETTINGS, tab: WORKSPACE_TAB, ...blank }
+  if (hash === `${SETTINGS}/${MCP_TAB}`) return { sectionId: SETTINGS, tab: MCP_TAB, ...blank }
   if (hash === KEY_LINK_ADDRESS) {
     const scope = keyLinkScope(query)
     return { sectionId: SETTINGS, tab: KEY_LINK_TAB, ...blank, ...(scope === null ? {} : { view: `scope=${scope}` }) }
@@ -1326,7 +1337,9 @@ export function App() {
             : at.sectionId === SETTINGS
               ? at.tab === WORKSPACE_TAB
                 ? WORKSPACE_LABEL
-                : KEYS_LABEL
+                : at.tab === MCP_TAB
+                  ? MCP_LABEL
+                  : KEYS_LABEL
               : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
   const object = at.missing ? null : documentObjectOf(at)
   useEffect(() => {
@@ -1413,6 +1426,8 @@ export function App() {
                   <GitHubCallbackScreen go={go} />
                 ) : at.sectionId === SETTINGS && at.tab === WORKSPACE_TAB ? (
                   <WorkspaceSettingsScreen />
+                ) : at.sectionId === SETTINGS && at.tab === MCP_TAB ? (
+                  <McpServersScreen />
                 ) : at.sectionId === SETTINGS ? (
                   <ProviderKeysScreen link={at.tab === KEY_LINK_TAB ? { scope: keyLinkScope(at.view ?? ''), token: keyLink.current } : null} />
                 ) : (
