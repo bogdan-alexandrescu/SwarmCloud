@@ -1625,6 +1625,20 @@ export function SkyShell({
         >
           Settings › Workspace
         </a>
+        {/* SETTINGS › MCP SERVERS (MCP-UI-NAV): the workspace's registered MCP
+            servers, beside Workspace (registered-mcp-servers.md §4.11; App.tsx MCP_TAB). */}
+        <a
+          className={`sk-pset${place === '/settings/mcp-servers' ? ' is-on' : ''}`}
+          aria-current={place === '/settings/mcp-servers' ? 'page' : undefined}
+          href={addressToPath('settings/mcp-servers')}
+          onClick={(e) => {
+            if (!routedClick(e)) return
+            e.preventDefault()
+            nav('settings/mcp-servers')
+          }}
+        >
+          Settings › MCP servers
+        </a>
         <ThemeToggle />
       </div>
     </nav>
