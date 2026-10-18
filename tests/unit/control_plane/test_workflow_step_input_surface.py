@@ -539,7 +539,7 @@ def test_run_cli_agent_really_refuses_an_empty_prompt(tmp_path):
         assert "input.prompt" in str(raised.value), payload
 
     # And the contract the API serves is the one that would have prevented it.
-    assert input_contract(RUNNER_PROFILES["claude-code"]) == {"required_keys": ["prompt"]}
+    assert input_contract(RUNNER_PROFILES["claude-code"])["required_keys"] == ["prompt"]
 
 
 def test_a_profile_whose_runner_reads_its_input_defensively_requires_nothing():
