@@ -7582,7 +7582,8 @@ class Worker:
                     base_sha=clone_base, call_options=self.control.call_options(),
                     log=self.log, mark=self._mark_graph_ready,
                     graph_ticket=self.graph_ticket, private_dir=ws.private,
-                    backend=self.cfg.backend, service_url=self.cfg.graph_service_url)
+                    backend=self.cfg.backend, service_url=self.cfg.graph_service_url,
+                    secret_env_names=self.cfg.profile.secrets)
             except graph_ticket_mod.GraphTicketFenced as exc:
                 raise FencedWriteRefused(
                     self.cfg.generation, -1, str(exc), write="graph ticket"

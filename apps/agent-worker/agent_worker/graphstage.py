@@ -124,7 +124,7 @@ import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 from urllib.parse import urlsplit
 
 from . import graph_ticket as graph_ticket_mod
@@ -891,7 +891,8 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
             private_dir: Path | None = None,
             backend: str | None = None,
             service_url: str | None = None,
-            probe: Callable[[str, Path], str | None] | None = None) -> dict[str, str]:
+            probe: Callable[[str, Path], str | None] | None = None,
+            secret_env_names: Iterable[str] = ()) -> dict[str, str]:
     """Stage (or pin) for this attempt and return the runner's variables.
 
     Raises only `graph_ticket.GraphTicketFenced`, the fence (invariant 5);
@@ -911,6 +912,9 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
     graph was to be delivered, staged or not, which is the denominator of
     §8.2's fallback rate. Arm A and `off` deliver nothing by decision and are
     not readings. A mark that fails costs only the mark.
+
+    `secret_env_names` is the task profile's `secrets`, handed on to Jev's
+    setup so its client drops every string holding one (§5.4 step 4).
     """
     try:
         if profile_name == indexrun.INDEXER_PROFILE or not offers_graph(runner_argv) \
@@ -957,7 +961,7 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
 
         jev = judge_attempt.setup(work=work, db=db, tenant_id=tenant_id,
                                   repository_url=repository_url, call_options=call_options,
-                                  log=log)
+                                  log=log, secret_env_names=secret_env_names)
         if result.served and result.pin is not None and result.ticket_file is not None:
             return {CONTEXT_ENV: str(context_dir), PIN_ENV: str(result.pin),
                     TICKET_FILE_ENV: str(result.ticket_file), URL_ENV: str(service_url),
