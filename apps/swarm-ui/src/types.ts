@@ -5757,3 +5757,168 @@ export interface AccessMembers {
   members: AccessMember[]
   tenant_id: string
 }
+
+// ---------------------------------------------------------------------------
+// Settings › Profile (docs/design/user-profile.md §4.1, §4.2; lane
+// PROFILE-PAGE, part of #1505). `GET /v1/profile` is ONE read for the page,
+// and each section fails alone: a section the API could not read is ABSENT
+// and named in `unavailable`, so the page says "could not be read" for it
+// rather than drawing an empty one. `api.ts::normProfile` copies every field
+// by name, so a field a source gains by mistake (a secret's name, a token id)
+// never reaches a screen.
+// ---------------------------------------------------------------------------
+
+/** A bell topic (`preferences.TOPICS`). Every one may be muted (Q3). */
+export type NotificationTopic = 'approval' | 'waiting_step' | 'question' | 'failed' | 'finished' | 'account' | 'admin'
+
+/** `preferences.REMINDERS`: how often a read needs-you item rings again (§4.6). */
+export type ReminderCadence = 'as_set' | 'every_4h' | 'daily' | 'never'
+
+/** A section of `GET /v1/profile` that can fail alone. */
+export type ProfileSection = 'preferences' | 'github' | 'typesafe' | 'claude_accounts'
+
+/**
+ * A person's role in one workspace, from `workspace_role.py::role_in` ONLY
+ * (Q7). `name` is drawn as given and nothing branches on it: the roles build
+ * (#1518) may serve any name with `source: "assigned"`, and needs no page
+ * change to do so. `via` is the group that confers it, when there is one.
+ */
+export interface WorkspaceRole {
+  name: string
+  source: string
+  via: string | null
+}
+
+export interface ProfileIdentity {
+  email: string
+  /** The stored name, or null: others then see the email alone. */
+  display_name: string | null
+  /** The token's name claim after the §4.4 rules, only while no name is stored: the editor's initial value. */
+  display_name_suggested: string | null
+  domain: string | null
+  /** `owner`, `admin` or null. Shown once, here, never as a workspace role. */
+  platform_role: string | null
+  is_admin: boolean
+  is_admin_unresolved: boolean
+}
+
+export interface ProfileWorkspace {
+  tenant_id: string
+  display_name: string
+  /** `user` (the personal workspace) or `group`. */
+  kind: string
+  role: WorkspaceRole
+  /** The personal workspace's state (`requested`, `applying`, `ready`...); null for a group. */
+  state: string | null
+  /** False for a personal workspace that is not ready yet: shown, never chosen. */
+  selectable: boolean
+  is_acting: boolean
+  is_default: boolean
+}
+
+export interface ProfileDefault {
+  tenant_id: string | null
+  /** `profile`, `personal`, `first_group`, `unavailable`, or null with no workspace at all. */
+  source: string | null
+  /** Why a stored default was not honoured: `not_a_member`, `not_ready`, `unknown`. */
+  ignored: string | null
+}
+
+/** One workspace's GitHub connection (Q10). `not_connected` carries the tenant and nothing else. */
+export interface ProfileGitHub {
+  tenant_id: string
+  state: string | null
+  forge_login: string | null
+  method: string | null
+  access_expires_at: string | null
+  refreshed_at: string | null
+  failure: { code: string | null; recovery: string | null } | null
+}
+
+/** A key's status: never a value, never a secret's id. */
+export interface ProfileKeyStatus {
+  set: boolean
+  set_at: string | null
+  set_by: string | null
+  version: string | null
+}
+
+export interface ProfileTypeSafe {
+  /** Null when the caller has no ready personal workspace to keep a key in. */
+  personal: ProfileKeyStatus | null
+  acting_workspace: ProfileKeyStatus & { tenant_id: string }
+  /** Which key a task the caller submits in the acting workspace would use. */
+  uses: 'user' | 'tenant' | 'none'
+}
+
+/** Section 2 has exactly these two (Q6: SwarmCloud has no personal API keys). */
+export interface ProfileConnections {
+  github?: ProfileGitHub[]
+  typesafe?: ProfileTypeSafe
+}
+
+export interface Preferences {
+  muted: NotificationTopic[]
+  reminder: ReminderCadence
+}
+
+export interface ProfileNotifications {
+  preferences: Preferences
+  /** Every topic the bell knows, each of which may be muted. */
+  topics: NotificationTopic[]
+}
+
+export interface ProfileQuotaWindow {
+  utilization: number | null
+  resets_at: string | null
+}
+
+export interface ProfileClaudeAccount {
+  account_id: string | null
+  label: string | null
+  /** `own` (your personal workspace owns it) or `borrowed` (lent to it). */
+  relation: 'own' | 'borrowed'
+  state: string | null
+  windows: { five_hour?: ProfileQuotaWindow; seven_day?: ProfileQuotaWindow }
+  /** How many workspaces you lend it to; null on a borrowed account. */
+  lent_to_count: number | null
+  stale: boolean
+}
+
+export interface ProfileClaudeAccounts {
+  /** Null when you have no ready personal workspace. */
+  personal_workspace: string | null
+  accounts: ProfileClaudeAccount[]
+  /** Pool documents the broker could not read: a short list is not the whole pool. */
+  unreadable_document_count: number
+}
+
+/** `GET /v1/profile`. */
+export interface Profile {
+  identity: ProfileIdentity
+  workspaces: ProfileWorkspace[]
+  default_workspace: ProfileDefault
+  connections: ProfileConnections
+  /** Absent when `preferences` is in `unavailable`. */
+  notifications?: ProfileNotifications
+  claude_accounts?: ProfileClaudeAccounts
+  /** The preferences document's revision, which a save echoes; null when it could not be read. */
+  revision: number | null
+  unavailable: ProfileSection[]
+}
+
+/** `PUT /v1/profile/preferences`: the whole set, at the revision last read. */
+export interface PreferencesWrite {
+  display_name: string | null
+  default_workspace: string | null
+  notifications: Preferences
+  revision: number
+}
+
+/** What a save answers: the GET's sections the save can change. */
+export interface PreferencesSaved {
+  identity: Pick<ProfileIdentity, 'display_name' | 'display_name_suggested'>
+  default_workspace: ProfileDefault
+  notifications: ProfileNotifications
+  revision: number
+}

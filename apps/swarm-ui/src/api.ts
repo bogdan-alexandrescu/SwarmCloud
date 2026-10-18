@@ -35,6 +35,9 @@ import type {
   AdminGrantAnswer, AdminRemoveAnswer, LoanDeclineAnswer, LoanRequestAnswer, PeopleDoc, WorkspaceActionAnswer, WorkspaceLimitsAnswer, WorkspaceLoanAnswer, WorkspaceView,
   AccessCheckName, AccessDisableResponse, AccessEnableResponse, AccessGrantResponse, AccessMembers, AccessMode, AccessOverview,
   AccessOwners, AccessRepositoryPage, AccessRevokeResponse, AccessVerifyResponse,
+  NotificationTopic, Preferences, PreferencesSaved, PreferencesWrite, Profile, ProfileClaudeAccount, ProfileClaudeAccounts, ProfileDefault,
+  ProfileGitHub, ProfileIdentity, ProfileKeyStatus, ProfileNotifications, ProfileQuotaWindow, ProfileSection, ProfileTypeSafe, ProfileWorkspace,
+  ReminderCadence, WorkspaceRole,
 } from './types'
 
 // The fetch contract lives in fetch.ts. This file is only the list of reads
@@ -5785,6 +5788,215 @@ export async function deleteProviderKey(provider: string, scope: ProviderKeyScop
     ? route('/v1/provider-keys/{provider}/user', { provider })
     : route('/v1/provider-keys/{provider}/tenant', { provider })
   return writeTo(target, 'DELETE')
+}
+
+// ---------------------------------------------------------------------------
+// Settings › Profile (docs/design/user-profile.md §4.2; PROFILE-API, PR #1544).
+// Profile.tsx is the only caller. Every field is copied BY NAME from an
+// allow-list, as the API builds it, so a field a response carries by mistake
+// -- a secret's name, a token id, a raw document -- is never drawn. A section
+// the response leaves out stays out (it is named in `unavailable`), and is
+// never filled in with an empty default that would read as "you have none".
+// ---------------------------------------------------------------------------
+
+/** `preferences.TOPICS`, in the API's order. */
+export const NOTIFICATION_TOPICS: readonly NotificationTopic[] = ['approval', 'waiting_step', 'question', 'failed', 'finished', 'account', 'admin']
+
+/** `preferences.REMINDERS`, in the API's order. */
+export const REMINDER_CADENCES: readonly ReminderCadence[] = ['as_set', 'every_4h', 'daily', 'never']
+
+const PROFILE_SECTIONS: readonly ProfileSection[] = ['preferences', 'github', 'typesafe', 'claude_accounts']
+
+function pfObj(v: unknown): Record<string, unknown> | null {
+  return typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null
+}
+
+function pfStr(v: unknown): string | null {
+  return typeof v === 'string' && v !== '' ? v : null
+}
+
+function pfStrOrNum(v: unknown): string | null {
+  return typeof v === 'number' && Number.isFinite(v) ? String(v) : pfStr(v)
+}
+
+function pfNum(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+function normRole(raw: unknown): WorkspaceRole {
+  const r = pfObj(raw) ?? {}
+  return { name: pfStr(r.name) ?? '', source: pfStr(r.source) ?? '', via: pfStr(r.via) }
+}
+
+function normIdentity(raw: unknown): ProfileIdentity {
+  const r = pfObj(raw) ?? {}
+  return {
+    email: pfStr(r.email) ?? '',
+    display_name: pfStr(r.display_name),
+    display_name_suggested: pfStr(r.display_name_suggested),
+    domain: pfStr(r.domain),
+    platform_role: pfStr(r.platform_role),
+    is_admin: r.is_admin === true,
+    is_admin_unresolved: r.is_admin_unresolved === true,
+  }
+}
+
+function normWorkspace(raw: unknown): ProfileWorkspace | null {
+  const r = pfObj(raw)
+  const tenantId = r === null ? null : pfStr(r.tenant_id)
+  if (r === null || tenantId === null) return null
+  return {
+    tenant_id: tenantId,
+    display_name: pfStr(r.display_name) ?? tenantId,
+    kind: pfStr(r.kind) ?? '',
+    role: normRole(r.role),
+    state: pfStr(r.state),
+    selectable: r.selectable !== false,
+    is_acting: r.is_acting === true,
+    is_default: r.is_default === true,
+  }
+}
+
+function normDefault(raw: unknown): ProfileDefault {
+  const r = pfObj(raw) ?? {}
+  return { tenant_id: pfStr(r.tenant_id), source: pfStr(r.source), ignored: pfStr(r.ignored) }
+}
+
+function normGitHub(raw: unknown): ProfileGitHub | null {
+  const r = pfObj(raw)
+  const tenantId = r === null ? null : pfStr(r.tenant_id)
+  if (r === null || tenantId === null) return null
+  const f = pfObj(r.failure)
+  return {
+    tenant_id: tenantId,
+    state: pfStr(r.state),
+    forge_login: pfStr(r.forge_login),
+    method: pfStr(r.method),
+    access_expires_at: pfStr(r.access_expires_at),
+    refreshed_at: pfStr(r.refreshed_at),
+    failure: f === null ? null : { code: pfStr(f.code), recovery: pfStr(f.recovery) },
+  }
+}
+
+function normProfileKey(raw: unknown): ProfileKeyStatus {
+  const r = pfObj(raw) ?? {}
+  return { set: r.set === true, set_at: pfStr(r.set_at), set_by: pfStr(r.set_by), version: pfStrOrNum(r.version) }
+}
+
+function normTypeSafe(raw: unknown): ProfileTypeSafe {
+  const r = pfObj(raw) ?? {}
+  const acting = pfObj(r.acting_workspace) ?? {}
+  return {
+    personal: pfObj(r.personal) === null ? null : normProfileKey(r.personal),
+    acting_workspace: { ...normProfileKey(acting), tenant_id: pfStr(acting.tenant_id) ?? '' },
+    uses: r.uses === 'user' || r.uses === 'tenant' ? r.uses : 'none',
+  }
+}
+
+function normTopics(raw: unknown): NotificationTopic[] {
+  const given = Array.isArray(raw) ? raw : []
+  return NOTIFICATION_TOPICS.filter((t) => given.includes(t))
+}
+
+function normPreferencesSet(raw: unknown): Preferences {
+  const r = pfObj(raw) ?? {}
+  const reminder = REMINDER_CADENCES.find((c) => c === r.reminder) ?? 'as_set'
+  return { muted: normTopics(r.muted), reminder }
+}
+
+function normNotifications(raw: unknown): ProfileNotifications {
+  const r = pfObj(raw) ?? {}
+  const topics = normTopics(r.topics)
+  return { preferences: normPreferencesSet(r.preferences), topics: topics.length === 0 ? [...NOTIFICATION_TOPICS] : topics }
+}
+
+function normWindow(raw: unknown): ProfileQuotaWindow | undefined {
+  const r = pfObj(raw)
+  return r === null ? undefined : { utilization: pfNum(r.utilization), resets_at: pfStr(r.resets_at) }
+}
+
+function normAccount(raw: unknown): ProfileClaudeAccount | null {
+  const r = pfObj(raw)
+  if (r === null || (r.relation !== 'own' && r.relation !== 'borrowed')) return null
+  const w = pfObj(r.windows) ?? {}
+  const windows: ProfileClaudeAccount['windows'] = {}
+  const five = normWindow(w.five_hour)
+  const seven = normWindow(w.seven_day)
+  if (five !== undefined) windows.five_hour = five
+  if (seven !== undefined) windows.seven_day = seven
+  return {
+    account_id: pfStr(r.account_id),
+    label: pfStr(r.label),
+    relation: r.relation,
+    state: pfStr(r.state),
+    windows,
+    lent_to_count: pfNum(r.lent_to_count),
+    // An account with no freshness flag is not claimed fresh.
+    stale: r.stale !== false,
+  }
+}
+
+function normClaudeAccounts(raw: unknown): ProfileClaudeAccounts {
+  const r = pfObj(raw) ?? {}
+  const list = Array.isArray(r.accounts) ? r.accounts : []
+  return {
+    personal_workspace: pfStr(r.personal_workspace),
+    accounts: list.map(normAccount).filter((a): a is ProfileClaudeAccount => a !== null),
+    unreadable_document_count: pfNum(r.unreadable_document_count) ?? 0,
+  }
+}
+
+function pfPresent<T>(v: T | null): v is T {
+  return v !== null
+}
+
+export function normProfile(raw: unknown): Profile {
+  const r = pfObj(raw) ?? {}
+  const unavailable = Array.isArray(r.unavailable) ? PROFILE_SECTIONS.filter((s) => (r.unavailable as unknown[]).includes(s)) : []
+  const c = pfObj(r.connections) ?? {}
+  const connections: Profile['connections'] = {}
+  if (Array.isArray(c.github)) connections.github = c.github.map(normGitHub).filter(pfPresent)
+  if (pfObj(c.typesafe) !== null) connections.typesafe = normTypeSafe(c.typesafe)
+  const profile: Profile = {
+    identity: normIdentity(r.identity),
+    workspaces: Array.isArray(r.workspaces) ? r.workspaces.map(normWorkspace).filter(pfPresent) : [],
+    default_workspace: normDefault(r.default_workspace),
+    connections,
+    revision: pfNum(r.revision),
+    unavailable,
+  }
+  if (pfObj(r.notifications) !== null) profile.notifications = normNotifications(r.notifications)
+  if (pfObj(r.claude_accounts) !== null) profile.claude_accounts = normClaudeAccounts(r.claude_accounts)
+  return profile
+}
+
+function normPreferencesSaved(raw: unknown): PreferencesSaved {
+  const r = pfObj(raw) ?? {}
+  const id = pfObj(r.identity) ?? {}
+  return {
+    identity: { display_name: pfStr(id.display_name), display_name_suggested: pfStr(id.display_name_suggested) },
+    default_workspace: normDefault(r.default_workspace),
+    notifications: normNotifications(r.notifications),
+    revision: pfNum(r.revision) ?? 0,
+  }
+}
+
+/** `GET /v1/profile`: the signed-in person's own profile, each section failing alone. */
+export async function loadProfile(): Promise<Result<Profile>> {
+  return readAs(route('/v1/profile'), normProfile)
+}
+
+/**
+ * `PUT /v1/profile/preferences`: replace the whole set at `body.revision`. A
+ * stale revision is a 409 `preferences_changed` (another tab saved first); a
+ * refused name is a 422 with its `display_name_*` code and a message that names
+ * the rule.
+ */
+export async function putPreferences(body: PreferencesWrite): Promise<Result<PreferencesSaved>> {
+  const r = await writeTo(route('/v1/profile/preferences'), 'PUT', body)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normPreferencesSaved(r.data) }
+  if (r.status === 'empty') return { status: 'error', error: { kind: 'server_error', httpStatus: null, code: null, message: 'The save answered with nothing to read back. Reload to see what was stored.', method: 'PUT' } }
+  return r
 }
 
 // ---------------------------------------------------------------------------
