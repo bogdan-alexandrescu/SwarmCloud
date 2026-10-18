@@ -2097,6 +2097,22 @@ def workspace_refusal_text(exc: SwarmError, setup_command: str) -> str | None:
     return f"✕ 403 {exc.code}: {api_message(exc)}\n  Finish setup with {setup_command}."
 
 
+def preferences_refusal_text(exc: SwarmError) -> str | None:
+    """A 503 `preferences_unavailable` as `sc` prints it, or None for any other
+    error (docs/design/user-profile.md §4.5, Q9):
+
+        ✕ 503 preferences_unavailable: <the API's message, word for word>
+
+    The API answered, so this is not a connection failure and `swarm doctor`
+    is no answer to it; its message already says how to name a workspace.
+    Nothing is retried in another workspace: the request named none, and
+    picking one here is the guess the API refused to make.
+    """
+    if exc.status != 503 or exc.code != "preferences_unavailable":
+        return None
+    return f"✕ 503 {exc.code}: {api_message(exc)}"
+
+
 def _workspace_shown(record: Any) -> dict[str, Any]:
     if not isinstance(record, dict) or not isinstance(record.get("state"), str):
         raise SwarmError("the API answered no workspace record; nothing was read")
@@ -3539,12 +3555,51 @@ def cmd_login(_client, args, out) -> int:
     return EXIT_OK
 
 
-#: Said when no SWARM_TENANT is set: the API picks, and since #1204 its pick is
-#: the caller's personal workspace when that is ready.
+#: Said when no SWARM_TENANT is set and `GET /v1/tenants/mine` did not say
+#: which default applied (an API older than PROFILE-DEFAULT, or the listing
+#: could not be read): the API picks, by the rule of
+#: docs/design/user-profile.md §4.5.
 _DEFAULT_TENANT_SOURCE = (
     "SWARM_TENANT is not set, so the API chose your default: "
-    "your personal workspace when it is ready"
+    "the one in Settings › Profile, else your personal workspace"
 )
+
+#: What each `default_source` the API reports on `tenants/mine`'s default
+#: entry is said as when no SWARM_TENANT is set (user-profile.md §4.5).
+#: "unavailable" is not a default at all: a headerless request is then 503
+#: `preferences_unavailable`, so it says to name a workspace.
+_DEFAULT_SOURCES = {
+    "profile": "SWARM_TENANT is not set, so the API used your default, from Settings › Profile",
+    "personal": (
+        "SWARM_TENANT is not set, so the API chose your default: your personal "
+        "workspace (no default is set in Settings › Profile)"
+    ),
+    "first_group": (
+        "SWARM_TENANT is not set, so the API chose your default: your first "
+        "group (no default is set in Settings › Profile)"
+    ),
+    "unavailable": (
+        "SWARM_TENANT is not set and your preferences could not be read; name a "
+        "workspace: set SWARM_TENANT or the plugin's tenant option"
+    ),
+}
+
+
+def default_source(client: SwarmClient) -> str | None:
+    """The `default_source` of `GET /v1/tenants/mine`'s default entry, or None.
+
+    None when the listing could not be read or names none -- an API older
+    than PROFILE-DEFAULT -- and the caller then says the general rule
+    (`_DEFAULT_TENANT_SOURCE`) rather than guessing which part of it applied.
+    """
+    try:
+        mine = client.tenants_mine()
+    except SwarmError:
+        return None
+    for entry in mine:
+        if entry.get("is_default") and isinstance(entry.get("default_source"), str):
+            return entry["default_source"]
+    return None
 
 
 def tenant_choice() -> tuple[str | None, str]:
@@ -3585,7 +3640,7 @@ def read_whoami(args) -> tuple[dict[str, Any], int]:
         "context": None, "url": None, "source": None, "current": None,
         "tier": None, "credential_store": None, "principal": None,
         "tenant": None, "tenant_chosen": chosen, "tenant_source": chosen_by,
-        "error": None,
+        "default_source": None, "error": None,
     }
     code = EXIT_OK
     try:
@@ -3601,6 +3656,12 @@ def read_whoami(args) -> tuple[dict[str, Any], int]:
             shown["principal"] = signin.SignedIn(deployment).claims().get("email")
         with SwarmClient(deployment=deployment, tenant=chosen) as api:
             me = api.request("GET", "/v1/tenants/me") or {}
+            if chosen is None:
+                # WHICH DEFAULT APPLIED (PROFILE-SC): read only when nothing was
+                # chosen, because a SWARM_TENANT wins whatever the default is.
+                source = default_source(api)
+                shown["default_source"] = source
+                shown["tenant_source"] = _DEFAULT_SOURCES.get(source or "", chosen_by)
         # Nested under `tenant` and `principal`, which the flat reads missed
         # (#88, SC-F3) -- through the one reader `render` keeps for it.
         shown["tenant"] = render.tenant_of(me)
@@ -4711,10 +4772,13 @@ def main(argv: list[str] | None = None, out=None) -> int:
         with SwarmClient(context=args.context, tenant=tenant_choice()[0]) as client:
             return args.func(client, args, stream)
     except SwarmError as exc:
-        # THE SUBMISSION GATE'S REFUSAL (#847): the API answered, so this is
+        # THE SUBMISSION GATE'S REFUSAL (#847), OR AN UNKNOWN DEFAULT (503
+        # `preferences_unavailable`, PROFILE-SC): the API answered, so this is
         # not a connection failure and `swarm doctor` is no answer to it. Its
         # message, word for word, and the command that fixes it.
-        refused = workspace_refusal_text(exc, f"`{terminal_command('sc setup')}`")
+        refused = workspace_refusal_text(
+            exc, f"`{terminal_command('sc setup')}`"
+        ) or preferences_refusal_text(exc)
         if refused is not None:
             print(refused, file=sys.stderr)
             return EXIT_FAIL

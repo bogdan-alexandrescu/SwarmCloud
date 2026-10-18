@@ -44,6 +44,13 @@ class FakeDeploymentApi:
         assert (method, path) == ("GET", "/v1/tenants/me")
         return self.me
 
+    def tenants_mine(self):
+        # Read by `read_whoami` to say which default applied (PROFILE-SC); an
+        # API older than PROFILE-DEFAULT marks none, which this fake is.
+        if self.error is not None:
+            raise self.error
+        return []
+
 
 def _deployment():
     return SimpleNamespace(

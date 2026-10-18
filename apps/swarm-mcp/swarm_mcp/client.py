@@ -2094,19 +2094,36 @@ def tenant_listing(client: Any) -> dict[str, Any]:
     default; with a choice it is the choice, or the API's 403 refusing it,
     which propagates unchanged. `chosen` is what was asked for, None when
     nothing was. Two GETs, nothing written.
+
+    `is_default` marks the tenant a request naming none acts in, and
+    `default_source` says why (`profile`, `personal`, `first_group`, or
+    `unavailable` when the preferences could not be read and such a request
+    is refused 503): both the API's, from `tenants/mine`'s default entry
+    (docs/design/user-profile.md §4.5). An API older than that marks no
+    entry; its first entry is the headerless one by the route's documented
+    order, so that one is marked and `default_source` is None, not a guess.
     """
     from .render import tenant_of
 
     mine = client.tenants_mine()
     current = tenant_of(client.request("GET", "/v1/tenants/me"))
+    marked = any("is_default" in entry for entry in mine)
+    default = next(
+        (entry for index, entry in enumerate(mine)
+         if (entry.get("is_default") is True if marked else index == 0)),
+        None,
+    )
     return {
         "current": current,
         "chosen": getattr(client, "tenant", None),
+        "default": default.get("tenant_id") if default else None,
+        "default_source": default.get("default_source") if default else None,
         "tenants": [
             {
                 "tenant_id": entry.get("tenant_id"),
                 "display_name": entry.get("display_name"),
                 "current": entry.get("tenant_id") == current,
+                "is_default": entry is default,
             }
             for entry in mine
         ],
