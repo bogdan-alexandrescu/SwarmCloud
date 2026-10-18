@@ -777,7 +777,16 @@ enable_graph_service = true
 # `enabled` stays false, so swarm-api mints
 # no graph ticket and no workspace uses the service until the owner turns it
 # on and a workspace's code_intelligence.graph_delivery is `service`.
+#
+# ENABLED 2026-10-16 (owner: "enable a workspace"). The service answers and
+# swarm-api mints graph tickets, but only a workspace whose
+# code_intelligence.graph_delivery is `service` uses it. Every other workspace
+# keeps `staged`, its default, and so does any attempt where the service is
+# unreachable (the worker falls back to staging). The first workspace switched
+# is u-bogdan, by PUT /v1/workspaces/u-bogdan/code-intelligence after this
+# release. Kill switch: enabled = false and release; the pods keep serving
+# nothing and every workspace stages again.
 graph_service = {
   serve   = true
-  enabled = false
+  enabled = true
 }

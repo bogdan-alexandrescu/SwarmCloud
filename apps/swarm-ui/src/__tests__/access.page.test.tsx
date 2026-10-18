@@ -185,6 +185,41 @@ describe('the page states what SwarmCloud may do as you', () => {
   })
 })
 
+// QUOTA-THROTTLE (#1483): GET /v1/access serves `github_quota`, one entry
+// per credential the person may see; the page draws one line each, amber
+// (the warn mark) while the server says it is low, and nothing for a
+// credential not read yet.
+describe('GitHub quota', () => {
+  const RESET = '2026-10-17T02:13:00+00:00'
+  const QUOTA = [
+    { kind: 'connection', name: 'octo-dev', limit: 5000, remaining: 712, reset_at: RESET, resource: 'core', observed_at: RESET, low: true },
+    { kind: 'installation', name: 'example-org', limit: 15000, remaining: 14000, reset_at: RESET, resource: 'core', observed_at: RESET, low: false },
+  ]
+
+  it('draws one line per credential with what is left and the reset, amber when low', async () => {
+    api((m, url) => (m === 'GET' && url === '/v1/access' ? { status: 200, body: overview({ github_quota: QUOTA }) } : null))
+    await mount()
+    const list = await screen.findByRole('list', { name: 'GitHub quota' })
+    const lines = within(list).getAllByRole('listitem')
+    expect(lines).toHaveLength(2)
+    const [you, app] = lines as [HTMLElement, HTMLElement]
+    expect(visible(you)).toContain('GitHub quota for you via SwarmCloud: 712 / 5,000 · resets 02:13 UTC')
+    expect(you.getAttribute('data-low')).toBe('true')
+    expect(you.querySelector('[data-mark="warn"]')).not.toBeNull()
+    expect(visible(app)).toContain('GitHub quota for the SwarmCloud App on example-org: 14,000 / 15,000')
+    expect(app.getAttribute('data-low')).toBeNull()
+    expect(app.querySelector('[data-mark="warn"]')).toBeNull()
+    expect(tokenShapedIn(document.documentElement.outerHTML)).toEqual([])
+  })
+
+  it('draws nothing when no quota was read, or the server sends none', async () => {
+    api()
+    await mount()
+    await screen.findByText('@octo-dev')
+    expect(screen.queryByRole('list', { name: 'GitHub quota' })).toBeNull()
+  })
+})
+
 describe('owners (chooser A, left)', () => {
   it('lists every owner with its state and the action it needs', async () => {
     api()

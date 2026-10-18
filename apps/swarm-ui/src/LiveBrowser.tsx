@@ -753,6 +753,8 @@ export function LiveBrowserPane({
   const [screenNode, setScreenNode] = useState<HTMLElement | null>(null)
   // The gate's reason the page is not (all) shown, while its desktop name carries one (`gateReason`).
   const [cover, setCover] = useState<string | null>(null)
+  // The frame noVNC draws (`LiveScreen`'s `onFrame`): what the caption checks the gate's report against.
+  const [frame, setFrame] = useState<FrameSize | null>(null)
   // The device the person in control last asked for, on the session they asked on (`LiveDevice`'s `onAsked`).
   const [asked, setAsked] = useState<DeviceAsk | null>(null)
   const session = live.status === 'ok' ? live.session : null
@@ -928,10 +930,11 @@ export function LiveBrowserPane({
             touch={mine && session.device !== null && session.device.touch}
             onScreen={setScreenNode}
             onGateSays={setCover}
+            onFrame={setFrame}
             device={deviceSize(session)}
             caption={
               <span className="live-caption">
-                {deviceCaption(session)}
+                {deviceCaption(session, frame)}
                 {pending !== null && (
                   <span className="live-caption-asked" data-testid="live-device-asked">
                     {` · ${presetLabel(pending)} asked for; the browser has not applied it yet`}
@@ -1027,17 +1030,49 @@ export function deviceSize(
  * path reported it still says so rather than print one nobody measured, and
  * a device the gate has not reported is said the same way (LB-SEAM).
  */
-export function deviceCaption(session: Pick<LiveSession, 'device' | 'presets' | 'origin'>): string {
+export function deviceCaption(
+  session: Pick<LiveSession, 'device' | 'presets' | 'origin'>,
+  frame: FrameSize | null = null,
+): string {
   const d = session.device
   const size = deviceSize(session)
+  const seen = size === null ? null : frameContradicts(size, frame)
   const device =
     d === null
       ? 'Device not reported'
-      : size === null
-        ? presetLabel(d.preset)
-        : `${presetLabel(d.preset)} · ${size.width}×${size.height}`
+      : seen !== null
+        ? `Device not confirmed: the gate reported ${presetLabel(d.preset)} (${d.orientation}), but the screen it sends is ${seen}`
+        : size === null
+          ? presetLabel(d.preset)
+          : `${presetLabel(d.preset)} · ${size.width}×${size.height}`
   const path = session.origin?.path
   return `${device} · ${typeof path === 'string' && path !== '' ? path : 'path not reported'}`
+}
+
+/** The framebuffer noVNC draws, in the gate's screen pixels (`LiveScreen`'s `onFrame`). */
+export interface FrameSize {
+  width: number
+  height: number
+}
+
+/**
+ * A REPORT THE SCREEN CONTRADICTS IS NOT THE DEVICE (LB-GREY; part of #1341).
+ * MEASURED 2026-10-15 on task_2ac5d7e22a51460995a2: the caption read "iPad ·
+ * 810×1080" under a session whose person in control had Desktop. Every device
+ * label here is `session.device`, which swarm-api writes from the gate's
+ * report alone (live.py `record_report`): this file does not derive a preset,
+ * it prints the one reported. The session's own device is the frame the gate
+ * sends, cropped to the device's display (livegate/device.py `captured`), so
+ * the two are compared by the one thing that survives the browser's band and
+ * the screen scale: which way round they are. The frame's orientation
+ * ("landscape" or "portrait") when it is the other way from the reported
+ * device's, else null -- also with no frame yet, or a square one.
+ */
+export function frameContradicts(device: { width: number; height: number }, frame: FrameSize | null): string | null {
+  if (frame === null || frame.width <= 0 || frame.height <= 0 || frame.width === frame.height) return null
+  if (device.width === device.height) return null
+  const wide = frame.width > frame.height
+  return wide === device.width > device.height ? null : wide ? 'landscape' : 'portrait'
 }
 
 /**
@@ -1362,6 +1397,14 @@ export interface Rfb {
   disconnect(): void
   clipboardPasteFrom(text: string): void
   addEventListener(type: 'connect' | 'disconnect' | 'securityfailure' | 'desktopname', listener: (e: Event) => void): void
+  /**
+   * The framebuffer's size, as ServerInit and every resize set it (noVNC
+   * 1.4.0 `_resize`). Not public API: noVNC exposes no getter and fires no
+   * resize event, and the version is pinned in package.json. Absent (an
+   * older or a test RFB), the caption is the gate's report unchecked.
+   */
+  readonly _fbWidth?: number
+  readonly _fbHeight?: number
 }
 
 /**
@@ -1469,6 +1512,7 @@ function LiveScreen({
   onGateSays,
   device = null,
   caption,
+  onFrame,
   onControlChange,
   onSessionMoved,
 }: {
@@ -1488,6 +1532,8 @@ function LiveScreen({
   device?: { width: number; height: number; mobile: boolean } | null
   /** Under the device frame: what it is, its size and the page's path. */
   caption?: ReactNode
+  /** Told the framebuffer's size when it connects and whenever noVNC rescales it, and null when it goes (`frameContradicts`). */
+  onFrame?: (frame: FrameSize | null) => void
   /** Called when swarm-api's status frames say control or the session changed: the pane re-reads the session. */
   onControlChange?: () => void
   /**
@@ -1513,6 +1559,8 @@ function LiveScreen({
   movedRef.current = onSessionMoved
   const saysRef = useRef(onGateSays)
   saysRef.current = onGateSays
+  const frameRef = useRef(onFrame)
+  frameRef.current = onFrame
   const [conn, setConn] = useState<Conn>('connecting')
   const [why, setWhy] = useState<string | null>(null)
   const [refused, setRefused] = useState<string | null>(null)
@@ -1733,10 +1781,20 @@ function LiveScreen({
           r.qualityLevel = 9
           r.compressionLevel = 1
           const canvas = host.current.querySelector('canvas')
+          // The frame the gate sends: noVNC rescales its canvas when it
+          // changes size, so the observer below hears every resize too.
+          const sized = () => {
+            const [width, height] = [r._fbWidth, r._fbHeight]
+            if (!stopped && typeof width === 'number' && typeof height === 'number') {
+              frameRef.current?.(width > 0 && height > 0 ? { width, height } : null)
+            }
+          }
+          r.addEventListener('connect', sized)
           if (canvas !== null && typeof ResizeObserver !== 'undefined') {
             const sharpen = () => {
               const crisp = crispAt(canvas.getBoundingClientRect().width, canvas.width, window.devicePixelRatio || 1)
               canvas.style.imageRendering = crisp ? 'pixelated' : ''
+              sized()
             }
             const sizes = new ResizeObserver(sharpen)
             sizes.observe(canvas)
@@ -1770,6 +1828,7 @@ function LiveScreen({
             setHasFocus(typing())
             if (rfb.current === r) rfb.current = null
             if (!stopped) saysRef.current?.(null)
+            if (!stopped) frameRef.current?.(null)
             if (closeCode === LIVE_RESTART_CODE) retry('The live relay restarted. Reconnecting.', true)
             else retry('The live connection closed. Reconnecting with a new ticket.')
           })
@@ -1787,6 +1846,8 @@ function LiveScreen({
       r?.disconnect()
       // A reason belongs to this connection: the next one starts with none.
       saysRef.current?.(null)
+      // So does its frame.
+      frameRef.current?.(null)
     }
   }, [taskId, sessionId, applyInput, focusCanvas, typing])
 

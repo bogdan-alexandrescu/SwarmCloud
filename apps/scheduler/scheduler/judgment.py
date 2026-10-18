@@ -32,12 +32,33 @@ DEFAULT, internal-jev: it is the choice that sends nothing outside Saga.
 
 The names below restate swarm-api's; tests/unit/control_plane/
 test_dispatch_judgment.py holds them equal.
+
+A VALUE COUNTS ONLY WHEN SWARM-API SIGNED IT, once the switch is on
+(docs/design/tenant-settings-integrity.md §4.5, interim A; #1457). Every
+tenant's worker can write `workspace_settings/<any tenant>` directly today, so
+a stored `judgment_backend` proves nothing about who chose it. swarm-api MACs
+each block it writes, `mac: {v: 1, key: <key version>, sig: <base64>}` beside
+the fields it covers, over `specsign.canonical_settings_block` under the
+`swarm-settings-key` secret that only swarm-api and this service hold.
+`trusted_settings` drops every covered field of a block whose MAC is missing
+or wrong, so a forged choice reads exactly as no choice: the default. Behind
+`SchedulerSettings.settings_mac_required` (SETTINGS_MAC_REQUIRED), OFF until
+lane ISO-SETTINGS-MAC's re-sign job has signed the documents that exist, since
+on an unsigned document it reads every workspace's choice as the default.
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
+import hmac
 import logging
+import time
+from collections.abc import Mapping
 from typing import Any
+
+from swarm_common.specsign import SETTINGS_MAC_FIELDS, SpecNotCanonical, canonical_settings_block
 
 log = logging.getLogger(__name__)
 
@@ -105,11 +126,122 @@ def jev_dispatch(backend: str, internal_url: str
     return env, labels, host_aliases
 
 
-def read_backend(db: Any, tenant_id: str) -> str:
-    """The tenant's stored choice; the default when none, unknown or unreadable."""
+#: Where a block's MAC sits: beside the fields it covers, in the block itself
+#: (the document for "top"). Its shape, `{v, key, sig}`, is §4.5's.
+MAC_FIELD = "mac"
+MAC_VERSION = 1
+#: The nested blocks this service reads: `code_intelligence`, for its
+#: `judgment_backend` (`dispatch.judge_backend`). `merge` is swarm-api's alone,
+#: so it is neither verified nor logged here.
+NESTED_BLOCKS = ("code_intelligence",)
+#: The log event for a block whose MAC is missing or wrong, once per tenant
+#: and block per process per hour.
+SETTINGS_MAC_REFUSED = "settings_mac_refused"
+SETTINGS_MAC_LOG_INTERVAL_S = 3600.0
+_mac_refusal_logged: dict[str, float] = {}
+
+
+def settings_mac(key: str, *, tenant_id: str, block: str, fields: Mapping[str, Any]) -> str:
+    """HMAC-SHA256(key, canonical_settings_block(...)), standard base64: the
+    `sig` swarm-api stores. The key is the secret's text as UTF-8, as the
+    child key is (`children.registration_nonce`)."""
+    message = canonical_settings_block(tenant_id=tenant_id, block=block, fields=fields)
+    digest = hmac.new(key.encode("utf-8"), message, hashlib.sha256).digest()
+    return base64.b64encode(digest).decode("ascii")
+
+
+def block_verifies(key: str, *, tenant_id: str, block: str, fields: Any) -> bool:
+    """Whether `fields`, one stored block, carries a MAC `key` made for this
+    tenant and this block. False for no key, no MAC, another version, a sig
+    that is not base64, or one made over other values, another tenant or
+    another block. `mac.key` names the key version and is not checked: a sig
+    that verifies under the key this service holds was made with it."""
+    if not key or not isinstance(fields, Mapping):
+        return False
+    mac = fields.get(MAC_FIELD)
+    if not isinstance(mac, Mapping) or mac.get("v") != MAC_VERSION:
+        return False
+    sig = mac.get("sig")
+    if not isinstance(sig, str):
+        return False
     try:
-        snap = db.collection(SETTINGS_COLLECTION).document(tenant_id).get()
-        doc = (snap.to_dict() or {}) if snap.exists else {}
+        presented = base64.b64decode(sig, validate=True)
+        expected = base64.b64decode(
+            settings_mac(key, tenant_id=tenant_id, block=block, fields=fields))
+    except (binascii.Error, ValueError, SpecNotCanonical):
+        return False
+    return hmac.compare_digest(presented, expected)
+
+
+def _say_refused(tenant_id: str, block: str, now: float) -> None:
+    due_key = f"{tenant_id}\n{block}"
+    last = _mac_refusal_logged.get(due_key)
+    if last is not None and now - last < SETTINGS_MAC_LOG_INTERVAL_S:
+        return
+    _mac_refusal_logged[due_key] = now
+    # Which fields were set, never their values: a forged value is the
+    # forger's text.
+    log.error(
+        "%s tenant=%s block=%s: its MAC is missing or does not verify; its fields "
+        "read as unset", SETTINGS_MAC_REFUSED, tenant_id, block,
+        extra={"event": SETTINGS_MAC_REFUSED, "tenant_id": tenant_id, "block": block},
+    )
+
+
+def trusted_settings(doc: Any, *, tenant_id: str, key: str | None) -> dict[str, Any]:
+    """`doc`, a `workspace_settings` document, with what is not swarm-api's removed.
+
+    `key` None is the switch off: the document as stored, today's reading.
+    Otherwise every field SETTINGS_MAC_FIELDS lists for a block whose MAC does
+    not verify is dropped -- the top level's from the document, a nested
+    block's from that block -- so a reader falls back to its default exactly
+    as for a workspace that never chose. A field outside the list is left
+    alone: no reader here acts on one.
+    """
+    doc = dict(doc) if isinstance(doc, Mapping) else {}
+    if key is None:
+        return doc
+    if any(doc.get(name) is not None for name in SETTINGS_MAC_FIELDS["top"]) \
+            and not block_verifies(key, tenant_id=tenant_id, block="top", fields=doc):
+        _say_refused(tenant_id, "top", time.monotonic())
+        for name in SETTINGS_MAC_FIELDS["top"]:
+            doc.pop(name, None)
+    for block in NESTED_BLOCKS:
+        fields = doc.get(block)
+        if not isinstance(fields, Mapping):
+            continue
+        if any(fields.get(name) is not None for name in SETTINGS_MAC_FIELDS[block]) \
+                and not block_verifies(key, tenant_id=tenant_id, block=block, fields=fields):
+            _say_refused(tenant_id, block, time.monotonic())
+            doc[block] = {k: v for k, v in fields.items() if k not in SETTINGS_MAC_FIELDS[block]}
+    return doc
+
+
+def settings_mac_key(settings: Any) -> str | None:
+    """The key `trusted_settings` verifies with; None while the switch is off.
+
+    On with no key is refused when the settings are built
+    (`SchedulerSettings.__post_init__`); a hand-built object that got here
+    anyway verifies with "" and so trusts nothing, which fails closed."""
+    if not getattr(settings, "settings_mac_required", False):
+        return None
+    return str(getattr(settings, "settings_mac_key", "") or "")
+
+
+def read_settings(db: Any, tenant_id: str, *, mac_key: str | None = None) -> dict[str, Any]:
+    """The tenant's `workspace_settings` document, through `trusted_settings`.
+
+    Raises what the read raises; each caller decides what unreadable means."""
+    snap = db.collection(SETTINGS_COLLECTION).document(tenant_id).get()
+    doc = (snap.to_dict() or {}) if snap.exists else {}
+    return trusted_settings(doc, tenant_id=tenant_id, key=mac_key)
+
+
+def read_backend(db: Any, tenant_id: str, *, mac_key: str | None = None) -> str:
+    """The tenant's stored choice; the default when none, unknown, unreadable
+    or, with `mac_key` (`settings_mac_key`), not signed by swarm-api."""
+    try:
+        doc = read_settings(db, tenant_id, mac_key=mac_key)
     except Exception as exc:  # noqa: BLE001 - a dispatch never fails on this read
         log.warning("judgment backend unreadable for tenant=%s, using %s: %s",
                     tenant_id, DEFAULT_BACKEND, type(exc).__name__)

@@ -220,8 +220,40 @@ def _jobs():
             yield f"{path.name}:{name}", job
 
 
+#: Jobs that ask for the pool by its bare labels, on purpose. The only one is
+#: runner-fallback.yml's probe: while SELF_HOSTED_CI is off nothing else asks
+#: for a bogdan-ci runner, so the probe is how the judge sees the pool serve
+#: again (docs/ci.md, "CI falls back to GitHub-hosted runners on its own").
+#: Accepted only while its workflow starts on schedule or dispatch alone (no
+#: fork can start it), and the job holds no permission, no secret and no
+#: checkout.
+PROBE_JOBS: dict[str, str] = {
+    "runner-fallback.yml:probe": "the pool probe CI-FALLBACK reads while the hatch is off",
+}
+PROBE_TRIGGERS = frozenset({"schedule", "workflow_dispatch"})
+
+
+def _probe_refused(name: str, job: dict) -> str | None:
+    """None when a PROBE_JOBS entry still qualifies, else why not."""
+    filename = name.split(":", 1)[0]
+    if not _file_triggers(filename) <= PROBE_TRIGGERS:
+        return f"{filename} can start on {sorted(_file_triggers(filename) - PROBE_TRIGGERS)}"
+    if job.get("permissions") != {}:
+        return f"permissions {job.get('permissions')!r} is not {{}}"
+    if _SECRET.findall(yaml.safe_dump(job)):
+        return "holds a secret"
+    if any("checkout" in str(s.get("uses", "")) for s in job.get("steps") or []):
+        return "checks out code"
+    return None
+
+
 def _verdict_of(name: str, job: dict) -> tuple[str, str]:
     filename = name.split(":", 1)[0]
+    if name in PROBE_JOBS:
+        why = _probe_refused(name, job)
+        if why:
+            return "EXPOSED", f"pool probe no longer qualifies: {why}"
+        return "probe", PROBE_JOBS[name]
     return verdict(job, filename, _file_triggers(filename))
 
 
@@ -442,12 +474,17 @@ def test_every_guarded_job_in_the_workflows_resolves_safely() -> None:
 # --- Every job is on the pool, or hosted for a checked reason ---------------
 
 CLOUD = "cloud"
+JUDGE = "judge"
 
 REASONS = {
     CLOUD: (
         "holds a Google identity through workload identity (id-token: write and "
         "google-github-actions/auth): deploy and cloud credentials stay on "
         "GitHub-hosted, the rule PR 1184 recorded for release.yml"
+    ),
+    JUDGE: (
+        "judges the self-hosted pool and sets SELF_HOSTED_CI (runner-fallback.yml): "
+        "on the pool it would queue behind the outage it exists to notice"
     ),
 }
 
@@ -488,6 +525,7 @@ HOSTED_JOBS: dict[str, str] = {
     "release.yml:deploy": CLOUD,
     "security.yml:images": CLOUD,
     "terraform.yml:plan": CLOUD,
+    "runner-fallback.yml:judge": JUDGE,
 }
 
 _SECRET = re.compile(r"secrets\.([A-Za-z_][A-Za-z0-9_]*)")
@@ -523,6 +561,13 @@ def _reason_holds(reason: str, job: dict, workflow_permissions: object) -> bool:
         return _id_token(job, workflow_permissions) and any(
             u.startswith("google-github-actions/auth@") for u in _uses(job)
         )
+    if reason == JUDGE:
+        return any(
+            u.startswith("actions/create-github-app-token@")
+            and "permission-variables" in (s.get("with") or {})
+            for s in job.get("steps") or []
+            for u in [str(s.get("uses", ""))]
+        )
     raise AssertionError(f"unknown reason {reason!r}")
 
 
@@ -537,6 +582,10 @@ def test_every_job_is_on_the_pool_or_hosted_for_a_checked_reason() -> None:
             continue  # a reusable workflow call: its own jobs are scanned
         runs_on = job.get("runs-on")
         gated = _is_guarded(runs_on)
+        if name in PROBE_JOBS:
+            if _verdict_of(name, job)[0] != "probe":
+                problems.append(f"{name}: {_verdict_of(name, job)[1]}")
+            continue
         if name in HOSTED_JOBS:
             reason = HOSTED_JOBS[name]
             if gated:

@@ -799,9 +799,18 @@ class GitHubIssues:
         return github_headers(token)
 
     def _get(self, url: str, token: str, what: str) -> bytes:
-        """One GET, its status mapped to a code. `what` names the read in the error."""
+        """One GET, its status mapped to a code. `what` names the read in the error.
+
+        A RATE-LIMITED 403 OR 429 IS NOT A REFUSAL (#1483, QUOTA-THROTTLE):
+        `forge_limits.rate_limit` reads it, and it is `read_failed` (GitHub
+        did not answer), never `no_access`. A transport that answers its
+        response headers too (a third item) also keeps the quota ledger.
+        """
+        # Imported here, so the rest of this module is untouched by it.
+        from .forge_limits import QUOTAS, Answer, until
+
         try:
-            status, raw = self._send(url, self._headers(token), self._timeout)
+            sent = self._send(url, self._headers(token), self._timeout)
         except ForgeReadError:
             raise
         except Exception as exc:
@@ -809,6 +818,15 @@ class GitHubIssues:
             raise IssueReadFailed(
                 f"{what} could not be read from GitHub ({type(exc).__name__})"
             ) from None
+        status, raw = sent[0], sent[1]
+        limited = QUOTAS.observe_answer(
+            Answer(status, sent[2] if len(sent) > 2 and sent[2] else {}, raw or b""))
+        if limited is not None:
+            when = until(limited)
+            raise IssueReadFailed(
+                f"GitHub is limiting requests for the tenant's forge credential, so {what} "
+                f"was not read (HTTP {status})" + (f"; it resets at {when}" if when else "")
+            )
         if status in (404, 410):
             raise IssueNotFound(
                 f"{what} was not found or not visible to the tenant's forge "

@@ -348,6 +348,21 @@ class WorkerConfig:
     #: Awaits whose attempt is refunded; the fifth counts like any attempt.
     max_child_await_resumes: int = 4
 
+    # --- the state routes (docs/design/tenant-settings-integrity.md, #1457) --
+    #: SWARM_STATE_VIA_API: reach this attempt's state only through swarm-api's
+    #: `/v1/attempts/{id}/state/...` routes (`control.RemoteControlPlane`),
+    #: building no Firestore client. Set by the dispatcher, per tenant, from
+    #: the scheduler's `STATE_VIA_API_TENANTS` (owner decision Q7: dev
+    #: first, then every tenant, then the role is removed).
+    #:
+    #: DEFAULT FALSE, ON PURPOSE: an unset variable is a tenant nobody has
+    #: switched, and its worker behaves exactly as before -- direct Firestore,
+    #: `ControlPlane`. Switching is reversible because both paths write the
+    #: same documents (§4.5). A switched attempt needs SWARM_API_URL and a
+    #: nonce to open its attempt with; without either it cannot start, and
+    #: another attempt would not either (`__post_init__`, exit 78).
+    state_via_api: bool = False
+
     # --- misc ----------------------------------------------------------------
     provider: str | None = None
     #: The model the agent CLI runs, from the Job's `MODEL` (#226). Set per
@@ -459,6 +474,16 @@ class WorkerConfig:
     def __post_init__(self) -> None:
         if self.generation < 1:
             raise ConfigError("fencing generation must be >= 1")
+        if self.state_via_api and not (self.swarm_api_url and self.child_nonce):
+            # Named, never shown: the nonce is a credential for one registration.
+            missing = [name for name, value in (("SWARM_API_URL", self.swarm_api_url),
+                                                ("SWARM_CHILD_NONCE", self.child_nonce))
+                       if not value]
+            raise ConfigError(
+                "SWARM_STATE_VIA_API is on, and the state routes need "
+                f"{' and '.join(missing)}: state/open spends the nonce at swarm-api "
+                "before any other state call"
+            )
         # Touch the profile so an unknown name fails at construction rather than
         # after a workspace has been created.
         _ = self.profile
@@ -569,6 +594,7 @@ class WorkerConfig:
             child_nonce=os.environ.get("SWARM_CHILD_NONCE", "").strip() or None,
             swarm_api_url=os.environ.get("SWARM_API_URL", "").strip() or None,
             swarm_api_audience=os.environ.get("SWARM_API_AUDIENCE", "").strip() or None,
+            state_via_api=_bool_env("SWARM_STATE_VIA_API", False),
             graph_service_url=(os.environ.get("SWARM_GRAPH_URL", "").strip()
                                or DEFAULT_GRAPH_SERVICE_URL),
             provider=profile.provider,

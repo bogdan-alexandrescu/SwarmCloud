@@ -73,7 +73,7 @@ from .forge import (
 from .forgeapp import GRANTS, ORGS, Caller
 from .gittokens import Scope, owner_suffix, provider_suffix
 from .metrics import ApiMetrics
-from .judgment import TYPESAFE_BACKEND, JudgmentSettings
+from .judgment import TYPESAFE_BACKEND, JudgmentSettings, settings_mac
 from .provider_keys import task_key_scope
 from .repositories import Repositories, merge_policy_of, repo_id_for
 from .mergesettings import MergeSettingsStore
@@ -623,7 +623,7 @@ class SubmissionService:
                        "jev-browser; pick auto, playwright or dev-browser")
         else:
             db = getattr(self._store, "db", None)
-            if db is not None and JudgmentSettings(db, now=self._now).read(
+            if db is not None and JudgmentSettings(db, now=self._now, mac=settings_mac(self._settings)).read(
                     tenant_id)["judgment_backend"] != TYPESAFE_BACKEND:
                 return
             scope = task_key_scope(db, self._store, tenant_id, submitted_by, TYPESAFE_PROVIDER,
@@ -1299,7 +1299,8 @@ class SubmissionService:
     def _merge_mode(self, tenant_id: str, repository_url: str | None) -> str:
         """The mode `tenant_id`'s merge step merges this repository in: the
         registration's override, else the workspace's (TRAIN-WS)."""
-        return MergeSettingsStore(self._store.db, now=self._now).mode_for(
+        return MergeSettingsStore(self._store.db, now=self._now,
+                                  mac=settings_mac(self._settings)).mode_for(
             tenant_id, self._registration(tenant_id, repository_url))
 
     def _registered_base(self, tenant_id: str, repository_url: str | None) -> str | None:
