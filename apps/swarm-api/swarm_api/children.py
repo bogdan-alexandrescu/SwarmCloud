@@ -76,6 +76,7 @@ from .store import EVENTS, LEASES, TASKS, Store, first_cancel_target
 from .validation import (
     CHILD_CASCADE_METADATA_KEY,
     CHILD_REQUEST_ID_METADATA_KEY,
+    mcp_server_names,
     resolve_dispatch_options,
 )
 
@@ -725,6 +726,12 @@ class ChildService:
             timeout_seconds=timeout,
         )
         repository_ref = spec.repository_ref or parent.repository_ref
+        # Q7 of #1433 (docs/design/registered-mcp-servers.md §4.3): a child
+        # names only servers its parent named, and uses the credential rows
+        # the parent's submission stored, the parent's own or its workflow's
+        # (the attach reads the same owners, from the child's signed
+        # `parent_task_id`). It has no `mcp_credentials` of its own.
+        mcp_inherited = self._mcp_inheritance(parent) if mcp_server_names(spec.input) else None
         task = self._submissions._build_task(
             spec=create,
             tenant=tenant,
@@ -747,6 +754,7 @@ class ChildService:
             priority=parent.priority,
             repository_url=parent.repository_url,
             repository_ref=repository_ref,
+            mcp_inherited=mcp_inherited,
         )
         # A child's timeout is never above its parent's, whatever the profile.
         task = replace(
@@ -767,6 +775,23 @@ class ChildService:
         # (contract request 42).
         self._submissions._sign([task])
         return task
+
+    def _mcp_inheritance(self, parent: Task) -> Any:
+        """The parent's servers as its SIGNED spec names them, and whose
+        credential rows a child may use. The agent can rewrite its own task
+        document, so a list read from a parent whose signature does not
+        verify is no list: the child inherits no server."""
+        from .service import McpInheritance
+        from .verdictpublish import spec_refusal
+
+        snap = self._db.collection(TASKS).document(parent.id).get()
+        doc = (snap.to_dict() or {}) if snap.exists else {}
+        signed = (doc.get("tenant_id") == parent.tenant_id
+                  and spec_refusal(self._settings, doc, parent.id) is None)
+        return McpInheritance(
+            servers=tuple(mcp_server_names(doc.get("input"))) if signed else (),
+            owners=tuple(o for o in (parent.id, parent.workflow_id or "") if o),
+        )
 
     # -- §6.2: the listing for a resumed worker ----------------------------
 
