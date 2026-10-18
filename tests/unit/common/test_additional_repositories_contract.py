@@ -176,8 +176,10 @@ def _doc(**over: object) -> dict:
 
 
 def test_format_4_is_known():
-    assert specsign.SPEC_FORMAT == 4
-    assert specsign.SPEC_FORMATS == (1, 2, 3, 4)
+    """Format 4 stays verifiable after a newer format is added (format 5,
+    model_class, contract request 104)."""
+    assert 4 in specsign.SPEC_FORMATS
+    assert specsign.SPEC_FORMAT >= 4
 
 
 def test_a_task_without_the_list_keeps_its_old_format_and_bytes():

@@ -249,6 +249,7 @@ _DOCS_BY_FORMAT: dict[int, dict[str, Any]] = {
             }
         ],
     },
+    5: {**_DOC, "model_class": "sonnet"},
 }
 
 
