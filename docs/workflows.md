@@ -678,7 +678,7 @@ never a channel ([an agent asks the owner](#an-agent-asks-the-owner-questionsjso
 Also refused on an `await-input` step: `resource_class`, `timeout_seconds`,
 `builds_on`, `when`, `allow_empty_diff`, `pr_role` and `merges` (none means
 anything without a container), any `input` key but `prompt`, an
-`assignees` key (the 422 points at `remind`), `await_input` on any other
+`assignees` key (the refusal points at `remind`), `await_input` on any other
 profile, and a caller-sent `metadata.await_input`, which is reserved. The
 block is stored, normalised, in the signed `metadata.dispatch`. On this step
 `input_from` is not staged: it is what the person is shown. Under
