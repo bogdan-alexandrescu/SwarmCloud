@@ -4725,9 +4725,14 @@ class Worker:
 
     def _additional_git_token(self, entry: dict[str, Any]) -> str | None:
         """This entry's forge token, read now, or None: `_git_token`'s path for
-        the entry's own slot. Never cached, never put in an environment."""
+        the entry's own slot. Never cached, never put in an environment.
+
+        A person's `git-u-` slot goes through `self.forge_broker`, as the
+        primary's does (#1041): without it `resolve_git_token` refuses every
+        user slot, and the entry cloned unauthenticated."""
         refusal = self._git_token_refusal()
-        if refusal or self.secret_client is None:
+        suffix = self._additional_suffix(entry)
+        if refusal or (self.secret_client is None and user_slot_hash(suffix) is None):
             return None
         try:
             tenant = load_tenant(
@@ -4735,7 +4740,7 @@ class Worker:
             )
             return resolve_git_token(
                 tenant=tenant, client=self.secret_client, logger=self.log,
-                provider=self._additional_suffix(entry),
+                provider=suffix, broker=self.forge_broker,
             )
         except SecretError as exc:
             self.log.warning(

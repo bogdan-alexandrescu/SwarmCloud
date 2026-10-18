@@ -408,6 +408,14 @@ class SchedulerSettings:
     #: settings, never a caller's (invariant 10). Omitted when empty.
     swarm_api_url: str = ""
     swarm_api_audience: str = ""
+    #: The forge broker's switch (FORGE_BROKER, terraform `forge_broker`;
+    #: #1041, docs/design/user-scoped-secrets.md §5). Off by default and in
+    #: every environment until the owner turns it on. On, every worker is
+    #: handed FORGE_BROKER=true, and a CHILD on a person's `git-u-` slot also
+    #: gets the registration nonce, so it can prove itself to the broker. Off,
+    #: dispatch is exactly what it was before the broker: no child is keyed
+    #: for its slot, and workers read the slot with their own account.
+    forge_broker: bool = False
     #: How long an awaiting parent waits for its children before the
     #: outstanding ones are cancelled and it is promoted (§7, F7). A day covers
     #: a full daily provider quota reset with margin.
@@ -557,6 +565,7 @@ class SchedulerSettings:
             internal_decision_api_url=os.environ.get("INTERNAL_DECISION_API_URL", "").strip(),
             child_key=os.environ.get("SWARM_CHILD_KEY", "").strip(),
             swarm_api_url=os.environ.get("SWARM_API_URL", "").strip(),
+            forge_broker=_bool("FORGE_BROKER", False),
             swarm_api_audience=os.environ.get("SWARM_API_AUDIENCE", "").strip(),
             child_await_max_seconds=_int("CHILD_AWAIT_MAX_SECONDS", 86400),
             project_id=core.project_id,

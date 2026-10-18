@@ -82,8 +82,10 @@
 #
 # THE TENANT GSA. Nothing here names a worker account, and
 # tests/terraform/workspace_secrets.tftest.hcl holds that no bootstrap grant
-# to a tenant worker (forge_user_slots.tf's forge_slot_reader,
-# typesafe_user_keys.tf's rows) admits a `-wsec-` name. credentials.py's
+# to a tenant worker admits a `-wsec-` name: typesafe_user_keys.tf's rows, and
+# forge_user_slots.tf's forge_slot_reader, which stays while terraform/infra's
+# `forge_broker` is off and is removed only after the broker has been on in
+# dev (#1041). The test reads both, so a removal changes it too. credentials.py's
 # per-secret worker binding is for provider keys; the store's writes
 # (SEC-STORE-API) must not add one for a `-wsec-` secret.
 #

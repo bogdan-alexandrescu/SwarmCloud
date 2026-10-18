@@ -9,6 +9,11 @@ Ed25519 key its worker registered before the agent existed
 signature swarm-api made at submission, who submitted it and which slot it
 runs with.
 
+OFF UNLESS FORGE_BROKER IS ON (`ApiSettings.forge_broker`, terraform
+`forge_broker`): off, the default and every environment's setting until the
+owner turns it on, `release` answers 503 forge_credential_unavailable before
+reading anything.
+
 `ForgeCredentialBroker.release` checks, in the design's order, and reads no
 secret before the last step:
 
@@ -279,6 +284,10 @@ class ForgeCredentialBroker:
 
     def release(self, authorization: str | None, raw: bytes, *, path: str,
                 proof: str | None, timestamp: str | None) -> Released:
+        if getattr(self._settings, "forge_broker", False) is not True:
+            raise self._refuse(ForgeCredentialUnavailable(
+                "the forge broker is switched off here (FORGE_BROKER), so it releases no "
+                "person's slot; workers read their own"), None)
         if not self._children._keys.configured:
             raise self._refuse(ForgeCredentialUnavailable(
                 "this deployment has no swarm-child-key, so it releases no person's slot"), None)

@@ -41,11 +41,15 @@
 # off by default so that measurement comes first.
 #
 # THE FORGE BROKER (#1041) needs the same key: a person's `git-u-` slot is
-# released by swarm-api only to an attempt that registered one. So this switch
-# also gates removing the tenant workers' read of user slots
-# (`forge_slot_reader`, terraform/bootstrap/forge_user_slots.tf), and the
-# measurement above is the broker's precondition too
-# (docs/design/user-scoped-secrets.md §5).
+# released by swarm-api only to an attempt that registered one. But child
+# tasks being on does NOT turn the broker on: dev has `enable_child_tasks =
+# true` (since 2026-10-11, for the live browser), so the broker has its own
+# switch, `forge_broker` below, off by default and off in dev. Off, workers
+# read a person's slot with their own account through the bootstrap root's
+# `forge_slot_reader` binding, exactly as before the broker; on, swarm-api's
+# broker is the only path. That binding is removed only after `forge_broker`
+# has been on in dev and a live run passed -- a later, separate owner step
+# (docs/design/user-scoped-secrets.md §5), never the same change.
 #
 # Off, nothing about a deployment changes: no service reads the secret, the
 # scheduler mints no nonce (no SWARM_CHILD_KEY), every worker runs without a
@@ -62,6 +66,29 @@ variable "enable_child_tasks" {
   EOT
   type        = bool
   default     = false
+}
+
+variable "forge_broker" {
+  description = <<-EOT
+    Turn on the forge-credential broker (#1041, docs/design/user-scoped-secrets.md):
+    rendered as FORGE_BROKER into swarm-api (which then answers
+    POST /v1/attempts/forge-credential) and the scheduler (which passes it to
+    every worker and keys a user-slot child for it). On, a worker obtains a
+    person's git-u- slot ONLY from swarm-api, proven with its attempt key, and
+    fails closed without it. Off -- the default, and dev's setting although dev
+    has enable_child_tasks on -- workers read the slot with their own account
+    through forge_slot_reader, exactly as before the broker. Needs
+    enable_child_tasks: the proof is the child path's attempt key. The
+    forge_slot_reader binding is removed only after this has been on in dev
+    and a live run passed, as a separate owner step.
+  EOT
+  type        = bool
+  default     = false
+
+  validation {
+    condition     = !var.forge_broker || var.enable_child_tasks
+    error_message = "forge_broker needs enable_child_tasks: the broker releases a person's slot only to an attempt proven with the child path's attempt key, so without it every user-slot task would fail closed."
+  }
 }
 
 variable "swarm_api_url" {
@@ -199,7 +226,7 @@ output "swarm_api_url" {
 }
 
 output "child_tasks_service_wiring" {
-  description = "What child tasks put on the services: the Secret Manager env each reads, the tenants whose worker may invoke swarm-api, and the address and audience handed to workers. Names only; never a value."
+  description = "What child tasks put on the services: the Secret Manager env each reads, the tenants whose worker may invoke swarm-api, the address and audience handed to workers, and each service's FORGE_BROKER switch. Names only; never a secret value."
   value = {
     secret_env = {
       "swarm-api"       = sort(keys(local.child_key_secret_env))
@@ -209,5 +236,9 @@ output "child_tasks_service_wiring" {
     api_audience       = local.service_env["swarm-api"].SWARM_API_AUDIENCE
     scheduler_audience = local.service_env["swarm-scheduler"].SWARM_API_AUDIENCE
     scheduler_api_url  = local.service_env["swarm-scheduler"].SWARM_API_URL
+    forge_broker = {
+      "swarm-api"       = local.service_env["swarm-api"].FORGE_BROKER
+      "swarm-scheduler" = local.service_env["swarm-scheduler"].FORGE_BROKER
+    }
   }
 }

@@ -700,6 +700,19 @@ class ApiSettings:
     #: way. This default stays off so a test or a local run refuses nothing.
     repository_grants_enforced: bool = False
 
+    # --- the forge-credential broker (#1041) -------------------------------
+    #: Whether `POST /v1/attempts/forge-credential` releases a person's
+    #: `git-u-` slot at all (FORGE_BROKER, terraform `forge_broker`;
+    #: docs/design/user-scoped-secrets.md §5). OFF by default and in every
+    #: environment until the owner turns it on: off, the route answers 503
+    #: forge_credential_unavailable before reading anything, and workers read
+    #: the slot with their own account as before the broker (the scheduler
+    #: hands them the same switch). The bootstrap root's `forge_slot_reader`
+    #: binding is removed only after this has been on in dev and a live run
+    #: passed. Not a refusal switch: it turns a new route on, and the route's
+    #: refusals are never switchable.
+    forge_broker: bool = False
+
     # --- a step's additional repositories (#1434, MR-API) ------------------
     #: Whether a submission may name `additional_repositories`. OFF by
     #: default (docs/design/multi-repository-steps.md §6, "Feature flag"):
@@ -886,6 +899,7 @@ class ApiSettings:
             dispatch_topic=os.environ.get("DISPATCH_TOPIC", "").strip(),
             execution_cancel_enabled=_bool("EXECUTION_CANCEL_ENABLED", True),
             repository_grants_enforced=_bool("REPOSITORY_GRANTS_ENFORCED", False),
+            forge_broker=_bool("FORGE_BROKER", False),
             additional_repositories_enabled=_bool("ADDITIONAL_REPOSITORIES_ENABLED", False),
             execution_cancel_topic=os.environ.get("EXECUTION_CANCEL_TOPIC", "").strip(),
             workspace_apply_topic=os.environ.get(

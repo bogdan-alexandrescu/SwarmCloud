@@ -25,13 +25,15 @@ they already have here: `attempt_superseded` is the fence (invariant 5,
 `FencedError`), and a removed or read-only grant asked for a write is
 `ForgeWriteRefused`.
 
-A DEPLOYMENT WITHOUT THE BROKER (no SWARM_API_URL, `ForgeBroker.deployed`)
-is not refused here: the worker reads the slot with its own account, as it
-did before #1041, so a release does not stop every user-slot task where
-child tasks are off. That read is IAM's to allow, and once the bootstrap
-apply removes `forge_slot_reader` it is PERMISSION_DENIED -- a named
-`SecretError`, never the tenant token. docs/design/user-scoped-secrets.md §5
-orders that removal after the broker is on.
+THE SWITCH IS FORGE_BROKER (`WorkerConfig.forge_broker`, terraform
+`forge_broker`, off by default and off in every environment until the owner
+turns it on; `ForgeBroker.deployed`). Off, nothing here is asked: the worker
+reads the slot with its own account, exactly as it did before #1041, which
+IAM allows while the bootstrap root's `forge_slot_reader` binding stands.
+That binding is removed only after the switch has been on in dev and a live
+run passed, as a separate owner step (docs/design/user-scoped-secrets.md §5).
+On, the broker is the only path: a worker with no SWARM_API_URL is refused
+`forge_broker_unconfigured` rather than falling back to a direct read.
 
 NEVER A VALUE. The token is registered with the logger's redaction before it
 is returned, and nothing here logs, raises or stores it: a log line carries
@@ -89,17 +91,17 @@ class ForgeBroker:
 
     @property
     def deployed(self) -> bool:
-        """Whether this deployment has the broker at all.
+        """Whether this deployment obtains a person's slot from the broker.
 
-        The scheduler hands a worker SWARM_API_URL only where the deployment
-        has `swarm-child-key` and `swarm_api_url` (`enable_child_tasks`,
-        terraform/infra/child_tasks.tf; `scheduler.dispatch.worker_env`).
-        Where it has not, there is nothing to ask, and `secrets.resolve_git_token`
-        reads the slot with the worker's own account instead -- which works
-        only while `forge_slot_reader` stands (docs/design/user-scoped-secrets.md
-        §5, "The rollout order").
+        The FORGE_BROKER switch, and nothing else: an address alone is not
+        the switch, because dev has child tasks on (SWARM_API_URL reaches its
+        workers) and the broker must not go live there with them. Off,
+        `secrets.resolve_git_token` reads the slot with the worker's own
+        account, as before #1041, which works while `forge_slot_reader`
+        stands. On, `fetch` is the only path, and with no SWARM_API_URL it
+        refuses (`NO_BROKER`) rather than reading directly.
         """
-        return self._children.api is not None
+        return getattr(self.cfg, "forge_broker", False) is True
 
     def fetch(self, tenant: Tenant, suffix: str, *, write: bool) -> str:
         """The latest version of the task's `git-u-` slot, released to this attempt.

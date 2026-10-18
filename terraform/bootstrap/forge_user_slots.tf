@@ -10,9 +10,10 @@
 #   D3  swarm-api creates each user's slot at onboarding -- self-service is the
 #       point of #780 -- with a project-level create grant that carries no
 #       read. So no slot is in any Terraform state, and no grant can name one.
-#   D7  U1: the tenant's worker account read every member's slot in its own
-#       tenant; swarm-api's resolver handed each task only its submitter's.
-#       SUPERSEDED, below.
+#   D7  U1: the tenant's worker account reads every member's slot in its own
+#       tenant; swarm-api's resolver hands each task only its submitter's.
+#       SUPERSEDED by the 2026-10-11 decision below, and its binding,
+#       forge_slot_reader, stays until the broker has been on in dev.
 #   D2  swarm-api refreshes: it reads the -refresh twins and writes both.
 #       It originally never read a base slot -- the split the quota broker
 #       has today. Revised by the owner on 2026-10-08, below.
@@ -30,28 +31,26 @@
 # worker account, and an agent can mint that account's token from the
 # metadata server, so the worker's read of every member's base slot let Bob's
 # agent read Alice's slot by name; only the worker's code chose the right one.
-# The worker now obtains a user slot ONLY through swarm-api's broker,
-# `POST /v1/attempts/forge-credential` (apps/swarm-api/swarm_api/credbroker.py),
-# which releases it to the current attempt of a task its owner submitted,
-# proven with the attempt key (docs/design/user-scoped-secrets.md). The
-# worker's binding, `forge_slot_reader`, is gone from this file, so
-# swarm-api's forge_refresh_reader is the ONLY reader of a `-git-u-` slot, and
-# it is IAM, not the resolver, that keeps Alice's slot from Bob's attempt.
-# tests/terraform/forge_app.tftest.hcl
-# (no_tenant_worker_holds_secret_accessor_on_a_user_slot) holds that no IAM
-# resource in this root grants a tenant worker secretAccessor at all.
+# The fix is swarm-api's broker, `POST /v1/attempts/forge-credential`
+# (apps/swarm-api/swarm_api/credbroker.py), which releases a person's slot
+# only to the current attempt of a task they submitted, proven with the
+# attempt key (docs/design/user-scoped-secrets.md). It ships behind its own
+# switch, terraform/infra's `forge_broker` (FORGE_BROKER), OFF by default and
+# off in dev. While it is off, workers read the slot with their own account
+# through `forge_slot_reader` below, exactly as before the broker, so THE
+# BINDING STAYS, unchanged, and IAM alone does not yet keep Alice's slot from
+# Bob's attempt.
 #
-# ROLLOUT ORDER. Removing the binding is the owner's bootstrap apply, and it
-# goes AFTER the broker is ON in that environment -- not merely released:
-# enable_child_tasks, swarm-child-key and swarm_api_url set
-# (terraform/infra/child_tasks.tf), which waits on the nonce measurement of
-# docs/design/child-tasks.md §9 item 2. A deployment without the broker reads
-# the slot with the worker's own account (forgebroker.ForgeBroker.deployed);
-# applied before the broker is on, that read is PERMISSION_DENIED and every
-# user-slot task fails closed until it is (docs/design/user-scoped-secrets.md
-# §5). Destroying the binding needs no `removed` block:
-# it is this root's own grant to this platform's account, and touches nothing
-# of the other team's.
+# ROLLOUT ORDER. Removing forge_slot_reader is a later, separate owner step,
+# never the change that ships the broker: first `forge_broker = true` in dev
+# (which needs enable_child_tasks, on in dev since 2026-10-11), then a live
+# user-slot run that clones and pushes through the broker, and only then the
+# bootstrap change that deletes the resource below and the owner's apply of
+# it. Applied before the switch is on, every user-slot task would be
+# PERMISSION_DENIED (docs/design/user-scoped-secrets.md §5;
+# docs/runbooks/github-app.md step 2). Destroying the binding then needs no
+# `removed` block: it is this root's own grant to this platform's account,
+# and touches nothing of the other team's.
 #
 # Owner decision 2026-10-07 (OB3, PR #821): "Disconnect GitHub" disables the
 # user's secret versions, so a disconnected user leaves no usable token behind,
@@ -94,8 +93,10 @@
 #       refresh token, which the sweep spends, and the current access token,
 #       which a request reuses. The address keeps its old name so the change
 #       reads as an in-place condition change in the plan.
-#
-# No tenant worker account holds any grant here (#1041, above).
+#   google_project_iam_member.forge_slot_reader         the tenant's WORKER
+#       account, secretAccessor, on its tenant's BASE slots only, never a
+#       -refresh twin (D7/U1). Superseded by the broker and removed only after
+#       the broker has been on in dev (#1041, above).
 #
 # WHY HERE AND NOT IN terraform/infra (where §3.4 item 4 put the worker's
 # grant, "from the tenancy module"). Every project-level role terraform/infra
@@ -126,9 +127,10 @@ variable "enable_forge_user_slots" {
     Define swarmForgeSlotCreator and swarmForgeSlotVersionManager and make
     the user-slot grants (forge_user_slots.tf): swarm-api creates GitHub user
     slots at onboarding, refreshes them, and disables and re-enables their
-    versions on disconnect and reconnect, and is the only reader of a
-    person's slot: a worker obtains one only through swarm-api's broker
-    (#1041), and no tenant worker account holds a grant in this root.
+    versions on disconnect and reconnect; and the tenant's worker reads its
+    members' base slots (forge_slot_reader), until swarm-api's broker
+    (#1041, terraform/infra forge_broker) has been on in dev and that
+    binding is removed as a separate owner step.
     swarm-api also reads repository (-git-r-) slots for the runner git tools
     it executes (#1225). Owner decisions D2, D3 and D7 on #780, OB3's disable of
     2026-10-07, the 2026-10-11 decision that secrets are user-scoped, and Q4
@@ -166,20 +168,23 @@ locals {
     t => "projects/${local.forge_project_number}/secrets/swarm-tenant-${t}-git-u-"
   }
 
-  # `any`: the tenant's user slots, base and -refresh twin. The worker's
-  # base-only condition went with its binding (#1041).
+  # `any`: the tenant's user slots, base and -refresh twin, swarm-api's.
+  # `base`: the base slots only, the worker's (forge_slot_reader): a secret
+  # name ending -refresh, or a version of one (`.../<id>-refresh/versions/<v>`,
+  # the form versions.access is evaluated on), is excluded.
   forge_slot_conditions = {
     for t, p in local.forge_user_slot_prefixes : t => {
-      any = "resource.name.startsWith(\"${p}\")"
+      any  = "resource.name.startsWith(\"${p}\")"
+      base = "resource.name.startsWith(\"${p}\") && !resource.name.endsWith(\"-refresh\") && resource.name.extract(\"/secrets/{secret}-refresh/\") == \"\""
     }
   }
 
   # A tenant whose slot names start with another tenant's prefix -- `eng` and
   # `eng-git-u-x` -- would have its slots inside the other's per-tenant
-  # conditions. Every such binding is swarm-api's today, which reaches both
-  # tenants anyway, so nothing leaks; it is refused still because a tenant id
-  # is cheap to rename before it holds anything, and the next per-tenant grant
-  # to a tenant's own account would hand the slots over. Read from the tenant
+  # conditions. For swarm-api's bindings that leaks nothing, since it reaches
+  # both tenants anyway; for forge_slot_reader it would hand one tenant's
+  # WORKER the other's members' slots. Refused either way, because a tenant id
+  # is cheap to rename before it holds anything. Read from the tenant
   # ids rather than the rendered prefixes, which share an unknown project
   # number at plan.
   forge_nested_tenants = [
@@ -286,6 +291,40 @@ resource "google_project_iam_member" "forge_refresh_reader" {
   # twins between the two.
   lifecycle {
     create_before_destroy = true
+  }
+}
+
+# THE TENANT WORKER'S READ OF ITS MEMBERS' BASE SLOTS (D7/U1). Kept, unchanged
+# in what it grants, while terraform/infra's `forge_broker` is off: the worker
+# reads a person's slot with its own account then (agent_worker.secrets
+# resolve_git_token, `broker.deployed` False). Removing it is the later owner
+# step the header's ROLLOUT ORDER gives -- after the broker has been on in dev
+# and a live run passed -- and not this file's to take early. A personal
+# tenant's worker reads its own slots through the workspace job's binding
+# instead (below); that account is one person's.
+resource "google_project_iam_member" "forge_slot_reader" {
+  for_each = local.forge_user_slot_tenants
+
+  project = var.project_id
+  role    = "roles/secretmanager.secretAccessor"
+  member  = "serviceAccount:${module.service_account_ids.worker_ids[each.key]}@${var.project_id}.iam.gserviceaccount.com"
+
+  condition {
+    title       = "swarm forge user slots worker ${each.key}"
+    description = "managed-by=swarm-terraform; tenant ${each.key}'s worker reads its members' GitHub user slots, never the -refresh twins (#780 D7/U1). Superseded by swarm-api's forge broker (#1041); removed only after the broker has been on in dev."
+    expression  = local.forge_slot_conditions[each.key].base
+  }
+
+  # A condition is part of a binding's identity, so a change to it replaces
+  # the binding; the new one is made first, so no user-slot task loses its
+  # read between the two.
+  lifecycle {
+    create_before_destroy = true
+
+    precondition {
+      condition     = length(local.forge_nested_tenants) == 0
+      error_message = "A tenant's user-slot prefix nests inside another's (${join(", ", local.forge_nested_tenants)}): that tenant's WORKER would read the other tenant's members' slots. Rename the tenant before it holds anything."
+    }
   }
 }
 
