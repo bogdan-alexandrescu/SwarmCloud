@@ -98,7 +98,14 @@ def submit(client: TestClient, user: str, tenant: str | None = None) -> Any:
 def mine(client: TestClient, user: str, tenant: str | None = None) -> list[dict[str, str]]:
     response = client.get("/v1/tenants/mine", headers=as_(user, tenant))
     assert response.status_code == 200, response.text
-    return response.json()
+    listed = response.json()
+    # The first entry is the default and says why (docs/design/user-profile.md
+    # §4.5); test_default_workspace.py holds those fields. These tests are
+    # about which entries are listed and in what order.
+    assert [e.pop("is_default") for e in listed] == [i == 0 for i in range(len(listed))]
+    for entry in listed[:1]:
+        assert entry.pop("default_source") in ("personal", "first_group")
+    return listed
 
 
 def own(user: str) -> dict[str, str]:
