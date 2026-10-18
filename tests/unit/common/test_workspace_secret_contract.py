@@ -243,7 +243,8 @@ def test_the_import_time_check_passes_on_the_catalogue():
 
 
 def test_consumer_kinds_and_platform_components():
-    assert models.SECRET_CONSUMER_KINDS == ("profile", "tool", "component")
+    # Contract request 89 added "mcp", a registered MCP server's consumer kind.
+    assert models.SECRET_CONSUMER_KINDS == ("profile", "tool", "component", "mcp")
     assert models.PLATFORM_COMPONENTS == ("judge", "merge", "indexer", "git")
 
 

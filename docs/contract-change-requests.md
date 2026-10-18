@@ -12524,10 +12524,10 @@ disabled.
 ### What it would break
 
 Nothing that exists: a task without the key is unchanged. Eleven unit tests
-in six files outside this lane's territory restate the old declarations, and
-this pull request does NOT update them (the row says "owner applies"); they
-are red until the operator applies `mcp-contract-operator.patch`, attached to
-this pull request, in the same merge:
+in six files outside this lane's territory restated the old declarations.
+The lane left them for the operator's `mcp-contract-operator.patch`; the
+pull request's first CI run was red on exactly these eleven, and its CI fix
+updated them in the same pull request:
 
 * `tests/unit/common/test_workspace_secret_contract.py`
   `test_consumer_kinds_and_platform_components` (the three kinds, request 89);

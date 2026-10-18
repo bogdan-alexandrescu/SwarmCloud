@@ -128,7 +128,10 @@ def test_claude_code_review_is_claude_code_but_its_name_and_never_restore_checkp
         "checkpoint_interval_seconds",
     ):
         assert getattr(review, field) == getattr(code, field), field
-    assert dict(review.inputs) == dict(code.inputs)
+    # Contract request 88 gave claude-code `mcp_servers` and deliberately left
+    # the review profile on `_CLI_AGENT_INPUTS`: a review step reads its diff.
+    assert dict(review.inputs) == {k: v for k, v in code.inputs.items() if k != "mcp_servers"}
+    assert "mcp_servers" in code.inputs
 
 
 @pytest.mark.parametrize("name", ("post-verdict", "claude-code-review"))
