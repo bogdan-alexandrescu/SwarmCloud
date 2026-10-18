@@ -2942,6 +2942,76 @@ def repository_not_granted(refused: Sequence[tuple[str | None, str]]) -> Reposit
 
 
 # --------------------------------------------------------------------------
+# A step's additional repositories (#1434, docs/design/multi-repository-steps.md §4.1)
+# --------------------------------------------------------------------------
+#
+# Every one is refused at submission, before anything is stored and before
+# any capacity is asked for (invariant 1), by `extrarepos`. Each is new with
+# the field and raised only for a submission that names it, behind
+# `ApiSettings.additional_repositories_enabled` (off by default), so no
+# existing caller can be refused by any of them. A message names the
+# caller's own `owner/repo` and never a URL, a slot or a token.
+
+
+class AdditionalRepositoriesDisabled(ValidationFailed):
+    """The submission names additional repositories and this deployment has
+    not turned them on (ADDITIONAL_REPOSITORIES_ENABLED)."""
+
+    code = "additional_repositories_disabled"
+
+
+class RepositoryNotRegistered(ValidationFailed):
+    """No registration of this repository in the caller's tenant: one answer
+    whether or not another tenant registered it."""
+
+    code = "repository_not_registered"
+
+
+class RepositoryNotReadableByTasks(Forbidden):
+    """Registered, but an admin has not let its tenant's tasks read it
+    (`readable_by_tasks`, the gate `read_private` uses; owner's Q1), or it is
+    archived."""
+
+    code = "repository_not_readable_by_tasks"
+
+
+class AdditionalRepositoryUnreadable(ValidationFailed):
+    """The slot the worker would clone it with cannot read it, or its ref
+    names no commit. One sentence for both, as `read_private`'s
+    `repo_not_allowlisted`: a repository readable only through its own
+    `git-r-` token is refused here too (owner's Q2)."""
+
+    code = "additional_repository_unreadable"
+
+
+class AdditionalRepositoryDuplicate(ValidationFailed):
+    """Two entries name one repository or one directory, or an entry names
+    the task's own repository."""
+
+    code = "additional_repository_duplicate"
+
+
+class TooManyAdditionalRepositories(ValidationFailed):
+    """More entries than the platform setting `max_additional_repositories`."""
+
+    code = "too_many_additional_repositories"
+
+
+class AdditionalRepositoriesTooLarge(ValidationFailed):
+    """The forge's reported sizes total more than the platform setting
+    `additional_repositories_budget_gib`."""
+
+    code = "additional_repositories_too_large"
+
+
+class AdditionalRepositoriesUnsupportedProfile(ValidationFailed):
+    """The step's profile does not take additional repositories: only GKE
+    agent profiles do (owner's Q4; design §4.3)."""
+
+    code = "additional_repositories_unsupported_profile"
+
+
+# --------------------------------------------------------------------------
 # Workflow DAG
 # --------------------------------------------------------------------------
 

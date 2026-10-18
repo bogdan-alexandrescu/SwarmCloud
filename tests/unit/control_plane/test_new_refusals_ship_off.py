@@ -282,6 +282,25 @@ NOT_SWITCHABLE_CODES = frozenset({
     "mcp_server_not_inherited",
     "mcp_credential_missing",
     "mcp_credential_unexpected",
+    # A step's additional repositories (MR-API, docs/design/
+    # multi-repository-steps.md §4.1, part of #1434), as MCP-SUBMIT's codes
+    # above: raised only for a submission that names an entry in
+    # `additional_repositories`, introduced by that change, and only while
+    # ADDITIONAL_REPOSITORIES_ENABLED is on (off by default; off, any entry is
+    # `additional_repositories_disabled`), so no existing caller can be
+    # refused by them. Continuing past any of them is the breach itself: a
+    # task cloning a repository its tenant never registered or an admin never
+    # let its tasks read, one its slot cannot read, past the platform's count
+    # or size limits, or on a profile whose backend cannot clone it. The
+    # feature flag is the switch.
+    "additional_repositories_disabled",
+    "repository_not_registered",
+    "repository_not_readable_by_tasks",
+    "additional_repository_unreadable",
+    "additional_repository_duplicate",
+    "too_many_additional_repositories",
+    "additional_repositories_too_large",
+    "additional_repositories_unsupported_profile",
     # The preferences store (PROFILE-STORE, docs/design/user-profile.md §4.2,
     # §4.4, part of #1505), as MCP-API's codes above: raised only by
     # `preferences.save` and `display_names`, which that change introduces and

@@ -630,6 +630,18 @@ class ApiSettings:
     #: way. This default stays off so a test or a local run refuses nothing.
     repository_grants_enforced: bool = False
 
+    # --- a step's additional repositories (#1434, MR-API) ------------------
+    #: Whether a submission may name `additional_repositories`. OFF by
+    #: default (docs/design/multi-repository-steps.md §6, "Feature flag"):
+    #: while off, a submission that names any is refused
+    #: `additional_repositories_disabled` and nothing is stored, so a
+    #: swarm-api deployed ahead of the workers that clone them writes no task
+    #: those workers would fail. The operator turns it on
+    #: (ADDITIONAL_REPOSITORIES_ENABLED) after workers with lane MR-WORKER
+    #: are deployed. Its limits are not here: they are platform settings an
+    #: admin edits at run time (`store.PLATFORM_SETTINGS_DEFAULTS`).
+    additional_repositories_enabled: bool = False
+
     #: The topic the reconciler stops executions from (EXECUTION_CANCEL_TOPIC,
     #: terraform's `<prefix>-execution-cancel`). The reconciler, not this
     #: service, holds the stop permissions. Empty means a cancel is left to the
@@ -791,6 +803,7 @@ class ApiSettings:
             dispatch_topic=os.environ.get("DISPATCH_TOPIC", "").strip(),
             execution_cancel_enabled=_bool("EXECUTION_CANCEL_ENABLED", True),
             repository_grants_enforced=_bool("REPOSITORY_GRANTS_ENFORCED", False),
+            additional_repositories_enabled=_bool("ADDITIONAL_REPOSITORIES_ENABLED", False),
             execution_cancel_topic=os.environ.get("EXECUTION_CANCEL_TOPIC", "").strip(),
             workspace_apply_topic=os.environ.get(
                 "WORKSPACE_APPLY_TOPIC", "swarm-workspace-apply"

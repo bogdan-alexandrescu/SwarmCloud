@@ -264,6 +264,33 @@ def _additional_repositories(value: Any) -> list[dict[str, Any]] | None:
     return value
 
 
+#: Where the agent finds an additional repository, relative to its own
+#: checkout `work/repo`: the worker links `work/repos/<name>` (#1434).
+ADDITIONAL_REPOSITORIES_PATH = "../repos"
+
+
+def additional_repositories_to_api(value: Any) -> list[dict[str, Any]] | None:
+    """What a caller is served of `Task.additional_repositories`
+    (docs/design/multi-repository-steps.md §4.1): each entry's name,
+    repository, registration, ref as asked, pinned commit, where the agent
+    finds it, and whose credential clones it, by kind. Never the URL
+    (derivable, and the primary's is masked for a reason) and never the slot
+    suffix (the primary's `forge_credential` is not public either). None for
+    a task that reads none, and for a stored list of the wrong shape."""
+    entries = _additional_repositories(value)
+    if not entries:
+        return None
+    return [{
+        "name": entry["name"],
+        "repository": entry["repository"],
+        "repo_id": entry["repo_id"],
+        "ref": entry["ref"],
+        "commit": entry["commit"],
+        "path": f"{ADDITIONAL_REPOSITORIES_PATH}/{entry['name']}",
+        "forge_credential_source": entry["forge_credential_source"],
+    } for entry in entries]
+
+
 #: What `task_to_api` says a task's `forge_credential` is, by its prefix.
 #: `git` is only ever a service submission's (`SubmissionService._resolve_forge`);
 #: so, in a personal tenant with no `-git` slot, is its owner's `git-u-` slot,
@@ -623,6 +650,10 @@ def task_to_api(
         "repository_url": repository_url,
         "repository_url_redaction_count": repository_url_count,
         "repository_ref": task.repository_ref,
+        # #1434 (MR-API): the repositories it reads beside its own, each at
+        # the commit swarm-api pinned at submission; no URL and no slot.
+        "additional_repositories": additional_repositories_to_api(
+            task.additional_repositories),
         "input": masked_input,
         "input_redaction_count": input_count,
         "last_error": last_error,

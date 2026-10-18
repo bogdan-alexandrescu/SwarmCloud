@@ -586,6 +586,18 @@ export interface StartProblem {
   seen_at: string | null
 }
 
+/** One entry of `Task.additional_repositories`, as `additional_repositories_to_api` serves it. */
+export interface TaskAdditionalRepository {
+  name: string
+  repository: string
+  repo_id: string
+  ref: string
+  commit: string
+  /** Where the agent finds it, relative to its own checkout. */
+  path: string
+  forge_credential_source: string
+}
+
 export interface Task {
   id: string
   tenant_id: string
@@ -623,6 +635,12 @@ export interface Task {
   forge_access?: 'read' | 'write' | null
   /** "the submitter's GitHub credential", "tenant token, service submission", "owner's GitHub connection, service submission" (INDEX-CRED), or null. */
   forge_credential_source?: string | null
+  /**
+   * Contract request 95 (docs/design/multi-repository-steps.md §4.1): the
+   * repositories this task reads beside its own, each pinned to a commit.
+   * Null when it reads none. OPTIONAL: an older API does not send it.
+   */
+  additional_repositories?: TaskAdditionalRepository[] | null
   cancel_requested: boolean
   repository_url: string | null
 
