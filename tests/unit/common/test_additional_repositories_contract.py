@@ -252,3 +252,23 @@ def test_a_format_4_signature_verifies_and_a_rewrite_does_not():
         key.public_key().verify(
             signature, spec_digest(canonical_step_spec(doc, task_id=TASK_ID, spec_format=fmt)), prehashed
         )
+
+
+# ---------------------------------------------------------------------------
+# swarm-api's codec reads the field back (so a rewrite keeps the signed list)
+# ---------------------------------------------------------------------------
+
+
+def test_the_codec_reads_the_list_back_and_a_malformed_one_as_none():
+    """A task swarm-api decodes and writes again keeps the list it was signed
+    with; a malformed stored list (a tenant's agent can write the document)
+    does not make the task unreadable to every listing -- the worker's
+    signature check is what refuses it."""
+    from swarm_api.codec import task_from_dict, task_to_firestore
+
+    entries = [_entry(0), _entry(1)]
+    stored = task_to_firestore(_task(additional_repositories=entries))
+    assert task_from_dict(stored).additional_repositories == entries
+    assert task_from_dict({**stored, "additional_repositories": [_entry(name="..")]}).additional_repositories is None
+    old = {k: v for k, v in stored.items() if k != "additional_repositories"}
+    assert task_from_dict(old).additional_repositories is None
