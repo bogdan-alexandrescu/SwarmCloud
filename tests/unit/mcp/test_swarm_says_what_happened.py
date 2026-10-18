@@ -390,7 +390,9 @@ def test_login_reports_the_tenant_the_route_answered(swarm, monkeypatch):
     code = sc.cmd_login(None, argparse.Namespace(client_secret_stdin=False, context=None), out)
 
     assert code == sc.EXIT_OK, out.getvalue()
-    assert f"tenant      {TENANT}" in out.getvalue().splitlines(), out.getvalue()
+    line = next((l for l in out.getvalue().splitlines() if l.startswith(f"tenant      {TENANT}")), None)
+    assert line is not None, out.getvalue()
+    assert "SWARM_TENANT" in line, line
 
 
 # ==========================================================================

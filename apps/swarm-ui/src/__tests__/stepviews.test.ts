@@ -40,6 +40,8 @@ import {
   stepTimes,
   stepWhy,
   workflowLabel,
+  listRowName,
+  UNTITLED_WORKFLOW,
   workflowPullRequest,
   type SortFacts,
   type TimelineAxis,
@@ -1050,6 +1052,31 @@ describe('#330: workflowLabel', () => {
     expect(of(undefined)).toBeNull()
     expect(of('   ')).toBeNull()
     expect(of(42)).toBeNull()
+  })
+
+  it('reads metadata.title when no step carries a unit, and a unit before a title', () => {
+    const titled = new Map([['t_a', task('t_a', 'RUNNING', { metadata: { title: ' Merge PR 1127 ' } })]])
+    expect(workflowLabel(w, titled)).toBe('Merge PR 1127')
+    const both = new Map([
+      ['t_a', task('t_a', 'RUNNING', { metadata: { title: 'the title' } })],
+      ['t_b', task('t_b', 'RUNNING', { metadata: { unit: 'the unit' } })],
+    ])
+    expect(workflowLabel(w, both)).toBe('the unit')
+  })
+})
+
+describe('listRowName: never the id alone for a row known to be nameless (2026-10-11)', () => {
+  it('leads with the label, the id under it', () => {
+    expect(listRowName('wf_x', 'Merge PR 1127', true)).toEqual({ name: 'Merge PR 1127', showId: true })
+  })
+
+  it('is "Untitled workflow" with the id under it when the read steps carry no name', () => {
+    expect(UNTITLED_WORKFLOW).toBe('Untitled workflow')
+    expect(listRowName('wf_x', null, true)).toEqual({ name: 'Untitled workflow', showId: true })
+  })
+
+  it('keeps the id alone while the steps are unread: the name is not known yet', () => {
+    expect(listRowName('wf_x', null, false)).toEqual({ name: 'wf_x', showId: false })
   })
 })
 

@@ -18,6 +18,11 @@ and the disagreement is counted and logged BEFORE the repair (`rollup._record`)
 so nothing is resolved without a trace. The alternative -- a background sweep as
 the only writer -- would leave every workflow nobody had swept unqueryable, which
 is the half of the owner's decision the write exists to satisfy.
+
+NAMES BESIDE EMAILS (docs/design/user-profile.md §4.4). Every workflow and
+step task these reads serve carries `submitted_by_name` beside
+`submitted_by`, from one lookup per response (`_named`). A name is a label;
+the submitter filter keeps using the email.
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response, status
+from swarm_common.models import Task
 from swarm_common.states import TERMINAL_STATES
 
 from ..auth import AuthContext
@@ -32,6 +38,8 @@ from ..attempt_totals import totals_for, with_totals
 from ..children import PARENT_CANCELLED, ChildService
 from ..codec import task_to_api, workflow_dispatch, workflow_to_api
 from ..task_accounts import accounts_for
+from ..errors import ValidationFailed
+from ..people import add_names, name_lookup
 from ..deps import (
     AppContext,
     current_auth,
@@ -49,6 +57,15 @@ log = logging.getLogger(__name__)
 _TERMINAL = frozenset(s.value for s in TERMINAL_STATES)
 
 router = APIRouter(prefix="/v1/workflows", tags=["workflows"])
+
+#: `GET /v1/workflows?view=` (live QA CH-21). `full`, or no `view` at all, is
+#: the row this route has always served; `summary` drops each step's input.
+WORKFLOW_VIEWS: tuple[str, ...] = ("full", "summary")
+
+#: `GET /v1/workflows?ids=` (live QA CH-6): how many workflows one read may
+#: name. 50 workflows of up to `max_workflow_steps` (50) steps is the step-read
+#: cost of a 50-row list page; the Timeline asks in chunks of this size.
+MAX_WORKFLOW_IDS = 50
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -100,6 +117,8 @@ def list_workflows(
     page_token: str | None = Query(default=None),
     state: list[str] | None = Query(default=None),
     active: bool = Query(default=False),
+    view: str | None = Query(default=None, description="`full` (default) or `summary`"),
+    ids: list[str] | None = Query(default=None),
     tenant_id: str = Depends(tenant_scope),
     submitted_by: str | None = Depends(submission_scope),
     ctx: AppContext = Depends(get_context),
@@ -124,7 +143,34 @@ def list_workflows(
     back short when stale rows derived terminal; page on until the token is
     null. `filter.stored_states` says which stored states the query asked
     for, and null when it could not narrow it (UNKNOWN named, or no filter).
+
+    `view=summary` (live QA CH-21, 2026-10-11) serves each step without its
+    `input` and that input's masking counts -- the keys absent, not null, as
+    `GET /v1/tasks?view=summary` drops its rows' -- and says `"view":
+    "summary"`. Every other field, the derived state and the rollup included,
+    is the full view's: the console's lists draw no step input, and a step's
+    input is read on its workflow or its task.
+
+    `ids` (repeatable, at most `MAX_WORKFLOW_IDS`; live QA CH-6) reads THOSE
+    workflows instead of a page: the Timeline named 52 workflows and asked for
+    each with its own `GET /v1/workflows/{id}`. The rows come back in the
+    order asked, derived like any other row; `missing` names the ids not
+    served (absent, another tenant's or not the caller's, never told apart),
+    and `tasks` carries every step task the derivation read, served as
+    `GET /v1/workflows/{id}` serves its own, with its account and attempt
+    totals. It takes no `page_token`, `state` or `active`: it is not a page.
     """
+    if view is not None and view not in WORKFLOW_VIEWS:
+        raise ValidationFailed(
+            f"unknown view {view!r}",
+            detail={"known_views": list(WORKFLOW_VIEWS)},
+        )
+    summary = view == "summary"
+    if ids:
+        return _by_ids(
+            ids, view=view, page_token=page_token, state=state, active=active,
+            tenant_id=tenant_id, submitted_by=submitted_by, ctx=ctx,
+        )
     stored_states = ctx.store.stored_states_for(active=active, states=state)
     page = ctx.store.list_workflows(
         tenant_id,
@@ -139,7 +185,7 @@ def list_workflows(
     if state:
         wanted = set(state)
         results = [r for r in results if r.to_api().get("state") in wanted]
-    return {
+    payload = {
         # Each step's input is masked by its own task's masker, from the step
         # tasks the rollup already read (the PR #229 review); a step whose task
         # the read budget left unread borrows a sibling's, and a workflow none
@@ -150,6 +196,7 @@ def list_workflows(
                 r.to_api(),
                 step_tasks=r.step_tasks,
                 console_url=ctx.settings.console_url,
+                summary=summary,
             )
             for r in results
         ],
@@ -175,6 +222,85 @@ def list_workflows(
         # the check's result is not known -- never zero (swarm_api.stalls).
         "stalled_workflows": stalled_workflows(ctx.store.db, tenant_id),
     }
+    _named(ctx, payload["workflows"], [])
+    if summary:
+        payload["view"] = "summary"
+    return payload
+
+
+def _named(ctx: AppContext, workflows: list[dict], tasks: list[dict]) -> None:
+    """`submitted_by_name` on every workflow and step task served, from ONE
+    lookup for the whole response."""
+    add_names(name_lookup(ctx), [*workflows, *tasks], ("submitted_by",))
+
+
+def _by_ids(
+    ids: list[str],
+    *,
+    view: str | None,
+    page_token: str | None,
+    state: list[str] | None,
+    active: bool,
+    tenant_id: str,
+    submitted_by: str | None,
+    ctx: AppContext,
+) -> dict:
+    """`GET /v1/workflows?ids=`: the named workflows, with their step tasks."""
+    wanted = list(dict.fromkeys(i for i in ids if i))
+    if len(wanted) > MAX_WORKFLOW_IDS:
+        raise ValidationFailed(
+            f"at most {MAX_WORKFLOW_IDS} ids in one read, {len(wanted)} given",
+            detail={"max_ids": MAX_WORKFLOW_IDS},
+        )
+    if page_token is not None or state or active:
+        raise ValidationFailed(
+            "ids reads the named workflows, not a page: it takes no page_token, state or active",
+            detail={"ids_exclusive_of": ["page_token", "state", "active"]},
+        )
+    summary = view == "summary"
+    found = ctx.store.workflows_by_id(tenant_id, wanted, submitted_by=submitted_by)
+    results, report = ctx.rollups.for_workflows(tenant_id, found)
+    # Every step task the derivation read, once, filtered as
+    # `GET /v1/workflows/{id}` filters its own: a row that is not the
+    # caller's is not served whatever workflow it claims to belong to.
+    tasks: dict[str, Task] = {}
+    for r in results:
+        for task in r.step_tasks.values():
+            if submitted_by is None or task.submitted_by == submitted_by:
+                tasks.setdefault(task.id, task)
+    step_tasks = list(tasks.values())
+    accounts = accounts_for(ctx.db, tenant_id, step_tasks)
+    totals = totals_for(ctx.db, tenant_id, [t.id for t in step_tasks])
+    served = {w.workflow_id for w in found}
+    payload = {
+        "workflows": [
+            workflow_to_api(
+                r.workflow,
+                r.to_api(),
+                step_tasks=r.step_tasks,
+                console_url=ctx.settings.console_url,
+                summary=summary,
+            )
+            for r in results
+        ],
+        "tasks": [
+            with_totals(
+                task_to_api(t, account=accounts.get(t.id), console_url=ctx.settings.console_url),
+                totals,
+            )
+            for t in step_tasks
+        ],
+        "missing": [i for i in wanted if i not in served],
+        "next_page_token": None,
+        "tenant_id": tenant_id,
+        "filter": {"active": False, "states": None, "stored_states": None, "ids": wanted},
+        "rollup_report": report.to_api(),
+        "stalled_workflows": stalled_workflows(ctx.store.db, tenant_id),
+    }
+    _named(ctx, payload["workflows"], payload["tasks"])
+    if summary:
+        payload["view"] = "summary"
+    return payload
 
 
 @router.get("/{workflow_id}")
@@ -203,7 +329,7 @@ def get_workflow(
     accounts = accounts_for(ctx.db, tenant_id, tasks.items)
     totals = totals_for(ctx.db, tenant_id, [t.id for t in tasks.items])
 
-    return {
+    payload = {
         # The step copies of each input are masked by the tasks' own maskers,
         # so `workflow.steps[i].input` and `tasks[i].input` agree (the PR #229
         # review), from the tasks this route already loaded.
@@ -229,6 +355,8 @@ def get_workflow(
             for t in tasks.items
         ],
     }
+    _named(ctx, [payload["workflow"]], payload["tasks"])
+    return payload
 
 
 @router.post("/{workflow_id}/cancel")

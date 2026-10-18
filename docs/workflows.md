@@ -53,6 +53,7 @@ costs nothing while it waits.
 | `when` | `{"step": upstream, "verdict_in": ["NOT_YET"]}`: run this step's agent only on those verdicts; see [review before publishing](#review-before-publishing-implement-review-fix-if-needed) |
 | `builds_on` | an upstream `step_id` whose pushed branch this step's checkout starts from, instead of `repository_ref` |
 | `allow_empty_diff` | `true`: an empty diff is this step's result, not its failure; see [an empty diff can succeed](#an-empty-diff-can-succeed-allow_empty_diff) |
+| `await_input` | only on the `await-input` profile, which requires it: the step waits for a tenant member's answer; see [waiting for a person](#waiting-for-a-person-await-input) |
 
 `max_workflow_steps` (default 50) bounds the whole thing.
 
@@ -136,12 +137,14 @@ What `claude-code` and `codex` declare (contract request 28, #265):
 | input | kind and bounds | what the claude-code runner does with it |
 |---|---|---|
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
 <!-- /runner-inputs:claude-code -->
 
 <!-- runner-inputs:codex generated from RUNNER_PROFILES["codex"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
 | input | kind and bounds | what the codex runner does with it |
 |---|---|---|
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
 <!-- /runner-inputs:codex -->
 
 `claude-code-review` is `claude-code` under its own Job and service account,
@@ -173,6 +176,8 @@ class and runs on GKE Autopilot; it declares what `claude-code` does:
 | input | kind and bounds | what the claude-code-browser runner does with it |
 |---|---|---|
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
+| `browser_tool` | string, one of auto \| playwright \| dev-browser \| jev | the live browser's tool: auto (every tool available; the default), playwright (the Playwright MCP tools only), dev-browser (the dev-browser CLI first, Playwright as fallback) or jev (the jev MCP tools, which send page text to TypeSafe and need a TypeSafe key; Playwright as fallback) |
 <!-- /runner-inputs:claude-code-browser -->
 
 `issue` points a step at a GitHub issue, so its prompt need not restate one.
@@ -531,11 +536,29 @@ line of a `format: "progress"` row says `? N question(s) for the owner`, and a
 carries `questions` with `""` for a missing text, keeping its no-null rule, and
 `plugin/agents/step.md` tells the row to put them in its result as given.
 
-**Data for the operator, never a channel to the platform.** Nothing executes,
-answers or acts on the file. No state, retry, dispatch, merge or verdict reads
-it, and no part of the platform takes an instruction from it. The agent asks,
-and a person decides. If the answer changes the work, that is a new task,
-dispatched by a person.
+**The owner answers on the task** (owner decision 2026-10-13, "Yes, pick an
+option on the task"; TASK-ANSWERS). The console's "Questions for you" card
+offers each question's options, with the recommended one marked, and an
+"Other…" box for the person's own words. Answering posts
+`POST /v1/tasks/{id}/answers` with `{question_index, choice, text}`. Only the
+task's submitter or an admin may answer. Another member of the tenant gets a
+403, and the card says why. Another tenant's task is a 404. `choice` must be one
+of that question's option labels, and `text` is at most 2,000 characters,
+redacted before it is stored. The answer is stored on the task as
+`metadata.owner_answers`. It is a reserved platform key, as `start_problem` is,
+so it needs no change to the frozen `Task`. Each question has one answer.
+Answering again replaces it and moves the replaced answer, with who gave it and
+when, into that answer's `history`. A question can change at most 20 times;
+after that a change is refused rather than dropping history. The task read
+serves the answers as `owner_answers`. `GET /questions` puts each one beside
+its question, and `swarm_result`, the follow outcome and `sc task` show them.
+That is how whoever launched the work reads the decision.
+
+**Data for the operator, never a channel to the platform.** Nothing executes or
+acts on the file or on the answers. No state, retry, dispatch, merge or verdict
+reads them, and no part of the platform takes an instruction from them. The
+agent asks, and a person decides. If the answer changes the work, that is a new
+task, dispatched by whoever reads the answer.
 
 ## Dependencies and state
 
@@ -551,6 +574,308 @@ monopolise a pass.
 would otherwise sit in `DEPENDENCY_INCOMPLETE` forever — holding no capacity, but
 never completing and never erroring, which is the worst kind of failure because
 nothing alerts on it.
+
+## Waiting for a person: `await-input`
+
+**A workflow step can wait for a member of its tenant to answer, for up to
+24 hours, at no cost, and the next step reads the answer as an artifact.**
+Issue #1436: a draft -> review -> revise loop used to be one workflow per
+round, with the caller downloading each round's artifacts and pasting them
+into the next prompt, because `input_from` does not cross workflows. The
+design, with the owner's decisions of 2026-10-17, is
+[docs/design/human-steps.md](design/human-steps.md); this section says what
+was built from it.
+
+While the catalogue lists `await-input` as unavailable
+(`apps/common/swarm_common/profiles.py::RUNNER_PROFILES`, contract request C),
+a submission that names it is refused like any disabled profile, the expiry
+sweep reads nothing, and nothing below changes how any workflow runs. The
+owner makes it available with request D, after the acceptance lane
+(HW-ACCEPT) has run it on dev.
+
+```json
+{"step_id": "review",
+ "runner_profile": "await-input",
+ "depends_on": ["draft"],
+ "input_from": {"draft": "draft.md"},
+ "input": {"prompt": "Read draft.md. Approve it, or list what must change."},
+ "await_input": {
+   "form": "verdict",
+   "artifact": "review.json",
+   "max_files": 10,
+   "expires_after_seconds": 86400,
+   "on_expire": "default",
+   "default": {"verdict": "MERGE", "findings": []},
+   "remind_after_seconds": 14400,
+   "remind": ["owner@saga.xyz"]}}
+```
+
+A `revise` step then declares `"depends_on": ["review"]` and
+`"input_from": {"review": "review.json"}`, and can be gated on it with
+`"when": {"step": "review", "verdict_in": ["NOT_YET"]}`, exactly as on an
+agent's review. Several rounds are unrolled in the DAG (`draft -> review1 ->
+revise1 -> review2 -> revise2`), each wait with its own 24-hour bound. There
+is no loop construct.
+
+### What the step is, and what it is not
+
+**It is `PARKED(AWAITING_INPUT)` from the moment its dependencies succeed
+until it is answered, expires or is cancelled, and it holds no lease, no slot
+and no container at any point** (invariant 1). The profile is
+`control_plane`: no image is pulled and no attempt is made, so nothing runs to
+be fenced or checkpointed. The scheduler parks it in the same call that
+promotes it to READY, and admission parks any READY one before it evaluates
+capacity, whatever the headroom. The park writes `metadata.await_input.opened_at` and
+`expires_at`, `opened_at` plus the declared seconds
+(`apps/scheduler/scheduler/awaitinput.py::wait_window`), and no reader
+re-derives the deadline. The `HUMAN_REQUIRED`
+sweep never ends it; under `on_step_failure: "fail_workflow"` a failed sibling
+cancels it, as it cancels any step that has not started.
+
+**The wait is bounded at 24 hours.** `expires_after_seconds` is required, from
+300 to 86,400, the same bound the scheduler holds a `HUMAN_REQUIRED` park to.
+swarm-api restates it
+(`apps/swarm-api/swarm_api/validation.py::AWAIT_INPUT_MAX_SECONDS`) because it
+does not carry the scheduler
+(`apps/scheduler/scheduler/loop.py::HUMAN_PARK_MAX_SECONDS`), and a unit test
+imports both and fails if they differ. A wait with no end would be a
+workflow nobody is alerted about, the failure the cycle check exists to
+prevent.
+
+**Waiting is not leasing, and answering is not running.** The answer is
+written by swarm-api, and its `task_finished` wake promotes the dependants in
+the same scheduler drain, as a MERGE verdict published without a worker
+does.
+
+### The `await_input` block
+
+`await_input` is valid only on a step whose `runner_profile` is
+`await-input`, and that profile requires it. Every refusal is a 422 naming the
+field (`apps/swarm-api/swarm_api/validation.py::resolve_await_input`).
+
+| field | rule |
+|---|---|
+| `form` | required: `"verdict"`, `"answers"` or `"text"` (the table below). |
+| `artifact` | the filename dependants stage it by, `^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`. Its stem names the files' directory: `review.json` -> `review.files/`. Default: the form's. |
+| `max_files` | 0 to 10, default 10. At 0 the step takes no files. |
+| `expires_after_seconds` | required, 300 to 86,400 (24 hours). |
+| `on_expire` | required: `"fail"` or `"default"`. |
+| `default` | required with `"default"` and refused with `"fail"`. Checked against `form`, at most 16 KiB, no files. It is signed with the spec, so the branch taken on expiry is the author's. |
+| `remind_after_seconds` | `null`, or 3,600 up to `expires_after_seconds`: how often the bell reminds (docs/notifications.md). |
+| `remind` | at most 10 addresses in the platform's allowed domains, default the submitter. **Not an authorisation**: it chooses whose bell rings, and any member may answer. |
+
+| form | the answer | default artifact |
+|---|---|---|
+| `verdict` | `{"verdict": "MERGE" \| "NOT_YET", "findings": [...]}`, at most 50 findings of 1,000 characters, read with the parser a `when` gate uses | `verdict.json` |
+| `answers` | `{"answers": [{"question_index", "choice", "text"}]}`, every counted question of the staged `questions.json` answered, as on a task's "Questions for you" card | `answers.json` |
+| `text` | `{"text": "..."}`, at most 64 KiB | `input.json` |
+
+`form: "answers"` needs exactly one `input_from` entry naming
+`questions.json`: an upstream agent's questions become the form only when the
+step stages them explicitly. Anywhere else a `questions.json` is still data,
+never a channel ([an agent asks the owner](#an-agent-asks-the-owner-questionsjson)).
+
+Also refused on an `await-input` step: `resource_class`, `timeout_seconds`,
+`builds_on`, `when`, `allow_empty_diff`, `pr_role` and `merges` (none means
+anything without a container), any `input` key but `prompt`, an
+`assignees` key (the refusal points at `remind`), `await_input` on any other
+profile, and a caller-sent `metadata.await_input`, which is reserved. The
+block is stored, normalised, in the signed `metadata.dispatch`. On this step
+`input_from` is not staged: it is what the person is shown. Under
+`strategy: "integrate"` the step is never in an integrator's `integrates`,
+because it pushes no branch.
+
+### Who answers, and how
+
+**Any member of the step's tenant, checked at the moment they answer; never a
+service account or an agent.** A `*.gserviceaccount.com` caller is 403
+`person_required`, so a workflow's own agent, whose bridge speaks as its
+worker, cannot answer its own review. Membership is asked of Cloud Identity
+again for the request, past the 120-second cache, for the one registered
+group (`searchTransitiveGroups` 403s in this project). A caller who is not a
+member is 403 `not_a_member`; a lookup failure is 503
+`membership_unavailable`. Either way nothing is written. A personal workspace's steps
+are answered only by its owner. There is no admin bypass. Another tenant's
+step is a 404.
+
+```
+POST /v1/workflows/{workflow_id}/steps/{step_id}/input   the answer
+GET  /v1/workflows/{workflow_id}/steps/{step_id}/input   what a card shows
+GET  /v1/inputs?status=waiting                           the tenant's open waits
+```
+
+The answer is `{"answer_id": "r1-owner", "payload": {...}}` as
+`application/json`, or the same object as the `answer` part of a
+`multipart/form-data` body whose `file` parts carry the files. `answer_id`
+(`[a-z0-9-]{1,64}`) is the idempotency key: a retry with the same digests gets
+the original 200 with `replayed: true`. The answer is recorded with
+`answered_by`, `answered_at` and `via` (`"console"` or `"mcp"`), on the task,
+its `succeeded` event and the response.
+
+**The first answer is final.** A second is 409 `already_answered`, naming who
+answered and when; a correction is a new round. An answer before the step has
+opened is 409 `not_open`, and one to an expired or cancelled step names that
+state. A spec whose signature does not verify is 409 `spec_refused`. The
+answer, the expiry sweep and a cancel each end the step in one transaction
+that commits only while it is still open, so exactly one of them wins.
+
+Every refusal carries its name in `detail.reason` under an established
+`code` (`forbidden`, `conflict`, `validation_failed`, `rate_limited`): 422
+`invalid_payload` (naming the position and key, never quoting the payload),
+`too_many_files`, `invalid_file_name` and `file_contains_credential`; 415
+`file_type_refused`; 413 `answer_too_large`; 429 `answer_busy`; 503
+`store_unavailable`, after which a retry is safe because nothing reached
+Firestore.
+
+### What an answer may carry
+
+**A form, redacted, and at most 10 files, 16 MiB in all.** The form is the
+form's JSON, at most 256 KiB serialised; every string in it goes through the
+platform's redaction rules before it is written, so a token pasted into a
+finding is stored as the mask. The 16 MiB is the whole answer, form and files
+together (`apps/swarm-api/swarm_api/awaitinput.py::MAX_ANSWER_BYTES`), the
+owner's number: it is what swarm-api holds in memory for one answer, and well
+inside the worker's 512 MiB staging total. The file count is
+`max_files`, never more than
+`apps/swarm-api/swarm_api/validation.py::AWAIT_INPUT_MAX_FILES`. A file's name
+follows the `artifact` pattern, with no directory.
+
+The size is gated before the body is read: a multipart answer must send
+`Content-Length` (411 without it), and more than 16 MiB plus 64 KiB of
+framing is 413 before a byte is read; the body is then read through a counting
+reader, because a length is a claim. One instance holds at most 4 multipart
+answers at once, which keeps them inside swarm-api's memory at concurrency 80.
+Then the step, the caller and the membership are checked, so an outsider's
+upload never reaches GCS.
+
+**Allowed types.** Decided by sniffing the bytes, never by the client's
+`Content-Type` (`apps/swarm-api/swarm_api/awaitinput.py::sniff`): UTF-8 text
+with no NUL byte and one of `.md` `.txt` `.json` `.yaml` `.yml` `.csv`
+`.diff` `.patch` `.py` `.ts` `.tsx` `.js` `.go` `.rs` `.java` `.sh` `.html`
+`.css` `.sql` `.toml`
+(`apps/swarm-api/swarm_api/awaitinput.py::TEXT_EXTENSIONS`), stored as
+`text/plain; charset=utf-8` or, for `.json`, `application/json`; a PDF
+(`application/pdf`, `.pdf`); a PNG (`image/png`, `.png`), JPEG (`image/jpeg`,
+`.jpg` or `.jpeg`) or WebP (`image/webp`, `.webp`) image. An image's or PDF's
+name must agree with its bytes. Everything else is 415 `file_type_refused`:
+archives on purpose, because no scan sees inside one and an archive is how a
+credentials directory travels as one file, and executables because nothing
+downstream should be handed a binary from an upload.
+
+**A text file is scanned and refused, never rewritten.** A credential in it is
+422 `file_contains_credential`, naming the file, the line and the rule, never
+the match: a masked line would silently change a file the person believes
+passes byte for byte, and break a patch. **A PDF or an image is not scanned**,
+because its text is compressed or pixels, so the person is told not to attach
+one that shows a key.
+
+**Where it lands.** swarm-api writes the form and the files to
+`tenants/<tenant>/tasks/<task>/attempts/input-<12 hex>/artifacts/`, create-only,
+through a separate writer with an IAM-conditioned `objectCreator` grant that
+reaches nothing else (`apps/swarm-api/swarm_api/inputwriter.py::InputWriter`).
+Firestore holds only the record: who, when, how, sizes and digests. The
+manifest entry for the artifact lists the files as `attachments`, and the
+worker staging a dependant puts each one in `review.files/` beside
+`review.json`, through the same tenant-prefix, destination and total-size
+checks as any staged artifact
+(`apps/agent-worker/agent_worker/inputs.py::attachments_dir`). The worker's
+staged list names them by path, so the next prompt does not have to guess.
+
+### Expiry and cancel
+
+The schedule tick (`POST /v1/admin/schedules/tick`, every minute) ends each
+step whose `expires_at` has passed, at most 200 per tick, after verifying its
+spec signature:
+
+* `"fail"`: the step is DEAD_LETTERED with `last_error`
+  `await_input_expired: nobody answered within <n> seconds`, and under
+  `fail_workflow` the rest of the workflow is cancelled as for any failed
+  step;
+* `"default"`: the signed `default` is written as the artifact and the step
+  SUCCEEDS with `input.source: "default"` and no `answered_by`, so a `when`
+  gate downstream takes the branch the author declared.
+
+A step whose signature does not verify is dead-lettered whatever it declares.
+`POST /v1/workflows/{id}/cancel` ends a waiting step directly, as it ends any
+task that holds no capacity.
+
+### Where a person sees it
+
+* **The approvals inbox**, for every member of the tenant, as kind `input`;
+  the inbox never takes the answer, the step's route does.
+* **The bell**, for the addresses on `remind`, once per
+  `remind_after_seconds` (docs/notifications.md, "A workflow step waiting for a
+  person").
+* **The console card and the plugin's `swarm_workflow_input`** are lanes
+  HW-UI and HW-MCP. Until they land, `GET .../input` is what either reads, and
+  an answer is posted to the route above.
+
+## Waiting for a pull request: `after`
+
+**Why it exists.** On 2026-10-14 three lanes -- RELAY-ROLL, DEVB-GATE and
+EGRESS-GATE -- each depended on another lane's pull request, and each sat
+until an operator noticed that pull request had merged and submitted them by
+hand. A workflow now says what it waits for, and the platform starts it
+(owner decision, delivery speed plan D3):
+
+```json
+{"repository_url": "https://github.com/owner/repo", "after": {"pr": 41}, "steps": [...]}
+```
+
+`after` is one `{"pr": N}` or a list of them, at most 10. The numbers are
+pull requests of the **workflow's own repository** -- a number, never a
+repository, so a spec cannot point the tenant's token at anything else. A
+workflow with no `repository_url`, or one not on github.com, is refused at
+submission, naming `after`.
+
+**What happens.** Every root step (a step that depends on no other) is
+written `PARKED(DEPENDENCY_INCOMPLETE)` carrying `metadata.after_prs`; every
+other step already waits on a root, so the whole workflow waits. It holds no
+lease, no pool count and no execution (invariant 1). Then:
+
+* **the wake tick reads.** The merge step's per-tenant tick
+  (`POST /v1/admin/merges/wake`, Cloud Scheduler job `merge_wake`, every
+  minute) reads each waiting gate's pull requests with **the tenant's own
+  `-git` token**, at most once per `issueci.CI_READ_SECONDS` per gate
+  (`swarm_api.prgate.wake_tenant`). It writes only the gate, in a
+  transaction guarded on the task still being PARKED on that gate. It never
+  moves a task.
+* **every one merged -> released.** The gate is marked `merged`; the
+  scheduler's dependency sweep promotes the root to READY on its next drain
+  and admission takes it as any other step. The reconciler's
+  DEPENDENCIES_MET rule is the backstop, as for any dependency park.
+* **one closed without merging -> failed.** The gate is marked `closed`,
+  naming it; the scheduler dead-letters the root ("pull request #42 of
+  owner/repo was closed without being merged; ..."), and its dependants are
+  cancelled as a failed parent's. PARKED -> FAILED is not a transition the
+  contract allows; DEAD_LETTERED is, and the workflow reads failed.
+* **a pull request GitHub says does not exist keeps waiting**, with the
+  tick's failure `pull_request_not_found`: a token that lost the repository
+  answers 404 too, and failing every waiting workflow on a rotated token is
+  worse than waiting. Cancel the workflow to stop it.
+
+**No webhook.** The platform has no GitHub webhook receiver (a per-repository
+hook, an HMAC secret per registration and a public unauthenticated route --
+docs/merge-step.md says why it has none), so the tick is the wake: a merge is
+noticed within a minute or two. The scheduler never reads GitHub.
+
+**Restart-safe by construction.** The wait is a document, not a process: the
+gate, its last reading and its release are on the root task. A restarted
+swarm-api re-reads the gates on its next tick; a restarted scheduler reads
+the gate's `state` on its next drain.
+
+**Where it shows.** `GET /v1/workflows[/{id}]` serves `after_pull_requests`
+(`state`, `pull_requests`, `pending`, `merged`, `closed`, and `text`) on a
+workflow submitted with `after`, read off its step tasks. The console's
+workflow list and page print `text` as a tag -- "waiting for PR #41 to
+merge" -- and `sc workflows` prints it under the workflow. A released wait
+prints nothing; the steps say the rest.
+
+**The contract.** The frozen `Workflow` has no metadata and `ParkReason` has
+no "pull request pending", so the gate lives on the root tasks and the park
+reuses `DEPENDENCY_INCOMPLETE`; every promoter of that reason checks the
+gate. Contract change request 76 (docs/contract-change-requests.md) asks for
+a typed home.
 
 ## The base pin: a downstream step starts where its parents started
 
@@ -628,9 +953,40 @@ names the uploaded `swarm-work.patch` uri, so the work can be recovered with
 attempt's final checkpoint. It is not retried: a refused push meets the same
 refusal on the same branch. The end cause is `outputs_missing`, as for
 `published_nothing:`, because the frozen contract has no publish-failed cause
-and no new `TaskState` was added for it. A step that publishes nothing by
-design -- a review, an `integrate` contributor, a `collect` step, a step with
-no repository -- is unaffected.
+and no new `TaskState` was added for it.
+
+**A step whose branch is its deliverable is FAILED when the branch was not
+pushed (G1, part of #1225).** #872 covered only a step that opens a pull
+request, and the gap it left was measured on 2026-10-12
+(`wf_e55610ded71c4d9d9fae`, `wf_0260c920acf8414395b2`): a review failed
+cloning "Remote branch swarm/task_... not found" behind a build step that had
+ended SUCCEEDED without pushing. That build step was an `integrate`
+contributor, whose branch is what the integrator merges and what a step that
+`builds_on` it clones. So the rule is now about the branch, not the pull
+request (`Worker._deliverable_branch`). It covers a step that opens a pull
+request, an `integrate` contributor, a `carrier: branches` step under any
+strategy, and a `single-pr` amender. A step another step `builds_on` is one of
+these already, because `builds_on` is accepted only under `direct-pr` and
+`integrate`. Such a step ends FAILED `publish_failed:` when it changed
+something and its branch was not pushed, by any path, not only a git failure:
+a publish that declined because the token cannot push (`can_push` false), a
+refused git token, a forge the worker cannot publish to, publishing disabled,
+a harvest that failed or met processes that survived the reap, or a publish
+that raised. Each of these used to read SUCCEEDED. A forge that could not be
+reached at the probe fails the attempt retryably instead (`forge_unreachable`),
+as it already did for a pull-request step. A push whose stderr says the forge
+did not answer (a reset connection, a 5xx, a timeout; git's own words, read by
+`gitops.transient_git_failure`) is tried once more after 5 s
+(`gitops.push_branch`). A refusal is not retried. A second transient failure
+ends the step FAILED as above.
+
+These steps still SUCCEED without a branch: one that changed nothing (its
+dependants already step past it), one that declared `allow_empty_diff` or
+wrote `verification.md`, and one whose verdict gate kept its agent from
+running. The skip path has its own rule (PUB-SKIP). Steps that deliver no
+branch at all are unaffected: a `collect` step without a carrier, a
+`single-pr` reader, a review that edits nothing, and a step with no
+repository.
 
 ## An empty diff can succeed: `allow_empty_diff`
 
@@ -1627,8 +1983,22 @@ submission, from the workflow's own `metadata`:
   a bool, a float -- is a 422 naming the bounds. So is the key on a workflow
   that ends with no merge step, whatever its value: rounds nothing would
   spend are a request that would silently not happen, as `metadata.merge`
-  `"on"` there is refused. It is stored as written; lane MS7 spends it, and
-  until then it is accepted and changes nothing.
+  `"on"` there is refused. It is stored as written; lane MS7 spends it.
+  **Since SPEED-D2 (2026-10-14) absent means 2, not 0**, and the spec's
+  top-level `fix_rounds` (0-5) says the same thing: see the next bullet.
+* **`fix_rounds`** on the workflow spec (lane SPEED-D2, owner decision
+  2026-10-14 "Auto fix rounds"): how many agent rounds the merge step spends
+  on a pull request whose required checks are red at its head. Absent, a
+  workflow with a merge step gets **2**, an issue run's 0 (it has its own
+  loop). `0` disables them: red refuses `checks_failed` at once, as before.
+  Given with a different `metadata.merge_fix_rounds`, or with no merge step,
+  it is a 422. Before spending a round on a red head the platform re-runs the
+  failing Actions jobs once; a re-run that passes spends nothing. Each round
+  appears as a step of this workflow, `ci-fix:<n>` (or `conflict-fix:<n>`
+  for a conflicting pull request, capped at 2 whatever this says), and a
+  round that failed does not fail a workflow whose merge then succeeded.
+  The why is in
+  [merge-step.md](merge-step.md#revised-2026-10-14-auto-fix-rounds-lane-speed-d2).
 * **The workflow's label is its pull request's fallback title, merge step
   or not.** `metadata.unit`, else `metadata.title`, reaches the gated step as
   the dispatch block's `pr_label`, which the worker uses only as title and
@@ -1794,7 +2164,7 @@ What each step does:
 | step | clones | publishes | writes |
 |---|---|---|---|
 | implement (`author`) | `main` | pushes `swarm/<its task id>` and opens the pull request | the code, and `pr-title.txt` |
-| review (`reader`, profile `claude-code-review`) | the implement branch | no git push, nothing to GitHub at all. Writes `review.json` under its own identity, `swarm-<tenant>-review`, to a prefix the tenant's ordinary worker account cannot write | `review.json` |
+| review (`reader`, profile `claude-code-review`) | the implement branch | no git push, nothing to GitHub at all. Writes `review.json` under its own identity, `swarm-<tenant>-review` (history: retired with the #295 design, docs/merge-step.md §3; the account no longer exists), to a prefix the tenant's ordinary worker account cannot write | `review.json` |
 | post-verdict (no agent, profile `post-verdict`) | nothing | submits a GitHub PR review (`APPROVE` or `REQUEST_CHANGES`, `commit_id` pinned to `review.json.sha`), from a credential only this step's own service account can read — the review agent that wrote `review.json` cannot read it. Reads `review.json` from the review-only-writable prefix, not the general staged-artifact location | nothing |
 | fix (`amender`) | the implement branch | fast-forward pushes to the **same** branch, only if it changed something | the fix |
 | proof (`reader`) | the implement branch | no git push, nothing to GitHub at all | `proof.json` |
@@ -1867,7 +2237,7 @@ recommended but, per the owner's round-3 decision, is **not** a
 precondition ([merge-step.md](merge-step.md) §7 R4, §11 open question (b)).
 **Separately, and NOT closed by anything above (named residual R8, joint
 review with CR 34, 2026-09-29):** the review-only-writable prefix stops the
-ordinary tenant account from writing there, but `swarm-<tenant>-review` is
+ordinary tenant account from writing there, but `swarm-<tenant>-review` (history: retired with the #295 design, docs/merge-step.md §3; the account no longer exists) is
 one identity shared by every `single-pr` workflow of the tenant, and its
 write grant covers every workflow's verdict path at once. A review agent of
 one workflow, compromised by prompt injection, can still write a fabricated

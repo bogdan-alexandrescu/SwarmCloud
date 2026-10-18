@@ -41,6 +41,7 @@ run is created in the caller's tenant (through `submit_tasks`, which runs
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 
@@ -52,11 +53,21 @@ from swarm_common.states import TaskState
 
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, paged_limit, tenant_scope
-from ..errors import ApiError, Conflict, Forbidden, Gone, NotFound, UpstreamUnavailable
+from ..errors import (
+    ApiError,
+    Conflict,
+    Forbidden,
+    Gone,
+    NotFound,
+    UpstreamUnavailable,
+    ValidationFailed,
+)
 from .. import issueci
 from ..forge import ForgeReadError, preview, read_open_work
+from .. import approvals
 from ..issueruns import (
     AUTO_APPROVER,
+    WORKFLOWS_PATH,
     MAX_PLAN_BYTES,
     PLAN_FILE,
     TERMINAL_RUN_STATES,
@@ -71,13 +82,24 @@ from ..issueruns import (
     parse_planner_output,
     plan_digest,
     plan_files,
+    plan_hold,
     planner_task,
     auto_merge_default,
     refuse_auto_merge,
+    refuse_planner_model_class,
+    run_summary,
     territory_overlap,
+    widen_hold,
+    workflow_paths,
 )
 from ..issuesync import sync_issue
-from ..repositories import registered_merge_policy
+from ..repositories import (
+    Repositories,
+    hard_stop_paths_of,
+    platform_of,
+    registered_merge_policy,
+    repo_id_for,
+)
 from ..plancontext import read_plan_context
 from ..reviewcontext import read_review_context
 from ..schemas import PlanApprove, PlanEdit, PlanReject, RunCreate
@@ -120,6 +142,76 @@ def _read_plan(ctx: AppContext, tenant_id: str, task_id: str) -> tuple[str, dict
     return parse_planner_output(window.get("content") or "")
 
 
+#: What the planner's worker writes beside plan.json when the workspace opted
+#: in to Jev (`agent_worker.judge.poststeps.PLAN_ADVISORY_FILE`, lane CTXQ-JW):
+#: J2's uncovered requirements and J5's likely-duplicate lane. ADVISORY: a
+#: missing, unreadable or malformed file is no advisory, and the run moves
+#: exactly as it did before Jev.
+PLAN_ADVISORY_FILE = "plan-advisory.json"
+MAX_PLAN_ADVISORY_BYTES = 64 * 1024
+
+
+def read_plan_advisory(ctx: AppContext, tenant_id: str, task_id: str) -> dict | None:
+    """The planner's Jev advisory, or None. Never raises: it decides nothing."""
+    try:
+        window = ctx.inspection.read_artifact(
+            tenant_id, task_id, submitted_by=None, name=PLAN_ADVISORY_FILE,
+            limit_bytes=MAX_PLAN_ADVISORY_BYTES,
+        )
+        if window.get("status") != "ok" or window.get("truncated"):
+            return None
+        advisory = json.loads(window.get("content") or "")
+    except Exception:  # noqa: BLE001 -- advisory: absent, gone or malformed is none
+        return None
+    return advisory if isinstance(advisory, dict) and advisory.get("advisory") is True else None
+
+
+def jev_holds_for_human(run: IssueRun, advisory: dict | None) -> bool:
+    """§8 Q5 A (owner decision 2026-10-14): J5 at p >= 0.85 on an in-flight lane
+    holds an AUTO-approved plan for a human. The hold is the run's own
+    `plan_approval` set to `required` -- a person approves it like any
+    required plan, so it is reversible and Jev never decides."""
+    if run.plan_approval != "auto" or not advisory:
+        return False
+    duplicate = advisory.get("duplicate")
+    return advisory.get("hold_for_human") is True and isinstance(duplicate, dict)
+
+
+def workflows_refusal(paths: list[str]) -> str:
+    """The run's `error` when its plan names `.github/workflows/` files (§4.4)."""
+    return (
+        f"{WORKFLOWS_PATH}: the plan changes {', '.join(paths[:10])}. SwarmCloud's forge "
+        "credential cannot push workflow files, so this change must be made by a person or "
+        "split out of the issue"
+    )
+
+
+def _registration(ctx: AppContext, tenant_id: str, run: IssueRun) -> dict:
+    """The run's repository as its OWN tenant registered it, or {} (unregistered)."""
+    ref = run.issue
+    return Repositories(ctx.db, now=ctx.now).find(tenant_id, repo_id_for(tenant_id, ref.owner, ref.repo)) or {}
+
+
+def hard_stops_at_plan(ctx: AppContext, tenant_id: str, run: IssueRun, plan: dict) -> dict | None:
+    """The §4.4 hold a plan puts on its run: IAM and bootstrap anywhere, the
+    frozen contract in a `platform: true` repository, the registration's
+    protected paths, and a security-class issue. Widened over the run's
+    current hold, never narrower (`widen_hold`)."""
+    record = _registration(ctx, tenant_id, run)
+    found = plan_hold(
+        plan, platform=platform_of(record), hard_stop_paths=hard_stop_paths_of(record),
+        issue_read=run.issue_read, at=ctx.now(),
+    )
+    hold = widen_hold(run.approval_hold, found)
+    if hold and hold != run.approval_hold:
+        log.info(
+            "issue run %s tenant=%s held %s (%s)", run.id, tenant_id, hold["code"],
+            ", ".join(hold.get("reasons") or []),
+        )
+        approvals.announce_hold(run, run.approval_hold, hold)
+    return hold
+
+
 def _from_planner(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
     runs = _runs(ctx)
     try:
@@ -152,10 +244,29 @@ def _from_planner(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
             return runs.transition(
                 tenant_id, run.id, RunState.NOT_READY, by=SYSTEM, patch={"not_ready": plan},
             )
-        return runs.transition(
-            tenant_id, run.id, RunState.PLANNED, by=SYSTEM,
-            patch={"plan": plan, "plan_digest": plan_digest(plan), "plan_revision": 1},
-        )
+        refused = workflow_paths(plan)
+        if refused:
+            # §4.4: refused, not held. The forge credential cannot push these
+            # files, so the step would fail after spending. No plan is
+            # stored, no workflow submitted, no re-plan attempted; the status
+            # comment carries this error.
+            log.info("issue run %s tenant=%s: plan names workflow files; refused (%s)",
+                     run.id, tenant_id, WORKFLOWS_PATH)
+            return runs.transition(
+                tenant_id, run.id, RunState.FAILED, by=SYSTEM,
+                patch={"error": failure_text(workflows_refusal(refused))},
+            )
+        patch = {"plan": plan, "plan_digest": plan_digest(plan), "plan_revision": 1,
+                 "approval_hold": hard_stops_at_plan(ctx, tenant_id, run, plan)}
+        advisory = read_plan_advisory(ctx, tenant_id, task.id)
+        if jev_holds_for_human(run, advisory):
+            log.info(
+                "issue run %s tenant=%s: Jev judged the plan a likely duplicate of in-flight "
+                "lane %r; the auto-approval waits for a person", run.id, tenant_id,
+                str((advisory or {}).get("duplicate", {}).get("ref") or "")[:120],
+            )
+            patch["plan_approval"] = "required"
+        return runs.transition(tenant_id, run.id, RunState.PLANNED, by=SYSTEM, patch=patch)
     if task.state in (TaskState.FAILED, TaskState.DEAD_LETTERED):
         why = f"the planner task {task.id} ended {task.state.value}"
         if task.last_error:
@@ -202,15 +313,38 @@ def _from_workflow(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
 
 
 def _approve(
-    ctx: AppContext, auth: AuthContext, tenant_id: str, run: IssueRun, *, digest: str, by: str
+    ctx: AppContext, auth: AuthContext, tenant_id: str, run: IssueRun, *, digest: str, by: str,
+    confirm: str | None = None,
 ) -> IssueRun:
     """APPROVED under the digest check, then the workflow, then RUNNING.
 
     The plan is compiled BEFORE the claim, so a plan the compiler refuses
     leaves the run PLANNED for an edit, and AGAIN from the claimed document,
     so what is submitted is the plan whose digest the transaction matched.
+
+    THE ONE FUNCTION EVERY APPROVAL GOES THROUGH, so the §4.4 hold is checked
+    here (docs/schedules.md §4.5): an approver the hold does not admit is 403
+    `hold_approver_required`, and an auto-approval (`by: AUTO_APPROVER`)
+    never satisfies one. Checked before the claim, and again inside it
+    against the document the claim read, so a hold set between the two is
+    not stepped round.
     """
     runs = _runs(ctx)
+    is_owner = bool(getattr(auth, "is_owner", False)) and by != AUTO_APPROVER
+    approvals.check_hold(ctx, run, email=by, is_owner=is_owner, confirm=confirm)
+    # §4.6: a scheduled run's named / owner_only approvers hold on EVERY
+    # approval path (this route, `sc plan approve`, the inbox), not only the
+    # inbox's. A hold is checked above IN ADDITION: it only ever makes
+    # approval stricter, never replaces the schedule's approvers. An
+    # auto-approval is the gate's own `auto` mode and is not a person.
+    schedule_ref = run.schedule or {}
+    if schedule_ref and by != AUTO_APPROVER:
+        schedule = approvals.read_schedule(ctx.db, tenant_id, schedule_ref.get("schedule_id"))
+        if schedule is not None:
+            approvals.check_gate_approver(
+                ctx, tenant_id, (schedule.get("gate") or {}).get("approvers"), email=by,
+                is_owner=is_owner, schedule=schedule, merge_tier=False,
+            )
     compile_plan(run)
     # docs/workspaces.md §5.3 (#847 W1): the submission gate, asked BEFORE the
     # claim, so a run whose submitter's workspace is not ready is refused and
@@ -218,13 +352,18 @@ def _approve(
     # rather than being claimed and then FAILED by `submit_workflow`'s
     # refusal below. Off (WORKSPACE_GATE), it returns at once.
     ctx.submissions.workspace_gate(auth, ctx.submissions.tenant_for(auth))
-    approved = runs.transition(
-        tenant_id, run.id, RunState.APPROVED, by=by, digest=digest, from_states=_PLANNED_ONLY,
-        patch=lambda current: {
+    def claim(current: IssueRun) -> dict:
+        if current.approval_hold != run.approval_hold:
+            approvals.check_hold(ctx, current, email=by, is_owner=is_owner, confirm=confirm)
+        return {
             "approved_by": by,
             "approved_at": ctx.now(),
             "approved_digest": current.plan_digest,
-        },
+        }
+
+    approved = runs.transition(
+        tenant_id, run.id, RunState.APPROVED, by=by, digest=digest, from_states=_PLANNED_ONLY,
+        patch=claim,
     )
     try:
         # The review's IMPACT block from the run's own tenant's index (lane
@@ -411,6 +550,11 @@ def _advance_state(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
             held = _territory_hold(ctx, tenant_id, run)
             if held is not None:
                 return held
+            if approvals.hold_blocks(run.approval_hold):
+                # §4.5: an auto-approval never satisfies a hard-stop hold. The
+                # run stays PLANNED, holding nothing (invariant 1), and the
+                # inbox shows it as a `kind: hold` item for its approvers.
+                return run
             try:
                 run = _approve(
                     ctx, run_owner_auth(ctx, run), tenant_id, run,
@@ -423,6 +567,8 @@ def _advance_state(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
                 )
             except Conflict:
                 raise
+            except approvals.HoldApproverRequired:
+                return run
             except ApiError as refused:
                 # Recorded on the run by `_approve` when it got as far as the
                 # submission; a compile refusal leaves it PLANNED for an edit.
@@ -485,6 +631,13 @@ def advance_tenant_runs(ctx: AppContext, tenant_id: str, *, limit: int) -> Advan
     round when its pull request's CI is red (`issueci`) -- each as the run's
     creator, in the run's tenant (`run_owner_auth`).
     """
+    # §4.7 on the tenant's own tick: expired approvals leave the inbox, and a
+    # scheduled plan nobody decided in time is REJECTED with reason "expired".
+    # A failure here is logged and never stops the runs below.
+    try:
+        approvals.expire_due(ctx, tenant_id)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("approvals of tenant=%s not expired by the tick (%s)", tenant_id, type(exc).__name__)
     rows, truncated = _runs(ctx).tickable(tenant_id, limit=limit)
     report = AdvanceReport(truncated=truncated)
     for run in rows:
@@ -527,7 +680,8 @@ def _read_issue(
         created_at=ctx.now(),
     )
     try:
-        read = preview(ref, tenant, tokens=ctx.forge_tokens, issues=ctx.forge)
+        read = preview(ref, tenant, tokens=ctx.forge_tokens, issues=ctx.forge,
+                       person=auth.email)
     except ForgeReadError as refused:
         log.info("issue run read tenant=%s issue=%s outcome=%s", tenant_id, ref.short, refused.code)
         return None, {"code": refused.code, "message": refused.message}
@@ -558,6 +712,11 @@ def create_run(
     # already made.
     if body.auto_merge is not None:
         refuse_auto_merge(body.auto_merge)
+    # The planner's class (#1435). Read with getattr: `RunCreate` is lane
+    # MODEL-API's schema, and until it declares the field a body naming one
+    # is refused there, so this is None and the planner is today's.
+    model_class = getattr(body, "model_class", None)
+    refuse_planner_model_class(model_class)
     ref = parse_issue_ref(body.issue)
     # The repository's open work, read with THIS caller's tenant's forge
     # token (invariant 9) before anything is created: a 403 or 404 refuses
@@ -577,7 +736,8 @@ def create_run(
     refuse_auto_merge(auto_merge)
     try:
         open_work = read_open_work(
-            ref, tenant, tokens=ctx.forge_tokens, issues=ctx.forge, read_at=ctx.now()
+            ref, tenant, tokens=ctx.forge_tokens, issues=ctx.forge, read_at=ctx.now(),
+            person=auth.email,
         )
     except ForgeReadError as refused:
         log.info(
@@ -591,7 +751,8 @@ def create_run(
     )
     run = start_run(
         ctx, auth, ref, open_work=open_work, plan_approval=body.plan_approval,
-        auto_merge=auto_merge, fix_rounds=body.fix_rounds,
+        auto_merge=auto_merge, fix_rounds=body.fix_rounds, claude_session=body.claude_session,
+        model_class=model_class,
     )
     response.headers["Location"] = f"/v1/runs/{run.id}"
     return {"run": run.to_api()}
@@ -607,6 +768,10 @@ def start_run(
     auto_merge: bool,
     fix_rounds: int,
     created_by: str | None = None,
+    schedule: dict | None = None,
+    merge_approval: str | None = None,
+    claude_session: str | None = None,
+    model_class: str | None = None,
 ) -> IssueRun:
     """The planner task, then the run document, then the first write-back.
 
@@ -618,7 +783,24 @@ def start_run(
     submits as is then kept in `on_behalf_of`, so every later submission is
     made as them, and only while they are still a member (`run_owner_auth`).
     Options are the caller's to have checked (`refuse_auto_merge`).
+
+    A schedule's firing (docs/schedules.md §2.7) passes `schedule`, its
+    `metadata.schedule` mark, which `IssueRuns.for_firing` finds again so a
+    retried firing adopts the run instead of making a second; and
+    `merge_approval="required"` when its gate says `merge: approve`, so the
+    run's green pull request waits in the inbox (§4.2).
+
+    `claude_session` (SC-SESSION-SCOPE) is the Claude Code session the caller
+    tagged the run with: on the planner and on the run, which copies it onto
+    every workflow it starts.
+
+    `model_class` is the PLANNER's class (`RunCreate.model_class`, #1435),
+    checked by the caller (`refuse_planner_model_class`), and by
+    `submit_tasks` once lane MODEL-API's `TaskCreate` carries it. None runs the profile's default (`opus`). The plan's
+    steps take theirs from the plan (`issueruns.PlanStep.model_class`).
     """
+    if merge_approval not in (None, "required"):
+        raise ValueError(f"merge_approval is 'required' or None, not {merge_approval!r}")
     run_id = new_id("run")
     # The issue and the tenant's own index of its repository BEFORE the
     # planner (lane KG1): the issue's words are what the planner's REPO GRAPH
@@ -635,7 +817,8 @@ def start_run(
     # one finished task nobody reads, while a run without its planner would
     # sit PLANNING for ever.
     submission = ctx.submissions.submit_tasks(
-        auth, [planner_task(ref, run_id, open_work, context=context.section)]
+        auth, [planner_task(ref, run_id, open_work, context=context.section,
+                            claude_session=claude_session, model_class=model_class)]
     )
     planner = submission.tasks[0]
     now = ctx.now()
@@ -659,18 +842,43 @@ def start_run(
             issue_read=issue_read,
             issue_read_error=issue_read_error,
             on_behalf_of=auth.email if created_by else None,
+            schedule=dict(schedule) if schedule else None,
+            merge_approval=merge_approval,
+            claude_session=claude_session,
         )
     )
     return sync_issue(ctx, run)
+
+
+#: `GET /v1/runs?view=` (RT-7). `full`, or no `view` at all, is the row every
+#: other route serves; `summary` drops what the list never shows
+#: (`issueruns.run_summary`), as `GET /v1/tasks?view=summary` does (#168).
+RUN_VIEWS: tuple[str, ...] = ("full", "summary")
 
 
 @router.get("")
 def list_runs(
     limit: int | None = Query(default=None, ge=1),
     page_token: str | None = Query(default=None),
+    view: str | None = Query(default=None, description="`full` (default) or `summary`"),
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
+    """One page of the tenant's runs, newest first, each live one advanced.
+
+    `view=summary` (RT-7) serves each row without the plan, the open work,
+    the history, the index context, the verification tables, the failure
+    excerpt and the unmet requirements -- the keys absent, not null -- with
+    `issue_read` cut to its title, state, url and read time and
+    `pull_request` without its per-check list, and says `"view": "summary"`.
+    No `view`, or `view=full`, is the response this route has always served;
+    `GET /v1/runs/{id}` is always the full row.
+    """
+    if view is not None and view not in RUN_VIEWS:
+        raise ValidationFailed(
+            f"unknown view {view!r}", detail={"known_views": list(RUN_VIEWS)},
+        )
+    summary = view == "summary"
     rows, next_token = _runs(ctx).list(
         tenant_id, limit=paged_limit(ctx, limit), page_token=page_token
     )
@@ -683,8 +891,11 @@ def list_runs(
                 # One run's read failing must not hide the page; the row is
                 # served as stored, and its own GET reports the failure.
                 log.warning("issue run %s not advanced in the list (%s)", run.id, exc.code)
-        served.append(run.to_api())
-    return {"runs": served, "next_page_token": next_token, "tenant_id": tenant_id}
+        served.append(run_summary(run.to_api()) if summary else run.to_api())
+    payload = {"runs": served, "next_page_token": next_token, "tenant_id": tenant_id}
+    if summary:
+        payload["view"] = "summary"
+    return payload
 
 
 @router.get("/{run_id}")
@@ -701,6 +912,7 @@ def get_run(
 def approve_plan(
     run_id: str,
     body: PlanApprove,
+    confirm: str | None = Query(default=None, max_length=2000),
     tenant_id: str = Depends(tenant_scope),
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
@@ -712,7 +924,8 @@ def approve_plan(
             detail={"state": run.state.value},
         )
     try:
-        run = _approve(ctx, auth, tenant_id, run, digest=body.plan_digest, by=auth.email)
+        run = _approve(ctx, auth, tenant_id, run, digest=body.plan_digest, by=auth.email,
+                       confirm=confirm)
     except ApiError:
         # A submission refused after the claim left the run FAILED: the
         # issue is told before the caller is. The caller's error is the one
@@ -739,14 +952,27 @@ def edit_plan(
     # `PlanOverlap.action` (#587) may still lack one; any other may not. The
     # transition's digest check refuses the edit if the plan moved since.
     plan = parse_edited_plan(body.plan, current.plan)
+    refused = workflow_paths(plan)
+    if refused:
+        # §4.4: an edit cannot add what the planner's plan would have been
+        # refused for.
+        raise InvalidPlan(
+            f"the plan may not change workflow files ({', '.join(refused[:10])}): "
+            "SwarmCloud's forge credential cannot push them",
+            detail={"code": WORKFLOWS_PATH, "paths": refused[:10]},
+        )
+    # An edit can add a hold but never clears one (§4.5): `widen_hold` over
+    # the hold the claim reads.
+    found = hard_stops_at_plan(ctx, tenant_id, current, plan)
     run = runs.transition(
         tenant_id, run_id, RunState.PLANNED, by=auth.email, digest=body.plan_digest,
         from_states=_PLANNED_ONLY,
-        patch=lambda current: {
+        patch=lambda latest: {
             "plan": plan,
             "plan_digest": plan_digest(plan),
-            "plan_revision": current.plan_revision + 1,
+            "plan_revision": latest.plan_revision + 1,
             "plan_edited_by": auth.email,
+            "approval_hold": widen_hold(latest.approval_hold, found),
         },
     )
     return {"run": sync_issue(ctx, run).to_api()}

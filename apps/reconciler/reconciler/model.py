@@ -17,6 +17,7 @@ from typing import Any
 
 from swarm_common.models import EndCause, WorkflowStep, retries_exhausted, utcnow
 from swarm_common.states import CONCURRENCY_STATES, TERMINAL_STATES, TaskState
+from .startproblem import start_problem_of
 
 
 def as_datetime(value: Any) -> datetime | None:
@@ -275,6 +276,10 @@ class TaskView:
     #: `metadata.disk_evictions`: attempts already lost to the pod passing its
     #: own disk limit (#893, `count_disk_eviction`).
     disk_evictions: int = 0
+    #: `metadata.start_problem`: why the current attempt's GKE pod was last
+    #: seen not starting (`startproblem`, F1-POD), or None. A record for the
+    #: console; no rule decides anything from it.
+    start_problem: dict[str, Any] | None = None
 
     @property
     def holds_capacity(self) -> bool:
@@ -304,6 +309,7 @@ class TaskView:
             completed_at=as_datetime(doc.get("completed_at")),
             startup_refunds=startup_refunds_used(doc.get("metadata")),
             disk_evictions=disk_evictions_used(doc.get("metadata")),
+            start_problem=start_problem_of(doc.get("metadata")),
         )
 
 
@@ -557,6 +563,27 @@ class ControlSnapshot:
 # ---------------------------------------------------------------------------
 
 
+#: A workflow that waits for named pull requests to merge (lane SPEED-D3,
+#: `swarm_api.prgate`): the gate its root steps carry while PARKED on
+#: DEPENDENCY_INCOMPLETE, and the state that releases it. Restated because
+#: this image carries neither swarm-api nor the scheduler; held equal by
+#: tests/unit/control_plane/test_workflow_after_pr.py.
+AFTER_PRS_METADATA_KEY = "after_prs"
+AFTER_PRS_MERGED = "merged"
+
+
+def held_for_pull_requests(metadata: Any) -> bool:
+    """Whether a step waits for a pull request that has not merged.
+
+    Any gate whose `state` is not `merged` holds, an unreadable one included:
+    the document is tenant-writable, and a gate is never read as released.
+    """
+    if not isinstance(metadata, dict) or AFTER_PRS_METADATA_KEY not in metadata:
+        return False
+    gate = metadata[AFTER_PRS_METADATA_KEY]
+    return not (isinstance(gate, dict) and gate.get("state") == AFTER_PRS_MERGED)
+
+
 @dataclass(frozen=True)
 class StepTaskView:
     """A workflow step's task, as the stall check needs it.
@@ -574,6 +601,9 @@ class StepTaskView:
     #: (`scheduler.loop._promote_dependencies`) gates a promotion on.
     depends_on: tuple[str, ...] = ()
     result_summary: dict[str, Any] | None = None
+    #: The step waits for a pull request to merge (`held_for_pull_requests`):
+    #: its dependencies are not met whatever its parents say.
+    held_for_pull_requests: bool = False
 
     @property
     def id(self) -> str:
@@ -591,6 +621,7 @@ class StepTaskView:
             park_reason=doc.get("park_reason") or None,
             depends_on=tuple(str(t) for t in (doc.get("depends_on") or [])),
             result_summary=dict(summary) if isinstance(summary, dict) else None,
+            held_for_pull_requests=held_for_pull_requests(doc.get("metadata")),
         )
 
 

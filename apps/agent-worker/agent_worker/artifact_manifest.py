@@ -26,8 +26,11 @@ them in the same order. The order below decides only WHICH files are taken
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from pathlib import Path
+from typing import Any, BinaryIO, Mapping, Sequence
 
 from . import standalone_outputs as standalone
 
@@ -220,3 +223,137 @@ def plan(
         not_uploaded=tuple(not_uploaded),
         declared_past_bound=past_bound,
     )
+
+
+# ---------------------------------------------------------------------------
+# A browser session copied into the workspace (LB-L4b, part of #1030)
+# ---------------------------------------------------------------------------
+#
+# docs/design/live-browser.md section 5.5. The live browser's profile lives on
+# a sidecar-only memory volume, never under `work/`. But the agent drives that
+# browser, and it can write Playwright's `storageState()` into its workspace or
+# copy a Chromium `Cookies` database there -- the signed-in session of the
+# person who took control. The checkpoint (`CheckpointManager._add_entry`) and
+# the output upload (`Worker._upload_copy`, `Worker._upload_workdir_outputs`)
+# ask `browser_state_kind` of every file they are about to send, and a file
+# with either shape stays in the pod and is recorded as `browser_state_refused`
+# with its path.
+#
+# A SHAPE CHECK, NOT A PROOF, as the design says. A cookie re-encoded, zipped
+# or split across files passes; the agent's instructions forbid that, and the
+# residual is stated in the design rather than hidden. What the check must not
+# do is refuse ordinary work, so it asks for the shape, not a word: a JSON
+# file merely mentioning "cookies", or any SQLite database, passes.
+
+#: The event and the reason, in the log and in `workdir_outputs.not_uploaded`.
+#: The design's name for it (section 5.5): searched for, so never reworded.
+BROWSER_STATE_REFUSED = "browser_state_refused"
+
+#: What `browser_state_kind` found, for the log line.
+STORAGE_STATE = "storage-state JSON"
+COOKIE_LIST = "cookie list JSON"
+COOKIE_DATABASE = "Chromium Cookies database"
+
+#: JSON this size or under is parsed and its shape checked. A storage state is
+#: kilobytes (cookies, plus localStorage per origin), so this is generous; a
+#: larger file is judged from its head (`STATE_HEAD_BYTES`) instead.
+STATE_PARSE_MAX_BYTES = 32 * 1024 * 1024
+
+#: Read first, from every file: enough for SQLite's first page at its largest
+#: page size (65,536), where Chromium's schema lives, and for the start of a
+#: storage state too large to parse, where Playwright writes `cookies` first.
+STATE_HEAD_BYTES = 1024 * 1024
+
+#: A SQLite database, its rollback journal and its write-ahead log. The two
+#: logs carry copies of the database's pages, cookies included.
+_SQLITE_MAGICS = (
+    b"SQLite format 3\x00",
+    bytes.fromhex("d9d505f920a163d7"),
+    bytes.fromhex("377f0682"),
+    bytes.fromhex("377f0683"),
+)
+
+#: The names Chromium gives the database and its logs: refused on the name
+#: and the SQLite magic alone, since a log need not hold the schema page.
+_COOKIE_DATABASE_NAMES = frozenset({"Cookies", "Cookies-journal", "Cookies-wal"})
+
+#: Chromium's table, as its schema in `sqlite_master` declares it. With
+#: `host_key` beside it, which a table of baking recipes does not have.
+_COOKIES_TABLE = re.compile(
+    rb"create\s+table\s+(?:if\s+not\s+exists\s+)?[\"'`\[]?cookies[\"'`\]]?\s*\(",
+    re.IGNORECASE,
+)
+
+_UTF8_BOM = b"\xef\xbb\xbf"
+_COOKIE_KEYS = frozenset({"name", "value", "domain"})
+
+
+def _is_cookie(entry: Any) -> bool:
+    return isinstance(entry, dict) and _COOKIE_KEYS <= entry.keys()
+
+
+def browser_state_kind(name: str, handle: BinaryIO) -> str | None:
+    """What browser state the file open as `handle` holds, or None.
+
+    `name` is the file's own name, the last component of its path. `handle`
+    is read from where it stands; the caller rewinds it if it reads it again.
+
+    * SQLite (a database, a journal or a WAL) named as Chromium names its
+      cookie store, or whose first page declares Chromium's `cookies` table:
+      `COOKIE_DATABASE`, under any name.
+    * A JSON object whose `cookies` is a list with an entry carrying `name`,
+      `value` and `domain` -- Playwright's storage state, the design's shape
+      -- or whose `cookies` and `origins` are both lists, which is Playwright's
+      storage state with an empty jar and localStorage beside it:
+      `STORAGE_STATE`. Over `STATE_PARSE_MAX_BYTES`, an object whose head
+      names `cookies` with `domain` or `origins` is refused unparsed: failing
+      closed on a file too large to read through costs a deliverable that
+      looks like a session, not a session.
+    * A JSON list of such entries, `context.cookies()` dumped as it is:
+      `COOKIE_LIST`. The design names the object; the bare jar is the same
+      session without its wrapper.
+    """
+    head = handle.read(STATE_HEAD_BYTES)
+    if head.startswith(_SQLITE_MAGICS):
+        if name in _COOKIE_DATABASE_NAMES:
+            return COOKIE_DATABASE
+        if _COOKIES_TABLE.search(head) and b"host_key" in head:
+            return COOKIE_DATABASE
+        return None
+    start = head[len(_UTF8_BOM) :] if head.startswith(_UTF8_BOM) else head
+    opener = start.lstrip(b" \t\r\n")[:1]
+    if opener not in (b"{", b"["):
+        return None
+    data = head + handle.read(STATE_PARSE_MAX_BYTES + 1 - len(head))
+    # Cheap before the parse: every shape below has a cookie's `domain` key or
+    # Playwright's `origins`, so most JSON in a workspace is never parsed.
+    if b'"domain"' not in data and b'"origins"' not in data:
+        return None
+    if len(data) > STATE_PARSE_MAX_BYTES:
+        if opener == b"{" and b'"cookies"' in head:
+            return STORAGE_STATE
+        return None
+    try:
+        value = json.loads(data)
+    except (ValueError, RecursionError):
+        return None
+    if isinstance(value, dict):
+        cookies = value.get("cookies")
+        if isinstance(cookies, list) and (
+            any(_is_cookie(entry) for entry in cookies) or isinstance(value.get("origins"), list)
+        ):
+            return STORAGE_STATE
+        return None
+    if isinstance(value, list) and any(_is_cookie(entry) for entry in value):
+        return COOKIE_LIST
+    return None
+
+
+def browser_state_of(path: Path, *, name: str) -> str | None:
+    """`browser_state_kind` of the file at `path`, judged under `name`.
+
+    For a copy in the worker's own scratch: the upload checks the very bytes
+    it is about to send, so a file swapped after the check cannot pass it.
+    """
+    with open(path, "rb") as handle:
+        return browser_state_kind(name, handle)

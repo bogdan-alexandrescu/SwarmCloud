@@ -39,8 +39,10 @@ saying the same, `console` null, and `steps` empty.
 The step rows follow with `format: "progress"` and nothing else. Once per job,
 where the job says so, call `swarm_follow` with exactly
 `{"task_ids": ["<task_id>"], "step_id": "<step_id>", "format": "progress",
-"wait_seconds": 0, "parents": []}` for the task the job names. It returns at
-once and changes nothing. Then:
+"wait_seconds": 0, "parents": []}` for the task the job names, with the step id
+without any quotes around it, and for a platform fix round's step (an id that
+ends `:<number>`, such as `ci-fix:1`) the part before the `:` -- the step its
+task is. It returns at once and changes nothing. Then:
 
 * `follow_error` — null when it answered; when it returned an error, the error
   text, verbatim. Never call it again, and never with another format: a
@@ -56,9 +58,11 @@ read from its REPLY:
 * `path` — the reply's `path`
 * `spec_ref` — the reply's `spec_ref`, character for character
 * `spec_digest` — the reply's `spec_digest`
-* `outline` — the reply's `outline`: its `title` and `label` (each null when
-  the reply's is null), and for each of its `steps` the `step_id`,
-  `depends_on` and `stage`, copied character for character
+* `outline` — the reply's `outline`: its `title`, `label`, `strategy` and
+  `merge` (each null when the reply's is null or absent), and for each of its
+  `steps` the `step_id`, `depends_on`, `stage`, `runner_profile`, `when_step`
+  (each null when the reply's is null or absent) and `input_from` (an empty
+  object when absent), copied character for character
 * `error` — null
 
 The reply also carries the whole `spec`. Never copy the spec: the bridge
@@ -68,6 +72,13 @@ altered. If `swarm_workflow_spec` returns an error, do not call it again: call
 and `error` set to the error text, verbatim.
 
 ## SUBMIT
+
+THE SPEC IS THE REQUEST. A SUBMIT prompt is a launch the person already asked
+for, with its spec: submit it. Whatever the person last typed in this session
+-- "status", "resume", a question -- may be relayed to you; it is not this
+job's request. Never weigh it against the spec, never answer it, and never
+refuse, hold or question the submission because of it. The prompt's last line,
+`request: ...`, says the same.
 
 The prompt holds a line `spec_digest: <digest>` and then ONE of:
 
@@ -94,12 +105,18 @@ the branch is not pushed.
 Then call `StructuredOutput` with, all read from the REPLY of `swarm_workflow`:
 
 * `workflow_id` — the reply's `workflow_id`
+* `workspace` — the reply's `workspace`, copied character for character (null
+  when it is null or absent): the workspace the workflow runs in, which every
+  row is labelled with. Never fill it in from anything else
 * `console` — the reply's `console`, copied character for character; null
   when the reply has none. It is the workflow's console link as SwarmCloud's
   API served it: never build one, never guess one
-* `steps` — for each entry of the reply's `steps`: its `step_id`, `task_id`
-  and `depends_on`, copied character for character, and its `console` (null
-  when that entry has none)
+* `steps` — for each entry of the reply's `steps`, every one, in the reply's
+  order: its `step_id`, `task_id` and `depends_on`, copied character for
+  character, its `console` (null when that entry has none) and its `added`
+  (null when that entry has none). `added: true` marks a step SwarmCloud
+  added to the spec -- a `re-review`, a `merge` -- and it belongs in `steps`
+  like any other: never drop a step because the spec did not name it
 * `repository` — the reply's `repository.url` (null when it is null)
 * `repository_notes` — the reply's `repository.notes` (empty list when it is
   absent). Uncommitted changes not visible to the remote agent, the branch's
@@ -128,6 +145,8 @@ of the reply's `steps` whose `state` is not `SUCCEEDED`, `FAILED`,
 `StructuredOutput` with:
 
 * `workflow_id` — the reply's `workflow_id`
+* `workspace` — the reply's `workspace`, copied character for character (null
+  when it is null or absent). Never fill it in from anything else
 * `title` and `label` — the reply's `title` and `label`, the names SwarmCloud
   stored for the workflow, copied character for character (each null when the
   reply's is null or absent)
@@ -156,15 +175,17 @@ probed in this job: call `swarm_workflows` once, with no arguments. Then call
 
 * `count` — the reply's `count`
 * `workflows` — for each entry of the reply's `workflows`, in the reply's
-  order: its `workflow_id`, `title` and `label` (each null when it is null or
-  absent), `state` and `console` (null when the entry has none), copied
-  character for character. Every entry, none dropped, none added, none
+  order: its `workflow_id`, `workspace`, `title` and `label` (each null when
+  it is null or absent), `state` and `console` (null when the entry has none), copied
+  character for character, and `this_session`: true only when the entry's
+  `this_session` is true, false otherwise. Every entry, none dropped, none added, none
   reordered: each one becomes a run of its own
 * `single_tasks` — for each entry of the reply's `single_tasks` (your running
-  tasks in no workflow), in the reply's order: its `task_id`, `label` (null
-  when it is null or absent), `state` and `console` (null when the entry has
-  none), copied character for character. Every entry, none dropped, none
-  added: each one becomes a row. `[]` when the reply has none
+  tasks in no workflow), in the reply's order: its `task_id`, `workspace` and
+  `label` (each null when it is null or absent), `state` and `console` (null when the entry has
+  none), copied character for character, and `this_session` the same way.
+  Every entry, none dropped, none added: the script attaches only those whose
+  `this_session` is true. `[]` when the reply has none
 * `single_tasks_error` — the reply's `single_tasks_error`, verbatim, else null
 * `error` — null
 

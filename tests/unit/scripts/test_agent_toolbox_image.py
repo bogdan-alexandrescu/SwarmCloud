@@ -469,7 +469,15 @@ def test_every_download_is_pinned_by_version_and_verified_before_use() -> None:
     for ins, fetch in downloads:
         text = _shell_text(ins)
         out, url = fetch.group(1), fetch.group(2)
-        assert url.startswith("https://"), f"{url} is not HTTPS"
+        # A release file read from the build mirror (docs/runbooks/build-mirror.md)
+        # comes from the bind-mounted tool mirror, and is checked exactly as a
+        # download is.
+        mirrored = url.startswith("file:///tmp/tool-mirror/")
+        assert url.startswith("https://") or mirrored, f"{url} is neither HTTPS nor the tool mirror"
+        if mirrored:
+            assert text.startswith("--mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror "), (
+                f"{url} is read from /tmp/tool-mirror by a RUN that does not bind-mount it"
+            )
         # `latest` and dl.k8s.io's stable*.txt pointers move; a pool path
         # that merely contains `/stable/` (Docker's channel name) does not.
         assert not re.search(r"latest|stable[-.\d]*\.txt", url), f"{url} floats"
@@ -607,3 +615,118 @@ def test_versions_doc_lists_the_image_toolbox_at_the_pinned_versions() -> None:
         assert row.group(1).strip() == want, (
             f"docs/versions.md says {tool} {row.group(1)}, the Dockerfile pins {want}"
         )
+
+
+# --------------------------------------------------------------------------- #
+# Python bytecode and jq: what a lane container pays on every start (#1334).
+# --------------------------------------------------------------------------- #
+#
+# Measured by lane FIX-TESTS (PR 1415): the base image's stdlib ships no .pyc,
+# and PYTHONDONTWRITEBYTECODE=1 stops one being written, so every Python start
+# in an agent container recompiles re/json/pathlib (0.21 s per call against
+# 0.08 s with a cache), and Debian's jq 1.6 takes 27 ms to start.
+
+#: The release jq is pinned to, and the file of it the image installs.
+JQ_VERSION = "1.7.1"
+JQ_ASSET = "jq-linux-amd64"
+TOOL_MIRROR_MANIFEST = REPO / "images" / "agent-runtime-base" / "tool-mirror.sha256"
+
+
+def _runtime_env() -> Instruction:
+    envs = [i for i in _runtime_stage() if i.keyword == "ENV" and "PYTHONDONTWRITEBYTECODE" in i.body]
+    assert len(envs) == 1, "expected one runtime ENV setting PYTHONDONTWRITEBYTECODE"
+    return envs[0]
+
+
+def _compile_step() -> Instruction:
+    runs = [i for i in _runtime_stage() if i.keyword == "RUN" and "compileall" in _shell_text(i)]
+    assert len(runs) == 1, f"expected exactly one RUN that precompiles Python, found {len(runs)}"
+    return runs[0]
+
+
+def test_the_runtime_stdlib_and_venv_are_precompiled_by_the_interpreter_the_image_runs() -> None:
+    stage = _runtime_stage()
+    env = _runtime_env()
+    # `python` at runtime is the first one on PATH: /opt/venv/bin/python, the
+    # ENTRYPOINT's and every agent's. A .pyc carries its interpreter's magic
+    # number, so compiling with any other Python would be a cache nobody reads.
+    path = re.search(r'PATH="([^"]+)"', env.body)
+    assert path and path.group(1).split(":")[0] == "/opt/venv/bin", env.body
+    step = _compile_step()
+    text = _shell_text(step)
+    assert re.search(r"/opt/venv/bin/python3?\b[^&;|]*-m compileall", text) or (
+        re.search(r'(\w+)=/opt/venv/bin/python3?\b', text)
+        and re.search(r'"\$\{?(\w+)\}?"\s+-m compileall', text)
+    ), f"compileall must run under /opt/venv/bin/python: {text}"
+    assert " -q" in text, "compileall -q: a listing of every file is log noise"
+    # The stdlib (with the base's own site-packages under it) and the venv's
+    # site-packages, asked of the same interpreter rather than spelled out.
+    assert 'sysconfig.get_path("stdlib")' in text or "sysconfig.get_path('stdlib')" in text, text
+    assert 'sysconfig.get_path("purelib")' in text or "sysconfig.get_path('purelib')" in text, text
+    assert not re.search(r"\|\|\s*(true|:)", text), "a failed compile must fail the build"
+    # After everything that installs into either tree, so nothing lands uncompiled.
+    venv_copy = next(i for i in stage if i.keyword == "COPY" and "/opt/venv" in i.body)
+    base_pip = next(i for i in stage if i.keyword == "RUN" and "pip install" in _shell_text(i))
+    assert step.index > venv_copy.index and step.index > base_pip.index
+    late_pip = [
+        i for i in stage if i.index > step.index and i.keyword == "RUN"
+        and re.search(r"\bpip install\b", _shell_text(i))
+    ]
+    assert not late_pip, f"installed into Python after the precompile: {late_pip}"
+    # And the build proves the cache is there, for the interpreter that runs.
+    assert "cache_from_source" in text, "the precompile RUN must check a stdlib .pyc exists"
+
+
+def test_runtime_bytecode_writes_stay_off_and_the_dockerfile_says_why() -> None:
+    env = _runtime_env()
+    assert re.search(r"\bPYTHONDONTWRITEBYTECODE=1\b", env.body), env.body
+    why = " ".join(env.comments)
+    assert "PYTHONDONTWRITEBYTECODE" in why and "compileall" in why, (
+        "the comment above the runtime ENV must say why bytecode writes stay off "
+        "while the build precompiles"
+    )
+
+
+def _apt_packages() -> list[str]:
+    runs = [_shell_text(i) for i in _runtime_stage() if i.keyword == "RUN" and "apt-get install" in _shell_text(i)]
+    assert len(runs) == 1, runs
+    listed = runs[0].split("apt-get install", 1)[1].split("&&", 1)[0]
+    return [w for w in listed.split() if not w.startswith("-")]
+
+
+def _jq_install() -> Instruction:
+    runs = [i for i in _runtime_stage() if i.keyword == "RUN" and "/jqlang/jq/" in _shell_text(i)]
+    assert len(runs) == 1, "expected exactly one RUN that installs jq from its release"
+    return runs[0]
+
+
+def test_jq_is_the_pinned_release_not_debians() -> None:
+    packages = _apt_packages()
+    assert "curl" in packages, f"the apt list did not parse: {packages}"
+    assert "jq" not in packages, "Debian bookworm's jq is 1.6; the image installs the pinned release"
+    args = _arg_defaults(_runtime_stage())
+    assert _arg_value(args["JQ_VERSION"]) == JQ_VERSION
+    sha = _arg_value(args["JQ_SHA256"])
+    assert re.fullmatch(r"[0-9a-f]{64}", sha)
+    text = _shell_text(_jq_install())
+    fetch = re.search(
+        r'-o\s+(\S+)\s+"file:///tmp/tool-mirror/github\.com/jqlang/jq/releases/download/'
+        r'jq-\$\{JQ_VERSION\}/' + re.escape(JQ_ASSET) + '"',
+        text,
+    )
+    assert fetch, f"jq must be read from the tool mirror at jq-${{JQ_VERSION}}/{JQ_ASSET}: {text}"
+    out = fetch.group(1)
+    check = text.find(f'echo "${{JQ_SHA256}}  {out}" | sha256sum -c -')
+    install = text.find(f"install -o root -g root -m 0755 {out} /usr/local/bin/jq")
+    assert -1 not in (check, install), text
+    assert check < install, "jq is installed before its sha256 is checked"
+    # The installed binary says the pinned version, or the build fails.
+    assert 'test "$(/usr/local/bin/jq --version)" = "jq-${JQ_VERSION}"' in text, text
+    # /usr/local/bin precedes /usr/bin on the runtime PATH, so the release is
+    # the jq every caller gets.
+    path = re.search(r'PATH="([^"]+)"', _runtime_env().body).group(1).split(":")
+    assert path.index("/usr/local/bin") < path.index("/usr/bin"), path
+    # The tool mirror carries it, at the same sha256 (test_build_mirror_switch
+    # holds the whole manifest equal to the Dockerfile's reads).
+    row = f"{sha}  github.com/jqlang/jq/releases/download/jq-{JQ_VERSION}/{JQ_ASSET}"
+    assert row in TOOL_MIRROR_MANIFEST.read_text().splitlines()

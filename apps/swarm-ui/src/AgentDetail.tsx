@@ -1,5 +1,5 @@
 import { Button, CIcon, Count, ToneMark } from './components'
-import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { Children, Fragment, cloneElement, createContext, isValidElement, useCallback, useContext, useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   EVENT_PAGE_LIMIT,
   loadAgentRun,
@@ -18,8 +18,10 @@ import { DiffstatChart } from './charts/Diffstat'
 import { PeakMemoryChart } from './charts/PeakMemory'
 import { TokenSpendChart } from './charts/TokenSpend'
 import { agentName, workflowHref } from './agentlist'
-import { resultIsNewest } from './dag'
+import { resultIsNewest, stepCostOf, totalCostOf } from './dag'
 import { DecisionCard } from './DecisionCard'
+import { QuestionsCard } from './QuestionsCard'
+import { handoffOf } from './Handoff'
 import { pullRequestOf } from './decision'
 import { PHASE_LABEL, attemptEnd, instant, phasesFor, spanText, type AttemptEnd, type AttemptPhases, type Segment } from './duration'
 import { eventKind, isTerminalEvent } from './events'
@@ -27,6 +29,7 @@ import { backendWord, eventWord, parkWord, stateWord } from './words'
 import { num, type Result } from './fetch'
 import { type TopicId } from './help'
 import { HelpCard, HelpNote } from './HelpCard'
+import { addressToPath } from './paths'
 import { LivenessBadge, livenessOf } from './Liveness'
 import { tokenCount } from './measure'
 import { Absent, Mark, UtilRow, type MarkKind } from './primitives'
@@ -433,6 +436,10 @@ export function Run({
           a verdict gate, or the review that gated one, leads with the rule,
           the verdict, what the review weighed and what happened instead.
           Nothing on any other step. */}
+      {/* THE AGENT'S QUESTIONS FOR ITS OWNER (owner report 2026-10-13, part
+          of #1206): where the bell's "Your agent asked N question(s)" lands,
+          at `#questions`. Nothing, and no read, when it asked none. */}
+      <QuestionsCard task={task} />
       <DecisionCard task={task} readAt={readAt} />
       {lead === 'failed' ? (
         <DtFailure run={run} links={links} lastLine={lastLine} />
@@ -560,9 +567,30 @@ function DtMore({ href, onClick, children }: { href: string; onClick: (() => voi
   )
 }
 
-/** The address of one of this agent's tabs. */
+/**
+ * The address of one of this agent's tabs: its PATH, under the list its state
+ * puts it in (live QA WA-21). It was `#work/task/<id>/<tab>`, which a click
+ * reached through the legacy hash redirect while hover, Copy link and a
+ * middle click all showed a URL that is not the page's.
+ */
 function tabHref(task: Task, tab: 'attempts' | 'artifacts' | 'changes'): string {
-  return `#work/task/${encodeURIComponent(task.id)}/${tab}`
+  const list = CONCURRENCY_STATES.has(task.state) ? 'live' : TERMINAL_STATES.has(task.state) ? 'recent' : 'waiting'
+  return addressToPath(`work/task/${encodeURIComponent(task.id)}/${tab}`, list)
+}
+
+/**
+ * HOW MANY TIMES THIS TASK RAN, for every place that says so (live QA WA-3).
+ *
+ * A failed merge read `attempt 1 of 10` in the header, `after 1 of 10
+ * attempts` in the failure card, `2 of 10 · task counts 1` on the Attempt
+ * card and `Attempts 1` on the tab -- while the Attempts tab listed two. The
+ * task's `attempt_count` is what is CHARGED against `max_attempts`, and a
+ * park for CI re-runs the task without charging it; the attempt documents
+ * are the runs. So where the text means "how many times it ran", the answer
+ * is the documents, and the task's own counter only when they were not read.
+ */
+export function timesRun(task: Pick<Task, 'attempt_count'>, attempts: readonly unknown[] | null): number {
+  return attempts === null ? task.attempt_count : Math.max(attempts.length, task.attempt_count)
 }
 
 /** The oldest-first copy of a run's attempts, and the newest of them. */
@@ -807,10 +835,19 @@ function DtFailure({ run, links, lastLine }: { run: AgentRun; links: DetailLinks
         ? 'Cancelled'
         : 'Failed'
   const text = task.last_error
+  // A CANCEL ON REQUEST IS NOT AN ERROR, AND NOBODY'S AGENT WROTE IT (live QA
+  // WA-6, 2026-10-11). A task stopped from the console read `Cancelled: it
+  // was cancelled on request · cancel_requested · Error written by agent, at
+  // finish`, the reason in the red error box. The worker does write that
+  // text, at finish -- but what it records is a person's request, so the card
+  // says who asked, from the request's own event, and draws the recorded text
+  // as a note rather than an error.
+  const requested = task.state === 'CANCELLED' && (task.cancel_requested || cause === 'cancel_requested')
+  const asker = requested ? cancelRequester(run) : null
   return (
     // A CANCEL IS NOT A FAILURE: it leads the same way, on the neutral rule,
     // so an operator's own Stop does not read as the platform's fault.
-    <section className={`dt-card dt-now ${task.state === 'CANCELLED' ? 'is-neu' : 'is-bad'}`} data-lead="failed">
+    <section className={`dt-card dt-now ${task.state === 'CANCELLED' ? 'is-neu' : 'is-bad'}`} data-lead={requested ? 'cancelled' : 'failed'}>
       <DtCardHead title={heading}>
         <DtMore href={tabHref(task, 'attempts')} onClick={links?.attempts}>
           Attempts
@@ -827,7 +864,9 @@ function DtFailure({ run, links, lastLine }: { run: AgentRun; links: DetailLinks
         )}
         {anythingRan(task, run.attempts) ? (
           <span className="dt-nf">
-            after {task.attempt_count} of {task.max_attempts} attempts
+            {timesRun(task, run.attempts) === task.attempt_count
+              ? `after ${task.attempt_count} of ${task.max_attempts} attempts`
+              : `after ${timesRun(task, run.attempts)} attempts · ${task.attempt_count} of ${task.max_attempts} counted against the cap`}
           </span>
         ) : (
           // NOTHING RAN, SO NOTHING WAS DUE (AG-8): a cascade cancel, a
@@ -836,18 +875,33 @@ function DtFailure({ run, links, lastLine }: { run: AgentRun; links: DetailLinks
           <span className="dt-nf">
             <Mark
               kind="zero"
-              say="No attempt of this task ever started, so no result summary was ever going to be written. This is a real zero, not a missing summary."
+              say="No attempt of this task ever started, so there is no result summary."
             />{' '}
             nothing ran · {stateWord(task.state)}
           </span>
         )}
       </p>
-      {text ? (
+      {requested ? (
+        <>
+          <span className="dt-who" data-who="requester">
+            {asker !== null ? (
+              <>
+                Stop requested by <b>{asker}</b>
+              </>
+            ) : (
+              <>
+                Stop requested · <span className="is-absent">who asked is not on the events read</span>
+              </>
+            )}
+          </span>
+          {text ? <p className="dt-cancel-note">{text}</p> : null}
+        </>
+      ) : text ? (
         <>
           <span className="dt-who">
-            Error written by <b>{errorWriter(run)}</b>
+            {task.state === 'CANCELLED' ? 'Reason written by' : 'Error written by'} <b>{errorWriter(run)}</b>
           </span>
-          <pre className="err full dt-err">{text}</pre>
+          <pre className={`err full dt-err${task.state === 'CANCELLED' ? ' is-neu' : ''}`}>{text}</pre>
         </>
       ) : (
         <p className="dt-nf is-absent">No error text was written on the task.</p>
@@ -855,6 +909,23 @@ function DtFailure({ run, links, lastLine }: { run: AgentRun; links: DetailLinks
       {lastLine}
     </section>
   )
+}
+
+/**
+ * WHO ASKED FOR A CANCEL: the `requested_by` the API writes on the request's
+ * own event (`Store.request_cancel`: a `cancel_requested` event, or a
+ * `cancelled` one when the request itself ended the task). Null when no such
+ * event is on the page -- the event read failed or paged it out -- which is
+ * "not read", never "nobody".
+ */
+export function cancelRequester(run: Pick<AgentRun, 'events'>): string | null {
+  for (const e of run.events ?? []) {
+    const kind = eventKind(e)
+    if (kind !== 'cancel_requested' && kind !== 'cancelled') continue
+    const by = e.detail?.['requested_by']
+    if (typeof by === 'string' && by.trim() !== '') return by
+  }
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -883,6 +954,14 @@ interface DtCell {
  */
 function DtStatCell({ c }: { c: DtCell }) {
   const id = useId()
+  // THE SUB-LINE IS WHOLE IN ITS TITLE (V058): a narrow pane clamps it to two
+  // lines (details.css), and a sub-line is a node as often as a string (Cost's
+  // `last attempt … · tokens`), so the title is what it rendered.
+  const sub = useRef<HTMLSpanElement>(null)
+  useEffect(() => {
+    const el = sub.current
+    if (el !== null) el.title = el.textContent ?? ''
+  })
   return (
     <div className={`dt-sc${c.tone ? ` is-${c.tone}` : ''}`}>
       <span className="dt-sc-l" aria-describedby={c.help === undefined ? undefined : id}>
@@ -891,12 +970,58 @@ function DtStatCell({ c }: { c: DtCell }) {
       </span>
       <span className="dt-sc-v">
         {c.value}
-        {c.unit !== undefined && <small> {c.unit}</small>}
+        {/* THE SPACE IS OUTSIDE THE UNIT (live QA WA-12): `<small> of 10</small>`
+            is an inline-block, whose leading space is dropped, and the card
+            read `2of 10`. */}
+        {c.unit !== undefined && (
+          <>
+            {' '}
+            <small>{c.unit}</small>
+          </>
+        )}
       </span>
       {c.bar !== undefined && <DtBar pct={c.bar} warn={c.tone === 'alert'} />}
-      {c.sub !== undefined && c.sub !== '' && <span className="dt-sc-s">{c.sub}</span>}
+      {c.sub !== undefined && c.sub !== '' && (
+        <span className="dt-sc-s" ref={sub}>
+          {glueSeparators(c.sub)}
+        </span>
+      )}
     </div>
   )
+}
+
+/**
+ * A sub-line with every ` · ` glued to the words before it (V260, VQA2-R13).
+ * `of 4 GiB · peak, written at exit · OOM near miss` wrapped in a ~115px cell
+ * as a line that began with an orphaned `· OOM near miss`. Each separator
+ * becomes `<span class="dt-dot"> ·</span>` -- `white-space: nowrap`
+ * (details.css), so its leading space is no break opportunity -- followed by
+ * a plain space, where the line may break. The text is unchanged, so the
+ * title `DtStatCell` copies from it is too. It walks strings, fragments and
+ * host elements: Cost's sub-line is a node, not a string.
+ */
+export function glueSeparators(node: ReactNode): ReactNode {
+  return Children.map(node, (n): ReactNode => {
+    if (typeof n === 'string') {
+      const parts = n.split(' · ')
+      if (parts.length === 1) return n
+      return parts.flatMap((part, i) =>
+        i === 0
+          ? [part]
+          : [
+              <span className="dt-dot" key={`dot-${i}`}>
+                {' ·'}
+              </span>,
+              ` ${part}`,
+            ],
+      )
+    }
+    if (isValidElement<{ children?: ReactNode }>(n) && (n.type === Fragment || typeof n.type === 'string')) {
+      if (n.props.children === undefined) return n
+      return cloneElement(n, undefined, glueSeparators(n.props.children))
+    }
+    return n
+  })
 }
 
 /** A thin bar against a limit; hatched, never empty, when there is no figure or no ceiling. */
@@ -1000,15 +1125,20 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
     unit: `of ${task.max_attempts}`,
     // THE TWO NUMBERS ARE THE FACT when they disagree: what the task counts
     // against the documents that came back.
+    // MORE DOCUMENTS THAN THE COUNTER IS NOT A HOLE (WA-3): a park for CI
+    // re-runs the task without charging an attempt, so it says what was
+    // charged. FEWER is one, and keeps its `unread` tone below.
     sub:
-      attempts.length !== task.attempt_count
+      attempts.length > task.attempt_count
+        ? `${task.attempt_count} counted against the cap`
+        : attempts.length !== task.attempt_count
         ? `task counts ${task.attempt_count}`
         : attempts.length === 0
           ? 'none admitted yet'
           : retries === 0
             ? 'no retries'
             : `${retries} ${retries === 1 ? 'retry' : 'retries'}`,
-    tone: attempts.length === task.attempt_count ? undefined : 'unread',
+    tone: attempts.length >= task.attempt_count ? undefined : 'unread',
   })
 
   // MEMORY, against the class's limit when the catalogue answered.
@@ -1062,11 +1192,19 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
   cells.push(cpuCell(latest, open !== null, events, cls))
 
   // COST, with tokens as its sub-line (#322: every kind summed on its own).
-  const reports = reportsSpend(task.runner_profile)
   const spent = attempts.filter((a) => a.cost_usd !== null)
   const cost = spent.length === 0 ? null : spent.reduce((t, a) => t + (a.cost_usd ?? 0), 0)
   const kinds = tokenKinds(task, attempts)
   const kindTotal = tokenTotal(kinds)
+  // THE GRAPH'S RULE WHEN THE DOCUMENTS CARRY NO COST (LB-V4, B8): the API's
+  // served total over every attempt, then the finished result's figure --
+  // `stepCostOf` with no telemetry of its own, because the attempt documents
+  // above ARE this page's telemetry. One rule, so the node and this card
+  // cannot print two figures for one task.
+  const served = cost === null ? stepCostOf(task, undefined) : null
+  // NO MODEL CALL ONLY WHEN THERE TRULY IS NONE: a profile outside the list
+  // that reported a figure is drawn with it, as the graph draws it.
+  const reports = reportsSpend(task.runner_profile) || cost !== null || kindTotal !== null || served !== null
   const withTokens = attempts.filter((a) => reportedTokens(a) || a.attempt_id === kinds.fromSummary).length
   // THE HEADLINE IS ALL FOUR KINDS, THE CAPTION EACH ONE (#322, owner
   // decision 2026-09-29): `1.41M tokens`, then `in 52 · out 9,955 · cache
@@ -1082,6 +1220,23 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
   if (!reports) {
     // NO MODEL CALL IS A FACT, NOT A GAP (owner decision, 2026-09-29).
     cells.push({ label: 'Cost', value: 'no model call', tone: 'absent', sub: 'this profile reports no spend', help: 'token-cost' })
+  } else if (served !== null) {
+    // WHERE IT CAME FROM, said as the graph says it: the API's sum over every
+    // attempt, or the last attempt's result alone.
+    const floor = served.from === 'total' && totalCostOf(task)?.incomplete === true
+    cells.push({
+      label: 'Cost',
+      value: floor ? <>at least {usd(served.usd)}</> : usd(served.usd),
+      sub: (
+        <>
+          {served.from === 'total' ? 'summed by the API' : 'from result'}
+          {' · '}
+          {tokenLine ?? 'tokens not reported'}
+        </>
+      ),
+      tone: open !== null ? 'reading' : undefined,
+      help: 'token-cost',
+    })
   } else if (cost === null && open !== null) {
     cells.push({ label: 'Cost', value: 'at exit', tone: 'reading', sub: tokenLine ?? 'with tokens, when the attempt ends', help: 'token-cost' })
   } else if (cost === null && latest === null) {
@@ -1257,8 +1412,8 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
                 kind="zero"
                 say={
                   TERMINAL_STATES.has(task.state)
-                    ? 'The attempt query succeeded and returned nothing. This task ended before anything was admitted, so this is a real zero rather than a failed read.'
-                    : 'The attempt query succeeded and returned nothing. Nothing has been admitted for this task yet, so this is a real zero rather than a failed read.'
+                    ? 'This task ended before anything was admitted, so it has no attempts.'
+                    : 'Nothing has been admitted for this task yet, so it has no attempts.'
                 }
               />{' '}
               {TERMINAL_STATES.has(task.state) ? 'no attempt' : 'no attempt yet'} · {stateWord(task.state)}
@@ -1681,13 +1836,32 @@ function anythingRan(task: Task, attempts: AttemptRow[] | null): boolean {
 }
 
 /**
- * Only the CLI agents parse a usage block out of the runner's output
- * (`cliagent.run_cli_agent`); the others report no tokens and no cost by
- * construction. One predicate for the run tiles and the attempt cards, so the
- * two cannot disagree about whether a figure is coming.
+ * Every profile whose runner is a CLI agent (`agent_worker.runners.claude_code`
+ * or `.codex`, swarm_common/profiles.py), which is what parses a usage block
+ * out of the runner's output (`cliagent.run_cli_agent`); the others report no
+ * tokens and no cost by construction.
+ *
+ * IT NAMED TWO OF FIVE (LB-V4, B8, QA pass 5 2026-10-12): `claude-code` and
+ * `codex` only, so a `claude-code-browser` step the workflow graph drew at
+ * `cost $0.712 · tokens 1.06M` read `no model call` here. `claude-code-review`
+ * and `indexer` run the same runner and read the same. A profile added later
+ * is still covered by `Run`'s cost cell, which reads any figure that was
+ * reported whatever this list says.
+ */
+const SPEND_PROFILES: ReadonlySet<string> = new Set([
+  'claude-code',
+  'claude-code-browser',
+  'claude-code-review',
+  'codex',
+  'indexer',
+])
+
+/**
+ * One predicate for the run tiles and the attempt cards, so the two cannot
+ * disagree about whether a figure is coming.
  */
 function reportsSpend(profile: string): boolean {
-  return profile === 'claude-code' || profile === 'codex'
+  return SPEND_PROFILES.has(profile)
 }
 
 /**
@@ -1941,6 +2115,14 @@ function elapsedNote(task: Task, phase: ElapsedPhase, now: number): string {
 
 function Alerts({ task }: { task: Task }) {
   const live = !TERMINAL_STATES.has(task.state)
+  // THE HAND-OFF BANNER IS THE ONE STATEMENT (LB-V4, U1, QA pass 5
+  // 2026-10-12). A PARKED(HUMAN_REQUIRED) task said it three times on this
+  // tab: the banner `AgentSplit` draws over every pane but the Browser tab,
+  // this bar (`waiting for you to sign in · eligible <the park instant>`) and
+  // the scheduler-pass bar with `HUMAN_REQUIRED` in it. The banner carries the
+  // park instant now (`HandoffParkedSince`), so both bars step aside -- for
+  // this reason only: for every other park they are the only explanation.
+  const handedOff = handoffOf(task)?.phase === 'parked'
 
   return (
     <>
@@ -1956,12 +2138,10 @@ function Alerts({ task }: { task: Task }) {
           on a step`. `reasonText` remains the fallback for a reason this screen does not
           recognise, because "we have no copy for that" is a fact about THIS
           SCREEN and cannot live in a help topic keyed on the reason. */}
-      {task.park_reason && (
+      {task.park_reason && !handedOff && (
         <div className="bar amber">
           <strong title={task.park_reason}>{parkWord(task.park_reason)}</strong>
-          {task.next_eligible_at && (
-            <> · eligible {new Date(task.next_eligible_at).toLocaleString()}</>
-          )}
+          <ParkEligible iso={task.next_eligible_at} />
           {REASON_COPY[task.park_reason] === undefined && (
             <span className="blocker-copy">{reasonText(task.park_reason)}</span>
           )}
@@ -1990,7 +2170,7 @@ function Alerts({ task }: { task: Task }) {
           being busy is not a durable condition -- so READY with blockers and
           no park reason is the commonest "why is nothing happening", and it
           would otherwise show as a bare READY chip with no explanation. */}
-      {task.blocked_by && task.blocked_by.length > 0 && (
+      {task.blocked_by && task.blocked_by.length > 0 && !handedOff && (
         <div className="bar amber" data-blocked-by="">
           <span className="blocker-copy">last scheduler pass</span>
           {task.blocked_by.map((b, i) => (
@@ -2025,6 +2205,58 @@ function Alerts({ task }: { task: Task }) {
         </div>
       )}
     </>
+  )
+}
+
+/**
+ * When a PARKED(HUMAN_REQUIRED) task parked, epoch ms, or null for any other
+ * task. The worker's park writes `next_eligible_at` as the park instant
+ * (agent_worker/handoff.py), and the scheduler's 24-hour dead-letter reads it
+ * the same way, `updated_at` standing in when it is absent (scheduler/loop.py)
+ * -- the rule `handoffOf` counts its deadline from.
+ */
+export function parkedSince(task: Task): number | null {
+  if (handoffOf(task)?.phase !== 'parked') return null
+  for (const iso of [task.next_eligible_at, task.updated_at]) {
+    const v = typeof iso === 'string' ? Date.parse(iso) : NaN
+    if (Number.isFinite(v)) return v
+  }
+  return null
+}
+
+/**
+ * `parked since <time>`, folded into the hand-off banner (LB-V4, U1) in place
+ * of the Details tab's `eligible <time>` bar, which printed the same instant
+ * under a word that read as a future one. Nothing for any other task.
+ */
+export function HandoffParkedSince({ task }: { task: Task }) {
+  const since = parkedSince(task)
+  if (since === null) return null
+  const at = clockTime(new Date(since).toISOString())!
+  return (
+    <span className="ho-since" title={at.title}>
+      parked since {at.text}
+    </span>
+  )
+}
+
+/**
+ * ` · eligible at <time>` (or `since`, once the instant has passed) on the
+ * park bar, through `clockTime` -- the formatter the Waiting row beside it
+ * uses (V060, VQA2-R13). `toLocaleString()` printed "10/16/2026, 6:28:17 PM"
+ * over a row that said "Eligible again since 18:28:17.": one instant, two
+ * formats, and the American date order read as a different day elsewhere.
+ * Nothing for a missing or unparseable value.
+ */
+export function ParkEligible({ iso, now = Date.now() }: { iso: string | null | undefined; now?: number }) {
+  const at = clockTime(iso, now)
+  if (at === null) return null
+  const word = new Date(iso as string).getTime() > now ? 'at' : 'since'
+  return (
+    <span title={at.title}>
+      {' '}
+      · eligible {word} {at.text}
+    </span>
   )
 }
 
@@ -2070,12 +2302,17 @@ function Why({
    * api.ts) -- not a second fetch of `/v1/resource-classes`. `classUnits`
    * (#66) turns it into this task's weight, never the bundled
    * `RESOURCE_UNITS` table: #66's own repro (`resource:browser` at
-   * `hard_limit 1`, a 2-unit browser task) read "busy platform-wide. (0/1)"
+   * `hard_limit 1`, a browser task when that class weighed 2 units, before
+   * contract request 79) read "busy platform-wide. (0/1)"
    * here before this was threaded through. null keeps the pre-#66 reading
    * when the catalogue has not answered.
    */
   classes: ResourceClasses | null
 }) {
+  // ONCE, IN THE BANNER (LB-V4, U1): a parked hand-off's sentence is the
+  // banner's, so it is not repeated here. See `Alerts`. This also skips
+  // `SilentWorker`, which is right: a PARKED task has no live worker.
+  if (handoffOf(task)?.phase === 'parked') return null
   const units = classUnits(classes, task.resource_class)
   const why = whyAgent(task, units)
   if (!why) return <SilentWorker task={task} events={events} now={now} />
@@ -2272,7 +2509,7 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
           <Absent
             kind="zero"
             heading={`no attempt yet · ${stateWord(task.state)}`}
-            say="The attempt query succeeded and returned nothing. Nothing has been admitted for this task yet, so this is a real zero rather than a failed read."
+            say="Nothing has been admitted for this task yet, so it has no attempts."
             explain="attempt-documents"
           />
         )}
@@ -2354,7 +2591,8 @@ function AttemptAccount({ a }: { a: AttemptRow }) {
   return (
     <li className={`ctl-fact${account.known ? '' : ' is-absent'}`} title={account.title}>
       <b>account</b>
-      <span className="mono">{account.text}</span>
+      {/* Mono for an account id only; `not read` is words, not a name (V149). */}
+      <span className={account.known ? 'mono' : undefined}>{account.text}</span>
     </li>
   )
 }
@@ -3458,7 +3696,7 @@ function Output({
         <Absent
           kind="zero"
           heading={`nothing ran · ${stateWord(task.state)}`}
-          say="No attempt of this task ever started, so no result summary was ever going to be written. This is a real zero, not a missing summary."
+          say="No attempt of this task ever started, so there is no result summary."
           explain="attempt-documents"
         />
       ) : summary === null ? (
@@ -3713,7 +3951,7 @@ function GitOutcome({
               <Em />{' '}
               <Mark
                 kind="zero"
-                say="Nothing differed from the clone, so there is no patch. This is a real zero rather than a patch that failed to upload."
+                say="Nothing differed from the clone, so there is no patch."
               />
             </>
           )}
@@ -4567,9 +4805,9 @@ function MaskedMetadataBlock({ served, copy }: { served: TaskInputCopy | null; c
         <p className="att-none">
           <Mark
             kind="zero"
-            say="Submitted with no metadata. The read succeeded and the object is empty, so this is a real zero."
+            say="This task was submitted with no metadata."
           />{' '}
-          submitted with none
+          no metadata submitted
         </p>
       ) : (
         <div className="ctl-table">

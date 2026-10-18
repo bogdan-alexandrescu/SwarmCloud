@@ -29,11 +29,9 @@ import pytest
 from swarm_common.states import CONCURRENCY_STATES, PENDING_STATES
 from swarm_mcp import render
 from swarm_mcp.render import (
-    Binding,
     Cell,
     Column,
     Finding,
-    Reading,
     Snapshot,
     Style,
     account_is_stale,
@@ -427,7 +425,8 @@ class TestBindingPool:
         assert binding.room == 2
 
     def test_units_divide_the_headroom(self):
-        # A `browser` task costs 2 units, so 5 free slots is 2 more tasks.
+        # A 2-unit task: 5 free slots is 2 more tasks. (No class weighs 2 since
+        # contract request 79 made `browser` 1; the arithmetic is the point.)
         pools = {"global": pool("global", limit=10, active=5)}
         assert binding_pool(["global"], pools, units=2).room == 2
 

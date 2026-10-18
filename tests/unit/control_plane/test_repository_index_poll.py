@@ -13,6 +13,9 @@ sweeper's OIDC identity. What is held here:
     when the head never moved;
   * a run in flight is never duplicated: a newer head is recorded as pending
     and indexed once, after the running one ends;
+  * a head that is not the BUILT index is queued once the throttle allows,
+    even when every read of it is a 304 and a run of it already failed
+    (live QA AUT-7), and each tick records why it queued nothing;
   * the poll reads only the named tenant's registrations, with that tenant's
     token, and submits only into that tenant, as the registration's creator;
   * only the scheduler's identity may call it.
@@ -320,6 +323,142 @@ def test_a_failed_run_is_not_retried_every_tick(client, db, objects, repo_id, cl
 
 
 # --------------------------------------------------------------------------
+# a head the index has not built (live QA AUT-7, 2026-10-11)
+# --------------------------------------------------------------------------
+#
+# The index sat 20 commits behind for seven hours: every poll read the head
+# (a 304, once its ETag was stored) and queued nothing. The decision compares
+# the head with the BUILT index, `current_sha`, whatever the read answered.
+
+
+def _failed_run_of(client, db, objects, github, repo_id, clock, head) -> dict:
+    """A tick reads `head` (a 200, its ETag stored) and queues a run of it,
+    which then fails: the head was given to a run and built nothing."""
+    github.heads["main"] = head
+    assert _poll(client).json()["report"]["submitted"] == 1
+    [task] = [t for t in _tasks(db) if t["repository_ref"] == head]
+    finish_index_task(db, objects, task["id"], None, state="FAILED")
+    return task
+
+
+def test_a_moved_head_answered_304_is_built_once_the_throttle_allows(
+    client, db, objects, repo_id, github, polls, clock
+):
+    _indexed(db, repo_id, ONE, clock() - timedelta(hours=2))
+    _failed_run_of(client, db, objects, github, repo_id, clock, TWO)
+    assert _index(db, repo_id)["etag_sha"] == TWO  # the stored ETag is the new head's
+
+    clock.advance(minutes=31)
+    report = _poll(client).json()["report"]
+
+    assert polls.calls[-1][2] == 304, "the read was answered Not Modified"
+    assert polls.calls[-1][1]["If-None-Match"] == etag_of(TWO)
+    assert report["not_modified"] == 1 and report["submitted"] == 1
+    newest = [t for t in _tasks(db) if t["repository_ref"] == TWO]
+    assert len(newest) == 2, "the unbuilt head is queued again"
+    run = db.docs[f"repo_index_runs/{max(newest, key=lambda t: t['created_at'])['id']}"]
+    assert run["trigger"] == "change"
+    poll = _index(db, repo_id)["last_poll"]
+    assert (poll["outcome"], poll["reason"], poll["head_sha"]) == ("queued", "change", TWO)
+
+
+def test_a_head_read_by_a_tick_that_built_nothing_is_built_on_the_next_304(
+    client, db, repo_id, github, polls, clock
+):
+    """The head and its ETag are stored, but no run of it was ever queued
+    (the tick that read it stopped after the read): the next tick's 304
+    still queues it."""
+    _indexed(db, repo_id, ONE, clock() - timedelta(hours=2), head=TWO)
+    github.heads["main"] = TWO
+
+    report = _poll(client).json()["report"]
+
+    assert polls.calls[-1][2] == 304
+    assert report["submitted"] == 1
+    [task] = _tasks(db)
+    assert task["repository_ref"] == TWO
+
+
+def test_an_unchanged_head_that_is_the_built_index_queues_nothing_and_says_so(
+    client, db, repo_id, polls, clock
+):
+    _indexed(db, repo_id, ONE, clock() - timedelta(hours=2))
+
+    for _ in range(3):
+        clock.advance(minutes=5)
+        report = _poll(client).json()["report"]
+        assert report["submitted"] == 0 and report["held"] == {"current": 1}
+
+    assert _tasks(db) == []
+    poll = _index(db, repo_id)["last_poll"]
+    assert (poll["outcome"], poll["reason"], poll["head_sha"]) == ("held", "current", ONE)
+    assert poll["at"] == clock()
+    served = client.get(f"/v1/repositories/{repo_id}", headers=auth_header("alice"))
+    assert served.json()["repository"]["index"]["last_poll"]["at"] == clock().isoformat()
+
+
+def test_the_minimum_change_interval_holds_back_a_retry_of_an_unbuilt_head(
+    client, db, objects, repo_id, github, clock
+):
+    _indexed(db, repo_id, ONE, clock() - timedelta(hours=2))
+    _failed_run_of(client, db, objects, github, repo_id, clock, TWO)
+
+    for _ in range(5):  # 25 minutes after the failed run was queued
+        clock.advance(minutes=5)
+        report = _poll(client).json()["report"]
+        assert report["submitted"] == 0 and report["held"] == {"throttled": 1}
+    assert len(_tasks(db)) == 1
+    poll = _index(db, repo_id)["last_poll"]
+    assert (poll["outcome"], poll["reason"]) == ("held", "throttled")
+
+    clock.advance(minutes=5)  # 30 minutes: the throttle is spent
+    assert _poll(client).json()["report"]["submitted"] == 1
+    clock.advance(minutes=5)
+    held = _poll(client).json()["report"]
+    assert held["submitted"] == 0 and held["held"] == {"throttled": 1}
+    assert len(_tasks(db)) == 2
+
+
+def test_a_refused_read_is_recorded_as_the_reason_nothing_was_built(
+    client, db, repo_id, polls, clock
+):
+    _indexed(db, repo_id, ONE, clock() - timedelta(hours=2))
+    polls.status["saga-xyz/widgets"] = 403
+
+    _poll(client)
+
+    poll = _index(db, repo_id)["last_poll"]
+    assert poll["outcome"] == "failed" and poll["reason"]
+
+
+@pytest.mark.parametrize(
+    "index, head, newest, minutes_ago, expected",
+    [
+        # moved past the built index; the newest run was GIVEN this head and
+        # failed -- it built nothing, so the head is still due (AUT-7)
+        ({"current_sha": ONE}, TWO, TWO, 31, ("change", "change")),
+        ({"current_sha": ONE}, TWO, TWO, 10, (None, "throttled")),
+        ({"current_sha": ONE}, TWO, None, None, ("change", "change")),
+        ({"current_sha": TWO}, TWO, TWO, 31, (None, "current")),
+        ({"current_sha": ONE, "on_change": "off"}, TWO, ONE, 31, (None, "on_change_off")),
+        ({"current_sha": ONE}, None, None, None, (None, "no_head")),
+        ({"current_sha": ONE, "min_change_interval_minutes": 60}, TWO, ONE, 31,
+         (None, "throttled")),
+    ],
+)
+def test_poll_decision_compares_the_head_with_the_built_index(
+    index, head, newest, minutes_ago, expected
+):
+    now = datetime(2026, 10, 11, 18, 10, tzinfo=timezone.utc)
+    index = {"last_indexed_at": now - timedelta(hours=7), **index}
+    newest_run = None if newest is None else {
+        "commit_sha": newest, "queued_at": now - timedelta(minutes=minutes_ago)}
+    decision = repoindex.poll_decision(index, head, newest_run=newest_run,
+                                       created_at=now - timedelta(days=3), now=now)
+    assert (decision.trigger, decision.reason) == expected
+
+
+# --------------------------------------------------------------------------
 # coalescing with RI2's in-flight rule
 # --------------------------------------------------------------------------
 
@@ -516,3 +655,63 @@ def test_the_poll_runs_full_when_the_weekly_full_run_is_due(
     assert task["metadata"]["index_kind"] == "full"
     run = db.docs[f"repo_index_runs/{task['id']}"]
     assert "due every 7" in run["kind_reason"]
+
+
+# --------------------------------------------------------------------------
+# lane GS-PUSHAPI: `webhook` is "poll and push" (graph-service.md §6.2)
+# --------------------------------------------------------------------------
+
+def test_webhook_is_an_on_change_value_and_poll_stays_the_default():
+    from swarm_api import repositories
+
+    assert repositories.ON_CHANGE_VALUES == ("poll", "webhook", "off")
+    # `webhook` becomes the default only once the receiver is live (§6.2).
+    assert repositories.ON_CHANGE_DEFAULT == "poll"
+
+
+def test_a_registration_may_ask_for_webhook(client, db, repo_id):
+    patched = client.patch(
+        f"/v1/repositories/{repo_id}", json={"index": {"on_change": "webhook"}},
+        headers=auth_header("alice"),
+    )
+    assert patched.status_code == 200, patched.text
+    assert _index(db, repo_id)["on_change"] == "webhook"
+    created = client.post(
+        "/v1/repositories",
+        json={"repository": OTHER, "index": {"on_change": "webhook"}},
+        headers=auth_header("alice"),
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["repository"]["index"]["on_change"] == "webhook"
+
+
+def test_a_webhook_registration_is_still_polled_on_change(
+    client, db, repo_id, github, polls, clock
+):
+    """`webhook` means poll AND push: the five-minute poll is the fallback for
+    a missed delivery (owner decision 2), so it reads and queues as `poll` does."""
+    client.patch(f"/v1/repositories/{repo_id}", json={"index": {"on_change": "webhook"}},
+                 headers=auth_header("alice"))
+    _indexed(db, repo_id, ONE, clock() - timedelta(hours=2))
+    github.heads["main"] = TWO
+
+    report = _poll(client).json()["report"]
+
+    assert report["read"] == 1 and report["submitted"] == 1
+    [task] = _tasks(db)
+    assert task["repository_ref"] == TWO
+    assert db.docs[f"repo_index_runs/{task['id']}"]["trigger"] == "change"
+
+
+@pytest.mark.parametrize("on_change, expected", [
+    ("poll", ("change", "change")),
+    ("webhook", ("change", "change")),
+    ("off", (None, "on_change_off")),
+])
+def test_poll_decision_reads_webhook_as_a_change_trigger(on_change, expected):
+    now = datetime(2026, 10, 11, 18, 10, tzinfo=timezone.utc)
+    index = {"on_change": on_change, "current_sha": ONE,
+             "last_indexed_at": now - timedelta(hours=1)}
+    decision = repoindex.poll_decision(index, TWO, newest_run=None,
+                                       created_at=now - timedelta(days=3), now=now)
+    assert (decision.trigger, decision.reason) == expected

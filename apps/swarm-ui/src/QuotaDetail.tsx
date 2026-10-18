@@ -145,7 +145,7 @@ function Grouped({ rows }: { rows: QuotaState[] }) {
                     <th role="columnheader" scope="col" className="is-num quota-nowrap">{QUOTA_CAP}</th>
                     {/* WHAT THE CAP FEEDS, right after it (CP-8). */}
                     <th role="columnheader" scope="col">{FEEDS_POOL}</th>
-                    <th role="columnheader" scope="col" className="is-num">Requests left</th>
+                    <th role="columnheader" scope="col" className="is-num quota-nowrap">Requests left</th>
                     {/* ONE LINE (QA G5-23): the head wrapped `429s (this` /
                         `run)`, splitting the window from the count it names. */}
                     <th role="columnheader" scope="col" className="is-num quota-nowrap">{RATE_LIMITS}</th>
@@ -222,17 +222,24 @@ function Row({ q, now }: { q: QuotaState; now: number }) {
     <tr role="row" className={admitsNothing ? 'is-bad' : tone === 'wait' ? 'is-warn' : undefined}>
       {/* No text-transform here. Tenant ids are opaque and a displayed id that
           differs from the real one is unusable. */}
-      <th role="rowheader" scope="row" className="mono">{q.tenant_id}</th>
+      <th role="rowheader" scope="row" className="mono quota-tenant" title={q.tenant_id} aria-label={q.tenant_id}>
+        <MiddleCut text={q.tenant_id} tail={tenantTail(q.tenant_id)} />
+      </th>
+      {/* ONE VALUE, ONE ELEMENT (visual QA V180, 2026-10-16): as two grid
+          items a phone record put `14m old` on a keyless row of its own,
+          stretched across the value column like a bar. */}
       <td role="cell" data-label="State">
-        <QuotaStateMark state={q.state} />
-        {age.stale && (
-          <span
-            className="ctl-stale-mark"
-            title={`Reported ${q.updated_at ? timeAgo(q.updated_at, now) : 'at an unknown time'}. A reading older than twice the quota broker's sweep is not drawn as current.`}
-          >
-            {age.ageMs === null ? 'age unknown' : `${ageSpan(age.ageMs)} old`}
-          </span>
-        )}
+        <span className="quota-val">
+          <QuotaStateMark state={q.state} />
+          {age.stale && (
+            <span
+              className="ctl-stale-mark"
+              title={`Reported ${q.updated_at ? timeAgo(q.updated_at, now) : 'at an unknown time'}. A reading older than twice the quota broker's sweep is not drawn as current.`}
+            >
+              {age.ageMs === null ? 'age unknown' : `${ageSpan(age.ageMs)} old`}
+            </span>
+          )}
+        </span>
       </td>
       {/* THE ONE ZERO ON THIS SCREEN THAT IS A FACT. effective_limit returns 0
           deliberately when the state is EXHAUSTED, DISABLED or COOLDOWN, so it
@@ -253,8 +260,8 @@ function Row({ q, now }: { q: QuotaState; now: number }) {
           pool in the same response (`feeds_pool`), so the ceiling is the one
           admission enforces, of the same age as the cap. */}
       <td role="cell" data-label={FEEDS_POOL} className="quota-feeds">
-        <a className="ctl-link mono" href={poolHref('capacity/pools', pool)} title={pool}>
-          {pool}
+        <a className="ctl-link mono" href={poolHref('capacity/pools', pool)} title={pool} aria-label={pool}>
+          <MiddleCut text={pool} tail={poolTail(pool)} keep={8} />
         </a>
         <PoolCeiling q={q} />
       </td>
@@ -268,9 +275,15 @@ function Row({ q, now }: { q: QuotaState; now: number }) {
       {/* "THIS RUN" ONLY OF A CURRENT READING (G5-03). A count on a document
           older than twice the sweep is what the last report said, which on a
           document 17 days old is not this run of anything. */}
+      {/* ONE ELEMENT (V180): the count and its basis stay on one line of a
+          phone record. The basis is the text face, not the figures' mono
+          (V156): in mono `9 (at last report)` was wider than the column and
+          printed into Last 429. */}
       <td role="cell" data-label={RATE_LIMITS} className="is-num">
-        {q.rate_limit_count}
-        {age.stale && <span className="quota-basis"> (at last report)</span>}
+        <span className="quota-val">
+          {q.rate_limit_count}
+          {age.stale && <span className="quota-basis"> (at last report)</span>}
+        </span>
       </td>
       {/* A COUNTED 429 WITH NO TIME IS A TIME NOBODY RECORDED (G5-03), not an
           absence: the dash says "never recorded" beside a count that says one
@@ -294,6 +307,58 @@ function Row({ q, now }: { q: QuotaState; now: number }) {
       </td>
     </tr>
   )
+}
+
+/**
+ * AN ID CUT IN THE MIDDLE, NEVER AT ITS END (visual QA V005, V020;
+ * 2026-10-11). The Feeds pool link was end-truncated, so
+ * `provider:anthropic:tenant:…` hid the tenant -- the one part that differs
+ * row to row -- and a long tenant id in the row head printed over State. The
+ * console cuts ids in the middle elsewhere (TaskRef's `task_…` and the last
+ * eight); here the head shrinks first and the tail is kept, as two boxes of
+ * one line: the head gives way and the tail does not, so only a tail wider
+ * than the whole column is cut itself. The whole id is the cell's title, and
+ * the text is unchanged for a copy. The two boxes are flex items, which an
+ * accessible-name walk joins with a space (`u-bogdan- research`), so the
+ * element that holds a cut id names itself with the whole id (`aria-label`).
+ */
+function MiddleCut({ text, tail, keep }: { text: string; tail: number; keep?: number }) {
+  const cut = Math.max(0, text.length - tail)
+  const rest = text.slice(cut)
+  // THE TAIL IS CUT IN ITS OWN MIDDLE TOO (visual QA V020, 2026-10-16). A
+  // pool's tail is `tenant:<id>`, and a long id made the tail alone wider
+  // than the column: it was end-cut, `tenant:customer-succes…`, the one part
+  // that differs row to row lost. `keep` holds the id's last characters, so
+  // the tail gives way in its middle once the head is gone.
+  const end = keep === undefined ? 0 : Math.min(keep, Math.max(0, rest.length - 'tenant:'.length))
+  return (
+    <span className="quota-cut">
+      {cut > 0 && (
+        <span className="quota-cut-head">
+          <span>{text.slice(0, cut)}</span>
+        </span>
+      )}
+      {end === 0 ? (
+        <span className="quota-cut-tail">{rest}</span>
+      ) : (
+        <span className="quota-cut-tail is-split">
+          <span className="quota-cut-mid">{rest.slice(0, rest.length - end)}</span>
+          <span className="quota-cut-end">{rest.slice(rest.length - end)}</span>
+        </span>
+      )}
+    </span>
+  )
+}
+
+/** The pool's tail is its `tenant:<id>` -- what differs between rows. */
+function poolTail(pool: string): number {
+  const at = pool.lastIndexOf('tenant:')
+  return at === -1 ? Math.min(pool.length, 12) : pool.length - at
+}
+
+/** A tenant id keeps its last eight, as a task reference does. */
+function tenantTail(id: string): number {
+  return Math.min(id.length, 8)
 }
 
 /**

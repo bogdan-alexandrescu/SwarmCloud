@@ -291,7 +291,12 @@ def test_run_js_asks_the_row_for_state_and_result():
     start = source.index("const STEP_RESULT = {")
     block = source[start:source.index("\n}\n", start)]
     assert "result: STEP_FIELDS" in block, block
-    assert "required: ['state', 'result']" in block, block
+    # The row is still asked for both; nothing is REQUIRED (SPEED-D5,
+    # 2026-10-14, after ROW-SKIP's `result` alone): a relay that ran out of its
+    # five attempts was an error row over a finished step, and run.js reads a
+    # stateless answer's state from the workflow status instead.
+    assert "state: { type: ['string', 'null'] }" in block, block
+    assert "required: []" in block, block
 
 
 def test_run_js_reads_a_rows_state_and_result_as_the_flat_step_result(tmp_path):

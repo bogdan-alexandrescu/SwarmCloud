@@ -114,6 +114,9 @@ REFUSED = [
     ),  # Teredo, RFC 4380
     ("http://[3fff::1]/", "[3fff::1]", True),  # documentation, RFC 9637
     ("http://[5f00::1]/", "[5f00::1]", True),  # SRv6 SIDs, RFC 9602
+    # The rest of 2001::/23 that is not globally reachable (request 61).
+    ("http://[2001:2::1]/", "[2001:2::1]", True),  # benchmarking, RFC 5180
+    ("http://[2001:10::1]/", "[2001:10::1]", True),  # ORCHID, RFC 4843, deprecated
     # Internal names, refused exactly (request 57).
     ("http://metadata.goog/", "metadata.goog", True),
     ("http://localhost.localdomain/", "localhost.localdomain", True),
@@ -147,6 +150,10 @@ ACCEPTED = [
     ("http://[2001:1::1]/", "[2001:1::1]", False),  # the /32 after Teredo's
     ("http://[3fff:1000::1]/", "[3fff:1000::1]", False),  # first after 3fff::/20
     ("http://[5f01::1]/", "[5f01::1]", False),  # first after 5f00::/16
+    # 2001::/23's globally reachable assignments stay accepted (request 61).
+    ("http://[2001:3::1]/", "[2001:3::1]", False),  # AMT
+    ("http://[2001:4:112::1]/", "[2001:4:112::1]", False),  # AS112
+    ("http://[2001:20::1]/", "[2001:20::1]", False),  # ORCHIDv2
     # Only the exact names are refused, not a name that contains one.
     ("http://metadata.goog.example.com/", "metadata.goog.example.com", False),
 ]

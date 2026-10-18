@@ -10,6 +10,12 @@ made by the **worker**, with a credential no agent can reach. The
 frozen-contract half is contract request 33 in
 [contract-change-requests.md](contract-change-requests.md); the example spec is
 in [workflows.md](workflows.md#proposed-a-chain-that-merges-its-own-pull-request).
+
+**Merge trains (TRAIN-WS, 2026-10-14).** A workspace may choose `train` as its
+merge mode. Its merge steps then do everything below up to the merge call, and
+instead register the pull request for the repository's merge train and park.
+See [merge-trains.md](merge-trains.md) for the setting, the coordinator and how
+the step ends.
 **Superseded in part on 2026-10-04: the merge step is built, on the tenant's
 `-git` token -- "Revised 2026-10-04 (owner)" says what changed and why.**
 **Revised again on 2026-10-06: merging becomes its own step that parks while
@@ -17,7 +23,211 @@ CI runs, updates a branch that is behind, and replaces `auto-merge.yml` --
 the "Revised 2026-10-06" section below is that design and its build plan
 (lane MS0); the section after it is what is built today.**
 **Revised 2026-10-10: merge steps against one repository take a merge slot,
-one at a time, in submission order -- the first section below.**
+one at a time, in submission order -- the section after the next.**
+**Revised 2026-10-11: a head the PR-side CI fixer pushed for the pull request
+is a fix round's, and a conflicting pull request goes to a conflict fix round
+instead of a six-hour wait for checks -- the second section below.**
+**Revised 2026-10-14: a lane workflow's red or conflicting pull request runs
+bounded fix rounds by itself, two by default, re-running a flaky job before
+it spends an agent -- the first section below.**
+
+## Revised 2026-10-14: auto fix rounds (lane SPEED-D2)
+
+Owner decision 2026-10-14 ("Auto fix rounds", the delivery speed plan),
+taken on a measurement over the last 150 merged pull requests: 0.52 red CI
+runs per pull request, 23% of SwarmCloud lanes needing a hand fix-up, and
+five fixers dispatched by hand in one day because a lane's merge step ended
+FAILED `checks_failed` (PR 1278: "checks_failed at <sha>: ci-gate") the
+first time CI was red. Nothing new was needed to fix a pull request -- MS7's
+CI-fix rounds and #1076's conflict rounds already existed. They were not
+used because a lane asked for no rounds: `metadata.merge_fix_rounds`
+defaulted to 0. What this lane changed, and why:
+
+* **Two rounds by default.** A workflow spec takes `fix_rounds` (0-5), the
+  same budget as `metadata.merge_fix_rounds`; given both, they must agree.
+  Submission resolves it once (`validation.resolve_fix_rounds`) and stamps
+  it on the merge task as `metadata.merge_fix_rounds`, which the wake tick
+  and the worker already read. Neither given: **2** beside a merge step
+  (`LANE_FIX_ROUNDS_DEFAULT`), the PR-side fixer's own bound; **0** for an
+  issue run's workflow, whose own loop (`--fix-rounds`) fixes CI before it
+  submits its merge -- two loops on one pull request would race each
+  other's pushes; and **0** for a `merge_pr` workflow (#352), which refuses
+  any other number: its branch is no task's, so no round could push to it,
+  and rounds asked for and never possible would park the worker on
+  `ci_fix_pending` until its six-hour bound. `fix_rounds: 0` keeps the behaviour from before this lane:
+  red refuses `checks_failed` at once, and nothing is re-run. Conflict
+  rounds keep their own cap of 2 (`MERGE_CONFLICT_ROUNDS_MAX`) whatever
+  `fix_rounds` says, as #1076 decided: a conflict nobody resolves is never
+  mergeable at all, so 0 does not turn them off.
+* **A flake costs no agent.** The first red reading at a head, when a round
+  is possible and every failing check is an Actions job, asks GitHub to
+  re-run exactly those jobs (`POST actions/jobs/<id>/rerun`, `actions:
+  write`, the tenant's own `-git` token) and spends no round. It is recorded
+  in `metadata.merge_fix.reruns`, claimed under the guard a round is claimed
+  under, once per head. The re-run's check runs are the latest of their name,
+  so the next reading is the re-run's: green wakes the step to merge, red
+  goes to a round. A red commit status or another App's check is not re-run
+  (re-running the rest could not make the head green). A credential without
+  `actions: write` is recorded as the re-run's `error`, and the round is
+  claimed in the same tick: the refusal costs one request, not a wait.
+  While GitHub still serves the very runs that were re-run, the tick waits,
+  at most `RERUN_SETTLE_SECONDS` (10 min).
+* **Each round is a step of the lane's workflow.** The round is still its
+  own one-step continuation workflow (it must be: it is submitted, signed and
+  admitted like any other). After it is submitted the tick appends a step to
+  the merge task's workflow -- `ci-fix:<n>` or `conflict-fix:<n>`, naming the
+  round's task -- so `GET /v1/workflows/<id>` and the console show it beside
+  implement, review, fix and merge. A caller's step id cannot hold `:`, so the
+  id alone marks a step only the platform appended; the append is guarded on
+  the workflow being the tenant's and holding the merge task.
+* **The rollup counts the round steps as rounds.** `swarm_rollup.derive`
+  ranks them like any step while they run or wait (a running round is a
+  RUNNING workflow; it holds capacity), but leaves them out of the terminal
+  severity while the workflow has steps of its own: the merge step's ending
+  is the verdict on its rounds. Round 1 FAILED, round 2 SUCCEEDED, merge
+  SUCCEEDED is a SUCCEEDED workflow; a merge that refused after its rounds is
+  FAILED on its own state. `counts` still says what each round's task is, and
+  `fix_round_steps` names them. The reconciler's stall check derives the same
+  answer, because it decodes step ids (not inputs) and calls the same rule.
+* **What a round is told.** A CI round's prompt carries the failing jobs'
+  names, titles, annotations and log tails (`issueci.excerpt_at`: read by the
+  platform with the tenant's token -- agents hold no GitHub token -- redacted,
+  then bounded at 8 KiB) and nothing else from GitHub. A conflict round's
+  carries the files both sides changed since the branch left its base: the
+  pull request's files intersected with `compare/<head>...<base>`, at most 50,
+  fenced as data. Unreadable, the round runs without the list. A round runs
+  the continued step's resource class when that step ran the round's profile.
+
+**Invariants.** 1-3: a re-run creates no task; a round is an ordinary task
+admitted like any other, and the merge step stays PARKED, holding nothing,
+while either runs. 5: unchanged -- the worker accepts a round's head only
+from its signed spec (`agent_worker.merge._fix_round_heads`). 9: every read
+and the re-run use the merge task's own tenant's token, and a round is
+submitted as the merge task's submitter only while they are a member. 10:
+the round's profile is `claude-code`, chosen by the platform.
+
+**Frozen contract.** `Workflow` has no field for the budget and
+`WorkflowStep` none that says "appended by the platform". Both are worked
+around (the merge task's metadata; the reserved step-id shape) and filed as
+request 75 in [contract-change-requests.md](contract-change-requests.md).
+
+## Revised 2026-10-11: the CI fixer's head, and conflicts (#1073, #1076)
+
+Two defects stalled self-merging workflows. Both are fixed in one lane by the
+owner's decision of 2026-10-11 ("one lane for both"): they are the same
+question -- which heads a merge step accepts, and what it waits on -- in the
+same two files (`apps/agent-worker/agent_worker/merge.py`,
+`apps/swarm-api/swarm_api/mergewake.py`).
+
+**#1073: the PR-side CI fixer's head was `head_moved`.** Measured on PR 1071
+(workflow wf_ca1fa9e2701642db890e, merge task task_f745c31a39014359bccd):
+`scripts/ci-fix.sh`, run by GitHub Actions on the red pull request, submitted
+fix task task_b87630a30d7b43428d8f, which pushed ed1b9056... to the branch
+while the merge step was parked. The step accepted only the head its workflow
+pushed, its own CI-fix rounds' heads, and GitHub's base merges of them, so it
+refused a fix the platform itself had made.
+
+Such a head now counts as one of the workflow's fix rounds -- **proved from the
+platform's own records, never from the commit**. The worker queries the
+tenant's tasks whose `metadata.ci_fix.pull_request` is this pull request and
+whose `metadata.dispatch.continues` is the branch's root
+(`agent_worker.inputs.find_ci_fix_tasks`, the same two equality filters
+swarm-api's own cap counts with in `cifix._attempts_made`) and accepts a
+task's recorded `pushed_head` only when (`merge._ci_fixer_heads`):
+
+* the task is this tenant's, and its signed spec verifies (against its own
+  signed workflow: the fixer is a separate workflow);
+* its SIGNED dispatch block `continues` the root whose branch the pull request
+  is on, and its SIGNED `repository_url` is this merge's repository;
+* its `ci_fix` record names THIS pull request and carries the `postback`
+  state only `cifix.stamp` writes.
+
+The commit's author and message are never read: anyone with push access
+writes both. The `ci_fix` record is tenant-writable, as the opener's pushed
+head always was; a forged one can name only a head pushed to this branch of
+this repository by a task whose spec swarm-api signed. A head the fixer
+recorded for another pull request, or any head no record names, is still
+`head_moved`.
+
+The same review found the CI-fix rounds' own heads were refused in production
+for a quieter reason: `_fix_round_heads` verified a round's spec against the
+MERGE's workflow, and a round is its own workflow (the tick submits it with
+`submit_workflow`), so the real verifier answered `workflow_mismatch` and the
+head fell through to `head_moved`. The unit world's verifier ignored the
+workflow, which is why no test saw it. Rounds are now verified against the
+workflow their entry names, and the world's verifier applies the real rule.
+
+**#1076: a CONFLICTING pull request was waited on for checks GitHub never
+runs.** Measured on PR 1028 (workflow wf_14b4278c117f47fda785, merge task
+task_9c21161ee37a46b48f0e): `checks_timeout` after 366 min, while GitHub
+reported mergeable CONFLICTING and "no checks reported". The step read
+mergeability only once the checks were green, and GitHub runs no workflow on
+a pull request that does not merge -- so it waited the whole
+`MERGE_CI_MAX_SECONDS` for a reading that could not come.
+
+Mergeability is now read FIRST, by the worker and by the wake tick, from the
+pull request read each already makes. On `mergeable: false` or
+`mergeable_state: dirty` (GraphQL's CONFLICTING / DIRTY) no check is read. The
+pull request goes to a **conflict fix round**, the way a red reading goes to a
+CI-fix round:
+
+* the worker parks `conflict_fix_pending` (or `conflict_fix_running` while a
+  round runs at this head), giving the merge slot back -- a round runs an
+  agent for as long as it takes;
+* the tick claims the round in `metadata.merge_fix.conflict_rounds`, beside
+  the CI-fix `rounds` and counted apart from them, under the same guarded
+  transaction, and submits as the merge task's submitter, while still a
+  member, a one-step `direct-pr` claude-code continuation of the pull
+  request's branch (`mergewake.conflict_fix_continuation`) that merges the
+  base in and resolves every conflict keeping both sides' intent;
+* the round's pushed head is a fix round's head to the worker, exactly as in
+  #1073; a merge, never a rebase or force-push, because a rewritten branch
+  would orphan heads the step already accepted;
+* the merge reaches the forge as a **two-parent merge** (Revised 2026-10-14,
+  #1321). The worker rewrites every commit it pushes as its own, and that
+  rewrite used to drop every merge's second parent, so the round's
+  `git merge origin/main` was pushed with one parent: GitHub kept the old
+  merge base, listed every file main had changed as the PR's, and the PR still
+  conflicted (PR 1316, PR 1304). The replay and the fold now keep a merge
+  parent the forge's default branch holds (`lifecycle.replay_agent_commits`,
+  `gitops.fold_agent_commits`); a side branch the agent made is still
+  dropped, so none of its commits is pushed as the agent wrote it. Before it
+  pushes, a round checks that `git merge-base <main's head on the forge> HEAD`
+  is main's head -- or the main commit it merged, when main moved on during
+  the round -- and otherwise fails with that merge base named
+  (`gitops.verify_merged_default_branch`), rather than push a head that still
+  conflicts and spend a round on it. The worker knows a round by
+  `dispatch.conflict_round`, which swarm-api copies at submission from the
+  `merge_conflict_round` record the tick submits the round with: the worker
+  acts on no metadata the step-spec signature does not cover;
+* **at most `MERGE_CONFLICT_ROUNDS_MAX` = 2 rounds**, the PR-side CI fixer's
+  own bound (`cifix.DEFAULT_MAX_ATTEMPTS`), whatever `merge_fix_rounds` says:
+  that budget is about red CI and defaults to none, and a conflict nobody
+  resolves is never mergeable at all. A third conflict after two merges of the
+  base means the base moves faster than an agent resolves it, a person's
+  question.
+
+With the rounds spent, a round that ended at the conflicting head without
+moving it, a round whose submission was refused, or a pull request no round
+may push to (a `merge_pr` target, or a branch that is not the root's), the
+step **fails fast with `merge_conflict`**, naming the pull request. A conflict
+GitHub reports only at update-branch (422) or at the merge call (405/422)
+takes the same path. `merge_conflict` is a step failure code in
+`result_summary.merge.refusal`, not an API refusal, so it ships without a
+`swarm_api.refusals` switch.
+
+**Invariants.** Every wait is a `CI_PENDING` park holding no lease, pool count
+or Job (1, 3, 4); a round is an ordinary admitted task. The rounds are bounded
+twice: by `MERGE_CONFLICT_ROUNDS_MAX`, and by `MERGE_CI_MAX_SECONDS` on the
+step's park, past which a conflict wait is `merge_conflict` too. Every forge
+write is still behind the fencing recheck (5). The fixer's task is read under
+the merge's tenant only (9).
+
+**Not verified here:** a conflict round end to end against GitHub. The
+worker's publish credential scan reads the round's added lines; a merge of a
+base that carries credential-shaped test fixtures could be refused there, in
+which case the round ends without a push and the step refuses
+`merge_conflict` after it.
 
 ## Revised 2026-10-10: one merge step per repository at a time (merge race, part of #295)
 
@@ -239,12 +449,12 @@ matches:
 |---|---|
 | merged at the pinned head (another merger won) | close the issues (below); SUCCEEDED, `merged_by_this_task: false` |
 | merged at another head, or closed | MERGE_REFUSED `merged_at_other_head` / `pull_request_closed` |
-| the head moved, and the step did not move it, or a CI-fix round of this workflow did not move it (below) | MERGE_REFUSED `head_moved` |
+| the head moved, and the step did not move it, nor a CI-fix or conflict fix round of this workflow, nor the PR-side CI fixer for this pull request (Revised 2026-10-11, #1073) | MERGE_REFUSED `head_moved` |
+| `mergeable` false (`dirty`, GraphQL CONFLICTING), read BEFORE the checks (Revised 2026-10-11, #1076) | park `CI_PENDING` for a **conflict fix round**, at most 2; with them spent, MERGE_REFUSED `merge_conflict` at once. Never a wait for checks |
 | a required check **failed** | **if the workflow has CI-fix rounds left** (§6 MS7), the tick hands the red reading to the **CI-fix loop** first, so this row only runs once the rounds are spent or there were none. Otherwise MERGE_REFUSED `checks_failed`, naming every failing check and its conclusion |
 | still pending, and `first_parked_at` is older than `MERGE_CI_MAX_SECONDS` (proposed 6 h) | MERGE_REFUSED `checks_timeout`, naming the checks still pending |
 | still pending, or mergeability unknown | park `CI_PENDING` again |
 | **behind** the base: GitHub's `mergeable_state` is `behind` (the base requires an up-to-date branch) | **update the branch** (below), then park `CI_PENDING` at the new head |
-| `mergeable` false (`dirty`) | MERGE_REFUSED `merge_conflict` |
 | green at the pinned head and mergeable | **squash-merge** (below); SUCCEEDED |
 
 **Updating a branch that is behind.** Before the call, the worker runs the
@@ -256,7 +466,7 @@ It calls `PUT /repos/{o}/{r}/pulls/{n}/update-branch` with
 pushed in between. GitHub, not an agent, makes the merge commit of the base
 into the branch. The responses map as follows:
 
-* a 422 that says the update conflicts → `merge_conflict`;
+* a 422 that says the update conflicts → a conflict fix round, then `merge_conflict` once they are spent (Revised 2026-10-11);
 * any other 422 → `head_moved`;
 * more than `MERGE_MAX_BRANCH_UPDATES` (5 since 2026-10-10, was 3) updates
   made while the step holds its repository's merge slot, past the one
@@ -324,7 +534,9 @@ continuation only once CI is green and its `Closes #N` block is written.
 That step therefore parks only on mergeability or a behind branch.
 
 A workflow that is not an issue run gets the same loop on request, as MS7.
-`metadata.merge_fix_rounds` is 0-5 and defaults to 0. When the tick reads a
+`metadata.merge_fix_rounds` is 0-5 and defaulted to 0; since SPEED-D2
+(2026-10-14, the first section of this document) it is stamped on every
+merge task, 2 unless the spec says otherwise. When the tick reads a
 red required check for a `CI_PENDING` merge with rounds left, it claims the
 round in the merge task's metadata in a guarded transaction, then submits
 the continuation the issue-run loop already builds
@@ -346,7 +558,7 @@ the worker from GitHub and the task store.
 | a base that is not the repository's default branch | `base_not_default` (new) | the registered repository's `default_branch` when the tenant registered it, else GitHub's `default_branch` |
 | the worker's placeholder title, `[swarm] task_` in any case or with leading space | `title_placeholder` (built) | `apps/agent-worker/agent_worker/merge.py::title_is_placeholder`, the same rule as `.github/workflows/auto-merge.yml` (`if [[ "${lower_title}" == "[swarm] task_"* ]]; then`) |
 | GitHub's branch protection refused the merge | `protection_refused` (new, split out of `not_mergeable`) | the merge call's 405/422 message |
-| a merge conflict, at merge time or on update | `merge_conflict` (new, split out of `not_mergeable`) | `mergeable: false`, or update-branch's 422 |
+| a merge conflict, at merge time or on update, with its conflict fix rounds spent (Revised 2026-10-11) | `merge_conflict` (new, split out of `not_mergeable`) | `mergeable: false` / `mergeable_state: dirty`, update-branch's 422, or the merge call's 405/422 |
 | a failing required check, no fix rounds left | `checks_failed` (built) | the check runs and statuses at the pinned head |
 | CI never settled | `checks_timeout` (new) | `merge_wait.first_parked_at` and `MERGE_CI_MAX_SECONDS` |
 | the base moved under a held merge slot faster than CI, more than `MERGE_MAX_BRANCH_UPDATES` times | `behind_too_often` (new) | the first-parent walk's count, less the slot's `holder.updates_at_acquire` |
@@ -385,7 +597,12 @@ repository it merges in:**
 | Metadata: read | mandatory on every fine-grained token; the branch rules (`rules/branches/{b}`) and protection summary (`branches/{b}`) |
 
 A classic personal access token needs the `repo` and `workflow` scopes for
-the same calls.
+the same calls. A GitHub App installation token needs the same permissions
+granted to the App and accepted on the installation; **Commit statuses: read**
+is the one most easily missed, because the step reads the combined status
+(`commits/{sha}/status`) on every merge, not only when a status is required,
+and its absence is a 403 that refuses `token_lacks_rights` (ai-studio,
+2026-10-11, merged once the permission was accepted).
 
 The step **does not need Administration**. It never reads or changes a
 ruleset's configuration: it reads the rules that apply to a branch, which
@@ -588,6 +805,15 @@ token (invariant 9); a tenant with no `-git` secret is 409. A
 continuation-scoped account is refused before any read: `merge_pr` is new
 work, which that scope may not submit.
 
+**Its name (owner report 2026-10-11).** A `merge_pr` workflow whose caller
+gave no `title` or `label` was nameless: Claude Code titled its run, and the
+console listed it, by the bare `wf_` id. The bridge now sends
+`title: "Merge PR <number>"` when none is given (`workflows.MERGE_PR_TITLE`),
+and swarm-api stores `metadata.unit: "Merge PR <number>"` for any client that
+sends neither (`continuation.with_merge_pr_label`), so it is never nameless
+whoever submits it. No `#` before the number: GitHub can read `#N` in some
+places as a reference to that issue.
+
 **Not built:** the console's Submit forms do not offer `merge_pr` (another
 lane was editing them); the API and the bridge are the way in until then.
 
@@ -699,7 +925,9 @@ only after its dependency has merged.
 * behind leads to an update with `expected_head_sha`, and a re-park at the
   new head;
 * an update 422 for a conflict gives `merge_conflict`;
-* a fourth update gives `behind_too_often`;
+* a sixth update while the step holds the merge slot gives
+  `behind_too_often` (`MERGE_MAX_BRANCH_UPDATES` is 5 since 2026-10-10; it
+  was 3, and this line said "a fourth update");
 * a head that is not a GitHub base-merge of the pushed head gives
   `head_moved`;
 * a stale generation makes no update call;
@@ -713,7 +941,7 @@ only after its dependency has merged.
 **What:** a card on the merge step showing three things:
 
 * the state: waiting for CI (with the pending checks and the head), behind
-  and updated (n of 3), merged (commit and issues closed), or refused (code
+  and updated (n of 12, the walk's cap), merged (commit and issues closed), or refused (code
   and reason);
 * the pull request link;
 * `merge_wait.first_parked_at`.
@@ -1322,7 +1550,7 @@ it cannot be overridden per execution, so the dispatcher creates
 per-tenant-per-profile Job resources."* **The profile is the one place where a
 step's identity can differ from its tenant's other steps.** A `merge` profile
 gets the Job `swarm-job-<tenant>-merge`. That Job can run as a separate service
-account, `swarm-<tenant>-merge`, which is the only accessor of the merge
+account, `swarm-<tenant>-merge` (history: retired, §3 "What this supersedes"; the account no longer exists), which is the only accessor of the merge
 credential. No agent ever runs as that account, because the profile starts no
 agent.
 
@@ -1433,7 +1661,7 @@ its own change, listed in §10):
 * **`review` runs on its own profile too — `claude-code-review` — but ONLY
   for a GCS write grant, never for an App key (round-3 correction,
   2026-09-29; do not conflate with the rejected bullet immediately below).**
-  Its Job's service account, `swarm-<tenant>-review`, is the only identity
+  Its Job's service account, `swarm-<tenant>-review` (history: retired, §3 "What this supersedes"; the account no longer exists), is the only identity
   with write access to the review-only-writable prefix (§4.3) where
   `review.json` lands. **Corrected (2026-09-30, #364): this is not the "no
   portable secret" case it was first written as.** A prompt-injected review
@@ -1589,7 +1817,7 @@ it runs.
 5. **Stage and check every claim that needs no credential** (§4.1, §4.2): the
    staged artifacts parse, the outcome and evidence fields are readable, and
    the shas agree with each other. A refusal here costs no secret read at all.
-6. **Read the secret.** Secret Manager `access`, as `swarm-<tenant>-merge`,
+6. **Read the secret.** Secret Manager `access`, as `swarm-<tenant>-merge` (history: retired, §3 "What this supersedes"; the account no longer exists),
    into a local variable. It is registered with the logger's redaction at once,
    the same way `resolve_git_token` does it.
 7. **Mint the installation token.** The worker signs a JWT with the key (valid
@@ -1846,7 +2074,7 @@ review step succeeds and posts the GitHub review.
 
 **`post-verdict`: a worker-action profile, structured exactly like `merge`
 (§1.3).** Its own Job, `swarm-job-<tenant>-post-verdict`; its own service
-account, `swarm-<tenant>-post-verdict`, the **sole** accessor of
+account, `swarm-<tenant>-post-verdict` (history: retired, §3 "What this supersedes"; the account no longer exists), the **sole** accessor of
 `swarm-tenant-<tenant>-git-review`; `runner_argv=()`; no agent ever runs
 there. It depends on `review` alone.
 
@@ -1957,7 +2185,7 @@ bindings, not adding a third:
    conditioned rather than being dropped once binding 2 is added. This
    replaces `worker_objects`; it is not an addition alongside it, since two
    overlapping write grants would defeat the exclusion;
-3. **the review SA, `swarm-<tenant>-review`, gets `roles/storage.objectCreator`
+3. **the review SA, `swarm-<tenant>-review` (history: retired, §3 "What this supersedes"; the account no longer exists), gets `roles/storage.objectCreator`
    — not `objectUser`, and with NO delete — on `tenants/<t>/verdicts/`
    alone**, per the owner's decision, round-5 re-review: `objectCreator`
    grants only `storage.objects.create`, never `update` or `delete`, so the
@@ -2033,7 +2261,7 @@ cross-workflow one unconditionally — corrected, joint review with CR 34,
 * **cross-workflow verdict laundering (R8) — the write-path attack is
   closed, round-5 re-review; the App-token half is not, and the owner still
   did not choose to bind a review to a specific pull request or task id.**
-  `swarm-<tenant>-review` is one identity shared by *every* `single-pr`
+  `swarm-<tenant>-review` (history: retired, §3 "What this supersedes"; the account no longer exists) is one identity shared by *every* `single-pr`
   workflow of the tenant, not scoped per-workflow (the same "one Job per
   tenant per profile" constraint that shapes every other identity in this
   design, §1.1). Its GCS grant (`objectCreator` on the whole

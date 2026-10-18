@@ -118,6 +118,16 @@ import { OpenLink } from '../TimelineRows'
 import { HatchDef, VALUE_LABEL_GAP_PX, useHatchId } from './parts'
 
 /**
+ * Where an HTML lane label's box starts above its lane: the --t-micro line
+ * box is 17.4px, so it ends 2.6px over the lane's top and never covers one of
+ * its marks.
+ */
+export const LABEL_RISE = 20
+/** The clear space between the lane above's baseline and a caption's box (V106). */
+export const LABEL_CLEAR = 12
+const LANE_GAP = LABEL_RISE + LABEL_CLEAR
+
+/**
  * The three drawings. `w` is the nominal width; `floor` the narrowest a
  * bucket's column may get before the drawing grows and scrolls instead; the
  * lane heights are that drawing's own. The wide lane heights are the
@@ -126,11 +136,18 @@ import { HatchDef, VALUE_LABEL_GAP_PX, useHatchId } from './parts'
  * THE NARROW FLOOR IS 26px, the phone column floor the Timeline already drew
  * (TS-3): a column narrower than that cannot be told from its neighbour by a
  * thumb, and the step buttons beside the readout are the 44px target.
+ *
+ * THE GAP BETWEEN LANES IS THE CAPTION'S, PLUS CLEAR SPACE ABOVE IT (VQA
+ * V106). At 24-26px the 17.4px caption filled the gap: it started 4-6px under
+ * the lane above's baseline and ended 2.6px over its own lane, so it read as
+ * that lane's foot note, sitting on its rule. The gap is now `LABEL_RISE`
+ * (the caption, ending just over its own lane) and `LABEL_CLEAR` above it,
+ * so a caption is several times nearer the lane it names than the one above.
  */
 export const LEDGER_DRAWN = [
-  { key: 'wide', w: 1080, left: 56, right: 16, floor: 8, lanes: [64, 168, 56, 64], gap: 26 },
-  { key: 'mid', w: 640, left: 48, right: 12, floor: 8, lanes: [56, 128, 48, 56], gap: 24 },
-  { key: 'narrow', w: 300, left: 38, right: 8, floor: 26, lanes: [48, 104, 40, 48], gap: 24 },
+  { key: 'wide', w: 1080, left: 56, right: 16, floor: 8, lanes: [64, 168, 56, 64], gap: LANE_GAP },
+  { key: 'mid', w: 640, left: 48, right: 12, floor: 8, lanes: [56, 128, 48, 56], gap: LANE_GAP },
+  { key: 'narrow', w: 300, left: 38, right: 8, floor: 26, lanes: [48, 104, 40, 48], gap: LANE_GAP },
 ] as const
 
 export type LedgerDrawn = (typeof LEDGER_DRAWN)[number]
@@ -352,14 +369,6 @@ function laneLabels(d: LedgerDrawn, s: Scales, basis: Outcomes['basis']): string
       : `Throughput · submitted (by ${basis.submitted}, the only lane on submission time) vs finished${max(s.flow)}`,
   ]
 }
-
-/**
- * Where an HTML lane label's box starts so its baseline sits where the SVG
- * label's did (`lane.y - 8`): the --t-micro line box is 17.4px and its
- * baseline ~12px down. It stays inside the gap above its lane (24-26px), so
- * it never covers a mark of the lane above.
- */
-const LABEL_RISE = 20
 
 /**
  * One drawing: the SVG marks and, over them, the columns a reader picks.
@@ -1079,7 +1088,7 @@ export function OutcomeLedger({ data, picked, onPick, onZoom, figureLink }: Outc
 
         <p className="ol-keys" aria-hidden>
           <span>
-            <i className="ol-k is-zero" /> real zero
+            <i className="ol-k is-zero" /> none
           </span>
           <span>
             <i className="ol-k is-so-far" /> so far

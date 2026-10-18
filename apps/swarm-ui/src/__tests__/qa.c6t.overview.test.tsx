@@ -5,7 +5,7 @@
  *          while Accounts listed two accounts whose window had reset (`~1%`,
  *          `~0%`). `accountHeadroom` keeps a projected account out of `best`
  *          -- a projection is not headroom -- but the line said nothing about
- *          them. It now names them: "· 2 projected (a, b) not counted".
+ *          them. It now names them: "2 projected (a, b) not counted" (no typed `·`: V145).
  *   G1-08  At 390 a Running row was a dot and a step name, and two
  *          "implement" rows could not be told apart; the runtime was in the
  *          monospace face. The row now carries a second line -- state,
@@ -109,12 +109,12 @@ afterEach(cleanup)
 
 describe('G5-05: the account line names the projected accounts it did not count', () => {
   // MUTATION: drop `projected` from `accountHeadroom`'s answer, or the clause from `AccountLine`.
-  it('appends "· 2 projected (devops-team, saga-personal) not counted" to the best-account line', async () => {
+  it('appends "2 projected (devops-team, saga-personal) not counted" to the best-account line', async () => {
     const el = await mount({ accounts: ok(accountsPage(POOL_ACCOUNTS)) })
     const line = el.querySelector('.ov-acc')!
     expect(line, 'no account line').not.toBeNull()
     expect(text(line)).toMatch(/best team at 22% of its five-hour window/)
-    expect(text(line)).toContain('· 2 projected (devops-team, saga-personal) not counted')
+    expect(text(line)).toContain('2 projected (devops-team, saga-personal) not counted')
     expect(text(line)).toMatch(/^2 of 4 usable/)
   })
 
@@ -135,7 +135,7 @@ describe('G5-05: the account line names the projected accounts it did not count'
     const el = await mount({ accounts: ok(accountsPage(POOL_ACCOUNTS.slice(2))) })
     const line = text(el.querySelector('.ov-acc'))
     expect(line).toMatch(/no current reading/)
-    expect(line).toContain('· 2 projected (devops-team, saga-personal) not counted')
+    expect(line).toContain('2 projected (devops-team, saga-personal) not counted')
   })
 })
 
@@ -205,13 +205,16 @@ describe('G1-13: a disabled tile shows its whole reason, two lines before it cut
     host.innerHTML = '<div class="ov-headroom"><div class="ov-hps"><div class="ov-hp is-off"><span class="ov-idc">x</span><b class="ov-hp-off">disabled</b><small>r</small></div></div></div>'
     document.body.appendChild(host)
     const small = host.querySelector('.ov-hp.is-off small')!
-    for (const env of [WIDE, PHONE]) {
-      expect(painted(small, 'white-space', env)).not.toBe('nowrap')
-      expect(painted(small, '-webkit-line-clamp', env)).toBe('2')
-      expect(painted(small, 'display', env)).toBe('-webkit-box')
-      expect(painted(small, '-webkit-box-orient', env)).toBe('vertical')
-      expect(painted(small, 'overflow', env)).toBe('hidden')
-    }
+    for (const env of [WIDE, PHONE]) expect(painted(small, 'white-space', env)).not.toBe('nowrap')
+    expect(painted(small, '-webkit-line-clamp', WIDE)).toBe('2')
+    expect(painted(small, 'display', WIDE)).toBe('-webkit-box')
+    expect(painted(small, '-webkit-box-orient', WIDE)).toBe('vertical')
+    expect(painted(small, 'overflow', WIDE)).toBe('hidden')
+    // WHOLE ON A PHONE (live QA OV-13, 2026-10-11): the cut text was only in
+    // a `title`, which a touch screen cannot open.
+    // MUTATION: drop the phone block's unclamp in overview.css.
+    expect(painted(small, '-webkit-line-clamp', PHONE)).not.toBe('2')
+    expect(painted(small, 'overflow', PHONE)).toBe('visible')
     // An available tile's one-line foot is unchanged.
     host.querySelector('.ov-hp')!.classList.remove('is-off')
     expect(painted(host.querySelector('.ov-hp small')!, 'white-space', WIDE)).toBe('nowrap')

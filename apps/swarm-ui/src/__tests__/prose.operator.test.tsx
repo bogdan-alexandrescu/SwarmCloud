@@ -62,9 +62,10 @@ const { DataSourceCells } = await import('../DataSources')
  * paragraph behind a `?`. `honesty.prose.test.tsx:125` strips it by the same
  * attribute, and this is that function's convention applied to a count.
  */
-function words(el: HTMLElement): number {
+function words(el: HTMLElement, without = ''): number {
   const clone = el.cloneNode(true) as HTMLElement
-  for (const n of [...clone.querySelectorAll('[data-help-description], style, script')]) {
+  const drop = ['[data-help-description]', 'style', 'script', ...(without === '' ? [] : [without])].join(', ')
+  for (const n of [...clone.querySelectorAll(drop)]) {
     n.remove()
   }
   return (clone.textContent ?? '').split(/\s+/).filter(Boolean).length
@@ -180,6 +181,20 @@ const BUDGET = {
   // fit a sentence back in.
   'Pool limits': 40,
   'Platform counts': 32,
+  // THE PLATFORM TICKS, MOVED ONTO PLATFORM COUNTS BY THE OWNER'S DECISION OF
+  // 2026-10-13 (SCHED-ONE-PAGE: Admin › Schedules folded into Automate ›
+  // Schedules, and its "Platform ticks" table came here with the same intro
+  // sentence). Measured on their own, so the moved words neither hide inside
+  // Platform counts' 32 nor raise it: 137 at the move -- the intro sentence
+  // and each Cloud Scheduler job's own description, one per job in jobs.tf, so
+  // it grows by about ten when a job is added. The margin is the quarter the
+  // others have, less: a new job fits, a paragraph does not.
+  // RAISED 165 -> 195, 2026-10-18: jobs.tf now holds 13 jobs, with
+  // secrets_rotation_sweep and mcp_credentials_sweep each adding its row, and
+  // measured 170 at that point. Each added word is a job's own description,
+  // not a sentence of prose; the margin is the same as before, so one more
+  // job fits and a paragraph still does not.
+  'Platform ticks': 195,
   // RAISED 52 -> 76, 2026-09-25, BY THE OWNER'S CP-8 / CP-9 / CP-10 DECISIONS
   // (#85), measured at 61 on CI after them. What the words are: a `Feeds pool`
   // column naming the pool each cap feeds, column names that carry their basis
@@ -212,8 +227,12 @@ describe('the operator screens carry data, not prose', () => {
     const { container } = render(<PlatformCountsScreen />)
     screen.getByRole('button', { name: /count/i }).click()
     await waitFor(() => expect(container.querySelector('.ctl-util, .split-row')).not.toBeNull())
-    measured['Platform counts'] = words(container)
+    measured['Platform counts'] = words(container, '.counts-ticks')
     expect(measured['Platform counts']).toBeLessThanOrEqual(BUDGET['Platform counts'])
+    const ticks = container.querySelector<HTMLElement>('.counts-ticks')
+    expect(ticks, 'the platform ticks section was not drawn, so its budget measured nothing').not.toBeNull()
+    measured['Platform ticks'] = words(ticks!)
+    expect(measured['Platform ticks']).toBeLessThanOrEqual(BUDGET['Platform ticks'])
   })
 
   it('Provider quota stays inside its word budget', async () => {

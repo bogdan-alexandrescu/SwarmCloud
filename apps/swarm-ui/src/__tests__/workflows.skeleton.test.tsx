@@ -23,6 +23,7 @@ import type { WorkflowBoard, WorkflowUsage } from '../api'
 import type { Task, Workflow, WorkflowStep } from '../types'
 import { cascade } from './cssgate'
 import { colour, contrast, resolveSheet, resolveVars, tokenTables, type RGBA } from './spaceprobe'
+import { ownFromBoard } from './workflowsById'
 
 const api = vi.hoisted(() => ({
   loadWorkflowBoard: vi.fn(),
@@ -107,10 +108,7 @@ beforeEach(() => {
   vi.spyOn(Date, 'now').mockReturnValue(T0)
   api.loadWorkflowUsage.mockResolvedValue({ status: 'empty', fetchedAt: T0 } satisfies Result<WorkflowUsage>)
   api.loadAttempts.mockResolvedValue({ status: 'empty', fetchedAt: T0 })
-  api.loadWorkflow.mockResolvedValue({
-    status: 'error',
-    error: { kind: 'not_found', httpStatus: 404, code: null, message: 'no such workflow' },
-  })
+  api.loadWorkflow.mockImplementation(ownFromBoard(api.loadWorkflowBoard))
 })
 
 afterEach(() => {
@@ -151,7 +149,9 @@ describe('#113: one workflow’s page draws its head and tabs while it reads', (
     expect(order).toEqual(['wfp-head', 'c-tabs', 'wfp-skel-body'])
     const head = page!.querySelector<HTMLElement>('.wfp-head')!
     const actions = within(head).getAllByRole('button')
-    expect(actions.map((b) => b.textContent)).toEqual(['Copy link', 'Cancel workflow'])
+    // No Cancel workflow before the state is read (WF-18a): it may have ended, or not exist.
+    expect(actions.map((b) => b.textContent)).toEqual(['Copy link'])
+    expect(head.querySelector('.wfp-skel-act')).not.toBeNull()
     expect(actions.every((b) => (b as HTMLButtonElement).disabled)).toBe(true)
     // The chips are bars, not words: a skeleton answers nothing.
     const chips = head.querySelector('.wfp-chips')!

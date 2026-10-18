@@ -207,6 +207,19 @@ def _heading_of(component: str, imports: dict[str, Path], app: str) -> str:
             raise AssertionError(f"{component} renders {tag}> only with per-object titles; no tab heading to read")
 
     m = re.search(r"<h1>(.*?)</h1>", body, re.S)
+    # A SCREEN MAY HAND ITS TAB VIEW TO A COMPONENT IN ITS OWN FILE
+    # (2026-10-11): Schedules returns early for one schedule's page or the
+    # create form, and its last, unconditional `return <ScheduleListScreen />`
+    # is what the tab opens. The list keeps its state hooks there because a
+    # hook may not follow an early return. Only that final return is followed,
+    # and only into a top-level function of the same file, so the heading read
+    # is still the one the tab lands on and still read from the shipped source.
+    if m is None:
+        tail = re.search(r"return <(\w+)\b[^<>]*/>\s*\}\s*$", body)
+        if tail is not None and re.search(
+            rf"^(?:export )?function {re.escape(tail.group(1))}\(", text, re.M
+        ):
+            return _heading_of(tail.group(1), {tail.group(1): path}, app)
     assert m is not None, (
         f"{component} renders none of {', '.join(repr(s) for s in HEADING_SOURCES)}, "
         "so this test cannot see the heading it puts on the page"
@@ -221,7 +234,6 @@ def _routes() -> list[tuple[str, str, str]]:
     """Every reachable route as (hash, the label that opens it, component)."""
     app = _read(APP_TSX)
     cases = _switch_cases(app)
-    imports = _import_map(app)
 
     rows: list[tuple[str, str, str]] = []
     for sid, _slabel, tabs in _sections(app):

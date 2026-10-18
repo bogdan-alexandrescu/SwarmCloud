@@ -10,8 +10,9 @@ workflow ends at the pull request, a manual issue run defaults to
 `auto_merge: false`, and one repository has no auto-merge workflow. 7 merge
 steps failed `behind_too_often`: the ruleset requires a branch to be up to
 date, 16 merge steps ran against main at once, each merge that landed put the
-rest behind, and a step updates its branch at most
-`agent_worker.merge.MERGE_MAX_BRANCH_UPDATES` (3) times. A user-owned
+rest behind, and a step then updated its branch at most
+`agent_worker.merge.MERGE_MAX_BRANCH_UPDATES` (3 then; 5 since 2026-10-10,
+counted only while the step holds its repository's merge slot) times. A user-owned
 repository has no GitHub merge queue (docs/ci.md). Nothing on the platform
 looked at an open pull request after the run that opened it ended.
 
@@ -97,6 +98,17 @@ the 16 concurrent merge steps that each put the rest behind are the failure
 this exists to recover from, and redriving every row at once would repeat
 it. The next sweep takes the next one.
 
+QUOTA FIRST, AND BACK OFF WHEN REFUSED (QUOTA-THROTTLE, #1483). Each
+repository is read as its credential (`forge_limits.acting_as`): the owner's
+installation, else the tenant's `-git` slot. The scheduled sweep asks the
+ledger first: a repository whose credential is under
+`forge_quota_defer_percent` of its limit, or held, is DEFERRED -- not read,
+listed in `deferred`, and its stored rows are carried forward unchanged
+rather than dropped as if it had no stranded pull request. The first
+rate-limited answer stops the sweep and holds the tenant's sweep until the
+reset GitHub named; a sweep that read nothing stores nothing. A redrive is
+an admin's action and is never deferred.
+
 INVARIANTS. The sweep itself creates no infrastructure demand (1-3): a
 redriven merge step is an ordinary task, admitted like any other. Every read
 and write is the named tenant's (9). A redrive names a runner profile by name
@@ -118,8 +130,10 @@ from swarm_common.states import TERMINAL_STATES
 from .auth import AuthContext
 from .errors import ApiError, NotFound
 from .forge import NoForgeCredential, neutral_line
+from . import forge_limits
+from .forge_installation import read_credential
 from .forgechecks import GREEN, NONE, RED, evaluate, required_status_checks
-from .forgewrite import GitHubWriter
+from .forgewrite import ForgeRateLimited, GitHubWriter
 from .repositories import Repositories
 from .schemas import WorkflowCreate
 from .validation import MERGE_STEP_ID, MERGE_TARGET_FIELD, IssueRef, merge_repository
@@ -483,6 +497,9 @@ class SweepReport:
     redriven: list[dict[str, Any]] = field(default_factory=list)
     not_redriven: list[dict[str, str]] = field(default_factory=list)
     failures: list[dict[str, str]] = field(default_factory=list)
+    #: Repositories not read because their credential's GitHub quota is low
+    #: or held (QUOTA-THROTTLE); their stored rows are carried forward.
+    deferred: list[str] = field(default_factory=list)
     truncated: bool = False
 
     def to_api(self) -> dict[str, Any]:
@@ -498,6 +515,7 @@ class SweepReport:
             "redriven": list(self.redriven),
             "not_redriven": list(self.not_redriven),
             "failures": list(self.failures),
+            "deferred": list(self.deferred),
             "truncated": self.truncated,
         }
 
@@ -808,6 +826,20 @@ def sweep_tenant(
     writer: GitHubWriter | None = getattr(ctx, "forge_writer", None)
     tokens = getattr(ctx, "forge_tokens", None)
     token = ""
+    reading = ""
+    # A redrive is an admin's action: never deferred. The scheduled sweep is.
+    background = not redrive
+    percent = forge_limits.defer_percent(ctx)
+    sweep = forge_limits.sweep_key(STRANDED_SWEEP, tenant_id)
+    halted = forge_limits.QUOTAS.held(sweep, now=now) if background else None
+    logged: set[str] = set()
+    read_any = False
+    if halted is not None:
+        log.info("github quota: stranded-pr sweep tenant=%s held until %s", tenant_id,
+                 halted.isoformat())
+        report.deferred = [f"{r.get('owner')}/{r.get('repo')}" for r in registrations
+                           if not r.get("archived")]
+        registrations = []
     try:
         if registrations and (writer is None or tokens is None):
             report.failures.append({"repository": "*", "error": "forge_unconfigured"})
@@ -828,10 +860,29 @@ def sweep_tenant(
                 continue
             urls[repo] = str(registration.get("repository_url") or f"https://github.com/{repo}")
             ref = IssueRef(owner=owner, repo=name, number=1)  # names the repository only
+            # Every read below is the App's when the owner has an
+            # installation (#1483): the sweep spends no person's quota. The
+            # tenant's token is kept for an owner with none.
+            reading, credential = read_credential(getattr(ctx, "forge_installations", None),
+                                                  tenant_id, owner, name)
+            if not reading:
+                reading, credential = token, forge_limits.tenant_credential(tenant_id)
+            deferral = (forge_limits.QUOTAS.defer(credential, percent, now=now)
+                        if background else None)
+            if halted is not None or deferral is not None:
+                report.deferred.append(repo)
+                if deferral is not None and deferral.credential not in logged:
+                    logged.add(deferral.credential)
+                    forge_limits.log_deferred("stranded-pr sweep", tenant_id, deferral)
+                continue
+            read_any = True
             try:
-                pulls, pulls_cut = list_open_pulls(writer, ref, token)
+                with forge_limits.acting_as(credential):
+                    pulls, pulls_cut = list_open_pulls(writer, ref, reading)
             except Exception as exc:  # noqa: BLE001 -- one repository's failure is its own
                 report.failures.append({"repository": repo, "error": _code(exc)})
+                if isinstance(exc, ForgeRateLimited) and background:
+                    halted = _halt(sweep, exc, now, tenant_id)
                 continue
             report.truncated = report.truncated or pulls_cut
             named = {pull.number: opener_task_id(pull) for pull in pulls}
@@ -854,8 +905,17 @@ def sweep_tenant(
                 }:
                     report.in_flight += 1
                     continue
-                verdict, ci, head = _judge(writer, ref, pull, merges, token, rules_by_base,
-                                           report, repo)
+                try:
+                    with forge_limits.acting_as(credential):
+                        verdict, ci, head = _judge(writer, ref, pull, merges, reading,
+                                                   rules_by_base, report, repo)
+                except ForgeRateLimited as exc:
+                    report.failures.append({"repository": repo, "number": str(pull.number),
+                                            "error": _code(exc)})
+                    if background:
+                        halted = _halt(sweep, exc, now, tenant_id)
+                        break
+                    continue
                 if verdict is None:
                     report.in_flight += 1
                     continue
@@ -864,15 +924,22 @@ def sweep_tenant(
                     continue
                 report.rows.append(StrandedRow(
                     tenant_id=tenant_id, repo=repo, number=pull.number,
-                    title=neutral_line(pull.title, MAX_TITLE_CHARS, literals=(token,)),
+                    title=neutral_line(pull.title, MAX_TITLE_CHARS, literals=(token, reading)),
                     url=pull.url, opened_at=pull.created_at, reason=verdict.reason,
-                    detail=neutral_line(verdict.detail, MAX_DETAIL_CHARS, literals=(token,)),
+                    detail=neutral_line(verdict.detail, MAX_DETAIL_CHARS,
+                                        literals=(token, reading)),
                     head_sha=head, remedy=verdict.remedy, checks=ci.state,
                     opened_by_task=task_id,
                 ))
     finally:
-        token = ""
+        token = reading = ""
 
+    if report.deferred and not read_any:
+        # Nothing was read: the stored sweep stays as it was, rather than
+        # an empty one that reads as "nothing stranded".
+        log.info("stranded-pr sweep tenant=%s deferred repositories=%d", tenant_id,
+                 len(report.deferred))
+        return report
     _store_and_log(ctx.db, report, now)
     if redrive:
         _redrive(ctx, tenant, report, busy, openers, urls)
@@ -889,6 +956,19 @@ def _code(exc: Exception) -> str:
     return exc.code if isinstance(exc, ApiError) else type(exc).__name__
 
 
+#: The stranded-PR sweep's hold key in `forge_limits.QUOTAS` (`sweep_key`).
+STRANDED_SWEEP = "stranded_prs"
+
+
+def _halt(sweep: str, exc: ForgeRateLimited, now: datetime, tenant_id: str) -> datetime:
+    """Hold the tenant's sweep until the reset GitHub named after a refusal."""
+    until = exc.reset or now + forge_limits.DEFAULT_HOLD
+    forge_limits.QUOTAS.hold(sweep, until)
+    log.warning("github quota: stranded-pr sweep tenant=%s rate-limited; held until %s",
+                tenant_id, until.isoformat())
+    return until
+
+
 def _judge(
     writer: GitHubWriter, ref: IssueRef, pull: OpenPull, merges: list[MergeStep], token: str,
     rules_by_base: dict[str, list[dict[str, Any]]], report: SweepReport, repo: str,
@@ -899,6 +979,8 @@ def _judge(
     try:
         state, mergeable, read_head = read_mergeable(writer, pref, pull.number, token)
         head = read_head or head
+    except ForgeRateLimited:
+        raise
     except Exception as exc:  # noqa: BLE001 -- one pull request's failure is its own
         report.failures.append({"repository": repo, "number": str(pull.number),
                                 "error": _code(exc)})
@@ -913,6 +995,8 @@ def _judge(
                 writer.check_runs(pref, head, token),
                 writer.commit_statuses(pref, head, token),
             )
+        except ForgeRateLimited:
+            raise
         except Exception as exc:  # noqa: BLE001 -- CI unread is a reading of its own
             report.failures.append({"repository": repo, "number": str(pull.number),
                                     "error": _code(exc)})
@@ -935,10 +1019,19 @@ def _store_and_log(db: Any, report: SweepReport, now: datetime) -> None:
         report.logged.append(row.key)
     # A pull request no longer stranded drops out of `logged`, so one that is
     # stranded again is logged at once rather than after the window.
+    # A deferred repository was not read: its last rows stand, unlogged.
+    deferred = set(report.deferred)
+    carried = [dict(doc) for doc in stored.get("rows") or []
+               if isinstance(doc, Mapping) and doc.get("repo") in deferred]
+    for doc in carried:
+        key = StrandedRow.from_doc(report.tenant_id, doc).key
+        if key in previous:
+            logged[key] = previous[key]
     _doc(db, report.tenant_id).set({
         "tenant_id": report.tenant_id,
         "swept_at": now,
-        "rows": [row.to_doc() for row in report.rows],
+        "rows": [row.to_doc() for row in report.rows] + carried,
+        "deferred": sorted(deferred),
         "failures": list(report.failures),
         "truncated": report.truncated,
         "logged": logged,

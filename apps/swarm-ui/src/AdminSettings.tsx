@@ -6,7 +6,7 @@ import { Refusal } from './GitHubConnect'
 import { ACCESS } from './Onboarding'
 import { addressToPath } from './paths'
 import { HelpCard } from './HelpCard'
-import { comparePools, poolViewer, tableMode, usePhoneTables } from './capacityPoll'
+import { POOLS_POLL_MS, capacityPoll, comparePools, poolViewer, tableMode, usePhoneTables } from './capacityPoll'
 import { Screen, timeAgo } from './Shell'
 import {
   FAMILY_TITLE,
@@ -134,6 +134,13 @@ export function AdminSettingsScreen() {
         // ("Admin") instead of naming the thing on the screen.
         title="Pool limits"
         load={loadLimits}
+        // READ ON CAPACITY'S CADENCE (live QA ADM-7, 2026-10-11): read once,
+        // In use went stale -- global 14 here while the sidebar's live read
+        // said 10 -- and the open editor's impact reasoned from the stale 14.
+        // A re-read hands down a new object, which wins over a save's
+        // read-back as the newer one; the open editor and what is typed in it
+        // are held above the rows (AH-7), so a re-read loses neither.
+        pollMs={capacityPoll(POOLS_POLL_MS)}
         // A count, not a promise. "changes take effect immediately" was a
         // rationale in the one slot on this screen a reader cannot skip.
         summary={(d) =>
@@ -423,6 +430,34 @@ function atPhoneWidth(): boolean {
 }
 
 /**
+ * WHERE THE SIDE EDITOR FLOATS BESIDE THE FAMILIES (VQA V024/V025): the width
+ * `.adm-split.is-editing` (styles/admin.css) lays the editor over the right of
+ * the families from. Below it the editor is drawn in the flow, under the row
+ * it edits. Kept equal to the stylesheet's `min-width: 1280px`.
+ */
+const BESIDE_QUERY = '(min-width: 1280px)'
+
+function subscribeBeside(onChange: () => void): () => void {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return () => {}
+  const query = window.matchMedia(BESIDE_QUERY)
+  query.addEventListener('change', onChange)
+  return () => query.removeEventListener('change', onChange)
+}
+
+/** True where there is no `matchMedia` (jsdom): the desktop's answer, the editor beside. */
+function atBesideWidth(): boolean {
+  return typeof window === 'undefined' || typeof window.matchMedia !== 'function' || window.matchMedia(BESIDE_QUERY).matches
+}
+
+/**
+ * MORE POOLS THAN A SCREEN HOLDS GET THE FILTER AT EVERY WIDTH (VQA V077). It
+ * was a phone control only, and a platform with 59 pools ran to several
+ * screens of rows at 1440 with nothing to narrow them by. Twenty rows is
+ * about what one 900px-tall screen shows of the families.
+ */
+const FILTER_FROM_POOLS = 20
+
+/**
  * The pool being edited, and what has been typed for it. `draft` null means
  * the field shows the pool's own value off the latest read.
  *
@@ -584,6 +619,39 @@ function notRecordedWhy(pool: Pool): string {
   return 'Not known here: the admin pool read (/v1/admin/pools), which serves admin_changed_by and admin_changed_at, did not answer for this pool, so who changed this ceiling, and when, is not known.'
 }
 
+/**
+ * THE THREE NO-RECORDS LOOK DIFFERENT, NOT ONLY READ DIFFERENT (VQA V078).
+ * Each was the same faint `—`, told apart by its `title` alone, so a failed
+ * admin read looked exactly like a pool no admin had ever changed. Now only
+ * "nobody changed it" is the dash; the other two carry the console's marks:
+ * `admin only` (blue, solid) where the record is an admin's to read, and
+ * `not read` (the failed-read mark) where the read did not answer.
+ */
+function NoRecord({ pool, as: Tag }: { pool: Pool; as: 'i' | 'dd' | 'p' }) {
+  const record = (pool as LimitPool).record
+  const why = notRecordedWhy(pool)
+  if (record !== 'served') {
+    const admin = record === 'admins-only'
+    const mark = (
+      <i className={`ctl-mark ${admin ? 'is-admin' : 'is-unread'} adm-record-gap`} title={why} aria-label={why}>
+        {admin ? 'admin only' : 'not read'}
+      </i>
+    )
+    return Tag === 'i' ? mark : <Tag className="adm-not-recorded is-gap">{mark}</Tag>
+  }
+  if (Tag === 'i')
+    return (
+      <i className="ctl-em adm-changed-none" title={why} aria-label={why}>
+        —
+      </i>
+    )
+  return (
+    <Tag className="adm-not-recorded" title={why}>
+      not recorded
+    </Tag>
+  )
+}
+
 /** The last admin write to a pool: who, when, what, and whether the pool still holds it. */
 interface Change {
   by: string
@@ -656,8 +724,13 @@ export function AdmSetBy({ pool }: { pool: Pool }) {
   const by = setBy(pool)
   // A faint dot, not the word (QA G5-19, capacity.html §G): `configured` on
   // nearly every row hid the rows where something else set the ceiling.
+  // NAMED FOR THE MOUSE TOO (VQA V190): the word was on `aria-label` alone,
+  // so a sighted reader hovering a lone `·` learnt nothing. Its own `title`
+  // says the word and the sentence why, whatever cell it is drawn in.
   return by.term === 'configured' ? (
-    <span className="adm-setby-cfg" role="img" aria-label="configured">·</span>
+    <span className="adm-setby-cfg" role="img" aria-label="configured" title={`configured. ${by.detail}`}>
+      ·
+    </span>
   ) : (
     <>{by.term}</>
   )
@@ -667,32 +740,61 @@ export function AdmSetBy({ pool }: { pool: Pool }) {
  * A pool key that breaks only after a colon (QA G5-11): the family tables
  * wrap anywhere, and `provider:anthropic:tenant:smok / e` is not a key anyone
  * can read or paste. The text is unchanged; `<wbr>` only offers the break.
+ *
+ * EACH SEGMENT IS ONE UNBROKEN RUN (VQA V076). `keep-all` stops no break in
+ * Latin text, so a hyphen inside a segment was still one: `runner:claude- /
+ * code` split the id mid-name. `.adm-key-seg` (styles/admin.css) holds each
+ * segment on its line, and the `<wbr>` after its colon is the only break.
  */
 export function keyBreaks(name: string): ReactNode {
   const parts = name.split(':')
   return parts.map((part, i) =>
     i < parts.length - 1 ? (
       <Fragment key={i}>
-        {`${part}:`}
+        <span className="adm-key-seg">{`${part}:`}</span>
         <wbr />
       </Fragment>
     ) : (
-      <Fragment key={i}>{part}</Fragment>
+      <span className="adm-key-seg" key={i}>
+        {part}
+      </span>
     ),
   )
 }
 
-/** `ops@… · 20 → 10 · 3h ago`, with the instant on the `time` element. */
+/**
+ * `ops@… · 20 → 10 · 3h ago`, with the instant on the `time` element.
+ *
+ * EACH `·` LEADS THE PART IT INTRODUCES (VQA V191). The separator trailed
+ * the part before it, so at 400 the line broke after it -- `ops@saga.xyz ·
+ * 40 → 20 ·` over `3h ago` -- and left a `·` alone at the line end. Every
+ * part after the author is one unbreakable run, `· 40 → 20`, `· 3h ago`
+ * (`.adm-changed-part`, styles/admin.css), and the only breaks are the
+ * spaces before them, so a line never ends on a separator.
+ */
 function Changed({ change, now, as: Tag }: { change: Change; now: number; as: 'dd' | 'p' | 'span' }) {
   return (
     <Tag className="adm-changed">
-      {change.by} · {change.what !== null && <span className="mono">{change.what} · </span>}
-      <time dateTime={change.at} title={change.at}>{timeAgo(change.at, now)}</time>
+      {change.by}
+      {change.what !== null && (
+        <>
+          {' '}
+          <span className="adm-changed-part">
+            · <span className="mono">{change.what}</span>
+          </span>
+        </>
+      )}{' '}
+      <span className="adm-changed-part">
+        · <time dateTime={change.at} title={change.at}>{timeAgo(change.at, now)}</time>
+      </span>
       {change.since !== null && (
         <>
-          {' · '}
-          <span className="adm-changed-since" title={change.since} aria-label={`changed since. ${change.since}`}>
-            changed since
+          {' '}
+          <span className="adm-changed-part">
+            ·{' '}
+            <span className="adm-changed-since" title={change.since} aria-label={`changed since. ${change.since}`}>
+              changed since
+            </span>
           </span>
         </>
       )}
@@ -724,12 +826,15 @@ function PoolEditor({
   const [filter, setFilter] = useState('')
   const target = useSyncExternalStore(subscribeHash, linkedPool, () => null)
   const phone = useSyncExternalStore(subscribePhone, atPhoneWidth, () => false)
+  const beside = useSyncExternalStore(subscribeBeside, atBesideWidth, () => true)
 
-  // THE FILTER IS A PHONE CONTROL (#132). At 390 the families run to several
-  // screens of rows; above 560px they fit, and a box nobody needs is noise.
-  // A filter typed on a phone that is then turned wide stops applying rather
-  // than hiding rows behind a box that is no longer drawn.
-  const needle = phone ? filter.trim().toLowerCase() : ''
+  // THE FILTER IS FOR A LIST LONGER THAN A SCREEN (#132, VQA V077). At 390
+  // the families run to several screens of rows, and so do 59 pools at 1440;
+  // a short list fits, and a box nobody needs is noise. A filter typed where
+  // it is drawn and then not drawn stops applying rather than hiding rows
+  // behind a box that is no longer there.
+  const filtered = phone || pools.length > FILTER_FROM_POOLS
+  const needle = filtered ? filter.trim().toLowerCase() : ''
   const matches = (p: Pool) =>
     needle === '' ||
     p.name.toLowerCase().includes(needle) ||
@@ -787,8 +892,30 @@ function PoolEditor({
       ? open.name
       : null
 
+  const editor =
+    open === undefined ? null : (
+      <SideEditor
+        // A fresh editor per pool: its busy flag, its error and its typed
+        // confirmation belong to the pool they were for.
+        key={open.name}
+        pool={open}
+        capacity={capacity}
+        draft={draft}
+        admin={admin}
+        onDraft={(draft) => {
+          setEditing({ pool: open.name, draft })
+          onEdit(open.name)
+        }}
+        onClose={() => close(open.name)}
+        onWriting={(on) => onWriting(open.name, on)}
+        onSaved={(outcome) => onSaved(open.name, outcome)}
+      />
+    )
+
   return (
-    <section className="section">
+    // `has-filter` moves the sticky family heads below the filter, which
+    // sticks too (VQA V077, V187; styles/admin.css `.adm-ceilings`).
+    <section className={`section adm-ceilings${filtered ? ' has-filter' : ''}`}>
       <span className="ctl-eyebrow has-q">
         Ceilings
         {/* What a write here DOES NOT do -- evict anything -- is the one
@@ -804,7 +931,7 @@ function PoolEditor({
           Admins only. You can read every ceiling; changing one needs the platform admin group.
         </p>
       )}
-      {phone && (
+      {filtered && (
         <div className="ctl-toolbar adm-filter">
           <input
             type="search"
@@ -816,10 +943,24 @@ function PoolEditor({
           />
         </div>
       )}
+      {target !== null && target !== '' && !landed && (
+        // A LINK TO NO POOL SAYS SO (live QA ADM-9, 2026-10-11): an unknown
+        // `?pool=` drew the full table with nothing marked and no word, so a
+        // mistyped or stale link read as a page that had lost its row.
+        <p className="ctl-panel-note adm-no-target" role="status">
+          No pool named <code>{target}</code>; every pool is listed below.
+        </p>
+      )}
       {families.length === 0 && <p className="ctl-panel-note">no pool matches</p>}
-      {/* THE TABLE STAYS STILL WHILE EDITING (L2). The editor is a side panel
-          beside the families rather than a field inside a row, so opening it
-          reflows no column, and it has room for the impact and the history. */}
+      {/* THE TABLE STAYS STILL WHILE EDITING (L2). The editor is a panel
+          rather than a field inside a row, and it has room for the impact and
+          the history. From 1280px it floats over the right of the families
+          (VQA V024): it took a grid column of its own, which narrowed every
+          family to ~660px and reflowed every row -- `edit` wrapped under its
+          figure and `AIMD back-off` broke in two -- the moment it opened.
+          Below 1280px it is drawn under the row it edits (VQA V025): placed
+          after all six families, tapping `edit` on a phone's first record
+          jumped ~5,000px down to it. */}
       <div className={`adm-split${open !== undefined ? ' is-editing' : ''}`}>
         {/* GROUPED AS CAPACITY › POOLS GROUPS THEM (#132): the same families,
             in the same order, under the same headings. `.cap-families` is that
@@ -838,27 +979,11 @@ function PoolEditor({
               held={held}
               admin={admin}
               onOpen={(pool) => setEditing({ pool, draft: null })}
+              inline={beside ? null : editor}
             />
           ))}
         </div>
-        {open !== undefined && (
-          <SideEditor
-            // A fresh editor per pool: its busy flag, its error and its typed
-            // confirmation belong to the pool they were for.
-            key={open.name}
-            pool={open}
-            capacity={capacity}
-            draft={draft}
-            admin={admin}
-            onDraft={(draft) => {
-              setEditing({ pool: open.name, draft })
-              onEdit(open.name)
-            }}
-            onClose={() => close(open.name)}
-            onWriting={(on) => onWriting(open.name, on)}
-            onSaved={(outcome) => onSaved(open.name, outcome)}
-          />
-        )}
+        {beside && editor}
       </div>
     </section>
   )
@@ -889,6 +1014,7 @@ function Family({
   held,
   admin,
   onOpen,
+  inline,
 }: {
   kind: PoolKind
   pools: Pool[]
@@ -901,61 +1027,110 @@ function Family({
   held: string | null
   admin: boolean | null
   onOpen: (pool: string) => void
+  /** The open editor, when it is drawn in the flow: under its row, if the row is in this family. */
+  inline: ReactNode
 }) {
-  // A RECORD PER POOL ON A PHONE (QA G5-08): at 390 the table ran 553-626px in
-  // a 356px box and cut `edit` to `edi`.
-  const phone = usePhoneTables()
+  // UNDER THE ROW IT EDITS (VQA V025). The table is cut after the open row and
+  // the rows after it continue in a second table of the same columns, so the
+  // editor is beside what it edits at every width it is drawn in the flow.
+  const at = inline === null ? -1 : pools.findIndex((p) => p.name === editing)
+  const parts = at === -1 ? [pools] : [pools.slice(0, at + 1), pools.slice(at + 1)]
+  const rows = (some: Pool[]) => (
+    <LimitTable
+      pools={some}
+      saved={saved}
+      outcomes={outcomes}
+      editing={editing}
+      target={target}
+      held={held}
+      admin={admin}
+      onOpen={onOpen}
+    />
+  )
   return (
     <section className="ctl-card adm-family">
       <div className="ctl-card-head">
         <h2 className="ctl-card-title">{FAMILY_TITLE[kind]}</h2>
       </div>
       <div className="ctl-card-body is-flush">
-        <div className={`ctl-table ${tableMode(phone)}`}>
-          {/* EVERY FAMILY TABLE HAS THE SAME COLUMNS, IN THE SAME ORDER, AT THE
-              SAME WIDTHS (#503, measured at 1440). `Set by` was drawn only in a
-              family where some pool was not at its configured value, so the
-              Providers table had a column the others did not and its `edit`
-              sat at x≈1068 against x≈828 everywhere else: the one control on
-              the screen moved from table to table. The columns are L2's
-              (admin-help.html), and `.adm-limits` (styles/admin.css) fixes
-              their widths through this colgroup, so `edit` -- first in the
-              Ceiling cell, after a figure of fixed width -- is at one x in
-              every family. */}
-          <table role="table" className="adm-limits">
-            <colgroup>
-              {LIMIT_COLUMNS.map((c) => (
-                <col key={c.key} className={`adm-col-${c.key}`} />
-              ))}
-            </colgroup>
-            <thead role="rowgroup">
-              <tr role="row">
-                {LIMIT_COLUMNS.map((c) => (
-                  <th key={c.key} role="columnheader" scope="col" className={c.num ? 'is-num' : undefined}>
-                    {c.head}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody role="rowgroup">
-              {pools.map((p) => (
-                <PoolRow
-                  key={p.name}
-                  pool={p}
-                  mark={saved[p.name] ?? null}
-                  outcome={outcomes[p.name] ?? null}
-                  open={editing === p.name}
-                  target={target === p.name}
-                  locked={held !== null && held !== p.name}
-                  admin={admin}
-                  onOpen={() => onOpen(p.name)}
-                />
-              ))}
-            </tbody>
-          </table>
-        </div>
+        {rows(parts[0]!)}
+        {at !== -1 && (
+          <>
+            <div className="adm-inline">{inline}</div>
+            {parts[1]!.length > 0 && rows(parts[1]!)}
+          </>
+        )}
       </div>
     </section>
+  )
+}
+
+function LimitTable({
+  pools,
+  saved,
+  outcomes,
+  editing,
+  target,
+  held,
+  admin,
+  onOpen,
+}: {
+  pools: Pool[]
+  saved: Readonly<Record<string, SaveMark>>
+  outcomes: Readonly<Record<string, SaveOutcome>>
+  editing: string | null
+  target: string | null
+  held: string | null
+  admin: boolean | null
+  onOpen: (pool: string) => void
+}) {
+  // A RECORD PER POOL ON A PHONE (QA G5-08): at 390 the table ran 553-626px in
+  // a 356px box and cut `edit` to `edi`.
+  const phone = usePhoneTables()
+  return (
+    <div className={`ctl-table ${tableMode(phone)}`}>
+      {/* EVERY FAMILY TABLE HAS THE SAME COLUMNS, IN THE SAME ORDER, AT THE
+          SAME WIDTHS (#503, measured at 1440). `Set by` was drawn only in a
+          family where some pool was not at its configured value, so the
+          Providers table had a column the others did not and its `edit`
+          sat at x≈1068 against x≈828 everywhere else: the one control on
+          the screen moved from table to table. The columns are L2's
+          (admin-help.html), and `.adm-limits` (styles/admin.css) fixes
+          their widths through this colgroup, so `edit` -- first in the
+          Ceiling cell, after a figure of fixed width -- is at one x in
+          every family. */}
+      <table role="table" className="adm-limits">
+        <colgroup>
+          {LIMIT_COLUMNS.map((c) => (
+            <col key={c.key} className={`adm-col-${c.key}`} />
+          ))}
+        </colgroup>
+        <thead role="rowgroup">
+          <tr role="row">
+            {LIMIT_COLUMNS.map((c) => (
+              <th key={c.key} role="columnheader" scope="col" className={c.num ? 'is-num' : undefined}>
+                {c.head}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody role="rowgroup">
+          {pools.map((p) => (
+            <PoolRow
+              key={p.name}
+              pool={p}
+              mark={saved[p.name] ?? null}
+              outcome={outcomes[p.name] ?? null}
+              open={editing === p.name}
+              target={target === p.name}
+              locked={held !== null && held !== p.name}
+              admin={admin}
+              onOpen={() => onOpen(p.name)}
+            />
+          ))}
+        </tbody>
+      </table>
+    </div>
   )
 }
 
@@ -1093,16 +1268,14 @@ function PoolRow({
       {/* EMPTY WHERE THE CEILING IS THE CONFIGURED VALUE (#132): `configured`
           on every such row was the column restating the Ceiling beside it.
           The column itself is in every family now (#503). */}
-      <td role="cell" data-label="Set by" title={by.detail}>
+      <td role="cell" data-label="Set by" className="adm-setby" title={by.detail}>
         <AdmSetBy pool={pool} />
       </td>
       <td role="cell" data-label="Last changed">
         {/* THE LAST ADMIN WRITE, OR A DASH WITH ITS REASON. Never `updated_at`,
             which admission rewrites on every lease (notRecordedWhy). */}
         {change === null ? (
-          <i className="ctl-em adm-changed-none" title={notRecordedWhy(pool)} aria-label={notRecordedWhy(pool)}>
-            —
-          </i>
+          <NoRecord pool={pool} as="i" />
         ) : (
           <Changed change={change} now={now} as="span" />
         )}
@@ -1223,9 +1396,7 @@ function SideEditor({
         )}
         <dt>Last changed</dt>
         {change === null ? (
-          <dd className="adm-not-recorded" title={notRecordedWhy(pool)}>
-            not recorded
-          </dd>
+          <NoRecord pool={pool} as="dd" />
         ) : (
           <Changed change={change} now={now} as="dd" />
         )}
@@ -1325,9 +1496,7 @@ function SideEditor({
           nothing about the ones before it. */}
       <span className="adm-side-k">History</span>
       {change === null ? (
-        <p className="adm-not-recorded" title={notRecordedWhy(pool)}>
-          not recorded
-        </p>
+        <NoRecord pool={pool} as="p" />
       ) : (
         <Changed change={change} now={now} as="p" />
       )}
@@ -1429,7 +1598,11 @@ export function FallbackTokenCard() {
           <code>uv run sc setup token --owner &lt;org&gt;</code>.
         </p>
       )}
-      <form className="adm-side-field" onSubmit={(e) => void submit(e)} autoComplete="off">
+      {/* ITS OWN FORM ROW, NOT THE CEILING EDITOR'S (VQA V023). It reused
+          `.adm-side-field`, whose 96px input is sized for a six-digit
+          ceiling, so `owner, e.g. example-org` and a pasted token were cut
+          at a dozen characters. */}
+      <form className="adm-token-form" onSubmit={(e) => void submit(e)} autoComplete="off">
         <input
           id={`${id}-owner`}
           type="text"

@@ -17,6 +17,7 @@ import type { CancelWorkflowResult, WorkflowBoard, WorkflowUsage } from '../api'
 import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
 import { painted } from './marks'
 import { cascade, gate } from './cssgate'
+import { ownFromBoard } from './workflowsById'
 
 const api = vi.hoisted(() => ({
   loadWorkflowBoard: vi.fn(),
@@ -138,10 +139,7 @@ beforeEach(() => {
   serve([b.w], b.tasks)
   api.loadWorkflowUsage.mockResolvedValue({ status: 'empty', fetchedAt: T0 } satisfies Result<WorkflowUsage>)
   api.loadAttempts.mockResolvedValue({ status: 'empty', fetchedAt: T0 })
-  api.loadWorkflow.mockResolvedValue({
-    status: 'error',
-    error: { kind: 'not_found', httpStatus: 404, code: null, message: 'no such workflow' },
-  })
+  api.loadWorkflow.mockImplementation(ownFromBoard(api.loadWorkflowBoard))
   try {
     window.localStorage.clear()
   } catch {

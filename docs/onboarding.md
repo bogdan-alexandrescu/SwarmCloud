@@ -263,7 +263,7 @@ first that is not `done`; the plugin resumes there and the console opens there.
 | `signed_in` | the caller has a verified Google identity and a resolved tenant | the platform's own tenant resolution (per registered group, with `x-goog-user-project`); no forge call | none here: an unresolved tenant is the sign-in's error |
 | `github_connected` | a connection record for this user is `active`, with `forge_login` read from GitHub | `GET /user` with the new token: the login, the account id, and for a PAT the `X-OAuth-Scopes` and `github-authentication-token-expiration` headers; one call | `AUTHORISATION_DENIED`, `AUTHORISATION_EXPIRED`, `REFRESH_FAILED`, `CLASSIC_PAT_BLOCKED` |
 | `app_installed` | the SwarmCloud GitHub App is installed on at least one owner the person reaches; done without a check for a connection that is a token rather than the App | an owner the person enabled was installed when enabled, so it answers with no forge call; otherwise `GET /user/installations` (one refresh of the person's token, the read Work › Access makes) | `FORGE_UNREACHABLE`; with no installation the step is `todo`, offering the App's install page |
-| `orgs_enabled` | at least one owner (the user's account or an org) is enabled and its installation is reachable | `GET /user/installations` paged at 100 per page until a short page, plus `GET /user/orgs` to show orgs with no installation; each owner gets `installed`, `requested` or `not_installed` | `ORG_APPROVAL_PENDING`, `SSO_NOT_AUTHORISED`, `CLASSIC_PAT_BLOCKED`, `FINE_GRAINED_PAT_PENDING` |
+| `orgs_enabled` | at least one owner (the user's account or an org) is enabled and its installation is reachable | `GET /user/installations` paged at 100 per page until a short page, plus `GET /user/orgs` to show orgs with no installation; each owner gets `installed`, `requested` or `not_installed`. For an App connection the owners enabled on Work › Access (`forge_orgs`) are read on every checklist read and listed with `enabled: true`, and an enabled, reachable owner checks the step at that read: on 2026-10-11 the step named only the owner a 12-hour-old probe had seen while Access listed two (live QA RSA-2) | `ORG_APPROVAL_PENDING`, `SSO_NOT_AUTHORISED`, `CLASSIC_PAT_BLOCKED`, `FINE_GRAINED_PAT_PENDING` |
 | `repos_chosen` | at least one repository is granted, each `read` or `write`, each registered | `GET /user/installations/{installation_id}/repositories` paged (100 per page, `page` until a short page, served to the chooser one page at a time with a server-side search); a typed `owner/repo` is read once with `GET /repos/{owner}/{repo}` | `REPO_NOT_INSTALLED`, `REPO_ARCHIVED`, `SSO_NOT_AUTHORISED` |
 | `access_verified` | every granted repository passed the checks its mode needs | clone: the smart-HTTP `upload-pack` advertisement (a GET of `info/refs?service=git-upload-pack`); push (write grants): the `receive-pack` advertisement plus `permissions.push` on `GET /repos/{owner}/{repo}`; pull request (write grants): the installation's `pull_requests: write` permission and the same push bit; all are reads, as the probe's are today (`apps/swarm-api/swarm_api/forge.py::git_basic_headers`). An optional write test creates and deletes one branch (decision D6) | `PERMISSION_MISSING`, `SSO_NOT_AUTHORISED`, `REPO_NOT_INSTALLED`, `FORGE_UNREACHABLE` |
 | `ready` | every step above is `done` | none of its own; it offers the first task in a granted repository | none |
@@ -333,6 +333,57 @@ each user holds their own `read` or `write` on it. A task acts as its
 connected first. The tenant view for an admin shows every member's connection
 state and grants, never a value.
 
+### 2.6 GitHub permissions health: what each permission is for
+
+**Why the console shows this.** On 2026-10-11 every merge on
+`sagaxyz/ai-studio` failed with `token_lacks_rights`: the `swarmcloud-saga`
+App had been changed to request **Commit statuses: read**, but the org had not
+accepted the update, and nothing in the console said so. GitHub never lets
+SwarmCloud grant itself a permission, and a requested one does nothing until
+an org owner accepts it on GitHub. So the platform's job is to say, before a
+run fails, which permission is missing, where, what it breaks, and to link to
+the exact GitHub page that fixes it (#1086, design 2, "Org cards").
+
+`GET /v1/forge/permissions` (`apps/swarm-api/swarm_api/forgeperms.py`) answers
+for the caller's tenant:
+
+* `required`: what the platform's steps need. It is served from one table,
+  `forgeperms.REQUIRED`, which is the source of truth; the list below explains
+  it, and `tests/unit/control_plane/test_forgeperms.py` fails when the two
+  disagree.
+* `app`: what the App requests (`GET /app`), what it lacks, and its settings
+  link. The link goes to platform admins only, because only the App's owner
+  can change it.
+* `orgs`: one card per installation covering a registered repository. Each
+  card shows what the installation granted, what it lacks, and
+  `pending_update`. That is the 2026-10-11 state: the App requests something
+  the installation has not accepted. The card also carries `review_url`,
+  GitHub's form for accepting it.
+* `repositories`: for each registration, whether the App or the tenant token
+  acts on it, and `push`, `pull_request`, `merge`, `ci`, `issues` and
+  `actions` as true, false or null. An App-backed repository's values come
+  from its installation's grant. A token-backed one is probed with two
+  read-only GETs: the repository's role, and one commit-status read on the
+  default branch. **null means "not measured", never "refused"**: a
+  fine-grained token's `pull_requests: write` cannot be read without writing,
+  so it stays null rather than becoming a guess.
+
+What each permission is for:
+
+| permission | access | what breaks without it |
+|---|---|---|
+| `contents` | write | runs can't push their branch, and merges can't land |
+| `pull_requests` | write | runs can't open or update pull requests, or merge them |
+| `statuses` | read | merge reads `/commits/{sha}/status` to wait for CI; without it every merge fails |
+| `checks` | read | merge and CI fixes can't see check runs |
+| `issues` | write | issue runs and the observer can't read or comment on issues |
+| `actions` | read | ci-flake-hunter and release-health can't read workflow runs |
+
+Every call is a GET. No installation token is minted, because minting is a
+POST. One org failing becomes that card's `error`; the rest of the answer
+still comes back. The answer is cached per tenant for 60 seconds, and
+`?refresh=true` (the console's re-check, and its return-to-tab) reads again.
+
 ---
 
 ## 3. Data model, API, the worker's credential, Terraform
@@ -397,6 +448,7 @@ Every route below is additive: nothing existing changes shape.
 | `DELETE /v1/access/grants/{repo_id}` | revoke the grant |
 | `POST /v1/access/grants/{repo_id}/verify` | {checks?}: run clone, push, pull_request now |
 | `GET /v1/access/members` | admin: every member's connection state and grants |
+| `GET /v1/forge/permissions` | ?refresh=true: required, App, per-org and per-repository permissions (§2.6) |
 
 **Every route above is served (2026-10-09).** Two late additions:
 `POST /v1/access/orgs/{owner}/install-request` records an install request
@@ -530,8 +582,15 @@ does).
    that this platform should hold); its non-secret settings (app id, client
    id, slug, callback URL `https://<console>/onboarding/github/callback`)
    become tfvars, and its permissions are: contents read and write, pull
-   requests read and write, issues read and write, checks read, metadata read,
-   workflows write only if D8 says so. "Expire user authorization tokens" on.
+   requests read and write, issues read and write, checks read, commit
+   statuses read, metadata read, workflows write only if D8 says so. "Expire
+   user authorization tokens" on. Commit statuses read is there because the
+   merge step reads the legacy combined status at the head
+   (`/repos/{o}/{r}/commits/{sha}/status`, `apps/agent-worker/agent_worker/merge.py`)
+   before every merge, and without it GitHub answers 403 "Resource not
+   accessible by integration" and the step refuses `token_lacks_rights`
+   (measured on ai-studio, 2026-10-11, until the permission was added to the
+   App and accepted on the installation).
 2. **A platform secret for the App's client secret**, declared by Terraform
    with no version, value added by `scripts/create-secrets.sh --stdin`;
    `secretAccessor` for swarm-api only.

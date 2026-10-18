@@ -169,8 +169,11 @@ REFUSALS: list[tuple[str, Callable[[MergeWorld], None], str, str, bool]] = [
      "verdict_not_merge", "NOT_YET", False),
     ("verdict_not_staged", _set("verdict", None), "verdict_unreadable", "verdict.json", False),
     ("unprotected_branch_with_a_red_check", _unprotected_and_red, "checks_failed", "unit", False),
-    ("merge_conflict", lambda w: w.pr.update(mergeable=False, mergeable_state="dirty"),
-     "merge_conflict", "does not merge cleanly", False),
+    # With its conflict fix rounds spent (#1076); with rounds left it parks
+    # for one instead (test_merge_conflict_round.py).
+    ("merge_conflict", lambda w: (w.pr.update(mergeable=False, mergeable_state="dirty"),
+                                  w.spend_conflict_rounds()),
+     "merge_conflict", f"#{NUMBER} conflicts with main", False),
     ("token_lacks_rights", lambda w: w.repository.update(permissions={"push": False}),
      "token_lacks_rights", "cannot write", False),
     ("token_cannot_read", lambda w: w.github.route("GET", API, (404, {}, {"message": "Not Found"})),
@@ -280,6 +283,7 @@ def test_a_protection_refusal_from_the_merge_call_is_protection_refused_with_git
 
 def test_a_405_conflict_from_the_merge_call_is_merge_conflict(tmp_path):
     world = MergeWorld(tmp_path)
+    world.spend_conflict_rounds()
     world.merge_answer = (405, {}, {"message": "Merge conflict between base and head"})
     outcome = merge.run_merge(world.context())
     assert outcome.summary["refusal"]["code"] == "merge_conflict"
@@ -709,6 +713,7 @@ def test_an_update_the_walk_would_not_accept_is_behind_too_often(tmp_path):
 
 def test_an_update_422_for_a_conflict_is_merge_conflict(tmp_path):
     world = MergeWorld(tmp_path)
+    world.spend_conflict_rounds()
     world.pr["mergeable_state"] = "behind"
     world.update_answer = (422, {}, {"message": "merge conflict between base and head"})
     outcome = merge.run_merge(world.context())

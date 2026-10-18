@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
@@ -47,8 +47,17 @@ from swarm_common.states import (
 )
 
 from . import children as children_mod
+from .awaitinput import is_control_plane
 from .codec import as_datetime
-from .credentials import AccountPool, CredentialSource, ForgeConnections, credential_for
+from .credentials import (
+    AccountPool,
+    CredentialAnswer,
+    CredentialSource,
+    ForgeConnections,
+    credential_for,
+)
+from .mcp_admission import McpCode
+from .secret_slots import WorkspaceGrants
 from .dispatch import BackendRouter, DispatchError
 from .fairness import AgingConfig, round_robin_order
 from .metrics import SchedulerMetrics
@@ -74,6 +83,54 @@ MERGE_WAKE_MARKER = "wake_requested_at"
 CONTROL_PUBLISH_METADATA_KEY = "control_publish"
 CONTROL_PUBLISH_CLAIMED = "claimed"
 CONTROL_PUBLISH_CLAIM_SECONDS = 300
+
+#: A workflow that waits for named pull requests to merge (lane SPEED-D3,
+#: `swarm_api.prgate`): the gate on each of its root steps, PARKED on
+#: DEPENDENCY_INCOMPLETE, and the two states that end the wait. Restated
+#: because the scheduler image does not carry swarm-api; held equal by
+#: tests/unit/control_plane/test_workflow_after_pr.py.
+AFTER_PRS_METADATA_KEY = "after_prs"
+AFTER_PRS_MERGED = "merged"
+AFTER_PRS_CLOSED = "closed"
+
+
+def after_prs_hold(metadata: Any) -> tuple[str, int | None] | None:
+    """What a step's pull-request gate says: None when there is none to hold on.
+
+    `("merged", None)`: every pull request merged; the step is promoted as any
+    dependency park is. `("closed", n)`: pull request `n` was closed without
+    merging; the step is ended. `("waiting", None)`: anything else, a gate this
+    reader cannot make sense of included -- the document is tenant-writable,
+    and a gate that cannot be read HOLDS, it is never read as released.
+    """
+    gate = metadata.get(AFTER_PRS_METADATA_KEY) if isinstance(metadata, dict) else None
+    if gate is None:
+        return None
+    if not isinstance(gate, dict):
+        return ("waiting", None)
+    state = gate.get("state")
+    if state == AFTER_PRS_MERGED:
+        return (AFTER_PRS_MERGED, None)
+    closed = gate.get("closed")
+    if state == AFTER_PRS_CLOSED and isinstance(closed, int) and not isinstance(closed, bool):
+        return (AFTER_PRS_CLOSED, closed)
+    return ("waiting", None)
+
+
+#: The live-browser hand-off (docs/design/live-browser.md §4.3, lane LB-L10).
+#: A PARKED(HUMAN_REQUIRED) task is promoted ONLY by a person, through
+#: swarm-api's `human-ready`; this scheduler never promotes it. Past
+#: `human_park_max_seconds` (24 hours, the owner's Q4) it is dead-lettered with
+#: this cause. Not an `EndCause` member -- the frozen enum has none -- so it is
+#: the `last_error` prefix and the event's `cause`, and `end_cause` is None as
+#: for every dead-lettered park. Restated from `swarm_api.handoff`, which this
+#: image does not carry; tests/unit/control_plane/test_handoff_api.py holds
+#: them equal.
+HUMAN_WAIT_EXPIRED = "human_wait_expired"
+#: The default for `human_park_max_seconds`, read through `getattr` so a
+#: settings field can be added without a change here. 24 hours: a person's
+#: day, and a parked task costs nothing while it waits (invariant 1).
+HUMAN_PARK_MAX_SECONDS = 86_400
 
 
 def held_for_control_publish(metadata: Any) -> bool:
@@ -248,7 +305,13 @@ class DrainReport:
     promoted_dependencies: int = 0
     #: Dependants left PARKED for swarm-api's publish of a MERGE verdict (#748).
     held_dependencies: int = 0
+    #: Root steps left PARKED because a pull request their workflow waits for
+    #: (`after`, lane SPEED-D3) has not merged yet.
+    held_pr_gates: int = 0
     promoted_credentials: int = 0
+    #: READY or PARKED tasks ended FAILED before any lease because a per-run
+    #: MCP credential they name expired or was revoked (contract request 99).
+    failed_unrunnable: int = 0
     promoted_prewarm: int = 0
     #: SCHEDULED_RETRY parks returned to READY once `next_eligible_at` passed.
     promoted_scheduled_retries: int = 0
@@ -299,6 +362,7 @@ class Scheduler:
         monotonic: Callable[[], float] = time.monotonic,
         pool: AccountPool | None = None,
         forge: ForgeConnections | None = None,
+        secrets: WorkspaceGrants | None = None,
     ) -> None:
         self._settings = settings
         self._store = store
@@ -321,6 +385,12 @@ class Scheduler:
         # (credentials.py, docs/onboarding.md §3.3 step 2). Forgotten at the
         # top of each run, like the pool.
         self._forge = forge if forge is not None else ForgeConnections(store.db)
+        # The workspace's enabled secret grants, which admission and the
+        # credential sweep ask about when a profile or a tool it launches
+        # declares a REQUIRED slot (secret_slots.py, workspace-secrets.md
+        # §4.2). One query at most per admission pass: forgotten at the top
+        # of each run and each pass.
+        self._secrets = secrets if secrets is not None else WorkspaceGrants(store.db)
         self._now = now
         self._monotonic = monotonic
         self._aging = AgingConfig(
@@ -386,6 +456,8 @@ class Scheduler:
         self._pool.forget()
         # A reconnect, or a refresh that failed, since the last drain likewise.
         self._forge.forget()
+        # And a secret grant ticked or unticked.
+        self._secrets.forget()
 
     def drain(self) -> DrainReport:
         started = self._monotonic()
@@ -407,6 +479,8 @@ class Scheduler:
         report.promoted_scheduled_retries = self._promote_scheduled_retries(report)
         report.promoted_manual_pauses = self._promote_manual_pauses(report)
         report.promoted_ci_waits = self._promote_ci_waits(report)
+        report.dead_lettered += self._expire_human_waits(report)
+        self._sweep_awaiting_input(report)
         # Guarded: a child sweep that cannot query (its index still building
         # after a release, say) must not stop admission for every tenant.
         try:
@@ -463,6 +537,9 @@ class Scheduler:
         ordered with everything else by `round_robin_order`, so a released
         task is admitted in its fair turn and never ahead of it.
         """
+        # A grant ticked since the previous pass is seen by this one, and
+        # every task in this pass is judged on one read of the grants.
+        self._secrets.forget()
         candidates = self._store.ready_tasks(self._settings.candidate_batch_size)
         if include:
             seen = {task.id for task in candidates}
@@ -793,6 +870,16 @@ class Scheduler:
                 )
                 return False
 
+        # THE AWAIT-INPUT BACKSTOP (docs/design/human-steps.md §4.4 step 2).
+        # A `control_plane` profile is never run, so it is parked here, before
+        # the tenant, the credential or any capacity is looked at, and never
+        # leased whatever the headroom (invariant 1). A step submitted with no
+        # dependencies reaches READY this way, and so does one an operator
+        # promotes by hand; the dependency rule parks the rest itself.
+        if profile.control_plane:
+            self._park_awaiting_input(task, report)
+            return False
+
         tenant = self._tenant(task.tenant_id)
         if tenant is None or not tenant.enabled:
             self._park(
@@ -815,7 +902,22 @@ class Scheduler:
         # token GitHub refuses (docs/onboarding.md §3.3 step 2, OB6). Parked
         # here it holds nothing (invariant 1), and nothing was reserved, so
         # the all-or-nothing reservation below is never half-made (2).
-        credential = credential_for(profile, tenant, self._pool, task=task, forge=self._forge)
+        # And so is a slot the profile, or a tool its `browser_tool` launches,
+        # declares `required` with no enabled grant (workspace-secrets.md
+        # §4.2, SEC-ADMIT-PARK): parked here rather than by the worker after
+        # a pod has started. The event names each consumer and slot, never a
+        # secret id. Nothing leased means nothing for concurrency to count (3).
+        credential = credential_for(
+            profile, tenant, self._pool, task=task, forge=self._forge,
+            secrets=self._secrets, tenant_of=self._tenant,
+        )
+        # A per-run MCP credential that expired or was revoked is not a park:
+        # nobody can hand this task a new value, so it ends FAILED here, from
+        # READY, in one guarded write that takes no lease and reserves nothing
+        # (registered-mcp-servers.md §4.10, contract request 99).
+        if credential.terminal:
+            self._fail_unrunnable(task, credential, report)
+            return False
         if not credential.runnable:
             self._park(
                 task,
@@ -1035,6 +1137,62 @@ class Scheduler:
         else:
             self._count_stale(outcome, report)
 
+    def _fail_unrunnable(
+        self, task: Task, credential: CredentialAnswer, report: DrainReport
+    ) -> None:
+        """End a READY or PARKED task whose MCP credential answer is terminal.
+
+        FAILED with the answer's terminal code as the error
+        (`mcp_credential_expired` for an expired or destroyed row,
+        `mcp_credential_missing` for none), through `store.fail_before_lease`:
+        no lease, no reservation, no attempt, and never retried. Its
+        dependants are resolved in this run like any other end this drain
+        writes, and a workflow step drops the cached verdict so its siblings
+        next in this pass see the failure.
+        """
+        detail = credential.park_detail()
+        error = str(detail.get("code") or McpCode.CREDENTIAL_EXPIRED.value)
+        outcome = self._store.fail_before_lease(task, error, detail=detail)
+        if not outcome.applied:
+            self._count_stale(outcome, report)
+            return
+        report.failed_unrunnable += 1
+        self._note_ended(task.id)
+        if task.workflow_id:
+            self._workflow_verdicts.pop((task.tenant_id, task.workflow_id), None)
+
+    def _park_awaiting_input(self, task: Task, report: DrainReport) -> None:
+        """Park a READY await-input step AWAITING_INPUT, with its window (`store.park_awaiting_input`).
+
+        The wait is held to `human_park_max_seconds`, the same 24 hours as the
+        hand-off's (the owner's Q4); swarm-api restates the bound and its
+        submission test holds the two equal.
+        """
+        limit = int(getattr(self._settings, "human_park_max_seconds", HUMAN_PARK_MAX_SECONDS))
+        outcome = self._store.park_awaiting_input(task, max_seconds=limit)
+        if outcome.applied:
+            self._metrics.parked.labels(reason=ParkReason.AWAITING_INPUT.value).inc()
+            report.parked += 1
+        else:
+            self._count_stale(outcome, report)
+
+    def _promote_dependant(self, task: Task, *, reason: str, report: DrainReport) -> bool:
+        """Promote a dependant whose dependencies are satisfied. True only if it is now READY.
+
+        An await-input step is promoted like any other and then parked
+        AWAITING_INPUT in the same call, guarded on the READY just written
+        (docs/design/human-steps.md §4.4 step 1). It passes through READY for
+        that one write and holds nothing during it. It is not returned as
+        released, so the finish event's admission pass is never handed it.
+        """
+        if not self._promote(task, kind="dependency", detail={"reason": reason}, report=report):
+            return False
+        if not is_control_plane(task.runner_profile):
+            return True
+        promoted = replace(task, state=TaskState.READY, park_reason=None, next_eligible_at=None)
+        self._park_awaiting_input(promoted, report)
+        return False
+
     def _cancel(
         self,
         task: Task,
@@ -1082,7 +1240,7 @@ class Scheduler:
         re-read on every drain to rediscover workflows that were finished long
         ago. Every park reason anything writes is read by a sweep that calls
         this (`_promote_scheduled_retries` and `_promote_manual_pauses` were
-        the last two). BUDGET_EXHAUSTED is the one reason no sweep reads, and
+        the last two, `_sweep_awaiting_input` the one that only cancels). BUDGET_EXHAUSTED is the one reason no sweep reads, and
         nothing writes it: there are no budgets (owner, 2026-10-01). A
         workflow whose remaining steps are all parked on a reason that has not
         cleared -- a disabled tenant, a retry not yet due -- is swept when its
@@ -1235,14 +1393,14 @@ class Scheduler:
         """
         if self._stop_for_failed_workflow(task, report):
             return False
+        if not self._pull_requests_merged(task, report):
+            return False
         if not task.depends_on:
             # Counted in the metric as well as the report. Incrementing only
             # the report here made `swarm_scheduler_promoted{kind=
             # "dependency"}` disagree with DrainReport.promoted_dependencies,
             # so a dashboard built on the metric under-counted promotions.
-            return self._promote(
-                task, kind="dependency", detail={"reason": "no_dependencies"}, report=report
-            )
+            return self._promote_dependant(task, reason="no_dependencies", report=report)
         parents = self._store.parent_ends(task.depends_on, tenant_id=task.tenant_id)
         states = {tid: end.state for tid, end in parents.items()}
         failed = [tid for tid, state in states.items() if state in _FAILED_PARENT_STATES]
@@ -1260,12 +1418,57 @@ class Scheduler:
             if self._held_for_control_publish(task, parents):
                 report.held_dependencies += 1
                 return False
-            return self._promote(
-                task,
-                kind="dependency",
-                detail={"reason": "dependencies_satisfied"},
-                report=report,
+            return self._promote_dependant(task, reason="dependencies_satisfied", report=report)
+        return False
+
+    def _pull_requests_merged(self, task: Task, report: DrainReport) -> bool:
+        """The pull-request gate of a step whose workflow waits on `after` (SPEED-D3).
+
+        True when the step carries no gate, or its gate says every pull
+        request merged: the dependency rule below then applies as it always
+        did. False otherwise, and the step is left alone:
+
+          * still waiting -- the step stays PARKED, holding no lease, no pool
+            count and no execution (invariant 1), counted in
+            `report.held_pr_gates`;
+          * a pull request closed without merging -- the step is ended
+            DEAD_LETTERED (PARKED -> FAILED, contract request 99, is kept for
+            a task that can never run, `_fail_unrunnable`), naming it, or CANCELLED when a cancel was asked for. Its
+            workflow has failed: under `fail_workflow` the next touch sweeps
+            the rest, and under either policy its dependants are cancelled as
+            a failed parent's.
+
+        The scheduler never reads GitHub. swarm-api's wake tick writes the
+        gate (`swarm_api.prgate.wake_tenant`); this reads only its `state`.
+        """
+        hold = after_prs_hold(task.metadata)
+        if hold is None or hold[0] == AFTER_PRS_MERGED:
+            return True
+        if hold[0] == AFTER_PRS_CLOSED:
+            gate = (task.metadata or {}).get(AFTER_PRS_METADATA_KEY) or {}
+            repository = gate.get("repository") if isinstance(gate, dict) else None
+            where = f" of {repository}" if isinstance(repository, str) and repository else ""
+            text = (
+                f"pull request #{hold[1]}{where} was closed without being merged; "
+                "this workflow waited for it to merge (after) and will not start"
             )
+            if task.cancel_requested:
+                self._cancel(
+                    task, text, report, why="cancel_requested",
+                    end_cause=children_mod.cancel_end_cause(task.metadata),
+                )
+                return False
+            outcome = self._store.dead_letter_parked(
+                task, text, detail={"park_reason": ParkReason.DEPENDENCY_INCOMPLETE.value,
+                                    "after_pr_closed": hold[1]},
+            )
+            if outcome.applied:
+                report.dead_lettered += 1
+                self._note_ended(task.id)
+            else:
+                self._count_stale(outcome, report)
+            return False
+        report.held_pr_gates += 1
         return False
 
     def _held_for_control_publish(self, task: Task, parents: dict[str, ParentEnd]) -> bool:
@@ -1351,6 +1554,13 @@ class Scheduler:
         any other. If the person instead disconnected, swarm-api deleted their
         grants, the task no longer needs the user slot, and it is promoted to
         run as it would have before onboarding.
+
+        SO ARE THE WORKSPACE'S SECRET GRANTS (SEC-ADMIT-PARK). A task parked
+        for a required slot with no enabled grant -- by admission, or by its
+        worker's backstop (`workspace-secret:<slots>`) -- is promoted once
+        every required slot has one, and only if the key and the connection
+        still answer yes: a park for a provider key or an account that is
+        still missing stays parked whatever the grants say.
         """
         promoted = 0
         now = self._now()
@@ -1366,8 +1576,15 @@ class Scheduler:
             if profile is None:
                 continue
             credential = credential_for(
-                profile, tenant, self._pool, task=task, forge=self._forge
+                profile, tenant, self._pool, task=task, forge=self._forge,
+                secrets=self._secrets, tenant_of=self._tenant,
             )
+            if credential.terminal:
+                # Parked before contract request 99 existed, or parked for a
+                # server an admin disabled while its credential then expired:
+                # either way it can never run, so it ends here, PARKED -> FAILED.
+                self._fail_unrunnable(task, credential, report)
+                continue
             if (
                 credential.source is CredentialSource.ACCOUNT_POOL
                 and task.next_eligible_at is not None
@@ -1413,8 +1630,8 @@ class Scheduler:
         Admission does not check `max_attempts`, so READY on a task that has
         used its last attempt would lease one more than the cap -- the defect
         `retries_exhausted` exists for. Such a task is ended DEAD_LETTERED
-        (PARKED -> FAILED is not a legal transition), or CANCELLED when a cancel
-        was requested, and counted in `report.dead_lettered` / `cancelled`.
+        (PARKED -> FAILED, contract request 99, is kept for a task that can
+        never run), or CANCELLED when a cancel was requested, and counted in `report.dead_lettered` / `cancelled`.
 
         Promotion is `promote_to_ready`, guarded on the state and park reason
         this sweep read, so two drains racing promote it once. It writes the
@@ -1537,6 +1754,92 @@ class Scheduler:
             ):
                 promoted += 1
         return promoted
+
+    # -- the live-browser hand-off (docs/design/live-browser.md §4.3) --------
+
+    def _expire_human_waits(self, report: DrainReport) -> int:
+        """Dead-letter a PARKED(HUMAN_REQUIRED) task nobody came back for.
+
+        THIS SWEEP NEVER PROMOTES. A hand-off parks when nobody took control
+        within the hold, and only a person -- swarm-api's `human-ready` -- may
+        return it to READY: re-admitting it with nobody there to sign in would
+        cost a cold pod start and park again. So the only thing done here is
+        the end: past `human_park_max_seconds` since the park it is ended
+        DEAD_LETTERED (PARKED -> FAILED, contract request 99, is kept for a
+        task that can never run), with `human_wait_expired`. A park on a task that has used its last attempt
+        -- past the worker's `max_human_resumes` a park is not refunded -- is
+        ended at once, as `_end_exhausted_retry` ends a SCHEDULED_RETRY park,
+        because `human-ready` refuses it and nothing else can resume it.
+
+        The park instant is `next_eligible_at`, which the worker's park writes
+        as the moment it parked (as the child await's does), with `updated_at`
+        standing in for a park that carries none. Returns how many it ended past
+        the maximum; the last-attempt ends are counted by `_end_exhausted_retry`.
+        """
+        ended = 0
+        now = self._now()
+        limit = int(getattr(self._settings, "human_park_max_seconds", HUMAN_PARK_MAX_SECONDS))
+        reason = ParkReason.HUMAN_REQUIRED
+        for task in self._parked_window(reason):
+            if self._stop_for_failed_workflow(task, report):
+                continue
+            if task.retries_exhausted():
+                # Counted into `report.dead_lettered` by `_end_exhausted_retry`
+                # itself, so not into this sweep's return.
+                self._end_exhausted_retry(
+                    task,
+                    report,
+                    reason=reason,
+                    text=(
+                        f"waited for a person on its last attempt ({task.attempt_count} of "
+                        f"{task.max_attempts}); retries exhausted"
+                    ),
+                )
+                continue
+            parked_at = task.next_eligible_at or task.updated_at
+            if parked_at + timedelta(seconds=limit) > now:
+                continue
+            text = (
+                f"{HUMAN_WAIT_EXPIRED}: nobody said they were ready to sign in within "
+                f"{limit} seconds of the park"
+            )
+            if task.cancel_requested:
+                self._cancel(
+                    task,
+                    text,
+                    report,
+                    why="cancel_requested",
+                    end_cause=children_mod.cancel_end_cause(task.metadata),
+                )
+                continue
+            outcome = self._store.dead_letter_parked(
+                task, text, detail={"park_reason": reason.value, "cause": HUMAN_WAIT_EXPIRED}
+            )
+            if outcome.applied:
+                ended += 1
+                self._note_ended(task.id)
+            else:
+                self._count_stale(outcome, report)
+        return ended
+
+    def _sweep_awaiting_input(self, report: DrainReport) -> None:
+        """Apply `fail_workflow` to await-input steps waiting for a person. Never promotes, never expires.
+
+        A PARKED(AWAITING_INPUT) step is ended by swarm-api alone: on the
+        answer, on its declared default or on its expiry, which honours
+        `on_expire` (docs/design/human-steps.md §4.6). So nothing here returns
+        it to READY, and `_expire_human_waits` keeps its HUMAN_REQUIRED filter.
+        What the scheduler does own is the failed-workflow rule (§4.4 step 3):
+        a waiting step is a step that has not started, and when it is the last
+        one in its workflow no other sweep would ever reach it. Through
+        `_stop_for_failed_workflow`, a failed sibling under `fail_workflow`
+        cancels it, exactly as it cancels any step that has not started. Under
+        `continue` it is left waiting. The window moves (`_parked_window`), so
+        every waiting step is looked at within ceil(waits / sweep size)
+        drains. Nothing is leased or released (invariant 1).
+        """
+        for task in self._parked_window(ParkReason.AWAITING_INPUT):
+            self._stop_for_failed_workflow(task, report)
 
     # -- child tasks (docs/design/child-tasks.md) ---------------------------
 

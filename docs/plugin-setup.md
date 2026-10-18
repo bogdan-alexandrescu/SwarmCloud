@@ -53,7 +53,15 @@ The install dialog asks for the three values above. Claude Code keeps the URL
 and client ID in your user `settings.json` (under `pluginConfigs`) and the
 **secret in your system's secure credential store**, because the manifest marks
 it `sensitive` ([plugins reference](https://code.claude.com/docs/en/plugins-reference),
-"User configuration"). Then:
+"User configuration"). It also asks for three optional settings:
+`default_target`, `auto_attach`, and **`tenant`** — the tenant every call
+acts in; empty uses your default, which is your personal workspace when it is
+ready. The `tenant` setting reaches the plugin's MCP server and its
+SessionStart hook as `SWARM_TENANT`, and a `SWARM_TENANT` already in the
+environment Claude Code was started with **wins** over it. `sc` in a terminal
+reads `SWARM_TENANT` only, and `sc whoami` says which tenant answered and
+which setting chose it ([plugin/README.md](../plugin/README.md), "Acting as
+one of several tenants"). Then:
 
 ```text
 /reload-plugins

@@ -308,8 +308,10 @@ module "cloud_run" {
       env         = local.service_env["swarm-api"]
       # SWARM_CHILD_KEY (and, during a rotation, SWARM_CHILD_KEY_PREVIOUS) by
       # Secret Manager reference, only once enable_child_tasks is on
-      # (child_tasks.tf).
-      secret_env = local.child_key_secret_env
+      # (child_tasks.tf); and SWARM_LIVE_KEY, the live relay's ticket key,
+      # only once the relay is on (locals.tf `live_key_secret_env`, live.tf);
+      # and SWARM_SETTINGS_KEY always (settings_mac.tf).
+      secret_env = local.api_secret_env
       # The audience a worker mints its ID token for when it calls the child
       # routes (SWARM_API_AUDIENCE): a constant, because the worker cannot be
       # told this service's URL-shaped API_AUDIENCE without a cycle. Accepted
@@ -354,10 +356,12 @@ module "cloud_run" {
       # The drain loop is a single serialised pass over admissible work.
       # Concurrent requests on one instance would have them contend on the same
       # Firestore documents and abort each other.
-      concurrency      = 1
-      request_timeout  = "540s"
-      env              = local.service_env["swarm-scheduler"]
-      secret_env       = local.scheduler_child_key_secret_env
+      concurrency     = 1
+      request_timeout = "540s"
+      env             = local.service_env["swarm-scheduler"]
+      # SWARM_CHILD_KEY once child tasks are on, and SWARM_SETTINGS_KEY
+      # (settings_mac.tf): locals.tf `scheduler_secret_env`.
+      secret_env       = local.scheduler_secret_env
       custom_audiences = [local.push_audiences["swarm-scheduler"]]
       invokers         = { tick = module.iam.tick_member }
     }
@@ -494,12 +498,11 @@ module "scheduler" {
   # same value verify.tf gives its own direct caller of swarm-api. The same
   # tenants get the #454 issue-run tick (`issue_run_advance`), as the same
   # account, on var.issue_run_advance_schedule's default of every minute,
-  # and the issue sweeper (`issue_sweep`), as the same account, on
-  # var.issue_sweep_schedule's default of :07 and :37 -- which starts nothing
-  # until var.enable_issue_sweep (swarm-api's SWEEP_ENABLED) and the tenant's
-  # own switch are on -- and the stranded-PR sweep (`stranded_pr_sweep`, part
-  # of #295), as the same account, at :19 and :49, which only reads, stores and
-  # logs `pr_stranded` (redrive false; the monitoring module alerts on it).
+  # and the stranded-PR sweep (`stranded_pr_sweep`, part of #295), as the
+  # same account, at :19 and :49, which only reads, stores and logs
+  # `pr_stranded` (redrive false; the monitoring module alerts on it). The
+  # issue sweeper's job was deleted on 2026-10-12: the tenant's `issue-sweep`
+  # schedule replaced it (modules/scheduler/jobs.tf).
   api_endpoint      = module.cloud_run.service_urls["swarm-api"]
   rollup_tenant_ids = toset(keys(var.tenants))
 
@@ -515,6 +518,12 @@ module "scheduler" {
   # tfvars variable: it runs even while var.workspace_apply_publish is off,
   # which is exactly when an approved workspace waits (2026-10-09).
   enable_workspace_sweep = true
+
+  # #1347 (owner decision Q5): swarm-workspace-secrets-rotation-sweep, the
+  # hourly caller that ends a rotated-out workspace secret's 24-hour grace.
+  # A literal, like the workspace sweep: an environment without it keeps
+  # every rotated-out value enabled for ever.
+  enable_secrets_rotation_sweep = true
 
   # The API publishes a wake message on submission; the reconciler republishes
   # when it returns reclaimed work to READY.

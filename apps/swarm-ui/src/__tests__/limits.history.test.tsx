@@ -130,6 +130,9 @@ describe('Pool limits says who last changed a ceiling, once the API serves it (#
   })
 
   it('still reads not recorded for a pool that carries neither field', async () => {
+    // The admin pool read answered and holds no record for these pools: the
+    // "nobody has changed it" case, which alone is the dash (VQA V078).
+    api.loadAdminPools.mockResolvedValue({ status: 'ok', data: { pools: [] }, fetchedAt: Date.now() })
     await rows(capacity(POOLS()))
     const side = open('tenant:eng')
     expect([...side.querySelectorAll('.adm-not-recorded')].map((m) => m.textContent)).toEqual(['not recorded', 'not recorded'])

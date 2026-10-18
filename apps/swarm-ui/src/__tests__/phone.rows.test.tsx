@@ -21,6 +21,7 @@
 // Workflows.tsx.
 
 import STYLES from '../styles.css?raw'
+import { painted } from './marks'
 import WORKFLOWS_SRC from '../Workflows.tsx?raw'
 import WORKFLOW_VIEWS_SRC from '../WorkflowViews.tsx?raw'
 import { describe, expect, it } from 'vitest'
@@ -145,6 +146,19 @@ describe('#109: the phone step Table keeps the columns that compare rows', () =>
     el.className = 'ctl-table wf-table is-scroll'
     expect(cascade(STYLES, el, 'mask-image', PHONE).winner).toBeNull()
     expect(cascade(STYLES, el, 'background-attachment', PHONE).winner).toBeNull()
+  })
+
+  // VQA V109: the workflow LIST scrolls sideways at 400 too, and its columns
+  // were cut at the edge mid-word with no cue. MUTATION: draw the list in a
+  // plain `div`, or drop `.wfl-scroll.has-more`.
+  it('fades the workflow list’s right edge the same way, only while columns are off it (V109)', () => {
+    expect(WORKFLOWS_SRC).toMatch(/<MoreRight className="table-wrap is-scroll wfl-scroll">\s*<table className="wfl-table">/)
+    const el = document.createElement('div')
+    el.className = 'table-wrap is-scroll wfl-scroll has-more'
+    // The list's sheet (styles/workflows.css) as well as styles.css: `painted` reads the bundle.
+    expect(painted(el, 'mask-image', PHONE) ?? '').toMatch(/^linear-gradient\(to left/)
+    el.className = 'table-wrap is-scroll wfl-scroll'
+    expect(painted(el, 'mask-image', PHONE)).toBeNull()
   })
 
   it('sets `has-more` from the scroller, and clears it at the right edge', () => {

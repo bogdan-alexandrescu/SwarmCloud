@@ -75,6 +75,8 @@ from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE
 
 from .detect import sanitised
 from .model import ExecutionPhase, ExecutionView, JobResourceView, Termination, as_datetime
+from .startproblem import StartProblem, pods_start_problem
+from .startsteps import StartRead, pods_start_steps
 
 MANAGED_LABEL = "managed-by"
 #: The marker this service itself would stamp. Other components stamp their own.
@@ -1644,6 +1646,46 @@ class GkeBackend:
             ),
             eviction=eviction,
         )
+
+    def start_problem(self, execution: ExecutionView) -> StartProblem | None:
+        """Why a Job's pod is not starting, from its container statuses (F1-POD).
+
+        For a task still DISPATCHED or STARTING: a container -- a native
+        sidecar or init container included -- Waiting in one of
+        `startproblem.START_PROBLEM_REASONS`, or one that has restarted. On
+        2026-10-11 the browser pods' `livegate` sidecar crash-looped for three
+        minutes and the task read only "dispatched"; `termination` could not
+        see it, because a crash-looping sidecar never ends the Job.
+
+        The same `pods list` `termination` makes, which the `swarm-reaper`
+        Role already grants, found by the same labels, and never outside the
+        tenant namespace prefix. None when the pod is starting normally, when
+        no pod exists yet, or when the namespace is not a tenant's. Raises when
+        the call fails; the caller then records and clears nothing.
+        """
+        found = self.start_read(execution)
+        return found.problem if found is not None else None
+
+    def start_read(self, execution: ExecutionView) -> StartRead | None:
+        """The Job's pod read once: its start problem and its start-up steps (F1-POD, STARTUP-API).
+
+        One `pods list` serves both `start_problem` and the `startup_progress`
+        steps (`startsteps.pods_start_steps`), so the progress bar costs the
+        reconciler no second read of a starting pod. None when no pod exists
+        yet or the namespace is not a tenant's; raises when the call fails.
+        """
+        namespace = execution.namespace
+        if not namespace or not namespace.startswith(self._prefix):
+            return None
+        self._configure()
+        for label in JOB_NAME_POD_LABELS:
+            listed = self._core.list_namespaced_pod(
+                namespace=namespace, label_selector=f"{label}={execution.name}"
+            )
+            pods = list(getattr(listed, "items", None) or [])
+            if pods:
+                return StartRead(problem=pods_start_problem(pods), steps=pods_start_steps(pods))
+        return None
 
     def _job_view(self, job: Any, namespace: str) -> ExecutionView | None:
         """One Job as an ExecutionView, or None when it is not ours to judge."""

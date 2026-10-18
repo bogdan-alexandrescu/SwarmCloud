@@ -1,0 +1,60 @@
+/* ==========================================================================
+   GITHUB PERMISSIONS HEALTH, DESIGN 2 "ORG CARDS" (#1086, PERM-2).
+
+   Work › Setup › GitHub, the repository page's card and the list's dot
+   (PermissionCards.tsx). Built on the canonical Card, Chip, Button and
+   ToneMark; the classes here are layout only, every colour is a token, and
+   the state is carried by the brand marks' silhouettes, never a hue alone.
+   A sheet of its own so this lane does not touch styles.css (open PR #1088).
+   ========================================================================== */
+
+.fp-section { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; }
+.fp-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.fp-cards { display: flex; flex-direction: column; gap: 10px; }
+.fp-checked { margin: 0; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.fp-title { display: inline-flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; min-width: 0; overflow-wrap: anywhere; }
+.fp-title small { font-size: var(--t-micro); color: var(--text-dim); font-weight: 400; }
+.fp-card.is-bad { border-left: 3px solid var(--s-bad); }
+.fp-acts { flex: none; }
+.fp-body { display: flex; flex-direction: column; gap: 8px; }
+.fp-lines { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.fp-line { display: flex; flex-direction: column; gap: 2px; padding: 6px 0; border-top: 1px solid var(--line); min-width: 0; }
+.fp-line:first-child { border-top: 0; }
+.fp-words { font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); overflow-wrap: anywhere; }
+.fp-jargon { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); overflow-wrap: anywhere; }
+.fp-note { margin: 0; }
+.fp-error { overflow-wrap: anywhere; }
+.fp-ok { margin: 0; }
+.fp-fix { display: flex; flex-wrap: wrap; gap: 6px; }
+.fp-dot { display: inline-flex; align-items: center; cursor: help; }
+
+/* FP-DETAIL: the header's summary, and the open card's grants table, extras,
+   covers / via lines. The table scrolls inside its card rather than widening
+   it; the mark column carries a hidden word, so the state is never a hue or a
+   silhouette alone. */
+.fp-summary { flex-basis: 100%; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); font-weight: 400; }
+.fp-detail { display: flex; flex-direction: column; gap: 6px; }
+.fp-grants-wrap { overflow-x: auto; }
+table.fp-grants { border-collapse: collapse; width: 100%; font-size: var(--t-micro); }
+table.fp-grants th { font-weight: 600; color: var(--text-dim); text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+table.fp-grants td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+table.fp-grants tr:last-child td { border-bottom: 0; }
+table.fp-grants tr.is-short td { color: var(--text); font-weight: 600; }
+.fp-perm { white-space: nowrap; }
+.fp-mark { white-space: nowrap; }
+.fp-for { display: flex; flex-direction: column; gap: 2px; min-width: 14em; }
+.fp-caps { color: var(--text-dim); }
+.fp-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.fp-extra summary { cursor: pointer; font-size: var(--t-micro); color: var(--text-dim); }
+.fp-extra-list { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: var(--t-micro); }
+.fp-covers, .fp-via, .fp-when { margin: 0; overflow-wrap: anywhere; }
+.fp-via { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+
+/* ON A PHONE the cards are already one column; the head's chip and fold
+   button drop under the name, and the fix button spans the card, so neither
+   is pushed off the right edge by a long org name. */
+@media (max-width: 560px) {
+  .fp-card .c-card-h { flex-wrap: wrap; }
+  .fp-acts { margin-left: 0; }
+  .fp-fix > .c-btn { flex: 1 1 100%; justify-content: center; min-height: 44px; }
+}

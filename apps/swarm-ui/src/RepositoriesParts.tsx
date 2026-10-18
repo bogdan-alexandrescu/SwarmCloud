@@ -5,14 +5,14 @@
  * canonical set that is on main (components.html A); lane U0's set is landing
  * in parallel, and a later pass can swap each of these for its own by name.
  */
-import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
-import { Button, ButtonLink, Dash, EmptyState, LoadingState, routedClick, type ButtonKind, type ButtonSize } from './components'
+import { Fragment, useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
+import { Banner, Button, ButtonLink, Dash, EmptyState, LoadingState, routedClick, type ButtonKind, type ButtonSize } from './components'
 import { MarkGlyph } from './marks'
 import { AGED_AFTER_MS, FailedPanel, RefreshControl, useClaimPageAge } from './Shell'
 import type { ApiError, Result } from './fetch'
 import { addressToPath } from './paths'
 import { AGE_TICK_MS, useNow } from './useNow'
-import { CAPABILITIES, coverageDetail, coverageRatio, coverageWords, notServed, pct, type CapCell, type CapRow, type Freshness, type RepoRecord } from './RepositoriesData'
+import { CAPABILITIES, coverageDetail, coverageRatio, coverageWords, notServed, pct, shortSha, thousands, type CapCell, type CapRow, type Freshness, type RepoRecord } from './RepositoriesData'
 
 /**
  * One read, re-run on `reload()` and whenever `key` changes. A late answer for an old key is dropped.
@@ -65,16 +65,19 @@ export type UrRead<T> = { state: Result<T>; reload: () => void }
  * page age, so the frame prints none beside it: one age per screen. These
  * pages are read once per visit, so it carries no cadence (#117 names none).
  */
-export function UrRefresh({ reads }: { reads: readonly UrRead<unknown>[] }) {
+export function UrRefresh({ reads, ageOf = reads }: { reads: readonly UrRead<unknown>[]; ageOf?: readonly UrRead<unknown>[] }) {
   useClaimPageAge(true)
   const now = useNow(AGE_TICK_MS)
-  const ats = reads.flatMap((r) => (r.state.status === 'loading' || r.state.status === 'error' ? [] : [r.state.fetchedAt]))
+  // THE AGE IS THE PAGE'S OWN READ'S (V223). `ageOf` names the reads the
+  // page stands on: a repository whose registration is still pending, or
+  // failed, said "read 0 s ago" from the index read beside it on this control.
+  const ats = ageOf.flatMap((r) => (r.state.status === 'loading' || r.state.status === 'error' ? [] : [r.state.fetchedAt]))
   const readAt = ats.length === 0 ? null : Math.max(...ats)
   return (
     <RefreshControl
       readAt={readAt}
       now={now}
-      stale={reads.some((r) => r.state.status === 'stale') || (readAt !== null && now - readAt > AGED_AFTER_MS)}
+      stale={ageOf.some((r) => r.state.status === 'stale') || (readAt !== null && now - readAt > AGED_AFTER_MS)}
       reading={reads.some((r) => r.state.status === 'loading')}
       onRefresh={() => {
         for (const r of reads) r.reload()
@@ -306,10 +309,24 @@ export function UrNavButton({
   )
 }
 
+/** The longest label a segment of a row of three or more holds before the row is drawn as a stack (V220). */
+export const SEGMENT_WORDS = 32
+
+/**
+ * Whether a group's options are sentences rather than segment words (V220):
+ * three or more options, one longer than `SEGMENT_WORDS`. The change trigger's
+ * "Webhook · on push to the default branch" wrapped its row in a half-width
+ * card at 1440, leaving "Off" alone on a second row under a divider.
+ */
+export function stacksOf(options: readonly { label: ReactNode }[]): boolean {
+  return options.length > 2 && options.some((o) => typeof o.label === 'string' && o.label.length > SEGMENT_WORDS)
+}
+
 /**
  * A single choice drawn as the canonical segmented control (`c-seg`, whose
  * `aria-checked` state it already styles), with radio semantics: the frames'
  * `.radio` rows (schedule, scope, policy) are one-of-N choices, not toggles.
+ * Options that are sentences are one segment per line (`is-stack`, V220).
  */
 export function UrRadio<K extends string>({
   label,
@@ -317,16 +334,20 @@ export function UrRadio<K extends string>({
   value,
   onChange,
   disabled = false,
+  stack = stacksOf(options),
 }: {
   label: string
   options: readonly { key: K; label: ReactNode; title?: string; disabled?: boolean }[]
   value: K | null
   onChange?: (k: K) => void
   disabled?: boolean
+  /** One segment per line; by default when the options are sentences (`stacksOf`). */
+  stack?: boolean
 }) {
+  const cls = ['c-seg', 'ur-radio', stack ? 'is-stack' : null, disabled ? 'is-readonly' : null].filter(Boolean).join(' ')
   return (
     // A whole group disabled is a value shown, not a choice refused: drawn read-only, at full contrast (V046).
-    <div className={disabled ? 'c-seg ur-radio is-readonly' : 'c-seg ur-radio'} role="radiogroup" aria-label={label} aria-readonly={disabled || undefined}>
+    <div className={cls} role="radiogroup" aria-label={label} aria-readonly={disabled || undefined}>
       {options.map((o) => (
         <button
           key={o.key}
@@ -350,6 +371,30 @@ export function UrRadio<K extends string>({
  */
 export function writeFailure(e: ApiError): string {
   return notServed(e) ? 'Not served yet: this API does not take this request yet.' : e.message
+}
+
+/**
+ * A repository path that breaks only after a `/` (V216): with
+ * `overflow-wrap: anywhere` the Modules column cut "swarm_common" into
+ * "swarm_comm / on". The text is unchanged; each `/` is followed by a break
+ * opportunity, so a narrow column wraps at a directory, never inside a name.
+ */
+export function SlashBreaks({ path }: { path: string }) {
+  const parts = path.split('/')
+  return (
+    <>
+      {parts.map((p, i) => (
+        <Fragment key={i}>
+          {p}
+          {i < parts.length - 1 && (
+            <>
+              /<wbr />
+            </>
+          )}
+        </Fragment>
+      ))}
+    </>
+  )
 }
 
 /** The test-map bar: filled to the ratio, or hatched when there is nothing measured. */
@@ -376,10 +421,10 @@ export function testsMappedWhy(r: RepoRecord): string {
  * `index.coverage` serves (QA G4-03, repo-index.md §6.2). Never a percentage
  * of source files: the index does not count those.
  */
-export function TestsMapped({ r }: { r: RepoRecord }) {
+export function TestsMapped({ r, cut = false }: { r: RepoRecord; cut?: boolean }) {
   const c = r.index.coverage
   const words = coverageWords(c)
-  const detail = coverageDetail(c)
+  const detail = cutDetail(c, cut)
   const why = testsMappedWhy(r)
   return (
     <div className="ur-tm">
@@ -437,4 +482,86 @@ export function scrollToShow(strip: { scrollLeft: number; clientWidth: number },
   if (item.left < strip.scrollLeft) return Math.max(0, item.left - FADE_PX)
   if (item.left + item.width > strip.scrollLeft + strip.clientWidth) return item.left + item.width - strip.clientWidth + FADE_PX
   return null
+}
+
+/**
+ * THE EDGE COUNT, SAID AS CUT WHEN THE INDEX CUT ITS TEST MAP (live QA
+ * RSA-4, 2026-10-11). The indexer keeps at most its ceiling of edges and
+ * names `test_map` in the document's `truncated`; "1,000 edges" then reads as
+ * a complete count when 1,000 is only where the list stopped. `cut` comes from
+ * the index document, so a page that has not read it says what was served.
+ */
+export function edgesWords(edges: number, cut: boolean): string {
+  return cut ? `${thousands(edges)}+ edges (cut)` : `${thousands(edges)} edge${edges === 1 ? '' : 's'}`
+}
+
+/** `coverageDetail`, with the edges said as cut when the test map was (RSA-4). */
+export function cutDetail(c: RepoRecord['index']['coverage'], cut: boolean): string | null {
+  if (!cut || c === null || c.test_map_edges === null) return coverageDetail(c)
+  const always = c.always_tests === null ? [] : [`${thousands(c.always_tests)} always-run`]
+  return [edgesWords(c.test_map_edges, true), ...always].join(' · ')
+}
+
+/**
+ * INDEXING SPENDS CAPACITY, SO IT IS CONFIRMED FIRST (live QA RSA-15,
+ * 2026-10-11). Index now and the full run each queue a task through the API
+ * on one click; the task holds capacity from the moment it is LEASED until it
+ * ends (invariants 1 and 3), so a misclick was a run nobody meant. This is the
+ * same inline confirmation the Access page uses for a push test, with the safe
+ * choice focused and Esc taking it, so a keyboard reader lands on Cancel.
+ */
+export function UrConfirmIndex({
+  name,
+  kind,
+  base,
+  busy,
+  onConfirm,
+  onCancel,
+}: {
+  name: string
+  kind: 'full' | 'incremental'
+  /** The index an incremental run starts from; null when there is none. */
+  base: string | null
+  busy: boolean
+  onConfirm: () => void
+  onCancel: () => void
+}) {
+  const box = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    box.current?.querySelector<HTMLButtonElement>('button[data-safe]')?.focus()
+  }, [])
+  return (
+    <div
+      className="ur-confirm"
+      ref={box}
+      data-confirm={kind}
+      onKeyDown={(e) => {
+        if (e.key !== 'Escape' || busy) return
+        e.stopPropagation()
+        onCancel()
+      }}
+    >
+      <Banner
+        tone="warn"
+        title={`Queue ${kind === 'full' ? 'a full' : 'an incremental'} index run for ${name}?`}
+        actions={
+          <>
+            <Button kind="primary" size="sm" busy={busy} onClick={onConfirm}>
+              Queue {kind} run
+            </Button>
+            <Button size="sm" data-safe="" disabled={busy} onClick={onCancel}>
+              Cancel
+            </Button>
+          </>
+        }
+      >
+        <p className="ur-small">
+          {kind === 'full'
+            ? 'A full run re-reads every file and re-resolves every call site with the language servers.'
+            : `An incremental run re-reads only what changed since the index at ${base === null ? 'its last commit' : shortSha(base)}.`}{' '}
+          It is a task like any other: it holds capacity from the moment it is leased until it finishes.
+        </p>
+      </Banner>
+    </div>
+  )
 }

@@ -13,20 +13,33 @@ and `eng@partner.com` both derive `eng`, and a registered group `u-eng@saga.xyz`
 derives what the personal tenant of `eng@saga.xyz` derives. Submitting was
 already refused by `ensure_tenant`; listing, reading and CANCELLING were not.
 `tenant_scope` applies that same principal check before any store call here.
+
+NAMES BESIDE EMAILS (docs/design/user-profile.md §4.4). The two task reads
+serve `submitted_by_name` beside `submitted_by`, from one lookup per page
+(`people.add_names`): ten tasks by three people read three names once. A name
+is a label; the submitter filter and every check here keep using the email.
 """
 
 from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 from swarm_common.states import TaskState
 
+from .. import agent_questions
 from ..agent_output import AgentOutputService
 from ..attempt_totals import totals_for, with_totals
-from ..children import PARENT_CANCELLED, cascade_children
+from ..children import (
+    PARENT_CANCELLED,
+    PROOF_HEADER,
+    TIMESTAMP_HEADER,
+    ChildService,
+    cascade_children,
+)
 from ..auth import AuthContext
 from ..codec import attempt_to_api, task_to_api
 from ..deps import (
@@ -38,8 +51,12 @@ from ..deps import (
     tenant_scope,
 )
 from ..errors import Forbidden, ValidationFailed
+from ..handoff import HandoffService
+from .children import child_service
 from ..heartbeats import heartbeats_for_page
+from ..people import add_names, name_lookup
 from ..schemas import TaskBatchCreate, TaskCreate
+from ..startup import startup_of
 from ..task_accounts import accounts_for, accounts_for_attempts
 from ..task_input import TaskMasking, input_copy, masking_for
 from ..waiting import waiting_for_page
@@ -250,6 +267,7 @@ def list_tasks(
         "next_page_token": page.next_page_token,
         "tenant_id": tenant_id,
     }
+    add_names(name_lookup(ctx), payload["tasks"], ("submitted_by",))
     if summary:
         payload["view"] = "summary"
     return payload
@@ -270,18 +288,18 @@ def get_task(
     # 2026-10-05, lane review P1): the task document describes only the attempt
     # that ended last. One attempt query; see `swarm_api.attempt_totals`.
     totals = totals_for(ctx.db, tenant_id, [task.id])
-    return {
-        "task": with_totals(
-            task_to_api(
-                task,
-                waiting.get(task.id),
-                account=accounts.get(task.id),
-                console_url=ctx.settings.console_url,
-                heartbeat=beats.get(task.id),
-            ),
-            totals,
-        )
-    }
+    served = with_totals(
+        task_to_api(
+            task,
+            waiting.get(task.id),
+            account=accounts.get(task.id),
+            console_url=ctx.settings.console_url,
+            heartbeat=beats.get(task.id),
+        ),
+        totals,
+    )
+    add_names(name_lookup(ctx), [served], ("submitted_by",))
+    return {"task": served}
 
 
 @router.post("/{task_id}/cancel")
@@ -342,13 +360,14 @@ def cancel_task(
     # A task cancelled between attempts has already spent: the response
     # carries every attempt's totals, as `get_task` does (P1 follow-up).
     totals = totals_for(ctx.db, tenant_id, [task.id])
+    served = with_totals(
+        task_to_api(task, account=accounts.get(task.id), console_url=ctx.settings.console_url),
+        totals,
+    )
+    # `submitted_by_name` beside `submitted_by`, as `get_task` serves it.
+    add_names(name_lookup(ctx), [served], ("submitted_by",))
     return {
-        "task": with_totals(
-            task_to_api(
-                task, account=accounts.get(task.id), console_url=ctx.settings.console_url
-            ),
-            totals,
-        ),
+        "task": served,
         # A task holding capacity stays in its state until the worker or the
         # reconciler releases the lease; decrementing the pool from here would
         # free a slot that a live container still occupies.
@@ -357,6 +376,101 @@ def cancel_task(
         # Whether this call asked the backend to stop the task's execution.
         "execution_cancel_requested": target is not None,
     }
+
+
+# --------------------------------------------------------------------------
+# The live-browser hand-off (docs/design/live-browser.md §4, lane LB-L10)
+# --------------------------------------------------------------------------
+
+
+def handoff_service(
+    ctx: AppContext = Depends(get_context), children: ChildService = Depends(child_service)
+) -> HandoffService:
+    return HandoffService(
+        settings=ctx.settings, db=ctx.db, store=ctx.store, children=children, now=ctx.now
+    )
+
+
+@router.post("/{task_id}/handoff", status_code=status.HTTP_201_CREATED)
+async def request_handoff(
+    task_id: str,
+    request: Request,
+    response: Response,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    serverless_authorization: str | None = Header(
+        default=None, alias="X-Serverless-Authorization"
+    ),
+    proof: str | None = Header(default=None, alias=PROOF_HEADER),
+    timestamp: str | None = Header(default=None, alias=TIMESTAMP_HEADER),
+    service: HandoffService = Depends(handoff_service),
+) -> dict:
+    """WORKER ONLY (§4.1 step 3): no `current_auth`, no `tenant_scope`. The
+    tenant is the worker's ID token checked against the body's, and the worker
+    is the attempt key's signature over the RAW body; `swarm_api.handoff`
+    holds every check."""
+    raw = await request.body()
+    wait, created = await run_in_threadpool(
+        lambda: service.request(
+            serverless_authorization or authorization,
+            task_id,
+            raw,
+            path=request.url.path,
+            proof=proof,
+            timestamp=timestamp,
+        )
+    )
+    if not created:
+        response.status_code = status.HTTP_200_OK
+    return {"human_wait": wait, "created": created}
+
+
+@router.post("/{task_id}/handoff/resolve")
+async def resolve_handoff(
+    task_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    serverless_authorization: str | None = Header(
+        default=None, alias="X-Serverless-Authorization"
+    ),
+    proof: str | None = Header(default=None, alias=PROOF_HEADER),
+    timestamp: str | None = Header(default=None, alias=TIMESTAMP_HEADER),
+    service: HandoffService = Depends(handoff_service),
+) -> dict:
+    """WORKER ONLY, as `request_handoff`: the wait ended (expired, cancelled,
+    live path lost, or returned)."""
+    raw = await request.body()
+    resolved = await run_in_threadpool(
+        lambda: service.resolve(
+            serverless_authorization or authorization,
+            task_id,
+            raw,
+            path=request.url.path,
+            proof=proof,
+            timestamp=timestamp,
+        )
+    )
+    return {"resolved": resolved}
+
+
+@router.post("/{task_id}/human-ready")
+def human_ready(
+    task_id: str,
+    background: BackgroundTasks,
+    tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+    service: HandoffService = Depends(handoff_service),
+) -> dict:
+    """§4.3: "I'm ready to sign in". The ONLY promotion of a
+    PARKED(HUMAN_REQUIRED) task; it writes READY and nothing else, so the
+    re-admission is an ordinary all-or-nothing one (invariants 1 and 2)."""
+    task = service.human_ready(tenant_id, task_id, email=auth.email, submitted_by=submitted_by)
+    # Admission sooner than the safety tick: a person is waiting.
+    background.add_task(
+        ring, ctx.waker, ctx.metrics, "human_ready", tenant_id=task.tenant_id, task_id=task.id,
+    )
+    return {"task": task_to_api(task, console_url=ctx.settings.console_url)}
 
 
 @router.get("/{task_id}/events")
@@ -399,6 +513,24 @@ def list_events(
         "events": [_event_to_api(e, masking) for e in page.items],
         "next_page_token": page.next_page_token,
     }
+
+
+@router.get("/{task_id}/startup")
+def read_startup(
+    task_id: str,
+    tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The current attempt's start-up steps and the profile's usual times (STARTUP-API).
+
+    The console's start-up progress bar (owner request 2026-10-13). The same
+    scope as `GET /v1/tasks/{id}`: another tenant's task, or another
+    submitter's for a continuation-scoped caller, is the same 404 as a
+    missing one. See `swarm_api.startup` for the shape and the reads.
+    """
+    task = ctx.store.get_task(tenant_id, task_id, submitted_by=submitted_by)
+    return startup_of(ctx.db, task, ctx.startup_estimates)
 
 
 @router.get("/{task_id}/attempts")
@@ -755,6 +887,57 @@ def read_answer(
     """
     return service.read_answer(
         tenant_id, task_id, attempt_id=attempt_id, submitted_by=submitted_by
+    )
+
+
+@router.get("/{task_id}/questions")
+def read_questions(
+    task_id: str,
+    tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+    service: AgentOutputService = Depends(agent_output_service),
+) -> dict:
+    """What the task's agent asked its owner, from its `questions.json`, redacted.
+
+    Only a file the worker validated and counted (`result_summary.questions`)
+    is served, read through the artifact read's tenant check and redaction.
+    `status` is `ok`, `none` (it asked none; `questions: []`, never a 404) or
+    `unavailable` (counted, not readable, with `unavailable_because`). Each
+    question carries the owner's `answer` (or null), and `may_answer` /
+    `may_answer_because` say whether the caller may answer. See
+    `swarm_api.agent_questions`.
+    """
+    return agent_questions.read_questions(
+        ctx.store, service, tenant_id, task_id, submitted_by=submitted_by,
+        viewer=auth.email, viewer_is_admin=auth.is_admin,
+    )
+
+
+@router.post("/{task_id}/answers")
+def answer_question(
+    task_id: str,
+    body: agent_questions.AnswerBody,
+    tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+    service: AgentOutputService = Depends(agent_output_service),
+) -> dict:
+    """The owner answers one of the agent's questions: an option label, free text, or both.
+
+    Only the task's submitter or an admin (403 for another member; another
+    tenant's task is a 404). `question_index` must name a question the worker
+    counted and `choice` one of THAT question's option labels; `text` is at
+    most 2,000 characters and is redacted before it is stored. One answer per
+    question: re-answering replaces it and keeps the replaced one in its
+    `history`. Stored as `metadata.owner_answers`; answers with the questions
+    as `GET /questions` now serves them. See `swarm_api.agent_questions`.
+    """
+    return agent_questions.answer_question(
+        ctx.store, service, ctx.db, tenant_id, task_id, body,
+        submitted_by=submitted_by, email=auth.email, is_admin=auth.is_admin, now=ctx.now(),
     )
 
 

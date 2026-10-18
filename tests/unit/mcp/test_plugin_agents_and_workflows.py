@@ -555,7 +555,10 @@ def test_run_js_uses_only_the_workflow_globals():
     tokens = _tokens(_RUN_JS.read_text())
     _, end = _meta_span(tokens)
     body = tokens[end:]
-    declared: set[str] = set()
+    # `meta` is the script's own `export const meta`, in scope for the body
+    # (the harnesses below run it as `const meta`); run.js reads its name to
+    # tell a launch by name from a titled copy (SC-TITLES).
+    declared: set[str] = {"meta"}
     for index, (kind, text) in enumerate(body):
         if kind != "ident":
             continue
@@ -762,14 +765,18 @@ _ANSWERS = {
 def test_run_js_submits_once_then_starts_one_step_row_per_step(tmp_path):
     got = _run(tmp_path, _SPEC, _ANSWERS)
     assert "error" not in got, got.get("error")
-    submit, *steps, status = got["calls"]
+    submit, *rest, status = got["calls"]
+    # The join row throws, so one status read is made for it between the rows
+    # (SPEED-D5): every other call is a step row.
+    steps = [c for c in rest if c["agentType"] == "sc:step"]
+    assert [c["label"] for c in rest if c["agentType"] != "sc:step"] == ["[SwarmCloud] scan · join · setup · status"]
 
     assert (submit["agentType"], submit["phase"], submit["label"]) == (
         "sc:workflow", "Submit", "[SwarmCloud] scan · 4 steps · setup · submit")
     lines = submit["prompt"].split("\n")
     assert lines[:3] == ["SUBMIT", "spec_digest: " + workflows.spec_digest(_SPEC), "BEGIN SPEC"]
-    assert lines[-1] == "END SPEC"
-    assert json.loads("\n".join(lines[3:-1])) == _SPEC, "the spec must reach the submitting agent verbatim"
+    assert lines[-2] == "END SPEC" and lines[-1].startswith("request: ")
+    assert json.loads("\n".join(lines[3:-2])) == _SPEC, "the spec must reach the submitting agent verbatim"
 
     # One row per step, labelled `[SwarmCloud] <workflow> · stage <n> · <step>`
     # (owner decision, 2026-10-01) with the CONSOLE'S stage, the DAG level plus
@@ -1000,7 +1007,8 @@ def test_run_js_takes_a_spec_files_path_and_submits_what_the_bridge_read(tmp_pat
         "sc:workflow", "Submit", "[SwarmCloud] specs/scan.json · setup · read spec")
     assert read["prompt"] == "READ SPEC\npath: specs/scan.json"
     # By the ref the bridge holds: the submit row never sees the spec.
-    assert submit["prompt"] == "SUBMIT\nspec_digest: " + workflows.spec_digest(_SPEC) + "\nspec_ref: spec_00112233aabbccdd"
+    assert submit["prompt"].split("\n")[:3] == ["SUBMIT", "spec_digest: " + workflows.spec_digest(_SPEC),
+                                                "spec_ref: spec_00112233aabbccdd"]
     assert got["result"]["workflow_id"] == "wf_1"
     assert "read the spec from /work/widgets/specs/scan.json" in got["logs"][0], got["logs"]
 
@@ -1125,23 +1133,26 @@ _STATUS_NAMING_JOIN = {
 
 def test_a_failed_relay_row_takes_its_state_from_the_workflow_status(tmp_path):
     """#285: the join row's relay failed to retype the answer into its
-    StructuredOutput five times, but the task SUCCEEDED. The workflow status
-    read after the rows names the step's state, so the row reports it -- with
-    the row's own error kept beside it and where the state came from."""
+    StructuredOutput five times, but the task SUCCEEDED. A workflow status read
+    made for the row at once names the step's state (SPEED-D5: before, the
+    read came after every row, and the row stayed an error row), so the row
+    reports it -- with the row's own failure kept beside it as a note, and
+    where the state came from."""
     got = _run(tmp_path, _SPEC, {**_ANSWERS, "STATUS": _STATUS_NAMING_JOIN})
 
     assert "error" not in got, got.get("error")
     rows = {row["step_id"]: row for row in got["result"]["steps"]}
     join = rows["join"]
     assert join["state"] == "SUCCEEDED"
-    assert "validation" in join["row_error"], "the row's own failure is kept beside the state"
+    assert "row_error" not in join, join
+    assert "validation" in join["row_note"], "the row's own failure is kept beside the state"
     assert "workflow status" in join["state_from"]
     # Only a recovered row carries the field: a row that answered keeps the
     # STEP_RESULT shape, and its own state, not the status's.
     assert "state_from" not in rows["scan-01"] and "state_from" not in rows["scan-02"]
     assert rows["scan-02"]["state"] == "FAILED"
     assert any(
-        line.startswith("join SUCCEEDED (from the workflow status; its row failed: ")
+        line.startswith("join SUCCEEDED (from the workflow status; its row could not answer: ")
         and "validation" in line
         for line in got["logs"]
     ), got["logs"]

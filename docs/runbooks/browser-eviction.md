@@ -15,7 +15,8 @@ Browser pods carry `cluster-autoscaler.kubernetes.io/safe-to-evict=false`
 (PR #31). That annotation stops the autoscaler moving a browser run in the
 middle of its work. It also means nothing in the cluster will ever reclaim one:
 a browser pod holds its node for as long as it runs. A browser attempt holds
-2 capacity units and an 8 vCPU / 16 GiB pod.
+1 capacity unit and a 4 vCPU / 8 GiB pod (contract request 79; 2 units and
+8 vCPU / 16 GiB before 2026-10-14).
 
 The owner's requirement, recorded on 2026-09-24 next to that annotation:
 

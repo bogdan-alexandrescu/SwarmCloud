@@ -15,8 +15,10 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import threading
+import time
 from dataclasses import dataclass, replace
-from typing import Any, Mapping, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol
 
 from swarm_common.identity import (
     AuthError,
@@ -24,23 +26,49 @@ from swarm_common.identity import (
     assert_allowed_domain,
     resolve_tenant,
     tenant_id_for_group,
+    tenant_id_for_user,
     tenant_member_for,
 )
 
-from .errors import Forbidden, Unauthenticated, UpstreamUnavailable
-from .gitidentity import clean_name
+from .errors import Forbidden, PreferencesUnavailable, Unauthenticated, UpstreamUnavailable
+from .gitidentity import clean_name, is_service_account
 from .groups import GroupLookupError, MembershipResolver
 from .settings import ApiSettings
+from .store import TENANTS
+from .workspaces import READY, WORKSPACES, is_service_identity, state_of
+
+if TYPE_CHECKING:  # the context only carries what `preferences` read
+    from .preferences import Preferences, StoredPreferences
 
 log = logging.getLogger(__name__)
+
+
+#: The routes that act in no workspace, as (HTTP method, route template), and
+#: so are served when the caller's preferences cannot be read and the request
+#: names no workspace (docs/design/user-profile.md §4.5, Q9). They are what a
+#: person needs to see their choices and pick one; on them `default_source` is
+#: "unavailable" and `tenant_choices` keeps today's order. Every other route
+#: answers that request 503 `preferences_unavailable` (`require_known_default`).
+#:
+#: A CLOSED LIST, held equal to these three by
+#: tests/unit/control_plane/test_default_workspace.py: a route that acts in a
+#: workspace -- the bell's `GET /v1/notifications` among them, whose items are
+#: a workspace's -- must not join it by accident, because joining it is
+#: running in a guessed workspace.
+PREFERENCE_FREE_ROUTES: frozenset[tuple[str, str]] = frozenset({
+    ("GET", "/v1/tenants/me"),
+    ("GET", "/v1/tenants/mine"),
+    ("GET", "/v1/profile"),
+})
 
 
 #: The request header a caller uses to pick ONE of its verified tenant
 #: memberships (the tenant switcher, owner decision 2026-10-01). It SELECTS and
 #: never grants: `Authenticator._select_tenant` honours it only when the named
 #: tenant is among the registered tenant groups Cloud Identity confirmed for
-#: this caller on this request. Absent (or empty), the tenant is today's first
-#: match in the admin-ordered `tenant_groups`.
+#: this caller on this request, or is the caller's OWN ready personal workspace
+#: (#1200). Absent (or empty), the tenant is that personal workspace when it is
+#: ready, else today's first match in the admin-ordered `tenant_groups`.
 TENANT_HEADER = "X-Swarm-Tenant"
 
 #: The same selection as a QUERY parameter, accepted on `TENANT_QUERY_ROUTES`
@@ -59,6 +87,10 @@ TENANT_QUERY = "tenant"
 TENANT_QUERY_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/v1/tasks/{task_id}/artifacts/raw"),
     ("GET", "/v1/tasks/{task_id}/checkpoints/{checkpoint_id}/content"),
+    # A live-browser recording is a `<video src>` (docs/design/live-browser.md
+    # §7; Recordings.tsx and Theater.tsx), which sends no header either.
+    ("GET", "/v1/tasks/{task_id}/live/recordings/raw"),
+    ("GET", "/v1/tasks/{task_id}/attempts/{attempt_id}/live/recordings/{seq}"),
 })
 
 
@@ -119,13 +151,17 @@ class AuthContext:
     #: read by `require_admin` -- `is_admin`/`is_pool_admin` stay False for
     #: every listed account regardless of this field.
     member_scope: str = ""
-    #: Every registered tenant group Cloud Identity CONFIRMED this caller is in,
-    #: as (tenant_id, group email), in the admin order of `tenant_groups` --
-    #: what `GET /v1/tenants/mine` lists and the only values `X-Swarm-Tenant`
-    #: may select. Derived from the same `member_groups` the default tenant is
+    #: Every tenant this caller may act in, as (tenant_id, principal) -- what
+    #: `GET /v1/tenants/mine` lists and the only values `X-Swarm-Tenant` may
+    #: select. FIRST, the caller's OWN personal workspace, (u-<caller>, the
+    #: caller's email), when `PersonalTenants.ready` says it is ready (#1200,
+    #: owner decision 2026-10-12: personal by default, groups are what you
+    #: switch to). Then every registered tenant group Cloud Identity CONFIRMED
+    #: this caller is in, (tenant_id, group email), in the admin order of
+    #: `tenant_groups`. Derived from the same answers the default tenant is
     #: resolved from, so the list and the default can never disagree: when it
-    #: is non-empty its first entry IS the default tenant. Empty for a
-    #: personal tenant and for a listed service account.
+    #: is non-empty its first entry IS the default tenant. Empty for a caller
+    #: in no group without a ready workspace, and for a listed service account.
     tenant_choices: tuple[tuple[str, str], ...] = ()
     #: On `ApiSettings.rollup_sweeper_users`: the identity the per-tenant
     #: Cloud Scheduler rollup jobs present (D17). May call the routes in
@@ -146,15 +182,60 @@ class AuthContext:
     #: sweeper's (one named tenant), so it is a different account on a
     #: different list, and the sweeper's route set is not widened.
     is_schedule_tick: bool = False
-    #: The verified token's `name` claim, cleaned for a commit identity
-    #: (`gitidentity.clean_name`); "" when the token carries none -- an IAP
-    #: assertion never does. Read from claims already verified, never asked of
-    #: a directory: what a person's commits are named (`gitidentity`).
+    #: What a person's commits are named (`gitidentity`), and the name the
+    #: platform calls them by (docs/design/user-profile.md §4.4, Q11 (a)): the
+    #: name stored in their preferences when they set one, else the verified
+    #: token's `name` claim -- which an IAP assertion never carries -- else
+    #: the email's local part. Cleaned for a commit identity
+    #: (`gitidentity.clean_name`). Never asked of a directory. A task keeps
+    #: the name recorded at admission, so a later rename rewrites no commit.
     display_name: str = ""
     #: The caller is `ApiSettings.platform_owner` (docs/workspaces.md §6.5).
     #: Always also `is_admin`. Read by the admin-role routes, which let only
     #: the owner change the owner's role.
     is_owner: bool = False
+    #: The caller's own `user_preferences` document as authentication read it
+    #: (`preferences.StoredPreferences`; the defaults when they have none), so
+    #: no route reads it a second time -- the bell's mutes and reminder come
+    #: from here (§4.6). None when it could not be read, and for every caller
+    #: that is not a person, which never reads it.
+    preferences: "StoredPreferences | None" = None
+    #: Why the first entry of `tenant_choices` is first (§4.5), for
+    #: `GET /v1/tenants/mine` and `GET /v1/profile`: "profile" (the stored
+    #: default), "personal" (the caller's own ready workspace), "first_group"
+    #: (the first confirmed group in admin order), "unavailable" (the
+    #: preferences could not be read, so today's order stands and is not the
+    #: person's known default), or "" when there is no choice at all.
+    default_source: str = ""
+    #: Why a stored default was NOT applied, or "": "not_a_member" (a group
+    #: the caller is no longer confirmed in) or "not_ready" (their own
+    #: personal workspace, while it is not ready). The stored value is kept;
+    #: it applies again as soon as it is one of `tenant_choices`.
+    default_ignored: str = ""
+    #: The request names no workspace AND the preferences could not be read,
+    #: so its default workspace is not known (Q9). Every route except
+    #: `PREFERENCE_FREE_ROUTES` then answers 503 `preferences_unavailable`
+    #: (`require_known_default`); it never runs in the computed default.
+    default_unknown: bool = False
+    #: The registered GROUP workspaces a platform admin may select although
+    #: Cloud Identity did not confirm them as a member, as (tenant_id, group
+    #: email) in the admin order of `tenant_groups` (docs/design/
+    #: workspace-roles.md §4.2.2, owner answer Q5). A SEPARATE list from
+    #: `tenant_choices`, so nothing that reads the memberships -- the default
+    #: tenant, `principal.groups`, the stored default -- changes. Empty unless
+    #: `is_admin` and `ApiSettings.platform_admin_reach` are both true and the
+    #: caller is a person (`Authenticator._special` is false). Never holds an
+    #: id already in `tenant_choices`, and never a `u-` id: a group slug can
+    #: land in the personal namespace, and a personal workspace is reachable
+    #: by its own person only. Built from configuration; asks Cloud Identity
+    #: nothing.
+    platform_reach: tuple[tuple[str, str], ...] = ()
+    #: How the caller reached `tenant_id`: "platform_admin" when
+    #: `X-Swarm-Tenant` selected an entry of `platform_reach` (a platform
+    #: admin acting in a group workspace they are not a member of, which
+    #: §4.2.4 audits), "" otherwise -- a membership, their own personal
+    #: workspace, or the default.
+    tenant_via: str = ""
 
     @property
     def email(self) -> str:
@@ -354,6 +435,81 @@ def bearer_token(authorization: str | None) -> str:
     return bearer_tokens(authorization)[0]
 
 
+class PersonalTenants:
+    """Whether a verified caller's OWN personal workspace is ready to act in (#1200).
+
+    Ready means BOTH documents the workspace job leaves agree on this person:
+
+      * `tenants/u-<caller>` exists, is `kind: user`, and its principal is the
+        caller's email -- the frozen slug keeps only the local part, so the id
+        alone does not say whose tenant it is;
+      * `workspaces/u-<caller>` is in state `ready` (docs/workspaces.md §1.1),
+        and its principal is that same email. Not `approved`: the build has
+        not made the service account, namespace and secrets yet, and the
+        workspace gate refuses a submit there anyway, so offering it as the
+        default would move a group member's work into a tenant that refuses it.
+
+    Asked of `email` only, which the caller passes from the verified token.
+
+    Cached per email for `cache_seconds`, both answers, as `AdminRoles` caches
+    a role: two document reads on every request otherwise. A workspace that
+    becomes ready is offered within that window; nothing here can offer one
+    person's tenant to another, so staleness only delays. Raises whatever
+    Firestore raises; `Authenticator` turns that into a 503.
+    """
+
+    def __init__(
+        self,
+        db: Any,
+        *,
+        cache_seconds: float = 30.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._db = db
+        self._cache_seconds = cache_seconds
+        self._clock = clock
+        self._cache: dict[str, tuple[float, bool]] = {}
+        self._lock = threading.Lock()
+
+    def ready(self, email: str) -> bool:
+        email = (email or "").strip().lower()
+        if not email:
+            return False
+        stamp = self._clock()
+        with self._lock:
+            cached = self._cache.get(email)
+        if cached is not None and cached[0] > stamp:
+            return cached[1]
+        answer = self._read(email)
+        with self._lock:
+            self._cache[email] = (stamp + self._cache_seconds, answer)
+        return answer
+
+    def _read(self, email: str) -> bool:
+        tenant_id = tenant_id_for_user(email)
+        tenant_snap = self._db.collection(TENANTS).document(tenant_id).get()
+        tenant = (tenant_snap.to_dict() or {}) if tenant_snap.exists else {}
+        if tenant.get("kind") != "user" or _principal(tenant) != email:
+            return False
+        record_snap = self._db.collection(WORKSPACES).document(tenant_id).get()
+        record = (record_snap.to_dict() or {}) if record_snap.exists else None
+        return state_of(record) == READY and _principal(record or {}) == email
+
+
+def _principal(doc: Mapping[str, Any]) -> str:
+    return str(doc.get("principal") or "").strip().lower()
+
+
+def _computed_source(ctx: AuthContext) -> str:
+    """Why `tenant_choices`' first entry is first when no stored default
+    applies (§4.5): the caller's own ready workspace, else the first confirmed
+    group in admin order. "" when there is no choice. The personal entry is
+    the one whose principal is the caller (`_with_own_workspace` makes it)."""
+    if not ctx.tenant_choices:
+        return ""
+    return "personal" if ctx.tenant_choices[0][1] == ctx.email else "first_group"
+
+
 class Authenticator:
     """Turns an Authorization header into an AuthContext."""
 
@@ -364,6 +520,8 @@ class Authenticator:
         groups: MembershipResolver,
         iap: Any = None,
         admin_roles: Any = None,
+        personal: "PersonalTenants | None" = None,
+        preferences: "Preferences | None" = None,
     ) -> None:
         self._settings = settings
         self._verifier = verifier
@@ -373,6 +531,15 @@ class Authenticator:
         # (a hand-built authenticator in a test) means configuration alone
         # decides admin, which is exactly the behaviour before §6.5.
         self.admin_roles = admin_roles
+        # Whether a caller's own personal workspace is ready (#1200). None (a
+        # hand-built authenticator in a test) offers no personal tenant, which
+        # is exactly the behaviour before #1200.
+        self._personal = personal
+        # A person's `user_preferences` document (docs/design/user-profile.md
+        # §4.5): their stored default workspace and name. None (a hand-built
+        # authenticator in a test) reads nothing and applies no stored
+        # default, which is exactly the behaviour before the profile.
+        self._preferences = preferences
         # Read once, here, at process start: an address on two lists is
         # refused before the service takes a request (`schedule_tick_users`).
         self._schedule_tick_users = frozenset(schedule_tick_users(settings))
@@ -395,9 +562,145 @@ class Authenticator:
         It is applied AFTER the identity is verified and its memberships
         resolved, and can only narrow the result to one of them -- see
         `_select_tenant`. A refusal raises before any route body runs.
+
+        Between the two, `_with_default` applies the person's stored default
+        workspace (docs/design/user-profile.md §4.5). `_select_tenant` is
+        unchanged by it: a request that names a tenant acts in that tenant,
+        one that names none acts in the first choice, as before.
         """
-        return self._select_tenant(
-            self._authenticate(authorization, iap_assertion), tenant
+        ctx = self._authenticate(authorization, iap_assertion)
+        ctx = self._with_default(self._with_own_workspace(ctx, tenant), tenant)
+        return self._select_tenant(ctx, tenant)
+
+    def _with_default(self, ctx: AuthContext, requested: str | None) -> AuthContext:
+        """Put the person's stored default workspace first (§4.5 steps 1-2).
+
+        Only a person (`_special` is false): a service identity, a listed
+        account and the platform's jobs never read preferences, and keep
+        today's default. The read goes through `Preferences.cached` (15
+        seconds per instance, keyed by email; a failure is never cached).
+
+        The stored default applies only when it is one of `tenant_choices`,
+        which this request's verified identity produced: a preference SELECTS
+        exactly as `X-Swarm-Tenant` does and never grants (invariant 9). A
+        group the person has left is ignored (`not_a_member`), and so is their
+        own workspace while it is not ready (`not_ready`); the stored value is
+        left as it is, and nothing here writes.
+
+        AN UNREADABLE DOCUMENT IS NEVER A GUESS (Q9). The order is left as it
+        is and `default_source` says "unavailable"; when the request names no
+        workspace, `default_unknown` makes every route outside
+        `PREFERENCE_FREE_ROUTES` a 503 (`require_known_default`), so nothing
+        runs in the computed default the person may have moved away from. A
+        request that names a workspace does not need the default and is
+        served, with `preferences` None.
+
+        A header naming a tenant outside `tenant_choices` is refused by
+        `_select_tenant` without this reading anything, as before. One naming
+        an entry of `platform_reach` is read for like a membership, so a
+        platform admin in a group workspace they are not in keeps their own
+        name and preferences (docs/design/workspace-roles.md §4.2.2).
+        """
+        if self._preferences is None or self._special(ctx):
+            return replace(ctx, default_source=_computed_source(ctx))
+        if requested and not self._names_a_choice(ctx, requested):
+            return ctx
+        try:
+            stored = self._preferences.cached(ctx.email)
+        except Exception as exc:  # noqa: BLE001 - PreferencesUnavailable or any Firestore failure
+            log.warning("preferences unreadable (%s)", type(exc).__name__)
+            return replace(
+                ctx, preferences=None, default_source="unavailable",
+                default_unknown=not requested,
+            )
+        ctx = replace(
+            ctx, preferences=stored,
+            display_name=clean_name(stored.display_name) or ctx.display_name,
+        )
+        chosen = stored.default_workspace
+        if not chosen:
+            return replace(ctx, default_source=_computed_source(ctx))
+        entry = next((c for c in ctx.tenant_choices if c[0] == chosen), None)
+        if entry is None:
+            ignored = "not_ready" if chosen == tenant_id_for_user(ctx.email) else "not_a_member"
+            return replace(ctx, default_source=_computed_source(ctx), default_ignored=ignored)
+        return replace(
+            ctx,
+            tenant_id=entry[0],
+            tenant_principal=entry[1],
+            tenant_choices=(entry, *(c for c in ctx.tenant_choices if c != entry)),
+            default_source="profile",
+        )
+
+    def _with_own_workspace(self, ctx: AuthContext, requested: str | None) -> AuthContext:
+        """Put the caller's OWN ready personal workspace first, as the default (#1200).
+
+        THE ID IS DERIVED FROM THE VERIFIED EMAIL, NEVER FROM THE HEADER: the
+        only personal tenant this can ever add is `tenant_id_for_user(ctx.email)`,
+        and only when `PersonalTenants.ready` confirms that tenant's documents
+        name THIS email -- the frozen slug drops the domain, so `bob@saga.xyz`
+        and `bob@partner.com` derive one id, and the principal is what tells
+        them apart. Another person's `u-` id is never in the list, so
+        `_select_tenant` refuses it exactly as it refuses a group the caller is
+        not in.
+
+        Only an ordinary human caller: the schedule tick, the rollup sweeper, a
+        listed service account and any service identity keep today's tenant,
+        so a CI or acceptance account's headerless default is unchanged.
+
+        A header naming neither a group this caller is in nor their own id is
+        refused below without reading anything, so a refusal still costs no
+        Firestore read. A failed read is a 503, never a guess, when the request
+        would act in the default or in the personal tenant: falling back to the
+        group would run work in a different tenant from the one this caller
+        acts in by default -- another secret, another GCS prefix -- exactly the
+        misfiling `_from_claims` refuses for a failed group lookup. A request
+        that NAMES one of its groups is unaffected by the answer, so it goes on
+        in that group without the personal entry. An entry of `platform_reach`
+        is treated exactly like one of its groups here (docs/design/
+        workspace-roles.md §4.2.2 step 2): the own entry is still offered
+        beside it, and a failed read still never refuses it.
+        """
+        if self._personal is None or self._special(ctx):
+            return ctx
+        own = tenant_id_for_user(ctx.email)
+        if requested and requested != own and not self._names_a_choice(ctx, requested):
+            return ctx
+        try:
+            ready = self._personal.ready(ctx.email)
+        except Exception as exc:  # noqa: BLE001 - any Firestore failure
+            log.warning("personal workspace unresolved (%s)", type(exc).__name__)
+            if requested and requested != own:
+                return ctx
+            raise UpstreamUnavailable(
+                "your personal workspace could not be read; retry shortly"
+            ) from None
+        if not ready:
+            return ctx
+        return replace(
+            ctx,
+            tenant_id=own,
+            tenant_principal=ctx.email,
+            tenant_choices=((own, ctx.email), *(
+                c for c in ctx.tenant_choices if c[0] != own
+            )),
+        )
+
+    @staticmethod
+    def _names_a_choice(ctx: AuthContext, requested: str) -> bool:
+        """Whether `requested` is one of the caller's memberships or, for a
+        platform admin, one of `platform_reach`'s entries."""
+        named = {tenant_id for tenant_id, _ in ctx.tenant_choices}
+        if ctx.is_admin:
+            named.update(tenant_id for tenant_id, _ in ctx.platform_reach)
+        return requested in named
+
+    @staticmethod
+    def _special(ctx: AuthContext) -> bool:
+        """Callers whose tenant is not a person's: never offered a personal one."""
+        return bool(
+            ctx.is_schedule_tick or ctx.is_rollup_sweeper or ctx.member_scope
+            or ctx.tenant_member or not ctx.email or is_service_identity(ctx.email)
         )
 
     def _authenticate(
@@ -700,7 +1003,7 @@ class Authenticator:
         admin_pool_users = {
             u.lower() for u in getattr(self._settings, "admin_pool_users", ())
         }
-        return AuthContext(
+        ctx = AuthContext(
             principal=principal,
             tenant_id=tenant_id,
             is_admin=is_admin,
@@ -710,12 +1013,163 @@ class Authenticator:
             admin_unresolved=(admin_unresolved or roles_unresolved) and not is_admin,
             is_pool_admin=email.lower() in admin_pool_users,
             tenant_choices=self._tenant_choices(member_groups),
-            display_name=clean_name(claims.get("name")),
+            # Q11 (a): the token's name claim, else the email's local part.
+            # `_with_default` puts a stored name in front of both.
+            display_name=clean_name(claims.get("name")) or clean_name(email.split("@", 1)[0]),
             is_owner=is_owner,
         )
+        # Last, from the finished context, so it can only ADD a separate list:
+        # the tenant, the choices and `principal.groups` above are exactly as
+        # they were before the reach existed.
+        return replace(ctx, platform_reach=self._platform_reach(ctx))
 
-    def is_tenant_member(self, email: str, tenant: Any) -> bool:
+    def _reach_enabled(self) -> bool:
+        # getattr because hand-built settings in tests predate the field,
+        # exactly as `allowed_users` above.
+        return bool(getattr(self._settings, "platform_admin_reach", False))
+
+    def _reachable_groups(self) -> tuple[tuple[str, str], ...]:
+        """(tenant_id, group) for every registered tenant group a platform
+        admin could reach: the walk `_tenant_choices` makes -- admin order,
+        the first group per id -- over ALL of `tenant_groups`, with every
+        `u-` id dropped. A group slug can land in the personal namespace
+        (the frozen `tenant_id_for_group` adds no prefix), and a personal
+        workspace is reachable by its own person only (§4.2.1). Dropping the
+        id, rather than the group, keeps the first-per-id rule: a later group
+        never stands in for a dropped one under the same id."""
+        reach: dict[str, str] = {}
+        for group in self._settings.tenant_groups:
+            reach.setdefault(tenant_id_for_group(group), group.lower())
+        return tuple((t, g) for t, g in reach.items() if not t.startswith("u-"))
+
+    def _platform_reach(self, ctx: AuthContext) -> tuple[tuple[str, str], ...]:
+        """`AuthContext.platform_reach` for this context (§4.2.2 step 1).
+
+        Empty unless the caller is a platform admin (`is_admin`; never
+        `is_pool_admin`, the sweeper, the tick or a listed account), the
+        reach is switched on, and the caller is a person. Every id already
+        among the caller's memberships is left out: a member reaches it as a
+        member. Asks Cloud Identity nothing -- `tenant_groups` is
+        configuration -- so a request naming a reach workspace costs no
+        directory call beyond the ones every request already makes.
+        """
+        if not ctx.is_admin or not self._reach_enabled() or self._special(ctx):
+            return ()
+        member_ids = {tenant_id for tenant_id, _ in ctx.tenant_choices}
+        return tuple(
+            (tenant_id, group) for tenant_id, group in self._reachable_groups()
+            if tenant_id not in member_ids
+        )
+
+    def holds_platform_admin(self, email: str, *, fresh: bool = False) -> bool:
+        """Whether `email` is a platform admin, asked without a request.
+
+        The same four sources `_from_claims` decides `is_admin` from:
+        `PLATFORM_OWNER`, `ADMIN_USERS`, an `admin_roles/` document and an
+        `ADMIN_GROUPS` membership. `fresh` reads the role document past
+        `admins.AdminRoles`' cache and asks Cloud Identity past the group
+        cache, for a re-check that a demotion a moment ago must already
+        change (§4.2.3). A lookup that fails is a 503, never a guess either
+        way, exactly as `is_tenant_member` -- unless another source has
+        already said yes, which no failure can turn into a no.
+        """
+        email = (email or "").strip().lower()
+        if not email:
+            return False
+        owner = (getattr(self._settings, "platform_owner", "") or "").lower()
+        if owner and email == owner:
+            return True
+        if email in {u.lower() for u in self._settings.admin_users}:
+            return True
+        unresolved = False
+        if self.admin_roles is not None:
+            try:
+                # Only a fresh question passes the keyword, so a resolver
+                # written before it is called as it always was.
+                held = (
+                    self.admin_roles.holds_admin(email, fresh=True)
+                    if fresh else self.admin_roles.holds_admin(email)
+                )
+            except Exception as exc:  # noqa: BLE001 - any Firestore failure
+                log.warning("admin role unresolved (%s)", type(exc).__name__)
+                unresolved = True
+            else:
+                if held:
+                    return True
+        admin_candidates = tuple(dict.fromkeys(self._settings.admin_groups))
+        if admin_candidates:
+            try:
+                groups = (
+                    self._groups.groups_for(email, admin_candidates, fresh=True)
+                    if fresh else self._groups.groups_for(email, admin_candidates)
+                )
+            except GroupLookupError as exc:
+                log.warning("admin membership unresolved for %s: %s", email, exc)
+                unresolved = True
+            else:
+                admin_set = {g.lower() for g in admin_candidates}
+                if any(g.lower() in admin_set for g in groups):
+                    return True
+        if unresolved:
+            raise UpstreamUnavailable(
+                "admin membership could not be resolved; retry shortly"
+            )
+        return False
+
+    def _reach_excluded(self, email: str) -> bool:
+        """The stored identities `_special` keeps out of the reach on a
+        request: a service identity, the schedule tick, the rollup sweeper
+        and a tenant's listed service account."""
+        sweepers = {u.lower() for u in getattr(self._settings, "rollup_sweeper_users", ())}
+        listed = {m.email.lower() for m in getattr(self._settings, "tenant_service_accounts", ())}
+        return bool(
+            is_service_identity(email) or email in self._schedule_tick_users
+            or email in sweepers or email in listed
+        )
+
+    def may_act_in(self, email: str, tenant: Any, *, fresh: bool = False) -> str:
+        """How the stored person `email` may act in `tenant` NOW, with nobody
+        on the call: "member", "platform_admin" or "" (§4.2.3).
+
+        For the paths that ask "is this person a member now?" of a stored
+        owner -- a schedule's firing, an issue run's auto step, a human-step
+        answer -- so a platform admin's own schedule in a group workspace they
+        are not in keeps firing, as Q5 says it must.
+
+        * "member" when `is_tenant_member` says so (`fresh` is passed on),
+          at no extra cost;
+        * else "platform_admin" when the tenant is a GROUP tenant, its id is
+          not a `u-` id, it is the registered group that id selects
+          (`_reachable_groups`: a group removed from `tenant_groups` is in
+          nobody's reach), the reach is on, `email` is a person, and
+          `holds_platform_admin(email, fresh=True)` -- one lookup per admin
+          source, asked only once membership has said no;
+        * else "".
+
+        A failed lookup is a 503 (`UpstreamUnavailable`), never a guess.
+        """
+        if self.is_tenant_member(email, tenant, fresh=fresh):
+            return "member"
+        email = (email or "").strip().lower()
+        if not email or not self._reach_enabled() or getattr(tenant, "kind", "") != "group":
+            return ""
+        tenant_id = (getattr(tenant, "tenant_id", "") or "").strip()
+        principal = (getattr(tenant, "principal", "") or "").strip().lower()
+        if tenant_id.startswith("u-") or (tenant_id, principal) not in self._reachable_groups():
+            return ""
+        if self._reach_excluded(email):
+            return ""
+        return "platform_admin" if self.holds_platform_admin(email, fresh=True) else ""
+
+    def is_tenant_member(self, email: str, tenant: Any, *, fresh: bool = False) -> bool:
         """Whether `email` belongs to `tenant` NOW, asked of the directory again.
+
+        `fresh` skips the resolver's per-(caller, group) cache
+        (`groups.CloudIdentityGroups.is_member(fresh=True)`), for a decision
+        that a removal from the group a minute ago must already change: an
+        await-input answer (docs/design/human-steps.md §4.2). Without it the
+        answer may be up to `group_cache_ttl_seconds` old, which is right for
+        the ordinary request path and nothing else.
 
         For work submitted on a member's behalf with nobody on the call -- an
         issue run's auto approval and its CI fix rounds (`routes.runs.
@@ -732,7 +1186,13 @@ class Authenticator:
         if getattr(tenant, "kind", "") != "group":
             return principal == email
         try:
-            held = self._groups.groups_for(email, (principal,))
+            # Only a fresh question passes the keyword, so every resolver
+            # written before it -- the tests' fakes included -- is called as
+            # it always was.
+            held = (
+                self._groups.groups_for(email, (principal,), fresh=True)
+                if fresh else self._groups.groups_for(email, (principal,))
+            )
         except GroupLookupError as exc:
             log.warning("tenant membership unresolved for %s: %s", email, exc)
             raise UpstreamUnavailable(
@@ -768,10 +1228,12 @@ class Authenticator:
 
         THE HEADER SELECTS; IT NEVER GRANTS (invariant 9). The only tenants it
         can name are the ones in `tenant_choices`, which this request's own
-        verified identity produced. Everything else -- another group's tenant,
-        a personal `u-` tenant (the caller's own included), an admin group, a
-        tenant that does not exist -- is one 403, raised here, before any route
-        body runs, so nothing is read and nothing is written.
+        verified identity produced: the caller's confirmed groups and, when it
+        is ready, the caller's OWN personal workspace (`_with_own_workspace`).
+        Everything else -- another group's tenant, another person's `u-`
+        tenant, the caller's own `u-` tenant before its workspace is ready, an
+        admin group, a tenant that does not exist -- is one 403, raised here,
+        before any route body runs, so nothing is written.
 
         `tenant_id` and `tenant_principal` are replaced TOGETHER from one
         entry, so they keep describing the same tenant (`_tenant_principal`'s
@@ -780,9 +1242,23 @@ class Authenticator:
         `is_pool_admin` and `principal.groups` are about the caller, not the
         tenant, and stay exactly as resolved.
 
-        Absent or empty: the context is returned untouched -- today's
-        first-match, byte for byte. Matched exactly: tenant ids are lowercase
+        Absent or empty: the context is returned untouched -- the default,
+        which is the first entry of `tenant_choices`. Matched exactly: tenant ids are lowercase
         slugs, and a near miss is a 403 rather than a guess.
+
+        A PLATFORM ADMIN'S REACH (docs/design/workspace-roles.md §4.2.2 step
+        3) is tried only after the memberships, and only for `is_admin`: a
+        match replaces `tenant_id` and `tenant_principal` together from the
+        one entry, as a membership does, and sets `tenant_via` to
+        "platform_admin". `platform_reach` never holds a `u-` id, so another
+        person's personal workspace is the same 403 for a platform admin as
+        for anyone. When the admin lookup did not answer (`admin_unresolved`)
+        the answer for any other id but a `u-` one is 503, not 403: the
+        unanswered lookup could have changed it, and a 403 would tell an
+        operator mid-incident they lack a privilege they hold. EVERY such id,
+        not only the registered ones, so that during the outage the answer
+        still does not say which tenant ids exist; a `u-` id is a 403 either
+        way, since no admin answer could ever select one.
         """
         if not requested:
             return ctx
@@ -791,6 +1267,20 @@ class Authenticator:
                 if tenant_id == ctx.tenant_id and group == ctx.tenant_principal:
                     return ctx
                 return replace(ctx, tenant_id=tenant_id, tenant_principal=group)
+        if ctx.is_admin:
+            for tenant_id, group in ctx.platform_reach:
+                if tenant_id == requested:
+                    return replace(
+                        ctx, tenant_id=tenant_id, tenant_principal=group,
+                        tenant_via="platform_admin",
+                    )
+        if ctx.admin_unresolved and self._reach_enabled() and not self._special(ctx) and \
+                not requested.startswith("u-"):
+            log.info("%s unresolved for %s: admin lookup did not answer", TENANT_HEADER, ctx.email)
+            raise UpstreamUnavailable(
+                "admin membership could not be resolved, and it decides whether "
+                f"you may select this tenant; retry shortly, or send no {TENANT_HEADER}"
+            )
         # The value is caller-supplied and arbitrary; it is not logged.
         log.info("%s refused for %s: not a verified membership", TENANT_HEADER, ctx.email)
         raise TenantNotMember(
@@ -811,6 +1301,30 @@ class Authenticator:
             if group.lower() in member_of:
                 return group.lower()
         return email
+
+
+def person_refusal(auth: AuthContext) -> str | None:
+    """Why this caller is not a PERSON, or None when it is one.
+
+    For the routes only a person may call: an await-input answer
+    (docs/design/human-steps.md §4.2 step 1, `routes.await_input`). A
+    verified human ID token is the only thing that passes. Refused: any
+    `*.gserviceaccount.com` principal (`gitidentity.is_service_account`) or
+    other service identity (`workspaces.is_service_identity`) -- a tenant's
+    worker GSA, the scheduler, a CI identity, one admitted through
+    ALLOWED_USERS and confirmed in a tenant's group -- and the platform's own
+    jobs and listed accounts, whatever their address: the schedule tick, the
+    rollup sweeper, a listed service account (contract request 30). Admin
+    status is not read: it is about the caller, and confers no exemption.
+    """
+    email = auth.email
+    if auth.is_schedule_tick or auth.is_rollup_sweeper:
+        return "the platform's scheduled jobs answer for no person"
+    if auth.member_scope or auth.tenant_member:
+        return "a listed service account answers for no person"
+    if not email or is_service_account(email) or is_service_identity(email):
+        return "a service account answers for no person; only a person signed in as themselves may"
+    return None
 
 
 #: Every admin route a POOL ADMIN (`ApiSettings.admin_pool_users`) may call, as
@@ -898,20 +1412,44 @@ ROLLUP_SWEEPER_ROUTES: frozenset[tuple[str, str]] = frozenset(
         # finished task's own tenant's token, for that tenant's gated
         # integrator, and moves only a step it claimed (`verdictpublish`).
         ("POST", "/v1/admin/tasks/finished"),
-        # The issue sweeper (owner decisions 2026-10-08, jobs.tf
-        # `issue_sweep`): lists one tenant's registered repositories' open
-        # issues with that tenant's token and starts issue runs for the
-        # candidates, each as its registration's creator
-        # (`routes.admin.registration_owner_auth`), never as the sweeper.
-        # Off unless SWEEP_ENABLED and the tenant's own switch say otherwise.
-        # Like the repository poll, the sweeper alone may call it.
-        ("POST", "/v1/admin/issues/sweep"),
+        # NOT the issue sweeper's route: it, its Cloud Scheduler job and
+        # SWEEP_ENABLED were removed on 2026-10-12 (Schedules S9, second
+        # change; docs/schedules.md §8.1 step 4). The tenant's `issue-sweep`
+        # schedule replaced them, and the schedule tick, not this identity,
+        # fires it.
         # The stranded-PR sweep (part of #295, jobs.tf `stranded_pr_sweep`):
         # reads one tenant's registered repositories' open pull requests with
         # that tenant's token, stores the rows and logs `pr_stranded`. It
         # submits nothing for this identity: `redrive: true` is refused unless
         # the caller is an admin (routes/strandedprs.py).
         ("POST", "/v1/admin/stranded-prs/sweep"),
+        # The workspace secrets rotation sweep (#1347, owner decision Q5;
+        # jobs.tf `secrets_rotation_sweep`, hourly): disables previous
+        # versions whose 24-hour grace has passed, each with its audit row,
+        # and never destroys one. It takes no argument, reads no value and
+        # grants nothing: what it may disable is fixed by the records' own
+        # `disable_after`.
+        ("POST", "/v1/admin/workspace-secrets/rotation-sweep"),
+        # The GitHub push hint (docs/design/graph-service.md §6.2, lane
+        # GS-HOOKS of #1384). OWNER DECISION 2026-10-16, recorded on #1384:
+        # the public receiver swarm-github-hooks RUNS AS this account and
+        # forwards a verified push's `{forge, full_name}` here; the design's
+        # own identity for it was declined. The route takes no tenant and no
+        # sha, and only polls now, through the poll's own `_poll_one` and with
+        # each workspace's own token, what the five-minute poll would poll
+        # anyway. THE TRADE-OFF THE OWNER ACCEPTED: a public-facing service
+        # now holds every route in this set, for every tenant
+        # (docs/runbooks/github-app.md, "Step 9").
+        ("POST", "/v1/admin/repositories/push"),
+        # The per-run MCP credential sweep (docs/design/registered-mcp-
+        # servers.md §4.4, owner decision Q2 of #1433; jobs.tf, lane MCP-IAM,
+        # every 10 minutes). It deletes the Secret Manager secret of a
+        # credential whose task has ended or whose `expires_in` has passed,
+        # and marks its row. It takes no argument, reads no value, submits
+        # nothing and grants nothing: what it may destroy is fixed by each
+        # row's own owner and expiry, and only a `-mcpc-` secret of the row's
+        # own tenant.
+        ("POST", "/v1/admin/mcp-credentials/sweep"),
     }
 )
 
@@ -1038,9 +1576,11 @@ def require_continuation_route(
     that is not admin-gated never reaches `require_admin`, so that gate alone
     would leave the sweeper an ordinary member everywhere else.
 
-    An ordinary member (`member_scope == ""`, not the sweeper) returns
-    immediately. `route=None` (no route matched) fails closed, same as
-    `require_admin`.
+    An ordinary member (`member_scope == ""`, not the sweeper) passes, unless
+    `require_known_default` refuses the request: this is the per-route gate
+    every authenticated request reaches (`deps.current_auth`, the live
+    socket), which is why that check is made here too. `route=None` (no route
+    matched) fails closed, same as `require_admin`.
     """
     if ctx.is_schedule_tick:
         if route is not None and route in SCHEDULE_TICK_ROUTES:
@@ -1053,11 +1593,31 @@ def require_continuation_route(
         method, path = route if route else ("?", "unmatched")
         raise Forbidden(f"the rollup sweeper may not call {method} {path}")
     if not ctx.member_scope:
-        return ctx
+        return require_known_default(ctx, route)
     if route is not None and route in CONTINUATION_ROUTES:
         return ctx
     method, path = route if route else ("?", "unmatched")
     raise Forbidden(f"a continuation-scoped account may not call {method} {path}")
+
+
+def require_known_default(
+    ctx: AuthContext, route: tuple[str, str] | None
+) -> AuthContext:
+    """A request that names no workspace, whose default workspace could not
+    be read, is 503 `preferences_unavailable` (docs/design/user-profile.md
+    §4.5, Q9) on every route outside `PREFERENCE_FREE_ROUTES`.
+
+    Raised before the route body runs, so nothing is submitted, read in a
+    guessed workspace or queued. The message says how to name a workspace:
+    the console's switcher, SWARM_TENANT or the plugin's tenant option, or
+    `--tenant`. It never falls back to the computed default, for the reason
+    `_with_own_workspace` gives a failed personal-workspace read: that is
+    the misfiling the default exists to prevent. `route=None` (no route
+    matched) is not on the list, so it fails closed.
+    """
+    if ctx.default_unknown and (route is None or route not in PREFERENCE_FREE_ROUTES):
+        raise PreferencesUnavailable()
+    return ctx
 
 
 def require_admin(

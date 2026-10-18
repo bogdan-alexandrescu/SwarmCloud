@@ -8,6 +8,7 @@ import { FrameAge, PageHead, timeAgo, useClaimPageAge } from './Shell'
 import { NEVER_WRITTEN, REAL_STATES, pluralise, type Stats } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
 import './styles/admin.css'
+import './styles/schedules.css'
 import { Button } from './components'
 
 /**
@@ -51,6 +52,69 @@ let lastRun: { run: Result<Stats>; runs: number } | null = null
 /** Forgets the session's record, for a test that starts a new session. */
 export function forgetLastRun(): void {
   lastRun = null
+}
+
+/**
+ * THE PLATFORM TICKS (docs/schedules.md §8.4): the platform's machinery,
+ * which no tenant manages and which stays in Terraform
+ * (`terraform/modules/scheduler/jobs.tf`). A static list, so an admin sees
+ * every recurring thing in one place; what each does is its Cloud Scheduler
+ * job's own description. Nothing here is read from GCP.
+ *
+ * EVERY JOB, IN jobs.tf's ORDER (live QA ADM-6, 2026-10-11): the list said
+ * "every recurring thing" and held 7 of the 12, schedule_tick among the
+ * missing though its own report headed the page then. `name` is the job's
+ * resource name in jobs.tf and `job` its name after the prefix, `<tenant>`
+ * for a per-tenant job; `adminSchedules.test.tsx` and
+ * `schedules.onepage.test.tsx` read jobs.tf and fails
+ * when the two disagree.
+ *
+ * HERE SINCE SCHED-ONE-PAGE (owner decision 2026-10-13). They were the third
+ * table of Admin › Schedules; that page folded into Automate › Schedules as
+ * its admin-only "All tenants" view, which is about TENANTS' schedules. These
+ * belong to no tenant, and this page is already the admin's read of what the
+ * platform itself is doing, so they came here rather than onto a page whose
+ * switch says "Mine | All tenants".
+ */
+export const PLATFORM_TICKS: readonly { name: string; job: string; does: string }[] = [
+  { name: 'safety_tick', job: 'scheduler-tick', does: 'A one-minute safety tick for the scheduler’s drain loop.' },
+  { name: 'reconciler', job: 'reconciler-tick', does: 'Reclaims expired leases and garbage-collects unused Job resources.' },
+  { name: 'quota_refresh', job: 'quota-refresh', does: 'Recomputes provider quota state and adaptive pool targets.' },
+  { name: 'workflow_rollup', job: 'workflow-rollup-<tenant>', does: 'Converges the stored state of each tenant’s workflows nobody reads.' },
+  { name: 'issue_run_advance', job: 'issue-run-advance-<tenant>', does: 'Advances each tenant’s issue runs nobody is reading.' },
+  { name: 'stranded_pr_sweep', job: 'stranded-pr-sweep-<tenant>', does: 'Finds each tenant’s SwarmCloud pull requests nothing is going to merge, and logs them.' },
+  { name: 'repo_index_poll', job: 'repo-index-poll-<tenant>', does: 'Reads each tenant’s registered repositories’ heads and queues their index runs.' },
+  { name: 'merge_wake', job: 'merge-wake-<tenant>', does: 'Every minute, marks each tenant’s CI-waiting merge steps whose checks have settled.' },
+  { name: 'forge_refresh', job: 'forge-refresh', does: 'Refreshes GitHub user access tokens before they expire.' },
+  { name: 'schedule_tick', job: 'schedule-tick', does: 'Fires every tenant’s due schedules, one firing per slot (its last hour is on Automate › Schedules, All tenants).' },
+  { name: 'workspace_sweep', job: 'workspace-sweep', does: 'Re-dispatches approved personal workspaces nobody built, and logs each one still waiting.' },
+  { name: 'secrets_rotation_sweep', job: 'workspace-secrets-rotation-sweep', does: 'Hourly, disables each rotated-out workspace secret version once its day of grace has passed; never destroys one.' },
+  { name: 'mcp_credentials_sweep', job: 'mcp-credentials-sweep', does: 'Every ten minutes, deletes per-run MCP credentials whose task ended or expired.' },
+]
+
+function PlatformTicks() {
+  return (
+    <div className="sc-table-wrap">
+      <table className="sc-table is-ticks" data-testid="as-platform-ticks">
+        <thead>
+          <tr>
+            <th scope="col" data-col="name">Tick</th>
+            <th scope="col" data-col="job">Cloud Scheduler job</th>
+            <th scope="col" data-col="does">What it does</th>
+          </tr>
+        </thead>
+        <tbody>
+          {PLATFORM_TICKS.map((t) => (
+            <tr key={t.name} className="sc-row" data-tick={t.name}>
+              <td data-label="Tick"><span className="mono">{t.name}</span></td>
+              <td data-label="Cloud Scheduler job"><span className="mono">{t.job}</span></td>
+              <td data-label="What it does">{t.does}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
 }
 
 export function PlatformCountsScreen() {
@@ -107,6 +171,11 @@ export function PlatformCountsScreen() {
   }
 
   const data = run && (run.status === 'ok' || run.status === 'stale') ? run.data : null
+  // ONE BAR SCALE FOR BOTH CARDS (VQA V084). Each card scaled its bars to its
+  // own largest count, so side by side a tenant's 7 drew as long as the
+  // platform's 185. The scale is the largest count on the screen, so equal
+  // bars are equal counts in either card.
+  const scale = data ? Math.max(barMax(data.tasks_by_state), barMax(data.platform_tasks_by_state ?? {})) : 1
   // A RUN'S OWN ANSWER WINS WHEN THERE IS ONE: it is the route that bills, and
   // it says whether it counted the platform. Before any run, the session says.
   const admin = data ? data.platform_tasks_by_state !== undefined : sessionAdmin
@@ -123,7 +192,12 @@ export function PlatformCountsScreen() {
   // (the panel below says so), so it reads as a failed run here too, and
   // neither kind of failure is counted as a run.
   const failed = run !== null && (run.status === 'error' || run.status === 'empty')
-  const provenance = failed ? (
+  // WHILE COUNTING THE LINE SAYS SO (VQA V029), and the button keeps its
+  // words: it said `Counting…` instead, a third of its width, and the head
+  // re-laid itself around the shorter control on every press.
+  const provenance = busy ? (
+    'counting…'
+  ) : failed ? (
     'last run failed'
   ) : runs === 0 ? (
     'not counted yet'
@@ -146,13 +220,21 @@ export function PlatformCountsScreen() {
           THE COST IS ON THE BUTTON (#138), not beside it: `Run the count ·
           24 reads` is one control whose name says what pressing it spends,
           so the price cannot wrap away from the press or be read as a fact
-          about the last run. While a run is in flight the button says so
-          instead; the cost of that press is already being paid. */}
+          about the last run. While a run is in flight the button keeps its
+          words and is disabled, and the line before it says `counting…`
+          (VQA V029), so the head keeps its shape. */}
       <PageHead title="Platform counts">
         <span className="counts-prov">{provenance}</span>
         {/* The canonical button (components.html A): primary before the
-            first run, plain for a re-run, busy while counting. */}
-        <Button className="counts-run" kind={run === null ? 'primary' : 'secondary'} onClick={go} busy={busy ? 'Counting…' : false}>
+            first run, plain for a re-run, disabled while counting. */}
+        <Button
+          className="counts-run"
+          kind={run === null ? 'primary' : 'secondary'}
+          onClick={go}
+          // Disabled, not `busy`: `busy` swaps in a spinner and widens the
+          // control; the cards below carry `aria-busy` for the run.
+          disabled={busy}
+        >
           {run === null ? 'Run the count' : 'Run it again'}
           {' · '}
           <span className="counts-cost">{queries} reads</span>
@@ -161,13 +243,15 @@ export function PlatformCountsScreen() {
 
       {/* BOTH CARDS BEFORE THE FIRST RUN (#135), each with `not run` in its
           figure slot: the page has its shape before the press, and an empty
-          page is not mistaken for a platform with nothing on it. Gone the
-          moment a run is asked for, so a result never shares the screen with
-          the placeholder it replaces. */}
-      {run === null && !busy && (
-        <div className="ctl-cards counts-scopes">
-          <NotRun title="This tenant" queries={STATE_COUNT} />
-          <NotRun title="Every tenant" queries={admin === false ? null : STATE_COUNT} />
+          page is not mistaken for a platform with nothing on it. They stay
+          while the first run is in flight (VQA V029) -- removing them on the
+          press left the page blank until the answer came -- marked busy, and
+          are replaced by the result, so a result never shares the screen
+          with the placeholder it replaces. */}
+      {run === null && (
+        <div className="ctl-cards counts-scopes" aria-busy={busy || undefined}>
+          <NotRun title="This tenant" queries={STATE_COUNT} counting={busy} />
+          <NotRun title="Every tenant" queries={admin === false ? null : STATE_COUNT} counting={busy} />
         </div>
       )}
 
@@ -187,19 +271,28 @@ export function PlatformCountsScreen() {
       )}
 
       {data && (
-        <div className="ctl-cards counts-scopes">
-          <Scope title="This tenant" subtitle={data.tenant_id} counts={data.tasks_by_state} />
+        <div className="ctl-cards counts-scopes" aria-busy={busy || undefined}>
+          <Scope title="This tenant" subtitle={data.tenant_id} counts={data.tasks_by_state} scale={scale} />
           {data.platform_tasks_by_state !== undefined ? (
             <Scope
               title="Every tenant"
               subtitle="all tenants"
               counts={data.platform_tasks_by_state}
+              scale={scale}
             />
           ) : (
             <AdminGated />
           )}
         </div>
       )}
+      {/* THE PLATFORM TICKS (§8.4), moved here from Admin › Schedules
+          (SCHED-ONE-PAGE, 2026-10-13). Static: nothing here is billed or
+          read, so it is drawn whether or not the count has run. */}
+      <section className="counts-ticks">
+        <h2 className="sc-h2">Platform ticks</h2>
+        <p className="sb-note">The platform’s own machinery. No tenant manages these; they are set in Terraform, and listed here so every recurring thing is in one place.</p>
+        <PlatformTicks />
+      </section>
       {/* THE FOOTER EVERY SIBLING PAGE HAS (QA G5-23): what a run returns,
           and why a state with no row is not a zero. */}
       <HelpLinks topics={COUNTS_TOPICS} />
@@ -222,8 +315,13 @@ const STATE_COUNT = REAL_STATES.length + NEVER_WRITTEN.size
  * One scope's card before anything has been counted. `queries` is what this
  * card's half of a run costs; null where the caller is known not to be an
  * admin, whose run does not read this scope at all.
+ *
+ * `counting`: the first run is in flight. THE CARD SAYS SO, AS THE HEAD DOES
+ * (VQA V192): while the head read `counting…`, both cards still read `not run
+ * yet`, which the press had just made untrue. A card this run will not read
+ * -- a non-admin's platform scope -- still says why it has no figure.
  */
-function NotRun({ title, queries }: { title: string; queries: number | null }) {
+function NotRun({ title, queries, counting }: { title: string; queries: number | null; counting: boolean }) {
   return (
     <section className="ctl-card counts-notrun">
       <div className="ctl-card-head">
@@ -237,14 +335,21 @@ function NotRun({ title, queries }: { title: string; queries: number | null }) {
             `not measured` mark of the six kinds of nothing (primitives.tsx
             `Mark`), hatched and greyscale-safe -- not `not read`, which is a
             read that failed -- and the words say why there is no figure. */}
-        <Mark
-          kind="absent"
-          say="Not counted yet. Nothing has been read, so there is no figure to show; this says nothing about the platform."
-        />
+        {counting && queries !== null ? (
+          // The `reading` mark of a read in flight, not `not measured`.
+          <Mark kind="pending" say="Counting now. Nothing has come back yet, so there is no figure to show." />
+        ) : (
+          <Mark
+            kind="absent"
+            say="Not counted yet. Nothing has been read, so there is no figure to show; this says nothing about the platform."
+          />
+        )}
         <span className="counts-notrun-words">
           {queries === null
             ? 'not run yet. Only an admin’s run counts every tenant.'
-            : `not run yet. One exact count per state, ${queries} reads.`}
+            : counting
+              ? `counting now. One exact count per state, ${queries} reads.`
+              : `not run yet. One exact count per state, ${queries} reads.`}
         </span>
       </div>
     </section>
@@ -324,18 +429,26 @@ function Failed({ error }: { error: ApiError }) {
   )
 }
 
+/** The largest count one scope carries over the written states, and never under 1 (a scale of 0 divides by zero). */
+function barMax(counts: Record<string, number>): number {
+  return Math.max(1, ...REAL_STATES.map((s) => (typeof counts[s] === 'number' ? counts[s] : 0)))
+}
+
 function Scope({
   title,
   subtitle,
   counts,
+  scale,
 }: {
   title: string
   subtitle: string
   counts: Record<string, number>
+  /** The count a full bar stands for: the largest on the screen, shared by both cards. */
+  scale: number
 }) {
   const real = REAL_STATES.map((s) => ({ state: s, n: counts[s] }))
   const missing = real.filter((r) => typeof r.n !== 'number').map((r) => r.state)
-  const max = Math.max(1, ...real.map((r) => (typeof r.n === 'number' ? r.n : 0)))
+  const max = Math.max(1, scale)
 
   // Only summed when every state arrived. A total over a partial response is
   // a wrong number wearing the clothes of a right one.

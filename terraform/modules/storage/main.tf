@@ -34,6 +34,11 @@ locals {
   aged_prefixes = flatten([
     for t in var.tenants : ["tenants/${t}/tasks/", "tenants/${t}/verdicts/"]
   ])
+
+  # The live relay's recordings (docs/design/live-browser.md §7): segments and
+  # action logs under an attempt's live/. terraform/infra/live.tf conditions
+  # the relay's write grant on the same two suffixes.
+  live_recording_suffixes = [".live.webm", ".live.jsonl"]
 }
 
 resource "google_storage_bucket" "access_logs" {
@@ -174,37 +179,6 @@ resource "google_storage_bucket" "artifacts" {
     }
   }
 
-  # Clone bundles and branch-head pointers expire on an `age` clock (issue
-  # #940, docs/clone-bundles.md). The worker writes a one-commit bundle to
-  # tenants/<t>/bundles/<repo_id>/<sha>.swarm-clone.bundle after a clone, and
-  # a later step that clones that sha reads it instead of contacting GitHub.
-  # It is a cache, useful for hours: a miss costs only the old clone.
-  #
-  # The customTime Delete above would keep a bundle artifact_retention_days
-  # (180 in prod), so this rule is separate and keyed on `age`.
-  #
-  # BUCKET-WIDE BY SUFFIX ON PURPOSE. A matches_prefix list cannot reach the
-  # personal `u-<slug>` tenants the API creates at runtime, for the same
-  # reason the customTime rule is bucket-wide. The two suffixes are written
-  # only by the bundle writer, so no checkpoint, repos/ object, artifact or
-  # verdict ends with either; this is the one `age` Delete that cannot reach
-  # a PARKED task's checkpoint (tests/terraform/clone_bundle_lifecycle.tftest.hcl).
-  # Bundles are not on the Nearline rule: they are read soon after writing.
-  #
-  # with_state = "ANY", stated rather than left to the provider's default (a
-  # computed value no plan-time test can read): a head pointer is overwritten
-  # per push, and its noncurrent versions are as stale as the live one.
-  lifecycle_rule {
-    condition {
-      age            = var.clone_bundle_retention_days
-      matches_suffix = [".swarm-clone.bundle", ".swarm-clone.head"]
-      with_state     = "ANY"
-    }
-    action {
-      type = "Delete"
-    }
-  }
-
   # Versioning without expiry is how a bucket quietly becomes the largest line
   # on the bill.
   lifecycle_rule {
@@ -221,6 +195,45 @@ resource "google_storage_bucket" "artifacts" {
     condition {
       days_since_noncurrent_time = var.noncurrent_version_retention_days
       with_state                 = "ARCHIVED"
+    }
+    action {
+      type = "Delete"
+    }
+  }
+
+  # Live-browser recordings are kept 7 days (LB-4, docs/design/live-browser.md
+  # §7), by a rule of their own that runs before the customTime clock above.
+  #
+  # `age`, not customTime: the relay writes the segments and need not stamp
+  # anything, and a recording with no customTime would otherwise be kept
+  # forever. That is safe here, where it is not for artifacts, only because
+  # the suffix confines the rule: a checkpoint, an artifact, a verdict or an
+  # index copy never ends in `.live.webm` or `.live.jsonl`
+  # (tests/terraform/live.tftest.hcl holds the keys).
+  #
+  # A SUFFIX, never a prefix. A prefix cannot match the middle of
+  # tenants/<t>/tasks/<task>/attempts/<a>/live/, and a per-tenant prefix list
+  # would miss every personal tenant the API creates at runtime. The relay's
+  # grant (terraform/infra/live.tf) admits only these suffixes under /live/,
+  # and the live suite holds the two lists to each other.
+  #
+  # with_state ANY, not LIVE. The bucket is versioned, so a Delete on the live
+  # object only makes it noncurrent; a LIVE-only rule would leave every
+  # recording behind as a noncurrent version for up to
+  # noncurrent_version_retention_days (30). ANY deletes that version on the
+  # next pass too: its age is still counted from the original write.
+  #
+  # NOT COVERED, stated plainly: the bucket's soft-delete policy
+  # (soft_delete_retention_seconds, 7 days by default) still holds a deleted
+  # recording for that long, readable by nobody and restorable only by an
+  # identity holding storage.objects.restore, which no tenant identity does.
+  # It is bucket-wide because it is what protects a checkpoint deleted by
+  # mistake, and is not narrowed for this.
+  lifecycle_rule {
+    condition {
+      age            = 7
+      with_state     = "ANY"
+      matches_suffix = local.live_recording_suffixes
     }
     action {
       type = "Delete"

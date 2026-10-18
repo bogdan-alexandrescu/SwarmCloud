@@ -52,6 +52,7 @@ import { HELP } from '../help'
 import { ledgerFixture } from '../outcomes.fixture'
 import { outcomesQuery, parseView, rowsQuery, serializeView, type EndedRow, type EndedRows, type Outcomes, type OutcomeBucket } from '../outcomes'
 import type { Me, Stats, Task, TaskPage, Tenant } from '../types'
+import { painted } from './marks'
 
 const api = vi.hoisted(() => ({
   loadOutcomes: vi.fn(),
@@ -454,7 +455,7 @@ describe('partial and not read', () => {
     const root = await timeline(d)
     for (const title of [/^Time to result/, /^Reliability/, /^Workflows that failed/]) {
       const c = card(root, title)
-      expect(c.textContent, `${title} calls a partial span's nothing a real zero`).not.toMatch(/real zero/i)
+      expect(c.querySelector('.ctl-mark.is-zero'), `${title} calls a partial span's nothing a real zero`).toBeNull()
       expect(c.querySelector('.ctl-empty .ctl-mark.is-partial'), `${title} has no partial empty state`).not.toBeNull()
       expect(c.querySelector('.ctl-empty')!.textContent).toContain('13 of 14 days')
     }
@@ -480,7 +481,6 @@ describe('partial and not read', () => {
       const c = card(root, title)
       expect(c.querySelector('.ctl-mark.is-unread'), `${title} has no not-read mark`).not.toBeNull()
       expect(visibleText(c), `${title} prints a digit over a span nobody read`).not.toMatch(/\d/)
-      expect(c.textContent, `${title} calls nothing read a real zero`).not.toMatch(/real zero/i)
       expect(c.querySelector('.ctl-util-track.is-zero, .ctl-mark.is-zero'), `${title} draws a measured zero`).toBeNull()
     }
   })
@@ -1455,7 +1455,8 @@ describe('a figure lists the tasks behind it (#116)', () => {
     const c = await rowsCard(root)
     const listed = [...c.querySelectorAll('tbody tr')]
     expect(listed).toHaveLength(21)
-    expect(listed[0]!.querySelector('a')!.getAttribute('href')).toBe(`#work/task/${encodeURIComponent(rows[0]!.id)}`)
+    // A path, never the legacy `#work/task/` hash (live QA RT-30).
+    expect(listed[0]!.querySelector('a')!.getAttribute('href')).toBe(`/agents/recent/${encodeURIComponent(rows[0]!.id)}`)
     expect(c.querySelector('.ctl-card-title')!.textContent).toMatch(/^21 failed · /)
     // The read asked for exactly that figure, under the page's own filters.
     const q = rowReads().at(-1)!
@@ -1653,5 +1654,53 @@ describe('the tenants table', () => {
     await screen.findByRole('rowheader', { name: 'eng' }, { timeout: 5000 })
     const cell = container.querySelector('td[data-label="Credentials"]')!
     expect(cell.querySelectorAll('.tags > .tag'), 'two tags with nothing spacing them').toHaveLength(2)
+  })
+})
+
+// VQA-L13 (#1038). V106: a lane's caption sat in the 24-26px gap 4-6px under
+// the lane above's baseline, so it read as that lane's foot note. V109: the
+// Outcomes tables scroll inside their card, and at 400 were cut mid-value at
+// its edge with nothing saying the row went on.
+// MUTATION: put the drawings' lane gap back to 24/26, or render a card's
+// table in a plain `div` instead of `MoreRight`.
+describe('VQA-L13: lane captions and table edges', () => {
+  it('V106: sets every caption well clear of the lane above’s baseline, in all three drawings', async () => {
+    const root = await timeline()
+    for (const key of ['wide', 'mid', 'narrow'] as const) {
+      const dr = drawing(root, key)
+      const tops = [...dr.querySelectorAll<HTMLElement>('.ol-lane-label')].map((l) => parseFloat(l.style.top))
+      // The baselines, in drawing order: lane 1's 0 %, lane 2's zero, lane 3's foot, lane 4's foot.
+      const bases = [...dr.querySelectorAll('.ol-svg .ol-base')].map((l) => Number(l.getAttribute('y1')))
+      expect(tops, `${key}: four captions`).toHaveLength(4)
+      expect(bases, `${key}: four baselines`).toHaveLength(4)
+      // Lane 2's caption under lane 1's 0 % rule, lane 4's under lane 3's foot.
+      for (const [cap, base] of [
+        [1, 0],
+        [3, 2],
+      ] as const) {
+        expect(tops[cap]! - bases[base]!, `${key}: caption ${cap + 1} sits on the lane above's baseline`).toBeGreaterThanOrEqual(10)
+      }
+    }
+  })
+
+  it('V109: fades a card table’s right edge while columns are off it, and only then', async () => {
+    const root = await timeline()
+    for (const title of [/^Reliability by/, /^Workflows that failed/]) {
+      const s = card(root, title).querySelector<HTMLElement>('.ctl-table.is-scroll')!
+      expect(s, `${title}: no scroller`).not.toBeNull()
+      Object.defineProperty(s, 'clientWidth', { value: 356, configurable: true })
+      Object.defineProperty(s, 'scrollWidth', { value: 820, configurable: true })
+      act(() => {
+        fireEvent.scroll(s)
+      })
+      expect(s.classList.contains('has-more'), `${title}: columns off the edge and no cue`).toBe(true)
+      expect(painted(s, 'mask-image', { width: 400 }) ?? '', `${title}: the cue paints nothing`).toMatch(/^linear-gradient\(to left/)
+      Object.defineProperty(s, 'scrollLeft', { value: 464, configurable: true })
+      act(() => {
+        fireEvent.scroll(s)
+      })
+      expect(s.classList.contains('has-more'), `${title}: the last column is in view and still dimmed`).toBe(false)
+      expect(painted(s, 'mask-image', { width: 400 })).toBeNull()
+    }
   })
 })

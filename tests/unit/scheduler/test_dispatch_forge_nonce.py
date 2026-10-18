@@ -39,11 +39,13 @@ NOW = datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc)
 USER_SLOT = "git-u-" + "0123456789abcdef"
 
 
-def _task(*, parent: str | None = None, forge: str | None = None) -> Task:
-    profile = RUNNER_PROFILES["mock"]
+def _task(
+    *, parent: str | None = None, forge: str | None = None, profile_name: str = "mock"
+) -> Task:
+    profile = RUNNER_PROFILES[profile_name]
     return Task(
         id="task_abc", tenant_id="eng", created_at=NOW, updated_at=NOW,
-        state=TaskState.LEASED, runner_profile="mock", resource_class=profile.resource_class,
+        state=TaskState.LEASED, runner_profile=profile_name, resource_class=profile.resource_class,
         input={}, submitted_by="alice@saga.xyz", parent_task_id=parent,
         forge_credential=forge,
     )
@@ -116,3 +118,16 @@ def test_no_deployment_child_key_means_no_nonce():
     no_api = scheduler_settings(child_key="k")
     env = _env(_task(parent="task_parent", forge=USER_SLOT), no_api)
     assert "SWARM_CHILD_NONCE" not in env
+
+
+def test_a_child_keyed_for_git_tools_keeps_its_child_path_on_a_user_slot():
+    """A child that has a key for another reason is not told SWARM_CHILD_PATH=false.
+
+    The git tools, a workspace secret and an MCP attach are all signed with the
+    key, and a worker with the child path off marks its key unavailable to them
+    (`ChildPath.available`). The flag belongs only to a child the broker alone
+    keyed; swarm-api's depth limit is the guard either way.
+    """
+    env = _env(_task(parent="task_parent", forge=USER_SLOT, profile_name="claude-code"), _keyed())
+    assert "SWARM_CHILD_NONCE" in env
+    assert "SWARM_CHILD_PATH" not in env

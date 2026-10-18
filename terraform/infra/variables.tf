@@ -373,14 +373,10 @@ variable "tenants" {
   # change or destroy one; a person in this map would be in state, and in a
   # public tfvars file besides (§2.6). So a `kind = "user"` tenant must be a
   # SERVICE account's -- swarm-verify's u-sw-c90291 is the one there is.
-  #
-  # u-bogdan is the one exception, and only until lane W9 moves it out of this
-  # map with `removed` blocks (§3.3); W9 deletes it from the list below in the
-  # same change, and from then on the list is empty.
   validation {
     condition = alltrue([
       for t, v in var.tenants :
-      v.kind != "user" || endswith(lower(v.principal), ".iam.gserviceaccount.com") || contains(["u-bogdan"], t)
+      v.kind != "user" || endswith(lower(v.principal), ".iam.gserviceaccount.com")
     ])
     error_message = "a `kind = \"user\"` tenant whose principal is a person is a personal workspace, and personal workspaces are made by the workspace job, never by Terraform (docs/workspaces.md §3.2). Ask for it in the console's setup checklist; only a service account's tenant belongs here."
   }
@@ -421,6 +417,23 @@ variable "pr_console_links" {
     OFF BY DEFAULT: off until the owner has seen it on a real PR. A PR body is
     read by people outside this platform, and a link they cannot open (the
     console is behind IAP) is noise in someone else's repository.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "internal_decision_api_enabled" {
+  description = <<-EOT
+    Whether the cluster's Tailscale egress to Saga's decision API is on
+    (JUDGE-NET: the Tailscale Kubernetes operator in swarm-system with ONE
+    egress Service to decision-api-staging). On, swarm-api and the scheduler
+    get INTERNAL_DECISION_API_URL, the egress Service's in-cluster address,
+    and a workspace's "Internal Jev" / "Internal Laya" judgment backend is
+    available (JUDGE-SELECT).
+
+    OFF BY DEFAULT: the egress needs the operator's OAuth client, which the
+    owner stores as swarm-tailscale-oauth in Secret Manager. Off, an internal
+    choice leaves Jev unavailable rather than sending page text to TypeSafe.
   EOT
   type        = bool
   default     = false
@@ -825,19 +838,6 @@ variable "enable_quota_refresh" {
   default     = true
 }
 
-variable "enable_issue_sweep" {
-  description = <<-EOT
-    swarm-api's SWEEP_ENABLED: whether POST /v1/admin/issues/sweep -- the
-    per-tenant issue_sweep Cloud Scheduler job, every 30 minutes -- may start
-    issue runs at all (docs/issue-runs.md "Sweeper"). OFF by default, by the
-    new-refusals-ship-off rule: a swept run auto-approves its plan and
-    auto-merges its pull request. A tenant is swept only when this AND its own
-    `issue_sweep.enabled` (PUT /v1/admin/tenants/<id>/issue-sweep) are on.
-  EOT
-  type        = bool
-  default     = false
-}
-
 variable "repository_grants_enforced" {
   description = <<-EOT
     swarm-api's REPOSITORY_GRANTS_ENFORCED (#780 D4, docs/onboarding.md):
@@ -854,13 +854,46 @@ variable "repository_grants_enforced" {
   default     = false
 }
 
+variable "search_tool_enabled" {
+  description = <<-EOT
+    swarm-api's SEARCH_TOOL_ENABLED (docs/search-tool.md, #1030): whether
+    POST /v1/attempts/{id}/search exists and live-browser agents are offered
+    the `search` tool. OFF by default (owner decision 2026-10-13), as
+    swarm_api.settings is: every query is billed to the platform, and the
+    provider's key must be stored first with
+    scripts/create-secrets.sh --search-api-key --stdin. Off, the route is a
+    404 and no agent is told the tool exists.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "search_provider" {
+  description = <<-EOT
+    swarm-api's SEARCH_PROVIDER: which swarm_api.search.PROVIDERS entry
+    answers a search. "brave" is the owner's choice (2026-10-13) and the only
+    provider implemented. Validated here against the same names because
+    swarm-api refuses to START on an unknown one, which a plan should catch
+    before a revision does; add a name here in the change that adds it to
+    PROVIDERS.
+  EOT
+  type        = string
+  default     = "brave"
+
+  validation {
+    condition     = contains(["brave"], var.search_provider)
+    error_message = "search_provider must name a swarm_api.search.PROVIDERS entry: brave."
+  }
+}
+
 variable "workspace_apply_publish" {
   description = <<-EOT
     swarm-api's WORKSPACE_APPLY_PUBLISH: whether approving a personal
     workspace (and its dispatch sweep) publishes the workspace id to the
-    swarm-workspace-apply topic, which starts the workspace job's Cloud Build
-    trigger (docs/workspaces.md §2.1-2.2). OFF by default because the topic
-    and the trigger exist only after the owner's bootstrap apply with
+    swarm-workspace-apply topic, which starts the workspace job through
+    Eventarc -> Workflows -> the Cloud Run job swarm-workspace-apply (WD2,
+    re-decided 2026-10-10; docs/workspaces.md §2.1-2.2). OFF by default because
+    the topic and what it starts exist only after the owner's bootstrap apply with
     enable_workspace_deployer = true (§10): publishing to a topic that does
     not exist records publish_failed on every sweep. Turn it on in the same
     release as that apply. Off, nothing is silent: the swarm-workspace-sweep
@@ -916,5 +949,69 @@ variable "api_refusals" {
   validation {
     condition     = alltrue([for code in keys(var.api_refusals) : can(regex("^[A-Za-z][A-Za-z0-9_]*$", code))])
     error_message = "api_refusals keys are swarm-api error codes: letters, digits and underscores."
+  }
+}
+
+variable "mirror_kms_key_name" {
+  description = "Customer-managed key for the pull-through mirror repositories (build_mirror.tf); empty keeps Google-managed encryption, as modules/artifact_registry does for kms_key_name."
+  type        = string
+  default     = ""
+}
+
+variable "settings_mac_tenants" {
+  description = <<-EOT
+    The tenants whose workspace_settings are signed and verified
+    (settings_mac.tf; docs/design/tenant-settings-integrity.md). ONE list,
+    rendered into swarm-api and the scheduler alike as SETTINGS_MAC_TENANTS,
+    so the signer and the verifiers never disagree about who is cut over.
+    Empty by default: no tenant is switched before the worker wiring
+    (ISO-WIRE) has merged (owner decision on #1457, 2026-10-17).
+  EOT
+  type        = list(string)
+  default     = []
+}
+
+variable "settings_mac_required" {
+  description = <<-EOT
+    The scheduler's SETTINGS_MAC_REQUIRED: whether it refuses to act on an
+    unsigned or badly signed workspace_settings value for a tenant in
+    settings_mac_tenants. Off by default, because turning it on before every
+    listed tenant's document has been re-signed would make the scheduler
+    ignore settings that are genuine.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "settings_mac_key_ready" {
+  description = <<-EOT
+    Whether swarm-settings-key has a version, so swarm-api and the scheduler
+    may reference it as SWARM_SETTINGS_KEY (and, in a rotation,
+    SWARM_SETTINGS_KEY_PREVIOUS). False by default because a Cloud Run
+    revision that references a secret with no version fails to start, and the
+    secret has none until `scripts/create-secrets.sh --settings-mac-key` runs,
+    which needs the container this root creates; the first apply would
+    otherwise take both services down. Set it true in the apply after that
+    script has run (owner decision on #1457, 2026-10-17).
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "settings_mac_key_previous_version" {
+  description = <<-EOT
+    During a swarm-settings-key rotation only: the version NUMBER the new one
+    replaced, read by both services as SWARM_SETTINGS_KEY_PREVIOUS so a value
+    signed under the old key still verifies until it is re-signed. Set it in
+    the apply that follows `create-secrets.sh --settings-mac-key`, clear it
+    once re-signing is done, then disable the old version. null outside a
+    rotation, and then no service carries the variable at all.
+  EOT
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.settings_mac_key_previous_version == null || can(regex("^[0-9]+$", var.settings_mac_key_previous_version))
+    error_message = "settings_mac_key_previous_version must be a version NUMBER, or null; never a value."
   }
 }

@@ -111,8 +111,13 @@ describe('an empty state carries exactly one `real zero`', () => {
       expect(marks[0]!.classList.contains('is-zero')).toBe(true)
       expect(marks[0]!.getAttribute('aria-label') ?? '', `${c.name}'s mark has no sentence`).not.toBe('')
 
-      const said = (el.textContent ?? '').match(/real zero/gi) ?? []
-      expect(said.length, `${c.name} says "real zero" ${said.length} times`).toBe(1)
+      // THE WORDS ONCE: the mark's word (`none`, owner 2026-10-11) is the
+      // mark's, and no hand-written copy repeats it or the old "real zero".
+      const word = marks[0]!.textContent ?? ''
+      expect(word, `${c.name}'s mark has no word`).not.toBe('')
+      const rest = (el.textContent ?? '').replace(word, '')
+      expect(rest, `${c.name} says "real zero" outside its mark`).not.toMatch(/real zero/i)
+      expect(rest, `${c.name} says its mark's word "${word}" twice`).not.toMatch(new RegExp(`(^|[^a-z])${word}([^a-z]|$)`))
     })
   }
 })

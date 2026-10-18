@@ -74,6 +74,46 @@ STILL_ACCEPTED = [
 ]
 
 
+#: Contract request 61 (#346 box 42): the two parts of 2001::/23 besides
+#: Teredo that IANA calls not globally reachable, first and last address of
+#: each. On main before the change url_refusal returned "" for every one.
+REQUEST_61_REFUSED = [
+    "http://[2001:2::1]/",  # benchmarking 2001:2::/48, RFC 5180
+    "http://[2001:2::]/",
+    "http://[2001:2:0:ffff:ffff:ffff:ffff:ffff]/",  # last of 2001:2::/48
+    "http://[2001:10::1]/",  # deprecated ORCHID 2001:10::/28, RFC 4843
+    "http://[2001:10::]/",
+    "http://[2001:1f:ffff:ffff:ffff:ffff:ffff:ffff]/",  # last of 2001:10::/28
+]
+
+#: The block's globally reachable assignments, and the neighbours just outside
+#: each new range: request 61 refuses named ranges, not the /23.
+REQUEST_61_ACCEPTED = [
+    "http://[2001:1::1]/",  # anycast
+    "http://[2001:3::1]/",  # AMT, RFC 7450
+    "http://[2001:4:112::1]/",  # AS112, RFC 7535
+    "http://[2001:20::1]/",  # ORCHIDv2, RFC 7343
+    "http://[2001:30::1]/",  # Drone Remote ID, RFC 9374
+    "http://[2001:2:1::1]/",  # first after 2001:2::/48
+    "http://[2001:f:ffff:ffff:ffff:ffff:ffff:ffff]/",  # last before 2001:10::/28
+]
+
+
+@pytest.mark.parametrize("url", REQUEST_61_REFUSED)
+def test_request_61_ranges_are_refused(url):
+    assert url_refusal(url), f"url_refusal accepted {url!r}"
+
+
+@pytest.mark.parametrize("url", REQUEST_61_ACCEPTED)
+def test_request_61_is_no_wider_than_its_two_ranges(url):
+    assert url_refusal(url) == "", url_refusal(url)
+
+
+@pytest.mark.parametrize("network", ["2001:2::/48", "2001:10::/28"])
+def test_each_request_61_range_is_declared_exactly(network):
+    assert ipaddress.ip_network(network) in _URL_REFUSED_V6_NETWORKS
+
+
 @pytest.mark.parametrize("url", ISSUE_REPRO + ALSO_REFUSED)
 def test_each_gap_the_review_found_is_refused(url):
     assert url_refusal(url), f"url_refusal accepted {url!r}"

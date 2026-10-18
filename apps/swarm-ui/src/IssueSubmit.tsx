@@ -1,11 +1,11 @@
-import { Fragment, useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { Fragment, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { createRun, loadCapacity, loadIssuePreview } from './api'
 import { WorkspaceRefusalBanner, workspaceRefusal } from './WorkspaceRefusal'
 import type { ApiError } from './fetch'
 import { Button, NamedMark, Tag, WarnMark } from './components'
 import { RunnerPicker, useProviderKeys } from './RunnerPicker'
 import { FailedPanel, Screen } from './Shell'
-import { Move } from './Submit'
+import { Move, OutcomeSlot } from './Submit'
 import { TASK_FORM } from './SubmitChooser'
 import { timeAgo, type Capacity, type IssuePreviewRead, type RunCreateBody, type RunnerProfile } from './types'
 import { Markdown } from './ArtifactViewer'
@@ -157,7 +157,12 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
   const [closedOk, setClosedOk] = useState(false)
   const [approval, setApproval] = useState<'required' | 'auto'>('required')
   const [rounds, setRounds] = useState(String(DEFAULT_FIX_ROUNDS))
-  const [merge, setMerge] = useState(false)
+  // NULL UNTIL SOMEBODY TOUCHES THE SWITCH, and then their choice (live QA
+  // SUB-2). The switch started `false` whatever the API said, so a repository
+  // whose preview served `auto_merge.default: true` -- SwarmCloud's -- was
+  // submitted with `auto_merge: false` under "Off (default)". Untouched, the
+  // switch is the served default for the issue on screen; a new read resets it.
+  const [merge, setMerge] = useState<boolean | null>(null)
   const [sending, setSending] = useState<Sending>({ kind: 'idle' })
   const keys = useProviderKeys()
 
@@ -185,7 +190,11 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
   // Offered only on the API's word, for the issue on screen; off otherwise.
   const mergeServed = read?.auto_merge ?? null
   const mergeOffered = mergeServed?.available === true
-  const mergeOn = mergeOffered && merge
+  // `default` is served beside `available` (`issueruns.auto_merge_availability`)
+  // and is already false whenever it is not available. Read as a boolean, so a
+  // server older than the field reads as off, which is what it did.
+  const mergeDefault = mergeOffered && (mergeServed as { default?: unknown } | null)?.default === true
+  const mergeOn = mergeOffered && (merge ?? mergeDefault)
 
   const parses = parseIssueRef(typed) !== null
 
@@ -194,6 +203,7 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
     if (ref === '' || parseIssueRef(ref) === null) return
     setPreview({ kind: 'reading', ref })
     setClosedOk(false)
+    setMerge(null)
     const r = await loadIssuePreview(ref)
     // A reference changed while its read was in flight: the answer is not the
     // one on screen any more, so it is dropped.
@@ -213,9 +223,13 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
     setSending({ kind: 'idle' })
   }
 
+  // A REF, NOT `sending`: two activations inside one render both read the
+  // state as it was before the first (live QA SUB-1, the task form's defect).
+  const inFlight = useRef(false)
+
   async function submit(e?: FormEvent) {
     e?.preventDefault()
-    if (blocked || read === null) return
+    if (inFlight.current || blocked || read === null) return
     const body: RunCreateBody = {
       // THE REFERENCE AS THE PREVIEW SERVED IT, so what is planned is what was shown.
       issue: read.issue.ref,
@@ -225,7 +239,9 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
       fix_rounds: roundsN,
     }
     setSending({ kind: 'sending' })
+    inFlight.current = true
     const r = await createRun(body)
+    inFlight.current = false
     if (r.status === 'ok' || r.status === 'stale') {
       const id = (r.data as { run?: { id?: unknown } } | null)?.run?.id
       if (typeof id === 'string' && id !== '') {
@@ -286,7 +302,8 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
             </div>
           )}
           {preview.kind === 'read' && (
-            <IssuePreviewCard read={preview.data} at={preview.at} closedOk={closedOk} onPlanAnyway={() => setClosedOk(true)} />
+            <IssuePreviewCard read={preview.data} at={preview.at} closedOk={closedOk} onPlanAnyway={() => setClosedOk(true)}
+              onTakeBack={() => setClosedOk(false)} />
           )}
           {preview.kind === 'refused' && (
             <Refusal error={preview.error} typed={preview.ref} tenant={tenant}
@@ -344,9 +361,10 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
               <b>Merge the pull request when it is ready</b>
               {mergeOffered ? (
                 <small>
+                  {/* "(default)" FOLLOWS THE SERVED DEFAULT, not the word "off". */}
                   {mergeOn
-                    ? 'On: once every required check is green, the merge step merges the pull request at the sha it proved.'
-                    : 'Off (default): a person merges the run’s pull request.'}
+                    ? `On${mergeDefault ? ' (default)' : ''}: once every required check is green, the merge step merges the pull request at the sha it proved.`
+                    : `Off${mergeDefault ? '' : ' (default)'}: a person merges the run’s pull request.`}
                 </small>
               ) : (
                 /* What the submitter sees and can do (walkthrough E); why it is
@@ -364,14 +382,23 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
           <div className="in-choice">
             <input id="in-fix-rounds" className="mono in-rounds" type="number" inputMode="numeric"
               min={MIN_FIX_ROUNDS} max={MAX_FIX_ROUNDS} step={1} value={rounds}
-              aria-invalid={!roundsOk || undefined} onChange={(e) => setRounds(e.target.value)} />
+              aria-invalid={!roundsOk || undefined} aria-describedby={roundsOk ? undefined : 'in-fix-rounds-say'}
+              onChange={(e) => setRounds(e.target.value)}
+              // ENTER HERE CONFIRMS THE NUMBER, IT DOES NOT PLAN THE ISSUE (live
+              // QA SUB-13). As an implicit submission it posted /v1/runs and
+              // started a planner with no click; the reference field's Enter
+              // reads, and the plan is started by its button only.
+              onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault() }} />
             <div className="in-choice-t">
               <label htmlFor="in-fix-rounds"><b>Fix rounds when checks go red</b></label>
               <small>
                 {MIN_FIX_ROUNDS}–{MAX_FIX_ROUNDS}. Once the pull request is open, each red CI reading spends one fix
                 round; past the cap the run fails with the failing checks&rsquo; excerpt.
               </small>
-              {!roundsOk && <small className="sbf-bad" role="alert">Not sent: a whole number from {MIN_FIX_ROUNDS} to {MAX_FIX_ROUNDS}.</small>}
+              {/* A STATE, NOT A CLICK'S RESULT (VQA V132): "Not sent" is what a
+                  click that was refused says (TS-15), and nothing had been
+                  clicked. The workflow form's priority says it the same way. */}
+              {!roundsOk && <small id="in-fix-rounds-say" className="sbf-bad" role="alert">Must be a whole number from {MIN_FIX_ROUNDS} to {MAX_FIX_ROUNDS}.</small>}
             </div>
           </div>
         </Move>
@@ -383,8 +410,12 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
           <ul className="ctl-facts">
             <li className={read === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
               <b>issue</b>
+              {/* THE NUMBER FIRST (live QA SUB-9): the cut fell on the repository
+                  and took the number with it -- "bogdan-alexandrescu/SwarmClou…" --
+                  and the number is the one part that tells two issues apart. The
+                  repository is the next row; the whole reference is the title. */}
               {read === null ? <i className="ctl-em">&mdash; read one first</i>
-                : <span><code className="in-ref-code" title={read.issue.ref}>{read.issue.ref}</code> · {read.issue.state}{closed && !closedOk && <i className="sbf-bad"> · not confirmed</i>}</span>}
+                : <span><code className="in-ref-code" title={read.issue.ref}>#{read.issue.number}</code> · {read.issue.state}{closed && !closedOk && <i className="sbf-bad"> · not confirmed</i>}</span>}
             </li>
             <li className={read === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
               <b>repository</b>
@@ -410,7 +441,7 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
             </li>
             <li className={roundsOk ? 'ctl-fact' : 'ctl-fact is-absent'}>
               <b>fix rounds</b>
-              {roundsOk ? `up to ${roundsN}` : <i className="sbf-bad">not sent: a whole number from {MIN_FIX_ROUNDS} to {MAX_FIX_ROUNDS}</i>}
+              {roundsOk ? `up to ${roundsN}` : <i className="sbf-bad">a whole number from {MIN_FIX_ROUNDS} to {MAX_FIX_ROUNDS}</i>}
             </li>
             <li className={tenant === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
               <b>tenant</b>
@@ -431,21 +462,27 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
               ? 'A planner task reads the issue and the repository and writes a plan; nothing else runs until the plan is approved.'
               : 'A planner task reads the issue and the repository and writes a plan; the plan is approved the moment it is written and the work starts without anyone being asked.'}
           </p>
-          {/* The submission gate's refusal (#847): why, and the setup step that fixes it. */}
-          {sending.kind === 'failed' && workspaceRefusal(sending.error) !== null && <WorkspaceRefusalBanner error={sending.error} />}
-          {sending.kind === 'failed' && workspaceRefusal(sending.error) === null && (
-            <>
-              <FailedPanel error={sending.error} onRetry={() => void submit()} />
-              <p className="warn-text">
-                <strong>Check Runs before submitting again.</strong> This failed on a write, so the run may exist anyway.
+          {/* IN THE SLOT THE TASK AND WORKFLOW FORMS DRAW THEIRS IN (VQA V175):
+              at 400 a POST 500 was drawn under the button at y 714-944 with
+              no scroll, and only its heading showed above the Reads dock.
+              The slot brings it into view and takes the keyboard to it. */}
+          <OutcomeSlot at={sending} shown={sending.kind === 'failed' || sending.kind === 'unnamed'}>
+            {/* The submission gate's refusal (#847): why, and the setup step that fixes it. */}
+            {sending.kind === 'failed' && workspaceRefusal(sending.error) !== null && <WorkspaceRefusalBanner error={sending.error} />}
+            {sending.kind === 'failed' && workspaceRefusal(sending.error) === null && (
+              <>
+                <FailedPanel error={sending.error} onRetry={() => void submit()} />
+                <p className="warn-text">
+                  <strong>Check Runs before submitting again.</strong> This failed on a write, so the run may exist anyway.
+                </p>
+              </>
+            )}
+            {sending.kind === 'unnamed' && (
+              <p className="warn-text" role="alert">
+                The API accepted this and named no run. Open Runs to find it before submitting again.
               </p>
-            </>
-          )}
-          {sending.kind === 'unnamed' && (
-            <p className="warn-text" role="alert">
-              The API accepted this and named no run. Open Runs to find it before submitting again.
-            </p>
-          )}
+            )}
+          </OutcomeSlot>
         </div>
       </aside>
     </form>
@@ -466,11 +503,24 @@ export function readAtText(at: number, now: number): { text: string; title: stri
 }
 
 /** What was read, as served: title, state, comments, labels, the body, the link. */
-export function IssuePreviewCard({ read, at, closedOk, onPlanAnyway }: {
+export function IssuePreviewCard({ read, at, closedOk, onPlanAnyway, onTakeBack }: {
   read: IssuePreviewRead; at: number; closedOk: boolean; onPlanAnyway: () => void
+  /** Withdraws "Plan it anyway" (live QA SUB-12); absent, nothing is offered. */
+  onTakeBack?: () => void
 }) {
   const { issue } = read
   const [whole, setWhole] = useState(false)
+  // WHETHER THE CUT HIDES ANYTHING (VQA V133), measured off the box: "Show the
+  // whole body · 5 characters" was offered under a body already fully on
+  // screen. Measured once per body while cut; open, it stays offered so it
+  // can close again.
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const [hidden, setHidden] = useState(false)
+  useLayoutEffect(() => {
+    const el = bodyRef.current
+    if (el === null || whole) return
+    setHidden(el.scrollHeight > el.clientHeight + 1)
+  }, [issue.body, whole])
   const closed = issue.state === 'closed'
   // AN AGE, LIKE EVERYTHING ELSE IN THE AREA (QA G4-34, 2026-10-07). It
   // printed the local wall clock -- "read 21:29:44", no date and no zone --
@@ -490,7 +540,12 @@ export function IssuePreviewCard({ read, at, closedOk, onPlanAnyway }: {
           with nothing after it. The issue's three facts are one line, dotted
           between and never after the last; when it was read is its own. */}
       <p className="in-meta">
-        <span className="in-meta-i"><a href={issue.url} target="_blank" rel="noreferrer" className="mono">{issue.ref}</a> ·</span>
+        {/* THE DOT FOLLOWS THE REFERENCE'S LAST LINE (VQA V252): in the
+            item's flex row a wrapped reference was one box and the dot a
+            second, stranded at the card's right edge. As inline text
+            (`.in-meta-i.is-ref`, submit.css) it sits after the last
+            character, held there by a no-break space. */}
+        <span className="in-meta-i is-ref"><a href={issue.url} target="_blank" rel="noreferrer" className="mono">{issue.ref}</a>{'\u00a0·'}</span>
         <span className="in-meta-i">
           <NamedMark mark={closed ? 'succeeded' : 'ready'} hue={closed ? 'neu' : 'live'} word={issue.state} /> ·
         </span>
@@ -510,14 +565,16 @@ export function IssuePreviewCard({ read, at, closedOk, onPlanAnyway }: {
               markers ("### What are you trying to do?"). `Markdown` is the
               console's own renderer -- React elements, never HTML, links only
               for http(s) -- so the issue's text cannot inject anything. */}
-          <div className={`in-body${whole ? ' is-whole' : ''}`}>
+          <div ref={bodyRef} className={`in-body${whole ? ' is-whole' : ''}`}>
             <Markdown source={issue.body} />
           </div>
-          <p className="in-row">
-            <Button onClick={() => setWhole((w) => !w)} aria-expanded={whole}>
-              {whole ? 'Show less of the body' : `Show the whole body · ${issue.body.length.toLocaleString()} characters`}
-            </Button>
-          </p>
+          {(hidden || whole) && (
+            <p className="in-row">
+              <Button onClick={() => setWhole((w) => !w)} aria-expanded={whole}>
+                {whole ? 'Show less of the body' : `Show the whole body · ${issue.body.length.toLocaleString()} characters`}
+              </Button>
+            </p>
+          )}
         </>
       )}
       {issue.body_truncated && (
@@ -534,8 +591,13 @@ export function IssuePreviewCard({ read, at, closedOk, onPlanAnyway }: {
           <span>
             <b>This issue is closed.</b> Planning it would reopen work someone marked done.
           </span>
+          {/* AND IT CAN BE TAKEN BACK (live QA SUB-12): "planning it anyway"
+              had no way back but reading the issue again. */}
           {closedOk ? (
-            <span className="sb-note">planning it anyway</span>
+            <>
+              <span className="sb-note">planning it anyway</span>
+              {onTakeBack && <Button onClick={onTakeBack}>Undo</Button>}
+            </>
           ) : (
             <Button onClick={onPlanAnyway}>Plan it anyway</Button>
           )}
@@ -611,7 +673,10 @@ function Refusal({ error, typed, tenant, onAgain, onTask }: {
       )
       break
     default:
-      return <FailedPanel error={error} onRetry={onAgain} />
+      // SPACED FROM THE INPUT ROW AS EVERY OTHER ANSWER IN THIS SLOT IS
+      // (VQA V251): a 404's `.in-refusal` sits 12px under it, and a 500's
+      // panel sat flush. `.in-read-failed`, submit.css.
+      return <div className="in-read-failed"><FailedPanel error={error} onRetry={onAgain} /></div>
   }
   return (
     <div className="in-refusal" role="alert" data-code={error.code ?? ''}>

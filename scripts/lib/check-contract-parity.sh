@@ -234,7 +234,7 @@ fi
 # 5. The frozen catalogue and the task lifecycle, restated in TypeScript.
 # --------------------------------------------------------------------------
 # `apps/swarm-ui/src/types.ts` hand-copies the unit weights, the twelve task
-# states, the nine park reasons, the six provider states, the end causes and
+# states, the park reasons, the six provider states, the end causes and
 # the pool families, and the child-task fields and cancel class (requests 14,
 # 40, 41, item 9).
 # It has to: the browser cannot import Python, and the alternative to a bundled
@@ -764,8 +764,7 @@ def emit(status, name, detail):
     REPORT.append("%s|%s|%s" % (status, name, detail))
 
 
-# Directories that hold no source, plus one that holds source this lane may not
-# edit. See the swarm-ui note at 6b.
+# Directories that hold no source.
 SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "dist", "build", ".mypy_cache",
              "__pycache__", ".pytest_cache", ".terraform", ".claude"}
 SKIP_SUFFIXES = {".md", ".lock", ".png", ".svg", ".ico", ".woff", ".woff2"}
@@ -846,7 +845,24 @@ DECLARATIONS = (
     # scanned. Two literals in one expression look like they must be edited
     # together, right up until one of them is not.
     (r"or\s+\"(swarm-tenant-[a-z0-9-]*)\"", "python empty-string fallback"),
+    # A prefix REBUILT from the Terraform name_prefix rather than written out:
+    # terraform/modules/monitoring/metrics.tf extracts the tenant from
+    # `resource.labels.namespace_name` with "^${var.name_prefix}-tenant-(.+)$".
+    # The captured template has `${var.name_prefix}` resolved below against
+    # the terraform/infra default, the value it is applied with. A drift here
+    # would not fail anything loudly: the GKE spec-refusal metric tenant_id
+    # label would read empty for every tenant (2026-10-11 stale-name audit).
+    (r"\^(\$\{var\.name_prefix\}-[a-z0-9-]*-)\(", "terraform namespace regex"),
 )
+
+# `${var.name_prefix}` in a captured template is the terraform/infra default.
+INFRA_VARS = (root / "terraform" / "infra" / "variables.tf").read_text()
+NAME_PREFIX = re.search(
+    r"variable\s+\"name_prefix\"\s*\{[^}]*?default\s*=\s*\"([^\"]*)\"", INFRA_VARS, re.S)
+if NAME_PREFIX is None:
+    emit("MISSING", "terraform/infra name_prefix default",
+         "no `variable \"name_prefix\"` default in terraform/infra/variables.tf, so the "
+         "templates built from it cannot be resolved")
 
 declared = []
 for path, text in FILES:
@@ -854,11 +870,15 @@ for path, text in FILES:
     for pattern, kind in DECLARATIONS:
         for match in re.finditer(pattern, text, re.M | re.S):
             line = text.count("\n", 0, match.start()) + 1
-            declared.append((str(rel), line, kind, match.group(1)))
+            value = match.group(1)
+            if "${var.name_prefix}" in value and NAME_PREFIX is not None:
+                value = value.replace("${var.name_prefix}", NAME_PREFIX.group(1))
+            declared.append((str(rel), line, kind, value))
 
-# The count when this was written. Lower means a restatement moved or was
-# renamed and this scan stopped seeing it, which is not the same as agreement.
-MIN_DECLARATIONS = 7
+# The count when this was last raised (10 on 2026-10-11, with the monitoring
+# regex; 7 when written). Lower means a restatement moved or was renamed and
+# this scan stopped seeing it, which is not the same as agreement.
+MIN_DECLARATIONS = 10
 if len(declared) < MIN_DECLARATIONS:
     emit("MISSING", "declared namespace prefixes",
          "found %d, expected at least %d; a restatement moved or was renamed -- "
@@ -884,14 +904,10 @@ else:
 # that feed the WRONG spelling in on purpose. The marker carries a reason, and
 # it is a line comment in every language scanned here.
 #
-# apps/swarm-ui IS SCANNED AND ITS FAILURES ARE REPORTED, not excluded: as of
-# 2026-09-24 two browser-side fixtures still carry `swarm-u-bogdan`
-# (src/api.ts and src/__tests__/brand.test.tsx). They are display-only mock
-# data and cannot dispatch anything, but an exclusion with a comment is how a
-# deficit becomes permanent, so they are listed below as ADVISORY -- printed on
-# every run, failing nothing, until the lane that owns that directory fixes
-# them and the ADVISORY branch here is deleted.
-ADVISORY_PREFIX = "apps/swarm-ui/"
+# apps/swarm-ui IS SCANNED LIKE EVERYTHING ELSE. Its display-only fixtures
+# carried `swarm-u-bogdan` and were reported ADVISORY from 2026-09-24 until the
+# 2026-10-11 stale-name audit renamed them; the advisory branch went with them,
+# so a browser fixture that restates a wrong prefix now fails like any other.
 # The apostrophe is BUILT, not written. This probe is a heredoc inside a
 # command substitution and bash scans that body for quote characters while it
 # looks for the closing paren, so a single one here truncates the script -- the
@@ -930,20 +946,13 @@ if len(literals) < MIN_LITERALS:
          % (len(literals), MIN_LITERALS))
 else:
     bad = [lit for lit in literals if not lit[2].startswith(AUTHORITY)]
-    hard = [lit for lit in bad if not lit[0].startswith(ADVISORY_PREFIX)]
-    soft = [lit for lit in bad if lit[0].startswith(ADVISORY_PREFIX)]
-    for rel, number, value in hard:
+    for rel, number, value in bad:
         emit("DRIFT", "namespace literal",
              "%s:%d is %s; the scheduler dispatches into %s<tenant>, so this "
              "names a namespace nothing creates" % (rel, number, value, AUTHORITY))
-    for rel, number, value in soft:
-        emit("ADVISORY", "namespace literal",
-             "%s:%d is %s -- browser-side mock data, owned by the UI lane, "
-             "dispatches nothing" % (rel, number, value))
-    if not hard:
+    if not bad:
         emit("OK", "namespace literals",
-             "%d of %d literal(s) start with %s; %d advisory"
-             % (len(literals) - len(bad), len(literals), AUTHORITY, len(soft)))
+             "%d literal(s) all start with %s" % (len(literals), AUTHORITY))
 
 print("\n".join(REPORT))
 PY
@@ -960,7 +969,6 @@ else
     NS_SEEN=$(( NS_SEEN + 1 ))
     case "${NS_STATUS}" in
       OK)       ok "namespace ${NS_NAME}: ${NS_DETAIL}" ;;
-      ADVISORY) warn "namespace ${NS_NAME}: ${NS_DETAIL}" ;;
       MISSING)
         err "the tenant-namespace scan lost sight of what it compares: ${NS_DETAIL}"
         err "A scan that passes because it stopped looking reports an agreement it never established."
@@ -1895,6 +1903,170 @@ else:
             emit("OK", "tenants.*.service_accounts shape",
                  "%d terraform validation(s) accept exactly the shape "
                  "identity.SERVICE_ACCOUNT_EMAIL matches" % len(sa_patterns))
+
+# -- 15. no live-browser profile in the Cloud Run fallback (request 71) ----
+# `RunnerProfile.live_browser` is valid only on a GKE_AUTOPILOT profile, and
+# the frozen dataclass refuses anything else. The Cloud Run fallback list in
+# terraform/infra/locals.tf is the one place that can still put such a profile
+# on Cloud Run: a fallback would silently run a profile whose display sidecar
+# does not exist there, so its hand-off could never work
+# (docs/design/live-browser.md section 8.1). Read from the frozen catalogue, so
+# a second live profile is covered the day it is added.
+live_profiles = sorted(
+    name for name, p in frozen_profiles.RUNNER_PROFILES.items()
+    if getattr(p, "live_browser", False)
+)
+fallback = re.search(r"^\s*cloud_run_fallback_profiles\s*=\s*\[([^\]]*)\]",
+                     TEXT["terraform/infra/locals.tf"], re.M)
+if not live_profiles:
+    emit("MISSING", "live_browser profiles",
+         "no profile in the frozen catalogue sets live_browser, so there is "
+         "nothing for the fallback list to be checked against")
+elif fallback is None:
+    emit("MISSING", "cloud_run_fallback_profiles",
+         "terraform/infra/locals.tf no longer declares cloud_run_fallback_profiles "
+         "as a list literal; point this check at where it moved")
+else:
+    listed = re.findall(r"\"([^\"]+)\"", fallback.group(1))
+    leaked = sorted(set(live_profiles) & set(listed))
+    if leaked:
+        emit("DRIFT", "cloud_run_fallback_profiles",
+             "lists live-browser profile(s) %s, which only run on GKE_AUTOPILOT"
+             % " ".join(leaked))
+    else:
+        emit("OK", "cloud_run_fallback_profiles",
+             "names none of the live-browser profiles %s" % " ".join(live_profiles))
+
+# -- 16. the browser tool names (contract request 77, BSTATUS-API) --------
+# `claude-code-browser` declares `browser_tool` with four choices: auto and
+# three tools. Each tool name is restated where Python cannot import the
+# catalogue or must not: the worker module that maps a name to what is
+# registered (agent_worker/browser_tools.py `TOOLS`), the API models the
+# console reads (apps/swarm-api/swarm_api/live.py, `LiveToolUse.name` and
+# `LiveBrowserTool.tool_selected`), the client tag each wrapper puts on the
+# CDP endpoint (images/agent-runtime-browser/dev-browser and
+# jev-browser/bin/jev-browser-mcp), and the tag the runner gives Playwright
+# MCP (runners/claude_code.py). A name renamed in one place and not the
+# others is a tool the gate never attributes, or a choice the API serves and
+# the console cannot draw. The jev reasons are restated by swarm-api from
+# the worker module, and compared here too.
+# Parentheses in patterns are built from chr, for the reason section 13 gives.
+LP, RP = re.escape(chr(40)), re.escape(chr(41))
+declared_inputs = getattr(frozen_profiles.RUNNER_PROFILES.get("claude-code-browser"), "inputs", {}) or {}
+browser_tool = declared_inputs.get("browser_tool")
+if browser_tool is None:
+    emit("MISSING", "browser_tool choices",
+         "claude-code-browser declares no browser_tool input, so there is nothing "
+         "for the runner, the API or the wrappers to be compared against")
+else:
+    choices = tuple(browser_tool.choices)
+    tools = [c for c in choices if c != "auto"]
+    wrong = []
+    worker = TEXT.get("apps/agent-worker/agent_worker/browser_tools.py", "")
+    found = re.search(r"^TOOLS = " + LP + r"([^\n]*)" + RP + r"\s*$", worker, re.M)
+    worker_tools = re.findall(r"\"([^\"]+)\"", found.group(1)) if found else None
+    if worker_tools is None:
+        wrong.append("agent_worker/browser_tools.py no longer declares TOOLS as a one-line tuple")
+    elif worker_tools != tools:
+        wrong.append("agent_worker/browser_tools.py TOOLS is %s, the catalogue offers %s"
+                     % (worker_tools, tools))
+    reasons = dict(re.findall(r"^(NO_KEY|NOT_INSTALLED|NOT_SELECTED|NO_ROUTE) = \"([a-z_]+)\"", worker, re.M))
+    api = TEXT.get("apps/swarm-api/swarm_api/live.py", "")
+    api_reasons = re.search(r"^JEV_REASONS: [^=]+= " + LP + r"([^\n]*)" + RP, api, re.M)
+    listed = re.findall(r"\"([^\"]+)\"", api_reasons.group(1)) if api_reasons else None
+    if len(reasons) != 4 or listed is None:
+        wrong.append("the jev reasons are no longer where this scan reads them")
+    elif sorted(reasons.values()) != sorted(listed):
+        wrong.append("swarm_api.live JEV_REASONS is %s, the worker sends %s"
+                     % (sorted(listed), sorted(reasons.values())))
+    for model, field, expected in (("LiveToolUse", "name", tools),
+                                   ("LiveBrowserTool", "tool_selected", list(choices))):
+        block = re.search(r"^class " + model + LP + r"_Wire" + RP + r":\n(.*?)\n\n\n", api, re.M | re.S)
+        literal = re.search(r"^    " + field + r": Literal\[([^\]]*)\]", block.group(1), re.M) if block else None
+        names = re.findall(r"\"([^\"]+)\"", literal.group(1)) if literal else None
+        if names != expected:
+            wrong.append("swarm_api.live %s.%s offers %s, the catalogue %s" % (model, field, names, expected))
+    for rel, tool in (("images/agent-runtime-browser/dev-browser", "dev-browser"),
+                      ("images/agent-runtime-browser/jev-browser/bin/jev-browser-mcp", "jev"),
+                      ("apps/agent-worker/agent_worker/runners/claude_code.py", "playwright")):
+        text = TEXT.get(rel, "")
+        tagged = ("/client/" + tool + chr(34)) in text or ("tag_endpoint" + chr(40) + "endpoint, \"" + tool + "\"") in text
+        if tool not in tools:
+            wrong.append("%s tags its connection %s, which the catalogue does not offer" % (rel, tool))
+        elif not tagged:
+            wrong.append("%s no longer tags its CDP connection as %s" % (rel, tool))
+    if wrong:
+        for line in wrong:
+            emit("DRIFT", "browser_tool names", line)
+    else:
+        emit("OK", "browser_tool names",
+             "the worker, the API models, the jev reasons and the three client tags "
+             "match the catalogue choices %s" % " ".join(choices))
+
+# -- 17. the model classes (#1435, docs/design/model-per-step.md §4.2) -----
+# The class vocabulary is the frozen catalogue's (`MODEL_CLASSES`, contract
+# request A) and the ID behind each class is Terraform's (`runner_models` in
+# terraform/infra/locals.tf, keyed by class). A class with no pin there is a
+# step that can never be dispatched; a pin under a name the catalogue does not
+# have is a model nobody can ask for; a pin of the wrong family is a step
+# that quietly runs another model. Each pin is held to its class by the
+# frozen `ModelClass.admits`, not by a rule restated here. And each profile's
+# `model_classes` and `default_model_class` (request B) are mirrored in
+# `runner_profiles`, which the Jobs' MODEL and the derived WORKER_MODELS read.
+locals_tf = TEXT.get("terraform/infra/locals.tf", "")
+model_classes = getattr(frozen_profiles, "MODEL_CLASSES", None)
+pinned = re.search(r"^  runner_models = \{\n(.*?)^  \}", locals_tf, re.M | re.S)
+mirrored = re.search(r"^  runner_profiles = \{\n(.*?)^  \}", locals_tf, re.M | re.S)
+if not model_classes:
+    emit("MISSING", "MODEL_CLASSES",
+         "swarm_common.profiles declares no MODEL_CLASSES, so there is no class "
+         "vocabulary for runner_models to be compared against")
+elif pinned is None or mirrored is None:
+    emit("MISSING", "runner_models",
+         "terraform/infra/locals.tf no longer declares runner_models and "
+         "runner_profiles as two-space-indented maps; point this check at where "
+         "they moved")
+else:
+    pins = dict(re.findall(r"^\s*\"?([a-z0-9-]+)\"?\s*=\s*\"([^\"]+)\"\s*$",
+                           pinned.group(1), re.M))
+    wrong = []
+    for name in sorted(set(model_classes) - set(pins)):
+        wrong.append("class %s has no pin in runner_models" % name)
+    for name in sorted(set(pins) - set(model_classes)):
+        wrong.append("runner_models pins %s, which is not a MODEL_CLASSES name" % name)
+    for name, model_id in sorted(pins.items()):
+        if name in model_classes and not model_classes[name].admits(model_id):
+            wrong.append("runner_models pins %s to %s, which ModelClass.admits refuses"
+                         % (name, model_id))
+    for name, profile in sorted(frozen_profiles.RUNNER_PROFILES.items()):
+        entry = re.search(r"^    \"" + re.escape(name) + r"\" = \{\n(.*?)^    \}",
+                          mirrored.group(1), re.M | re.S)
+        if entry is None:
+            wrong.append("runner_profiles in locals.tf has no entry for %s" % name)
+            continue
+        classes = re.search(r"^\s*model_classes\s*=\s*\[([^\]]*)\]", entry.group(1), re.M)
+        default = re.search(r"^\s*default_model_class\s*=\s*(null|\"[a-z]+\")\s*$",
+                            entry.group(1), re.M)
+        if classes is None or default is None:
+            wrong.append("the mirror of %s states no model_classes or default_model_class" % name)
+            continue
+        listed = tuple(re.findall(r"\"([^\"]+)\"", classes.group(1)))
+        stated = None if default.group(1) == "null" else default.group(1).strip("\"")
+        if listed != tuple(getattr(profile, "model_classes", ())) or stated != getattr(
+            profile, "default_model_class", None
+        ):
+            wrong.append("the mirror of %s accepts %s with default %s; the catalogue %s with default %s"
+                         % (name, list(listed), stated,
+                            list(getattr(profile, "model_classes", ())),
+                            getattr(profile, "default_model_class", None)))
+    if wrong:
+        for line in wrong:
+            emit("DRIFT", "model classes", line)
+    else:
+        emit("OK", "model classes",
+             "runner_models pins exactly %s, each admitted by its class, and the "
+             "%d mirrored profiles state the catalogue's classes and defaults"
+             % (" ".join(model_classes), len(frozen_profiles.RUNNER_PROFILES)))
 
 print("\n".join(REPORT))
 PY

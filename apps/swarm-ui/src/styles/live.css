@@ -1,0 +1,220 @@
+/* THE BROWSER TAB (docs/design/live-browser.md §3.4, §6, §6.1; lane L11).
+   LiveBrowser.tsx draws it: the hand-off banner, the origin strip, the device
+   bar, and noVNC's canvas with the logs beside it when asked.
+
+   THE STRIP IS OUTSIDE THE CANVAS, AND ITS COLOUR IS THE CONSOLE'S. A page
+   cannot draw into it (§5.7 item 1). Red is the hand-off's named site and the
+   page's registrable domain disagreeing (§5.7 item 2), yellow a hand-off that
+   named no site, and every tone says its reason in words beside the colour. */
+
+.ag-split > .ag-split-pane.is-browser { display: flex; flex-direction: column; overflow: auto; scrollbar-gutter: stable; }
+/* THE PANE'S HEIGHT REACHES THE STAGE (LB-R1, re-QA 2026-10-12). TheaterHost
+   wraps the tab in `.th-host`, and as a plain block it gave `.live-tab` its
+   content's height: the stage sat at its 320px floor, a 1440×900 desktop
+   was drawn 424×291 and the lower half of the window was empty. Every box
+   from the pane to the stage now takes the room left -- the window less the
+   header, tabs, strip, toolbar and caption -- with no ceiling anywhere.
+   AND THE WIDTH TOO (QA12-19, QA p12): under a hand-off banner the room
+   left was the stage's floor again, and the device 424×291 beside an empty
+   width. LiveScreen gives the stage a min-height (`stageFloor`) that lets
+   the device fill the pane's width; the pane scrolls when that is more than
+   it has. The gutter is kept, so a scrollbar appearing does not narrow the
+   pane, change the floor and take the scrollbar away again. */
+.ag-split-pane.is-browser > .th-host { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.live-tab { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; }
+.live-note { color: var(--text-dim); font-size: var(--t-body); padding: 12px 0; }
+
+
+.live-strip {
+  display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline;
+  padding: 6px 12px; border-radius: var(--radius);
+  border: 1px solid var(--line); border-left-width: 4px;
+  font-size: var(--t-meta);
+}
+.live-strip.is-ok { border-left-color: var(--ok); }
+.live-strip.is-warn { border-left-color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.live-strip.is-mismatch, .live-strip.is-refused {
+  border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); border-left-color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 18%, transparent);
+}
+.live-strip.is-mismatch .live-strip-say, .live-strip.is-refused .live-strip-say { color: var(--bad-ink); }
+.live-origin { font-family: var(--mono); font-size: var(--t-body); }
+.live-origin-scheme, .live-origin-sub { color: var(--text-dim); }
+.live-origin-puny { margin-left: 8px; color: var(--bad-ink); font-size: var(--t-meta); }
+.live-strip-who { margin-left: auto; color: var(--text-dim); }
+
+/* The mockup's toolbar: chips, rotate, touch, logs, and ⤢ Theater at the
+   right with "Let any member take control". ONE ROW WHERE IT FITS (LB-V1,
+   visual QA 5 U3): no group breaks inside itself, and the why of a disabled
+   device bar is its tooltip, not a line here, so the toolbar wraps only when
+   its controls are wider than the pane. */
+.live-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: var(--t-meta); }
+.live-device { display: inline-flex; gap: 6px; align-items: center; }
+.live-open { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
+/* The member-control confirm (QA12-11) opens under its checkbox, as Take control's does under its button. */
+.live-open-wrap { position: relative; display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.live-chips { display: inline-flex; flex-wrap: nowrap; gap: 2px; }
+.live-chip[aria-pressed="true"] { border-color: var(--sk-ac); color: var(--sk-ac); font-weight: 600; }
+.live-toolbar-end { margin-left: auto; display: inline-flex; flex-wrap: nowrap; gap: 8px; align-items: center; }
+.live-caption { color: var(--text-dim); font-size: var(--t-meta); text-align: center; }
+
+/* ◫ logs: the logs on the LEFT, the device on the right (the mockup). */
+/* One row the height of the room left, never of its content: the stage is
+   measured from it, and a row sized to the canvas is what drew a phone 1552px
+   tall in a 900px window (LB-V1). */
+.live-body { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: 8px; flex: 1; min-height: 0; }
+.live-tab.with-logs .live-body { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); }
+.live-logs { min-height: 0; overflow: auto; }
+
+/* THE STAGE (LB-V1, visual QA 5 B3): the device fitted into it both ways
+   and centred, the caption under it. The stage takes the room the tab has
+   and never its content's size (flex-basis 0, min-height 0, overflow hidden),
+   so the canvas cannot grow the stage it is measured from. LiveScreen sizes
+   `.live-frame` to the fit; noVNC scales its canvas to the screen inside. */
+.live-screen-wrap { display: flex; flex-direction: column; gap: 4px; min-height: 0; }
+.live-stage {
+  flex: 1 1 0; min-height: 320px; overflow: hidden;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+}
+.live-frame { box-sizing: content-box; flex: none; display: flex; width: 100%; height: 100%; }
+/* A phone or a tablet, in its outline (the mockup); a desktop has none. The
+   border width is LiveBrowser.tsx's MOBILE_BEZEL. */
+.live-frame.is-phone, .live-frame.is-tablet {
+  border-style: solid; border-width: 10px; border-color: var(--text); background: var(--text);
+}
+.live-frame.is-phone { border-radius: 36px; }
+.live-frame.is-tablet { border-radius: 22px; }
+.live-frame.is-phone > .live-screen { border-radius: 26px; }
+.live-frame.is-tablet > .live-screen { border-radius: 12px; }
+.live-stage-caption { flex: none; }
+.live-screen {
+  flex: 1; min-width: 0; min-height: 0; border-radius: var(--radius);
+  border: 1px solid var(--line); background: var(--bg); overflow: hidden;
+  /* Holds .live-type-hint (KEYS-FOCUS). */
+  position: relative;
+}
+.live-screen.is-control { border-color: var(--warn); }
+.live-screen.is-control:focus-within { outline: 2px solid var(--warn); outline-offset: 1px; }
+/* KEYS-FOCUS: in control, over the screen while its canvas has no focus. Clicks go through to it. */
+.live-type-hint {
+  position: absolute; top: 8px; left: 50%; transform: translateX(-50%); pointer-events: none;
+  padding: 2px 8px; border-radius: var(--radius); background: var(--warn); color: var(--bg);
+  font-size: var(--t-meta); white-space: nowrap;
+}
+.live-screen-say { color: var(--text-dim); font-size: var(--t-meta); }
+
+.live-control { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; position: relative; }
+.live-control-view { color: var(--text-dim); font-size: var(--t-meta); }
+.live-control-error { color: var(--bad-ink); font-size: var(--t-meta); }
+.live-ask {
+  position: absolute; top: 100%; right: 0; z-index: 5; width: min(420px, 90vw);
+  display: flex; flex-direction: column; gap: 8px; padding: 12px;
+  border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface);
+  font-size: var(--t-body);
+}
+.live-ask.is-mismatch { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 14%, var(--surface)); }
+/* No gap under the title (visual QA 5, U4): the ask's own `gap` spaces its
+   lines, and a heading's or paragraph's default margin added a blank band. */
+.live-ask h4, .live-ask p { margin: 0; }
+.live-ask-warn { color: var(--warn-ink); }
+/* The agent's own reason, first in the take-control ask (QA12-09): the ask
+   opens over the hand-off banner, and the reason is what the person decides on. */
+.live-ask-reason { color: var(--text-dim); font-size: var(--t-meta); }
+.live-ask-reason b { color: var(--text); font-weight: 600; }
+.live-ask-actions { display: flex; gap: 8px; }
+
+/* THE PHONE'S "⋯" MENU (LB-UX3, LiveToolMenu.tsx): the device switcher,
+   rotate, touch and the logs toggle, folded out of the toolbar at 560px. */
+.live-more { position: relative; display: inline-flex; }
+.live-more-menu {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 20;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+  min-width: 200px; padding: 10px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.16);
+}
+
+/* THE START-UP BAR (StartupProgress.tsx; owner request 2026-10-13): a browser
+   agent's start-up as a bar that fills by stage and a step list -- ✓ done
+   with its time, ● the current one counting, ○ to come. The tab and the
+   theater draw it centred over the screen area (`is-overlay`); the graph's
+   thumbnail draws only the thin bar and "starting m:ss". Colours are the
+   console's tokens, so both themes read it. */
+.startup { display: flex; justify-content: center; padding: 16px 0; }
+.startup.is-overlay {
+  position: absolute; inset: 0; z-index: 2; align-items: center; padding: 16px;
+  background: color-mix(in srgb, var(--surface-2) 88%, transparent);
+}
+.startup-card {
+  display: flex; flex-direction: column; gap: 10px; width: min(380px, 100%);
+  padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface);
+}
+.startup-title { margin: 0; font-size: var(--t-body); }
+.startup-left { color: var(--text-dim); font-size: var(--t-meta); }
+.startup-say { margin: 0; color: var(--text-dim); font-size: var(--t-meta); }
+.startup-bar {
+  position: relative; height: 6px; border-radius: 3px; overflow: hidden;
+  background: var(--line);
+}
+.startup-bar.is-thin { height: 3px; flex: 1; }
+.startup-fill { display: block; height: 100%; background: var(--sk-ac); transition: width 0.4s ease; }
+.startup-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: var(--t-meta); }
+.startup-step { display: flex; gap: 8px; align-items: baseline; }
+.startup-step.is-todo { color: var(--text-dim); }
+.startup-step.is-current { font-weight: 600; }
+.startup-mark { width: 1em; text-align: center; }
+.startup-step.is-done .startup-mark { color: var(--ok-ink); }
+.startup-step.is-skipped .startup-mark { color: var(--ok-ink); }
+.startup-skipped { color: var(--text-dim); }
+.startup-step.is-current .startup-mark { color: var(--sk-ac); }
+.startup-time { margin-left: auto; font-family: var(--mono); color: var(--text-dim); }
+.startup-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.startup-thin { display: flex; gap: 8px; align-items: center; font-size: var(--t-meta); color: var(--text-dim); }
+.startup-thin-say { font-family: var(--mono); white-space: nowrap; }
+/* The overlays' anchors: the tab's stage and the theater's centre column. */
+.live-stage, .th-center { position: relative; }
+@media (prefers-reduced-motion: reduce) { .startup-fill { transition: none; } }
+
+/* LIVE-UNUSED (#1030): a RUNNING agent that has not connected to this browser
+   a minute after its first frame. Its own line in the strip, never the verdict's. */
+.live-strip-unused { flex-basis: 100%; color: var(--text); }
+/* The gate's reason that part of the page is painted over (STRIP-LABEL): a line of its own, above the browser. */
+.live-strip-cover { flex-basis: 100%; color: var(--warn-ink); }
+.live-strip-unused strong { color: var(--warn-ink); }
+
+/* BSTATUS-STRIP (#1030): the browser tool, egress and Jev badges, the strip's
+   last item. The row GROWS into the line's free space and right-aligns its
+   badges, so on a wide pane they sit at the right after the control state;
+   when they do not fit, flex-wrap moves the whole row to its own line rather
+   than pushing the URL or "Nobody is in control" off theirs. Inside, the row
+   wraps too, so at 390px three badges become two lines, never an overflow.
+   Theme tokens only: both themes redefine every one of them (styles.css). */
+.bb-row {
+  display: inline-flex; flex: 1 0 auto; flex-wrap: wrap; justify-content: flex-end;
+  gap: 4px 6px; min-width: 0; align-self: center;
+}
+.bb-badge {
+  position: relative; display: inline-flex; align-items: center;
+  padding: 1px 8px; border: 1px solid var(--line); border-radius: 999px;
+  color: var(--text); background: var(--surface-2);
+  font-size: var(--t-micro); line-height: var(--lh-micro); white-space: nowrap; cursor: default;
+}
+.bb-badge:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 1px; }
+.bb-badge.is-ok { border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); }
+.bb-badge.is-warn {
+  border-color: var(--warn-ink); color: var(--warn-ink);
+  background: color-mix(in srgb, var(--warn) 14%, transparent); font-weight: 600;
+}
+.bb-badge.is-note { border-color: color-mix(in srgb, var(--sk-ac) 45%, var(--line)); }
+/* The card opens under its badge, anchored right because the badges are, and
+   is held inside a phone's width; it is transient, so over the frame is fine. */
+.bb-card {
+  position: absolute; z-index: 40; top: calc(100% + 6px); right: 0;
+  display: flex; flex-direction: column; gap: 4px;
+  width: max-content; max-width: min(320px, calc(100vw - 24px));
+  padding: 8px 10px; border-radius: var(--r-ctl);
+  background: var(--ctl-tip); color: var(--ctl-tip-ink); box-shadow: var(--sk-sh);
+  font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 400; white-space: normal;
+}
+.bb-card[hidden] { display: none; }
+.bb-how { opacity: .8; }

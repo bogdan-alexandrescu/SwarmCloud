@@ -148,7 +148,7 @@ describe('Holders says whether its rows are every live lease', () => {
   it('draws a complete read exactly as before: a real zero, and the rows as a count', async () => {
     await mount({ active_beyond_window: 0, truncated: false, examined: 3 })
     const card = driftCard()
-    expect(card.querySelector('.ctl-mark.is-zero')?.textContent).toBe('real zero')
+    expect(card.querySelector('.ctl-mark.is-zero')?.textContent).toBe('none')
     expect(card.querySelector('.ctl-mark.is-partial')).toBeNull()
     expect(tableNote()).toBe('3 rows')
     expect(summary()).toContain('3 unreleased leases')

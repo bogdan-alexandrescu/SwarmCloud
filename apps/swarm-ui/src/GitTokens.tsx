@@ -1,14 +1,14 @@
 import { useEffect, useState } from 'react'
-import { loadGitTokens, loadRepositories, loadTokenPermissions, registerTokenSlot, verifyGitToken } from './api'
+import { loadGitTokens, loadMe, loadOnboarding, loadRepositories, loadTokenPermissions, registerTokenSlot, verifyGitToken } from './api'
 import { Banner, Button, Card, Chip, Dash, EmptyState, ToneMark } from './components'
 import {
-  CAPABILITIES, SCOPE_WORD, createSecretsCommand, daysUntil, expiryWords, kindWords, normToken, repoName,
+  CAPABILITIES, SCOPE_WORD, createSecretsCommand, daysUntil, expiryWords, kindWords, normToken, renewsItself, repoName, storeCommand,
   type GitToken, type PermissionRow, type RepoRecord, type TokenScope,
 } from './RepositoriesData'
-import { LIST, PERMISSIONS, GT_PAGE, UrCap, UrCrumb, UrNavButton, UrRadio, UrRefresh, UrRegion, useUrRead, writeFailure } from './RepositoriesParts'
+import { LIST, PERMISSIONS, GT_PAGE, UrCap, UrCrumb, UrNavButton, UrRadio, UrRefresh, UrRegion, useUrRead, writeFailure, type UrRead } from './RepositoriesParts'
 import { CountNote, PageHead } from './Shell'
-import { GitHubConnectCard } from './GitHubConnect'
-import { timeAgo } from './types'
+import { GitHubSetupCard } from './GitHubConnect'
+import { timeAgo, type OnboardingDoc } from './types'
 
 /**
  * GIT GT_PAGE, pick B (repositories.html screen 12; PICKS.md): cards by scope
@@ -16,9 +16,16 @@ import { timeAgo } from './types'
  * command line. PERMISSIONS, pick A (screen 13): tokens × repositories, one
  * cell per capability.
  *
+ * GUIDED FIRST (GT-GUIDE, owner 2026-10-12): a new person arrives here right
+ * after their workspace is approved, so the page opens on "Set up GitHub
+ * access" (GitHubConnect.tsx `GitHubSetupCard`), three steps ticked by the
+ * onboarding read. The terminal path is folded under "Use a personal access
+ * token instead (advanced)", and the team (tenant) token under its own
+ * disclosure, drawn for an admin only.
+ *
  * A TOKEN VALUE NEVER ENTERS OR LEAVES THIS PAGE (CLAUDE.md, owner rule
  * 2026-09-25; PICKS.md: "No console paste box in phase 1"). There is no field
- * that takes one: registering creates the slot's RECORD and prints the exact
+ * that takes one: registering creates the token entry and prints the exact
  * `scripts/create-secrets.sh --stdin` command, and the value goes from the
  * operator's terminal to Secret Manager. Records are read through
  * `normToken`, which copies metadata by name and nothing else, so a value a
@@ -35,6 +42,12 @@ type ScopeFilter = 'all' | TokenScope
 
 const NO_EXPIRY_CLASSIC = 'No expiry recorded: a classic PAT without an expiration header does not expire'
 const NO_EXPIRY = 'No expiry recorded for this token'
+
+/** The terminal path's disclosure, and the team token's (GT-GUIDE). */
+const PAT_TOGGLE = 'Use a personal access token instead (advanced)'
+
+/** The scopes as the register card offers them: who the token is for, not the API's word. */
+const SCOPE_CHOICE: Readonly<Record<TokenScope, string>> = { user: 'Me', repository: 'One repository', tenant: 'Team' }
 
 function tokenTitle(t: GitToken, repos: readonly RepoRecord[]): string {
   if (t.scope === 'tenant') return `${t.tenant_id ?? 'tenant'} default`
@@ -54,28 +67,79 @@ function covered(t: GitToken, repos: readonly RepoRecord[]): string {
   return names.length === 0 ? 'no repository named' : names.join(', ')
 }
 
+/**
+ * When the token stops working. A token GitHub's App renews (`app_user`) is
+ * hours from its `expires_at` by design, and "Expires today" on it read as an
+ * alarm about the normal case (owner, 2026-10-12): it says it renews, and
+ * warns only when the record says a renewal failed (`expired`).
+ */
 function Expires({ t, now }: { t: GitToken; now: number }) {
-  if (t.expires_at === null) return <Dash why={t.kind === 'classic_pat' ? NO_EXPIRY_CLASSIC : NO_EXPIRY} />
+  if (renewsItself(t)) {
+    return t.state === 'expired' ? <b className="ur-bad">Renewal failed: reconnect GitHub</b> : <b>renews automatically</b>
+  }
+  if (t.expires_at === null) return <>Expires <Dash why={t.kind === 'classic_pat' ? NO_EXPIRY_CLASSIC : NO_EXPIRY} /></>
   const w = expiryWords(t.expires_at, now)
-  if (w === null) return <Dash why="The expiry could not be read" />
-  return w.startsWith('expired') ? <b className="ur-bad">{w}</b> : <b>{w}</b>
+  if (w === null) return <>Expires <Dash why="The expiry could not be read" /></>
+  return <>Expires {w.startsWith('expired') ? <b className="ur-bad">{w}</b> : <b>{w}</b>}</>
+}
+
+/**
+ * WHO IS ASKING: an admin, and which tenant. The API registers a tenant's and
+ * a repository's token for an admin only (`routes/gittokens._slot_from`), and
+ * a non-admin used to meet that only after the click. Either signal the
+ * console already reads will do -- `signed_in`'s `is_admin` on the
+ * onboarding read, or the frame's `GET /v1/tenants/me` -- and an unknown is
+ * not an admin: the server is still the gate.
+ */
+function useWho(ob: UrRead<OnboardingDoc>): { admin: boolean; tenant: string | null } {
+  const [me, setMe] = useState<{ admin: boolean; tenant: string | null } | null>(null)
+  useEffect(() => {
+    let live = true
+    Promise.resolve(loadMe({ frame: true })).then(
+      (r) => {
+        if (live && r !== undefined && (r.status === 'ok' || r.status === 'stale')) {
+          setMe({ admin: r.data.principal?.is_admin === true, tenant: r.data.tenant?.tenant_id ?? null })
+        }
+      },
+      () => {},
+    )
+    return () => {
+      live = false
+    }
+  }, [])
+  const doc = ob.state.status === 'ok' || ob.state.status === 'stale' ? ob.state.data : null
+  const signedIn = doc?.steps.find((s) => s.step === 'signed_in')
+  const obAdmin = signedIn?.evidence?.is_admin === true
+  return { admin: obAdmin || me?.admin === true, tenant: doc?.tenant_id ?? me?.tenant ?? null }
 }
 
 export function GitTokensPage({ go }: { go: (to: string) => void }) {
   const tokens = useUrRead(loadGitTokens, 'tokens')
   const repos = useUrRead(loadRepositories, 'repos')
+  const onboarding = useUrRead(loadOnboarding, 'onboarding')
+  const who = useWho(onboarding)
   const [scope, setScope] = useState<ScopeFilter>('all')
   const [slot, setSlot] = useState<GitToken | null>(null)
-  // G4-22: ONE entry point to registering. The card stays folded behind the
-  // header's "Register token" button, and Rotate opens it on its slot; an
-  // always-open card next to a button that scrolls to it was two ways in.
-  const [regOpen, setRegOpen] = useState(false)
+  // G4-22, kept by GT-GUIDE: ONE entry point to each terminal path. The
+  // personal one is folded behind its disclosure, the team one (admins only)
+  // behind its own, and Rotate opens the one its entry belongs to.
+  const [patOpen, setPatOpen] = useState(false)
+  const [teamOpen, setTeamOpen] = useState(false)
   useEffect(() => {
-    if (regOpen) document.getElementById('ur-reg')?.scrollIntoView?.({ block: 'start' })
-  }, [regOpen, slot?.token_id])
+    if (patOpen) document.getElementById('ur-reg')?.scrollIntoView?.({ block: 'start' })
+  }, [patOpen, slot?.token_id])
+  useEffect(() => {
+    if (teamOpen) document.getElementById('ur-reg-team')?.scrollIntoView?.({ block: 'start' })
+  }, [teamOpen])
   const regs = repos.state.status === 'ok' || repos.state.status === 'stale' ? repos.state.data : []
   const n = tokens.state.status === 'ok' || tokens.state.status === 'stale' ? tokens.state.data.length : tokens.state.status === 'empty' ? 0 : null
   const now = Date.now()
+  const tenant = who.tenant ?? 'your team'
+  // Rotate only where a Create would be accepted: your own entry, or any for an admin.
+  const mayRotate = (t: GitToken) => who.admin || (t.scope === 'user' && t.yours)
+  const patScopes: TokenScope[] = who.admin ? ['user', 'repository'] : ['user']
+  const patSlot = slot !== null && slot.scope !== 'tenant' ? slot : null
+  const teamSlot = slot !== null && slot.scope === 'tenant' ? slot : null
 
   return (
     <div className="ur-page ur-tokens">
@@ -84,7 +148,7 @@ export function GitTokensPage({ go }: { go: (to: string) => void }) {
           the page, and the count is the note over its first card. */}
       <PageHead title="Git tokens">
         {/* The page's one age, on the control that renews it (#98). */}
-        <UrRefresh reads={[tokens, repos]} />
+        <UrRefresh reads={[tokens, repos, onboarding]} />
         <UrRadio<ScopeFilter>
           label="Scope"
           value={scope}
@@ -100,24 +164,65 @@ export function GitTokensPage({ go }: { go: (to: string) => void }) {
           <UrNavButton to={PERMISSIONS} go={go} size="sm">
             Permissions
           </UrNavButton>
-          <Button kind="primary" size="sm" aria-expanded={regOpen} aria-controls="ur-reg" onClick={() => setRegOpen((o) => !o)}>
-            Register token
-          </Button>
         </span>
       </PageHead>
-      {/* CONNECT GITHUB (#780, OB3): a person's own account through the App,
-          first, because it is the way in that needs no terminal. A disconnect
-          changes the records below, so it re-reads them. */}
-      <GitHubConnectCard onChange={tokens.reload} />
+      {/* SET UP GITHUB ACCESS (GT-GUIDE): the three steps a new person takes,
+          first, because connecting through the App needs no terminal. A
+          disconnect changes the token entries below, so it re-reads them. */}
+      <GitHubSetupCard read={onboarding} go={go} onChange={tokens.reload} />
+      <div className="ur-discl">
+        <Button kind="ghost" size="sm" className="ur-discl-btn" aria-expanded={patOpen} aria-controls="ur-reg" onClick={() => setPatOpen((o) => !o)}>
+          <span aria-hidden="true">{patOpen ? '▾ ' : '▸ '}</span>
+          {PAT_TOGGLE}
+        </Button>
+        {patOpen && (
+          <RegisterToken
+            id="ur-reg"
+            className="ur-reg"
+            title="Personal access token: from your terminal"
+            scopes={patScopes}
+            slot={patSlot}
+            onSlot={(t) => {
+              setSlot(t)
+              tokens.reload()
+            }}
+            onClear={() => setSlot(null)}
+            repos={regs}
+          />
+        )}
+        {who.admin && (
+          <>
+            <Button kind="ghost" size="sm" className="ur-discl-btn" aria-expanded={teamOpen} aria-controls="ur-reg-team" onClick={() => setTeamOpen((o) => !o)}>
+              <span aria-hidden="true">{teamOpen ? '▾ ' : '▸ '}</span>
+              {`Team token for ${tenant} (admins only)`}
+            </Button>
+            {teamOpen && (
+              <RegisterToken
+                id="ur-reg-team"
+                className="ur-reg ur-reg-team"
+                title={`Team token for ${tenant}: from your terminal`}
+                scopes={['tenant']}
+                slot={teamSlot}
+                onSlot={(t) => {
+                  setSlot(t)
+                  tokens.reload()
+                }}
+                onClear={() => setSlot(null)}
+                repos={regs}
+              />
+            )}
+          </>
+        )}
+      </div>
       <CountNote>{n === null ? null : `${n} token${n === 1 ? '' : 's'}`}</CountNote>
       <UrRegion
         state={tokens.state}
         route="GET /v1/git-tokens"
-        what="The tenant's git token records"
+        what="The tenant's git tokens"
         onRetry={tokens.reload}
         empty={
           <EmptyState kind="empty" heading="No git tokens registered">
-            Register a slot with Register token, then store its value from your terminal with the command it shows.
+            Connect GitHub in the steps above, the simplest way in. Or use a personal access token from your terminal.
           </EmptyState>
         }
       >
@@ -130,15 +235,18 @@ export function GitTokensPage({ go }: { go: (to: string) => void }) {
                   <div className="ur-tok-h">
                     <Chip>{SCOPE_WORD[t.scope]}</Chip>
                     <h2>{tokenTitle(t, regs)}</h2>
-                    <Button
-                      size="sm"
-                      onClick={() => {
-                        setSlot(t)
-                        setRegOpen(true)
-                      }}
-                    >
-                      Rotate
-                    </Button>
+                    {mayRotate(t) && (
+                      <Button
+                        size="sm"
+                        onClick={() => {
+                          setSlot(t)
+                          if (t.scope === 'tenant') setTeamOpen(true)
+                          else setPatOpen(true)
+                        }}
+                      >
+                        Rotate
+                      </Button>
+                    )}
                   </div>
                   <p className="ur-cmeta">
                     <span>acts as {t.forge_login === null ? <Dash why="The account was not read: the token has not been verified" /> : <b>{t.forge_login}</b>}</span>
@@ -150,7 +258,7 @@ export function GitTokensPage({ go }: { go: (to: string) => void }) {
                   </p>
                   <p className="ur-cmeta">
                     <span>
-                      Expires <Expires t={t} now={now} />
+                      <Expires t={t} now={now} />
                     </span>
                     <span>Last verified {t.verified_at === null ? <Dash why="Never verified" /> : <b>{timeAgo(t.verified_at)}</b>}</span>
                     {t.state !== null && t.state !== 'active' && <ToneMark tone={t.state === 'unverified' ? 'unknown' : 'bad'}>{t.state}</ToneMark>}
@@ -166,47 +274,50 @@ export function GitTokensPage({ go }: { go: (to: string) => void }) {
           )
         }}
       </UrRegion>
-      {regOpen && (
-        <RegisterSlot
-          slot={slot}
-          onSlot={(t) => {
-            setSlot(t)
-            tokens.reload()
-          }}
-          onClear={() => setSlot(null)}
-          repos={regs}
-        />
-      )}
     </div>
   )
 }
 
 /**
- * Register token: from your terminal. Step 1 makes (or, for Rotate, names)
- * the slot's record; step 2 is the command that stores its value from stdin;
- * step 3 says what happens next. No step takes a value.
+ * A token from your terminal. Step 1 creates (or, for Rotate, names) the
+ * token entry; step 2 is the command that stores its value from stdin; step 3
+ * says what happens next. No step takes a value.
+ *
+ * THE ANSWER IS `{token, store_command, note}` (`routes/gittokens.py`
+ * `register_git_token`). This read `git_token`, then the whole body, found
+ * neither, and told every person whose entry WAS created that it was not
+ * (owner, 2026-10-12). `token` first; the older names stay as fallbacks.
  */
-function RegisterSlot({
+function RegisterToken({
+  id,
+  className,
+  title,
+  scopes,
   slot,
   onSlot,
   onClear,
   repos,
 }: {
+  id: string
+  className: string
+  title: string
+  /** What this card may create: never a scope the API refuses the caller. */
+  scopes: TokenScope[]
   slot: GitToken | null
   onSlot: (t: GitToken) => void
-  /** Forget the rotated or created slot: the person chose another scope. */
+  /** Forget the rotated or created entry: the person chose another scope. */
   onClear: () => void
   repos: readonly RepoRecord[]
 }) {
-  const [scope, setScope] = useState<TokenScope>('repository')
+  const [scope, setScope] = useState<TokenScope>(scopes[0]!)
   const [repoId, setRepoId] = useState<string>('')
   const [busy, setBusy] = useState(false)
   const [refused, setRefused] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   // ONE source of truth for the scope: what the radio shows is what the
-  // select follows and what Create posts. A rotated slot shows its own scope
-  // until the person picks another, which forgets the slot.
-  const shownScope = slot?.scope ?? scope
+  // select follows and what Create posts. A rotated entry shows its own scope
+  // until the person picks another, which forgets the entry.
+  const shownScope = slot !== null && scopes.includes(slot.scope) ? slot.scope : scopes.includes(scope) ? scope : scopes[0]!
   const pickRepo = repoId !== '' ? repoId : repos[0]?.repo_id ?? ''
 
   async function create() {
@@ -219,13 +330,13 @@ function RegisterSlot({
       setRefused(writeFailure(res.error))
       return
     }
-    const data = res.status === 'ok' ? (res.data as Record<string, unknown> | null) : null
-    const t = normToken(data !== null && typeof data.git_token === 'object' ? data.git_token : data)
+    const data = res.status === 'ok' && typeof res.data === 'object' && res.data !== null ? (res.data as Record<string, unknown>) : null
+    const t = data === null ? null : normToken(data.token) ?? normToken(data.git_token) ?? normToken(data)
     if (t === null) {
-      setRefused('The slot was created, but the answer named no record this page can read; reload to see it.')
+      setRefused('The token entry was created, but the answer did not describe it; reload the page to see it.')
       return
     }
-    onSlot(t)
+    onSlot({ ...t, store_command: t.store_command ?? storeCommand(data?.store_command) })
   }
 
   async function copyName(name: string) {
@@ -233,26 +344,35 @@ function RegisterSlot({
     setCopied(true)
   }
 
-  const command = slot !== null && slot.tenant_id !== null && slot.provider_suffix !== null ? createSecretsCommand(slot.tenant_id, slot.provider_suffix) : null
+  const command =
+    slot === null
+      ? null
+      : slot.store_command ?? (slot.tenant_id !== null && slot.provider_suffix !== null ? createSecretsCommand(slot.tenant_id, slot.provider_suffix) : null)
 
   return (
-    <Card id="ur-reg" className="ur-reg" title="Register token: from your terminal" action={<Chip>value never enters the console</Chip>}>
-      <p className="ur-sub">1. Choose the slot. The console creates the record and shows the secret's name; the name is not a credential.</p>
+    <Card id={id} className={className} title={title} action={<Chip>value never enters the console</Chip>}>
+      {scopes.includes('user') && (
+        <p className="ur-hint">
+          For when Connect GitHub above is not an option. A personal access token does not renew itself: you store a new
+          one before it expires.
+        </p>
+      )}
+      <p className="ur-sub">
+        1. Create the token entry. SwarmCloud names the secret that will hold the token; the name is not a credential.
+      </p>
       <div className="ur-slot">
-        <UrRadio<TokenScope>
-          label="Slot"
-          value={shownScope}
-          onChange={(s) => {
-            setScope(s)
-            setCopied(false)
-            if (slot !== null && slot.scope !== s) onClear()
-          }}
-          options={[
-            { key: 'tenant', label: 'Tenant' },
-            { key: 'repository', label: 'Repository' },
-            { key: 'user', label: 'User (me)' },
-          ]}
-        />
+        {scopes.length > 1 && (
+          <UrRadio<TokenScope>
+            label="For"
+            value={shownScope}
+            onChange={(s) => {
+              setScope(s)
+              setCopied(false)
+              if (slot !== null && slot.scope !== s) onClear()
+            }}
+            options={scopes.map((k) => ({ key: k, label: SCOPE_CHOICE[k] }))}
+          />
+        )}
         {shownScope === 'repository' && (
           <select className="ur-select" aria-label="Repository" value={pickRepo} onChange={(e) => setRepoId(e.target.value)} disabled={repos.length === 0}>
             {repos.length === 0 && <option value="">No registered repository</option>}
@@ -264,20 +384,20 @@ function RegisterSlot({
           </select>
         )}
         <Button size="sm" busy={busy} onClick={() => void create()} disabled={shownScope === 'repository' && pickRepo === ''}>
-          Create the slot
+          Create the token entry
         </Button>
       </div>
       {refused !== null && (
-        <Banner tone="bad" title="The slot was not created">
+        <Banner tone="bad" title="The token entry was not created">
           {refused}
         </Banner>
       )}
       {slot === null ? (
-        <p className="ur-hint">Create a slot, or Rotate one above, to see its secret's name and the command that stores its value.</p>
+        <p className="ur-hint">Create the token entry, or press Rotate on a token above, to see its secret's name and the command that stores its value.</p>
       ) : (
         <>
           <div className="ur-secret">
-            {slot.secret_name === null ? <Dash why="The record did not name its secret" /> : <code>{slot.secret_name}</code>}
+            {slot.secret_name === null ? <Dash why="The answer did not name its secret" /> : <code>{slot.secret_name}</code>}
             {slot.secret_name !== null && (
               <Button size="sm" onClick={() => void copyName(slot.secret_name as string)}>
                 Copy secret name
@@ -289,11 +409,11 @@ function RegisterSlot({
               </span>
             )}
           </div>
-          <p className="ur-sub">2. Store the value the way every forge token is stored today, from stdin:</p>
+          <p className="ur-sub">2. Store the token from your terminal; the command reads it from stdin:</p>
           {command === null ? (
             <p className="ur-hint">
-              <Dash why="The record did not name its tenant or provider suffix" /> The command needs the slot's tenant and
-              provider suffix, which the record did not carry.
+              <Dash why="The answer did not name its tenant or provider suffix" /> The command needs the entry's tenant and
+              provider suffix, which the answer did not carry.
             </p>
           ) : (
             <pre className="ur-term">
@@ -301,8 +421,8 @@ function RegisterSlot({
             </pre>
           )}
           <p className="ur-sub">
-            3. SwarmCloud sees the new version, records the last 4 characters, checks the token's permissions and shows
-            them here. The value is never shown again, and never was: it went from your terminal to Secret Manager.
+            3. SwarmCloud sees the new version, keeps the last 4 characters, checks the token's permissions and shows
+            them here. The token itself is never shown here: it goes from your terminal to Secret Manager.
           </p>
         </>
       )}

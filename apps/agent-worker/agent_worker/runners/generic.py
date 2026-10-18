@@ -47,6 +47,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ..cachedirs import AGENT_CACHE_ENV
 from ..logs import StructuredLogger
 from ..procman import run_child
 from .base import RunnerContext, RunnerFailure, run_runner
@@ -238,9 +239,11 @@ def _build_env(ctx: RunnerContext) -> dict[str, str]:
 
     An environment variable is a command in disguise -- `NODE_OPTIONS`,
     `PYTHONSTARTUP`, `LD_PRELOAD` and `PATH` all change which code runs -- so
-    `input` contributes nothing here.
+    `input` contributes nothing here. The cache variables are the WORKER's
+    (`cachedirs`, CACHE-SCRATCH), carried by exact name from this runner's own
+    environment, so a build's caches and temp files stay off the workspace.
     """
-    return {
+    env = {
         "PATH": BASE_PATH,
         "HOME": str(ctx.work_dir),
         "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
@@ -256,6 +259,10 @@ def _build_env(ctx: RunnerContext) -> dict[str, str]:
         "SWARM_WORK_DIR": str(ctx.work_dir),
         "SWARM_ARTIFACTS_DIR": str(ctx.artifacts_dir),
     }
+    for name in AGENT_CACHE_ENV:
+        if os.environ.get(name):
+            env[name] = os.environ[name]
+    return env
 
 
 def _resolve_working_directory(ctx: RunnerContext) -> Path:

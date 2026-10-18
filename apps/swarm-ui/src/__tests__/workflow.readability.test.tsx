@@ -25,6 +25,7 @@ import type { WorkflowBoard, WorkflowUsage } from '../api'
 import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
 import { cascade } from './cssgate'
 import { colour, contrast, resolveSheet, resolveVars, tokenTables, type RGBA } from './spaceprobe'
+import { ownFromBoard } from './workflowsById'
 
 const api = vi.hoisted(() => ({
   loadWorkflowBoard: vi.fn(),
@@ -172,10 +173,7 @@ beforeEach(() => {
   api.loadWorkflowBoard.mockResolvedValue({ status: 'ok', data: fixture(), fetchedAt: T0 } satisfies Result<WorkflowBoard>)
   api.loadWorkflowUsage.mockResolvedValue({ status: 'empty', fetchedAt: T0 } satisfies Result<WorkflowUsage>)
   api.loadAttempts.mockResolvedValue({ status: 'empty', fetchedAt: T0 })
-  api.loadWorkflow.mockResolvedValue({
-    status: 'error',
-    error: { kind: 'not_found', httpStatus: 404, code: null, message: 'no such workflow' },
-  })
+  api.loadWorkflow.mockImplementation(ownFromBoard(api.loadWorkflowBoard))
 })
 
 afterEach(() => {

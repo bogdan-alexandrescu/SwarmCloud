@@ -69,6 +69,28 @@ export function notServed(e: ApiError): boolean {
 
 export type ChangeTrigger = 'poll' | 'webhook' | 'off'
 
+/**
+ * The change trigger's choices, one list for Register and Settings (HOOKS-UI,
+ * part of #1384). `webhook` is "poll AND push" (swarm_api/repositories.py
+ * `ON_CHANGE_POLLED`, graph-service.md §6.2): the five-minute poll still reads
+ * it, so it is safe to offer while the push receiver (`swarm-github-hooks`)
+ * is off -- a webhook registration is never left unrefreshed, it only
+ * waits for the poll the way a `poll` one does.
+ */
+export const TRIGGER_OPTIONS: readonly { key: ChangeTrigger; label: string }[] = [
+  { key: 'poll', label: 'Poll the default branch (every 5 min)' },
+  { key: 'webhook', label: 'Webhook · on push to the default branch' },
+  { key: 'off', label: 'Off' },
+]
+
+/** What a webhook needs outside this console (docs/runbooks/github-app.md Step 9). */
+export const WEBHOOK_NOTE =
+  "Webhook: the GitHub App's webhook must be ticked (runbook Step 9). The five-minute poll stays on as the fallback for a lost push."
+
+export function triggerLabel(t: ChangeTrigger): string {
+  return TRIGGER_OPTIONS.find((o) => o.key === t)!.label
+}
+
 /** `index.interval_hours` as designed: 1-168, or `'off'`. Anything else is not that, so unknown. */
 function intervalHours(v: unknown): number | 'off' | null {
   if (v === 'off') return 'off'
@@ -95,6 +117,101 @@ export interface RepoIndexState {
   /** The test map's reach in the index's own units (QA G4-03); null when not served. */
   coverage: TestCoverage | null
   next_run_at: string | null
+  /** The last index run that FAILED, as the API classified it (INDEX-FAIL); null when none. */
+  last_failure: IndexFailure | null
+  /** Set when the poll stopped re-running this repository after repeated access failures. */
+  backoff: IndexBackoff | null
+}
+
+/** `access` (the forge refused or could not find it), `transient` (nobody answered), `other`. */
+export type FailureClass = 'access' | 'transient' | 'other'
+
+/**
+ * `index.last_failure` (`swarm_api/indexfailure.py` `failure_record`): the
+ * failed task, when, its class, the API's sentence and one scrubbed git line.
+ * Operator QA p14 (2026-10-13): runs failed every 15 minutes while the card
+ * said only "no index". The text is masked again here (`maskCredential`): the
+ * API scrubs it, and a card is not where to find out it once did not.
+ */
+export interface IndexFailure {
+  task_id: string
+  at: string | null
+  kind: FailureClass
+  cause: string
+  detail: string | null
+}
+
+/** `index.backoff`: the poll stopped, since when, after how many failures. */
+export interface IndexBackoff {
+  since: string | null
+  failures: number | null
+}
+
+/**
+ * `index_credential` (`swarm_api/forge.py` `service_credential_view`,
+ * INDEX-CRED): which credential the tenant's index runs clone with -- the
+ * team token (`tenant`), a personal workspace owner's GitHub connection
+ * (`owner`), or none. Owner report 2026-10-13: Try it passed through the
+ * owner's connection while the index runs cloned with a team token the
+ * workspace never had, and the two looked the same. A secret NAME and a
+ * login, never a value.
+ */
+export interface IndexCredential {
+  source: 'tenant' | 'owner' | 'none'
+  secret_name: string | null
+  login: string | null
+}
+
+const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/
+
+function normIndexCredential(v: unknown): IndexCredential | null {
+  if (!isRec(v)) return null
+  const source = oneOf(v.source, ['tenant', 'owner', 'none'] as const)
+  if (source === null) return null
+  const login = str(v.login)
+  return { source, secret_name: str(v.secret_name), login: login !== null && LOGIN.test(login) ? login : null }
+}
+
+/** "Indexing uses: ..." in words: what the card and Try it both say. */
+export function indexCredentialWords(c: IndexCredential | null): string | null {
+  if (c === null) return null
+  if (c.source === 'owner') return c.login === null ? 'your GitHub connection' : `your GitHub connection (@${c.login})`
+  if (c.source === 'tenant') return 'the team token'
+  return 'none \u2014 connect GitHub'
+}
+
+/**
+ * A served line with anything credential-shaped cut: URL user-info, GitHub
+ * token shapes. The patterns are built from pieces, so this file is not one.
+ */
+const CREDENTIAL_SHAPES: readonly RegExp[] = [
+  /\b([a-z][a-z0-9+.-]*:\/\/)[^/\s@]*@/gi,
+  new RegExp('\\bgh[pousr]_[A-Za-z0-9]{8,}', 'g'),
+  new RegExp('\\bgithub' + '_pat_[A-Za-z0-9_]{8,}', 'g'),
+]
+
+export function maskCredential(text: string): string {
+  return CREDENTIAL_SHAPES.reduce((t, re, i) => t.replace(re, i === 0 ? '$1' : '[redacted]'), text)
+}
+
+function normFailure(v: unknown): IndexFailure | null {
+  if (!isRec(v)) return null
+  const id = str(v.task_id)
+  const cause = str(v.cause)
+  if (id === null || cause === null) return null
+  const detail = str(v.detail)
+  return {
+    task_id: id,
+    at: str(v.at),
+    kind: oneOf(v.class, ['access', 'transient', 'other'] as const) ?? 'other',
+    cause: maskCredential(cause),
+    detail: detail === null ? null : maskCredential(detail),
+  }
+}
+
+function normBackoff(v: unknown): IndexBackoff | null {
+  if (!isRec(v)) return null
+  return { since: str(v.since), failures: num(v.failures) }
 }
 
 /**
@@ -180,6 +297,8 @@ export interface RepoRecord {
   last_run: IndexRun | null
   graph: { depth: number | null; min_confidence: number | null }
   selection_policy: { policy: string | null; mode: string | null; inherited_from_tenant: boolean | null }
+  /** Which credential its index runs clone with; null when not served. */
+  index_credential: IndexCredential | null
 }
 
 export interface UsedBy {
@@ -263,6 +382,8 @@ export function normRepo(v: unknown): RepoRecord | null {
       in_flight_task_id: str(ix.in_flight_task_id),
       coverage: normCoverage(ix.coverage),
       next_run_at: str(ix.next_run_at),
+      last_failure: normFailure(ix.last_failure),
+      backoff: normBackoff(ix.backoff),
     },
     last_run: normIndexRun(v.last_run),
     graph: { depth: num(graph.depth), min_confidence: num(graph.min_confidence) },
@@ -271,6 +392,7 @@ export function normRepo(v: unknown): RepoRecord | null {
       mode: str(pol.mode),
       inherited_from_tenant: bool(pol.inherited_from_tenant),
     },
+    index_credential: normIndexCredential(v.index_credential),
   }
 }
 
@@ -818,6 +940,12 @@ export interface GitToken {
   yours: boolean
   /** A user token's email: served on the caller's own records, and to an admin. */
   owner: string | null
+  /**
+   * The exact line that stores this entry's value from stdin, as the API
+   * serves it (`gittokens.store_command`). Only a line of that one shape is
+   * kept: it is printed for a person to run.
+   */
+  store_command: string | null
 }
 
 function scopeOf(v: unknown): TokenScope | null {
@@ -858,7 +986,24 @@ export function normToken(v: unknown): GitToken | null {
     last_error: str(v.last_error) ?? str(v.probe_error),
     yours: v.yours === true,
     owner: str(v.owner),
+    store_command: storeCommand(v.store_command),
   }
+}
+
+/** `scripts/create-secrets.sh --tenant <t> --provider <suffix> --stdin`, or nothing. */
+export function storeCommand(v: unknown): string | null {
+  return typeof v === 'string' && /^scripts\/create-secrets\.sh --tenant [a-z0-9][a-z0-9-]{0,62} --provider [a-z0-9][a-z0-9-]{0,254} --stdin$/.test(v) ? v : null
+}
+
+/**
+ * A token GitHub's App renews by itself (`app_user`, the user-to-server token
+ * a Connect GitHub stores; forgeapp.py refreshes it before it lapses). Its
+ * `expires_at` is hours away by design, so "Expires today" on it was an alarm
+ * about the normal case. A renewal that failed marks the record `expired`
+ * (`forgeapp._mark_failed`), which is the case worth saying.
+ */
+export function renewsItself(t: Pick<GitToken, 'kind'>): boolean {
+  return t.kind === 'app_user'
 }
 
 /**
@@ -1036,11 +1181,11 @@ export function normResolved(v: unknown): ResolvedToken {
   }
 }
 
-/** "fine-grained PAT", "classic PAT", "App installation", or the served word. */
+/** "fine-grained PAT", "classic PAT", "App installation", "GitHub App (user)", or the served word. */
 export function kindWords(kind: string | null): string | null {
   if (kind === null) return null
   return (
-    { fine_grained_pat: 'fine-grained PAT', classic_pat: 'classic PAT', app_installation: 'App installation' } as Record<string, string>
+    { fine_grained_pat: 'fine-grained PAT', classic_pat: 'classic PAT', app_installation: 'App installation', app_user: 'GitHub App (user)' } as Record<string, string>
   )[kind] ?? kind.replace(/_/g, ' ')
 }
 

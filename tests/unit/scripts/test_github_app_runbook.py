@@ -60,6 +60,24 @@ def _declared_slots() -> set[str]:
     return {f"swarm-github-app-{word}" for word in _declared_slot_words()}
 
 
+HOOKS_TF = INFRA / "github_hooks.tf"
+
+
+def _hooks_secret_ids() -> set[str]:
+    """The push receiver's webhook secret id, read from terraform/infra/github_hooks.tf.
+
+    It is an App secret too, but terraform/infra declares it beside the
+    receiver it serves (Step 9), not in modules/secret_manager.
+    """
+    text = HOOKS_TF.read_text()
+    ids = set(re.findall(r'github_hooks_secret_id\s*=\s*"([^"]+)"', text))
+    assert len(ids) == 1, "github_hooks.tf no longer declares one github_hooks_secret_id"
+    assert "secret_id = local.github_hooks_secret_id" in text, (
+        "github_hooks.tf no longer names its secret by github_hooks_secret_id"
+    )
+    return ids
+
+
 def _runbook() -> str:
     assert RUNBOOK.exists(), "docs/runbooks/github-app.md does not exist"
     return RUNBOOK.read_text()
@@ -76,9 +94,24 @@ def test_terraform_declares_the_two_app_slots() -> None:
 
 def test_the_runbook_names_every_slot_terraform_declares_and_no_other() -> None:
     named = set(SLOT_RE.findall(_runbook()))
-    declared = _declared_slots()
+    declared = _declared_slots() | _hooks_secret_ids()
     assert declared <= named, f"runbook does not name {sorted(declared - named)}"
     assert named <= declared, f"runbook names slots Terraform does not declare: {sorted(named - declared)}"
+
+
+def test_the_hooks_secret_is_an_app_secret_id() -> None:
+    # The control: an id the slot pattern does not match would make the
+    # comparison above hold without ever reading it.
+    assert all(SLOT_RE.fullmatch(i) for i in _hooks_secret_ids()), _hooks_secret_ids()
+
+
+def test_step_9_names_the_webhook_secret_beside_the_output() -> None:
+    text = _runbook()
+    start = text.index("## Step 9:")
+    step = text[start:text.index("\n## ", start + 1)]
+    for secret_id in _hooks_secret_ids():
+        assert secret_id in step, f"Step 9 does not name {secret_id}"
+    assert "output github_hooks" in step
 
 
 def _store_commands(text: str) -> list[str]:

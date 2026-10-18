@@ -61,8 +61,10 @@ What it settles, one line each:
   and every firing uses that tenant's identity, secrets, prefix and ceilings.
   Admins get a cross-tenant view that can pause but cannot edit or approve.
 * **A new spine section, Automate** (Overview, Work, Automate, Capacity,
-  Admin), holding Schedules and the Approvals inbox, and an admin view under
-  Admin (§6, SD1). Also a REST API, MCP tools and `sc schedules`
+  Admin), holding Schedules and the Approvals inbox (§6, SD1). An admin's
+  cross-tenant view is the same Schedules page switched to "All tenants"
+  (owner decision 2026-10-13, §6.1); it was a second page under Admin until
+  then. Also a REST API, MCP tools and `sc schedules`
   (§7).
 
 `eng` is an example tenant and `example-org/example-api` an example repository.
@@ -260,6 +262,10 @@ in the code, so they are measured here:
 | territory guard `routes/runs.py` `territory_conflict` | the same, with `_territory_hold` writing the hold `territory_overlap: <run id>`, and `issueruns.territory_overlap` |
 | job `google_cloud_scheduler_job.issue_sweep` | the same: one per tenant in `var.rollup_tenant_ids`, named `<prefix>-issue-sweep-<t>`, at `var.issue_sweep_schedule` (default `7,37 * * * *`), as the rollup sweeper's OIDC identity |
 
+(This table is the 2026-10-08 measurement. Every SWEEP-only name in it --
+the route, `SWEEP_ENABLED`, the tenant settings and their routes, the job --
+was deleted on 2026-10-12: §8.1 step 4.)
+
 Where the code differs from §8.1, S6 and S9 follow the code (§8.1's rule):
 
 * **The submitter is the tenant's `issue_sweep.submit_as`, not a
@@ -430,10 +436,12 @@ document already there is the duplicate that never happens twice.
 | `state` | §1.4 |
 | `params_digest` | sha256 of the resolved `{type, scope (resolved repo list), params, gate, budget}` the firing ran with. A run approval approves this digest (§4.5) |
 | `work` | `[{kind: issue_run \| task \| workflow \| api_action, id, repo_id}]`, what it created. A sweep creates several |
-| `skip` | `{code, detail}` when nothing was created: `OVERLAP`, `BUDGET_EXHAUSTED`, `MISSED_SLOT`, `OWNER_NOT_MEMBER`, `REPOSITORY_NOT_GRANTED`, `WORKSPACE_NOT_READY`, `NO_CLAUDE_ACCOUNT`, `SCHEDULES_DISABLED` or `DRY_RUN` |
+| `skip` | `{code, detail}` when nothing was created: `OVERLAP`, `BUDGET_EXHAUSTED`, `MISSED_SLOT`, `OWNER_NOT_MEMBER`, `REPOSITORY_NOT_GRANTED`, `WORKSPACE_NOT_READY`, `NO_CLAUDE_ACCOUNT`, `SCHEDULES_DISABLED`, `DRY_RUN` or `NOTHING_STARTED`. A firing that ran and created nothing ends `succeeded` but is never silent: `NOTHING_STARTED` carries the executor's `reason` (an issue sweep's `no_room` with its `bound`, `repositories_not_read`, `no_eligible_issue`, `no_open_issue`, `no_repository`), or `executor_created_nothing` when it gave none. Before #1133 such a firing had `work: []` and no skip, indistinguishable from one whose every read had failed |
 | `dry_run` | what a dry run would have created, as data (§2.8) |
+| `selection` | on a real firing whose executor explains itself (`issue-sweep`, `issue-plan-only`): the dry run's answer for the selection it actually made, plus `started` and `start_failures`, so a firing can be compared with its dry run after the fact |
 | `approval_id` | set while a run approval is pending |
 | `outcome` | `succeeded`, `failed`, `cancelled`, `refused`, `skipped`, `expired`, `rejected` or `partial`, derived from its work (§2.9) |
+| `refused_runs` | `[{run_id, issue, code}]`, present only when an issue run was refused at planning for what its issue asks (`WORKFLOWS_PATH`). Those runs are not counted in `outcome` (§2.9) |
 | `cost` | `{reported_usd, unreported_attempts}`, summed over the work's attempts (§4.3) |
 | `history` | each move, with time and actor |
 
@@ -721,6 +729,19 @@ derived from its steps:
   things (a sweep that started five runs, of which one failed);
 * a run that ended `NOT_READY` (§3.1) counts as succeeded, because "this issue
   is not ready" is an answer.
+* a run **refused at planning for what its issue asks** is not counted at all:
+  it is listed under the firing's `refused_runs` as `{run_id, issue, code}`,
+  and the firing's outcome comes from its other runs, `succeeded` when there
+  are none. Today the one such code is `WORKFLOWS_PATH`
+  (`issueruns.PLANNING_REFUSALS`): the plan changes `.github/workflows/`,
+  which SwarmCloud's forge credential cannot push. The refusal is correct, but
+  counted as a failure it made the firing `failed` (#1030's
+  `run_21bcbaba3ba14235832a`, 2026-10-12), which reads as the schedule being
+  broken and counts toward `CONSECUTIVE_FAILURES`. A run that failed for any
+  other reason (a planner task that failed, an invalid plan, a submission
+  refused after approval) still fails the firing, and an exception or API
+  error in the firing itself is handled as before. The console's History
+  shows each refused run under the outcome, in plain words.
 
 The tick advances live firings: up to one page, oldest first, after it has
 fired due slots. For an issue run it calls
@@ -814,6 +835,36 @@ every tenant's data within one approval's reach.
     labels have not changed since.
   - It creates an issue run for each of up to `max_new_per_firing` remaining
     issues, oldest first, subject to `max_live_runs`.
+  - **It drops issues somebody is already working on outside an issue run**
+    (2026-10-12). Firing `sch_6ecbe1307511:29862877` took #1030 for idle
+    because it had no open pull request at that moment, while ~25 dedicated
+    workflows titled "... (LB-Lx; part of #1030)" were building it and
+    merging one after another; the same day the sweep opened PR 1136 beside
+    a lane's PR 1134 for #1133. "No open pull request" is not "nobody is on
+    it": between two merges of a multi-lane feature there is none. So:
+    - `in_flight_workflow: <workflow_id>` — a **non-terminal** workflow of
+      the tenant names the issue in its label or title (`part of #N`,
+      `(#N)`, or any `#N` bounded by non-digits; `owner/repo#N` only for
+      that repository, a bare `#N` for every repository in scope), or a step
+      carries an issue-run link to it (`metadata.issue_run`). The read is the
+      one `GET /v1/workflows?active=true` makes, **bounded to the newest 50**
+      (`issue_sweep.WORKFLOW_SCAN`), its state derived from the steps without
+      writing the cache back; the firing's `selection.in_flight` says how many
+      were read and whether the page was cut. A tenant with more than 50 live
+      workflows can have an older one's issue swept.
+    - `recently_worked: PR <n>` — a pull request whose title says `part of
+      #N` (or closes it) was **merged within `cooldown_hours`**: work just
+      landed, and the next lane may be about to start. One page of the
+      newest-updated closed pull requests (`forge.recently_merged_pulls`, 100);
+      `selection.in_flight.merged_truncated` names a repository that closed
+      more than that in the window. A repository whose closed pull requests
+      cannot be read starts nothing (`recently_worked: not read (<code>)`),
+      as one whose open pull requests could not all be read does not.
+    Dry run and real firing share this rule: both go through `select`.
+  - An issue whose last run was **refused at planning** for what the issue
+    asks (§2.9) is passed over as `unchanged_since_run: <run> (REFUSED:
+    <code>)` until the issue is edited or commented on: the same plan would
+    be refused again.
   - The planner decides readiness. Lane SWEEP's `NOT_READY` verdict ends the
     run with no workflow and a comment that says what is missing.
   - The **territory guard** holds an approved plan whose `files` overlap a live
@@ -898,11 +949,31 @@ every tenant's data within one approval's reach.
   | `window_hours` | 24 | 1-168 |
   | `focus` | all | a subset of `cost`, `latency`, `ci`, `idle_fixes`, `titles`, `parks`, `refusals` |
   | `file_issues` | `false` | — |
+  | `file_issues_repo_id` | none | a `repo_id` registered in the schedule's tenant; required when `file_issues` is true |
 
 * **Default gate.** Auto. Each proposal lands in the inbox as a **proposal**
   (§4.5). Turning one into a GitHub issue is a click by a person, unless
   `file_issues` is true, in which case they are filed as one epic per the
   CLAUDE.md "Issues" rules: one comment per finding.
+* **Where the epic is filed (owner decision 2026-10-11).** The report's task
+  has no repository, so the schedule names one: `file_issues_repo_id`. It must
+  be a registration of the schedule's own tenant (another tenant's id gets the
+  same answer as an unregistered one, §5.1) that the schedule's owner can
+  write: a `write` grant, or no grant while `REPOSITORY_GRANTS_ENFORCED` is off
+  -- the rule a submission follows. It is checked at create, at edit, at
+  take-ownership and again at every firing before anything is written. The
+  three codes (`observer_file_issues_repo_required`, `..._not_registered`,
+  `..._not_writable`) are new refusals and ship report-only
+  (`swarm_api/refusals.py`): switched off, the schedule is saved, and its
+  firings write the report and **file nothing** in a repository that failed
+  its check. The epic is filed when the next firing takes the report's
+  proposals in, with the tenant's own forge credential
+  (`swarm-tenant-<tenant>-git`, `issues: write`) through
+  `forgewrite.GitHubWriter.create_issue` and `create_comment`: the epic form's
+  sections and label, no task item in the body, one `- [ ]` comment per
+  proposal. `observer_epics/{task_id}` records the issue and each comment as
+  GitHub answers, and a marker opening each body finds a write whose record
+  was lost, so a retried firing files nothing twice.
 * **Produces.** `report.md` (an artifact, shown on the firing), proposals, and
   optionally an epic.
 * **Blast radius.** None on code. It reads the tenant's own records.
@@ -1187,7 +1258,7 @@ admin, not by a gate set to `auto`.
 
 | stop | detected | what happens |
 |---|---|---|
-| **IAM, Terraform bootstrap, `terraform/**/iam*.tf`, any `google_*_iam_*` change** | at plan (the plan's `files`, and a scan of step prompts for the paths) **and** at merge (the pull request's changed files, read through the forge API before the merge continuation is submitted, `issueci._merge`'s point) | **Held** (§4.5, "The hold lives on the issue run"), whatever the schedule's approvers. In a `platform: true` repository the hold is `NEEDS_OWNER` with `approvers: owner_only`. In any other repository it is `NEEDS_SECOND_MEMBER` with `approvers: second_member` (§4.6, SD11). The plan's files are advisory, which is why the merge check exists |
+| **IAM, Terraform bootstrap, `terraform/**/iam*.tf`, any `google_*_iam_*` change** | at plan (the plan's `files`, and a scan of step prompts for the paths) **and** at merge (the pull request's changed files, read through the forge API before the merge continuation is submitted, `issueci._merge`'s point) | **Held** (§4.5, "The hold lives on the issue run"), and the approver must satisfy BOTH the hold's rule and the schedule's approvers (`owner_only` or a named list): a hold only ever makes approval stricter and never replaces them. In a `platform: true` repository the hold is `NEEDS_OWNER` with `approvers: owner_only`. In any other repository it is `NEEDS_SECOND_MEMBER` with `approvers: second_member` (§4.6, SD11). The plan's files are advisory, which is why the merge check exists |
 | **The frozen contract**, `apps/common/swarm_common/**`, in a repository whose registration marks it `platform: true` | the same two points | `NEEDS_OWNER` with `approvers: owner_only`, and the inbox item links [contract-change-requests.md](contract-change-requests.md). `platform: true` exists only in a platform repository, so this hold never reaches another tenant |
 | **`.github/workflows/**`** | at plan | **Refused, not held.** The credential cannot push those files (§0), so the step would fail after spending. When the planner's plan names such a file, the plan is not stored: the run moves `PLANNING` → `FAILED`, a transition `RUN_TRANSITIONS` already has, with `error` carrying the code `WORKFLOWS_PATH` and the matched files. No workflow is submitted, no re-plan is attempted, and no state is added. The issue gets a comment saying the change must be made by a person or split out of the issue, and the sweep's cooldown (§3.1) applies to it as to `NOT_READY`. A person's plan edit (`PLANNED` → `PLANNED`) that adds such a path is refused with the existing 422 `invalid_plan`, naming the path |
 | **A security-class issue**: label `security`, or the form's severity S0 | at selection and at plan | Excluded from `issue-sweep` by default. If a member removes `security` from `labels_exclude`, or a run is created on such an issue by any path, its plan is **always** held and its merge is never `auto` (owner decision 2026-10-08). The hold is `NEEDS_OWNER`, `approvers: owner_only`, in a `platform: true` repository, and `NEEDS_SECOND_MEMBER` elsewhere (SD11) |
@@ -1417,6 +1488,12 @@ for that tenant's secret only.
 
 ### 5.3 The admin view
 
+**Where it is drawn (owner decision 2026-10-13, re-deciding the 2026-10-08
+placement under Admin; §6.1).** Automate › Schedules, switched from "Mine" to
+"All tenants" (`/automate/schedules?scope=all`). The switch is drawn only for
+an admin, and the server still decides: everything below is `is_admin` on the
+API, whatever the console shows.
+
 `GET /v1/admin/schedules` (`is_admin`) lists every tenant's schedules. Each row
 shows:
 
@@ -1506,8 +1583,35 @@ The alternatives, drawn and not chosen:
 * **P2, inside Runs**, as a segmented control: "Issue runs | Schedules |
   Approvals". Runs today means issue runs, and a schedule is not a run.
 
-The admin cross-tenant view is **Admin › Schedules** (`admin: true`), beside
-Tenants.
+~~The admin cross-tenant view is **Admin › Schedules** (`admin: true`), beside
+Tenants.~~ **Re-decided by the owner 2026-10-13 (SCHED-ONE-PAGE): schedules are
+one page, with an admin toggle.** The owner asked "why do I have schedules in
+Admin and also in Automate?": two nav entries named Schedules, one per
+audience, read as two different things, and an admin had to know which one
+held which half. So:
+
+* **Automate › Schedules is the only Schedules page.** An admin sees a
+  segmented switch, **Mine | All tenants**; anyone else sees no switch. "All
+  tenants" is §5.3's view: the table with a Tenant column, the schedule tick's
+  last hour, per-row Pause, Disable and Re-enable, and pausing every enabled
+  schedule of one tenant, typed with its id. The switch is in the address,
+  `/automate/schedules?scope=all`, so it can be linked. A non-admin following
+  that link gets their own list, and the admin read is never made for them;
+  the API still refuses it if it were (`is_admin`, §5.3).
+* **Admin › Schedules is gone.** `/admin/schedules` lands on
+  `/automate/schedules?scope=all`. Admin's question lost its schedules clause.
+* **The platform's own ticks (§8.4) moved to Admin › Platform counts**, under
+  their own "Platform ticks" heading with the same intro sentence. They belong
+  to no tenant, so they do not sit behind a "Mine | All tenants" switch, and
+  Platform counts is already the admin's read of what the platform itself is
+  doing.
+
+Why a toggle rather than a second page: the noun is one thing, a schedule,
+and the admin's question about it ("what is every tenant scheduled to run?")
+is the tenant's question with a wider scope, not a different question. A
+scope belongs on the page, as Capacity's "Ceilings | By runner profile" does,
+not in the nav. Two pages also meant two places to keep one row's words, and
+a reader who found one did not learn the other existed.
 
 Adding a section changes `SECTIONS` in `apps/swarm-ui/src/App.tsx`. So the
 build lane (S7) also updates the issue forms' "Where" list, which
@@ -1520,6 +1624,37 @@ constant: `test_nav_headings_agree.py` reads the array out of the TypeScript
 with a regex, and every tab needs a `SectionBody` case. S7 reads how both
 tests parse sections before it edits them, and records any difference
 here.
+
+**Read by S7, 2026-10-11.** Neither parser needed a change. Both read
+`SECTIONS` with the same regex (`test_issue_forms.py` imports
+`test_nav_headings_agree.py`'s), and the literal `id: 'automate'` entry parses
+like the other four. Two things follow from how they read it. A one-tab
+section draws no tab strip, so the forms name it by the section alone ("Web UI
+· Automate (/automate/schedules)"); when Approvals becomes the second tab both
+forms' options become "Automate › Schedules" and "Automate › Approvals", and
+the forms test fails until they do. And a tab is added only with its
+`SectionBody` case and its screen, because the nav test fails a tab whose
+route renders "No such pane": so Approvals joins `SECTIONS` in the lane that
+builds `Approvals.tsx`, not before. `docs/web-ui/redesign.md` §2 also carries
+each section's question verbatim (`apps/swarm-ui/tests/sections.test.ts`), so
+Automate's row was added there.
+
+**Built by S7, 2026-10-11, in its review round.** Approvals joined `SECTIONS`
+as Automate's second tab with `Approvals.tsx`, at `/approvals` (one item is
+`/approvals/<id>`), so the forms now offer "Automate › Schedules" and
+"Automate › Approvals"; the page carries the inbox count the section does.
+Admin › Schedules (`AdminSchedules.tsx`, `/admin/schedules`) joined Admin as
+its fifth tab, with the schedule tick's last hour and §8.4's "Platform ticks".
+That widened Admin's question by one clause ("and what is every tenant
+scheduled to run?"), changed in `SECTIONS` and in redesign.md §2 together.
+
+**Moved by SCHED-ONE-PAGE, 2026-10-13** (the re-decision above). The Admin ›
+Schedules tab, its `SectionBody` case, its panel entry and its "Where" option
+in both issue forms are gone; `AdminSchedules.tsx` keeps the cross-tenant read
+and actions, mounted by `Schedules.tsx` as the All tenants view; the platform
+ticks are in `PlatformCounts.tsx`. Admin's question now reads "...how many
+tasks are in each state, what does the platform run on its own, and who is
+waiting for a workspace?", in `SECTIONS` and redesign.md §2 together.
 
 ### 6.2 Screens
 
@@ -1663,6 +1798,25 @@ The migration keeps SWEEP's logic and moves its trigger and configuration:
    entry in `ROLLUP_SWEEPER_ROUTES`, `SWEEP_ENABLED` and the tenant document's
    `issue_sweep` settings, and points SWEEP's docs here.
 
+   **Done on 2026-10-12, early (lane SWEEP-RM).** The owner approved the
+   deletion that day, the day after `sch_6ecbe1307511` first fired
+   (2026-10-11 19:40Z), and waived the 7-day watch. Deleted together: the job with its
+   `issue_sweep_schedule` variable and output; `POST /v1/admin/issues/sweep`
+   and its `ROLLUP_SWEEPER_ROUTES` entry; `GET`/`PUT
+   /v1/admin/tenants/{tenant_id}/issue-sweep`; `SWEEP_ENABLED`
+   (`ApiSettings.sweep_enabled`, `var.enable_issue_sweep`, dev's `true`); and
+   `issuesweep.sweep_tenant`, `get_config`/`set_config` and the `submit_as`
+   check, which only the route used. Kept: everything the schedule types call
+   -- `issuesweep.collect_candidates`, `skip_reason`, `claimed_issues`,
+   `SweepConfig`, `SweepReport`, `TRUSTED_AUTHORS` -- unchanged in
+   behaviour. Why not keep the paused job as a fallback: un-pausing it would
+   be a second trigger of the same sweep, and the route auto-merged with no
+   person's gate, which is what the schedule's default `merge: approve`
+   replaced. `test_issue_sweep.py`, `test_schedules_migration_seed.py` and
+   `tests/terraform/scheduler.tftest.hcl` hold the absence;
+   [issue-runs.md](issue-runs.md#removed-2026-10-12-the-job-the-route-and-the-switch)
+   records what each setting became.
+
 If SWEEP's merged names differ from the above, S6 follows SWEEP's code and
 records the difference in this document. That is the rule for when another
 lane's layout contradicts this one.
@@ -1707,9 +1861,11 @@ tick. The owner chose not to.
 
 `workflow_rollup`, `issue_run_advance`, `merge_wake`, `forge_refresh`,
 `quota_refresh`, `reconciler` and `safety_tick` are **platform machinery**.
-They are not jobs a tenant manages, and they stay in Terraform. The admin view
-lists them read-only, as "Platform ticks", from a static list in the S7 lane,
-so an admin sees every recurring thing in one place.
+They are not jobs a tenant manages, and they stay in Terraform. Admin ›
+Platform counts lists them read-only, as "Platform ticks", from a static list
+(`PLATFORM_TICKS` in `PlatformCounts.tsx`, held to `jobs.tf` by a test), so an
+admin sees every recurring thing in one place. They were on Admin › Schedules
+until the owner folded that page into Automate › Schedules (2026-10-13, §6.1).
 
 ---
 
@@ -1868,6 +2024,16 @@ Changed: the summary, §6.1 and the §6.2 table, §9's S7 lane and acceptance
 (`SECTIONS` gains a section, so `test_issue_forms.py`'s "Where" list follows),
 the mock-ups (P3 marked as the pick) and
 [PICKS.md](web-ui/mockups/PICKS.md).
+
+**Re-decided 2026-10-13 (owner, SCHED-ONE-PAGE), for the admin half only.**
+Automate stands. The admin's cross-tenant view, placed under Admin by §5.3 and
+§6.1, is now Automate › Schedules' "All tenants" switch, shown to admins only,
+at `?scope=all`; Admin › Schedules is removed and `/admin/schedules` redirects
+there, and the platform ticks moved to Admin › Platform counts. Why: the owner
+asked "why do I have schedules in Admin and also in Automate?" and chose "One
+page, admin toggle" -- two Schedules entries were confusing. Changed: the
+summary, §5.3, §6.1, §8.4, `SECTIONS` (Admin's tab and question),
+redesign.md §2 and the issue forms' "Where" lists.
 
 ### SD2. Which types are built first?
 

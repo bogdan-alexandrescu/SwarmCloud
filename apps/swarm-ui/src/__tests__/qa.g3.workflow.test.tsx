@@ -39,7 +39,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { WorkflowCard, integratorShort } = await import('../Workflows')
+const { WorkflowCard } = await import('../Workflows')
 const { workflowSpend, dueSteps, layoutOf, nodeWidthAt, CHAIN_NODE_W } = await import('../dag')
 const { attemptFacts, attemptPhase, failureCause } = await import('../stepviews')
 const { TIMELINE_KEY } = await import('../WorkflowViews')
@@ -369,9 +369,12 @@ function sheetTable(skipped = false): HTMLElement {
 const px = (v: string | null): number => (v === null ? NaN : Number.parseFloat(v))
 
 describe('G3-10: the Steps table keeps the words that carry meaning', () => {
-  it('gives State the list’s 136px and Step at least 96px', () => {
+  // 126px since V202 (#1427): `skipped by verdict` and its mark are 114px of
+  // 12px sans (Chromium, 2026-10-16) plus the 12px of padding. It was the
+  // list's 136; the 10px went to Ran, which cut `between attempts`.
+  it('gives State the 126px that holds `skipped by verdict`, and Step at least 96px', () => {
     const h = sheetTable()
-    expect(px(painted(h.querySelector('th[data-col="state"]')!, 'width', { width: 1440 }))).toBe(136)
+    expect(px(painted(h.querySelector('th[data-col="state"]')!, 'width', { width: 1440 }))).toBe(126)
     expect(px(painted(h.querySelector('th[data-col="step"]')!, 'width', { width: 1440 }))).toBeGreaterThanOrEqual(96)
   })
 
@@ -539,10 +542,10 @@ describe('G3-25: the integrator is a task, linked to its agent', () => {
     expect(fact, 'no integrator fact').toBeDefined()
     const link = fact!.querySelector<HTMLAnchorElement>('a')!
     expect(link.getAttribute('href')).toBe(`#work/task/${INTEGRATOR}`)
-    expect(link.textContent).toBe('task_…18680')
+    // The whole id, never cut in the text (V102): only CSS may ellipse it.
+    expect(link.textContent).toBe(INTEGRATOR)
     expect(link.getAttribute('title')).toBe(INTEGRATOR)
     expect([...container.querySelectorAll('.wf-dispatch b')].map((b) => b.textContent)).not.toContain('via')
-    expect(integratorShort('abc')).toBe('abc')
   })
 })
 

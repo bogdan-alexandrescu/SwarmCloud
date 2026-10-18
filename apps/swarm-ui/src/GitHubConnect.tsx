@@ -1,10 +1,14 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { authorizeGitHub, disconnectGitHub, exchangeGitHub, loadOnboarding } from './api'
-import { Banner, Button, Card, Chip, Dash, ToneMark } from './components'
+import { authorizeGitHub, disconnectGitHub, enableAccessOwner, exchangeGitHub, loadOnboarding, loadRepositories, verifyAccessGrant, verifyGitToken } from './api'
+import { Banner, Button, ButtonLink, Card, Chip, Dash, ToneMark } from './components'
 import { errorHeading, type ApiError, type Result } from './fetch'
+import { indexCredentialWords, type RepoRecord } from './RepositoriesData'
 import { GT_PAGE, UrNavButton, UrRefresh, UrRegion, useUrRead, type UrRead } from './RepositoriesParts'
 import { PageHead, useClaimPageAge } from './Shell'
+import { prefillTask } from './submitPrefill'
 import type {
+  AccessVerifyResponse,
+  AppInstalledEvidence,
   GitHubConnectedEvidence,
   GitHubDisconnectResponse,
   GitHubExchangeBody,
@@ -23,10 +27,12 @@ import './styles/repositories.css'
  * of OB8 on 2026-10-07 so a person can connect before the full checklist
  * exists). Two pieces:
  *
- *   * `GitHubConnectCard`, on Work › Repositories › Git tokens -- where the
- *     console shows git access today -- reads `GET /v1/onboarding` for the
- *     connection, starts one (`POST .../authorize`, then the browser goes to
- *     GitHub) and ends one (`DELETE /v1/onboarding/github`, behind a confirm);
+ *   * `GitHubSetupCard`, on Work › Repositories › Git tokens -- where the
+ *     console shows git access today -- reads `GET /v1/onboarding` and guides
+ *     a person through three steps (GT-GUIDE, 2026-10-12): Connect GitHub
+ *     (`POST .../authorize`, then the browser goes to GitHub; ending one is
+ *     `DELETE /v1/onboarding/github`, behind a confirm), Choose what it
+ *     reaches, and Try it;
  *   * `GitHubCallbackScreen`, at `/onboarding/github/callback`, the App's
  *     registered callback URL: it posts GitHub's `state` and `code` (or
  *     `error`) to `POST .../exchange` ONCE and says what came of it.
@@ -166,24 +172,65 @@ const REACH_WORD: Record<string, string> = {
   classic_blocked: 'refuses classic tokens',
 }
 
+/** Where the orgs are enabled and the repositories chosen (OB4's routes; Onboarding.tsx `ACCESS`). */
+export const ACCESS_PAGE = 'work/access'
+const SUBMIT_TASK = 'work/new'
+
+function str(v: unknown): string | null {
+  return typeof v === 'string' && v !== '' ? v : null
+}
+
+/** The guided step (1-3) an onboarding step belongs to. */
+const GUIDE_OF: Partial<Record<OnboardingStep['step'], 1 | 2 | 3>> = {
+  github_connected: 1,
+  app_installed: 1,
+  orgs_enabled: 2,
+  repos_chosen: 2,
+  access_verified: 3,
+}
+
 /**
- * The accounts and orgs the connection reaches, from `orgs_enabled`. The
- * probe reads them after the token is stored, so straight after connecting
- * they may not be read yet -- said so, never drawn as "no orgs".
+ * The orgs line. NEVER "they appear here once it has" (GT-GUIDE, owner
+ * 2026-10-12): `orgs_enabled` completes only once the person ENABLES an owner
+ * on Work › Access, and the old line waited on a verification that was never
+ * going to tick it. It now says what the step waits for -- an earlier step,
+ * the first read of the owners, or the person -- and where to act. `onEnabled`
+ * draws an inline Enable per owner (`POST /v1/access/orgs`, Access's own
+ * route) and re-reads the steps after it.
  */
-function Owners({ doc }: { doc: OnboardingDoc }) {
+function Owners({ doc, onEnabled }: { doc: OnboardingDoc; onEnabled?: () => void }) {
   const step = stepOf(doc, 'orgs_enabled')
-  const ev = (step?.evidence ?? {}) as Partial<OrgsEnabledEvidence>
+  const ev = (step?.evidence ?? {}) as Partial<OrgsEnabledEvidence> & { enabled?: unknown; waiting_for?: unknown }
   const owners = Array.isArray(ev.owners) ? ev.owners : []
-  if (step === null || step.state === 'todo' || owners.length === 0) {
+  const waiting = str(ev.waiting_for)
+  const enabled = Array.isArray(ev.enabled) ? (ev.enabled as unknown[]).filter((o): o is string => typeof o === 'string') : null
+  const [busy, setBusy] = useState<string | null>(null)
+  const [refused, setRefused] = useState<ApiError | null>(null)
+
+  async function enable(owner: string) {
+    setBusy(owner)
+    setRefused(null)
+    const res = await enableAccessOwner(owner)
+    setBusy(null)
+    if (res.status === 'error') {
+      setRefused(res.error)
+      return
+    }
+    onEnabled?.()
+  }
+
+  if (waiting !== null && GUIDE_OF[waiting as OnboardingStep['step']] === 1) {
+    return <p className="ur-hint">Orgs: after GitHub is connected and the App installed, enable the ones SwarmCloud may work in on Work › Access.</p>
+  }
+  if (step === null || owners.length === 0) {
     return (
       <p className="ur-hint">
-        Orgs <Dash why="Not read yet" /> SwarmCloud reads the accounts and orgs this connection reaches when it verifies
-        the new token; they appear here once it has.
+        Orgs <Dash why="Not read yet" /> SwarmCloud has not read the accounts and orgs this connection reaches yet; then enable the ones SwarmCloud may work in on Work › Access.
       </p>
     )
   }
   const issues: OnboardingIssue[] = Array.isArray(step.issues) ? step.issues : []
+  const isOn = (o: string) => enabled !== null && enabled.some((e) => e.toLowerCase() === o.toLowerCase())
   return (
     <div className="ur-gh-orgs">
       <p className="ur-sub">Reaches</p>
@@ -192,11 +239,21 @@ function Owners({ doc }: { doc: OnboardingDoc }) {
           <li key={o.owner}>
             <Chip tone={o.reach === 'reachable' ? undefined : 'bad'} title={o.owner_type === 'User' ? 'Your account' : 'An org'}>
               {o.owner}
-              {o.reach !== 'reachable' ? ` · ${REACH_WORD[o.reach] ?? o.reach}` : ''}
+              {o.reach !== 'reachable' ? ` · ${REACH_WORD[o.reach] ?? o.reach}` : isOn(o.owner) ? ' · enabled' : ''}
             </Chip>
+            {onEnabled !== undefined && enabled !== null && o.reach === 'reachable' && !isOn(o.owner) && (
+              <Button size="sm" kind="ghost" busy={busy === o.owner} disabled={busy !== null} aria-label={`Enable ${o.owner}`} onClick={() => void enable(o.owner)}>
+                Enable
+              </Button>
+            )}
           </li>
         ))}
       </ul>
+      {step.state !== 'done' && (
+        <p className="ur-small">
+          Enable the accounts and orgs SwarmCloud may work in{onEnabled !== undefined && enabled !== null ? ' here, or' : ''} on Work › Access, where you also choose their repositories.
+        </p>
+      )}
       {ev.sso_hidden_orgs !== undefined && ev.sso_hidden_orgs > 0 && (
         <p className="ur-hint">
           GitHub hid {ev.sso_hidden_orgs} more org{ev.sso_hidden_orgs === 1 ? '' : 's'} behind single sign-on.
@@ -207,36 +264,151 @@ function Owners({ doc }: { doc: OnboardingDoc }) {
           {i.copy}
         </p>
       ))}
+      {refused !== null && <Refusal error={refused} title="The org was not enabled" />}
     </div>
   )
 }
 
 // ---------------------------------------------------------------------------
-// The card, on Git tokens
+// Set up GitHub access: the guided steps, on Git tokens
 // ---------------------------------------------------------------------------
 
+type GuideState = 'done' | 'todo' | 'failed' | 'waiting'
+
+const GUIDE_WORD: Readonly<Record<GuideState, string>> = { done: 'done', todo: 'to do', failed: 'needs you', waiting: 'waiting' }
+
 /**
- * CONNECT GITHUB, the card (onboarding.md §4, Connect A: one button for the
- * App). It reads its own state from `GET /v1/onboarding` and reloads it after
- * a disconnect; `onChange` lets the page re-read its token records too.
+ * One guided step's state, from the onboarding steps it groups. DERIVED, NEVER
+ * SET: done only when the server derived every one of them done. A step this
+ * server does not serve is left out rather than counted either way; one
+ * waiting on an EARLIER guided step is `waiting`, and offers nothing.
  */
-export function GitHubConnectCard({ onChange }: { onChange?: () => void }) {
-  const doc = useUrRead(loadOnboarding, 'onboarding')
+function guideState(doc: OnboardingDoc, names: OnboardingStep['step'][]): { state: GuideState; after: 1 | 2 | null } {
+  const steps = names.map((n) => stepOf(doc, n)).filter((s): s is OnboardingStep => s !== null)
+  const own = GUIDE_OF[names[0]!]!
+  for (const s of steps) {
+    const on = GUIDE_OF[str(s.evidence?.waiting_for) as OnboardingStep['step']]
+    if (s.state !== 'done' && on !== undefined && on < own) return { state: 'waiting', after: on as 1 | 2 }
+  }
+  if (steps.length > 0 && steps.every((s) => s.state === 'done')) return { state: 'done', after: null }
+  if (steps.some((s) => s.state === 'failed')) return { state: 'failed', after: null }
+  return { state: 'todo', after: null }
+}
+
+/** A grant or registration the steps name: `repos_chosen`'s evidence rows. */
+interface ChosenRepo {
+  repo_id: string
+  repository: string
+  owner: string
+}
+
+function chosenRepos(doc: OnboardingDoc): ChosenRepo[] {
+  const rows = stepOf(doc, 'repos_chosen')?.evidence?.repositories
+  if (!Array.isArray(rows)) return []
+  const out: ChosenRepo[] = []
+  for (const r of rows as unknown[]) {
+    if (typeof r !== 'object' || r === null) continue
+    const row = r as Record<string, unknown>
+    const id = str(row.repo_id)
+    const name = str(row.repository)
+    if (id === null || name === null) continue
+    out.push({ repo_id: id, repository: name, owner: str(row.owner) ?? name.split('/')[0]! })
+  }
+  return out
+}
+
+/**
+ * The harmless prompt "Run a test task" hands Submit: it reads and reports.
+ * With the default strategy (`collect`), nothing is pushed either way.
+ */
+export const TEST_TASK_PROMPT =
+  'This is a SwarmCloud test task. List the top-level files of this repository and say in three sentences what the project does. Do not change, commit or push anything.'
+
+/** Only an `owner/repo` this page can name as a github.com clone URL. */
+const OWNER_REPO = /^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/
+
+function GuideRow({ n, title, state, line, actions, children }: {
+  n: 1 | 2 | 3
+  title: string
+  state: GuideState
+  line?: ReactNode
+  actions?: ReactNode
+  children?: ReactNode
+}) {
   return (
-    <Card className="ur-gh" title="Connect GitHub" action={<Chip>acts as you</Chip>}>
-      <UrRegion state={doc.state} route="GET /v1/onboarding" what="Your GitHub connection" onRetry={doc.reload} lines={2}>
-        {(d) => <CardBody doc={d} read={doc} onChange={onChange} />}
+    <li className="ur-step" data-n={n} data-state={state}>
+      <span className="ur-step-mark" aria-hidden="true">
+        {state === 'done' ? '✓' : n}
+      </span>
+      <div className="ur-step-main">
+        <div className="ur-step-h">
+          <h3>{title}</h3>
+          <span className="ur-step-word">{GUIDE_WORD[state]}</span>
+        </div>
+        {line !== undefined && line !== null && <p className="ur-step-line">{line}</p>}
+        {children}
+      </div>
+      {actions !== undefined && actions !== null && <div className="ur-gh-acts ur-step-acts">{actions}</div>}
+    </li>
+  )
+}
+
+/**
+ * SET UP GITHUB ACCESS (lane GT-GUIDE, the owner's GUIDED STEPS design,
+ * 2026-10-12). A new person lands on Git tokens straight after their workspace
+ * is approved; the page used to open on token cards and a terminal command.
+ * It now opens on three steps, each ticked by `GET /v1/onboarding` and never
+ * by this page:
+ *
+ *   1. Connect GitHub          -- `github_connected` + `app_installed`
+ *   2. Choose what it reaches  -- `orgs_enabled` + `repos_chosen`
+ *   3. Try it                  -- `access_verified`
+ *
+ * A step that is not done says exactly what to do next and offers it here or
+ * links to where it is done (Work › Access). Try it acts through the routes
+ * that already exist -- a grant's verify, or the token's -- and hands Submit
+ * a harmless task. No token value passes through any of it.
+ */
+export function GitHubSetupCard({ read, go, onChange }: { read: UrRead<OnboardingDoc>; go: (to: string) => void; onChange?: () => void }) {
+  const done = read.state.status === 'ok' || read.state.status === 'stale' ? countDone(read.state.data) : null
+  return (
+    <Card className="ur-gh ur-steps" title="Set up GitHub access" action={done === null ? undefined : <span className="ur-steps-count">{`${done} of 3 done`}</span>}>
+      <UrRegion state={read.state} route="GET /v1/onboarding" what="Your GitHub setup" onRetry={read.reload} lines={3}>
+        {(d) => (
+          <>
+            <ol className="ur-steps-list">
+              <ConnectStep doc={d} read={read} onChange={onChange} />
+              <ReachStep doc={d} read={read} go={go} />
+              <TryStep doc={d} read={read} go={go} />
+            </ol>
+            <p className="ur-hint">
+              Checked {d.derived_at ? timeAgo(d.derived_at) : <Dash why="The read carried no time" />}. No token passes
+              through this page: GitHub hands it to SwarmCloud, which stores it in Secret Manager.
+            </p>
+          </>
+        )}
       </UrRegion>
     </Card>
   )
 }
 
-function CardBody({ doc, read, onChange }: { doc: OnboardingDoc; read: UrRead<OnboardingDoc>; onChange?: () => void }) {
+function countDone(doc: OnboardingDoc): number {
+  return [guideState(doc, ['github_connected', 'app_installed']), guideState(doc, ['orgs_enabled', 'repos_chosen']), guideState(doc, ['access_verified'])].filter(
+    (g) => g.state === 'done',
+  ).length
+}
+
+function ConnectStep({ doc, read, onChange }: { doc: OnboardingDoc; read: UrRead<OnboardingDoc>; onChange?: () => void }) {
   const view = connectionOf(doc)
+  const g = guideState(doc, ['github_connected', 'app_installed'])
+  const installed = stepOf(doc, 'app_installed')
+  const inst = (installed?.evidence ?? {}) as Partial<AppInstalledEvidence> & { waiting_for?: unknown }
+  const installUrl = str(inst.install_url)
+  const needsInstall = installed !== null && installed.state !== 'done' && str(inst.waiting_for) === null && inst.needed !== false
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
   const [refused, setRefused] = useState<ApiError | null>(null)
-  const [done, setDone] = useState<GitHubDisconnectResponse | null>(null)
+  const [gone, setGone] = useState<GitHubDisconnectResponse | null>(null)
 
   async function disconnect() {
     setBusy(true)
@@ -248,47 +420,73 @@ function CardBody({ doc, read, onChange }: { doc: OnboardingDoc; read: UrRead<On
       setRefused(res.error)
       return
     }
-    setDone(res.status === 'ok' ? res.data : null)
+    setGone(res.status === 'ok' ? res.data : null)
     read.reload()
     onChange?.()
   }
 
   const who = (login: string | null) => (login === null ? <Dash why="The account was not read yet" /> : <b>@{login}</b>)
 
-  return (
-    <div className="ur-gh-body">
-      {done !== null && (
-        <Banner tone={done.github_revoked ? 'info' : 'warn'} title="GitHub was disconnected" role="status">
-          <p className="ur-small">{done.github}</p>
-        </Banner>
+  const line =
+    view.kind === 'app' ? (
+      <>
+        Connected as {who(view.login)} through the SwarmCloud GitHub App ·{' '}
+        {view.failed !== null ? <ToneMark tone="bad">access ended</ToneMark> : 'renews automatically'}
+      </>
+    ) : view.kind === 'own-token' ? (
+      <>
+        Your own stored token ({who(view.login)}) is what your tasks use. Connect GitHub to act through the SwarmCloud App
+        instead: no token to paste, and it renews itself.
+      </>
+    ) : view.kind === 'tenant' ? (
+      <>
+        Your tasks act through the tenant token ({who(view.login)}), not as you. Connect your GitHub account so SwarmCloud
+        clones, pushes and opens pull requests as you.
+      </>
+    ) : (
+      <>No GitHub account is connected. Connect yours so SwarmCloud clones, pushes and opens pull requests as you.</>
+    )
+
+  const actions = confirming ? null : (
+    <>
+      {needsInstall && installUrl !== null && installUrl.startsWith(GITHUB_AUTHORIZE) && (
+        <ButtonLink kind="primary" size="sm" href={installUrl} target="_blank" rel="noreferrer">
+          Install the App
+        </ButtonLink>
+      )}
+      {needsInstall && (
+        <Button size="sm" kind="ghost" onClick={read.reload}>
+          Re-check
+        </Button>
       )}
       {view.kind === 'app' ? (
         <>
-          <p className="ur-cmeta">
-            <span>Connected as {who(view.login)}</span>
-            <span>through the SwarmCloud GitHub App</span>
-            {view.failed !== null && <ToneMark tone="bad">access ended</ToneMark>}
-          </p>
-          {view.failed !== null && view.failed.copy !== null && <p className="ur-small ur-bad">{view.failed.copy}</p>}
-          <Owners doc={doc} />
+          {view.failed !== null && <ConnectButton label="Reconnect" />}
+          <Button kind="danger" size="sm" onClick={() => setConfirming(true)}>
+            Disconnect
+          </Button>
         </>
-      ) : view.kind === 'own-token' ? (
-        <p className="ur-sub">
-          Your own stored token ({who(view.login)}) is what your tasks use. Connect GitHub to act through the SwarmCloud
-          App instead: no token to paste, and it renews itself.
-        </p>
-      ) : view.kind === 'tenant' ? (
-        <p className="ur-sub">
-          Your tasks act through the tenant token ({who(view.login)}), not as you. Connect your GitHub account so
-          SwarmCloud clones, pushes and opens pull requests as you.
-        </p>
       ) : (
-        <p className="ur-sub">
-          No GitHub account is connected. Connect yours so SwarmCloud clones, pushes and opens pull requests as you.
+        <ConnectButton />
+      )}
+    </>
+  )
+
+  return (
+    <GuideRow n={1} title="Connect GitHub" state={g.state} line={line} actions={actions}>
+      {gone !== null && (
+        <Banner tone={gone.github_revoked ? 'info' : 'warn'} title="GitHub was disconnected" role="status">
+          <p className="ur-small">{gone.github}</p>
+        </Banner>
+      )}
+      {view.kind === 'app' && view.failed !== null && view.failed.copy !== null && <p className="ur-small ur-bad">{view.failed.copy}</p>}
+      {needsInstall && (
+        <p className="ur-small">
+          Install the SwarmCloud App on your account or an org you work in: connecting lets it act as you, installing lets
+          it reach that owner's repositories. Then press Re-check.
         </p>
       )}
-
-      {confirming ? (
+      {confirming && (
         <Banner
           tone="warn"
           title={view.kind === 'app' && view.login !== null ? `Disconnect @${view.login}?` : 'Disconnect GitHub?'}
@@ -308,26 +506,228 @@ function CardBody({ doc, read, onChange }: { doc: OnboardingDoc; read: UrRead<On
             repositories you granted. Tasks you submit afterwards wait until you connect again.
           </p>
         </Banner>
-      ) : (
-        <div className="ur-gh-acts">
-          {view.kind === 'app' ? (
-            <>
-              {view.failed !== null && <ConnectButton label="Reconnect" />}
-              <Button kind="danger" size="sm" onClick={() => setConfirming(true)}>
-                Disconnect
-              </Button>
-            </>
-          ) : (
-            <ConnectButton />
-          )}
-        </div>
       )}
       {refused !== null && <Refusal error={refused} title="GitHub was not disconnected" />}
-      <p className="ur-hint">
-        Checked {doc.derived_at ? timeAgo(doc.derived_at) : <Dash why="The read carried no time" />}. No token passes
-        through this page: GitHub hands it to SwarmCloud, which stores it in Secret Manager.
+    </GuideRow>
+  )
+}
+
+function ReachStep({ doc, read, go }: { doc: OnboardingDoc; read: UrRead<OnboardingDoc>; go: (to: string) => void }) {
+  const g = guideState(doc, ['orgs_enabled', 'repos_chosen'])
+  if (g.state === 'waiting') {
+    return <GuideRow n={2} title="Choose what it reaches" state="waiting" line={`After step ${g.after}: SwarmCloud reaches nothing until GitHub is connected.`} />
+  }
+  const repos = chosenRepos(doc)
+  const orgs = stepOf(doc, 'orgs_enabled')
+  const chosen = stepOf(doc, 'repos_chosen')
+  const enabledRaw = (orgs?.evidence as { enabled?: unknown } | undefined)?.enabled
+  const enabled = Array.isArray(enabledRaw) ? enabledRaw.filter((o): o is string => typeof o === 'string') : null
+  // Each owner it may work in, with the repositories chosen under it.
+  const owners = enabled ?? Array.from(new Set(repos.map((r) => r.owner)))
+  const reach = owners
+    .map((o) => {
+      const n = repos.filter((r) => r.owner.toLowerCase() === o.toLowerCase()).length
+      return `${o} (${n} repo${n === 1 ? '' : 's'})`
+    })
+    .join(' · ')
+  const line =
+    g.state === 'done'
+      ? reach === ''
+        ? `${repos.length} repositor${repos.length === 1 ? 'y' : 'ies'} chosen`
+        : reach
+      : orgs?.state !== 'done'
+        ? 'Enable the accounts and orgs SwarmCloud may work in, then choose their repositories.'
+        : repos.length === 0
+          ? `${reach === '' ? 'An org is enabled' : `Enabled: ${reach}`}. Now choose the repositories SwarmCloud may work in, on Work › Access.`
+          : reach
+  const issues: OnboardingIssue[] = chosen !== null && Array.isArray(chosen.issues) ? chosen.issues : []
+  return (
+    <GuideRow
+      n={2}
+      title="Choose what it reaches"
+      state={g.state}
+      line={line}
+      actions={
+        <UrNavButton to={ACCESS_PAGE} go={go} size="sm" kind={g.state === 'done' ? 'secondary' : 'primary'}>
+          Manage in Access
+        </UrNavButton>
+      }
+    >
+      {g.state !== 'done' && <Owners doc={doc} onEnabled={read.reload} />}
+      {g.state === 'done' && <Owners doc={doc} />}
+      {issues.map((i) => (
+        <p key={`${i.code}:${i.repository ?? i.owner ?? ''}`} className="ur-small ur-bad">
+          {i.copy}
+        </p>
+      ))}
+    </GuideRow>
+  )
+}
+
+/** What one Check access answered, as the step draws it. */
+type CheckView = { kind: 'grant'; repository: string; data: AccessVerifyResponse } | { kind: 'token' } | { kind: 'refused'; error: ApiError }
+
+/**
+ * WHAT INDEXING USES, UNDER TRY IT (lane INDEX-CRED, owner report
+ * 2026-10-13: "it says all tests pass for /repositories/tokens but it can't
+ * index the repo in my personal workspace?"). Try it checks the access a
+ * person's own tasks use; an index run is the tenant's and clones with the
+ * credential `GET /v1/repositories` names (`index_credential`), so this says
+ * which one, and the chosen repository's last index result with its reason
+ * (`index.last_failure`) -- a passing check beside a failing index is
+ * explained, never left to look like the same thing.
+ */
+function IndexingNote({ repo, registered }: { repo: ChosenRepo | null; registered: RepoRecord[] | null }) {
+  if (repo === null || registered === null) return null
+  const record = registered.find((r) => r.repo_id === repo.repo_id) ?? null
+  const words = indexCredentialWords(record?.index_credential ?? registered[0]?.index_credential ?? null)
+  const failure = record?.index.last_failure ?? null
+  return (
+    <div className="ur-small ur-indexing" data-testid="indexing-note">
+      <p>
+        Indexing uses: {words === null ? <Dash why="Not served: no repository is registered for indexing" /> : <b className={words.startsWith('none') ? 'ur-bad' : undefined}>{words}</b>}
+        {words !== null && '. Try it checks the access your own tasks use; indexing clones with this.'}
+      </p>
+      <p>
+        {record === null ? (
+          <>{repo.repository} is not registered for indexing.</>
+        ) : failure !== null ? (
+          <span className="ur-bad" data-class={failure.kind}>
+            Last index of {repo.repository} failed{failure.at !== null && <> {timeAgo(failure.at)}</>}: {failure.cause}
+            {record.index.backoff !== null && <> Polling stopped; Index now retries.</>}
+          </span>
+        ) : record.index.last_indexed_at !== null ? (
+          <>
+            Last index of {repo.repository}: <b>indexed {timeAgo(record.index.last_indexed_at)}</b>.
+          </>
+        ) : (
+          <>{repo.repository} has not been indexed yet.</>
+        )}
       </p>
     </div>
+  )
+}
+
+function TryStep({ doc, read, go }: { doc: OnboardingDoc; read: UrRead<OnboardingDoc>; go: (to: string) => void }) {
+  const g = guideState(doc, ['access_verified'])
+  const repos = chosenRepos(doc)
+  const [pick, setPick] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [check, setCheck] = useState<CheckView | null>(null)
+  // What indexing uses and how each repository last indexed (INDEX-CRED).
+  const indexed = useUrRead(loadRepositories, 'try-it:repositories')
+  const registered = indexed.state.status === 'ok' || indexed.state.status === 'stale' ? indexed.state.data : indexed.state.status === 'empty' ? [] : null
+  if (g.state === 'waiting') {
+    return (
+      <GuideRow
+        n={3}
+        title="Try it"
+        state="waiting"
+        line={`After step ${g.after}: there is no repository to try yet.`}
+      />
+    )
+  }
+  const step = stepOf(doc, 'access_verified')
+  const ev = (step?.evidence ?? {}) as Record<string, unknown>
+  const repo = repos.find((r) => r.repo_id === pick) ?? repos[0] ?? null
+  // An App connection's repositories are its grants, verified one by one
+  // (`POST /v1/access/grants/{repo_id}/verify`); a stored token is re-probed
+  // whole (`POST /v1/git-tokens/{id}/verify`). Both routes already exist.
+  const viaGrants = ev.source === 'grants' || connectionOf(doc).kind === 'app'
+  const tokenId = str(ev.token_id) ?? str(stepOf(doc, 'github_connected')?.evidence?.token_id)
+
+  async function checkAccess() {
+    if (repo === null) return
+    setBusy(true)
+    setCheck(null)
+    if (viaGrants) {
+      const res = await verifyAccessGrant(repo.repo_id)
+      setBusy(false)
+      if (res.status === 'error') setCheck({ kind: 'refused', error: res.error })
+      else if (res.status === 'ok' && res.data !== null) setCheck({ kind: 'grant', repository: repo.repository, data: res.data })
+    } else if (tokenId !== null) {
+      const res = await verifyGitToken(tokenId)
+      setBusy(false)
+      setCheck(res.status === 'error' ? { kind: 'refused', error: res.error } : { kind: 'token' })
+    } else {
+      setBusy(false)
+    }
+    read.reload()
+  }
+
+  function runTestTask() {
+    if (repo === null || !OWNER_REPO.test(repo.repository)) return
+    prefillTask({ profile: 'claude-code', prompt: TEST_TASK_PROMPT, repositoryUrl: `https://github.com/${repo.repository}.git` })
+    go(SUBMIT_TASK)
+  }
+
+  const rows = Array.isArray(ev.repositories) ? (ev.repositories as Record<string, unknown>[]) : []
+  const count = (r: string) => rows.filter((x) => x?.result === r).length
+  const line =
+    repos.length === 0
+      ? 'Choose a repository in step 2 first.'
+      : g.state === 'done'
+        ? 'Every chosen repository passed its clone, push and pull request checks.'
+        : rows.length > 0
+          ? `${count('passed')} passed${count('failed') > 0 ? ` · ${count('failed')} failed` : ''}${count('pending') > 0 ? ` · ${count('pending')} not checked yet` : ''}. Check a repository, or run a harmless test task in it.`
+          : 'Check a repository, or run a harmless test task in it.'
+
+  return (
+    <GuideRow
+      n={3}
+      title="Try it"
+      state={g.state}
+      line={line}
+      actions={
+        repos.length === 0 ? null : (
+          <>
+            <select className="ur-select" aria-label="Repository to check" value={repo?.repo_id ?? ''} onChange={(e) => setPick(e.target.value)}>
+              {repos.map((r) => (
+                <option key={r.repo_id} value={r.repo_id}>
+                  {r.repository}
+                </option>
+              ))}
+            </select>
+            <Button size="sm" kind={g.state === 'done' ? 'secondary' : 'primary'} busy={busy} disabled={!viaGrants && tokenId === null} onClick={() => void checkAccess()}>
+              Check access
+            </Button>
+            <Button size="sm" disabled={repo === null || !OWNER_REPO.test(repo.repository)} onClick={runTestTask}>
+              Run a test task
+            </Button>
+          </>
+        )
+      }
+    >
+      {check?.kind === 'grant' &&
+        (check.data.passed ? (
+          <p className="ur-small" role="status">
+            {check.repository}: clone, push and pull request checks passed.
+          </p>
+        ) : (
+          <div role="status">
+            {(check.data.failures ?? []).map((f) => (
+              <p key={`${f.check}:${f.code}`} className="ur-small ur-bad">
+                {f.copy}
+              </p>
+            ))}
+            {(check.data.failures ?? []).length === 0 && <p className="ur-small ur-bad">{check.repository}: a check did not pass.</p>}
+          </div>
+        ))}
+      {check?.kind === 'token' && (
+        <p className="ur-small" role="status">
+          SwarmCloud re-checked your token; the step above shows what it found.
+        </p>
+      )}
+      {check?.kind === 'refused' && <Refusal error={check.error} title="Access was not checked" />}
+      <IndexingNote repo={repo} registered={registered} />
+      {step !== null &&
+        g.state === 'failed' &&
+        (Array.isArray(step.issues) ? step.issues : []).map((i) => (
+          <p key={`${i.code}:${i.repository ?? ''}`} className="ur-small ur-bad">
+            {i.copy}
+          </p>
+        ))}
+    </GuideRow>
   )
 }
 
@@ -467,6 +867,9 @@ function Connected({ data, go }: { data: GitHubExchangeResponse | null; go: (to:
       <div className="ur-gh-acts">
         <UrNavButton to={GT_PAGE} go={go} kind="primary" size="sm">
           Back to Git tokens
+        </UrNavButton>
+        <UrNavButton to={ACCESS_PAGE} go={go} size="sm">
+          Choose orgs in Access
         </UrNavButton>
       </div>
     </Card>

@@ -38,7 +38,7 @@ from urllib.parse import urlparse
 import pytest
 from fastapi.testclient import TestClient
 
-from swarm_api import forgewrite, issueci, mergewake
+from swarm_api import cifix, forgewrite, issueci, mergewake
 from swarm_api.auth import StaticTokenVerifier
 from swarm_api.credentials import InMemoryCredentials
 from swarm_api.deps import build_context
@@ -310,7 +310,8 @@ def test_other_states_and_park_reasons_are_not_visited(db, wake_client, github):
 def test_a_tenant_with_no_ci_wait_reads_no_token(db, wake_client, tenant_tokens):
     body = _tick(wake_client).json()
     assert body["report"] == {"visited": 0, "woken": 0, "waiting": 0, "skipped": 0,
-                              "failed": 0, "fixing": 0, "truncated": False}
+                              "failed": 0, "fixing": 0, "rerun": 0, "deferred": 0,
+                              "truncated": False}
     assert tenant_tokens.asked == []
 
 
@@ -593,6 +594,84 @@ def test_a_forged_round_budget_is_capped(db, wake_client, github):
 
 
 # --------------------------------------------------------------------------
+# 6b. a PR-side fix holding the claim at this head (FIX-MERGE-2, epic #1334)
+# --------------------------------------------------------------------------
+#
+# The PR-side fixer (scripts/ci-fix.sh -> `cifix.stamp`) claims one failing
+# (repository, pull request, head, run) in `cifix.CLAIMS`. While the task
+# holding that claim is not terminal, the merge step's own CI-fix round
+# would be a second agent on the same failure, pushing to the same branch:
+# the tick leaves the merge parked on CI_PENDING instead, and submits no
+# round. A claim at another head, a terminal one, another tenant's, or none,
+# and the round goes ahead as before.
+
+PR_FIX_TASK = "task_" + "c" * 20
+PR_FIX_WORKFLOW = "wf_" + "d" * 20
+
+
+def pr_side_claim(db, *, head: str = HEAD, state: str = "RUNNING", tenant_id: str = "eng",
+                  task: bool = True, claimed_at: datetime = NOW) -> None:
+    """A PR-side fix's claim on NUMBER at `head`, and the task holding it."""
+    claim_id = "e" * 32
+    db.docs[f"{cifix.CLAIMS}/claim-{tenant_id}-{head[:8]}"] = {
+        "tenant_id": tenant_id, "repository": "saga-xyz/widgets",
+        "pull_request": NUMBER, "head_sha": head, "run_id": 4242,
+        "root_task_id": ROOT, "claim_id": claim_id, "claimed_at": claimed_at,
+    }
+    if task:
+        fix = seed_task(db, task_id=PR_FIX_TASK, tenant_id=tenant_id, state=state,
+                        runner_profile="claude-code", workflow_id=PR_FIX_WORKFLOW)
+        fix["metadata"] = {"ci_fix": {"pull_request": NUMBER, "head_sha": head,
+                                      "run_id": 4242, "attempt": 1, cifix.CLAIM_FIELD: claim_id}}
+
+
+def test_a_live_pr_side_fix_at_the_same_head_keeps_the_merge_parked(db, wake_client, github):
+    fixable_merge(db, github, rounds=2)
+    pr_side_claim(db)
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["fixing"] == 0 and body["report"]["woken"] == 0, body
+    assert body["report"]["waiting"] == 1
+    task = db.docs["tasks/task_merge"]
+    assert task["state"] == "PARKED" and task["park_reason"] == ParkReason.CI_PENDING.value
+    assert mergewake.WAKE_MARKER not in _wait(db)
+    assert _fix_workflows(db) == [], "a second agent was started on a failure already being fixed"
+    assert _fix_record(db) == {}, "no round, and no re-run, is claimed while the PR-side fix runs"
+
+
+def test_a_pr_side_claim_still_being_submitted_keeps_the_merge_parked(db, wake_client, github):
+    fixable_merge(db, github, rounds=2)
+    pr_side_claim(db, task=False, claimed_at=NOW - timedelta(seconds=5))
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["waiting"] == 1 and body["report"]["fixing"] == 0, body
+    assert _fix_workflows(db) == []
+
+
+@pytest.mark.parametrize("claim", [
+    {"head": MOVED},
+    {"state": "SUCCEEDED"},
+    {"state": "FAILED"},
+    {"tenant_id": "research"},
+    {"task": False, "claimed_at": NOW - timedelta(hours=1)},
+    None,
+], ids=["another-head", "succeeded", "failed", "another-tenant", "lapsed-grace", "no-claim"])
+def test_with_no_live_pr_side_fix_at_this_head_the_round_proceeds(db, wake_client, github, claim):
+    fixable_merge(db, github, rounds=2)
+    if claim is not None:
+        pr_side_claim(db, **claim)
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["fixing"] == 1, body
+    (workflow,) = _fix_workflows(db)
+    (claimed,) = _fix_record(db)["rounds"]
+    assert claimed["workflow_id"] == workflow["workflow_id"]
+
+
+# --------------------------------------------------------------------------
 # 7. update-branch is asynchronous (MS3 review finding, 2026-10-06)
 # --------------------------------------------------------------------------
 
@@ -744,3 +823,136 @@ def test_a_park_waiting_for_the_merge_slot_is_not_read(db, wake_client, github):
     assert body["report"]["skipped"] == 1 and body["report"]["woken"] == 0, body
     assert mergewake.WAKE_MARKER not in _wait(db)
     assert _reads(github) == []
+
+
+# --------------------------------------------------------------------------
+# 9. a conflicting pull request goes to a conflict fix round (#1076)
+# --------------------------------------------------------------------------
+#
+# PR 1028 waited 366 min for checks GitHub never runs on a CONFLICTING pull
+# request. The tick reads mergeability from the pull request it already read,
+# BEFORE the checks, and hands a conflict to a conflict fix round exactly as
+# it hands red to a CI-fix round: claimed under the same guard in
+# `merge_fix.conflict_rounds`, at most MERGE_CONFLICT_ROUNDS_MAX, whatever
+# `merge_fix_rounds` says.
+
+
+def conflicting_merge(db, github, **wait: Any) -> dict:
+    doc = fixable_merge(db, github, rounds=0, **wait)
+    github.pulls[NUMBER].update(mergeable=False, mergeable_state="dirty")
+    github.check_runs.pop(HEAD, None)  # GitHub runs no checks on it
+    return doc
+
+
+def _conflict_workflows(db) -> list[dict]:
+    return [w for key, w in db.docs.items() if key.startswith("workflows/")
+            and any(s.get("step_id") == mergewake.CONFLICT_FIX_STEP for s in w.get("steps") or [])]
+
+
+def _check_reads(github) -> list[str]:
+    return [u for u in _reads(github) if "/check-runs" in u or "/status" in u]
+
+
+@pytest.mark.parametrize("code", ["checks_pending", "no_checks", "conflict_fix_pending"])
+def test_a_conflict_claims_a_conflict_round_and_never_reads_the_checks(
+    db, wake_client, github, code
+):
+    conflicting_merge(db, github, code=code)
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["fixing"] == 1 and body["report"]["woken"] == 0, body
+    assert _check_reads(github) == [], "checks were read on a conflicting pull request"
+    assert mergewake.WAKE_MARKER not in _wait(db)
+    (workflow,) = _conflict_workflows(db)
+    assert _fix_workflows(db) == [], "a conflict is not a CI-fix round"
+    (step,) = workflow["steps"]
+    fix_task = db.docs[f"tasks/{step['task_id']}"]
+    assert fix_task["runner_profile"] == "claude-code"
+    assert fix_task["submitted_by"] == "alice@saga.xyz"
+    assert fix_task["metadata"]["merge"] == "off"
+    assert fix_task["metadata"]["dispatch"]["continues"] == ROOT
+    assert fix_task["metadata"]["merge_conflict_round"] == {
+        "merge_task": "task_merge", "round": 1, "head_sha": HEAD, "pull_request": NUMBER}
+    prompt = fix_task["input"]["prompt"]
+    assert f"#{NUMBER}" in prompt and "conflict fix round 1 of at most 2" in prompt
+    assert "git merge --no-ff origin/main" in prompt and "force-push" in prompt
+    (claimed,) = _fix_record(db)[mergewake.CONFLICT_ROUNDS_KEY]
+    assert claimed == {"round": 1, "head": HEAD, "claimed_at": NOW,
+                       "workflow_id": workflow["workflow_id"], "task_id": step["task_id"]}
+    assert "rounds" not in _fix_record(db), "a conflict round is not counted as a CI-fix round"
+
+
+def test_a_conflict_round_still_running_is_waited_on(db, wake_client, github, clock):
+    conflicting_merge(db, github)
+    _tick(wake_client)
+    clock.now = NOW + timedelta(seconds=issueci.CI_READ_SECONDS)
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["waiting"] == 1 and body["report"]["fixing"] == 0, body
+    assert len(_conflict_workflows(db)) == 1
+    assert _check_reads(github) == []
+
+
+def test_a_conflict_with_its_rounds_spent_wakes_the_step(db, wake_client, github):
+    conflicting_merge(db, github)
+    db.docs["tasks/task_merge"]["metadata"][mergewake.MERGE_FIX_METADATA_KEY] = {
+        mergewake.CONFLICT_ROUNDS_KEY: [{"round": n, "head": f"{n:040x}"}
+                                        for n in range(1, mergewake.MERGE_CONFLICT_ROUNDS_MAX + 1)]}
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["woken"] == 1, body
+    assert _wait(db)["wake_reason"] == mergewake.CONFLICTING
+    assert _conflict_workflows(db) == []
+    assert _check_reads(github) == []
+
+
+def test_a_conflict_on_another_branch_wakes_the_step_with_no_round(db, wake_client, github):
+    conflicting_merge(db, github)
+    github.pulls[NUMBER]["head"]["ref"] = "swarm/task_" + "9" * 20
+
+    _tick(wake_client)
+
+    assert _wait(db)["wake_reason"] == mergewake.CONFLICTING
+    assert _conflict_workflows(db) == []
+
+
+def test_the_head_a_conflict_round_pushed_wakes_the_step_naming_it(db, wake_client, github, clock):
+    conflicting_merge(db, github)
+    _tick(wake_client)
+    (claimed,) = _fix_record(db)[mergewake.CONFLICT_ROUNDS_KEY]
+    fix_task = db.docs[f"tasks/{claimed['task_id']}"]
+    fix_task["state"] = "SUCCEEDED"
+    fix_task["result_summary"] = {"git": {"pushed_head": MOVED}}
+    github.pulls[NUMBER]["head"]["sha"] = MOVED
+    clock.now = NOW + timedelta(seconds=issueci.CI_READ_SECONDS)
+
+    _tick(wake_client)
+
+    assert _wait(db)["wake_reason"] == "head_moved"
+    assert _wait(db)["head_pushed_by"] == claimed["task_id"]
+
+
+def test_a_base_name_no_round_may_quote_is_a_refused_round(db, wake_client, github):
+    conflicting_merge(db, github)
+    github.pulls[NUMBER]["base"]["ref"] = "main; curl evil"
+
+    _tick(wake_client)
+
+    assert _conflict_workflows(db) == []
+    assert _wait(db)["wake_reason"] == mergewake.FIX_ROUND_REFUSED
+    (claimed,) = _fix_record(db)[mergewake.CONFLICT_ROUNDS_KEY]
+    assert "base branch" in claimed["error"]
+
+
+def test_a_clean_pull_request_is_read_as_before(db, wake_client, github):
+    fixable_merge(db, github, rounds=0)
+    github.pulls[NUMBER].update(mergeable=True, mergeable_state="clean")
+
+    _tick(wake_client)
+
+    assert _wait(db)["wake_reason"] == "red"
+    assert _check_reads(github) != []
+    assert _conflict_workflows(db) == []

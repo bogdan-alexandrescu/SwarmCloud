@@ -341,9 +341,13 @@ describe('G3-20: the time column is the submission the newest-first order sorts 
 describe('G3-21: an empty search says it searched only the newest workflows read', () => {
   it('names how many it searched', async () => {
     render(<WorkflowsScreen view="q=zzzqqq" />)
-    await waitFor(() => expect(document.querySelector('.wfl-none')).toBeTruthy())
-    expect(document.querySelector('.wfl-none')!.textContent).toMatch(
-      /^No match among the 2 newest workflows read; older ones are not searched\.Clear the filters$/,
+    // The search reads the unread row's name before it says "no match" (WF-1);
+    // its read fails here, so the answer is over both rows, and the read held
+    // every workflow there is (no page token), so it says all of them.
+    await waitFor(() =>
+      expect(document.querySelector('.wfl-none')?.textContent).toMatch(
+        /^No match among all 2 workflows read\.Clear the filters$/,
+      ),
     )
   })
 })

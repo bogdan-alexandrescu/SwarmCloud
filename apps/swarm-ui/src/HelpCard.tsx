@@ -458,15 +458,28 @@ export function useCardBridge(
    * silently teleported to the top of the document. `inside` is still true at
    * that point, because nothing fires `blur` for a node that was removed.
    */
+  /*
+   * A PINNED CARD THAT FOCUS NEVER ENTERED has the same problem from the other
+   * side (AUT-13, ADM-12, live QA 2026-10-11): a click that does not focus
+   * the button it lands on -- Safari's, or an automation driver's -- pins the
+   * card with focus on `<body>`, and Escape left it there. Dismissing a card
+   * the reader pinned returns focus to its `?` when nothing else holds it. A
+   * card that was only hovered open is left alone: moving focus on a hover
+   * would steal it.
+   */
+  const wasPinned = useRef(false)
   useEffect(() => {
-    if (wasOpen.current && !state.open && inside.current) {
+    const doc = triggerRef.current?.ownerDocument
+    const adrift = doc !== undefined && (doc.activeElement === null || doc.activeElement === doc.body)
+    if (wasOpen.current && !state.open && (inside.current || (wasPinned.current && adrift))) {
       inside.current = false
       focusTriggerSilently()
     }
     wasOpen.current = state.open
+    wasPinned.current = state.pinned
     // `focusTriggerSilently` closes over refs only, so it needs no dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.open])
+  }, [state.open, state.pinned])
 
   const leaveCard = (e: BridgeKey) => {
     if (e.key === 'Escape') {

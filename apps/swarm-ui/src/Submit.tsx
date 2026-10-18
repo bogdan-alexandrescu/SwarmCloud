@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
-import { loadCapacity } from './api'
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { loadCapacity, loadStats } from './api'
 import {
   CeilingTag,
   blockerVerdict,
@@ -9,13 +9,16 @@ import {
   verdictCopy,
   verdictNeedsAPerson,
 } from './Blockers'
-import { DispatchChoice, DispatchFacts, type DispatchDraft } from './Dispatch'
+import { DispatchChoice, DispatchFacts, REPOSITORY_SCHEMES, refusedSayId, repositorySchemeRefused, type DispatchDraft } from './Dispatch'
 import { WorkspaceRefusalBanner, workspaceRefusal } from './WorkspaceRefusal'
-import { apiHeaders, chosenTenant, classifyFailure, dropRefusedTenant, isPaused, type ApiError } from './fetch'
+import { apiHeaders, chosenTenant, classifyFailure, dropRefusedTenant, isPaused, type ApiError, type Result } from './fetch'
 import { HELP } from './help'
 import { HelpCard } from './HelpCard'
+import { clearTaskPrefill, peekTaskPrefill } from './submitPrefill'
 import { Mark } from './primitives'
 import { RoomFact, RunnerPicker, useProviderKeys } from './RunnerPicker'
+import { AUTO, BROWSER_TOOL_KEY, BrowserToolPicker, declaredBrowserTools, jevAllowed, profileEgress, useJevJudgment, useTypesafeKey, withBrowserTool } from './BrowserToolPicker'
+import { MCP_SERVERS_KEY, McpServerPicker, clearCredentials, declaredMcpServers, loadMcpServers, offeredMcpServers, readCredentials, withMcpServers, type McpServerList } from './McpServers'
 import { FailedPanel, Screen, useSubmitAs } from './Shell'
 import {
   DEFAULT_CARRIER,
@@ -93,16 +96,20 @@ type Field = (typeof FIELDS)[number]
 type Outcome =
   | { kind: 'idle' | 'sending' }
   | { kind: 'created'; task: Task; woke: boolean }
-  /** A 422, on the field that caused it. Never a page-level error. */
-  | { kind: 'refused'; fields: Partial<Record<Field, string>>; unattributed: string | null }
+  /** A 422, on the field that caused it. Never a page-level error. `sent`
+   *  tells the API's refusal from this form's own "Not sent": only the first
+   *  went anywhere, and only the first is refused again by the same click. */
+  | { kind: 'refused'; sent: boolean; fields: Partial<Record<Field, string>>; unattributed: string | null }
   | { kind: 'failed'; error: ApiError }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
 
+// `method: 'POST'`: a failed submit is a write's failure, and the panel says
+// so rather than "a failure to read the platform" (fetch.ts `ApiError.method`).
 function fail(kind: ApiError['kind'], httpStatus: number | null, message: string): Outcome {
-  return { kind: 'failed', error: { kind, httpStatus, code: null, message } }
+  return { kind: 'failed', error: { kind, httpStatus, code: null, message, method: 'POST' } }
 }
 
 /** POST /v1/tasks. Exported for `submit.errors.test.ts`, which hands it real responses. */
@@ -140,7 +147,7 @@ export async function postTask(body: Record<string, unknown>): Promise<Outcome> 
     // `=== true`, not `?? false`: only an explicit true means it was woken.
     return { kind: 'created', task, woke: env.scheduler_woken === true }
   }
-  if (res.status === 422) return { kind: 'refused', ...attribute(env, message) }
+  if (res.status === 422) return { kind: 'refused', sent: true, ...attribute(env, message) }
 
   // THE ONE CLASSIFIER (fetch.ts `classifyFailure`). This used to restate a
   // piece of it and map every 503 to upstream_degraded, so a submit refused
@@ -151,7 +158,7 @@ export async function postTask(body: Record<string, unknown>): Promise<Outcome> 
   // for this task.
   dropRefusedTenant(res.status, code, tenant)
   const ra = Number(res.headers.get('retry-after'))
-  const error = classifyFailure(res.status, { code, message, detail: env.detail }, Number.isFinite(ra) && ra > 0 ? ra : undefined)
+  const error: ApiError = { ...classifyFailure(res.status, { code, message, detail: env.detail }, Number.isFinite(ra) && ra > 0 ? ra : undefined), method: 'POST' }
   return { kind: 'failed', error }
 }
 
@@ -315,6 +322,10 @@ const SUGGESTED: Record<string, Suggestion[]> = {
   ],
   'post-verdict': [
   ],
+  // A control_plane profile (contract request 93) runs nothing and declares
+  // no input; listed, empty, for the same reason.
+  'await-input': [
+  ],
   // runners/generic.py -- GENERIC_COMMANDS is the frozen argv catalogue, and
   // `command` NAMES an entry in it. That is invariant 10's own pattern, not an
   // exception to it: the caller picks a name, the platform owns the argv.
@@ -400,14 +411,17 @@ export function buildInput(fields: InputField[]): BuiltInput {
     const name = f.name.trim()
     if (name === '') continue
     if (Object.prototype.hasOwnProperty.call(input, name)) {
-      return { ok: false, message: `${name} is set twice and an object has one value per key` }
+      // THE KEY NEVER OPENS THE MESSAGE (live QA SUB-15): `asSentence`
+      // capitalises a fragment's first letter, and a key is case-sensitive,
+      // so "Prompt is set to abc" named a setting this form does not have.
+      return { ok: false, message: `the setting ${name} is set twice and an object has one value per key` }
     }
     if (f.kind === 'flag') { input[name] = f.flag; continue }
     if (f.kind === 'number') {
       const raw = f.text.trim()
       if (raw === '') continue
       const n = Number(raw)
-      if (!Number.isFinite(n)) return { ok: false, message: `${name} is set to ${raw}, which is not a number` }
+      if (!Number.isFinite(n)) return { ok: false, message: `the setting ${name} is set to ${raw}, which is not a number` }
       input[name] = n
       continue
     }
@@ -441,6 +455,73 @@ export function buildInput(fields: InputField[]): BuiltInput {
     input[name] = text
   }
   return { ok: true, input }
+}
+
+/**
+ * WHAT AN INPUT COSTS AS THE API MEASURES IT (live QA SUB-4): Firestore's own
+ * rule, restated from `validation.firestore_size` -- a string its UTF-8 bytes
+ * plus 1, a number 8, a boolean or null 1, a list the sum of its values, an
+ * object the sum of each key (sized as a string) and its value. The API
+ * refuses an input over `max_input_bytes` with a 422 after the POST; this is
+ * what lets the form say so before it, with the limit in the words. The
+ * server's figure stays the one that decides: the form blocks only on a limit
+ * the API served (`/v1/stats` `limits.max_input_bytes`), never on a constant.
+ */
+export function inputBytes(value: unknown): number {
+  const utf8 = new TextEncoder()
+  let total = 0
+  const stack: unknown[] = [value]
+  while (stack.length > 0) {
+    const v = stack.pop()
+    if (v === null || v === undefined || typeof v === 'boolean') total += 1
+    else if (typeof v === 'number') total += 8
+    else if (typeof v === 'string') total += utf8.encode(v).length + 1
+    else if (Array.isArray(v)) stack.push(...v)
+    else if (typeof v === 'object') {
+      for (const [k, item] of Object.entries(v as Record<string, unknown>)) {
+        total += utf8.encode(k).length + 1
+        stack.push(item)
+      }
+    } else total += utf8.encode(String(v)).length + 1
+  }
+  return total
+}
+
+/** A byte count as a reader says it: `256 KiB`, `300.5 KiB`, `812 bytes`. */
+export function byteWords(n: number): string {
+  if (n < 1024) return `${n} byte${n === 1 ? '' : 's'}`
+  const kib = n / 1024
+  return `${Number.isInteger(kib) ? kib : kib.toFixed(1)} KiB`
+}
+
+/**
+ * Why an input will not be taken for its size, or null when it fits -- and
+ * null when the limit was not read, since an unread limit is not a limit.
+ */
+export function inputSizeProblem(input: Record<string, unknown>, limit: number | null): string | null {
+  if (limit === null) return null
+  const bytes = inputBytes(input)
+  return bytes > limit ? `the input is ${byteWords(bytes)}, over the API's ${byteWords(limit)} limit` : null
+}
+
+/**
+ * `limits.max_input_bytes` off `/v1/stats`, read once for the form; null until
+ * it answers and when it does not.
+ */
+export function useInputLimit(): number | null {
+  const [limit, setLimit] = useState<number | null>(null)
+  useEffect(() => {
+    let live = true
+    void loadStats().then((r) => {
+      if (!live) return
+      const raw = r.status === 'ok' || r.status === 'stale' ? r.data.limits?.max_input_bytes : undefined
+      setLimit(typeof raw === 'number' && raw > 0 ? raw : null)
+    })
+    return () => {
+      live = false
+    }
+  }, [])
+  return limit
 }
 
 /**
@@ -685,7 +766,7 @@ export function InputFields({ profile, fields, required, onChange, idPrefix }: {
         const gap = f.required && missing.has(key) && left.has(f.key)
         const missId = `${id}-missing`
         return (
-          <div className={f.required ? 'sbf-field is-required' : 'sbf-field'} key={f.key}>
+          <div className={f.required ? 'sbf-field is-required' : 'sbf-field has-remove'} key={f.key}>
             <div className="sbf-key">
               {f.own ? (
                 <label className="sbf-name">
@@ -712,15 +793,21 @@ export function InputFields({ profile, fields, required, onChange, idPrefix }: {
                   <option value="list">list of text</option>
                 </select>
               )}
-              {!f.required && (
-                <button type="button" className="c-link is-sm" onClick={() => onChange(fields.filter((_, j) => j !== i))}>
-                  remove
-                </button>
-              )}
             </div>
             <ValueEditor f={f} id={id} choices={choicesFor(key)} invalid={gap}
               describedBy={gap ? missId : undefined} onBlur={() => leave(f.key)}
               onChange={(next) => set(i, next)} />
+            {/* AFTER ITS FIELD, AND NAMING IT (live QA SUB-17): it came before
+                the value in Tab order, so a screen reader heard "remove" and
+                then "prompt", and every row's button was called "remove". It
+                is still drawn on the name's line (`.sbf-remove`, submit.css);
+                only the order a keyboard meets it in has moved. */}
+            {!f.required && (
+              <button type="button" className="c-link is-sm sbf-remove" aria-label={`remove ${key || 'this setting'}`}
+                onClick={() => onChange(fields.filter((_, j) => j !== i))}>
+                remove
+              </button>
+            )}
             {gap && (
               <p id={missId} className="sbf-miss"
                 aria-label={`${profile} will not start without ${key}. A run sent without it is dispatched, given a credential, and then fails, so this form will not send it.`}>
@@ -777,6 +864,14 @@ export function AddSetting({ idPrefix, offers, onAdd, onOwn }: {
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [open, buttonId])
+  // OPENED, IT IS BROUGHT INTO VIEW (VQA V137). Drawn in flow under a button
+  // that often sits at the bottom of the scroller, the list opened below the
+  // fold, under the Reads dock, and the click looked like it did nothing.
+  // `nearest` scrolls only as far as the list needs, and not at all when it
+  // is already on screen.
+  useEffect(() => {
+    if (open) document.getElementById(listId)?.scrollIntoView?.({ block: 'nearest' })
+  }, [open, listId])
   return (
     <div className="sbf-addset">
       <button type="button" id={buttonId} className="sbf-addset-btn" aria-expanded={open}
@@ -832,6 +927,32 @@ export function Move({ n, title, aside, dim = false, children }: {
   )
 }
 
+/**
+ * WHERE A SUBMIT FORM DRAWS WHAT ITS CLICK DID: inside the send panel, under
+ * the button (VQA V002/V049, owner decision Q1 on #1038). The task, workflow
+ * and issue forms all draw it here, so a failure, a refusal or a 201 is on
+ * screen at the place the click was made. `at` is the outcome itself: a new
+ * one is brought into view once -- on a phone the panel can sit at a scroll's
+ * end -- and typing into the form afterwards does not scroll anything.
+ *
+ * AND THE KEYBOARD GOES WITH IT (VQA V255): the click that caused it left
+ * focus on a button that is now disabled or replaced, so it fell to `<body>`
+ * and the next Tab started at the top of the page. The slot takes focus
+ * (`tabIndex={-1}`: reachable by script, not a stop of its own), so the next
+ * Tab is the outcome's own link or button. `preventScroll`: the scroll above
+ * already chose the nearest edge.
+ */
+export function OutcomeSlot({ at, shown, children }: { at: unknown; shown: boolean; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!shown) return
+    ref.current?.scrollIntoView?.({ block: 'nearest' })
+    ref.current?.focus({ preventScroll: true })
+  }, [at, shown])
+  if (!shown) return null
+  return <div ref={ref} className="sbf-outcome" tabIndex={-1}>{children}</div>
+}
+
 /** The task form's field-id prefix: the editor and the panel's buttons share it. */
 const TASK_FIELDS = 'task'
 
@@ -856,14 +977,25 @@ function Form({ capacity }: { capacity: Capacity }) {
   // EMPTY, AND IT STAYS EMPTY UNTIL SOMEBODY PICKS (#118/#119, submit.html
   // decided 2026-10-01). No runner is preselected: `blocked` below holds the
   // button while this is '', so an untouched form cannot send anything.
-  const [chosen, setChosen] = useState('')
-  const [fields, setFields] = useState<InputField[]>([])
+  // THE ONE EXCEPTION: a task another screen handed over (GT-GUIDE, the Git
+  // tokens page's "Run a test task"; submitPrefill.ts). It is a pick the
+  // person made there, of a runner this catalogue serves; the button still
+  // waits for their press here.
+  const [handed] = useState(() => peekTaskPrefill())
+  useEffect(() => clearTaskPrefill(), [])
+  const handedProfile = handed !== null && capacity.runner_profiles[handed.profile] !== undefined ? handed.profile : ''
+  const [chosen, setChosen] = useState(handedProfile)
+  const [fields, setFields] = useState<InputField[]>(() =>
+    handed === null || handed.prompt === ''
+      ? []
+      : seedFields([field({ name: 'prompt', kind: 'text', text: handed.prompt })], requiredInputKeys(capacity.runner_profiles[handedProfile] ?? undefined)),
+  )
   // Seeded with the API's own defaults, so a caller who touches nothing sends
   // the dispatch they would have got before this control existed.
   const [dispatch, setDispatch] = useState<DispatchDraft>({
     strategy: DEFAULT_STRATEGY,
     carrier: DEFAULT_CARRIER,
-    repositoryUrl: '',
+    repositoryUrl: handed?.repositoryUrl ?? '',
   })
   const [outcome, setOutcome] = useState<Outcome>({ kind: 'idle' })
   // Whether this tenant holds each provider's key, for every row of the picker.
@@ -876,49 +1008,207 @@ function Form({ capacity }: { capacity: Capacity }) {
   const required = requiredInputKeys(profile ?? undefined)
   const bad = outcome.kind === 'refused' ? outcome.fields : {}
 
+  // THE BROWSER TOOL (BSTATUS-SUBMIT): drawn only for a profile that declares
+  // `browser_tool`, Auto by default, and Auto sends nothing. A pick the form
+  // can no longer honour -- another runner, Jev without a key -- reads as Auto,
+  // so the button never sends a tool the picker is not showing as chosen.
+  const tools = declaredBrowserTools(profile)
+  const [browserTool, setBrowserTool] = useState(AUTO)
+  const typesafe = useTypesafeKey(tools !== null)
+  const judgment = useJevJudgment(tools !== null)
+  const tool = tools !== null && tools.includes(browserTool) && (browserTool !== 'jev' || jevAllowed(typesafe, judgment)) ? browserTool : AUTO
+
+  // THE MCP SERVERS (MCP-UI; docs/design/registered-mcp-servers.md §4.3):
+  // drawn only for a profile that declares `mcp_servers`, offering the
+  // workspace's enabled registrations that profile may use. A pick the list no
+  // longer offers -- another runner, a server disabled since -- is dropped, so
+  // the button never sends a name the picker is not showing as picked. A
+  // `dispatch` server's credential stays in its field's DOM node (`mcpFields`),
+  // never in state, and leaves only in the POST's `mcp_credentials`.
+  const mcpMax = declaredMcpServers(profile)
+  const [mcpList, setMcpList] = useState<Result<McpServerList> | null>(null)
+  const mcpDeclared = mcpMax !== null
+  useEffect(() => {
+    if (!mcpDeclared) return
+    let live = true
+    void loadMcpServers().then((r) => {
+      if (live) setMcpList(r)
+    })
+    return () => {
+      live = false
+    }
+  }, [mcpDeclared])
+  const mcpOffered = mcpMax !== null && mcpList !== null && (mcpList.status === 'ok' || mcpList.status === 'stale')
+    ? offeredMcpServers(mcpList.data, chosen) : []
+  const [mcpPicked, setMcpPicked] = useState<string[]>([])
+  const mcpNames = mcpPicked.filter((n) => mcpOffered.some((s) => s.name === n))
+  const mcpFields = useRef(new Map<string, HTMLInputElement>())
+  const [mcpFilled, setMcpFilled] = useState<ReadonlySet<string>>(() => new Set())
+  const [mcpLifetimes, setMcpLifetimes] = useState<Record<string, number>>({})
+  const mcpUnfilled = mcpOffered.filter((s) => mcpNames.includes(s.name) && s.auth.mode === 'dispatch' && !mcpFilled.has(s.name)).map((s) => s.name)
+  const onMcpFilled = (name: string, on: boolean) =>
+    setMcpFilled((was) => {
+      const next = new Set(was)
+      if (on) next.add(name)
+      else next.delete(name)
+      return next
+    })
+  const forgetCredentials = () => {
+    clearCredentials(mcpFields)
+    setMcpFilled(new Set())
+  }
+
   const pick = (name: string) => {
     setChosen(name)
+    setBrowserTool(AUTO)
+    setMcpPicked([])
+    forgetCredentials()
     setFields((prev) => seedFields(prev, requiredInputKeys(capacity.runner_profiles[name] ?? undefined)))
   }
 
-  const built = buildInput(fields)
+  const typed = buildInput(fields)
+  // The picker's key beside the typed ones: a `browser_tool` typed as a
+  // setting of one's own as well is the same one-value-per-key refusal.
+  const withTool: BuiltInput = !typed.ok || tool === AUTO ? typed
+    : Object.prototype.hasOwnProperty.call(typed.input, BROWSER_TOOL_KEY)
+      ? { ok: false, message: `the setting ${BROWSER_TOOL_KEY} is set twice and an object has one value per key` }
+      : { ok: true, input: withBrowserTool(typed.input, tool) }
+  // The MCP picks the same way: a typed `mcp_servers` beside them is set twice.
+  const built: BuiltInput = !withTool.ok || mcpNames.length === 0 ? withTool
+    : Object.prototype.hasOwnProperty.call(withTool.input, MCP_SERVERS_KEY)
+      ? { ok: false, message: `the setting ${MCP_SERVERS_KEY} is set twice and an object has one value per key` }
+      : { ok: true, input: withMcpServers(withTool.input, mcpNames) }
   const missing = missingRequired(fields, required)
-  const blocked = chosen === '' || !built.ok || missing.length > 0
   // THE REPOSITORY THE CLICK PUSHES TO, from the draft `submit` sends: the
   // trimmed URL, and only while the chosen strategy pushes at all (#115).
   const repo = dispatch.repositoryUrl.trim()
   const pushes = consequenceOf(dispatch.strategy, 1).pushes
+  // A PUSH WITH NOWHERE TO PUSH IS NOT READY (VQA V052). The panel already
+  // said "none — nowhere to push" and the dispatch control that the API would
+  // refuse it (`DispatchOptionError`, `missing: repository_url`), under a
+  // "Ready to send" heading and a live button.
+  // AND A REPOSITORY THE API WILL REFUSE IS NOT READY EITHER (live QA SUB-3):
+  // the field said "it will refuse this one" under "Ready to send" and a live
+  // button. `repositorySchemeRefused` is the field's own test, held to the
+  // API's tuple by `dispatch.test.ts`, so the field, the heading and the
+  // button read one answer. Blank is the line above's case, not this one's.
+  const badRepo = repositorySchemeRefused(repo)
+  // AN INPUT OVER THE SERVED LIMIT IS NOT READY (live QA SUB-4): a 300,000-
+  // character prompt read "Ready to send" and found out from the 422.
+  const inputLimit = useInputLimit()
+  const tooBig = built.ok ? inputSizeProblem(built.input, inputLimit) : null
+  const blocked = chosen === '' || !built.ok || missing.length > 0 || (pushes && repo === '') || badRepo || tooBig !== null
+    || mcpUnfilled.length > 0
+  // WHAT THIS CLICK WOULD SEND, as one comparable value. After a 201 the
+  // button is "Submit another" for as long as the form still says exactly
+  // what was sent (VQA V048, owner decision Q1 on #1038): one more click on an
+  // unchanged form was a duplicate task. Any edit makes it a new request.
+  const draftKey = JSON.stringify([chosen, built.ok ? built.input : null, dispatch.strategy, dispatch.carrier, repo])
+  const [sentKey, setSentKey] = useState<string | null>(null)
+  const justSent = outcome.kind === 'created' && sentKey === draftKey
+  // AND A 422 IS NOT "READY TO SEND" (VQA V002): the panel said so over a live
+  // button after the API had refused exactly what the form still held, and the
+  // same click would be refused the same way. Held until any edit.
+  const [refusedKey, setRefusedKey] = useState<string | null>(null)
+  const refusedAsIs = outcome.kind === 'refused' && outcome.sent && refusedKey === draftKey
+  const inFlight = useRef(false)
+  // "Submit another" starts a blank form: the task just created is one click
+  // away from its own card until then.
+  const another = () => {
+    setChosen('')
+    setBrowserTool(AUTO)
+    setMcpPicked([])
+    setMcpLifetimes({})
+    forgetCredentials()
+    setFields([])
+    setDispatch({ strategy: DEFAULT_STRATEGY, carrier: DEFAULT_CARRIER, repositoryUrl: '' })
+    setOutcome({ kind: 'idle' })
+    setSentKey(null)
+    setRefusedKey(null)
+    setRestarted((n) => n + 1)
+  }
+  // AND THE KEYBOARD STARTS AGAIN AT THE TOP (live QA SUB-16): the button
+  // that had focus is unmounted by the reset, and focus fell to `<body>`.
+  // After the render, so the runner list it lands on is the blank form's.
+  const formRef = useRef<HTMLFormElement>(null)
+  const [restarted, setRestarted] = useState(0)
+  useEffect(() => {
+    if (restarted === 0) return
+    formRef.current?.querySelector<HTMLElement>('input[name="runner-profile"]:not(:disabled)')?.focus()
+  }, [restarted])
   // The send panel's "`prompt` missing" takes the reader to that field.
   const toField = (key: string) => {
     const f = fields.find((x) => x.name.trim() === key)
     if (f) document.getElementById(inputFieldId(TASK_FIELDS, f.key))?.focus()
   }
+  // The refusal card's way to the field a 422 named (VQA V002): its control
+  // where it has one that takes focus, else the sentence printed under it --
+  // the carrier's select is disabled, and an input with no setting yet has
+  // no field to land in.
+  const toRefused = (f: Field) => {
+    const form = formRef.current
+    const control =
+      f === 'runner_profile' ? form?.querySelector<HTMLElement>('input[name="runner-profile"]:checked')
+        ?? form?.querySelector<HTMLElement>('input[name="runner-profile"]:not(:disabled)')
+      : f === 'input' ? (fields[0] === undefined ? null : document.getElementById(inputFieldId(TASK_FIELDS, fields[0].key)))
+      : f === 'strategy' ? form?.querySelector<HTMLElement>('input[name="dispatch-strategy"]:checked')
+      : f === 'repository_url' ? document.getElementById('dsp-repo')
+      : null
+    ;(control ?? document.getElementById(refusedSayId(f)))?.focus()
+  }
 
   async function submit(e?: FormEvent) {
     e?.preventDefault()
+    // ONE POST PER CLICK, WHATEVER SUBMITS THE FORM (live QA SUB-1). After a
+    // 201 the button is "Submit another" (`type="button"`), and the form is
+    // left with one text input -- the repository URL -- so Enter there was
+    // still an implicit submission, and it posted the same task again. The
+    // guard is here, not on the button: a request in flight, or the one that
+    // was just created and is still what the form says, is never sent twice.
+    if (inFlight.current || outcome.kind === 'sending' || justSent || refusedAsIs) return
     // The button is disabled with no runner; this holds the same rule for any
     // other way a form can be submitted, so nothing is posted without a name.
     if (chosen === '') {
-      setOutcome({ kind: 'refused', fields: { runner_profile: 'Not sent — no runner chosen.' }, unattributed: null })
+      setOutcome({ kind: 'refused', sent: false, fields: { runner_profile: 'Not sent — no runner chosen.' }, unattributed: null })
       return
     }
     if (!built.ok) {
       // Labelled "not sent": a refusal phrased like the API's sends someone
       // looking at the platform for a typo that is in this form.
-      setOutcome({ kind: 'refused', fields: { input: `Not sent — ${built.message}.` }, unattributed: null })
+      setOutcome({ kind: 'refused', sent: false, fields: { input: `Not sent — ${built.message}.` }, unattributed: null })
       return
     }
     if (missing.length > 0) {
       // A CLICK'S RESULT, so it is the one place "Not sent" belongs (TS-15).
       // The keys as the API named them, without its `input.` prefix or its
       // "as a non-empty string".
-      setOutcome({ kind: 'refused', unattributed: null, fields: { input:
+      setOutcome({ kind: 'refused', sent: false, unattributed: null, fields: { input:
         `Not sent — ${chosen} will not start without ${missing.join(', ')}.` } })
       return
     }
+    // The button is off for both; this keeps them for Enter as well.
+    if (badRepo) {
+      setOutcome({ kind: 'refused', sent: false, unattributed: null, fields: { repository_url:
+        `Not sent — the API accepts only a URL starting with ${REPOSITORY_SCHEMES.join(', ')}.` } })
+      return
+    }
+    if (tooBig !== null) {
+      setOutcome({ kind: 'refused', sent: false, unattributed: null, fields: { input: `Not sent — ${tooBig}.` } })
+      return
+    }
+    if (mcpUnfilled.length > 0) {
+      setOutcome({ kind: 'refused', sent: false, unattributed: null, fields: { input:
+        `Not sent — ${mcpUnfilled.join(', ')} ${mcpUnfilled.length === 1 ? 'needs its' : 'need their'} credential for this run.` } })
+      return
+    }
+    // Read once, here, from the fields; never held in state.
+    const credentials = readCredentials(mcpFields, mcpOffered, mcpNames, mcpLifetimes)
     setOutcome({ kind: 'sending' })
-    setOutcome(
-      await postTask({
+    // A REF, NOT THE STATE ABOVE: two Enters inside one render both read
+    // `outcome` as it was before the first, so only this sees the second.
+    inFlight.current = true
+    const sending = draftKey
+    const result = await postTask({
         runner_profile: chosen,
         input: built.input,
         // Sent ALWAYS, including when they are the defaults. `TaskCreate` has
@@ -931,33 +1221,22 @@ function Form({ capacity }: { capacity: Capacity }) {
         // validator, and `""` fails it with a message about URL schemes rather
         // than about the field being empty.
         ...(repo === '' ? {} : { repository_url: repo }),
-      }),
-    )
+        // BESIDE `input`, never in it: `input` is stored and shown, and the
+        // credential is neither (§4.3). Omitted when no `dispatch` server is picked.
+        ...(Object.keys(credentials).length === 0 ? {} : { mcp_credentials: credentials }),
+      })
+    inFlight.current = false
+    // NEVER RENDERED BACK: whatever the answer, the field is emptied. A second
+    // send needs the credential typed again.
+    forgetCredentials()
+    if (result.kind === 'created') setSentKey(sending)
+    if (result.kind === 'refused') setRefusedKey(sending)
+    setOutcome(result)
   }
 
   return (
-    <form className="sbf" onSubmit={submit}>
+    <form ref={formRef} className="sbf" onSubmit={submit}>
       <div className="sbf-build">
-        {outcome.kind === 'created' && <Created task={outcome.task} woke={outcome.woke} />}
-        {/* The submission gate's refusal (#847): why, in the API's words, and the
-            setup step that fixes it. It is the one failure that proves nothing
-            was created, so the warning below is not drawn under it. */}
-        {outcome.kind === 'failed' && workspaceRefusal(outcome.error) !== null && <WorkspaceRefusalBanner error={outcome.error} />}
-        {outcome.kind === 'failed' && workspaceRefusal(outcome.error) === null && (
-          <>
-            <FailedPanel error={outcome.error} onRetry={() => void submit()} />
-            {/* A write is not a read: a failure after the request left the browser
-                does not prove nothing was created. */}
-            {/* NO `?` (B7.4). `ambiguous-write` is "a failure after the request
-                left the browser does not prove nothing was created", and the
-                two sentences here ARE that, with the remedy first. */}
-            <p className="warn-text">
-              <strong>Check Agents before submitting again.</strong> This failed on
-              a write, so the task may exist anyway.
-            </p>
-          </>
-        )}
-
         {/* THIS SCREEN'S ONE `?` (B7.4). It was seven: two of them repeated a
             sentence printed beside the glyph, one repeated `all at once` from
             the line it sat on, one repeated a bold `That is not zero.`, and one
@@ -973,7 +1252,7 @@ function Form({ capacity }: { capacity: Capacity }) {
               control both Submit forms draw. */}
           <RunnerPicker group="runner-profile" label="runner" profiles={catalogue} chosen={chosen}
             keys={keys} onPick={pick} />
-          {bad.runner_profile && <p className="warn-text" role="alert">{bad.runner_profile}</p>}
+          {bad.runner_profile && <p id={refusedSayId('runner_profile')} tabIndex={-1} className="warn-text" role="alert">{bad.runner_profile}</p>}
           {profile && <ProfileFacts name={chosen} profile={profile} pools={capacity.pools} />}
         </Move>
 
@@ -986,9 +1265,20 @@ function Form({ capacity }: { capacity: Capacity }) {
           {chosen === '' ? (
             <p className="sbf-none">no runner chosen</p>
           ) : (
-            <InputFields profile={chosen} fields={fields} required={required} onChange={setFields} idPrefix={TASK_FIELDS} />
+            <>
+              {tools !== null && (
+                <BrowserToolPicker tools={tools} value={tool} onChange={setBrowserTool} typesafe={typesafe} judgment={judgment}
+                  egress={profileEgress(profile)} />
+              )}
+              {mcpMax !== null && (
+                <McpServerPicker list={mcpList} profile={chosen} max={mcpMax} picked={mcpNames} onPick={setMcpPicked}
+                  fields={mcpFields} filled={mcpFilled} onFilled={onMcpFilled}
+                  lifetimes={mcpLifetimes} onLifetime={(name, seconds) => setMcpLifetimes((was) => ({ ...was, [name]: seconds }))} />
+              )}
+              <InputFields profile={chosen} fields={fields} required={required} onChange={setFields} idPrefix={TASK_FIELDS} />
+            </>
           )}
-          {bad.input && <p className="warn-text" role="alert">{bad.input}</p>}
+          {bad.input && <p id={refusedSayId('input')} tabIndex={-1} className="warn-text" role="alert">{bad.input}</p>}
         </Move>
 
         {/* `steps={1}`: a standalone task IS one step, and that is the number the
@@ -1018,7 +1308,7 @@ function Form({ capacity }: { capacity: Capacity }) {
               heading said `Ready to send` over a greyed-out button with no
               runner chosen and an empty prompt -- the panel's title and its
               only control disagreeing about the one thing the panel is for. */}
-          <h2>{blocked ? 'Not ready to send' : 'Ready to send'}</h2>
+          <h2>{justSent ? 'Sent' : refusedAsIs ? 'Refused' : blocked ? 'Not ready to send' : 'Ready to send'}</h2>
           <ul className="ctl-facts">
             <li className={chosen === '' ? 'ctl-fact is-absent' : 'ctl-fact'}>
               <b>runner</b>
@@ -1037,6 +1327,7 @@ function Form({ capacity }: { capacity: Capacity }) {
                   a button to its field, the workflow panel's per-step pattern. */}
               {chosen === '' ? <i className="ctl-em">&mdash;</i>
                 : !built.ok ? <i className="sbf-bad">{built.message}</i>
+                  : tooBig !== null ? <i className="sbf-bad">{tooBig}</i>
                   : missing.length > 0 ? (
                     <span className="sbf-gaps">
                       {missing.map((k) => (
@@ -1082,20 +1373,63 @@ function Form({ capacity }: { capacity: Capacity }) {
             {pushes && (
               <li className="ctl-fact">
                 <b>repository</b>
-                {repo === '' ? <i className="sbf-bad">none — nowhere to push</i> : <code>{repositorySlug(repo)}</code>}
+                {/* ONE LINE, CUT, WHOLE IN ITS TITLE (VQA V130): an address
+                    `repositorySlug` does not recognise comes back whole, and it
+                    wrapped over eight lines where the issue panel cuts it. */}
+                {repo === '' ? <i className="sbf-bad">none — nowhere to push</i>
+                  : badRepo ? <i className="sbf-bad sbf-cut" title={repo}>not a URL the API accepts</i>
+                  : <code className="sbf-cut" title={repo}>{repositorySlug(repo)}</code>}
+              </li>
+            )}
+            {!pushes && badRepo && (
+              <li className="ctl-fact">
+                <b>repository</b>
+                <i className="sbf-bad sbf-cut" title={repo}>not a URL the API accepts</i>
               </li>
             )}
           </ul>
           {/* The panel's "{runner} requires input.x as a non-empty string"
               alert is gone (TS-15): the field says it, and the fact above is
               the way to the field. */}
-          <Button type="submit" kind="primary" full disabled={outcome.kind === 'sending' || blocked}>
-            {outcome.kind === 'sending' ? 'Submitting…' : submitAs === null ? 'Submit one task' : `Submit as ${submitAs}`}
-          </Button>
-          <p className="sb-note">Nothing runs until the scheduler admits it into every pool it needs.</p>
-          {outcome.kind === 'refused' && outcome.unattributed && (
-            <p className="warn-text" role="alert">The API refused this and did not say which field: {outcome.unattributed}</p>
+          {justSent ? (
+            <Button key="another" type="button" kind="primary" full onClick={another}>Submit another</Button>
+          ) : (
+            <Button key="submit" type="submit" kind="primary" full disabled={outcome.kind === 'sending' || blocked || refusedAsIs}>
+              {outcome.kind === 'sending' ? 'Submitting…' : submitAs === null ? 'Submit one task' : `Submit as ${submitAs}`}
+            </Button>
           )}
+          <p className="sb-note">Nothing runs until the scheduler admits it into every pool it needs.</p>
+          {/* THE OUTCOME IS DRAWN BESIDE THE BUTTON THAT CAUSED IT (VQA V002,
+              owner decision Q1 on #1038), as the issue form draws it. It was
+              at the top of the build column, ~1,400px above the button at
+              400px, so a failed write looked like nothing had happened.
+              A REFUSAL TOO (VQA2 V002): a 422 naming a field was drawn only
+              under that field, ~1,000px above the button at 400, and one
+              naming none under the note, outside this slot. The field keeps
+              its sentence; this card says the click was refused, and names
+              each field with a way to it. */}
+          <OutcomeSlot at={outcome} shown={outcome.kind === 'created' || outcome.kind === 'failed' || outcome.kind === 'refused'}>
+            {outcome.kind === 'refused' && <Refused outcome={outcome} onField={toRefused} />}
+            {outcome.kind === 'created' && <Created task={outcome.task} woke={outcome.woke} />}
+            {/* The submission gate's refusal (#847): why, in the API's words, and the
+                setup step that fixes it. It is the one failure that proves nothing
+                was created, so the warning below is not drawn under it. */}
+            {outcome.kind === 'failed' && workspaceRefusal(outcome.error) !== null && <WorkspaceRefusalBanner error={outcome.error} />}
+            {outcome.kind === 'failed' && workspaceRefusal(outcome.error) === null && (
+              <>
+                <FailedPanel error={outcome.error} onRetry={() => void submit()} />
+                {/* A write is not a read: a failure after the request left the browser
+                    does not prove nothing was created. */}
+                {/* NO `?` (B7.4). `ambiguous-write` is "a failure after the request
+                    left the browser does not prove nothing was created", and the
+                    two sentences here ARE that, with the remedy first. */}
+                <p className="warn-text">
+                  <strong>Check Agents before submitting again.</strong> This failed on
+                  a write, so the task may exist anyway.
+                </p>
+              </>
+            )}
+          </OutcomeSlot>
         </div>
       </aside>
     </form>
@@ -1129,7 +1463,8 @@ export function ProfileFacts({ name, profile, pools }: { name: string; profile: 
   // "busy platform-wide. (0/0)" in this box's words. `blockerCeiling` decides
   // it from the blocker the server sent, not from the pool row.
   //
-  // AND A LEAD WHOSE LIMIT IS BELOW ONE TASK (#66): a browser task under a
+  // AND A LEAD WHOSE LIMIT IS BELOW ONE TASK (#66): a browser task (then 2
+  // units; contract request 79 made it 1, so today it is a large task) under a
   // limit of 1 read "held down by resource:browser, 0 of 1 weighted units in
   // use" -- wait -- about a task no wait will admit. The weight is the class
   // catalogue's (`/v1/resource-classes`); null until it answers, and then the
@@ -1225,6 +1560,43 @@ export function ProfileFacts({ name, profile, pools }: { name: string; profile: 
   )
 }
 
+/** What the panel calls each field a refusal can name: its facts' own keys. */
+const FIELD_WORD: Record<Field, string> = {
+  runner_profile: 'runner', input: 'input', strategy: 'result', carrier: 'carrier', repository_url: 'repository',
+}
+
+/**
+ * A REFUSED CLICK, IN THE SEND PANEL (VQA V002). The API's 422 or this form's
+ * own "Not sent": what was refused, each named field a button to the field
+ * (where its sentence stays), and the invariant -- nothing was created.
+ */
+function Refused({ outcome, onField }: {
+  outcome: Extract<Outcome, { kind: 'refused' }>
+  onField: (f: Field) => void
+}) {
+  const named = FIELDS.filter((f) => outcome.fields[f] !== undefined)
+  return (
+    // `alert`, as the field's own sentence is: a refusal, not a record of something made.
+    <div className="state failed" role="alert">
+      <h3>{outcome.sent ? 'The API refused this task' : 'Not sent'}</h3>
+      {outcome.unattributed !== null && <p>It did not say which field: {outcome.unattributed}</p>}
+      {named.length > 0 && (
+        <ul className="sbf-refused">
+          {named.map((f) => (
+            <li key={f}>
+              <button type="button" className="c-link is-sm" onClick={() => onField(f)}>{FIELD_WORD[f]}</button>
+              {' — '}
+              {/* The field's own sentence opens "Not sent —"; the heading says it here. */}
+              {outcome.fields[f]!.replace(/^Not sent — /, '')}
+            </li>
+          ))}
+        </ul>
+      )}
+      <p>{outcome.sent ? 'Nothing was created. Change what it names and submit again.' : 'Nothing was sent, so nothing was created.'}</p>
+    </div>
+  )
+}
+
 function Created({ task, woke }: { task: Task; woke: boolean }) {
   return (
     <div className="state" role="status">
@@ -1242,12 +1614,14 @@ function Created({ task, woke }: { task: Task; woke: boolean }) {
         it.
         {task.park_reason ? <> It is parked: <code>{String(task.park_reason)}</code>.</> : null}</p>
       {/* The id verbatim: not truncated, not transformed. This is what gets pasted. */}
-      <p className="mono">{task.id}</p>
+      <p className="mono sbf-id">{task.id}</p>
       {/* READ BACK OFF THE 201, not off the form. The form says what was asked
           for; `task.dispatch` is what was stored, and a caller who is about to
           wait for a pull request should be told from the second one. */}
       <DispatchFacts task={task} />
-      <p className="checked-at">
+      {/* A SENTENCE, SET AS ONE (live QA SUB-7): it was a `checked-at` line,
+          which is the micro MONOSPACE of a read's age, not prose. */}
+      <p className="sbf-woke">
         {woke ? 'The scheduler was woken by this submission.'
           : 'The scheduler was not woken; it will pick this up on its next pass.'}{' '}
         {/* The EXPLICIT drawer form. `#work/<id>` also resolves -- it is

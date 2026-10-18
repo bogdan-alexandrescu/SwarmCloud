@@ -295,7 +295,7 @@ WS_NAMESPACE=""
 WS_SCHEDULER=""
 WS_RECONCILER=""
 WS_BUCKET_URL=""
-WS_MARKER_URL=""
+WS_MARKER_UPLOAD_URL=""
 WS_GCS_PREFIX=""
 WS_READ_EXPR=""
 WS_WRITE_EXPR=""
@@ -575,7 +575,7 @@ ws_load_names() {
   WS_SCHEDULER="$(ws_expect scheduler_email)"
   WS_RECONCILER="$(ws_expect reconciler_email)"
   WS_BUCKET_URL="$(ws_expect bucket_url)"
-  WS_MARKER_URL="$(ws_expect marker_url)"
+  WS_MARKER_UPLOAD_URL="$(ws_expect marker_upload_url)"
   WS_GCS_PREFIX="$(ws_expect gcs_prefix)"
   WS_READ_EXPR="$(ws_expect read_expr)"
   WS_WRITE_EXPR="$(ws_expect write_expr)"
@@ -589,7 +589,8 @@ ws_load_names() {
   WS_FALLBACK="$(jq -r '.wd9_fallback == true' "${SWARM_LIB_DIR}/workspace-calls.json")"
   local name
   for name in WS_TENANT WS_DOC WS_DOCS_PREFIX WS_WORKER_EMAIL WS_NAMESPACE WS_SCHEDULER \
-              WS_RECONCILER WS_BUCKET_URL WS_READ_EXPR WS_WRITE_EXPR WS_FORGE_SLOT WS_FORGE_TWIN; do
+              WS_RECONCILER WS_BUCKET_URL WS_MARKER_UPLOAD_URL WS_READ_EXPR WS_WRITE_EXPR \
+              WS_FORGE_SLOT WS_FORGE_TWIN; do
     [[ -n "${!name}" ]] || die "the guard's expectation holds no ${name#WS_}; nothing past A1 can run"
   done
 }
@@ -985,9 +986,39 @@ ws_bucket_has() {
     "$1" >/dev/null 2>&1
 }
 
+# The .tenant marker, create-only: ONE Storage JSON API upload with
+# ifGenerationMatch=0 (the guard's expectation builds the URL, C4), which needs
+# storage.objects.create on tenants/ and nothing else -- exactly what the
+# deployer holds. `gcloud storage cp` read the destination object before it
+# uploaded, and no flag of it skips that read: w-7f9285's A5 died on
+# storage.objects.get, 2026-10-13 01:40Z, and the deployer is given no object
+# read (WS-WALK). tests/unit/scripts/test_workspace_deployer_walk.py holds it.
+#
+# 412 is the precondition answering "an object is already there": a re-run
+# meeting its own marker, or the operator path's. It counts as done. What it
+# says is not compared, because comparing would need the read this exists to
+# avoid; the marker only materialises the prefix, and nothing reads it.
+# Anything else non-2xx is a failure, its HTTP status on stderr so ws_call
+# asks a 429 or a 5xx again.
 ws_put_marker() {
-  printf 'workspace %s registered %s\n' "${WORKSPACE_ID}" "$(iso_now)" \
-    | gcloud storage cp - "${WS_MARKER_URL}" --project "${PROJECT_ID}"
+  local token body status rc=0
+  token="$(access_token)" || return 1
+  body="$(jq -nc --arg t "${WS_TENANT}" --arg w "${WORKSPACE_ID}" '{tenant_id: $t, workspace_id: $w}')"
+  status="$(auth_config "${token}" | curl -sS -m "${HTTP_TIMEOUT}" -K - -X POST \
+    -H "Content-Type: application/json" --data-binary "${body}" \
+    -o "${WS_WORK}/marker.json" -w '%{http_code}' "${WS_MARKER_UPLOAD_URL}")" || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    printf 'ERROR: the .tenant marker upload could not complete (curl exit %s)\n' "${rc}" >&2
+    return 1
+  fi
+  case "${status}" in
+    2*) printf 'written' >"${WS_WORK}/marker" ;;
+    412) printf 'present' >"${WS_WORK}/marker" ;;
+    *)
+      printf 'ERROR: the .tenant marker upload returned HTTP %s: %s\n' "${status}" \
+        "$(jq -r '.error.message? // empty' "${WS_WORK}/marker.json" 2>/dev/null | head -c 300)" >&2
+      return 1 ;;
+  esac
 }
 
 ws_a5() {
@@ -1040,7 +1071,11 @@ ws_a5() {
     done
   fi
   ws_call /dev/null ws_put_marker || { ws_show_err; return 1; }
-  ok "access: granted"
+  if [[ "$(cat "${WS_WORK}/marker" 2>/dev/null || true)" == "present" ]]; then
+    ok "access: granted (the .tenant marker was already there, and is left as it is)"
+  else
+    ok "access: granted"
+  fi
 }
 
 # The person's empty forge slot and its twin, and the worker's read of the slot

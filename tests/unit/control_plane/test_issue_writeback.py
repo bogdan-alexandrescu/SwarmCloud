@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import re
+import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -255,7 +256,7 @@ def test_a_tenant_without_a_forge_credential_still_gets_a_run(db, tokens, group_
     class ReadOnly(forge_fakes.AnyTenantTokens):
         calls = 0
 
-        def token_for(self, tenant):
+        def token_for(self, tenant, *, person=None):
             ReadOnly.calls += 1
             if ReadOnly.calls > 1:
                 raise forge.NoForgeCredential("tenant 'eng' has no forge credential")
@@ -479,9 +480,12 @@ def test_sync_pull_request_records_the_pr_and_writes_the_keyword(client, db, obj
         "number": 57, "url": "https://github.com/saga-xyz/widgets/pull/57",
         "head_sha": "c" * 40, "checks": None,
         # The sync read the pull request, so `merged` is that read's; what only
-        # the CI loop records (#503) is null before it reads, never 0.
+        # the CI loop records (#503) is null before it reads, never 0, and so
+        # is when it last read and why that read failed (RT-4).
         "merged": False, "merged_at": None, "check_counts": None, "check_list": None,
-        "check_list_truncated": None, "ci_url": None,
+        "check_list_truncated": None, "ci_url": None, "checked_at": None, "read_error": None,
+        # WRITEBACK (2026-10-12): a failing read's attempts, since and retry.
+        "read_attempts": None, "read_failing_since": None, "read_retry_at": None,
     }
     assert "part of #42" in writes.pulls[57]["body"] and "Closes #42" not in writes.pulls[57]["body"]
     assert "#57" in _bodies(writes, "status", run["id"])[0]["body"]
@@ -532,6 +536,65 @@ def test_a_transport_failure_reports_its_type_only():
     with pytest.raises(forgewrite.ForgeWriteError) as refused:
         forgewrite.GitHubWriter(send=send).edit_comment(REF, 1, "b", token)
     assert "OSError" in refused.value.message and token not in refused.value.message
+
+
+# WRITEBACK (2026-10-12): which failures are worth retrying. run_0d784c412dbc
+# sat 12 hours on "(URLError)" with nothing to say whether a retry could help.
+
+@pytest.mark.parametrize(
+    "raised,named",
+    [
+        (urllib.error.URLError(TimeoutError("timed out")), "URLError: TimeoutError"),
+        (urllib.error.URLError("no host given"), "URLError"),
+        (TimeoutError("timed out"), "TimeoutError"),
+        (ConnectionResetError("reset by peer"), "ConnectionResetError"),
+    ],
+)
+def test_github_unreachable_is_transient_and_names_the_types_only(raised, named):
+    token = "ghp_" + "u" * 36
+
+    def send(method, url, headers, body, timeout):
+        raise raised
+
+    with pytest.raises(forgewrite.ForgeUnreachable) as refused:
+        forgewrite.GitHubWriter(send=send).check_runs(REF, "a" * 40, token)
+    assert refused.value.code == "writeback_failed"
+    assert refused.value.message.endswith(f"could not be sent to GitHub ({named})")
+    assert "timed out" not in refused.value.message and "peer" not in refused.value.message
+    assert forgewrite.is_transient(refused.value)
+
+
+@pytest.mark.parametrize("status", [500, 502, 503, 504, 429])
+def test_a_5xx_or_429_is_transient(status):
+    with pytest.raises(forgewrite.ForgeUnreachable, match=f"HTTP {status}"):
+        forgewrite.GitHubWriter(send=lambda *a: (status, b"{}")).check_runs(REF, "a" * 40, "t")
+
+
+def test_a_rate_limited_403_is_transient_not_a_missing_permission():
+    body = json.dumps({"message": "API rate limit exceeded for installation ID 1."}).encode()
+    with pytest.raises(forgewrite.ForgeUnreachable, match="rate limit"):
+        forgewrite.GitHubWriter(send=lambda *a: (403, body)).commit_statuses(REF, "a" * 40, "t")
+
+
+@pytest.mark.parametrize(
+    "status,error",
+    [(401, forgewrite.ForgeWriteUnauthorized), (403, forgewrite.ChecksForbidden)],
+)
+def test_a_refused_credential_is_not_transient(status, error):
+    with pytest.raises(error) as refused:
+        forgewrite.GitHubWriter(send=lambda *a: (status, b"{}")).check_runs(REF, "a" * 40, "t")
+    assert not forgewrite.is_transient(refused.value)
+    assert forgewrite.is_credential_refusal(refused.value)
+
+
+def test_a_404_or_an_unreadable_answer_is_neither_transient_nor_a_credential_refusal():
+    for answer in ((404, b"{}"), (200, b"not json")):
+        with pytest.raises(forgewrite.ForgeWriteError) as refused:
+            forgewrite.GitHubWriter(send=lambda *a, answer=answer: answer).check_runs(
+                REF, "a" * 40, "t"
+            )
+        assert not forgewrite.is_transient(refused.value)
+        assert not forgewrite.is_credential_refusal(refused.value)
 
 
 def test_the_production_transport_sends_to_api_github_com_only():

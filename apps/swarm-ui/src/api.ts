@@ -20,7 +20,7 @@ import {
   type CallGraph, type ImpactPlan, type ModuleGraph, type SymbolSearch, type SymbolTests,
 } from './RepoGraphData'
 import type {
-  ArtifactContent, ArtifactListing, LogStream, LogStreamName, TaskAnswer, TaskInputCopy, TaskTranscript, TranscriptStep,
+  ArtifactContent, ArtifactListing, LogStream, LogStreamName, OwnerAnswer, TaskAnswer, TaskInputCopy, TaskTranscript, TranscriptStep,
   CheckpointsPage, TaskLogs,
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
   AdminPool, AttemptRow, AttemptsPage, TaskEventsPage, TaskAccount, LeaseHeartbeat, LeaseHeartbeatPage, LeasePage, LeaseRow, Pool, ProfileAdmission, QuotaState, ResourceClassSpec,
@@ -29,12 +29,15 @@ import type {
   Workflow, WorkflowPage,
   Account, AccountStateName, AccountsPage, RefreshResponse,
   AccountAuthorization, AccountExchangeResponse,
-  IssuePreviewRead, IssueRefDoc, IssueRun, IssueRunPage, IssueRunRead, RunCreateBody, RunPlan,
+  IssuePreviewRead, IssueRefDoc, IssueRun, IssueRunPage, IssueRunRead, IssueRunSummaryPage, RunCreateBody, RunPlan,
   GitHubAuthorization, GitHubAuthorizeSurface, GitHubDisconnectResponse, GitHubExchangeBody, GitHubExchangeResponse, OnboardingDoc,
   OnboardingDismissal, OwnerTokenResponse, AccessInstallRequestResponse,
-  AdminGrantAnswer, AdminRemoveAnswer, LoanRequestAnswer, PeopleDoc, WorkspaceActionAnswer, WorkspaceLimitsAnswer, WorkspaceLoanAnswer, WorkspaceView,
+  AdminGrantAnswer, AdminRemoveAnswer, LoanDeclineAnswer, LoanRequestAnswer, PeopleDoc, WorkspaceActionAnswer, WorkspaceLimitsAnswer, WorkspaceLoanAnswer, WorkspaceView,
   AccessCheckName, AccessDisableResponse, AccessEnableResponse, AccessGrantResponse, AccessMembers, AccessMode, AccessOverview,
   AccessOwners, AccessRepositoryPage, AccessRevokeResponse, AccessVerifyResponse,
+  NotificationTopic, Preferences, PreferencesSaved, PreferencesWrite, Profile, ProfileClaudeAccount, ProfileClaudeAccounts, ProfileDefault,
+  ProfileGitHub, ProfileIdentity, ProfileKeyStatus, ProfileNotifications, ProfileQuotaWindow, ProfileSection, ProfileTypeSafe, ProfileWorkspace,
+  ReminderCadence, WorkspaceRole,
 } from './types'
 
 // The fetch contract lives in fetch.ts. This file is only the list of reads
@@ -43,6 +46,7 @@ import type {
 // task page with no tasks are both non-empty objects.
 
 export type { Result, ApiError } from './fetch'
+export type { OwnerAnswer, OwnerAnswerVersion } from './types'
 
 /** Fixtures, so the UI can be worked on before DNS resolves. Exported so a
  *  component that keeps its own loaders (CheckpointBrowser.tsx) reads this one
@@ -106,13 +110,23 @@ export { TASK_PAGE_LIMIT }
  */
 export async function loadTasks(
   limit: number = TASK_PAGE_LIMIT,
-  options: { view?: 'summary' } = {},
+  options: { view?: 'summary'; submittedBy?: 'me'; pageToken?: string | null } = {},
 ): Promise<Result<TaskPage>> {
-  if (USE_FIXTURES) return fixtureTasks()
+  // A FIXTURE LIST IS ONE PAGE: it never hands out a token, so a page after
+  // it is the end of the list.
+  if (USE_FIXTURES) {
+    return options.pageToken ? { status: 'empty', fetchedAt: Date.now() } : fixtureTasks()
+  }
   // One route with the `?state=` and paged reads below: `/v1/tasks` (CH-18),
-  // whatever page size and view the caller asked for.
-  const query = options.view === 'summary' ? `limit=${limit}&view=summary` : `limit=${limit}`
-  return read<TaskPage>(route('/v1/tasks', {}, query), (d) => d.tasks.length === 0)
+  // whatever page size and view the caller asked for, and the page after a
+  // token (the timeline's span read, live QA RT-1). `submitted_by=me` (U5)
+  // narrows the page to the caller IN THE QUERY, so the page is full of
+  // theirs rather than the tenant's newest filtered down (live QA SUB-6).
+  const q = new URLSearchParams({ limit: String(limit) })
+  if (options.view === 'summary') q.set('view', 'summary')
+  if (options.submittedBy === 'me') q.set('submitted_by', 'me')
+  if (options.pageToken) q.set('page_token', options.pageToken)
+  return read<TaskPage>(route('/v1/tasks', {}, q), (d) => d.tasks.length === 0)
 }
 
 /**
@@ -135,13 +149,28 @@ export interface WorkflowBoard {
   taskById: Map<string, Task> | null
   /** Why states are missing, for the banner. null when the join succeeded. */
   statesDetail: string | null
+  /**
+   * The list read's `next_page_token`: older workflows exist past these 100
+   * (live QA WF-2). Absent or null when the read holds the whole history, or
+   * when it is not a list read at all.
+   */
+  nextPageToken?: string | null
 }
+
+/**
+ * EVERY LIST READ OF WORKFLOWS ASKS FOR THE SUMMARY VIEW (live QA CH-21,
+ * 2026-10-11): each step without its masked `input`, which no list, board or
+ * count in this console draws. A step's input is read on its workflow
+ * (`loadWorkflow`) or its task. An API older than the view ignores the
+ * parameter and serves the full rows, which carry the same fields and more.
+ */
+export const WORKFLOW_LIST_VIEW = 'view=summary'
 
 export async function loadWorkflowBoard(): Promise<Result<WorkflowBoard>> {
   if (USE_FIXTURES) return fixtureWorkflowBoard()
 
   const [wf, tasks] = await Promise.all([
-    read<{ workflows: Workflow[] }>(route('/v1/workflows?limit=100'), (d) => d.workflows.length === 0),
+    read<WorkflowPage>(route('/v1/workflows?limit=100', {}, WORKFLOW_LIST_VIEW), (d) => d.workflows.length === 0),
     read<TaskPage>(route('/v1/tasks', {}, 'limit=200'), (d) => d.tasks.length === 0),
   ])
 
@@ -161,7 +190,12 @@ export async function loadWorkflowBoard(): Promise<Result<WorkflowBoard>> {
       status: 'ok',
       fetchedAt: wf.fetchedAt,
       serverAt: wf.serverAt,
-      data: { workflows: wf.data.workflows, taskById: null, statesDetail: tasks.error.message },
+      data: {
+        workflows: wf.data.workflows,
+        taskById: null,
+        statesDetail: tasks.error.message,
+        nextPageToken: wf.data.next_page_token ?? null,
+      },
     }
   }
 
@@ -171,8 +205,24 @@ export async function loadWorkflowBoard(): Promise<Result<WorkflowBoard>> {
     status: 'ok',
     fetchedAt: wf.fetchedAt,
     serverAt: wf.serverAt,
-    data: { workflows: wf.data.workflows, taskById, statesDetail: null },
+    data: { workflows: wf.data.workflows, taskById, statesDetail: null, nextPageToken: wf.data.next_page_token ?? null },
   }
+}
+
+/**
+ * THE NEXT 100 WORKFLOWS, OLDER THAN A LIST READ (live QA WF-2, 2026-10-11).
+ * The list read only its newest 100 and offered no way past them, while its
+ * counts and its "oldest first" read as the tenant's whole history:
+ * `Failed 15` against 52 failed workflows. `token` is the previous read's
+ * `next_page_token`. No task join: the list reads each older row's steps by
+ * id as it scrolls in (`useRowReads`), as it already does for the first 100.
+ */
+export async function loadOlderWorkflows(token: string): Promise<Result<WorkflowPage>> {
+  if (USE_FIXTURES) return { status: 'ok', fetchedAt: Date.now(), data: { workflows: [], next_page_token: null } }
+  return read<WorkflowPage>(
+    route('/v1/workflows', {}, new URLSearchParams({ limit: '100', page_token: token, view: 'summary' })),
+    (d) => d.workflows.length === 0,
+  )
 }
 
 function emptyBoard(workflows: Workflow[]): WorkflowBoard {
@@ -194,12 +244,16 @@ function emptyBoard(workflows: Workflow[]): WorkflowBoard {
  * complete. A caller that ignores it can report an all-clear over workflows
  * whose state was never established.
  */
-export async function loadWorkflows(): Promise<Result<WorkflowPage>> {
+export async function loadWorkflows(limit: number = 100): Promise<Result<WorkflowPage>> {
   if (USE_FIXTURES) return fixtureWorkflows()
   // 100, matching loadWorkflowBoard: `max_workflow_steps` is 50 and the route's
   // step-read budget is what actually binds, so a larger page buys rows whose
-  // rollup is incomplete rather than more information.
-  return read<WorkflowPage>(route('/v1/workflows?limit=100'), (d) => d.workflows.length === 0)
+  // rollup is incomplete rather than more information. A caller that lists a
+  // handful (Submit's recent card, live QA SUB-6) asks for fewer.
+  // Both are the one registry route, `/v1/workflows`: `route` keys by the
+  // template without its query.
+  if (limit !== 100) return read<WorkflowPage>(route('/v1/workflows', {}, `limit=${limit}&${WORKFLOW_LIST_VIEW}`), (d) => d.workflows.length === 0)
+  return read<WorkflowPage>(route('/v1/workflows?limit=100', {}, WORKFLOW_LIST_VIEW), (d) => d.workflows.length === 0)
 }
 
 /**
@@ -989,6 +1043,84 @@ export async function loadAnswer(taskId: string, options: { attemptId?: string }
   return read<TaskAnswer>(route('/v1/tasks/{id}/answer', { id: taskId }, query), () => false)
 }
 
+/** One option of an agent's question, as the worker validated it. */
+export interface QuestionOption {
+  label: string | null
+  description: string | null
+}
+
+/** One question an agent asked its owner (`questions.json`). */
+export interface AgentQuestion {
+  question: string | null
+  options: QuestionOption[]
+  /** One of the options' labels, or null when the agent recommended none. */
+  recommended: string | null
+  context: string | null
+  /** The owner's stored answer; null or absent when unanswered (or from an API older than answers). */
+  answer?: OwnerAnswer | null
+}
+
+/**
+ * `GET /v1/tasks/{id}/questions`. `status` is `ok`, `none` (asked none --
+ * `questions: []`, never a 404) or `unavailable` (the worker counted some
+ * and they could not be read; `unavailable_because` says why).
+ */
+export interface TaskQuestions {
+  task_id: string
+  count: number
+  status: 'ok' | 'none' | 'unavailable'
+  questions: AgentQuestion[]
+  attempt_id?: string | null
+  unavailable_because?: string
+  redacted: boolean
+  redaction_count: number
+  /** Whether this viewer may answer: the task's submitter or an admin. Absent from an API older than answers. */
+  may_answer?: boolean
+  /** Why not, when `may_answer` is false. */
+  may_answer_because?: string | null
+}
+
+/** `POST /v1/tasks/{id}/answers`: an option label, free text, or both. */
+export interface AnswerChoice {
+  question_index: number
+  choice: string | null
+  text: string | null
+}
+
+/**
+ * What the task's agent asked its owner: `GET /v1/tasks/{id}/questions`, the
+ * file the worker validated, redacted by the artifact read (part of #1206).
+ */
+export async function loadQuestions(taskId: string): Promise<Result<TaskQuestions>> {
+  if (USE_FIXTURES) {
+    noteFixtureProbe(route('/v1/tasks/{id}/questions', { id: taskId }), 0, true)
+    return {
+      status: 'ok',
+      fetchedAt: Date.now(),
+      data: { task_id: taskId, count: 0, status: 'none', questions: [], redacted: false, redaction_count: 0 },
+    }
+  }
+  return read<TaskQuestions>(route('/v1/tasks/{id}/questions', { id: taskId }), () => false)
+}
+
+/**
+ * The owner answers one of the agent's questions: `POST /v1/tasks/{id}/answers`
+ * (TASK-ANSWERS, owner decision 2026-10-13). Stored on the task, where whoever
+ * launched the work reads it; answers with the questions as they now read.
+ * Re-answering replaces the answer, and the API keeps the replaced one.
+ */
+export async function answerQuestion(taskId: string, answer: AnswerChoice): Promise<Result<TaskQuestions>> {
+  const target = route('/v1/tasks/{id}/answers', { id: taskId })
+  if (USE_FIXTURES) {
+    noteFixtureProbe(target, 0, false)
+    return {
+      status: 'error',
+      error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build stores no answers.' },
+    }
+  }
+  return (await write(target, 'POST', answer)) as Result<TaskQuestions>
+}
+
 /**
  * THE TASK'S INPUT, MASKED: `GET /v1/tasks/{id}/input` (#184 follow-up). What
  * Inputs and Details draw -- the prompt, the rest of the input and the whole
@@ -1088,6 +1220,70 @@ export async function loadWorkflow(workflowId: string): Promise<Result<WorkflowR
   return read<WorkflowRead>(route('/v1/workflows/{id}', { id: workflowId }), () => false)
 }
 
+/**
+ * HOW MANY WORKFLOWS ONE `GET /v1/workflows?ids=` NAMES: the route's own cap,
+ * `MAX_WORKFLOW_IDS` (routes/workflows.py). A caller with more asks in chunks.
+ */
+export const WORKFLOW_IDS_PER_READ = 50
+
+/** `GET /v1/workflows?ids=`: the named workflows, their step tasks, and the ids not served. */
+interface WorkflowsByIdPage extends WorkflowPage {
+  tasks?: Task[]
+  missing?: string[]
+}
+
+/**
+ * The answer to one by-id read. `batched` is false when the API ignored `ids`
+ * -- one older than the parameter answers with its newest page instead, with
+ * no `missing` -- and then `reads` is empty and nothing may be concluded
+ * about the ids from it: the caller reads them one by one.
+ */
+export interface WorkflowReads {
+  batched: boolean
+  reads: Map<string, WorkflowRead>
+  missing: string[]
+}
+
+/**
+ * MANY WORKFLOWS IN ONE READ (live QA CH-6, 2026-10-11): the Timeline asked
+ * for each workflow its lanes name with its own `GET /v1/workflows/{id}` -- 52
+ * of them on one load. `GET /v1/workflows?ids=` serves up to
+ * `WORKFLOW_IDS_PER_READ` of them, each with the step tasks the derivation
+ * read, in the summary view (no step input: nothing that batches draws one).
+ * Each workflow's `tasks` are its steps' tasks, as far as they were read.
+ */
+export async function loadWorkflowsById(ids: readonly string[]): Promise<Result<WorkflowReads>> {
+  if (USE_FIXTURES) {
+    const reads = new Map<string, WorkflowRead>()
+    for (const id of ids) {
+      const r = await fixtureWorkflowRead(id)
+      if (r.status === 'ok') reads.set(id, r.data)
+    }
+    return { status: 'ok', fetchedAt: Date.now(), data: { batched: true, reads, missing: ids.filter((i) => !reads.has(i)) } }
+  }
+  const query = new URLSearchParams()
+  for (const id of ids) query.append('ids', id)
+  query.set('view', 'summary')
+  const r = await read<WorkflowsByIdPage>(route('/v1/workflows', {}, query), () => false)
+  if (r.status !== 'ok' && r.status !== 'stale') return r as Result<WorkflowReads>
+  const page = r.data
+  const batched = Array.isArray(page.missing) && Array.isArray(page.tasks)
+  const reads = new Map<string, WorkflowRead>()
+  if (batched) {
+    const taskById = new Map((page.tasks ?? []).map((t) => [t.id, t]))
+    for (const w of page.workflows) {
+      const tasks = w.steps
+        .map((st) => (st.task_id ? taskById.get(st.task_id) : undefined))
+        .filter((t): t is Task => t !== undefined)
+      reads.set(w.workflow_id, { workflow: w, tasks })
+    }
+  }
+  const data: WorkflowReads = { batched, reads, missing: batched ? (page.missing ?? []) : [] }
+  return r.status === 'ok'
+    ? { status: 'ok', data, fetchedAt: r.fetchedAt, serverAt: r.serverAt }
+    : { status: 'stale', data, fetchedAt: r.fetchedAt, error: r.error }
+}
+
 // ---------------------------------------------------------------------------
 // Issue runs (#454; intake-tenants.html 1A): the preview, the runs, the plan
 // ---------------------------------------------------------------------------
@@ -1106,11 +1302,26 @@ export async function loadIssuePreview(issue: string): Promise<Result<IssuePrevi
   return read<IssuePreviewRead>(route('/v1/issues/preview', {}, new URLSearchParams({ issue })), () => false)
 }
 
-/** `GET /v1/runs`: the tenant's runs, newest first. Empty is a measured zero. */
-export async function loadRuns(pageToken: string | null = null): Promise<Result<IssueRunPage>> {
+/**
+ * `GET /v1/runs?view=summary`: the tenant's runs, newest first. Empty is a
+ * measured zero.
+ *
+ * THE SUMMARY VIEW (RT-7, 2026-10-11): the full rows were 1.5 MB for 50 runs,
+ * almost all of it plans, open work and per-check lists the list never draws.
+ * Both callers -- the Runs list and Submit's recent list -- read only the
+ * row's id, issue, title, state, approval, workflow and creator. A run's own
+ * page reads `loadRun`, which is always the full row.
+ */
+export async function loadRuns(
+  pageToken: string | null = null,
+  limit: number | null = null,
+): Promise<Result<IssueRunSummaryPage>> {
   if (USE_FIXTURES) return fixtureRuns(pageToken)
-  const query = pageToken === null ? undefined : new URLSearchParams({ page_token: pageToken })
-  return read<IssueRunPage>(route('/v1/runs', {}, query), (d) => d.runs.length === 0 && d.next_page_token === null)
+  const query = new URLSearchParams({ view: 'summary' })
+  if (pageToken !== null) query.set('page_token', pageToken)
+  // `limit` null is the route's own page, as before.
+  if (limit !== null) query.set('limit', String(limit))
+  return read<IssueRunSummaryPage>(route('/v1/runs', {}, query), (d) => d.runs.length === 0 && d.next_page_token === null)
 }
 
 /** `GET /v1/runs/{run_id}`. The read advances the run (routes/runs.py). */
@@ -1629,7 +1840,7 @@ async function fixtureResourceClasses(): Promise<Result<{ resource_classes: Reso
     data: {
       resource_classes: {
         standard: { name: 'standard', cpu: 4, memory_gib: 8, disk_gib: 4, units: 1 },
-        browser: { name: 'browser', cpu: 8, memory_gib: 16, disk_gib: 8, units: 2 },
+        browser: { name: 'browser', cpu: 4, memory_gib: 8, disk_gib: 4, units: 1 },
         large: { name: 'large', cpu: 8, memory_gib: 32, disk_gib: 16, units: 4 },
       },
     },
@@ -2049,7 +2260,13 @@ export async function loadProviders(): Promise<Result<ProvidersPage>> {
 }
 
 /** One page of tasks in one state. Server-side filter, backed by a real index. */
-export async function loadTasksInState(state: TaskState): Promise<Result<TaskPage>> {
+export async function loadTasksInState(
+  state: TaskState,
+  // THE OVERVIEW'S STATE READS (live QA OV-1/OV-4, 2026-10-11) ask for the
+  // summary rows, as its page read does (#168); everyone else keeps the full
+  // 200-row page this always served.
+  options: { limit?: number; view?: 'summary' } = {},
+): Promise<Result<TaskPage>> {
   if (USE_FIXTURES) {
     const page = await fixtureTasks()
     if (page.status !== 'ok') return page
@@ -2059,7 +2276,11 @@ export async function loadTasksInState(state: TaskState): Promise<Result<TaskPag
       : { status: 'ok', fetchedAt: Date.now(), data: { ...page.data, tasks } }
   }
   return read<TaskPage>(
-    route('/v1/tasks', {}, new URLSearchParams({ state, limit: '200' })),
+    route(
+      '/v1/tasks',
+      {},
+      new URLSearchParams({ state, limit: String(options.limit ?? 200), ...(options.view === 'summary' ? { view: 'summary' } : {}) }),
+    ),
     (d) => d.tasks.length === 0,
   )
 }
@@ -2152,15 +2373,19 @@ export async function loadMe(options: { frame?: boolean } = {}): Promise<Result<
 /** One tenant the caller may select: an entry of `GET /v1/tenants/mine`. */
 export interface TenantChoice {
   tenant_id: string
-  /** The registered group's email -- unique where the tenant id is not. */
+  /** The registered group's email -- unique where the tenant id is not; "Your workspace (u-…)" for your own. */
   display_name: string
+  /** `user` for the caller's own personal workspace, `group` for a tenant group (#1200). Absent from an older API. */
+  kind?: 'user' | 'group'
 }
 
 /**
- * `GET /v1/tenants/mine`: every registered tenant group the caller is a
- * VERIFIED member of, in the admin order -- the only values `X-Swarm-Tenant`
- * can select. A frame read, like `loadMe`. An empty list is a caller in no
- * tenant group (a personal tenant), which is an answer, not a failure.
+ * `GET /v1/tenants/mine`: the caller's own ready personal workspace FIRST
+ * (#1200: it is the default), then every registered tenant group the caller
+ * is a VERIFIED member of, in the admin order -- the only values
+ * `X-Swarm-Tenant` can select. A frame read, like `loadMe`. An empty list is
+ * a caller in no tenant group without a ready workspace, which is an answer,
+ * not a failure.
  */
 export async function loadMyTenants(): Promise<Result<TenantChoice[]>> {
   if (USE_FIXTURES) {
@@ -2170,6 +2395,71 @@ export async function loadMyTenants(): Promise<Result<TenantChoice[]>> {
     return { status: 'empty', fetchedAt: Date.now() }
   }
   return read<TenantChoice[]>(route('/v1/tenants/mine'), (rows) => rows.length === 0, { frame: true })
+}
+
+/**
+ * ONE ENTRY OF THE NOTIFICATION FEED (#1206, proposal A). `id` is stable: the
+ * same underlying thing has the same id on every read, so "read" survives a
+ * re-read. A `needs_you` item is DERIVED from live state, not stored, and
+ * leaves the feed once that state is resolved -- a handled request clears
+ * itself without anyone marking it.
+ */
+export interface NotificationItem {
+  id: string
+  group: 'admin' | 'approval' | 'task' | 'account' | 'finished'
+  needs_you: boolean
+  title: string
+  detail: string | null
+  /** A console path, `/admin/people` or `/agents/live/<task>/browser`. */
+  href: string
+  at: string
+  read: boolean
+}
+
+/** `GET /v1/notifications`: needs-you items, then at most 50 updates from the last 7 days. */
+export interface NotificationFeed {
+  items: NotificationItem[]
+  unread_needs_you: number
+  unread_updates: number
+  /** Requests waiting on any admin; 0 for a non-admin. */
+  admin_pending: number
+  read_at: string
+}
+
+/**
+ * `GET /v1/notifications`, read by the frame on every page. A FRAME read: the
+ * header's data age is the page's, and the bell's poll is not the page's data.
+ *
+ * The fixture build serves no feed, so it answers the 404 an API without the
+ * route would, and the bell hides exactly as it does there. It records NO
+ * probe: the fixture build makes no request, and a failing row for it on API
+ * reads -- on every page of every fixture session -- would be a failure that
+ * never happened, pushed above the ones being demonstrated.
+ */
+export async function loadNotifications(): Promise<Result<NotificationFeed>> {
+  const target = route('/v1/notifications')
+  if (USE_FIXTURES) return { status: 'error', error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build serves no notification feed.' } }
+  const r = await read<NotificationFeed>(target, () => false, { frame: true })
+  // A 200 with no list is not an empty feed, and drawing "Nothing needs you"
+  // over an answer nobody could read would be a claim; it is a failure.
+  if ((r.status === 'ok' || r.status === 'stale') && !Array.isArray(r.data.items)) {
+    return { status: 'error', error: { kind: 'server_error', httpStatus: 200, code: null, message: 'The notifications answer carried no list of items.' } }
+  }
+  return r
+}
+
+/** `POST /v1/notifications/read {"ids": [...]}`. */
+export async function markNotificationsRead(ids: readonly string[]): Promise<Result<unknown>> {
+  const target = route('/v1/notifications/read')
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  return write(target, 'POST', { ids })
+}
+
+/** `POST /v1/notifications/read-all`. */
+export async function markAllNotificationsRead(): Promise<Result<unknown>> {
+  const target = route('/v1/notifications/read-all')
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  return write(target, 'POST')
 }
 
 /**
@@ -2241,8 +2531,11 @@ async function fixtureMe(options: { frame?: boolean } = {}): Promise<Result<Me>>
         tenant_id: 'u-bogdan', kind: 'user', principal: 'bogdan@saga.xyz',
         display_name: 'Bogdan', created_at: new Date(Date.now() - 86_400_000 * 9).toISOString(),
         max_active: 2, capacity_units: 40, monthly_budget_usd: null, enabled: true,
-        credentials: ['anthropic'], service_account: 'swarm-agent-u-bogdan@saga-agents-staging.iam.gserviceaccount.com',
-        gcs_prefix: 'gs://swarm-artifacts-dev/u-bogdan', namespace: 'swarm-u-bogdan',
+        credentials: [
+          'anthropic',
+        ],
+        service_account: 'swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com',
+        gcs_prefix: 'gs://swarm-artifacts-dev/u-bogdan', namespace: 'swarm-tenant-u-bogdan',
       },
       principal: {
         email: 'bogdan@saga.xyz', domain: 'saga.xyz',
@@ -2806,6 +3099,10 @@ export async function setPoolLimit(poolName: string, limit: number): Promise<Res
  * pools tied at 15 and `codex` by two tied at 10, so every single-ceiling
  * counterfactual on them reads zero. Those zeros are the shape an operator has
  * to recognise, and they are real numbers off the dev platform, not staged ones.
+ *
+ * `browser` was regenerated at 1 unit when contract request 79 dropped the
+ * class from 2; test_blocker_ui_surface.py's `FIXTURE_PROFILES` carries the
+ * weight it is generated with, so change both in one commit.
  */
 const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
   "mock": {
@@ -3120,7 +3417,7 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
     "uncapped": []
   },
   "browser": {
-    "units": 2,
+    "units": 1,
     "headroom": 0,
     "basis": "measured",
     "blockers": [
@@ -3199,14 +3496,13 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
       {
         "pool": "provider:anthropic:tenant:u-bogdan",
         "action": "raise",
-        "headroom_after": 2,
+        "headroom_after": 4,
         "basis_after": "measured",
-        "delta": 2,
+        "delta": 4,
         "next_binding": [
           "resource:browser",
           "runner:browser",
-          "backend:GKE_AUTOPILOT",
-          "provider:anthropic"
+          "backend:GKE_AUTOPILOT"
         ]
       }
     ],
@@ -3264,7 +3560,8 @@ const FIXTURE_INPUT_CONTRACTS: Record<string, RunnerInputContract> = {
   "post-verdict": {"required_keys": []},
   "claude-code-review": {"required_keys": ["prompt"]},
   "indexer": {"required_keys": ["prompt"]},
-  "claude-code-browser": {"required_keys": ["prompt"]}
+  "claude-code-browser": {"required_keys": ["prompt"]},
+  "await-input": {"required_keys": []}
 }
 
 /**
@@ -3297,7 +3594,8 @@ const FIXTURE_AVAILABILITY: Record<string, FixtureAvailability> = {
   "post-verdict": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."},
   "claude-code-review": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."},
   "indexer": {"available": true, "disabled_reason": ""},
-  "claude-code-browser": {"available": true, "disabled_reason": ""}
+  "claude-code-browser": {"available": true, "disabled_reason": ""},
+  "await-input": {"available": false, "disabled_reason": "await-input steps are being built (docs/design/human-steps.md)"}
 }
 
 async function fixtureCapacity(): Promise<Result<Capacity>> {
@@ -3371,7 +3669,7 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
           input_contract: FIXTURE_INPUT_CONTRACTS.codex,
         },
         browser: {
-          resource_class: 'browser', backend: 'GKE_AUTOPILOT', provider: 'anthropic', units: 2,
+          resource_class: 'browser', backend: 'GKE_AUTOPILOT', provider: 'anthropic', units: 1,
           ...FIXTURE_AVAILABILITY.browser,
           pools: [
             'global', 'tenant:u-bogdan', 'resource:browser', 'runner:browser',
@@ -3381,10 +3679,11 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
           input_contract: FIXTURE_INPUT_CONTRACTS.browser,
         },
         // Contract request 67: claude-code on the browser image, so it costs a
-        // browser class (2 units) and runs where the browser image must. No
-        // admission row: the panel reads a missing one as not measured.
+        // browser class (1 unit since contract request 79; 2 before) and runs
+        // where the browser image must. No admission row: the panel reads a
+        // missing one as not measured.
         'claude-code-browser': {
-          resource_class: 'browser', backend: 'GKE_AUTOPILOT', provider: 'anthropic', units: 2,
+          resource_class: 'browser', backend: 'GKE_AUTOPILOT', provider: 'anthropic', units: 1,
           ...FIXTURE_AVAILABILITY['claude-code-browser'],
           pools: [
             'global', 'tenant:u-bogdan', 'resource:browser', 'runner:claude-code-browser',
@@ -3889,6 +4188,14 @@ export interface AccountsBoard {
    * age of what is on screen, which is the part that IS measurable here.
    */
   readAt: number
+  /**
+   * True only on the development fixture's board. Accounts' Holding now and
+   * History reads live in Accounts.tsx and had no fixture, so in development
+   * they always drew a 404 (visual QA V017); the board that came from the
+   * fixture is what tells them to answer from it too, without importing the
+   * build flag into a module the tests mock.
+   */
+  fixture?: true
 }
 
 export async function loadAccountsBoard(): Promise<Result<AccountsBoard>> {
@@ -4314,6 +4621,7 @@ async function fixtureAccountsBoard(): Promise<Result<AccountsBoard>> {
       tenants: null,
       tenantsDetail: 'Admin group membership is required for this endpoint.',
       readAt: Date.now(),
+      fixture: true,
     },
   }
 }
@@ -5233,13 +5541,13 @@ export function normRepoHardStops(raw: unknown): RepoHardStops | null {
 }
 
 /** A registration's detail with its hard-stop fields, read from the one answer. */
-export type RepoDetailRead = RepoDetail & { hard_stops: RepoHardStops | null }
+export type RepoDetailRead = RepoDetail & { hard_stops: RepoHardStops | null; context: RepoContext }
 
 /** `GET /v1/repositories/{repo_id}`: one registration, its last index runs, who used its index, and its hard stops. */
 export async function loadRepository(repoId: string): Promise<Result<RepoDetailRead | null>> {
   return readAs(route('/v1/repositories/{repo_id}', { repo_id: repoId }), (raw) => {
     const d = normRepoDetail(raw)
-    return d === null ? null : { ...d, hard_stops: normRepoHardStops(raw) }
+    return d === null ? null : { ...d, hard_stops: normRepoHardStops(raw), context: normRepoContext(raw) }
   })
 }
 
@@ -5360,7 +5668,7 @@ export interface RegisterRepositoryBody {
   repository: string
   default_branch?: string
   allowed_profiles?: string[]
-  /** repo-index.md §3.3: 1-168 or `'off'`; `poll`, `webhook` (phase 3) or `off`. */
+  /** repo-index.md §3.3: 1-168 or `'off'`; `poll`, `webhook` (poll and push, graph-service.md §6.2) or `off`. */
   index?: { interval_hours: number | 'off'; on_change: 'poll' | 'webhook' | 'off' }
 }
 
@@ -5392,6 +5700,457 @@ export async function registerTokenSlot(body: { scope: TokenScope; repo_id?: str
 /** `POST /v1/git-tokens/{token_id}/verify`: re-probe now. */
 export async function verifyGitToken(tokenId: string): Promise<Result<unknown>> {
   return writeTo(route('/v1/git-tokens/{token_id}/verify', { token_id: tokenId }), 'POST')
+}
+
+// ---------------------------------------------------------------------------
+// Provider keys a person or an admin sets: TypeSafe (KEYS-API, PR #1284;
+// docs/provider-keys.md). Settings › API keys (ProviderKeys.tsx) is the only
+// caller. THE KEY IS AN ARGUMENT OF `putProviderKey` AND NOTHING ELSE: it goes
+// into that one request's body and is not kept, logged or returned here, and
+// no response carries it back. The status is copied field by field
+// (`normKeyStatus`), so anything a response carried by mistake is never drawn.
+// ---------------------------------------------------------------------------
+
+/** Whose key: the caller's own (`u-<you>`), or the selected tenant's (admins). */
+export type ProviderKeyScope = 'user' | 'tenant'
+
+/** One key's status: never a value, its length, a prefix or a suffix. */
+export interface ProviderKeyStatus {
+  /** False for `user` when the caller has no ready personal workspace to keep a key in. */
+  available: boolean
+  set: boolean
+  set_at: string | null
+  set_by: string | null
+  version: string | null
+}
+
+/** `GET /v1/provider-keys/{provider}`. */
+export interface ProviderKeys {
+  provider: string
+  user: ProviderKeyStatus
+  tenant: ProviderKeyStatus & { tenant_id: string }
+  /** Which key a task the caller submits in `tenant_id` would use. */
+  resolution: { tenant_id: string; uses: ProviderKeyScope | 'none' }
+  /** What reads these keys today. Empty: nothing does yet (docs/provider-keys.md). */
+  consumed_by: string[]
+}
+
+function keyField(v: unknown): string | null {
+  return typeof v === 'string' && v !== '' ? v : typeof v === 'number' ? String(v) : null
+}
+
+function normKeyStatus(raw: unknown): ProviderKeyStatus {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  return {
+    available: r.available !== false,
+    set: r.set === true,
+    set_at: keyField(r.set_at),
+    set_by: keyField(r.set_by),
+    version: keyField(r.version),
+  }
+}
+
+function normProviderKeys(raw: unknown): ProviderKeys {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  const tenant = (typeof r.tenant === 'object' && r.tenant !== null ? r.tenant : {}) as Record<string, unknown>
+  const res = (typeof r.resolution === 'object' && r.resolution !== null ? r.resolution : {}) as Record<string, unknown>
+  const uses = res.uses === 'user' || res.uses === 'tenant' ? res.uses : 'none'
+  const tenantId = keyField(res.tenant_id) ?? keyField(tenant.tenant_id) ?? ''
+  return {
+    provider: keyField(r.provider) ?? '',
+    user: normKeyStatus(r.user),
+    tenant: { ...normKeyStatus(r.tenant), tenant_id: keyField(tenant.tenant_id) ?? tenantId },
+    resolution: { tenant_id: tenantId, uses },
+    consumed_by: Array.isArray(r.consumed_by) ? r.consumed_by.filter((c): c is string => typeof c === 'string') : [],
+  }
+}
+
+/** `GET /v1/provider-keys/{provider}`: your key's status, your selected tenant's, and which a task here would use. */
+export async function loadProviderKeys(provider: string): Promise<Result<ProviderKeys>> {
+  return readAs(route('/v1/provider-keys/{provider}', { provider }), normProviderKeys)
+}
+
+/**
+ * `PUT /v1/provider-keys/{provider}/user|tenant`: store a key. `linkToken` is
+ * the `t` of a one-time link minted for this scope, sent back so the API can
+ * consume it; it authorises nothing (the caller's session does).
+ */
+export async function putProviderKey(provider: string, scope: ProviderKeyScope, apiKey: string, linkToken: string | null): Promise<Result<unknown>> {
+  const target = scope === 'user'
+    ? route('/v1/provider-keys/{provider}/user', { provider })
+    : route('/v1/provider-keys/{provider}/tenant', { provider })
+  return writeTo(target, 'PUT', linkToken === null ? { api_key: apiKey } : { api_key: apiKey, link_token: linkToken })
+}
+
+/** `DELETE /v1/provider-keys/{provider}/user|tenant`: destroy every version of the key. */
+export async function deleteProviderKey(provider: string, scope: ProviderKeyScope): Promise<Result<unknown>> {
+  const target = scope === 'user'
+    ? route('/v1/provider-keys/{provider}/user', { provider })
+    : route('/v1/provider-keys/{provider}/tenant', { provider })
+  return writeTo(target, 'DELETE')
+}
+
+// ---------------------------------------------------------------------------
+// Settings › Profile (docs/design/user-profile.md §4.2; PROFILE-API, PR #1544).
+// Profile.tsx is the only caller. Every field is copied BY NAME from an
+// allow-list, as the API builds it, so a field a response carries by mistake
+// -- a secret's name, a token id, a raw document -- is never drawn. A section
+// the response leaves out stays out (it is named in `unavailable`), and is
+// never filled in with an empty default that would read as "you have none".
+// ---------------------------------------------------------------------------
+
+/** `preferences.TOPICS`, in the API's order. */
+export const NOTIFICATION_TOPICS: readonly NotificationTopic[] = ['approval', 'waiting_step', 'question', 'failed', 'finished', 'account', 'admin']
+
+/** `preferences.REMINDERS`, in the API's order. */
+export const REMINDER_CADENCES: readonly ReminderCadence[] = ['as_set', 'every_4h', 'daily', 'never']
+
+const PROFILE_SECTIONS: readonly ProfileSection[] = ['preferences', 'github', 'typesafe', 'claude_accounts']
+
+function pfObj(v: unknown): Record<string, unknown> | null {
+  return typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null
+}
+
+function pfStr(v: unknown): string | null {
+  return typeof v === 'string' && v !== '' ? v : null
+}
+
+function pfStrOrNum(v: unknown): string | null {
+  return typeof v === 'number' && Number.isFinite(v) ? String(v) : pfStr(v)
+}
+
+function pfNum(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+function normRole(raw: unknown): WorkspaceRole {
+  const r = pfObj(raw) ?? {}
+  return { name: pfStr(r.name) ?? '', source: pfStr(r.source) ?? '', via: pfStr(r.via) }
+}
+
+function normIdentity(raw: unknown): ProfileIdentity {
+  const r = pfObj(raw) ?? {}
+  return {
+    email: pfStr(r.email) ?? '',
+    display_name: pfStr(r.display_name),
+    display_name_suggested: pfStr(r.display_name_suggested),
+    domain: pfStr(r.domain),
+    platform_role: pfStr(r.platform_role),
+    is_admin: r.is_admin === true,
+    is_admin_unresolved: r.is_admin_unresolved === true,
+  }
+}
+
+function normWorkspace(raw: unknown): ProfileWorkspace | null {
+  const r = pfObj(raw)
+  const tenantId = r === null ? null : pfStr(r.tenant_id)
+  if (r === null || tenantId === null) return null
+  return {
+    tenant_id: tenantId,
+    display_name: pfStr(r.display_name) ?? tenantId,
+    kind: pfStr(r.kind) ?? '',
+    role: normRole(r.role),
+    state: pfStr(r.state),
+    selectable: r.selectable !== false,
+    is_acting: r.is_acting === true,
+    is_default: r.is_default === true,
+  }
+}
+
+function normDefault(raw: unknown): ProfileDefault {
+  const r = pfObj(raw) ?? {}
+  return { tenant_id: pfStr(r.tenant_id), source: pfStr(r.source), ignored: pfStr(r.ignored) }
+}
+
+function normGitHub(raw: unknown): ProfileGitHub | null {
+  const r = pfObj(raw)
+  const tenantId = r === null ? null : pfStr(r.tenant_id)
+  if (r === null || tenantId === null) return null
+  const f = pfObj(r.failure)
+  return {
+    tenant_id: tenantId,
+    state: pfStr(r.state),
+    forge_login: pfStr(r.forge_login),
+    method: pfStr(r.method),
+    access_expires_at: pfStr(r.access_expires_at),
+    refreshed_at: pfStr(r.refreshed_at),
+    failure: f === null ? null : { code: pfStr(f.code), recovery: pfStr(f.recovery) },
+  }
+}
+
+function normProfileKey(raw: unknown): ProfileKeyStatus {
+  const r = pfObj(raw) ?? {}
+  return { set: r.set === true, set_at: pfStr(r.set_at), set_by: pfStr(r.set_by), version: pfStrOrNum(r.version) }
+}
+
+function normTypeSafe(raw: unknown): ProfileTypeSafe {
+  const r = pfObj(raw) ?? {}
+  const acting = pfObj(r.acting_workspace) ?? {}
+  return {
+    personal: pfObj(r.personal) === null ? null : normProfileKey(r.personal),
+    acting_workspace: { ...normProfileKey(acting), tenant_id: pfStr(acting.tenant_id) ?? '' },
+    uses: r.uses === 'user' || r.uses === 'tenant' ? r.uses : 'none',
+  }
+}
+
+function normTopics(raw: unknown): NotificationTopic[] {
+  const given = Array.isArray(raw) ? raw : []
+  return NOTIFICATION_TOPICS.filter((t) => given.includes(t))
+}
+
+function normPreferencesSet(raw: unknown): Preferences {
+  const r = pfObj(raw) ?? {}
+  const reminder = REMINDER_CADENCES.find((c) => c === r.reminder) ?? 'as_set'
+  return { muted: normTopics(r.muted), reminder }
+}
+
+function normNotifications(raw: unknown): ProfileNotifications {
+  const r = pfObj(raw) ?? {}
+  const topics = normTopics(r.topics)
+  return { preferences: normPreferencesSet(r.preferences), topics: topics.length === 0 ? [...NOTIFICATION_TOPICS] : topics }
+}
+
+function normWindow(raw: unknown): ProfileQuotaWindow | undefined {
+  const r = pfObj(raw)
+  return r === null ? undefined : { utilization: pfNum(r.utilization), resets_at: pfStr(r.resets_at) }
+}
+
+function normAccount(raw: unknown): ProfileClaudeAccount | null {
+  const r = pfObj(raw)
+  if (r === null || (r.relation !== 'own' && r.relation !== 'borrowed')) return null
+  const w = pfObj(r.windows) ?? {}
+  const windows: ProfileClaudeAccount['windows'] = {}
+  const five = normWindow(w.five_hour)
+  const seven = normWindow(w.seven_day)
+  if (five !== undefined) windows.five_hour = five
+  if (seven !== undefined) windows.seven_day = seven
+  return {
+    account_id: pfStr(r.account_id),
+    label: pfStr(r.label),
+    relation: r.relation,
+    state: pfStr(r.state),
+    windows,
+    lent_to_count: pfNum(r.lent_to_count),
+    // An account with no freshness flag is not claimed fresh.
+    stale: r.stale !== false,
+  }
+}
+
+function normClaudeAccounts(raw: unknown): ProfileClaudeAccounts {
+  const r = pfObj(raw) ?? {}
+  const list = Array.isArray(r.accounts) ? r.accounts : []
+  return {
+    personal_workspace: pfStr(r.personal_workspace),
+    accounts: list.map(normAccount).filter((a): a is ProfileClaudeAccount => a !== null),
+    unreadable_document_count: pfNum(r.unreadable_document_count) ?? 0,
+  }
+}
+
+function pfPresent<T>(v: T | null): v is T {
+  return v !== null
+}
+
+export function normProfile(raw: unknown): Profile {
+  const r = pfObj(raw) ?? {}
+  const unavailable = Array.isArray(r.unavailable) ? PROFILE_SECTIONS.filter((s) => (r.unavailable as unknown[]).includes(s)) : []
+  const c = pfObj(r.connections) ?? {}
+  const connections: Profile['connections'] = {}
+  if (Array.isArray(c.github)) connections.github = c.github.map(normGitHub).filter(pfPresent)
+  if (pfObj(c.typesafe) !== null) connections.typesafe = normTypeSafe(c.typesafe)
+  const profile: Profile = {
+    identity: normIdentity(r.identity),
+    workspaces: Array.isArray(r.workspaces) ? r.workspaces.map(normWorkspace).filter(pfPresent) : [],
+    default_workspace: normDefault(r.default_workspace),
+    connections,
+    revision: pfNum(r.revision),
+    unavailable,
+  }
+  if (pfObj(r.notifications) !== null) profile.notifications = normNotifications(r.notifications)
+  if (pfObj(r.claude_accounts) !== null) profile.claude_accounts = normClaudeAccounts(r.claude_accounts)
+  return profile
+}
+
+function normPreferencesSaved(raw: unknown): PreferencesSaved {
+  const r = pfObj(raw) ?? {}
+  const id = pfObj(r.identity) ?? {}
+  return {
+    identity: { display_name: pfStr(id.display_name), display_name_suggested: pfStr(id.display_name_suggested) },
+    default_workspace: normDefault(r.default_workspace),
+    notifications: normNotifications(r.notifications),
+    revision: pfNum(r.revision) ?? 0,
+  }
+}
+
+/** `GET /v1/profile`: the signed-in person's own profile, each section failing alone. */
+export async function loadProfile(): Promise<Result<Profile>> {
+  return readAs(route('/v1/profile'), normProfile)
+}
+
+/**
+ * `PUT /v1/profile/preferences`: replace the whole set at `body.revision`. A
+ * stale revision is a 409 `preferences_changed` (another tab saved first); a
+ * refused name is a 422 with its `display_name_*` code and a message that names
+ * the rule.
+ */
+export async function putPreferences(body: PreferencesWrite): Promise<Result<PreferencesSaved>> {
+  const r = await writeTo(route('/v1/profile/preferences'), 'PUT', body)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normPreferencesSaved(r.data) }
+  if (r.status === 'empty') return { status: 'error', error: { kind: 'server_error', httpStatus: null, code: null, message: 'The save answered with nothing to read back. Reload to see what was stored.', method: 'PUT' } }
+  return r
+}
+
+// ---------------------------------------------------------------------------
+// The workspace's Jev judgment backend (JUDGE-SELECT; swarm_api/judgment.py).
+// Internal Jev is the default; Internal Laya and TypeSafe are the others. The
+// backend is chosen BY NAME: no URL or key goes in the PUT body.
+// ---------------------------------------------------------------------------
+
+export type JevBackend = 'internal-jev' | 'internal-laya' | 'typesafe'
+
+export const JEV_BACKENDS: readonly JevBackend[] = ['internal-jev', 'internal-laya', 'typesafe']
+
+export interface JevOption {
+  backend: JevBackend
+  label: string
+  available: boolean
+  /** Why not, in the API's words; null when available. */
+  reason: string | null
+}
+
+/** The `jev` object: the chosen backend, whether it can run, and every option. */
+export interface JevStatus extends JevOption {
+  default: JevBackend
+  set_at: string | null
+  set_by: string | null
+  options: JevOption[]
+}
+
+/** `GET /v1/judgment` and `GET|PUT /v1/workspaces/{id}/judgment-backend`. */
+export interface Judgment {
+  tenant_id: string
+  can_edit: boolean
+  jev: JevStatus
+}
+
+function jevBackend(v: unknown): JevBackend {
+  return v === 'internal-laya' || v === 'typesafe' ? v : 'internal-jev'
+}
+
+function normJevOption(raw: unknown): JevOption {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  return {
+    backend: jevBackend(r.backend),
+    label: keyField(r.label) ?? '',
+    available: r.available === true,
+    reason: keyField(r.reason),
+  }
+}
+
+function normJudgment(raw: unknown): Judgment {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  const jev = (typeof r.jev === 'object' && r.jev !== null ? r.jev : {}) as Record<string, unknown>
+  const options = Array.isArray(jev.options) ? jev.options.map(normJevOption) : []
+  return {
+    tenant_id: keyField(r.tenant_id) ?? '',
+    can_edit: r.can_edit === true,
+    jev: {
+      ...normJevOption(jev),
+      default: jevBackend(jev.default),
+      set_at: keyField(jev.set_at),
+      set_by: keyField(jev.set_by),
+      options: JEV_BACKENDS.map((b) => options.find((o) => o.backend === b) ?? { backend: b, label: b, available: false, reason: null }),
+    },
+  }
+}
+
+/** `GET /v1/judgment`: the selected workspace's Jev backend and what is available. */
+export async function loadJudgment(): Promise<Result<Judgment>> {
+  return readAs(route('/v1/judgment'), normJudgment)
+}
+
+/** `PUT /v1/workspaces/{tenant_id}/judgment-backend`: the owner's or an admin's choice. */
+export async function putJudgmentBackend(tenantId: string, backend: JevBackend): Promise<Result<unknown>> {
+  return writeTo(route('/v1/workspaces/{tenant_id}/judgment-backend', { tenant_id: tenantId }), 'PUT', { judgment_backend: backend })
+}
+
+// ---------------------------------------------------------------------------
+// Code intelligence (CTXQ-UI over CTXQ-SET; docs/design/context-quality.md
+// §4.7). The workspace's switch is ONE FIELD of `workspace_settings/{tenant_id}`
+// (`code_intelligence`, beside `judgment_backend` and `merge`), written by
+// swarm-api (`swarm_api/codeintel.py`); the API answers and takes the flat
+// shape: `{jev, context, context_ab, defaults, updated_at, updated_by,
+// can_edit, repositories}` and a PUT body of `{jev}`. `jev` -- whether Jev is ever sent code -- is OFF unless
+// the API says, explicitly, `true`: an answer without the field is a workspace
+// that never turned it on. A repository's `context` override is
+// `on | off`, or absent for inherit, and travels on `PATCH
+// /v1/repositories/{repo_id}` as `merge_policy` does, `inherit` clearing it.
+// These shapes follow CTXQ-SET's API; a fix to them is here.
+// ---------------------------------------------------------------------------
+
+export interface CodeIntelligence {
+  tenant_id: string
+  /** The workspace's owner or a platform admin; the API is the gate. */
+  can_edit: boolean
+  /** Whether Jev is sent excerpts of this workspace's code. Off by default. */
+  jev: boolean
+  /** The local context default (pack and graph tools); nothing leaves the platform. On by default. */
+  context: boolean
+  set_at: string | null
+  set_by: string | null
+}
+
+function normCodeIntelligence(raw: unknown): CodeIntelligence {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  const defaults = (typeof r.defaults === 'object' && r.defaults !== null ? r.defaults : {}) as Record<string, unknown>
+  // `context` is `on | off | inherit`; inherit is the platform default.
+  const context = r.context === 'on' || r.context === 'off' ? r.context : defaults.context
+  return {
+    tenant_id: keyField(r.tenant_id) ?? '',
+    can_edit: r.can_edit === true,
+    jev: r.jev === true,
+    context: context !== 'off',
+    set_at: keyField(r.updated_at),
+    set_by: keyField(r.updated_by),
+  }
+}
+
+/** `GET /v1/code-intelligence`: the selected workspace's Code intelligence setting. */
+export async function loadCodeIntelligence(): Promise<Result<CodeIntelligence>> {
+  return readAs(route('/v1/code-intelligence'), normCodeIntelligence)
+}
+
+/** `PUT /v1/workspaces/{tenant_id}/code-intelligence`: the owner's or an admin's switch. */
+export async function putCodeIntelligence(tenantId: string, jev: boolean): Promise<Result<unknown>> {
+  return writeTo(route('/v1/workspaces/{tenant_id}/code-intelligence', { tenant_id: tenantId }), 'PUT', { jev })
+}
+
+/** A repository's `context` override; `inherit` is the absent field. */
+export type RepoContext = 'on' | 'off' | 'inherit'
+
+/** The registration's `context`, `inherit` when absent or unknown. */
+export function normRepoContext(raw: unknown): RepoContext {
+  if (typeof raw !== 'object' || raw === null) return 'inherit'
+  const outer = raw as Record<string, unknown>
+  const rec = (typeof outer.repository === 'object' && outer.repository !== null ? outer.repository : outer) as Record<string, unknown>
+  return rec.context === 'on' || rec.context === 'off' ? rec.context : 'inherit'
+}
+
+/** `PATCH /v1/repositories/{repo_id}` with `context`: on, off, or inherit to clear it. */
+export async function patchRepositoryContext(repoId: string, context: RepoContext): Promise<Result<unknown>> {
+  const target = route('/v1/repositories/{repo_id}', { repo_id: repoId })
+  if (USE_FIXTURES) return repoNotServed<unknown>(target)
+  return write(target, 'PATCH', { context })
+}
+
+/**
+ * `PATCH /v1/repositories/{repo_id}` with `index.on_change` alone: the API
+ * merges `index` field by field (`Repositories.patch`), so the interval and
+ * the throttle are left as they are. Any member of the workspace may send it.
+ */
+export async function patchRepositoryTrigger(repoId: string, onChange: 'poll' | 'webhook' | 'off'): Promise<Result<unknown>> {
+  const target = route('/v1/repositories/{repo_id}', { repo_id: repoId })
+  if (USE_FIXTURES) return repoNotServed<unknown>(target)
+  return write(target, 'PATCH', { index: { on_change: onChange } })
 }
 
 // ---------------------------------------------------------------------------
@@ -5441,6 +6200,194 @@ export async function storeOwnerToken(owner: string, token: string): Promise<Res
 /** `POST /v1/onboarding/dismiss`: hide the caller's checklist (`true`), or show it again. Steps keep their state. */
 export async function dismissOnboarding(dismissed = true): Promise<Result<OnboardingDismissal>> {
   return writeTo(route('/v1/onboarding/dismiss'), 'POST', { dismissed }) as Promise<Result<OnboardingDismissal>>
+}
+
+// ---------------------------------------------------------------------------
+// GitHub permissions health (#1086, PERM-2 over PERM-1's read).
+//
+// `GET /v1/forge/permissions` is swarm_api/forgeperms.py. It answers what the
+// platform needs (`required`), what the App requests (`app`), what each org's
+// installation granted (`orgs`) and what each registered repository can do
+// (`repositories`). Every call it makes is a GET and it stores nothing; a fix
+// is always a link to GitHub, which is why the only URLs kept here are
+// github.com pages. `refresh=true` skips the server's 60 s cache.
+//
+// NORMALISE OR DROP, NEVER GUESS. A field of the wrong type is null (not
+// read), never false (refused) or true (granted): a dot or a card that turned
+// green on a malformed answer would hide the one failure this read exists for.
+// ---------------------------------------------------------------------------
+
+/** One unmet requirement: what it is, and in plain words what breaks without it. */
+export interface ForgeGap {
+  /** GitHub's permission name; null on a token's measured refusal, whose grant is not readable. */
+  permission: string | null
+  access: string | null
+  granted: string | null
+  needed_for: string
+  capabilities: string[]
+}
+
+/** A permission the App requests above what an installation accepted. */
+export interface ForgePending {
+  permission: string
+  requested: string
+  granted: string | null
+}
+
+export interface ForgeAppCard {
+  configured: boolean
+  slug: string | null
+  /** Null when `GET /app` was not read; then `error` says why. */
+  missing: ForgeGap[] | null
+  /** Served to platform admins only; null for everyone else. */
+  settings_url: string | null
+  error: string | null
+}
+
+export interface ForgeOrgCard {
+  org: string
+  account_type: string | null
+  installation_id: number
+  /**
+   * GitHub's permission map for the installation (`contents: write`), the
+   * ones SwarmCloud does not use included; null when it was not read.
+   */
+  granted: Record<string, string> | null
+  missing: ForgeGap[] | null
+  pending: ForgePending[] | null
+  review_url: string | null
+  error: string | null
+}
+
+/** A capability's state: granted, refused (measured), or null (not measured). */
+export type ForgeCapability = boolean | null
+
+/** What reaches a repository: the App's installation, or the tenant's stored git access. */
+export type ForgeReach = 'app' | 'token'
+
+export interface ForgeRepoStatus {
+  repo_id: string
+  repo: string
+  credential: ForgeReach | null
+  installation_id: number | null
+  capabilities: Record<string, ForgeCapability>
+  blocked_by: ForgeGap[]
+  error: string | null
+}
+
+export interface ForgePermissionsDoc {
+  checked_at: string | null
+  required: ForgeGap[]
+  app: ForgeAppCard
+  orgs: ForgeOrgCard[]
+  repositories: ForgeRepoStatus[]
+  cached: boolean
+}
+
+function fpStr(v: unknown): string | null {
+  return typeof v === 'string' && v !== '' ? v : null
+}
+
+function fpObj(v: unknown): Record<string, unknown> | null {
+  return typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null
+}
+
+function fpList(v: unknown): Record<string, unknown>[] {
+  return Array.isArray(v) ? v.map(fpObj).filter((o): o is Record<string, unknown> => o !== null) : []
+}
+
+/** A fix link is a github.com page, or nothing: a button to anywhere else is not drawn. */
+function fpGitHubUrl(v: unknown): string | null {
+  const s = fpStr(v)
+  return s !== null && s.startsWith('https://github.com/') ? s : null
+}
+
+/** A permission map, keeping only string levels; not an object at all is null (not read), never `{}` (nothing granted). */
+function fpPermMap(v: unknown): Record<string, string> | null {
+  const o = fpObj(v)
+  if (o === null) return null
+  const out: Record<string, string> = {}
+  for (const [k, level] of Object.entries(o)) if (typeof level === 'string' && level !== '') out[k] = level
+  return out
+}
+
+function fpGap(o: Record<string, unknown>): ForgeGap | null {
+  const why = fpStr(o.needed_for)
+  if (why === null) return null
+  return {
+    permission: fpStr(o.permission),
+    access: fpStr(o.access),
+    granted: fpStr(o.granted),
+    needed_for: why,
+    capabilities: Array.isArray(o.capabilities) ? o.capabilities.filter((c): c is string => typeof c === 'string') : [],
+  }
+}
+
+function fpGaps(v: unknown): ForgeGap[] | null {
+  if (!Array.isArray(v)) return null
+  return fpList(v).map(fpGap).filter((g): g is ForgeGap => g !== null)
+}
+
+export function normForgePermissions(raw: unknown): ForgePermissionsDoc {
+  const doc = fpObj(raw) ?? {}
+  const app = fpObj(doc.app) ?? {}
+  const orgs: ForgeOrgCard[] = []
+  for (const o of fpList(doc.orgs)) {
+    const org = fpStr(o.org)
+    if (org === null || typeof o.installation_id !== 'number') continue
+    orgs.push({
+      org,
+      account_type: fpStr(o.account_type),
+      installation_id: o.installation_id,
+      granted: fpPermMap(o.granted),
+      missing: fpGaps(o.missing),
+      pending: Array.isArray(o.pending)
+        ? fpList(o.pending).flatMap((p) => {
+            const permission = fpStr(p.permission)
+            const requested = fpStr(p.requested)
+            return permission === null || requested === null ? [] : [{ permission, requested, granted: fpStr(p.granted) }]
+          })
+        : null,
+      review_url: fpGitHubUrl(o.review_url),
+      error: fpStr(o.error),
+    })
+  }
+  const repositories: ForgeRepoStatus[] = []
+  for (const r of fpList(doc.repositories)) {
+    const repoId = fpStr(r.repo_id)
+    const name = fpStr(r.repo)
+    if (repoId === null || name === null) continue
+    const caps: Record<string, ForgeCapability> = {}
+    for (const [k, v] of Object.entries(fpObj(r.capabilities) ?? {})) caps[k] = typeof v === 'boolean' ? v : null
+    repositories.push({
+      repo_id: repoId,
+      repo: name,
+      credential: r.credential === 'app' || r.credential === 'token' ? r.credential : null,
+      installation_id: typeof r.installation_id === 'number' ? r.installation_id : null,
+      capabilities: caps,
+      blocked_by: fpGaps(r.blocked_by) ?? [],
+      error: fpStr(r.error),
+    })
+  }
+  return {
+    checked_at: fpStr(doc.checked_at),
+    required: fpGaps(doc.required) ?? [],
+    app: {
+      configured: app.configured === true,
+      slug: fpStr(app.slug),
+      missing: fpGaps(app.missing),
+      settings_url: fpGitHubUrl(app.settings_url),
+      error: fpStr(app.error),
+    },
+    orgs,
+    repositories,
+    cached: doc.cached === true,
+  }
+}
+
+/** `GET /v1/forge/permissions`: the tenant's GitHub permissions; `refresh` reads GitHub again. */
+export async function loadForgePermissions(refresh = false): Promise<Result<ForgePermissionsDoc>> {
+  return readAs(route('/v1/forge/permissions', {}, refresh ? 'refresh=true' : undefined), normForgePermissions)
 }
 
 // ---------------------------------------------------------------------------
@@ -5501,6 +6448,17 @@ export async function setWorkspaceCeiling(workspaceId: string, maxActive: number
 export async function setWorkspaceLoan(workspaceId: string, accountId: string, lend: boolean): Promise<Result<WorkspaceLoanAnswer>> {
   return writeTo(route('/v1/admin/people/{workspace_id}/loan', { workspace_id: workspaceId }), 'PUT', { account_id: accountId, lend }) as Promise<
     Result<WorkspaceLoanAnswer>
+  >
+}
+
+/**
+ * `POST /v1/admin/people/{workspace_id}/loan/decline` (admin): close the person's open loan
+ * request without lending. The reason is optional and shown to them; none sends `{}`.
+ */
+export async function declineLoanRequest(workspaceId: string, reason: string): Promise<Result<LoanDeclineAnswer>> {
+  const text = reason.trim()
+  return writeTo(route('/v1/admin/people/{workspace_id}/loan/decline', { workspace_id: workspaceId }), 'POST', text === '' ? {} : { reason: text }) as Promise<
+    Result<LoanDeclineAnswer>
   >
 }
 
@@ -5601,4 +6559,1035 @@ export async function typedRepoId(tenantId: string, repository: string): Promise
   const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes)
   const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
   return `repo_${hex.slice(0, 16)}`
+}
+
+// ---------------------------------------------------------------------------
+// Schedules and approvals (docs/schedules.md §7.1; the console is §6, lane S7)
+// ---------------------------------------------------------------------------
+
+/**
+ * Today's reported spend of one schedule, in its own zone (§4.3). `partial`
+ * says some attempt never reported a cost, so `reported_usd` is a floor: the
+ * console draws it with `Mark kind="partial"`, never as the whole figure.
+ */
+export interface ScheduleSpendToday {
+  day: string
+  reported_usd: number
+  unreported_attempts: number
+  coverage: 'complete' | 'partial'
+}
+
+/** `last_firing`, the copy the list reads (§1.1). */
+export interface ScheduleLastFiring {
+  firing_id: string
+  slot: string | null
+  outcome: string | null
+  work_ref?: unknown
+  ended_at: string | null
+}
+
+/**
+ * One `schedules/` document as `routes/schedules.py::schedule_to_api` serves
+ * it: the stored fields, and `words`, `tier`, `spend_today` and
+ * `pending_approvals` computed on read. Every map is the caller's or the
+ * type's; the console reads and never writes one in this lane.
+ */
+export interface Schedule {
+  schedule_id: string
+  tenant_id: string
+  name: string
+  type: string
+  scope: { mode: 'repos' | 'all' | 'platform'; repo_ids?: string[] }
+  cron: string
+  timezone: string
+  params: Record<string, unknown>
+  gate: { plan?: string; run?: string; merge?: string; approvers?: string; approval_ttl_hours?: number }
+  budget: { per_run_usd?: number; per_day_usd?: number; max_concurrent?: number }
+  policy: { overlap?: string; catch_up?: string; jitter?: boolean; dry_run?: boolean; max_consecutive_failures?: number }
+  state: 'enabled' | 'paused' | 'auto_paused' | 'disabled'
+  pause: { by?: string; at?: string; reason?: string | null; code?: string | null } | null
+  owner: string
+  created_by: string
+  created_at: string
+  updated_by?: string | null
+  updated_at?: string | null
+  next_run_at: string | null
+  last_firing: ScheduleLastFiring | null
+  consecutive_failures?: number
+  revision: number
+  /** The cron in words, or null when the tick's parser refused it. */
+  words: string | null
+  /** The risk tier (§4.1), or null when the type has left the catalogue. */
+  tier: string | null
+  spend_today: ScheduleSpendToday
+  pending_approvals: number
+  /** Served by `GET /v1/schedules/{id}` only (`_budget_use`); the list never carries it. */
+  budget_use?: ScheduleBudgetUse | null
+}
+
+/**
+ * Today's burn as the tick's budget gate counts it (§4.3), from
+ * `routes/schedules.py::_budget_use`: every figure is the server's, so the
+ * Budget tab's bar draws and computes none. `unreported_usd` is each attempt
+ * that never reported a cost at `per_run_usd`; `live_usd` each live work item
+ * at `per_run_usd`; `free_usd` what is left of `per_day_usd`, never below 0.
+ */
+export interface ScheduleBudgetUse {
+  day: string
+  per_day_usd: number
+  per_run_usd: number
+  reported_usd: number
+  unreported_attempts: number
+  unreported_usd: number
+  live_firings: number
+  live_items: number
+  live_usd: number
+  free_usd: number
+}
+
+/** One thing a firing created (§1.2). */
+export interface FiringWork {
+  kind: 'issue_run' | 'task' | 'workflow' | 'api_action'
+  id: string
+  repo_id?: string | null
+  outcome?: string | null
+}
+
+/** One `schedule_firings/` document as `firing_to_api` serves it (§1.2). */
+export interface ScheduleFiring {
+  firing_id: string
+  schedule_id: string
+  type: string
+  slot: string | null
+  fired_at: string | null
+  trigger: 'cron' | 'catch_up' | 'run_now' | 'queued'
+  state: string
+  work: FiringWork[]
+  skip: { code: string; detail?: unknown } | null
+  dry_run: unknown
+  approval_id: string | null
+  outcome: string | null
+  cost: { reported_usd?: number; unreported_attempts?: number } | null
+  ended_at: string | null
+  /**
+   * Issue runs refused at planning for what their issue asks
+   * (`issueruns.PLANNING_REFUSALS`): recorded here and not counted in
+   * `outcome`, which stays `succeeded` for them. Absent when there were none.
+   */
+  refused_runs?: FiringRefusedRun[]
+  /**
+   * What the executor selected and why (`Firing.explain`, #1133): for the
+   * issue types, `describe`'s answer. Read here only for `own_live`.
+   */
+  selection?: { own_live?: FiringOwnLive | null } & Record<string, unknown>
+}
+
+/**
+ * A schedule's live runs against its OWN limit, never the tenant's (lane
+ * SCHED): `bound` names the parameter, `max_live_runs` or `max_pending_plans`.
+ */
+export interface FiringOwnLive {
+  running: number
+  limit: number
+  bound: string
+}
+
+/** The `NOTHING_STARTED` skip's detail (`schedulefire.nothing_started`): every field optional. */
+export interface NothingStartedDetail {
+  reason?: string
+  bound?: string | null
+  own_live?: FiringOwnLive | null
+  passed_over_by_reason?: Record<string, number>
+  failures?: { repository?: string; error?: string }[]
+  start_failures?: { issue?: string; error?: string }[]
+  truncated?: boolean
+}
+
+/** One `refused_runs` entry: the run, its issue, and the refusal's code. */
+export interface FiringRefusedRun {
+  run_id: string
+  issue: string
+  code: string
+}
+
+/** One `schedule_audit/` entry (§4.8). Never updated after it is written. */
+export interface ScheduleAuditEntry {
+  schedule_id: string
+  action: string
+  by: string
+  at: string
+  detail: Record<string, unknown>
+}
+
+/** One inbox item (§4.5): a stored approval, or a PLANNED run projected into it. */
+export interface ApprovalItem {
+  approval_id: string
+  kind: string
+  subject: { run_id?: string; issue?: string; schedule_id?: string | null; firing_id?: string | null } & Record<string, unknown>
+  summary: string
+  state: string
+  requested_at: string | null
+  expires_at: string | null
+  projected?: boolean
+}
+
+/** `GET /v1/schedules`: the tenant's schedules, by name. */
+export async function loadSchedules(): Promise<Result<{ schedules: Schedule[]; tenant_id: string }>> {
+  // Never `empty`: the list draws its own Absent beside the built-in rows,
+  // which exist whether or not the tenant has made a schedule (§8.3).
+  return read(route('/v1/schedules'), () => false)
+}
+
+/** `GET /v1/schedules/{id}`: one schedule and its last 50 firings, newest first. */
+export async function loadSchedule(scheduleId: string): Promise<Result<{ schedule: Schedule; firings: ScheduleFiring[] }>> {
+  return read(route('/v1/schedules/{id}', { id: scheduleId }), () => false)
+}
+
+/** `GET /v1/schedules/{id}/audit`: the decisions, newest first (§4.8). */
+export async function loadScheduleAudit(scheduleId: string): Promise<Result<{ audit: ScheduleAuditEntry[] }>> {
+  return read(route('/v1/schedules/{id}/audit', { id: scheduleId }), (d) => d.audit.length === 0)
+}
+
+/**
+ * `GET /v1/approvals`: the inbox, oldest first -- the Automate badge and
+ * Overview's "Waiting on you" card. `empty` is a measured nothing-waiting.
+ * The development fixtures serve no inbox, and say so by being empty rather
+ * than by inventing items.
+ */
+export async function loadApprovals(options: { frame?: boolean; kind?: string } = {}): Promise<Result<{ approvals: ApprovalItem[] }>> {
+  if (USE_FIXTURES) return { status: 'empty', fetchedAt: Date.now() }
+  // The frame reads this on every page. A 200 without an `approvals` list is
+  // not a measured empty inbox, and passing it on as one would draw "nothing
+  // waiting" over an answer nobody read; it is a failure, as an unreadable
+  // body is. `kind` is the route's own filter (`?kind=`, §4.5).
+  const kind = options.kind === undefined || options.kind === '' ? undefined : new URLSearchParams({ kind: options.kind })
+  const r = await read<{ approvals: ApprovalItem[] }>(
+    route('/v1/approvals', {}, kind),
+    (d) => Array.isArray(d.approvals) && d.approvals.length === 0,
+    { frame: options.frame === true },
+  )
+  if (r.status === 'ok' && !Array.isArray(r.data.approvals)) {
+    return {
+      status: 'error',
+      error: { kind: 'server_error', httpStatus: 200, code: null, message: 'The approvals answer carried no list of approvals.' },
+    }
+  }
+  return r
+}
+
+/**
+ * `GET /v1/approvals/{id}`: one item, with what it is decided on -- the run
+ * for a projected plan, and for a merge the head it was checked at and what
+ * its requirements say. `digest` is what an approve sends back: the server
+ * refuses one that no longer matches (409 `merge_changed`, `plan_changed`).
+ */
+export interface ApprovalDetail {
+  approval: ApprovalItem & {
+    digest?: unknown
+    approvers?: unknown
+    hold?: { code?: string; approvers?: string; matched?: string[]; reasons?: string[] } | null
+    decided_by?: string | null
+    decided_at?: string | null
+    reason?: string | null
+  }
+  run?: { id?: string; state?: string; plan?: { summary?: string; steps?: unknown[]; files?: string[] } | null } & Record<string, unknown>
+  merge?: {
+    green_sha?: string | null
+    pull_request?: { number?: number; url?: string } | null
+    requirements_met?: boolean | null
+    requirements_unmet?: string[]
+    files_checked_head?: string | null
+  }
+}
+
+export async function loadApproval(itemId: string): Promise<Result<ApprovalDetail>> {
+  const target = route('/v1/approvals/{id}', { id: itemId })
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  return read(target, () => false)
+}
+
+/**
+ * `POST /v1/approvals/{id}:approve` with the digest the person was shown.
+ * A one-person tenant's own hold answers 403 `hold_approver_required` with
+ * `detail.confirm`, the words to type; the retry sends them as `confirm`.
+ */
+export async function approveApproval(itemId: string, body: { digest: unknown; confirm?: string }): Promise<Result<unknown>> {
+  const target = route('/v1/approvals/{id}:approve', { id: itemId })
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  return write(target, 'POST', body)
+}
+
+/** `POST /v1/approvals/{id}:reject`: any member may, and a reason is required (§4.5). */
+export async function rejectApproval(itemId: string, body: { reason: string }): Promise<Result<unknown>> {
+  const target = route('/v1/approvals/{id}:reject', { id: itemId })
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  return write(target, 'POST', body)
+}
+
+/**
+ * One row of `GET /v1/admin/schedules` (§5.3, `_admin_row`): what an admin
+ * sees of another tenant's schedule. Not its parameters, gate or spec --
+ * those are the tenant's decisions.
+ */
+export interface AdminScheduleRow {
+  schedule_id: string
+  tenant_id: string
+  name: string
+  type: string
+  tier: string | null
+  cron: string
+  timezone: string
+  words: string | null
+  next_run_at: string | null
+  last_outcome: string | null
+  last_firing_at: string | null
+  spend_today: ScheduleSpendToday
+  pending_approvals: number
+  state: Schedule['state']
+  pause: Schedule['pause']
+  owner: string
+}
+
+/** The schedule tick's last hour (§2.10), as the admin list serves it. */
+export interface ScheduleTickHealth {
+  window_minutes: number
+  ticks: number
+  disabled: number
+  errors: number
+  truncated: number
+  fired: number
+  max_lateness_seconds: number | null
+  last: Record<string, unknown> | null
+}
+
+export async function loadAdminSchedules(
+  pageToken: string | null = null,
+): Promise<Result<{ schedules: AdminScheduleRow[]; next_page_token: string | null; tick: ScheduleTickHealth }>> {
+  const target = route('/v1/admin/schedules', {}, pageToken === null ? undefined : new URLSearchParams({ page_token: pageToken }))
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  // Never `empty`: the screen draws its own Absent beside the tick's health.
+  return read(target, () => false)
+}
+
+/** `POST /v1/admin/schedules/{id}:pause|disable|enable` (§5.3), audited as `admin:<email>`. */
+export async function adminScheduleAction(
+  scheduleId: string,
+  action: 'pause' | 'disable' | 'enable',
+  reason?: string,
+): Promise<Result<{ schedule: AdminScheduleRow }>> {
+  const target =
+    action === 'pause'
+      ? route('/v1/admin/schedules/{id}:pause', { id: scheduleId })
+      : action === 'disable'
+        ? route('/v1/admin/schedules/{id}:disable', { id: scheduleId })
+        : route('/v1/admin/schedules/{id}:enable', { id: scheduleId })
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  const body = action === 'enable' || reason === undefined || reason.trim() === '' ? undefined : { reason: reason.trim() }
+  return (await write(target, 'POST', body)) as Result<{ schedule: AdminScheduleRow }>
+}
+
+/** `POST /v1/admin/tenants/{tenant}/schedules:pause`, typed with the tenant id (§2.11). */
+export async function adminPauseTenantSchedules(tenantId: string, confirm: string, reason?: string): Promise<Result<unknown>> {
+  const target = route('/v1/admin/tenants/{tenant}/schedules:pause', { tenant: tenantId })
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  return write(target, 'POST', { confirm, ...(reason === undefined || reason.trim() === '' ? {} : { reason: reason.trim() }) })
+}
+
+/**
+ * One row of `GET /v1/schedule-types` (§7.1, `scheduletypes.describe`): what
+ * the create form offers. The gates and the parameter schema are the type's,
+ * served, so the form never restates the catalogue.
+ */
+export interface ScheduleTypeRow {
+  name: string
+  description: string
+  params_schema: { properties?: Record<string, ParamSchema>; required?: string[] }
+  default_gate: Schedule['gate']
+  floor_gate: Schedule['gate']
+  min_interval_minutes: number
+  budget_caps: Schedule['budget'] | null
+  scopes: string[]
+  /** The scopes this caller may create the type in; absent from an older API. */
+  creatable_scopes?: string[]
+  gate_notes?: string | null
+  available: boolean
+  disabled_reason: string | null
+}
+
+/** The subset of a JSON-schema property the form draws a field for. */
+export interface ParamSchema {
+  type?: string
+  title?: string
+  description?: string
+  default?: unknown
+  enum?: unknown[]
+  minimum?: number
+  maximum?: number
+}
+
+/** `POST /v1/schedules:preview` (§6.3), from the tick's own parser. */
+export interface SchedulePreview {
+  words: string
+  /** ISO 8601 in the schedule's zone, with its offset. */
+  next: string[]
+  min_gap_minutes: number
+  /** Why the type would refuse this cadence, or null. */
+  refusal: unknown
+}
+
+/** The create body (§7.1). Never an image, a command or a resource spec (invariant 10). */
+export interface ScheduleCreateBody {
+  name: string
+  type: string
+  scope: Schedule['scope']
+  cron: string
+  timezone: string
+  params?: Record<string, unknown>
+  gate?: Schedule['gate']
+  budget?: Schedule['budget']
+  policy?: Schedule['policy']
+  state?: 'enabled' | 'paused'
+  client_request_id?: string
+}
+
+/** The edit body: what changed, and the revision it was read at. `type` is not editable. */
+export type ScheduleEditBody = Partial<Omit<ScheduleCreateBody, 'type' | 'state' | 'client_request_id'>> & { revision: number }
+
+function scheduleNotServed<T>(target: ApiRoute): Result<T> {
+  noteFixtureProbe(target, 0, false)
+  return {
+    status: 'error',
+    error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build serves no schedule routes.' },
+  }
+}
+
+/** A schedule write: the answer's `schedule`, or the refusal as served. */
+async function scheduleWrite(target: ApiRoute, method: 'POST' | 'PATCH', body: unknown): Promise<Result<{ schedule: Schedule }>> {
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  return (await write(target, method, body)) as Result<{ schedule: Schedule }>
+}
+
+/** `GET /v1/schedule-types`: the types this caller may create, with their gates. */
+export async function loadScheduleTypes(): Promise<Result<{ types: ScheduleTypeRow[] }>> {
+  if (USE_FIXTURES) return scheduleNotServed(route('/v1/schedule-types'))
+  return read(route('/v1/schedule-types'), () => false)
+}
+
+/**
+ * `POST /v1/schedules:preview`: the words, the next five and the type's
+ * refusal. A bad expression or zone is a 422 with the parser's reason.
+ */
+export async function previewSchedule(body: { cron: string; timezone: string; type?: string }): Promise<Result<{ preview: SchedulePreview }>> {
+  const target = route('/v1/schedules:preview')
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  return (await write(target, 'POST', body)) as Result<{ preview: SchedulePreview }>
+}
+
+/** `POST /v1/schedules`: create. A repeated `client_request_id` returns the first one's schedule. */
+export async function createSchedule(body: ScheduleCreateBody): Promise<Result<{ schedule: Schedule }>> {
+  return scheduleWrite(route('/v1/schedules'), 'POST', body)
+}
+
+/** `PATCH /v1/schedules/{id}`: a stale revision is 409 `schedule_changed`; `gate.merge: auto` is 422 `use_merge_switch`. */
+export async function updateSchedule(scheduleId: string, body: ScheduleEditBody): Promise<Result<{ schedule: Schedule }>> {
+  return scheduleWrite(route('/v1/schedules/{id}', { id: scheduleId }), 'PATCH', body)
+}
+
+/** `POST /v1/schedules/{id}:pause` (§2.11): no new firings; live work continues. */
+export async function pauseSchedule(scheduleId: string, body: { reason?: string } = {}): Promise<Result<{ schedule: Schedule }>> {
+  return scheduleWrite(route('/v1/schedules/{id}:pause', { id: scheduleId }), 'POST', body)
+}
+
+/** `POST /v1/schedules/{id}:resume` (§1.3): from paused or auto-paused; a disabled one is an admin's (403 `admin_required`). */
+export async function resumeSchedule(scheduleId: string): Promise<Result<{ schedule: Schedule }>> {
+  return scheduleWrite(route('/v1/schedules/{id}:resume', { id: scheduleId }), 'POST', {})
+}
+
+/**
+ * `POST /v1/schedules/{id}:run` (§7.1): a `run_now` firing under the gate's
+ * `run` point, the overlap and the budget. `dry_run` computes what it would
+ * create and runs no agent (§2.8). The answer is the firing as written.
+ */
+export async function runSchedule(scheduleId: string, body: { dry_run: boolean }): Promise<Result<{ firing: ScheduleFiring }>> {
+  const target = route('/v1/schedules/{id}:run', { id: scheduleId })
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  return (await write(target, 'POST', body)) as Result<{ firing: ScheduleFiring }>
+}
+
+/** `DELETE /v1/schedules/{id}?confirm=<name>` (§7.1): the name typed; firings and audit stay. */
+export async function deleteSchedule(scheduleId: string, confirm: string): Promise<Result<{ deleted: string }>> {
+  const target = route('/v1/schedules/{id}', { id: scheduleId }, new URLSearchParams({ confirm }))
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  return (await write(target, 'DELETE')) as Result<{ deleted: string }>
+}
+
+/**
+ * `POST /v1/schedules/{id}:merge-mode`, the SD3 switch (§4.2). The server
+ * holds every rule -- the type's floor, the second person, the platform
+ * admin, the one-person tenant's typed name -- and says which one refused.
+ */
+export async function setMergeMode(
+  scheduleId: string,
+  body: { mode: 'approve' | 'auto'; revision: number; confirm?: string },
+): Promise<Result<{ schedule: Schedule }>> {
+  return scheduleWrite(route('/v1/schedules/{id}:merge-mode', { id: scheduleId }), 'POST', body)
+}
+
+// ---------------------------------------------------------------------------
+// The live browser (docs/design/live-browser.md §3.3, §4.2, §5.1-5.2, §5.7,
+// §6, §6.1; lane L11). The routes are swarm-api's, built by lane L9 in
+// parallel; this client is written against the design's interface and names
+// each route once, here. NO FIXTURES: the fixture build has no browser to
+// show and invents none, so every route answers as not served -- which the
+// split reads as "this agent has no live browser" and draws no Browser tab.
+// ---------------------------------------------------------------------------
+
+/** The top frame's origin as the GATE read it from Chromium over CDP (§5.7), never from the page. */
+export interface LiveOrigin {
+  /** `https://github.com`: scheme, host and port, nothing else. */
+  origin: string
+  /** The host as Chromium reports it, punycode included (`xn--...`). */
+  host: string
+  /** The host decoded for display; differs from `host` only for punycode. */
+  display_host?: string
+  /** The registrable domain (public-suffix aware), emphasised in the strip. */
+  registrable_domain: string
+  /** `https:` or `http:`. The gate refuses control over `http:` (§5.7 item 4). */
+  scheme: string
+  /** True when the host is an IP literal. The gate refuses control (§5.7 item 4). */
+  ip_literal?: boolean
+  /** True while the page reports a certificate error; the gate refuses control (§5.4.4). */
+  cert_error?: boolean
+  /**
+   * The top frame's path, redacted, no query or fragment (LB-R6): the
+   * caption under the device reads it, the strip never does. Null or absent
+   * when the gate reported none (a gate that predates it, or a path
+   * swarm-api refused).
+   */
+  path?: string | null
+}
+
+/** `Task.human_wait` as the session read serves it (§4.1 step 3). */
+export interface LiveHumanWait {
+  /** Redacted by the worker before it was stored (§4.1). */
+  reason: string
+  /** The host the agent said it would ask to sign in to, or null when it named none. */
+  expect: string | null
+  requested_at: string
+  deadline: string
+}
+
+/** One device preset, served from the gate's fixed list (§6.1). A caller never sends dimensions. */
+export interface LivePreset {
+  name: string
+  width: number
+  height: number
+  scale: number
+  mobile: boolean
+}
+
+/** The device the gate has applied (§6.1). */
+export interface LiveDevice {
+  preset: string
+  orientation: 'portrait' | 'landscape'
+  /**
+   * The person in control works it by touch (§6.1): pointer events become
+   * touch events at the gate. The preset's touch AND the controller's toggle
+   * (LB-DEV-B), so a phone with touch turned off reports false.
+   */
+  touch: boolean
+}
+
+/**
+ * One live browser session, as the CALLER may see it (`LiveRead.session`).
+ * What the caller may do is the server's answer in `you`; the console only
+ * draws it.
+ */
+export interface LiveSession {
+  session_id: string
+  /** `open` while the tunnel is up; `closed` once the attempt ended or was cancelled. */
+  state: 'open' | 'closed'
+  /** Why it closed (`cancelled`, `attempt_ended`, ...), when it has. */
+  closed_reason?: string | null
+  origin: LiveOrigin | null
+  human_wait: LiveHumanWait | null
+  /** The person in control, or null in view mode. One at a time, always (§4.2). */
+  controller: { email: string; since: string } | null
+  /**
+   * Whether the submitter opened control to every member of the tenant (§5.1,
+   * Q1). The task's setting, carried into each new attempt's session (QA12-11).
+   */
+  open_to_members: boolean
+  /**
+   * The device the gate applied, or null while nothing reports it to
+   * swarm-api (LB-SEAM, #1030): the gate applies it, but no relay message or
+   * ctl report carries it yet, so the API serves null rather than a guess.
+   * `origin` is null for the same reason.
+   */
+  device: LiveDevice | null
+  presets: LivePreset[]
+  /** What THIS caller may do (§5.1). The server decides; the console only draws it. */
+  you: {
+    email: string
+    /** May take control now: the submitter, or any member once control is opened (§5.1). */
+    can_control: boolean
+    /** May take control from someone who holds it: the submitter only (§5.1). */
+    can_preempt: boolean
+    /** May open control to every member, and close it again: the submitter only (§5.1). */
+    can_open: boolean
+    /** May switch the device, rotate it and turn touch on or off: the person in control only (§6.1, Q13; LB-DEV-B). */
+    can_switch_device: boolean
+  }
+  /**
+   * WHETHER THE AGENT IS USING THIS BROWSER (LIVE-UNUSED, #1030), as the
+   * gate's CDP proxy reported it: when the agent first connected (null until
+   * it has), how many connections it holds now (null while no gate has
+   * reported it -- never read as "none"), and when the gate published its
+   * first frame. Optional: an older API serves none of them.
+   */
+  agent_connected_at?: string | null
+  agent_connections?: number | null
+  first_frame_at?: string | null
+}
+
+/**
+ * `GET /v1/tasks/{task_id}/live/session`. `live_browser` is the task's
+ * profile's catalogue property (contract request 71, LB-D), never inferred
+ * here from a profile name; `session` is null until the gate's tunnel is up
+ * (a LEASED or STARTING attempt, or a browser being started for a person).
+ *
+ * A TASK WITH NO LIVE BROWSER IS A 200, NOT A 404. The split asks this of
+ * every running agent it opens; a 404 for each ordinary one would put a
+ * failing route in the data-source strip on every open. A 404 is what the
+ * route answers for a task the caller cannot see at all -- another tenant's
+ * answers exactly as a missing one (§5.2 step 2) -- and the split reads it,
+ * like any failure, as "no Browser tab".
+ */
+export interface LiveRead {
+  live_browser: boolean
+  session: LiveSession | null
+}
+
+export async function loadLiveSession(taskId: string): Promise<Result<LiveRead>> {
+  const target = route('/v1/tasks/{id}/live/session', { id: taskId })
+  if (USE_FIXTURES) {
+    // The fixture build has no browser to show. Answered as the API answers
+    // a task with none, so opening a fixture agent records no failed route.
+    noteFixtureProbe(target, 0, true)
+    return { status: 'ok', fetchedAt: Date.now(), data: { live_browser: false, session: null } }
+  }
+  return read<LiveRead>(target, () => false)
+}
+
+/** A step of a browser agent's start-up: lane STARTUP-API's `startup_progress` steps, in order. */
+export type StartupStepName =
+  | 'pod_scheduled'
+  | 'image_pulling'
+  | 'image_pulled'
+  | 'container_started'
+  | 'browser_launching'
+  | 'browser_ready'
+  | 'first_frame'
+
+/**
+ * `GET /v1/tasks/{task_id}/startup` (lane STARTUP-API, owner request
+ * 2026-10-13): the CURRENT attempt's start-up, oldest step first --
+ * `lease_acquired`, `dispatched`, `starting`, `running` and every
+ * `startup_progress` step. `estimate` is the median seconds from `dispatched`
+ * to each step over the profile's last 20 completed start-ups; `{}` with
+ * `sample_size` 0 when there is no history, and the bar then shows no time.
+ */
+export interface StartupRead {
+  attempt_id: string | null
+  generation: number | null
+  steps: { step: string; at: string }[]
+  estimate: Partial<Record<string, number>>
+  sample_size: number
+  /** `first_frame` seen, or the task is no longer starting or running. */
+  done: boolean
+}
+
+/**
+ * A 404 IS "NOT DEPLOYED YET", not a failure of the agent: the route ships in
+ * a parallel lane, and StartupProgress then draws the bar from the task's own
+ * events (`useStartup`). No empty predicate: a start-up with no step yet is a
+ * real answer.
+ */
+export async function loadStartup(taskId: string): Promise<Result<StartupRead>> {
+  const target = route('/v1/tasks/{id}/startup', { id: taskId })
+  // The fixture build has no browser agent to start: answered as the route
+  // not being served, so the fixture exercises the events fallback.
+  if (USE_FIXTURES) return liveNotServed(target)
+  return read<StartupRead>(target, () => false)
+}
+
+/**
+ * The viewer ticket's answer. `session_id` names the session the ticket is
+ * bound to; the socket is opened on it (`liveSocketUrl`), not on the task.
+ * `socket_path` is the server's own statement of that address.
+ */
+export interface LiveTicket {
+  ticket: string
+  session_id: string
+  expires_in: number
+  socket_path: string
+}
+
+/**
+ * `POST /v1/tasks/{task_id}/live/ticket`: a one-use viewer ticket, 30 seconds
+ * (§5.2 step 3), rate limited per person (§5.10). It travels ONLY as the
+ * websocket's first message (`openLiveSocket`), never in a URL: load
+ * balancer, IAP and Cloud Run request logs record URLs (§5.2).
+ */
+export async function mintLiveTicket(taskId: string): Promise<Result<LiveTicket>> {
+  const target = route('/v1/tasks/{id}/live/ticket', { id: taskId })
+  if (USE_FIXTURES) return liveNotServed(target)
+  return (await write(target, 'POST')) as Result<LiveTicket>
+}
+
+/**
+ * The live websocket's address: `wss://<console host>/v1/live/{session_id}/stream`
+ * through the same IAP load balancer as every `/v1` read (§3.3 step 3);
+ * swarm-api proxies it to the relay. It carries the session id AND NOTHING
+ * ELSE -- no ticket, no tenant, no query.
+ */
+export function liveSocketUrl(sessionId: string): string {
+  const loc = typeof window === 'undefined' ? null : window.location
+  const scheme = loc !== null && loc.protocol === 'http:' ? 'ws' : 'wss'
+  return `${scheme}://${loc?.host ?? ''}${route('/v1/live/{id}/stream', { id: sessionId }).url}`
+}
+
+/**
+ * What swarm-api pushes down the live socket as TEXT frames, between the
+ * relay's binary RFB frames: `{"type": "status", ...}`, sent when it changes
+ * (swarm_api/routes/live.py `_status`). `controller` is the controller's
+ * email, or null in view mode; `cause` says why, once `open` is false.
+ */
+export interface LiveStatus {
+  open: boolean
+  in_control: boolean
+  controller: string | null
+  cause: string | null
+}
+
+/** The members of a WebSocket the live channel drives: the ones a test fake has to carry. */
+export interface RawLiveSocket {
+  binaryType: string
+  readonly readyState: number
+  readonly protocol?: string
+  onopen: ((ev: Event) => void) | null
+  onmessage: ((ev: MessageEvent) => void) | null
+  onclose: ((ev: CloseEvent) => void) | null
+  onerror: ((ev: Event) => void) | null
+  send(data: string | ArrayBufferLike | ArrayBufferView): void
+  close(): void
+}
+
+/**
+ * The relay's word that it refused a control message on this link
+ * (`{"type": "refused", "reason": "control", "cause": ...}`, swarm_live
+ * rendezvous.py `viewer_text`): the cause, such as `wrong_session` or
+ * `session_closed`, or `unknown` from a relay that names none. Null for any
+ * other frame. Without it, a console whose control the relay turned away drew
+ * "you are in control" over a browser that ignored every move (LB-CURSOR2).
+ */
+export function liveRefusal(text: string): string | null {
+  let msg: unknown
+  try {
+    msg = JSON.parse(text)
+  } catch {
+    return null
+  }
+  if (typeof msg !== 'object' || msg === null) return null
+  const m = msg as Record<string, unknown>
+  if (m.type !== 'refused' || m.reason !== 'control') return null
+  return typeof m.cause === 'string' && /^[a-z_]{1,64}$/.test(m.cause) ? m.cause : 'unknown'
+}
+
+function liveStatus(text: string): LiveStatus | null {
+  let msg: unknown
+  try {
+    msg = JSON.parse(text)
+  } catch {
+    return null
+  }
+  if (typeof msg !== 'object' || msg === null || (msg as { type?: unknown }).type !== 'status') return null
+  const m = msg as Record<string, unknown>
+  return {
+    open: m.open === true,
+    in_control: m.in_control === true,
+    controller: typeof m.controller === 'string' ? m.controller : null,
+    cause: typeof m.cause === 'string' ? m.cause : null,
+  }
+}
+
+/**
+ * THE LIVE SOCKET AS AN RFB CLIENT MAY SEE IT: binary frames only.
+ *
+ * swarm-api interleaves its own `{"type": "status"}` TEXT frames with the
+ * relay's binary RFB stream on one socket. An RFB client reads every frame as
+ * protocol bytes, so a status frame ahead of "RFB 003.008\n" is a handshake
+ * that never completes: the Browser tab sat on "Connecting" forever on
+ * 2026-10-12 (LB-STREAM, #1030). This channel owns the raw socket's handlers,
+ * hands text frames to `onStatus` and forwards binary frames, unchanged and
+ * in order, to its own `onmessage`.
+ *
+ * It is a WebSocket as noVNC 1.4.0 (core/websock.js `attach`) uses one: it
+ * checks that `send`, `close`, `binaryType`, `onerror`, `onmessage`,
+ * `onopen`, `protocol` and `readyState` exist, sets `binaryType` and the four
+ * `on*` handlers, reads `readyState` (WebSocket's numbers), `protocol`, and
+ * calls `send` and `close`. Nothing else. The live thumbnail's RFB client
+ * (LiveThumb.tsx) reads the same channel, so the split lives in one place.
+ *
+ * The ticket goes as the FIRST message, before `onopen` runs (§5.2), so
+ * whatever the consumer sends from its open handler follows it.
+ */
+export class LiveChannel {
+  onopen: ((ev: Event) => void) | null = null
+  onmessage: ((ev: { data: ArrayBuffer | Blob }) => void) | null = null
+  onclose: ((ev: CloseEvent) => void) | null = null
+  onerror: ((ev: Event) => void) | null = null
+
+  constructor(
+    private readonly raw: RawLiveSocket,
+    ticket: string,
+    onStatus?: (status: LiveStatus) => void,
+    onRefused?: (cause: string) => void,
+  ) {
+    raw.binaryType = 'arraybuffer'
+    raw.onopen = (ev) => {
+      raw.send(JSON.stringify({ ticket }))
+      this.onopen?.(ev)
+    }
+    raw.onmessage = (ev) => {
+      if (typeof ev.data === 'string') {
+        const status = liveStatus(ev.data)
+        if (status !== null) onStatus?.(status)
+        else {
+          const refused = liveRefusal(ev.data)
+          if (refused !== null) onRefused?.(refused)
+        }
+        return
+      }
+      this.onmessage?.({ data: ev.data as ArrayBuffer | Blob })
+    }
+    raw.onclose = (ev) => this.onclose?.(ev)
+    raw.onerror = (ev) => this.onerror?.(ev)
+  }
+
+  get binaryType(): string {
+    return this.raw.binaryType
+  }
+
+  set binaryType(value: string) {
+    this.raw.binaryType = value
+  }
+
+  get readyState(): number {
+    return this.raw.readyState
+  }
+
+  get protocol(): string {
+    return this.raw.protocol ?? ''
+  }
+
+  send(data: ArrayBufferLike | ArrayBufferView): void {
+    this.raw.send(data)
+  }
+
+  close(): void {
+    this.raw.close()
+  }
+}
+
+/** Open the session's live socket as a `LiveChannel`: the ticket first, then binary frames only. */
+export function openLiveChannel(
+  sessionId: string,
+  ticket: string,
+  onStatus?: (status: LiveStatus) => void,
+  onRefused?: (cause: string) => void,
+): LiveChannel {
+  return new LiveChannel(new WebSocket(liveSocketUrl(sessionId)), ticket, onStatus, onRefused)
+}
+
+/**
+ * Open the live channel (`LiveChannel`: the ticket as the FIRST message,
+ * §5.2, then binary frames only) and hand it to `attach` IN THE SAME 'open'
+ * HANDLER. No byte goes before the ticket; swarm-api answers nothing until it
+ * has checked it, then proxies the RFB stream (and closes the socket if it
+ * refuses). Its status frames go to `onStatus`, never to `attach`'s consumer.
+ *
+ * WHY `attach` RUNS INSIDE THE HANDLER, NOT AFTER THE PROMISE. noVNC only
+ * reads frames once it has set the channel's `onmessage`, and an RFB server
+ * speaks first (its ProtocolVersion). A frame that arrives before that is
+ * dropped, and noVNC then waits forever for a handshake that already went
+ * past. Constructing noVNC synchronously here, before control returns to the
+ * event loop, means no frame can arrive in between; and the socket is still
+ * open, so noVNC never sees an already-closed channel. If `attach` throws,
+ * the socket is closed and the promise rejects, so the caller retries.
+ */
+export function openLiveSocket<T>(
+  sessionId: string,
+  ticket: string,
+  attach: (channel: LiveChannel) => T,
+  onStatus?: (status: LiveStatus) => void,
+  onRefused?: (cause: string) => void,
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const channel = openLiveChannel(sessionId, ticket, onStatus, onRefused)
+    channel.onerror = () => reject(new Error('The live connection did not open.'))
+    channel.onclose = () => reject(new Error('The live connection closed before it opened.'))
+    channel.onopen = () => {
+      // The consumer sets its own handlers in `attach`; until it does, none of these is its.
+      channel.onopen = channel.onerror = channel.onclose = null
+      try {
+        resolve(attach(channel))
+      } catch (err) {
+        channel.close()
+        reject(err instanceof Error ? err : new Error('The live viewer could not attach to the connection.'))
+      }
+    }
+  })
+}
+
+/**
+ * `POST /v1/tasks/{task_id}/live/control`: take control (§4.2 step 1). When
+ * the top frame's registrable domain is not the one the hand-off expected,
+ * the person was asked twice and `confirmed_mismatch` names both domains, so
+ * the audit records what they confirmed past (§5.7 item 2). `preempt` is the
+ * submitter taking control from someone who holds it (§5.1).
+ */
+export async function takeLiveControl(
+  taskId: string,
+  body: { preempt?: boolean; confirmed_mismatch?: { expected: string; actual: string } } = {},
+): Promise<Result<unknown>> {
+  const target = route('/v1/tasks/{id}/live/control', { id: taskId })
+  if (USE_FIXTURES) return liveNotServed(target)
+  return write(target, 'POST', body)
+}
+
+/** `DELETE /v1/tasks/{task_id}/live/control`: return control (§4.2 step 3). */
+export async function returnLiveControl(taskId: string): Promise<Result<unknown>> {
+  const target = route('/v1/tasks/{id}/live/control', { id: taskId })
+  if (USE_FIXTURES) return liveNotServed(target)
+  return write(target, 'DELETE')
+}
+
+/**
+ * `POST /v1/tasks/{task_id}/live/control/renew`: the controller's console
+ * renews while it is open. Control ends when `renew_by` passes, 60 seconds
+ * after the last renewal (§4.2), so a closed tab cannot hold it.
+ */
+export async function renewLiveControl(taskId: string): Promise<Result<unknown>> {
+  const target = route('/v1/tasks/{id}/live/control/renew', { id: taskId })
+  if (USE_FIXTURES) return liveNotServed(target)
+  return write(target, 'POST')
+}
+
+/**
+ * `POST /v1/tasks/{task_id}/live/device`: the person in control switches the
+ * device (§6.1, Q13; LB-DEV-B). A preset BY NAME from `session.presets`, an
+ * orientation (the preset's natural one when absent) and touch (left as it is
+ * when absent) -- never a size (invariant 10). swarm-api answers the session
+ * as it stands: the gate applies the choice and reports it, so the NEXT read
+ * carries the new `device`. Anyone not in control gets 409 `not_controller`.
+ */
+export async function setLiveDevice(
+  taskId: string,
+  body: { preset: string; orientation?: LiveDevice['orientation']; touch?: boolean },
+): Promise<Result<unknown>> {
+  const target = route('/v1/tasks/{id}/live/device', { id: taskId })
+  if (USE_FIXTURES) return liveNotServed(target)
+  return write(target, 'POST', body)
+}
+
+/**
+ * `POST /v1/tasks/{task_id}/live/open-to-members`: the submitter opens control
+ * to every member (§5.1, audited). The TASK's setting (owner decision
+ * 2026-10-13, QA12-11): swarm-api keeps it on the task and every later
+ * attempt's session starts with it, until `closeLiveToMembers` turns it off.
+ */
+export async function openLiveToMembers(taskId: string): Promise<Result<unknown>> {
+  const target = route('/v1/tasks/{id}/live/open-to-members', { id: taskId })
+  if (USE_FIXTURES) return liveNotServed(target)
+  return write(target, 'POST')
+}
+
+/**
+ * `DELETE /v1/tasks/{task_id}/live/open-to-members`: the submitter turns member
+ * control off again, for this attempt and the task's later ones (QA12-11,
+ * audited). Whoever holds control now keeps it until they return it.
+ */
+export async function closeLiveToMembers(taskId: string): Promise<Result<unknown>> {
+  const target = route('/v1/tasks/{id}/live/open-to-members', { id: taskId })
+  if (USE_FIXTURES) return liveNotServed(target)
+  return write(target, 'DELETE')
+}
+
+/**
+ * One recorded segment of a live session (§7), as `GET .../live/recordings`
+ * serves it: every field both views read (`RecordingSegmentView` in
+ * `swarm_api.live`, held by tests/fixtures/live/recordings.json). The
+ * Attempts tab's player reads `name`, `key`, `bytes` and `created_at`; the
+ * theater's scrubber reads `seq`, `object` and `started_at`.
+ */
+export interface LiveRecording {
+  attempt_id: string
+  seq: number
+  /** `rec-<13-digit seq>.live.webm`. */
+  name: string
+  /** The object's key, from which the tenant and task are checked. */
+  key: string
+  /** The same object name, under the name the theater reads it by. */
+  object: string
+  bytes: number | null
+  created_at: string | null
+  /** The object's write time: the END of the minute it holds (§6.2). */
+  started_at: string | null
+}
+
+/** `GET /v1/tasks/{task_id}/live/recordings`: every attempt's segments, oldest first. */
+export interface LiveRecordings {
+  tenant_id: string
+  task_id: string
+  segments: LiveRecording[]
+  truncated: boolean
+}
+
+/**
+ * THE ONE READ OF THE RECORDINGS ROUTE (lane LB-UX2a). The Attempts tab's
+ * player (Recordings.tsx) and the theater's replay each had their own, against
+ * two shapes, which is how the route came to serve both. The server sends the
+ * same list as `segments` and as `recordings`; this reads `segments`, and
+ * `recordings` only from a server that sends nothing else.
+ *
+ * NO FIXTURE BRANCH, like `loadLiveActions`: the fixture build serves no live
+ * session, so no theater opens there, and the Attempts tab's panel decides
+ * for itself what the fixture build shows. What each view may PLAY is still
+ * its own tenant check (`segmentsOfTenant`, `ownRecording`).
+ */
+export async function loadLiveRecordings(taskId: string): Promise<Result<LiveRecordings>> {
+  const r = await read<{ tenant_id?: unknown; task_id?: unknown; segments?: unknown; recordings?: unknown; truncated?: unknown }>(
+    route('/v1/tasks/{id}/live/recordings', { id: taskId }),
+    () => false,
+  )
+  if (r.status !== 'ok' && r.status !== 'stale') return r as Result<LiveRecordings>
+  const d = r.data
+  const list = Array.isArray(d.segments) ? d.segments : Array.isArray(d.recordings) ? d.recordings : []
+  const data: LiveRecordings = {
+    tenant_id: typeof d.tenant_id === 'string' ? d.tenant_id : '',
+    task_id: typeof d.task_id === 'string' ? d.task_id : '',
+    segments: list as LiveRecording[],
+    truncated: d.truncated === true,
+  }
+  // An empty list is an answer, not a different state: each view draws its own zero.
+  return { ...r, data }
+}
+
+function liveNotServed<T>(target: ApiRoute): Result<T> {
+  noteFixtureProbe(target, 0, false)
+  return {
+    status: 'error',
+    error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build serves no live browser.' },
+  }
 }

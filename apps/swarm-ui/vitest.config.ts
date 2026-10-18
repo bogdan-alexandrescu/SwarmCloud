@@ -40,7 +40,12 @@ export default defineConfig({
     // Colocated with the source they cover, so a moved component takes its
     // tests with it and a deleted component leaves a failing import rather
     // than an orphan file nobody runs.
-    include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
+    //
+    // AND `test/*.test.tsx`: the live-browser lanes' acceptance tests live
+    // where docs/design/live-browser.md §9 names them (`test/LiveThumb.test.tsx`
+    // and its siblings). `test/` otherwise holds the node runner's `.mjs`
+    // files, which this glob does not match.
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'test/**/*.test.tsx'],
     setupFiles: ['src/__tests__/setup.ts'],
     // Every mock is undone between tests. Without this a test that stubs
     // `globalThis.fetch` leaves it stubbed, and the offline guard in setup.ts

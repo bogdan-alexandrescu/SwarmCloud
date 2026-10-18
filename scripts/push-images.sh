@@ -7,7 +7,8 @@
 #
 #   * resolve every image to an immutable sha256 digest;
 #   * optionally scan it before it is allowed near a channel tag;
-#   * attach the channel tag (dev/prod) to that exact digest;
+#   * attach the channel tag (dev/prod) to that exact digest, and the
+#     promotion mark <channel>-promoted-<tag>, which never moves;
 #   * write build/deployed-images-<env>.json, which deploy.sh consumes.
 #
 # ALL OR NOTHING, and exactly where that stops being true.
@@ -58,21 +59,29 @@ set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+# The scan policy, shared with the pull request's scan (scan-image-layout.sh).
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=lib/image-scan.sh
+source "${REPO_ROOT}/scripts/lib/image-scan.sh"
 
-# The same ten build-images.sh builds (agent-runtime-indexer since #625, workspace-apply since #847). This list had six -- no swarm-ui, no
+# The same sixteen build-images.sh builds (agent-runtime-indexer since #625, workspace-apply since #847, swarm-live since LB-L8e,
+# agent-runtime-base-nocodex -- the codex-less base agent-runtime-browser is built FROM -- since BROWSER-NO-CODEX, swarm-egress since
+# EGRESS-BUILD: its promoted digest is the image_refs entry egress.tf renders swarm_egress_manifest from, swarm-typesafe-fwd since
+# SEC-INJECT-B, for typesafe_fwd.tf's swarm_typesafe_fwd_manifest, swarm-graph since GS-INFRA, for graph_service.tf's
+# swarm_graph_manifest, swarm-github-hooks since GS-HOOKS, for github_hooks.tf's Cloud Run service). This list had six -- no swarm-ui, no
 # swarm-verify -- and it is the fallback whenever build/images-<env>.json is
 # absent. That used to cost only an unpromoted image; now terraform deploys
 # every image by digest from the manifest this writes and refuses to plan one
 # with no digest, so a promotion that silently skips two images is a deploy
 # that fails naming them. Better to promote them.
-ALL_TARGETS=(agent-runtime-base agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify workspace-apply)
+ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live swarm-egress swarm-typesafe-fwd swarm-graph swarm-github-hooks workspace-apply)
 TARGETS=()
 TAG=""
 CHANNEL="${ENVIRONMENT}"
 SCAN="${SCAN_IMAGES:-1}"
 SCAN_ONLY=0
 NO_SCAN_FLAG=0
-SEVERITY="${TRIVY_SEVERITY:-HIGH,CRITICAL}"
+SEVERITY="${IMAGE_SCAN_SEVERITY}"
 FROM_MANIFEST=""
 
 while [[ $# -gt 0 ]]; do
@@ -83,7 +92,7 @@ while [[ $# -gt 0 ]]; do
     --no-scan)   SCAN=0; NO_SCAN_FLAG=1; shift ;;
     --scan-only) SCAN_ONLY=1; shift ;;
     --manifest)  FROM_MANIFEST="$2"; shift 2 ;;
-    -h|--help)   sed -n '2,55p' "$0"; exit 0 ;;
+    -h|--help)   sed -n '2,57p' "$0"; exit 0 ;;
     -*)          die "unknown flag: $1" ;;
     *)           TARGETS+=("$1"); shift ;;
   esac
@@ -327,17 +336,11 @@ if [[ "${SCAN}" -eq 1 ]]; then
   # --ignorefile carries the accepted-with-an-expiry list. Entries there are
   # dated, so one that outlives its date fails this scan again rather than
   # quietly becoming permanent.
-  IGNORE_ARGS=()
-  if [[ -f "${REPO_ROOT}/.trivyignore.yaml" ]]; then
-    IGNORE_ARGS=(--ignorefile "${REPO_ROOT}/.trivyignore.yaml")
-  fi
+  image_scan_args
   for ((i = 0; i < ${#R_NAME[@]}; i++)); do
     target="${R_NAME[$i]}"
     step "Scan ${target} (${SEVERITY})"
-    if ! "${TRIVY_BIN}" image --quiet --scanners vuln \
-         --severity "${SEVERITY}" --exit-code 1 --ignore-unfixed \
-         ${IGNORE_ARGS[@]+"${IGNORE_ARGS[@]}"} \
-         "${R_IMAGE[$i]}@${R_DIGEST[$i]}" 2>&1 | redact; then
+    if ! "${TRIVY_BIN}" "${IMAGE_SCAN_ARGS[@]}" "${R_IMAGE[$i]}@${R_DIGEST[$i]}" 2>&1 | redact; then
       err "${target}: trivy found unfixed-excluded ${SEVERITY} vulnerabilities; refusing to promote"
       refuse "${target}" "trivy: fixable ${SEVERITY} findings"
       continue
@@ -467,6 +470,44 @@ for ((i = 0; i < ${#R_NAME[@]}; i++)); do
   MOVED+=("${i}")
   ok "${image}:${CHANNEL} -> ${R_DIGEST[$i]}"
 done
+
+# ---------------------------------------------------------------------------
+# 3b. Mark every promoted digest as promoted, for good.
+# ---------------------------------------------------------------------------
+# `:${CHANNEL}` moves on with the next release and forgets this digest. The
+# mark (promotion_mark_prefix, lib/common.sh) never moves, and it is how
+# deploy.sh tells an owner-pinned job still on an EARLIER release's digest --
+# awaiting the owner's re-pin -- from one on an image no release promoted.
+#
+# Only after every channel tag moved: a promotion that was undone promoted
+# nothing, and must mark nothing. A mark that fails does not undo the
+# promotion -- it happened, and the manifest below must say so. What it costs
+# is that a later lag on that digest fails the deploy as unreleased, which is
+# the safe direction; the command that adds it by hand is printed.
+MARK="$(promotion_mark_prefix "${CHANNEL}")${TAG}"
+MARK_MISSING=()
+if [[ ! "${MARK}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+  warn "${MARK} is not a valid image tag, so no digest of ${TAG} is marked as promoted"
+  MARK_MISSING=("${R_NAME[@]}")
+else
+  for ((i = 0; i < ${#R_NAME[@]}; i++)); do
+    image="${R_IMAGE[$i]}"
+    if gcloud artifacts docker tags add "${image}@${R_DIGEST[$i]}" "${image}:${MARK}" \
+         --project "${PROJECT_ID}" >/dev/null 2>"${LOOKUP_ERR}"; then
+      continue
+    fi
+    # Never die here, not even on a dead session: every channel tag has
+    # moved, and dying would leave :${CHANNEL} promoted with no manifest.
+    warn "${R_NAME[$i]}: promoted, but could not be marked ${MARK}; add it by hand:"
+    lookup_error | redact | sed -n '1,2s/^/     /p' >&2
+    printf '     gcloud artifacts docker tags add %s@%s %s:%s --project %s\n' \
+      "${image}" "${R_DIGEST[$i]}" "${image}" "${MARK}" "${PROJECT_ID}" >&2
+    MARK_MISSING+=("${R_NAME[$i]}")
+  done
+fi
+if [[ "${#MARK_MISSING[@]}" -eq 0 ]]; then
+  ok "every promoted digest marked :${MARK}"
+fi
 
 # ---------------------------------------------------------------------------
 # 4. The manifest, written only now that every tag has moved, and renamed into

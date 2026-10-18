@@ -30,12 +30,23 @@ from swarm_common.models import (
     Tenant,
     Workflow,
     WorkflowStep,
+    check_additional_repositories,
 )
+from swarm_common.profiles import RUNNER_PROFILES, step_model_class
 from swarm_common.states import BlockedReason, EventType, ParkReason, TaskState
 from swarm_common.models import ProviderState
 
+from .prgate import wait_for_api
+from . import sessiontag
 from .task_input import TaskMasking, masking_for
-from .validation import DEFAULT_CARRIER, DEFAULT_STRATEGY, DISPATCH_METADATA_KEY
+from .validation import (
+    DEFAULT_CARRIER,
+    DEFAULT_STRATEGY,
+    DISPATCH_METADATA_KEY,
+    FORGE_SOURCE_METADATA_KEY,
+    OWNER_ANSWERS_METADATA_KEY,
+    START_PROBLEM_METADATA_KEY,
+)
 
 #: A masker over no document: the rules, and no literals. What an attempt is
 #: masked with when its caller had no task to hand (`attempt_to_api`). It only
@@ -141,6 +152,25 @@ def _end_cause(value: Any) -> EndCause | None:
         return None
 
 
+def served_model_class(runner_profile: str, stored: str | None) -> dict[str, Any]:
+    """`model_class` as served: the stored class, or the profile's default
+    when none is stored (`model_class_defaulted: true`), by the frozen
+    `profiles.step_model_class` the scheduler and the worker resolve with.
+
+    Never raises: a document written past the API with a class its profile
+    does not accept, or naming a profile this image does not know, is served
+    as stored, not defaulted, so a reader sees what the scheduler will refuse.
+    """
+    profile = RUNNER_PROFILES.get(runner_profile)
+    if profile is None:
+        return {"model_class": stored, "model_class_defaulted": False}
+    try:
+        resolved = step_model_class(profile, stored)
+    except ValueError:
+        return {"model_class": stored, "model_class_defaulted": False}
+    return {"model_class": resolved, "model_class_defaulted": stored is None and resolved is not None}
+
+
 def task_to_firestore(task: Task) -> dict[str, Any]:
     return task.to_firestore()
 
@@ -193,7 +223,38 @@ def task_from_dict(data: dict[str, Any]) -> Task:
         # writes again keeps the signed fields it was submitted with.
         forge_credential=_forge_credential(data.get("forge_credential")),
         forge_access=_forge_access(data.get("forge_access")),
+        # Contract request 70 (LB-C). Read back so a task this service decodes
+        # and writes again never clears a live hand-off; anything but a dict
+        # is no wait.
+        human_wait=_human_wait(data.get("human_wait")),
+        # Contract request 95 (MR-CONTRACT). Read back so a task this service
+        # decodes and writes again keeps the signed list it was submitted with.
+        additional_repositories=_additional_repositories(data.get("additional_repositories")),
+        # Contract request 104 (#1435). Read back so a task this service
+        # decodes and writes again keeps the signed class it was submitted
+        # with. None: the profile's default class.
+        model_class=data.get("model_class") or None,
     )
+
+
+def _human_wait(value: Any) -> dict[str, Any] | None:
+    return dict(value) if isinstance(value, dict) else None
+
+
+#: What of `Task.human_wait` a caller is served (docs/design/live-browser.md
+#: §4.1, contract request 70): the five fields the design names, for the
+#: console's hand-off banner (lane LB-L12). The document also carries the
+#: worker's `request_id`, `attempt_id` and `generation`, which only the worker
+#: routes compare; they are left out so the public shape is the design's, not
+#: whatever the writer happens to store.
+HUMAN_WAIT_PUBLIC_KEYS = ("reason", "expect", "requested_at", "deadline", "controller")
+
+
+def human_wait_to_api(value: Any) -> dict[str, Any] | None:
+    """The served hand-off, or None while nobody is being waited for."""
+    if not isinstance(value, dict):
+        return None
+    return {key: value.get(key) for key in HUMAN_WAIT_PUBLIC_KEYS}
 
 
 def _forge_credential(value: Any) -> str | None:
@@ -212,21 +273,65 @@ def _forge_access(value: Any) -> str | None:
     return value if isinstance(value, str) and value in FORGE_ACCESS else None
 
 
+def _additional_repositories(value: Any) -> list[dict[str, Any]] | None:
+    """A stored additional-repository list, or None -- as `_forge_credential`:
+    a malformed one must not make the task unreadable here, and the worker
+    verifies the signed document itself."""
+    try:
+        check_additional_repositories(value)
+    except ValueError:
+        return None
+    return value
+
+
+#: Where the agent finds an additional repository, relative to its own
+#: checkout `work/repo`: the worker links `work/repos/<name>` (#1434).
+ADDITIONAL_REPOSITORIES_PATH = "../repos"
+
+
+def additional_repositories_to_api(value: Any) -> list[dict[str, Any]] | None:
+    """What a caller is served of `Task.additional_repositories`
+    (docs/design/multi-repository-steps.md §4.1): each entry's name,
+    repository, registration, ref as asked, pinned commit, where the agent
+    finds it, and whose credential clones it, by kind. Never the URL
+    (derivable, and the primary's is masked for a reason) and never the slot
+    suffix (the primary's `forge_credential` is not public either). None for
+    a task that reads none, and for a stored list of the wrong shape."""
+    entries = _additional_repositories(value)
+    if not entries:
+        return None
+    return [{
+        "name": entry["name"],
+        "repository": entry["repository"],
+        "repo_id": entry["repo_id"],
+        "ref": entry["ref"],
+        "commit": entry["commit"],
+        "path": f"{ADDITIONAL_REPOSITORIES_PATH}/{entry['name']}",
+        "forge_credential_source": entry["forge_credential_source"],
+    } for entry in entries]
+
+
 #: What `task_to_api` says a task's `forge_credential` is, by its prefix.
-#: `git` is only ever a service submission's (`SubmissionService._resolve_forge`).
+#: `git` is only ever a service submission's (`SubmissionService._resolve_forge`);
+#: so, in a personal tenant with no `-git` slot, is its owner's `git-u-` slot,
+#: which `metadata.forge_credential_source` = `owner` tells apart (INDEX-CRED).
 _FORGE_SOURCES = (
     ("git-u-", "the submitter's GitHub credential"),
     ("git-r-", "the repository's token"),
 )
 
 
-def forge_credential_source(value: str | None) -> str | None:
+def forge_credential_source(value: str | None, source: Any = None) -> str | None:
     """The words for a task's forge credential, or None when it names none
-    (no repository, not GitHub, or submitted before #780)."""
+    (no repository, not GitHub, or submitted before #780). `source` is the
+    task's `metadata.forge_credential_source`: `owner` on a user slot is the
+    owner's connection run on the tenant's behalf, not the submitter's own."""
     if value is None:
         return None
     if value == "git":
         return "tenant token, service submission"
+    if source == "owner" and value.startswith("git-u-"):
+        return "owner's GitHub connection, service submission"
     for prefix, words in _FORGE_SOURCES:
         if value.startswith(prefix):
             return words
@@ -267,6 +372,118 @@ def dispatch_of(task: Task) -> dict[str, Any]:
     if block.get("allow_empty_diff") is True:
         out["allow_empty_diff"] = True
     return out
+
+
+def claude_session_of(task: Task, masking: TaskMasking) -> str | None:
+    """The Claude Code session the task was tagged with (SC-SESSION-SCOPE,
+    `sessiontag`), or None: `metadata.claude_session`, lifted out as
+    `dispatch` is so a list in the summary view -- which drops `metadata` --
+    still says whose the task is. Caller-written, so masked by the task's
+    masker like every other caller string."""
+    raw = sessiontag.of(task.metadata)
+    if raw is None:
+        return None
+    masked, count = masking.text(raw)
+    return masked if count == 0 else None
+
+
+def workflow_claude_session(step_tasks: Mapping[str, Task]) -> dict[str, Any]:
+    """`{claude_session}` for a workflow, off its step tasks (the frozen
+    `Workflow` has no metadata; every step task carries the workflow's): the
+    key only when a step task was read, null when none is tagged, so a reader
+    tells "untagged" from "not read"."""
+    if not step_tasks:
+        return {}
+    for task in step_tasks.values():
+        found = claude_session_of(task, masking_for(task, warm=False))
+        if found:
+            return {sessiontag.KEY: found}
+    return {sessiontag.KEY: None}
+
+
+def start_problem_to_api(task: Task, masking: TaskMasking) -> dict[str, Any] | None:
+    """Why the task's pod is not starting, as the reconciler last saw it, or None (F1-POD).
+
+    Stored as `metadata.start_problem` by the reconciler
+    (`reconciler.startproblem`), because the frozen `Task` has no field for
+    it; lifted here so a caller reads one key without knowing the encoding,
+    as `dispatch` is. `message` is kubelet's text about a tenant's pod, so
+    every string is masked by the task's masker, as `last_error` is. A record
+    that is not a map serves None: a document can hold anything.
+    """
+    raw = (task.metadata or {}).get(START_PROBLEM_METADATA_KEY)
+    if not isinstance(raw, dict):
+        return None
+    masked, _ = masking.leaves(
+        {
+            "container": raw.get("container"),
+            "reason": raw.get("reason"),
+            "restarts": raw.get("restarts") if isinstance(raw.get("restarts"), int) else 0,
+            "message": raw.get("message"),
+            "pod_started": raw.get("pod_started") is True,
+            "attempt_id": raw.get("attempt_id"),
+            "seen_at": raw.get("seen_at"),
+        }
+    )
+    return masked
+
+
+def owner_answers_by_index(metadata: dict[str, Any] | None) -> dict[int, dict[str, Any]]:
+    """The owner's answers stored on a task (`metadata.owner_answers`), by question index.
+
+    Written only by `agent_questions.answer_question` (TASK-ANSWERS). A
+    document can hold anything, so an entry that is not a map or has no
+    non-negative integer `question_index` is skipped, never guessed at.
+    """
+    raw = (metadata or {}).get(OWNER_ANSWERS_METADATA_KEY)
+    out: dict[int, dict[str, Any]] = {}
+    for entry in raw if isinstance(raw, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        index = entry.get("question_index")
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            continue
+        out[index] = entry
+    return out
+
+
+def owner_answer_to_api(entry: dict[str, Any], masking: TaskMasking) -> dict[str, Any]:
+    """One stored answer as it is served, every string masked by the task's masker.
+
+    The free text was redacted before it was stored; it is masked again here
+    as every collected text is (`task_input.COLLECTED_METADATA_KEYS`).
+    """
+
+    def text(value: Any) -> str | None:
+        return value if isinstance(value, str) else None
+
+    def one(e: dict[str, Any]) -> dict[str, Any]:
+        at = e.get("at")
+        return {
+            "choice": text(e.get("choice")),
+            "text": text(e.get("text")),
+            "by": text(e.get("by")),
+            "at": at.isoformat() if isinstance(at, datetime) else text(at),
+        }
+
+    history = entry.get("history") if isinstance(entry.get("history"), list) else []
+    masked, _ = masking.leaves(
+        {
+            "question_index": entry.get("question_index"),
+            "question": text(entry.get("question")),
+            **one(entry),
+            "history": [one(h) for h in history if isinstance(h, dict)],
+        }
+    )
+    return masked
+
+
+def owner_answers_to_api(task: Task, masking: TaskMasking) -> list[dict[str, Any]]:
+    """The owner's answers to the agent's questions, in question order; `[]` for none."""
+    return [
+        owner_answer_to_api(entry, masking)
+        for _, entry in sorted(owner_answers_by_index(task.metadata).items())
+    ]
 
 
 def workflow_dispatch(tasks: Any) -> dict[str, Any]:
@@ -368,6 +585,11 @@ def task_to_api(
         "resource_class": task.resource_class,
         "provider": task.provider,
         "model": task.model,
+        # Contract request 104 (#1435, model-per-step §4.4): the class this
+        # task runs, RESOLVED -- the stored one, or its profile's default when
+        # none is stored -- and whether it was defaulted. Null on a profile
+        # that runs no Claude model.
+        **served_model_class(task.runner_profile, task.model_class),
         "priority": task.priority,
         "created_at": task.created_at,
         "updated_at": task.updated_at,
@@ -425,7 +647,8 @@ def task_to_api(
         # D4 for automation (2026-10-07): "the task says so".
         "forge_credential": task.forge_credential,
         "forge_access": task.forge_access,
-        "forge_credential_source": forge_credential_source(task.forge_credential),
+        "forge_credential_source": forge_credential_source(
+            task.forge_credential, (task.metadata or {}).get(FORGE_SOURCE_METADATA_KEY)),
         "cancel_requested": task.cancel_requested,
         "metadata": masked_metadata,
         "metadata_redaction_count": metadata_count,
@@ -434,9 +657,25 @@ def task_to_api(
         # that predates the feature and has no block -- without knowing the
         # encoding.
         "dispatch": dispatch_of(task),
+        # SC-SESSION-SCOPE: the Claude Code session that submitted it, lifted
+        # out of `metadata` (and kept in the summary view, which drops it).
+        "claude_session": claude_session_of(task, masking),
+        # F1-POD: why the pod is not starting, in the summary view too -- the
+        # list is where a stuck "dispatched" row is first seen. Null when the
+        # reconciler recorded nothing. Also inside `metadata`, masked there too.
+        "start_problem": start_problem_to_api(task, masking),
+        # TASK-ANSWERS (part of #1206): the owner's answers to the agent's
+        # questions, lifted out of `metadata.owner_answers` as `start_problem`
+        # is, so whoever launched the work reads them from the task it already
+        # reads. `[]` when none is answered. Also inside `metadata`, masked.
+        "owner_answers": owner_answers_to_api(task, masking),
         "repository_url": repository_url,
         "repository_url_redaction_count": repository_url_count,
         "repository_ref": task.repository_ref,
+        # #1434 (MR-API): the repositories it reads beside its own, each at
+        # the commit swarm-api pinned at submission; no URL and no slot.
+        "additional_repositories": additional_repositories_to_api(
+            task.additional_repositories),
         "input": masked_input,
         "input_redaction_count": input_count,
         "last_error": last_error,
@@ -444,6 +683,13 @@ def task_to_api(
         "result_summary": result_summary,
         "result_summary_redaction_count": result_summary_count,
         "latest_checkpoint": task.latest_checkpoint,
+        # Contract request 70 (LB-C): the live-browser hand-off a RUNNING task
+        # is holding for, so the console can raise its banner (§4.1, §6).
+        # In the summary view too: the list and the Overview read that view,
+        # and they are where "needs you" is drawn. Null when nobody is waited
+        # for, including on a PARKED(HUMAN_REQUIRED) task, whose wait the
+        # park cleared.
+        "human_wait": human_wait_to_api(task.human_wait),
         # Contract request 23 (#217), ACCEPTED 2026-09-25. Written by every
         # terminal writer beside `completed_at` and read here first by the
         # outcome ledger (`swarm_api.outcomes`); this serialiser never sent it,
@@ -613,6 +859,10 @@ def attempt_from_dict(data: dict[str, Any]) -> Attempt:
         # from before it, which is read as `not recorded`, never as a guess.
         cpu_measured_at=as_datetime(data.get("cpu_measured_at")),
         cpu_limit_source=data.get("cpu_limit_source"),
+        # Contract request 103 (#1435): the model ID the worker started this
+        # attempt's agent with. Read explicitly, as the spend fields above
+        # were not. None: no model, or an attempt from before the field.
+        model=data.get("model") or None,
     )
 
 
@@ -737,15 +987,71 @@ def pool_attribution(pool: SlotPool) -> dict[str, Any]:
     return dict(found)
 
 
-def lease_to_api(lease: Lease) -> dict[str, Any]:
+#: The task states that prove a lease's dispatch landed: the worker itself
+#: writes them, so a container ran. LEASED and DISPATCHED are written by the
+#: scheduler before any container exists, and prove nothing.
+_WORKER_STARTED = frozenset({TaskState.STARTING, TaskState.RUNNING})
+
+
+def lease_task_is_current(lease: Lease, task: Task) -> bool:
+    """`task` is on the attempt `lease` was taken for -- not a later one.
+
+    By `current_lease_id` when the task names one, by generation otherwise
+    (a document written before the field existed). `routes/leases.py` and
+    `lease_dispatch_overdue` judge "this lease's task" by the same rule.
+    """
+    if task.current_lease_id is not None:
+        return task.current_lease_id == lease.lease_id
+    return task.current_generation == lease.generation
+
+
+def lease_dispatch_overdue(
+    lease: Lease, task: Task | None = None, now: datetime | None = None
+) -> bool:
+    """Past the dispatch deadline with NO EVIDENCE that the dispatch landed.
+
+    NOT `Lease.dispatch_overdue()` alone (QA, Capacity > Holders, 2026-10-11
+    ~12:30Z: 9 of 13 healthy, heartbeating leases flagged). The frozen
+    predicate is "the deadline has passed", and a lease's deadline passes on
+    every attempt that lives longer than `dispatch_timeout_seconds` -- the
+    lease's own state never says otherwise, because it stops at DISPATCHED:
+    the worker advances the TASK through STARTING and RUNNING and touches the
+    lease only to heartbeat.
+
+    So the flag is computed READ-SIDE from what the worker does write, and
+    nothing is added to the heartbeat path or to admission. Either of these is
+    proof a container ran, and clears it:
+
+      * the lease has a `heartbeat_at` -- the reconciler's own split
+        (`detect_stale_leases`): before the first beat the dispatch deadline
+        is the only clock; after it, `silent` and `expired` are, and they
+        still catch a worker that beat and then went quiet;
+      * the lease's task, on THIS lease's attempt, is STARTING or RUNNING.
+
+    A lease whose task never started and never beat stays overdue, whatever
+    the lease's state says -- `mark_dispatched` writes DISPATCHED the moment
+    the backend accepts the create call (contract change request 9).
+    """
+    if not lease.dispatch_overdue(now):
+        return False
+    if lease.heartbeat_at is not None:
+        return False
+    if task is not None and task.state in _WORKER_STARTED and lease_task_is_current(lease, task):
+        return False
+    return True
+
+
+def lease_to_api(
+    lease: Lease, *, task: Task | None = None, now: datetime | None = None
+) -> dict[str, Any]:
     """Public JSON shape for a lease. No credential material, no backend spec.
 
     `dispatch_overdue` and `expired` are COMPUTED here rather than left to the
-    caller. Both are one-line predicates on the model, and both are exactly
-    the kind of thing a UI gets subtly wrong -- `dispatch_overdue` is only
-    meaningful while the lease is still LEASED, because nothing ever writes
-    STARTING or RUNNING to a lease document. Computing them server-side means
-    every caller agrees with the reconciler.
+    caller. Both are exactly the kind of thing a UI gets subtly wrong, and
+    computing them server-side means every caller agrees with the reconciler.
+    `dispatch_overdue` is `lease_dispatch_overdue`: pass the lease's `task`
+    when the route has read it, so a STARTING or RUNNING task clears the flag
+    even before its first beat lands on the lease.
     """
     return {
         "lease_id": lease.lease_id,
@@ -770,16 +1076,14 @@ def lease_to_api(lease: Lease) -> dict[str, Any]:
         # cannot be tidied -- calling the property returns a bool and then
         # tries to call it, which fails at runtime rather than at import.
         #
-        # `dispatch_overdue` no longer carries a `state is LEASED` guard. The
-        # old comment here argued the guard was safe "because nothing ever
-        # writes STARTING or RUNNING to a lease document". That premise was
-        # true and the conclusion did not follow: the state that ends the
-        # window is DISPATCHED, written by `mark_dispatched` as soon as the
-        # backend accepts the create call. So the flag read false on every
-        # lease whose dispatch was in flight -- the only population it is for.
+        # `dispatch_overdue` carries no `state is LEASED` guard: DISPATCHED is
+        # written as soon as the backend accepts the create call, so that guard
+        # hid every lease whose dispatch was in flight. Nor is it the bare
+        # deadline, which flagged every healthy agent older than the dispatch
+        # window -- see `lease_dispatch_overdue`.
         "released": lease.is_released,
-        "expired": lease.is_expired(),
-        "dispatch_overdue": lease.dispatch_overdue(),
+        "expired": lease.is_expired(now),
+        "dispatch_overdue": lease_dispatch_overdue(lease, task, now),
     }
 
 
@@ -855,6 +1159,9 @@ def attempt_to_api(
         "cpu_measured_at": attempt.cpu_measured_at,
         "cpu_limit_source": attempt.cpu_limit_source,
         "cpu_reading_age_seconds": _age_seconds(attempt.cpu_measured_at, read_at),
+        # Contract request 103: the model ID the agent was started with.
+        # Null is not recorded.
+        "model": attempt.model,
     }
 
 
@@ -999,6 +1306,7 @@ def workflow_from_dict(data: dict[str, Any]) -> Workflow:
                 input_from=dict(s.get("input_from") or {}),
                 timeout_seconds=s.get("timeout_seconds"),
                 task_id=s.get("task_id"),
+                model_class=s.get("model_class") or None,
             )
             for s in (data.get("steps") or [])
         ],
@@ -1014,8 +1322,15 @@ def workflow_to_api(
     *,
     step_tasks: Mapping[str, Task] | None = None,
     console_url: str | None = None,
+    summary: bool = False,
 ) -> dict[str, Any]:
     """Public JSON shape for a workflow.
+
+    `summary` (`GET /v1/workflows?view=summary`, live QA CH-21) serves each
+    step without `input`, `input_redaction_count` and `input_masked_by` -- the
+    keys absent, not null, as `GET /v1/tasks?view=summary` drops its rows' --
+    and the step input's masking is never run. A list draws no step's input;
+    `GET /v1/workflows/{id}` and the step's own task still serve it.
 
     `links.console` is the workflow's console page and each step's
     `links.console` its agent's, both from `console_url`
@@ -1045,6 +1360,10 @@ def workflow_to_api(
     """
     served = dict(rollup or {})
     state = served.pop("state", None) or workflow.state.value
+    # SPEED-D3: the pull requests the workflow waits for, off its step tasks
+    # (the frozen `Workflow` has no metadata); the key only on a workflow
+    # submitted with `after`, so every other workflow's shape is unchanged.
+    after = wait_for_api(step_tasks or {})
     return {
         "workflow_id": workflow.workflow_id,
         "tenant_id": workflow.tenant_id,
@@ -1060,8 +1379,13 @@ def workflow_to_api(
         "priority": workflow.priority,
         "on_step_failure": workflow.on_step_failure,
         "cancel_requested": workflow.cancel_requested,
+        **({"after_pull_requests": after} if after is not None else {}),
+        # SC-SESSION-SCOPE: the Claude Code session that submitted it.
+        **workflow_claude_session(step_tasks or {}),
         "steps": [
-            _step_to_api(s, _step_masking(workflow, s, step_tasks or {}), console_url)
+            _step_to_api(
+                s, _step_masking(workflow, s, step_tasks or {}), console_url, summary=summary
+            )
             for s in workflow.steps
         ],
         "links": {"console": workflow_console_url(console_url, workflow.workflow_id)},
@@ -1088,6 +1412,8 @@ def _step_to_api(
     step: WorkflowStep,
     masking: tuple[TaskMasking, str] | None,
     console_url: str | None = None,
+    *,
+    summary: bool = False,
 ) -> dict[str, Any]:
     """One workflow step. Its `input` is served MASKED, with its count.
 
@@ -1116,8 +1442,13 @@ def _step_to_api(
         "input_from": {key: masker.name(value)[0] for key, value in step.input_from.items()},
         "timeout_seconds": step.timeout_seconds,
         "task_id": step.task_id,
+        # Contract request 102: the class the step runs, resolved as its
+        # task's is (`served_model_class`).
+        **served_model_class(step.runner_profile, step.model_class),
         "links": {"console": agent_console_url(console_url, step.task_id)},
     }
+    if summary:
+        return base
     if masking is None:
         return {**base, "input": None, "input_redaction_count": None, "input_masked_by": "not_read"}
     _, whose = masking

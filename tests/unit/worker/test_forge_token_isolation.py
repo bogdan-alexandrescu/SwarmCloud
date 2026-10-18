@@ -631,17 +631,32 @@ _DAEMON_HELPER = Path(__file__).with_name("forge_escaped_daemon.py")
 
 
 def _pid_alive(pid: int) -> bool:
-    """True while `pid` names a live (non-zombie) process."""
+    """True while `pid` names a live process: not a zombie, not being released.
+
+    ONCE DEAD, ALWAYS DEAD (flake fixed 2026-10-14: run 38139511518 failed
+    `alive_at_prepare` and passed on its rerun at the same commit). The reaper
+    below returns as soon as this says False, and the test then asks again at
+    `prepare_publish_repo`. A killed daemon goes zombie (`Z`), then, while its
+    new parent (init) reaps it, `X (dead)`, then is gone. The old check called
+    only `Z` dead: a read during the release saw `X` and said alive, and a read
+    that failed mid-release (ESRCH, an OSError but not FileNotFoundError) fell
+    through to `os.kill(pid, 0)`, which succeeds on a zombie. Either turned a
+    process the reaper had already seen dead back into a live one. Every state
+    after death now reads as dead, so the answer cannot go back.
+    """
     try:
         with open(f"/proc/{pid}/status", encoding="utf-8", errors="replace") as fh:
             for line in fh:
                 if line.startswith("State:"):
-                    return not line.split(None, 2)[1].startswith("Z")
-        return True
+                    return not line.split(None, 2)[1].startswith(("Z", "X"))
+        return False  # a status with no State: line is a task being torn down
     except FileNotFoundError:
         return False
     except OSError:
-        # No /proc (e.g. macOS locally): fall back to signal 0. CI is Linux.
+        if Path("/proc").is_dir():
+            return False  # /proc is here and the pid's entry would not read: it is going
+        # No /proc (e.g. macOS locally): fall back to signal 0. CI is Linux,
+        # and the test that reads this is skipped without /proc.
         try:
             os.kill(pid, 0)
             return True

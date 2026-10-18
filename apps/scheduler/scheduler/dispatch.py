@@ -86,14 +86,34 @@ import re
 import tempfile
 import threading
 import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE
+from swarm_common.identity import worker_service_account_id
 from swarm_common.models import Lease, Task, Tenant
-from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend, RunnerProfile
+from swarm_common.profiles import (
+    RESOURCE_CLASSES,
+    RUNNER_PROFILES,
+    RUNTIME_TOOLS,
+    Backend,
+    RunnerProfile,
+    step_model_class,
+    tools_launched,
+)
 
 from .credentials import AccountPool, CredentialSource, credential_for, needs_user_slot
+from .mcp_admission import names_mcp_servers
+from .judgment import BACKENDS as JUDGMENT_BACKENDS
+from .judgment import (
+    DEFAULT_BACKEND,
+    TYPESAFE_BACKEND,
+    jev_dispatch,
+    read_backend,
+    read_settings,
+    settings_mac_key,
+)
 
 log = logging.getLogger(__name__)
 
@@ -162,6 +182,32 @@ WORKER_HOME = "/home/swarm"
 WORKSPACE_MOUNT = "/workspace"
 WORKER_ARTIFACTS_DIR = f"{WORKSPACE_MOUNT}/artifacts"
 
+#: THE GKE POD'S CACHE VOLUME (CACHE-SCRATCH, owner decision 2026-10-15), and
+#: the variable that tells the worker where it is. The worker puts the agent's
+#: tool caches (uv, npm, pip, terraform, XDG) and its TMPDIR under
+#: `<CACHE_MOUNT>/<attempt>/` and never checkpoints or uploads them
+#: (agent_worker/cachedirs.py, whose CACHE_ROOT_ENV is this name;
+#: tests/unit/control_plane/test_gke_cache_volume.py holds the two equal).
+#: OUTSIDE the workspace mount, because the workspace's own sizeLimit is what
+#: evicted three claude-code attempts twice each on 2026-10-15 while it held
+#: every cache as well as the clone. GKE only: Cloud Run has no second disk,
+#: and a worker that is not told of one keeps its caches small in its tmpfs.
+CACHE_MOUNT = "/cache"
+CACHE_ROOT_ENV = "SWARM_CACHE_ROOT"
+
+#: THE CACHE VOLUME IS A NETWORK DISK (CACHE-PVC, owner decision 2026-10-15
+#: ~04:00 PDT, "Network-disk cache"): a generic ephemeral volume, i.e. a
+#: PersistentVolumeClaim the ephemeral-volume controller creates from the pod
+#: spec when the pod is created and deletes when the pod is deleted. It is NOT
+#: ephemeral-storage: kubelet counts neither it nor its usage against the pod's
+#: limit, so filling it is ENOSPC in the writing process, never an eviction.
+#: The class is kubernetes/storage/cache-storage-class.yaml's (pd-balanced,
+#: reclaimPolicy Delete, WaitForFirstConsumer; none existed in terraform/ or
+#: kubernetes/); the size is the owner's, ten times the 2 GiB emptyDir that
+#: evicted (GKE_DISK says why). ReadWriteOnce: one pod, one disk.
+CACHE_STORAGE_CLASS = "swarm-cache-pd-balanced"
+CACHE_VOLUME_GIB = 20
+
 #: THE CLOUD RUN WORKSPACE IS A TMPFS, sized as terraform sizes it.
 #:
 #: terraform/modules/cloud_run_jobs/main.tf gives its Jobs `empty_dir { medium =
@@ -201,11 +247,12 @@ AUTOPILOT_MAX_EPHEMERAL_GIB = 10
 
 @dataclass(frozen=True)
 class GkeDisk:
-    """A GKE worker pod's disk-backed scratch volumes, in GiB, for one resource class.
+    """A GKE worker pod's LOCAL disk-backed scratch volumes, in GiB, for one resource class.
 
-    `readOnlyRootFilesystem` makes these the only places the worker and its
-    toolchain can write: the workspace (the attempt tree, which is also the
-    agent's HOME and TMPDIR -- see GKE_DISK), /tmp (where `checkpoint.py`
+    `readOnlyRootFilesystem` makes these, and the cache's network disk
+    (CACHE_VOLUME_GIB, not here: a PVC is not ephemeral-storage), the only
+    places the worker and its toolchain can write: the workspace (the attempt
+    tree, which is also the agent's HOME -- see GKE_DISK), /tmp (where `checkpoint.py`
     builds its archive, up to `max_checkpoint_bytes`, 2 GiB, and wherever an
     agent names /tmp by its literal path) and the WORKER's HOME, /home/swarm.
     kubelet sums every disk-backed emptyDir against the pod's ONE
@@ -234,12 +281,19 @@ class GkeDisk:
 #: sized from this, not from a formula:
 #:
 #: * workspace -- `<WORKSPACE_ROOT>/<attempt>/` (agent_worker/workspace.py):
-#:   the checkout, `node_modules`, and the agent's HOME and TMPDIR both. The
-#:   runner child's environment is built from an allowlist
-#:   (`Workspace.child_env`, `cliagent.run_cli_agent`, `generic.py`), and it
-#:   sets HOME to `work/` and TMPDIR to the attempt's own `tmp/`, so npm's,
-#:   uv's, pip's and git's caches and every `mkdtemp` land HERE. `restore/`
-#:   stages a downloaded checkpoint here too, before the agent starts.
+#:   the checkout, its `node_modules` and `.venv`, and the agent's HOME
+#:   (`work/`: the CLI's own state, which is checkpointed). `restore/` stages
+#:   a downloaded checkpoint here too, before the agent starts.
+#: * cache -- NOT a GkeDisk volume since CACHE-PVC: a CACHE_VOLUME_GIB network
+#:   disk (below). `<CACHE_MOUNT>/<attempt>/` (agent_worker/cachedirs.py,
+#:   CACHE-SCRATCH): UV_CACHE_DIR, npm_config_cache, PIP_CACHE_DIR,
+#:   TF_PLUGIN_CACHE_DIR, XDG_CACHE_HOME and the agent's TMPDIR, so every
+#:   `mkdtemp` and pytest/xdist temp tree too. Emptied at the start of every
+#:   attempt, never checkpointed, never uploaded. uv cannot hard-link a venv
+#:   across volumes, so it copies (`UV_LINK_MODE=copy`): the venv in the
+#:   checkout is as large as before, and what left the workspace is what the
+#:   caches hold beyond it -- npm's tarballs, downloads, builds, terraform's
+#:   providers and all of TMPDIR.
 #: * tmp -- the WORKER's own temp dir: its TMPDIR is unset, so `checkpoint.py`'s
 #:   `tempfile.TemporaryDirectory` builds the archive here, while the agent
 #:   runs, up to `max_checkpoint_bytes` (2 GiB). The agent reaches this volume
@@ -253,12 +307,37 @@ class GkeDisk:
 #:   git gets the attempt's `private/`). It holds the worker's own dotfiles and
 #:   nothing of the agent's, which is why it can give up three of its four GiB.
 #:
-#: WHY NOT POINT THE AGENT'S TMPDIR AND CACHES ELSEWHERE (#893, option a).
-#: They are already on the workspace volume, as above, and the caches are left
-#: out of every checkpoint (`checkpoint.py`, `.cache`, `.npm`,
-#: `**/node_modules`). Setting TMPDIR/TMP/TEMP, npm_config_cache,
-#: XDG_CACHE_HOME, UV_CACHE_DIR or PIP_CACHE_DIR again would move nothing, and
-#: none of them reaches a literal `/tmp`. Only room on the `tmp` volume does.
+#: WHY THE CACHES MOVED AFTER ALL (CACHE-SCRATCH, reversing #893's option a).
+#: #893 left them on the workspace volume because pointing the variables at
+#: another directory on the SAME volume would move nothing. On 2026-10-15
+#: task_41ae250f, task_c6a07695 (CI-fix rounds on PR 1338) and task_44c61c77
+#: (BROWSER-CLASS implement) were evicted twice each with `Usage of EmptyDir
+#: volume "workspace" exceeds the limit "5Gi"`, and the owner moved them to a
+#: volume of their OWN, which does move them. None of these variables reaches a
+#: literal `/tmp`; that is still the `tmp` volume's.
+#:
+#: WHY THE CACHE LEFT THE LOCAL DISK (CACHE-PVC, owner decision 2026-10-15
+#: ~04:00 PDT). The cache volume CACHE-SCRATCH (PR 1360) added was a 2 GiB
+#: emptyDir, and task_247c87a8714c4977921a (SEC-INJECT-TYPESAFE implement) was
+#: evicted on it twice -- `EmptyDir volume "cache" exceeds 2Gi` -- and not
+#: retried: one uv sync and one npm install of this repository fill 2 GiB.
+#: There was no local GiB left to give it: Autopilot caps a general-purpose
+#: pod's ephemeral-storage at 10 GiB (AUTOPILOT_MAX_EPHEMERAL_GIB), and the
+#: split was already 10. So the cache is a CACHE_VOLUME_GIB (20 GiB)
+#: pd-balanced generic ephemeral volume: outside the 10 GiB cap entirely, sized
+#: by the owner, deleted with the pod, and a full one is ENOSPC in the tool
+#: that filled it rather than an eviction of the pod. Its 2 local GiB went
+#: back to /tmp and HOME, one each.
+#:
+#: THE TRADE, stated: a disk attach is on every GKE start's critical path. The
+#: pod waits, after it is scheduled, for the CSI driver to create a disk in the
+#: node's zone (WaitForFirstConsumer) and attach it before the container can
+#: start -- tens of seconds that a local emptyDir never cost. UNMEASURED when
+#: this was written: docs/browser-startup-speed.md §11 has the slot for it
+#: beside the warm 6 s / cold 125 s it adds to. And a disk outlives the run by
+#: as long as the pod does: a finished Job keeps its pod for
+#: ttlSecondsAfterFinished (an hour), so the tenant quota admits one claim per
+#: Job, not per running pod (kubernetes/namespaces/tenant-namespace.yaml).
 #:
 #: HOW GKE FAILS WHEN A VOLUME FILLS, compared with Cloud Run. Cloud Run's
 #: workspace is a memory-medium tmpfs with a size (`workspace_size_gib`): a
@@ -272,23 +351,41 @@ class GkeDisk:
 #: what the reconciler does when it is reached anyway is name the eviction and
 #: retry it at most once (`reconciler.detect.detect_evicted`).
 #:
-#: standard: workspace 5 + /tmp 4 + HOME 1 = 10, Autopilot's maximum (#893).
-#:   It was 4 + 2 + 4 (contract request 53).
+#: standard: workspace 5 + /tmp 3 + HOME 2 = 10, Autopilot's maximum (CACHE-PVC,
+#:   the owner's preview, 2026-10-15), plus the 20 GiB network-disk cache. It
+#:   was 5 + cache 2 + /tmp 2 + 1 (CACHE-SCRATCH, the same day), 5 + 4 + 1
+#:   (#893), and 4 + 2 + 4 before that (contract request 53). The cache's
+#:   2 GiB went back one to /tmp -- 1 GiB above the 2 GiB checkpoint cap, which
+#:   the test still holds every class to, for an agent's literal /tmp writes
+#:   while an archive is built (task_22e763906edd4edcb630's eviction, #893) --
+#:   and one to HOME. An agent that writes more than that 1 GiB under a
+#:   LITERAL /tmp while a checkpoint is being built can still be evicted on
+#:   /tmp; the reconciler names and retries such an eviction once
+#:   (`detect_evicted`). The history of the other numbers, for the record:
 #:   - /tmp 4: the 2 GiB checkpoint archive (`max_checkpoint_bytes`) plus 2 GiB
 #:     an agent can write under a literal /tmp while one is being built, and 4
 #:     when none is. The checkpoint cap still fits on its own:
 #:     tests/unit/control_plane/test_gke_workspace_fits.py holds tmp >= the cap.
 #:   - workspace 5: one more than Cloud Run's 4 GiB tmpfs (the test holds it no
-#:     smaller), because on GKE it ALSO carries the agent's TMPDIR and caches,
-#:     which on Cloud Run sit in the in-memory writable layer outside it.
+#:     smaller); until CACHE-SCRATCH it also carried the agent's TMPDIR and
+#:     caches, and it keeps the GiB now that they are on the cache volume.
 #:     task_5ccac63ae3724e72b5cd was evicted on the 4 GiB workspace once on
 #:     2026-10-08.
-#:   - HOME 1: what is left. It holds the worker's own files only (above).
+#:   - HOME 2: what is left (it was 1 until CACHE-PVC). It holds the worker's
+#:     own files only (above).
 #:   On Cloud Run claude-code's /tmp and HOME sit in the container's in-memory
 #:   writable layer, bounded only by the 8 GiB memory limit; on GKE all three
 #:   are disk, and their sum is the pod's ephemeral-storage limit.
 #:
-#: browser: 4 + 2 + 2 = 8, the class's disk_gib and the pod limit it always had.
+#: browser: workspace 4 + /tmp 3 + HOME 3 = 10 (CACHE-PVC, the owner's preview,
+#: 2026-10-15), plus the 20 GiB network-disk cache. It was 4 + cache 2 + 2 + 2
+#: (CACHE-SCRATCH), which had taken the owner's 4 + 2 + 2 below from 8 GiB to
+#: Autopilot's 10; the cache's 2 GiB went one each to /tmp and HOME.
+#: claude-code-browser runs the same uv and npm work as claude-code on this
+#: class. The 8 was also the class's disk_gib until contract request 79
+#: (2026-10-14) made that 4; disk_gib sizes Cloud Run's memory tmpfs, and on GKE
+#: these volumes are disk, outside the 8 GiB memory limit, so the request left
+#: this layout as the owner set it.
 #: Owner decisions 2026-10-07 (contract request 53): it was workspace 8 + /tmp 2 +
 #: HOME 4 = 14 GiB of sizeLimits against an 8 GiB pod limit, so the pod could be
 #: evicted before any one volume was full; then 5 + 1 + 2, which left /tmp below
@@ -297,15 +394,15 @@ class GkeDisk:
 #: workspace gives up the GiB: 4 + 2 + 2. Left as the owner set it: #893 is
 #: claude-code's eviction, and browser's numbers are a decision of their own.
 #:
-#: large: 5 + 4 + 1 = 10, standard's layout. No GKE profile can reach it --
+#: large: 5 + 3 + 2 = 10, standard's layout. No GKE profile can reach it --
 #: none is `large`, and a step's resource_class override may only shrink
 #: (swarm_api.validation.validate_resource_class_override) -- but the manifest
 #: renders any class it is given, and its disk_gib of 16 alone is past what
 #: Autopilot admits, so a pod sized from it would never start.
 GKE_DISK: dict[str, GkeDisk] = {
-    "standard": GkeDisk(workspace_gib=5, tmp_gib=4, home_gib=1),
-    "browser": GkeDisk(workspace_gib=4, tmp_gib=2, home_gib=2),
-    "large": GkeDisk(workspace_gib=5, tmp_gib=4, home_gib=1),
+    "standard": GkeDisk(workspace_gib=5, tmp_gib=3, home_gib=2),
+    "browser": GkeDisk(workspace_gib=4, tmp_gib=3, home_gib=3),
+    "large": GkeDisk(workspace_gib=5, tmp_gib=3, home_gib=2),
 }
 
 
@@ -331,17 +428,72 @@ def gke_ephemeral_storage_gib(rc: Any) -> int:
 
 
 def profile_model(settings: Any, profile: RunnerProfile) -> str | None:
-    """The model this profile's agent runs, from WORKER_MODELS, or None.
+    """The model this profile's agent runs when a step names no class, or None.
 
-    ONE answer for every backend (#226; contract request 53). WORKER_MODELS is
-    terraform's `local.runner_models`, the same map it writes onto the Cloud Run
-    Jobs it creates, so a Job the scheduler creates -- Cloud Run or GKE -- runs
-    the model a terraform Job does. None means no profile pins one, and the Job
-    then carries no MODEL at all: the CLI runs its own default, on either backend.
+    The `MODEL` of every Cloud Run Job this scheduler creates (#226), so a Job
+    run any way other than `dispatch` runs the profile's default class, as a
+    terraform Job does. With WORKER_CLASS_MODELS set it is that map's pin for
+    the profile's `default_model_class` (#1435, §4.2): the map terraform's own
+    Jobs take their `MODEL` from, through the same default. Without it, it is
+    WORKER_MODELS, the profile-keyed map that map replaces, read for as long as
+    terraform derives it (one release, so a scheduler rolled back alone still
+    finds it). None means nothing pins one, and the Job carries no MODEL.
     """
+    class_models = getattr(settings, "worker_class_models", None) or {}
+    if class_models:
+        if profile.default_model_class is None:
+            return None
+        return class_models.get(profile.default_model_class)
     models = getattr(settings, "worker_models", None) or {}
     value = models.get(profile.name)
     return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def step_model(settings: Any, profile: RunnerProfile, task: Task) -> str | None:
+    """The model ID this step's worker runs, as `MODEL` in `worker_env`, or None.
+
+    #1435, docs/design/model-per-step.md §4.5: ONE resolution, for both
+    backends. The class is the frozen `step_model_class` over the step's own
+    `model_class` -- the rule swarm-api applies at submission and the worker
+    at start, so the three never resolve a step differently -- and the ID is
+    the scheduler's WORKER_CLASS_MODELS entry for it. Never `task.model`,
+    never anything in `input` or `metadata`: a caller names a class, the
+    platform picks the ID (invariant 10).
+
+    None for a profile with no classes (codex, mock, generic, ...): no MODEL,
+    as before. An unknown class, one the profile does not accept, or one with
+    no pin raises `model_not_pinned`, which returns the lease and the task. It
+    never falls back to the profile's default, and never to the CLI's own,
+    which is how the QA task of 2026-09-26 ran claude-sonnet-5 on an Opus
+    profile. The startup check makes a missing pin unreachable once the map is
+    set; this is the second line, for a document written past the API.
+
+    WITHOUT A CLASS MAP (WORKER_CLASS_MODELS unset: the local emulator loop,
+    or a scheduler configured before #1435), a step naming a class refuses,
+    and a step naming none gets None here: the profile's model then reaches it
+    as it did before, on the Job (`profile_model`) or, on GKE, from the pod
+    manifest. The per-execution environment carries a MODEL only from the
+    class map.
+    """
+    try:
+        model_class = step_model_class(profile, task.model_class)
+    except ValueError as exc:
+        raise DispatchError(
+            f"task {task.id} on {profile.name}: {exc}", code="model_not_pinned"
+        ) from None
+    if model_class is None:
+        return None
+    class_models = getattr(settings, "worker_class_models", None) or {}
+    if not class_models and task.model_class is None:
+        return None
+    model_id = class_models.get(model_class)
+    if not isinstance(model_id, str) or not model_id:
+        raise DispatchError(
+            f"task {task.id} on {profile.name}: model class {model_class!r} has no "
+            "pin in WORKER_CLASS_MODELS",
+            code="model_not_pinned",
+        )
+    return model_id
 
 
 #: Pod hardening. kubernetes/namespaces/tenant-namespace.yaml holds Pod Security
@@ -415,6 +567,419 @@ GKE_POD_DNS_CONFIG: dict[str, Any] = {
     "searches": [],
     "options": [{"name": "ndots", "value": "1"}],
 }
+
+#: THE LIVE BROWSER'S DISPLAY SIDECAR (docs/design/live-browser.md §3.1, §8.2,
+#: §8.3; lane L5, part of #1030).
+#:
+#: A pod of a `live_browser` profile (`claude-code-browser`, contract request
+#: 71) carries a second container, `display`: Xvfb, the platform's headed
+#: Chromium and the live gate, under a uid of its own. Rendered only while
+#: `settings.live_browser_sidecar` is on, the rollout switch, because the gate
+#: it runs is built by lanes L1-L4 (SchedulerSettings.live_browser_sidecar).
+#:
+#: WHY A SECOND UID. It is the only boundary available inside one pod: a
+#: same-uid process can read the other's /proc/<pid>/environ, signal it and
+#: open its sockets. The agent runs in the worker container as WORKER_UID; the
+#: display, its X socket (in the sidecar's own /tmp) and the browser profile
+#: (cookies) are in a container the worker container shares no such volume
+#: with. The images create the uid (images/agent-runtime-browser/Dockerfile,
+#: `swarm-display`); the pod repeats it so the cluster enforces it. Note what
+#: the pod-level `fsGroup` (WORKER_UID) does: it is a supplementary group of
+#: BOTH containers, which is what lets the worker move a download the sidecar
+#: wrote and the sidecar read an upload the worker wrote. It opens nothing
+#: else, because the sidecar's private volumes are not mounted in the worker
+#: container at all -- the mount, not the mode bits, is the boundary there.
+#:
+#: WHY NATIVE (an init container with `restartPolicy: Always`). A Job's pod
+#: completes when its containers exit, so an ordinary second container that
+#: keeps running would hold the attempt open forever. A native sidecar starts
+#: BEFORE the worker -- and, with the startup probe below, is listening on
+#: ctl.sock before the worker's lifecycle begins, so the worker's
+#: first-registration-wins slot (§5.4.2) is taken before the agent exists --
+#: and is stopped after the worker exits.
+DISPLAY_UID = 10002
+
+#: The gate's entrypoint. The worker's container has NO command (the image
+#: ENTRYPOINT is the worker lifecycle); the sidecar names its own, under tini
+#: like the worker, so Xvfb and Chromium are reaped.
+DISPLAY_COMMAND = ("/usr/bin/tini", "--", "python", "-m", "agent_worker.livegate")
+
+#: The label the live egress policy selects (`swarm-allow-live-egress`, §8.3,
+#: lane L6). Only a pod carrying it can reach the relay on TCP 8080; the
+#: dispatcher sets it on live-browser pods and nowhere else.
+LIVE_POD_LABEL = ("swarm-live", "enabled")
+
+#: RESIDENTIAL EGRESS FOR THE LIVE BROWSER (docs/browser-egress.md §10.3; lane
+#: EGRESS-DISPATCH, part of #1030). What the gate reads on the `display`
+#: sidecar (agent_worker.livegate.egress EGRESS_ENV, BYPASS_ENV) and the label
+#: `swarm-allow-egress-proxy` (kubernetes/network-policies/allow-egress-proxy.yaml)
+#: selects to open TCP 3128 to swarm-egress. Set together by
+#: `with_browser_egress`, only when `browser_egress_on`, and nowhere else.
+BROWSER_EGRESS_ENV = ("SWARM_BROWSER_EGRESS", "proxy")
+BROWSER_EGRESS_BYPASS_ENV = "SWARM_EGRESS_BYPASS"
+EGRESS_POD_LABEL = ("swarm-egress", "proxy")
+
+#: THE TYPESAFE FORWARDER'S LABEL (docs/design/workspace-secrets.md §3.5,
+#: SEC-MIGRATE-TYPESAFE; lane TS-MIGRATE-POD, part of #1347). What
+#: `swarm-allow-typesafe-fwd` (kubernetes/network-policies/allow-typesafe-fwd.yaml,
+#: the tenant side) and `swarm-typesafe-fwd-ingress` (the forwarder's own
+#: manifest) both select: only a pod carrying it reaches swarm-typesafe-fwd on
+#: TCP 8080. Set by `_with_judgment`, only when `typesafe_forwarder_on`.
+TYPESAFE_POD_LABEL = ("swarm-typesafe", "inject")
+#: THE WORKER'S FORWARDER SWITCH (lane TS-INJECT, part of #1347), set on the
+#: worker container by `_with_judgment` with TYPESAFE_POD_LABEL and never
+#: otherwise: a labelled pod whose worker still reads the key file, or a
+#: switched worker the policies do not open the forwarder to, is half a
+#: migration. RESTATED from `agent_worker.typesafe_shim.SWITCH_ENV` and
+#: `SWITCH_ON`, because the scheduler's image does not carry the worker;
+#: tests/unit/control_plane/test_typesafe_switch_parity.py holds them equal.
+TYPESAFE_INJECT_ENV = ("SWARM_TYPESAFE_INJECT", "on")
+
+#: The three volumes both containers mount, and only these (§3.1). All memory,
+#: so inside the pod's memory limit, and none under WORKSPACE_MOUNT, so none
+#: is checkpointed.
+LIVE_GATE_MOUNT = "/run/swarm-gate"
+LIVE_GATE_CTL = f"{LIVE_GATE_MOUNT}/ctl.sock"
+LIVE_DOWNLOADS_MOUNT = "/run/swarm-browser/downloads"
+LIVE_UPLOADS_MOUNT = "/run/swarm-browser/uploads"
+#: The sidecar's own: the browser profile (wiped at attempt end, §5.5).
+LIVE_PROFILE_MOUNT = "/run/swarm-display/profile"
+#: The gate's CDP proxy, for the agent's Playwright (`connectOverCDP`, §3.2).
+#: Loopback: the pod's containers share a network namespace, nothing else
+#: does, and the tenant ingress policy admits nothing to the pod.
+LIVE_CDP_LISTEN = "127.0.0.1:9222"
+
+
+@dataclass(frozen=True)
+class LiveDisplayShare:
+    """What the `display` sidecar takes out of a resource class.
+
+    THE CLASS DOES NOT CHANGE; IT IS SPLIT (§8.2). The worker keeps the rest,
+    each container has requests == limits (invariant 7), and the two sum to
+    the class, so admission's unit arithmetic and the pod Autopilot bills are
+    what they were. `ephemeral_gib` is the sidecar's container-level disk
+    (its logs; its root is read-only and every volume it mounts is memory);
+    the worker's ephemeral-storage gives up the same amount, so the pod's sum
+    is still `gke_ephemeral_storage_gib(rc)` and every disk volume's
+    sizeLimit still binds before the pod's limit does (GkeDisk).
+    """
+
+    cpu: int
+    memory_gib: int
+    ephemeral_gib: int = 1
+
+
+#: Per class, like GKE_DISK, and refused for a class without a row.
+#:
+#: browser: display 3 vCPU / 5 GiB, worker 1 / 3, of the class's 4 / 8
+#:   (contract request 79). Chromium, Xvfb and the encoder on one side;
+#:   claude-code, Node and the worker on the other. It was the design's
+#:   starting split (§8.2), display 5 / 10 and worker 3 / 6 of 8 / 16, which
+#:   cannot fit the smaller class. Sized from the measurement that justified
+#:   the class (docs/browser-startup-speed.md §11, 2026-10-15, four pods,
+#:   eight samples): the display peaked at 1.90 cores and 1.48 GiB, the worker
+#:   at 0.55 cores and 0.37 GiB, so each side has about 1.5x its CPU peak and
+#:   the worker about 8x its memory peak. The sidecar's resident tmpfs
+#:   (/dev/shm 2, profile 1, /tmp 0.25) plus its measured peak is 4.73 of its
+#:   5 GiB; downloads (1) do not stay resident because the worker moves each
+#:   one into work/. A heavier page or a download in flight at a peak is an
+#:   OOM kill, whose cost the worker's periodic checkpoint bounds (invariant 8).
+#: standard: display 2 / 4, worker 2 / 4. A workflow step may shrink a task's
+#:   class (swarm_api.validation.validate_resource_class_override), and admission
+#:   charged the smaller class, so the pod must fit it; half each, still with
+#:   the 2 GiB /dev/shm on the sidecar's side.
+#: large: no live profile can reach it (a step only shrinks), but the manifest
+#:   renders any class it is given; the design's starting sidecar (§8.2, what
+#:   browser's was until contract request 79), the rest to the worker.
+LIVE_DISPLAY_SHARE: dict[str, LiveDisplayShare] = {
+    "browser": LiveDisplayShare(cpu=3, memory_gib=5),
+    "standard": LiveDisplayShare(cpu=2, memory_gib=4),
+    "large": LiveDisplayShare(cpu=5, memory_gib=10),
+}
+
+#: The display container's hardening: CONTAINER_SECURITY_CONTEXT's every
+#: field, under DISPLAY_UID and a primary group of its own.
+DISPLAY_SECURITY_CONTEXT: dict[str, Any] = {
+    **CONTAINER_SECURITY_CONTEXT,
+    "runAsUser": DISPLAY_UID,
+    "runAsGroup": DISPLAY_UID,
+}
+
+
+def live_display_share(rc: Any) -> LiveDisplayShare:
+    """The sidecar's part of resource class `rc`, refused loudly when it has no row."""
+    try:
+        share = LIVE_DISPLAY_SHARE[rc.name]
+    except KeyError:
+        raise ValueError(
+            f"resource class {rc.name!r} has no live-browser split in LIVE_DISPLAY_SHARE "
+            "(apps/scheduler/scheduler/dispatch.py); add one that leaves the worker room"
+        ) from None
+    if share.cpu >= rc.cpu or share.memory_gib >= rc.memory_gib:
+        raise ValueError(f"LIVE_DISPLAY_SHARE[{rc.name!r}] leaves the worker nothing")
+    return share
+
+
+def with_live_display(job: dict[str, Any], *, rc: Any) -> dict[str, Any]:
+    """`job`, a rendered GKE worker Job, with the display sidecar added.
+
+    Applied to the finished manifest, so a pod that is not live is not merely
+    "the same by construction" -- it is the same object this function never
+    touched, which test_dispatch_live_sidecar.py holds byte for byte.
+    """
+    job = copy.deepcopy(job)
+    share = live_display_share(rc)
+    disk = gke_disk(rc)
+    template = job["spec"]["template"]
+    spec = template["spec"]
+    (worker,) = [c for c in spec["containers"] if c["name"] == "worker"]
+    image = worker["image"]
+
+    template["metadata"]["labels"][LIVE_POD_LABEL[0]] = LIVE_POD_LABEL[1]
+
+    # The split. Both directions equal on both containers (invariant 7).
+    worker_resources = {
+        "cpu": str(int(rc.cpu) - share.cpu),
+        "memory": f"{rc.memory_gib - share.memory_gib}Gi",
+        "ephemeral-storage": f"{disk.ephemeral_gib - share.ephemeral_gib}Gi",
+    }
+    display_resources = {
+        "cpu": str(share.cpu),
+        "memory": f"{share.memory_gib}Gi",
+        "ephemeral-storage": f"{share.ephemeral_gib}Gi",
+    }
+    worker["resources"] = {"requests": dict(worker_resources), "limits": dict(worker_resources)}
+
+    # /dev/shm moves to where Chromium runs. The agent's own headless
+    # Chromium, if it starts one, is not shown (§3.2) and gets the runtime's
+    # default /dev/shm, which `--disable-dev-shm-usage` copes with.
+    worker["volumeMounts"] = [m for m in worker["volumeMounts"] if m["name"] != "dshm"]
+    worker["volumeMounts"] += [
+        {"name": "live-gate", "mountPath": LIVE_GATE_MOUNT},
+        # Read-write: the worker MOVES a download into work/.
+        {"name": "live-downloads", "mountPath": LIVE_DOWNLOADS_MOUNT},
+        {"name": "live-uploads", "mountPath": LIVE_UPLOADS_MOUNT},
+    ]
+    # Where the worker (lane L4) finds the gate. No DISPLAY: the worker sets
+    # none in the agent's environment either (Workspace.child_env), so a
+    # headed launch in the worker container fails loudly.
+    worker["env"] = worker["env"] + [
+        {"name": "SWARM_GATE_CTL", "value": LIVE_GATE_CTL},
+        {"name": "SWARM_CDP_ENDPOINT", "value": f"http://{LIVE_CDP_LISTEN}"},
+        {"name": "SWARM_BROWSER_DOWNLOADS", "value": LIVE_DOWNLOADS_MOUNT},
+        {"name": "SWARM_BROWSER_UPLOADS", "value": LIVE_UPLOADS_MOUNT},
+    ]
+
+    spec["initContainers"] = [{
+        "name": "display",
+        "image": image,
+        "command": list(DISPLAY_COMMAND),
+        # Native sidecar: started before the worker, stopped after it.
+        "restartPolicy": "Always",
+        # Paths only. No task, tenant, lease or attempt identifier and no
+        # secret: the tunnel ticket arrives over ctl.sock from the worker
+        # (§3.3, §5.4.2), and the gate needs to know nothing else.
+        "env": [
+            # Chromium writes under HOME (crash reports, caches); the root is
+            # read-only, so HOME is the sidecar's own memory /tmp.
+            {"name": "HOME", "value": "/tmp"},
+            {"name": "DISPLAY", "value": ":0"},
+            {"name": "SWARM_GATE_CTL", "value": LIVE_GATE_CTL},
+            {"name": "SWARM_BROWSER_PROFILE_DIR", "value": LIVE_PROFILE_MOUNT},
+            {"name": "SWARM_BROWSER_DOWNLOADS", "value": LIVE_DOWNLOADS_MOUNT},
+            {"name": "SWARM_BROWSER_UPLOADS", "value": LIVE_UPLOADS_MOUNT},
+            {"name": "SWARM_CDP_LISTEN", "value": LIVE_CDP_LISTEN},
+        ],
+        "resources": {"requests": dict(display_resources), "limits": dict(display_resources)},
+        "securityContext": copy.deepcopy(DISPLAY_SECURITY_CONTEXT),
+        # The worker starts only once this passes: the gate is listening, so
+        # the worker's registration is the first one (§5.4.2). A gate that
+        # restarts mid-attempt is probed again, and refuses every registration
+        # whatever the probe says (the restart marker in its /tmp).
+        "startupProbe": {
+            "exec": {"command": ["/usr/bin/test", "-S", LIVE_GATE_CTL]},
+            "periodSeconds": 1,
+            "failureThreshold": 120,
+        },
+        "volumeMounts": [
+            # Its own /tmp: the X socket (/tmp/.X11-unix/X0) and the gate's
+            # restart marker. Not mounted in the worker container.
+            {"name": "display-tmp", "mountPath": "/tmp"},
+            {"name": "browser-profile", "mountPath": LIVE_PROFILE_MOUNT},
+            {"name": "dshm", "mountPath": "/dev/shm"},
+            {"name": "live-gate", "mountPath": LIVE_GATE_MOUNT},
+            {"name": "live-downloads", "mountPath": LIVE_DOWNLOADS_MOUNT},
+            # The worker writes, the sidecar only reads (setInputFiles paths).
+            {"name": "live-uploads", "mountPath": LIVE_UPLOADS_MOUNT, "readOnly": True},
+        ],
+    }]
+
+    spec["volumes"] = spec["volumes"] + [
+        {"name": "display-tmp", "emptyDir": {"medium": "Memory", "sizeLimit": "256Mi"}},
+        {"name": "browser-profile", "emptyDir": {"medium": "Memory", "sizeLimit": "1Gi"}},
+        {"name": "live-gate", "emptyDir": {"medium": "Memory", "sizeLimit": "1Mi"}},
+        {"name": "live-downloads", "emptyDir": {"medium": "Memory", "sizeLimit": "1Gi"}},
+        {"name": "live-uploads", "emptyDir": {"medium": "Memory", "sizeLimit": "512Mi"}},
+    ]
+    return job
+
+def browser_egress_on(settings: Any, *, tenant_id: str, profile: Any) -> bool:
+    """Whether a pod of `profile` for `tenant_id` is dispatched for residential egress.
+
+    FROM THE SCHEDULER'S CONFIGURATION ONLY (invariant 10): the platform
+    switch, the tenant by exact membership and the profile by name, the three
+    tests swarm-api mints the attempt's egress ticket by (swarm_api.egress
+    `_switch`). Nothing on the task is read, so no caller field can turn it
+    on. A profile with no live browser has no Chromium to route and is never on.
+    """
+    if not getattr(settings, "browser_egress_enabled", False):
+        return False
+    if not getattr(profile, "live_browser", False):
+        return False
+    if tenant_id not in tuple(getattr(settings, "browser_egress_tenants", ())):
+        return False
+    return str(getattr(profile, "name", "")) in tuple(
+        getattr(settings, "browser_egress_profiles", ()))
+
+
+def typesafe_forwarder_on(settings: Any, *, tenant_id: str, profile: Any, backend: str) -> bool:
+    """Whether this attempt's TypeSafe key is delivered by the forwarder, so its
+    pod is labelled `swarm-typesafe: inject` (design §3.5).
+
+    All four, FROM CONFIGURATION ONLY (invariant 10): the forwarder switched on,
+    the tenant listed by exact name, a live-browser pod (the profile and the
+    display rollout switch), and the workspace's stored judgment backend is
+    `typesafe`. A TypeSafe-backed jev or judge is exactly that attempt: the
+    worker resolves a TypeSafe key only for a live-browser attempt on the
+    TypeSafe backend (`jevkey.prepare`), and the judge reads the key jevkey
+    wrote, so neither runs on TypeSafe anywhere else. GKE only, because this is
+    called only from GkeJobDispatcher: a Cloud Run Job cannot reach the
+    forwarder and keeps today's path.
+    """
+    if not getattr(settings, "typesafe_forwarder_enabled", False):
+        return False
+    if tenant_id not in tuple(getattr(settings, "typesafe_forwarder_tenants", ())):
+        return False
+    if not (getattr(profile, "live_browser", False)
+            and getattr(settings, "live_browser_sidecar", False)):
+        return False
+    return backend == TYPESAFE_BACKEND
+
+
+#: THE RUNNERS THAT CARRY THE JEV CLIENT (`agent_worker.judge`, registered by
+#: runners/cliagent.py): the worker sets the judge up in `graphstage.prepare`,
+#: which does so only for these runners and never for an index run. RESTATED
+#: from `graphstage.GRAPH_RUNNERS` and `indexrun.INDEXER_PROFILE`, because the
+#: scheduler does not depend on the worker package;
+#: tests/unit/control_plane/test_typesafe_judge_on_gke.py holds them equal.
+JEV_CLIENT_RUNNERS = ("agent_worker.runners.claude_code", "agent_worker.runners.codex")
+JEV_CLIENT_EXCLUDED_PROFILES = ("indexer",)
+#: The worker's reading of the one settings document (`judge.attempt
+#: .judge_settings`): `code_intelligence.judgment_backend` when the block
+#: carries one, else the document's top-level `judgment_backend`.
+CODE_INTELLIGENCE_FIELD = "code_intelligence"
+JUDGMENT_BACKEND_FIELD = "judgment_backend"
+#: The DispatchError code of a TypeSafe judge held off Cloud Run.
+TYPESAFE_JUDGE_NEEDS_GKE = "typesafe_judge_needs_gke"
+
+
+def runs_jev_client(profile: Any) -> bool:
+    """Whether an attempt of `profile` can ask Jev at all."""
+    if str(getattr(profile, "name", "")) in JEV_CLIENT_EXCLUDED_PROFILES:
+        return False
+    argv = tuple(getattr(profile, "runner_argv", ()) or ())
+    return any(module in argv for module in JEV_CLIENT_RUNNERS)
+
+
+def judge_backend(doc: Any) -> str:
+    """The judgment backend the worker's judge will resolve from `doc`, the
+    tenant's `workspace_settings` document, in the worker's precedence. An
+    unknown or missing value is the worker's default, internal-jev."""
+    doc = doc if isinstance(doc, Mapping) else {}
+    block = doc.get(CODE_INTELLIGENCE_FIELD)
+    block = block if isinstance(block, Mapping) else {}
+    value = block.get(JUDGMENT_BACKEND_FIELD) if JUDGMENT_BACKEND_FIELD in block \
+        else doc.get(JUDGMENT_BACKEND_FIELD)
+    return value if isinstance(value, str) and value in JUDGMENT_BACKENDS else DEFAULT_BACKEND
+
+
+def read_judge_backend(db: Any, tenant_id: str, *, mac_key: str | None = None) -> str | None:
+    """`judge_backend` of the tenant's stored document; None when unreadable,
+    which `typesafe_judge_needs_gke` treats as TypeSafe (it fails closed).
+
+    With `mac_key` (`judgment.settings_mac_key`, the SETTINGS_MAC_REQUIRED
+    switch), a block whose MAC does not verify counts as unset
+    (`judgment.trusted_settings`): an unsigned `code_intelligence
+    .judgment_backend` is ignored and the top level decides, and an unsigned
+    top level reads as the default. Read the same way as `read_backend`, so
+    the pod and the router never disagree on a forged value."""
+    try:
+        doc = read_settings(db, tenant_id, mac_key=mac_key)
+    except Exception as exc:  # noqa: BLE001 - said by type, decided by the caller
+        log.warning("judge backend unreadable for tenant=%s: %s", tenant_id,
+                    type(exc).__name__)
+        return None
+    return judge_backend(doc)
+
+
+def typesafe_judge_needs_gke(settings: Any, *, tenant_id: str, profile: Any,
+                             backend: Backend, judgment: str | None) -> bool:
+    """Whether this attempt must NOT run as a Cloud Run Job, because its judge
+    would answer through TypeSafe (lane JUDGE-GKE, owner decision 2026-10-16
+    on #1347).
+
+    The forwarder that keeps the key out of the pod is an in-cluster Service,
+    so a TypeSafe judgment belongs on GKE. All four, FROM CONFIGURATION AND
+    THE STORED SETTING ONLY (invariant 10):
+
+      * the forwarder's switch family serves the tenant: `typesafe_forwarder_
+        enabled` and the tenant in `typesafe_forwarder_tenants` by exact name.
+        Off, routing is exactly what it was;
+      * the attempt would be a Cloud Run Job (`backend`, the catalogue's);
+      * the profile carries the Jev client (`runs_jev_client`);
+      * the workspace's judgment backend, read as the worker reads it
+        (`judge_backend`), is `typesafe`. `None` -- the document could not be
+        read -- counts as TypeSafe: the worker reads it again at setup, and an
+        unread setting is not evidence that it says otherwise.
+
+    It does not read the code-intelligence opt-in or the repository's
+    override: either can only turn the judge off, so ignoring them can hold
+    back an attempt that would not have judged, never let one through that
+    would.
+    """
+    if not getattr(settings, "typesafe_forwarder_enabled", False):
+        return False
+    if tenant_id not in tuple(getattr(settings, "typesafe_forwarder_tenants", ())):
+        return False
+    if backend is not Backend.CLOUD_RUN_JOB:
+        return False
+    if not runs_jev_client(profile):
+        return False
+    return judgment is None or judgment == TYPESAFE_BACKEND
+
+
+def with_browser_egress(job: dict[str, Any], *, bypass: Any) -> dict[str, Any]:
+    """`job`, a live-browser Job from `with_live_display`, routed through swarm-egress.
+
+    Adds exactly three things and changes nothing else, which
+    test_dispatch_browser_egress.py holds byte for byte: the pod label the
+    proxy NetworkPolicy selects, and on the `display` container -- where
+    Chromium runs; the worker container gets neither -- the switch and the
+    bypass list. The bypass list is configuration (egress.tf's
+    `egress_bypass_hosts`); the gate adds GitHub itself, so an empty one still
+    names the variable. No ticket and no forwarder address: the ticket reaches
+    the gate over ctl.sock, and the gate's default forwarder is swarm-egress's
+    Service.
+    """
+    job = copy.deepcopy(job)
+    template = job["spec"]["template"]
+    template["metadata"]["labels"][EGRESS_POD_LABEL[0]] = EGRESS_POD_LABEL[1]
+    (display,) = [c for c in template["spec"]["initContainers"] if c["name"] == "display"]
+    display["env"] = display["env"] + [
+        {"name": BROWSER_EGRESS_ENV[0], "value": BROWSER_EGRESS_ENV[1]},
+        {"name": BROWSER_EGRESS_BYPASS_ENV, "value": ",".join(bypass or ())},
+    ]
+    return job
 
 #: THE BACKEND'S DEADLINE IS A BACKSTOP, AND IT MUST FIRE AFTER THE LIFECYCLE'S.
 #:
@@ -607,6 +1172,47 @@ def spec_job_env(settings: Any) -> dict[str, str]:
     return {name: str(value) for name, value in values.items() if value}
 
 
+#: The runners the `swarm-git` MCP shim is named in (docs/runner-git-tools.md
+#: §7, lane G6: claude-code's `--mcp-config`, codex's MCP configuration).
+GIT_TOOL_RUNNERS = ("agent_worker.runners.claude_code", "agent_worker.runners.codex")
+
+
+def offers_git_tools(profile_name: str) -> bool:
+    """Whether a task on this profile is offered the git tools, so needs an attempt key.
+
+    Read from the frozen catalogue rather than kept as a list of profile names,
+    so a new profile on one of these runners is covered without a second edit
+    here. A worker action (merge, post-verdict) runs no agent at all; the mock
+    and browser runners have no MCP configuration to name the shim in.
+    """
+    profile = RUNNER_PROFILES.get(profile_name)
+    if profile is None or profile.worker_action is not None:
+        return False
+    return any(part in GIT_TOOL_RUNNERS for part in profile.runner_argv)
+
+
+def consumes_workspace_secrets(profile_name: str, inputs: Any) -> bool:
+    """Whether an attempt on this profile could be released a workspace secret,
+    so needs an attempt key to sign the release with (docs/design/workspace-
+    secrets.md §3.3, lane SEC-RELEASE).
+
+    The frozen catalogue's declarations (contract requests 80-81): the profile
+    declares a secret slot, or a RUNTIME_TOOLS entry its `browser_tool` input
+    launches does. The platform components a release can name (`merge`,
+    `indexer`) declare no slot, so they add nobody; the judge's TypeSafe key
+    is not released into a pod at all (owner decision Q8). Read from the
+    catalogue rather than from the grants, so the scheduler reads no
+    workspace's secrets to dispatch it.
+    """
+    profile = RUNNER_PROFILES.get(profile_name)
+    if profile is None or profile.worker_action is not None:
+        return False
+    if profile.secret_slots:
+        return True
+    launched = tools_launched(profile, inputs if isinstance(inputs, dict) else {})
+    return any(RUNTIME_TOOLS[name].secret_slots for name in launched)
+
+
 def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> dict[str, str]:
     """The ONLY thing the environment carries is identifiers and endpoints.
 
@@ -633,6 +1239,8 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
     metadata server's address and nothing else. Anything BOTH backends need
     still belongs here, not there.
     """
+    gcs_prefix = tenant_gcs_prefix(task.tenant_id, settings.core.artifact_bucket)
+    _record_disagrees(task.tenant_id, "gcs_prefix", tenant.gcs_prefix, gcs_prefix)
     env = {
         "TASK_ID": task.id,
         "ATTEMPT_ID": lease.attempt_id,
@@ -644,7 +1252,8 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
         "REGION": settings.region,
         "FIRESTORE_DATABASE": settings.core.firestore_database,
         "ARTIFACT_BUCKET": settings.core.artifact_bucket,
-        "GCS_PREFIX": tenant.gcs_prefix or "",
+        # DERIVED, never the stored `tenant.gcs_prefix` (#1457, row 3).
+        "GCS_PREFIX": gcs_prefix,
         "CHECKPOINT_INTERVAL_SECONDS": str(
             RUNNER_PROFILES[task.runner_profile].checkpoint_interval_seconds
         ),
@@ -657,6 +1266,14 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
         # kept and why it was never the fix it was taken for.
         "SWARM_ARTIFACTS_DIR": WORKER_ARTIFACTS_DIR,
     }
+    # THE STEP'S MODEL (#1435; the owner's answer to Q2, 2026-10-17). The ID
+    # of the step's resolved class, from the scheduler's own class map: on a
+    # Cloud Run execution it overrides the Job's default-class MODEL for this
+    # execution only, and on GKE it is the pod's. Omitted, not set empty, for
+    # a profile with no classes, for the merge reason below.
+    model = step_model(settings, RUNNER_PROFILES[task.runner_profile], task)
+    if model is not None:
+        env["MODEL"] = model
     broker_url = str(getattr(settings, "quota_broker_url", "") or "").strip()
     if broker_url:
         env["QUOTA_BROKER_URL"] = broker_url
@@ -692,16 +1309,35 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
         env["SWARM_CONSOLE_URL"] = console_url
     if getattr(settings, "pr_console_links", False) is True:
         env["SWARM_PR_CONSOLE_LINKS"] = "true"
-    # THE CHILD PATH (docs/design/child-tasks.md §3.2). A one-use registration
+    # THE ATTEMPT KEY (docs/design/child-tasks.md §3.2). A one-use registration
     # nonce bound to this exact attempt, which its worker spends registering
     # the attempt key it generates BEFORE its agent exists; the agent can read
-    # it later from /proc/1/environ, by which time it is worthless. The child
-    # path is only for a task that is not itself a child (depth 1), and only
-    # when this deployment has the key -- omitted otherwise, so the worker
-    # offers no child path.
-    # The nonce and the API's address travel together: a nonce the worker
-    # had nowhere to spend would sit unspent in an environment its agent reads.
+    # it later from /proc/1/environ, by which time it is worthless. Only when
+    # this deployment has the key -- omitted otherwise, so the worker registers
+    # nothing. The nonce and the API's address travel together: a nonce the
+    # worker had nowhere to spend would sit unspent in an environment its
+    # agent reads.
     #
+    # A CHILD GETS ONE ONLY WHEN ITS PROFILE OFFERS GIT TOOLS
+    # (docs/runner-git-tools.md §1.4, lane G2). The key was the child path's
+    # alone, and a child may not have children, so a child got none. The git
+    # tools are signed with the same key, and a fan-out lane runs as a child,
+    # so it needs one too. Having a key does not lift the depth limit:
+    # swarm-api refuses a child's `submit` as `child_depth_exceeded` from the
+    # task document, whatever its worker registered.
+    #
+    # AND WHEN IT COULD BE RELEASED A WORKSPACE SECRET (docs/design/workspace-
+    # secrets.md §3.3, lane SEC-RELEASE). The release is signed with the same
+    # key, so a child whose profile or tools declare a secret slot needs one
+    # even with no git tools (a `browser` child): without it the worker cannot
+    # ask, a required slot parks it, and an optional one is never delivered.
+    #
+    # AND WHEN ITS SIGNED INPUT NAMES AN MCP SERVER (docs/design/registered-
+    # mcp-servers.md §4.6, lane MCP-SCHED). The attach that hands the worker
+    # each server's URL and credential is signed with the same key, so a child
+    # naming a server needs one whatever else its profile offers: without it
+    # the worker cannot attach, and the attempt fails before its agent runs.
+    # A task naming none is keyed exactly as before.
     # THE FORGE BROKER (#1041, docs/design/user-scoped-secrets.md) reuses the
     # same registered attempt key: swarm-api releases a person's `git-u-` slot
     # only to an attempt that signs with it. So an attempt whose signed
@@ -717,8 +1353,12 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
     # therefore waits on the key being here (docs/design/user-scoped-secrets.md
     # §5, the rollout order).
     #
-    # A CHILD STILL GETS NO CHILD PATH. SWARM_CHILD_PATH=false tells its worker
-    # to register the key and offer its agent nothing to submit children with.
+    # A CHILD KEYED ONLY FOR THE BROKER GETS NO CHILD PATH. SWARM_CHILD_PATH=false
+    # tells its worker to register the key and offer its agent nothing to
+    # submit children with. It is written only when the broker is the SOLE
+    # reason the child has a key: a child keyed for git tools, a workspace
+    # secret or an MCP server needs the key's child path (`ChildPath.available`)
+    # for those, and the flag would switch them off.
     # That flag is a courtesy, not the guard: swarm-api refuses depth itself
     # (`swarm_api.children` raises ChildDepthExceeded for any parent that has a
     # `parent_task_id`, both when it reads the parent and again inside the
@@ -728,7 +1368,13 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
     child_key = str(getattr(settings, "child_key", "") or "")
     api_url = str(getattr(settings, "swarm_api_url", "") or "").strip()
     is_child = bool(task.parent_task_id)
-    if child_key and api_url and (not is_child or needs_user_slot(task)):
+    other_key_use = (
+        offers_git_tools(task.runner_profile)
+        or consumes_workspace_secrets(task.runner_profile, task.input)
+        or names_mcp_servers(task.runner_profile, task.input)
+    )
+    keyed = not is_child or needs_user_slot(task) or other_key_use
+    if child_key and api_url and keyed:
         from .children import registration_nonce
 
         env["SWARM_CHILD_NONCE"] = registration_nonce(
@@ -743,7 +1389,7 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
         api_audience = str(getattr(settings, "swarm_api_audience", "") or "").strip()
         if api_audience:
             env["SWARM_API_AUDIENCE"] = api_audience
-        if is_child:
+        if is_child and not other_key_use:
             env["SWARM_CHILD_PATH"] = "false"
     return env
 
@@ -829,6 +1475,10 @@ def gke_worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -
     env = worker_env(task=task, lease=lease, tenant=tenant, settings=settings)
     env["GCE_METADATA_HOST"] = GKE_METADATA_SERVER_IP
     env["GCE_METADATA_IP"] = GKE_METADATA_SERVER_IP
+    # The pod's cache volume (CACHE_MOUNT, CACHE-SCRATCH). GKE only, for the
+    # reason the two above are: a Cloud Run worker has no second disk, and a
+    # value here in `worker_env` would reach every Cloud Run execution.
+    env[CACHE_ROOT_ENV] = CACHE_MOUNT
     return env
 
 
@@ -862,25 +1512,85 @@ def image_uri(settings: Any, profile: RunnerProfile) -> str:
     return f"{settings.artifact_registry_host}/{profile.image}:{settings.worker_image_tag}"
 
 
-def assert_tenant_identity(tenant: Tenant) -> str:
-    """Refuse to start anything for a tenant with no service account.
+#: GCP's cap on a service account id. A tenant id whose
+#: `worker_service_account_id` is longer has no worker account it could run as
+#: (swarm-api's `store.derived_service_account` records None for it).
+SERVICE_ACCOUNT_ID_MAX = 30
 
-    Cloud Run falls back to the project's DEFAULT compute service account when a
-    Job names none, and that identity is shared and usually far more privileged
-    than a worker -- so a tenant whose infrastructure was never provisioned would
-    run its code as it. Invariant 9 requires the tenant's own identity, and a
-    task that cannot have one belongs back in READY with a clear error, not in a
-    container.
+#: The event logged when a `tenants/<id>` record disagrees with what dispatch
+#: derives. The namespace keeps its own, `TENANT_NAMESPACE_MISMATCH`, which the
+#: monitoring module counts.
+TENANT_RECORD_MISMATCH = "tenant_record_mismatch"
+
+
+def tenant_service_account(tenant_id: str, project_id: str) -> str | None:
+    """`swarm-agent-worker-<tenant>@<project>.iam.gserviceaccount.com`, the one
+    account a tenant's attempt runs as, or None when no such account can exist.
+
+    DERIVED, NEVER READ from `tenants/<id>.service_account` (design
+    tenant-settings-integrity.md §1.3 row 1, #1457): a tenant's worker can
+    rewrite its own tenant document, and this service holds `actAs` on every
+    tenant's worker account, so a Job built from the stored value ran tenant A's
+    next attempt as tenant B. Terraform's tenancy module, register-tenant.sh
+    and swarm-api all name the account by `identity.worker_service_account_id`.
     """
-    if not tenant.service_account:
+    account_id = worker_service_account_id(tenant_id)
+    if not tenant_id or not project_id or len(account_id) > SERVICE_ACCOUNT_ID_MAX:
+        return None
+    return f"{account_id}@{project_id}.iam.gserviceaccount.com"
+
+
+def tenant_gcs_prefix(tenant_id: str, artifact_bucket: str) -> str:
+    """`gs://<bucket>/tenants/<tenant>`, as swarm-api records it when it creates
+    the tenant; derived for the same reason as `tenant_service_account` (row 3).
+    "" when the deployment names no bucket, as an unset record read before."""
+    return f"gs://{artifact_bucket}/tenants/{tenant_id}" if artifact_bucket else ""
+
+
+def _record_disagrees(tenant_id: str, name: str, stored: Any, derived: str) -> None:
+    """Log, once per tenant and field per process per hour, a stored record
+    that is not the derived value. The record is IGNORED either way: a
+    disagreement is a stale document or a forged one, and both are repaired in
+    Firestore, never followed."""
+    stored = str(stored).strip() if stored else ""
+    if not stored or stored.lower() == derived.lower():
+        return
+    if _record_mismatch_due(f"{name}\n{tenant_id}"):
+        log.error(
+            "%s tenant=%s field=%s stored=%r derived=%r: IGNORED, dispatch uses the "
+            "derived value. A tenant's worker can write its own tenant document; "
+            "repair it and find out who wrote it",
+            TENANT_RECORD_MISMATCH, tenant_id, name, stored, derived,
+            extra={"event": TENANT_RECORD_MISMATCH, "tenant_id": tenant_id,
+                   "field": name, "stored": stored, "derived": derived},
+        )
+
+
+def assert_tenant_identity(tenant: Tenant, settings: Any) -> str:
+    """The service account this tenant's attempt runs as: DERIVED from its id.
+
+    `tenant.service_account` is a record, not authority (contract request 87):
+    a stored value that is not the derived one is logged and ignored
+    (`tenant_service_account`, which says why). What is refused is a tenant
+    that can have no account at all -- an id too long for one, or a scheduler
+    with no project -- because Cloud Run falls back to the project's DEFAULT
+    compute service account when a Job names none, and that identity is shared
+    and usually far more privileged than a worker. Invariant 9 requires the
+    tenant's own identity, and a task that cannot have one belongs back in
+    READY with a clear error, not in a container.
+    """
+    project_id = str(getattr(settings, "project_id", "") or "")
+    derived = tenant_service_account(tenant.tenant_id, project_id)
+    if derived is None:
         raise DispatchError(
-            f"tenant {tenant.tenant_id!r} has no service account; its identity has "
-            "not been provisioned (terraform tenants map, or "
-            "scripts/register-tenant.sh) and the platform will not run its work "
-            "under a shared one",
+            f"tenant {tenant.tenant_id!r} has no service account it could run as: "
+            f"{worker_service_account_id(tenant.tenant_id)!r} is not a valid account "
+            f"id in project {project_id!r} (over {SERVICE_ACCOUNT_ID_MAX} characters, "
+            "or no project), and the platform will not run its work under a shared one",
             code="tenant_identity_missing",
         )
-    return tenant.service_account
+    _record_disagrees(tenant.tenant_id, "service_account", tenant.service_account, derived)
+    return derived
 
 
 # --------------------------------------------------------------------------
@@ -961,7 +1671,10 @@ class CloudRunJobDispatcher:
         return f"{self.parent}/jobs/{job_id}"
 
     def _model_for(self, profile: RunnerProfile) -> str | None:
-        """The model this profile's agent runs, from WORKER_MODELS, or None."""
+        """The Job's own MODEL: the profile's default-class pin, or None.
+
+        A step's own class reaches each execution through `worker_env`, whose
+        MODEL overrides this one for that execution only (#1435, §4.5)."""
         return profile_model(self._settings, profile)
 
     def _build_job(
@@ -971,7 +1684,7 @@ class CloudRunJobDispatcher:
         from google.cloud import run_v2
         from google.protobuf import duration_pb2
 
-        assert_tenant_identity(tenant)
+        service_account = assert_tenant_identity(tenant, self._settings)
         rc = RESOURCE_CLASSES[resource_class or profile.resource_class]
         env = [
             run_v2.EnvVar(name="RUNNER_PROFILE", value=profile.name),
@@ -1096,7 +1809,7 @@ class CloudRunJobDispatcher:
                             dispatch_timeout_seconds=self._settings.core.dispatch_timeout_seconds,
                         )
                     ),
-                    service_account=tenant.service_account,
+                    service_account=service_account,
                     execution_environment=run_v2.ExecutionEnvironment.EXECUTION_ENVIRONMENT_GEN2,
                 ),
             ),
@@ -1177,6 +1890,18 @@ class CloudRunJobDispatcher:
         storage_drift = _workspace_drift(
             existing, RESOURCE_CLASSES[resource_class or profile.resource_class]
         )
+        # AND ITS IDENTITY (#1457). Until the account was derived, `_build_job`
+        # named whatever `tenants/<id>.service_account` said, and a tenant's
+        # worker can write that. A Job built while the record named another
+        # tenant's account would go on running this tenant's attempts as that
+        # account for as long as it exists, so it is rebuilt as the derived one.
+        wanted_account = assert_tenant_identity(tenant, self._settings)
+        try:
+            current_account = str(existing.template.template.service_account or "")
+        except AttributeError:
+            current_account = ""
+        if current_account.lower() != wanted_account.lower():
+            storage_drift = [*storage_drift, "service_account"]
         if (current == wanted and current_model == wanted_model and not spec_drift
                 and not storage_drift):
             return False
@@ -1195,7 +1920,7 @@ class CloudRunJobDispatcher:
         # needs no more than which settings moved.
         log.info(
             "cloud run job %s moved from %s (MODEL %s) to %s (MODEL %s); SPEC_* changed: %s; "
-            "workspace changed: %s",
+            "workspace or identity changed: %s",
             name, current or "?", current_model or "unset", wanted, wanted_model or "unset",
             ", ".join(spec_drift) or "none", ", ".join(storage_drift) or "none",
         )
@@ -1329,7 +2054,10 @@ class CloudRunJobDispatcher:
 
         # Before any API call: a tenant with no identity is refused here rather
         # than after a round trip that would only be wasted.
-        assert_tenant_identity(tenant)
+        assert_tenant_identity(tenant, self._settings)
+        # The step's model before the Job is touched, for the same reason: a
+        # class with no pin refuses with no API call made (#1435).
+        step_model(self._settings, profile, task)
         name = self.ensure_job(profile, tenant, resource_class_for(task, profile))
         env = worker_env(task=task, lease=lease, tenant=tenant, settings=self._settings)
         overrides = run_v2.RunJobRequest.Overrides(
@@ -1550,7 +2278,7 @@ def authenticated_identity(credentials: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
-# A stored tenant namespace is VERIFIED, not trusted (owner decision 2026-10-11)
+# A stored tenant namespace is a RECORD, not authority (#1457)
 # ---------------------------------------------------------------------------
 #
 # `tenants/u-bogdan` carried `namespace: swarm-u-bogdan`, the spelling used
@@ -1558,23 +2286,28 @@ def authenticated_identity(credentials: Any) -> str:
 # `namespace_for` preferred the stored value unchecked, so every GKE task for
 # that tenant was created in a namespace that does not exist -- and Kubernetes
 # reports that as `jobs.batch is forbidden`, never as a missing namespace
-# (docs/gke-dispatch-403.md). The data was repaired; this is what stops the
-# next bad value from doing the same.
+# (docs/gke-dispatch-403.md). The owner's 2026-10-11 rule then kept a stored
+# value inside the authority prefix (`swarm-tenant-`) and ignored one outside.
 #
-# THE RULE, identical in `reconciler.backends.GkeBackend.namespace_for` (that
-# image cannot import this one; tests/unit/control_plane/
-# test_reconciler_gke_namespaced.py pins the two together):
+# THAT RULE ACCEPTED ANOTHER TENANT'S NAMESPACE. `swarm-tenant-B` is inside
+# the prefix, and a tenant's worker can write its own `tenants/<id>` document,
+# so tenant A's next GKE pod ran in B's namespace, as B's KSA and so as B's
+# Google account (docs/design/tenant-settings-integrity.md §1.3 row 2). The
+# namespace is therefore DERIVED, always, from the template and the tenant id:
 #
-#   * a stored value OUTSIDE the authority prefix (`swarm-tenant-`) is IGNORED:
-#     the derived name is used, and `tenant_namespace_mismatch` is logged at
-#     ERROR. Nothing outside the prefix is ever ours -- terraform's tenancy
-#     module, `kubernetes/render.py`, the reconciler's GC filter and the
-#     repository's kubectl guard all key on it -- so such a value can only be a
-#     stale spelling or a typo, and dispatching into it can only fail;
-#   * a stored value INSIDE the prefix but not the derived name is KEPT and
-#     logged at WARNING. `kubernetes/render.py --namespace` deliberately allows
-#     a rename within the prefix (a `-canary` namespace), and the objects that
-#     make dispatch work were applied there, so overruling it would break it.
+#   * a stored value that is not the derived name is IGNORED and logged as
+#     `tenant_namespace_mismatch` at ERROR, inside the prefix or not. A rename
+#     within the prefix (`kubernetes/render.py --namespace`'s `-canary`) is
+#     no longer followed by dispatch: that is the price of the fix, and the
+#     derived namespace is the one terraform's tenancy module binds.
+#
+# The reconciler must read where this writes. `reconciler.backends
+# .GkeBackend.namespace_for` (that image cannot import this one) derives the
+# same name when it is handed no recorded value, and still keeps a recorded
+# one inside the prefix; `reconciler.store.tenant_namespaces` is what hands it
+# that value, and lane ISO-RECON (#1457) makes it the derived one. tests/unit/
+# control_plane/test_reconciler_gke_namespaced.py pins the derived names of
+# the two together.
 #
 # Logged at most once per tenant per process per hour: the dispatch loop asks
 # on every dispatch, and the alert (terraform/modules/monitoring,
@@ -1618,41 +2351,38 @@ class _OncePerInterval:
 
 
 _namespace_mismatch_due = _OncePerInterval(TENANT_NAMESPACE_MISMATCH_LOG_INTERVAL_S)
+#: The same, for `tenant_record_mismatch` (service account, GCS prefix).
+_record_mismatch_due = _OncePerInterval(TENANT_NAMESPACE_MISMATCH_LOG_INTERVAL_S)
 
 
 def verified_namespace(tenant_id: str, stored: Any, derived: str, prefix: str) -> str:
-    """`stored` if it is inside `prefix`, else `derived`; logs any disagreement.
+    """`derived`, always; logs a `stored` value that disagrees.
 
     See the block comment above. `prefix` is the authority prefix, the literal
-    part of the namespace template before `{tenant}`.
+    part of the namespace template before `{tenant}`; it only says, in the
+    log, whether the ignored value was inside it -- another tenant's namespace
+    or a rename -- or outside it, a stale spelling.
     """
     stored = str(stored) if stored else ""
     if not stored or stored == derived:
         return derived
-    trusted = bool(prefix) and stored.startswith(prefix) and len(stored) > len(prefix)
     if _namespace_mismatch_due(tenant_id):
-        fields = {
-            "event": TENANT_NAMESPACE_MISMATCH,
-            "tenant_id": tenant_id,
-            "stored": stored,
-            "derived": derived,
-            "used": stored if trusted else derived,
-        }
-        if trusted:
-            log.warning(
-                "%s tenant=%s stored=%r derived=%r: kept, it is inside %r",
-                TENANT_NAMESPACE_MISMATCH, tenant_id, stored, derived, prefix,
-                extra=fields,
-            )
-        else:
-            log.error(
-                "%s tenant=%s stored=%r derived=%r: IGNORED, it is outside %r; "
-                "dispatching to the derived namespace. Repair the tenant document "
-                "(scripts/tenant-namespace-audit.sh)",
-                TENANT_NAMESPACE_MISMATCH, tenant_id, stored, derived, prefix,
-                extra=fields,
-            )
-    return stored if trusted else derived
+        inside = bool(prefix) and stored.startswith(prefix) and len(stored) > len(prefix)
+        log.error(
+            "%s tenant=%s stored=%r derived=%r: IGNORED (%s %r); dispatching to the "
+            "derived namespace. Repair the tenant document "
+            "(scripts/tenant-namespace-audit.sh)",
+            TENANT_NAMESPACE_MISMATCH, tenant_id, stored, derived,
+            "inside" if inside else "outside", prefix,
+            extra={
+                "event": TENANT_NAMESPACE_MISMATCH,
+                "tenant_id": tenant_id,
+                "stored": stored,
+                "derived": derived,
+                "used": derived,
+            },
+        )
+    return derived
 
 
 @dataclass(frozen=True)
@@ -1691,10 +2421,15 @@ class GkeJobDispatcher:
     """
 
     def __init__(self, settings: Any, *, target: GkeTarget | None = None,
-                 batch_api: Any | None = None, identity: str = "") -> None:
+                 batch_api: Any | None = None, identity: str = "",
+                 judgment: Callable[[str], str] | None = None) -> None:
         self._settings = settings
         self._target = target
         self._batch_api = batch_api
+        #: tenant id -> the workspace's Jev judgment backend (JUDGE-SELECT;
+        #: `judgment.read_backend` over Firestore in a deployment). None reads
+        #: as the default, internal-jev.
+        self._judgment = judgment
         self._ca_file: str | None = None
         #: WHO THIS DISPATCHER AUTHENTICATES AS, for the failure message. Filled
         #: in by `_api()` from the credentials it resolves, so in a deployment it
@@ -1768,11 +2503,11 @@ class GkeJobDispatcher:
         return self._batch_api
 
     def namespace_for(self, tenant: Tenant) -> str:
-        """The tenant's namespace: derived from the template, a stored one VERIFIED.
+        """The tenant's namespace: DERIVED from the template, never read.
 
-        A stored `tenant.namespace` is used only when it is inside the
-        template's prefix (`verified_namespace`); anything else is a stale
-        spelling that dispatch could only fail in, so the derived name wins.
+        A stored `tenant.namespace` that differs is logged and ignored
+        (`verified_namespace`): a tenant's worker can rewrite it, and any
+        value inside the prefix would run this tenant's pod as another's.
         """
         template = (
             self._target.namespace_template if self._target else "swarm-tenant-{tenant}"
@@ -1800,7 +2535,7 @@ class GkeJobDispatcher:
 
     def _manifest(self, *, task: Task, lease: Lease, profile: RunnerProfile,
                   tenant: Tenant) -> dict[str, Any]:
-        assert_tenant_identity(tenant)
+        assert_tenant_identity(tenant, self._settings)
         rc = RESOURCE_CLASSES[resource_class_for(task, profile)]
         disk = gke_disk(rc)
         # Identifiers only. No provider key is injected: there is no Kubernetes
@@ -1816,14 +2551,17 @@ class GkeJobDispatcher:
         # FROM THIS SAME RENDER, so the comparison proves only that this
         # dispatcher agrees with itself; GKE injects no Job name of its own.
         env.append({"name": "RUNNER_JOB_NAME", "value": job_name})
-        # THE PROFILE'S MODEL, as a Cloud Run Job carries it (#226; contract
-        # request 53). Same source, `profile_model` over WORKER_MODELS, and the
-        # same absence: no pinned model, no MODEL, the CLI's default on both
-        # backends. On the Job, never in `worker_env`, which a task shapes: a
-        # caller never chooses it (invariant 10).
-        model = profile_model(self._settings, profile)
-        if model:
-            env.append({"name": "MODEL", "value": model})
+        # THE STEP'S MODEL comes from `gke_worker_env` above (`step_model`,
+        # #1435), the one source both backends share. Only a scheduler with no
+        # WORKER_CLASS_MODELS leaves it unset for a classed profile, and then
+        # the pod carries the profile's model as a Cloud Run Job does (#226;
+        # contract request 53): `profile_model` over WORKER_MODELS, and the
+        # same absence -- no pinned model, no MODEL, the CLI's default on both
+        # backends. Never `task.model`: a caller never chooses it (invariant 10).
+        if not any(e["name"] == "MODEL" for e in env):
+            model = profile_model(self._settings, profile)
+            if model:
+                env.append({"name": "MODEL", "value": model})
         # THE STEP-SPEC VERIFICATION SETTINGS, ON THE JOB, as a Cloud Run Job
         # carries them (contract request 34; owner decision 2026-10-08). This
         # reverses the original GKE design, which delivered them ONLY through
@@ -1842,7 +2580,8 @@ class GkeJobDispatcher:
             "cpu": str(int(rc.cpu)),
             "memory": f"{rc.memory_gib}Gi",
             # The whole pod's local disk -- the sum of the scratch volumes'
-            # sizeLimits below, not the workspace's: see GkeDisk.
+            # sizeLimits below, not the workspace's alone, and not the
+            # cache's network disk, which is no ephemeral-storage: see GkeDisk.
             "ephemeral-storage": f"{gke_ephemeral_storage_gib(rc)}Gi",
         }
         labels = {
@@ -1866,7 +2605,7 @@ class GkeJobDispatcher:
         # (test_the_rendered_job_and_the_dispatched_job_are_the_same_job) is
         # what found the difference.
         not_evictable = {"cluster-autoscaler.kubernetes.io/safe-to-evict": "false"}
-        return {
+        job = {
             "apiVersion": "batch/v1",
             "kind": "Job",
             "metadata": {
@@ -1952,6 +2691,10 @@ class GkeJobDispatcher:
                                     # a HOME for tool caches and crash dumps.
                                     {"name": "tmp", "mountPath": "/tmp"},
                                     {"name": "home", "mountPath": WORKER_HOME},
+                                    # The agent's tool caches and TMPDIR,
+                                    # off the workspace (CACHE-SCRATCH); the
+                                    # worker is told where by CACHE_ROOT_ENV.
+                                    {"name": "cache", "mountPath": CACHE_MOUNT},
                                 ],
                             }
                         ],
@@ -1963,8 +2706,9 @@ class GkeJobDispatcher:
                             # is the reason browser work is on GKE at all.
                             # Every pod gets it, so `claude-code-browser`
                             # (contract request 67) has it too; its `browser`
-                            # class (16 GiB) is what pays for it, since this
-                            # tmpfs is charged to the memory limit. Chromium's
+                            # class (8 GiB since contract request 79) is what
+                            # pays for it, since this tmpfs is charged to the
+                            # memory limit. Chromium's
                             # own sandbox stays off on both profiles
                             # (CONTAINER_SECURITY_CONTEXT): the claude-code
                             # runner tells its agent to launch with
@@ -1973,6 +2717,20 @@ class GkeJobDispatcher:
                                 "medium": "Memory", "sizeLimit": "2Gi"}},
                             {"name": "tmp", "emptyDir": {"sizeLimit": f"{disk.tmp_gib}Gi"}},
                             {"name": "home", "emptyDir": {"sizeLimit": f"{disk.home_gib}Gi"}},
+                            # A NETWORK DISK, not a local emptyDir (CACHE-PVC):
+                            # the 2 GiB emptyDir evicted, and Autopilot's
+                            # 10 GiB had no more to give it. The ephemeral-
+                            # volume controller creates the claim with the pod
+                            # and deletes it with the pod, under its own
+                            # identity, so the dispatcher's Role needs nothing
+                            # new. Not ephemeral-storage. See CACHE_STORAGE_CLASS.
+                            {"name": "cache", "ephemeral": {"volumeClaimTemplate": {
+                                "spec": {
+                                    "accessModes": ["ReadWriteOnce"],
+                                    "storageClassName": CACHE_STORAGE_CLASS,
+                                    "resources": {"requests": {
+                                        "storage": f"{CACHE_VOLUME_GIB}Gi"}},
+                                }}}},
                             # `optional`: a namespace whose ConfigMap has not
                             # been applied (one onboarding created) still
                             # starts its pod, and verifies with the keys in
@@ -1987,6 +2745,46 @@ class GkeJobDispatcher:
                 },
             },
         }
+        # The live browser's display sidecar (docs/design/live-browser.md):
+        # only for a live-browser profile, and only while the rollout switch
+        # is on. Every other pod is returned exactly as built above.
+        if getattr(profile, "live_browser", False) and getattr(
+                self._settings, "live_browser_sidecar", False):
+            self._with_judgment(job, tenant, profile)
+            job = with_live_display(job, rc=rc)
+            # Residential egress (docs/browser-egress.md §10.3): only on a pod
+            # that has the display sidecar, so only a browser that exists is
+            # routed, and only when configuration switches its tenant and
+            # profile on. Otherwise the live pod is returned as it was.
+            if browser_egress_on(self._settings, tenant_id=tenant.tenant_id, profile=profile):
+                job = with_browser_egress(
+                    job, bypass=getattr(self._settings, "browser_egress_bypass", ()))
+        return job
+
+    def _with_judgment(self, job: dict[str, Any], tenant: Tenant, profile: Any) -> None:
+        """Where this live-browser pod's Jev judgments go (`judgment`,
+        JUDGE-SELECT): SWARM_JEV_BACKEND always, and for an internal backend
+        with the tailnet egress on, JEV_API_URL, the `swarm-judge: internal`
+        pod label JUDGE-NET's NetworkPolicy opens the decision API to, and the
+        hostAliases entry that resolves the API's tailnet name to the egress
+        Service. For the TypeSafe backend with the forwarder serving the
+        tenant (`typesafe_forwarder_on`), the `swarm-typesafe: inject` label
+        that opens swarm-typesafe-fwd instead, and SWARM_TYPESAFE_INJECT=on on
+        the worker, which turns its forwarder path on. Only with the live browser:
+        jev-browser attaches to nothing else."""
+        backend = self._judgment(tenant.tenant_id) if self._judgment else DEFAULT_BACKEND
+        env, labels, host_aliases = jev_dispatch(
+            backend, str(getattr(self._settings, "internal_decision_api_url", "") or ""))
+        if typesafe_forwarder_on(self._settings, tenant_id=tenant.tenant_id,
+                                 profile=profile, backend=backend):
+            labels[TYPESAFE_POD_LABEL[0]] = TYPESAFE_POD_LABEL[1]
+            env[TYPESAFE_INJECT_ENV[0]] = TYPESAFE_INJECT_ENV[1]
+        template = job["spec"]["template"]
+        (worker,) = [c for c in template["spec"]["containers"] if c["name"] == "worker"]
+        worker["env"].extend({"name": k, "value": v} for k, v in env.items())
+        template["metadata"]["labels"].update(labels)
+        if host_aliases:
+            template["spec"].setdefault("hostAliases", []).extend(host_aliases)
 
     @staticmethod
     def _is_forbidden(exc: BaseException) -> bool:
@@ -2093,10 +2891,26 @@ class BackendRouter:
     """Picks the dispatcher for a profile's resolved backend."""
 
     def __init__(self, *, cloud_run: Dispatcher | None, gke: Dispatcher | None,
-                 settings: Any) -> None:
+                 settings: Any, judgment: Callable[[str], str | None] | None = None) -> None:
         self._cloud_run = cloud_run
         self._gke = gke
         self._settings = settings
+        #: tenant id -> the judgment backend its worker's judge will resolve
+        #: (`read_judge_backend` in a deployment), None when unreadable. Unset
+        #: reads as unreadable: `cloud_run_refused` then fails closed.
+        self._judgment = judgment
+
+    def cloud_run_refused(self, *, tenant_id: str, profile: RunnerProfile,
+                          backend: Backend) -> bool:
+        """`typesafe_judge_needs_gke` for this attempt. The stored setting is
+        read only when everything else already says yes, so with the switch
+        off a dispatch reads nothing it did not read before."""
+        if not typesafe_judge_needs_gke(self._settings, tenant_id=tenant_id, profile=profile,
+                                        backend=backend, judgment=TYPESAFE_BACKEND):
+            return False
+        judgment = self._judgment(tenant_id) if self._judgment is not None else None
+        return typesafe_judge_needs_gke(self._settings, tenant_id=tenant_id, profile=profile,
+                                        backend=backend, judgment=judgment)
 
     def for_backend(self, backend: Backend) -> Dispatcher:
         if backend is Backend.CLOUD_RUN_JOB:
@@ -2119,6 +2933,26 @@ class BackendRouter:
     def dispatch(
         self, *, task: Task, lease: Lease, profile: RunnerProfile, tenant: Tenant, backend: Backend
     ) -> str:
+        # A TYPESAFE JUDGE NEVER RUNS AS A CLOUD RUN JOB (lane JUDGE-GKE). The
+        # scheduler routes by the catalogue's backend and has no runtime
+        # fallback, so a GKE profile reaches Cloud Run only through a rollback
+        # of its catalogue line (terraform/infra/locals.tf
+        # `cloud_run_fallback_profiles` keeps those Jobs), and a CLOUD_RUN_JOB
+        # profile by contract (claude-code-review, contract request 84). Either
+        # way the forwarder, an in-cluster Service, is out of reach. Refused
+        # BEFORE anything is created: the DispatchError returns the lease and
+        # the task to READY, where it holds no capacity (invariant 1) and no
+        # pool stays reserved (2). Each refusal is an attempt, so at the retry
+        # cap the task ends FAILED with this code: loud, never a Cloud Run
+        # judge. Rerouting it to GKE here is not an option: the lease
+        # reserved the Cloud Run backend's pool.
+        if self.cloud_run_refused(tenant_id=tenant.tenant_id, profile=profile, backend=backend):
+            raise DispatchError(
+                f"profile {profile.name} judges with TypeSafe in tenant {tenant.tenant_id} "
+                "and the forwarder serves that tenant, so it does not run as a Cloud Run "
+                "Job: the forwarder is reachable only from GKE (lane JUDGE-GKE)",
+                code=TYPESAFE_JUDGE_NEEDS_GKE,
+            )
         return self.for_backend(backend).dispatch(
             task=task, lease=lease, profile=profile, tenant=tenant
         )
@@ -2155,7 +2989,8 @@ def _gke_ca_file() -> str:
     return handle.name
 
 
-def build_router(settings: Any, *, pool: AccountPool | None = None) -> BackendRouter:
+def build_router(settings: Any, *, pool: AccountPool | None = None,
+                 db: Any | None = None) -> BackendRouter:
     """The deployment's router. `pool` is the Scheduler's AccountPool.
 
     main.build_scheduler passes it, so the Cloud Run Job's secret mount and
@@ -2176,8 +3011,19 @@ def build_router(settings: Any, *, pool: AccountPool | None = None) -> BackendRo
             ca_cert_path=ca_path,
             ksa_name=getattr(settings, "worker_ksa_name", "") or "swarm-agent-worker",
         )
+    # None while SETTINGS_MAC_REQUIRED is off; otherwise both readers below
+    # count only a value swarm-api signed (#1457).
+    mac_key = settings_mac_key(settings)
     return BackendRouter(
         cloud_run=CloudRunJobDispatcher(settings, pool=pool),
-        gke=GkeJobDispatcher(settings, target=target),
+        # `db` for the workspace's Jev judgment backend (JUDGE-SELECT), one
+        # document read per live-browser dispatch; without it, the default.
+        gke=GkeJobDispatcher(
+            settings, target=target,
+            judgment=(lambda tenant_id: read_backend(db, tenant_id, mac_key=mac_key))
+            if db is not None else None),
         settings=settings,
+        # The same document, read as the worker's judge reads it (JUDGE-GKE).
+        judgment=(lambda tenant_id: read_judge_backend(db, tenant_id, mac_key=mac_key))
+        if db is not None else None,
     )

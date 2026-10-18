@@ -25,15 +25,31 @@ test fails.
 
 #893 (2026-10-08): claude-code's /tmp was 2 GiB, exactly the checkpoint cap,
 and an agent that cloned and installed a project under a literal /tmp was
-evicted three times. Put `standard` back to 4/2/4 and the layout test and the
-/tmp-headroom test fail; point the agent's TMPDIR off the workspace volume and
-the TMPDIR test fails.
+evicted three times, so /tmp went to 4 GiB.
+
+CACHE-SCRATCH (2026-10-15): three claude-code attempts were evicted twice each
+on the 5 GiB WORKSPACE volume, which also held every tool cache and the
+agent's TMPDIR. The caches and TMPDIR moved to a `cache` volume of their own
+(agent_worker/cachedirs.py), and under Autopilot's 10 GiB the 2 GiB it needs
+came out of /tmp, back to the checkpoint cap: workspace 5 + cache 2 + /tmp 2 +
+HOME 1. Point the agent's TMPDIR back at the workspace volume and the TMPDIR
+test fails.
+
+CACHE-PVC (owner decision 2026-10-15 ~04:00 PDT): the 2 GiB cache emptyDir
+evicted task_247c87a8714c4977921a twice (`EmptyDir volume "cache" exceeds
+2Gi`). The cache became a 20 GiB pd-balanced generic ephemeral volume, which
+is NOT ephemeral-storage, so its 2 GiB went back to the local volumes:
+standard workspace 5 + /tmp 3 + HOME 2 = 10, browser 4 + 3 + 3 = 10. Put either
+class back to its CACHE-SCRATCH numbers and its layout test fails; put the
+cache back to an emptyDir and both layout tests fail on the extra volume; drop
+any class's /tmp below 2 GiB and the checkpoint test fails naming the class.
 """
 
 from __future__ import annotations
 
 import dataclasses
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -146,18 +162,18 @@ def test_the_gke_workspace_is_no_smaller_than_cloud_runs(tenant):
     assert _disk_volumes(_pod(tenant, "claude-code"))["workspace"] >= workspace_size_gib(rc)
 
 
-def test_tmp_holds_the_largest_checkpoint_archive_the_worker_builds():
+@pytest.mark.parametrize("name", sorted(GKE_DISK))
+def test_tmp_holds_the_largest_checkpoint_archive_the_worker_builds(name):
     """The archive is built under /tmp (`checkpoint.py`, TemporaryDirectory).
 
-    claude-code's class only. Browser's /tmp is 1 GiB by the owner's decision of
-    2026-10-07 (see GKE_DISK): it fits the pod's 8 GiB, not the 2 GiB cap.
+    Every class: since CACHE-PVC each one's /tmp is 3 GiB, the 2 GiB cap plus
+    1 GiB for a literal /tmp write while an archive is being built.
     """
     from agent_worker.config import WorkerConfig
 
     defaults = {f.name: f.default for f in dataclasses.fields(WorkerConfig)}
 
-    standard = GKE_DISK[RUNNER_PROFILES["claude-code"].resource_class]
-    assert standard.tmp_gib * GIB >= defaults["max_checkpoint_bytes"]
+    assert GKE_DISK[name].tmp_gib * GIB >= defaults["max_checkpoint_bytes"], name
 
 
 @pytest.mark.parametrize("profile_name", sorted({"claude-code"} | {
@@ -230,14 +246,15 @@ def test_a_gke_pods_scratch_volumes_never_add_up_past_its_disk_limit(
     )
 
 
-def test_a_browser_pod_has_the_owners_disk_layout(tenant):
-    """Owner decision 2026-10-07: workspace 4 + /tmp 2 + HOME 2 = the 8 GiB limit.
+def test_a_browser_pod_has_the_owners_cache_pvc_disk_layout(tenant):
+    """Owner's preview, CACHE-PVC (2026-10-15): workspace 4 + /tmp 3 + HOME 3 =
+    10 GiB, Autopilot's maximum, with the cache on its network disk instead.
 
     /tmp holds the largest checkpoint archive (max_checkpoint_bytes = 2 GiB)."""
     pod = _pod(tenant, "browser")
 
-    assert _disk_volumes(pod) == {"workspace": 4, "tmp": 2, "home": 2}
-    assert _worker(pod)["resources"]["limits"]["ephemeral-storage"] == "8Gi"
+    assert _disk_volumes(pod) == {"workspace": 4, "tmp": 3, "home": 3}
+    assert _worker(pod)["resources"]["limits"]["ephemeral-storage"] == "10Gi"
 
 
 def test_the_tenant_jobs_quota_defaults_to_200():
@@ -249,41 +266,36 @@ def test_the_tenant_jobs_quota_defaults_to_200():
     assert re.search(r'"--quota-jobs",\s*type=int,\s*default=200\)', src)
 
 
-def test_a_claude_code_pod_has_the_layout_of_893(tenant):
-    """workspace 5 + /tmp 4 + HOME 1 = Autopilot's 10 GiB (#893): what each holds is GKE_DISK's."""
+def test_a_claude_code_pod_has_the_layout_of_cache_pvc(tenant):
+    """workspace 5 + /tmp 3 + HOME 2 = Autopilot's 10 GiB (CACHE-PVC, the
+    owner's preview): what each holds is GKE_DISK's. The cache left the local
+    disk for its own PVC, and its 2 GiB went to /tmp and HOME, one each."""
     pod = _pod(tenant, "claude-code")
 
-    assert _disk_volumes(pod) == {"workspace": 5, "tmp": 4, "home": 1}
+    assert _disk_volumes(pod) == {"workspace": 5, "tmp": 3, "home": 2}
     assert _worker(pod)["resources"]["limits"]["ephemeral-storage"] == "10Gi"
 
 
-def test_tmp_has_room_for_an_agents_files_beside_a_checkpoint_in_flight():
-    """The checkpoint archive is built in /tmp WHILE the agent runs, so /tmp is
-    the cap plus room for a literal /tmp write -- at least as much again."""
-    from agent_worker.config import WorkerConfig
+def test_the_agents_tmpdir_is_on_the_cache_volume_and_its_home_on_the_workspace(tmp_path):
+    """Where the runner child writes on GKE (CACHE-SCRATCH, reversing #893's option a).
 
-    cap = {f.name: f.default for f in dataclasses.fields(WorkerConfig)}["max_checkpoint_bytes"]
-    standard = GKE_DISK[RUNNER_PROFILES["claude-code"].resource_class]
-
-    assert standard.tmp_gib * GIB - cap >= cap
-
-
-def test_the_agents_tmpdir_and_home_are_on_the_workspace_volume(tmp_path):
-    """Why /tmp is not where the agent's TMPDIR and caches go (#893, option a).
-
-    The runner child's TMPDIR and HOME are the attempt's own directories under
-    WORKSPACE_ROOT, so `mkdtemp` and npm/uv/pip caches fill the workspace
-    volume. The worker's root is the volume the GKE manifest mounts there.
+    HOME stays the attempt's `work/` on the workspace volume: the CLI's own
+    state is checkpointed with the work. TMPDIR, and every tool cache, are the
+    attempt's directory on the cache volume, which the GKE pod mounts at
+    CACHE_MOUNT and names to the worker as SWARM_CACHE_ROOT.
     """
     from agent_worker.config import WorkerConfig
     from agent_worker.workspace import create
 
-    from scheduler.dispatch import WORKSPACE_MOUNT
+    from scheduler.dispatch import CACHE_MOUNT, WORKSPACE_MOUNT
 
     root = {f.name: f.default for f in dataclasses.fields(WorkerConfig)}["workspace_root"]
     assert str(root) == WORKSPACE_MOUNT
+    assert not CACHE_MOUNT.startswith(WORKSPACE_MOUNT + "/")
 
-    ws = create(tmp_path, "att_tmpdir")
+    ws = create(tmp_path / "workspace", "att_tmpdir", cache_root=tmp_path / "cache")
     env = ws.child_env()
-    assert env["TMPDIR"] == str(ws.tmp) and env["HOME"] == str(ws.work)
-    assert ws.tmp.is_relative_to(tmp_path) and ws.work.is_relative_to(tmp_path)
+    assert env["HOME"] == str(ws.work) and ws.work.is_relative_to(tmp_path / "workspace")
+    assert Path(env["TMPDIR"]).is_relative_to(tmp_path / "cache")
+    for name in ("UV_CACHE_DIR", "npm_config_cache", "PIP_CACHE_DIR", "XDG_CACHE_HOME"):
+        assert Path(env[name]).is_relative_to(tmp_path / "cache"), name

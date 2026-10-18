@@ -677,6 +677,8 @@ the reason goes back to the planner so it re-plans. Nothing is auto-chained.
 
 ### 5.1 How the graph reaches a step
 
+Proposed replacement for the per-step snapshot row below: one shared graph service and a local shim, [graph-service.md](graph-service.md) (#1384).
+
 | path | for | built on |
 |---|---|---|
 | **composed into the prompt by swarm-api** | planner, review, fix: prompts swarm-api already composes | the stored graph via `repograph.py`; phase 1 |

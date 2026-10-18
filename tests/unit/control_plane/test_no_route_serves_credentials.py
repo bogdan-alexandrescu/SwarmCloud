@@ -28,6 +28,21 @@ THREE SENTINELS, three different claims:
     since the PR #229 review not through `last_error` or `result_summary`
     either: both are masked by the input's masker, with their counts.
 
+TWO CARVE-OUTS, NAMED. Owner decision Q2 (docs/design/workspace-secrets.md
+§10): `POST /v1/attempts/{attempt_id}/secrets:release` hands an attempt its
+granted workspace secrets, signed by its worker's attempt key and fenced by its
+generation. Owner decision Q9 of #1433 (docs/design/registered-mcp-servers.md
+§4.6): `POST /v1/attempts/{attempt_id}/mcp:attach` hands an attempt its
+registered MCP servers' credentials, signed under its own purpose, fenced and
+once, through the same reader. Both are outside the GET sweep because they
+are POSTs, and that is a reason to name them rather than to rely on the sweep
+missing them. So the last
+tests below find every mounted route that can read a workspace secret's value
+(it depends on `attempts_secrets.secret_reader`, the one place a reader is
+made) and every module that reads any Secret Manager payload, and require each
+set to be exactly what is named here. A second credential-serving route fails
+them until someone names it, with the owner's decision to point to.
+
 Offline: FakeFirestore, an in-memory credential store and an in-memory object
 reader. No credentials, no emulator, no network.
 """
@@ -76,6 +91,9 @@ ROUTER_MODULES = (
     # GET /v1/leases (#179): the caller's own tenant's heartbeats, ids and
     # timestamps only.
     "leases",
+    # GET /v1/provider-keys/{provider} (KEYS-API): whether a TypeSafe key is
+    # set, when and by whom, never the key. Swept for `typesafe`.
+    "provider_keys",
 )
 
 #: A query string for a route that refuses to answer without one. Stripped
@@ -142,6 +160,12 @@ def leaky(client, db):
     assert REGISTERED_KEY not in stored.text, (
         "the credential route echoed the key it was given back in its own response"
     )
+    # The same key as eng's TypeSafe tenant key, through its own write-only
+    # route (KEYS-API), so the sweep proves that route's status read too.
+    stored = client.put("/v1/provider-keys/typesafe/tenant", headers=auth_header("root"),
+                        json={"api_key": REGISTERED_KEY})
+    assert stored.status_code == 200, stored.text
+    assert REGISTERED_KEY not in stored.text
     return client
 
 
@@ -162,6 +186,8 @@ def _get_routes() -> list[str]:
                 .replace("{checkpoint_id}", "ckpt-00001")
                 .replace("{path:path}", "notes.md")
             )
+            if filled.startswith("/v1/provider-keys/"):
+                filled = filled.replace("{provider}", "typesafe")
             if re.search(r"\{[^}]*\}", filled):
                 # An unfilled parameter would request a resource that does not
                 # exist, which proves nothing. Anything left here is a route
@@ -189,10 +215,6 @@ UNREACHED_BY_THE_SWEEP = {
     # Serves `{"tenant_id", "findings_epic"}`, an issue number and nothing
     # else (#638); read back in test_findings_epic_setting.py.
     "/v1/admin/tenants/{tenant_id}/findings-epic",
-    # Serves `{"tenant_id", "issue_sweep", "platform_enabled"}`: switches,
-    # issue numbers, labels and a member address, no credential; read back
-    # whole in test_issue_sweep.py.
-    "/v1/admin/tenants/{tenant_id}/issue-sweep",
 }
 
 
@@ -213,6 +235,7 @@ def test_every_get_route_is_either_swept_or_named(leaky):
          .replace("acct_1", "{account_id}")
          .replace("ckpt-00001", "{checkpoint_id}")
          .replace("notes.md", "{path:path}")
+         .replace("/v1/provider-keys/typesafe", "/v1/provider-keys/{provider}")
         for p in _get_routes()
     }
     unreached = sorted(declared - swept_templates - UNREACHED_BY_THE_SWEEP)
@@ -396,3 +419,110 @@ def test_no_response_carries_a_key_named_like_a_secret(leaky):
         f"these responses carry a field named like credential material: "
         f"{sorted(problems)}"
     )
+
+
+# --------------------------------------------------------------------------
+# The two carve-outs (owner decisions Q2 of #1347 and Q9 of #1433)
+# --------------------------------------------------------------------------
+
+#: Every route that may serve credential material, by (method, path). Each
+#: only by an owner's decision: docs/design/workspace-secrets.md §10 Q2 for
+#: the release, docs/design/registered-mcp-servers.md §7 Q9 for the MCP attach.
+CREDENTIAL_SERVING_ROUTES = {
+    ("POST", "/v1/attempts/{attempt_id}/secrets:release"),
+    ("POST", "/v1/attempts/{attempt_id}/mcp:attach"),
+}
+
+#: Every module that reads a Secret Manager PAYLOAD, and what it does with it.
+#: Only the release's serves one; the others use the value inside swarm-api.
+SECRET_PAYLOAD_READERS = {
+    # The release: the carve-out above, and the only reader that answers with it.
+    "routes/attempts_secrets.py",
+    # The platform's search key, sent to the provider and scrubbed from every answer.
+    "search.py",
+    # The forge App's private key, used to mint installation tokens.
+    "forgeapp.py",
+    # A tenant's forge token, sent to GitHub for issue previews and writes.
+    "forge.py",
+}
+
+
+def _api_routes(routes: Any, prefix: str = "") -> list[tuple[str, Any]]:
+    """Every APIRoute the app serves, with its full path: through included
+    routers too, which newer FastAPI keeps as wrappers around the original."""
+    from fastapi.routing import APIRoute
+
+    out: list[tuple[str, Any]] = []
+    for route in routes:
+        if isinstance(route, APIRoute):
+            out.append((prefix + route.path, route))
+            continue
+        inner = getattr(route, "original_router", None)
+        if inner is not None:
+            context = getattr(route, "include_context", None)
+            out.extend(_api_routes(inner.routes, prefix + (getattr(context, "prefix", "") or "")))
+    return out
+
+
+def _depends_on(dependant: Any, target: Any) -> bool:
+    for sub in dependant.dependencies:
+        if sub.call is target or _depends_on(sub, target):
+            return True
+    return False
+
+
+def test_only_the_named_routes_can_read_a_workspace_secrets_value():
+    from swarm_api.main import create_app
+    from swarm_api.routes import attempts_secrets
+
+    from .conftest import api_settings
+
+    from swarm_api.deps import build_context
+    from swarm_api.auth import StaticTokenVerifier
+    from swarm_api.credentials import InMemoryCredentials
+    from swarm_api.groups import StaticGroups
+    from swarm_api.metrics import ApiMetrics
+    from swarm_api.waker import NullWaker
+    from .fakes import FakeFirestore
+
+    ctx = build_context(settings=api_settings(), db=FakeFirestore(),
+                        verifier=StaticTokenVerifier({}), groups=StaticGroups({}),
+                        credentials=InMemoryCredentials(), waker=NullWaker(),
+                        metrics=ApiMetrics())
+    app = create_app(ctx)
+    routes = _api_routes(app.routes)
+    serving = {
+        (method, path)
+        for path, route in routes if _depends_on(route.dependant, attempts_secrets.secret_reader)
+        for method in route.methods
+    }
+    assert len(routes) > 100, f"the walk reached only {len(routes)} routes"
+    assert serving == CREDENTIAL_SERVING_ROUTES, (
+        f"routes that can read a workspace secret's value: {sorted(serving)}. Only the "
+        "release (owner decision Q2 of #1347) and the MCP attach (Q9 of #1433) may; "
+        "another needs its own decision, named here."
+    )
+
+
+def test_only_the_named_modules_read_a_secret_payload():
+    """A route that builds its own reader would be outside the walk above, so
+    the payload read itself is found in the source."""
+    from pathlib import Path
+
+    import swarm_api
+
+    root = Path(swarm_api.__file__).parent
+    readers = {
+        str(path.relative_to(root)) for path in root.rglob("*.py")
+        if "access_secret_version" in path.read_text(encoding="utf-8")
+    }
+    assert readers == SECRET_PAYLOAD_READERS, (
+        f"modules reading a Secret Manager payload: {sorted(readers)}; name each in "
+        "SECRET_PAYLOAD_READERS with what it does with the value, and never serve one "
+        "outside CREDENTIAL_SERVING_ROUTES"
+    )
+    makers = {
+        str(path.relative_to(root)) for path in root.rglob("*.py")
+        if "SecretManagerReader(" in path.read_text(encoding="utf-8")
+    }
+    assert makers == {"routes/attempts_secrets.py"}

@@ -418,7 +418,11 @@ def test_another_tenants_repository_is_a_404_on_every_index_route(
 # --------------------------------------------------------------------------
 
 def test_the_renderer_lays_out_a_fixture_index():
-    text = repoindex.render_markdown(fixture_index(ONE), repository=REPOSITORY)
+    # The renderer is pure, so the pinned `built_at` it is handed is what it
+    # prints; `BUILT_AT` is the session-relative default this override replaces.
+    text = repoindex.render_markdown(
+        fixture_index(ONE, built_at="2026-10-05T09:00:00Z"), repository=REPOSITORY
+    )
     lines = text.splitlines()
     assert lines[0] == "# Repository index: saga-xyz/widgets"
     assert f"Describes `{ONE}` on `main`, built 2026-10-05T09:00:00Z (full)." in lines
@@ -612,6 +616,11 @@ def test_freshness_states():
 
 def test_get_index_compares_a_moved_head_once(client, db, objects, repo_id, github):
     _promoted(client, db, objects, repo_id)
+    # Built an hour ago BY THE RUN'S CLOCK. The fixture index says "built 2026-10-05",
+    # and an index older than repoindex.STALE_AGE (7 days) reads "stale", not
+    # "behind": from 2026-10-12 09:00 UTC this test failed on every pull request.
+    built = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    _registration(db, repo_id)["index"]["current_built_at"] = built
     _registration(db, repo_id)["index"]["head_sha"] = TWO
     github.compares[(ONE, TWO)] = {"status": "ahead", "ahead_by": 2, "files": ["src/api/x.py"]}
     body = _get_index(client, repo_id).json()
@@ -621,6 +630,27 @@ def test_get_index_compares_a_moved_head_once(client, db, objects, repo_id, gith
     compares = [u for u, _ in github.calls if "/compare/" in u]
     _get_index(client, repo_id)
     assert [u for u, _ in github.calls if "/compare/" in u] == compares
+
+
+def test_an_index_that_lands_at_the_head_stores_no_older_pairs_compare(
+    client, db, objects, repo_id
+):
+    """Live QA RSA-3: an index at the head kept `behind_by: 2` and the 20-file
+    `head_relation` of an older pair. Promotion settles both from the shas.
+
+    MUTATION: drop `settle_relation` from the promotion and the stored
+    `behind_by` stays 2."""
+    started = _index_now(client, repo_id)
+    assert started.status_code == 202, started.text
+    stored = _registration(db, repo_id)["index"]
+    stored["head_relation"] = {"base": TWO, "head": ONE, "status": "ahead", "ahead_by": 2,
+                               "files": ["src/api/x.py"]}
+    stored["behind_by"] = 2
+    finish_index_task(db, objects, started.json()["run"]["task_id"], fixture_index(ONE))
+    _get_index(client, repo_id)
+    stored = _registration(db, repo_id)["index"]
+    assert stored["current_sha"] == stored["head_sha"] == ONE
+    assert stored["behind_by"] == 0 and stored["head_relation"] is None
 
 
 def test_the_tenant_token_reads_the_head_and_is_never_stored_or_served(

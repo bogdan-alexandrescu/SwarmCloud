@@ -26,6 +26,8 @@ token is built at runtime. No credentials, no network, no emulator.
 
 from __future__ import annotations
 
+import re
+import urllib.error
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -41,7 +43,7 @@ from swarm_api.metrics import ApiMetrics
 from swarm_api.waker import NullWaker
 
 from . import forge_fakes
-from .conftest import api_settings
+from .conftest import api_settings, auth_header
 from .test_issue_runs import _approve, _docs, _planned, _run
 
 SHA_A, SHA_B, SHA_C, SHA_D = ("a" * 40, "b" * 40, "c" * 40, "d" * 40)
@@ -800,6 +802,416 @@ def test_an_unresolved_membership_spends_no_round_and_the_next_read_does(
     assert run["state"] == "FIXING" and run["ci_fix_round"] == 1
     assert len(_rounds(db, running["id"])) == 1
 
+
+
+# --------------------------------------------------------------------------
+# RT-4 (2026-10-11): a read that fails is recorded where the page can show it
+# --------------------------------------------------------------------------
+
+def _refuse_statuses(writes, sha: str = SHA_A) -> tuple[str, str]:
+    """GitHub answers 403 on the commit statuses at `sha` -- an App installation
+    without `Commit statuses: read` -- and nothing else."""
+    route = ("GET", f"/repos/saga-xyz/widgets/commits/{sha}/status")
+    writes.refuse[route] = 403
+    return route
+
+
+def _unreachable_statuses(writes, sha: str = SHA_A) -> tuple[str, str]:
+    """GitHub answers 503 on the commit statuses at `sha`, and nothing else."""
+    route = ("GET", f"/repos/saga-xyz/widgets/commits/{sha}/status")
+    writes.refuse[route] = 503
+    return route
+
+
+def test_a_failed_read_is_served_as_read_error_with_checked_at(
+    client, db, objects, writes, clock
+):
+    # run_e525710be66e4d4fbb29: CHECKING for 15 hours, `checks` null, and the
+    # page said "not read yet" because the failure was stored but not served.
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", "success")
+    _unreachable_statuses(writes)
+
+    run = _read(client, clock, running["id"])
+
+    pr = run["pull_request"]
+    assert run["state"] == "CHECKING"
+    assert pr["checks"] is None, "a failed read is not a reading"
+    assert pr["read_error"] is not None
+    assert "commit statuses" in pr["read_error"] and "503" in pr["read_error"]
+    assert pr["checked_at"] == clock.at.isoformat()
+    assert _rounds(db, running["id"]) == []
+
+
+def test_the_read_after_github_answers_again_records_checks_and_clears_the_error(
+    client, db, objects, writes, clock
+):
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", "pending", status="in_progress")
+    route = _unreachable_statuses(writes)
+    assert _read(client, clock, running["id"])["pull_request"]["read_error"]
+
+    del writes.refuse[route]  # GitHub answers again
+    run = _read(client, clock, running["id"])
+
+    pr = run["pull_request"]
+    assert run["state"] == "CHECKING"
+    assert pr["checks"] == "pending"
+    assert pr["read_error"] is None
+    assert pr["read_attempts"] is None and pr["read_failing_since"] is None
+    assert pr["checked_at"] == clock.at.isoformat()
+
+
+def test_a_move_that_raises_after_a_good_read_keeps_the_reading_and_records_why(
+    client, db, objects, writes, clock, monkeypatch
+):
+    # Before RT-4 an exception after the read -- here a round's start --
+    # discarded the reading: `checks` stayed null and `checked_at` unmoved on
+    # every visit, and the list route only logged it.
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", "failure", output={"summary": "test_a"})
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("the store went away")
+
+    monkeypatch.setattr(issueci, "_start_round", broken)
+    run = _read(client, clock, running["id"])
+
+    pr = run["pull_request"]
+    assert run["state"] == "CHECKING"
+    assert pr["checks"] == "red" and pr["head_sha"] == SHA_A
+    assert pr["checked_at"] == clock.at.isoformat()
+    assert "could not move on" in pr["read_error"] and "RuntimeError" in pr["read_error"]
+    assert "the store went away" not in pr["read_error"], "an exception's text is not served"
+
+    monkeypatch.undo()
+    again = _read(client, clock, running["id"])
+    assert again["state"] == "FIXING" and again["ci_fix_round"] == 1
+    assert again["pull_request"]["read_error"] is None
+
+
+# --------------------------------------------------------------------------
+# RUNS (2026-10-12): CHECKING has a deadline
+# --------------------------------------------------------------------------
+
+def _deadline() -> timedelta:
+    return timedelta(seconds=issueci.CHECKING_DEADLINE_SECONDS)
+
+
+def _entered_checking(client, clock, run_id: str) -> datetime:
+    run = _read(client, clock, run_id)
+    assert run["state"] == "CHECKING"
+    return clock.at
+
+
+def test_the_checking_deadline_is_a_bounded_named_constant():
+    assert 3600 <= issueci.CHECKING_DEADLINE_SECONDS <= 24 * 3600
+    assert issueci.CHECKING_DEADLINE_SECONDS > issueci.NO_CHECKS_SECONDS
+
+
+def test_a_run_whose_checks_cannot_be_read_fails_at_the_deadline_saying_why(
+    client, db, objects, writes, clock
+):
+    # run_e525710be66e: the repository's checks could not be read, so every
+    # visit recorded `read_error` and the run sat CHECKING for hours, holding
+    # a schedule slot. run_0d784c412dbc421a98ec (#1151, 2026-10-12): the same,
+    # GitHub unreachable at the check runs for 12 hours -- and its error said
+    # only "(URLError)", not since when or how often it had been tried.
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", "pending", status="in_progress")
+    entered = _entered_checking(client, clock, running["id"])
+    writes.raise_for[_CHECK_RUNS] = urllib.error.URLError(TimeoutError("timed out"))
+    first = _read(client, clock, running["id"])
+    failing_since = clock.at
+
+    clock.at = entered + _deadline() - timedelta(minutes=2)
+    assert _read(client, clock, running["id"])["state"] == "CHECKING", "not before the deadline"
+
+    clock.at = entered + _deadline() - timedelta(minutes=1)
+    run = _read(client, clock, running["id"])
+
+    assert first["state"] == "CHECKING"
+    assert run["state"] == "FAILED"
+    assert run["error"].startswith(
+        "could not read the repository's checks for 12 hours: GitHub writeback failing since "
+        + _minute(failing_since) + ": "
+    )
+    assert f"the check runs at saga-xyz/widgets@{SHA_A[:12]}" in run["error"]
+    assert "URLError: TimeoutError" in run["error"]
+    assert re.search(r"\((\d+) attempts\)$", run["error"]), run["error"]
+    assert "timed out" not in run["error"], "an exception's text is never served"
+    assert [h["to"] for h in run["history"]][-2:] == ["CHECKING", "FAILED"]
+    assert _rounds(db, running["id"]) == [], "a timed-out run spends no round"
+    # FAILED is terminal: the run holds nothing and later reads leave it be.
+    assert _read(client, clock, running["id"])["state"] == "FAILED"
+
+
+def test_ci_that_stays_pending_past_the_deadline_fails_naming_the_head(
+    client, db, objects, writes, clock
+):
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", None, status="in_progress")
+    entered = _entered_checking(client, clock, running["id"])
+
+    clock.at = entered + _deadline()
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "FAILED"
+    assert "pending" in run["error"] and SHA_A[:12] in run["error"]
+    assert run["pull_request"]["checks"] == "pending"
+
+
+def test_a_read_that_turns_green_at_the_deadline_is_done_not_failed(
+    client, db, objects, writes, clock
+):
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", None, status="in_progress")
+    entered = _entered_checking(client, clock, running["id"])
+
+    writes.check_runs[SHA_A].clear()  # the in-progress run completed
+    writes.check(SHA_A, "unit", "success")
+    clock.at = entered + _deadline()
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "DONE" and run["green_sha"] == SHA_A
+
+
+def test_the_deadline_restarts_when_a_fix_round_returns_the_run_to_checking(
+    client, db, objects, writes, clock
+):
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", "failure", output={"summary": "test_a"})
+    first = _read(client, clock, running["id"])
+    assert first["state"] == "FIXING"
+
+    # The round takes most of a deadline; its head's CI is still pending.
+    clock.at += _deadline() - timedelta(minutes=5)
+    _round_ends(db, _rounds(db, running["id"])[0])
+    writes.open_pull(PR, SHA_B)
+    writes.check(SHA_B, "unit", None, status="in_progress")
+    back = _read(client, clock, running["id"])
+    assert back["state"] == "CHECKING"
+    reentered = clock.at
+
+    clock.at = reentered + timedelta(hours=1)
+    assert _read(client, clock, running["id"])["state"] == "CHECKING"
+    clock.at = reentered + _deadline()
+    assert _read(client, clock, running["id"])["state"] == "FAILED"
+
+
+# --------------------------------------------------------------------------
+# WRITEBACK (2026-10-12): a transient failure is retried with backoff and
+# says why it is stuck; a refused credential fails the run at once
+# --------------------------------------------------------------------------
+
+_CHECK_RUNS = ("GET", f"/repos/saga-xyz/widgets/commits/{SHA_A}/check-runs")
+
+
+def _minute(moment: datetime) -> str:
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+
+
+def _github_reads(writes) -> int:
+    return sum(1 for call in writes.calls if call[0] == "GET")
+
+
+def test_a_transient_urlerror_is_retried_and_the_run_recovers(client, db, objects, writes, clock):
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", "pending", status="in_progress")
+    assert _read(client, clock, running["id"])["state"] == "CHECKING"
+
+    writes.check_runs[SHA_A].clear()
+    writes.check(SHA_A, "unit", "success")
+    writes.raise_for[_CHECK_RUNS] = urllib.error.URLError(OSError("network is unreachable"))
+    stuck = _read(client, clock, running["id"])
+
+    pr = stuck["pull_request"]
+    assert stuck["state"] == "CHECKING", "GitHub unreachable is not a reason to fail"
+    assert pr["read_attempts"] == 1
+    assert pr["read_failing_since"] == clock.at.isoformat()
+    assert pr["read_error"] == (
+        f"GitHub writeback failing since {_minute(clock.at)}: writeback_failed: the check runs "
+        f"at saga-xyz/widgets@{SHA_A[:12]} could not be sent to GitHub (URLError: OSError) "
+        "(1 attempt)"
+    )
+
+    del writes.raise_for[_CHECK_RUNS]  # GitHub answers again
+    clock.at += timedelta(seconds=issueci.READ_BACKOFF_MAX_SECONDS)
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "DONE" and run["green_sha"] == SHA_A
+    assert run["pull_request"]["read_error"] is None
+    assert run["pull_request"]["read_attempts"] is None
+
+
+def test_repeated_transient_errors_back_off_and_surface_the_attempts_and_since_when(
+    client, db, objects, writes, clock
+):
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", "pending", status="in_progress")
+    assert _read(client, clock, running["id"])["state"] == "CHECKING"
+    writes.raise_for[_CHECK_RUNS] = urllib.error.URLError(TimeoutError("timed out"))
+
+    first = _read(client, clock, running["id"])["pull_request"]
+    since = clock.at
+    assert first["read_attempts"] == 1
+
+    # Each later read is tried only once its backoff has passed, and the delay
+    # doubles from CI_READ_SECONDS up to a bound.
+    delays: list[float] = []
+    previous = first
+    for attempt in range(2, 9):
+        retry_at = datetime.fromisoformat(previous["read_retry_at"])
+        checked_at = datetime.fromisoformat(previous["checked_at"])
+        delays.append((retry_at - checked_at).total_seconds())
+        clock.at = retry_at - timedelta(seconds=1)
+        reads = _github_reads(writes)
+        assert _run(client, running["id"]).json()["run"]["pull_request"]["read_attempts"] == (
+            attempt - 1
+        ), "nothing is read inside the backoff"
+        assert _github_reads(writes) == reads
+        clock.at = retry_at
+        current = _run(client, running["id"]).json()["run"]
+        assert current["state"] == "CHECKING"
+        previous = current["pull_request"]
+        assert previous["read_attempts"] == attempt
+        assert previous["read_failing_since"] == since.isoformat(), "since the FIRST failure"
+        assert previous["read_error"].startswith(f"GitHub writeback failing since {_minute(since)}: ")
+        assert previous["read_error"].endswith(f"({attempt} attempts)")
+
+    assert delays[0] == issueci.CI_READ_SECONDS
+    assert all(b == min(2 * a, issueci.READ_BACKOFF_MAX_SECONDS) for a, b in zip(delays, delays[1:]))
+    assert delays[-1] == issueci.READ_BACKOFF_MAX_SECONDS, delays
+
+
+def test_a_5xx_is_transient_and_retried(client, db, objects, writes, clock):
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", "success")
+    _unreachable_statuses(writes)
+
+    pr = _read(client, clock, running["id"])["pull_request"]
+
+    assert pr["read_attempts"] == 1 and pr["read_retry_at"]
+    assert pr["read_error"].endswith("(1 attempt)")
+
+
+def test_a_403_on_commit_statuses_fails_the_run_at_once_naming_the_permission(
+    client, db, objects, writes, clock
+):
+    # A credential GitHub refuses is not going to start working on its own:
+    # twelve hours of CHECKING only hide the cause and hold the slot.
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", "success")
+    writes.refuse[("GET", f"/repos/saga-xyz/widgets/commits/{SHA_A}/status")] = 403
+
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "FAILED"
+    assert run["error"].startswith("could not read the repository's checks: checks_forbidden: ")
+    assert "statuses: read" in run["error"] and "403" in run["error"]
+    assert _rounds(db, running["id"]) == []
+
+
+def test_a_401_fails_the_run_at_once_saying_the_credential_is_invalid(
+    client, db, objects, writes, clock
+):
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", "success")
+    writes.refuse[_CHECK_RUNS] = 401
+
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "FAILED"
+    assert "writeback_unauthorized" in run["error"] and "invalid or has expired" in run["error"]
+
+
+def test_green_checks_with_a_failing_comment_writeback_still_end_the_run_done(
+    client, db, objects, writes, clock
+):
+    # The status comment is the run's report, not its gate: GitHub refusing
+    # or dropping that write never holds a green pull request back.
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", "pending", status="in_progress")
+    assert _read(client, clock, running["id"])["state"] == "CHECKING"
+    writes.check_runs[SHA_A].clear()
+    writes.check(SHA_A, "unit", "success")
+    comments = "/repos/saga-xyz/widgets/issues/42/comments"
+    writes.raise_for[("POST", comments)] = urllib.error.URLError(OSError("unreachable"))
+    for comment_id in list(writes.comments):
+        writes.raise_for[("PATCH", f"/repos/saga-xyz/widgets/issues/comments/{comment_id}")] = (
+            urllib.error.URLError(OSError("unreachable"))
+        )
+
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "DONE" and run["green_sha"] == SHA_A
+    assert _stored(db, running["id"])["writeback_error"]
+
+
+# --------------------------------------------------------------------------
+# RT-7 (2026-10-11): GET /v1/runs?view=summary drops what the list never shows
+# --------------------------------------------------------------------------
+
+def _list(client, **params) -> dict:
+    response = client.get("/v1/runs", headers=auth_header("alice"), params=params)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_the_summary_view_drops_the_heavy_fields_and_keeps_what_the_list_draws(
+    client, db, objects, writes, clock
+):
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", "pending", status="in_progress")
+    full_run = _read(client, clock, running["id"])
+    assert full_run["plan"] and full_run["history"] and full_run["pull_request"]["check_list"]
+
+    page = _list(client, view="summary")
+
+    assert page["view"] == "summary"
+    (row,) = page["runs"]
+    for key in issueruns.RUN_SUMMARY_DROPPED:
+        assert key not in row, key
+    assert "check_list" not in row["pull_request"]
+    # What the Runs list and Submit's recent list read, unchanged.
+    for key in ("id", "tenant_id", "state", "terminal", "issue", "plan_approval", "workflow_id",
+                "created_at", "created_by", "on_behalf_of", "not_ready", "hold", "plan_shape",
+                "plan_digest", "error"):
+        assert row[key] == full_run[key], key
+    assert row["pull_request"]["checks"] == "pending"
+    assert row["pull_request"]["check_counts"] == full_run["pull_request"]["check_counts"]
+    if full_run["issue_read"] is not None:
+        assert set(row["issue_read"]) == set(issueruns.ISSUE_READ_SUMMARY_KEYS)
+        assert row["issue_read"]["title"] == full_run["issue_read"]["title"]
+    # Smaller, by construction rather than by a byte budget.
+    import json
+
+    assert len(json.dumps(row)) < len(json.dumps(full_run))
+
+
+def test_no_view_and_view_full_serve_the_full_row_and_a_single_read_is_always_full(
+    client, db, objects, writes, clock
+):
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", "pending", status="in_progress")
+    _read(client, clock, running["id"])
+
+    for params in ({}, {"view": "full"}):
+        page = _list(client, **params)
+        assert "view" not in page
+        (row,) = page["runs"]
+        for key in issueruns.RUN_SUMMARY_DROPPED:
+            assert key in row, (params, key)
+        assert "check_list" in row["pull_request"]
+    single = _run(client, running["id"]).json()["run"]
+    for key in issueruns.RUN_SUMMARY_DROPPED:
+        assert key in single, key
+
+
+def test_an_unknown_view_is_refused(client, db, objects, writes, clock):
+    response = client.get("/v1/runs", headers=auth_header("alice"), params={"view": "tiny"})
+    assert response.status_code == 422
+    assert "tiny" in response.text
 
 
 @pytest.fixture(autouse=True)

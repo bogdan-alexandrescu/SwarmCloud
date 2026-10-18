@@ -81,7 +81,9 @@ def test_coverage_reads_the_extractors_block_with_source_modules_as_the_denomina
 def test_coverage_of_an_older_document_is_todays_count_and_says_so():
     answer = repoindex.coverage(fixture_index(ONE))
     assert answer == {"basis": "legacy", "modules": 2, "modules_with_tests": 2,
-                      "test_map_edges": 3, "always_tests": 1}
+                      "test_map_edges": 3, "always_tests": 1,
+                      "truncated": [], "test_map_edges_capped": False,
+                      "degraded_languages": []}
 
 
 def test_the_document_accepts_the_block_and_refuses_one_that_does_not_add_up():

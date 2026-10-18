@@ -309,6 +309,12 @@ driven by hand, for an operator who already holds the credentials and is doing
 a break-glass deploy or a dev-environment push. It is not what someone
 authoring a change runs; see [where the gates run](ci.md).
 
+**A run of `cancelled` dev releases means one is waiting at `dev-iam`.** It
+holds the `release-dev` group, and each newer release cancels the one pending
+behind it, so nothing deploys until it ends. Find it with `gh run list
+--workflow release.yml --status waiting`; reject it if main has moved past it or
+its plan would fail ([why, and how to tell](ci.md#a-held-dev-iam-plan-cancels-every-release-behind-it)).
+
 ```bash
 make lint test          # shellcheck, terraform fmt/validate, tflint, unit tests
 make build push deploy
@@ -483,3 +489,85 @@ Stuck in `PLANNING` or `CHECKING`, and `writeback_error`, are in
 [troubleshooting](troubleshooting.md#an-issue-run-is-stuck-in-planning-or-checking).
 The swarm-api log lines are `issue run <id> tenant=<t> not advanced by the tick
 (<code>)` and `issue run <id> tenant=<t>: CI not read (<code>)`.
+
+---
+
+## 13. Schedules: the S9 migration (SWEEP removed 2026-10-12)
+
+**State from 2026-10-11 (Schedules lane S9, [schedules.md §8.1-§8.2](schedules.md#8-migration)).**
+Recurring tenant work is a schedule, not a Cloud Scheduler job per purpose.
+
+| what | state | why |
+|---|---|---|
+| `issue-sweep` schedule in `eng` (`sch_6ecbe1307511`, firing since 2026-10-11 19:40Z), plus a weekly `repo-index-refresh` | **live** once an operator posts them (below) | they replace lane SWEEP's job and the operator's session cron |
+| `google_cloud_scheduler_job.issue_sweep` (`swarm-issue-sweep-<t>`) | **paused** 2026-10-11 (§8.1 step 3), **deleted** 2026-10-12 | two triggers of one sweep must not run side by side |
+| `POST /v1/admin/issues/sweep` and its `auth.ROLLUP_SWEEPER_ROUTES` entry, `GET`/`PUT /v1/admin/tenants/{id}/issue-sweep`, `SWEEP_ENABLED` / `var.enable_issue_sweep`, the reads of the tenant's `issue_sweep` settings | **deleted** 2026-10-12 (lane SWEEP-RM, §8.1 step 4) | the owner approved the second S9 change on 2026-10-12 and **waived the planned 7-day watch**: the schedule replaced all of them, and a paused auto-merging fallback beside it was a second trigger waiting to happen |
+| session cron `bdb47d30` | the operator's to delete, per §8.2, once a real firing has created issue runs | it is a session object, not code |
+
+The release that carries SWEEP-RM's commit plans one **destroy** per
+registered tenant (`module.scheduler.google_cloud_scheduler_job.issue_sweep[...]`),
+an in-place update of the `swarm-rollup-sweeper` account's description, and a
+new swarm-api revision without `SWEEP_ENABLED`. Each job carries
+`managed-by=swarm-terraform` in its description, so the plan guard admits the
+deletions. A tenant document that still holds an `issue_sweep` map keeps it;
+nothing reads it.
+
+The bodies are checked in as [`schedules-migration.json`](schedules-migration.json);
+`tests/unit/control_plane/test_schedules_migration_seed.py` builds each through
+the create route's own `schedules.build_schedule`, so a body the API would refuse
+fails CI first. A schedule is data, not infrastructure, so the release does not
+create it: an operator posts it, **as the member who will own it** (§2.7: the
+schedule fires as its owner). For `eng` that was the member SWEEP submitted as,
+its `issue_sweep.submit_as`. The route that read it was deleted on 2026-10-12;
+the member is now the posted schedule's own `owner`:
+
+```bash
+./scripts/api.sh GET "/schedules/sch_6ecbe1307511" | jq -r .schedule.owner
+```
+
+Signed in as that member, in tenant `eng`:
+
+```bash
+SEED=docs/schedules-migration.json
+mkdir -p build
+posted=0
+while read -r i; do
+  jq ".schedules[$i].body" "$SEED" > "build/schedule-$i.json"
+  ./scripts/api.sh POST "/schedules" "@build/schedule-$i.json" | jq '.schedule | {schedule_id, name, state}'
+  posted=$((posted + 1))
+done < <(jq '.schedules | keys[]' "$SEED")
+echo "posted $posted of $(jq '.schedules | length' "$SEED")"
+```
+
+Each body carries a `client_request_id`, so posting it again returns the first
+schedule rather than a second one. Check the count: a loop that printed nothing
+has not posted anything.
+
+**The sweep is created paused, and its first firing is dry** (§8.1 step 2, §2.8):
+
+```bash
+SCH=sch_...   # the issue-sweep schedule's id, from the post above
+./scripts/api.sh POST "/schedules/$SCH:run" '{"dry_run": true}' | jq .firing
+./scripts/api.sh GET "/schedules/$SCH" | jq '.firings[0].dry_run'
+```
+
+Compare the candidate list with SWEEP's last real sweep: the issue runs with
+`created_by: issue-sweep`. Then
+`./scripts/api.sh POST "/schedules/$SCH:resume"`. It fires at `:07` and `:37`,
+SWEEP's old cadence. Until it is resumed, nothing in the platform sweeps, and
+session cron `bdb47d30` is the only sweep, which is why §8.2 deletes that cron
+only after a real firing.
+
+**What differs from SWEEP, on purpose.** The schedule's merge gate is
+`approve`, so each swept pull request waits in Automate › Approvals instead of
+merging unattended. Unattended merge is SD3's audited switch (`POST
+/v1/schedules/{id}:merge-mode`, a second member), never a create. It starts at
+most `max_new_per_firing` (3) new runs a firing, under the same cap of 8 live
+runs. It skips `needs-owner`, `wontfix` and `question` as well as SWEEP's `epic`,
+`blocked` and `security`. A tenant's old `issue_sweep.exclude_issues` has no
+schedule parameter: label the issue and add the label to `labels_exclude`.
+
+**There is no falling back to SWEEP** since 2026-10-12: the job, the route and
+the switch are gone. To stop the sweep, pause the schedule (`sc schedules pause
+<name>`). Bringing SWEEP back means reverting SWEEP-RM's commit and releasing,
+and pausing the schedule first, so that two triggers never run together.

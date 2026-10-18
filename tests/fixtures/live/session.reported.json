@@ -1,0 +1,105 @@
+{
+  "live_browser": true,
+  "session": {
+    "session_id": "live_att_fafe0d6de50c4ff39de9",
+    "state": "open",
+    "closed_reason": null,
+    "origin": {
+      "origin": "https://github.com",
+      "host": "github.com",
+      "display_host": "github.com",
+      "registrable_domain": "github.com",
+      "scheme": "https:",
+      "ip_literal": false,
+      "cert_error": null,
+      "path": "/login"
+    },
+    "human_wait": {
+      "reason": "Sign in to GitHub so I can open the pull request",
+      "expect": "github.com",
+      "requested_at": "2026-10-11T23:40:00+00:00",
+      "deadline": "2026-10-11T23:50:00+00:00"
+    },
+    "controller": {
+      "email": "dave@saga.xyz",
+      "since": "2026-10-11T23:41:00+00:00",
+      "renew_by": "2026-10-11T23:42:00+00:00"
+    },
+    "open_to_members": true,
+    "device": {
+      "preset": "iphone-15",
+      "orientation": "portrait",
+      "touch": true
+    },
+    "presets": [
+      {
+        "name": "desktop",
+        "width": 1440,
+        "height": 900,
+        "scale": 1.0,
+        "mobile": false
+      },
+      {
+        "name": "iphone-15",
+        "width": 393,
+        "height": 852,
+        "scale": 3.0,
+        "mobile": true
+      },
+      {
+        "name": "pixel-8",
+        "width": 412,
+        "height": 915,
+        "scale": 2.625,
+        "mobile": true
+      },
+      {
+        "name": "iphone-se",
+        "width": 375,
+        "height": 667,
+        "scale": 2.0,
+        "mobile": true
+      },
+      {
+        "name": "ipad-7",
+        "width": 810,
+        "height": 1080,
+        "scale": 2.0,
+        "mobile": true
+      }
+    ],
+    "you": {
+      "email": "alice@saga.xyz",
+      "can_control": true,
+      "can_preempt": true,
+      "can_open": true,
+      "can_switch_device": false
+    },
+    "agent_connected_at": "2026-10-11T23:39:12+00:00",
+    "agent_connections": 1,
+    "first_frame_at": "2026-10-11T23:39:05+00:00"
+  },
+  "browser": {
+    "tool_selected": "auto",
+    "tools_available": [
+      "playwright",
+      "dev-browser",
+      "jev"
+    ],
+    "tool_last_used": {
+      "name": "dev-browser",
+      "at": "2026-10-11T23:41:30+00:00"
+    },
+    "jev": {
+      "enabled": true,
+      "reason": null,
+      "key_scope": "user"
+    },
+    "egress": {
+      "mode": "residential",
+      "country": "us",
+      "state": "ok",
+      "last_error": null
+    }
+  }
+}

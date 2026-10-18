@@ -111,12 +111,17 @@ function KeyFact({ provider, keys }: { provider: string | null; keys: ProviderKe
   if (keys.kind === 'reading') {
     return <><Mark kind="pending" say={`Reading whether this tenant has registered its ${provider} key.`} /> {provider} key</>
   }
+  // THE MARK'S REASON IS ALSO ITS TITLE (live QA SUB-14): the dashed `not
+  // read` chip explained itself only to a screen reader, and a pointer over
+  // it learned nothing.
   if (keys.kind === 'unread') {
-    return <><Mark kind="unread" say={`Whether this tenant holds its ${provider} key could not be read. ${keys.detail}`} /> {provider} key</>
+    const why = `Whether this tenant holds its ${provider} key could not be read. ${keys.detail}`
+    return <span title={why}><Mark kind="unread" say={why} /> {provider} key</span>
   }
   const held = keys.registered.get(provider)
   if (held === undefined) {
-    return <><Mark kind="unread" say={`The providers read did not list ${provider}, so whether its key is held is unknown.`} /> {provider} key</>
+    const why = `The providers read did not list ${provider}, so whether its key is held is unknown.`
+    return <span title={why}><Mark kind="unread" say={why} /> {provider} key</span>
   }
   return held ? <>{provider} key present</> : <span className="sbf-runner-miss">{provider} key missing</span>
 }
@@ -150,7 +155,7 @@ export function CanStartFact({ profile }: { profile: RunnerProfile }) {
   const room = headroomFor(profile)
   if (room.agents !== null) {
     if (room.agents > 0) return <>{room.agents} more can start now</>
-    return <>0 can start now{room.binding !== null && <> · held by <span className="mono">{room.binding}</span></>}</>
+    return <>0 can start now{room.binding !== null && <> · held by <span className="sbf-runner-holder" title={room.binding}>{room.binding}</span></>}</>
   }
   if (room.basis === 'uncapped') return <>no pool caps it</>
   return (
@@ -206,8 +211,13 @@ export function shortReason(reason: string | null | undefined): string {
   const r = (reason ?? '').trim()
   if (r === '') return 'Not available'
   if (r.length <= 48 && !/[#/()_]|\d{3}/.test(r)) return r.replace(/\.$/, '')
+  // WHAT IT WAITS FOR, WHEN THE REASON NAMES IT (live QA SUB-14): codex said
+  // "Not enabled yet. Use claude-code", and the merge chain's two runners said
+  // only "Not enabled yet" -- no reason and nothing to do instead. Their
+  // reason names the merge chain; that is what a submitter can be told.
+  const chain = /\bmerge chain\b/i.test(r)
   const why = /\b(disabled|until|not (yet )?enabled)\b/i.test(r)
-    ? 'Not enabled yet'
+    ? chain ? 'Not enabled yet: the merge chain is off' : 'Not enabled yet'
     : /\b(credential|key|token|sign[- ]?in)\b/i.test(r)
       ? 'Its credential was refused'
       : 'Not available'
@@ -381,14 +391,19 @@ export function RunnerSelect({ id, label, profiles, chosen, onPick }: {
   )
 }
 
-/** The chosen step runner's size, room and key, under its select. */
+/** The chosen step runner's size, room and key, under its select.
+ *
+ *  EACH SEPARATOR ENDS ITS ITEM (VQA V127), the issue preview's rule (N20):
+ *  the dot is held to the word before it by a no-break space, so a wrapped
+ *  line can end on one but never start with one. The size is one unbroken
+ *  run (`.wfb-cost .sb-runner-size`, submit.css): its own dots wrapped too. */
 export function StepRunnerFacts({ profile, keys }: { profile: RunnerProfile; keys: ProviderKeys }) {
   return (
     <p className="wfb-cost">
       <span className="sb-runner-size">{sizeOf(profile)}</span>
-      {' · '}
+      {'\u00a0· '}
       <span className="sbf-runner-room"><CanStartFact profile={profile} /></span>
-      {' · '}
+      {'\u00a0· '}
       <span className="sbf-runner-key"><KeyFact provider={profile.provider} keys={keys} /></span>
     </p>
   )

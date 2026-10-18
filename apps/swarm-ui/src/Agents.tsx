@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react'
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { createPortal } from 'react-dom'
 // `Em` and `Mark` live in AgentDetail.tsx, which is where `ABSENT_MARK` was
 // written and which design-system.md §9.1 names as the source to promote from.
@@ -7,12 +7,15 @@ import { createPortal } from 'react-dom'
 // `Chip` joins them for the same reason: §9.3 of design-system.md counted four
 // status chips in this product and asked for one, and the rebuilt `.ctl-chip`
 // is only a rebuild if the screens stop hand-rolling their own.
-import { Em, Mark, type ChipTone } from './AgentDetail'
+import { Em, Mark, timesRun, type ChipTone } from './AgentDetail'
 import { TaskIdLine } from './TaskIdLine'
 import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, agentKind, agentList, agentName, shortTaskId, workflowHref, type AgentList, type RecentState } from './agentlist'
-import { TASK_PAGE_LIMIT, loadTasks, type ResourceClasses } from './api'
+import { TASK_PAGE_LIMIT, USE_FIXTURES, loadAttempts, loadLiveSession, loadTask, loadTasks, loadTasksInState, type LiveSession, type ResourceClasses } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
 import type { Result } from './fetch'
+import { isLiveBrowser, liveBrowserRows, needsYou } from './Handoff'
+import { presetLabel } from './LiveBrowser'
+import { theaterPath } from './LiveThumb'
 import { HelpCard, phoneWidth } from './HelpCard'
 import { toggleListSnap, useListSnap } from './listSnap'
 import './styles/agents.css'
@@ -80,6 +83,24 @@ const TABS: { id: Tab; label: string; say: string }[] = [
   { id: 'recent', label: 'Recent', say: 'Recent: finished, one way or another' },
 ]
 
+/**
+ * THE BROWSER SWITCH'S ROWS (QA12-20): `liveBrowserRows` -- the RUNNING
+ * browser agents, needs-you first -- then the browser agents still STARTING.
+ * A starting browser was left out, so a browser agent the reader had just
+ * launched was missing from the one filter that names browsers; it is listed
+ * last, with a `starting` mark in its row, because its browser is not up yet.
+ */
+export function browserRows(tasks: readonly Task[]): Task[] {
+  return [...liveBrowserRows(tasks), ...tasks.filter((t) => t.state === 'STARTING' && isLiveBrowser(t))]
+}
+
+/**
+ * THE LIST'S READ TIME, FOR THE ROWS THAT READ ON THE LIST'S POLL (QA12-29):
+ * the device outline. A context rather than a prop through every row
+ * component, because one cell of one kind of row uses it.
+ */
+const ListReadAt = createContext<number | null>(null)
+
 function tabOf(t: Task): Tab {
   if (CONCURRENCY_STATES.has(t.state)) return 'live'
   if (TERMINAL_STATES.has(t.state)) return 'recent'
@@ -97,8 +118,8 @@ function tabOf(t: Task): Tab {
  * costliest fact on the page -- so this changes only the landing that was
  * guaranteed to be empty.
  *
- * `'live'` when every tab is empty, which the screen does not reach: an empty
- * page renders the Screen's own empty state before this body mounts.
+ * `'live'` when every tab is empty: an empty read is a page of no rows
+ * (`loadAgentsPage`, V151), so the body mounts and lands on Live's own zero.
  */
 function landingTab(counts: Readonly<Record<Tab, number>>): Tab {
   return TABS.find((t) => counts[t.id] > 0)?.id ?? 'live'
@@ -147,11 +168,11 @@ export function pollInterval(page: TaskPage | null): number {
  * 200-row page on every viewport -- 2-4 MB every 5s over cellular, for as
  * long as Live held a row and the tab was visible.
  *
- * `view=summary` EXISTS NOW (#168) AND THE CAP STAYS. The summary view cuts
- * each row; the cap cuts the row count, and the Overview's failures check
- * counts over this same phone page (OV-10), so lifting it changes what two
- * screens' figures describe at once. Whether a phone should go back to 200
- * summary rows is a decision #168 left open, not one this read makes.
+ * `view=summary` EXISTS NOW (#168), AND THE PHONE READS THE FULL PAGE (live QA
+ * CH-4, 2026-10-11): 50 rows made the phone say "failed 0+" where the desktop
+ * said "failed 6+" at the same minute. `PHONE_PAGE_LIMIT` is `TASK_PAGE_LIMIT`
+ * (pageLimits.ts says why); the Overview's failures check counts over this
+ * same page (OV-10), so the two moved together.
  *
  * "PHONE" IS `phoneWidth()` from HelpCard.tsx: 560px and under, the width at
  * which this list already draws as cards and a `?` takes a fingertip. §2.1
@@ -171,6 +192,56 @@ export { PHONE_PAGE_LIMIT }
 interface AgentsPage extends TaskPage {
   /** The `limit` the read asked for: `PHONE_PAGE_LIMIT` at phone width. */
   asked: number
+  /** Further pages were read into it with "load more" (`MorePages`). */
+  extended?: boolean
+  /**
+   * EVERY LIVE AGENT IS IN `tasks` (QA12-20): the page held them all, or the
+   * live states were read in full beside it (`readLive`). False when a capped
+   * page's live-state read failed or was itself capped, and Live's count is
+   * then a lower bound like every other.
+   */
+  liveWhole?: boolean
+}
+
+/**
+ * THE PAGES READ PAST THE FIRST, BY "LOAD MORE" (live QA WA-2, 2026-10-11).
+ * The list said `200 loaded · more beyond` and never followed the
+ * `next_page_token` it was handed, so a task older than the newest 200 could
+ * not be reached from this screen at all.
+ *
+ * `tasks` STARTS WITH THE FIRST PAGE AS IT WAS when "load more" was pressed,
+ * then each page after it. The first page goes on being re-read every few
+ * seconds and the token does not move with it: rows that newer tasks push off
+ * the re-read first page are older than every row on it, and they would fall
+ * into a gap between it and the next page if the snapshot did not keep them.
+ * Rows past the first page are not re-read; they are, overwhelmingly, finished
+ * agents, whose rows no longer change.
+ */
+interface MorePages {
+  tasks: Task[]
+  /** The token for the page after the last one read; null when none is left. */
+  token: string | null
+}
+
+/** The re-read first page, with every further page read into it after its own rows. */
+export function withMorePages(page: AgentsPage, more: MorePages | null): AgentsPage {
+  if (more === null) return page
+  const fresh = new Set(page.tasks.map((t) => t.id))
+  return {
+    ...page,
+    tasks: [...page.tasks, ...more.tasks.filter((t) => !fresh.has(t.id))],
+    next_page_token: more.token,
+    extended: true,
+    // Read to the last page, the list holds every row, live ones included.
+    liveWhole: page.liveWhole === true || more.token === null,
+  }
+}
+
+/** One more page after `token`, appended to what is already held. */
+function appendPage(held: readonly Task[], got: TaskPage | null, token: string | null): MorePages {
+  const seen = new Set(held.map((t) => t.id))
+  const rows = got === null ? [] : got.tasks.filter((t) => !seen.has(t.id))
+  return { tasks: [...held, ...rows], token }
 }
 
 async function loadAgentsPage(): Promise<Result<AgentsPage>> {
@@ -179,9 +250,67 @@ async function loadAgentsPage(): Promise<Result<AgentsPage>> {
   // or `result_summary` -- the inspector reads its own task, full, through
   // `loadTask` -- and the trap in `drawer.reread.test.tsx` holds that.
   const read = await loadTasks(asked, { view: 'summary' })
-  return read.status === 'ok' || read.status === 'stale'
-    ? { ...read, data: { ...read.data, asked } }
-    : read
+  // AN EMPTY READ IS A PAGE OF NO ROWS, NOT A DIFFERENT SCREEN (V151, visual
+  // QA #1038). Handed to `Screen` as `empty`, it replaced the whole body with
+  // one panel: the tab strip, the search and the filters went with it, so the
+  // screen a tenant with no agents saw was laid out unlike the one it would
+  // see a minute later. The body draws each tab's own real zero, mark and
+  // all, under the same chrome it always has.
+  if (read.status === 'empty') {
+    return { status: 'ok', data: { tasks: [], next_page_token: null, asked }, fetchedAt: read.fetchedAt, serverAt: read.serverAt }
+  }
+  if (read.status !== 'ok' && read.status !== 'stale') return read
+  if (!read.data.next_page_token) return { ...read, data: { ...read.data, asked, liveWhole: true } }
+  // A FIXTURE LIST IS ONE PAGE (`loadTasks`): it never hands out a token, so
+  // there is no capped page to read the live states beside, and its `?state=`
+  // reads are the same fixture rows again, not a second population.
+  if (USE_FIXTURES) return { ...read, data: { ...read.data, asked, liveWhole: false } }
+  const live = await readLive()
+  const held = new Set(read.data.tasks.map((t) => t.id))
+  return {
+    ...read,
+    data: {
+      ...read.data,
+      tasks: [...read.data.tasks, ...live.tasks.filter((t) => !held.has(t.id))],
+      asked,
+      liveWhole: live.whole,
+    },
+  }
+}
+
+/**
+ * THE LIVE STATES, READ IN FULL (live-browser QA p12, QA12-20). Live was
+ * counted over the newest 200 rows, so with more beyond them it read `Live
+ * 5+` with exactly five live, offered `Load 200 more` under five rows, and a
+ * resumed task older than the page -- the case p12 measured -- was not on it
+ * at all. A live agent holds a pool slot, so the live states are bounded by
+ * concurrency (invariant 3), not by the page: one `?state=` read each, summary
+ * rows, made only when the page is capped. A failed or capped read leaves
+ * Live a lower bound, as it was.
+ */
+async function readLive(): Promise<{ tasks: Task[]; whole: boolean }> {
+  const reads = await Promise.all(
+    // A read that throws or answers nothing is a failed read, never an
+    // empty state, as the header's attempt read treats one (AgentSplit.tsx).
+    [...CONCURRENCY_STATES].map((state) =>
+      Promise.resolve()
+        .then(() => loadTasksInState(state, { view: 'summary' }))
+        .then((r) => r ?? null, () => null),
+    ),
+  )
+  let whole = true
+  const tasks: Task[] = []
+  for (const r of reads) {
+    if (r !== null && r.status === 'empty') continue
+    if (r === null || r.status !== 'ok') {
+      whole = false
+      if (r !== null && r.status === 'stale') tasks.push(...r.data.tasks)
+      continue
+    }
+    tasks.push(...r.data.tasks)
+    if (r.data.next_page_token) whole = false
+  }
+  return { tasks, whole }
 }
 
 /**
@@ -240,6 +369,29 @@ export function AgentsScreen({
   // RECENT'S SEARCH (#99). Held here beside `profile`, not in the address: a
   // query is a reader's scratch.
   const [query, setQuery] = useState('')
+  // "LOAD MORE" (WA-2): the pages read past the first, kept across the first
+  // page's re-reads, and the state of the read in flight.
+  const [more, setMore] = useState<MorePages | null>(null)
+  const [moreRead, setMoreRead] = useState<MoreRead>({ kind: 'idle' })
+  const busy = useRef(false)
+  const loadMore = async (page: AgentsPage) => {
+    const token = more !== null ? more.token : (page.next_page_token ?? null)
+    if (token === null || busy.current) return
+    busy.current = true
+    setMoreRead({ kind: 'reading' })
+    const got = await loadTasks(page.asked, { view: 'summary', pageToken: token })
+    busy.current = false
+    if (got.status === 'ok' || got.status === 'stale') {
+      setMore((m) => appendPage(m === null ? page.tasks : m.tasks, got.data, got.data.next_page_token ?? null))
+      setMoreRead({ kind: 'idle' })
+    } else if (got.status === 'empty') {
+      // An empty page after a token is the end of the list, and an answer.
+      setMore((m) => appendPage(m === null ? page.tasks : m.tasks, null, null))
+      setMoreRead({ kind: 'idle' })
+    } else if (got.status === 'error') {
+      setMoreRead({ kind: 'failed', why: got.error.message })
+    }
+  }
 
   return (
     <Screen
@@ -252,7 +404,8 @@ export function AgentsScreen({
       // can change; this screen owns the cadence, which is a function of the
       // rows it holds.
       pollMs={pollInterval}
-      summary={(d) => {
+      summary={(first) => {
+        const d = withMorePages(first, more)
         const live = d.tasks.filter((t) => tabOf(t) === 'live').length
         return (
           <>
@@ -261,32 +414,17 @@ export function AgentsScreen({
           </>
         )
       }}
-      empty={{
-        // ONE `real zero`, AND IT IS THE PRIMITIVE'S. This heading read
-        // `No agents · real zero` beside the mark `Absent` already draws in
-        // the heading (#145), so the empty state said it twice -- and only
-        // the mark has a sentence behind it. `emptystate.onemark.test.tsx`.
-        heading: 'No agents',
-        // ONE SENTENCE, WHICH IS WHAT §6.9 ALLOWS AN EMPTY STATE. The second
-        // sentence -- "nothing has been submitted under this tenant, or
-        // everything has aged out of the page" -- was two guesses about a
-        // cause this screen cannot see, and the link is where a reader finds
-        // out which states a page holds.
-        // NO `?` HERE (B7.4). The heading beside this sentence already reads
-        // `real zero · No agents`, which is the whole of what `tenant-scope`
-        // was guarding against -- a reader taking an empty list for a failed
-        // read. Whose agents these are is the crumb and the provenance line
-        // above, and the topic is one click away in the rail's Help section.
-        // This screen keeps exactly one glyph, on the empty TAB below, where
-        // the claim being made is about capacity rather than about the read.
-        body: <>The read succeeded and returned nothing.</>,
-      }}
+      // NO `empty` PANEL (V151): `loadAgentsPage` never answers `empty`, so
+      // a tenant with no agents keeps the tabs, search and filters, and each
+      // tab draws its own real zero below them.
     >
       {(d, reading) => (
         <AgentsBody
           onOpen={onOpen}
           openTaskId={taskId}
-          page={d}
+          page={withMorePages(d, more)}
+          onMore={() => void loadMore(withMorePages(d, more))}
+          moreRead={moreRead}
           // WHEN THE ROWS ON SCREEN WERE READ, and the cadence in force, as
           // `Screen` read them -- not recorded a second time here. A stale
           // screen hands over the last GOOD read's time, which is the one the
@@ -319,10 +457,15 @@ export function AgentsScreen({
  */
 export { rowClock }
 
+/** The "load more" read: none in flight, one in flight, or the last one failed. */
+type MoreRead = { kind: 'idle' } | { kind: 'reading' } | { kind: 'failed'; why: string }
+
 function AgentsBody({
   onOpen,
   openTaskId,
   page,
+  onMore,
+  moreRead,
   readAt,
   interval,
   tab,
@@ -342,6 +485,9 @@ function AgentsBody({
   onOpen: (taskId: string) => void
   openTaskId: string | null
   page: AgentsPage
+  /** Read the page after the last one held (WA-2). */
+  onMore: () => void
+  moreRead: MoreRead
   readAt: number | null
   /** The cadence the rows are re-read at: how far past `readAt` they are good for. */
   interval: number
@@ -403,7 +549,8 @@ function AgentsBody({
   // read `/v1/stats` on its own 30s clock and lagged the tabs. A page with
   // fewer rows than it asked for and no next page is every row there is;
   // a capped page is not, and the panel says so by keeping its own read.
-  const whole = page.tasks.length < page.asked && (page.next_page_token ?? null) === null
+  // A list extended by "load more" to its last page holds every row too.
+  const whole = (page.next_page_token ?? null) === null && (page.tasks.length < page.asked || page.extended === true)
   useEffect(() => {
     publishListCounts({ live: counts.live, waiting: counts.waiting, at: readAt ?? Date.now(), whole })
   }, [counts.live, counts.waiting, readAt, whole])
@@ -444,13 +591,31 @@ function AgentsBody({
   // THE STARTED SORT (#376), on every tab: newest start, oldest start, then
   // back to the list's own order. A reader's scratch, so not in the address.
   const [startedSort, setStartedSort] = useState<StartedSort>(null)
+  // THE "ALL | BROWSERS N" SWITCH (docs/design/live-browser.md §6, "All live
+  // browsers"; lanes LB-L12, LB-UX3): on the Live tab, Browsers lists only
+  // the browser agents, the ones waiting for a person first, then the rest
+  // running, then the ones starting (`browserRows`), and N counts them. It
+  // was a "Live browsers" checkbox; the chosen design draws a switch. A
+  // reader's scratch, like the sort.
+  //
+  // `BROWSERS`, NOT `LIVE` (live-browser QA p12, QA12-20): the option read
+  // `Live` inside the Live tab, one word for two different sets on one line.
+  const [browsersOnly, setBrowsersOnly] = useState(false)
+  const browsers = shown === 'live' && browsersOnly
+  const liveBrowsers = useMemo(() => browserRows(page.tasks).length, [page.tasks])
   const sort: SortControl = {
     started: startedSort,
     onStarted: () => setStartedSort((s) => (s === null ? 'desc' : s === 'desc' ? 'asc' : null)),
   }
   const rows = useMemo(
     () =>
-      page.tasks
+      browsers
+        ? // Needs-you first IS this filter's order, so the started sort does
+          // not reorder it; the profile and the search still narrow it.
+          browserRows(page.tasks)
+            .filter((t) => profile === '' || t.runner_profile === profile)
+            .filter((t) => needle === '' || matchesQuery(t, needle))
+        : page.tasks
         .filter((t) => tabOf(t) === shown)
         .filter((t) => stateFilter === null || t.state === RECENT_STATE_OF[stateFilter])
         .filter((t) => profile === '' || t.runner_profile === profile)
@@ -461,21 +626,24 @@ function AgentsBody({
             if (byFailed !== 0) return byFailed
           }
           if (startedSort !== null) return compareStarted(a, b, startedSort === 'asc')
-          return a.updated_at < b.updated_at ? 1 : -1
+          return listOrder(a, b, shown)
         }),
-    [page.tasks, shown, stateFilter, profile, needle, failFirst, startedSort],
+    [page.tasks, shown, stateFilter, profile, needle, failFirst, startedSort, browsers],
   )
 
-  // The segment's counts, from the loaded Recent rows, like the tab badges.
+  // The segment's counts, from the loaded Recent rows, like the tab badges --
+  // UNDER THE PROFILE FILTER (live QA WA-9): with `indexer` chosen and 15 rows
+  // on screen the segment read `all 181+`, the count of every profile's rows.
+  // A count beside a filter counts what that filter lets through.
   const stateCounts = useMemo(() => {
-    const recent = page.tasks.filter((t) => tabOf(t) === 'recent')
+    const recent = page.tasks.filter((t) => tabOf(t) === 'recent' && (profile === '' || t.runner_profile === profile))
     return {
       all: recent.length,
       failed: recent.filter((t) => t.state === RECENT_STATE_OF.failed).length,
       cancelled: recent.filter((t) => t.state === RECENT_STATE_OF.cancelled).length,
       succeeded: recent.filter((t) => t.state === RECENT_STATE_OF.succeeded).length,
     }
-  }, [page.tasks])
+  }, [page.tasks, profile])
 
   // EVERY REPORT CARRIES THE TOGGLES (G2-22): a tab click that wrote only
   // `{ tab, state }` would clear `group=wf` from the address, and the
@@ -510,6 +678,33 @@ function AgentsBody({
     report({})
     onOpen(taskId)
   }
+  // A ROW FOUND UNDER ANOTHER TAB, or by its id beyond the page (WA-1),
+  // opens under the tab its state puts it in, as every row does.
+  const openElsewhere = (t: Task) => {
+    const where = tabOf(t)
+    setTab(where)
+    // On Recent with no state filter, so a cancelled agent opened from a
+    // `failed` view is not hidden by the filter it came through.
+    setRecentState(null)
+    report({ tab: where, state: null })
+    onOpen(t.id)
+  }
+  const idQuery = WHOLE_TASK_ID.test(needle) ? needle : null
+
+  // THE OPEN AGENT'S ROW IS SCROLLED INTO VIEW, ONCE, when it is first drawn
+  // (live QA WA-15). A deep link marked the row `aria-current` and left it at
+  // y=2030, below the fold. Once per agent: a reader who then scrolls the
+  // list away from it is not pulled back on the next re-read.
+  const scrolledTo = useRef<string | null>(null)
+  useEffect(() => {
+    if (openTaskId === null || scrolledTo.current === openTaskId) return
+    const row = [...document.querySelectorAll<HTMLElement>('.row.is-compact[data-task-id]')].find(
+      (r) => r.getAttribute('data-task-id') === openTaskId,
+    )
+    if (row === undefined) return
+    scrolledTo.current = openTaskId
+    if (typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'nearest' })
+  }, [openTaskId, rows])
 
   // THE SCOPE OF EVERY FIGURE ABOVE, IN ONE QUALIFIER.
   //
@@ -547,11 +742,21 @@ function AgentsBody({
   // aggregation per state set on every poll, and this screen's figures are
   // the page's by design (the Overview counts over the same page, OV-10).
   const bounded = Boolean(page.next_page_token)
-  const countText = (n: number): string => (bounded ? `${n}+` : String(n))
+  // LIVE IS READ IN FULL (QA12-20), so its count is exact over a capped page
+  // whenever the live-state reads answered whole (`readLive`): `Live 5+` with
+  // exactly five live claimed a doubt there was no reason for.
+  const liveWhole = page.liveWhole === true
+  const tabBounded = (t: Tab): boolean => bounded && !(t === 'live' && liveWhole)
+  const countText = (n: number, b: boolean = bounded): string => (b ? `${n}+` : String(n))
   const countSay = (n: number): string => `at least ${n} among the ${page.tasks.length} newest read; more rows exist beyond them`
+  // ON LIVE, NO "MORE" WHEN THERE IS NO MORE (QA12-20): `200 loaded · more
+  // beyond` and `Load 200 more` sat under five live rows. More pages exist,
+  // but none of them holds a live agent, so Live does not offer them.
+  const liveAll = shown === 'live' && liveWhole
+  const liveSay = `Every agent holding a pool slot is listed: the live states are read in full, not only from the ${page.tasks.length} newest rows.`
 
   return (
-    <>
+    <ListReadAt.Provider value={readAt}>
       {/* THE SECTION'S PAGES AS A STRIP (agents.html V1; #503 at 390): Live,
           Waiting and Recent with their counts, underlined rather than boxed.
           On a phone it sticks under the header, so the reader can change tab
@@ -563,10 +768,11 @@ function AgentsBody({
             type="button"
             role="tab"
             aria-selected={shown === t.id}
-            aria-label={bounded ? `${t.say} — ${countSay(counts[t.id])}` : t.say}
+            aria-label={tabBounded(t.id) ? `${t.say} — ${countSay(counts[t.id])}` : t.say}
             onClick={() => chooseTab(t.id)}
           >
-            {t.label} <span className={`badge${bounded ? ' is-bound' : ''}`}>{countText(counts[t.id])}</span>
+            {t.label}{' '}
+            <span className={`badge${tabBounded(t.id) ? ' is-bound' : ''}`}>{countText(counts[t.id], tabBounded(t.id))}</span>
           </button>
         ))}
       </div>
@@ -578,7 +784,12 @@ function AgentsBody({
             open agent, where there is a detail to give the room to. */}
         {openTaskId !== null && <AgCollapse />}
 
-        <label className="ag-find">
+        {/* THE SCOPE RIDES WITH THE SEARCH (V147, visual QA #1038). It was the
+            toolbar's last, `is-end` item, and whenever the toolbar wrapped
+            `26 loaded` was stranded on a line of its own. It qualifies what
+            the search searches, so it sits at the search box's end, on the
+            one line that always takes the slack. */}
+        <div className="ag-find">
           <input
             type="search"
             value={query}
@@ -586,98 +797,182 @@ function AgentsBody({
             aria-label="Find by name or task id"
             onChange={(e) => setQuery(e.target.value)}
           />
-        </label>
+          <span className="ag-scope" aria-label={liveAll && bounded ? liveSay : scopeSay}>
+            {liveAll && bounded
+              ? `all ${counts.live} live`
+              : phonePage
+                ? `showing the ${page.tasks.length} most recent`
+                : `${page.tasks.length} loaded${page.next_page_token ? ' · more beyond' : ''}`}
+          </span>
+        </div>
 
-        <label className="ag-filter">
-          <span className="ag-filter-k">profile:</span>
-          <select value={profile} onChange={(e) => setProfile(e.target.value)}>
-            <option value="">all</option>
-            {profiles.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
-            ))}
-          </select>
-        </label>
+        {/* THE CONTROLS ARE ONE ITEM OF THE TOOLBAR (V147, VQA2-R13). Each was
+            its own flex item, so at 1440 on Recent the row filled and `Started`
+            alone dropped to a second line -- what the WA-10 rule in
+            agents.css says must not happen. Grouped, they wrap together, and
+            the checkboxes and `Started` are one unbreakable tail inside the
+            group, so a narrow list never strands the last control either. */}
+        <div className="ag-tools">
+          <label className="ag-filter">
+            <span className="ag-filter-k">profile:</span>
+            {/* CAPPED, NOT SIZED TO ITS LONGEST OPTION (V061): the whole value is
+                its title. */}
+            <select value={profile} title={profile === '' ? 'all' : profile} onChange={(e) => setProfile(e.target.value)}>
+              <option value="">all</option>
+              {profiles.map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+            </select>
+          </label>
 
-        {/* RECENT, BY STATE (OV-10): pressed buttons rather than tabs -- it
-            filters the tab it sits beside, it is not a fourth tab. Counts are
-            from the loaded rows, like the tab badges, and DEAD_LETTERED is
-            never offered: nothing writes it (`agentlist.ts`). */}
-        {shown === 'recent' && (
-          <Segmented
-            label="Recent, by state"
-            value={recentState ?? 'all'}
-            // A capped page's count is drawn in the label as `2+` with its
-            // sentence as the title (G2-05): `SegOption.count` is a number.
-            options={(['all', ...RECENT_STATES] as const).map((s) =>
-              bounded
-                ? {
-                    key: s,
-                    label: (
-                      <>
-                        {s}
-                        <em className="is-bound" title={countSay(stateCounts[s])}>
-                          {countText(stateCounts[s])}
-                        </em>
-                      </>
-                    ),
-                  }
-                : { key: s, label: s, count: stateCounts[s] },
+          {/* RECENT, BY STATE (OV-10): pressed buttons rather than tabs -- it
+              filters the tab it sits beside, it is not a fourth tab. Counts are
+              from the loaded rows, like the tab badges, and DEAD_LETTERED is
+              never offered: nothing writes it (`agentlist.ts`). */}
+          {shown === 'recent' && (
+            <Segmented
+              label="Recent, by state"
+              value={recentState ?? 'all'}
+              // A capped page's count is drawn in the label as `2+` with its
+              // sentence as the title (G2-05): `SegOption.count` is a number.
+              options={(['all', ...RECENT_STATES] as const).map((s) =>
+                bounded
+                  ? {
+                      key: s,
+                      label: (
+                        <>
+                          {s}
+                          <em className="is-bound" title={countSay(stateCounts[s])}>
+                            {countText(stateCounts[s])}
+                          </em>
+                        </>
+                      ),
+                    }
+                  : { key: s, label: s, count: stateCounts[s] },
+              )}
+              onChange={(s) => chooseState(s === 'all' ? null : s)}
+            />
+          )}
+
+          {/* OFFERED ONLY WHEN THERE IS A LIVE BROWSER TO SHOW (#139 at 390). With
+              none, `Live 0` can only empty the list, and on a phone the switch
+              is a 44px row of its own that put the first Agents row past the
+              screen's midpoint. Kept while it is on, so the way back to All
+              never disappears under the reader. */}
+          {shown === 'live' && (liveBrowsers > 0 || browsersOnly) && (
+            <Segmented
+              label="All live agents or the browser agents among them"
+              value={browsersOnly ? 'browsers' : 'all'}
+              options={[
+                { key: 'all', label: 'All', title: 'Every agent holding a pool slot' },
+                tabBounded('live')
+                  ? {
+                      key: 'browsers',
+                      label: (
+                        <>
+                          Browsers
+                          <em className="is-bound" title={countSay(liveBrowsers)}>
+                            {countText(liveBrowsers)}
+                          </em>
+                        </>
+                      ),
+                      title: 'Browser agents only: the ones waiting for you first, then running, then starting',
+                    }
+                  : {
+                      key: 'browsers',
+                      label: 'Browsers',
+                      count: liveBrowsers,
+                      title: 'Browser agents only: the ones waiting for you first, then running, then starting',
+                    },
+              ]}
+              onChange={(k) => setBrowsersOnly(k === 'browsers')}
+            />
+          )}
+
+          {/* ⤢ THEATER ALL (§6): the first row's Browser tab in the theater,
+              whose prev and next walk the live browsers from there. The first
+              row is the one waiting for a person, when one is. */}
+          {browsers && rows.length > 0 && (
+            <a className="ag-theater-all" href={theaterPath(rows[0]!.id, null)}>
+              ⤢ theater all
+            </a>
+          )}
+
+          <div className="ag-tools-tail">
+            {shown === 'recent' && (
+              <label className="ag-filter check">
+                <input
+                  type="checkbox"
+                  checked={failedFirst}
+                  onChange={(e) => chooseFailedFirst(e.target.checked)}
+                />
+                Failed first
+              </label>
             )}
-            onChange={(s) => chooseState(s === 'all' ? null : s)}
-          />
-        )}
 
-        {shown === 'recent' && (
-          <label className="ag-filter check">
-            <input
-              type="checkbox"
-              checked={failedFirst}
-              onChange={(e) => chooseFailedFirst(e.target.checked)}
-            />
-            Failed first
-          </label>
-        )}
+            {shown !== 'live' && (
+              <label className="ag-filter check">
+                <input
+                  type="checkbox"
+                  checked={grouped}
+                  onChange={(e) => chooseGrouped(e.target.checked)}
+                />
+                Group by workflow
+              </label>
+            )}
 
-        {shown !== 'live' && (
-          <label className="ag-filter check">
-            <input
-              type="checkbox"
-              checked={grouped}
-              onChange={(e) => chooseGrouped(e.target.checked)}
-            />
-            Group by workflow
-          </label>
-        )}
-
-        {/* SORTED BY START (#376): newest start, oldest start, then the
-            list's own order. It was the Started column's head; the compact
-            list has no columns, so it is a control of the list. */}
-        <button
-          type="button"
-          className="ag-sort"
-          aria-pressed={sort.started !== null}
-          aria-label={
-            sort.started === null
-              ? 'Sort by start time'
-              : sort.started === 'desc'
-                ? 'Sorted by start, newest first'
-                : 'Sorted by start, oldest first'
-          }
-          onClick={sort.onStarted}
-        >
-          Started{sort.started === 'desc' ? ' ↓' : sort.started === 'asc' ? ' ↑' : ''}
-        </button>
-
-        <span className="is-end ag-scope" aria-label={scopeSay}>
-          {phonePage
-            ? `showing the ${page.tasks.length} most recent`
-            : `${page.tasks.length} loaded${page.next_page_token ? ' · more beyond' : ''}`}
-        </span>
+            {/* SORTED BY START (#376): newest start, oldest start, then the
+                list's own order. It was the Started column's head; the compact
+                list has no columns, so it is a control of the list. */}
+            <button
+              type="button"
+              className="ag-sort"
+              aria-pressed={sort.started !== null}
+              aria-label={
+                sort.started === null
+                  ? 'Sort by start time'
+                  : sort.started === 'desc'
+                    ? 'Sorted by start, newest first'
+                    : 'Sorted by start, oldest first'
+              }
+              onClick={sort.onStarted}
+            >
+              Started{sort.started === 'desc' ? ' ↓' : sort.started === 'asc' ? ' ↑' : ''}
+            </button>
+          </div>
+        </div>
       </div>
 
-      {rows.length === 0 ? (
+      {rows.length === 0 && idQuery !== null ? (
+        // A WHOLE TASK ID IS LOOKED UP, NOT SEARCHED FOR (live QA WA-1).
+        <IdLookup
+          key={idQuery}
+          id={idQuery}
+          loaded={page.tasks.find((t) => t.id === idQuery) ?? null}
+          shown={shown}
+          rowsRead={page.tasks.length}
+          now={now}
+          vouched={vouched}
+          classes={classes}
+          onOpen={openElsewhere}
+        />
+      ) : rows.length === 0 && bounded && (needle !== '' || stateFilter !== null) ? (
+        // A SEARCH OR A STATE OVER A CAPPED PAGE FOUND NOTHING IN THE PAGE,
+        // AND THAT IS ALL IT FOUND (live QA WA-1). It said `real zero`, a
+        // measured absence, about rows it never read.
+        <div className="ctl-empty">
+          <h3>
+            <Mark
+              kind="partial"
+              say={`No ${stateFilter !== null ? `${RECENT_STATE_OF[stateFilter]} ` : ''}agent among the ${page.tasks.length} loaded rows of ${shown}${needle !== '' ? ` matches “${query.trim()}”` : ''}. More rows exist beyond them, so this is not an answer for the platform: load more, or paste a whole task id to look it up.`}
+            />{' '}
+            {stateFilter !== null ? `nothing ${stateFilter} in the ${page.tasks.length} loaded` : `nothing in the ${page.tasks.length} loaded`}
+            {needle !== '' && ` matching “${query.trim()}”`}
+          </h3>
+        </div>
+      ) : rows.length === 0 ? (
         // A REAL ZERO, DRAWN AS ONE. The mark is the fact -- two words, always
         // rendered, legible with every card shut -- and the sentence that used
         // to stand here is its accessible name. Which states cost nothing is
@@ -690,7 +985,7 @@ function AgentsBody({
                 needle !== ''
                   ? `No ${stateFilter !== null ? `${RECENT_STATE_OF[stateFilter]} ` : ''}agent in the loaded page of ${shown} matches “${query.trim()}”.`
                   : shown === 'live'
-                  ? 'No agent is holding a pool slot right now. This is a real zero from a successful read, not a failed one.'
+                  ? 'No agent is holding a pool slot right now.'
                   : shown === 'waiting'
                     ? 'Nothing is waiting. Waiting work costs nothing, so an empty tab here is normal.'
                       : stateFilter !== null
@@ -720,8 +1015,145 @@ function AgentsBody({
       ) : (
         <FlatRows rows={rows} now={now} vouched={vouched} onOpen={openRow} openTaskId={openTaskId} classes={classes} />
       )}
-    </>
+
+      {/* LOAD MORE (live QA WA-2): the list stopped at its first page and
+          said `more beyond` with nothing to reach it by. The next page is
+          read into the same list, so every count, filter and search above
+          runs over it as well. */}
+      {bounded && !liveAll && (
+        <div className="ag-more">
+          <button type="button" className="ag-more-btn" disabled={moreRead.kind === 'reading'} onClick={onMore}>
+            {moreRead.kind === 'reading' ? 'Loading…' : `Load ${page.asked} more`}
+          </button>
+          <span className="ag-more-note">{page.tasks.length} loaded · more beyond</span>
+          {moreRead.kind === 'failed' && (
+            <span className="ag-more-note is-bad" role="alert">
+              <Mark kind="unread" say={`The next page could not be read: ${moreRead.why}`} /> {moreRead.why}
+            </span>
+          )}
+        </div>
+      )}
+    </ListReadAt.Provider>
   )
+}
+
+/** A whole task id, as the list's search box takes it: `task_` and twenty hex digits. */
+export const WHOLE_TASK_ID = /^task_[0-9a-f]{20}$/
+
+/**
+ * A WHOLE TASK ID THAT IS NOT IN THE TAB (live QA WA-1, 2026-10-11).
+ *
+ * Pasting an id is the main reason to use the search box, and the search ran
+ * over the loaded page only: `task_7898edecb15543d98553`, the 201st newest,
+ * read `real zero · nothing in recent matching "task_…"` -- a measured
+ * absence, for a task that existed. Now a whole id that the tab's rows do not
+ * hold is looked for in two places, in order:
+ *
+ *   1. the loaded page's other tabs -- a pasted id on Live of an agent that
+ *      has finished is in Recent, and the row says so;
+ *   2. the server, `GET /v1/tasks/{id}`, which answers for the whole tenant.
+ *      A 404 there IS a measured absence, and only then is it drawn as one.
+ */
+function IdLookup({
+  id,
+  loaded,
+  shown,
+  rowsRead,
+  now,
+  vouched,
+  classes,
+  onOpen,
+}: {
+  id: string
+  /** The row, when the loaded page holds it under another tab. */
+  loaded: Task | null
+  shown: Tab
+  rowsRead: number
+  now: number
+  vouched: number
+  classes: ResourceClasses | null
+  /** Opens a task under the tab its state puts it in. */
+  onOpen: (task: Task) => void
+}) {
+  const [got, setGot] = useState<Result<Task> | null>(null)
+  useEffect(() => {
+    if (loaded !== null) return
+    let gone = false
+    void loadTask(id).then((r) => {
+      if (!gone) setGot(r)
+    })
+    return () => {
+      gone = true
+    }
+  }, [id, loaded])
+  const found = loaded ?? (got !== null && (got.status === 'ok' || got.status === 'stale') ? got.data : null)
+  if (found !== null) {
+    const where = tabOf(found)
+    return (
+      <div className="ag-idfound" data-found={loaded !== null ? 'page' : 'server'}>
+        <p className="ag-idfound-say">
+          {loaded !== null
+            ? `In ${where}, not ${shown}: this agent is ${found.state.toLowerCase()}.`
+            : `Found by its id. It is not among the ${rowsRead} loaded rows; it is in ${where}.`}
+        </p>
+        <div className="rows">
+          <TaskRow task={found} now={now} vouched={vouched} onOpen={() => onOpen(found)} classes={classes} />
+        </div>
+      </div>
+    )
+  }
+  if (got === null || got.status === 'loading') {
+    return (
+      <div className="ctl-empty">
+        <h3>
+          <Mark kind="pending" say={`Looking up ${id} by its id: it is not among the ${rowsRead} loaded rows.`} /> looking up {id}
+        </h3>
+      </div>
+    )
+  }
+  if (got.status === 'error' && got.error.httpStatus === 404) {
+    return (
+      <div className="ctl-empty">
+        <h3>
+          <Mark
+            kind="zero"
+            say={`The server has no task ${id} in this tenant (HTTP 404). This is an answer for the whole tenant, not only for the loaded rows; it could be another tenant's task.`}
+          />{' '}
+          no task {id} in this tenant
+        </h3>
+      </div>
+    )
+  }
+  return (
+    <div className="ctl-empty">
+      <h3>
+        <Mark
+          kind="unread"
+          say={`${id} is not among the ${rowsRead} loaded rows, and looking it up by its id failed${got.status === 'error' ? `: ${got.error.message}` : ''}. This is a failed read, not an absence.`}
+        />{' '}
+        could not look up {id}
+      </h3>
+    </div>
+  )
+}
+
+/**
+ * THE LIST'S OWN ORDER, with the Started sort off (live QA WA-4, 2026-10-11).
+ *
+ * It was `updated_at`, newest first, on every tab, and a live task's
+ * `updated_at` moves with each checkpoint and status write: over three 5s
+ * re-reads one Live row jumped from 8th to 1st, under the pointer and the
+ * keyboard focus. Live and Waiting are now in submission order, newest first
+ * (`created_at`, which never changes), so a re-read moves no row that is
+ * still there. Recent keeps the newest change first: a finished task's
+ * `updated_at` is when it finished, and it does not move again. Ties go to
+ * the id, so equal times cannot swap places between reads either.
+ */
+export function listOrder(a: Task, b: Task, tab: Tab): number {
+  const ka = tab === 'recent' ? a.updated_at : a.created_at
+  const kb = tab === 'recent' ? b.updated_at : b.created_at
+  if (ka !== kb) return ka < kb ? 1 : -1
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
 }
 
 /**
@@ -860,6 +1292,15 @@ function matchesQuery(t: Task, needle: string): boolean {
 
 /** A row's why line and whether it asks a person to act -- `TaskRow`'s own reading. */
 type RowReason = { text: string; warn: boolean }
+
+/**
+ * A ROW WHOSE MARK IS DRAWN IN --bad (marks.tsx `STATE_MARK` hue `bad`):
+ * FAILED and DEAD_LETTERED. Its reason takes the same red (V146), so the
+ * mark, the leading rule and the sentence say one thing.
+ */
+export function failedRow(task: Pick<Task, 'state'>): boolean {
+  return task.state === 'FAILED' || task.state === 'DEAD_LETTERED'
+}
 
 function rowReason(task: Task, classes: ResourceClasses | null, now: number): RowReason {
   // A SILENT WORKER FIRST (#179, AG-14's fourth kind): `whyAgent` writes
@@ -1082,17 +1523,61 @@ function GroupedRows({
  * problem with the platform, and only it gets the treatment and the overage
  * in words.
  */
-export function attemptsUsed(task: Pick<Task, 'attempt_count' | 'max_attempts'>): {
+export function attemptsUsed(
+  task: Pick<Task, 'attempt_count' | 'max_attempts'>,
+  runs: number = task.attempt_count,
+): {
   over: boolean
+  text: string
   say: string
 } {
   const over = task.attempt_count > task.max_attempts
+  // THE HEADER'S WORDS AND THE HEADER'S COUNT (live-browser QA p12, QA12-12):
+  // a resumed attempt read `try 1/3` here and `attempt 2 of 3` in the task
+  // header. `runs` is `timesRun` over the attempt documents, as the header's
+  // is; the charged counter is still what the ceiling is judged on (AG-15),
+  // and the sentence says so when the two differ.
+  const text = runs > 0 ? `attempt ${runs} of ${task.max_attempts}` : 'no attempt yet'
+  const charged = runs !== task.attempt_count ? `, ${task.attempt_count} counted against the cap` : ''
   return {
     over,
+    text,
     say: over
       ? `${task.attempt_count} attempts against a cap of ${task.max_attempts}: ${task.attempt_count - task.max_attempts} over the ceiling`
-      : `${task.attempt_count} of ${task.max_attempts} attempts used`,
+      : `${text}${charged}`,
   }
+}
+
+/**
+ * HOW MANY TIMES A ROW'S TASK RAN, read as the task header reads it
+ * (`timesRun` over `GET /v1/tasks/{id}/attempts`, QA12-12). Only for a row
+ * that shows the figure -- live, or over its cap -- and re-read only when the
+ * task says its attempts changed (its generation, its counter or its state),
+ * the header's own key, never on every list poll. Until the documents are
+ * read, or when the read fails, the task's own counter, as the header falls
+ * back to it.
+ */
+function useRuns(task: Task, shows: boolean): number {
+  const key = `${task.id}:${task.current_generation}:${task.attempt_count}:${task.state}`
+  const [got, setGot] = useState<{ key: string; attempts: readonly unknown[] | null } | null>(null)
+  useEffect(() => {
+    if (!shows) return
+    let live = true
+    // A read that throws or answers nothing is a failed read: the counter.
+    Promise.resolve()
+      .then(() => loadAttempts(task.id))
+      .then((r) => r ?? null, () => null)
+      .then((r) => {
+        if (!live) return
+        const attempts = r === null ? null : r.status === 'ok' || r.status === 'stale' ? r.data.attempts : r.status === 'empty' ? [] : null
+        setGot({ key, attempts })
+      })
+    return () => {
+      live = false
+    }
+    // `key` names everything the read depends on, the task id included.
+  }, [key, shows])
+  return timesRun(task, got !== null && got.key === key ? got.attempts : null)
 }
 
 /** The qualifier on a CANCELLED row's elapsed figure (#163); `TaskRow` says why. */
@@ -1155,7 +1640,9 @@ function AgCollapse() {
       title={folded ? 'Open the list again ([)' : 'Fold the list to a strip ([)'}
       onClick={toggleListSnap}
     >
-      {folded ? '»' : '«'} <kbd>[</kbd>
+      {/* THE GLYPH ALONE (V147): the boxed `[` key hint beside it read as
+          `« [`, half a bracket pair. The key is in the title and the name. */}
+      {folded ? '»' : '«'}
     </button>
   )
 }
@@ -1177,7 +1664,8 @@ type CardAt = { top: number; left: number }
  * THE COMPACT ROW (agents.html V1, decided 2026-10-01): two lines, as drawn.
  *
  *   line 1  the state mark, the agent's name, its elapsed time
- *   line 2  profile (and model) · owner · `try n/m` on a live row
+ *   line 2  profile (and model) · owner · `attempt n of m` on a live row,
+ *           in the task header's words and from its count (QA12-12)
  *   then    the reason it waits or stopped, where there is one -- never
  *           dropped, for the reason `TaskRow` gives (the phone question)
  *
@@ -1216,16 +1704,23 @@ function CompactRow({
   // has room for the figure only, so here it is the cell's `title`: the figure
   // is not presented as run time without saying what it spans.
   const cancelSpan = task.state === 'CANCELLED' && el.phase === 'ran'
-  const tries = attemptsUsed(task)
+  const live = tabOf(task) === 'live'
+  const tries = attemptsUsed(task, useRuns(task, live || task.attempt_count > task.max_attempts))
   // NAMED FROM WHAT IT IS (walkthrough G): its step, else `browser check ·
   // 02e9705a` -- it was the bare hash. `agentName`'s rule, drawn below.
   const name = agentName(task)
   const owner = task.submitted_by?.split('@')[0] ?? null
   const profile = task.model ? `${task.runner_profile} · ${task.model}` : task.runner_profile
-  const live = tabOf(task) === 'live'
+  // A BROWSER AGENT WHOSE BROWSER IS NOT UP YET (QA12-20): listed under
+  // Browsers with the running ones, and marked, so it is not read as a
+  // browser to watch.
+  const startingBrowser = task.state === 'STARTING' && isLiveBrowser(task)
   // THE ONE FACT THAT CONTRADICTS THE STATE WORD: a stop is requested and the
   // lease is still held (invariant 3), so the row still reads RUNNING.
   const cancelling = task.cancel_requested && !TERMINAL_STATES.has(task.state)
+  // A LIVE-BROWSER AGENT WAITING FOR A PERSON (live-browser.md §6): the row
+  // is yellow and says so, held or parked, on whichever tab it is on.
+  const waitsForYou = needsYou(task)
   const cardId = `ag-card-${task.id}`
 
   const show = (row: HTMLElement) => {
@@ -1245,7 +1740,7 @@ function CompactRow({
 
   return (
     <div
-      className="row clickable is-compact"
+      className={`row clickable is-compact${waitsForYou ? ' is-needs-you' : ''}`}
       role="button"
       tabIndex={0}
       data-task-id={task.id}
@@ -1290,6 +1785,7 @@ function CompactRow({
         {el.text}
       </span>
       <span className="cr-sub">
+        {task.state === 'RUNNING' && isLiveBrowser(task) && <DeviceThumb taskId={task.id} />}
         <span className="cr-profile">{profile}</span>
         {' · '}
         <span className="cr-owner" title={task.submitted_by ?? undefined}>
@@ -1302,7 +1798,15 @@ function CompactRow({
           <>
             {' · '}
             <span className={`cr-try${tries.over ? ' is-over' : ''}`} aria-label={tries.say}>
-              try {task.attempt_count}/{task.max_attempts}
+              {tries.text}
+            </span>
+          </>
+        )}
+        {startingBrowser && (
+          <>
+            {' · '}
+            <span className="cr-starting" title="The browser is starting: there is nothing to watch yet">
+              <ToneMark tone="unknown">starting</ToneMark>
             </span>
           </>
         )}
@@ -1310,6 +1814,12 @@ function CompactRow({
           <>
             {' · '}
             <ToneMark tone="wait">cancelling</ToneMark>
+          </>
+        )}
+        {waitsForYou && (
+          <>
+            {' · '}
+            <ToneMark tone="wait">needs you</ToneMark>
           </>
         )}
         {/* WHAT A CANCELLED RUN'S FIGURE SPANS (#163), as a short mark on
@@ -1325,7 +1835,15 @@ function CompactRow({
           </>
         )}
       </span>
-      {why.text && !whyHidden && <span className={`why${why.warn ? ' is-warn' : ''}`}>{why.text}</span>}
+      {/* THE REASON IS CLAMPED AND WHOLE IN ITS TITLE (V061): a failed row
+          printed its whole multi-line error. ON A FAILED ROW IT IS RED, as the
+          mark and the rule beside it are (V146): it was --warn amber, a third
+          colour for one fact. */}
+      {why.text && !whyHidden && (
+        <span className={`why${why.warn ? ' is-warn' : ''}${failedRow(task) ? ' is-bad' : ''}`} title={why.text}>
+          {why.text}
+        </span>
+      )}
       {/* A HIDDEN REASON SAYS THAT IT IS ONE (G2-24, dev QA 2026-10-07): the
           row looked as if it had none. Muted, on the reason's own line; the
           sentence is its title for a pointer, and a screen reader already
@@ -1356,5 +1874,74 @@ function CompactRow({
           document.body,
         )}
     </div>
+  )
+}
+
+/** The outline a live browser row draws: what shape of screen its browser is. */
+export type DeviceShape = 'phone' | 'tablet' | 'desktop' | 'unknown'
+
+/**
+ * Which outline a session's device is drawn as. The preset's own served
+ * size decides (§6.1: a fixed, named list in the gate), so a preset added
+ * there is drawn by its size rather than missed by a name list here: not
+ * mobile is a desktop, mobile with a short side of 600px or more a tablet,
+ * other mobile a phone. A preset the read did not list falls back to its
+ * name. Null -- the gate has not reported the device (LB-SEAM, §6.2) -- is
+ * `unknown`, never a guessed desktop.
+ */
+export function deviceShape(session: Pick<LiveSession, 'device' | 'presets'> | null): DeviceShape {
+  const device = session?.device ?? null
+  if (device === null) return 'unknown'
+  const p = session!.presets.find((x) => x.name === device.preset)
+  if (p !== undefined) return !p.mobile ? 'desktop' : Math.min(p.width, p.height) >= 600 ? 'tablet' : 'phone'
+  if (/ipad|tab/i.test(device.preset)) return 'tablet'
+  if (/iphone|pixel|phone|android/i.test(device.preset)) return 'phone'
+  return /desktop/i.test(device.preset) ? 'desktop' : 'unknown'
+}
+
+/**
+ * A LIVE BROWSER ROW'S DEVICE OUTLINE (§6, "a device thumbnail per row"; lane
+ * LB-UX3): a static phone, tablet or desktop outline in the session's
+ * orientation -- not a stream. The workflow card's ~1 fps picture is a socket
+ * per card (LiveThumb.tsx); forty rows of sockets on a list that re-reads
+ * every 5s would be the cost of forty Browser tabs.
+ *
+ * RE-READ WITH THE LIST'S POLL (live-browser QA p12, QA12-29). It was read
+ * once, when the row first drew, on the reasoning that the device moves only
+ * when someone switches it -- and after a switch the row went on drawing the
+ * old device for as long as the list was open. Still one small session read
+ * per live browser row, never a socket; each list read (`ListReadAt`) brings
+ * the next, and the outline drawn stays until it answers.
+ */
+function DeviceThumb({ taskId }: { taskId: string }) {
+  const [got, setGot] = useState<{ taskId: string; session: LiveSession | null } | null>(null)
+  const polledAt = useContext(ListReadAt)
+  useEffect(() => {
+    let live = true
+    void loadLiveSession(taskId).then((r) => {
+      if (live && (r.status === 'ok' || r.status === 'stale')) setGot({ taskId, session: r.data.session ?? null })
+    })
+    return () => {
+      live = false
+    }
+  }, [taskId, polledAt])
+  const session = got !== null && got.taskId === taskId ? got.session : null
+  const shape = deviceShape(session)
+  const device = session?.device ?? null
+  // A desktop is landscape and a phone portrait unless the session says otherwise.
+  const orientation = device?.orientation ?? (shape === 'phone' || shape === 'tablet' ? 'portrait' : 'landscape')
+  const say =
+    device === null
+      ? 'Browser device not reported'
+      : `Browser device: ${presetLabel(device.preset)}, ${device.orientation}`
+  return (
+    <span
+      className={`ag-device is-${shape} is-${orientation}`}
+      data-device={shape}
+      data-orientation={orientation}
+      role="img"
+      aria-label={say}
+      title={say}
+    />
   )
 }

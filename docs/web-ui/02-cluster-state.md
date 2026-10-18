@@ -43,7 +43,7 @@ every row including the ones marked Yes.
 | Which states cost capacity | `apps/common/swarm_common/states.py:35-42` (`CONCURRENCY_STATES`), `:56-63` (`PENDING_STATES`) | Constant, compiled into the UI |
 | Live leases (`lease_id, task_id, attempt_id, tenant_id, generation, pools[], units, state, created_at, dispatch_deadline, expires_at, heartbeat_at, released_at, release_reason`) | Firestore `leases`; model `models.py:114-146`; index `leases-released-expires` at `terraform/modules/firestore/indexes.tf:144-151` | **No.** `LEASES = "leases"` is declared at `store.py:80` and **never used anywhere else in swarm-api**. There is no `lease_to_api` in `codec.py` and no route. → **P1** |
 | Provider/quota health per `(provider, tenant)` | Firestore `quota/{provider}:{tenant_id}`; model `models.py:268-300` | Own tenant only — `GET /v1/providers` (`service.py:334-350`, the sole caller of `list_quota`, at `service.py:336`). `store.list_quota(None)` exists at `store.py:663-668` but **nothing calls it with `None`**. → **P2** |
-| Resource-class sizing (cpu, memory, units) | `profiles.py:77-81` — `standard` 4cpu/8GiB/1u, `browser` 8cpu/16GiB/2u, `large` 8cpu/32GiB/4u | Constant, compiled into the UI |
+| Resource-class sizing (cpu, memory, units) | `profiles.py:77-81` — `standard` 4cpu/8GiB/1u, `browser` 4cpu/8GiB/1u (8cpu/16GiB/2u until contract request 79), `large` 8cpu/32GiB/4u | Constant, compiled into the UI |
 | Cloud Run execution / GKE Job inventory | `apps/reconciler/reconciler/backends.py:263-289` and `:560-608`; views at `reconciler/model.py:171-202` | **No.** The reconciler's only routes are `/healthz`, `/readyz`, `POST /reconcile` (`reconciler/service.py:109-136`). swarm-api's SA has **no** `run.*` and **no** `container.*` (`terraform/modules/iam/bindings.tf:73-107`, swarm-api entry at `:79-85`). → **P5** |
 | GKE nodes | nothing reads them; no `container.nodes.*` permission exists in either custom role (`terraform/modules/iam/custom_roles.tf:95-110`, `:123-133`) | **No, and partly impossible.** → §7, **P6** |
 | Reconciler last pass | `GET /readyz` on swarm-reconciler, `reconciler/service.py:114-121`; report held in a per-instance dict at `:100` | **No** — internal ingress, and `min_instance_count = 0` (`terraform/modules/cloud_run/main.tf:40`) means a cold instance answers `last_pass_at: null`. → **P7** |
@@ -68,8 +68,12 @@ lease only to read it (`apps/agent-worker/agent_worker/control.py::ControlPlane.
 (`apps/agent-worker/agent_worker/control.py::ControlPlane.heartbeat`). A "state" column on the lease table would therefore show
 `DISPATCHED` for an agent that has been running for an hour. The column is labelled
 **"dispatch"** with values `awaiting dispatch` / `dispatched`, and liveness is expressed
-by the *heartbeat age* next to it. (`Lease.dispatch_overdue` at `models.py:144-146` is
-still correct, because it only tests `state is LEASED`.)
+by the *heartbeat age* next to it. For the same reason the API's `dispatch_overdue` is
+not the lease's own predicate: `Lease.dispatch_overdue` is "the deadline has passed" and
+nothing else, which is true of every healthy agent older than the dispatch window (QA,
+2026-10-11: 9 of 13 heartbeating leases flagged). `swarm_api.codec.lease_dispatch_overdue`
+clears it on a first heartbeat or on the lease's task reaching `STARTING`/`RUNNING`, read
+from documents the routes already fetch, so no write was added to the heartbeat path.
 
 **Trap C — `pool.updated_at` is not a freshness signal.** Terraform bootstraps pool
 documents with `name, hard_limit, active, enabled, managed_by` and **no `updated_at`**

@@ -13,7 +13,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { App } from '../App'
-import { forgetProbes, noteFixtureProbe, route } from '../fetch'
+import { forgetProbes, noteFixtureProbe, probeSnapshot, route } from '../fetch'
 
 afterEach(() => {
   vi.useRealTimers()
@@ -71,7 +71,18 @@ describe('API reads orders routes by what went wrong (#140)', () => {
     await referenceRows()
     const toggle = screen.getByRole('button', { name: 'failures only' })
     expect(toggle.getAttribute('aria-pressed')).toBe('false')
-    expect(document.querySelector('.ref-count')?.textContent).toBe('6 of 6')
+    // "OF HOW MANY" IS THE WHOLE REGISTRY, which is the six reads above PLUS
+    // whatever the shell's own fixture reads (/v1/stats, /v1/tenants/me, ...)
+    // have registered by now. Those land on real 150-220 ms timers, so a busy
+    // runner sees some of them and an idle one none: a literal "6 of 6" was
+    // "8 of 8" on PR #1304's CI. They are all ok, so they never change the
+    // failing rows. Read the total off the registry, and wait for the screen
+    // to catch up with it.
+    expect(probeSnapshot().length).toBeGreaterThanOrEqual(6)
+    await waitFor(() => {
+      const total = probeSnapshot().length
+      expect(document.querySelector('.ref-count')?.textContent).toBe(`${total} of ${total}`)
+    })
     act(() => {
       fireEvent.click(toggle)
     })
@@ -79,7 +90,10 @@ describe('API reads orders routes by what went wrong (#140)', () => {
     const rows = [...document.querySelectorAll('tbody th[scope="row"]')].map((th) => th.firstChild?.textContent)
     // The admin 403 is the expected answer, not a failure.
     expect(rows).toEqual(['/v1/z-never', '/v1/e-failing', '/v1/d-paused'])
-    expect(document.querySelector('.ref-count')?.textContent).toBe('3 of 6')
+    // MUTATION: count the filtered rows as the total too ("3 of 3").
+    await waitFor(() => {
+      expect(document.querySelector('.ref-count')?.textContent).toBe(`3 of ${probeSnapshot().length}`)
+    })
   })
 
   it('says it is this tab only once', async () => {
@@ -115,7 +129,7 @@ describe('API reads with nothing read draws its real zero with the Mark primitiv
     expect(marks).toHaveLength(1)
     const mark = marks[0] as HTMLElement
     expect(mark.classList.contains('is-zero')).toBe(true)
-    expect(mark.textContent).toBe('real zero')
+    expect(mark.textContent).toBe('none')
     expect(mark.getAttribute('role')).toBe('img')
     expect(mark.getAttribute('aria-label') ?? '').toMatch(/nothing has been read/i)
   })

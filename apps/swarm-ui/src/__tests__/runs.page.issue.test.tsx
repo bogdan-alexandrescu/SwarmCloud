@@ -227,7 +227,7 @@ describe('item 5: the plan is drawn from its schema', () => {
 
 // SUPERSEDED BY U12 A (owner, 2026-10-04): one line cut with an ellipsis put
 // the value past a 300px card's edge. The reference now takes the card's width
-// under its label and breaks ONLY after `/` or `#` -- still never at the
+// under its label and breaks ONLY after `/` or before `#` (V107) -- still never at the
 // owner's hyphen by `overflow-wrap: anywhere`, which is what item 6 forbade.
 describe('item 6: owner/repo#N breaks only at its joints', () => {
   for (const width of [1440, 390]) {
@@ -241,7 +241,8 @@ describe('item 6: owner/repo#N breaks only at its joints', () => {
         expect(painted(ref, 'overflow-wrap', env) ?? 'normal', `${name}: the reference breaks anywhere`).toBe('normal')
         expect(painted(ref, 'word-break', env) ?? 'normal', `${name}: the reference breaks anywhere`).toBe('normal')
         const breaks = [...ref.childNodes].map((n) => (n.nodeName === 'WBR' ? '|' : n.textContent)).join('')
-        expect(breaks, `${name}: a break inside a name`).toBe(REF.replace('/', '/|').replace('#', '#|'))
+        // V107 (2026-10-11): the break is BEFORE the `#`, so `#N` is one piece.
+        expect(breaks, `${name}: a break inside a name`).toBe(REF.replace('/', '/|').replace('#', '|#'))
       }
     })
   }

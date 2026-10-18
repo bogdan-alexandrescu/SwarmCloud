@@ -452,6 +452,31 @@ def test_run_now_submits_as_the_stored_owner_and_is_in_the_history(client, ctx, 
     assert audit(client, sid)[0]["action"] == "run_now"
 
 
+def test_one_schedule_serves_its_budget_use_as_the_ticks_gate_counts_it(client, ctx, db, executor) -> None:
+    """§4.3: reported, each unreported attempt at the per-run cap, each live work
+    item reserved at the per-run cap, and what is left of the day. The console
+    draws its burn bar from these and computes none of them."""
+    sid = create(client)["schedule_id"]
+    at(ctx, NOW + timedelta(minutes=1))
+    fired = client.post(f"/v1/schedules/{sid}:run", json={}, headers=auth_header("alice"))
+    assert fired.status_code == 200 and fired.json()["firing"]["state"] == "created", fired.text
+    db.docs[f"schedules/{sid}"]["spend"] = {"day": "2026-10-09", "reported_usd": 41.2, "unreported_attempts": 1}
+    use = client.get(f"/v1/schedules/{sid}", headers=auth_header("alice")).json()["schedule"]["budget_use"]
+    assert use == {
+        "day": "2026-10-09", "per_day_usd": 120.0, "per_run_usd": 15.0,
+        "reported_usd": 41.2, "unreported_attempts": 1, "unreported_usd": 15.0,
+        "live_firings": 1, "live_items": 1, "live_usd": 15.0,
+        "free_usd": 48.8,
+    }
+    # A day spent past its figure leaves nothing free, never a negative.
+    db.docs[f"schedules/{sid}"]["spend"]["reported_usd"] = 119.0
+    over = client.get(f"/v1/schedules/{sid}", headers=auth_header("alice")).json()["schedule"]["budget_use"]
+    assert over["free_usd"] == 0
+    # The list does not scan each schedule's firings, so it serves no reservation.
+    [row] = client.get("/v1/schedules", headers=auth_header("alice")).json()["schedules"]
+    assert "budget_use" not in row
+
+
 def test_a_dry_run_creates_nothing(client, db, executor) -> None:
     sid = create(client)["schedule_id"]
     response = client.post(f"/v1/schedules/{sid}:run", json={"dry_run": True}, headers=auth_header("alice"))

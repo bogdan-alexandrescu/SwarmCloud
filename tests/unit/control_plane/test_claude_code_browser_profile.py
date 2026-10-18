@@ -89,13 +89,20 @@ def test_the_profile_is_claude_code_on_the_browser_image():
         f.name for f in dataclasses.fields(profile)
         if getattr(profile, f.name) != getattr(claude, f.name)
     )
-    assert differ == ["image", "name", "resource_class"], (
-        f"the owner's decision was claude-code with its name, image and class changed; {differ} differ"
+    # `live_browser` is contract request 71 (LB-D, #1030): the one live profile.
+    # `inputs` is contract request 77 (BSTATUS-API): claude-code's plus `browser_tool`.
+    assert differ == ["image", "inputs", "live_browser", "name", "resource_class"], (
+        f"the owner's decision was claude-code with its name, image and class changed, "
+        f"live_browser set (request 71) and browser_tool declared (request 77); {differ} differ"
     )
+    extra = dict(profile.inputs)
+    assert extra.pop("browser_tool").choices == ("auto", "playwright", "dev-browser", "jev")
+    assert extra == dict(claude.inputs)
+    assert profile.live_browser is True
     assert profile.image == "agent-runtime-browser"
     assert profile.image == RUNNER_PROFILES["browser"].image
     assert profile.resource_class == "browser"
-    assert RESOURCE_CLASSES["browser"].units == 2
+    assert RESOURCE_CLASSES["browser"].units == 1  # contract request 79
     assert profile.runner_argv == ("python", "-m", "agent_worker.runners.claude_code")
     assert profile.available
     assert DOCKERFILE.is_file()
@@ -119,8 +126,10 @@ def test_it_is_selectable_by_name():
 
 
 def test_it_accepts_the_issue_input_like_claude_code():
-    assert set(RUNNER_PROFILES[PROFILE].inputs) == {"issue"}
-    assert RUNNER_PROFILES[PROFILE].inputs == RUNNER_PROFILES["claude-code"].inputs
+    # And `browser_tool` besides, by contract request 77 (BSTATUS-API), and
+    # `mcp_servers`, by contract request 88 (MCP-CONTRACT).
+    assert set(RUNNER_PROFILES[PROFILE].inputs) == {"issue", "browser_tool", "mcp_servers"}
+    assert RUNNER_PROFILES[PROFILE].inputs["issue"] == RUNNER_PROFILES["claude-code"].inputs["issue"]
     assert check_inputs(RUNNER_PROFILES[PROFILE], {"issue": 42}) == {"issue": 42}
     assert check_inputs(RUNNER_PROFILES[PROFILE], {"issue": 42.0}) == {"issue": 42}
     with pytest.raises(InputRefused):
@@ -222,6 +231,116 @@ def test_the_runner_says_nothing_of_a_browser_on_the_base_image(monkeypatch, tmp
     assert seen["prompt"] == "Screenshot the settings page."
 
 
+def test_the_agents_bash_tool_inherits_swarm_handoff_and_the_cdp_endpoint(monkeypatch, tmp_path):
+    """LB-POLISH (part of #1030). MEASURED 2026-10-13 on
+    task_1f28d5bfa5a14f618f83: the agent had to `export SWARM_HANDOFF=...`
+    itself -- the lifecycle sets it for the runner (`handoff.prepare`), but
+    the CLI's environment is built from scratch and did not carry it, so
+    `swarm-handoff` in the Bash tool found no spool. The CLI's environment is
+    what its Bash tool inherits; the hand-off's variables are now in it."""
+    from agent_worker import handoff
+
+    spool = tmp_path / ".swarm-handoff"
+    monkeypatch.setenv(handoff.HANDOFF_ENV, str(spool))
+    monkeypatch.setenv("SWARM_CDP_ENDPOINT", "http://127.0.0.1:9223")
+    monkeypatch.setenv("SWARM_BROWSER_UPLOADS", "/run/swarm/uploads")
+    # JUDGE-SELECT's two, so every name the hand-off passes is present.
+    monkeypatch.setenv("SWARM_JEV_BACKEND", "internal-laya")
+    monkeypatch.setenv("JEV_API_URL", "https://decision-api-staging.taile0bda9.ts.net/laya/v1/decide")
+    seen = _run_body(monkeypatch, tmp_path, "/opt/playwright")
+    assert seen["env"]["SWARM_HANDOFF"] == str(spool)
+    assert seen["env"]["SWARM_CDP_ENDPOINT"] == "http://127.0.0.1:9223"
+    assert seen["env"]["SWARM_BROWSER_UPLOADS"] == "/run/swarm/uploads"
+    # Exactly the hand-off's own names: what the worker hands the agent.
+    assert {handoff.HANDOFF_ENV, *handoff.AGENT_PASSTHROUGH_ENV} <= set(seen["env"])
+
+
+def test_the_judgment_backend_and_its_url_reach_the_cli_and_no_typesafe_key(monkeypatch, tmp_path):
+    """JUDGE-SELECT (owner decision 2026-10-14). The dispatcher names the
+    workspace's judgment backend (SWARM_JEV_BACKEND) and, for an internal one,
+    the decision API's tailnet JEV_API_URL; the CLI's environment is what its MCP servers
+    inherit, so jev-browser-mcp reads both there. Nothing here hands the CLI a
+    TypeSafe key: an internal backend needs none."""
+    from agent_worker import handoff
+
+    url = "https://decision-api-staging.taile0bda9.ts.net/jev/v1/decide"
+    monkeypatch.setenv(handoff.HANDOFF_ENV, str(tmp_path / ".swarm-handoff"))
+    monkeypatch.setenv("SWARM_CDP_ENDPOINT", "http://127.0.0.1:9223")
+    monkeypatch.setenv("SWARM_JEV_BACKEND", "internal-jev")
+    monkeypatch.setenv("JEV_API_URL", url)
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    seen = _run_body(monkeypatch, tmp_path, "/opt/playwright")
+    assert seen["env"]["SWARM_JEV_BACKEND"] == "internal-jev"
+    assert seen["env"]["JEV_API_URL"] == url
+    assert "TYPESAFE_API_KEY" not in seen["env"]
+    assert {"SWARM_JEV_BACKEND", "JEV_API_URL"} <= set(handoff.AGENT_PASSTHROUGH_ENV)
+
+
+def test_the_launch_env_built_by_the_cli_runner_carries_swarm_handoff(monkeypatch, tmp_path):
+    """The same, one layer down: the env `run_cli_agent` hands the CLI process
+    (and so its Bash tool) names the attempt's spool, which `prepare` made."""
+    from agent_worker import handoff
+    from agent_worker.runners import claude_code, cliagent
+
+    spool = tmp_path / ".swarm-handoff"
+    spool.mkdir()
+    monkeypatch.setenv(handoff.HANDOFF_ENV, str(spool))
+    monkeypatch.delenv("SWARM_CDP_ENDPOINT", raising=False)
+    monkeypatch.delenv("SWARM_BROWSER_UPLOADS", raising=False)
+    monkeypatch.setenv(claude_code.SPEC.key_env, "sk-ant-" + "x" * 40)
+    launched: dict[str, Any] = {}
+
+    class Stop(Exception):
+        pass
+
+    def fake_child(argv, *, env, **kwargs):
+        launched.update(env)
+        raise Stop
+
+    monkeypatch.setattr(cliagent, "run_child", fake_child)
+    binary = tmp_path / "claude"
+    binary.write_text("")
+    monkeypatch.setenv(claude_code.SPEC.binary_env, str(binary))
+    from agent_worker.runners.base import RunnerContext
+
+    ctx = RunnerContext(
+        work_dir=tmp_path,
+        artifacts_dir=tmp_path / "artifacts",
+        input_path=tmp_path / "input.json",
+        result_path=tmp_path / "result.json",
+        quota_path=tmp_path / "quota.json",
+        payload={"prompt": "Sign in, then hand off."},
+    )
+    (tmp_path / "artifacts").mkdir()
+    with pytest.raises(Stop):
+        claude_code.body(ctx)
+    assert launched.get("SWARM_HANDOFF") == str(spool)
+
+
+def test_a_resumed_attempt_is_told_in_its_prompt_what_the_earlier_one_did(monkeypatch, tmp_path):
+    """RESUME-PROGRESS (QA12-14, part of #1030). The CLI has no conversation
+    to resume across a park, so the worker's summary of the earlier attempts'
+    hand-offs (`handoff.HandoffPath.prepare`, written into the spool) is the
+    resumed agent's prompt: after the caller's, before the platform's notes."""
+    from agent_worker import handoff
+    from agent_worker.runners.claude_code import BROWSER_NOTE
+
+    spool = tmp_path / handoff.SPOOL_DIR_NAME
+    spool.mkdir()
+    summary = f"{handoff.RESUME_HEADLINE}\n\n1. \"QA1\": {handoff.MARK_DONE}"
+    (spool / handoff.RESUME_NAME).write_text(summary)
+    monkeypatch.setenv(handoff.HANDOFF_ENV, str(spool))
+    seen = _run_body(monkeypatch, tmp_path, "/opt/playwright")
+    assert seen["prompt"].startswith("Screenshot the settings page.")
+    assert summary in seen["prompt"]
+    assert seen["prompt"].index(summary) < seen["prompt"].index(BROWSER_NOTE)
+
+    # No summary in the spool: a first attempt's prompt is the caller's.
+    (spool / handoff.RESUME_NAME).unlink()
+    seen = _run_body(monkeypatch, tmp_path, None)
+    assert seen["prompt"] == "Screenshot the settings page."
+
+
 def test_the_browser_image_sets_the_path_the_runner_reads():
     text = DOCKERFILE.read_text(encoding="utf-8")
     assert re.search(r"^ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright", text, re.M)
@@ -248,8 +367,15 @@ def test_the_terraform_mirror_carries_it_and_its_model():
     assert re.search(r'^\s*backend\s*=\s*"GKE_AUTOPILOT"$', body, re.M), body
     assert re.search(r'^\s*provider\s*=\s*"anthropic"$', body, re.M), body
     assert re.search(r"^\s*timeout_seconds\s*=\s*7200$", body, re.M), body
-    models = dict(re.findall(r'^\s*"([a-z-]+)"\s*=\s*"(claude-[a-z0-9-]+)"$', text, re.M))
-    assert models.get(PROFILE) == models["claude-code"], models
+    # runner_models is keyed by model class (#1435); a profile's model is the
+    # pin of its default_model_class, so it runs claude-code's model when the
+    # two name the same default class.
+    claude_code = re.search(r'^    "claude-code" = \{\n(.*?)^    \}\n', text, re.M | re.S)
+    assert claude_code, 'terraform/infra/locals.tf runner_profiles has no "claude-code" entry'
+    default = r'^\s*default_model_class\s*=\s*"([a-z]+)"$'
+    classes = [re.search(default, b, re.M) for b in (body, claude_code.group(1))]
+    assert all(classes), classes
+    assert classes[0].group(1) == classes[1].group(1), classes
 
 
 def test_the_parity_checked_ui_tables_carry_it():

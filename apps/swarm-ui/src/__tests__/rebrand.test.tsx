@@ -277,12 +277,12 @@ describe('the Sky spine shell', () => {
     window.history.replaceState(null, '', '/')
   })
 
-  it('draws the spine in one fixed order: Submit, the four sections, Help, API reads', () => {
+  it('draws the spine in one fixed order: Submit, the five sections, Help, API reads', () => {
     render(<App />)
     const spine = document.querySelector('.sk-spine')!
     // Links since #503 (a section opens in a new tab and copies as a link).
     const labels = [...spine.querySelectorAll('a.sk-ri')].map((b) => b.textContent?.trim())
-    expect(labels).toEqual(['Submit', 'Overview', 'Work', 'Capacity', 'Admin', 'Help', 'API reads'])
+    expect(labels).toEqual(['Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Admin', 'Help', 'API reads'])
   })
 
   it('lists the open section\'s pages in the panel, with the open page\'s children', async () => {

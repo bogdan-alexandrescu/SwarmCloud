@@ -77,6 +77,7 @@ export type TopicId =
   | 'accounts-table-shape'
   | 'admin-gate-not-failure'
   | 'advisory-vs-lease'
+  | 'approvals'
   | 'all-clear-basis'
   | 'ambiguous-write'
   | 'api-reads'
@@ -138,6 +139,7 @@ export type TopicId =
   | 'recent-submissions'
   | 'runner-profile-by-name'
   | 'runtime-needs-no-provider'
+  | 'schedules'
   | 'second-browser-application'
   | 'sign-in-not-paste'
   | 'strategy-on-a-task'
@@ -254,7 +256,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'A digit is a measurement, and a measured zero is a digit too. A dash, or the hatched mark “not measured”, means nothing ever recorded the figure. The dashed mark “not read” means the read failed and the platform may still hold it. A tilde marks a real reading too old to trust.',
     long: [
       'Every number on these screens is one of four things: measured, never measured, not read, or measured too long ago. They are different facts, and each is drawn with a mark of its own.',
-      'A measured figure is a digit — including a measured zero, which is a real result: on a bar it is a tick at the origin, and where a whole panel is empty it is the solid mark “real zero”.',
+      'A measured figure is a digit — including a measured zero, which is a real result: on a bar it is a tick at the origin, and where a whole panel is empty it is the solid mark “none”.',
       'A figure nothing ever recorded is a dimmed dash (—), or the hatched mark “not measured”. It is never drawn as a zero, because a zero is a claim about a measurement nobody has.',
       'A figure a failed read left behind is the dashed mark “not read”, and no number appears beside it: the platform may well hold the figure, and the read that should have brought it did not.',
       'A tilde (~) in front of a figure means the reading is real but older than it can be trusted to describe now.',
@@ -286,7 +288,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'an-attempt',
     title: 'When an attempt document exists',
     short:
-      'An attempt document is written when capacity is reserved, not when a task is submitted. A task waiting for capacity has none, and that is a real zero rather than a gap in the record.',
+      'An attempt document is written when capacity is reserved, not when a task is submitted. A task waiting for capacity has none, and that is the true state of the task, not a gap in the record.',
     long: [
       'The unit of the agent screen is the attempt, not the task. Each attempt carries its own runtime, its own requested-against-used figures, its own tokens and cost, its own checkpoints and its own error.',
       'The document is created at dispatch, and the task’s own attempt counter is incremented inside the same admission transaction. So the counter and the documents should agree, and when they do not the difference is the interesting part: a task that counts attempts whose query returned fewer documents has a hole in its record, and that is true of a running task as much as a finished one.',
@@ -397,6 +399,36 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'It covers that part and nothing past it. A large artifact is served a window at a time, and the viewer marks such a read partial beside its byte count: the masked count is over those bytes, and the rest of the object has not been checked by this read at all.',
       'A count of zero is measured against the rules, not against the content: it says no value in the bytes served matched a known family of credential, which is not the same as the artifact holding nothing sensitive.',
     ],
+  },
+
+  // THE AUTOMATE PAGES' OWN TOPICS (live QA AUT-14, 2026-10-11): the head's
+  // `?` on Schedules and on Approvals led to the top of Help, which has
+  // nothing on either.
+  schedules: {
+    group: 'the-platform',
+    title: 'A schedule makes ordinary work on a timetable',
+    short:
+      'A schedule fires on its cron, in its own timezone, and each firing makes ordinary work: an issue run, a task or a workflow. Its gate says what waits for a person, its budget what a day may spend. A dry run records what a firing would make and makes nothing.',
+    long: [
+      'A schedule is a named, typed timetable. The type is picked by name from the catalogue, and its parameters, gate and budget start at the type’s defaults; nothing about the machine it runs on is chosen here.',
+      'Each firing makes ordinary work, which is admitted and leased like any other and is listed under Work. The schedule’s page links every firing to what it made.',
+      'A paused schedule does not fire and holds nothing. A dry-run schedule fires and records what it would have made, and makes nothing; its chip says so wherever its state is shown. A new schedule starts as a dry run unless another start is chosen.',
+      'The gate decides what waits for a person: a run, a plan or a merge. Automatic merging is never set by the form: it is a separate switch on the Gate tab, which the member who last changed the gate, scope or spec cannot make.',
+    ],
+    see: ['approvals'],
+  },
+
+  approvals: {
+    group: 'the-platform',
+    title: 'What waits for a person holds nothing',
+    short:
+      'The inbox lists every item waiting for a person, oldest first: a firing waiting to run, a plan, a held plan, a merge, a proposal or a spec. A waiting item holds no capacity. Approve sends back what you read, so an item that changed since is refused, not approved.',
+    long: [
+      'An item waits until someone approves it, someone rejects it with a reason, or it expires. Rejecting is open to any member; who may approve is the item’s own rule, and the server says which rule refused.',
+      'An approval is decided on what was read. If the plan was edited or the branch moved after the item was opened, the approval is refused and the item is read again.',
+      'A link to an item that is no longer waiting opens that item with what became of it: approved, rejected, expired or superseded, and by whom.',
+    ],
+    see: ['schedules'],
   },
 
   capacity: {
@@ -644,7 +676,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'the-platform',
     title: 'Capacity is counted in units, not agents',
     short:
-      'Each size has a weight, and admission adds that weight to every pool the task has to clear. A pool showing eight in use may be four agents of a size that weighs two, so a ceiling is a ceiling on units and headroom converts back through the weight.',
+      'Each size has a weight, and admission adds that weight to every pool the task has to clear. A pool showing eight in use may be two agents of a size that weighs four, so a ceiling is a ceiling on units and headroom converts back through the weight.',
     long: [
       'A pool counter is a sum of weights, not a count of workloads. The weight is the size’s own, published by the catalogue, and it is the same number in every pool the task touches.',
       'So "units in use" and "how many more agents could start" are different questions with different answers, and this app never prints one under the other’s label.',
@@ -801,7 +833,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'The platform prefers waiting to failing wherever the obstacle is temporary, and an account that has not been added yet is exactly that.',
       'The cost of that choice is that nothing goes red. Work accumulates in a waiting state, consumes no capacity, and produces no error anyone is paged for.',
-      'So the screens say it where it would otherwise be invisible: an empty account pool is reported as a real zero with its consequence attached, not as an empty table.',
+      'So the screens say it where it would otherwise be invisible: an empty account pool is reported as empty, with its consequence attached, not as a bare empty table.',
     ],
   },
 
@@ -1650,6 +1682,8 @@ export const HELP_PLACES = {
   'admin/limits': 'Pool limits',
   'admin/tenants': 'Tenants',
   'admin/counts': 'Platform counts',
+  'automate/schedules': 'Schedules',
+  'automate/approvals': 'Approvals',
   reference: 'API reads',
 } as const
 
@@ -1780,6 +1814,14 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   'api-reads': {
     subject: 'The reads behind a screen',
     act: { say: 'Open the reads to see which route is failing and how old its last good payload is.', at: 'reference' },
+  },
+  schedules: {
+    subject: 'What a schedule does',
+    act: { say: 'Open a schedule to read its firings, its budget and its gate; a dry-run chip beside its state means its firings make nothing.', at: 'automate/schedules' },
+  },
+  approvals: {
+    subject: 'The approvals inbox',
+    act: { say: 'Read an item before deciding it; a waiting item costs nothing while it waits.', at: 'automate/approvals' },
   },
   capacity: {
     subject: 'What reserves capacity',

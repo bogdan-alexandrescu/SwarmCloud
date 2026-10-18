@@ -283,7 +283,7 @@ describe('the filtering legend', () => {
 })
 
 describe('the inspector neighbour list', () => {
-  it('lists callers and callees by unique label with their calls, and walks the graph on click', async () => {
+  it('lists callers and callees by full path with their calls, and walks the graph on click', async () => {
     vi.resetModules()
     routes()
     await mount()
@@ -292,11 +292,12 @@ describe('the inspector neighbour list', () => {
     await waitFor(() => expect(visible(inspector().querySelector('h2'))).toBe('src/core/orders.py'), WAIT)
     const from = within(inspector()).getByRole('region', { name: 'Called from' })
     expect(within(from).getAllByRole('button').map((b) => [b.querySelector('code')!.textContent, b.querySelector('small')!.textContent])).toEqual([
-      ['api/orders', '12 calls'],
-      ['invoices', '3 calls'],
+      // By full path, not the canvas label (live QA RSA-19): a module and a folded cluster could share one.
+      ['src/api/orders.py', '12 calls'],
+      ['workers/invoices.py', '3 calls'],
     ])
     const calls = within(inspector()).getByRole('region', { name: 'Calls' })
-    expect(within(calls).getAllByRole('button').map((b) => b.querySelector('code')!.textContent)).toEqual(['money'])
+    expect(within(calls).getAllByRole('button').map((b) => b.querySelector('code')!.textContent)).toEqual(['src/core/money.py'])
     fireEvent.click(within(calls).getByRole('button', { name: /money/ }))
     await waitFor(() => expect(visible(inspector().querySelector('h2'))).toBe('src/core/money.py'), WAIT)
     // money calls nothing drawn: a measured none, the real-zero mark.
@@ -369,5 +370,70 @@ describe('the layout runs in a Web Worker past IN_PLACE_MAX nodes', () => {
     fireEvent.click(within(card()).getByRole('button', { name: 'Lay out here' }))
     await waitFor(() => expect(nodes()).toHaveLength(200), WAIT)
     FakeWorker.fail = false
+  })
+})
+
+// Live QA of the Graph tab, 2026-10-11 (RSA-18, RSA-20, RSA-21).
+describe('the graph after the live QA', () => {
+  const world = () => card().querySelector('.rg-world')!.getAttribute('transform')
+
+  it('RSA-18: a label centred under a node at the left edge slides inside the canvas', async () => {
+    const { placeLabels } = await import('../RepoGraphLayout')
+    const spot = { id: 'edge', x: 10, y: 100, r: 8, text: 'apps/acceptance/fixtures (2)', weight: 0 }
+    const free = placeLabels([spot])
+    expect(free.get('edge')!.x).toBe(10)
+    const inside = placeLabels([spot], [], [], { width: 640, height: 440 }).get('edge')!
+    const half = (spot.text.length * 6.2) / 2
+    expect(inside.side).toBe('below')
+    expect(inside.x - half).toBeGreaterThanOrEqual(0)
+  })
+
+  it('RSA-18: every label a laid-out plan prints is inside the canvas', () => {
+    const plan = layoutPlan(graphView(normModuleGraph(GRAPH)!, new Set(), true), 640, 440)
+    for (const [, p] of plan.labels) {
+      if (p.side === 'hidden') continue
+      expect(p.x).toBeGreaterThanOrEqual(0)
+      expect(p.x).toBeLessThanOrEqual(640)
+    }
+  })
+
+  it('RSA-20: Ctrl + wheel zooms the drawing (V044: a plain wheel is the page\'s), and keys on a focused node zoom, pan and fit', async () => {
+    vi.resetModules()
+    routes()
+    await mount()
+    await waitFor(() => expect(nodes()).toHaveLength(4), WAIT)
+    const fit = world()
+    fireEvent.wheel(card().querySelector('svg')!, { deltaY: -100, clientX: 0, clientY: 0, ctrlKey: true })
+    expect(world()).toMatch(/scale\(1\.1\)/)
+    fireEvent.keyDown(node('src/core/orders.py'), { key: '0' })
+    expect(world()).toBe(fit)
+    fireEvent.keyDown(node('src/core/orders.py'), { key: '+' })
+    expect(world()).toMatch(/scale\(1\.25\)/)
+    fireEvent.keyDown(node('src/core/orders.py'), { key: '0' })
+    fireEvent.keyDown(node('src/core/orders.py'), { key: 'ArrowRight' })
+    expect(world()).toMatch(/^translate\(40 0\)/)
+  })
+
+  it('RSA-20: switching to Call graph is written to the address, and Modules is the bare tab', async () => {
+    window.history.replaceState(null, '', `/repositories/${ID}/graph`)
+    vi.resetModules()
+    routes()
+    await mount()
+    await waitFor(() => expect(nodes()).toHaveLength(4), WAIT)
+    fireEvent.click(within(document.querySelector('.rg-tools')!).getByRole('radio', { name: 'Call graph' }))
+    expect(new URLSearchParams(window.location.search).get('view')).toBe('calls')
+    fireEvent.click(within(document.querySelector('.rg-tools')!).getByRole('radio', { name: 'Modules' }))
+    expect(window.location.search).toBe('')
+    window.history.replaceState(null, '', '/')
+  })
+
+  it('RSA-21: the inspector names no line count, a figure the route never serves', async () => {
+    vi.resetModules()
+    routes()
+    await mount()
+    await waitFor(() => expect(nodes()).toHaveLength(4), WAIT)
+    fireEvent.click(node('src/core/orders.py'))
+    await waitFor(() => expect(visible(inspector().querySelector('h2'))).toBe('src/core/orders.py'), WAIT)
+    expect(visible(inspector().querySelector('.rg-meta'))).not.toMatch(/\blines\b/)
   })
 })

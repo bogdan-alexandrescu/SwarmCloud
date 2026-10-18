@@ -46,7 +46,9 @@
 # It STOPS, and says so on the pull request once, when MAX_FIX_ATTEMPTS have
 # been made or when it is not configured. A refused submission is reported on
 # the pull request, fails this run, and does not count as an attempt, because
-# nothing ran.
+# nothing ran -- except 409 `ci_fix_in_flight`: the failure already has a live
+# fix task, so the run logs that task and workflow, comments nothing and
+# passes.
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
@@ -329,6 +331,20 @@ run_fix() {
   if [[ "${submitted}" -ne 1 ]]; then
     local code message
     code="$(jq -r '.code // "unknown"' "${WORK}/response" 2>/dev/null || printf 'unknown')"
+    # 409 `ci_fix_in_flight` (swarm_api.cifix.CiFixInFlight, epic #1334): this
+    # failure already has a live fix task -- a second delivery of one red run.
+    # It is being handled, so nothing failed: name the live task and workflow
+    # in the log, post no comment, pass. Only the two ids are read from the
+    # answer, and only in their minted shape; the body is never printed.
+    if [[ "${API_STATUS}" == "409" && "${code}" == "ci_fix_in_flight" ]]; then
+      local live_task live_workflow
+      live_task="$(jq -r '.detail.task_id // empty | strings | select(test("^task_[0-9a-f]{20}$"))' \
+        "${WORK}/response" 2>/dev/null || true)"
+      live_workflow="$(jq -r '.detail.workflow_id // empty | strings | select(test("^wf_[0-9a-f]{20}$"))' \
+        "${WORK}/response" 2>/dev/null || true)"
+      ok "#${pr}'s run ${run_id} at ${head_sha:0:12} already has a live fix: task ${live_task:-(still being submitted)}, workflow ${live_workflow:-(still being submitted)}; no second fix step, no comment"
+      return 0
+    fi
     message="$(jq -r '.message // empty' "${WORK}/response" 2>/dev/null | redact | head -c 600 || true)"
     {
       printf '%s\n' "${MARK_REFUSED}"

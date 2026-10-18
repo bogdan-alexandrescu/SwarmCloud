@@ -1,0 +1,66 @@
+# The live browser's one extra path out of a tenant namespace: TCP 8080 to the
+# relay, from a live-browser pod, and nothing else
+# (docs/design/live-browser.md §3.3 and §8.3; lane LB-L6, part of #1030).
+#
+# A `claude-code-browser` pod's live gate DIALS OUT to `swarm-live` -- the
+# single-replica relay StatefulSet in `swarm-system` -- over plain ws on 8080. The
+# pod listens on nothing; `default-deny.yaml` still denies all ingress here,
+# and nothing in this file touches that.
+#
+# WHY A SECOND POLICY AND NOT A FIFTH RULE IN `allow-egress.yaml`. That
+# policy's internet rule is an `ipBlock`, and on Dataplane V2 "Pod traffic is
+# never covered by an ipBlock rule" (its header records the measurement), so
+# no edit to rule 4 can reach the relay pod. A pod-to-pod path needs a pod
+# selector, and it must name ONE destination: the relay pods in ONE namespace,
+# never "every pod in swarm-system". NetworkPolicies are unions, so this adds
+# exactly that path and removes nothing; the existing policy renders
+# byte-identical (tests/unit/scripts/test_live_netpol.py holds its digest).
+#
+# WHY A LABEL, NOT `podSelector: {}`. `allow-egress.yaml` selects every pod for
+# a reason its comment gives (a label the dispatcher did not set would leave a
+# browser task with no DNS). That reason does not apply here: a pod missing
+# `swarm-live: enabled` simply has no live path, and its DNS and internet
+# still come from the existing policy. The label is set by the dispatcher,
+# never by a caller -- `scheduler.dispatch.LIVE_POD_LABEL`, on live-browser
+# pods only -- so only a pod whose profile is `live_browser` in the frozen
+# catalogue can reach the relay (invariant 10). Every other agent in this
+# namespace, and anything one of them spawns, cannot open the socket at all.
+#
+# WHAT THIS DOES NOT DO. It does not make the relay trust the pod. The relay
+# admits a tunnel only with a one-use ticket swarm-api minted for this
+# session, tenant, attempt and generation (§3.3, §5.2); this policy only
+# decides who may knock. The agent shares the worker's network namespace
+# (`allow-egress.yaml`, WHAT RULE 2 COSTS), so the agent child can open the
+# same socket -- and holds no ticket for it, because the ticket travels over
+# ctl.sock and is never in an environment variable, a file or `work/`.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: swarm-allow-live-egress
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-terraform
+    swarm-tenant: __TENANT_ID__
+spec:
+  # Must equal scheduler.dispatch.LIVE_POD_LABEL; test_live_netpol.py holds
+  # the two together.
+  podSelector:
+    matchLabels:
+      swarm-live: "enabled"
+  policyTypes:
+    - Egress
+  egress:
+    # ONE peer with BOTH selectors: the relay pods in swarm-system. Two list
+    # items -- a namespaceSelector and a podSelector -- would be an OR, and
+    # would open every pod in swarm-system, or every relay-named pod in this
+    # namespace.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: swarm-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: swarm-live
+      ports:
+        - protocol: TCP
+          port: 8080

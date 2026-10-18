@@ -13,10 +13,10 @@ with the tenant's token otherwise. Everything about the token is
 `swarm_api.forge`'s and `swarm_api.repositories`'s; these routes log the
 outcome's code -- never the token, never the forge's text.
 
-Who may register: any member of the tenant, as for issue runs. The design's
-"an admin of the tenant" (repo-index.md §1, git-tokens.md §1) names a role
-this API does not have yet; a platform admin acts in a tenant only as a member
-of it, like everywhere else here.
+Who may register: anyone holding the workspace role `member` or above, as
+for issue runs (WORKSPACE ROLES below). The design's "an admin of the tenant"
+(repo-index.md §1, git-tokens.md §1) was decided as `member` by the owner's
+Q1: registering is something every member does today.
 
 `platform` (docs/schedules.md §4.4, lane S11) and `merge_policy`
 (WF-MERGE-API, part of #295) are the exceptions to "any member": a create or
@@ -27,6 +27,25 @@ acts as a member of the tenant they are in: the registration is read with
 `tenant_scope`, so an admin marks only their own tenant's repositories, which
 is where §4.6 puts the platform's. The change and its `admin_audit` entry
 commit in one transaction (`repositories.Repositories.patch` and `create`).
+
+`context` (CTXQ-SET, docs/design/context-quality.md §4.7) is the graph-context
+override: a PATCH that carries it passes `codeintel.require_owner_or_admin`
+first -- the workspace's owner or a platform admin, exactly who may set the
+workspace default it overrides -- so a member's answers 403 with nothing
+written. `inherit` clears it. Its `admin_audit` entry commits with it.
+
+WORKSPACE ROLES (docs/design/workspace-roles.md §4.1, §4.8, Q13; lane
+ROLES-GATES-AUTOMATE). Register, PATCH, DELETE, index and index:run need the
+role `member` (`_member`): a `viewer` is `role_member_required`, through its
+switch, before the forge is read or anything is written. The code-intelligence
+reads (`tests:select`, `impact`, `search`, `territory`) are POSTs that change
+nothing and stay open to a viewer. A repository's `context` is a WORKSPACE
+SETTING (Q13), so it is the role `admin`'s (`_context_by`): a workspace admin
+now sets it without a platform admin; anyone below is `role_admin_required`
+through its switch, and with that switch off is held to the rule above
+exactly as before, so turning roles on never loosens it. `platform`,
+`merge_policy` and `readable_by_tasks` stay platform-admin-only: a workspace
+admin administers one workspace, never the platform.
 
 THE INDEX ROUTES (lane RI2, repo-index.md §6.1) are below the registration
 routes: `GET/POST /{repo_id}/index` (and `POST /{repo_id}/index:run`, the
@@ -72,12 +91,14 @@ from fastapi.responses import JSONResponse
 
 from swarm_common.models import Tenant
 
+from .. import roles
 from ..auth import AuthContext, require_admin
+from ..codeintel import require_owner_or_admin
 from ..deps import AppContext, current_auth, get_context, paged_limit, tenant_scope
 from ..forgeapp import Caller
 from .access import get_access
 from ..errors import ValidationFailed
-from ..forge import ForgeReadError
+from ..forge import FirestoreSlotIndex, ForgeReadError, service_credential_view
 from ..impact import (
     DEPTH_MAX,
     NEIGHBOURHOOD_DEPTH_DEFAULT,
@@ -167,6 +188,48 @@ def _platform_admin(fields: set[str], auth: AuthContext, field: str = "platform"
     return auth.email
 
 
+def _member(ctx: AppContext, auth: AuthContext) -> None:
+    """The role gate on every repository write (workspace-roles.md §4.8):
+    `role_member_required` for a `viewer`, through its switch."""
+    if ctx.roles is not None:
+        ctx.roles.require(auth, roles.MEMBER)
+
+
+def _context_by(ctx: AppContext, auth: AuthContext, tenant_id: str) -> str:
+    """Who sets a repository's `context` (Q13): the workspace's `admin` --
+    its person in a personal workspace; in a group one a workspace admin or a
+    platform admin. Below `admin` is `role_admin_required` through its
+    switch; with the switch off (or the role unreadable) the caller is held
+    to today's rule, `codeintel.require_owner_or_admin`, so nobody it refuses
+    today is let through."""
+    if ctx.roles is not None:
+        me = ctx.roles.require(auth, roles.ADMIN)
+        if me is not None and roles.at_least(me.role, roles.ADMIN):
+            return (auth.email or "").strip().lower()
+    return require_owner_or_admin(auth, ctx.store.get_tenant(tenant_id))
+
+
+def _index_credential(ctx: AppContext, tenant_id: str, auth: AuthContext) -> dict:
+    """Which credential the tenant's index runs clone with (INDEX-CRED):
+    `forge.service_credential_view` over the slot `forge.service_slot` picks
+    -- the one `SubmissionService._resolve_forge` gives an index run -- so a
+    repository that passes Try it but fails to index shows why on its card.
+    Names and a login only, never a value."""
+    return service_credential_view(_tenant(ctx, tenant_id, auth), FirestoreSlotIndex(ctx.db))
+
+
+def _served(ctx: AppContext, record: dict, credential: dict | None = None) -> dict:
+    """A registration as served: `to_api`, with a coverage block that says
+    which of its counts are capped (RSA-4, `RepoIndex.served_coverage`), and
+    the credential its index runs use (`index_credential`, INDEX-CRED)."""
+    body = to_api(record)
+    if isinstance((record.get("index") or {}).get("coverage"), dict):
+        body["index"]["coverage"] = _index(ctx).served_coverage(record)
+    if credential is not None:
+        body["index_credential"] = dict(credential)
+    return body
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
 def create_repository(
     body: RepositoryCreate,
@@ -176,6 +239,7 @@ def create_repository(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
+    _member(ctx, auth)
     platform_by = _platform_admin(body.model_fields_set, auth)
     merge_policy_by = _platform_admin(body.model_fields_set, auth, "merge_policy")
     tenant = _tenant(ctx, tenant_id, auth)
@@ -205,13 +269,16 @@ def list_repositories(
     limit: int | None = Query(default=None),
     page_token: str | None = Query(default=None, max_length=256),
     tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     rows, next_token = _store(ctx).list(
         tenant_id, limit=paged_limit(ctx, limit), page_token=page_token
     )
+    # Resolved once for the page: it is the tenant's, the same on every card.
+    credential = _index_credential(ctx, tenant_id, auth) if rows else None
     return {
-        "repositories": [to_api(row) for row in rows],
+        "repositories": [_served(ctx, row, credential) for row in rows],
         "next_page_token": next_token,
         "tenant_id": tenant_id,
     }
@@ -248,9 +315,12 @@ def readable_repositories(
 def get_repository(
     repo_id: str,
     tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    return {"repository": to_api(_store(ctx).get(tenant_id, repo_id)), "tenant_id": tenant_id}
+    record = _store(ctx).get(tenant_id, repo_id)
+    return {"repository": _served(ctx, record, _index_credential(ctx, tenant_id, auth)),
+            "tenant_id": tenant_id}
 
 
 @router.patch("/{repo_id}")
@@ -261,10 +331,14 @@ def patch_repository(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
+    _member(ctx, auth)
     platform_by = _platform_admin(body.model_fields_set, auth)
     merge_policy_by = _platform_admin(body.model_fields_set, auth, "merge_policy")
+    readable_by = _platform_admin(body.model_fields_set, auth, "readable_by_tasks")
+    context_by = _context_by(ctx, auth, tenant_id) if body.context is not None else None
     record = _store(ctx).patch(tenant_id, repo_id, body, platform_by=platform_by,
-                               merge_policy_by=merge_policy_by)
+                               merge_policy_by=merge_policy_by, readable_by=readable_by,
+                               context_by=context_by)
     log.info(
         "repository patch tenant=%s repo_id=%s by=%s fields=%s", tenant_id, record["repo_id"],
         auth.email, ",".join(sorted(body.model_dump(exclude_none=True))),
@@ -279,6 +353,7 @@ def delete_repository(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> Response:
+    _member(ctx, auth)
     _store(ctx).delete(tenant_id, repo_id)
     log.info("repository delete tenant=%s repo_id=%s by=%s", tenant_id, repo_id, auth.email)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -295,6 +370,7 @@ def _index(ctx: AppContext) -> RepoIndex:
 def _start_index(
     repo_id: str, body: IndexRunRequest, tenant_id: str, auth: AuthContext, ctx: AppContext
 ) -> dict:
+    _member(ctx, auth)
     kind = check_run_kind(body.kind)
     service = _index(ctx)
     # The registration first: another tenant's id is a 404 before the forge.
@@ -354,7 +430,7 @@ def get_index(
     service.registrations.get(tenant_id, repo_id)
     tenant = _tenant(ctx, tenant_id, auth)
     service.settle(tenant_id, repo_id, auth=auth, tenant=tenant)
-    service.refresh_relation(tenant_id, repo_id, tenant)
+    service.refresh_relation(tenant_id, repo_id, tenant, person=auth.email)
     record = service.registrations.get(tenant_id, repo_id)
     index_state = dict(record.get("index") or {})
     in_flight_id = index_state.get("in_flight_task_id")

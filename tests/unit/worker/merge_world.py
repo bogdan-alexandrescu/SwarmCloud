@@ -31,7 +31,7 @@ from itertools import count
 from pathlib import Path
 from typing import Any
 
-from agent_worker import mergeslot, post_verdict
+from agent_worker import mergeslot, mergetrain, post_verdict
 from agent_worker.errors import FencedError
 from agent_worker.objectstore import LocalObjectStore
 from agent_worker.specverify import UpstreamSpecUnverified
@@ -112,6 +112,13 @@ class MergeWorld:
         self.verdict: dict[str, Any] | None = {"verdict": "MERGE", "findings": []}
         self.verdict_path = tmp_path / VERDICT_FILE
         self.unverified: dict[str, str] = {}
+        #: (task, the workflow it was verified against) for every upstream verify.
+        self.verified: list[tuple[str, str | None]] = []
+        #: The PR-side CI fixer's tasks the worker's query finds (#1073):
+        #: (task id, document). None: the worker was given no finder.
+        self.ci_fixes: list[tuple[str, dict[str, Any]]] | None = []
+        #: Every (pull request, root) the finder was asked for.
+        self.ci_fix_queries: list[tuple[int, str]] = []
         self.cancel = False
         #: Fencing turns stale after this many rechecks (None: never).
         self.stale_after: int | None = None
@@ -154,6 +161,13 @@ class MergeWorld:
         #: world's step is alone in its repository unless a test seeds one.
         self.slot_db = FakeFirestore()
         self.slots = mergeslot.FirestoreMergeSlots(
+            self.slot_db, tenant_id=TENANT,
+            run_transaction=FakeTransactionRunner(self.slot_db).run,
+            fence=lambda _txn: None,
+        )
+        #: The merge train's entries (TRAIN-WS), in the same in-memory
+        #: Firestore: read only when the target says `merge_mode: train`.
+        self.trains = mergetrain.FirestoreTrainEntries(
             self.slot_db, tenant_id=TENANT,
             run_transaction=FakeTransactionRunner(self.slot_db).run,
             fence=lambda _txn: None,
@@ -256,6 +270,18 @@ class MergeWorld:
         return [int(s.path.rsplit("/", 1)[1]) for s in self.github.seen
                 if s.method == "PATCH" and s.path.startswith(f"{API}/issues/")]
 
+    def spend_conflict_rounds(self) -> None:
+        """Every conflict fix round this merge gets, spent at earlier heads (#1076):
+        a conflict now fails fast with `merge_conflict` rather than parking."""
+        from agent_worker import merge
+
+        self.docs[TASK].setdefault("metadata", {})[merge.MERGE_FIX_METADATA_KEY] = {
+            merge.CONFLICT_ROUNDS_KEY: [
+                {"round": n, "head": f"{n:040x}"}
+                for n in range(1, merge.MERGE_CONFLICT_ROUNDS_MAX + 1)
+            ],
+        }
+
     # -- the context ------------------------------------------------------
     def context(self) -> post_verdict.ActionContext:
         staged: dict[str, Path] = {}
@@ -266,9 +292,21 @@ class MergeWorld:
         def fetch(task_id: str) -> dict[str, Any]:
             return self.docs[task_id]
 
-        def verify(task_id: str, _doc: Any) -> None:
+        def verify(task_id: str, doc: Any, *, of_workflow: str | None = None) -> None:
+            # The real verifier's workflow rule (`specverify.verify_upstream_spec`):
+            # the upstream's signed `workflow_id` is this execution's, or the
+            # one the caller names.
+            self.verified.append((task_id, of_workflow))
             if task_id in self.unverified:
                 raise UpstreamSpecUnverified(task_id, self.unverified[task_id])
+            expected = of_workflow if of_workflow is not None else WORKFLOW
+            recorded = doc.get("workflow_id") if isinstance(doc, dict) else None
+            if recorded is not None and recorded != expected:
+                raise UpstreamSpecUnverified(task_id, "workflow_mismatch")
+
+        def find_ci_fixes(number: int, root: str) -> list[tuple[str, dict[str, Any]]]:
+            self.ci_fix_queries.append((number, root))
+            return list(self.ci_fixes or [])
 
         def read_token() -> str:
             self.token_reads += 1
@@ -290,4 +328,6 @@ class MergeWorld:
             register_secret=self.log.register_secret,
             read_git_token=read_token, repository_url=self.repository_url,
             merge_slots=self.slots,
+            merge_trains=self.trains,
+            find_ci_fix_tasks=find_ci_fixes if self.ci_fixes is not None else None,
         )

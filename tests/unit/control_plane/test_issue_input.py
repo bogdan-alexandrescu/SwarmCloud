@@ -62,7 +62,8 @@ DOORS = {"POST /v1/tasks": _task, "POST /v1/tasks/batch": _batch, "a workflow st
 @pytest.mark.parametrize("name", ["claude-code", "codex"])
 def test_the_cli_agent_profiles_declare_issue_and_nothing_else(name):
     declared = RUNNER_PROFILES[name].inputs
-    assert declared is not None and set(declared) == {"issue"}, declared
+    # `mcp_servers` is contract request 88's (MCP-CONTRACT), not this file's.
+    assert declared is not None and set(declared) == {"issue", "mcp_servers"}, declared
     spec = declared["issue"]
     assert spec.kind == "integer"
     assert spec.minimum == 1

@@ -145,16 +145,23 @@ from swarm_redaction import redact as redact_text
 
 from . import artifact_manifest as manifest_mod
 from . import children as children_mod
-from . import clonebundle as clonebundle_mod
 from . import continuation as continuation_mod
 from . import egress as egress_mod
 from . import expected_outputs as expected_mod
 from . import gitops as gitops_mod
 from . import forgebroker as forgebroker_mod
+from . import graph_ticket as graph_ticket_mod
+from . import graphstage as graphstage_mod
+from . import handoff as handoff_mod
 from . import inputs as inputs_mod
 from . import issue as issue_mod
+from . import jevkey as jevkey_mod
+from . import mcp_attach as mcp_attach_mod
+from . import secretrelease as secretrelease_mod
+from . import typesafe_shim as typesafe_shim_mod
 from . import questions as questions_mod
 from . import redact as redact_mod
+from . import extrarepos as extrarepos_mod
 from . import standalone_outputs as standalone_mod
 from . import verdict as verdict_mod
 from . import workspace as workspace_mod
@@ -209,6 +216,7 @@ from . import indexrun as indexrun_mod
 from . import forge as forge_mod
 from . import merge as merge_mod
 from . import mergeslot as mergeslot_mod
+from . import mergetrain as mergetrain_mod
 from . import post_verdict as post_verdict_mod
 from . import specverify
 from .forge import ForgeError, RepoAccess, probe_repository, open_pull_request
@@ -220,25 +228,26 @@ from .gitops import (
     GitTransient,
     MergeOutcome,
     PeerPin,
+    PushRejected,
     branch_commits,
     clone_at_commit,
-    clone_from_bundle,
     commit_dirty,
     commit_tree_onto,
     fetch_branch_tip,
-    fetch_tip_onto_bundle,
     fold_agent_commits,
     hide_from_git,
     merge_branches,
     mirror_worktree,
+    own_branch_tip,
     prepare_publish_repo,
     push_branch,
     read_agent_excludes,
     retry_clone,
     shallow_clone,
     summarize_work,
+    validate_ref,
+    verify_merged_default_branch,
     verify_worker_authorship,
-    write_clone_bundle,
 )
 # The helpers every function in `gitops` builds its git commands from. Borrowed
 # rather than restated for `replay_agent_commits` below, so its commands carry
@@ -379,13 +388,6 @@ FORGE_UNREACHABLE = "forge_unreachable"
 #: delay keeps the retry from meeting the same outage at once. Bounded by
 #: `max_attempts`, like every retry.
 FORGE_UNREACHABLE_RETRY_DELAY_SECONDS = 60
-#: How long `_cleanup` waits for a clone bundle's upload (#940) before the
-#: workspace holding the file is destroyed. A bundle is capped at
-#: `clone_bundle_max_bytes` (512 MiB) and goes over Private Google Access,
-#: seconds even at the cap; 30 s covers a slow one without holding a finished
-#: attempt's container for long. Abandoning it costs the next step a forge
-#: clone and nothing else: a write-once upload that never finished is no object.
-CLONE_BUNDLE_UPLOAD_JOIN_SECONDS = 30
 #: Why the worker refused a forge write the task's credential does not allow
 #: (docs/onboarding.md §3.3 steps 3-4, #780 lane OB5). Worker vocabulary in
 #: the error text and `result_summary.forge_check`, like the three above; the
@@ -494,6 +496,16 @@ PUBLISH_UNREACHABLE_FIELD = "forge_unreachable"
 #: task_6a0c9afdbaea449eb53d: "push failed with exit 1", state SUCCEEDED, the
 #: workflow green, and the work found in `swarm-work.patch` six hours later.
 PUBLISH_FAILED_FIELD = "publish_failed"
+#: The dispatch block's mark of a merge step's conflict fix round (#1321):
+#: swarm-api copies it from the `metadata.merge_conflict_round` record
+#: `mergewake._on_conflict` submits the round with, INTO the signed block,
+#: because the worker acts on no metadata the step-spec signature does not
+#: cover. Restated here because the worker cannot import swarm_api
+#: (`swarm_api.validation.CONFLICT_ROUND_FIELD`);
+#: tests/unit/worker/test_conflict_round_merge_parents.py holds the two
+#: together. A round checks, before it pushes, that it merged the default
+#: branch (`gitops.verify_merged_default_branch`).
+CONFLICT_ROUND_FIELD = "conflict_round"
 #: The file whose presence makes a clean run that changed nothing a RESULT
 #: (Proposal J, owner decision 2026-10-08): the agent checked, found nothing
 #: to change, and wrote down why. Read from `$SWARM_ARTIFACTS_DIR`; its text is
@@ -518,6 +530,19 @@ TITLE_MISSING_PREFIX = "[title missing] "
 #: `Worker._agent_pull_request_text`.
 PR_TITLE_FILE = "pr-title.txt"
 PR_BODY_FILE = "pr-body.md"
+#: The runner's pre-publish section (SPEED-D1; `prepublish.PR_SECTION_NAME` and
+#: `prepublish.PR_SECTION_HEADING`, restated because the runner never imports
+#: the worker; tests/unit/worker/test_prepublish_gate.py holds them equal).
+PREPUBLISH_SECTION_FILE = "prepublish-checks.md"
+PREPUBLISH_SECTION_HEADING = "## Pre-publish checks failed"
+PREPUBLISH_SECTION_MAX_CHARS = 20000
+#: The runner's advisory section (CTXQ-G; `prepublish.ADVISORY_SECTION_NAME`
+#: and `_HEADING`, held equal by tests/unit/worker/test_prepublish_graph_gate.py):
+#: test reach, the agent's self-check, what the graph selected. Appended for
+#: the reader; no merge path reads it, and it never marks the checks failed.
+PREPUBLISH_ADVISORY_FILE = "prepublish-advisory.md"
+PREPUBLISH_ADVISORY_HEADING = "## Advisory signals (not a gate)"
+PREPUBLISH_ADVISORY_MAX_CHARS = 10000
 #: One line, at most this many characters: GitHub's own title field is 256.
 PR_TITLE_MAX_CHARS = 256
 #: At most this many bytes of the agent's body, before the platform's block. A
@@ -719,6 +744,9 @@ class Worker:
         self.secret_client = deps.secret_client
         self.memory = deps.memory
         self.ws: workspace_mod.Workspace | None = None
+        #: The staged graph's runner variables (CTXQ-S), decided once per
+        #: attempt: a credential reload rebuilds the env and must not restage.
+        self._graph_env: dict[str, str] | None = None
         self.checkpoints = CheckpointManager(
             store=deps.store,
             tenant_id=config.tenant_id,
@@ -792,6 +820,10 @@ class Worker:
         #: trusted (`_forge_suffix`): the generation check, then the
         #: signature, then the credential read (invariant 5).
         self._forge_signed = False
+        #: The own spec's check, set by `_verify_spec` (MODEL-WORKER). Until
+        #: then the check of a document that names no class: an unverified
+        #: document never reaches the model check, which runs after it.
+        self._spec_check = specverify.SpecCheck(reason="unverified", task_id=config.task_id)
         #: An `input.issue` number's title, when something upstream of the pull
         #: request title (#265's own fetch, once it lands) already read it.
         #: Nothing sets this yet -- #265 is landing separately and had not, as
@@ -819,6 +851,10 @@ class Worker:
         # in this process, or the base a previous attempt's worker recorded in
         # the checkpoint manifest. `EMPTY_CLONE_BASE` for an empty repository.
         self._publish_base: str | None = None
+        # The base BRANCH the runner rebases the lane onto before it publishes
+        # (SPEED-D1, `agent_worker.prepublish`), when that is safe for this
+        # step (`_prepublish_rebase_ref`); None, and no rebase, otherwise.
+        self._prepublish_rebase: str | None = None
         # What `metadata.input_from` put in the workspace. Kept so the result
         # summary can report which upstream artifact this attempt actually ran
         # on -- the question every debugging of a wrong workflow output starts
@@ -881,6 +917,10 @@ class Worker:
         # less what an earlier attempt's agent created; None until then, and
         # None means nothing is uploaded from the working folder.
         self._standalone = False
+        #: The task's additional repositories as they landed on disk this
+        #: attempt (`extrarepos.prepare`, MULTI-REPO #1434), in the task's
+        #: order; empty for a task with none, which is every task before it.
+        self._extra_checkouts: list[extrarepos_mod.Checkout] = []
         self._restored_workdir: frozenset[str] = frozenset()
         self._workdir_baseline: frozenset[str] | None = None
         self._heartbeats = 0
@@ -993,10 +1033,8 @@ class Worker:
         # what the agent start reads to say whether this attempt cloned.
         self._clone_marked = False
         self._agent_start_marked = False
-        # The clone bundle's write-once upload (#940), off the start path:
-        # started by `_write_clone_bundle` once the clone is bundled, joined,
-        # bounded, by `_cleanup` before the workspace holding the file goes.
-        self._bundle_upload: threading.Thread | None = None
+        # `graph_ready` (lane GS-MEASURE): what staging the graph cost, once.
+        self._graph_marked = False
         # The workflow base pin (`_upstream_base_pin`): what this step's clone
         # started from and why, `result_summary.git.base_pin`. None for a root
         # step, a non-workflow task, a step that starts from an upstream
@@ -1017,6 +1055,49 @@ class Worker:
         # docs/design/user-scoped-secrets.md §3.2). Inert for a team token.
         self.forge_broker = forgebroker_mod.ForgeBroker(
             config, children=self.children, logger=deps.logger
+        )
+        # The shared graph service's attempt ticket (docs/design/graph-service.md
+        # §4.1, lane GS-WORKER): minted by `graphstage.prepare` only when the
+        # workspace stored `graph_delivery: service`, then renewed on the
+        # control poll. Signs with the child path's attempt key. Inert otherwise.
+        self.graph_ticket = graph_ticket_mod.GraphTicket(
+            config, children=self.children, logger=deps.logger
+        )
+        # The workspace secrets release (docs/design/workspace-secrets.md
+        # §3.3, lane SEC-RELEASE): once per attempt, before the runner exists,
+        # signed with the child path's attempt key. Inert for a profile whose
+        # catalogue entry, and whose launched tools, declare no secret slot.
+        self.secret_release = secretrelease_mod.SecretRelease(
+            config, children=self.children, logger=deps.logger
+        )
+        # The caller's registered MCP servers (docs/design/registered-mcp-
+        # servers.md §4.7, lane MCP-WORKER): attached once per attempt, after
+        # the release, and served through a loopback relay that holds the
+        # credentials in this heap. Inert for a task whose signed input names
+        # no server -- which is every task while SWARM_MCP_SERVERS is off.
+        self.mcp = mcp_attach_mod.McpAttachment(
+            config, children=self.children, logger=deps.logger
+        )
+        # The TypeSafe forwarder's ticket and the loopback shim jev and the
+        # judge call (workspace-secrets.md §3.5, SEC-MIGRATE-TYPESAFE): only
+        # with SWARM_TYPESAFE_INJECT=on, which the scheduler sets with the
+        # pod's `swarm-typesafe: inject` label, and only on GKE. Inert
+        # otherwise: the key file path is today's. Signs with the child
+        # path's attempt key.
+        self.typesafe = typesafe_shim_mod.TypesafeInject(
+            config, children=self.children, logger=deps.logger, environ=os.environ,
+            backend=_config_backend(config),
+        )
+        # The live-browser path (docs/design/live-browser.md §4, lane L4): the
+        # gate's ctl.sock slot, the tunnel ticket and the hand-off spool. Inert
+        # unless the profile is a live-browser one; signs with the child
+        # path's attempt key, so it needs that registered.
+        self.handoff = handoff_mod.HandoffPath(
+            config,
+            logger=deps.logger,
+            memory=deps.memory,
+            children=self.children,
+            progress=self._emit_startup_progress,
         )
         self._account_broker = deps.account_broker
         if self._account_broker is None and config.quota_broker_url:
@@ -1926,14 +2007,44 @@ class Worker:
             ),
             # The repository's merge slot (merge race, #295): every slot
             # write is fenced on this attempt's task and lease, as the park is.
+            # A tenant switched to the state routes (#1457) holds no Firestore
+            # client: its `db` is the attempt's state client, and swarm-api
+            # fences each slot write on the same tuple.
             merge_slots=(
-                mergeslot_mod.FirestoreMergeSlots(
+                (mergeslot_mod.RemoteMergeSlots(self.db, tenant_id=self.cfg.tenant_id)
+                 if getattr(self.control, "state_via_api", False) else
+                 mergeslot_mod.FirestoreMergeSlots(
                     self.db,
                     tenant_id=self.cfg.tenant_id,
                     run_transaction=self.control._run_transaction,
                     fence=lambda txn: self.control._fenced_task(txn, write="merge slot"),
                     call_options=self.control.call_options,
-                )
+                ))
+                if action is WorkerAction.MERGE else None
+            ),
+            # The repository's merge train (TRAIN-WS): this step's entry,
+            # written only in train mode, fenced on this attempt as the slot is.
+            merge_trains=(
+                (mergetrain_mod.RemoteTrainEntries(self.db, tenant_id=self.cfg.tenant_id,
+                                                   task_id=self.cfg.task_id)
+                 if getattr(self.control, "state_via_api", False) else
+                 mergetrain_mod.FirestoreTrainEntries(
+                    self.db,
+                    tenant_id=self.cfg.tenant_id,
+                    run_transaction=self.control._run_transaction,
+                    fence=lambda txn: self.control._fenced_task(txn, write="merge train entry"),
+                    call_options=self.control.call_options,
+                ))
+                if action is WorkerAction.MERGE else None
+            ),
+            # The PR-side CI fixer's tasks for the merged pull request (#1073):
+            # this tenant's only, each held to its signed spec by the merge.
+            find_ci_fix_tasks=(
+                (lambda number, root: inputs_mod.find_ci_fix_tasks(
+                    self.db, tenant_id=self.cfg.tenant_id, pull_request=number,
+                    root_task_id=root, limit=merge_mod.CI_FIXER_TASKS_READ,
+                    call_options=self.control.call_options(),
+                ))
                 if action is WorkerAction.MERGE else None
             ),
         )
@@ -2093,6 +2204,10 @@ class Worker:
         # `checks_timeout` reads, so a long queue neither spends the step's CI
         # wakes nor times its checks out.
         slot_wait = code == mergeslot_mod.MERGE_SLOT_WAIT
+        # A wait on the repository's merge train (TRAIN-WS) likewise: its own
+        # bound and counter, off the CI clock -- several trains ahead of it
+        # are a queue, not a slow CI.
+        train_wait = code == mergetrain_mod.TRAIN_WAITING
         # Recorded before any metrics export (TEL #718, `_metrics_after_the_record`).
         with self._metrics_after_the_record():
             refunded = self.control.park_ci_pending(
@@ -2101,10 +2216,12 @@ class Worker:
                 pull_request=int(wait.get("pull_request") or 0),
                 pending=[str(name) for name in wait.get("pending") or []],
                 max_wakes=(mergeslot_mod.MERGE_SLOT_MAX_WAITS if slot_wait
+                           else mergetrain_mod.TRAIN_MAX_WAITS if train_wait
                            else merge_mod.MERGE_CI_MAX_WAKES),
                 fallback_seconds=merge_mod.MERGE_CI_FALLBACK_SECONDS,
-                counter="slot_waits" if slot_wait else "wakes",
-                ci_clock=not slot_wait,
+                counter=("slot_waits" if slot_wait else "train_waits" if train_wait
+                         else "wakes"),
+                ci_clock=not (slot_wait or train_wait),
             )
         self.log.info("worker action parked until CI settles", action=action.value,
                       code=wait.get("code"), attempt_refunded=refunded)
@@ -2201,7 +2318,9 @@ class Worker:
     def _verify_spec(self, task: dict[str, Any], create_time: Any) -> None:
         """Contract request 34's check, with its log line and its legacy note.
 
-        The spec itself is never logged: a prompt can hold anything.
+        The spec itself is never logged: a prompt can hold anything. The
+        check is kept as `_spec_check`: its `model_class` is the signed class
+        the model check holds MODEL to.
         """
         clock = self.cfg.spec_clock
         now = clock() if clock is not None else datetime.now(timezone.utc)
@@ -2232,6 +2351,38 @@ class Worker:
         else:
             self.log.info("spec signature verified", spec_check=check.as_detail())
             self._forge_signed = True
+        self._spec_check = check
+
+    def _fail_model_check(self, refusal: specverify.ModelRefusal) -> Outcome:
+        """FAILED, not retried, before the agent ran: MODEL cannot run this step.
+
+        docs/design/model-per-step.md §4.5. NOT RETRIED: the next attempt is
+        dispatched from the same signed class by the same scheduler, and
+        meets the same MODEL. CANNOT_START, like every refusal before the
+        agent. The class and the ID are logged and recorded: neither is a
+        secret, and an operator needs both to see which side is wrong.
+        """
+        error = self._scrub(
+            f"{refusal.cause}: {refusal.reason}. The agent was not started."
+        )
+        self.log.error(
+            "the execution's MODEL cannot run this step's model class; failing "
+            "before the agent runs",
+            cause=refusal.cause,
+            model_class=refusal.model_class,
+            job_model=refusal.model,
+        )
+        summary = self._upload_outputs()
+        summary["model_check"] = refusal.as_detail()
+        with self._metrics_after_the_record():
+            self.control.finish(
+                state=TaskState.FAILED,
+                exit_code=None,
+                error=error,
+                result_summary=summary,
+                end_cause=EndCause.CANNOT_START,
+            )
+        return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
 
     def _incomplete_parents(self, task: dict[str, Any]) -> dict[str, str | None]:
         """The signed parents of `task` that have not SUCCEEDED, with their state.
@@ -2297,8 +2448,11 @@ class Worker:
 
         # ---- STEP 2: STARTING -> RUNNING --------------------------------
         self.phases.enter("record_attempt_start")
+        # `model` is the ID this attempt was started with (contract request
+        # 103), written with `started_at`. STEP 1's generation check has
+        # passed, so a stale generation never reaches this write.
         self.control.record_attempt_start(
-            backend=cfg.backend, execution_name=_execution_name()
+            backend=cfg.backend, execution_name=_execution_name(), model=cfg.model
         )
         self.phases.enter("advance_to_running")
         # STEP 2a, inside STEP 2: the child-task attempt key is registered
@@ -2306,13 +2460,39 @@ class Worker:
         # §3.2 step 3). swarm-api refuses a registration once it is RUNNING.
         # ONE STARTING event: the walk to STARTING writes none, and the
         # registration's note (no child path, and why) is its detail.
-        if self.cfg.child_nonce:
-            moved = self.control.advance_to_starting()
-            notes: list[dict[str, Any]] = []
-            self.children.register(notes.append)
-            if moved or notes:
-                self.control.emit(EventType.STARTING, notes[-1] if notes else None)
-        self.control.advance_to_running()
+        notes: list[dict[str, Any]] = []
+        if getattr(self.control, "state_via_api", False):
+            # THE TENANT IS SWITCHED TO THE STATE ROUTES (#1457, §4.3). The
+            # key was generated and registered by `state/open`, the first call
+            # this attempt made (STEP 1), so the child path takes that key
+            # rather than spending the nonce again. swarm-api writes each
+            # step's event with its transition, and the ONE STARTING event
+            # carries the registration's note, as below.
+            self.children.adopt(
+                self.control.attempt_key, self.control.registration, notes.append
+            )
+            self.control.advance_to_running(starting_detail=notes[-1] if notes else None)
+        else:
+            if self.cfg.child_nonce:
+                moved = self.control.advance_to_starting()
+                self.children.register(notes.append)
+                if moved or notes:
+                    self.control.emit(EventType.STARTING, notes[-1] if notes else None)
+            self.control.advance_to_running()
+        # STEP 2b: the live path (live-browser §3.3, §5.4.2), once RUNNING --
+        # the live-session route checks the fence on RUNNING -- and long before
+        # the agent exists, so the gate's one registration is this worker's.
+        # Never raises; an attempt without a live path runs without one -- but
+        # never SILENTLY: a live profile whose path did not open says so on the
+        # task's events, where the console shows it beside an empty Browser
+        # tab (task_23cc2e82178640709a45, 2026-10-12, LB-KEYRACE).
+        self.handoff.setup(self._live_browser_unavailable)
+        # NOLIVE-GUARD (part of #1366): the agent's browser follows the GATE,
+        # never the viewer's tunnel. A live-browser attempt whose gate is not
+        # ready has no CDP proxy, and it never starts its agent headless: the
+        # ATTEMPT fails retryably, before the agent, after the startup window.
+        if self.handoff.gate_missing:
+            return functools.partial(self._fail_live_gate_missing, self.handoff.unavailable)
 
         # THE FIRST HEARTBEAT GOES HERE, BEFORE ANY SLOW WORK.
         #
@@ -2336,9 +2516,11 @@ class Worker:
 
         # ---- STEP 3: isolated workspace ---------------------------------
         self.phases.enter("workspace")
-        self.ws = workspace_mod.create(cfg.workspace_root, cfg.attempt_id)
+        self.ws = workspace_mod.create(
+            cfg.workspace_root, cfg.attempt_id, cache_root=cfg.cache_root
+        )
         ws = self.ws
-        self.log.info("workspace created", path=str(ws.root))
+        self.log.info("workspace created", path=str(ws.root), cache=str(ws.cache))
 
         # ---- STEP 4: fetch the task and VERIFY ITS SPEC -----------------
         # Contract request 34 (#342). Immediately after the fetch and before
@@ -2354,6 +2536,15 @@ class Worker:
         # verified copy, never on the live field a tenant agent can rewrite
         # (#346).
         self.control.pin_verified_max_attempts(task.get("max_attempts"))
+
+        # ---- STEP 4 (cont.): the MODEL this execution was given ----------
+        # docs/design/model-per-step.md §4.5. After the signature, on its
+        # signed class, and before a credential is read or the CLI started:
+        # a classed step with no pin, or with the pin of another class, is
+        # refused rather than run on whatever model the CLI would pick.
+        _, model_refusal = specverify.check_model(cfg.profile, self._spec_check, cfg.model)
+        if model_refusal is not None:
+            return functools.partial(self._fail_model_check, model_refusal)
         # The clone host joins the egress probe (#721 (a)) as soon as the
         # document naming it is verified, the same URL `_maybe_clone` reads.
         self._add_egress_target(self.cfg.repository_url or task.get("repository_url"))
@@ -2402,7 +2593,7 @@ class Worker:
         # because it talks to the forge (`_run_worker_action`).
         action = cfg.profile.worker_action
         if action is not None:
-            _recheck_runner_input(cfg.runner_profile, task.get("input"))
+            _read_input_as_checked(task, cfg.runner_profile)
             self._task = task
             self.phases.enter("stage_inputs")
             staged_inputs = self._stage_declared_inputs(task)
@@ -2430,7 +2621,12 @@ class Worker:
         # snapshot never reaches `_recheck_runner_input`. The owner's
         # decision on #353/#345 ordering: verify the signature first, then
         # re-check the input, both on the one verified document.
-        _recheck_runner_input(cfg.runner_profile, task.get("input"))
+        #
+        # And from here on the worker reads the input AS CHECKED (contract
+        # request 58): an `integer` input stored as `7.0` -- which JCS gives
+        # the same bytes as the `7` that was signed -- is read as `7`, so the
+        # issue the title names is the issue the signer signed.
+        _read_input_as_checked(task, cfg.runner_profile)
         # Kept because the publish gate, several steps later, needs the
         # caller's dispatch strategy and re-fetching it there would be a
         # second read of a document that cannot have changed. It is the
@@ -2477,6 +2673,20 @@ class Worker:
         # A clone is the single slowest step before the agent starts, and the
         # one most likely to vary with repository size.
         self._heartbeat()
+
+        # ---- STEP 5': the additional repositories (MULTI-REPO, #1434) ------
+        # docs/design/multi-repository-steps.md §4.4: right after the primary
+        # clone, each signed entry cloned at its signed commit onto the cache
+        # volume, read-only, and linked under `work/repos`. All of them or the
+        # agent does not start: a revoked grant or an oversized set ends the
+        # attempt for good, a clone that failed ends it retryably. A task
+        # with no primary repository takes them too (the owner's Q8).
+        try:
+            self._extra_checkouts = self._clone_additional_keeping_lease(task)
+        except extrarepos_mod.Refused as exc:
+            return functools.partial(self._end_additional_refused, exc)
+        if self._extra_checkouts:
+            self._heartbeat()
 
         # ---- before STEP 5a: a READ grant on a step that must push (D9, OB5) -
         # A step whose job is to open a pull request, or to carry its work on a
@@ -2555,6 +2765,17 @@ class Worker:
         payload = dict(task.get("input") or {})
         if repo_info:
             payload.setdefault("repository", repo_info)
+        if self._extra_checkouts:
+            # Assigned, not `setdefault`: what is on disk now, as
+            # `staged_inputs` below is.
+            payload[extrarepos_mod.INPUT_KEY] = [c.as_dict() for c in self._extra_checkouts]
+        elif extrarepos_mod.INPUT_KEY in payload:
+            # Only the worker's own record names checkouts to the agent.
+            payload.pop(extrarepos_mod.INPUT_KEY)
+            self.log.warning(
+                "dropped the caller's own input.additional_repositories: only the "
+                "checkouts the worker made for this task are named to the agent",
+            )
         if staged_inputs:
             # Assigned, not `setdefault`: this key describes what is actually on
             # disk right now, so a caller's own `staged_inputs` in the step input
@@ -2631,6 +2852,65 @@ class Worker:
 
         # ---- STEP 6: tenant credentials ---------------------------------
         self.phases.enter("credentials")
+        # STEP 6a: the workspace secrets granted to this attempt's consumers
+        # (SEC-RELEASE), ONCE, before the runner exists: every value is
+        # registered for redaction as the answer is parsed, and the runner is
+        # handed only the manifest's path (`_build_child_env`). A 409 is the
+        # fence: stand down without touching the lease (invariant 5). A
+        # required slot with nothing in it -- no grant, or swarm-api not
+        # reachable -- parks CREDENTIAL_MISSING at no cost (invariant 1);
+        # optional slots only, the attempt starts without them.
+        try:
+            released = self.secret_release.release(
+                profile=cfg.profile, inputs=task.get("input"), private_dir=ws.private
+            )
+        except secretrelease_mod.SecretReleaseFenced as exc:
+            raise FencedWriteRefused(
+                cfg.generation, -1, f"secrets release: {exc.code}", write="secrets release"
+            ) from None
+        if released.missing_required:
+            secretrelease_mod.remove(ws.private)
+            return functools.partial(
+                self._park_credential_missing,
+                CredentialMissing(
+                    cfg.tenant_id,
+                    "workspace-secret:" + ",".join(released.missing_required),
+                ),
+            )
+        # STEP 6a': the TypeSafe forwarder's first ticket and the shim, before
+        # the runner and before `_build_child_env` (whose jev key and judge
+        # setup read the shim file). Switched off, nothing happens. A 409 is
+        # the fence, as for the release: stand down, leave the lease.
+        try:
+            self.typesafe.start(ws.private)
+        except typesafe_shim_mod.TypesafeTicketFenced as exc:
+            raise FencedWriteRefused(
+                cfg.generation, -1, str(exc), write="typesafe ticket"
+            ) from None
+        # STEP 6a'': the caller's registered MCP servers (MCP-WORKER, design
+        # §4.7), ONCE, before the runner's environment: every credential is
+        # registered for redaction as the answer is parsed, and the runner is
+        # handed only the relay file's path (`_build_child_env`). A 409 is the
+        # fence: stand down without the agent, leave the lease (invariant 5).
+        # A withheld server, or an attach that could not be made, fails the
+        # attempt before the agent runs: it was named because it is needed.
+        try:
+            attached = self.mcp.attach(profile=cfg.profile, inputs=task.get("input"))
+        except mcp_attach_mod.McpAttachFenced as exc:
+            raise FencedWriteRefused(
+                cfg.generation, -1, f"mcp attach: {exc.code}", write="mcp attach"
+            ) from None
+        unattached = attached.failure()
+        if unattached is None and attached.servers:
+            try:
+                self.mcp.start(ws.private)
+            except OSError as exc:
+                unattached = (
+                    mcp_attach_mod.UNAVAILABLE, f"relay_not_started:{type(exc).__name__}", True
+                )
+        if unattached is not None:
+            self.mcp.close()
+            return functools.partial(self._fail_mcp_unattached, *unattached)
         try:
             child_env = self._build_child_env()
         except CredentialMissing as exc:
@@ -2888,6 +3168,39 @@ class Worker:
                     return self._exit_fenced_mid_run(
                         child, observed_generation=-1, reason=f"child submission: {exc.code}"
                     )
+                # The graph ticket (GS-WORKER), renewed when a third of its
+                # life is left; a stat-free clock check when it is not due.
+                # A 409 is the fence: stop the agent, leave the lease.
+                if self.graph_ticket.due():
+                    try:
+                        with self._heartbeat_meanwhile("graph ticket"):
+                            self.graph_ticket.keep()
+                    except graph_ticket_mod.GraphTicketFenced as exc:
+                        return self._exit_fenced_mid_run(
+                            child, observed_generation=-1, reason=str(exc)
+                        )
+                # The TypeSafe ticket (SEC-MIGRATE-TYPESAFE), the same way: a
+                # third of its life left, or a fence the shim found (a 409 at
+                # an on-demand renewal, or the forwarder's stale_generation).
+                if self.typesafe.due():
+                    try:
+                        with self._heartbeat_meanwhile("typesafe ticket"):
+                            self.typesafe.keep()
+                    except typesafe_shim_mod.TypesafeTicketFenced as exc:
+                        return self._exit_fenced_mid_run(
+                            child, observed_generation=-1, reason=str(exc)
+                        )
+                if self.handoff.spooled:
+                    # Live-browser §4.1-§4.3: answer the agent's requests and
+                    # watch an open hand-off's hold. Never raises.
+                    with self._heartbeat_meanwhile("hand-off"):
+                        ended = self.handoff.tick(ws.work, self.control.fetch_task)
+                        # LB-RETURN: swarm-api decides whether the hold really
+                        # ran out, against a viewer who came as it did.
+                        if ended == handoff_mod.HOLD_EXPIRED and not self.handoff.confirm_expired():
+                            ended = None
+                    if ended is not None:
+                        return self._park_for_human(child, cause=ended)
 
             if now >= self._runner_deadline:
                 self.log.error("task timeout reached", timeout_seconds=cfg.timeout_seconds)
@@ -2897,6 +3210,9 @@ class Worker:
 
         result = child.finish()
         self._child_ended()
+        # An agent that ended with a hand-off open is waiting for nobody now:
+        # resolved while the task is still RUNNING (live-browser §4.1).
+        self.handoff.agent_exited(ws.work)
         self.log.info(
             "runner finished",
             exit_code=result.exit_code,
@@ -3049,6 +3365,15 @@ class Worker:
 
         if signals.cancel_requested:
             self.log.warning("cancellation requested; stopping the runner")
+            # CANCEL DURING A HAND-OFF'S HOLD (live-browser §4.4): the agent's
+            # `wait` exits 4, the gate ends control and wipes, swarm-api's
+            # wait is resolved `cancelled`; then the ordinary cancel path.
+            if self.handoff.end(
+                self.ws.work if self.ws is not None else None,
+                outcome="cancelled",
+                cause="cancelled",
+            ):
+                child.wait(handoff_mod.CANCEL_ANSWER_SECONDS)
             child.terminate(cfg.termination_grace_seconds, reason="cancelled")
             child.finish()
             self._child_ended()
@@ -3201,6 +3526,8 @@ class Worker:
         """
         cfg = self.cfg
         self._fenced_exit = True
+        # Before the runner is stopped: from here the relay forwards nothing.
+        self.mcp.mark_fenced()
         self.log.error(
             "generation fenced mid-run; stopping the runner",
             observed_generation=observed_generation,
@@ -3258,6 +3585,7 @@ class Worker:
             attempt made while it still owned the task.
         """
         self._fenced_exit = True
+        self.mcp.mark_fenced()
         self.log.error(
             "FENCED on the way out: this attempt has been superseded; exiting "
             "without writing the task, the lease or an event",
@@ -3416,7 +3744,7 @@ class Worker:
 
         if result.timed_out:
             error = f"runner exceeded its {self.cfg.timeout_seconds}s timeout and was killed"
-            self.control.finish(
+            self._finish_terminal(
                 state=TaskState.FAILED,
                 exit_code=result.exit_code,
                 error=error,
@@ -3428,7 +3756,7 @@ class Worker:
         if result.exit_code == 0:
             if runner_result is None:
                 error = "runner exited 0 without writing result.json"
-                self.control.finish(
+                self._finish_terminal(
                     state=TaskState.FAILED,
                     exit_code=0,
                     error=error,
@@ -3463,18 +3791,25 @@ class Worker:
             unreachable = self._publish_unreachable(summary)
             if unreachable is not None:
                 return self._fail_for_publish_unreachable(unreachable, summary, exit_code=0)
+            # After the outage, which stays retryable: anything else that left
+            # a skip-path step without its branch fails it now (PUB-SKIP).
+            unpushed = self._skipped_publish_missing(summary)
+            if unpushed is not None:
+                self._mark_publish(summary, failed=str(self._scrub(unpushed)))
+                return self._fail_for_published_nothing(unpushed, summary, exit_code=0)
+            self._mark_publish(summary)
             # LAST before the success, so an attempt that fails above never
             # leaves a write-once verdict behind it for its retry to meet.
             unpublished = self._publish_review_verdict(summary)
             if unpublished is not None:
                 return unpublished
-            self.control.finish(
+            self._finish_terminal(
                 state=TaskState.SUCCEEDED, exit_code=0, result_summary=summary
             )
             return Outcome(exit_code=ExitCode.OK, state=TaskState.SUCCEEDED)
 
         if result.exit_code == EXIT_TERMINATED:
-            self.control.finish(
+            self._finish_terminal(
                 state=TaskState.CANCELLED,
                 exit_code=result.exit_code,
                 error="runner stopped on SIGTERM",
@@ -3483,7 +3818,7 @@ class Worker:
             return Outcome(exit_code=ExitCode.CANCELLED, state=TaskState.CANCELLED)
 
         error = (runner_result or {}).get("error") or _tail_text(ws.stderr_path)
-        self.control.finish(
+        self._finish_terminal(
             state=TaskState.FAILED,
             end_cause=EndCause.RUNNER_ERROR,
             exit_code=result.exit_code,
@@ -3562,13 +3897,13 @@ class Worker:
         summary["verdict_published"] = {"refused": error}
         self.log.error("the review's verdict was not published", reason=error)
         if retryable:
-            state = self.control.fail_retryably(
+            state = self._fail_retryably_terminal(
                 exit_code=0, error=error, cause="verdict_unpublished",
                 result_summary=summary, end_cause=end_cause,
             )
             return Outcome(exit_code=ExitCode.FAILED, state=state)
-        self.control.finish(state=TaskState.FAILED, exit_code=0, error=error,
-                            result_summary=summary, end_cause=end_cause)
+        self._finish_terminal(state=TaskState.FAILED, exit_code=0, error=error,
+                              result_summary=summary, end_cause=end_cause)
         return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
 
     def _carry_parked_uploads(self, summary: dict[str, Any]) -> None:
@@ -3727,6 +4062,7 @@ class Worker:
     def _exit_fenced(self, exc: FencedError) -> int:
         """Emit the event and leave. No workspace, no agent, no lease change."""
         self._fenced_exit = True
+        self.mcp.mark_fenced()
         self.log.error(
             "FENCED: this attempt has been superseded; exiting without running the agent",
             expected_generation=exc.expected,
@@ -4148,13 +4484,23 @@ class Worker:
         # `attempt_count`, so the attempt after it can read 1 and still be a
         # resume. Counted back here; a tenant that can write the counter can
         # write `attempt_count` itself, so this adds no reach (see below).
+        #
+        # A refunded HAND-OFF park (live-browser §4.3) takes one off the same
+        # way, and is counted back the same way (RESUME-PROGRESS, QA12-14).
+        # It was not: MEASURED 2026-10-13 on task_4defa61c5eea4a5c87f5, the
+        # attempt after a hand-off park read `attempt_count` 1, was taken for
+        # the task's first, restored nothing, and its agent started the task
+        # over -- asking again for the hand-off already done.
         metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
-        resumes = metadata.get(CHILD_AWAIT_RESUMES_METADATA_KEY)
-        resumes = resumes if isinstance(resumes, int) and not isinstance(resumes, bool) else 0
+        resumes = 0
+        for key in (CHILD_AWAIT_RESUMES_METADATA_KEY, handoff_mod.HUMAN_WAIT_RESUMES_METADATA_KEY):
+            value = metadata.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                resumes += max(0, value)
         if (
             isinstance(count, bool)
             or not isinstance(count, int)
-            or count + max(0, resumes) <= 1
+            or count + resumes <= 1
         ):
             refuse(reason="first attempt of this task", attempt_count=count)
             return None
@@ -4308,6 +4654,134 @@ class Worker:
         with self._heartbeat_meanwhile("clone"):
             return self._maybe_clone(task)
 
+    def _clone_additional_keeping_lease(
+        self, task: dict[str, Any]
+    ) -> list[extrarepos_mod.Checkout]:
+        """The task's additional repositories on disk (`extrarepos.prepare`), the
+        lease heartbeated from a thread meanwhile, as for the primary clone.
+
+        Raises `extrarepos.Refused` when they cannot all be put there. From the
+        VERIFIED document only (`_task`, after `_verify_spec`), whose spec
+        signature covers the list at format 4.
+        """
+        entries = extrarepos_mod.entries_of(task)
+        if not entries:
+            return []
+        ws = self.ws
+        assert ws is not None
+        self.phases.enter("additional_clone", count=len(entries))
+        budget = extrarepos_mod.budget_bytes(
+            self.db, logger=self.log, call_options=self.control.call_options()
+        )
+        with self._heartbeat_meanwhile("additional_clone"):
+            checkouts = extrarepos_mod.prepare(
+                ws=ws,
+                entries=entries,
+                grant_refusal=self._additional_grant_refusal,
+                token_for=self._additional_git_token,
+                budget=budget,
+                logger=self.log,
+                timeout_seconds=self.cfg.git_clone_timeout_seconds,
+                max_wait_seconds=self.cfg.max_in_worker_retry_delay_seconds,
+                remaining_seconds=self._remaining_seconds,
+                sleep=self.forge_sleep,
+                egress=self._egress,
+            )
+        # From now on every checkpoint leaves `work/repos` out (§4.6), and
+        # the standalone upload skips it (`_workdir_reserved`).
+        self.checkpoints.leaves_out_extra_repos = True
+        self._extra_checkouts = checkouts
+        return checkouts
+
+    def _additional_suffix(self, entry: dict[str, Any]) -> str:
+        """The forge slot an additional repository is cloned with.
+
+        The entry's signed `forge_credential`, only once the spec signature
+        was verified; an unsigned task reads the tenant token, as
+        `_forge_suffix` does for the primary, so a field anyone with write on
+        the document could set never chooses whose slot this worker reads.
+        """
+        return entry["forge_credential"] if self._forge_signed else GIT_PROVIDER
+
+    def _additional_grant_refusal(self, entry: dict[str, Any]) -> str | None:
+        """Why the submitter's grant no longer covers this entry, or None.
+
+        `secrets.grant_refusal` for the entry's own slot and repository, read
+        again by id. Nothing for a tenant token. Raises when it cannot be read.
+        """
+        suffix = self._additional_suffix(entry)
+        if user_slot_hash(suffix) is None:
+            return None
+        submitted_by = (self._task or {}).get("submitted_by")
+        return grant_refusal(
+            self.db,
+            tenant_id=self.cfg.tenant_id,
+            suffix=suffix,
+            repository_url=entry["repository_url"],
+            write=False,
+            call_options=self.control.call_options(),
+            submitted_by=submitted_by if isinstance(submitted_by, str) else None,
+        )
+
+    def _additional_git_token(self, entry: dict[str, Any]) -> str | None:
+        """This entry's forge token, read now, or None: `_git_token`'s path for
+        the entry's own slot. Never cached, never put in an environment."""
+        refusal = self._git_token_refusal()
+        if refusal or self.secret_client is None:
+            return None
+        try:
+            tenant = load_tenant(
+                self.db, self.cfg.tenant_id, call_options=self.control.call_options()
+            )
+            return resolve_git_token(
+                tenant=tenant, client=self.secret_client, logger=self.log,
+                provider=self._additional_suffix(entry),
+            )
+        except SecretError as exc:
+            self.log.warning(
+                "no usable git credential for an additional repository; cloning "
+                "unauthenticated", name=entry["name"], error=str(exc),
+            )
+            return None
+
+    def _end_additional_refused(self, exc: extrarepos_mod.Refused) -> Outcome:
+        """End the attempt before the agent ran: its additional repositories
+        could not all be put on disk.
+
+        After the startup window closes, like every ending `_prepare` decides
+        on. `control.finish` or `fail_retryably` writes the task's state and
+        releases the lease; nothing else touches it. The reason names entries
+        by `name` only.
+        """
+        reason = self._scrub(exc.reason)
+        error = self._scrub(f"{exc.cause}: {reason}. The agent was not started.")
+        self.log.error(
+            "the additional repositories could not be prepared; ending before the agent runs",
+            cause=exc.cause, retryable=exc.retryable,
+        )
+        summary = self._upload_outputs()
+        summary["additional_repositories_check"] = {"cause": exc.cause, "reason": reason}
+        with self._metrics_after_the_record():
+            if exc.retryable:
+                state = self.control.fail_retryably(
+                    exit_code=None,
+                    error=error,
+                    cause=exc.cause,
+                    result_summary=summary,
+                    retry_delay_seconds=FORGE_UNREACHABLE_RETRY_DELAY_SECONDS,
+                    detail={"clone": "additional_repositories"},
+                    end_cause=EndCause.CANNOT_START,
+                )
+                return Outcome(exit_code=ExitCode.FAILED, state=state)
+            self.control.finish(
+                state=TaskState.FAILED,
+                exit_code=None,
+                error=error,
+                result_summary=summary,
+                end_cause=EndCause.CANNOT_START,
+            )
+        return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
+
     def _maybe_clone(self, task: dict[str, Any]) -> dict[str, Any] | None:
         ws = self.ws
         assert ws is not None
@@ -4316,6 +4790,14 @@ class Worker:
             return None
         destination = ws.work / REPO_DIR_NAME
         self._repo_url = url
+        # AN INDEX RUN'S CHECKPOINTS LEAVE ITS CHECKOUT OUT (INDEX-CKPT, owner
+        # decision 2026-10-17): the indexer only reads it, and a resumed
+        # attempt clones it again below, at the manifest's `clone_base`
+        # (`indexrun.resume_clone_ref`). Set before the first checkpoint, so
+        # a chain never changes what it covers. Empty for every other profile.
+        self.checkpoints.excluded_dirs = indexrun_mod.checkpoint_excludes(
+            self.cfg.runner_profile
+        )
         if destination.exists() and any(destination.iterdir()):
             # Restored from a checkpoint that already contains the clone. The
             # base commit is read back from the marker the FIRST attempt wrote,
@@ -4377,8 +4859,17 @@ class Worker:
         carried, carried_head = (
             ("", None) if pr_branch or continued or builds_on else self._carrier_parent(task, url)
         )
+        # A resumed index run whose checkpoint left the checkout out clones
+        # again at the commit its first attempt cloned, by the same call and
+        # with the token read the same way, wherever `repository_ref` has
+        # moved since: the restored graph describes that commit.
+        resumed_at = indexrun_mod.resume_clone_ref(
+            self.cfg.runner_profile,
+            self._restored_from.clone_base if self._restored_from else None,
+        )
         ref = (
-            pr_branch
+            resumed_at
+            or pr_branch
             or continued
             or (f"{self.cfg.git_branch_prefix}{builds_on}" if builds_on else None)
             or (f"{self.cfg.git_branch_prefix}{carried}" if carried else None)
@@ -4393,7 +4884,7 @@ class Worker:
         # pinned. `_upstream_base_pin` reads nothing for a root step or a
         # non-workflow task, which is therefore unchanged.
         pinned_sha: str | None = None
-        if not (pr_branch or continued or builds_on or carried):
+        if not (resumed_at or pr_branch or continued or builds_on or carried):
             pinned_sha, self._base_pin = self._upstream_base_pin(task)
         if carried:
             # THE PARENT'S RECORDED HEAD, NOT THE BRANCH'S TIP (#453). The tip
@@ -4472,26 +4963,12 @@ class Worker:
                 and forge_credential_refused(exc),
             )
 
-        # CLONE BUNDLES (#940, docs/clone-bundles.md). #721 measured a median
-        # 36.6 s TCP connect to GitHub per clone against 1.7 s of transfer. A
-        # commit some earlier step of this tenant cloned is in a one-commit
-        # bundle under `tenants/<own tenant>/bundles/`, read over Private
-        # Google Access with this worker's own credentials (`self.store`, the
-        # tenant's service account: invariant 9). A pinned step clones from it
-        # and never contacts the forge; a branch-tip step seeds from the
-        # branch's last bundle and fetches only the delta. Any miss or bundle
-        # error is today's clone, below, unchanged. An index run's deep clone
-        # neither reads nor writes one: its 90 days are not a checkout.
+        # An index run reads 90 days of history (hot spots, co-change); every
+        # other step stays one commit deep. Every clone is the forge's: the
+        # clone bundles of #940 were retired on 2026-10-11
+        # (docs/clone-bundles.md), once forge clones measured faster.
         history_days = indexrun_mod.clone_history_days(self.cfg.runner_profile)
-        bundle = self._bundle_record(history_days)
-        if pinned_sha is not None and bundle["miss_reason"] is None:
-            # No `retry`, no token and no egress wait: nothing here reaches
-            # the forge, which is the whole point.
-            clone = self._clone_pinned_from_bundle(
-                url=url, ref=ref, sha=pinned_sha, destination=destination, record=bundle,
-            )
-
-        if pinned_sha is not None and clone is None:
+        if pinned_sha is not None:
             try:
                 clone = retry(lambda: clone_at_commit(
                     url=url,
@@ -4509,7 +4986,7 @@ class Worker:
             except GitTransient as exc:
                 # Not a fall back to the branch tip: the tip is on the same
                 # forge, and an unpinned clone would be a silent change of base.
-                self._mark_clone_timed(None, tries=tries, pinned=True, bundle=bundle)
+                self._mark_clone_timed(None, tries=tries, pinned=True)
                 self._mark_egress_ready()
                 raise _CloneUnreachable(self._scrub(str(exc)[-600:]), exc.tries) from exc
             except GitError as exc:
@@ -4518,7 +4995,7 @@ class Worker:
                     # refuses to trust. The parent's head is not on the
                     # branch any more, which only a force push or a deleted
                     # branch does -- neither of them this platform's.
-                    self._mark_clone_timed(None, tries=tries, pinned=True, bundle=bundle)
+                    self._mark_clone_timed(None, tries=tries, pinned=True)
                     self._mark_egress_ready()
                     raise WorkerError(
                         f"repository clone failed: this step starts from task "
@@ -4537,28 +5014,6 @@ class Worker:
                 )
                 self._base_pin = {"pinned": False, "reason": "fetch_failed"}
         pinned_clone = clone is not None
-        if (
-            clone is None and pinned_sha is None and ref and not pr_branch
-            and bundle["miss_reason"] is None
-        ):
-            # A branch tip: seeded from the branch's last bundle, then the
-            # delta from the forge, through the same `retry` -- the same
-            # tries, waits, credential re-read and `try_log` as the clone
-            # below. A `single-pr` reader or amender is left exactly as it was.
-            try:
-                clone = self._clone_tip_onto_bundle(
-                    url=url, ref=ref, destination=destination, record=bundle,
-                    retry=retry, token=clone_token, peers=peers,
-                )
-            except GitTransient as exc:
-                # The forge did not answer the delta fetch through every try.
-                # Not a second round against the same outage from a full
-                # clone: the attempt ends retryably, as that clone's would.
-                self._mark_clone_timed(
-                    None, tries=tries, pinned=False, source="bundle+delta", bundle=bundle
-                )
-                self._mark_egress_ready()
-                raise _CloneUnreachable(self._scrub(str(exc)[-600:]), exc.tries) from exc
         try:
             clone = clone or retry(lambda: shallow_clone(
                 url=url,
@@ -4575,16 +5030,14 @@ class Worker:
                 token=clone_token(),
                 egress=self._egress,
                 peers=peers,
-                # An index run reads 90 days of history (hot spots,
-                # co-change); every other step stays one commit deep.
                 history_days=history_days,
             ))
         except GitTransient as exc:
-            self._mark_clone_timed(None, tries=tries, pinned=False, bundle=bundle)
+            self._mark_clone_timed(None, tries=tries, pinned=False)
             self._mark_egress_ready()
             raise _CloneUnreachable(self._scrub(str(exc)[-600:]), exc.tries) from exc
         except GitError as exc:
-            self._mark_clone_timed(None, tries=tries, pinned=False, bundle=bundle)
+            self._mark_clone_timed(None, tries=tries, pinned=False)
             self._mark_egress_ready()
             based = (
                 f"; this step builds on task {builds_on}, whose branch {ref} is "
@@ -4603,16 +5056,7 @@ class Worker:
                     f"tenant git token because {refusal}"
                 ) from exc
             raise WorkerError(f"repository clone failed: {exc}{based}") from exc
-        source = str(clone.phases.get("source") or "forge")
-        # Bundled BEFORE the agent starts, so the agent never touches what is
-        # bundled; uploaded off the start path. Never fails the step.
-        self._write_clone_bundle(
-            clone, url=url, source=source, record=bundle,
-            head_ref=ref if not pinned_clone else None,
-        )
-        self._mark_clone_timed(
-            clone, tries=tries, pinned=pinned_clone, source=source, bundle=bundle
-        )
+        self._mark_clone_timed(clone, tries=tries, pinned=pinned_clone)
         self._mark_egress_ready()
         self._repo_url = clone.url
         self._clone_base = clone.commit
@@ -4623,6 +5067,12 @@ class Worker:
         # manifest from here on, so a resumed attempt can trust it too.
         self._publish_base = clone.commit or (EMPTY_CLONE_BASE if clone.empty else None)
         self.checkpoints.clone_base = self._publish_base
+        self._prepublish_rebase = self._prepublish_rebase_ref(
+            ref=ref,
+            checkout=Path(destination),
+            fixed_base=bool(pr_branch or continued or builds_on or carried)
+            or pinned_sha is not None,
+        )
         self._write_clone_base(clone.commit)
         info: dict[str, Any] = {
             "path": REPO_DIR_NAME,
@@ -4648,303 +5098,144 @@ class Worker:
             info["git_token_refused"] = refusal
         return info
 
-    # -----------------------------------------------------------------------
-    # Clone bundles (#940, docs/clone-bundles.md)
-    # -----------------------------------------------------------------------
+    def _prepublish_rebase_ref(
+        self, *, ref: str | None, checkout: Path, fixed_base: bool
+    ) -> str | None:
+        """The branch the runner may rebase this lane onto before publishing, or None.
 
-    def _bundle_record(self, history_days: int | None) -> dict[str, Any]:
-        """`clone_timed.bundle`, begun: whether a bundle may be read at all, and why not.
+        SPEED-D1 (owner decision 2026-10-14): 128 of 150 merged pull requests
+        needed an update from main, because a lane's branch is cut from the
+        commit it started on. The runner rebases onto the base's CURRENT tip
+        through the git tools (`agent_worker.prepublish`), and the publish
+        then diffs from where it landed (`_adopt_rebase_base`). Only where a
+        moved base breaks nothing:
 
-        `miss_reason` None means "look"; anything else is why this clone
-        neither reads nor writes one -- the kill switch
-        (`SWARM_CLONE_BUNDLES=0`) or an index run, whose clone is deepened to
-        its history window and is never one commit.
+        * an AUTHOR of its own pull request -- `direct-pr`, or `single-pr`'s
+          author. `collect` stages its patch onto a downstream step's pinned
+          base, an amender only fast-forwards the author's branch, an
+          integrator merges contributors onto their base;
+        * cloned from the repository's branch, not from a continued, built-on,
+          carried or author's branch (`fixed_base`), whose pushed tip a
+          rewritten history would no longer fast-forward, and not pinned to an
+          upstream step's base, which a downstream patch must apply to;
+        * no `carrier: branches`, whose checkpoints already pushed the branch;
+        * a BRANCH: a ref that is a sha has no newer tip.
+
+        The default branch, when the task names no ref, is read from the
+        clone's own HEAD file, which this process wrote before any agent ran.
         """
-        record: dict[str, Any] = {
-            "hit": False, "download_seconds": None, "bytes": None, "written": False,
-            "miss_reason": None,
-        }
-        if not self.cfg.clone_bundles_enabled:
-            record["miss_reason"] = "disabled"
-        elif history_days is not None:
-            record["miss_reason"] = "index_run"
-        return record
-
-    def _fetch_clone_bundle(self, url: str, sha: str, record: dict[str, Any]) -> Path | None:
-        """Download the bundle of `sha` from the worker's OWN tenant's prefix, or None.
-
-        The key is built from `self.cfg.tenant_id` -- this worker's, set by
-        dispatch, never the task's input -- so a tenant only ever reads what
-        its own steps wrote (invariant 9), and the read is `self.store`, the
-        tenant's own service account, over Private Google Access. The file
-        goes to `ws.private`, which the agent is never handed.
-        """
-        assert self.ws is not None
-        key = clonebundle_mod.bundle_key(self.cfg.tenant_id, url, sha)
-        if isinstance(key, clonebundle_mod.NoKey):
-            record["miss_reason"] = "no_key"
-            self.log.info("clone bundle: none can be keyed", reason=key.reason)
+        if fixed_base or self._dispatch_carrier() == "branches":
             return None
-        path = self.ws.private / f"{sha}{clonebundle_mod.BUNDLE_SUFFIX}"
-        started = time.monotonic()
-        size = clonebundle_mod.fetch_bundle(
-            self.store, key, path, self.cfg.clone_bundle_max_bytes, log=self.log
-        )
-        record["download_seconds"] = round(time.monotonic() - started, 3)
-        if size is None:
-            record["miss_reason"] = "miss"
+        role = self._pr_role()
+        if role:
+            if role != "author":
+                return None
+        elif self._dispatch_strategy() != "direct-pr":
             return None
-        record["bytes"] = size
-        return path
-
-    @staticmethod
-    def _with_download(clone: CloneResult, seconds: float) -> CloneResult:
-        """The clone's time with the bundle's download in it: `clone_timed`'s
-        `seconds` and `total_seconds` are then what the step waited, which is
-        #940's acceptance number."""
-        total = float(clone.phases.get("total_seconds") or clone.duration_seconds)
-        return dataclasses.replace(
-            clone,
-            duration_seconds=float(clone.duration_seconds) + seconds,
-            phases={**clone.phases, "total_seconds": round(total + seconds, 3)},
-        )
-
-    def _clone_pinned_from_bundle(
-        self, *, url: str, ref: str | None, sha: str, destination: Path,
-        record: dict[str, Any],
-    ) -> CloneResult | None:
-        """A pinned sha from its bundle, without contacting the forge; None to
-        clone it from the forge as before (a miss, an over-cap bundle, or any
-        error from the bundle -- the destination is emptied first)."""
-        assert self.ws is not None
-        path = self._fetch_clone_bundle(url, sha, record)
-        if path is None:
-            return None
-        try:
-            clone = clone_from_bundle(
-                bundle=path, url=url, branch=ref, commit=sha, destination=destination,
-                private_dir=self.ws.private, logs_dir=self.ws.logs,
-                timeout_seconds=self.cfg.git_clone_timeout_seconds, logger=self.log,
-            )
-        except Exception as exc:  # noqa: BLE001 -- any bundle failure is today's clone
-            record["miss_reason"] = "bundle_error"
-            gitops_mod._empty_directory(Path(destination))
-            self.log.warning(
-                "clone bundle: the bundle did not clone; cloning from the forge",
-                commit=sha, error=self._scrub(f"{type(exc).__name__}: {str(exc)[:300]}"),
-            )
-            return None
-        finally:
-            path.unlink(missing_ok=True)
-        record["hit"] = True
-        return self._with_download(clone, float(record["download_seconds"] or 0.0))
-
-    def _clone_tip_onto_bundle(
-        self, *, url: str, ref: str, destination: Path, record: dict[str, Any],
-        retry: Callable[[Callable[[], CloneResult]], CloneResult],
-        token: Callable[[], str | None], peers: PeerPin,
-    ) -> CloneResult | None:
-        """A branch's tip: its last bundle, then only the delta from the forge.
-
-        The forge IS contacted (the tip is only known there), through the
-        caller's `retry` -- every try re-seeds from the downloaded bundle,
-        which is local and cheap, because a refused try empties the folder.
-        None to clone as before: no head pointer, no bundle, or any failure
-        that is not the forge's outage (the destination emptied first). A
-        `GitTransient` that outlasted the tries is raised: a full clone would
-        meet the same forge.
-        """
-        assert self.ws is not None
-        ws = self.ws
-        head = clonebundle_mod.head_key(self.cfg.tenant_id, url, ref)
-        if isinstance(head, clonebundle_mod.NoKey):
-            record["miss_reason"] = "no_key"
-            return None
-        seed = clonebundle_mod.read_head(self.store, head, log=self.log)
-        if seed is None:
-            record["miss_reason"] = "no_head"
-            return None
-        path = self._fetch_clone_bundle(url, seed, record)
-        if path is None:
-            return None
-        common = dict(private_dir=ws.private, logs_dir=ws.logs,
-                      timeout_seconds=self.cfg.git_clone_timeout_seconds, logger=self.log)
-
-        def seed_then_delta() -> CloneResult:
-            seeded = clone_from_bundle(bundle=path, url=url, branch=ref, commit=seed,
-                                       destination=destination, **common)
-            tip = fetch_tip_onto_bundle(destination=destination, url=url, ref=ref,
-                                        token=token(), egress=self._egress, peers=peers,
-                                        **common)
-            local = float(seeded.duration_seconds)
-            total = float(tip.phases.get("total_seconds") or tip.duration_seconds)
-            return dataclasses.replace(
-                tip,
-                duration_seconds=float(tip.duration_seconds) + local,
-                phases={**tip.phases, "total_seconds": round(total + local, 3),
-                        "source": "bundle+delta"},
-            )
-
-        try:
-            clone = retry(seed_then_delta)
-        except GitTransient:
-            gitops_mod._empty_directory(Path(destination))
-            raise
-        except Exception as exc:  # noqa: BLE001 -- any other failure is today's clone
-            record["miss_reason"] = "bundle_error"
-            gitops_mod._empty_directory(Path(destination))
-            self.log.warning(
-                "clone bundle: the branch tip did not land onto the bundle; "
-                "cloning from the forge",
-                ref=ref, error=self._scrub(f"{type(exc).__name__}: {str(exc)[:300]}"),
-            )
-            return None
-        finally:
-            path.unlink(missing_ok=True)
-        record["hit"] = True
-        record["seed_commit"] = seed
-        return self._with_download(clone, float(record["download_seconds"] or 0.0))
-
-    def _write_clone_bundle(
-        self, clone: CloneResult, *, url: str, source: str, record: dict[str, Any],
-        head_ref: str | None,
-    ) -> None:
-        """Bundle a depth-1 clone whose commit has no bundle yet, and upload it once.
-
-        "Written once per sha, by whoever clones first": the upload's
-        `ifGenerationMatch=0` precondition (`clonebundle.publish_bundle`).
-        The bundle is written HERE, before the agent starts, so the agent
-        never touches what is bundled; it holds one commit's objects and one
-        ref, never the clone's config, remote URL or credential file, and
-        its object carries a content type only -- no forge token reaches the
-        bundle or its metadata. The upload, and the branch's head pointer
-        after it (`head_ref`: an unpinned branch clone), run in a thread
-        `_cleanup` joins, bounded, so the agent never waits on them. NEVER
-        RAISES: a cache that could not be written costs the next step a
-        forge clone, never this step its outcome.
-        """
-        if record["miss_reason"] in ("disabled", "index_run") or source == "bundle":
-            return  # nothing to write: off, deep, or the bundle just read
-        if clone.empty or not clone.commit or self.ws is None:
-            return
-        ws = self.ws
-        commit = clone.commit
-        key = clonebundle_mod.bundle_key(self.cfg.tenant_id, url, commit)
-        head = (clonebundle_mod.head_key(self.cfg.tenant_id, url, head_ref)
-                if head_ref else None)
-        if isinstance(key, clonebundle_mod.NoKey):
-            return
-        if isinstance(head, clonebundle_mod.NoKey):
-            head = None
-        out = ws.private / f"{commit}.upload{clonebundle_mod.BUNDLE_SUFFIX}"
-        copy: Path | None = None
-        try:
-            known = source == "bundle+delta" and record.get("seed_commit") == commit
-            if not known:
-                try:
-                    known = bool(self.store.exists(key))
-                except Exception:  # noqa: BLE001 -- unknown: the precondition decides
-                    known = False
-            if known:
-                # Its bundle is there; only the branch's pointer may lag.
-                if head is not None and record.get("seed_commit") != commit:
-                    self._start_bundle_upload(None, None, head, commit)
-                return
-            started = time.monotonic()
-            bundled_from = Path(clone.path)
-            if source == "bundle+delta":
-                # The delta fetch leaves the seed's commit in `.git/shallow`
-                # beside the tip's, and a bundle is one commit deep: bundle a
-                # depth-1 local copy of the tip instead (no forge contact).
-                copy = ws.private / "clone-bundle-source"
-                self._depth_one_copy(bundled_from, copy)
-                bundled_from = copy
-            write_clone_bundle(
-                clone=bundled_from, commit=commit, out=out, private_dir=ws.private,
-                logs_dir=ws.logs, timeout_seconds=self.cfg.git_clone_timeout_seconds,
-                logger=self.log,
-            )
-            record["write_seconds"] = round(time.monotonic() - started, 3)
-            record["written"] = True
-            self._start_bundle_upload(key, out, head, commit)
-        except Exception as exc:  # noqa: BLE001 -- a cache write never fails the step
-            out.unlink(missing_ok=True)
-            self.log.warning(
-                "clone bundle: not written", commit=commit,
-                error=self._scrub(f"{type(exc).__name__}: {str(exc)[:300]}"),
-            )
-        finally:
-            if copy is not None:
-                shutil.rmtree(copy, ignore_errors=True)
-
-    def _depth_one_copy(self, repository: Path, copy: Path) -> None:
-        """A depth-1 local clone of `repository`'s HEAD at `copy`: no checkout,
-        no token, no forge -- `file://` of a folder on this disk."""
-        assert self.ws is not None
-        shutil.rmtree(copy, ignore_errors=True)
-        env, config_args, _ = gitops_mod._clone_env("", None, self.ws.private, self.log)
-        gitops_mod._run_git_steps(
-            [["git", *config_args, "clone", "--quiet", "--no-checkout", "--depth", "1",
-              "--no-tags", f"file://{Path(repository).absolute()}", str(copy)]],
-            url="", token=None, private_dir=self.ws.private, env=env, logs_dir=self.ws.logs,
-            timeout_seconds=self.cfg.git_clone_timeout_seconds, logger=self.log,
-            label="git-bundle-copy",
-        )
-
-    def _start_bundle_upload(
-        self, key: str | None, source: Path | None, head: str | None, commit: str
-    ) -> None:
-        """The write-once upload, then the head pointer, in a thread. Never raises."""
-
-        def upload() -> None:
+        name = (ref or "").strip()
+        if not name:
             try:
-                written = False
-                if key is not None and source is not None:
-                    written = clonebundle_mod.publish_bundle(
-                        self.store, key, source, self.cfg.clone_bundle_max_bytes, log=self.log
-                    )
-                    self.log.info(
-                        "clone bundle published" if written
-                        else "clone bundle not published (already there, or refused)",
-                        commit=commit,
-                    )
-                # The pointer moves only to a bundle that is there: one this
-                # call wrote, or one that already was (`source` None).
-                if head is not None and (written or source is None):
-                    clonebundle_mod.publish_head(self.store, head, commit, log=self.log)
-            except Exception as exc:  # noqa: BLE001 -- a cache write never fails the step
-                self.log.warning("clone bundle: upload failed",
-                                 error=self._scrub(f"{type(exc).__name__}: {str(exc)[:300]}"))
-            finally:
-                if source is not None:
-                    source.unlink(missing_ok=True)
-
+                head = (checkout / ".git" / "HEAD").read_text(encoding="utf-8").strip()
+            except OSError:
+                return None
+            prefix = "ref: refs/heads/"
+            name = head[len(prefix):] if head.startswith(prefix) else ""
+        if not name or re.fullmatch(r"[0-9a-f]{7,40}", name):
+            return None
         try:
-            thread = threading.Thread(target=upload, name="clone-bundle-upload", daemon=True)
-            thread.start()
-            self._bundle_upload = thread
-        except Exception as exc:  # noqa: BLE001 -- no thread, no upload; the step goes on
-            if source is not None:
-                source.unlink(missing_ok=True)
-            self.log.warning("clone bundle: the upload could not start",
-                             error=type(exc).__name__)
+            validate_ref(name)
+        except GitError:
+            return None
+        return name
 
-    def _join_clone_bundle_upload(self) -> None:
-        """Wait, bounded, for the bundle's upload before the workspace goes.
+    def _adopt_rebase_base(self, publish_repo: Path, floor: str | None) -> str | None:
+        """The commit the publish diffs from after a pre-publish rebase, or None.
 
-        Called by `_cleanup`, after the attempt's outcome is recorded, so the
-        upload never delays it. Bounded by `CLONE_BUNDLE_UPLOAD_JOIN_SECONDS`;
-        an upload still running then is abandoned with the process, and the
-        write-once precondition means a write that never finished is no
-        object at all, so the next step simply writes it.
+        The runner rebased the lane onto the base's newer tip
+        (`agent_worker.prepublish`), so `floor..HEAD` holds every commit the
+        base gained since the clone; replayed as the lane's, they would be
+        republished under the worker's name. The commit the rebase landed on
+        is a sha the git tools' relay fetched itself (`GitTools.rebased_onto`),
+        so origin has it, and it becomes the publish base when, in the
+        worker's own clean repository, the floor is its ancestor and HEAD
+        descends from it -- an aborted or undone rebase fails the second test
+        and the floor stands.
         """
-        thread, self._bundle_upload = self._bundle_upload, None
-        if thread is None:
-            return
-        thread.join(CLONE_BUNDLE_UPLOAD_JOIN_SECONDS)
-        if thread.is_alive():
-            self.log.warning("clone bundle: the upload outlasted its wait; abandoned",
-                             waited_seconds=CLONE_BUNDLE_UPLOAD_JOIN_SECONDS)
+        onto = self.children.rebased_onto
+        base = (floor or "").strip()
+        if not onto or not _FULL_SHA_RE.fullmatch(onto) or not _FULL_SHA_RE.fullmatch(base) \
+                or onto == base:
+            return None
+        ws = self.ws
+        assert ws is not None
+        g = ["git", *_NO_HOOKS]
+        for older, newer, slug in ((base, onto, "publish-rebase-floor"),
+                                   (onto, "HEAD", "publish-rebase-head")):
+            code, _ = _git_text(
+                [*g, "merge-base", "--is-ancestor", older, newer],
+                repo=Path(publish_repo), private_dir=ws.private, logs_dir=ws.logs, slug=slug,
+                timeout_seconds=self.cfg.git_harvest_timeout_seconds, logger=self.log,
+            )
+            if code != 0:
+                self.log.warning(
+                    "the lane was rebased but its head no longer stands on that base; "
+                    "the publish diffs from the clone base",
+                    onto=onto, base=base, failed=slug,
+                )
+                return None
+        self.log.info("the lane was rebased before publishing; the publish diffs from "
+                      "where it landed", onto=onto, base=base)
+        return onto
+
+    def _prepublish_advisory(self) -> str:
+        """The runner's "Advisory signals (not a gate)" section, or "" (CTXQ-G).
+
+        Read, scrubbed and capped exactly like `_prepublish_section`, and only
+        when it carries the runner's heading, so no other file in the
+        artifacts folder reaches the pull request's body this way.
+        """
+        ws = self.ws
+        if ws is None:
+            return ""
+        path = ws.artifacts / PREPUBLISH_ADVISORY_FILE
+        try:
+            if path.is_symlink() or not path.is_file():
+                return ""
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+        text = str(self._scrub(redact_text(text).text)).strip()
+        if not text.startswith(PREPUBLISH_ADVISORY_HEADING):
+            return ""
+        if len(text) > PREPUBLISH_ADVISORY_MAX_CHARS:
+            text = text[:PREPUBLISH_ADVISORY_MAX_CHARS].rstrip() + "\n\n_[cut by the worker]_"
+        return text
+
+    def _prepublish_section(self) -> str:
+        """The runner's "Pre-publish checks failed" section, or "" (SPEED-D1).
+
+        Written into the artifacts folder by the runner (`prepublish.Gate`)
+        only when a check still failed after the agent's fix turn, or a
+        rebase conflict was not resolved: the branch is published anyway and
+        this tells the operator what is red. Read after the pre-publish reap,
+        like the agent's own body; scrubbed again here, and capped.
+        """
+        ws = self.ws
+        if ws is None:
+            return ""
+        path = ws.artifacts / PREPUBLISH_SECTION_FILE
+        try:
+            if path.is_symlink() or not path.is_file():
+                return ""
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+        text = str(self._scrub(redact_text(text).text)).strip()
+        if not text.startswith(PREPUBLISH_SECTION_HEADING):
+            return ""
+        if len(text) > PREPUBLISH_SECTION_MAX_CHARS:
+            text = text[:PREPUBLISH_SECTION_MAX_CHARS].rstrip() + "\n\n_[cut by the worker]_"
+        return text
 
     def _fail_clone_unreachable(self, reason: str, tries: int) -> Outcome:
         """A retryable failure before the agent ran: the clone's forge did not answer.
@@ -5622,6 +5913,8 @@ class Worker:
         found_by = f"found by review `{verdict.get('task_id')}`" + (
             f" of workflow `{workflow_id}`" if workflow_id else ""
         )
+        # The lambdas run inside this call, before `del token` below; ruff reads
+        # the `del` as leaving `token` unbound in them (F821).
         result = findings_epic_mod.file_minors(
             minors=minors,
             epic=epic,
@@ -5629,12 +5922,12 @@ class Worker:
             # Reads are retried on an outage; the POST is not, since one whose
             # answer was lost may have made the comment (the dedup finds it).
             list_comments=lambda number: forge_mod.retry_transient(
-                lambda: forge_mod.list_issue_comments(ref=ref, token=token, number=number),
+                lambda: forge_mod.list_issue_comments(ref=ref, token=token, number=number),  # noqa: F821
                 policy=self._forge_retry(),
                 what="the findings epic's comments",
             ),
             post_comment=lambda number, body: forge_mod.create_issue_comment(
-                ref=ref, token=token, number=number, body=body
+                ref=ref, token=token, number=number, body=body  # noqa: F821
             ),
             found_by=found_by,
             clean=lambda text: _neutralise_mentions(str(self._scrub(text))),
@@ -6024,6 +6317,10 @@ class Worker:
         link = ws.artifacts_link()
         if ws.is_artifacts_link(link):
             names.add(link.name)
+        if self._extra_checkouts:
+            # `work/repos`: the worker's links to the additional checkouts
+            # (MULTI-REPO §4.5), never the agent's deliverable.
+            names.add(workspace_mod.REPOS_DIR_NAME)
         return frozenset(names)
 
     def _take_workdir_baseline(self) -> None:
@@ -6166,6 +6463,11 @@ class Worker:
                 not_uploaded.append({"name": name, "bytes": size, "reason": standalone_mod.UNREADABLE})
                 continue
             try:
+                if self._browser_state_refused(staging, relative, label=name):
+                    not_uploaded.append(
+                        {"name": name, "bytes": size, "reason": manifest_mod.BROWSER_STATE_REFUSED}
+                    )
+                    continue
                 if self.log.has_secrets:
                     entry = self._redact_file(staging, label=name, withheld=True)
                     if entry is not None:
@@ -6505,7 +6807,7 @@ class Worker:
         causes = self._missing_causes(summary)
         error = self._scrub(expected_mod.missing_error(missing, causes=causes))
         if not expected_mod.retryable(missing, causes):
-            self.control.finish(
+            self._finish_terminal(
                 state=TaskState.FAILED,
                 exit_code=exit_code,
                 error=error,
@@ -6518,7 +6820,7 @@ class Worker:
                 causes=self._scrub(expected_mod.causes_of(missing, causes)),
             )
             return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
-        state = self.control.fail_retryably(
+        state = self._fail_retryably_terminal(
             exit_code=exit_code,
             error=error,
             cause="expected_outputs_missing",
@@ -6546,7 +6848,7 @@ class Worker:
         the title again.
         """
         error = self._scrub(reason)
-        state = self.control.fail_retryably(
+        state = self._fail_retryably_terminal(
             exit_code=exit_code,
             error=error,
             cause="pull_request_title_refused",
@@ -6574,7 +6876,7 @@ class Worker:
         so the agent's files are there to edit.
         """
         error = self._scrub(reason)
-        state = self.control.fail_retryably(
+        state = self._fail_retryably_terminal(
             exit_code=exit_code,
             error=error,
             cause="final_tree_adds_a_credential",
@@ -6595,7 +6897,9 @@ class Worker:
         `single-pr` author. NOT an `integrate` contributor (its branch is its
         deliverable), a `single-pr` reader or amender, a `collect` task or a
         worker action: for those, changing nothing is a correct outcome -- a
-        review that edits no file is a review that did its job.
+        review that edits no file is a review that did its job. A contributor,
+        an amender and a `carrier: branches` step still owe their BRANCH when
+        they changed something: `_deliverable_branch` (G1, #1225).
 
         The strategy is read raw, not through `_dispatch_strategy`, which
         reads `single-pr` as `collect` (`_publish_git` reads its role through
@@ -6613,6 +6917,47 @@ class Worker:
             role = block.get("pr_role")
             return isinstance(role, str) and role.strip().lower() == "author"
         return False
+
+    def _deliverable_branch(self) -> str:
+        """Why this step's PUSHED BRANCH is what it delivers, or "" (G1, #1225).
+
+        Wider than `_opens_pull_request`, which stays what it says: a step
+        that owes a pull request. A branch is also the deliverable of
+
+          * an `integrate` contributor: the integrator merges `swarm/<its id>`
+            and a review that `builds_on` it clones that branch;
+          * a `carrier: branches` step, under any strategy but a `single-pr`
+            reader's: the branch is where the next step finds the work;
+          * a `single-pr` amender: its fast-forward push IS the pull
+            request's update.
+
+        A step another step `builds_on` is one of these already: swarm-api
+        accepts `builds_on` only under `direct-pr` and `integrate`
+        (`validation._EVERY_STEP_PUSHES_STRATEGIES`), where every step that
+        runs an agent opens a pull request or is a contributor. Measured
+        (#1225, wf_e55610ded71c4d9d9fae, wf_0260c920acf8414395b2): a review
+        failed cloning "Remote branch swarm/task_... not found" behind a build
+        step that ended SUCCEEDED having pushed nothing.
+        """
+        if self._opens_pull_request():
+            return "the step was to open a pull request"
+        pr_role = self._pr_role()
+        if pr_role == "amender":
+            return (
+                "the step is the 'single-pr' amender, whose push to the author's "
+                "branch is its update of the pull request"
+            )
+        if pr_role in ("reader", "none"):
+            # `_publish_git` pushes nothing for these, whatever the carrier.
+            return ""
+        if self._dispatch_carrier() == "branches":
+            return "the step carries its work on its branch (carrier: branches)"
+        if self._dispatch_strategy() == "integrate" and self._dispatch_role() == "contributor":
+            return (
+                "the step is an 'integrate' contributor, whose branch the integrator "
+                "merges and a step that builds on it clones"
+            )
+        return ""
 
     def _published_nothing(self, summary: dict[str, Any]) -> str | None:
         """Why a pull-request step that ran clean delivered nothing, or None.
@@ -6661,25 +7006,53 @@ class Worker:
         return None
 
     def _publish_failed(self, summary: dict[str, Any]) -> str | None:
-        """Why a pull-request step's push failed, naming the patch, or None (#872).
+        """Why a step whose branch is its deliverable ended without pushing it,
+        naming where the work is, or None (#872; G1, #1225).
 
         `_publish_git` sets `publish_failed` when git failed the publish --
         the push itself, or the commit, fold or authorship check before it.
         Measured 2026-10-08 (task_6a0c9afdbaea449eb53d): the push failed with
         exit 1, the agent had exited 0, and the step and its workflow read
-        SUCCEEDED with the work only in `swarm-work.patch`. A step whose job is
-        to open a pull request (`_opens_pull_request`) has not delivered, so
-        it ends FAILED, and the error says where the work is so it can be
-        recovered with `swarm_apply`. A step that publishes nothing by design
-        -- a review, an `integrate` contributor, a `collect` step, a step with
-        no repository -- never reaches here: it is not a pull-request step.
+        SUCCEEDED with the work only in `swarm-work.patch`.
+
+        #872 covered only a step that opens a pull request. G1 (#1225) widens
+        it to every step whose branch is its deliverable
+        (`_deliverable_branch`), and to every way such a step can end with
+        work and no pushed branch, not only a git failure: a publish that
+        declined for a token that cannot push (`can_push` false), a refused
+        git token, a forge this worker cannot publish to, publishing
+        disabled, a harvest that failed or met survivors of the reap, or the
+        catch-all in `_publish_checked`. Each read SUCCEEDED, and the step
+        that builds on it then failed cloning a branch that was never there.
+
+        Not here: a step that changed nothing (`published_nothing`, and the
+        allowed empty diff), which had no branch to push and whose dependants
+        already step past it; a shut verdict gate's step, which
+        `_skipped_publish_missing` answers; a forge outage, which
+        `_publish_unreachable` fails retryably. The forge-write refusal and
+        the final-tree leak are answered before this is asked. A `collect`
+        step without a carrier, a `single-pr` reader and a step with no
+        repository deliver no branch and never reach here.
         """
-        if not self._opens_pull_request():
+        why = self._deliverable_branch()
+        if not why:
             return None
         git = summary.get("git")
-        if not isinstance(git, dict) or git.get(PUBLISH_FAILED_FIELD) is not True:
+        if not isinstance(git, dict):
             return None
-        cause = str(git.get("publish_reason") or "the push failed")
+        # `_publish_git` says `published: true` only once the push returned.
+        if git.get("published") is True:
+            return None
+        if git.get(PUBLISH_FAILED_FIELD) is not True:
+            if summary.get(expected_mod.NO_CHANGE_SUMMARY_KEY) is True:
+                return None
+            if published_nothing(summary):
+                return None
+            if self._verdict is not None and not self._verdict.get("agent_ran", True):
+                return None
+            if isinstance(git.get(PUBLISH_UNREACHABLE_FIELD), dict):
+                return None
+        cause = str(git.get("publish_reason") or git.get("error") or "the push failed")
         patch = next(
             (
                 entry.get("uri")
@@ -6699,9 +7072,75 @@ class Worker:
                 + (f" ({git['patch_note']})" if git.get("patch_note") else "")
                 + "; the work is in the attempt's final checkpoint."
             )
+        return f"publish_failed: {why} and its branch was not pushed: {cause}. {where}"
+
+    def _skipped_publish_missing(self, summary: dict[str, Any]) -> str | None:
+        """Why a step whose verdict gate skipped its agent pushed no branch, or None (PUB-SKIP).
+
+        Measured 2026-10-12 (wf_18f0b5e64639417f83d6, task_58ecd704c73a433b9782):
+        the review said MERGE, the fix step skipped its agent and ended
+        SUCCEEDED with no push and no error, and the re-review that builds on
+        it failed cloning its branch. On the skip path the step's only
+        deliverable is the reviewed branch, published, and `_published_nothing`
+        exempts a shut gate -- so every way the publish can decline (a token
+        that may not push, a refused git token, a forge this worker cannot
+        publish to, a harvest that returned early) read as success. Now a
+        skip-path step that owes a pull request (`_shut_gate_owes_publish`)
+        and did not push its branch has this reason, quoting the publish's
+        own, and ends FAILED. A step whose agent ran is unchanged.
+        """
+        if not self._shut_gate_owes_publish():
+            return None
+        git = summary.get("git")
+        if isinstance(git, dict) and git.get("published") is True and git.get("branch"):
+            return None
+        if not isinstance(git, dict):
+            cause = "no repository was harvested, so there was nothing to push"
+        else:
+            cause = str(
+                git.get("publish_reason") or git.get("error")
+                or "the publish recorded no reason"
+            )
         return (
-            f"publish_failed: the step was to open a pull request and its branch "
-            f"was not pushed: {cause}. {where}"
+            f"publish_failed: the review verdict was {self._verdict['verdict']}, so this "
+            f"step's agent did not run and the step was to publish the reviewed work, "
+            f"but its branch was not pushed: {cause}"
+        )
+
+    def _mark_publish(self, summary: dict[str, Any], *, failed: str | None = None) -> None:
+        """`published` or `publish_failed` on the task's events (PUB-SKIP).
+
+        `published` when this attempt's publish pushed its branch: the branch,
+        the head pushed and the pull request, if one was opened or reused, on
+        both paths, so a reader of the events alone can tell a step that
+        delivered from one that only said SUCCEEDED. `publish_failed`, with the
+        reason, when the finish fails the step for a publish that did not
+        happen. A RUNNING mark with a `cause`, as every other note here is
+        (`_emit_startup_mark`): the frozen `EventType` has no note-only type.
+        """
+        verdict = self._verdict
+        agent_ran = True if verdict is None else bool(verdict.get("agent_ran", True))
+        if failed is not None:
+            self._emit_startup_mark(
+                "publish_failed", {"reason": failed, "agent_ran": agent_ran}
+            )
+            return
+        git = summary.get("git")
+        if not (isinstance(git, dict) and git.get("published") is True and git.get("branch")):
+            return
+        pull = git.get("pull_request")
+        self._emit_startup_mark(
+            "published",
+            {
+                "branch": git.get("branch"),
+                "head": git.get("pushed_head"),
+                "pull_request": (
+                    {"number": pull.get("number"), "url": pull.get("url"),
+                     "created": pull.get("created")}
+                    if isinstance(pull, dict) else None
+                ),
+                "agent_ran": agent_ran,
+            },
         )
 
     def _publish_unreachable(self, summary: dict[str, Any]) -> dict[str, Any] | None:
@@ -6713,14 +7152,19 @@ class Worker:
         rate-limit 403 at the probe or at `open_pull_request`. A forge that
         ANSWERED (a 422 refusal, a 404, a plain 403) is not here: the refusal
         is `_published_nothing`'s, and the rest stay the publish's recorded
-        reason. Only a step that owes a pull request (`_opens_pull_request`)
-        is failed for it; any other step's deliverable is its branch or its
-        artifacts, which an outage at the forge's API does not touch.
+        reason. Only a step whose branch is its deliverable
+        (`_deliverable_branch`, widened from `_opens_pull_request` by G1,
+        #1225) is failed for it: one that owes a pull request, or one whose
+        outage at the probe kept its branch from being pushed. Any other
+        step's deliverable is its artifacts, which an outage at the forge's
+        API does not touch.
         """
-        if not self._opens_pull_request():
+        if not self._deliverable_branch():
             return None
         git = summary.get("git")
         if not isinstance(git, dict):
+            return None
+        if not self._opens_pull_request() and git.get("published") is True:
             return None
         marker = git.get(PUBLISH_UNREACHABLE_FIELD)
         return marker if isinstance(marker, dict) else None
@@ -6761,7 +7205,7 @@ class Worker:
             f"forge did not answer after {tries} tries: {reason}. The attempt is "
             "retried while the task has attempts left."
         )
-        state = self.control.fail_retryably(
+        state = self._fail_retryably_terminal(
             exit_code=exit_code,
             error=error,
             cause=FORGE_UNREACHABLE,
@@ -6801,7 +7245,7 @@ class Worker:
         `PUBLISHED_NOTHING`, is contract request 46, not applied.
         """
         error = self._scrub(reason[:4000])
-        self.control.finish(
+        self._finish_terminal(
             state=TaskState.FAILED,
             exit_code=exit_code,
             error=error,
@@ -7137,7 +7581,7 @@ class Worker:
         )
         summary["forge_check"] = {"cause": cause, "reason": reason}
         if cause == FORGE_GRANT_UNREADABLE:
-            state = self.control.fail_retryably(
+            state = self._fail_retryably_terminal(
                 exit_code=exit_code,
                 error=error,
                 cause=cause,
@@ -7147,7 +7591,7 @@ class Worker:
                 end_cause=EndCause.PUBLISH_REFUSED,
             )
             return Outcome(exit_code=ExitCode.FAILED, state=state)
-        self.control.finish(
+        self._finish_terminal(
             state=TaskState.FAILED,
             exit_code=exit_code,
             error=error,
@@ -7213,6 +7657,12 @@ class Worker:
         clone_base = self._publish_base or self._clone_base
         if clone_base:
             base[CLONE_BASE_ENV] = clone_base
+        # THE BRANCH THE RUNNER REBASES ONTO BEFORE PUBLISHING (SPEED-D1), set
+        # only when that is safe for this step (`_prepublish_rebase_ref`).
+        # The runner rebases through the git tools, so without them it is
+        # recorded and skipped. Set by the worker, never from `input`.
+        if self._prepublish_rebase:
+            base[PREPUBLISH_BASE_ENV] = self._prepublish_rebase
         # WHAT THE IMAGE SETS THAT THE RUNNER NEEDS, carried by EXACT NAME.
         # Everything else in the worker's environment stays behind; see
         # `workspace.child_env` for why this environment is built rather than
@@ -7302,9 +7752,108 @@ class Worker:
                 base.update(self._session_channel_env())
         # The child-task spool, when this attempt has a child path: the one
         # variable an agent needs to submit and await helpers (child tasks,
-        # §3.1). A path, never a credential: the attempt key stays here.
-        base.update(self.children.prepare(ws.work))
+        # §3.1). And the git tools' spool, when it is offered them
+        # (docs/runner-git-tools.md §1.3, lane G6): read from the VERIFIED
+        # task, the checkout and the clone base this worker recorded. Paths,
+        # never a credential: the attempt key stays here, and no forge token
+        # is in this process while the agent runs (§0).
+        base.update(self.children.prepare(
+            ws.work,
+            task=self._task,
+            checkout=ws.checkout() if self._repo_url else None,
+            repository_url=self._repo_url,
+            clone_base=clone_base,
+            private_dir=ws.private,
+            logs_dir=ws.logs,
+            store=self.store,
+        ))
+        # The hand-off spool, on a live-browser attempt (live-browser §4.1):
+        # a path and the gate's loopback CDP address, never a credential.
+        base.update(self.handoff.prepare(ws.work))
+        base.update(self._graph_context_env(ws, clone_base))
+        # `work/repos`, when the task reads additional repositories: a path.
+        base.update(extrarepos_mod.child_env(ws, self._extra_checkouts))
+        # The jev MCP server's TypeSafe key, on a live-browser attempt with a
+        # key (JEV-RUNNER, `jevkey`): the PATH of a 0600 file in private/,
+        # never the key, which reaches only that server's process. Never
+        # fatal: no key, or no read, is an attempt without the jev tools.
+        base.update(jevkey_mod.prepare(
+            endpoint=base.get(jevkey_mod.CDP_ENDPOINT_ENV),
+            db=self.db,
+            client=self.secret_client,
+            tenant_id=self.cfg.tenant_id,
+            submitted_by=(self._task or {}).get("submitted_by"),
+            private_dir=ws.private,
+            logger=self.log,
+            call_options=self.control.call_options("tenant"),
+            backend=base.get(jevkey_mod.BACKEND_ENV) or os.environ.get(jevkey_mod.BACKEND_ENV),
+            inject=self.typesafe.on,
+            shim_file=self.typesafe.shim_file,
+        ))
+        # The released workspace secrets (SEC-RELEASE): the manifest's PATH,
+        # `SWARM_SECRETS_MANIFEST`, and nothing else -- never a value. The
+        # release ran once, in STEP 6a; a rebuild on a credential reload
+        # hands the same path.
+        released = self.secret_release.result
+        if released is not None:
+            base.update(released.env)
+        # The MCP relay (MCP-WORKER): the relay file's PATH, whose contents
+        # are loopback URLs and the local token -- never a credential.
+        base.update(self.mcp.env)
         return ws.child_env(base)
+
+    def _graph_context_env(self, ws: Any, clone_base: str | None) -> dict[str, str]:
+        """The staged graph snapshot's variables (docs/design/context-quality.md
+        §4.7, lane CTXQ-S): decided by the stored setting, once per attempt.
+        A staging failure is a reason in `stage.json`, never this attempt's.
+
+        Or the served graph's (graph-service.md §4.1, lane GS-WORKER): the pin,
+        the ticket file in `private/` and the service URL, when the workspace
+        stored `graph_delivery: service`. A 409 at the ticket's mint is the
+        fence (invariant 5): raised as FencedWriteRefused, which `run` turns
+        into a stand-down that touches neither the lease nor the task, as the
+        secrets release's 409 is."""
+        if self._graph_env is None:
+            try:
+                self._graph_env = graphstage_mod.prepare(
+                    ws.work, profile_name=self.cfg.runner_profile,
+                    runner_argv=self.cfg.profile.runner_argv, db=self.db, store=self.store,
+                    tenant_id=self.cfg.tenant_id, repository_url=self._repo_url,
+                    task_id=self.cfg.task_id,
+                    checkout=ws.checkout() if self._repo_url else None,
+                    base_sha=clone_base, call_options=self.control.call_options(),
+                    log=self.log, mark=self._mark_graph_ready,
+                    graph_ticket=self.graph_ticket, private_dir=ws.private,
+                    backend=self.cfg.backend, service_url=self.cfg.graph_service_url,
+                    secret_env_names=self.cfg.profile.secrets)
+            except graph_ticket_mod.GraphTicketFenced as exc:
+                raise FencedWriteRefused(
+                    self.cfg.generation, -1, str(exc), write="graph ticket"
+                ) from None
+            except Exception as exc:  # noqa: BLE001 -- never fails the attempt
+                self.log.warning("graph context not staged", error=type(exc).__name__)
+                self._graph_env = {}
+        return dict(self._graph_env)
+
+    def _mark_graph_ready(self, detail: dict[str, Any]) -> None:
+        """`graph_ready`: how the graph reached this attempt and what it cost.
+
+        docs/design/graph-service.md §9.1 and §9.3 (lane GS-MEASURE, part of
+        #1384). Staging ran inside `_build_child_env`, under the `credentials`
+        phase, with no timer: no mark isolated it, and its bytes were only in
+        the pod-local `stage.json`. The detail is `graph`, built by
+        `graphstage.ready_detail`: `delivery` (`staged`, `service` or `none`),
+        `seconds` (the decision's wall time, Firestore reads, ancestry git
+        calls and downloads), `bytes` and `blobs` (None when nothing was
+        delivered) and `reason`. Numbers and a fixed sentence only. Once per
+        attempt, on the same RUNNING startup-mark path as `clone_timed`;
+        never raises.
+        """
+        if self._graph_marked:
+            return
+        # Set before the write, so a failed write is not tried again later.
+        self._graph_marked = True
+        self._emit_startup_mark(graphstage_mod.READY_MARK, detail)
 
     # -- the account pool --------------------------------------------------
     def _pool_credential_env(self, profile: Any) -> dict[str, str] | None:
@@ -7924,6 +8473,84 @@ class Worker:
                 error=f"{type(exc).__name__}: {exc}",
             )
 
+    def _live_browser_unavailable(self, note: dict[str, Any]) -> None:
+        """`live_browser_unavailable`: a live profile ran with no live session.
+
+        `note` is `HandoffPath._refuse`'s: the code (`live_path`) and a reason
+        that is a swarm-api error code, an exception's class name or a fixed
+        sentence -- never a ticket, a key or a response body.
+        """
+        reason = note.get("reason") or note.get("live_path") or "unknown"
+        self._emit_startup_mark(
+            "live_browser_unavailable",
+            {
+                "phase": note.get("phase", "live_session"),
+                "live_path": note.get("live_path"),
+                "reason": reason,
+                # A failed VIEW says "live view unavailable" (NOLIVE-GUARD).
+                "message": note.get("message") or f"live browser unavailable: {reason}",
+            },
+        )
+
+    def _fail_live_gate_missing(self, code: str | None) -> Outcome:
+        """A retryable failure before the agent ran: the live gate was not ready.
+
+        NOLIVE-GUARD (part of #1366). Ending the ATTEMPT (`fail_retryably`)
+        rather than parking: a park holds no capacity, but nothing about this
+        pod's sidecar gets better by waiting, and only a new attempt brings a
+        new one; SCHEDULED_RETRY parks are promoted by nothing. The task goes
+        back to READY while it has attempts left, its lease and capacity
+        released (invariant 1), and ends CANNOT_START when they are spent.
+        The spec is verified first, as step 4 would have: the retry is decided
+        on the signed `max_attempts`, never the live field (#346).
+        """
+        task, create_time = self.control.fetch_task_snapshot()
+        self._verify_spec(task, create_time)
+        self.control.pin_verified_max_attempts(task.get("max_attempts"))
+        cause = handoff_mod.LIVE_GATE_UNAVAILABLE
+        error = (
+            f"{cause}: the live browser's gate was not ready ({code or 'unknown'}), so the "
+            "agent was not started without its browser; the attempt is retried while the "
+            "task has attempts left."
+        )
+        self.log.warning(
+            "the live gate is not ready; failing the attempt retryably before the agent runs",
+            cause=cause,
+            live_path=code,
+        )
+        with self._metrics_after_the_record():
+            state = self.control.fail_retryably(
+                exit_code=None,
+                error=error,
+                cause=cause,
+                result_summary={"live_gate": {"cause": cause, "live_path": code}},
+                retry_delay_seconds=handoff_mod.LIVE_GATE_RETRY_DELAY_SECONDS,
+                detail={"live_path": code},
+                end_cause=EndCause.CANNOT_START,
+            )
+        return Outcome(exit_code=ExitCode.FAILED, state=state)
+
+    def _emit_startup_progress(self, step: str, at: datetime) -> bool:
+        """`startup_progress`: one of the browser's start-up steps, at the gate's time (STARTUP-API).
+
+        Called by `handoff.HandoffPath.note_startup` once per step and
+        attempt, for the console's progress bar (contract request 74). Never
+        on a fenced exit or a tenant mismatch (invariant 5: the stream is not
+        this attempt's to write then), which settles the step unwritten; a
+        control-plane outage leaves it for a later tick. A write that fails
+        raises, and the caller tries it again. Holds and moves nothing.
+        """
+        if self._fenced_exit or self._writes_forbidden:
+            return True
+        if self._control_plane_down:
+            return False
+        self.control.emit(
+            EventType.STARTUP_PROGRESS,
+            {"step": step, "attempt_id": self.cfg.attempt_id, "generation": self.cfg.generation},
+            at=at,
+        )
+        return True
+
     def _emit_startup_mark(self, cause: str, detail: dict[str, Any]) -> None:
         """One startup mark on the task's events: RUNNING, with `cause`.
 
@@ -7952,8 +8579,6 @@ class Worker:
         *,
         tries: list[dict[str, Any]],
         pinned: bool,
-        source: str = "forge",
-        bundle: dict[str, Any] | None = None,
     ) -> None:
         """`clone_timed`: where the clone's time went (#667, lane OB1). Once per attempt.
 
@@ -7984,14 +8609,10 @@ class Worker:
         `peer_pinned`, true when any try ran pinned to the probe's address.
         Distinct from `pinned`, which is the workflow BASE pin.
 
-        WHERE THE COMMIT CAME FROM (#940): `source` is `bundle` (the tenant's
-        clone bundle, no forge contact), `bundle+delta` (the branch's last
-        bundle, then the delta from the forge) or `forge` (today's clone);
-        `bundle` is `{hit, download_seconds, bytes, written, miss_reason}`
-        (and `write_seconds` when this step bundled its clone). For a bundle
-        hit `seconds` and `total_seconds` include the download, so
-        `total_seconds` is what the step waited for its repository -- the
-        issue's acceptance number. A bundle hit made no forge try: `tries` 0.
+        WHERE THE COMMIT CAME FROM: `source` is always `forge`. #940's clone
+        bundles added `bundle` and `bundle+delta`; they were retired on
+        2026-10-11 (docs/clone-bundles.md), and the field stays so a reader
+        of events from both sides of that date needs no second rule.
         """
         if self._clone_marked:
             return
@@ -8009,8 +8630,7 @@ class Worker:
             **(clone.phases if clone is not None else {}),
         }
         last = log[-1] if log else {}
-        timings["source"] = source
-        timings["bundle"] = dict(bundle) if bundle is not None else self._bundle_record(None)
+        timings["source"] = "forge"
         timings.setdefault("probe_peer", last.get("probe_peer"))
         timings.setdefault("git_peer", last.get("git_peer"))
         timings["peer_pinned"] = any(bool(entry.get("peer_pinned")) for entry in log)
@@ -8169,6 +8789,47 @@ class Worker:
                 next_eligible_at=utcnow() + timedelta(hours=1),
                 detail={"provider": exc.provider, **summary},
             )
+        return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
+
+    def _park_for_human(self, child: ChildProcess, *, cause: str) -> Outcome:
+        """A hand-off's hold ended with nobody in control (live-browser §4.3).
+
+        The agent's `wait` exits 3 and it gets `EXPIRY_NOTES_SECONDS` to write
+        its notes into `work/`; then: wipe, checkpoint, upload,
+        PARKED(HUMAN_REQUIRED) with the attempt refunded within
+        `max_human_resumes`, release, exit. Only a person's `human-ready`
+        promotes it. `cause` is `hold_expired`, or `gate_lost` when the gate's
+        channel dropped (§5.4.2), which ends the hand-off the same way.
+        """
+        cfg = self.cfg
+        ws = self.ws
+        assert ws is not None
+        self.log.warning(
+            "nobody took control within the hand-off's hold; parking for a person",
+            cause=cause,
+        )
+        # Resolved at swarm-api while the task is RUNNING, the agent told, and
+        # the browser wiped before the checkpoint (§5.5).
+        self.handoff.end(ws.work, outcome="expired", cause=cause)
+        with self._heartbeat_meanwhile("hand-off notes"):
+            if child.wait(handoff_mod.EXPIRY_NOTES_SECONDS) is None:
+                child.terminate(cfg.termination_grace_seconds, reason="hand-off hold expired")
+        child.finish()
+        self._child_ended()
+        self._checkpoint("human-wait")
+        uploaded = self._upload_outputs().get("artifacts")
+        with self._metrics_after_the_record():
+            park = handoff_mod.park_human_required(
+                self.control,
+                max_resumes=self.handoff.max_resumes,
+                detail={"park_phase": "human_wait", "cause": cause},
+                uploads=uploaded if isinstance(uploaded, list) else None,
+            )
+        if park.returned_by is not None:
+            # A person returned control while this attempt parked: re-queued
+            # READY, lease released all the same (LB-RETURN).
+            self.log.info("a person returned control as the hold ended; re-queued")
+            return Outcome(exit_code=ExitCode.PARKED, state=TaskState.READY)
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
     def _park_for_quota(self, decision: QuotaDecision, *, source: str) -> Outcome:
@@ -8819,6 +9480,49 @@ class Worker:
             )
         return Outcome(exit_code=ExitCode.FAILED, state=state)
 
+    def _fail_mcp_unattached(self, cause: str, detail: str, retryable: bool) -> Outcome:
+        """The attempt ends before its agent ran: a registered MCP server the
+        task names was withheld, or the attach could not be made (MCP-WORKER,
+        design §4.7 step 2). The caller named the server because the agent
+        needs it; work built without it would rest on knowledge the agent was
+        told it had. Retryable only when a later attempt may get it
+        (`unreadable`, an unreachable swarm-api); `credential_expired` and
+        the other reasons are final. `detail` holds names and reason words,
+        never a value.
+        """
+        error = self._scrub(
+            f"{cause}: the task names registered MCP servers this attempt could not "
+            f"attach ({detail}). The agent was not started"
+            + ("; the attempt is retried while the task has attempts left." if retryable
+               else ".")
+        )
+        self.log.warning(
+            "mcp servers not attached; failing before the agent runs",
+            cause=cause, detail=detail, retryable=retryable,
+        )
+        summary = self._upload_outputs()
+        summary["mcp_check"] = {"cause": cause, "detail": detail, "retryable": retryable}
+        with self._metrics_after_the_record():
+            if not retryable:
+                self.control.finish(
+                    state=TaskState.FAILED,
+                    exit_code=None,
+                    error=error,
+                    result_summary=summary,
+                    end_cause=EndCause.CANNOT_START,
+                )
+                return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
+            state = self.control.fail_retryably(
+                exit_code=None,
+                error=error,
+                cause=cause,
+                result_summary=summary,
+                retry_delay_seconds=FORGE_UNREACHABLE_RETRY_DELAY_SECONDS,
+                detail={"mcp": detail},
+                end_cause=EndCause.CANNOT_START,
+            )
+        return Outcome(exit_code=ExitCode.FAILED, state=state)
+
     def _forge_retry(self) -> forge_mod.RetryPolicy:
         """The bound on retrying a forge call that failed transiently (F1).
 
@@ -8882,7 +9586,8 @@ class Worker:
         return Outcome(exit_code=ExitCode.FAILED, state=state)
 
     def _scan_floor(
-        self, publish_repo: Path, *, url: str, token: str, default_branch: str | None
+        self, publish_repo: Path, *, url: str, token: str, default_branch: str | None,
+        tip: str | None = None,
     ) -> str | None:
         """The commit the publish scans read from when it is not the clone base, or None.
 
@@ -8905,6 +9610,16 @@ class Worker:
 
         No merge, no default branch, a fetch that fails, or a floor that is
         the base itself: None, and the scans read from the clone base.
+
+        `tip`, when given, is the default branch's tip the caller already
+        fetched from the forge (`_default_branch_tip`, a conflict fix round),
+        and it is not fetched again.
+
+        THE FLOOR IS ALSO WHAT KEEPS A MERGE A MERGE (#1321). The replay and
+        the fold keep a merge parent that is the floor or one of its
+        ancestors -- a commit the forge's default branch holds -- so a lane
+        that merged `main` pushes a two-parent merge and its pull request's
+        merge base moves to where it merged.
         """
         ws = self.ws
         assert ws is not None
@@ -8930,25 +9645,10 @@ class Worker:
         )
         if code != 0 or not merges.split():
             return None
-        try:
-            tip = fetch_branch_tip(
-                repo=publish_repo,
-                url=url,
-                branch=default_branch,
-                token=token,
-                private_dir=ws.private,
-                logs_dir=ws.logs,
-                timeout_seconds=cfg.git_clone_timeout_seconds,
-                logger=self.log,
-                # The default branch is read, never written: `push_branch`
-                # still refuses it (`protected`), and the prefix rule governs
-                # what this worker may push.
-                branch_prefix="",
+        if not tip:
+            tip = self._default_branch_tip(
+                publish_repo, url=url, token=token, default_branch=default_branch
             )
-        except GitError as exc:
-            self.log.warning("could not read the default branch; scanning from the clone base",
-                             error=str(self._scrub(str(exc)[:300])))
-            return None
         if not tip:
             return None
         code, found = run([*g, "merge-base", "HEAD", tip], "publish-floor-base")
@@ -8961,6 +9661,43 @@ class Worker:
             base=base,
         )
         return floor
+
+    def _default_branch_tip(
+        self, publish_repo: Path, *, url: str, token: str, default_branch: str | None
+    ) -> str | None:
+        """The default branch's tip, fetched from the FORGE into the publish
+        repository (`fetch_branch_tip`, the token-bearing fetch the carrier
+        uses), or None when there is no default branch or the fetch failed.
+        Never read from the agent's clone, whose `origin/main` the agent can
+        point anywhere."""
+        if not default_branch:
+            return None
+        ws = self.ws
+        assert ws is not None
+        try:
+            return fetch_branch_tip(
+                repo=publish_repo,
+                url=url,
+                branch=default_branch,
+                token=token,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=self.cfg.git_clone_timeout_seconds,
+                logger=self.log,
+                # The default branch is read, never written: `push_branch`
+                # still refuses it (`protected`), and the prefix rule governs
+                # what this worker may push.
+                branch_prefix="",
+            )
+        except GitError as exc:
+            self.log.warning("could not read the default branch from the forge",
+                             error=str(self._scrub(str(exc)[:300])))
+            return None
+
+    def _conflict_round(self) -> bool:
+        """True when this step is a merge step's conflict fix round (#1076):
+        `dispatch.conflict_round`, inside the signed block (#1321)."""
+        return self._dispatch_block().get(CONFLICT_ROUND_FIELD) is True
 
     def _publish_identity(self) -> tuple[str, str]:
         """(name, email) every commit the worker pushes is written as.
@@ -9231,6 +9968,8 @@ class Worker:
                 try:
                     signals = self.control.poll()
                     if signals.is_fenced(self.cfg.generation):
+                        # The relay stops forwarding now, not at the next poll.
+                        self.mcp.mark_fenced()
                         self.log.warning(
                             "stopped heartbeating the lease during a long operation: "
                             "the attempt is fenced",
@@ -9451,6 +10190,8 @@ class Worker:
             self.log.warning("artifact upload failed", artifact=shown, error=str(exc))
             return _Upload(skipped=standalone_mod.UNREADABLE)
         try:
+            if self._browser_state_refused(staging, relative, label=label):
+                return _Upload(skipped=manifest_mod.BROWSER_STATE_REFUSED)
             entry = None
             if self.log.has_secrets:
                 _rewritten, entry = self._redact_outcome(staging, label=label, report=False)
@@ -9470,6 +10211,29 @@ class Worker:
         if entry is not None and report:
             self._report_unredacted(entry)
         return _Upload(bytes=size, unredacted=entry)
+
+    def _browser_state_refused(self, staging: Path, relative: str, *, label: str) -> bool:
+        """True, and `browser_state_refused` recorded, when the copy about to
+        be uploaded is shaped like a browser session (LB-L4b).
+
+        docs/design/live-browser.md section 5.5: an agent can write a
+        Playwright storage state or copy a Chromium `Cookies` database into
+        its workspace or `$SWARM_ARTIFACTS_DIR`, and the output upload would
+        publish the signed-in session. Judged on the worker's own copy, the
+        bytes that would leave, under the file's own name
+        (`artifact_manifest.browser_state_kind`). Before redaction, so a
+        refused file is never rewritten or scanned either.
+        """
+        kind = manifest_mod.browser_state_of(staging, name=relative.rsplit("/", 1)[-1])
+        if kind is None:
+            return False
+        self.log.warning(
+            "a file shaped like a browser session was refused; it was not uploaded",
+            event=manifest_mod.BROWSER_STATE_REFUSED,
+            path=standalone_mod.shown(self._scrub(label)),
+            kind=kind,
+        )
+        return True
 
     def _walk_artifacts(self, root: Path) -> tuple[dict[str, int], list[str]]:
         """Every regular file under the artifacts folder, and the folders not walked.
@@ -9976,6 +10740,15 @@ class Worker:
         )
         try:
             publish_repo = self._build_clean_repo(repo, floor=floor, allow_unknown_base=True)
+            # A lane the runner rebased onto the base's newer tip (SPEED-D1)
+            # is described, scanned and published from where it landed.
+            rebased = self._adopt_rebase_base(publish_repo, self._publish_base)
+            if rebased is not None:
+                out["rebased_from"] = self._publish_base
+                out["rebased_onto"] = rebased
+                self._publish_base = rebased
+                self.checkpoints.clone_base = rebased
+                fetched_base = rebased
             work = summarize_work(
                 repo=publish_repo,
                 base=fetched_base,
@@ -10054,7 +10827,16 @@ class Worker:
         # It was invisible because it depended on whether the integrator's
         # agent happened to touch a file. Found by running the strategy against
         # a real repository, not by reading it.
-        if work.is_empty and not self._integration_is_pending():
+        # A SHUT VERDICT GATE IS THE SAME KIND OF EXCEPTION (PUB-SKIP,
+        # 2026-10-12). Its agent never ran, so "changed nothing" is the gate's
+        # doing, and the reviewed work is the branch it cloned: a step that
+        # owes a pull request still pushes that branch and opens it, and
+        # `_skipped_publish_missing` fails the step if it could not.
+        if (
+            work.is_empty
+            and not self._integration_is_pending()
+            and not self._shut_gate_owes_publish()
+        ):
             out["published"] = False
             out["publish_reason"] = "the agent changed nothing in the repository"
             return out
@@ -10096,7 +10878,13 @@ class Worker:
             )
         except Exception as exc:  # pragma: no cover - defensive; teardown path
             self.log.exception("the publish raised; continuing without it", exc)
-            result = {"published": False, "publish_reason": "the publish failed unexpectedly"}
+            # Marked failed (G1, #1225): a step whose branch is its deliverable
+            # did not push it, and `_publish_failed` ends it FAILED for that.
+            result = {
+                "published": False,
+                "publish_reason": "the publish failed unexpectedly",
+                PUBLISH_FAILED_FIELD: True,
+            }
         git.update(self._scrub(result))
 
     def _integration_is_pending(self) -> bool:
@@ -10111,6 +10899,16 @@ class Worker:
             self._dispatch_strategy() == "integrate"
             and self._dispatch_role() == "integrator"
             and bool(self._dispatch_integrates())
+        )
+
+    def _shut_gate_owes_publish(self) -> bool:
+        """True when this step's verdict gate kept its agent from running and
+        the step owes a pull request (`_opens_pull_request`): the one ending
+        whose only deliverable is the reviewed branch, published (PUB-SKIP)."""
+        return (
+            self._verdict is not None
+            and not self._verdict.get("agent_ran", True)
+            and self._opens_pull_request()
         )
 
     def _build_clean_repo(
@@ -10152,6 +10950,94 @@ class Worker:
         )
         self._publish_config_seals[str(publish_repo)] = _config_seal(publish_repo)
         return publish_repo
+
+    def _push_over_own_earlier_attempt(
+        self,
+        publish_repo: Path,
+        rejected: PushRejected,
+        *,
+        url: str,
+        token: str,
+        branch: str,
+        protected: tuple[str, ...],
+        author_name: str,
+        author_email: str,
+    ) -> str:
+        """Publish onto this task's branch when only its earlier attempt wrote it (#1438).
+
+        MEASURED 2026-10-16: attempt 1 pushed `swarm/task_<id>`, then crashed
+        before its terminal state landed; the reconciler reclaimed it, and
+        attempts 2 and 3 published from a fresh publish repository at the
+        same clone base, so their pushes were refused as non-fast-forwards
+        against attempt 1's commit and the task failed with no pull request.
+
+        When the refused branch is exactly `<prefix><this task id>` and every
+        commit it adds over the clone base is this task's worker's
+        (`gitops.own_branch_tip`), this attempt's HEAD replaces it with
+        `--force-with-lease` to the sha just verified. Anything else -- a
+        commit someone else wrote, a branch this task continues or amends, a
+        tip that moved after the check -- re-raises, and the attempt fails as
+        it always did.
+
+        FORCE-WITH-LEASE, NOT A COMMIT ON TOP, AND WHY: the branch then holds
+        exactly what a first-attempt push would have left -- this attempt's
+        own history over the clone base, the one its final-tree scan and
+        authorship check just read, its kept commits (a red-first tests
+        commit among them) intact -- so the pull request that follows sees
+        the branch it would have seen. A commit on the fetched head would
+        squash this attempt's history into one commit and stack it on a tree
+        this attempt never scanned. What the lease replaces is only commits
+        proven this task's own, and it is refused if the branch moved since.
+        """
+        cfg = self.cfg
+        ws = self.ws
+        assert ws is not None
+        tip, why = own_branch_tip(
+            repo=publish_repo,
+            url=url,
+            branch=branch,
+            token=token,
+            task_id=cfg.task_id,
+            base=self._publish_base,
+            author_name=author_name,
+            author_email=author_email,
+            also_own=((cfg.git_author_name, cfg.git_author_email),),
+            private_dir=ws.private,
+            logs_dir=ws.logs,
+            timeout_seconds=cfg.git_clone_timeout_seconds,
+            logger=self.log,
+            branch_prefix=cfg.git_branch_prefix,
+        )
+        if tip is None:
+            self.log.warning(
+                "the push was refused and the branch is not this task's own earlier "
+                "push; publishing nothing",
+                branch=branch,
+                reason=str(self._scrub(why)),
+            )
+            raise rejected
+        pushed = push_branch(
+            repo=publish_repo,
+            url=url,
+            branch=branch,
+            token=token,
+            private_dir=ws.private,
+            logs_dir=ws.logs,
+            timeout_seconds=cfg.git_clone_timeout_seconds,
+            logger=self.log,
+            branch_prefix=cfg.git_branch_prefix,
+            protected=protected,
+            lease=tip,
+        )
+        self.log.info(
+            "the task's branch held only its earlier attempt's worker commits; "
+            "replaced them with this attempt's (force-with-lease)",
+            branch=branch,
+            replaced=tip,
+            head=pushed or "unknown",
+            how="force_with_lease",
+        )
+        return pushed
 
     def _publish_git(
         self,
@@ -10443,10 +11329,24 @@ class Worker:
             # replay or the fold, the integrator's merges. The bot only when
             # the task names nobody. See `_publish_identity`.
             author_name, author_email = self._publish_identity()
-            # Read before the replay or the fold rewrites the agent's merges
-            # away. See `_scan_floor`.
+            # A CONFLICT FIX ROUND READS MAIN'S TIP WHETHER OR NOT IT MERGED
+            # (#1321): the check before the push asks whether the round's
+            # branch now stands on it, and a round that merged nothing is the
+            # case that check exists to refuse.
+            conflict_round = self._conflict_round()
+            default_tip = (
+                self._default_branch_tip(
+                    publish_repo, url=url, token=token, default_branch=access.default_branch
+                )
+                if conflict_round
+                else None
+            )
+            # Read before the replay or the fold rewrites the agent's commits.
+            # See `_scan_floor`: it is also the bound on which merge parents
+            # the replay and the fold keep.
             scan_floor = self._scan_floor(
-                publish_repo, url=url, token=token, default_branch=access.default_branch
+                publish_repo, url=url, token=token, default_branch=access.default_branch,
+                tip=default_tip,
             )
             new_sha = commit_dirty(
                 repo=publish_repo,
@@ -10528,11 +11428,32 @@ class Worker:
                         logs_dir=ws.logs,
                         timeout_seconds=cfg.git_harvest_timeout_seconds,
                         logger=self.log,
+                        # The default branch's commit the lane merged, proven
+                        # on the forge: the fold's second parent (#1321).
+                        merged=scan_floor or "",
                     )
                     # The worker's own auto-commit is among what was replaced when
                     # there was one; the rest were the agent's.
                     folded = max(replaced - (1 if new_sha else 0), 0)
                     out["agent_commits_folded"] = folded
+
+            # A CONFLICT FIX ROUND MUST LEAVE THE BRANCH ON MAIN (#1321). Its
+            # whole job is to move the pull request's merge base to the
+            # default branch's head; a branch that does not stand on it still
+            # conflicts, and pushing it would spend one of the merge step's
+            # rounds on a head that changes nothing. Refused here, with the
+            # merge base named, as the attempt's error.
+            if conflict_round:
+                verify_merged_default_branch(
+                    repo=publish_repo,
+                    base=self._publish_base,
+                    tip=default_tip,
+                    default_branch=access.default_branch or "the default branch",
+                    private_dir=ws.private,
+                    logs_dir=ws.logs,
+                    timeout_seconds=cfg.git_harvest_timeout_seconds,
+                    logger=self.log,
+                )
 
             # THE BRANCH AS IT WILL BE PUSHED IS SCANNED BEFORE ANY PUSH
             # (owner decision, 2026-09-28, #259 review M4). The scan above
@@ -10635,18 +11556,24 @@ class Worker:
                 logger=self.log,
             )
 
-            pushed = push_branch(
-                repo=publish_repo,
-                url=url,
-                branch=branch,
-                token=token,
-                private_dir=ws.private,
-                logs_dir=ws.logs,
-                timeout_seconds=cfg.git_clone_timeout_seconds,
-                logger=self.log,
-                branch_prefix=cfg.git_branch_prefix,
-                protected=protected,
-            )
+            try:
+                pushed = push_branch(
+                    repo=publish_repo,
+                    url=url,
+                    branch=branch,
+                    token=token,
+                    private_dir=ws.private,
+                    logs_dir=ws.logs,
+                    timeout_seconds=cfg.git_clone_timeout_seconds,
+                    logger=self.log,
+                    branch_prefix=cfg.git_branch_prefix,
+                    protected=protected,
+                )
+            except PushRejected as rejected:
+                pushed = self._push_over_own_earlier_attempt(
+                    publish_repo, rejected, url=url, token=token, branch=branch,
+                    protected=protected, author_name=author_name, author_email=author_email,
+                )
         except GitError as exc:
             out["published"] = False
             out["auto_committed"] = auto_committed
@@ -10720,6 +11647,17 @@ class Worker:
         )
         agent_title, agent_body, refused = self._agent_pull_request_text()
         title = agent_title or self._generated_pull_request_title()
+        # WHAT THE PRE-PUBLISH GATE COULD NOT CLEAR (SPEED-D1): published
+        # anyway, never dropped, and said where the operator reads first.
+        prepublish = self._prepublish_section()
+        if prepublish:
+            generated = f"{prepublish}\n\n{generated}"
+            out["prepublish_checks_failed"] = True
+        # WHAT THE GATE ADVISES (CTXQ-G): test reach and the self-check, for
+        # the reader. It sets nothing in `out` that a merge path reads.
+        advisory = self._prepublish_advisory()
+        if advisory:
+            generated = f"{generated}\n\n{advisory}"
         body = f"{agent_body}\n\n---\n\n{generated}" if agent_body else generated
         # The generated block quotes the step's prompt, which is anyone's
         # text too; the whole body is neutralised, so no part of what the
@@ -10747,6 +11685,7 @@ class Worker:
                 self._pull_request_amendment(
                     agent_body=agent_body, branch=branch, head=str(pushed or work_head or "")
                 )
+                + (f"\n\n{prepublish}" if prepublish else "")
             ),
             origin=cfg.console_url,
             task_id=cfg.task_id,
@@ -11775,12 +12714,38 @@ class Worker:
                 usage = {**usage, **more}
                 if "total_cost_usd" in more:
                     self._spend["cost_estimated"] = True
+        self._note_model_mismatch(usage.get("models"))
         if usage:
             self._spend = _add_spend(
                 self._spend,
                 usage,
                 session_base=self._session_spend_base if self._spend_resumes_session else None,
             )
+
+    def _note_model_mismatch(self, models: Any) -> None:
+        """Log `model_mismatch` when the stream ran none of the pinned model.
+
+        docs/design/model-per-step.md §4.6. `Attempt.model` is what the
+        worker was started with; `usage.models` is what the CLI's stream says
+        it ran. The two are different facts, and a pinned CLI that
+        substituted another model shows as a disagreement here. Judged as
+        "the pin is not among them", not "anything else is": the CLI also
+        reports the small model it runs for its own housekeeping beside the
+        one it was told to run, and that is not a substitution. A `[...]`
+        context suffix (`claude-opus-5-5[1m]`) is the same model.
+        """
+        pinned = self.cfg.model
+        if not pinned or not isinstance(models, list) or not models:
+            return
+        reported = sorted(str(m) for m in models)
+        if any(m.split("[", 1)[0] == pinned for m in reported):
+            return
+        self.log.warning(
+            "model_mismatch: the agent's stream reports models other than the pinned one",
+            cause="model_mismatch",
+            job_model=pinned,
+            stream_models=reported,
+        )
 
     def _note_runner_spend_start(self, *, resumed: bool) -> None:
         """Say, at a runner's start, whose session its spend will report.
@@ -12008,6 +12973,136 @@ class Worker:
         finally:
             self._signal_mode = previous
 
+    def _finish_terminal(
+        self,
+        *,
+        state: TaskState,
+        exit_code: int | None,
+        error: str | None = None,
+        result_summary: dict[str, Any] | None = None,
+        end_cause: EndCause | None = None,
+    ) -> None:
+        """`ControlPlane.finish`, written once more with a minimal summary when
+        Firestore refuses the document (#1438).
+
+        MEASURED 2026-10-16: a `result_summary` holding an array inside an
+        array made Firestore answer `400 ... invalid nested entity`
+        (InvalidArgument); it propagated out of `_record_finalised` as
+        "worker crashed", the process exited 1, the lease was released only
+        ~100 s later by the reconciler as a lost worker, and the task was
+        retried -- after an attempt that had decided its own state.
+        `agent_worker.storable` reshapes the known case; this is what holds
+        for the next shape, or a size, nobody has seen yet.
+
+        So on InvalidArgument, and nothing else, the SAME transition is
+        written once more through the same fenced `finish` -- state, exit
+        code, error and end cause unchanged -- with `_minimal_terminal_summary`
+        in place of the summary. The refused write committed nothing (the
+        transition is the first write and is one transaction), so the lease is
+        released once, by that second `finish`. A fenced refusal is never
+        retried here: it is a `FencedError`, re-raised as it was, and a
+        refusal of the minimal write too raises the FIRST refusal, as before.
+        Logged by type and message only, never the summary.
+        """
+        self._write_terminal_once_more_if_refused(
+            lambda summary: self.control.finish(
+                state=state,
+                exit_code=exit_code,
+                error=error,
+                result_summary=summary,
+                end_cause=end_cause,
+            ),
+            decided=state.value,
+            error=error,
+            result_summary=result_summary,
+        )
+
+    def _fail_retryably_terminal(
+        self,
+        *,
+        exit_code: int | None,
+        error: str,
+        cause: str,
+        result_summary: dict[str, Any] | None = None,
+        retry_delay_seconds: int = 0,
+        detail: dict[str, Any] | None = None,
+        end_cause: EndCause | None = None,
+    ) -> TaskState:
+        """`ControlPlane.fail_retryably`, under the same refusal rule as
+        `_finish_terminal` (#1438): the attempt's retryable ends
+        (`_fail_for_missing_outputs`, a refused title, a final-tree leak, an
+        unreachable forge, an unreadable grant, an unpublished verdict) wrote
+        the same summary `finish` did and crashed the same way when Firestore
+        refused it.
+
+        On InvalidArgument, and nothing else, the same transition is written
+        once more -- cause, delay, detail, exit code, error and end cause
+        unchanged -- with the minimal summary. Which state the task lands in
+        (READY, FAILED or CANCELLED) is still decided inside that one fenced
+        transaction, so the minimal summary records `failed_retryably`, what
+        the attempt decided, not a state it cannot know. A FencedError is
+        re-raised, never retried. Returns the state the task was left in.
+        """
+        return self._write_terminal_once_more_if_refused(
+            lambda summary: self.control.fail_retryably(
+                exit_code=exit_code,
+                error=error,
+                cause=cause,
+                result_summary=summary,
+                retry_delay_seconds=retry_delay_seconds,
+                detail=detail,
+                end_cause=end_cause,
+            ),
+            decided=FAILED_RETRYABLY,
+            error=error,
+            result_summary=result_summary,
+        )
+
+    def _write_terminal_once_more_if_refused(
+        self,
+        write: Callable[[dict[str, Any] | None], Any],
+        *,
+        decided: str,
+        error: str | None,
+        result_summary: dict[str, Any] | None,
+    ) -> Any:
+        """Run one terminal write; when Firestore refuses its document, run it
+        once more with `_minimal_terminal_summary`. The mechanics
+        `_finish_terminal` and `_fail_retryably_terminal` share (#1438)."""
+        try:
+            return write(result_summary)
+        except FencedError:
+            raise
+        except Exception as exc:
+            if result_summary is None or not _firestore_refused_the_document(exc):
+                raise
+            refused = exc
+        refusal = str(self._scrub(str(refused)))
+        self.log.error(
+            "the terminal write was refused; writing the same state once more "
+            "with a minimal summary",
+            state=decided,
+            error_type=type(refused).__name__,
+            error=refusal[:SUMMARY_REFUSED_MAX_CHARS],
+        )
+        try:
+            written = write(
+                _minimal_terminal_summary(decided, error, result_summary, refusal)
+            )
+        except FencedError:
+            raise
+        except Exception as again:
+            self.log.error(
+                "the minimal terminal write was refused too",
+                state=decided,
+                error_type=type(again).__name__,
+            )
+            raise refused from None
+        self.log.warning(
+            "the terminal state landed with a minimal summary", state=decided
+        )
+        return written
+
     def _safe_finish(
         self,
         state: TaskState,
@@ -12033,7 +13128,7 @@ class Worker:
             if extra_summary:
                 summary = {**(summary or {}), **extra_summary}
             with self._metrics_after_the_record():
-                self.control.finish(
+                self._finish_terminal(
                     state=state,
                     exit_code=exit_code,
                     error=self._scrub(error[:4000]),
@@ -12070,10 +13165,33 @@ class Worker:
 
         def destroy_workspace() -> None:
             if self.ws is not None:
+                # The additional checkouts were made read-only; their folders
+                # get write back first, or the removal could not unlink in them.
+                extrarepos_mod.release(self.ws)
                 workspace_mod.destroy(self.ws)
+
+        def remove_released_secrets() -> None:
+            # The released workspace secrets (SEC-RELEASE, design §4.1): gone
+            # once the runner is, on every exit -- success, failure, park,
+            # cancel, fence -- before anything else in cleanup can fail.
+            if self.ws is not None:
+                secretrelease_mod.remove(self.ws.private)
 
         for step, action in (
             ("terminate_runner", terminate_runner),
+            ("remove_released_secrets", remove_released_secrets),
+            # The MCP relay closes, its file goes and every credential
+            # reference is dropped once the runner is gone (MCP-WORKER,
+            # design §4.7 step 6). The bytes go when this process exits.
+            ("close_mcp_relay", self.mcp.close),
+            # The TypeSafe shim stops, its file goes and the ticket is dropped
+            # once the runner is gone (SEC-MIGRATE-TYPESAFE). A no-op when off.
+            ("stop_typesafe_shim", self.typesafe.close),
+            # THE BROWSER IS WIPED ON EVERY EXIT (live-browser §5.5): success,
+            # failure, park, cancel, fence. The hand-off's own park and cancel
+            # wipe earlier, before their checkpoint; this is every other exit,
+            # once the agent is gone. Once per attempt either way.
+            ("wipe_browser", self.handoff.close),
             # THE SPEND BACKSTOP, after the runner is gone and before the
             # workspace holding its result.json is destroyed. Every orderly
             # exit has already recorded in `_upload_outputs`; this catches the
@@ -12098,8 +13216,6 @@ class Worker:
             # single release point for every exit path -- see
             # `_release_account`.
             ("release_account", self._release_account),
-            # Before the workspace: the bundle being uploaded is in it.
-            ("join_clone_bundle_upload", self._join_clone_bundle_upload),
             ("destroy_workspace", destroy_workspace),
         ):
             try:
@@ -12349,6 +13465,9 @@ SCAN_OVERLAP_CHARS = 64 * 1024
 #: secret was outside its diff (#470's review). A description of the work,
 #: never trusted for the push: the publish keeps reading `_publish_base`.
 CLONE_BASE_ENV = "SWARM_CLONE_BASE"
+#: The branch the runner rebases onto before publishing (SPEED-D1;
+#: `prepublish.PREPUBLISH_BASE_ENV`, held equal by test_prepublish_gate.py).
+PREPUBLISH_BASE_ENV = "SWARM_PREPUBLISH_BASE"
 
 
 class CredentialHit(NamedTuple):
@@ -13805,8 +14924,15 @@ def replay_agent_commits(
     made with `git commit-tree` under `_worker_identity`, and #219's rule that
     the worker writes every commit it pushes holds, checked again at the push
     by `verify_worker_authorship`. A merge the agent made keeps its merged
-    tree and loses its second parent: every commit on that side would
-    otherwise be pushed as it was written.
+    tree, and keeps a second parent ONLY when that parent is `upstream` or
+    one of its ancestors -- a commit of the default branch proven on the
+    forge (`Worker._scan_floor`), already published, so nothing on that side
+    is pushed as the agent wrote it (#1321). Every other merge parent -- a
+    side branch the agent made -- is dropped: every commit on that side would
+    otherwise be pushed as it was written. Dropping main's parent too was
+    #1321: a conflict fix round's `git merge origin/main` reached the forge
+    with one parent, GitHub kept the old merge base and the pull request
+    still conflicted.
 
     The index and working tree are not touched; `reset --soft` moves the
     branch onto the rewritten line, which ends in the same tree HEAD had.
@@ -13906,6 +15032,9 @@ def replay_agent_commits(
         tree = trees[0].strip() if trees else ""
         if not _SHA_RE.match(tree):
             raise GitError(f"could not read the tree of commit {sha[:12]}")
+        merged = _published_merge_parents(
+            run, g, header, upstream=upstream, base=floor
+        )
         if sha == keep:
             # The worker's own message, from `commit_dirty`.
             text = message.replace("\x00", "").strip()
@@ -13920,6 +15049,8 @@ def replay_agent_commits(
         argv = [*g, "commit-tree", tree]
         if parent:
             argv += ["-p", parent]
+        for other in merged:
+            argv += ["-p", other]
         argv += ["-m", text]
         code, made = run(argv, "publish-keep-write")
         made = made.strip()
@@ -13937,7 +15068,57 @@ def replay_agent_commits(
     return kept
 
 
-def _recheck_runner_input(runner_profile: str, stored: Any) -> None:
+def _published_merge_parents(
+    run: Callable[[list[str], str], tuple[int, str]],
+    g: list[str],
+    header: str,
+    *,
+    upstream: str,
+    base: str,
+) -> list[str]:
+    """The merge parents of a commit (its `header`) the replay keeps (#1321).
+
+    Every parent after the first that is `upstream` or one of its ancestors
+    -- the default branch's commit the lane merged, proven on the forge
+    (`Worker._scan_floor`) -- and that `base` does not already contain,
+    which would make it a redundant parent. Nothing when `upstream` is "".
+    A side branch the agent made is no ancestor of the forge's default
+    branch, so it is never here.
+    """
+    if not upstream:
+        return []
+    parents = [line[len("parent "):].strip() for line in header.split("\n")
+               if line.startswith("parent ")]
+    kept: list[str] = []
+    for other in parents[1:]:
+        if not _SHA_RE.match(other):
+            continue
+        code, _ = run([*g, "merge-base", "--is-ancestor", other, upstream], "publish-keep-merged")
+        if code != 0:
+            continue
+        if base:
+            code, _ = run([*g, "merge-base", "--is-ancestor", other, base], "publish-keep-redundant")
+            if code == 0:
+                continue
+        kept.append(other)
+    return kept
+
+
+def _read_input_as_checked(task: dict[str, Any], runner_profile: str) -> None:
+    """Replace `task["input"]` with what `_recheck_runner_input` returns.
+
+    Contract request 58. The replacement has the SAME canonical bytes as the
+    stored input -- `check_inputs` only turns an integral float into an int,
+    which JCS writes identically -- so the verified document still verifies;
+    what changes is the type every later reader sees. A recheck that returns
+    None (no stored input, or a test that bypasses it) leaves it as stored.
+    """
+    checked = _recheck_runner_input(runner_profile, task.get("input"))
+    if checked is not None:
+        task["input"] = checked
+
+
+def _recheck_runner_input(runner_profile: str, stored: Any) -> dict[str, Any] | None:
     """Refuse a stored `input` its profile's declaration refuses. Every profile.
 
     The same rule swarm-api and the plugin's bridge apply at submission,
@@ -13956,6 +15137,10 @@ def _recheck_runner_input(runner_profile: str, stored: Any) -> None:
 
     The message names the key and the bound, never the value: a refused URL
     may carry `user:password@`, and this text is stored as the task's error.
+
+    Returns the input AS CHECKED -- the stored map with every declared key
+    replaced by `check_inputs`' normalised value, the prompt kept -- or None
+    when nothing is stored (contract request 58).
     """
     profile = RUNNER_PROFILES[runner_profile]
     raw = stored if stored is not None else {}
@@ -13966,7 +15151,9 @@ def _recheck_runner_input(runner_profile: str, stored: Any) -> None:
             "request 32)"
         )
     try:
-        check_inputs(profile, {key: value for key, value in raw.items() if key != "prompt"})
+        checked = check_inputs(
+            profile, {key: value for key, value in raw.items() if key != "prompt"}
+        )
     except InputRefused as refused:
         bound = f"; expected {refused.expected}" if refused.expected else ""
         raise ConfigError(
@@ -13974,6 +15161,9 @@ def _recheck_runner_input(runner_profile: str, stored: Any) -> None:
             f"{_refused_key_names(refused.keys)}{bound} (checked again by the worker, "
             "contract request 32)"
         ) from None
+    if stored is None:
+        return None
+    return {**raw, **checked}
 
 
 #: The most refused key names `_recheck_runner_input`'s message lists, and the
@@ -13992,6 +15182,70 @@ def _refused_key_names(keys: Sequence[str]) -> str:
     ]
     rest = len(keys) - len(shown)
     return ", ".join(shown) + (f" and {rest} more" if rest > 0 else "")
+
+
+#: How much of Firestore's refusal the minimal summary keeps, as
+#: `summary_refused` (#1438). The refusal measured on 2026-10-16 -- "400
+#: Property result_summary contains an invalid nested entity." -- is under 70
+#: characters; 300 keeps the property and the rule of any refusal of that
+#: form and still bounds a field the next refusal's text fills.
+SUMMARY_REFUSED_MAX_CHARS = 300
+
+#: The minimal summary's `state` when the refused write was `fail_retryably`
+#: (#1438). Which state the task lands in -- READY, FAILED or CANCELLED -- is
+#: picked inside that write's own fenced transaction, after the summary is
+#: built, so the summary records what the attempt decided instead of guessing.
+FAILED_RETRYABLY = "failed_retryably"
+
+
+def _firestore_refused_the_document(exc: BaseException) -> bool:
+    """Whether `exc` is Firestore refusing what was written: InvalidArgument,
+    a document's shape or size (#1438). Imported here, not at module level,
+    as `_is_final_refusal` does: the worker's tests run without the library
+    loaded for anything else."""
+    try:
+        from google.api_core import exceptions as core
+    except ImportError:
+        return False
+    return isinstance(exc, core.InvalidArgument)
+
+
+def _minimal_terminal_summary(
+    state: str, error: str | None, summary: dict[str, Any], refusal: str
+) -> dict[str, Any]:
+    """What a terminal write carries once Firestore refused its summary (#1438).
+
+    The state, the error, the branch and the pull request when the attempt
+    had them -- by their scalar fields only, so this summary holds no value
+    of the shape that was refused -- and `summary_refused`, Firestore's
+    reason cut to `SUMMARY_REFUSED_MAX_CHARS`. The rest of what the attempt
+    produced is still in its artifacts and its final checkpoint."""
+
+    def scalars(value: Any, keys: tuple[str, ...]) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        kept = {
+            key: value[key]
+            for key in keys
+            if isinstance(value.get(key), (str, int, bool))
+        }
+        return kept or None
+
+    git = summary.get("git") if isinstance(summary.get("git"), dict) else {}
+    minimal: dict[str, Any] = {
+        "state": state,
+        "error": error,
+        "summary_refused": refusal[:SUMMARY_REFUSED_MAX_CHARS],
+    }
+    branch = scalars(summary.get("branch"), ("name", "head", "head_sha", "base_sha"))
+    if branch is None and isinstance(git.get("branch"), str):
+        branch = {"name": git["branch"], "head": git.get("pushed_head")}
+    if branch is not None:
+        minimal["branch"] = branch
+    pull_request = scalars(git.get("pull_request"), ("number", "url", "state", "created"))
+    if pull_request is not None:
+        minimal["pull_request"] = pull_request
+    return minimal
 
 
 def _end_cause_of(exc: BaseException) -> EndCause:
@@ -14258,6 +15512,16 @@ def _refusal_cause(exc: BaseException) -> BaseException | None:
         if isinstance(current, refusals) and not getattr(current, "retryable", False):
             return current
     return None
+
+
+def _config_backend(config: Any) -> str | None:
+    """The backend this worker runs on (`WorkerConfig.backend`), or None when
+    it cannot be said: the TypeSafe forwarder is then not used (fail closed)."""
+    try:
+        backend = config.backend
+    except Exception:  # noqa: BLE001 -- an unresolvable profile is no forwarder
+        return None
+    return backend if isinstance(backend, str) else None
 
 
 def _execution_name() -> str | None:

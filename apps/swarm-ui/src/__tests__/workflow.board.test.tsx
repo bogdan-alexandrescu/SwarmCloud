@@ -589,7 +589,8 @@ describe('the expanded canvas', () => {
     const open = inspector!.querySelector<HTMLAnchorElement>('a.wf-inspect-run')
     expect(open, 'the inspector carries no link to the run').toBeTruthy()
     expect(open!.textContent).toBe('Open agent →')
-    expect(open!.getAttribute('href')).toBe('#work/task/task_scan_a')
+    // A running task opens over Live; a finished one over Recent (WF-21).
+    expect(open!.getAttribute('href')).toBe('/agents/live/task_scan_a')
     // Let the attempt read the inspector started settle inside the test.
     await waitFor(() =>
       expect(inspector!.querySelector('[data-scrub="attempt"]')!.textContent).not.toContain('reading'),
@@ -1796,6 +1797,7 @@ describe('the owner’s decisions: the open card', () => {
   })
 
   it('WF-19: gives a unit longer than a line the whole line, so nothing shares a line with it', () => {
+    const FILE = 'runs/cc-checkpoint-of-the-whole-run.md'
     // FIX-UP, #160 review finding 3. An inline-block whose text is wider than
     // the line is shrink-to-fit to the WHOLE line: it cannot sit after `↑ ` or
     // after a unit before it, and nothing after it can share its last line.
@@ -1803,30 +1805,32 @@ describe('the owner’s decisions: the open card', () => {
     // followed by another parent came out a line short -- 18px of dependency
     // text in the stop strip, the overlap `heightOf` exists to prevent.
     //
-    // `details`, which Auto picks for a six-wide stage: short names, so a line
-    // holds (144 - 28) / 7.22 = 16 columns and `(cc-checkpoint.md),` is 19.
-    const merge = step('merge', ['plan', 'fencing'], { input_from: { plan: 'cc-checkpoint.md' } })
+    // `details`, which Auto picks for a six-wide stage. Since V102 a node is
+    // widened to its widest unit up to the full tier's text column, so the
+    // fixture's file is longer than that column: `(runs/cc-checkpoint-...md),`
+    // is 41 characters against a line of at most (255 - 28) / 7.22 = 31.
+    const merge = step('merge', ['plan', 'fencing'], { input_from: { plan: FILE } })
     const w = workflow('wf_long_unit', [step('plan', []), step('fencing', []), merge])
     const dw = nodeWidthAt('details', w.steps)
     const perLine = Math.floor((dw - NODE_CHROME_W) / monoW(1, 12))
-    expect(depUnits(merge).map((u) => u.text)).toEqual(['plan', '(cc-checkpoint.md),', 'fencing'])
-    expect('(cc-checkpoint.md),'.length, 'the fixture no longer has a unit longer than a line').toBeGreaterThan(perLine)
+    expect(depUnits(merge).map((u) => u.text)).toEqual(['plan', `(${FILE}),`, 'fencing'])
+    expect(`(${FILE}),`.length, 'the fixture no longer has a unit longer than a line').toBeGreaterThan(perLine)
     // The lines the model counts, read back out of the height: `--ctl-s1` (4)
     // above the list, 18 a line (12 x 1.45, rounded up), as the sheet declares.
     const lines = (s: WorkflowStep) => (heightOf(s, 'details', dw) - nodeHeightAt('details') - 4) / 18
-    // `↑ plan` / `(cc-checkpoint.md),` on two lines of its own / `fencing`.
+    // `↑ plan` / the file unit on two lines of its own / `fencing`.
     expect(lines(merge), 'the unit after a line-wide one was packed onto its last line').toBe(
-      1 + Math.ceil('(cc-checkpoint.md),'.length / perLine) + 1,
+      1 + Math.ceil(`(${FILE}),`.length / perLine) + 1,
     )
     // LAST, it changes nothing: nothing follows it to be displaced.
-    const last = step('merge', ['fencing', 'plan'], { input_from: { plan: 'cc-checkpoint.md' } })
-    expect(lines(last)).toBe(1 + Math.ceil('(cc-checkpoint.md)'.length / perLine))
+    const last = step('merge', ['fencing', 'plan'], { input_from: { plan: FILE } })
+    expect(lines(last)).toBe(1 + Math.ceil(`(${FILE})`.length / perLine))
     // FIRST -- a parent this workflow does not contain, so its id was never
     // measured into the node's width -- it cannot sit after the `↑ ` either.
-    const stray = step('merge', ['a-parent-this-workflow-lacks'])
-    expect('a-parent-this-workflow-lacks'.length).toBeGreaterThan(perLine)
+    const stray = step('merge', ['a-parent-that-this-workflow-does-not-contain'])
+    expect('a-parent-that-this-workflow-does-not-contain'.length).toBeGreaterThan(perLine)
     expect(lines(stray), 'a line-wide first unit was counted as fitting after the arrow').toBe(
-      1 + Math.ceil('a-parent-this-workflow-lacks'.length / perLine),
+      1 + Math.ceil('a-parent-that-this-workflow-does-not-contain'.length / perLine),
     )
   })
 

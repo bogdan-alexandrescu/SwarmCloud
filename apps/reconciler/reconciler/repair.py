@@ -89,6 +89,8 @@ from .model import (
     Termination,
 )
 from .progress import assess
+from .startproblem import START_PROBLEM_STATES
+from .startsteps import POD_STARTUP_STEPS, RUNNING_STEPS_WINDOW_SECONDS, StartRead
 from .store import ControlStore, RepairPlan
 
 #: The two lines the reconciler writes when it holds back, spelled ONCE.
@@ -610,6 +612,11 @@ class Reconciler:
             if kills and finding.lease_id and not outcome.terminated and not self._config.dry_run:
                 unstopped.add(finding.lease_id)
 
+        # Why a DISPATCHED or STARTING task's pod is not starting (F1-POD).
+        # After the repairs, so nothing is recorded ahead of a kill; a record
+        # only, never fatal. See `_watch_starts`.
+        self._watch_starts(snapshot, sight, report)
+
         self._watch_holds(snapshot, report)
 
         # After the lease repairs, so a step this pass requeued is judged as it
@@ -660,6 +667,169 @@ class Reconciler:
             report.errors.append(f"record_pass: {exc}")
 
         return report
+
+    # ------------------------------------------------------------------
+    # Pods that are not starting (F1-POD)
+    # ------------------------------------------------------------------
+    def _watch_starts(self, snapshot: ControlSnapshot, sight: _Sight, report: ReconcileReport) -> None:
+        """Record why each DISPATCHED or STARTING task's pod is not starting; clear it once it is.
+
+        On 2026-10-11 the browser pods' `livegate` sidecar crash-looped for
+        three minutes while the task read only "dispatched": nothing looked at
+        a pod until its Job ended. Here, per task waiting to run, the current
+        attempt's ACTIVE execution -- of the task's own tenant -- is read by
+        the backend that listed it (`GkeBackend.start_problem`; a backend
+        without the method is skipped, so Cloud Run reads nothing) and the
+        answer goes on the task as `metadata.start_problem`
+        (`ControlStore.record_start_problem`). A task that reached RUNNING,
+        or went back to LEASED for a new attempt, has its record cleared
+        without a read, and so does a record an earlier attempt left.
+
+        A RECORD, NOT A RULE: no state, lease or pool moves here (invariants
+        1-3), and no finding is made. A read that fails records and clears
+        nothing -- "the pod is fine" and "I could not look" must not lead to
+        the same write. A dry run reads and writes nothing.
+
+        THE SAME READ YIELDS THE START-UP STEPS (STARTUP-API, contract request
+        74): a backend with `start_read` returns the pod's steps beside its
+        problem, and each is written once per attempt as a `startup_progress`
+        event (`_record_steps`) -- for a RUNNING task too, within
+        `RUNNING_STEPS_WINDOW_SECONDS` of its lease, because the worker often
+        reaches RUNNING between two passes. A record as well: no state, lease
+        or pool moves.
+        """
+        if self._config.dry_run:
+            return
+        now = snapshot.taken_at
+        for task in list(snapshot.tasks.values()):
+            try:
+                if task.state not in START_PROBLEM_STATES:
+                    # RUNNING: the worker started. LEASED: a new attempt with
+                    # no pod yet, after a requeue. Neither is described by an
+                    # earlier pod.
+                    if task.start_problem is not None:
+                        self._store.record_start_problem(task.task_id, lease_id=task.lease_id, record=None)
+                    if task.state is TaskState.RUNNING:
+                        # The pod's steps outlive the transition: a worker
+                        # that starts in seconds reaches RUNNING between two
+                        # passes, and the pod still dates every step.
+                        self._read_running_steps(task, snapshot, sight, now)
+                    continue
+                lease = snapshot.lease_for_task(task.task_id)
+                if lease is None or lease.is_released:
+                    continue
+                recorded = task.start_problem
+                if recorded is not None and recorded.get("attempt_id") != lease.attempt_id:
+                    # An earlier attempt's pod: not this attempt's problem.
+                    self._store.record_start_problem(task.task_id, lease_id=lease.lease_id, record=None)
+                    recorded = None
+                execution = self._current_execution(task, lease, sight)
+                if execution is None:
+                    continue
+                handle = sight.handles.get(execution.backend)
+                read_both = getattr(handle, "start_read", None)
+                if callable(read_both):
+                    found = read_both(execution)
+                    problem = found.problem if found is not None else None
+                    self._record_steps(task, lease, found)
+                else:
+                    read = getattr(handle, "start_problem", None)
+                    if not callable(read):
+                        continue
+                    problem = read(execution)
+                if problem is None:
+                    if recorded is not None:
+                        self._store.record_start_problem(task.task_id, lease_id=lease.lease_id, record=None)
+                    continue
+                written = self._store.record_start_problem(
+                    task.task_id,
+                    lease_id=lease.lease_id,
+                    record=problem.record(attempt_id=lease.attempt_id, seen_at=now),
+                )
+                if written:
+                    self._log.warning(
+                        "a task's pod is not starting",
+                        task_id=task.task_id,
+                        attempt_id=lease.attempt_id,
+                        execution=execution.name,
+                        container=problem.container,
+                        reason=problem.reason,
+                        restarts=problem.restarts,
+                    )
+            except Exception as exc:
+                self._log.warning(
+                    "could not read or record why a pod is not starting; nothing changed",
+                    task_id=task.task_id,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                report.errors.append(f"start_problem {task.task_id}: {exc}")
+
+    @staticmethod
+    def _current_execution(task: Any, lease: Any, sight: _Sight) -> ExecutionView | None:
+        """The current attempt's ACTIVE execution, of the task's own tenant, or None."""
+        return next(
+            (
+                e
+                for e in sight.executions
+                if e.task_id == task.task_id
+                and e.attempt_id == lease.attempt_id
+                and e.tenant_id == task.tenant_id
+                and not e.claim_refused
+                and e.is_active
+                # A Job stamped with another generation is not this attempt's pod.
+                and (e.generation is None or e.generation == lease.generation)
+            ),
+            None,
+        )
+
+    def _read_running_steps(self, task: Any, snapshot: ControlSnapshot, sight: _Sight, now: datetime) -> None:
+        """A RUNNING task's pod steps, read only within the start-up window (STARTUP-API).
+
+        Bounded: only a task whose lease was admitted less than
+        `RUNNING_STEPS_WINDOW_SECONDS` ago, and only through a backend that
+        reads pods (`start_read`; Cloud Run has none). Raises as the read
+        does; the caller records the error.
+        """
+        lease = snapshot.lease_for_task(task.task_id)
+        if lease is None or lease.is_released or lease.created_at is None:
+            return
+        if (now - lease.created_at).total_seconds() > RUNNING_STEPS_WINDOW_SECONDS:
+            return
+        execution = self._current_execution(task, lease, sight)
+        if execution is None:
+            return
+        read_both = getattr(sight.handles.get(execution.backend), "start_read", None)
+        if callable(read_both):
+            self._record_steps(task, lease, read_both(execution))
+
+    def _record_steps(self, task: Any, lease: Any, found: StartRead | None) -> None:
+        """Write each pod step the read found as one `startup_progress` event (STARTUP-API).
+
+        `ControlStore.record_startup_step` writes each step once per attempt
+        and only while the task is still on this lease and generation, so a
+        pass that reads the same pod again writes nothing new.
+        """
+        if found is None:
+            return
+        for step in POD_STARTUP_STEPS:
+            at = found.steps.get(step)
+            if at is None:
+                continue
+            if self._store.record_startup_step(
+                task.task_id,
+                tenant_id=task.tenant_id,
+                lease_id=lease.lease_id,
+                attempt_id=lease.attempt_id,
+                generation=lease.generation,
+                step=step,
+                at=at,
+            ):
+                self._log.info(
+                    "a task's pod reached a start-up step",
+                    task_id=task.task_id,
+                    attempt_id=lease.attempt_id,
+                    step=step,
+                )
 
     # ------------------------------------------------------------------
     # Holding

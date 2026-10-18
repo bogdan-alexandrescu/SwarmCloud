@@ -1,0 +1,20 @@
+{
+  "URLBlocklist": [
+    "file://*",
+    "chrome://*",
+    "devtools://*",
+    "view-source:*",
+    "svc.cluster.local",
+    "cluster.local",
+    "swarm-system"
+  ],
+  "URLAllowlist": ["chrome://newtab"],
+  "DeveloperToolsAvailability": 2,
+  "PasswordManagerEnabled": false,
+  "AutofillAddressEnabled": false,
+  "AutofillCreditCardEnabled": false,
+  "FullscreenAllowed": false,
+  "SSLErrorOverrideAllowed": false,
+  "BrowserSignin": 0,
+  "SyncDisabled": true
+}

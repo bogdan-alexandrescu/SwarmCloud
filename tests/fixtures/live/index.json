@@ -1,0 +1,133 @@
+{
+  "_doc": "The live routes' wire, shared by tests/unit/control_plane/test_live_wire_shapes.py (validated by swarm_api.live's models, and compared with what the real routes serve) and apps/swarm-ui/src/__tests__/live.seam.test.ts (parsed by the console's own loaders). Add a route here and BOTH suites fail until each has handled it. Lane LB-SEAM, part of #1030.",
+  "fixtures": [
+    {
+      "file": "session.open.json",
+      "method": "GET",
+      "path": "/v1/tasks/{task_id}/live/session",
+      "direction": "response",
+      "model": "LiveRead",
+      "ui": "loadLiveSession"
+    },
+    {
+      "file": "session.reported.json",
+      "method": "GET",
+      "path": "/v1/tasks/{task_id}/live/session",
+      "direction": "response",
+      "model": "LiveRead",
+      "ui": "loadLiveSession"
+    },
+    {
+      "file": "session.pending.json",
+      "method": "GET",
+      "path": "/v1/tasks/{task_id}/live/session",
+      "direction": "response",
+      "model": "LiveRead",
+      "ui": "loadLiveSession"
+    },
+    {
+      "file": "session.not-live.json",
+      "method": "GET",
+      "path": "/v1/tasks/{task_id}/live/session",
+      "direction": "response",
+      "model": "LiveRead",
+      "ui": "loadLiveSession"
+    },
+    {
+      "file": "session.closed.json",
+      "method": "GET",
+      "path": "/v1/tasks/{task_id}/live/session",
+      "direction": "response",
+      "model": "LiveRead",
+      "ui": "loadLiveSession"
+    },
+    {
+      "file": "ticket.json",
+      "method": "POST",
+      "path": "/v1/tasks/{task_id}/live/ticket",
+      "direction": "response",
+      "model": "LiveTicketView",
+      "ui": "mintLiveTicket"
+    },
+    {
+      "file": "control.take.request.json",
+      "method": "POST",
+      "path": "/v1/tasks/{task_id}/live/control",
+      "direction": "request",
+      "model": "TakeControl",
+      "ui": "takeLiveControl"
+    },
+    {
+      "file": "control.taken.json",
+      "method": "POST",
+      "path": "/v1/tasks/{task_id}/live/control",
+      "direction": "response",
+      "model": "LiveRead",
+      "ui": "takeLiveControl"
+    },
+    {
+      "file": "control.taken.json",
+      "method": "POST",
+      "path": "/v1/tasks/{task_id}/live/control/renew",
+      "direction": "response",
+      "model": "LiveRead",
+      "ui": "renewLiveControl"
+    },
+    {
+      "file": "session.open.json",
+      "method": "DELETE",
+      "path": "/v1/tasks/{task_id}/live/control",
+      "direction": "response",
+      "model": "LiveRead",
+      "ui": "returnLiveControl"
+    },
+    {
+      "file": "device.request.json",
+      "method": "POST",
+      "path": "/v1/tasks/{task_id}/live/device",
+      "direction": "request",
+      "model": "SetDevice",
+      "ui": "setLiveDevice"
+    },
+    {
+      "file": "device.switched.json",
+      "method": "POST",
+      "path": "/v1/tasks/{task_id}/live/device",
+      "direction": "response",
+      "model": "LiveRead",
+      "ui": "setLiveDevice"
+    },
+    {
+      "file": "session.open.json",
+      "method": "POST",
+      "path": "/v1/tasks/{task_id}/live/open-to-members",
+      "direction": "response",
+      "model": "LiveRead",
+      "ui": "openLiveToMembers"
+    },
+    {
+      "file": "session.open.json",
+      "method": "DELETE",
+      "path": "/v1/tasks/{task_id}/live/open-to-members",
+      "direction": "response",
+      "model": "LiveRead",
+      "ui": "closeLiveToMembers"
+    },
+    {
+      "file": "recordings.json",
+      "method": "GET",
+      "path": "/v1/tasks/{task_id}/live/recordings",
+      "direction": "response",
+      "model": "RecordingsView",
+      "ui": "loadRecordings"
+    },
+    {
+      "file": "actions.json",
+      "method": "GET",
+      "path": "/v1/tasks/{task_id}/live/actions",
+      "direction": "response",
+      "model": "LiveActionsView",
+      "ui": "loadLiveActions"
+    }
+  ]
+}

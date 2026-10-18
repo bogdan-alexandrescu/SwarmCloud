@@ -75,3 +75,21 @@ vulnerabilities:
   - id: CVE-2026-97031
     statement: "Go stdlib crypto/tls DoS (ECH extensions) inside the same vendor-built Go binaries; needs vendor rebuilds."
     expired_at: 2026-10-24
+  # Same class again (owner, 2026-10-17): golang.org/x/text's precis Nickname
+  # profile can panic on an out-of-bounds slice. It is in two vendor-built
+  # binaries: kubectl (agent-runtime-base, -nocodex, -browser, -indexer and
+  # workspace-apply) and Google's prebuilt gke-gcloud-auth-plugin
+  # (agent-runtime-base and its children), whose newest apt release, 589.0.0,
+  # still carries x/text v0.40.0. Measured on 2026-10-17: `strings` over the
+  # 587.0.0 and 589.0.0 plugin binaries finds x/text's secure/bidirule,
+  # unicode/bidi and unicode/norm, and no secure/precis, so the plugin does
+  # not link the vulnerable package at all. Fixed in x/text 0.41.0, but no kubectl release ships it:
+  # 1.36.5 (pinned) carries v0.39.0 and the newest, 1.37.1, carries v0.40.0
+  # (read from each binary's build info, 2026-10-17). The releases at 18:53Z and
+  # 19:43Z were refused on this id alone, so nothing merged after 18:03Z deployed.
+  # Same bound: a panic ends one kubectl invocation inside a non-root, read-only,
+  # capability-dropped attempt, which the platform retries. Revisit by bumping
+  # KUBECTL_VERSION in both Dockerfiles once a release ships x/text >= 0.41.0.
+  - id: CVE-2026-56851
+    statement: "golang.org/x/text precis Nickname panic inside vendor-built kubectl; no kubectl release ships x/text 0.41.0 yet."
+    expired_at: 2026-12-17

@@ -58,9 +58,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from . import artifact_manifest
 from .errors import CheckpointError
 from .objectstore import ObjectStore
-from .workspace import Workspace, walk_tree
+from .workspace import REPOS_DIR_NAME, Workspace, walk_tree
 
 
 class RestoreResourceError(CheckpointError):
@@ -174,6 +175,18 @@ TOOL_CACHES: tuple[str, ...] = (
     ".yarn/cache",
     "**/node_modules",
 )
+
+
+#: `work/repos`, the links to a task's additional repositories (MULTI-REPO,
+#: docs/design/multi-repository-steps.md §4.6, #1434): left out of every
+#: checkpoint of a task that has any (`CheckpointManager.leaves_out_extra_repos`).
+#: Each link resolves onto the cache volume, so the walk would archive the
+#: link entries only and a restore would remove them as links out of `work/`
+#: -- noise, never content. A resumed attempt clones the same signed commits
+#: again, so a checkpoint never carries several codebases and never restores
+#: one an agent edited. Only for such a task: a task with none whose agent
+#: made its own `repos/` folder has made its own work, which is kept.
+EXTRA_REPOS_DIR = REPOS_DIR_NAME
 
 
 def _is_tool_cache(rel: str) -> bool:
@@ -344,13 +357,20 @@ class _BuildDirFilter:
     Out unless a git checkout enclosing it tracks a file under it. The nearest
     enclosing checkout is the nearest ancestor (`work/` included) holding a
     real `.git` directory; its index is read once per checkpoint.
+
+    `also` names `work/`-relative directories left out whole, by exact path
+    and whatever they hold (`CheckpointManager.excluded_dirs`): an index
+    run's read-only checkout (`indexrun.checkpoint_excludes`).
     """
 
-    def __init__(self, source: Path) -> None:
+    def __init__(self, source: Path, also: frozenset[str] = frozenset()) -> None:
         self._source = source
+        self._also = also
         self._tracked: dict[str, frozenset[str] | None] = {}
 
     def excludes(self, rel: str) -> bool:
+        if rel in self._also:
+            return True
         parts = rel.split("/")
         if parts[-1] not in BUILD_DIRS:
             return False
@@ -854,6 +874,16 @@ class CheckpointManager:
         #: once the clone has landed, or once it has been read back from the
         #: checkpoint a resumed attempt restored, so it carries forward.
         self.clone_base: str | None = None
+        #: Directories of `work/`, by exact relative path, left out of every
+        #: checkpoint this manager writes from now on, through the build
+        #: directory filter (`_BuildDirFilter`). Empty unless the lifecycle
+        #: sets it: an index run's checkout (`indexrun.checkpoint_excludes`,
+        #: INDEX-CKPT), which a resumed attempt clones again at `clone_base`.
+        self.excluded_dirs: frozenset[str] = frozenset()
+        #: True once the lifecycle has linked a task's additional repositories
+        #: under `work/repos` (`EXTRA_REPOS_DIR`): every checkpoint from then on
+        #: leaves that folder out, whatever it holds.
+        self.leaves_out_extra_repos: bool = False
         #: THE CHAIN (#637). What the last committed checkpoint of this
         #: attempt archived, entry by entry (`_signature`), and its id and
         #: digest: the next one archives only what differs. None until this
@@ -967,8 +997,10 @@ class CheckpointManager:
             for path in (ws.artifacts_link(), ws.artifacts_link(ws.checkout()))
             if ws.is_artifacts_link(path)
         ) | {ws.input_path.relative_to(ws.work).as_posix()}
+        if self.leaves_out_extra_repos:
+            skip |= {EXTRA_REPOS_DIR}
         self.last_unchanged = False
-        build_dirs = _BuildDirFilter(ws.work)
+        build_dirs = _BuildDirFilter(ws.work, self.excluded_dirs)
         racy_after = time.time_ns() - RACY_WINDOW_NS
         previous = self._index
         base = self._base
@@ -1210,6 +1242,8 @@ class CheckpointManager:
         count = 0
         too_deep: list[str] = []
         unreadable: list[str] = []
+        #: Files shaped like a browser session, left out (LB-L4b): `_add_entry`.
+        browser_state: list[str] = []
         #: File content archived so far, against `CHECKPOINT_EXPANSION_RATIO`.
         expanded = [0]
         stack: list[tuple[int, str, list[str]]] = []
@@ -1244,6 +1278,7 @@ class CheckpointManager:
                         index=index,
                         expanded=expanded,
                         expanded_cap=self._max_bytes * CHECKPOINT_EXPANSION_RATIO,
+                        browser_state=browser_state,
                     )
                 except (FileNotFoundError, NotADirectoryError):
                     continue  # gone, or no longer a directory
@@ -1270,6 +1305,22 @@ class CheckpointManager:
                 "folders below the bound were not archived",
                 max_depth=CHECKPOINT_MAX_DEPTH,
                 folders_not_archived=folders,
+            )
+        if browser_state and tar is not None:
+            # RECORDED AS `browser_state_refused`, with the paths (LB-L4b,
+            # docs/design/live-browser.md section 5.5): the agent copied a
+            # browser session into `work/`, and an operator searching for it
+            # finds every checkpoint that left one out. Scrubbed, as every
+            # agent-written path this module logs.
+            scrub_paths: Callable[[str], str] = getattr(self._log, "scrub_text", None) or (
+                lambda text: text
+            )
+            self._log.warning(
+                "files shaped like a browser session were not archived",
+                event=artifact_manifest.BROWSER_STATE_REFUSED,
+                refused=len(browser_state),
+                paths=[scrub_paths(rel) for rel in browser_state[:SKIPPED_LINKS_NAMED]],
+                not_named=max(0, len(browser_state) - SKIPPED_LINKS_NAMED),
             )
         if unreadable and tar is not None:
             # The path only, never the OS error's text, and through the
@@ -1299,6 +1350,7 @@ class CheckpointManager:
         index: dict[str, tuple[Any, ...]] | None = None,
         expanded: list[int] | None = None,
         expanded_cap: int | None = None,
+        browser_state: list[str] | None = None,
     ) -> int:
         """Add one entry of the directory open as `dir_fd`; 1 when it counts.
 
@@ -1324,6 +1376,18 @@ class CheckpointManager:
         reads. Accepted: it publishes nothing a copy would not, and refusing
         it would leave the copy archived anyway. Only a second name of an
         inode this walk already archived becomes a hard-link member.
+
+        A FILE SHAPED LIKE A BROWSER SESSION IS NOT ARCHIVED (LB-L4b,
+        docs/design/live-browser.md section 5.5): a Playwright storage state
+        or a Chromium `Cookies` database the agent wrote or copied into
+        `work/` (`artifact_manifest.browser_state_kind`). Judged on the bytes
+        read for the archive, so what is checked is what would have gone in;
+        its path goes into `browser_state`, which the walk records. Its
+        signature stays in `index`, so an unchanged tree is still unchanged
+        and the next periodic checkpoint does not read it again. A refused
+        file's inode is taken back out of `tar.inodes`: `gettarinfo`
+        registered it, and a second name of it would otherwise become a link
+        member pointing at a member the archive does not hold.
         """
         st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
 
@@ -1401,6 +1465,15 @@ class CheckpointManager:
                     spool.write(chunk)
                     remaining -= len(chunk)
                 info.size -= remaining
+                spool.seek(0)
+                if artifact_manifest.browser_state_kind(name, spool) is not None:
+                    st_read = os.fstat(handle.fileno())
+                    inode = (st_read.st_ino, st_read.st_dev)
+                    if tar.inodes.get(inode) == rel:  # type: ignore[attr-defined]
+                        del tar.inodes[inode]  # type: ignore[attr-defined]
+                    if browser_state is not None:
+                        browser_state.append(rel)
+                    return 0
                 spool.seek(0)
                 tar.addfile(info, spool)
         return 1

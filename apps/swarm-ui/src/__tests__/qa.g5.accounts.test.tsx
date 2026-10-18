@@ -12,7 +12,7 @@
 // Colours are read through `cascade` (marks.ts), not getComputedStyle: jsdom
 // orders rules by source alone and applies no @media block.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 
 import type { Result } from '../fetch'
@@ -158,6 +158,19 @@ describe('G5-17: the chosen row keeps its muted clauses at 4.5:1 in both themes'
 })
 
 describe('G5-16: Holding now is the mock-up’s Agent · Attempt · Since table', () => {
+  // The screen prints a bare clock only for an event TODAY and adds the date otherwise, and
+  // these fixtures sit minutes to hours before now. Against the real clock they passed only
+  // while now was more than three hours into a local day: from 00:00 to 03:00 the 3-hours-ago
+  // event is yesterday and reads 'Oct 11 21:00', which went red on every PR at 00:00Z 2026-10-12.
+  // Pin local noon; only Date is faked so the render's promises and timers still run.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date(2026, 9, 11, 12, 0, 0))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('names each agent from its task, with its attempt and since', async () => {
     const since = new Date(Date.now() - 21 * MINUTES).toISOString()
     const holders: AccountHolders = {
@@ -219,14 +232,26 @@ describe('G5-16: Holding now is the mock-up’s Agent · Attempt · Since table'
   })
 
   it('gives Last given out the clock it happened at, with its age under it', async () => {
-    const at = new Date(Date.now() - 3 * 60 * MINUTES).toISOString()
-    await openRow(account({ last_assigned_at: at }))
-    const tile = [...document.querySelectorAll('.acct-tiles > .acct-tile')].find(
-      (t) => t.querySelector('small')?.textContent === 'Last given out',
-    )!
-    // MUTATION: print `timeAgo` as the figure again.
-    expect(tile.querySelector('b')!.textContent).toBe(hhmm(at))
-    expect(tile.querySelector('i')!.textContent).toBe('3h ago')
-    expect(tile.querySelector('b')!.getAttribute('title')).toBe(new Date(at).toLocaleString())
+    // MIDDAY, LOCAL. Three hours before a run between 00:00 and 03:00 is
+    // yesterday, and givenAt rightly puts the date before yesterday's clock
+    // (CAP-13) -- so an unpinned clock failed this test at 00:00:38 in CI.
+    // Only Date is faked; the findBy waits keep real timers.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const noon = new Date()
+      noon.setHours(12, 0, 0, 0)
+      vi.setSystemTime(noon)
+      const at = new Date(Date.now() - 3 * 60 * MINUTES).toISOString()
+      await openRow(account({ last_assigned_at: at }))
+      const tile = [...document.querySelectorAll('.acct-tiles > .acct-tile')].find(
+        (t) => t.querySelector('small')?.textContent === 'Last given out',
+      )!
+      // MUTATION: print `timeAgo` as the figure again.
+      expect(tile.querySelector('b')!.textContent).toBe(hhmm(at))
+      expect(tile.querySelector('i')!.textContent).toBe('3h ago')
+      expect(tile.querySelector('b')!.getAttribute('title')).toBe(new Date(at).toLocaleString())
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

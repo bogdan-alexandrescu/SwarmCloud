@@ -265,7 +265,7 @@ FIXTURE_PROFILES = {
                         "provider:anthropic", "provider:anthropic:tenant:u-bogdan"]),
     "codex": (1, ["global", "tenant:u-bogdan", "resource:standard", "runner:codex",
                   "backend:CLOUD_RUN_JOB", "provider:openai"]),
-    "browser": (2, ["global", "tenant:u-bogdan", "resource:browser", "runner:browser",
+    "browser": (1, ["global", "tenant:u-bogdan", "resource:browser", "runner:browser",
                     "backend:GKE_AUTOPILOT", "provider:anthropic",
                     "provider:anthropic:tenant:u-bogdan"]),
 }

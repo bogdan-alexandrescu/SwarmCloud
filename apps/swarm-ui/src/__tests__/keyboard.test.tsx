@@ -207,10 +207,11 @@ function helpTriggersInSource(): number {
  * The shell's controls on one rendered route, read off the shell itself.
  *
  * `all` is what the shell drew; `reachable` is the part of it that should be
- * a Tab stop. The two differ only for the panel's locked Admin rows, which a
+ * a Tab stop. The two differ for the panel's locked Admin rows, which a
  * non-admin is shown DISABLED on purpose (Spine.tsx: a hidden page is
  * indistinguishable from one that does not exist) and which are therefore not
- * stops.
+ * stops, and for the theme switch's unchosen radios: a radio group is one
+ * stop, its chosen radio (ThemeToggle.tsx, V074).
  */
 function shellControls(root: Element): Record<string, { all: Element[]; reachable: Element[] }> {
   const spine = root.querySelector('.sk-spine')
@@ -227,7 +228,14 @@ function shellControls(root: Element): Record<string, { all: Element[]; reachabl
       all: pages,
       reachable: pages.filter((el) => !(el as HTMLButtonElement).disabled && el.getAttribute('aria-disabled') !== 'true'),
     },
-    'footer control': of([
+    // A RADIO GROUP IS ONE STOP (visual QA V074, 2026-10-11): the theme
+    // switch's chosen radio is in the Tab order and the arrow keys move the
+    // choice, as a native group does. Its other radios are drawn and are
+    // deliberately not stops; the group still is, so it cannot drop out.
+    'footer control': ((els: Element[]) => ({
+      all: els,
+      reachable: els.filter((el) => el.getAttribute('role') !== 'radio' || el.getAttribute('aria-checked') === 'true'),
+    }))([
       ...(spine === null ? [] : [...spine.querySelectorAll('.sk-foot a, .sk-foot button')]),
       ...(panel === null ? [] : [...panel.querySelectorAll('.sk-ph button, .sk-pfoot button')]),
     ]),

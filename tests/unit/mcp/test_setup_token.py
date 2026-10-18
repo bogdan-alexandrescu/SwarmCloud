@@ -179,7 +179,7 @@ def test_an_api_that_could_not_be_read_exits_1_through_main_without_the_value(mo
     api = FakeApi(error=SwarmError(f"could not reach https://swarm.example.com ({value})"))
 
     class Client:
-        def __init__(self, context=None):
+        def __init__(self, context=None, tenant=None):
             pass
 
         def __enter__(self):

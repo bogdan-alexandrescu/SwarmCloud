@@ -111,7 +111,7 @@ spec:
         {"/serviceaccounts": ["swarm-agent-worker", "default", "swarm-worker"],
         "/resourcequotas": ["swarm-tenant-quota"],
         "/limitranges": ["swarm-worker-limits"],
-        "networking.k8s.io/networkpolicies": ["swarm-default-deny", "swarm-deny-cross-tenant-ingress", "swarm-allow-worker-egress"],
+        "networking.k8s.io/networkpolicies": ["swarm-default-deny", "swarm-deny-cross-tenant-ingress", "swarm-allow-worker-egress", "swarm-allow-live-egress", "swarm-allow-egress-proxy", "swarm-allow-judge-egress", "swarm-allow-graph-service", "swarm-allow-typesafe-fwd"],
         "rbac.authorization.k8s.io/roles": ["swarm-worker", "swarm-dispatcher", "swarm-reaper"],
         "rbac.authorization.k8s.io/rolebindings": ["swarm-worker", "swarm-worker-legacy", "swarm-dispatcher", "swarm-reaper"]}
   validations:
@@ -254,9 +254,14 @@ spec:
         "swarm-reaper": [[["batch"], ["jobs"], ["get", "list", "watch", "delete"]], [[""], ["pods"], ["get", "list", "watch", "delete"]]]}
     # A rule without apiGroups, resources or verbs is an evaluation error here,
     # and so a refusal. None of the render's omits them.
+    # The swarm-worker Role is intentionally empty, and an empty `rules` list
+    # reaches admission as a PRESENT field whose value is null: has() alone
+    # let `.map` run on null, the expression errored ("got 'types.Null',
+    # expected iterable type") and the first self-service workspace's A7 was
+    # refused (w-7f9285, 2026-10-13 04:52Z). Null and absent both mean no rules.
     - name: actual
       expression: >-
-        has(object.rules) ? object.rules.map(r, [r.apiGroups, r.resources, r.verbs]) : []
+        has(object.rules) && type(object.rules) == list ? object.rules.map(r, [r.apiGroups, r.resources, r.verbs]) : []
   validations:
     - expression: "object.metadata.name in variables.expected"
       message: >-
@@ -275,7 +280,7 @@ spec:
       reason: Forbidden
 
     - expression: >-
-        !has(object.rules) ||
+        !has(object.rules) || type(object.rules) != list ||
         object.rules.all(r, !has(r.resourceNames) && !has(r.nonResourceURLs))
       message: "the rendered Roles name no resourceNames and no nonResourceURLs."
       reason: Forbidden

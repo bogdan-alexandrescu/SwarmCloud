@@ -33,6 +33,12 @@
 #     nothing else;
 #   * an integrate pull request lists at least one `- merged:` swarm/ branch
 #     and no `- conflicted:` or `- missing:` one.
+#   * the git-tools rebase lane's pull request (its body carries the marker
+#     tests/acceptance/test_runner_git_tools.py's `pr_kind` reads) instead:
+#     its head contains main (rebased, not merged around), it changes only
+#     planted.txt and lane.txt under tests/acceptance/fixtures/git-tools/,
+#     and planted.txt at its head is the resolution the lane was asked for
+#     (`expected-planted`) -- the half of the rebase check only GitHub sees.
 #
 # Nothing is written: this reads only. Pull requests are listed by the sweep
 # that follows and closed there.
@@ -74,6 +80,10 @@ FIXTURES="tests/acceptance/fixtures/"
 # groups/claude-code.sh asserts on (CC_FIXTURE, CC_BUG_LINE).
 CALC="tests/acceptance/fixtures/claude-code/calc.py"
 BUG_LINE="    return a - b"
+# The git-tools group's judge: which pull request is its rebase lane's, and
+# what that lane's planted.txt must read. Written once, there.
+GIT_TOOLS_JUDGE="${REPO_ROOT}/tests/acceptance/test_runner_git_tools.py"
+GIT_TOOLS_DIR="tests/acceptance/fixtures/git-tools"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-acc-verify.XXXXXX")"
 trap 'rm -rf "${WORK}"' EXIT
 
@@ -89,6 +99,16 @@ gh_api() {
   [[ "${code}" =~ ^2 ]]
 }
 
+# gh_raw PATH OUTFILE -> a file's bytes through the contents API; non-zero on a non-2xx.
+gh_raw() {
+  local path="$1" out="$2" code
+  code="$(auth_config "${TOKEN}" \
+    | curl -K - -sS -m 30 -o "${out}" -w '%{http_code}' \
+        -H "Accept: application/vnd.github.raw" -H "X-GitHub-Api-Version: 2022-11-28" \
+        "${API}${path}")" || return 1
+  [[ "${code}" =~ ^2 ]]
+}
+
 failures=0
 # fail_pr NUMBER WHY -> records a failure against one pull request.
 fail_pr() {
@@ -100,8 +120,40 @@ step "Acceptance pull requests on ${REPO}${SINCE:+ opened since ${SINCE}}"
 gh_api "/repos/${REPO}/pulls?state=open&per_page=100" >"${WORK}/pulls.json" \
   || die "could not list open pull requests: $(redact <"${WORK}/pulls.json" | head -c 200)"
 
+# verify_git_tools_pr NUMBER HEAD -> the git-tools rebase lane's pull request,
+# after its lane rebased it onto ACC_REF and resolved the planted conflict.
+verify_git_tools_pr() {
+  local number="$1" head="$2" behind files want
+  if ! gh_api "/repos/${REPO}/compare/${ACC_REF}...${head}" >"${WORK}/compare.json"; then
+    fail_pr "${number}" "could not compare ${head} with ${ACC_REF}"
+    return 0
+  fi
+  behind="$(jq -r '.behind_by // "unknown"' "${WORK}/compare.json")"
+  if [[ "${behind}" == "0" ]]; then
+    ok "PR #${number}: its head contains ${ACC_REF} (the lane rebased it)"
+  else
+    fail_pr "${number}" "its head is ${behind} commit(s) behind ${ACC_REF}: the rebase lane did not land its rebase"
+  fi
+  files="$(jq -r '[.files[]?.filename] | sort | join(" ")' "${WORK}/compare.json")"
+  want="${GIT_TOOLS_DIR}/lane.txt ${GIT_TOOLS_DIR}/planted.txt"
+  if [[ "${files}" == "${want}" ]]; then
+    ok "PR #${number}: against ${ACC_REF} it changes only ${want}"
+  else
+    fail_pr "${number}" "against ${ACC_REF} it must change exactly ${want}; it changes: ${files:-nothing}"
+  fi
+  python3 "${GIT_TOOLS_JUDGE}" expected-planted >"${WORK}/planted.want"
+  if ! gh_raw "/repos/${REPO}/contents/${GIT_TOOLS_DIR}/planted.txt?ref=$(jq -r '.head.sha // ""' "${WORK}/pr.json")" "${WORK}/planted.got"; then
+    fail_pr "${number}" "could not read ${GIT_TOOLS_DIR}/planted.txt at its head"
+  elif cmp -s "${WORK}/planted.want" "${WORK}/planted.got"; then
+    ok "PR #${number}: planted.txt at its head is the resolution: main's line, then the lane's"
+  else
+    fail_pr "${number}" "planted.txt at its head is not the resolution the lane was asked for: $(head -c 200 "${WORK}/planted.got" | redact | tr '\n' '|')"
+  fi
+}
+
 direct=0
 integrate=0
+git_tools=0
 visited=0
 while IFS=$'\t' read -r number head; do
   [[ -n "${number}" ]] || continue
@@ -131,6 +183,11 @@ while IFS=$'\t' read -r number head; do
   outside="$(jq -r --arg p "${FIXTURES}" '[.[].filename | select(startswith($p) | not)] | join(" ")' "${WORK}/files.json")"
   if [[ -n "${outside}" ]]; then
     fail_pr "${number}" "it changes files outside ${FIXTURES}: ${outside}"
+  fi
+  if [[ "$(python3 "${GIT_TOOLS_JUDGE}" pr-kind --body-file "${WORK}/body.txt")" == "git-tools" ]]; then
+    git_tools=$(( git_tools + 1 ))
+    verify_git_tools_pr "${number}" "${head}"
+    continue
   fi
   if jq -r --arg f "${CALC}" '.[] | select(.filename == $f) | .patch // ""' "${WORK}/files.json" \
       | grep -qxF -- "-${BUG_LINE}"; then
@@ -166,10 +223,13 @@ done < <(jq -r --arg since "${SINCE}" '
   | select($since == "" or (.created_at // "") >= $since)
   | [.number, .head.ref] | @tsv' "${WORK}/pulls.json")
 
-info "verified ${visited} pull request(s): ${direct} direct-pr, ${integrate} integrate"
-for kind in direct-pr integrate; do
-  n="${direct}"
-  [[ "${kind}" == "direct-pr" ]] || n="${integrate}"
+info "verified ${visited} pull request(s): ${direct} direct-pr, ${integrate} integrate, ${git_tools} git-tools"
+for kind in direct-pr integrate git-tools; do
+  case "${kind}" in
+    direct-pr) n="${direct}" ;;
+    integrate) n="${integrate}" ;;
+    *) n="${git_tools}" ;;
+  esac
   if [[ "${n}" -eq 0 ]]; then
     warn "no ${kind} pull request to read back: the suite opened none (see its SKIP or FAIL lines)"
     [[ -z "${GITHUB_ACTIONS:-}" ]] || printf '::warning::acceptance opened no %s pull request on the sandbox; nothing of it was read back\n' "${kind}"

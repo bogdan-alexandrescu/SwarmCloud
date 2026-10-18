@@ -19,6 +19,7 @@ to be written down rather than assumed.
 | `rbac/worker-rbac.yaml` | A Role with no rules, and the binding |
 | `network-policies/default-deny.yaml` | Deny ingress and egress, for every pod |
 | `network-policies/allow-egress.yaml` | DNS (NodeLocal DNSCache and kube-dns), the metadata server, Google APIs, the internet minus the cluster |
+| `storage/cache-storage-class.yaml` | The cluster-scoped pd-balanced StorageClass of every worker pod's 20 GiB `cache` claim (CACHE-PVC), applied with the policies |
 | `policies/pod-security.yaml` | Cluster-scoped ValidatingAdmissionPolicies |
 | `policies/workspace-provisioner-scope.yaml` | The policies that confine the workspace deployer's writes to `swarm-tenant-u-*` and to what the tenant render produces |
 | `rbac/provisioner-rbac.yaml` | The workspace deployer's ClusterRole and binding, and its two reads in `kube-system` — the one cluster-scoped grant here ([docs/workspaces.md](../docs/workspaces.md) §2.3) |
@@ -27,7 +28,8 @@ to be written down rather than assumed.
 | `render.py` | Fills in the placeholders; sizing comes from the frozen catalogue, the cluster's network from its inputs |
 | `apply.sh` | Checks it is pointed at the right cluster, reads that cluster's network and the tenant GSA's Workload Identity bindings, renders, applies |
 | `cluster-network.sh` | Reads the pod range, service range, kube-dns IP and NodeLocal DNSCache address from the live cluster (sourced) |
-| `network_parity.py` | Compares an applied egress policy with the live network; run by `scripts/lib/check-cluster-network-parity.sh` |
+| `network_parity.py` | Compares an applied egress policy with the live network; run by `scripts/lib/check-cluster-network-parity.sh`. With `--live-ingress`, compares swarm-system's three live-relay policies with swarm-api's egress range; run by `apply.sh --swarm-system --confirm` |
+| `swarm-system/swarm-live.yaml` | The live relay's manifest, a template `terraform/infra/live.tf` renders as `swarm_live_manifest`; applied by `apply.sh --swarm-system` |
 
 Every file is held to its invariants by `tests/unit/worker/test_kubernetes_manifests.py`,
 which renders them with the real renderer and asserts the properties that matter
@@ -53,6 +55,13 @@ scripts/lib/check-cluster-network-parity.sh --require-live
 
 # The cluster-scoped admission policies, once per cluster.
 kubernetes/apply.sh --policies --confirm
+
+# The live-browser relay and swarm-system's ingress (docs/design/live-browser.md
+# §8.1.1): `terraform output -raw swarm_live_manifest` first -- it creates the
+# namespace -- then the policies, in one apply. Refuses while the relay is off,
+# and when terraform's subnet range is not the one swarm-api egresses from.
+kubernetes/apply.sh --swarm-system
+kubernetes/apply.sh --swarm-system --confirm
 
 # One Job, for an incident repro.
 kubernetes/render.py job --tenant eng --profile browser \

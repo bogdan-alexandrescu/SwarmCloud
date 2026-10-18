@@ -373,14 +373,15 @@ run "its_roles_are_section_2_3_and_each_grant_is_bounded" {
       "iam.serviceAccounts.getIamPolicy",
       "iam.serviceAccounts.list",
       "iam.serviceAccounts.setIamPolicy",
+      "iam.serviceAccountKeys.list",
     ])
-    error_message = "swarmWorkspaceAccountAdmin is exactly §2.3's five permissions"
+    error_message = "swarmWorkspaceAccountAdmin is exactly §2.3's six permissions"
   }
 
   assert {
     condition = alltrue(flatten([
       for k, r in google_project_iam_custom_role.workspace : [
-        for p in r.permissions : length(regexall("(?i)(delete|disable|undelete|keys|getAccessToken|getOpenIdToken|signBlob|signJwt|actAs|implicitDelegation|versions\\.access|objects\\.(get|list))", p)) == 0
+        for p in r.permissions : length(regexall("(?i)(delete|disable|undelete|keys\\.(create|upload|update|enable)|getAccessToken|getOpenIdToken|signBlob|signJwt|actAs|implicitDelegation|versions\\.access|objects\\.(get|list))", p)) == 0
       ]
     ]))
     error_message = "no swarmWorkspace* role may delete, disable, make a key, mint or sign a token, act as an account, read a secret's payload or read an object"

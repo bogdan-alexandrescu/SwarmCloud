@@ -96,10 +96,26 @@ spec:
     limits.memory: __QUOTA_MEMORY__
     limits.ephemeral-storage: __QUOTA_EPHEMERAL__
     count/jobs.batch: "__QUOTA_JOBS__"
+    # THE CACHE'S NETWORK DISKS (CACHE-PVC, owner decision 2026-10-15). Every
+    # worker pod's `cache` volume is a generic ephemeral volume: the
+    # ephemeral-volume controller creates one PVC per pod, here, and this quota
+    # counts it -- at "0", which this line was, every pod would wait Pending
+    # for a claim the API server refused. One per JOB, not per running pod: the
+    # claim is deleted with its pod, and a finished Job keeps its pod for
+    # ttlSecondsAfterFinished (an hour), which is why count/jobs.batch is
+    # larger than pods. Storage is that many 20 GiB claims, on the cache's
+    # class alone; every other class Autopilot ships is held to none, so "we
+    # only ever make cache disks" is the API server's rule too.
+    count/persistentvolumeclaims: "__QUOTA_JOBS__"
+    requests.storage: __QUOTA_CACHE_STORAGE__
+    __CACHE_STORAGE_CLASS__.storageclass.storage.k8s.io/persistentvolumeclaims: "__QUOTA_JOBS__"
+    __CACHE_STORAGE_CLASS__.storageclass.storage.k8s.io/requests.storage: __QUOTA_CACHE_STORAGE__
+    standard.storageclass.storage.k8s.io/persistentvolumeclaims: "0"
+    standard-rwo.storageclass.storage.k8s.io/persistentvolumeclaims: "0"
+    premium-rwo.storageclass.storage.k8s.io/persistentvolumeclaims: "0"
     # Nothing in this platform creates any of these in a tenant namespace, and a
     # zero quota turns "we never do that" into "the API server refuses to".
     count/services: "0"
-    count/persistentvolumeclaims: "0"
     count/deployments.apps: "0"
     count/statefulsets.apps: "0"
     count/daemonsets.apps: "0"

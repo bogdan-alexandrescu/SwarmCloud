@@ -186,6 +186,49 @@ the money was spent, and a tenant at `max_active: 25` could overshoot by up to
 25 attempts' worth. Concurrency and capacity units bound spend *before* it
 happens, at admission, which is why they are the controls this platform keeps.
 
+### The one carve-out: what a schedule may start
+
+**Owner decision 2026-10-08 (SD4, [schedules.md §4.3](schedules.md#43-budgets-and-what-they-can-and-cannot-promise)):
+per-type dollar caps, for schedules only.** The 2026-10-01 decision above still
+holds for everything that is not scheduled: tasks, workflows and issue runs
+started by hand. Nothing in admission reads these figures, no tenant-wide
+budget exists, `monthly_budget_usd` is still refused, and the scheduler is
+unchanged. What the caps bound is the **firing**, the moment a schedule decides
+whether to create work:
+
+| type | per run | per day | concurrent |
+|---|---|---|---|
+| `issue-sweep` | $15 | $120 | 8 |
+| `issue-plan-only` | $3 | $30 | 5 |
+| `observer` | $5 | $10 | 1 |
+| `repo-index-refresh` | $5 | $40 | 4 |
+
+No measurement backs these numbers; they are the owner's caps.
+
+* **`per_day_usd` is a firing gate.** A firing is skipped with
+  `BUDGET_EXHAUSTED` when the day's reported spend plus what is reserved for
+  live work would pass it (`apps/swarm-api/swarm_api/schedules.py::budget_exhausted`).
+  That is a skip code on the firing record. It is **not** `PARKED(BUDGET_EXHAUSTED)`,
+  which stays unwritten as the list above says, and nothing that already exists
+  is stopped.
+* **An unknown cost counts at the per-run cap, never as zero.** This is the
+  same lower-bound problem as `spend_coverage`, turned the safe way round.
+* **`per_run_usd` is a tripwire, not a ceiling.** The constraint above applies
+  here too: `cost_usd` is written when an attempt ends, so a run over its cap is
+  found afterwards. It ends its firing `RUN_OVER_BUDGET` and pauses the schedule
+  (`apps/swarm-api/swarm_api/schedules.py::run_over_budget`). The run's real bound
+  is its time, the profile's `timeout_seconds` and its `fix_rounds`, so a day's
+  worst case is `per_day_usd + max_concurrent × (actual run cost − per_run_usd)`.
+
+Since 2026-10-11 (Schedules S9) the issue sweep runs under this carve-out. Lane
+SWEEP's Cloud Scheduler job was paused that day, when the `issue-sweep`
+schedule replaced it, and deleted with its route and `SWEEP_ENABLED` on
+2026-10-12 (the owner waived the planned 7-day watch), so no unbudgeted
+trigger of the sweep is left
+([operations.md §13](operations.md#13-schedules-the-s9-migration-sweep-removed-2026-10-12)).
+The sweep is therefore the first recurring work with a dollar bound. Under SWEEP
+it had only the cap of 8 live runs, which still applies.
+
 ---
 
 ## 3. Spot is off, and why that is not a missed saving

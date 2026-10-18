@@ -179,6 +179,8 @@ def test_the_workers_restatements_match_swarm_api():
     assert children_mod.TIMESTAMP_HEADER == api_children.TIMESTAMP_HEADER
     assert children_mod.WORKER_UNPROTECTED == api_childkey.WORKER_UNPROTECTED
     assert children_mod.CHILD_FIELDS == set(api_children.ChildSpec.model_fields)
+    # #1435 (MODEL-API): a child names its model class by name, on both sides.
+    assert "model_class" in children_mod.CHILD_FIELDS
     assert control_mod.CHILD_AWAIT_RESUMES_METADATA_KEY == api_validation.CHILD_AWAIT_RESUMES_METADATA_KEY
     assert control_mod.CHILD_CASCADE_METADATA_KEY == api_validation.CHILD_CASCADE_METADATA_KEY
     for args in [("POST", "/v1/tasks/t/children", b'{"a":1}', "17"), ("GET", "/p?q=1", b"", "9")]:

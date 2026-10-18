@@ -68,12 +68,20 @@ def _needs(job: dict) -> list[str]:
     return [needs] if isinstance(needs, str) else list(needs or [])
 
 
+REUSED = "!contains(fromJSON(needs.changes.outputs.reused || '[]'), '%s')"
+
+
 def test_each_job_runs_only_on_the_gates_output():
     """MUTATION: drop a job's `if:`, or point it at the wrong output."""
     jobs = _jobs()
     gate = jobs["changes"]
-    for name in ("app", "python", "areas", "ui"):
+    for name in ("app", "ui"):
         assert gate["outputs"][name].replace(" ", "") == "${{steps.diff.outputs.%s}}" % name, gate["outputs"]
+    # python and areas pass through the `select` step, which narrows a pull
+    # request's python=all to the tests it reaches (B2) and passes every other
+    # answer through (test_select_unit_tests.py runs it).
+    for name in ("python", "areas", "tests"):
+        assert gate["outputs"][name].replace(" ", "") == "${{steps.select.outputs.%s}}" % name, gate["outputs"]
     # The gate itself is never filtered: if it were skipped, so would everything be.
     assert "if" not in gate
     # `base...head` needs the history; a depth-1 clone has no merge base.
@@ -81,14 +89,18 @@ def test_each_job_runs_only_on_the_gates_output():
     assert checkout.get("with", {}).get("fetch-depth") == 0
 
     expected_if = {
-        "ui-build": "needs.changes.outputs.ui == 'true'",
-        "ui-tests": "needs.changes.outputs.ui == 'true'",
-        "python-checks": "needs.changes.outputs.python == 'all'",
-        "python-unit": "needs.changes.outputs.python != 'none'",
-        "shell": "needs.changes.outputs.app == 'true'",
-        "workflows": "needs.changes.outputs.app == 'true'",
-        "integration": "needs.changes.outputs.app == 'true'",
-        "manifests": "needs.changes.outputs.app == 'true'",
+        # Each test job is also skipped when main's push run reuses it from a
+        # run of the identical tree (B1, test_ci_reuse.py).
+        "ui-build": "needs.changes.outputs.ui == 'true' && " + REUSED % "ui-build",
+        "ui-tests": "needs.changes.outputs.ui == 'true' && " + REUSED % "ui-tests",
+        "python-checks": "(needs.changes.outputs.python == 'all' || needs.changes.outputs.python == 'selected') && "
+                         + REUSED % "python-checks",
+        "python-unit": "needs.changes.outputs.python != 'none' && " + REUSED % "python-unit",
+        "shell": "needs.changes.outputs.app == 'true' && " + REUSED % "shell",
+        "workflows": "needs.changes.outputs.app == 'true' && " + REUSED % "workflows",
+        "ruff": "needs.changes.outputs.app == 'true' && " + REUSED % "ruff",
+        "integration": "needs.changes.outputs.app == 'true' && " + REUSED % "integration",
+        "manifests": "needs.changes.outputs.app == 'true' && " + REUSED % "manifests",
         # `images` is false when app is (the images step says so first), and
         # test_build_images_local.py runs that step against the plan's answer.
         "build-check": "github.event_name == 'pull_request' && needs.changes.outputs.images == 'true'",
@@ -98,7 +110,8 @@ def test_each_job_runs_only_on_the_gates_output():
         assert jobs[job_id].get("if") == condition, (job_id, jobs[job_id].get("if"))
     # Every job but the gate's own reads, the aggregators, ci-gate and main's
     # build is listed above: a new job must decide what reaches it.
-    rest = set(jobs) - set(expected_if) - {"changes", "python", "ui", "ci-gate", "build"}
+    # tested-tree reads `changes`' result, not its outputs: it records whatever ran.
+    rest = set(jobs) - set(expected_if) - {"changes", "python", "ui", "ci-gate", "build", "tested-tree"}
     assert not rest, f"jobs that do not read the changes gate: {sorted(rest)}"
 
 
@@ -261,17 +274,34 @@ def test_the_list_carries_every_pattern_the_old_filter_did():
     }
 
 
-def test_the_shared_reading_of_the_list_agrees_with_the_step(tmp_path):
-    """application_paths.reaches() is what other tests ask; it must say what
-    the step says, for a sample under each pattern and a near miss of each."""
+def _shared_reading_samples() -> list[str]:
+    """A sample under each pattern in APP_PATHS and a near miss of each."""
     samples = []
     for pattern in app_paths():
         if pattern.endswith("/**"):
             samples += [pattern[:-2] + "a/b.txt", pattern[:-3] + "x/b.txt"]
         else:
             samples += [pattern, pattern + ".orig"]
-    for i, sample in enumerate(samples):
-        sub = tmp_path / str(i)
-        sub.mkdir()
-        outputs = _pull_request(sub, sample)
-        assert (outputs["app"] == "true") == reaches(sample), (sample, outputs)
+    return samples
+
+
+# One case per sample rather than one loop over all of them (box 102 of #888):
+# the loop ran the step ~60 times serially in one test, about 80 s, the
+# slowest test in scripts/changed-guards.sh's selection. As cases, xdist
+# spreads them across workers. Built at collection time from the same list.
+SHARED_READING_SAMPLES = _shared_reading_samples()
+
+
+def test_the_shared_reading_samples_cover_every_pattern():
+    """An empty parametrisation is a skip, not a failure, so the sample set is
+    held here. MUTATION: make _shared_reading_samples() return []."""
+    assert SHARED_READING_SAMPLES
+    assert len(SHARED_READING_SAMPLES) == 2 * len(app_paths())
+
+
+@pytest.mark.parametrize("sample", SHARED_READING_SAMPLES, ids=SHARED_READING_SAMPLES)
+def test_the_shared_reading_of_the_list_agrees_with_the_step(tmp_path, sample):
+    """application_paths.reaches() is what other tests ask; it must say what
+    the step says, for a sample under each pattern and a near miss of each."""
+    outputs = _pull_request(tmp_path, sample)
+    assert (outputs["app"] == "true") == reaches(sample), (sample, outputs)

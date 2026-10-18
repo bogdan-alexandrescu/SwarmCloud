@@ -391,7 +391,7 @@ describe('Agents, with every help card closed', () => {
     expect(empty).not.toBeNull()
     const mark = empty!.querySelector('.ctl-mark.is-zero')
     expect(mark, 'a real zero is not marked as one').not.toBeNull()
-    expect(mark!.textContent).toMatch(/real zero/i)
+    expect(mark!.textContent).toBe('none')
     // THE ROUTE TO THE WORDS. `.ctl-q` is a button while the card is shut and
     // becomes an anchor to `#help/capacity` when it opens, which is exactly
     // the property that makes this assertion mean something: the topic is
@@ -710,7 +710,10 @@ describe('AttemptTimeline, with every help card closed', () => {
     expect(facts, 'the attempt facts strip is missing').not.toBeNull()
     const absent = facts!.querySelector('.ctl-fact.is-absent')
     expect(absent, 'an unread fact has been dropped instead of kept as a slot').not.toBeNull()
-    expect(absent!.querySelector('.ctl-em')).not.toBeNull()
+    // ONE GLYPH PER ABSENCE (V261, VQA2-R13): the mark where the fact has
+    // one, the em dash where it does not -- never both.
+    expect(absent!.querySelector('.ctl-em, .ctl-mark')).not.toBeNull()
+    expect(absent!.querySelector('.ctl-em') !== null && absent!.querySelector('.ctl-mark') !== null).toBe(false)
   })
 })
 

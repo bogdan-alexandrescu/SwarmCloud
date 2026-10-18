@@ -172,6 +172,6 @@ describe('the ~ legend is drawn only when a ~ is (#127)', () => {
   it('keeps the legend when a projected figure is on screen', async () => {
     await mount([live({ stale: true })])
     expect(document.querySelector('.acct-tilde')).not.toBeNull()
-    expect(document.querySelector('.provenance')!.textContent).toContain('~ is projected, not measured')
+    expect(document.querySelector('.provenance')!.textContent).toContain('~ is an old reading, not current')
   })
 })

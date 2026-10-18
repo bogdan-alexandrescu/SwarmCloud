@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 #
 # workspace-apply -- the image of the personal-workspace job, and the code it
 # runs (docs/workspaces.md §2.1-2.2; lane W4 of #847 made the toolbox, lane
@@ -83,9 +83,17 @@ ARG GCLOUD_IMAGE=gcr.io/google.com/cloudsdktool/google-cloud-cli:587.0.0-stable@
 # The uv every other image copies in, for the same reason they give
 # (images/swarm-api/Dockerfile): 0.12.15 is the release whose static Rust
 # dependencies pass the promote scan.
-ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.12.15@sha256:62f8c047d0a0e9ece6b53fc63df902585a67a47a7f318ddec4a37db586edc8e3
+ARG UV_IMAGE=astral-sh/uv:0.12.15@sha256:62f8c047d0a0e9ece6b53fc63df902585a67a47a7f318ddec4a37db586edc8e3
+# Every base is pulled through this project's Artifact Registry mirrors,
+# never from Docker Hub or ghcr.io directly: on 2026-10-12 three release
+# builds failed inside Cloud Build on ghcr.io timeouts and a github.com 504.
+# Remote repositories (terraform/infra/build_mirror.tf) serve the same
+# digests. A pull request's local build, which has no Google identity,
+# passes the upstream registries here instead (scripts/lib/build-mirror.sh).
+# docs/runbooks/build-mirror.md.
+ARG MIRROR_GHCR=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-ghcr
 
-FROM ${UV_IMAGE} AS uvbin
+FROM ${MIRROR_GHCR}/${UV_IMAGE} AS uvbin
 
 FROM ${GCLOUD_IMAGE} AS runtime
 
@@ -93,6 +101,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # bash with pipefail: every `echo <sha> <file> | sha256sum -c -` below is a
 # pipe, and a pipe whose first command failed must not pass on the last one's.
+# EVERY DOWNLOAD HERE RETRIES (2026-10-14, PR 1281's flake table): `curl -fsSL
+# --retry 5 --retry-all-errors --retry-connrefused`, 1+2+4+8+16 s of backoff at
+# most. --retry-all-errors is what makes an HTTP error (curl's exit 22, which
+# failed one main build of agent-runtime-base in run 38245452463) retry at all. A
+# file that is really gone still fails, ~31 s later, and every download is
+# still checked against its pinned checksum after it lands.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # jq, curl and python3 from Debian, with the security updates of the day.
@@ -101,13 +115,36 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # names with `python3 - <<PY`, and gcloud itself runs on it once the bundled
 # interpreter is gone (below). Debian trixie's python3 is 3.13, inside the
 # 3.9-3.14 range gcloud 587's launcher accepts.
-RUN apt-get update -qq \
+#
+# A FRESH LAYER, EVERY BUILD AND EVERY RELEASE (owner decision 2026-10-14).
+# Releases 38535875750 and 38540997006 refused this image over curl and
+# libcurl4t64 8.14.1-2+deb13u5 (CVE-2026-8286, HIGH, fixed in +deb13u7): this
+# RUN had last run on 2026-10-13, and main's incremental build kept re-tagging
+# that digest because none of its inputs changed. scripts/build-images.sh now
+# rebuilds it in every main build and every release, and passes the build's
+# name as APT_REFRESH, named here so no layer cache can serve an older upgrade.
+#
+# THE ASSERTION. After the upgrade and the installs, a simulated dist-upgrade
+# must have nothing left to do. `apt-get upgrade` keeps back a package whose
+# fix needs a new dependency, and that package would ship at its vulnerable
+# version and fail the release's promote scan 45 minutes later; here it fails
+# this build, naming the package. No version is pinned and nothing is ignored.
+ARG APT_REFRESH=unset
+RUN echo "apt layer of ${APT_REFRESH}" \
+ && apt-get update -qq \
  && apt-get upgrade -y -qq \
  && apt-get install --no-install-recommends -y -qq \
       ca-certificates \
       curl \
       jq \
       python3 \
+ && apt-get -s dist-upgrade >/tmp/apt-pending.txt \
+ && if grep '^Inst ' /tmp/apt-pending.txt >&2; then \
+      echo "workspace-apply: the packages above still have a newer Debian version after apt-get upgrade (APT_REFRESH=${APT_REFRESH}); the promote scan would refuse this image" >&2; \
+      exit 1; \
+    fi \
+ && rm -f /tmp/apt-pending.txt \
+ && dpkg-query -W curl libcurl4t64 \
  && rm -rf /var/lib/apt/lists/*
 
 # THE BUNDLED INTERPRETER COMES OUT, as it does in agent-runtime-base. gcloud
@@ -143,9 +180,9 @@ ARG GKE_PLUGIN_SHA256=c572f6cf9b401820032e8459b2bade792442dfbbce30e53d3b1b0d7be1
 ARG KUBECTL_VERSION=1.36.5
 ARG KUBECTL_SHA256=33bc88a24c3b09cf55bfd59e6ca977881b61fc3f25ab65bc80c65b430248648e
 RUN mkdir -p /tmp/toolbox \
- && curl -fsSL -o /tmp/toolbox/gke-gcloud-auth-plugin.deb \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/gke-gcloud-auth-plugin.deb \
       "https://packages.cloud.google.com/apt/pool/cloud-sdk/google-cloud-cli-gke-gcloud-auth-plugin_${GCLOUD_VERSION}-0_amd64_${GKE_PLUGIN_POOL_ID}.deb" \
- && curl -fsSL -o /tmp/toolbox/kubectl \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/kubectl \
       "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
  && echo "${GKE_PLUGIN_SHA256}  /tmp/toolbox/gke-gcloud-auth-plugin.deb" | sha256sum -c - \
  && echo "${KUBECTL_SHA256}  /tmp/toolbox/kubectl" | sha256sum -c - \

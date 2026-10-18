@@ -56,7 +56,9 @@ from .test_ci_built_images import IMAGES, REGISTRY
 
 REPO = Path(__file__).resolve().parents[3]
 WORKFLOW = REPO / ".github" / "workflows" / "application.yml"
-WORKER = {"agent-runtime-base", "agent-runtime-browser", "agent-runtime-indexer"}
+# agent-runtime-base-nocodex is the base's Dockerfile built with INSTALL_CODEX=0
+# (BROWSER-NO-CODEX): the base's inputs are its inputs.
+WORKER = {"agent-runtime-base", "agent-runtime-base-nocodex", "agent-runtime-browser", "agent-runtime-indexer"}
 PYTHON_SERVICES = {"swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler"}
 
 pytestmark = pytest.mark.skipif(
@@ -114,13 +116,20 @@ sys.exit(2)
 '''
 
 
+#: The APT_REFRESH every sandbox build runs with and every sandbox record carries.
+APT_PIN = "sandbox-apt-pin"
+
+
 def _old_digest(name: str, commit: str) -> str:
     return "sha256:" + hashlib.sha256(f"previous {name} {commit}".encode()).hexdigest()
 
 
 def _baked(name: str, environment: str) -> list[str]:
     """The build args build-images.sh bakes into an image beyond GIT_SHA and
-    BUILD_TIME: swarm-ui's environment, which Vite inlines at compile time."""
+    BUILD_TIME: swarm-ui's environment, which Vite inlines at compile time,
+    and the codex-less base's INSTALL_CODEX=0 (BROWSER-NO-CODEX)."""
+    if name == "agent-runtime-base-nocodex":
+        return ["INSTALL_CODEX=0"]
     return [f"VITE_SWARM_ENV={environment}"] if name == "swarm-ui" else []
 
 
@@ -137,6 +146,10 @@ class Sandbox:
         self.root = tmp_path / "repo"
         shutil.copytree(REPO / "scripts", self.root / "scripts")
         shutil.copytree(REPO / "images", self.root / "images")
+        # A recipe may also sit beside its app (apps/swarm-live/Dockerfile).
+        for recipe in REPO.glob("apps/*/Dockerfile"):
+            (self.root / recipe.parent.relative_to(REPO)).mkdir(parents=True, exist_ok=True)
+            shutil.copy2(recipe, self.root / recipe.relative_to(REPO))
         for name in (".gitignore", ".gcloudignore", ".dockerignore", "pyproject.toml", "uv.lock"):
             if (REPO / name).exists():
                 shutil.copy2(REPO / name, self.root / name)
@@ -168,6 +181,12 @@ class Sandbox:
             "BUILD_PARALLELISM": "8",
             "BUILD_POLL_INTERVAL": "0.05",
             "BUILD_SUBMIT_STAGGER": "0",
+            # APT_REFRESH names the build in build-images.sh, and an image
+            # that upgrades OS packages is reused only from a record of the
+            # same one. Pinned here, and written into every record below, so
+            # these tests see only the input-diff rules; the refresh itself
+            # is exercised in test_build_images_apt_refresh.py.
+            "BUILD_APT_REFRESH": APT_PIN,
         }
         for leak in ("GITHUB_ACTIONS", "GITHUB_STEP_SUMMARY", "GITHUB_OUTPUT", "GH_TOKEN", "GITHUB_TOKEN"):
             self.env.pop(leak, None)
@@ -206,6 +225,7 @@ class Sandbox:
             }
             if baked_args:
                 entry["build_args"] = _baked(name, environment)
+            entry["apt_refresh"] = APT_PIN
             entry.update((per_image or {}).get(name, {}))
             images.append(entry)
         path = self.tmp / f"previous-{commit[:12]}.json"
@@ -295,14 +315,19 @@ def test_a_base_change_rebuilds_the_images_built_from_it(box):
     _assert_whole(manifest, head)
 
 
-def test_a_base_whose_retag_fails_is_rebuilt_with_everything_built_from_it(box):
+@pytest.mark.parametrize(("base", "built_from_it"), [
+    ("agent-runtime-base", {"agent-runtime-indexer"}),
+    # BROWSER-NO-CODEX: the browser is built FROM the codex-less base.
+    ("agent-runtime-base-nocodex", {"agent-runtime-browser"}),
+])
+def test_a_base_whose_retag_fails_is_rebuilt_with_everything_built_from_it(box, base, built_from_it):
     head = box.commit("docs", {"docs/ci.md": "words\n"})
-    proc, manifest, events = box.build(box.record(box.first), FAKE_TAG_FAIL="agent-runtime-base")
+    proc, manifest, events = box.build(box.record(box.first), FAKE_TAG_FAIL=base)
     assert proc.returncode == 0, proc.stderr[-4000:]
-    assert _submitted(events) == WORKER, (
+    assert _submitted(events) == {base} | built_from_it, (
         "the base could not be re-tagged, so the images built FROM it must be built on a fresh base"
     )
-    assert _retagged(events) == set(IMAGES) - WORKER
+    assert _retagged(events) == set(IMAGES) - {base} - built_from_it
     _assert_whole(manifest, head)
 
 
@@ -352,11 +377,15 @@ def test_a_baked_build_arg_that_changed_rebuilds_its_image_and_nothing_else(box)
 
 def test_a_record_that_does_not_name_its_baked_args_rebuilds_only_the_images_that_bake_one(box):
     """A record written before the manifest named build args says nothing
-    about swarm-ui's; an image that bakes none has nothing to disagree with."""
+    about swarm-ui's, or the codex-less base's INSTALL_CODEX=0 (and so the
+    browser built FROM that base is rebuilt on it); an image that bakes none
+    has nothing to disagree with."""
     box.commit("docs", {"docs/ci.md": "words\n"})
     proc, _, events = box.build(box.record(box.first, baked_args=False))
     assert proc.returncode == 0, proc.stderr[-4000:]
-    assert _submitted(events) == {"swarm-ui"}, f"submitted {_submitted(events)}"
+    assert _submitted(events) == {"swarm-ui", "agent-runtime-base-nocodex", "agent-runtime-browser"}, (
+        f"submitted {_submitted(events)}"
+    )
     assert "baked build args were not recorded" in proc.stderr, proc.stderr[-4000:]
 
 

@@ -199,7 +199,7 @@ def test_a_worker_registers_its_key_once_while_starting(child_client, db):
     response = register(child_client, db, attempt)
     assert response.status_code == 201, response.text
     body = response.json()
-    assert body == {"registered": "key", "attempt_id": ATTEMPT}
+    assert body == {"registered": "key", "attempt_id": ATTEMPT, "search_tool": False}
     # Nothing secret in the answer: not the nonce, not the attestation, not the id.
     text = response.text
     keys = ChildKeys(KEY)
@@ -222,6 +222,70 @@ def test_registration_is_refused_once_the_task_is_running(child_client, db):
     assert response.status_code == 409
     assert response.json()["code"] == "child_key_window_closed"
     assert not [p for p in db.docs if p.startswith(f"{CHILD_KEYS}/")]
+
+
+def _slow_pod_lease(db, *, beat: bool = False, deadline_in: timedelta = timedelta(minutes=4)) -> None:
+    """The lease task_23cc2e82178640709a45 registered on (2026-10-12, LB-KEYRACE).
+
+    Admitted, then a pod that took longer than `lease_timeout_seconds` (120)
+    to reach STARTING: `expires_at` already passed, the dispatch deadline not.
+    """
+    now = datetime.now(timezone.utc)
+    lease = db.docs[f"leases/{LEASE}"]
+    lease["created_at"] = now - timedelta(seconds=154)
+    lease["expires_at"] = now - timedelta(seconds=34)
+    lease["dispatch_deadline"] = now + deadline_in
+    lease["heartbeat_at"] = now - timedelta(seconds=150) if beat else None
+
+
+def test_a_pod_slower_than_the_lease_timeout_still_registers_its_key(child_client, db):
+    """The race: STARTING, this attempt's lease, never beaten, past `expires_at`.
+
+    The reconciler judges such a lease by its dispatch deadline alone, so it
+    is live; refusing it here left the attempt with no child key and so no
+    live browser session.
+    """
+    seed_tenant(db, "eng")
+    attempt = Attempt()
+    seed_parent(db, attempt, state="STARTING")
+    _slow_pod_lease(db)
+    response = register(child_client, db, attempt)
+    assert response.status_code == 201, response.text
+    assert response.json() == {"registered": "key", "attempt_id": ATTEMPT, "search_tool": False}
+    again = register(child_client, db, attempt)
+    assert again.status_code == 409 and again.json()["code"] == "child_key_taken"
+
+
+@pytest.mark.parametrize(
+    "lease_case",
+    [
+        {"beat": True},
+        {"deadline_in": timedelta(seconds=-1)},
+    ],
+    ids=["beat-then-expired", "past-dispatch-deadline"],
+)
+def test_an_expired_lease_still_closes_the_window(child_client, db, lease_case):
+    """Only a never-beaten lease inside its dispatch deadline is spared `expires_at`."""
+    seed_tenant(db, "eng")
+    attempt = Attempt()
+    seed_parent(db, attempt, state="STARTING")
+    _slow_pod_lease(db, **lease_case)
+    response = register(child_client, db, attempt)
+    assert response.status_code == 409
+    assert response.json()["code"] == "child_key_window_closed"
+    assert not [p for p in db.docs if p.startswith(f"{CHILD_KEYS}/")]
+
+
+@pytest.mark.parametrize("state", ["DISPATCHED", "RUNNING"])
+def test_a_slow_pod_outside_starting_is_still_refused(child_client, db, state):
+    """The clock is the only thing that moved: the window is still STARTING alone."""
+    seed_tenant(db, "eng")
+    attempt = Attempt()
+    seed_parent(db, attempt, state=state)
+    _slow_pod_lease(db)
+    response = register(child_client, db, attempt)
+    assert response.status_code == 409
+    assert response.json()["code"] == "child_key_window_closed"
 
 
 def test_a_wrong_nonce_is_unproven(child_client, db):

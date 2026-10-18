@@ -151,6 +151,24 @@ def test_the_tenants_only_registered_repository_is_merged_at_the_named_head(clie
     assert read[1].endswith(f"/repos/{OWNER}/{NAME}/pulls/{NUMBER}")
 
 
+@pytest.mark.parametrize("fix_rounds", [None, 0])
+def test_a_merge_pr_workflow_gets_no_fix_rounds(client, db, fix_rounds):
+    """SPEED-D2: a lane gets 2 rounds by default, but a named pull request's
+    branch is no task's, so no round could ever push to it; rounds asked for
+    would only park the worker on `ci_fix_pending` until its 6 h bound."""
+    _register(db, "eng", OWNER, NAME)
+    spec = _spec() if fix_rounds is None else _spec(fix_rounds=fix_rounds)
+    response = _post(client, spec)
+    assert response.status_code == 201, response.text
+    (step,) = response.json()["workflow"]["steps"]
+    assert db.docs[f"tasks/{step['task_id']}"]["metadata"]["merge_fix_rounds"] == 0
+
+
+def test_a_merge_pr_workflow_asking_for_fix_rounds_is_refused(client, db):
+    _register(db, "eng", OWNER, NAME)
+    _refused(client, db, _spec(fix_rounds=2), "merge_pr takes no fix_rounds")
+
+
 def test_the_named_registered_repository_is_used_when_the_tenant_has_several(client, db):
     _register(db, "eng", OWNER, NAME)
     _register(db, "eng", OWNER, "gadget-shop")
@@ -167,6 +185,36 @@ def test_the_token_is_in_no_response(client, db, forge_tokens):
     assert accepted.status_code == 201 and refused.status_code == 422
     for token in forge_tokens.issued.values():
         assert token not in accepted.text and token not in refused.text
+
+
+# --------------------------------------------------------------------------
+# The name (owner report 2026-10-11: a merge workflow listed as its bare id)
+# --------------------------------------------------------------------------
+
+def test_a_nameless_merge_pr_workflow_is_stored_as_merge_pr_and_its_number(client, db):
+    _register(db, "eng", OWNER, NAME)
+    response = _post(client, _spec())
+    assert response.status_code == 201, response.text
+    (step,) = response.json()["workflow"]["steps"]
+    metadata = db.docs[f"tasks/{step['task_id']}"]["metadata"]
+    # The words the plugin defaults to, and no "#": GitHub can read "#41" as a reference.
+    assert metadata["unit"] == f"Merge PR {NUMBER}"
+    assert "#" not in metadata["unit"]
+
+
+@pytest.mark.parametrize("metadata, key, name", [
+    ({"unit": "land the docs fix"}, "unit", "land the docs fix"),
+    ({"title": "Merge the docs fix"}, "title", "Merge the docs fix"),
+])
+def test_a_merge_pr_workflow_keeps_the_name_its_caller_gave(client, db, metadata, key, name):
+    _register(db, "eng", OWNER, NAME)
+    response = _post(client, _spec(metadata=metadata))
+    assert response.status_code == 201, response.text
+    (step,) = response.json()["workflow"]["steps"]
+    stored = db.docs[f"tasks/{step['task_id']}"]["metadata"]
+    assert stored[key] == name
+    # A caller's title is not shadowed by a filled-in `unit`.
+    assert stored.get("unit", name) == name
 
 
 # --------------------------------------------------------------------------

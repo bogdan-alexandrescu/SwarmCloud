@@ -114,11 +114,12 @@ def test_every_build_arg_the_config_passes_is_declared():
 def test_the_indexer_proves_every_tool_runs_as_the_agent_user():
     code = _code(INDEXER)
     user = code.rindex("USER swarm:swarm")
-    for check in ("RUN swarm-repo-index --self-test",
-                  "RUN swarm-repo-index --lsp-self-test",
-                  "RUN swarm-repo-graph --self-test"):
+    # One RUN for the three (test_image_streaming.py says why), after USER.
+    run = code.index("RUN swarm-repo-index --self-test \\\n")
+    assert run > user, "the self-tests run before USER swarm:swarm"
+    for check in (" && swarm-repo-index --lsp-self-test", " && swarm-repo-graph --self-test"):
         assert check in code, check
-        assert code.index(check) > user, f"{check} runs before USER swarm:swarm"
+        assert code.index(check) > run, f"{check} is not part of the self-test RUN"
 
 
 def test_the_indexer_never_runs_as_root():
@@ -137,7 +138,10 @@ def test_every_from_is_the_base_by_digest_or_a_digest_pinned_arg():
     froms = re.findall(r"^FROM (\S+)(?: AS (\S+))?$", code, re.M)
     assert froms, "no FROM in the indexer Dockerfile"
     for ref, _ in froms:
-        name = re.fullmatch(r"\$\{(\w+)\}", ref)
+        # A public base is named through the build mirror (`${MIRROR_DOCKER_HUB}/
+        # library/${PYTHON_IMAGE}`, docs/runbooks/build-mirror.md); the image
+        # itself, and so its digest, is still the ARG.
+        name = re.fullmatch(r"(?:\$\{MIRROR_[A-Z_]+\}/(?:library/)?)?\$\{(\w+)\}", ref)
         assert name, f"FROM {ref} is not an ARG, so nothing pins it"
         if name.group(1) == "BASE_IMAGE":
             continue

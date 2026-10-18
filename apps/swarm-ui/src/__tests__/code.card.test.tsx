@@ -117,7 +117,9 @@ describe('the card opens with one sentence, then the base pin, then the diff', (
     const t = finished({ base: 'abc', published: false, publish_reason: 'collect', strategy: 'collect', patch: 'change.diff' })
     render(<Run run={run(t)} links={links} />)
     const link = screen.getByRole('link', { name: 'Changes ›' })
-    expect(link.getAttribute('href')).toBe(`#work/task/${encodeURIComponent(t.id)}/changes`)
+    // The agent's own path, under the list a finished agent is in (live QA
+    // WA-21): it was the legacy `#work/task/<id>/changes` hash.
+    expect(link.getAttribute('href')).toBe(`/agents/recent/${encodeURIComponent(t.id)}/changes`)
     expect(link.parentElement?.textContent).toMatch(/change\.diff · 9[,.]?400 bytes/)
     fireEvent.click(link)
     expect(changes).toHaveBeenCalledTimes(1)

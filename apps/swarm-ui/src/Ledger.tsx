@@ -33,6 +33,7 @@ import { useId, type ReactNode } from 'react'
 
 import { Segmented, Tag, UsageTrack } from './components'
 import { HelpNote } from './HelpCard'
+import { MoreRight } from './WorkflowViews'
 import { type TopicId } from './help'
 import {
   LOW_N,
@@ -239,7 +240,7 @@ function NotRead({ cov, what }: { cov: SpanCoverage; what: string }) {
 /** The empty state of a card whose list is empty: a real zero over the whole span, a partial one otherwise. */
 function Nothing({ cov, heading, what }: { cov: SpanCoverage; heading: string; what: string }) {
   if (cov.complete) {
-    return <Absent kind="zero" heading={`${heading} in this span`} say={`A real zero: ${what} in this span.`} />
+    return <Absent kind="zero" heading={`${heading} in this span`} say={`${what.charAt(0).toUpperCase()}${what.slice(1)} in this span.`} />
   }
   return (
     <Absent
@@ -262,7 +263,7 @@ function Nothing({ cov, heading, what }: { cov: SpanCoverage; heading: string; w
 export function LedgerTable({ data }: { data: Outcomes }) {
   const { bucket, tz } = data
   return (
-    <div className="ctl-table is-scroll ol-table">
+    <MoreRight className="ctl-table is-scroll ol-table">
       <table>
         <thead>
           <tr>
@@ -324,7 +325,7 @@ export function LedgerTable({ data }: { data: Outcomes }) {
           ))}
         </tbody>
       </table>
-    </div>
+    </MoreRight>
   )
 }
 
@@ -429,7 +430,7 @@ export function WorkflowsFailedCard({
       {w.rows.length === 0 ? (
         <Nothing cov={cov} heading="No workflow step failed" what="every workflow step that ended ended some other way" />
       ) : (
-        <div className="ctl-table is-scroll">
+        <MoreRight className="ctl-table is-scroll">
           <table>
             {w.rows_total > w.rows.length && <caption>showing {w.rows.length} of {w.rows_total}</caption>}
             <thead>
@@ -472,7 +473,7 @@ export function WorkflowsFailedCard({
               ))}
             </tbody>
           </table>
-        </div>
+        </MoreRight>
       )}
     </Card>
   )
@@ -888,7 +889,7 @@ export function ReliabilityCard({
       ) : g.rows.length === 0 ? (
         <Nothing cov={cov} heading="Nothing ended" what="no task ended under these filters" />
       ) : (
-        <div className="ctl-table is-scroll">
+        <MoreRight className="ctl-table is-scroll">
           <table>
             {g.rows_total > g.rows.length && <caption>showing {g.rows.length} of {g.rows_total}</caption>}
             <thead>
@@ -967,7 +968,7 @@ export function ReliabilityCard({
               })}
             </tbody>
           </table>
-        </div>
+        </MoreRight>
       )}
     </Card>
   )

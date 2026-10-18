@@ -106,6 +106,30 @@ def _distinct(annotation: str, name: str, index: int, default: Any) -> Any:
         return "git-u-" + "0123456789abcdef"
     if name == "forge_access":
         return "read"
+    # Contract request 95: entries the model holds to a shape.
+    if name == "additional_repositories":
+        return [{
+            "name": "web",
+            "repo_id": "repo_" + "0123456789abcdef",
+            "repository": "acme/web",
+            "repository_url": "https://github.com/acme/web",
+            "ref": "main",
+            "commit": "a" * 40,
+            "forge_credential": "git",
+            "forge_credential_source": "tenant",
+            "size_kib": 1024,
+        }]
+    # Contract request 70: served as its public projection
+    # (`codec.HUMAN_WAIT_PUBLIC_KEYS`), so a value holding exactly those keys
+    # is served unchanged and the value comparison below still bites.
+    if name == "human_wait":
+        return {
+            "reason": "Sign in to the fixture site",
+            "expect": "example.com",
+            "requested_at": MOMENT,
+            "deadline": MOMENT + timedelta(minutes=10),
+            "controller": None,
+        }
 
     if base == "str":
         return f"{name}-value"
@@ -246,6 +270,11 @@ CODECS: tuple[Codec, ...] = (
             # submission that writes them.
             "forge_credential": "worker-only: the secret suffix swarm-api resolved, not served",
             "forge_access": "worker-only: the forge mode swarm-api resolved, not served",
+            # Contract request 95 (MR-CONTRACT, part of #1434). Served as its
+            # masked projection (no URL, no slot) by lane MR-API, which owns the
+            # public shape (docs/design/multi-repository-steps.md §4.1); this
+            # entry is the thing that lane deletes.
+            "additional_repositories": "served by lane MR-API as its §4.1 projection; not yet",
         },
         # The input and metadata are served MASKED (owner decision,
         # 2026-09-26), and these say how many masks each took; so, since the
@@ -260,8 +289,19 @@ CODECS: tuple[Codec, ...] = (
         # `swarm_api.heartbeats`, never stored on the task.
         # `forge_credential_source` (#780 OB7) is the words for the stored
         # `forge_credential`, `codec.forge_credential_source`.
+        # `start_problem` (F1-POD) is lifted out of `metadata.start_problem`,
+        # where the reconciler stores it, as `dispatch` is lifted out of
+        # `metadata.dispatch`: `codec.start_problem_to_api`. `owner_answers`
+        # (TASK-ANSWERS) is lifted out of `metadata.owner_answers` the same
+        # way: `codec.owner_answers_to_api`. `claude_session` (SC-SESSION-SCOPE)
+        # is lifted out of `metadata.claude_session`: `codec.claude_session_of`.
+        # `model_class_defaulted` (#1435, MODEL-API) says the served
+        # `model_class` is the profile's default because none was stored:
+        # `codec.served_model_class`.
         api_computed=(
-            "dispatch", "input_redaction_count", "metadata_redaction_count",
+            "dispatch", "start_problem", "owner_answers", "claude_session",
+            "model_class_defaulted",
+            "input_redaction_count", "metadata_redaction_count",
             "last_error_redaction_count", "result_summary_redaction_count",
             "repository_url_redaction_count", "waiting_for", "account", "links",
             "heartbeat_at", "heartbeat_grace_seconds", "heartbeat",
@@ -351,7 +391,9 @@ CODECS: tuple[Codec, ...] = (
         #: naming them here is what makes that a decision rather than drift:
         #: delete either from the codec and the shape test below fails.
         #: `links` is the workflow's console page (`codec.workflow_console_url`).
-        api_computed=("stored_state", "state_source", "links"),
+        #: `claude_session` (SC-SESSION-SCOPE) is read off the step tasks,
+        #: the frozen `Workflow` having no metadata: `codec.workflow_claude_session`.
+        api_computed=("stored_state", "state_source", "links", "claude_session"),
     ),
 )
 
@@ -551,6 +593,29 @@ def test_every_served_value_is_the_value_that_was_modelled(codec: Codec):
 # --------------------------------------------------------------------------
 # 4. The nested shape the generic pass cannot reach
 # --------------------------------------------------------------------------
+
+def test_the_served_hand_off_is_the_designs_five_fields_and_no_worker_key():
+    """Contract request 70: the console reads `human_wait` off the task row
+    (lane LB-L12), and the stored document also carries the worker's
+    `request_id`, `attempt_id` and `generation` (swarm_api.handoff). Those are
+    compared only by the worker routes, so they are not served."""
+    populated = _populated(Task)
+    stored = {
+        "reason": "Sign in to the fixture site",
+        "expect": "example.com",
+        "requested_at": MOMENT,
+        "deadline": MOMENT + timedelta(minutes=10),
+        "controller": {"email": "ada@acme.test"},
+        "request_id": "req-1",
+        "attempt_id": "att_1",
+        "generation": 3,
+    }
+    served = task_to_api(dataclasses.replace(populated, human_wait=stored))["human_wait"]
+    assert served == {k: stored[k] for k in ("reason", "expect", "requested_at", "deadline", "controller")}
+    assert task_to_api(dataclasses.replace(populated, human_wait=None))["human_wait"] is None
+    # The summary view the list and the Overview read carries it too.
+    assert task_to_api(dataclasses.replace(populated, human_wait=stored), summary=True)["human_wait"] == served
+
 
 def test_every_workflow_step_field_survives_and_is_served():
     """`WorkflowStep` is nested inside Workflow, so the table above skips it.

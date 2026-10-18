@@ -17,6 +17,7 @@ explicitly.
 from __future__ import annotations
 
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -47,6 +48,15 @@ _DEPLOYMENT_VARS = (
     # would put X-Swarm-Tenant on every request a test makes.
     "SWARM_TENANT",
     "XDG_CONFIG_HOME",
+    # Which Claude Code session the bridge serves (SC-SESSION-SCOPE): set on
+    # the machine -- every Claude Code session sets the first -- it would tag
+    # every submission a test makes and scope every attach and check to it.
+    "CLAUDE_CODE_SESSION_ID",
+    "SWARM_SC_SESSION_ID",
+    # The session's project (SC-TITLES): set on the machine, every launch a
+    # test makes would write its run copy and its launched.jsonl line into
+    # the developer's own project.
+    "CLAUDE_PROJECT_DIR",
 )
 
 
@@ -71,6 +81,11 @@ def _isolated_deployment_config(monkeypatch, tmp_path_factory):
     # inference refuses -- so every test starts in an empty directory that is
     # no checkout at all, and the tests about inference build their own.
     monkeypatch.setenv("SWARM_CHECKOUT_DIR", str(tmp_path_factory.mktemp("not-a-checkout")))
+    # With no project known, every launch -- a swarm_dispatch's row included --
+    # writes its run copy and its launched.jsonl line (SC-TITLES) to the
+    # system temp directory. A private one per test, so no test reads
+    # another's record and none is left in the machine's.
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path_factory.mktemp("system-tmp")))
 
 
 @pytest.fixture(autouse=True)
@@ -90,3 +105,32 @@ def _fresh_since_handles():
     yield
     if handles is not None:
         handles.clear()
+
+
+@pytest.fixture
+def claude_session(monkeypatch) -> str:
+    """This test's Claude Code session (SC-SESSION-SCOPE): set where Claude
+    Code sets it, so the bridge tags what it submits and scopes what it
+    attaches and checks to it. A fresh id per test."""
+    import uuid
+
+    sid = str(uuid.uuid4())
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", sid)
+    return sid
+
+
+
+@pytest.fixture(autouse=True)
+def _no_github_reads(monkeypatch):
+    """`swarm_check` reads a refused merge step's PR state from GitHub's
+    public API (`check.github_pull_state`, epic #1334). A unit test runs with
+    no network, so every test starts with that read failing -- the check's
+    own "PR state not read" path -- and the tests about the read put their
+    own answer there."""
+    from swarm_mcp import check
+    from swarm_mcp.client import SwarmError
+
+    def offline(key, number):
+        raise SwarmError("unit tests read no network")
+
+    monkeypatch.setattr(check, "github_pull_state", offline, raising=False)

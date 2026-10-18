@@ -12,7 +12,7 @@ import {
 } from 'react'
 import { HIDDEN_LINE_AFTER_MS, HiddenTabLine } from './AppStates'
 import { Banner, Button } from './components'
-import { chosenTenant, errorHeading, errorReassurance, pageReads, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, type ApiError, type ApiErrorKind, type Result } from './fetch'
+import { chosenTenant, errorHeading, errorReassurance, isWriteFailure, pageReads, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, writeRefused, type ApiError, type ApiErrorKind, type Result } from './fetch'
 import { type TopicId } from './help'
 import { HelpCard } from './HelpCard'
 import { Absent, type LinkOut } from './primitives'
@@ -87,7 +87,7 @@ const NEEDS_A_PERSON: ReadonlySet<ApiErrorKind> = new Set<ApiErrorKind>([
 ])
 
 /** The accessible name of an empty state's mark when the screen gives none. */
-const EMPTY_SAY = 'A real zero: the read succeeded and returned nothing.'
+const EMPTY_SAY = 'The read succeeded and returned nothing.'
 
 /**
  * The wait before the next read, given the base cadence and how many reads in
@@ -386,7 +386,7 @@ export function staleFoot(at: number | null, now: number, failed = false): strin
 /**
  * THE HEAD'S REFRESH, A QUIET CONTROL CARRYING ITS OWN TICKING AGE (#138,
  * #98, #117; owner rulings 2026-10-07). The screen's one age is on the button
- * that renews it: `⟳ 12 s` on a screen read once per visit, and
+ * that renews it: `⟳ read 12 s ago` on a screen read once per visit, and
  * `⟳ every 30 s · read 4 s ago` on one that polls, so a reader sees both that
  * the age will move and how soon. A stale or aged read says `not refreshed`
  * first. A poll the idle stop halted is `Paused · resume`, and pressing it
@@ -458,7 +458,9 @@ export function RefreshControl({
         ? `every ${spacedAge(cadence.wait)}, backing off`
         : `every ${spacedAge(cadence.base)}`
   const lead = [stale ? 'not refreshed' : null, every].filter((p): p is string => p !== null)
-  const said = lead.length === 0 ? age : `${lead.join(' · ')} · read ${age} ago`
+  // A screen read once still says what the age is (V092): a bare `⟳ 0 s` beside
+  // siblings that say `every 30 s · read 0 s ago` reads as a counter, not an age.
+  const said = lead.length === 0 ? `read ${age} ago` : `${lead.join(' · ')} · read ${age} ago`
   return (
     <button
       type="button"
@@ -805,7 +807,9 @@ export function Screen<T>({
           environment, and the second opinion is the one that gets believed
           because it is next to what you are reading. */}
       <PageHead title={title} help={help}>
-        {/* An admin gate is not a read to renew: the panel says `admin only`. */}
+        {/* An admin gate is not a read to renew: the panel says `admin only`
+            (#138). The head keeps its height without it (`.c-phead`'s
+            min-height, visual QA V064), so the title does not move. */}
         {!(state.status === 'error' && state.error.kind === 'admin_required') && (
           <RefreshControl
             readAt={
@@ -834,7 +838,7 @@ export function Screen<T>({
       )}
 
       {state.status === 'loading' && (skeleton ?? <SkeletonRows />)}
-      {state.status === 'error' && <FailedPanel error={state.error} onRetry={retry} />}
+      {state.status === 'error' && <FailedPanel error={state.error} onRetry={retry} page />}
 
       {/* THE SHARED EMPTY STATE (CH-10), where this was a hand-built `.state`
           box: no mark, so a real zero told itself from a failed read by
@@ -1010,8 +1014,24 @@ function StaleBanner({ error, fetchedAt, now }: { error: ApiError; fetchedAt: nu
  * read renders no figure, and the absence of a figure is not a thing a reader
  * can see. Everything else on this panel was cut; this stays.
  */
-export function FailedPanel({ error, onRetry }: { error: ApiError; onRetry: () => void }) {
+export function FailedPanel({
+  error,
+  onRetry,
+  page = false,
+}: {
+  error: ApiError
+  onRetry: () => void
+  /**
+   * The panel IS the page: a `Screen` whose read failed. Its sentences keep
+   * the lead size. Everywhere else the panel sits in a card, a pane or the
+   * 300px send panel, beside facts at 12-14px, and its body is the 13px scale
+   * (visual QA V008, owner decision Q4 2026-10-11). Nested is the default
+   * because every caller but `Screen` nests it.
+   */
+  page?: boolean
+}) {
   const reload = error.kind === 'session_expired' || error.kind === 'unauthenticated'
+  const scale = page ? 'is-page' : 'is-nested'
 
   // AN ADMIN GATE IS NOT A FAILURE. A non-admin genuinely cannot read
   // /v1/admin/*, and painting that red -- with "this is a failure to read the
@@ -1034,10 +1054,25 @@ export function FailedPanel({ error, onRetry }: { error: ApiError; onRetry: () =
     )
   }
 
+  // A WRITE IS NOT A READ (visual QA V010, 2026-10-11). `not read` is a
+  // claim about a read, and a refused change was drawn with it. A write's
+  // panel has no mark -- the heading says what failed -- and a refusal has no
+  // Try again: resending the same input gets the same answer, and the form
+  // the person has to change is the control above the panel.
+  const wrote = isWriteFailure(error)
+  // A 404 ON A READ IS AN ANSWER (visual QA V007): the thing is not there, or
+  // is another tenant's, and reading it again gets the same 404. Try again
+  // offered a press that could only fail the same way.
+  const answered = !wrote && error.kind === 'not_found'
   return (
-    <div className="state failed">
+    <div className={`state failed ${scale}`}>
       <h3>
-        <i className="ctl-mark is-unread">not read</i> {errorHeading(error)}
+        {!wrote && (
+          <>
+            <i className="ctl-mark is-unread">not read</i>{' '}
+          </>
+        )}
+        {errorHeading(error)}
       </h3>
       <p>{error.message}</p>
       <p className="state-invariant">{errorReassurance(error)}</p>
@@ -1060,12 +1095,15 @@ export function FailedPanel({ error, onRetry }: { error: ApiError; onRetry: () =
         <p className="checked-at">
           paused {error.retryAfterSeconds ?? 'a few'}s — the API asked us to wait
         </p>
-      ) : (
+      ) : writeRefused(error) || answered ? null : (
         <Button onClick={onRetry}>Try again</Button>
       )}
     </div>
   )
 }
+
+/** Each row's bar, as a share of the card: uneven, as the text in rows is. */
+const SKELETON_BARS = [86, 62, 92, 70, 56, 80, 66, 90] as const
 
 /**
  * THE GEOMETRY A VALUE WILL OCCUPY, while it is still being read.
@@ -1074,14 +1112,30 @@ export function FailedPanel({ error, onRetry }: { error: ApiError; onRetry: () =
  * frame: `borderRadius: 8` is not one of 0/2/6/10/14/999, and a React inline
  * style is the one place the sheet's corner scale cannot see. They are a class
  * now, so `spaceprobe.ts` grades them like everything else.
+ *
+ * A CARD, NOT SIX BARS (visual QA V063, 2026-10-11). It was six identical
+ * full-width bars that looked like no screen, so everything jumped when the
+ * data landed -- into a card with a head and rows -- and screens with a
+ * skeleton of their own (`CardSkeleton`, the Workflows list) drew something
+ * else again. Every `Screen` without its own now draws the shape nearly all of
+ * them load into: one `.ctl-card`, a head where its title goes, and rows at a
+ * table's row height whose bars are as uneven as the text in them. The
+ * widths are fixed, so the skeleton never moves while it waits.
  */
 export function SkeletonRows({ rows = 6 }: { rows?: number }) {
   return (
-    <div className="section" aria-hidden>
-      {Array.from({ length: rows }, (_, i) => (
-        <div className="skeleton ctl-skeleton-row" key={i} />
-      ))}
-    </div>
+    <section className="ctl-card ctl-skel-card" aria-hidden>
+      <div className="ctl-card-head">
+        <span className="skeleton ctl-skel-title" />
+      </div>
+      <div className="ctl-card-body ctl-skel-body">
+        {Array.from({ length: rows }, (_, i) => (
+          <div className="ctl-skel-row" key={i}>
+            <span className="skeleton ctl-skel-bar" style={{ width: `${SKELETON_BARS[i % SKELETON_BARS.length]}%` }} />
+          </div>
+        ))}
+      </div>
+    </section>
   )
 }
 

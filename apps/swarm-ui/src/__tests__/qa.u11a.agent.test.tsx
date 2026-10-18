@@ -19,7 +19,7 @@
  *
  * MUTATIONS: drop the span's title; draw the Checkpoints pane only on its
  * tab, or say `in bucket` again; drop the strip's sticky head or its hidden
- * breadcrumb; drop the phone `?` rule or the tabs' wrap; scroll the viewer
+ * breadcrumb; drop the phone `?` rule or put the tabs' wrap back; scroll the viewer
  * with `scrollIntoView` inside the pane; drop `openRow`'s report; split the
  * refresh's age from its press, drop its title, let the title block shrink,
  * or drop the count note's title; file a park under
@@ -33,6 +33,7 @@ import type { Result } from '../fetch'
 import type { CheckpointsPage, Task, TaskPage } from '../types'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
+import { landed } from './reads'
 import { at, attempt, task as runTask } from './runfixture'
 
 const api = vi.hoisted(() => ({
@@ -162,7 +163,14 @@ describe('D21: the Checkpoints tab counts from the read its pane draws, from the
     render(<Routed start="detail" />)
     // On Details, before Checkpoints has ever been opened: a count, not a dash.
     // Kept of written (G2-12): a bare `0` read as none ever written.
-    await waitFor(() => expect(tab('Checkpoints').querySelector('em')?.textContent).toBe('0 of 1'))
+    // Wait on the three reads the badge is drawn from, then query the tablist
+    // ONCE (reads.ts, #605): `tab()` is a `*ByRole` query, and polling it inside
+    // `waitFor` spent the 2000 ms window on `getComputedStyle` -- red at 3911 ms
+    // on a bogdan-ci runner (run 38267927535, PR 1184).
+    await landed(api.loadTask)
+    await landed(api.loadAttempts)
+    await landed(api.loadCheckpoints)
+    expect(tab('Checkpoints').querySelector('em')?.textContent).toBe('0 of 1')
     expect(tab('Details').getAttribute('aria-selected')).toBe('true')
     expect(tab('Checkpoints').querySelector('em')?.getAttribute('title')).toMatch(/^1 written, 0 kept/)
     // One read: the badge and the pane are the same answer.
@@ -225,11 +233,16 @@ describe('D39: the phone frame', () => {
     expect(painted(host.querySelector('h1')!, 'display', PHONE) ?? 'block').not.toBe('none')
   })
 
-  it('wraps the agent’s tabs onto as many lines as they take, so none is cut', () => {
+  // SUPERSEDED BY V148 (visual QA #1038): the wrap this case held drew the
+  // tabs as two ragged rows. They are one row that scrolls, with the `›` edge
+  // and the open tab scrolled into view (`AgTabsEdge`); `qa.vqa.l04.test.tsx`
+  // holds that. What D39 asked -- no tab cut with nothing to say so -- is
+  // the edge's job, which `qa.u10a.agent.test.tsx` holds.
+  it('keeps the agent’s tabs on one row that scrolls, never wrapped (V148)', () => {
     const host = tree('<div class="ag-split"><div class="ag-tabs-edge"><div class="c-tabs ag-split-tabs" role="tablist"></div></div></div>')
     const strip = host.querySelector('.ag-split-tabs')!
-    expect(painted(strip, 'flex-wrap', PHONE)).toBe('wrap')
-    expect(painted(strip, ['overflow-x', 'overflow'], PHONE)).toBe('visible')
+    expect(painted(strip, 'flex-wrap', PHONE)).toBe('nowrap')
+    expect(painted(strip, ['overflow-x', 'overflow'], PHONE)).toBe('auto')
     expect(painted(strip, 'flex-wrap', WIDE)).toBe('nowrap')
   })
 })
@@ -319,9 +332,9 @@ describe('N10: the list head fits its control beside an open agent', () => {
     expect(container.querySelector('.c-age, .c-age-say, .c-meta'), 'the old age line or meta pill is back').toBeNull()
     // Whole in its title and its accessible name, as the words the reader sees.
     const said = button.getAttribute('title')!
-    expect(said).toMatch(/^\d+ s$/)
+    expect(said).toMatch(/^read \d+ s ago$/)
     expect(button.textContent).toBe(`⟳ ${said}`)
-    expect(button.getAttribute('aria-label')).toBe(`Refresh · read ${said} ago`)
+    expect(button.getAttribute('aria-label')).toBe(`Refresh · ${said}`)
     // It is what gives way, with an ellipsis; the title keeps its width.
     expect(painted(button, 'text-overflow', WIDE)).toBe('ellipsis')
     expect(painted(button, 'min-width', WIDE)).toBe('0')

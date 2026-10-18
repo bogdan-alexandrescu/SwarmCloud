@@ -21,20 +21,35 @@ WHY THIS IS NOT FIXED BY WIRING IT THROUGH. A model chosen per task by the
 caller is an execution parameter supplied by the caller, and CONTRACT.md
 invariant 10 exists to forbid exactly that: "API callers pick a runner_profile
 by name. Never accept images, commands, resource specs or backend parameters
-from a caller." Changing it is an owner decision and belongs in
-docs/contract-change-requests.md, not in a patch. The fix available here is to
-stop the CLI claiming otherwise, and these tests hold both halves in place: the
-help text says what the flag does, and the transport still does it.
+from a caller." The fix available here was to stop the CLI claiming otherwise,
+and the help-text half below still holds that: `--model` records, and does
+not select.
 
-`test_worker_environment_carries_no_model_for_a_task_that_names_one` is
-therefore a DELIBERATE brake. If it ever fails because MODEL was wired into
-`worker_env`, that is the contract change -- go and get the decision, and
-update the help text in the same commit.
+THE BRAKE, INVERTED ON PURPOSE (#1435, lane MODEL-SCHED). The worker-env
+half was a deliberate brake: "If it ever fails because MODEL was wired into
+`worker_env`, that is the contract change -- go and get the decision." The
+decision was got. The owner's answer to Q2 on 2026-10-17 (PR 1509 and PR
+1460; docs/design/model-per-step.md §4.5) is design B: a step names a model
+CLASS from the frozen `MODEL_CLASSES`, the profile lists the classes it
+accepts, and the platform pins each class's ID in Terraform. So `worker_env`
+now carries `MODEL`, and the test asserts that it does, and that its value is
+the scheduler's OWN `WORKER_CLASS_MODELS` entry for the step's resolved
+class. Invariant 10 still holds, because the caller names a class and never
+an ID, and what a caller could have used to name an ID still cannot reach
+the environment. Each of these is asserted below:
+
+  * `Task.model`, any string: the class's pin runs and the string is nowhere;
+  * `input.model` or any `input` key, and any `metadata` key: none becomes
+    `MODEL` or any other variable;
+  * a model ID in `model_class`: not a class, so the dispatch raises;
+  * a class the profile does not accept: raises, never defaulted;
+  * anything for a classless profile: no `MODEL`.
 """
 
 from __future__ import annotations
 
 import argparse
+import secrets
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -121,15 +136,26 @@ def test_model_travels_as_a_top_level_field_and_never_as_runner_input() -> None:
 
 # -- why it cannot select anything ----------------------------------------
 
-def _task_with_model() -> Task:
-    profile = RUNNER_PROFILES["claude-code"]
-    return Task(
+#: terraform/infra/locals.tf `runner_models`, as WORKER_CLASS_MODELS carries
+#: it to the scheduler. Test input: the assertions compare the environment to
+#: this map, through the settings the scheduler reads it into.
+CLASS_MODELS = {
+    "opus": "claude-opus-5-5",
+    "fable": "claude-fable-5-1",
+    "sonnet": "claude-sonnet-5-5",
+    "haiku": "claude-haiku-5-5",
+}
+
+
+def _task(profile_name: str = "claude-code", **fields) -> Task:
+    profile = RUNNER_PROFILES[profile_name]
+    base = dict(
         id="task_abc123",
         tenant_id="eng",
         created_at=NOW,
         updated_at=NOW,
         state=TaskState.LEASED,
-        runner_profile="claude-code",
+        runner_profile=profile_name,
         resource_class=profile.resource_class,
         input={},
         submitted_by="alice@saga.xyz",
@@ -137,13 +163,14 @@ def _task_with_model() -> Task:
         model=MODEL,
         timeout_seconds=1800,
     )
+    base.update(fields)
+    return Task(**base)
 
 
-def test_worker_environment_carries_no_model_for_a_task_that_names_one() -> None:
+def _env(task: Task, *, class_models: dict | None = None) -> dict[str, str]:
     from control_plane.conftest import PROJECT, scheduler_settings
     from scheduler.dispatch import worker_env
 
-    task = _task_with_model()
     tenant = Tenant(
         tenant_id="eng",
         kind="group",
@@ -166,14 +193,70 @@ def test_worker_environment_carries_no_model_for_a_task_that_names_one() -> None
         dispatch_deadline=NOW + timedelta(minutes=5),
         expires_at=NOW + timedelta(minutes=2),
     )
+    settings = scheduler_settings(
+        worker_class_models=dict(CLASS_MODELS if class_models is None else class_models)
+    )
+    return worker_env(task=task, lease=lease, tenant=tenant, settings=settings)
 
-    env = worker_env(task=task, lease=lease, tenant=tenant, settings=scheduler_settings())
+
+def test_worker_environment_carries_the_class_pin_and_not_the_task_s_model() -> None:
+    """The inverted brake: MODEL is the scheduler's pin for the step's class."""
+    task = _task(model_class="sonnet")
+    env = _env(task)
 
     assert task.model == MODEL, "the task really does name a model"
-    assert "MODEL" not in env, (
-        "a caller-chosen model in the execution environment is an execution "
-        "parameter from a caller -- CONTRACT.md invariant 10. If this is meant "
-        "to change, raise it in docs/contract-change-requests.md and update the "
-        "`--model` help text in the same commit"
-    )
-    assert MODEL not in env.values(), "not under another name either"
+    assert env["MODEL"] == CLASS_MODELS["sonnet"]
+    assert MODEL not in env.values(), "a task's own `model` is attribution, never MODEL"
+
+
+def test_a_step_naming_no_class_carries_its_profile_s_default_pin() -> None:
+    env = _env(_task())
+    assert env["MODEL"] == CLASS_MODELS["opus"]
+    assert MODEL not in env.values()
+
+
+def test_a_stored_model_written_past_the_api_selects_nothing() -> None:
+    """Any string in `Task.model` -- here another class's real ID."""
+    for stored in (CLASS_MODELS["haiku"], "gpt-" + secrets.token_hex(4), ""):
+        env = _env(_task(model=stored or None))
+        assert env["MODEL"] == CLASS_MODELS["opus"], stored
+        if stored:
+            assert stored not in env.values(), stored
+
+
+def test_no_input_or_metadata_key_reaches_the_environment() -> None:
+    """`input.model` (the API refuses it, #213; this is a document written past
+    the API) and any other key: no MODEL from them, and no new variable."""
+    marker = "claude-haiku-5-" + str(10 + secrets.randbelow(80))
+    smuggled = {"model": marker, "MODEL": marker, "model_class": "haiku", "x": marker}
+    plain = _env(_task())
+    with_keys = _env(_task(input=dict(smuggled), metadata=dict(smuggled)))
+
+    assert with_keys == plain
+    assert marker not in with_keys.values()
+
+
+def test_a_model_id_named_as_a_class_raises() -> None:
+    from scheduler.dispatch import DispatchError
+
+    with pytest.raises(DispatchError) as raised:
+        _env(_task(model_class=CLASS_MODELS["opus"]))
+    assert raised.value.code == "model_not_pinned"
+
+
+def test_a_class_the_profile_does_not_accept_raises_and_is_not_defaulted() -> None:
+    """claude-code-review accepts `opus` only."""
+    from scheduler.dispatch import DispatchError
+
+    with pytest.raises(DispatchError) as raised:
+        _env(_task("claude-code-review", model_class="haiku"))
+    assert raised.value.code == "model_not_pinned"
+
+
+def test_a_classless_profile_gets_no_model() -> None:
+    for name, profile in sorted(RUNNER_PROFILES.items()):
+        if profile.model_classes or profile.worker_action:
+            continue
+        env = _env(_task(name))
+        assert "MODEL" not in env, name
+        assert MODEL not in env.values(), name

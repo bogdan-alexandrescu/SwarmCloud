@@ -110,18 +110,16 @@ UPSTREAM_PYTHON_ENV: dict[str, str] = {
 # `generic._build_env`), so nothing carried at this hop reaches an agent's own
 # processes unless that runner forwards it as well.
 #
-# OPEN OWNER DECISION, raised on PR #37 and NOT taken here. An agent's own
-# `pip install` -- a claude-code or codex tool call -- runs in the environment
-# `cliagent.py` builds, which has no PIP_NO_CACHE_DIR. pip therefore caches
-# under $HOME/.cache/pip; HOME is the attempt's work dir; and every checkpoint
-# archives the work dir whole (`checkpoint._write_archive`), so that cache is
-# uploaded with each checkpoint, restored with it, and counts toward the 2 GiB
-# checkpoint cap. The image's PIP_NO_CACHE_DIR=1 reaches no agent today, on
-# either backend. Carrying it at THIS hop would not change that: if it is
-# wanted, it belongs in `cliagent.py`'s environment, the way
-# `generic._build_env` already sets npm's two settings for its own commands.
-# Those two, NPM_CONFIG_UPDATE_NOTIFIER and NPM_CONFIG_FUND, are the same
-# question at smaller stakes: `cliagent.py` does not set them either.
+# THE PIP HALF OF THE DECISION RAISED ON PR #37 WAS TAKEN BY CACHE-SCRATCH
+# (owner, 2026-10-15). An agent's own `pip install` runs in the environment
+# `cliagent.py` builds. That environment now carries the WORKER's cache
+# variables (`agent_worker.cachedirs`): PIP_CACHE_DIR points at the attempt's
+# cache directory, outside `work/`, so pip's cache is never checkpointed; and
+# on Cloud Run, where that directory shares the workspace tmpfs, the worker
+# also sets PIP_NO_CACHE_DIR=1 itself. That is the worker's value by backend,
+# never the image's carried through, so it is SET_BY_THE_WORKER below.
+# NPM_CONFIG_UPDATE_NOTIFIER and NPM_CONFIG_FUND remain the open question at
+# smaller stakes: `cliagent.py` does not set them.
 
 #: Set by the image and deliberately NOT given to the runner. A variable the
 #: image gains that is neither carried nor listed here fails
@@ -132,13 +130,6 @@ NOT_FOR_THE_RUNNER: dict[str, str] = {
         "read only by apt and debconf when a package is installed or configured. "
         "The runner is uid 10001 and the image has no sudo, so nothing it can "
         "run installs a package"
-    ),
-    "PIP_NO_CACHE_DIR": (
-        "no runner process runs pip: the browser runner's subprocesses are "
-        "Playwright's driver and Chromium, and the other runners give their "
-        "commands a rebuilt environment this hop does not reach. Nor is the "
-        "build relying on it: its two `pip install` steps pass --no-cache-dir "
-        "themselves. Whether AGENTS should have it is the open decision above"
     ),
     "NPM_CONFIG_PREFIX": (
         "where the build's `npm install -g` put the agent CLIs; they are found "
@@ -183,6 +174,17 @@ NOT_FOR_THE_RUNNER: dict[str, str] = {
     "PYTHON_SHA256": (
         "the upstream python image's own build input: the checksum of the "
         "CPython source tarball its Dockerfile downloaded"
+    ),
+}
+
+#: Set by the image, and ALSO decided by the worker itself, per backend: the
+#: runner sees the worker's value or none, whatever the image says.
+SET_BY_THE_WORKER: dict[str, str] = {
+    "PIP_NO_CACHE_DIR": (
+        "`cachedirs.cache_env`: 1 where the attempt's cache shares the "
+        "workspace tmpfs (Cloud Run), absent where it is a volume of its own "
+        "(GKE). The build does not rely on the image's copy: its two `pip "
+        "install` steps pass --no-cache-dir themselves"
     ),
 }
 
@@ -281,8 +283,10 @@ def _pinned_upstream() -> tuple[str, str]:
     """The upstream image the base's runtime stage is built FROM: (ref, digest).
 
     Read from the Dockerfile rather than assumed, and the runtime stage is
-    required to be `FROM ${PYTHON_IMAGE}` -- otherwise the recorded upstream ENV
-    would be attached to an image that is not the base's parent at all.
+    required to be `FROM ${PYTHON_IMAGE}`, pulled through the Docker Hub build
+    mirror (docs/runbooks/build-mirror.md), which serves the same digest --
+    otherwise the recorded upstream ENV would be attached to an image that is
+    not the base's parent at all.
     """
     text = BASE_DOCKERFILE.read_text()
     arg = re.search(r"^ARG PYTHON_IMAGE=(\S+)@(sha256:[0-9a-f]{64})\s*$", text, re.M)
@@ -291,8 +295,8 @@ def _pinned_upstream() -> tuple[str, str]:
         "digest; the upstream ENV below cannot be tied to an image"
     )
     runtime_from = re.search(r"^FROM\s+(\S+)\s+[Aa][Ss]\s+runtime\s*$", text, re.M)
-    assert runtime_from and runtime_from.group(1) == "${PYTHON_IMAGE}", (
-        "the base's runtime stage is no longer built FROM ${PYTHON_IMAGE}; "
+    assert runtime_from and runtime_from.group(1) == "${MIRROR_DOCKER_HUB}/library/${PYTHON_IMAGE}", (
+        "the base's runtime stage is no longer built FROM ${MIRROR_DOCKER_HUB}/library/${PYTHON_IMAGE}; "
         f"it is FROM {runtime_from.group(1) if runtime_from else '<not found>'}"
     )
     return arg.group(1), arg.group(2)
@@ -422,6 +426,8 @@ def test_every_env_the_browser_image_sets_is_carried_or_refused_for_a_reason(
 
     problems: list[str] = []
     for name, value in sorted(image_env.items()):
+        if name in SET_BY_THE_WORKER:
+            continue
         if name in NOT_FOR_THE_RUNNER:
             if name in env:
                 problems.append(
@@ -445,7 +451,8 @@ def test_every_env_the_browser_image_sets_is_carried_or_refused_for_a_reason(
 
     # And the lists describe the images as they are, not as they were.
     stale = sorted(
-        (set(NOT_FOR_THE_RUNNER) | set(REPLACED_FOR_THE_RUNNER)) - set(image_env)
+        (set(NOT_FOR_THE_RUNNER) | set(REPLACED_FOR_THE_RUNNER) | set(SET_BY_THE_WORKER))
+        - set(image_env)
     )
     assert not stale, f"listed but no longer set by any layer of the image: {stale}"
 

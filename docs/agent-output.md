@@ -394,6 +394,93 @@ The prefix is the point: a fallback title is the worker's, and a reviewer has
 to be able to tell it from one the agent chose. A title a later step declared
 it will stage is never excused, issue or not: that step needs the file.
 
+## Before the worker publishes: a rebase and the repository's own checks (SPEED-D1)
+
+Measured over the last 150 merged pull requests (owner, 2026-10-14): 0.52 red
+CI runs per pull request -- checkov, shellcheck, the guards, the build mirror
+-- and 128 of 150 needed an update from main, because a lane's branch was cut
+from the commit it started on and nothing held the agent to the checks it was
+told to run. So the claude-code runner now runs a **pre-publish gate** after
+the repair turns, while the session can still be continued
+(`agent_worker.prepublish`, `CliAgentSpec.prepublish`):
+
+1. **Rebase onto the current base.** When the worker names a branch in
+   `SWARM_PREPUBLISH_BASE`, the runner asks the git tools for
+   `git_rebase_onto` through their spool -- the container holds no forge
+   token. The worker names one only for an author of its own pull request
+   (`direct-pr`, or a `single-pr` author) cloned from the repository's branch:
+   never under `collect` (a downstream patch applies to a pinned base), for an
+   amender or a continued, built-on or carried branch (the pushed tip must
+   only fast-forward), or with `carrier: branches`. A **conflict** gets the
+   session back for **one** turn naming the files; a rebase still in progress
+   after it is aborted and the branch publishes on its original base. Never a
+   conflicted branch.
+2. **The publish diffs from where the rebase landed.** The publish replays
+   every commit in `<base>..HEAD` as the worker's, so with the clone base as
+   `<base>` main's newer commits would be republished as the lane's and its
+   lines scanned as the lane's additions. The relay records the sha it
+   fetched (`GitTools.rebased_onto`), and the harvest adopts it as the publish
+   base when the worker's own clean repository shows HEAD still descends from
+   it (`Worker._adopt_rebase_base`).
+3. **The checks, limited to what the diff touches** -- committed, uncommitted
+   and untracked, since the worker commits all three:
+
+   | the diff touches | check |
+   |---|---|
+   | anything | `scripts/changed-guards.sh --base <base>` |
+   | `terraform/**/*.tf` | `checkov --framework terraform -f <files>`; `tflint` as CI runs it, failing only on an issue in a changed file |
+   | `kubernetes/` | the manifests rendered as `make security` renders them, then `checkov --framework kubernetes` |
+   | `*.sh` | `shellcheck -x <files>` |
+   | `*.py`, where the repository configures ruff | `ruff format --check` and `ruff check` on the files |
+   | an image's `Dockerfile` or `tool-mirror.sha256` | the build mirror's manifest-vs-Dockerfile tests |
+   | a file the graph's `tests` layer, a changed test or a sibling `X.test.tsx` covers (CTXQ-G) | `graph-pytest`: those Python test files `changed-guards.sh --list` did not already select, with `pytest -n auto`; `vitest`: the JavaScript ones, with the package's own `node_modules/.bin/vitest run`, from the package |
+   | a `.ts`/`.tsx` file of a package with a `tsconfig.json` | `tsc` with the package's own `typecheck` arguments |
+   | `*.tf` anywhere | `terraform fmt -check -diff <files>` |
+
+   A check that cannot run is `skipped` with its reason and never sent to the
+   agent. Two are skipped by design today. `tflint`: agent-runtime-base
+   installs it only with `INSTALL_TFLINT=1`, and no tflint release passes the
+   image promote gate. `scripts/refresh-build-mirror.sh --check`: it needs
+   gcloud and the mirror bucket, and the container has no cloud credential,
+   so the gate runs the tests that hold the manifest equal to the Dockerfiles
+   instead. `vitest` and `tsc` are skipped when the package has no
+   `node_modules` (the gate does not run `npm install`), and `terraform-fmt`
+   when terraform is not on PATH. ruff is configured here (lint only, [docs/ci.md](ci.md#ruff-lint-is-the-house-python-linter-and-formatting-is-not-adopted)),
+   and formatting excludes every file, so `ruff format --check` passes
+   whatever a lane touched and `ruff check` is the one that can fail.
+4. **One fix turn**, with each failing check's output, then the set runs
+   again.
+5. **What still fails is published anyway.** No work is dropped. The runner
+   writes `prepublish-checks.md` into the artifacts directory, and the worker
+   puts it at the top of its block of the pull request body under
+   **Pre-publish checks failed** (`Worker._prepublish_section`), so the
+   operator reads it before merging.
+6. **An advisory section no merge path reads** (CTXQ-G,
+   [design/context-quality.md](design/context-quality.md) §4.6). The runner
+   writes `prepublish-advisory.md`, and the worker appends it to its block
+   under **Advisory signals (not a gate)** (`Worker._prepublish_advisory`):
+   what the graph selected, **test reach** (M11: the changed symbols with no
+   covering test edge, nor a test this change adds or edits that names them),
+   and the agent's `self-check.md` from the artifacts directory, or a line
+   saying it wrote none. Auto-merge, the review verdict and the requirements
+   never read it, and it never sets `prepublish_checks_failed`.
+
+   **Why a sibling rule as well as the graph.** The graph is read from the
+   snapshot staged beside the checkout (`.swarm-context/snapshot`, or
+   `SWARM_CONTEXT_DIR`). A step with none staged still runs a changed test and
+   the `.tsx`'s own `.test.tsx`, and says test reach is *unknown*: it never
+   reports every symbol covered because it could not look.
+
+The result records the rebase and every check's name, status and duration per
+round (`result_summary.runner.output.prepublish`), never a check's output. The
+checks run in the agent's environment **without** its provider credential.
+Every byte of output that reaches the fix prompt or the pull request is first
+scrubbed of the runner's secrets and then of every credential pattern
+(`swarm_redaction.redact`).
+
+**Not covered yet.** An attempt resumed from a checkpoint is not offered the
+rebase: the decision is made at the fresh clone. The checks still run.
+
 ## At most 500 files from `$SWARM_ARTIFACTS_DIR`
 
 Found by reading on 2026-09-26 (#228), not measured: every file in the

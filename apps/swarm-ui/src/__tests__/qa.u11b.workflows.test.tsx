@@ -242,9 +242,10 @@ describe('N8: the Workflow cell is the row\'s own cell', () => {
   it('lays the name cell out as a table cell, so its border is the row\'s', async () => {
     const t = await list()
     const td = t.querySelector('tbody tr.wfl-row td[data-col="workflow"]')!
-    for (const width of [1440, 390]) {
-      expect(painted(td, 'display', { width }) ?? 'table-cell', `at ${width}`).toBe('table-cell')
-    }
+    expect(painted(td, 'display', { width: 1440 }) ?? 'table-cell', 'at 1440').toBe('table-cell')
+    // At 390 the row is a card (WF-8): the cell is a block in the row's grid,
+    // and the border is the row's own, so the name cell still draws none.
+    expect(painted(td.parentElement!, 'display', { width: 390 }), 'the row at 390').toBe('grid')
     // Its pieces still stack, one under the other.
     const a = td.querySelector(':scope > a')!
     expect(painted(a, 'display', { width: 1440 })).toBe('block')
@@ -264,7 +265,15 @@ describe('the graph: a picked node\'s card is scrolled to', () => {
     // its card, and the arrival pick itself is not scrolled to (QA G3-28).
     // Queried AFTER the arrival pick has landed: the canvas redraws its nodes
     // then, and a node taken before it is a detached element a click misses.
-    await waitFor(() => expect(document.querySelector('.wf-canvas button.node.is-picked')).not.toBeNull())
+    // ITS OWN CEILING, NOT THE SUITE'S 2000 ms: this wait's callback is one
+    // `querySelector`, so it is not #605's query cost. Measured 2026-10-14 on an
+    // idle box, the page's reads (workflow, tenants, stats, capacity, tasks) all
+    // land within ~530 ms of `render`, then the graph page's own render takes
+    // another ~2.3 s before a node carries `is-picked` -- 1.9-3.4 s in all, and
+    // red at 2000 ms both on CI (run 38581770106) and on that box.
+    await waitFor(() => expect(document.querySelector('.wf-canvas button.node.is-picked')).not.toBeNull(), {
+      timeout: 10_000,
+    })
     const node = document.querySelector<HTMLButtonElement>('.wf-canvas button.node:not(.is-picked)')!
     expect(node).not.toBeNull()
     fireEvent.click(node)

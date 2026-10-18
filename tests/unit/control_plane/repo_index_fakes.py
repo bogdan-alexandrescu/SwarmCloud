@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import unquote, urlparse
 
@@ -18,6 +19,10 @@ from .repo_fakes import GitHubRepos, repo_entry
 
 BUCKET = "swarm-artifacts-saga-agents-staging"
 REPOSITORY = "saga-xyz/widgets"
+# Relative to the clock the route reads, not a fixed date: freshness() calls an
+# index older than STALE_AGE (7 days) `stale`, so a pinned 2026-10-05 build
+# turned every "behind" assertion red on 2026-10-12 (PR #1170).
+BUILT_AT = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def sha(word: str) -> str:
@@ -70,13 +75,24 @@ class IndexGitHub(GitHubRepos):
         return super().__call__(url, headers, timeout)
 
 
+# An hour before the session started, not a fixed date: freshness calls an
+# index built more than `STALE_AGE` (7 days) ago `stale`, so a literal date
+# turned every route test expecting `behind` red a week after it was written
+# (2026-10-12, PR #1169). Read once, not per call, so two fixtures built in one
+# test are byte-identical and their digests agree.
+BUILT_AT = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def fixture_index(commit_sha: str, **overrides: Any) -> dict[str, Any]:
-    """A small, complete `swarm.repo-index/v1` document describing `commit_sha`."""
+    """A small, complete `swarm.repo-index/v1` document describing `commit_sha`.
+
+    `built_at` is `BUILT_AT`, read once per session (see there).
+    """
     document: dict[str, Any] = {
         "schema": "swarm.repo-index/v1",
         "commit_sha": commit_sha,
         "branch": "main",
-        "built_at": "2026-10-05T09:00:00Z",
+        "built_at": BUILT_AT,
         "kind": "full",
         "extractor": {"ran": True, "command": "swarm-repo-extract", "version": "1"},
         "modules": [

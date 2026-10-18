@@ -26,10 +26,16 @@ What is held:
   * `input.model` on claude-code is refused on a task, a batch and a workflow
     step, the refusal names the key, and nothing is created -- asserted on the
     store, not only on the status;
-  * the top-level `model` field is still accepted. It is attribution: "recorded
-    for attribution and cost reporting; it selects nothing about the container"
-    (`TaskCreate.model`), and `swarm dispatch --model` sends it;
+  * the top-level `model` field is still accepted. It is a record: since
+    #1435 (docs/design/model-per-step.md §4.4) swarm-api fills it with the
+    pin of the task's model class, a caller's value equal to that pin is
+    accepted, and it selects nothing about the container;
   * the same submission without `input.model` is accepted (the control).
+
+#1435 extends the refusal to every profile that runs a model class
+(`claude-code`, `claude-code-browser`, `indexer`, owner's Q3): a step picks
+its model by `model_class`, a name, and `input.model` stays refused on each,
+because none of their `inputs` declares `model`.
 """
 
 from __future__ import annotations
@@ -52,17 +58,54 @@ def _created(db) -> dict[str, list[str]]:
     return {"tasks": _task_documents(db), "workflows": db.paths("workflows/")}
 
 
-def _assert_model_refusal(response) -> dict:
+#: The profiles that run a model class (#1435 Q3), each refusing `input.model`.
+CLASSED_PROFILES = ("claude-code", "claude-code-browser", "indexer")
+
+
+def _assert_model_refusal(response, profile: str = "claude-code") -> dict:
     assert response.status_code == 422, response.text
     body = response.json()
     assert body["code"] == REFUSAL_CODE, body
     assert body["detail"]["key"] == "model", body
-    assert body["detail"]["runner_profile"] == "claude-code", body
+    assert body["detail"]["runner_profile"] == profile, body
     assert "model" not in body["detail"]["declared"], (
-        "claude-code must not declare `model`: the model is the Job's MODEL, "
-        "set in Terraform (#226), and a caller does not choose it"
+        f"{profile} must not declare `model`: the model is its model class's pin, "
+        "set in Terraform (#226, #1435), and a caller does not choose it"
     )
     return body
+
+
+@pytest.mark.parametrize("profile", CLASSED_PROFILES)
+def test_every_classed_profile_refuses_input_model_and_creates_nothing(client, db, profile):
+    """Naming a class does not open `input.model`: the class is the only way."""
+    response = client.post(
+        "/v1/tasks",
+        headers=auth_header("carol"),
+        json={
+            "runner_profile": profile,
+            "input": {"prompt": "fix the bug", "model": "claude-haiku-5-5"},
+            "model_class": "haiku",
+        },
+    )
+
+    assert _created(db) == {"tasks": [], "workflows": []}
+    _assert_model_refusal(response, profile)
+
+
+@pytest.mark.parametrize("profile", CLASSED_PROFILES)
+def test_every_classed_profile_refuses_input_model_on_a_workflow_step(client, db, profile):
+    response = client.post(
+        "/v1/workflows",
+        headers=auth_header("carol"),
+        json={"steps": [{
+            "step_id": "tidy", "runner_profile": profile,
+            "input": {"prompt": "tidy", "model": "claude-haiku-5-5"},
+        }]},
+    )
+
+    assert _created(db) == {"tasks": [], "workflows": []}
+    body = _assert_model_refusal(response, profile)
+    assert body["detail"].get("step_id") == "tidy"
 
 
 def test_a_claude_code_task_carrying_input_model_is_refused_and_creates_nothing(client, db):

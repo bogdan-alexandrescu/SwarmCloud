@@ -29,6 +29,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { leakedValue, serve, tokenShapedIn, visible } from './repofixture'
+import type { CascadeEnv } from './cssgate'
+import { painted } from './marks'
 
 const ID = (n: number) => `repo_${String(n).padStart(16, '0')}`
 
@@ -162,7 +164,11 @@ const grantRow = (repository: string) => document.querySelector(`li.ac-grant[dat
 const owner = (name: string) => document.querySelector(`li.ac-owner[data-owner="${name}"]`) as HTMLElement
 const radio = (el: HTMLElement, name: string) => within(el).getByRole('radio', { name }) as HTMLButtonElement
 
-afterEach(() => vi.unstubAllEnvs())
+afterEach(() => {
+  vi.unstubAllEnvs()
+  // Members is in the address now (RSA-28): one case's click must not open the next case on it.
+  window.history.replaceState(null, '', window.location.pathname)
+})
 
 describe('the page states what SwarmCloud may do as you', () => {
   it('says Read is enforced by SwarmCloud, there is no workflows write, and verifying only reads', async () => {
@@ -176,6 +182,41 @@ describe('the page states what SwarmCloud may do as you', () => {
     expect(d8).toContain('does not ask for workflows write')
     expect(d8).toContain('.github/workflows/')
     expect(visible(document.querySelector('[data-rule="D6"]'))).toContain('Nothing is written to GitHub')
+  })
+})
+
+// QUOTA-THROTTLE (#1483): GET /v1/access serves `github_quota`, one entry
+// per credential the person may see; the page draws one line each, amber
+// (the warn mark) while the server says it is low, and nothing for a
+// credential not read yet.
+describe('GitHub quota', () => {
+  const RESET = '2026-10-17T02:13:00+00:00'
+  const QUOTA = [
+    { kind: 'connection', name: 'octo-dev', limit: 5000, remaining: 712, reset_at: RESET, resource: 'core', observed_at: RESET, low: true },
+    { kind: 'installation', name: 'example-org', limit: 15000, remaining: 14000, reset_at: RESET, resource: 'core', observed_at: RESET, low: false },
+  ]
+
+  it('draws one line per credential with what is left and the reset, amber when low', async () => {
+    api((m, url) => (m === 'GET' && url === '/v1/access' ? { status: 200, body: overview({ github_quota: QUOTA }) } : null))
+    await mount()
+    const list = await screen.findByRole('list', { name: 'GitHub quota' })
+    const lines = within(list).getAllByRole('listitem')
+    expect(lines).toHaveLength(2)
+    const [you, app] = lines as [HTMLElement, HTMLElement]
+    expect(visible(you)).toContain('GitHub quota for you via SwarmCloud: 712 / 5,000 · resets 02:13 UTC')
+    expect(you.getAttribute('data-low')).toBe('true')
+    expect(you.querySelector('[data-mark="warn"]')).not.toBeNull()
+    expect(visible(app)).toContain('GitHub quota for the SwarmCloud App on example-org: 14,000 / 15,000')
+    expect(app.getAttribute('data-low')).toBeNull()
+    expect(app.querySelector('[data-mark="warn"]')).toBeNull()
+    expect(tokenShapedIn(document.documentElement.outerHTML)).toEqual([])
+  })
+
+  it('draws nothing when no quota was read, or the server sends none', async () => {
+    api()
+    await mount()
+    await screen.findByText('@octo-dev')
+    expect(screen.queryByRole('list', { name: 'GitHub quota' })).toBeNull()
   })
 })
 
@@ -272,6 +313,8 @@ describe('repositories (chooser A, right)', () => {
       ]),
     )
     fireEvent.click(radio(row('example-org/example-docs'), 'Not chosen'))
+    // Not chosen takes access away, so it asks first (live QA RSA-1).
+    fireEvent.click(within(row('example-org/example-docs')).getByRole('button', { name: 'Remove access' }))
     await waitFor(() => expect(calls.filter((c) => c.method === 'DELETE').map((c) => c.url)).toEqual([`/v1/access/grants/${ID(1)}`]))
   })
 
@@ -379,6 +422,8 @@ describe('the grants, verified (Verify A)', () => {
     await mount()
     await screen.findByRole('list', { name: 'Your granted repositories, failures first' })
     fireEvent.click(radio(grantRow('octo-dev/example-api'), 'Read'))
+    // Write to Read takes access away, so it asks first (live QA RSA-1).
+    fireEvent.click(within(grantRow('octo-dev/example-api')).getByRole('button', { name: 'Change to Read' }))
     await waitFor(() => expect(calls.filter((c) => c.method === 'PUT')).toEqual([expect.objectContaining({ body: { repository: 'octo-dev/example-api', mode: 'read' } })]))
   })
 })
@@ -440,8 +485,12 @@ describe('connected but not installed (#780)', () => {
     // The row itself offers Install, and the right column says why it is empty.
     expect(within(owner('octo-dev')).getByRole('link', { name: 'Install on octo-dev' }).getAttribute('href')).toBe(APP_INSTALL)
     expect(screen.getByText('Nothing to list until the App is installed')).toBeTruthy()
-    // Authorized and installed are told apart in one line.
-    expect(visible(document.querySelector('.ac-authz'))).toContain('Authorized is not installed')
+    // Authorized and installed are told apart in one line, which opens with a
+    // sentence, not the fragment "Authorized is not installed:" (visual QA V124).
+    const authz = visible(document.querySelector('.ac-authz'))
+    expect(authz).toMatch(/^Connecting and installing are two steps\. Connect lets SwarmCloud act as you/)
+    expect(authz).toContain('Authorized GitHub Apps')
+    expect(authz).toContain('Installed GitHub Apps')
   })
 
   it('draws mixed rows: Enable for the installed owner, Install for the other, and no notice', async () => {
@@ -531,6 +580,20 @@ describe('members (Access B)', () => {
     fireEvent.click(screen.getByRole('radio', { name: 'Members' }))
     await waitFor(() => expect(visible(document.querySelector('.ac-members'))).toMatch(/admin/i))
     expect(screen.queryByRole('list', { name: 'Members of eng' })).toBeNull()
+  })
+
+  it("draws the API's own refusal (403 forbidden) as the admin gate, with no Try again (visual QA V047)", async () => {
+    // MUTATION: drop `membersGated` -- the route answers a non-admin with the
+    // generic `forbidden` code, which drew a red failure with a Try again
+    // that can never succeed.
+    api((m, url) => (m === 'GET' && url === '/v1/access/members' ? { status: 403, body: { code: 'forbidden', message: "the tenant's members view is for admins" } } : null))
+    await mount()
+    fireEvent.click(screen.getByRole('radio', { name: 'Members' }))
+    await waitFor(() => expect(document.querySelector('.ac-members .state.admin-gate')).not.toBeNull())
+    const card = document.querySelector<HTMLElement>('.ac-members')!
+    expect(card.querySelector('.state.failed')).toBeNull()
+    expect(within(card).queryByRole('button', { name: /Try again|Retry/ })).toBeNull()
+    expect(visible(card)).toContain("the tenant's members view is for admins")
   })
 })
 
@@ -720,5 +783,123 @@ describe('(4) the controls survive a background re-read', () => {
     open()
     await waitFor(() => expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1))
     await waitFor(() => expect(owner('example-lab').className).toContain('is-selected'))
+  })
+})
+
+// VISUAL QA, LANE VQA-L06 (#1038): V042, V043, V122, V123. Each case asserts
+// the property the finding was about, not the markup's shape.
+describe('visual QA (VQA-L06)', () => {
+  const WIDE: CascadeEnv = { width: 1440 }
+  const MID: CascadeEnv = { width: 900 }
+  const PHONE: CascadeEnv = { width: 400 }
+
+  /** Stub `matchMedia`, which jsdom does not have, as a phone or a desktop. */
+  function media(phone: boolean): void {
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: phone && query.includes('560'),
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    }))
+  }
+
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('V042: the grants head and every grant row paint one set of fixed columns', async () => {
+    // MUTATION: an `auto` track back in `.ac-grid-h, .ac-grant` (each row sized its own
+    // column, so nothing lined up with its header).
+    api()
+    await mount()
+    await screen.findByRole('list', { name: 'Your granted repositories, failures first' })
+    const head = document.querySelector<HTMLElement>('.ac-grid-h')!
+    const rows = [...document.querySelectorAll<HTMLElement>('li.ac-grant')]
+    expect(rows.length).toBe(GRANTS.length)
+    const cols = painted(head, 'grid-template-columns', WIDE)
+    expect(cols).not.toBeNull()
+    // The track list, `repeat(n, x)` written out n times.
+    const tracks = cols!
+      .replace(/repeat\((\d+),\s*([^()]+(?:\([^()]*\))?)\)/g, (_, n: string, t: string) => Array(Number(n)).fill(t.trim()).join(' '))
+      .split(/\s+(?![^(]*\))/)
+    expect(tracks, 'a track sized by its own row').not.toContain('auto')
+    expect(tracks.length, 'a head cell with no track').toBe(head.children.length)
+    for (const r of rows) expect(painted(r, 'grid-template-columns', WIDE)).toBe(cols)
+    // Narrower, the rows are records and the head is gone.
+    expect(painted(head, 'display', MID)).toBe('none')
+  })
+
+  it('V043: a long owner name takes the room beside its chip and wraps, the chip keeps its width', async () => {
+    // MUTATION: drop `min-width: 0` / `overflow-wrap: anywhere` from the
+    // owner's name, or let the chip shrink.
+    api()
+    await mount()
+    await screen.findByRole('list', { name: 'Owners your connection reaches' })
+    const h = owner('example-org').querySelector<HTMLElement>('.ac-owner-h')!
+    const name = h.querySelector<HTMLElement>('.ac-owner-pick')!
+    const chip = h.querySelector<HTMLElement>('.c-chip')!
+    expect(chip.textContent).toMatch(/chosen/)
+    for (const env of [WIDE, PHONE]) {
+      expect(painted(name, 'min-width', env)).toBe('0')
+      expect(painted(name, 'overflow-wrap', env)).toBe('anywhere')
+      expect(painted(name, 'flex', env)).toBe('1 1 auto')
+      expect(painted(chip, 'flex', env)).toBe('none')
+    }
+    const plain = owner('example-lab').querySelector<HTMLElement>('.ac-owner-h > b')!
+    expect(painted(plain, 'overflow-wrap', WIDE)).toBe('anywhere')
+    expect(painted(plain, 'min-width', WIDE)).toBe('0')
+  })
+
+  it('V122: on a phone the policy opens folded to its three headlines; wider, the whole list', async () => {
+    // MUTATION: draw the full list on a phone too.
+    media(true)
+    api()
+    await mount()
+    const rules = document.querySelector<HTMLElement>('.ac-rules')!
+    expect(rules.classList.contains('is-folded')).toBe(true)
+    const folds = [...rules.querySelectorAll<HTMLDetailsElement>('li > details')]
+    expect(folds.map((d) => d.parentElement!.dataset.rule)).toEqual(['D9', 'D8', 'D6'])
+    expect(folds.every((d) => !d.open), 'a rule opens unfolded').toBe(true)
+    expect(folds.map((d) => d.querySelector('summary')!.textContent)).toEqual([
+      'Read means read, and SwarmCloud enforces it.',
+      'No workflow changes.',
+      'Verifying only reads.',
+    ])
+    // Folded is not dropped: every sentence is still in the page.
+    expect(visible(document.querySelector('[data-rule="D9"]'))).toContain('GitHub itself would let the push through')
+  })
+
+  it('V122: on a desktop the policy is the whole list, unfolded', async () => {
+    media(false)
+    api()
+    await mount()
+    const rules = document.querySelector<HTMLElement>('.ac-rules')!
+    expect(rules.classList.contains('is-folded')).toBe(false)
+    expect(rules.querySelector('details')).toBeNull()
+  })
+
+  it('V123: on a phone every Access control is 44px tall, and a segment or chip in a row is as wide as its words', async () => {
+    // MUTATION: drop the `.ac-page` 44px rules, or the `justify-self: start`
+    // on a row's segment and chip.
+    api()
+    await mount()
+    await screen.findByRole('list', { name: 'Your granted repositories, failures first' })
+    await waitFor(() => expect(row('example-org/example-tools')).not.toBeNull())
+    const segs = [...document.querySelectorAll<HTMLElement>('.ac-page .c-seg')]
+    expect(segs.length, 'no segmented control was drawn').toBeGreaterThan(2)
+    for (const seg of segs) {
+      expect(painted(seg, 'height', PHONE)).toBe('auto')
+      for (const b of seg.querySelectorAll<HTMLElement>(':scope > button')) expect(painted(b, 'min-height', PHONE)).toBe('44px')
+    }
+    const btns = [...document.querySelectorAll<HTMLElement>('.ac-page .c-btn')]
+    expect(btns.length).toBeGreaterThan(2)
+    for (const b of btns) expect(painted(b, 'min-height', PHONE), `${b.textContent} is not a phone target`).toBe('44px')
+    const r = row('example-org/example-tools')
+    expect(painted(r.querySelector<HTMLElement>(':scope > .c-seg')!, 'justify-self', PHONE)).toBe('start')
+    expect(painted(r.querySelector<HTMLElement>(':scope > .ur-cap')!, 'justify-self', PHONE)).toBe('start')
+    expect(painted(grantRow('octo-dev/example-api').querySelector<HTMLElement>(':scope > .c-seg')!, 'justify-self', PHONE)).toBe('start')
+    expect(painted(document.querySelector<HTMLElement>('.ac-typed-row > .c-seg')!, 'flex-basis', PHONE)).toBe('auto')
   })
 })

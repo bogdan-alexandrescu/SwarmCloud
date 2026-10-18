@@ -54,6 +54,7 @@ from .follow import (
     STREAMS,
     console_link,
     empty_log_line,
+    event_label,
     event_type,
     follow,
     follow_command,
@@ -505,8 +506,8 @@ def cmd_tail(client: SwarmClient, args) -> int:
         # time so an order across polls can be read off the screen too. The
         # key is `follow.time_order`, which `swarm follow` sorts by too (#194).
         fresh.sort(key=lambda item: item[0])
-        for _, task_id, event, kind in fresh:
-            _emit(labels[task_id], f"{clock(event.get('at'))} · {kind}")
+        for _, task_id, event, _kind in fresh:
+            _emit(labels[task_id], f"{clock(event.get('at'))} · {event_label(event)}")
 
         for task_id, task in polled.items():
             label = labels[task_id]
@@ -1037,6 +1038,7 @@ def cmd_workflow(client: SwarmClient, args) -> int:
         label=args.label or spec["label"],
         title=workflows.check_title(getattr(args, "title", None), where="--title") or spec["title"],
         merge=spec["merge"],
+        after=spec["after"],
     )
     workflow = envelope["workflow"]
     workflow_id = workflow.get("workflow_id")
@@ -1928,7 +1930,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="a registered repository's URL, when the pull request names none "
                     "and your tenant registered several (default: $SWARM_REPO, else the "
                     "tenant's only registered repository)")
-    mg.add_argument("--title", default=None, help="the workflow's short name")
+    mg.add_argument(
+        "--title", default=None,
+        help="the workflow's short name (default: \"Merge PR <number>\")",
+    )
     mg.add_argument("--json", action="store_true")
     mg.set_defaults(func=cmd_merge)
 

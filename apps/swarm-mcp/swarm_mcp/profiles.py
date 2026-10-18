@@ -105,6 +105,15 @@ def _declaring() -> str:
     return ", ".join(declaring()) or "none"
 
 
+#: Declared inputs whose refused value is NEVER repeated in a refusal: the
+#: registered MCP servers a step names (contract request 88). A name is
+#: harmless, but the per-run credential that travels beside it
+#: (`mcp_credentials`, docs/design/registered-mcp-servers.md §4.3) is the
+#: value most likely to be pasted here by mistake, and a refusal is a tool
+#: reply in the session's transcript.
+_UNREPEATED_INPUTS = frozenset({"mcp_servers"})
+
+
 def check_inputs(name: str, raw: Any, *, where: str = "") -> dict[str, Any]:
     """The declared inputs `raw` asks for, checked; refuses anything else. Returns them.
 
@@ -137,6 +146,14 @@ def check_inputs(name: str, raw: Any, *, where: str = "") -> dict[str, Any]:
     except InputRefused as refused:
         # A declared key out of its bounds, or a required key not sent: the
         # rule's own message names the key and says which.
+        if refused.key.split("[", 1)[0] in _UNREPEATED_INPUTS:
+            # The rule's message repeats the start of the refused value; for
+            # this input that may be a credential pasted where a name goes.
+            raise SwarmError(
+                f"{prefix}input {refused.key!r} must be {refused.expected or 'as declared'}; "
+                "the value given is not repeated, because a per-run credential belongs in "
+                "`mcp_credentials` and a value here could be one"
+            ) from None
         if refused.expected is not None or set(refused.keys) <= set(declared):
             raise SwarmError(f"{prefix}{refused}") from None
         offered = ", ".join(f"{key} ({spec.describe()})" for key, spec in sorted(declared.items()))

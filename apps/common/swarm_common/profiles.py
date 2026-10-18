@@ -29,6 +29,8 @@ from types import MappingProxyType
 from typing import Any
 from urllib.parse import urlsplit
 
+from .models import PLATFORM_COMPONENTS, parse_consumer
+
 
 class Backend(str, Enum):
     CLOUD_RUN_JOB = "CLOUD_RUN_JOB"
@@ -96,8 +98,44 @@ class ResourceClass:
 # Cloud Run choice is better served here than by the feature we set out to use.
 RESOURCE_CLASSES: dict[str, ResourceClass] = {
     "standard": ResourceClass("standard", cpu=4, memory_gib=8, disk_gib=4, units=1),
-    "browser": ResourceClass("browser", cpu=8, memory_gib=16, disk_gib=8, units=2),
+    "browser": ResourceClass("browser", cpu=4, memory_gib=8, disk_gib=4, units=1),
     "large": ResourceClass("large", cpu=8, memory_gib=32, disk_gib=16, units=4),
+}
+
+
+@dataclass(frozen=True)
+class ModelClass:
+    """A model family a step may name (contract request 100, #1435).
+
+    The ID it stands for is Terraform's (`runner_models`, keyed by class),
+    held to the class by `admits` at the scheduler's and swarm-api's start.
+    A caller names the class, never the ID (invariant 10)."""
+
+    name: str
+    #: The family word in a model ID: claude-<family>-<major>[-<minor>].
+    family: str
+    #: The oldest generation a pin of this class may name.
+    min_major: int
+
+    def admits(self, model_id: str) -> bool:
+        if not isinstance(model_id, str):
+            return False
+        m = re.fullmatch(
+            rf"claude-{re.escape(self.family)}-(\d+)(?:-\d+)?(?:-\d{{8}})?", model_id
+        )
+        return m is not None and int(m.group(1)) >= self.min_major
+
+
+#: The classes a step may name. `opus` is the default of every classed
+#: profile: coding and implementation. `fable` is for planning ("Fable 5+"),
+#: `sonnet` and `haiku` for mechanical steps. Owner decision 2026-10-17. The
+#: floor is generation 5 for all four, since all four pins are generation-5
+#: models: a re-pin to an older generation fails at start instead of shipping.
+MODEL_CLASSES: dict[str, ModelClass] = {
+    "opus": ModelClass("opus", "opus", 5),
+    "fable": ModelClass("fable", "fable", 5),
+    "sonnet": ModelClass("sonnet", "sonnet", 5),
+    "haiku": ModelClass("haiku", "haiku", 5),
 }
 
 
@@ -208,12 +246,18 @@ _URL_REFUSED_V4_NETWORKS = (
 #: reproducing a tunnelling scheme instead of refusing it -- the subset of
 #: what Chromium accepts that `url_refusal`'s docstring states. Site-local,
 #: Teredo, `3fff::/20` and `5f00::/16` were added by contract request 57
-#: (#349), after the #345 security review found each accepted.
+#: (#349), after the #345 security review found each accepted. Benchmarking
+#: `2001:2::/48` and the deprecated ORCHID `2001:10::/28`, the two parts of
+#: `2001::/23` the IANA registry calls not globally reachable besides Teredo,
+#: were added by contract request 61; the block's global assignments
+#: (`2001:1::1`, AMT, AS112, ORCHIDv2, Drone Remote ID) stay accepted.
 _URL_REFUSED_V6_NETWORKS = (
     ipaddress.ip_network("::1/128"),  # loopback
     ipaddress.ip_network("::/128"),  # unspecified
     ipaddress.ip_network("100::/64"),  # discard-only, RFC 6666
     ipaddress.ip_network("2001::/32"),  # Teredo, RFC 4380 (refused, not unwrapped)
+    ipaddress.ip_network("2001:2::/48"),  # benchmarking, RFC 5180 (request 61)
+    ipaddress.ip_network("2001:10::/28"),  # ORCHID, RFC 4843, deprecated by RFC 7343 (request 61)
     ipaddress.ip_network("2001:db8::/32"),  # documentation
     ipaddress.ip_network("3fff::/20"),  # documentation, RFC 9637
     ipaddress.ip_network("5f00::/16"),  # SRv6 SIDs, RFC 9602; not globally routable
@@ -377,6 +421,10 @@ def url_refusal(value: str) -> str:
     reaches the empty-label check and is refused as `a..b` is. The same
     request makes `RunnerInput.check` never repeat a value containing '@',
     which is what keeps "never served by the API" true of a refused URL too.
+
+    ADDED BY CONTRACT REQUEST 61 (#346 box 42): benchmarking `2001:2::/48`
+    (RFC 5180) and the deprecated ORCHID `2001:10::/28` (RFC 4843), the rest
+    of `2001::/23` that is not globally reachable.
     """
     if len(value) > _URL_MAX_CHARS:
         return f"it is longer than {_URL_MAX_CHARS} characters"
@@ -716,6 +764,60 @@ def _frozen_inputs(declared: Mapping[str, RunnerInput]) -> Mapping[str, RunnerIn
     return MappingProxyType(dict(declared))
 
 
+#: Contract request 80 (workspace secrets, docs/design/workspace-secrets.md
+#: §2.1): the kinds a workspace secret can be. A kind decides the value's
+#: SHAPE (basic_auth is a JSON object of exactly username and password,
+#: oauth_client of exactly client_id and client_secret) and which slots may
+#: take it; never behaviour. `forge_token` is listed so a forge row has a
+#: kind, and is accepted by no profile or tool slot (owner rule 2026-09-25:
+#: a forge token is never readable by the agent).
+SECRET_KINDS: tuple[str, ...] = (
+    "api_key", "bearer_token", "basic_auth", "oauth_client", "opaque", "forge_token",
+)
+_SLOT_NAME = re.compile(r"[a-z][a-z0-9-]{0,31}")
+
+
+@dataclass(frozen=True)
+class SecretSlot:
+    """A place a consumer takes a workspace secret (design §2.4).
+
+    The slot's NAME is the key it is declared under and becomes a directory
+    (`private/secrets/<slot>/<name>`, design §4.1), so it is a short
+    lower-case word. A grant names one slot; a release lands each secret in
+    its grant's slot and nowhere else."""
+
+    kinds: tuple[str, ...]
+    means: str
+    #: True when the consumer cannot run without it: the task parks
+    #: CREDENTIAL_MISSING before it leases, at no cost (invariant 1), and
+    #: starts by itself once a grant is ticked. False (the default) starts
+    #: without it.
+    required: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.kinds:
+            raise ValueError("a secret slot accepts at least one kind")
+        unknown = [k for k in self.kinds if k not in SECRET_KINDS]
+        if unknown:
+            raise ValueError(f"secret slot: unknown kind(s) {unknown}")
+        if "forge_token" in self.kinds:
+            raise ValueError(
+                "secret slot: a forge token is never granted to a profile or a tool "
+                "(contract request 80)"
+            )
+        if not self.means.strip():
+            raise ValueError("secret slot: `means` says what the consumer does with it")
+
+
+#: The slot every agent profile declares: any non-forge kind, one 0600 file
+#: per secret, listed by name in the manifest the runner is pointed at.
+_FILES_SLOT = SecretSlot(
+    kinds=("api_key", "bearer_token", "basic_auth", "oauth_client", "opaque"),
+    means="one file per granted secret under private/secrets/files/, named in "
+          "the manifest at $SWARM_SECRETS_MANIFEST; never in the environment",
+)
+
+
 @dataclass(frozen=True)
 class RunnerProfile:
     name: str
@@ -813,18 +915,105 @@ class RunnerProfile:
     #: "restore on attempt 1, skip only on retries". Checkpointing itself
     #: stays on (invariant 8); only the restore is skipped.
     never_restore_checkpoint: bool = False
+    #: True when this profile's pod runs the live browser: a platform-launched
+    #: Chromium in a display sidecar that a member of the task's tenant can
+    #: watch and, to sign in, take control of (docs/design/live-browser.md).
+    #: A catalogue property, never a caller's: a caller names a profile, and
+    #: cannot ask for a live browser on another one (invariant 10). Valid only
+    #: on a profile whose backend is GKE_AUTOPILOT, stated, not AUTO: the
+    #: sidecar and its second uid exist only in the GKE manifest, and AUTO
+    #: resolves the `browser` class to Cloud Run. Contract request 71 (LB-D),
+    #: accepted by the owner 2026-10-11 (#1030).
+    live_browser: bool = False
+    #: Contract request 80: the workspace-secret slots this profile's
+    #: attempts may be released into, by slot name. Empty (the default)
+    #: means a grant to `profile:<name>` is refused at write time. NOT the
+    #: provider key (`secrets` above, unchanged). Excluded from the hash, as
+    #: `inputs` is: a mapping is not hashable.
+    secret_slots: Mapping[str, SecretSlot] = field(default_factory=dict, hash=False)
+    #: True when no container ever runs this profile: the control plane
+    #: ends its tasks itself (docs/design/human-steps.md, `await-input`).
+    #: The scheduler never leases one; admission parks it before any
+    #: capacity check. Such a profile has no runner, no worker action, no
+    #: provider, no secrets, no slots, no live browser and no declared
+    #: inputs besides `prompt`, and has no Job or pod (Terraform's
+    #: `profiles_without_a_job`). Contract request 93 (HW-CONTRACT, human
+    #: steps request B), accepted by the owner 2026-10-17.
+    control_plane: bool = False
+    #: Contract request 101 (#1435): the MODEL_CLASSES names a step on this
+    #: profile may ask for, and the one it runs when it asks for none. Both
+    #: empty on a profile that runs no Claude model. The IDs are
+    #: `runner_models` in terraform/infra/locals.tf. Last in the class, so no
+    #: positional construction of a profile changes meaning.
+    model_classes: tuple[str, ...] = ()
+    default_model_class: str | None = None
 
     def __post_init__(self) -> None:
+        if self.control_plane:
+            # Contract request 93: nothing runs this profile, anywhere, so a
+            # field that only means something to a runner, a worker or a pod
+            # is a declaration nobody would honour.
+            for declared, set_ in (
+                ("runner_argv", bool(self.runner_argv)),
+                ("worker_action", self.worker_action is not None),
+                ("provider", self.provider is not None),
+                ("secrets", bool(self.secrets)),
+                ("secret_slots", bool(self.secret_slots)),
+                ("inputs", bool(self.inputs)),
+                ("live_browser", self.live_browser),
+            ):
+                if set_:
+                    raise ValueError(
+                        f"runner {self.name}: a control_plane profile is never run, so it "
+                        f"sets no {declared} (contract request 93)"
+                    )
         if self.worker_action is not None and self.runner_argv:
             raise ValueError(
                 f"runner {self.name}: a worker_action profile starts no runner, so its "
                 "runner_argv must be empty (contract request 33)"
             )
-        if self.worker_action is None and not self.runner_argv:
+        if self.worker_action is None and not self.runner_argv and not self.control_plane:
             raise ValueError(
                 f"runner {self.name}: an empty runner_argv starts nothing; only a "
-                "worker_action profile may have one (contract request 33)"
+                "worker_action or control_plane profile may have one (contract "
+                "requests 33 and 93)"
             )
+        if self.worker_action is not None:
+            # Contract request 60 (#453): a worker action reads its credential
+            # itself, at action time, and the lifecycle dispatches on the enum
+            # by identity. Item 2 is scoped to POST_VERDICT, the one action
+            # that runs as its own Cloud Run Job's service account: merge runs
+            # as the tenant's worker account on either backend (requests 47
+            # and 66), so refusing GKE for every action would refuse `merge`.
+            if not isinstance(self.worker_action, WorkerAction):
+                raise ValueError(
+                    f"runner {self.name}: worker_action must be a WorkerAction, not a "
+                    f"{type(self.worker_action).__name__} (contract request 60)"
+                )
+            if self.secrets:
+                raise ValueError(
+                    f"runner {self.name}: a worker_action profile mounts no secret; the "
+                    "worker reads its credential at action time (contract request 60)"
+                )
+            if (
+                self.worker_action is WorkerAction.POST_VERDICT
+                and self.backend is not Backend.CLOUD_RUN_JOB
+            ):
+                raise ValueError(
+                    f"runner {self.name}: a post_verdict profile runs as its own Cloud "
+                    "Run Job's service account, so its backend is CLOUD_RUN_JOB, not "
+                    f"{self.backend.value} (contract request 60)"
+                )
+            if self.secret_slots:
+                raise ValueError(
+                    f"runner {self.name}: a worker_action profile runs no agent and "
+                    "takes no workspace secret (contract request 80)"
+                )
+        for slot, declared_slot in self.secret_slots.items():
+            if not _SLOT_NAME.fullmatch(slot):
+                raise ValueError(f"runner {self.name}: secret slot {slot!r} is not a slot name")
+            if not isinstance(declared_slot, SecretSlot):
+                raise ValueError(f"runner {self.name}: secret slot {slot!r} is not a SecretSlot")
         for key, declared in self.inputs.items():
             if not isinstance(declared, RunnerInput):
                 raise ValueError(f"runner {self.name}: input {key!r} is not a RunnerInput")
@@ -854,10 +1043,54 @@ class RunnerProfile:
             )
         if self.resource_class not in RESOURCE_CLASSES:
             raise ValueError(f"runner {self.name}: unknown resource class {self.resource_class}")
+        if self.live_browser and self.backend is not Backend.GKE_AUTOPILOT:
+            raise ValueError(
+                f"runner {self.name}: live_browser needs the GKE_AUTOPILOT backend, "
+                f"not {self.backend.value}; the display sidecar exists only in the "
+                "GKE manifest (contract request 71)"
+            )
         if self.spot is not SpotStrategy.ON_DEMAND_ONLY:
             raise ValueError(
                 f"runner {self.name}: Spot is disabled platform-wide; Spot Pods cannot "
                 "use extended run time and would violate the no-preemption requirement"
+            )
+        self._check_model_classes()
+
+    def _check_model_classes(self) -> None:
+        """Contract request 101: a profile's classes mean something only where a
+        Claude model runs, and must agree with their own default."""
+        if not self.model_classes and self.default_model_class is None:
+            return
+        if not self.model_classes or self.default_model_class is None:
+            raise ValueError(
+                f"runner {self.name}: model_classes and default_model_class are set "
+                "together or not at all (contract request 101)"
+            )
+        if self.worker_action is not None:
+            raise ValueError(
+                f"runner {self.name}: a worker_action profile starts no model, so it "
+                "names no model class (contract request 101)"
+            )
+        if self.provider != "anthropic":
+            raise ValueError(
+                f"runner {self.name}: model classes name Claude models, so only an "
+                f"anthropic profile has them, not {self.provider!r} (contract request 101)"
+            )
+        for name in self.model_classes:
+            if name not in MODEL_CLASSES:
+                raise ValueError(
+                    f"runner {self.name}: model class {name!r} is not one of "
+                    f"MODEL_CLASSES {tuple(MODEL_CLASSES)} (contract request 101)"
+                )
+        if len(set(self.model_classes)) != len(self.model_classes):
+            raise ValueError(
+                f"runner {self.name}: model_classes names a class twice (contract request 101)"
+            )
+        if self.default_model_class not in self.model_classes:
+            raise ValueError(
+                f"runner {self.name}: default_model_class {self.default_model_class!r} "
+                f"is not one of its own model_classes {self.model_classes} (contract "
+                "request 101)"
             )
 
 
@@ -1174,6 +1407,56 @@ _CLI_AGENT_INPUTS: dict[str, RunnerInput] = {
     ),
 }
 
+#: CONTRACT REQUEST 88, accepted by the owner 2026-10-17 (design
+#: docs/design/registered-mcp-servers.md §5 M1, part of #1433): the
+#: registered MCP servers a step may call, by name, never a URL or a command
+#: (invariant 10). Inside `input`, so the spec signature covers it (format 3).
+#: Its own dict, NOT a key of _CLI_AGENT_INPUTS, which indexer and
+#: claude-code-review also take: the indexer runs no prompt a caller wrote,
+#: and a review step reads the diff it was given. Membership is checked by
+#: swarm-api against the tenant's registry, which changes at runtime, so the
+#: names cannot be `choices`. 31 is models.MCP_SERVER_NAME's length bound.
+_MCP_SERVER_INPUTS: dict[str, RunnerInput] = {
+    "mcp_servers": RunnerInput(
+        "list",
+        minimum=1,
+        maximum=4,
+        items=RunnerInput("string", maximum=31),
+        means=(
+            "registered MCP servers, by name, the agent may call during its run; "
+            "each must be registered and enabled for the task's workspace and allowed "
+            "for this profile (docs/design/registered-mcp-servers.md)"
+        ),
+    ),
+}
+
+#: claude-code and codex: the CLI agent inputs plus mcp_servers (request 88).
+_CLI_AGENT_MCP_INPUTS: dict[str, RunnerInput] = {
+    **_CLI_AGENT_INPUTS,
+    **_MCP_SERVER_INPUTS,
+}
+
+#: CONTRACT REQUEST 77, accepted by the owner 2026-10-14 ("Picker on Submit,
+#: Auto by default"): which browser tool the live-browser agent is given. A
+#: NAMED option, never a command (invariant 10); the claude-code runner maps
+#: each name to what it registers (`agent_worker.browser_tools`). Absent is
+#: `auto`. Only `claude-code-browser` declares it: no other profile has a
+#: browser to choose a tool for.
+_CLAUDE_CODE_BROWSER_INPUTS: dict[str, RunnerInput] = {
+    **_CLI_AGENT_INPUTS,
+    **_MCP_SERVER_INPUTS,   # contract request 88
+    "browser_tool": RunnerInput(
+        "string",
+        choices=("auto", "playwright", "dev-browser", "jev"),
+        means=(
+            "the live browser's tool: auto (every tool available; the default), "
+            "playwright (the Playwright MCP tools only), dev-browser (the dev-browser "
+            "CLI first, Playwright as fallback) or jev (the jev MCP tools, which send "
+            "page text to TypeSafe and need a TypeSafe key; Playwright as fallback)"
+        ),
+    ),
+}
+
 
 #: Why the three #295 profiles are refused, served to a caller who names one.
 _DISABLED_UNTIL_342 = (
@@ -1181,6 +1464,12 @@ _DISABLED_UNTIL_342 = (
     "specs (#342) are enforced and the review and merge GitHub Apps exist."
 )
 
+
+#: Contract request 101 (owner's Q3, 2026-10-17): the classes the three
+#: claude-code-family profiles accept -- claude-code, indexer and
+#: claude-code-browser run one CLI, pinned once in the base image, so an ID
+#: accepted on one is accepted on all three. Every class, in vocabulary order.
+_CLAUDE_CODE_MODEL_CLASSES: tuple[str, ...] = tuple(MODEL_CLASSES)
 
 RUNNER_PROFILES: dict[str, RunnerProfile] = {
     "mock": RunnerProfile(
@@ -1223,7 +1512,12 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
         secrets_any_of=True,
         timeout_seconds=7200,
-        inputs=_CLI_AGENT_INPUTS,
+        inputs=_CLI_AGENT_MCP_INPUTS,   # contract request 88
+        secret_slots={"files": _FILES_SLOT},   # contract request 80
+        # Contract request 101 (owner's Q3, 2026-10-17): every class, opus by
+        # default (R3: a step naming no class runs opus).
+        model_classes=_CLAUDE_CODE_MODEL_CLASSES,
+        default_model_class="opus",
     ),
     "codex": RunnerProfile(
         name="codex",
@@ -1238,7 +1532,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         provider="openai",
         secrets=("OPENAI_API_KEY",),
         timeout_seconds=7200,
-        inputs=_CLI_AGENT_INPUTS,
+        inputs=_CLI_AGENT_MCP_INPUTS,   # contract request 88
         # DISABLED 2026-09-23 by the owner's decision: the platform is focusing
         # on Claude, and codex does not currently work here anyway. A twenty-step
         # load test that day dispatched four codex steps and all four failed
@@ -1255,6 +1549,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
             "registered credential and the platform is focused on Claude. Use "
             "claude-code."
         ),
+        secret_slots={"files": _FILES_SLOT},   # contract request 80
     ),
     "browser": RunnerProfile(
         name="browser",
@@ -1268,6 +1563,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secrets=("ANTHROPIC_API_KEY",),
         timeout_seconds=5400,
         inputs=_BROWSER_INPUTS,
+        secret_slots={"files": _FILES_SLOT},   # contract request 80
     ),
     # --- #295, the merge chain: contract requests 33, 35 and 36 -------------
     #
@@ -1323,11 +1619,14 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         backend=Backend.CLOUD_RUN_JOB,
         runner_argv=(),
         worker_action=WorkerAction.POST_VERDICT,
-        # The credential is never mounted: its secret is read by the worker at
-        # post-time, as `swarm-<tenant>-post-verdict`, the Job's own service
-        # account. `provider` is what parks the step CREDENTIAL_MISSING, at no
-        # cost, for a tenant that has not registered one, and keeps Terraform
-        # from creating a post-verdict Job for that tenant.
+        # The credential is never mounted: its secret was to be read by the
+        # worker at post-time, as a per-tenant post-verdict service account
+        # that was retired with the #295 design (docs/merge-step.md §3 "What
+        # this supersedes"); the profile has no Job for any tenant
+        # (contract request 72). `provider` is what parks the step
+        # CREDENTIAL_MISSING, at no cost, for a tenant that has not registered
+        # one, and keeps Terraform from creating a post-verdict Job for that
+        # tenant.
         #
         # Listing `git-review` here is not by itself sufficient to keep the
         # ordinary worker account off this secret (contract request 35, "What
@@ -1339,13 +1638,14 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         available=False,
         disabled_reason=_DISABLED_UNTIL_342,
     ),
-    # Identical to claude-code except its name -- and so its Job and service
-    # account, `swarm-<tenant>-review` -- and never_restore_checkpoint, and,
-    # since contract request 53 moved claude-code to GKE Autopilot, its
+    # Identical to claude-code except its name and never_restore_checkpoint,
+    # and, since contract request 53 moved claude-code to GKE Autopilot, its
     # backend: this profile is retired (no Job for any tenant,
     # `profiles_without_a_job`), so request 53 did not move it, and neither
     # did #939's option A (contract request 66): it was designed to run as its
-    # own account, `swarm-<tenant>-review`, which a GKE pod cannot be.
+    # own per-tenant review account, which a GKE pod cannot be, and that
+    # account is retired (docs/merge-step.md §3 "What this supersedes";
+    # contract request 72).
     "claude-code-review": RunnerProfile(
         name="claude-code-review",
         image="agent-runtime-base",
@@ -1360,6 +1660,11 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         never_restore_checkpoint=True,
         available=False,
         disabled_reason=_DISABLED_UNTIL_342,
+        secret_slots={"files": _FILES_SLOT},   # contract request 80
+        # Contract request 101: retired under request 50 (request 84 (b)), so
+        # it keeps the pin it has today and gains no class.
+        model_classes=("opus",),
+        default_model_class="opus",
     ),
     # CONTRACT REQUEST 48, accepted by the owner 2026-10-05 (#625): claude-code
     # on agent-runtime-indexer, the image that carries the repository index's
@@ -1384,6 +1689,10 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secrets_any_of=True,
         timeout_seconds=7200,
         inputs=_CLI_AGENT_INPUTS,
+        secret_slots={"files": _FILES_SLOT},   # contract request 80
+        # Contract request 101 (owner's Q3): claude-code's classes and default.
+        model_classes=_CLAUDE_CODE_MODEL_CLASSES,
+        default_model_class="opus",
     ),
     # CONTRACT REQUEST 67, accepted by the owner 2026-10-11: claude-code on
     # agent-runtime-browser (Playwright + Chromium), so an agent can render
@@ -1406,9 +1715,201 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
         secrets_any_of=True,
         timeout_seconds=7200,
-        inputs=_CLI_AGENT_INPUTS,
+        # Contract request 77: claude-code's inputs plus `browser_tool`.
+        inputs=_CLAUDE_CODE_BROWSER_INPUTS,
+        # Contract request 71 (LB-D): the one live-browser profile.
+        live_browser=True,
+        secret_slots={"files": _FILES_SLOT},   # contract request 80
+        # Contract request 101 (owner's Q3): claude-code's classes and default.
+        model_classes=_CLAUDE_CODE_MODEL_CLASSES,
+        default_model_class="opus",
+    ),
+    # CONTRACT REQUEST 94, accepted by the owner 2026-10-17 (HW-CONTRACT,
+    # docs/design/human-steps.md §5 request C): a workflow step that waits for
+    # a tenant member's answer. control_plane (request 93): no container runs
+    # it, swarm-api ends it, and Terraform makes no Job for it
+    # (`profiles_without_a_job`). SHIPPED UNAVAILABLE until every build lane of
+    # the design's §6 has merged and HW-ACCEPT is green on dev; the owner then
+    # applies request D, which is `available=True` and nothing else.
+    "await-input": RunnerProfile(
+        name="await-input",
+        image="agent-runtime-base",   # never pulled: control_plane
+        resource_class="standard",    # never reserved: control_plane
+        backend=Backend.CLOUD_RUN_JOB,
+        runner_argv=(),
+        control_plane=True,
+        provider=None,
+        secrets=(),
+        timeout_seconds=300,          # unused; the wait is await_input's (at most 24 h)
+        inputs={},
+        available=False,
+        disabled_reason="await-input steps are being built (docs/design/human-steps.md)",
     ),
 }
+
+
+#: CONTRACT REQUEST 89, accepted by the owner 2026-10-17 (design
+#: docs/design/registered-mcp-servers.md §5 M2): the one slot an `mcp:`
+#: consumer (models.SECRET_CONSUMER_KINDS) takes. Optional, as every slot is
+#: unless it says otherwise; a `workspace_secret` server's registration is
+#: what makes swarm-api require its grant.
+MCP_SECRET_SLOTS: Mapping[str, SecretSlot] = MappingProxyType({
+    "auth": SecretSlot(
+        kinds=("api_key", "bearer_token"),
+        means="the relay adds it as the registered server's auth header; never a file",
+    ),
+})
+
+
+#: Contract request 81 (workspace secrets, design §2.3): a program the
+#: platform launches INSIDE an attempt that can be granted a workspace
+#: secret on its own. A tool is a NAME, never an image or a command
+#: (invariant 10): the agent can start any process in its pod, so a grant
+#: is matched against the signed spec's `browser_tool`, never against a
+#: process name.
+@dataclass(frozen=True)
+class RuntimeTool:
+    name: str
+    #: The profiles whose attempts can launch this tool.
+    profiles: tuple[str, ...]
+    #: The `browser_tool` input values that launch it, on those profiles.
+    #: An attempt whose signed value is not listed never launches it, and is
+    #: never released a secret granted only to it.
+    launched_by: tuple[str, ...]
+    secret_slots: Mapping[str, SecretSlot] = field(default_factory=dict, hash=False)
+
+
+RUNTIME_TOOLS: Mapping[str, RuntimeTool] = MappingProxyType({
+    "jev-browser": RuntimeTool(
+        name="jev-browser",
+        profiles=("claude-code-browser",),
+        launched_by=("auto", "jev"),
+        # Optional, as every tool slot is: the profile runs without the tool,
+        # and with no grant `browser_tools.choose` takes its `no_key` path.
+        secret_slots={"typesafe": SecretSlot(
+            kinds=("api_key",),
+            means="the TypeSafe key jev_launch.py puts in the jev process's own "
+                  "environment; jev sends page text to TypeSafe",
+        )},
+    ),
+    "dev-browser": RuntimeTool(
+        name="dev-browser", profiles=("claude-code-browser",),
+        launched_by=("auto", "dev-browser"),
+    ),
+    "playwright": RuntimeTool(
+        name="playwright", profiles=("claude-code-browser",),
+        # The fallback under every choice (request 77's `means`).
+        launched_by=("auto", "playwright", "dev-browser", "jev"),
+    ),
+})
+
+
+def _check_runtime_tools(
+    runner_profiles: Mapping[str, RunnerProfile], tools: Mapping[str, RuntimeTool]
+) -> None:
+    """Contract request 81's import-time checks, called below on the catalogue.
+
+    Every name in a tool's `profiles` declares `browser_tool`; every
+    `launched_by` value is one of its choices; and every `browser_tool`
+    choice except `auto` launches some tool, so adding a fifth choice without
+    a tool fails the import."""
+    launched: set[str] = set()
+    for key, tool in tools.items():
+        if tool.name != key:
+            raise ValueError(f"runtime tool {key!r} is named {tool.name!r}")
+        for name in tool.profiles:
+            profile = runner_profiles.get(name)
+            if profile is None or "browser_tool" not in profile.inputs:
+                raise ValueError(
+                    f"runtime tool {key}: profile {name!r} does not declare browser_tool "
+                    "(contract request 81)"
+                )
+            outside = [v for v in tool.launched_by if v not in profile.inputs["browser_tool"].choices]
+            if outside:
+                raise ValueError(
+                    f"runtime tool {key}: launched_by {outside} is not a browser_tool "
+                    f"choice of {name} (contract request 81)"
+                )
+        for slot, declared in tool.secret_slots.items():
+            if not _SLOT_NAME.fullmatch(slot) or not isinstance(declared, SecretSlot):
+                raise ValueError(f"runtime tool {key}: secret slot {slot!r} is not a SecretSlot")
+        launched.update(tool.launched_by)
+    for profile in runner_profiles.values():
+        if "browser_tool" not in profile.inputs:
+            continue
+        orphans = [c for c in profile.inputs["browser_tool"].choices if c != "auto" and c not in launched]
+        if orphans:
+            raise ValueError(
+                f"runner {profile.name}: browser_tool choice(s) {orphans} launch no "
+                "RUNTIME_TOOLS entry; add the tool in the same change (contract request 81)"
+            )
+
+
+_check_runtime_tools(RUNNER_PROFILES, RUNTIME_TOOLS)
+
+
+def tools_launched(profile: RunnerProfile, inputs: Mapping[str, Any]) -> tuple[str, ...]:
+    """The RUNTIME_TOOLS an attempt of `profile` with signed `inputs` launches.
+
+    `browser_tool` absent is `auto` (request 77). Empty for a profile that no
+    tool lists. Read by swarm-api's release and by the worker's re-check, so
+    the two derive the same set."""
+    selected = inputs.get("browser_tool", "auto")
+    return tuple(
+        t.name for t in RUNTIME_TOOLS.values()
+        if profile.name in t.profiles and selected in t.launched_by
+    )
+
+
+def is_secret_consumer(consumer: str) -> bool:
+    """Whether `consumer` is a secret consumer this catalogue has.
+
+    Contract request 82: `models.consumer_name` fixes the spelling and the
+    closed component list; profile and tool membership is checked here,
+    beside RUNNER_PROFILES and RUNTIME_TOOLS. Applied by swarm-api on a
+    grant's write and on a release's read."""
+    try:
+        kind, name = parse_consumer(consumer)
+    except ValueError:
+        return False
+    if kind == "profile":
+        return name in RUNNER_PROFILES
+    if kind == "tool":
+        return name in RUNTIME_TOOLS
+    if kind == "mcp":
+        # Contract request 89: an `mcp:` name is a tenant's registration, not
+        # a catalogue entry, so this catalogue cannot vouch for it; swarm-api
+        # checks it against the tenant's registry. Without this branch
+        # `mcp:judge` would fall through to PLATFORM_COMPONENTS below.
+        return False
+    return name in PLATFORM_COMPONENTS
+
+
+def step_model_class(profile: RunnerProfile, requested: str | None) -> str | None:
+    """The class a step on `profile` runs: `requested` if the profile accepts
+    it, the profile's default if None, None for a profile with no classes.
+    Raises ValueError naming the accepted classes otherwise.
+
+    Contract request 101 (#1435): the ONE statement of the resolution rule
+    swarm-api (at submission), the scheduler (at dispatch) and the worker (at
+    start) all apply, so the three can never resolve a step differently.
+    """
+    if requested is None:
+        return profile.default_model_class
+    if requested not in MODEL_CLASSES:
+        raise ValueError(
+            f"model class {requested!r} is not one of MODEL_CLASSES {tuple(MODEL_CLASSES)}"
+        )
+    if not profile.model_classes:
+        raise ValueError(
+            f"runner {profile.name} runs no model class, so a step on it names none"
+        )
+    if requested not in profile.model_classes:
+        raise ValueError(
+            f"runner {profile.name} does not accept model class {requested!r}; it "
+            f"accepts {profile.model_classes}"
+        )
+    return requested
 
 
 def resolve_backend(profile: RunnerProfile) -> Backend:

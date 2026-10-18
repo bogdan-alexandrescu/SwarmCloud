@@ -687,6 +687,44 @@ def test_the_compiled_workflow_always_says_merge_off(auto_merge):
     assert [s.step_id for s in spec.steps] == ["impl-sort-key", "impl-ui", "review", "fix"]
 
 
+def test_the_compiled_workflow_is_titled_by_its_issue_and_labelled_issue_n():
+    """RUNS (2026-10-12): a workflow an issue run started was stored with no
+    title or label, so the console and the Claude Code rows showed only
+    "wf_02381158...". `title` and `unit` are the keys both read."""
+    spec = compile_plan(_stored_run(issue_read={"title": "Widgets  cannot\nbe sorted"}))
+    assert spec.metadata["title"] == "saga-xyz/widgets#42: Widgets cannot be sorted"
+    assert spec.metadata["unit"] == "issue-42"
+
+
+def test_with_no_issue_title_the_workflow_is_titled_by_the_plans_summary():
+    spec = compile_plan(_stored_run(issue_read=None))
+    assert spec.metadata["title"] == "saga-xyz/widgets#42: Make the widget list sortable by name."
+    assert spec.metadata["unit"] == "issue-42"
+
+
+def test_a_long_title_is_cut_to_the_cap():
+    spec = compile_plan(_stored_run(issue_read={"title": "x" * 400}))
+    title = spec.metadata["title"]
+    assert len(title) == issueruns.WORKFLOW_TITLE_MAX_CHARS == 150
+    assert title.startswith("saga-xyz/widgets#42: x") and title.endswith("…")
+
+
+def test_every_step_task_of_an_approved_run_carries_the_title_and_label(client, db, objects):
+    run = _planned(client, db, objects)
+    response = _approve(client, run["id"], run["plan_digest"])
+    assert response.status_code == 200, response.text
+    workflow_id = response.json()["run"]["workflow_id"]
+    tasks = [d for d in _docs(db, "tasks").values() if d.get("workflow_id") == workflow_id]
+    assert tasks
+    title = issueruns.workflow_title(
+        issueruns.IssueRun.from_firestore(db.docs[f"issue_runs/{run['id']}"])
+    )
+    assert title.startswith("saga-xyz/widgets#42: ")
+    for task in tasks:
+        assert task["metadata"]["title"] == title
+        assert task["metadata"]["unit"] == "issue-42"
+
+
 def test_an_auto_merge_run_submits_its_workflow_with_no_merge_step(client):
     client.put("/v1/admin/settings", headers=auth_header("root"), json={"merge_by_default": True})
     spec = compile_plan(_stored_run(auto_merge=True))
@@ -852,6 +890,9 @@ def test_a_plan_without_depends_on_compiles_to_the_chain_byte_for_byte():
     dumped = spec.model_dump(mode="json", exclude_defaults=True)
     # The one addition (contract request 47): the run's merge choice, stated.
     assert dumped["metadata"].pop("merge") == "off"
+    # And its title and label (RUNS, 2026-10-12): what the console names it by.
+    assert dumped["metadata"].pop("title") == "saga-xyz/widgets#42: Make the widget list sortable by name."
+    assert dumped["metadata"].pop("unit") == "issue-42"
     assert dumped == CHAIN_AS_BEFORE
 
 

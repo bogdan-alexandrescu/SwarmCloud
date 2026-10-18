@@ -169,7 +169,7 @@ describe('the task form is F1', () => {
     const mock = runnerCard(container, 'mock')
     expect(visible(mock.querySelector('.sb-runner-size'))).toBe('standard · 1 unit · Cloud Run')
     expect(visible(mock.querySelector('.sbf-runner-room'))).toBe('15 more can start now')
-    expect(visible(runnerCard(container, 'browser').querySelector('.sb-runner-size'))).toBe('browser · 2 units · GKE Autopilot')
+    expect(visible(runnerCard(container, 'browser').querySelector('.sb-runner-size'))).toBe('browser · 1 unit · GKE Autopilot')
     // A measured zero is a digit, and it names the pool holding it down.
     expect(visible(runnerCard(container, 'claude-code').querySelector('.sbf-runner-room'))).toMatch(/^0 can start now · held by \S+/)
     // A disabled runner stays listed with its reason in place of the room.

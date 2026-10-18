@@ -20,7 +20,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from swarm_common.config import Settings
-from swarm_common.profiles import RUNNER_PROFILES
+from swarm_common.profiles import MODEL_CLASSES, RUNNER_PROFILES
+
+from .judgment import check_internal_decision_api_url
 
 #: `<registry path>@sha256:<64 hex>`, and nothing before the `@` that could be a
 #: tag. The same shape terraform/infra/variables.tf validates `image_refs`
@@ -91,6 +93,67 @@ def check_worker_models(models: object) -> None:
             raise ValueError(
                 f"WORKER_MODELS[{profile!r}] = {model!r} is not a model name"
             )
+
+
+def check_worker_class_models(models: object) -> None:
+    """Refuse a class map that is not exactly {MODEL_CLASSES name: an ID it admits}.
+
+    #1435, docs/design/model-per-step.md §4.2. WORKER_CLASS_MODELS is
+    terraform's `local.runner_models`, keyed by class; the scheduler renders a
+    step's `MODEL` from it (`dispatch.step_model`). At START, like the image
+    map, and against the frozen catalogue rather than a restatement of it:
+
+      * an ID its class does not admit -- `haiku = "claude-opus-5-5"` -- would
+        bill every haiku step as Opus with nothing saying so;
+      * a missing class would leave that class with no pin, and its steps
+        would fail at dispatch, after admission has taken a lease;
+      * an extra key is a class the catalogue does not have, which no step can
+        name: a typo for one that it does, so the real one is missing.
+
+    EMPTY IS ALLOWED, and means the deployment pins no class (the local
+    emulator loop, and a settings object a test builds). Then a step naming a
+    class refuses at dispatch and a step naming none runs as before this map
+    existed, on WORKER_MODELS (`dispatch.step_model`).
+    """
+    if not isinstance(models, dict):
+        raise ValueError(
+            f"WORKER_CLASS_MODELS must be a JSON object of model class -> model ID, "
+            f"got {type(models).__name__}"
+        )
+    if not models:
+        return
+    missing = sorted(set(MODEL_CLASSES) - set(models))
+    extra = sorted(str(k) for k in set(models) - set(MODEL_CLASSES))
+    if missing or extra:
+        raise ValueError(
+            f"WORKER_CLASS_MODELS must name exactly the model classes "
+            f"{tuple(MODEL_CLASSES)}; missing {missing}, not a class {extra}"
+        )
+    for name, model_id in models.items():
+        if not MODEL_CLASSES[name].admits(model_id):
+            raise ValueError(
+                f"WORKER_CLASS_MODELS[{name!r}] = {model_id!r} is not a {name} model: "
+                f"a pin of this class is claude-{MODEL_CLASSES[name].family}-<major>"
+                f"[-<minor>][-<yyyymmdd>] with major at least "
+                f"{MODEL_CLASSES[name].min_major}"
+            )
+
+
+def parse_worker_class_models(raw: str) -> dict[str, str]:
+    """WORKER_CLASS_MODELS -> {model class: model ID}. Empty means none pinned.
+
+    Written by terraform/infra/locals.tf as `jsonencode(local.runner_models)`
+    (`model_class_env`), the ONE place a class's ID is stated (#1435 Q1).
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return {}
+    try:
+        models = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"WORKER_CLASS_MODELS is not valid JSON: {exc}") from exc
+    check_worker_class_models(models)
+    return dict(models)
 
 
 def check_spec_settings(settings: object) -> None:
@@ -188,6 +251,11 @@ def _bool(name: str, default: bool) -> bool:
     if not raw:
         return default
     return raw in {"1", "true", "yes", "on"}
+
+
+def _csv(name: str, default: str = "") -> tuple[str, ...]:
+    raw = os.environ.get(name, default)
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
 
 
 @dataclass(frozen=True)
@@ -316,6 +384,17 @@ class SchedulerSettings:
     #: Default False: off until the owner has seen it on a real PR (owner
     #: decision, 2026-10-01).
     pr_console_links: bool = False
+    #: Saga's decision API through the cluster's Tailscale egress Service
+    #: (INTERNAL_DECISION_API_URL; JUDGE-NET's switch, terraform
+    #: `internal_decision_api_enabled`). Set, a live-browser pod whose
+    #: workspace chose an internal judgment backend gets JEV_API_URL under it
+    #: and the `swarm-judge: internal` label (`scheduler.judgment`). Empty,
+    #: no pod gets either, and an internal choice leaves Jev unavailable
+    #: rather than sending page text to TypeSafe. Only "" or the decision
+    #: API's tailnet origin (`judgment.INTERNAL_DECISION_ORIGIN`), because
+    #: that is the one host the jev wrapper accepts and the pod's hostAliases
+    #: entry resolves.
+    internal_decision_api_url: str = ""
 
     # --- child tasks (docs/design/child-tasks.md) --------------------------
     #: `swarm-child-key` (SWARM_CHILD_KEY), from Secret Manager, held by this
@@ -352,15 +431,85 @@ class SchedulerSettings:
     #: Excluded from the hash: a dict is unhashable and the settings are frozen.
     worker_image_refs: dict[str, str] = field(default_factory=dict, hash=False)
     #: Runner profile -> the model its agent CLI runs, from WORKER_MODELS
-    #: (terraform/infra/locals.tf writes it from `local.runner_models`, today
-    #: `{"claude-code": "claude-opus-5-5"}`). Set as `MODEL` on every Cloud Run
-    #: Job this scheduler CREATES, so a tenant Terraform does not list runs the
-    #: model a listed one does (#226), and on every GKE pod of a pinned profile
-    #: (`profile_model`), which since contract request 53 is how claude-code's
-    #: model reaches it. Never in the per-execution environment:
-    #: `worker_env` carries identifiers and endpoints, and a task's own `model`
-    #: is attribution. Excluded from the hash, like `worker_image_refs`.
+    #: (terraform/infra/locals.tf derives it from `local.runner_models` through
+    #: each profile's `default_model_class`, for one release, #1435). READ ONLY
+    #: WHEN `worker_class_models` IS EMPTY: then it is the `MODEL` on every
+    #: Cloud Run Job this scheduler CREATES and on every GKE pod of a pinned
+    #: profile (`profile_model`), as it was before the class map (#226;
+    #: contract request 53), and never in the per-execution environment. A
+    #: task's own `model` is attribution on either path. Excluded from the
+    #: hash, like `worker_image_refs`.
     worker_models: dict[str, str] = field(default_factory=dict, hash=False)
+    #: Model class -> the ID a step of that class runs, from WORKER_CLASS_MODELS
+    #: (terraform's `local.runner_models`; #1435). When set it is the ONLY
+    #: source of a step's `MODEL`, and `worker_env` carries it on both backends
+    #: (`dispatch.step_model`): the class is the step's, resolved by the frozen
+    #: `step_model_class`, and the ID is this map's, never the task's own
+    #: `model` (invariant 10). It also sets the default class's pin as the
+    #: `MODEL` of every Cloud Run Job this scheduler creates. Empty, the
+    #: scheduler runs on `worker_models` as before, and a step naming a class
+    #: refuses at dispatch. Excluded from the hash, like `worker_image_refs`.
+    worker_class_models: dict[str, str] = field(default_factory=dict, hash=False)
+    #: THE LIVE-BROWSER ROLLOUT SWITCH (docs/design/live-browser.md, lane L5,
+    #: part of #1030). On, a GKE pod of a `live_browser` profile
+    #: (`claude-code-browser`) carries the `display` native sidecar, which runs
+    #: the live gate (`python -m agent_worker.livegate`); off, it is the pod it
+    #: always was. OFF BY DEFAULT because the gate is built by lanes L1-L4,
+    #: and a native sidecar whose entrypoint does not exist yet crash-loops in
+    #: every `claude-code-browser` pod. Turn it on (LIVE_BROWSER_SIDECAR=true)
+    #: once the image that the scheduler dispatches carries the gate.
+    live_browser_sidecar: bool = False
+    #: THE BROWSER EGRESS SWITCH, the dispatcher's side (docs/browser-egress.md
+    #: §10.3; lane EGRESS-DISPATCH, part of #1030). A live-browser pod is
+    #: dispatched for residential egress -- `SWARM_BROWSER_EGRESS=proxy` on its
+    #: `display` sidecar and the `swarm-egress: proxy` label -- only when
+    #: `browser_egress_enabled`, its tenant is in `browser_egress_tenants` AND
+    #: its profile is in `browser_egress_profiles` (scheduler.dispatch
+    #: `browser_egress_on`). terraform/infra/egress.tf renders these from
+    #: var.browser_egress, the SAME values it gives swarm-api, which mints the
+    #: attempt's ticket by the same three tests: a pod routed here that
+    #: swarm-api refused would fail closed with no browser, and one left
+    #: direct that swarm-api would mint for would never ask. OFF BY DEFAULT,
+    #: and the profile default is swarm-api's, so the two agree on a
+    #: deployment that names only the tenants. Never from a task (invariant 10).
+    browser_egress_enabled: bool = False
+    browser_egress_tenants: tuple[str, ...] = ()
+    browser_egress_profiles: tuple[str, ...] = ("claude-code-browser",)
+    #: Hosts the browser reaches DIRECT, as SWARM_EGRESS_BYPASS: egress.tf's
+    #: `egress_bypass_hosts`, the list swarm-egress refuses a CONNECT for, so
+    #: the gate's `--proxy-bypass-list` and the forwarder's refusal agree.
+    browser_egress_bypass: tuple[str, ...] = ()
+    #: THE TYPESAFE FORWARDER SWITCH, the dispatcher's side (docs/design/
+    #: workspace-secrets.md §3.5, SEC-MIGRATE-TYPESAFE; lane TS-MIGRATE-POD,
+    #: part of #1347). A GKE live-browser pod whose workspace chose the
+    #: `typesafe` judgment backend is labelled `swarm-typesafe: inject` -- the
+    #: label both sides of the forwarder's NetworkPolicy select -- only when
+    #: `typesafe_forwarder_enabled` and its tenant is in
+    #: `typesafe_forwarder_tenants` (scheduler.dispatch `typesafe_forwarder_on`).
+    #: terraform/infra/typesafe_fwd.tf renders these from var.typesafe_forwarder,
+    #: the SAME `enabled` and `tenants` the forwarder re-reads as its kill
+    #: switch, and "false" unless the forwarder is served: a pod labelled for a
+    #: tenant the forwarder refuses would fail every judgment, and one left
+    #: unlabelled could never reach it. OFF BY DEFAULT. Never from a task
+    #: (invariant 10).
+    typesafe_forwarder_enabled: bool = False
+    typesafe_forwarder_tenants: tuple[str, ...] = ()
+    #: THE SETTINGS-MAC SWITCH (docs/design/tenant-settings-integrity.md §4.5,
+    #: interim A; lane ISO-SCHED, part of #1457). On, a `workspace_settings`
+    #: `judgment_backend` -- top level or `code_intelligence.` -- counts only
+    #: when its block's MAC verifies under `settings_mac_key`
+    #: (`judgment.trusted_settings`); a forged or unsigned one reads as the
+    #: default, internal-jev, for the pod (`judgment.read_backend`) and for
+    #: the router (`dispatch.read_judge_backend`) alike. Every tenant's worker
+    #: can write any tenant's settings document today, which is #1457.
+    #: OFF BY DEFAULT, because on it reads every document swarm-api has not
+    #: yet signed as unset: turn it on (SETTINGS_MAC_REQUIRED=true) only after
+    #: lane ISO-SETTINGS-MAC's re-sign job has signed the documents that exist.
+    settings_mac_required: bool = False
+    #: `swarm-settings-key` (SWARM_SETTINGS_KEY), from Secret Manager, held by
+    #: swarm-api, which signs with it, and this service, which verifies. Not in
+    #: the repr, so a logged settings object cannot carry it.
+    settings_mac_key: str = field(default="", repr=False)
     dispatch_topic: str = ""
     #: The step-spec verification settings a worker needs (contract request
     #: 34), passed through VERBATIM onto every Cloud Run Job this scheduler
@@ -405,6 +554,7 @@ class SchedulerSettings:
             quota_broker_audience=os.environ.get("QUOTA_BROKER_AUDIENCE", "").strip(),
             console_url=os.environ.get("SWARM_CONSOLE_URL", "").strip(),
             pr_console_links=_bool("SWARM_PR_CONSOLE_LINKS", False),
+            internal_decision_api_url=os.environ.get("INTERNAL_DECISION_API_URL", "").strip(),
             child_key=os.environ.get("SWARM_CHILD_KEY", "").strip(),
             swarm_api_url=os.environ.get("SWARM_API_URL", "").strip(),
             swarm_api_audience=os.environ.get("SWARM_API_AUDIENCE", "").strip(),
@@ -419,6 +569,18 @@ class SchedulerSettings:
             ),
             worker_image_refs=parse_worker_image_refs(os.environ.get("WORKER_IMAGE_REFS", "")),
             worker_models=parse_worker_models(os.environ.get("WORKER_MODELS", "")),
+            worker_class_models=parse_worker_class_models(
+                os.environ.get("WORKER_CLASS_MODELS", "")
+            ),
+            live_browser_sidecar=_bool("LIVE_BROWSER_SIDECAR", False),
+            browser_egress_enabled=_bool("BROWSER_EGRESS_ENABLED", False),
+            browser_egress_tenants=_csv("BROWSER_EGRESS_TENANTS"),
+            browser_egress_profiles=_csv("BROWSER_EGRESS_PROFILES", "claude-code-browser"),
+            browser_egress_bypass=_csv("BROWSER_EGRESS_BYPASS"),
+            typesafe_forwarder_enabled=_bool("TYPESAFE_FORWARDER_ENABLED", False),
+            typesafe_forwarder_tenants=_csv("TYPESAFE_FORWARDER_TENANTS"),
+            settings_mac_required=_bool("SETTINGS_MAC_REQUIRED", False),
+            settings_mac_key=os.environ.get("SWARM_SETTINGS_KEY", "").strip(),
             dispatch_topic=os.environ.get("DISPATCH_TOPIC", ""),
             spec_verify_keys=os.environ.get("SPEC_VERIFY_KEYS", "").strip(),
             spec_signing_key=os.environ.get("SPEC_SIGNING_KEY", "").strip(),
@@ -451,4 +613,13 @@ class SchedulerSettings:
         # directly -- as every test does -- cannot carry a tag either.
         check_worker_image_refs(self.worker_image_refs)
         check_worker_models(self.worker_models)
+        check_worker_class_models(self.worker_class_models)
         check_spec_settings(self)
+        check_internal_decision_api_url(self.internal_decision_api_url)
+        # At START, like the image map: on with no key would read every
+        # workspace's choice as the default without saying why.
+        if self.settings_mac_required and not self.settings_mac_key:
+            raise ValueError(
+                "SETTINGS_MAC_REQUIRED is on and SWARM_SETTINGS_KEY is empty: the "
+                "scheduler cannot verify a workspace_settings MAC without the key"
+            )

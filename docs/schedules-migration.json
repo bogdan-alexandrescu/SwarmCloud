@@ -1,0 +1,36 @@
+{
+  "_what": "Schedules lane S9 (docs/schedules.md §8.1-§8.2), 2026-10-11. The POST /v1/schedules bodies that replace lane SWEEP's issue_sweep Cloud Scheduler job and the operator's session cron bdb47d30. An operator posts each body as the member named in `post_as` (that member becomes the schedule's owner, §2.7); docs/operations.md 'Schedules: the S9 migration' is the procedure. tests/unit/control_plane/test_schedules_migration_seed.py validates every body through swarm_api.schedules.build_schedule, so a body here that the API would refuse fails CI.",
+  "schedules": [
+    {
+      "tenant_id": "eng",
+      "post_as": "the member that was the tenant's issue_sweep.submit_as; since 2026-10-12, when that setting and its route were removed, the posted schedule's own owner (GET /v1/schedules/<id>)",
+      "replaces": ["google_cloud_scheduler_job.issue_sweep[\"eng\"] (swarm-issue-sweep-eng)", "session cron bdb47d30"],
+      "body": {
+        "name": "issue-sweep (was SWEEP)",
+        "type": "issue-sweep",
+        "scope": {"mode": "all"},
+        "cron": "7,37 * * * *",
+        "timezone": "UTC",
+        "params": {"max_live_runs": 8, "fix_rounds": 2},
+        "gate": {"run": "auto", "plan": "auto", "merge": "approve"},
+        "state": "paused",
+        "client_request_id": "s9-eng-issue-sweep"
+      }
+    },
+    {
+      "tenant_id": "eng",
+      "post_as": "the same member",
+      "replaces": [],
+      "body": {
+        "name": "index refresh (weekly, full)",
+        "type": "repo-index-refresh",
+        "scope": {"mode": "all"},
+        "cron": "0 3 * * 0",
+        "timezone": "UTC",
+        "params": {"kind": "full", "only_if_behind": false},
+        "state": "enabled",
+        "client_request_id": "s9-eng-index-refresh"
+      }
+    }
+  ]
+}

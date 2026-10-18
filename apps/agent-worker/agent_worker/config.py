@@ -20,6 +20,7 @@ from swarm_common.config import Settings
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, RunnerProfile, resolve_backend
 
 from . import artifact_manifest, standalone_outputs
+from .cachedirs import CACHE_ROOT_ENV
 from .checkpoint import CHECKPOINT_BACKOFF_CAP_SECONDS
 from .errors import ConfigError
 
@@ -130,6 +131,11 @@ def heartbeat_beat_seconds(grace_seconds: int, platform_interval_seconds: int) -
 #: worker is idle, which is nearly always.
 RUNNER_NICENESS_DEFAULT = 10
 
+#: `graphmcp.shim.DEFAULT_URL` and `graphstage.DEFAULT_SERVICE_URL`: the
+#: `swarm-graph` headless Service in `swarm-system` (graph-service.md §2.1,
+#: §4.2). Restated so this module imports neither; the tests hold them equal.
+DEFAULT_GRAPH_SERVICE_URL = "http://swarm-graph.swarm-system.svc.cluster.local:8080/mcp"
+
 @dataclass(frozen=True)
 class WorkerConfig:
     # --- identity of this attempt -------------------------------------------
@@ -153,6 +159,11 @@ class WorkerConfig:
     #: Run this is the Preview ephemeral disk mount; it is NOT shared with any
     #: other attempt and is assumed empty on every start.
     workspace_root: Path = Path("/workspace")
+    #: The GKE pod's cache volume (`SWARM_CACHE_ROOT`, CACHE-SCRATCH): where
+    #: the agent's tool caches and TMPDIR go, off the workspace volume. None on
+    #: Cloud Run, whose caches stay small inside the workspace tmpfs. See
+    #: `cachedirs`.
+    cache_root: Path | None = None
 
     # --- timing --------------------------------------------------------------
     #: The worker's beat, `heartbeat_beat_seconds` of the grace -- not the
@@ -247,17 +258,6 @@ class WorkerConfig:
     repository_url: str | None = None
     repository_ref: str | None = None
     git_clone_timeout_seconds: int = 300
-    #: Clone from a bundle of the commit in the tenant's own prefix when one is
-    #: there (`clonebundle`, #940). On by default; `SWARM_CLONE_BUNDLES=0` is
-    #: the kill switch, and with it off every clone is today's clone from the
-    #: forge, so turning it off needs no dispatch change.
-    clone_bundles_enabled: bool = True
-    #: A bundle larger than this is neither written nor read: 512 MiB. The
-    #: workspace is memory-backed tmpfs, so a bundle is held in the task's own
-    #: memory beside the checkout it unpacks into; the same ceiling as
-    #: `max_artifact_bytes`, which already bounds what one attempt writes to
-    #: the bucket. A repository past it clones from the forge, as today.
-    clone_bundle_max_bytes: int = 512 * 1024 * 1024
 
     # Harvest and publish. The DEFAULTS here encode the split the whole feature
     # rests on: harvesting is on because it is read-only and costs one git
@@ -334,6 +334,14 @@ class WorkerConfig:
     #: with. Default True, because a root task is written nothing. A courtesy,
     #: not the guard: swarm-api refuses depth itself (MAX_CHILD_DEPTH).
     child_path: bool = True
+    #: The shared graph service (SWARM_GRAPH_URL; docs/design/graph-service.md
+    #: §4.2, lane GS-WORKER): the worker's own setting, handed to the shim in
+    #: its MCP server entry's `env` and never an argument a caller can set
+    #: (invariant 10). Used only for an attempt whose workspace stored
+    #: `graph_delivery: service`. The default is the in-cluster headless
+    #: Service, which every GKE step can reach; a CLOUD_RUN_JOB step stages
+    #: whatever this says (owner decision Q2).
+    graph_service_url: str = DEFAULT_GRAPH_SERVICE_URL
     #: The design's limits (§7). Requests answered per control poll: four per
     #: 10 s keeps one worker far below the API's per-caller rate.
     max_child_requests_per_tick: int = 4
@@ -346,6 +354,21 @@ class WorkerConfig:
     max_child_request_bytes: int = 256 * 1024
     #: Awaits whose attempt is refunded; the fifth counts like any attempt.
     max_child_await_resumes: int = 4
+
+    # --- the state routes (docs/design/tenant-settings-integrity.md, #1457) --
+    #: SWARM_STATE_VIA_API: reach this attempt's state only through swarm-api's
+    #: `/v1/attempts/{id}/state/...` routes (`control.RemoteControlPlane`),
+    #: building no Firestore client. Set by the dispatcher, per tenant, from
+    #: the scheduler's `STATE_VIA_API_TENANTS` (owner decision Q7: dev
+    #: first, then every tenant, then the role is removed).
+    #:
+    #: DEFAULT FALSE, ON PURPOSE: an unset variable is a tenant nobody has
+    #: switched, and its worker behaves exactly as before -- direct Firestore,
+    #: `ControlPlane`. Switching is reversible because both paths write the
+    #: same documents (§4.5). A switched attempt needs SWARM_API_URL and a
+    #: nonce to open its attempt with; without either it cannot start, and
+    #: another attempt would not either (`__post_init__`, exit 78).
+    state_via_api: bool = False
 
     # --- misc ----------------------------------------------------------------
     provider: str | None = None
@@ -458,6 +481,16 @@ class WorkerConfig:
     def __post_init__(self) -> None:
         if self.generation < 1:
             raise ConfigError("fencing generation must be >= 1")
+        if self.state_via_api and not (self.swarm_api_url and self.child_nonce):
+            # Named, never shown: the nonce is a credential for one registration.
+            missing = [name for name, value in (("SWARM_API_URL", self.swarm_api_url),
+                                                ("SWARM_CHILD_NONCE", self.child_nonce))
+                       if not value]
+            raise ConfigError(
+                "SWARM_STATE_VIA_API is on, and the state routes need "
+                f"{' and '.join(missing)}: state/open spends the nonce at swarm-api "
+                "before any other state call"
+            )
         # Touch the profile so an unknown name fails at construction rather than
         # after a workspace has been created.
         _ = self.profile
@@ -516,6 +549,7 @@ class WorkerConfig:
         raw_keys = spec["SPEC_VERIFY_KEYS"]
         signing_key = spec["SPEC_SIGNING_KEY"].strip()
         timeout_env = os.environ.get("TASK_TIMEOUT_SECONDS", "").strip()
+        cache_root = os.environ.get(CACHE_ROOT_ENV, "").strip()
 
         return cls(
             task_id=_require("TASK_ID"),
@@ -529,6 +563,7 @@ class WorkerConfig:
             firestore_database=settings.firestore_database,
             artifact_bucket=os.environ.get("ARTIFACT_BUCKET", settings.artifact_bucket),
             workspace_root=Path(os.environ.get("WORKSPACE_ROOT", "/workspace")),
+            cache_root=Path(cache_root) if cache_root else None,
             heartbeat_interval_seconds=heartbeat_beat_seconds(
                 heartbeat_grace_seconds(settings.heartbeat_interval_seconds),
                 settings.heartbeat_interval_seconds,
@@ -548,7 +583,6 @@ class WorkerConfig:
             heartbeat_meanwhile_max_seconds=3 * settings.lease_timeout_seconds,
             repository_url=repo,
             repository_ref=ref,
-            clone_bundles_enabled=_bool_env("SWARM_CLONE_BUNDLES", True),
             git_harvest_enabled=_bool_env("GIT_HARVEST_ENABLED", True),
             git_publish_enabled=_bool_env("GIT_PUBLISH_ENABLED", True),
             git_harvest_timeout_seconds=_int_env("GIT_HARVEST_TIMEOUT_SECONDS", 120),
@@ -568,6 +602,9 @@ class WorkerConfig:
             swarm_api_url=os.environ.get("SWARM_API_URL", "").strip() or None,
             swarm_api_audience=os.environ.get("SWARM_API_AUDIENCE", "").strip() or None,
             child_path=_bool_env("SWARM_CHILD_PATH", True),
+            state_via_api=_bool_env("SWARM_STATE_VIA_API", False),
+            graph_service_url=(os.environ.get("SWARM_GRAPH_URL", "").strip()
+                               or DEFAULT_GRAPH_SERVICE_URL),
             provider=profile.provider,
             model=os.environ.get("MODEL", "").strip() or None,
             spec_signature_mode=specverify.parse_mode(spec["SPEC_SIGNATURE_MODE"]),

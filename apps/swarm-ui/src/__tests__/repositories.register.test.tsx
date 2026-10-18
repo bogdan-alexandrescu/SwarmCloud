@@ -54,7 +54,7 @@ describe('Register repository picks from what the token can read (pick C)', () =
     await waitFor(() => expect(picks()).toHaveLength(4), WAIT)
     expect(document.querySelector('h1')?.textContent).toBe('Register repository')
     expect(visible(document.querySelector('.ur-steps'))).toBe('1 Choose repository › 2 Schedule and profiles › 3 Register')
-    expect(screen.getByRole('searchbox').getAttribute('placeholder')).toBe('Filter the 4 repositories swarm-tenant-eng-git can read')
+    expect(screen.getByRole('searchbox').getAttribute('placeholder')).toBe('Filter the 4 readable repositories')
     const web = picks()[2]!
     expect(visible(web)).toContain('example-org/example-web')
     expect(visible(web)).toContain('already registered')
@@ -97,6 +97,10 @@ describe('Register repository picks from what the token can read (pick C)', () =
     expect((screen.getByRole('checkbox', { name: 'claude-code' }) as HTMLInputElement).checked).toBe(true)
     expect((screen.getByRole('checkbox', { name: 'codex' }) as HTMLInputElement).checked).toBe(false)
     fireEvent.click(screen.getByRole('radio', { name: '12 h' }))
+    // Step 2 writes nothing: its button opens step 3, the review (RSA-9).
+    expect(screen.queryByRole('button', { name: 'Register example-org/example-api' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Next: review' }))
+    expect(visible(document.querySelector('.ur-steps b'))).toBe('3 Register')
     fireEvent.click(screen.getByRole('button', { name: 'Register example-org/example-api' }))
 
     await waitFor(() => expect(go).toHaveBeenCalledWith('work/repositories?repo=repo_0a1b2c3d4e5f6071'), WAIT)
@@ -124,6 +128,8 @@ describe('Register repository picks from what the token can read (pick C)', () =
     await waitFor(() => expect(picks()).toHaveLength(4), WAIT)
     fireEvent.click(picks()[0]!)
     fireEvent.click(screen.getByRole('button', { name: 'Next: schedule' }))
+    await waitFor(() => screen.getByRole('button', { name: 'Next: review' }), WAIT)
+    fireEvent.click(screen.getByRole('button', { name: 'Next: review' }))
     await waitFor(() => screen.getByRole('button', { name: 'Register example-org/example-api' }), WAIT)
     fireEvent.click(screen.getByRole('button', { name: 'Register example-org/example-api' }))
     await waitFor(() => expect(document.body.textContent).toContain('cannot read example-org/example-api (GitHub answered 404).'), WAIT)
@@ -159,11 +165,84 @@ describe('Register repository picks from what the token can read (pick C)', () =
     await waitFor(() => expect(picks()).toHaveLength(4), WAIT)
     fireEvent.click(picks()[0]!)
     fireEvent.click(screen.getByRole('button', { name: 'Next: schedule' }))
-    await waitFor(() => screen.getByRole('button', { name: 'Register example-org/example-api' }), WAIT)
+    await waitFor(() => screen.getByRole('button', { name: 'Next: review' }), WAIT)
     fireEvent.click(screen.getByRole('radiogroup', { name: 'Re-index every' }).querySelector('[role="radio"]:last-child')!)
     fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Change trigger' })).getByRole('radio', { name: 'Off' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Next: review' }))
     fireEvent.click(screen.getByRole('button', { name: 'Register example-org/example-api' }))
     await waitFor(() => expect(calls.some((c) => c.method === 'POST')).toBe(true), WAIT)
     expect((calls.find((c) => c.method === 'POST')!.body as { index: unknown }).index).toEqual({ interval_hours: 'off', on_change: 'off' })
+  })
+})
+
+// Live QA of /repositories/register, 2026-10-11 (RSA-9, RSA-11, RSA-12, RSA-13).
+describe('Register repository after the live QA', () => {
+  const api = () =>
+    serve((m, url) => {
+      if (m === 'GET' && url === '/v1/repositories/readable') return { status: 200, body: { ...READABLE, secret_name: 'swarm-tenant-eng-git-u-' + 'c6e'.repeat(5) } }
+      if (m === 'GET' && url === '/v1/runtimes') return { status: 200, body: RUNTIMES }
+      if (m === 'POST' && url === '/v1/repositories') return { status: 201, body: { repo_id: 'repo_0a1b2c3d4e5f6071' } }
+      if (m === 'POST') return { status: 202, body: {} }
+      return null
+    })
+
+  it('RSA-9: nothing is posted before step 3, which reads back what will be sent, and Back returns to step 2 with it kept', async () => {
+    const calls = api()
+    await mount()
+    await waitFor(() => expect(picks()).toHaveLength(4), WAIT)
+    fireEvent.click(picks()[0]!)
+    fireEvent.click(screen.getByRole('button', { name: 'Next: schedule' }))
+    await waitFor(() => screen.getByRole('checkbox', { name: 'codex' }), WAIT)
+    fireEvent.click(screen.getByRole('checkbox', { name: 'codex' }))
+    fireEvent.click(screen.getByRole('radio', { name: '7 days' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Index now, after registering' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Next: review' }))
+    expect(calls.filter((c) => c.method !== 'GET')).toEqual([])
+
+    const review = (k: string) => visible(document.querySelector(`[data-review="${k}"]`))
+    expect(review('repository')).toBe('example-org/example-api · default branch main')
+    expect(review('profiles')).toBe('claude-code, codex')
+    expect(review('interval')).toBe('7 days')
+    expect(review('first-index')).toBe('Not queued now.')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+    expect(visible(document.querySelector('.ur-steps b'))).toBe('2 Schedule and profiles')
+    expect(screen.getByRole('radio', { name: '7 days' }).getAttribute('aria-checked')).toBe('true')
+    fireEvent.click(screen.getByRole('button', { name: 'Next: review' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Register example-org/example-api' }))
+    await waitFor(() => expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1), WAIT)
+    expect(calls.find((c) => c.method === 'POST')!.body).toMatchObject({ allowed_profiles: ['claude-code', 'codex'], index: { interval_hours: 168 } })
+  })
+
+  it('RSA-11: a row whose last push was not read says nothing about it', async () => {
+    api()
+    await mount()
+    await waitFor(() => expect(picks()).toHaveLength(4), WAIT)
+    expect(document.body.textContent).not.toContain('last push not read')
+    expect(visible(picks()[1]!.querySelector('small'))).toBe('private')
+  })
+
+  it("RSA-12: the filter's placeholder names no secret", async () => {
+    api()
+    await mount()
+    await waitFor(() => expect(picks()).toHaveLength(4), WAIT)
+    const placeholder = screen.getByRole('searchbox').getAttribute('placeholder') ?? ''
+    expect(placeholder).not.toMatch(/swarm-tenant/)
+    expect(placeholder).toContain('4')
+  })
+
+  it('RSA-13: a typed value that is not owner/repo says why Next is off, and the message goes once it is', async () => {
+    api()
+    await mount()
+    await waitFor(() => expect(picks()).toHaveLength(4), WAIT)
+    const typed = screen.getByRole('textbox', { name: 'Not listed? Type owner/repo' })
+    fireEvent.change(typed, { target: { value: 'not a repo' } })
+    expect((screen.getByRole('button', { name: 'Next: schedule' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(typed.getAttribute('aria-invalid')).toBe('true')
+    const why = document.getElementById(typed.getAttribute('aria-describedby') ?? '')
+    expect(visible(why)).toMatch(/owner\/repo/)
+    fireEvent.change(typed, { target: { value: 'example-org/example-new' } })
+    expect(typed.getAttribute('aria-invalid')).toBeNull()
+    expect(document.getElementById('ur-typed-why')).toBeNull()
   })
 })

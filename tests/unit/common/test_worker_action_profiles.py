@@ -128,7 +128,10 @@ def test_claude_code_review_is_claude_code_but_its_name_and_never_restore_checkp
         "checkpoint_interval_seconds",
     ):
         assert getattr(review, field) == getattr(code, field), field
-    assert dict(review.inputs) == dict(code.inputs)
+    # Contract request 88 gave claude-code `mcp_servers` and deliberately left
+    # the review profile on `_CLI_AGENT_INPUTS`: a review step reads its diff.
+    assert dict(review.inputs) == {k: v for k, v in code.inputs.items() if k != "mcp_servers"}
+    assert "mcp_servers" in code.inputs
 
 
 @pytest.mark.parametrize("name", ("post-verdict", "claude-code-review"))
@@ -153,3 +156,56 @@ def test_the_four_end_causes_are_in_the_frozen_contract():
         assert value in values, f"EndCause has no {value}"
     assert models.EndCause("merge_refused").name == "MERGE_REFUSED"
     assert models.EndCause("verdict_failed").name == "VERDICT_FAILED"
+
+
+# -- contract request 60 (#453 box 87), accepted by the owner 2026-10-11 ----------
+#
+# On main before the change each construct below built without error, so
+# every `pytest.raises` here fails there on "DID NOT RAISE".
+
+
+def _worker_action_profile(**overrides):
+    base = dict(runner_argv=(), worker_action=profiles.WorkerAction.MERGE)
+    base.update(overrides)
+    return _profile(**base)
+
+
+def test_a_plain_string_worker_action_is_refused():
+    # A `str` enum compares equal to its member, but the lifecycle dispatches
+    # with `action is WorkerAction.MERGE`: the string "merge" would run
+    # post-verdict.
+    with pytest.raises(ValueError, match=r"must be a WorkerAction, not a str.*request 60"):
+        _worker_action_profile(worker_action="merge")
+
+
+@pytest.mark.parametrize("action", list(profiles.WorkerAction))
+def test_a_worker_action_profile_with_secrets_is_refused(action):
+    with pytest.raises(ValueError, match=r"mounts no secret.*request 60"):
+        _worker_action_profile(worker_action=action, secrets=("x",))
+
+
+@pytest.mark.parametrize("backend", (Backend.GKE_AUTOPILOT, Backend.AUTO))
+def test_post_verdict_off_cloud_run_is_refused(backend):
+    # AUTO is refused with GKE_AUTOPILOT: it may resolve to GKE, where the pod
+    # runs as the tenant's worker KSA, not post-verdict's own account.
+    with pytest.raises(ValueError, match=r"CLOUD_RUN_JOB.*request 60"):
+        _worker_action_profile(worker_action=profiles.WorkerAction.POST_VERDICT, backend=backend)
+
+
+def test_merge_on_gke_is_still_accepted():
+    """Request 60's item 2 is scoped to post-verdict: merge runs as the tenant's
+    worker account on either backend (requests 47 and 66), see its amendment."""
+    p = _worker_action_profile(backend=Backend.GKE_AUTOPILOT)
+    assert p.backend is Backend.GKE_AUTOPILOT
+
+
+def test_a_runner_profile_may_still_mount_secrets_on_any_backend():
+    # The rule is about worker actions only.
+    for backend in (Backend.CLOUD_RUN_JOB, Backend.GKE_AUTOPILOT, Backend.AUTO):
+        assert _profile(backend=backend, secrets=("x",)).secrets == ("x",)
+
+
+@pytest.mark.parametrize("name", ("merge", "post-verdict"))
+def test_the_catalogue_worker_action_profiles_still_construct(name):
+    p = RUNNER_PROFILES[name]
+    assert dataclasses.replace(p) == p

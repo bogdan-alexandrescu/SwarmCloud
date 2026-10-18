@@ -33,7 +33,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from swarm_api import schedulefire, schedules
+from swarm_api import schedulefire, schedules, scheduletypes
 from swarm_api.auth import (
     ROLLUP_SWEEPER_ROUTES,
     SCHEDULE_TICK_ROUTES,
@@ -787,8 +787,14 @@ def test_a_type_withdrawn_from_the_catalogue_disables_the_schedule(db, ctx) -> N
 
 
 def test_an_unbuilt_executor_is_never_imported_as_available(db, ctx) -> None:
-    """No `swarm_api/schedtypes/` module exists yet (S6): the real loader finds none."""
-    seed_schedule(db)
+    """A type whose `swarm_api/schedtypes/` module does not exist yet: the real loader finds none.
+
+    Chosen at run time, because each type lane (S6, S10a-h) adds a module.
+    """
+    unbuilt = [entry.name for entry in scheduletypes.TYPES if not scheduletypes.executor_present(entry)]
+    if not unbuilt:
+        pytest.skip("every type's executor is built")
+    seed_schedule(db, type_=unbuilt[0])
     Ticker(ctx).tick()
     (firing,) = firings(db).values()
     assert firing["skip"]["code"] == "TYPE_UNAVAILABLE" and tasks(db) == []

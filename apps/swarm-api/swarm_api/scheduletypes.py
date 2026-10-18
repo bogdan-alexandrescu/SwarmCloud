@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
+from pydantic_core import to_jsonable_python
 
 from .schemas import WorkflowCreate
 
@@ -148,8 +149,9 @@ class _Selection(Params):
 
 
 class IssueSweepParams(_Selection):
-    #: Lane SWEEP's cap of 8 is the upper bound: one firing holds at most 8
-    #: tenant slots of work at once.
+    #: Lane SWEEP's cap of 8 is the upper bound. It counts THIS schedule's
+    #: live runs only (`issue_sweep.schedule_live`, lane SCHED): another
+    #: schedule's or a person's run takes no place in it.
     max_live_runs: int = Field(default=8, ge=1, le=8)
     #: These two restate the schedule's gate for the runs it creates; the gate
     #: is the authority and `schedules.resolve_params` keeps them equal to it.
@@ -181,6 +183,14 @@ class ObserverParams(Params):
         default_factory=lambda: list(OBSERVER_FOCUS), min_length=1
     )
     file_issues: StrictBool = False
+    #: The repository the report's epic is filed in (owner decision
+    #: 2026-10-11: the schedule names it, because the report's task has no
+    #: repository). Required when `file_issues` is true, and then one of the
+    #: tenant's registrations the owner can write -- checked at create, at
+    #: edit and again at fire time by `schedtypes/observer.py`, not here: a
+    #: model refusal would also refuse a stored schedule at fire time, where
+    #: the answer is to file nothing, not to fail the report.
+    file_issues_repo_id: str | None = Field(default=None, pattern=r"^repo_[0-9a-f]{16}$")
 
     @field_validator("focus")
     @classmethod
@@ -634,6 +644,26 @@ def creator_role(
     return max(needed, key=ROLE_ORDER.index)
 
 
+def params_schema(model: type[Params]) -> dict[str, Any]:
+    """A type's parameter schema, with every default the server would store.
+
+    Pydantic leaves a `default_factory` out of the JSON schema, so a list
+    default -- issue-sweep's `labels_exclude`, observer's `focus`, the drift
+    types' `paths` -- reached the console as an empty field while create
+    stored the list (live QA AUT-12, 2026-10-11). The factory is called here
+    and its value served as the property's `default`, so the form shows what
+    a blank field means.
+    """
+    schema = model.model_json_schema()
+    props = schema.get("properties") or {}
+    for name, info in model.model_fields.items():
+        prop = props.get(name)
+        if info.default_factory is None or prop is None or "default" in prop:
+            continue
+        prop["default"] = to_jsonable_python(info.get_default(call_default_factory=True, validated_data={}))
+    return schema
+
+
 def describe(entry: ScheduleType, root: Path = EXECUTOR_DIR) -> dict[str, Any]:
     """One row of `GET /v1/schedule-types` (§7.1)."""
     available, reason = availability(entry, root)
@@ -642,7 +672,7 @@ def describe(entry: ScheduleType, root: Path = EXECUTOR_DIR) -> dict[str, Any]:
         "name": entry.name,
         "description": entry.description,
         "executor": entry.executor,
-        "params_schema": entry.params_model.model_json_schema(),
+        "params_schema": params_schema(entry.params_model),
         "default_gate": entry.default_gate.as_dict(),
         "floor_gate": entry.floor_gate.as_dict(),
         "min_interval_minutes": int(entry.min_interval.total_seconds() // 60),

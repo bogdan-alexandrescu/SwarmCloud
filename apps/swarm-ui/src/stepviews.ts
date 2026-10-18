@@ -43,8 +43,11 @@ import {
   type Cell,
 } from './measure'
 import {
+  PARK_REASONS,
   TERMINAL_STATES,
+  clockTime,
   dispatchOf,
+  reasonCopy,
   stepState,
   whyAgent,
   whyNeedsAction,
@@ -1315,6 +1318,14 @@ export function attemptFacts(
   if (a.error !== null && a.error !== '') {
     const lines = a.error.split('\n')
     const first = lines[0] ?? ''
+    // A PARK IS NOT AN ERROR (live QA WF-20): an attempt that ended by
+    // parking -- a merge waiting on CI writes `CI_PENDING` -- read
+    // `error CI_PENDING` in the error slot on a normal wait.
+    const code = a.error.trim()
+    if ((PARK_REASONS as readonly string[]).includes(code)) {
+      facts.push({ key: 'parked', cell: measuredCell(code, reasonCopy(code)) })
+      return facts
+    }
     facts.push({
       key: 'error',
       cell: measuredCell(lines.length > 1 ? `${first} (+${lines.length - 1} lines)` : first, a.error),
@@ -1543,6 +1554,19 @@ export function stepWhy(
     default: {
       const warn = whyNeedsAction(task, units)
       if (failedParent !== null) return why(`blocked: ${failedParent} failed`, warn)
+      // A CI WAIT IS WOKEN BY THE CHECKS (live QA WF-20, 2026-10-11). The
+      // node said "Eligible again at 04:37:11 (in 11m)" beside a merge card
+      // saying "Woken when the checks settle". `next_eligible_at` is the
+      // scheduler's FALLBACK for a CI park (agent_worker control.py: woken
+      // then even if the tick never marks it), so it is said as the latest
+      // time, after what actually wakes it.
+      if (task.state === 'PARKED' && task.park_reason === 'CI_PENDING') {
+        const latest = clockTime(task.next_eligible_at)
+        return why(
+          `${reasonCopy('CI_PENDING')} Woken when the checks settle${latest === null ? '' : `, at the latest at ${latest.text}`}.`,
+          warn,
+        )
+      }
       const agent = whyAgent(task, units)
       if (agent !== '') return why(agent, warn)
       const blocked = whyNotRunning(task)
@@ -1588,17 +1612,46 @@ export function nodeNote(
  * metadata, like everything on a task: a label the masker caught reads as its
  * mask, never as the literal.
  *
- * Null when no step task was joined or none carries a non-blank `unit`; the row
- * then leads with the id alone, which is what it always did.
+ * THEN ITS `title`. The plugin sends a spec's `title` as `metadata.title`
+ * beside the label's `unit`; a workflow that carries only a title is named,
+ * not untitled. The order is swarm-api's (`WORKFLOW_LABEL_KEYS`): unit, title.
+ *
+ * Null when no step task was joined or none carries a non-blank `unit` or
+ * `title`; the list row then reads `listRowName`.
  */
 export function workflowLabel(workflow: Workflow, taskById: ReadonlyMap<string, Task> | null): string | null {
   if (taskById === null) return null
-  for (const s of workflow.steps) {
-    const t = s.task_id ? taskById.get(s.task_id) : undefined
-    const unit = t?.metadata?.unit
-    if (typeof unit === 'string' && unit.trim() !== '') return unit.trim()
+  for (const key of ['unit', 'title'] as const) {
+    for (const s of workflow.steps) {
+      const t = s.task_id ? taskById.get(s.task_id) : undefined
+      const value = t?.metadata?.[key]
+      if (typeof value === 'string' && value.trim() !== '') return value.trim()
+    }
   }
   return null
+}
+
+/** What a list row with neither a label nor a title is called. */
+export const UNTITLED_WORKFLOW = 'Untitled workflow'
+
+/**
+ * The name a workflow list row leads with, and whether the id goes on the
+ * line under it.
+ *
+ * NEVER THE ID ALONE FOR A ROW KNOWN TO BE NAMELESS (owner report 2026-10-11:
+ * a merge workflow listed as "wf_02381158..."). A row whose steps were read
+ * and carry no label or title is "Untitled workflow", with the id under it. A
+ * row whose steps are not read yet does not know its name -- "Untitled" would
+ * be a guess -- so it keeps the id alone, as the note above the table says.
+ */
+export function listRowName(
+  workflowId: string,
+  label: string | null,
+  stepsKnown: boolean,
+): { readonly name: string; readonly showId: boolean } {
+  if (label !== null) return { name: label, showId: true }
+  if (stepsKnown) return { name: UNTITLED_WORKFLOW, showId: true }
+  return { name: workflowId, showId: false }
 }
 
 /** The pull request a workflow opened, as the row prints it. */
@@ -1666,11 +1719,16 @@ export function workflowPullRequest(
 export const MERGE_PROFILE = 'merge'
 
 /**
- * `agent_worker.merge.MERGE_MAX_BRANCH_UPDATES`: how many times the step
- * updates a branch that is behind before it refuses `behind_too_often`.
- * Restated because the console carries no worker; the card prints "n of 3".
+ * `agent_worker.merge.MERGE_MAX_HEAD_UPDATES`: how many of GitHub's base
+ * merges the step's first-parent walk accepts on the pushed head, in all,
+ * before it refuses `behind_too_often`. The card's count (`merge_wait.updates`,
+ * the worker's `branch_updated.updates`) is that walk's total, so this is its
+ * cap -- not `MERGE_MAX_BRANCH_UPDATES` (5 since 2026-10-10, was 3), which
+ * bounds only the updates made while the step held the merge slot. Restated
+ * because the console carries no worker; held to merge.py's source by
+ * __tests__/merge.card.test.tsx. The card prints "n of 12".
  */
-export const MERGE_MAX_BRANCH_UPDATES = 3
+export const MERGE_MAX_HEAD_UPDATES = 12
 
 /** What the merge step is doing, as its card says it. */
 export type MergeCardState =
@@ -1697,7 +1755,10 @@ export interface MergeCard {
   readonly state: MergeCardState
   /** The pull request: a link only when a worker-written result yields one. */
   readonly pullRequest: { readonly number: number; readonly href: string | null } | null
-  /** `metadata.merge_wait.first_parked_at`: when the step first parked for CI. */
+  /**
+   * `metadata.merge_wait.first_parked_at`: when the CURRENT wait for CI began.
+   * Not the step's first park: a merge-slot wait clears it (WF-5).
+   */
   readonly firstParkedAt: string | null
 }
 

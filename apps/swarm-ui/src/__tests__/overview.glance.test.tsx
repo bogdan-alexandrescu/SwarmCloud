@@ -6,7 +6,7 @@
 //
 //   #95  Headroom. "5 can start" beside "0 / 10" read as a contradiction,
 //        because the 5 counts agents and the 10 counts units on the binding
-//        pool, where a browser agent weighs 2. Every figure now names its
+//        pool, where a browser agent then weighed 2. Every figure now names its
 //        unit, and the binding column says it is the binding pool.
 //   #97  Spend. `c-rd` and `c-wr` were never explained; the headline switched
 //        from four decimals to two at $10; the token-mix bar was 90-95% cache
@@ -85,21 +85,23 @@ const EMPTY_STATS: Stats = {
 }
 
 /**
- * The issue's own picture: a browser agent weighs 2 units, the browser pool
- * holds 10 and none are in use, so 5 browser agents can start. A second
- * profile is bound by the caller's own tenant pool, whose column reads `your
- * tenant`.
+ * The issue's picture, on the `large` class: a large agent weighs 4 units, the
+ * large pool holds 20 and none are in use, so 5 can start. (The issue drew it
+ * with a browser agent at 2 units and a pool of 10; contract request 79 made
+ * the browser class 1 unit, and at 1 unit agents and units are the same number
+ * -- the confusion #95 is about cannot be shown.) A second profile is bound by
+ * the caller's own tenant pool, whose column reads `your tenant`.
  */
 const CAPACITY: Capacity = {
   pools: [
     {
-      name: 'resource:browser',
-      hard_limit: 10,
+      name: 'resource:large',
+      hard_limit: 20,
       adaptive_target: null,
       quota_derived_limit: null,
-      effective_limit: 10,
+      effective_limit: 20,
       active: 0,
-      available: 10,
+      available: 20,
       enabled: true,
       updated_at: '2026-09-23T10:00:00Z',
     },
@@ -116,18 +118,18 @@ const CAPACITY: Capacity = {
     },
   ],
   runner_profiles: {
-    browser: {
-      resource_class: 'browser',
+    heavy: {
+      resource_class: 'large',
       backend: 'gke',
       provider: 'anthropic',
-      units: 2,
-      pools: ['resource:browser'],
+      units: 4,
+      pools: ['resource:large'],
       admission: {
-        units: 2,
+        units: 4,
         headroom: 5,
         basis: 'measured',
         blockers: [],
-        binding: ['resource:browser'],
+        binding: ['resource:large'],
         counterfactual: [],
         complete: true,
         unread: [],
@@ -220,7 +222,7 @@ function profileTile(el: HTMLElement, name: string): Element {
 describe('#95: every figure in the Headroom card names what it counts', () => {
   /**
    * "5 can start" and "0 / 10" side by side, the first in agents and the
-   * second in units on the binding pool, where a browser agent weighs 2. O1
+   * second in units on the binding pool, where a large agent weighs 4. O1
    * splits them: a profile tile counts AGENTS that can start (and its long
    * form says the weight), a pool row counts UNITS in use, and each says so.
    *
@@ -229,13 +231,13 @@ describe('#95: every figure in the Headroom card names what it counts', () => {
    */
   it('counts agents on a profile tile and units on a pool row', async () => {
     const el = await mount()
-    const browser = profileTile(el, 'browser')
-    expect(text(browser.querySelector('b'))).toBe('+5')
-    expect(browser.getAttribute('title') ?? '').toMatch(/5 more agents can start; 2 unit\(s\) per agent/)
+    const heavy = profileTile(el, 'heavy')
+    expect(text(heavy.querySelector('b'))).toBe('+5')
+    expect(heavy.getAttribute('title') ?? '').toMatch(/5 more agents can start; 4 unit\(s\) per agent/)
     expect(profileTile(el, 'claude-code').getAttribute('title') ?? '').toMatch(/1 more agent can start;/)
-    const pool = [...el.querySelectorAll('.ov-pools .ov-pl')].find((r) => text(r.querySelector('.ov-idc')) === 'resource:browser')!
-    expect(text(pool.querySelector('b'))).toBe('0/10')
-    expect(pool.getAttribute('title') ?? '').toMatch(/0 of 10 units in use/)
+    const pool = [...el.querySelectorAll('.ov-pools .ov-pl')].find((r) => text(r.querySelector('.ov-idc')) === 'resource:large')!
+    expect(text(pool.querySelector('b'))).toBe('0/20')
+    expect(pool.getAttribute('title') ?? '').toMatch(/0 of 20 units in use/)
   })
 
   /**
@@ -246,7 +248,7 @@ describe('#95: every figure in the Headroom card names what it counts', () => {
    */
   it('labels the binding pool as the one that binds', async () => {
     const el = await mount()
-    expect(text(profileTile(el, 'browser').querySelector('small'))).toBe('binds browser')
+    expect(text(profileTile(el, 'heavy').querySelector('small'))).toBe('binds large')
     expect(text(profileTile(el, 'claude-code').querySelector('small'))).toBe('binds your tenant')
   })
 })

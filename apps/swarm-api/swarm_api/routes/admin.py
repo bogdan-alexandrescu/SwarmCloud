@@ -24,13 +24,15 @@ from typing import Any, Mapping
 from fastapi import APIRouter, Body, Depends, Query
 
 from swarm_common.identity import Principal
-from swarm_common.models import ProviderState, SlotPool, Tenant
+from swarm_common.models import ProviderState, SlotPool, Task, Tenant
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend
 
 from ..attempt_totals import totals_for, with_totals
+from ..browser_logins import CarryReaper
 from ..auth import AuthContext
 from ..cifix import postback_tenant as postback_ci_fixes
 from ..codec import (
+    lease_dispatch_overdue,
     lease_to_api,
     pool_attribution,
     pool_to_api,
@@ -41,12 +43,18 @@ from ..codec import (
 from ..deps import AppContext, admin_auth, get_context, paged_limit
 from ..errors import Forbidden, NotFound, ValidationFailed
 from ..heartbeats import heartbeat_grace_seconds
+from ..people import add_names, name_lookup
 from ..mergewake import wake_tenant
+from ..prgate import wake_tenant as wake_after_prs
+from ..mergetrain import tick_tenant as tick_merge_trains
 from ..purge import HistoryPurge, parse_query
 from ..verdictpublish import on_task_finished
 from ..waker import TASK_FINISHED
 from ..repoindex import RepoIndex
+from ..repositories import RepositoryPush
+from ..brokerclient import AccountPool
 from ..schemas import (
+    AdaptiveTargetRequest,
     DrainRequest,
     HistoryPurgeRequest,
     LimitRequest,
@@ -59,10 +67,9 @@ from ..schemas import (
 from ..task_accounts import accounts_for
 from ..task_input import masking_for
 from ..validation import known_providers
-from ..issuesweep import SweepConfig, SweepSubmitterNotMember, sweep_tenant
-from ..issuesweep import get_config as get_sweep_config
-from ..issuesweep import set_config as set_sweep_config
-from .runs import advance_tenant_runs, start_run
+from .accounts import account_pool
+from .browser_logins import browser_vault
+from .runs import advance_tenant_runs
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
 
@@ -168,6 +175,13 @@ def put_platform_settings(
     one pull request and does not say `metadata.merge` gets a `merge` step
     appended at submission. It applies to workflows submitted AFTER the
     change; a workflow already submitted keeps the steps it was signed with.
+
+    `max_additional_repositories` (1-10, default 5) and
+    `additional_repositories_budget_gib` (1-20, default 6): the limits on a
+    step's additional repositories (#1434). Read at every submission, so a
+    change refuses or admits the next one with no deploy; the worker reads
+    the budget at every clone. A task already submitted keeps what it was
+    pinned with. Ranges: `store.PLATFORM_SETTINGS_RANGES`.
     """
     changes = body.model_dump(exclude_none=True)
     if not changes:
@@ -533,7 +547,7 @@ def list_leases(
     tenant_id: str | None = Query(default=None),
     active_only: bool = Query(default=True),
     state: str | None = Query(default=None, description="LEASED or DISPATCHED"),
-    overdue_only: bool = Query(default=False, description="dispatch_deadline already passed"),
+    overdue_only: bool = Query(default=False, description="dispatch_deadline passed with no heartbeat and no STARTING/RUNNING task"),
     limit: int | None = Query(default=None, ge=1),
     page_token: str | None = Query(default=None),
     auth: AuthContext = Depends(admin_auth),
@@ -604,15 +618,21 @@ def list_leases(
         wanted = state.strip().upper()
         leases = [x for x in leases if x.state.value == wanted]
     if overdue_only:
+        # The deadline first: it needs no read, and no lease inside it can be
+        # overdue. The rest are judged below, once their tasks are read.
         leases = [x for x in leases if x.dispatch_overdue(now)]
 
-    # One batched read for the error text, not one per row.
+    # One task read per distinct task, for the error text and for
+    # `dispatch_overdue`, which a STARTING or RUNNING task clears (the lease's
+    # own state stops at DISPATCHED -- `codec.lease_dispatch_overdue`).
+    tasks: dict[str, Task | None] = {}
     errors: dict[str, str | None] = {}
     for lease in leases:
         if lease.task_id in errors:
             continue
         try:
             task = ctx.store.get_task(lease.tenant_id, lease.task_id, submitted_by=None)
+            tasks[lease.task_id] = task
             # Masked by the task's own masker, as every task route serves it
             # (the PR #229 review): this row crosses tenants, and `last_error`
             # can be the agent's stderr tail.
@@ -620,11 +640,17 @@ def list_leases(
         except Exception:
             # A lease whose task is gone is itself a finding -- the reconciler
             # calls it task_missing. Do not let it fail the whole listing.
+            tasks[lease.task_id] = None
             errors[lease.task_id] = None
+
+    if overdue_only:
+        leases = [
+            x for x in leases if lease_dispatch_overdue(x, tasks.get(x.task_id), now)
+        ]
 
     rows = []
     for lease in leases:
-        row = lease_to_api(lease)
+        row = lease_to_api(lease, task=tasks.get(lease.task_id), now=now)
         row["last_error"] = errors.get(lease.task_id)
         # Written out rather than `heartbeat_at ?? created_at`: the fallback is
         # a real timestamp for a lease that has never beaten, never 0 and
@@ -693,7 +719,7 @@ def list_failures(
         # row carries the same fields a member's task row does
         # (`swarm_api.attempt_totals`).
         totals.update(totals_for(ctx.db, tenant_id, [t.id for t in tasks]))
-    return {
+    payload = {
         "tasks": [
             with_totals(
                 task_to_api(
@@ -707,6 +733,9 @@ def list_failures(
         ],
         "next_page_token": page.next_page_token,
     }
+    # `submitted_by_name` beside `submitted_by`, as `GET /v1/tasks` serves it.
+    add_names(name_lookup(ctx), payload["tasks"], ("submitted_by",))
+    return payload
 
 
 @router.post("/history:purge")
@@ -784,6 +813,43 @@ def list_quota(
         "tenant_id": tenant_id,
         "generated_at": ctx.now(),
     }
+
+
+@router.put("/quota/{provider}/{tenant_id}/adaptive-target")
+def reset_adaptive_target(
+    provider: str,
+    tenant_id: str,
+    body: AdaptiveTargetRequest,
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+    broker: AccountPool = Depends(account_pool),
+) -> dict:
+    """Reset a throttled tenant's AIMD target, through the quota broker.
+
+    QUOTA-RESET (owner, 2026-10-14). One 429 halves `adaptive_target` and the
+    climb back is +1 per 20 consecutive successes, so a tenant can sit far
+    below the ceiling an admin chose long after the cause is gone. The broker
+    is the only writer of quota documents, so this route PROXIES: it checks
+    the caller is a platform admin (`admin_auth`; not a pool admin -- this
+    route is not in `POOL_ADMIN_ROUTES`), that the provider and tenant exist,
+    and forwards the admin's verified email as `requested_by`. The broker
+    clamps to `configured_hard_max`, refuses an EXHAUSTED tenant unless
+    `clear_cooldown`, and audits it in `quota_audit`.
+    docs/runbooks/quota-throttled-tenant.md.
+    """
+    name = _check_provider(provider)
+    if ctx.store.get_tenant(tenant_id) is None:
+        raise NotFound(f"tenant {tenant_id!r} not found")
+    result = broker.set_adaptive_target(
+        name,
+        tenant_id,
+        target=body.target,
+        reason=body.reason,
+        clear_cooldown=body.clear_cooldown,
+        requested_by=auth.email,
+    )
+    ctx.metrics.admin_actions.labels(action="quota_adaptive_target_reset").inc()
+    return result
 
 
 def _provider_pool_name(provider: str, tenant_id: str) -> str:
@@ -937,6 +1003,21 @@ def wake_merges(
     # how its fix step ended (`cifix.postback_tenant`); it never moves a task.
     postback = postback_ci_fixes(ctx, tenant_id, limit=paged_limit(ctx, limit))
     ctx.metrics.admin_actions.labels(action="ci_fix_postback").inc()
+    # Lane SPEED-D3 rides it too, for the same reasons: workflows submitted
+    # with `after` wait, PARKED, for pull requests of their own repository to
+    # merge; this reads each with the same tenant's token and marks the gate
+    # merged or closed (`prgate.wake_tenant`). It never moves a task: the
+    # scheduler's dependency sweep promotes or ends the root.
+    gates = wake_after_prs(ctx, tenant_id, limit=paged_limit(ctx, limit))
+    ctx.metrics.admin_actions.labels(action="after_prs_wake").inc()
+    # The merge train coordinator (TRAIN-WS, docs/merge-trains.md §4) rides
+    # this tick too, for the reason the post-back does: the same tenant, the
+    # same `-git` token and writer, the same minute. It composes, tests,
+    # lands and ejects the tenant's trains and marks each concluded step's
+    # park; it never moves a task. A tenant with no train entries reads two
+    # empty queries and nothing else.
+    trains = tick_merge_trains(ctx, tenant_id, limit=paged_limit(ctx, limit))
+    ctx.metrics.admin_actions.labels(action="merge_train").inc()
     return {
         "tenant_id": tenant_id,
         "report": report.to_api(),
@@ -945,6 +1026,10 @@ def wake_merges(
         "failures": report.failures,
         "ci_fix": postback.to_api(),
         "ci_fix_failures": postback.failures,
+        "after_prs": gates.to_api(),
+        "after_prs_failures": gates.failures,
+        "merge_train": trains.to_api(),
+        "merge_train_failures": trains.failures,
     }
 
 
@@ -992,40 +1077,6 @@ def registration_owner_auth(ctx: AppContext, tenant_id: str):
         )
 
     return _owner
-
-
-def sweep_submitter_auth(ctx: AppContext, tenant_id: str):
-    """email -> the AuthContext a swept run is submitted as: the tenant's named member.
-
-    Same shape as `registration_owner_auth` (built from the stored tenant,
-    never the caller; nothing wider than an ordinary member) but the address
-    is the tenant's `issue_sweep.submit_as`, not a registration's creator, and
-    membership is asked of the directory on every call.
-    """
-
-    def _submitter(email: str) -> AuthContext:
-        tenant = ctx.store.get_tenant(tenant_id)
-        if tenant is None:
-            raise NotFound(f"tenant {tenant_id!r} not found")
-        email = (email or "").strip().lower()
-        if not email or not ctx.authenticator.is_tenant_member(email, tenant):
-            raise SweepSubmitterNotMember(
-                f"issue_sweep.submit_as {email or '(unset)'} is not a current member of "
-                f"tenant {tenant_id!r}, so nothing is swept on their behalf"
-            )
-        return AuthContext(
-            principal=Principal(
-                email=email,
-                subject=f"issue-sweep:{tenant_id}",
-                domain=email.rsplit("@", 1)[-1],
-                groups=(),
-            ),
-            tenant_id=tenant_id,
-            is_admin=False,
-            tenant_principal=tenant.principal,
-        )
-
-    return _submitter
 
 
 @router.post("/repositories/poll")
@@ -1076,81 +1127,50 @@ def poll_repositories(
     }
 
 
-@router.post("/issues/sweep")
-def sweep_issues(
-    tenant_id: str = Query(..., min_length=1),
+@router.post("/repositories/push")
+def push_repository(
+    body: RepositoryPush,
     auth: AuthContext = Depends(admin_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    """Start issue runs for one tenant's ready-looking open issues (owner, 2026-10-08).
+    """A verified push to a registered repository's default branch (graph-service.md §6.2).
 
-    Called every 30 minutes by the per-tenant Cloud Scheduler job
-    `issue_sweep` (terraform/modules/scheduler/jobs.tf). For each of the
-    tenant's registered repositories it lists the open issues with the
-    tenant's token, skips what docs/issue-runs.md "Sweeper" lists, and starts
-    an `auto`, `auto_merge`, two-fix-round run for the rest, oldest-updated
-    first, until the tenant has its cap of live runs (`issuesweep`). Whether
-    an issue is READY is the planner's call: it answers NOT_READY with a
-    reason, posted on the issue.
+    Called by the public receiver `swarm-github-hooks` (lane GS-HOOKS) after it
+    has checked `X-Hub-Signature-256`, deduped `X-GitHub-Delivery` and kept
+    only a non-deleting push to `refs/heads/<default_branch>`. It forwards
+    `{forge, full_name}` and nothing else; `RepositoryPush` refuses any other
+    field, so a payload's `after` sha is never read or stored.
 
-    ONLY THE SCHEDULER'S IDENTITY, as the repository poll: the rollup
-    sweeper, admitted by `auth.ROLLUP_SWEEPER_ROUTES`. Not an admin either --
-    an operator who wants a sweep now runs the job. OFF unless SWEEP_ENABLED
-    and the tenant's `issue_sweep.enabled` are both on; off, it answers
-    which switch is off and starts nothing.
+    Every registration of that repository, in every workspace that registered
+    it, is polled now through the poll's own `RepoIndex._poll_one`
+    (`RepoIndex.push`): its head re-read with that workspace's credential, the
+    throttle and the in-flight rule applied, a run queued in that tenant as
+    the registration's creator (`registration_owner_auth`). Only registrations
+    whose `on_change` is `webhook` are read; the five-minute poll stays the
+    fallback for a missed delivery (owner decision 2).
 
-    TENANT IS EXPLICIT, as on the other ticks. Each run is submitted in that
-    tenant as the member named in its `issue_sweep.submit_as`
-    (`sweep_submitter_auth`), never the caller and never the registrant; a
-    tenant without a current-member `submit_as` is skipped, with the reason in
-    `tenant_skipped`. Its planner waits for admission like any task.
+    The answer carries counts and, for a registration that could not be
+    polled, its opaque `repo_id` and a code: never a tenant id, a head or a
+    name, since the receiver needs none of them.
+
+    ONE IDENTITY, as `poll_repositories` admits only the scheduler's: the
+    rollup sweeper (§6.2 step 4). Not an admin and not a member: a push is
+    forwarded by the receiver, never typed by a person.
     """
     if not auth.is_rollup_sweeper:
         raise Forbidden(
-            "POST /v1/admin/issues/sweep is the issue_sweep scheduler job's; run the job, "
-            "or start a run on the issue with POST /v1/runs"
+            "POST /v1/admin/repositories/push is the swarm-github-hooks receiver's; "
+            "a person who wants an index now uses Index now on the repository"
         )
-    report = sweep_tenant(
-        ctx, tenant_id, owner_auth=sweep_submitter_auth(ctx, tenant_id), start_run=start_run,
+    service = RepoIndex.from_context(ctx)
+    owner, repo = body.owner_repo
+    report = service.push(
+        body.forge, owner, repo,
+        owner_auth_for=lambda tenant_id: registration_owner_auth(ctx, tenant_id),
+        page_size=paged_limit(ctx, None),
     )
-    ctx.metrics.admin_actions.labels(action="issue_sweep").inc()
-    return report.to_api()
-
-
-@router.get("/tenants/{tenant_id}/issue-sweep")
-def get_issue_sweep(
-    tenant_id: str,
-    auth: AuthContext = Depends(admin_auth),
-    ctx: AppContext = Depends(get_context),
-) -> dict:
-    """The tenant's issue-sweep settings (`issuesweep.SweepConfig`), and
-    whether the platform switch SWEEP_ENABLED is on: both must be."""
-    return {
-        "tenant_id": tenant_id,
-        "issue_sweep": get_sweep_config(ctx.db, tenant_id).model_dump(),
-        "platform_enabled": bool(ctx.settings.sweep_enabled),
-    }
-
-
-@router.put("/tenants/{tenant_id}/issue-sweep")
-def set_issue_sweep(
-    tenant_id: str,
-    body: SweepConfig,
-    auth: AuthContext = Depends(admin_auth),
-    ctx: AppContext = Depends(get_context),
-) -> dict:
-    """Replace the tenant's issue-sweep settings: `enabled` (default off),
-    `max_live_runs` (default 8), `submit_as` (the member swept runs are
-    submitted as; required for a sweep to start anything), and the issues the sweep never starts, by
-    number (`exclude_issues`) or label (`exclude_labels`). Whole, not merged:
-    what is sent is what the next sweep reads."""
-    config = set_sweep_config(ctx.db, tenant_id, body)
-    ctx.metrics.admin_actions.labels(action="issue_sweep_settings").inc()
-    return {
-        "tenant_id": tenant_id,
-        "issue_sweep": config.model_dump(),
-        "platform_enabled": bool(ctx.settings.sweep_enabled),
-    }
+    ctx.metrics.admin_actions.labels(action="repo_index_push").inc()
+    return {"report": report.to_api(), "failures": report.failures}
 
 
 def _push_fields(envelope: Mapping[str, Any]) -> dict[str, str]:
@@ -1183,6 +1203,7 @@ def task_finished_push(
     envelope: dict[str, Any] = Body(default_factory=dict),
     auth: AuthContext = Depends(admin_auth),
     ctx: AppContext = Depends(get_context),
+    vault: Any = Depends(browser_vault),
 ) -> dict:
     """A `task_finished` wake, pushed by the scheduler wake topic's second subscription (#748).
 
@@ -1204,6 +1225,12 @@ def task_finished_push(
     if fields.get("reason") != TASK_FINISHED or not task_id:
         return {"handled": False, "reason": fields.get("reason")}
     report = on_task_finished(ctx, task_id, tenant_id=fields.get("tenant_id"))
+    # A personal workflow that this step ended loses its browser session
+    # carry now (docs/design/live-browser.md §5.5.1, lane LB-L9b). Never
+    # raises; the carry sweep and the 24-hour TTL are behind it.
+    CarryReaper(db=ctx.db, vault=vault, now=ctx.now).on_task_finished(
+        task_id, store=ctx.store, rollups=ctx.rollups
+    )
     ctx.metrics.admin_actions.labels(action="task_finished_push").inc()
     return {"handled": True, "report": report.to_api()}
 

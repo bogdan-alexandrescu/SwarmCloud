@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState, type KeyboardEvent, type ReactNode, type Ref } from 'react'
+import { Fragment, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode, type Ref } from 'react'
 
 import { loadAttempts } from './api'
 import { DECLARED_WORDS, NEVER_STARTED_WORD, type DagShape, type ResultUsage, type StepInputs, type StrayInput } from './dag'
@@ -7,6 +7,8 @@ import { NO_ATTEMPT_YET, durationText, type Absence, type Cell } from './measure
 import type { MarkHue, MarkName } from './marks'
 import { NamedMark, Segmented } from './components'
 import { Id } from './Shell'
+import { agentPath } from './OverviewRegions'
+import { addressToPath } from './paths'
 import {
   DEFAULT_SORT,
   VIEW_LABEL,
@@ -27,7 +29,7 @@ import {
   type StepWhy,
   type TimelineAxis,
   type WorkflowView,
-  MERGE_MAX_BRANCH_UPDATES,
+  MERGE_MAX_HEAD_UPDATES,
   type MergeCard,
 } from './stepviews'
 import { TERMINAL_STATES, bytesLabel, timeAgo, type AttemptRow, type TaskState, type Tone, type WorkflowStep } from './types'
@@ -533,7 +535,15 @@ function CellView({
   pending?: boolean
   from?: 'result' | null
 }) {
-  if (pending) return <span className="node-reading" role="img" aria-label="reading" />
+  // A WORD, NOT ONLY A PULSE (live QA WF-24, 2026-10-11): the pulse bar on
+  // the table's ground read as an empty cell beside a total already drawn.
+  if (pending) {
+    return (
+      <span className="wf-cell is-reading" title="The step's attempt read has not landed yet.">
+        reading…
+      </span>
+    )
+  }
   const figure = (
     <span className={cell.kind === 'absent' ? 'wf-cell is-absent' : 'wf-cell'} title={cell.note || undefined}>
       {cell.text}
@@ -588,6 +598,78 @@ const COLUMNS: ReadonlyArray<{ col: string; label: string; sort: SortKey | null;
   { col: 'tokens', label: 'Tokens', sort: 'tokens', num: true },
   { col: 'inputs', label: 'Inputs', sort: null, num: false },
 ]
+
+/**
+ * THE STEP COLUMN'S WIDTH: ITS LONGEST NAME, OUT OF WHY'S SLACK (V098, #1038).
+ *
+ * At the sheet's 96px every name past nine characters was cut -- `cold-start`,
+ * `scan-scr…` -- while all the slack went to Why. The column now asks for its
+ * longest name: the name's characters at the pick's mono advance (0.6em of
+ * `--t-body`, DM Mono's, rounded up) plus the cell's and the button's 22px of
+ * chrome. It is capped at the floor plus whatever the table's box has over its
+ * 980px minimum (`100cqi`: the `wf-steps` container the table sits in), so Why
+ * keeps what it has at the minimum and a name longer than that is still cut,
+ * whole in its title. The 96px floor is the sheet's `min-width`, which this
+ * cannot go under. Inline, on the head cell, because a fixed table takes its
+ * column widths from there and the length is this table's own.
+ */
+export function stepColumnWidth(rows: readonly { step: { step_id: string } }[]): CSSProperties {
+  const longest = rows.reduce((n, r) => Math.max(n, r.step.step_id.length), 0)
+  return { width: `min(calc(${longest} * 0.6 * var(--t-body) + 22px), calc(96px + 100cqi - 980px))` }
+}
+
+/**
+ * EACH FIGURE COLUMN'S PX CEILING: the width the sheet holds it at, sized to
+ * the widest value it can hold -- `skipped by verdict`, `task unread`, `not
+ * reported` (styles/workflows.css). Ran is 128 because `between attempts` is
+ * 16 characters of 12px mono, 115px, and it was cut at 114; State (136 to
+ * 126) and Tokens (104 to 100) gave the room (V202, #1427).
+ */
+const FIGURE_COLUMN_CAP_PX: Readonly<Record<'state' | 'waited' | 'ran' | 'attempts' | 'cost' | 'tokens', number>> = {
+  state: 126,
+  waited: 108,
+  ran: 128,
+  attempts: 92,
+  cost: 100,
+  tokens: 100,
+}
+
+/**
+ * THE FIGURE COLUMNS ARE AS WIDE AS WHAT THIS TABLE PRINTS IN THEM, AND WHY
+ * TAKES THE REST (V202, #1427).
+ *
+ * Every figure column was its ceiling, the widest value it could ever hold, in
+ * every table: at 1440 a failed step's reason was cut to two ellipsised lines
+ * in a 60-75px Why ("exit status / 1: pytest…") while Waited, Ran, Cost and
+ * Tokens printed 35-49px of figures in 100-114px cells. Each column now asks for
+ * its longest value in this table at the cell's advance -- the figures are
+ * 12px mono (`td.is-num`), 0.6em each; the state word is sans at no more than
+ * `--t-meta`, measured at the same 0.6em as an upper bound, after its 22px mark
+ * and gap -- never less than its head (the label and the sort arrow, at
+ * `--t-meta`) and never more than its ceiling. 12px is the cell's padding.
+ * Inline on the head cells, as the Step column's width is (`stepColumnWidth`),
+ * because a fixed table takes its column widths from there.
+ */
+export function figureColumnWidths(
+  rows: readonly Pick<StepRowModel, 'look' | 'times' | 'ran' | 'attempts' | 'cost' | 'tokens' | 'costFrom' | 'tokensFrom' | 'pending'>[],
+): Readonly<Record<keyof typeof FIGURE_COLUMN_CAP_PX, CSSProperties>> {
+  const figure = (cell: Cell, from: 'result' | null, pending: boolean): string =>
+    pending ? 'reading…' : from === 'result' && cell.kind !== 'absent' ? `${cell.text} ${FROM_RESULT_WORD}` : cell.text
+  const longest = (texts: readonly string[]) => texts.reduce((n, t) => Math.max(n, t.length), 0)
+  const label = (col: string) => (COLUMNS.find((c) => c.col === col)?.label ?? col).length
+  const width = (col: keyof typeof FIGURE_COLUMN_CAP_PX, content: string): CSSProperties => ({
+    width: `min(max(calc(${label(col) + 2} * 0.6 * var(--t-meta) + 12px), ${content}), ${FIGURE_COLUMN_CAP_PX[col]}px)`,
+  })
+  const mono = (n: number) => `calc(${n} * 0.6 * var(--t-micro) + 12px)`
+  return {
+    state: width('state', `calc(${longest(rows.map((r) => r.look.word))} * 0.6 * var(--t-meta) + 34px)`),
+    waited: width('waited', mono(longest(rows.map((r) => waitedCell(r.times).text)))),
+    ran: width('ran', mono(longest(rows.map((r) => r.ran.text)))),
+    attempts: width('attempts', mono(longest(rows.map((r) => r.attempts.text)))),
+    cost: width('cost', mono(longest(rows.map((r) => figure(r.cost, r.costFrom, r.pending))))),
+    tokens: width('tokens', mono(longest(rows.map((r) => figure(r.tokens, r.tokensFrom, r.pending))))),
+  }
+}
 
 /** The columns a table draws: every one, less Why when no row has a why (D12). */
 export function tableColumns(rows: readonly Pick<StepRowModel, 'why'>[]): typeof COLUMNS {
@@ -809,6 +891,10 @@ export function WorkflowTable({
   // waiting on a reason or failed, Why was ~110px of blank while ten long step
   // names were squeezed beside it. The step column takes that room instead.
   const columns = tableColumns(rows)
+  // The Step column grows to its longest name (V098; `stepColumnWidth`), and
+  // the figure columns hold their longest value, so Why gets the rest (V202).
+  const stepWidth = stepColumnWidth(rows)
+  const figureWidths = figureColumnWidths(rows)
   const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set())
   const toggleInputs = (stepId: string) =>
     setOpened((was) => {
@@ -840,6 +926,16 @@ export function WorkflowTable({
                 key={c.col}
                 data-col={c.col}
                 className={c.num ? 'is-num' : undefined}
+                // With no Why column the sheet's `width: auto` gives Step all the slack already.
+                style={
+                  c.col === 'step'
+                    ? columns.length === COLUMNS.length
+                      ? stepWidth
+                      : undefined
+                    : c.col in figureWidths
+                      ? figureWidths[c.col as keyof typeof figureWidths]
+                      : undefined
+                }
                 aria-sort={c.sort !== null && sort.key === c.sort ? sort.dir : undefined}
               >
                 {c.sort === null ? (
@@ -964,6 +1060,22 @@ export function useMoreRight<T extends HTMLElement>(): { ref: Ref<T>; on: boolea
     }
   }, [])
   return { ref, on }
+}
+
+/**
+ * A sideways scroller that says when columns are off its right edge: the
+ * `useMoreRight` cue, mounted WITH its element. A table drawn only once its
+ * rows land (an Outcomes card, the workflow list) cannot take the hook from
+ * the screen above it -- the hook measures on mount, when there was no
+ * element yet -- so it takes this instead (VQA V109).
+ */
+export function MoreRight({ className, children }: { className: string; children: ReactNode }) {
+  const more = useMoreRight<HTMLDivElement>()
+  return (
+    <div ref={more.ref} className={more.on ? `${className} has-more` : className}>
+      {children}
+    </div>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -1260,6 +1372,14 @@ export function StepInspector({
   }
   const prevAttempt = ready !== null && at !== null && at > 0 ? () => toAttempt(-1) : null
   const nextAttempt = ready !== null && at !== null && at < ready.length - 1 ? () => toAttempt(1) : null
+  // The stepper's records and the table's counted attempts differ (a CI park
+  // is refunded): the stepper says `run` and names the counted figure (WF-6).
+  const counted = ready !== null && row.sort.attempts !== null && row.sort.attempts !== ready.length
+  const countedTitle =
+    ready === null || at === null
+      ? undefined
+      : `Run ${at + 1} of the ${ready.length} attempt records this step has. ` +
+        `${row.attempts.text} count against its attempts, as the table says: a wait for CI is refunded and not counted.`
 
   return (
     <section className="wf-inspect" aria-label={`Step ${row.step.step_id} of ${workflowId}`}>
@@ -1274,6 +1394,14 @@ export function StepInspector({
           )}
           <Id title={workflowId}>{workflowId}</Id>
         </span>
+        {/* THE CLOSE BUTTON ENDS THE HEAD'S FIRST LINE (V100, #1038). It was
+            the head's last item, after Open agent and Changes, so in a panel
+            or a narrow pane the row wrapped and the × sat alone on a line of
+            its own under the step name, tied to nothing. Beside the workflow's
+            name it is the panel's top-right corner, where a close goes. */}
+        <button type="button" className="wf-inspect-close" aria-label="Stop inspecting this step" onClick={onClose}>
+          ×
+        </button>
         {/* THE WORKFLOW'S START AND SUBMIT (#376), on their own line under
             its name: derived from the earliest step, as the row prints it. */}
         {workflowStarted !== null && (
@@ -1296,19 +1424,37 @@ export function StepInspector({
             Agents drawer. A step with no task has nothing to open, so it gets
             no link rather than a dead one. */}
         {taskId !== null && (
-          <a className="ctl-link wf-inspect-run" href={`#work/task/${encodeURIComponent(taskId)}`}>
+          // THE AGENT'S OWN PATH, UNDER THE LIST THAT HOLDS IT (live QA WF-21,
+          // 2026-10-11): the legacy `#work/task/<id>` resolved every state to
+          // `/agents/live/<id>`, a succeeded step's included. By the rule Run
+          // steps' Open agent uses (`agentPath`, QA G2-17); a task the read
+          // did not carry keeps the Live address, having no state to route by.
+          <a
+            className="ctl-link wf-inspect-run"
+            href={
+              taskState === null
+                ? addressToPath(`work/task/${encodeURIComponent(taskId)}`)
+                : agentPath({ id: taskId, state: taskState })
+            }
+          >
             Open agent →
           </a>
         )}
         {changes !== null && (
           <a className="ctl-link wf-inspect-changes" href={changes.href} title={changes.say ?? undefined}>
-            Changes · {changes.count === null ? '—' : `${changes.count} ${changes.count === 1 ? 'file' : 'files'}`} ›
+            {/* UNCOUNTED, THE LINK SAYS NO COUNT AT ALL (V111, #1038). It
+                printed `Changes · — ›`, a dash where a figure goes, which read
+                as a broken number; and a 0 would claim a count nobody took.
+                The reason nothing was counted is the link's title. */}
+            {changes.count === null ? 'Changes ›' : `Changes · ${changes.count} ${changes.count === 1 ? 'file' : 'files'} ›`}
           </a>
         )}
-        <button type="button" className="wf-inspect-close" aria-label="Stop inspecting this step" onClick={onClose}>
-          ×
-        </button>
       </div>
+
+      {/* NO LIVE THUMBNAIL HERE (LB-UX2b, docs/design/live-browser.md §6).
+          The running browser step's card is inline in its graph NODE
+          (`StepNode` in Workflows.tsx), as the owner's chosen mockup draws
+          it; a second one here would be a second stream of the same session. */}
 
       {children}
 
@@ -1339,11 +1485,35 @@ export function StepInspector({
           </span>
         ) : (
           <>
-            <ScrubButton label="Previous attempt" glyph="◀" onPress={prevAttempt} />
-            <span className="wf-scrub-pos">
-              attempt {at + 1} of {ready.length}
+            {/* ◀ POSITION ▶ IS ONE UNIT THAT NEVER WRAPS, as the same-step
+                stepper's is (V200, #1427): at 400 `run 3 of 3 · 1 of 3
+                counted` filled the line and ▶ wrapped alone onto the next.
+                The counted figure follows the unit and wraps on its own. */}
+            <span className="wf-scrub-nav">
+              <ScrubButton label="Previous attempt" glyph="◀" onPress={prevAttempt} />
+              {/* ONE COUNT, NAMED FOR WHAT IT COUNTS (live QA WF-6, 2026-10-11).
+                  The stepper walks the step's attempt DOCUMENTS; the table's
+                  Attempts is `attempt_count`, which a merge step's CI park
+                  refunds (agent_worker control.py). A merge that parked for CI
+                  four times read `attempt 5 of 5` here and `1 of 10` in the
+                  table, on one screen. Where the two differ the stepper says
+                  `run`, and the counted figure beside it is the table's. */}
+              {counted ? (
+                <span className="wf-scrub-pos" title={countedTitle}>
+                  run {at + 1} of {ready.length}
+                </span>
+              ) : (
+                <span className="wf-scrub-pos">
+                  attempt {at + 1} of {ready.length}
+                </span>
+              )}
+              <ScrubButton label="Next attempt" glyph="▶" onPress={nextAttempt} />
             </span>
-            <ScrubButton label="Next attempt" glyph="▶" onPress={nextAttempt} />
+            {counted && (
+              <span className="wf-scrub-counted" title={countedTitle}>
+                {row.attempts.text} counted
+              </span>
+            )}
             <FactList
               facts={attemptFacts(
                 current,
@@ -1450,7 +1620,7 @@ const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`
  * THE MERGE STEP'S CARD (docs/merge-step.md "Revised 2026-10-06" §6 MS4), on
  * the run page's Steps card and in the workflow page's step inspector: the
  * state -- waiting for CI with the pending checks and the head, behind and
- * updated (n of 3), merged with the commit and the issues closed, or refused
+ * updated (n of 12), merged with the commit and the issues closed, or refused
  * with the code and the reason -- the pull request, and when the step first
  * parked for CI. Every fact is `mergeCardOf`'s; this draws them.
  *
@@ -1473,8 +1643,8 @@ export function MergeStepCard({ card, now }: { card: MergeCard; now: number }) {
     case 'updated':
       head =
         s.updates === null
-          ? `behind, updated (count not recorded) · at most ${MERGE_MAX_BRANCH_UPDATES}`
-          : `behind, updated ${s.updates} of ${MERGE_MAX_BRANCH_UPDATES}`
+          ? `behind, updated (count not recorded) · at most ${MERGE_MAX_HEAD_UPDATES}`
+          : `behind, updated ${s.updates} of ${MERGE_MAX_HEAD_UPDATES}`
       lines = [
         <>GitHub merged the base into the branch; the checks run again{s.head !== null && <> at <Sha sha={s.head} /></>}</>,
         'Holds no capacity. Woken when the checks settle.',
@@ -1539,10 +1709,19 @@ export function MergeStepCard({ card, now }: { card: MergeCard; now: number }) {
           {line}
         </p>
       ))}
+      {/* THE CI CLOCK'S START, NOT THE FIRST PARK (live QA WF-5, 2026-10-11).
+          `first_parked_at` is carried from park to park only while the step
+          waits on CI; a wait for the merge slot clears it (agent_worker
+          control.py, the CI park), so the next CI wait starts it afresh. A
+          step that first parked at 10:35 read "first parked for CI 17m ago"
+          off a clock restarted at 11:08. The words say what the field is. */}
       {card.firstParkedAt !== null && (
         <p className="wf-card-foot" data-fact="first-parked">
-          first parked for CI{' '}
-          <time dateTime={card.firstParkedAt} title={card.firstParkedAt}>
+          current CI wait began{' '}
+          <time
+            dateTime={card.firstParkedAt}
+            title={`${card.firstParkedAt}. The CI clock restarts after a wait for the merge slot, so an earlier park can predate it; the step's events list every park.`}
+          >
             {timeAgo(card.firstParkedAt, now)}
           </time>
         </p>

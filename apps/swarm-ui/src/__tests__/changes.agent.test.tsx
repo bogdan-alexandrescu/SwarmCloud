@@ -286,6 +286,12 @@ describe('the states: none of them reads as no changes', () => {
     render(<AgentChanges task={agent({ base: 'abc', commits: [], dirty: [] })} attempts={[]} file={null} onFile={() => {}} />)
     expect(document.querySelector('.chg-state h3')?.textContent).toMatch(/no changes · nothing differed from the clone/)
     expect(document.querySelector('.chg-state .ctl-mark.is-zero')).not.toBeNull()
+    // The sentence states the fact; the mark, not a coined term, says it is
+    // a measured nothing rather than a failed read (owner, 2026-10-11).
+    expect(document.querySelector('.chg-state .ctl-mark.is-zero')!.getAttribute('aria-label')).toBe(
+      'Nothing differed from the clone, so there is no patch.',
+    )
+    expect(document.querySelector('.chg-state .ctl-mark.is-unread')).toBeNull()
   })
 
   it('says a failed read is not read, with its status, and reads again on Retry', async () => {

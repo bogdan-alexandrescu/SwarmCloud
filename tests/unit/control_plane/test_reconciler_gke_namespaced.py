@@ -67,7 +67,7 @@ from reconciler.logs import build_logger
 from reconciler.model import JobResourceView
 from reconciler.repair import Reconciler
 from reconciler.store import ControlStore
-from scheduler.dispatch import GkeJobDispatcher, GkeTarget
+from scheduler.dispatch import GkeJobDispatcher, GkeTarget, sanitize_name
 
 from .conftest import scheduler_settings
 from .fakes import FakeFirestore
@@ -608,10 +608,13 @@ def test_nothing_is_released_when_the_attempts_own_namespace_is_unreadable():
 def test_the_reconciler_names_a_tenant_namespace_exactly_as_the_dispatcher_does():
     """Two images, one naming rule, pinned together.
 
-    The dispatcher reads `tenant.namespace` FIRST and its template second
-    (`GkeJobDispatcher.namespace_for`). A reconciler that derived the name from
-    the prefix alone would read one namespace while Jobs were created in
-    another, and every task there would read as abandoned.
+    The dispatcher DERIVES the namespace from its template and ignores
+    `tenant.namespace` (#1457: a tenant's worker can rewrite it, and a value
+    inside the prefix named another tenant's namespace). The reconciler is
+    handed what `reconciler.store.tenant_namespaces` returns, which lane
+    ISO-RECON makes the derived name too, so the pair it sees is (tenant id,
+    no record) or (tenant id, the derived name). Either must name where the
+    dispatcher wrote, or every task there would read as abandoned.
     """
     backend = GkeBackend(namespace_prefix=NS, batch_api=RbacBatchApi(), core_api=RbacCoreApi())
     dispatchers = [
@@ -625,7 +628,7 @@ def test_the_reconciler_names_a_tenant_namespace_exactly_as_the_dispatcher_does(
         Tenant(tenant_id="u-sw-c90291", kind="user", principal="sw@saga.xyz",
                created_at=utcnow()),
         # Recorded, and deliberately NOT what the template would derive: the
-        # recorded value must win on both sides.
+        # dispatcher ignores it (#1457).
         Tenant(tenant_id="smoke", kind="group", principal="smoke@saga.xyz",
                created_at=utcnow(), namespace=f"{NS}smoke-legacy"),
         Tenant(tenant_id="eng", kind="group", principal="eng@saga.xyz",
@@ -641,9 +644,10 @@ def test_the_reconciler_names_a_tenant_namespace_exactly_as_the_dispatcher_does(
     ]
     for dispatcher in dispatchers:
         for tenant in tenants:
-            assert backend.namespace_for(tenant.tenant_id, tenant.namespace) == (
-                dispatcher.namespace_for(tenant)
-            ), tenant
+            written = dispatcher.namespace_for(tenant)
+            assert written == sanitize_name(f"{NS}{tenant.tenant_id}"), tenant
+            assert backend.namespace_for(tenant.tenant_id, None) == written, tenant
+            assert backend.namespace_for(tenant.tenant_id, written) == written, tenant
 
 
 # ---------------------------------------------------------------------------
@@ -741,32 +745,31 @@ def test_a_stored_namespace_outside_the_prefix_is_ignored_and_logged_at_error_by
     }
 
 
-def test_a_stored_namespace_inside_the_prefix_is_kept_and_logged_at_warning_by_both(
+def test_a_stored_namespace_inside_the_prefix_is_ignored_and_logged_at_error_by_the_scheduler(
     fresh_mismatch_log, caplog
 ):
-    """The `-canary` rename `kubernetes/render.py --namespace` allows.
+    """Inside the prefix is not ours to trust (#1457): `swarm-tenant-other` is
+    inside it, and a tenant's worker can write its own tenant document, so the
+    2026-10-11 rule that kept such a value ran a pod as another tenant. The
+    `-canary` rename `kubernetes/render.py --namespace` allows is ignored with
+    it, and said once, at ERROR.
 
-    The namespace's RBAC and KSA were applied there, so overruling it would
-    break dispatch; it is kept, and said once.
+    The reconciler's `GkeBackend.namespace_for` still keeps a recorded value
+    inside the prefix; after lane ISO-RECON it is handed only the derived name
+    (`reconciler.store.tenant_namespaces`), which the parity test above pins.
     """
     caplog.set_level("DEBUG", logger="scheduler.dispatch")
-    canary = f"{NS}eng-canary"
     dispatcher = GkeJobDispatcher(scheduler_settings(),
                                   target=GkeTarget("10.0.0.1", "/dev/null"))
-    stream = io.StringIO()
-    backend = GkeBackend(namespace_prefix=NS, batch_api=RbacBatchApi(),
-                         core_api=RbacCoreApi(), logger=build_logger(stream))
 
-    assert dispatcher.namespace_for(_tenant("eng", canary)) == canary
-    assert backend.namespace_for("eng", canary) == canary
+    for stored in (f"{NS}eng-canary", f"{NS}other"):
+        assert dispatcher.namespace_for(_tenant("eng", stored)) == ENG_NS, stored
 
-    [scheduler_entry] = _mismatch_records(caplog)
-    [reconciler_entry] = _reconciler_mismatches(stream)
-    for entry in (scheduler_entry, reconciler_entry):
-        assert entry["severity"] == "WARNING", entry
-        assert (entry["tenant_id"], entry["stored"], entry["derived"]) == (
-            "eng", canary, ENG_NS
-        ), entry
+    [entry] = _mismatch_records(caplog)
+    assert entry["severity"] == "ERROR", entry
+    assert (entry["tenant_id"], entry["stored"], entry["derived"]) == (
+        "eng", f"{NS}eng-canary", ENG_NS
+    ), entry
 
 
 def test_a_stored_namespace_equal_to_the_derived_one_logs_nothing(fresh_mismatch_log, caplog):

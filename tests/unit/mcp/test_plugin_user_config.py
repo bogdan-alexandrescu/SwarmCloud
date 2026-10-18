@@ -68,9 +68,22 @@ def _user_config() -> dict:
 _HOOK_OPTIONS = {"auto_attach": _MANIFEST.parents[1] / "hooks" / "session-start.sh"}
 
 
+#: The option that reaches the bridge NOT as `SWARM_PLUGIN_<KEY>` but as the
+#: variable every client already reads for it: `tenant` -> SWARM_TENANT
+#: (SC-TENANT, owner decision 2026-10-12), behind a SWARM_TENANT already in
+#: Claude Code's environment. `test_sc_tenant.py` holds that mapping and that
+#: precedence, by expanding the manifest's own entry the way Claude Code does.
+_TENANT_OPTION = "tenant"
+_TENANT_ENV = "SWARM_TENANT"
+
+
 def _bridge_options() -> dict:
-    """The options the bridge reads: every declared one but the hooks'."""
-    return {k: v for k, v in _user_config().items() if k not in _HOOK_OPTIONS}
+    """The options the bridge reads as SWARM_PLUGIN_<KEY>: every declared one
+    but the hooks' and the tenant."""
+    return {
+        k: v for k, v in _user_config().items()
+        if k not in _HOOK_OPTIONS and k != _TENANT_OPTION
+    }
 
 
 def test_every_hook_option_is_read_by_its_hook():
@@ -114,7 +127,10 @@ def test_every_option_reaches_the_bridge_under_the_name_it_reads():
             f"{key!r} must reach the bridge as {name}={'${user_config.' + key + '}'}; "
             f"env carries {env.get(name)!r}"
         )
-    passed = {v for v in env.values() if isinstance(v, str) and "${user_config." in v}
+    passed = {
+        v for name, v in env.items()
+        if name != _TENANT_ENV and isinstance(v, str) and "${user_config." in v
+    }
     assert len(passed) == len(_bridge_options()), f"env passes an option nobody declared: {passed}"
 
 
@@ -145,6 +161,7 @@ def test_what_the_install_dialog_collects_is_what_the_bridge_resolves(tmp_path):
     options = _bridge_options()
     assert set(options) == {
         config.PLUGIN_URL, config.PLUGIN_CLIENT_ID, config.PLUGIN_CLIENT_SECRET, config.PLUGIN_TARGET,
+        config.PLUGIN_MAX_LIVE_ROWS,
     }, "the bridge names a role for every option the manifest prompts for, and no other"
     # URL-shaped for every option: a valid deployment URL, and a string that
     # is still a well-formed (if unusual) client id and secret. The target is
@@ -152,6 +169,9 @@ def test_what_the_install_dialog_collects_is_what_the_bridge_resolves(tmp_path):
     # in the target proves the substitution and not the fallback.
     answers = {key: f"https://{key.replace('_', '-')}.example.test" for key in options}
     answers[config.PLUGIN_TARGET] = "local"
+    # A number the default is not, so landing in the cap proves the
+    # substitution and not the fallback (SC-ROWS).
+    answers[config.PLUGIN_MAX_LIVE_ROWS] = "17"
     environ = {"SWARM_CONFIG_DIR": str(tmp_path)}
     for name, value in _server_env().items():
         for key, answer in answers.items():
@@ -167,6 +187,7 @@ def test_what_the_install_dialog_collects_is_what_the_bridge_resolves(tmp_path):
     target = config.session_target(environ)
     assert target.value == answers[config.PLUGIN_TARGET], "the default target typed at install never arrived"
     assert "plugin" in target.source, target.source
+    assert config.max_live_rows(environ) == 17, "the live-row cap typed at install never arrived"
 
 
 def test_the_default_target_defaults_to_the_bridges_default_and_names_all_three():
@@ -234,3 +255,13 @@ def test_the_prompts_say_what_to_paste_and_where_it_comes_from(key):
     assert len(description) > 40, key
     if key != "deployment_url":
         assert "desktop" in description, f"{key} must say it is the Desktop app client"
+
+
+def test_the_tenant_option_says_where_the_default_it_falls_back_to_is_set():
+    """Empty is not "the personal workspace" any more: it is the default the
+    person chose in Settings › Profile, else that (PROFILE-SC,
+    docs/design/user-profile.md §4.5). A prompt that names the wrong fallback
+    sends someone to the wrong screen to change it."""
+    described = _user_config()[_TENANT_OPTION]["description"]
+    assert "Settings › Profile" in described, described
+    assert _TENANT_ENV in described, described

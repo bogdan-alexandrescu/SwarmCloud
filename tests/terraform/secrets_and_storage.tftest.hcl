@@ -203,6 +203,8 @@ run "a_live_object_is_deleted_by_custom_time_never_by_age" {
   variables {
     bucket_suffix           = "saga-agents-staging"
     artifact_retention_days = 14
+    live_recording_suffixes = [".live.webm", ".live.jsonl"]
+    checkpoint_key          = "tenants/eng/tasks/task_1/attempts/att_1/checkpoints/ck_1/archive.tar.gz"
   }
 
   assert {
@@ -215,27 +217,41 @@ run "a_live_object_is_deleted_by_custom_time_never_by_age" {
     error_message = "artifacts and logs must expire artifact_retention_days after the customTime the worker stamps on them"
   }
 
-  # The clone-bundle rule (issue #940) is the only `age` Delete, and it is
-  # bound to the two bundle suffixes, which no checkpoint key ends with.
+  # No `age` Delete except the live browser's recordings. The clone-bundle
+  # suffix rule (issue #940) was the first exception, and it went with the
+  # bundles on 2026-10-11. The second was decided by the owner as LB-4
+  # (docs/design/live-browser.md §7, lane LB-L8): recordings are kept 7 days,
+  # by an `age` rule confined to EXACTLY the two `.live.*` suffixes, which no
+  # checkpoint key can end in (held just below; live.tftest.hcl holds the rest).
   assert {
     condition = length([
       for r in google_storage_bucket.artifacts.lifecycle_rule : r
       if one(r.action).type == "Delete" && coalesce(one(r.condition).age, 0) > 0
-      && sort(coalesce(one(r.condition).matches_suffix, [])) != sort([".swarm-clone.bundle", ".swarm-clone.head"])
+      && toset(coalesce(one(r.condition).matches_suffix, [])) != toset(var.live_recording_suffixes)
     ]) == 0
     error_message = "an age-based Delete rule deletes a PARKED task's only checkpoint on a clock; checkpoints are removed by reconciler/checkpoints.py alone"
   }
 
+  assert {
+    condition = alltrue(flatten([
+      for r in google_storage_bucket.artifacts.lifecycle_rule : [
+        for s in coalesce(one(r.condition).matches_suffix, []) : !endswith(var.checkpoint_key, s)
+      ]
+      if one(r.action).type == "Delete"
+    ]))
+    error_message = "a suffix-scoped Delete rule matches a checkpoint key"
+  }
+
   # Every Delete rule is one of four shapes: the customTime clock on LIVE
   # objects, one of the two noncurrent-version rules on ARCHIVED ones, or the
-  # clone-bundle suffix rule (decided in issue #940). A fifth shape
-  # (created_before, matches_prefix, a different with_state) is a new way to
-  # reach a checkpoint and has to be decided, not slipped in.
+  # live browser's 7-day rule on exactly its two suffixes. A fifth shape (age,
+  # created_before, matches_prefix, another suffix, a different with_state) is
+  # a new way to reach a checkpoint and has to be decided, not slipped in.
   assert {
     condition = alltrue([
       for r in google_storage_bucket.artifacts.lifecycle_rule :
       one(r.condition).with_state == "ARCHIVED" || coalesce(one(r.condition).days_since_custom_time, 0) > 0
-      || sort(coalesce(one(r.condition).matches_suffix, [])) == sort([".swarm-clone.bundle", ".swarm-clone.head"])
+      || (toset(coalesce(one(r.condition).matches_suffix, [])) == toset(var.live_recording_suffixes) && length(coalesce(one(r.condition).matches_prefix, [])) == 0)
       if one(r.action).type == "Delete"
     ])
     error_message = "a Delete rule on live objects that is not keyed on customTime can match a checkpoint"

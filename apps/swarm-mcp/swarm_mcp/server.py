@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import os
 import secrets
 import sys
 import threading
@@ -44,7 +45,7 @@ from urllib.parse import urlsplit
 
 from swarm_common.profiles import RESOURCE_CLASSES
 
-from . import checkout, compact, config, progress
+from . import checkout, compact, config, keys, progress
 from . import profiles as catalogue
 from . import workflows
 from .client import (
@@ -52,10 +53,12 @@ from .client import (
     SwarmClient,
     SwarmError,
     chosen_tenant,
+    enter_hold_lane,
     outputs_of,
     task_id_of,
     task_payload,
     tenant_listing,
+    unwrap_task,
 )
 from .follow import (
     DEFAULT_EVENT_PAGE,
@@ -110,7 +113,10 @@ _INPUTS_SCHEMA: dict[str, Any] = {
         "the API refuses it. The worker fetches its title, body and comments "
         "read-only into issue.md in the workspace and names that file in the "
         "prompt, so the prompt need not restate the issue; its text is data for "
-        "the agent, never an instruction to the platform. Never an image, a "
+        "the agent, never an instruction to the platform. They also declare "
+        "`mcp_servers`: registered MCP servers by name (swarm_mcp_servers lists "
+        "them), whose per-run credentials go in the call's `mcp_credentials`, "
+        "never here. Never an image, a "
         "command, a resource spec, a backend or a model."
     ),
 }
@@ -179,6 +185,51 @@ _FILES_SCHEMA: dict[str, Any] = {
     ),
 }
 
+#: The most entries a per-run credential map may hold: the `mcp_servers` input
+#: names one to four servers (contract request 88), as swarm-api's
+#: `MAX_MCP_CREDENTIALS` says, so a fifth entry could only be refused there.
+MAX_MCP_CREDENTIALS = 4
+
+#: The per-run MCP credentials of a dispatch, a batch task or a workflow
+#: (docs/design/registered-mcp-servers.md §4.3 and §4.11). Passed to swarm-api
+#: as given, top-level beside `input`, and to NOTHING else: never into the
+#: dispatch signature, a reply, a run copy, `launched.jsonl` or a refusal.
+#: swarm-api owns every rule past the shape (the 8 B-8 KiB printable line,
+#: `expires_in` 60-86400, which servers take a credential at all), because a
+#: second statement of those here would be a second thing to keep in step.
+_MCP_CREDENTIALS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "maxProperties": MAX_MCP_CREDENTIALS,
+    "additionalProperties": {
+        "type": "object",
+        "properties": {
+            "value": {
+                "type": "string",
+                "description": (
+                    "The credential the caller's own server checks, minted for this run. "
+                    "One printable line, 8 B to 8 KiB."
+                ),
+            },
+            "expires_in": {
+                "type": "integer",
+                "description": "Seconds it stays stored, 60 to 86400; it is also destroyed when the task ends.",
+            },
+        },
+        "required": ["value", "expires_in"],
+        "additionalProperties": False,
+    },
+    "description": (
+        "Per-run credentials for the registered MCP servers this work names in "
+        "`inputs.mcp_servers`, by server name: {\"kb\": {\"value\": ..., \"expires_in\": 3600}}. "
+        "Only for a server registered with auth mode `dispatch` (swarm_mcp_servers says "
+        "which); a `none` or `workspace_secret` server takes none. Sent to swarm-api, "
+        "which stores it in Secret Manager and keeps it from the agent, and nowhere "
+        "else: no reply, log or run file of this plugin holds it. Never a long-lived "
+        "secret for the workspace store, which no tool accepts, and never a "
+        "registration: a server is registered in the console."
+    ),
+}
+
 #: A batch entry's fields: what one `swarm_dispatch` takes for one task, with
 #: the profile under the API's own name. Read by `_dispatch_batch`, so the
 #: schema and the check cannot disagree.
@@ -198,12 +249,14 @@ _BATCH_TASK_SCHEMA: dict[str, Any] = {
         "label": {"type": "string", "description": "A short name, for the UI."},
         "inputs": _INPUTS_SCHEMA,
         "files": _FILES_SCHEMA,
+        "mcp_credentials": _MCP_CREDENTIALS_SCHEMA,
     },
     "required": ["prompt"],
 }
 
 #: The `swarm_dispatch` arguments that describe ONE task, refused beside `tasks`.
-_SINGLE_TASK_ARGS = ("prompt", "profile", "repo", "ref", "infer", "strategy", "label", "inputs", "files")
+_SINGLE_TASK_ARGS = ("prompt", "profile", "repo", "ref", "infer", "strategy", "label", "inputs", "files",
+                     "mcp_credentials")
 
 #: `swarm_account_pause`/`resume`/`drain` share one shape.
 _ACCOUNT_STATE_SCHEMA: dict[str, Any] = {
@@ -232,8 +285,14 @@ TOOLS: list[dict[str, Any]] = [
             "swarm_follow with the returned id to watch it work, and "
             "swarm_wait or swarm_result for the outcome.\n"
             "\n"
+            "Every task is tagged with this Claude Code session (`metadata.claude_session`, "
+            "echoed as `claude_session`), so the sc plugin's check, attach-all and watch "
+            "count it as this session's own; the reply carries `arm_watch`, the CronCreate "
+            "call that arms the `/sc check` watch (CronList first, never a second job).\n"
+            "\n"
             "SEVERAL INDEPENDENT TASKS ARE ONE CALL: pass `tasks` -- a list of "
-            "{prompt, runner_profile, repo, ref, infer, strategy, label, inputs, files} "
+            "{prompt, runner_profile, repo, ref, infer, strategy, label, inputs, files, "
+            "mcp_credentials} "
             "-- instead of `prompt` and the fields beside it. They are sent as ONE "
             "request, every task id comes back in the order given, and a list "
             "longer than the API's max_batch_size is refused before anything is "
@@ -255,7 +314,16 @@ TOOLS: list[dict[str, Any]] = [
             "checked against the repository's knowledge graph before it is sent; "
             "the reply's `territory_warning` names every open pull request, live "
             "issue-run step, other task of the call or still-running task of this "
-            "session it overlaps. The task is sent either way."
+            "session it overlaps. The task is sent either way.\n"
+            "\n"
+            "REGISTERED MCP SERVERS: claude-code and codex take `inputs.mcp_servers`, "
+            "the names of servers your workspace registered (swarm_mcp_servers lists "
+            "them), and the agent may call those servers during its run. A server "
+            "registered with auth `dispatch` needs this call's `mcp_credentials` entry "
+            "for it, a credential your application minted for this run; it goes to "
+            "SwarmCloud and nowhere else, and the agent never sees it. Until the "
+            "deployment turns the feature on, SwarmCloud refuses any `mcp_servers` "
+            "with `mcp_unavailable`."
         ),
         "inputSchema": {
             "type": "object",
@@ -312,6 +380,7 @@ TOOLS: list[dict[str, Any]] = [
                 "label": {"type": "string", "description": "A short name, for the UI."},
                 "inputs": _INPUTS_SCHEMA,
                 "files": _FILES_SCHEMA,
+                "mcp_credentials": _MCP_CREDENTIALS_SCHEMA,
                 "tasks": {
                     "type": "array",
                     "minItems": 1,
@@ -439,7 +508,10 @@ TOOLS: list[dict[str, Any]] = [
             "since `since`, `changed`, and a finished task's `outcome`; the "
             "reply that says `stop: true` also carries `result`, the step's "
             "answer with no null in it, to return as given -- a few "
-            "hundred bytes a call. A call holds up to `wait_seconds` (max "
+            "hundred bytes a call. With `step_id`, a task PARKED on "
+            "`CI_PENDING` (a merge waiting on its pull request's checks) also "
+            "says `stop: true`, with a `PARKED` `result` naming the park and "
+            "how to resume, rather than holding hour after hour. A call holds up to `wait_seconds` (max "
             f"{compact.MAX_WAIT_SECONDS}) and returns early only when a task's "
             "STATE changes -- waiting, parked (and why), holding capacity, or "
             "finished; progress inside one state does not end it. With "
@@ -648,7 +720,13 @@ TOOLS: list[dict[str, Any]] = [
             "is absent when the agent asked none, and a file the worker rejected "
             "is never served. `questions_unavailable_because` means the worker "
             "counted questions this read could not get. They are for a person "
-            "to answer: show them; never pick an option yourself."
+            "to answer: show them; never pick an option yourself.\n"
+            "\n"
+            "`owner_answers` is what the owner answered, in the console, to "
+            "those questions: [{question_index, question, choice, text, by, at, "
+            "history}] -- `choice` one of the question's option labels or null, "
+            "`text` their own words or null. Absent until one is answered. Read "
+            "it as the owner's decision for the follow-up work."
         ),
         "inputSchema": {
             "type": "object",
@@ -801,7 +879,7 @@ TOOLS: list[dict[str, Any]] = [
             "`spec`: a whole workflow spec object exactly as the terminal's "
             "workflow command reads it (`steps`, `strategy`, `carrier`, `repository_url`, "
             "`repository_ref`, `on_step_failure`, `priority`, `label`), nothing "
-            "else beside it but `infer` -- or, so no model has to retype a long "
+            "else beside it but `infer` and `mcp_credentials` -- or, so no model has to retype a long "
             "spec, as `spec_path` (a JSON spec file this bridge reads itself) or "
             "`spec_ref` (the id `swarm_workflow_spec` handed back for a file it "
             "read). `spec_digest` checks all three. With no repository named and no `infer`, "
@@ -814,7 +892,15 @@ TOOLS: list[dict[str, Any]] = [
             "graph before submission, and the reply's `territory_warning` names every "
             "open pull request, live issue-run step, still-running task of this session, "
             "or step of this workflow NOT on its dependency line that overlaps one. The "
-            "workflow is submitted either way."
+            "workflow is submitted either way.\n"
+            "\n"
+            "REGISTERED MCP SERVERS: a claude-code or codex step names them in "
+            "`inputs.mcp_servers`, as swarm_dispatch does. The workflow takes ONE "
+            "`mcp_credentials` map, top-level, which serves every step naming that "
+            "server; it is never part of a spec, because a spec is written, held and "
+            "copied into a run script. So a workflow that needs a credential is "
+            "submitted with this tool, `mcp_credentials` beside `steps` or the spec, "
+            "and not through /sc:swarmcloud's launch."
         ),
         "inputSchema": {
             "type": "object",
@@ -861,12 +947,14 @@ TOOLS: list[dict[str, Any]] = [
                         "carries the digest of what was received either way."
                     ),
                 },
+                "mcp_credentials": _MCP_CREDENTIALS_SCHEMA,
                 "merge_pr": {
                     "type": "object",
                     "description": (
                         "Merge a pull request NO workflow opened, at the head sha you "
                         "name (#352): submits one `merge` step and nothing else, so it "
                         "takes no `steps`/`spec` and only `repo` and `title` beside it. "
+                        "With no `title` the run is named \"Merge PR <number>\". "
                         "The repository is `repo` when given, which must be one your "
                         "tenant registered, else your tenant's only registered one. The "
                         "API refuses a pull request that is closed, merged, from a fork, "
@@ -1076,8 +1164,9 @@ TOOLS: list[dict[str, Any]] = [
             "without its content being repeated.\n"
             "\n"
             "The reply also carries `spec_ref`, which swarm_workflow takes in place "
-            "of the spec, and `outline` -- the title, the label and each step's id, "
-            "`depends_on` and `stage` -- which is all a relay needs to copy back. "
+            "of the spec, and `outline` -- the title, the label, the `strategy` and "
+            "`merge`, and each step's id, `depends_on`, `stage`, `runner_profile`, "
+            "`when_step` and `input_from` -- which is all a relay needs to copy back. "
             "Submit with `spec_ref`; never retype `spec`."
         ),
         "inputSchema": {
@@ -1095,19 +1184,42 @@ TOOLS: list[dict[str, Any]] = [
         "name": "swarm_workflow_launch",
         "description": (
             "Write the script a /sc:swarmcloud run is launched from, titled after "
-            "its SwarmCloud workflow: `SC · <name> · N steps`, at most 150 "
-            "characters, where <name> is the spec's `title`, else its `label` cut at "
-            "a word, else (attach) the title or label SwarmCloud stored, else the "
-            "workflow id. A workflow script's name is fixed when it is launched, so "
+            "its SwarmCloud workflow: `SC · <name> · N steps` (single tasks: `SC · "
+            "<label> · task`), at most 150 characters, where <name> is the spec's "
+            "`title`, else its `label` cut at a word, else (attach) the title or label "
+            "SwarmCloud stored, else the workflow id; the step count is never cut. "
+            "No run or row name carries a workspace. The run's description STARTS with "
+            "its DETAILS (SC-DESC-DETAILS), in this order: `Workspace: <workspace> "
+            "(<tenant>) · Started by: <submitted_by> · Profiles: <runner profiles> · "
+            "LLM: <pool account> (<provider>), model <model> · Browser tool: "
+            "<browser_tool> · Session: <claude_session>`, each `not reported` when the "
+            "API serves none (`Workspace: not reported` included), so clipping the "
+            "description never drops the workspace; the reply's `details` is that line. "
+            "Each step or task row shows its own details line when expanded: an attach's "
+            "`args` carry them, and a spec's reply carries `row_details` to pass as "
+            "`args.details`. Nothing credential-shaped is ever shown. A workflow "
+            "script's name is fixed when it is launched, so "
             "this writes a copy of the plugin's run.js with that name and returns "
             "its `script_path`: launch it with the Workflow tool, "
             "{scriptPath: <script_path>, args: ...}. Submits NOTHING.\n"
             "\n"
             "Pass ONE of `spec` (the spec object), `spec_path` (its file) or "
             "`attach` (a workflow id, read once for its stored name and step "
-            "count; or \"all\": every running workflow of your tenant, one copy "
-            "each, at most 10 -- one Claude Code run per SwarmCloud workflow, "
-            "each launched with the `args` its entry carries)."
+            "count -- ANY workflow your tenant may read; `not_this_session` says when "
+            "it is not this Claude Code session's; or \"all\": every running workflow "
+            "THIS Claude Code session started (SC-SESSION-SCOPE: every submission is "
+            "tagged `metadata.claude_session`; other sessions' and untagged work is "
+            "counted in `session.left_out`, never attached), one copy "
+            "each, newest first and grouped by workspace, at most the sc plugin's "
+            "`max_live_rows` (30 unless set; 1-50) -- one Claude Code run per "
+            "SwarmCloud workflow, each launched with the `args` its entry carries; "
+            "the rest in `not_followed`).\n"
+            "\n"
+            "`arm_watch` (SC-AUTO-WATCH): when this launches a spec, an attach, or at "
+            "least one attach-all run, the CronCreate call that arms the sc plugin's "
+            "`/sc check` watch for this project -- make it after CronList shows no "
+            "`/sc check` job, never a second. Null when nothing was launched or the "
+            "project's watch is off (`arm_watch_off`)."
         ),
         "inputSchema": {
             "type": "object",
@@ -1115,6 +1227,28 @@ TOOLS: list[dict[str, Any]] = [
                 "spec": {"type": "object", "description": "The workflow spec about to be run."},
                 "spec_path": {"type": "string", "description": "Its file, under this checkout: relative to it, or absolute."},
                 "attach": {"type": "string", "description": "A workflow id, or \"all\"."},
+                "repository": {
+                    "type": "string",
+                    "description": (
+                        "With attach \"all\" only (SC-WATCH): keep the workflows and single "
+                        "tasks that clone this repository -- a URL, `owner/repo`, \"origin\" "
+                        "(this checkout's remote) or \"all\". `repository_unread` lists those "
+                        "whose repository could not be read, with the command for each."
+                    ),
+                },
+                "new_only": {
+                    "type": "boolean",
+                    "description": (
+                        "With attach \"all\" only: leave out every workflow and task this "
+                        "session was already handed a row for (listed in `already_attached`), "
+                        "so nothing is attached twice."
+                    ),
+                },
+                "exclude": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "With attach \"all\" only: workflow or task ids with a live row you can see; left out.",
+                },
             },
         },
     },
@@ -1145,7 +1279,13 @@ TOOLS: list[dict[str, Any]] = [
             "Each step whose task was read carries `questions`: how many "
             "questions the worker validated in that step's questions.json, 0 "
             "when it asked none. Read a step with questions with swarm_result, "
-            "whose `owner_questions` holds them; they are for the owner to answer."
+            "whose `owner_questions` holds them; they are for the owner to answer.\n"
+            "\n"
+            "A step parked AWAITING_INPUT waits for a member of its tenant to "
+            "answer and holds nothing while it does; its row carries `awaiting: "
+            "{tenant, opened_at, expires_at, form, artifact, max_files, remind}`. "
+            "Once answered it carries `answered: {answered_by, answered_at, via, "
+            "files}`. A person answers with swarm_workflow_input, or in the console."
         ),
         "inputSchema": {
             "type": "object",
@@ -1154,11 +1294,60 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "swarm_inputs",
+        "description": (
+            "The workflow steps of YOUR tenant waiting for a person's answer (an "
+            "`await-input` step, parked AWAITING_INPUT): each with its workflow_id, "
+            "step_id, task_id, `opened_at` and `expires_at`, newest first, and "
+            "`answer_with`, the swarm_workflow_input call that answers it. Any member "
+            "of the tenant may answer any of them. Read-only. A waiting step holds no "
+            "lease and no capacity (invariant 1): it is waiting for a person, not stuck."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "At most this many, 1-200 (default 200)."},
+            },
+        },
+    },
+    {
+        "name": "swarm_workflow_input",
+        "description": (
+            "Answer a workflow step that waits for a person (an `await-input` step). "
+            "THE PERSON TYPES THE ANSWER, not the caller: the bridge shows the step's "
+            "prompt and what it stages in this host's own prompt (MCP elicitation), "
+            "and sends only what the person typed there -- a verdict and findings, "
+            "answers to the upstream agent's questions, or a text. This tool takes no "
+            "verdict, payload or text argument, and refuses a call that passes one. "
+            "`files` are LOCAL PATHS you may propose to attach; the person is shown "
+            "each one's name, size and sha256 and sends them only by ticking the box, "
+            "so a file they did not see is never sent. At most 10 files and 16 MiB in "
+            "all, refused before anything is sent. A host that cannot ask its human "
+            "sends nothing, and the reply names the step's console link instead. The "
+            "first answer is final; the API records who answered, when, and `via: "
+            "mcp`. List the waiting steps with swarm_inputs."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "workflow_id": {"type": "string"},
+                "step_id": {"type": "string", "description": "The await-input step to answer."},
+                "files": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Local file paths to propose attaching. The person decides.",
+                },
+            },
+            "required": ["workflow_id", "step_id"],
+        },
+    },
+    {
         "name": "swarm_workflows",
         "description": (
             "The workflows of YOUR tenant that are still running in SwarmCloud: "
             "every one whose derived state is not SUCCEEDED, FAILED, CANCELLED or "
-            "DEAD_LETTERED, newest first, each with its workflow_id, its spec's "
+            "DEAD_LETTERED, newest first and grouped by workspace, each with its "
+            "workflow_id, the `workspace` it runs in, its spec's "
             "label, its state, its current (unfinished) steps and their states, "
             "its age and its console link. Read-only; it submits and attaches "
             "nothing. The API filters on the workflows' stored state in its "
@@ -1170,15 +1359,89 @@ TOOLS: list[dict[str, Any]] = [
             "may be missing. A workflow with `steps_unread_because` was listed "
             "but its steps were not read. To show them all as live rows, run "
             "`/sc attach --all` (the /sc:swarmcloud workflow with "
-            "{attach: \"all\"}), which follows at most 10.\n"
+            "{attach: \"all\"}), which follows at most the sc plugin's "
+            "`max_live_rows` (30 unless set).\n"
             "\n"
             "`single_tasks` lists YOUR running single tasks beside them: not "
             "finished, in no workflow, submitted by you (`swarm_dispatch`), each "
-            "with its task_id, label, state, age and console link. "
-            "`/sc attach --all` gives each one row too, at most 10. "
+            "with its task_id, workspace, label, state, age and console link. "
+            "`/sc attach --all` gives each one row too, at most `max_live_rows`. "
             "`single_tasks_error` means they could not be read."
         ),
         "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "swarm_check",
+        "description": (
+            "Which SwarmCloud work of THIS PROJECT is stuck or stale -- read-only, it "
+            "cancels, retries and attaches nothing. Only work THIS Claude Code session "
+            "started is checked (SC-SESSION-SCOPE: tagged `metadata.claude_session`); "
+            "other sessions' and untagged work is counted in `session.left_out` and "
+            "never flagged. Scoped to one repository (default: "
+            "this checkout's `origin` remote; a workflow belongs to the repository its "
+            "steps clone) in your tenant (`tenants: \"all\"` for every tenant you may "
+            "choose). `flagged` lists each item with `kind` STUCK or STALE, its `rule`, a "
+            "`reason`, the `evidence` the API served, its console link and `next`, the "
+            "command for a person to run:\n"
+            "  no_heartbeat (STALE): RUNNING/STARTING with no heartbeat and no event for "
+            "more than `stale_minutes` (default 20);\n"
+            "  waiting_for_capacity (STUCK): READY/QUEUED longer than that, with the pool "
+            "that binds it (`evidence.binding`);\n"
+            "  parked (STUCK): HUMAN_REQUIRED, CI_PENDING over 90 min, or "
+            "DEPENDENCY_INCOMPLETE whose dependency failed;\n"
+            "  merge_refused (STUCK): a merge step FAILED with head_moved, merge_conflict "
+            "or checks_failed while its PR is still open (read from GitHub's public API, "
+            "unauthenticated; a PR since MERGED or CLOSED is not flagged, and a failed read "
+            "keeps the flag saying \"PR state not read\"), with its PR link;\n"
+            "  state_disagrees (STALE): a workflow whose stored and derived state disagree "
+            "on whether it is finished (the stale RUNNING cache).\n"
+            "`running` lists the project's running workflows and your single tasks; "
+            "`unchecked` names what was not checked and why; `repository: null` means "
+            "the check was not scoped (`repository_note` says why). Then attach rows "
+            "with swarm_workflow_launch {attach: \"all\", repository, new_only: true}."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "repository": {
+                    "type": "string",
+                    "description": "A URL or `owner/repo`; \"origin\" (the default) or \"all\".",
+                },
+                "stale_minutes": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "The window for no_heartbeat and waiting_for_capacity. Default 20.",
+                },
+                "tenants": {
+                    "type": "string",
+                    "enum": ["current", "all"],
+                    "description": "\"current\" (the default): the tenant this session acts in.",
+                },
+            },
+        },
+    },
+    {
+        "name": "swarm_check_schedule",
+        "description": (
+            "The sc plugin's watch for THIS PROJECT: a `/sc check` every interval. It "
+            "schedules nothing and reads nothing from SwarmCloud: `{interval}` (default "
+            "30m, at least 5m, e.g. `30m`, `1h`) saves the preference for this project "
+            "and answers `arm_with`, the CronCreate call that schedules it in this "
+            "session (`replace_first` says how to drop an older one), and `without_cron`, "
+            "the `/loop` command that does the same; `{off: true}` saves \"off\" for the "
+            "project -- no reply's `arm_watch` arms it until `{interval}` again -- and says "
+            "how to cancel the job; neither reports it. An interval a cron expression "
+            "cannot say is rounded (`rounded`), one below the floor raised (`clamped`). "
+            "Scheduled prompts end with the session; the plugin's SessionStart hook asks "
+            "the next session to run `/sc watch` again while the preference is saved."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "interval": {"type": "string", "description": "`30m`, `45`, `1h`, `1h30m`. Default 30m."},
+                "off": {"type": "boolean", "description": "true: turn the watch off for this project."},
+            },
+        },
     },
     {
         "name": "swarm_workflow_result",
@@ -1346,6 +1609,193 @@ TOOLS: list[dict[str, Any]] = [
                 "plan_digest": {"type": "string"},
             },
             "required": ["run_id", "reason"],
+        },
+    },
+    # -- schedules and approvals (docs/schedules.md §7.2, lane S8) -----------
+    #
+    # The calls `sc schedules` / `sc approvals` make, through `schedules`. A
+    # schedule names a TYPE, never a backend (invariant 10); an approval sends
+    # the digest of what the developer was SHOWN, as `swarm_plan_approve` does.
+    {
+        "name": "swarm_schedule_types",
+        "description": (
+            "The schedule-type catalogue (docs/schedules.md §3), as your tenant sees "
+            "it: each type's name, description, params_schema, default and floor "
+            "gate, minimum interval, budget caps, the scopes you may create it in, "
+            "and `available` with `disabled_reason`. Read it before "
+            "swarm_schedule_create: it is the authority on which types this "
+            "deployment can run. Read-only."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "swarm_schedules",
+        "description": (
+            "Your tenant's schedules, each with its state, cron in words, "
+            "next_run_at, last_firing, spend today (with `coverage: partial` when "
+            "an attempt's cost was never reported -- the figure is then a floor) "
+            "and pending approval count. With `id` (a schedule id or its name), "
+            "that one schedule with its last 50 firings, each with its work, cost "
+            "and dry-run output. Read-only. Another tenant's schedule answers as "
+            "missing."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "string", "description": "A schedule id (sch_...) or name."}},
+        },
+    },
+    {
+        "name": "swarm_schedule_create",
+        "description": (
+            "Create a recurring schedule on your tenant's repositories. `type` is "
+            "one of the catalogue's twelve: `issue-sweep`, `issue-plan-only`, "
+            "`repo-index-refresh`, `observer`, `epic-triage`, `pr-shepherd`, "
+            "`ci-flake-hunter`, `dependency-cve-refresh`, `release-health`, "
+            "`docs-drift`, `cost-report`, `custom-prompt` -- which of them this "
+            "deployment can run now is swarm_schedule_types' `available`, and a "
+            "type that is not is refused with the available ones named. The type "
+            "chooses the work: NO IMAGE OR COMMAND IS ACCEPTED, nor a runner "
+            "profile, resources or a credential, at the top level or inside "
+            "`params`, and offering one sends nothing. `params` are the type's own "
+            "(its params_schema). `repos` are owner/repo names registered in your "
+            "tenant (scope `repos`, the default). The gate, budget and policy "
+            "default to the type's; `dry_run: true` makes every firing list what "
+            "it would do and create nothing. `gate.merge: auto` is refused here: "
+            "it is set only through the audited merge switch. WRITES: the "
+            "schedule fires on its cron as you -- say so before calling it."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Unique in your tenant, at most 80 characters."},
+                "type": {"type": "string", "description": "A catalogue type's name."},
+                "cron": {"type": "string", "description": "Five fields, e.g. `0 9 * * 1-5`."},
+                "timezone": {"type": "string", "default": "UTC", "description": "An IANA zone."},
+                "scope": {"type": "string", "enum": ["repos", "all", "platform"], "default": "repos"},
+                "repos": {"type": "array", "items": {"type": "string"}, "description": "owner/repo names."},
+                "params": {"type": "object"},
+                "gate": {"type": "object"},
+                "budget": {"type": "object"},
+                "policy": {"type": "object"},
+                "dry_run": {"type": "boolean", "default": False},
+                "state": {"type": "string", "enum": ["enabled", "paused"], "default": "enabled"},
+            },
+            "required": ["name", "type", "cron"],
+        },
+    },
+    {
+        "name": "swarm_schedule_update",
+        "description": (
+            "Edit a schedule, carrying the `revision` you read (from "
+            "swarm_schedules): only the fields given change. A schedule edited "
+            "since is refused (`schedule_changed`) and nothing changes. A gate "
+            "below the type's default needs an admin; `gate.merge: auto` is "
+            "refused (`use_merge_switch`). `type` is not editable. No image or "
+            "command is accepted."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "A schedule id (sch_...) or name."},
+                "revision": {"type": "integer", "minimum": 1},
+                "name": {"type": "string"},
+                "cron": {"type": "string"},
+                "timezone": {"type": "string"},
+                "scope": {"type": "string", "enum": ["repos", "all", "platform"]},
+                "repos": {"type": "array", "items": {"type": "string"}},
+                "params": {"type": "object"},
+                "gate": {"type": "object"},
+                "budget": {"type": "object"},
+                "policy": {"type": "object"},
+            },
+            "required": ["id", "revision"],
+        },
+    },
+    {
+        "name": "swarm_schedule_pause",
+        "description": (
+            "Pause a schedule: it makes no firing until resumed. Work it already "
+            "made runs on. `reason` is recorded in its audit."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "string"}, "reason": {"type": "string"}},
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "swarm_schedule_resume",
+        "description": "Resume a paused schedule from its next slot; missed slots are not replayed.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "swarm_schedule_run_now",
+        "description": (
+            "Fire a schedule now (a `run_now` firing), under its gate's `run` "
+            "point, its overlap rule and its budget, as the schedule's owner. "
+            "With `dry_run: true` the firing lists what it would do and creates "
+            "nothing. Without it, it may SUBMIT WORK -- say so before calling it. "
+            "Answers the firing; a gate that holds it answers it "
+            "`awaiting_approval`, and it is then in swarm_approvals."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "string"}, "dry_run": {"type": "boolean", "default": False}},
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "swarm_approvals",
+        "description": (
+            "Your tenant's approval inbox: firings waiting to run, issue-run plans "
+            "(id `run:<run_id>`), merges, proposals, holds and specs, each with "
+            "its `digest` -- the evidence an approval must send back. `kind` "
+            "filters. Read-only; nothing waiting holds capacity."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "enum": ["run", "plan", "merge", "proposal", "spec", "hold"]},
+            },
+        },
+    },
+    {
+        "name": "swarm_schedule_approve",
+        "description": (
+            "Approve an inbox item. `digest` MUST be the digest of the item the "
+            "developer was SHOWN (from swarm_approvals) and agreed to -- a string, "
+            "or a merge's {head_sha, verdict} -- never read and approve in one go. "
+            "An item that changed since is refused (`approval_changed`, "
+            "`merge_changed`, `plan_changed`) and nothing is done. For an "
+            "issue-run plan (`run:<run_id>`) this is the same call as "
+            "swarm_plan_approve. `confirm` is a one-person tenant's typed "
+            "confirmation of its own hold."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "approval_id": {"type": "string"},
+                "digest": {"type": ["string", "object"], "description": "The digest of the item shown."},
+                "confirm": {"type": "string"},
+            },
+            "required": ["approval_id", "digest"],
+        },
+    },
+    {
+        "name": "swarm_schedule_reject",
+        "description": (
+            "Reject an inbox item with a reason: a firing creates nothing, a plan "
+            "ends REJECTED, a merge does not happen. Anyone in the tenant may "
+            "reject."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"approval_id": {"type": "string"}, "reason": {"type": "string"}},
+            "required": ["approval_id", "reason"],
         },
     },
     # -- onboarding (#780, OB9) ---------------------------------------------
@@ -1540,6 +1990,69 @@ TOOLS: list[dict[str, Any]] = [
             "with its mode and last checks. `text` is what to show."
         ),
         "inputSchema": {"type": "object", "properties": {}},
+    },
+    # -- provider keys (KEYS-PLUGIN, docs/provider-keys.md) -----------------
+    #
+    # THE KEY NEVER PASSES THROUGH CLAUDE (owner, 2026-10-14): not as a tool
+    # argument, not in a reply. So there is no tool that SETS a key -- only
+    # status and a one-time link to the console form, where the person pastes
+    # it. Both schemas are enums and `additionalProperties: false`: no field a
+    # key fits in, and an argument not in the schema is refused unsent
+    # (`_refuse_unknown_arguments`). tests/unit/mcp/test_provider_keys_bridge.py.
+    {
+        "name": "swarm_mcp_servers",
+        "description": (
+            "The MCP servers your workspace registered, by name: the names a "
+            "claude-code or codex step may put in `inputs.mcp_servers`, each with its "
+            "URL, auth mode (`dispatch` needs a per-run `mcp_credentials` entry from "
+            "you; `none` and `workspace_secret` take none), the profiles allowed to "
+            "use it, the tools an agent may call and whether it is enabled; and the "
+            "addresses a server's operator allowlists. Read-only: no tool registers a "
+            "server or stores its credential -- an admin does that in the console's "
+            "Settings > Workspace > MCP servers. `text` is what to show."
+        ),
+        "inputSchema": {"type": "object", "additionalProperties": False, "properties": {}},
+    },
+    {
+        "name": "swarm_keys",
+        "description": (
+            "Whether a TypeSafe key is set for YOU and for your selected tenant, "
+            "and which one a task you submit there would use (your own key wins "
+            "over the tenant's). Status only -- set, version, who set it and when; "
+            "never a key, its length or any part of it. `text` is what to show. "
+            "Read-only. To set a key, call swarm_key_set_link; never ask the person "
+            "for the key itself."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "provider": {"type": "string", "enum": list(keys.PROVIDERS),
+                             "default": "typesafe"},
+            },
+        },
+    },
+    {
+        "name": "swarm_key_set_link",
+        "description": (
+            "A one-time console link where the person pastes their TypeSafe key "
+            "themselves: answers ONLY `url` and `expires_at` (ten minutes, one use, "
+            "valid only in their own console session). There is deliberately no "
+            "argument for the key: never ask for it, never accept it in chat. Give "
+            "the person the url and tell them to open it. scope `user` (default) is "
+            "their own key, which wins over the tenant's; `tenant` is the selected "
+            "tenant's key and needs an admin. In their own terminal, the sc CLI's "
+            "`key set` does the same at a hidden prompt; tell them, never run it."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "provider": {"type": "string", "enum": list(keys.PROVIDERS)},
+                "scope": {"type": "string", "enum": list(keys.SCOPES), "default": "user"},
+            },
+            "required": ["provider"],
+        },
     },
     # -- cluster state -----------------------------------------------------
     #
@@ -1806,6 +2319,112 @@ def _dispatch_strategy(value: Any) -> str | None:
 _DISPATCHED: "weakref.WeakKeyDictionary[Any, set[tuple]]" = weakref.WeakKeyDictionary()
 
 
+def check_mcp_credentials(raw: Any, named: Any, *, where: str) -> dict[str, Any] | None:
+    """A per-run credential map, its SHAPE checked before anything travels
+    (docs/design/registered-mcp-servers.md §4.3): an object of at most
+    MAX_MCP_CREDENTIALS entries, each `{value: string, expires_in: integer}`
+    and nothing else, each keyed by a server the work names in
+    `inputs.mcp_servers` (`named`). None or `{}` is no map.
+
+    Shape only. Which servers take a credential, the value's length and
+    alphabet and the `expires_in` range are swarm-api's rules
+    (`mcp_credentials.check_credential`), refused there with their own codes.
+    EVERY REFUSAL NAMES THE FIELD AND THE RULE, NEVER A VALUE: a refusal is a
+    tool reply, and a tool reply is the session's transcript.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise SwarmError(
+            f"{where}: `mcp_credentials` is an object of server name to "
+            "{value, expires_in}. Nothing was sent"
+        )
+    if not raw:
+        return None
+    if len(raw) > MAX_MCP_CREDENTIALS:
+        raise SwarmError(
+            f"{where}: `mcp_credentials` holds {len(raw)} entries, and a step names at most "
+            f"{MAX_MCP_CREDENTIALS} servers, so it takes at most 4. Nothing was sent"
+        )
+    names = {str(n) for n in named} if isinstance(named, (list, set, tuple)) else set()
+    for server_name, entry in raw.items():
+        if not (isinstance(entry, dict) and set(entry) == {"value", "expires_in"}
+                and isinstance(entry["value"], str)
+                and isinstance(entry["expires_in"], int) and not isinstance(entry["expires_in"], bool)):
+            raise SwarmError(
+                f"{where}: `mcp_credentials` entry {str(server_name)[:40]!r} is not "
+                "{value, expires_in}: `value` a string, `expires_in` whole seconds, "
+                "nothing else. Nothing was sent"
+            )
+        if server_name not in names:
+            raise SwarmError(
+                f"{where}: `mcp_credentials` has an entry for {str(server_name)[:40]!r}, and the "
+                f"work's `inputs.mcp_servers` does not name it (it names {sorted(names)}). "
+                "Nothing was sent"
+            )
+    return raw
+
+
+def without_credentials(value: Any) -> Any:
+    """`value` with every `mcp_credentials` it holds cut down to
+    `{server, expires_at}` per entry -- what swarm-api answers for a stored
+    credential (§4.3) -- at any depth.
+
+    Applied to every answer of a dispatch or a workflow submission BEFORE it
+    reaches a reply, a run copy or `launched.jsonl`. swarm-api never echoes a
+    value; this is what keeps "the plugin's log of a dispatch holds no
+    credential" true of an API that one day did, rather than true only
+    because of what another service chose to answer.
+    """
+    if isinstance(value, dict):
+        return {
+            key: (_credential_echo(item) if key == "mcp_credentials" else without_credentials(item))
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [without_credentials(item) for item in value]
+    return value
+
+
+def _credential_echo(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        entries = [{"server": key, **(item if isinstance(item, dict) else {})} for key, item in value.items()]
+    elif isinstance(value, list):
+        entries = [item for item in value if isinstance(item, dict)]
+    else:
+        entries = []
+    return [{"server": entry.get("server"), "expires_at": entry.get("expires_at")} for entry in entries]
+
+
+def _send_task(client: Any, credentials: dict[str, Any] | None, **fields: Any) -> dict[str, Any]:
+    """`POST /v1/tasks` for one task, with its per-run credential map beside
+    `input` when it has one.
+
+    Without a map this is `client.dispatch`, the call every dispatch made
+    before MCP servers existed, so a dispatch naming none is sent exactly as
+    it was. With one, the body is the same `task_payload` plus
+    `mcp_credentials`, sent through the client's own transport: the map is a
+    request field, never a part of `input`, which the spec signature covers
+    and the runner reads.
+    """
+    if not credentials:
+        return client.dispatch(**fields)
+    payload = task_payload(**fields)
+    payload["mcp_credentials"] = credentials
+    return unwrap_task(client.request("POST", "/v1/tasks", payload=payload))
+
+
+def _step_servers(steps: list[dict[str, Any]]) -> set[str]:
+    """Every server any step of a workflow names, which the workflow's one
+    credential map may hold entries for."""
+    named: set[str] = set()
+    for step in steps:
+        servers = (step.get("input") or {}).get("mcp_servers") if isinstance(step, dict) else None
+        if isinstance(servers, list):
+            named.update(str(n) for n in servers)
+    return named
+
+
 def _dispatch_signature(profile: str, prompt: str, strategy: str | None, repository, inputs: Any) -> tuple:
     return (
         profile, prompt, strategy or "collect", repository.url, repository.ref,
@@ -1953,6 +2572,22 @@ ROWS_START_NOW = (
 )
 
 
+def _submitted_session_fields() -> dict[str, Any]:
+    """What every reply to a submission carries (SC-SESSION-SCOPE, owner
+    2026-10-14): `claude_session`, the Claude Code session the work was
+    tagged with (null when this bridge knows none, and then nothing it sent
+    counts as this session's), and `arm_watch` -- a task sent with
+    swarm_dispatch arms the watch exactly as a workflow does."""
+    from . import session, watch
+
+    sid = session.current()
+    out: dict[str, Any] = {"claude_session": sid}
+    if not sid:
+        out["claude_session_note"] = session.UNKNOWN_NOTE
+    out.update(watch.arm_fields(True))
+    return out
+
+
 def _dispatch_rows(sent: list[tuple[str, str | None, dict[str, Any]]]) -> dict[str, Any]:
     """The row launch for tasks just dispatched (#830): `swarm_dispatch`'s
     reply hands it back so a dispatched task gets a row without anyone asking
@@ -1968,6 +2603,14 @@ def _dispatch_rows(sent: list[tuple[str, str | None, dict[str, Any]]]) -> dict[s
     entries = []
     for task_id, label, task in sent:
         entry: dict[str, Any] = {"task_id": task_id, "label": label}
+        # The workspace the task runs in, from the API's own task (SC-ROWS).
+        workspace = workflows.workspace_of(task)
+        if workspace:
+            entry["workspace"] = workspace
+        # The task as the API created it: its row's DETAILS (who started it,
+        # its profile, its account once assigned, its session) are read off
+        # it by `details`, never copied whole into the row (SC-DESC-DETAILS).
+        entry["task"] = task
         entries.append(with_console(entry, task))
     try:
         rows = launch.for_tasks(entries)
@@ -2520,6 +3163,9 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
             raise SwarmError(f"{where} has no prompt. Nothing was sent")
         profile = catalogue.check(item.get("runner_profile") or "claude-code", where=where)
         inputs = catalogue.check_inputs(profile, item.get("inputs"), where=where)
+        credentials = check_mcp_credentials(
+            item.get("mcp_credentials"), (inputs or {}).get("mcp_servers"), where=where
+        )
         strategy = _dispatch_strategy(item.get("strategy"))
         repository = checkout.resolve(repo=item.get("repo"), ref=item.get("ref"), infer=_flag(item, "infer"))
         if strategy == "direct-pr" and not repository.url:
@@ -2553,12 +3199,14 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
             inputs=inputs or None,
             strategy=strategy,
         )
+        if credentials:
+            payload["mcp_credentials"] = credentials
         prepared.append((payload, signature, repository, strategy))
 
     # THE TERRITORY, read before the one send and reported after it: a
     # warning, never a refusal (see "territory" above).
     territory, checks = _territory_of_units(client, units)
-    created = client.dispatch_batch([payload for payload, *_ in prepared])
+    created = without_credentials(client.dispatch_batch([payload for payload, *_ in prepared]))
     # The request reached the API, so every signature is remembered BEFORE the
     # answer is judged: a reply this bridge cannot read is not proof nothing
     # was created, and a retry must not create the list twice.
@@ -2599,6 +3247,7 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
     }
     if limit_note:
         answer["max_batch_size_unread_because"] = limit_note
+    answer.update(_submitted_session_fields())
     answer.update(territory)
     for check in checks:
         _remember_territory(client, check, [(lane["lane"], task_id)
@@ -2641,6 +3290,12 @@ def _result_of(client: Any, task_id: str, task: dict[str, Any]) -> dict[str, Any
         described["owner_questions"] = asked["questions"]
     if asked.get("questions_unavailable_because"):
         described["questions_unavailable_because"] = asked["questions_unavailable_because"]
+    # WHAT THE OWNER ANSWERED (TASK-ANSWERS, owner decision 2026-10-13): the
+    # answers stored on the task in the console, as the task read served them.
+    # No key until one is answered, as `owner_questions` has none until asked.
+    answered = progress.owner_answers(task)
+    if answered:
+        described["owner_answers"] = answered
     # WHAT THE WHOLE TASK COST (lane review P1): every attempt's cost and time,
     # as the API served them, the last attempt's beside them, and `cost` --
     # the total in words, `at least` when an attempt recorded none.
@@ -2948,23 +3603,44 @@ def _held_spec(ref: str) -> dict[str, Any]:
 
 
 def _outline(spec: dict[str, Any]) -> dict[str, Any]:
-    """What a relay copies back instead of a spec: its title, its label and its DAG."""
+    """What a relay copies back instead of a spec: its title, its label and its DAG.
+
+    Plus what decides the merge steps swarm-api appends to it (2026-10-11):
+    the spec's `strategy` and `merge`, and each step's `runner_profile`, its
+    verdict gate (`when_step`) and its `input_from`. `/sc:swarmcloud`'s
+    run.js (`appendable`) derives from them the `re-review` and `merge` steps
+    the submit reply may name beyond the spec, and refuses any other.
+    """
     steps = []
     for step in spec.get("steps") or []:
         if not isinstance(step, dict):
             continue
         stage = step.get("stage")
+        when = step.get("when")
+        when_step = when.get("step") if isinstance(when, dict) else None
+        input_from = step.get("input_from")
+        profile = step.get("runner_profile")
         steps.append({
             "step_id": step.get("step_id"),
             "depends_on": list(step.get("depends_on") or []),
             "stage": stage.strip() if isinstance(stage, str) and stage.strip() else None,
+            "runner_profile": profile if isinstance(profile, str) and profile else None,
+            "when_step": when_step if isinstance(when_step, str) and when_step else None,
+            "input_from": (
+                {str(k): str(v) for k, v in input_from.items()}
+                if isinstance(input_from, dict) else {}
+            ),
         })
     label = spec.get("label")
     title = spec.get("title")
+    strategy = spec.get("strategy")
+    merge = spec.get("merge")
     return {
         "title": title.strip() if isinstance(title, str) and title.strip() else None,
         "label": label if isinstance(label, str) and label.strip() else None,
         "steps": steps,
+        "strategy": strategy if isinstance(strategy, str) and strategy else None,
+        "merge": merge if isinstance(merge, str) and merge else None,
     }
 
 
@@ -3019,8 +3695,6 @@ def _run_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
     digest it approves with: `swarm_plan_approve` takes it from the caller,
     who was shown it.
     """
-    from . import runs
-
     if name == "swarm_run_issue":
         approval = args.get("plan_approval") or "required"
         if approval not in ("required", "auto"):
@@ -3034,7 +3708,7 @@ def _run_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
             auto_merge=_flag(args, "auto_merge"),
             fix_rounds=fix_rounds,
         )
-        return json.dumps(runs.summary(client, run), indent=2, default=str)
+        return json.dumps(_run_summary(client, run), indent=2, default=str)
     if name == "swarm_runs":
         limit = args.get("limit")
         listing = client.runs(
@@ -3058,7 +3732,96 @@ def _run_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
             plan_digest=args.get("plan_digest") or None,
             reason=_text_arg(args, "reason", name),
         )
-    return json.dumps(runs.summary(client, run), indent=2, default=str)
+    return json.dumps(_run_summary(client, run), indent=2, default=str)
+
+
+def _run_summary(client: SwarmClient, run: dict[str, Any]) -> dict[str, Any]:
+    """`runs.summary`, and `arm_watch` (SC-AUTO-WATCH) once the run's workflow
+    exists -- the same moment it carries `attach_with`."""
+    from . import runs, watch
+
+    out = runs.summary(client, run)
+    # The session the run was tagged with (SC-SESSION-SCOPE), as swarm-api
+    # stored it, and why not when a deployment refused the tag.
+    out["claude_session"] = run.get("claude_session")
+    if run.get("session_tag"):
+        out["session_tag"] = run["session_tag"]
+    out.update(watch.arm_fields(bool(out.get("attach_with"))))
+    return out
+
+
+_SCHEDULE_TOOLS = frozenset(
+    {"swarm_schedule_types", "swarm_schedules", "swarm_schedule_create", "swarm_schedule_update",
+     "swarm_schedule_pause", "swarm_schedule_resume", "swarm_schedule_run_now", "swarm_approvals",
+     "swarm_schedule_approve", "swarm_schedule_reject"}
+)
+
+#: The edit fields `swarm_schedule_update` passes through as given.
+_SCHEDULE_EDIT_FIELDS = ("name", "cron", "timezone", "params", "gate", "budget", "policy")
+
+
+def _schedule_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
+    """The schedule and approval tools (docs/schedules.md §7.2).
+
+    Refusals are `SwarmError`s worded by `schedules.refusal` and answered
+    through `_tool_error_text`. Nothing here reads the digest it approves
+    with: `swarm_schedule_approve` takes it from the caller, who was shown it.
+    """
+    from . import schedules
+
+    def dumps(value: Any) -> str:
+        return json.dumps(value, indent=2, default=str)
+
+    if name == "swarm_schedule_types":
+        return dumps(schedules.types(client))
+    if name == "swarm_approvals":
+        listing = schedules.inbox(client, args.get("kind") or None)
+        step = schedules.next_step(listing)
+        return dumps({**listing, "next": step} if step else listing)
+    if name == "swarm_schedule_approve":
+        return dumps(schedules.approve(client, _text_arg(args, "approval_id", name),
+                                       digest=args.get("digest"), confirm=args.get("confirm") or None))
+    if name == "swarm_schedule_reject":
+        return dumps(schedules.reject(client, _text_arg(args, "approval_id", name),
+                                      reason=_text_arg(args, "reason", name)))
+    if name == "swarm_schedule_create":
+        body: dict[str, Any] = {
+            "name": _text_arg(args, "name", name),
+            "type": _text_arg(args, "type", name),
+            "cron": _text_arg(args, "cron", name),
+            "timezone": args.get("timezone") or "UTC",
+            "state": args.get("state") or "enabled",
+        }
+        for key in ("params", "gate", "budget", "policy"):
+            if args.get(key) is not None:
+                if not isinstance(args[key], dict):
+                    raise SwarmError(f"{name} takes `{key}` as an object. Nothing was sent")
+                body[key] = args[key]
+        if _flag(args, "dry_run"):
+            body["policy"] = {**(body.get("policy") or {}), "dry_run": True}
+        # Refused before `repos` is resolved, so a refusal reads nothing either.
+        schedules.refuse_backend_fields(body, name)
+        body["scope"] = schedules.scope(client, args.get("scope"), args.get("repos"))
+        return dumps(schedules.create(client, body))
+    if name == "swarm_schedules" and not args.get("id"):
+        return dumps(schedules.listing(client))
+    sid = schedules.resolve(client, args.get("id"))
+    if name == "swarm_schedules":
+        return dumps(schedules.schedule(client, sid))
+    if name == "swarm_schedule_update":
+        revision = args.get("revision")
+        if isinstance(revision, bool) or not isinstance(revision, int):
+            raise SwarmError(f"{name} needs the `revision` it read, as an integer. Nothing was sent")
+        edit: dict[str, Any] = {"revision": revision}
+        edit.update({k: args[k] for k in _SCHEDULE_EDIT_FIELDS if args.get(k) is not None})
+        if args.get("scope") is not None or args.get("repos") is not None:
+            edit["scope"] = schedules.scope(client, args.get("scope"), args.get("repos"))
+        return dumps(schedules.update(client, sid, edit))
+    if name == "swarm_schedule_pause":
+        return dumps(schedules.pause(client, sid, args.get("reason") or None))
+    if name == "swarm_schedule_resume":
+        return dumps(schedules.resume(client, sid))
+    return dumps(schedules.run_now(client, sid, dry_run=_flag(args, "dry_run")))
 
 
 _SETUP_TOOLS = frozenset(
@@ -3274,14 +4037,34 @@ def _workflow_merge_pr(client: SwarmClient, args: dict[str, Any]) -> str:
         envelope, placed=placed,
         repository={"url": repo, "ref": None,
                     "source": "named" if repo else "the tenant's only registered repository"},
+        name=args.get("title"),
     )
 
 
 def _workflow_created(
     envelope: dict[str, Any], *, placed: dict[str, Any], repository: dict[str, Any],
     digest: str | None = None, expected_digest: Any = None,
+    given: list[str] | None = None, name: str | None = None,
 ) -> str:
-    """`swarm_workflow`'s answer to an accepted submission, spec or `merge_pr`."""
+    """`swarm_workflow`'s answer to an accepted submission, spec or `merge_pr`.
+
+    `given` is the step ids this bridge submitted. Each reply step then says
+    whether SwarmCloud ADDED it (`added`): swarm-api appends a re-review and a
+    merge the spec never named (`swarm_api.service._with_merge_step`), and
+    /sc:swarmcloud starts a row for every step the server marks so, instead of
+    predicting the server's merge rules and refusing the reply when the
+    prediction missed (SPEED-D5, measured 2026-10-14 on plugin sc 0.5.27: a
+    3-step spec came back with 5 and no row started). The comparison is made
+    here because this is the one place that holds both the spec submitted and
+    the reply; no relay retyped either.
+
+    THE PROJECT RECORD (SC-TITLES-B, part of #1511): the submission is
+    appended to the project's `launched.jsonl` HERE, by the id SwarmCloud
+    just named, so `session.recorded` matches it by id and two of this
+    session's workflows with one `name` are told apart. `name` is the spec's
+    title, else its label; without one, the run is named by its id
+    (`workflows.title_name`).
+    """
     workflow = envelope["workflow"]
     workflow_id = workflow.get("workflow_id")
     if not workflow_id:
@@ -3300,13 +4083,27 @@ def _workflow_created(
                 "runner_profile": step.get("runner_profile"),
                 "depends_on": step.get("depends_on") or [],
                 "input_from": step.get("input_from") or {},
+                **({} if given is None else {"added": step.get("step_id") not in given}),
             },
             step,
         )
         for step in workflow.get("steps") or []
     ]
+    named = workflows.title_name(title=name, workflow_id=workflow_id)
+    try:
+        from . import launch
+
+        launch.record(
+            "submit", title=workflows.workflow_title(named, len(given) if given is not None else len(steps)),
+            workflow_id=str(workflow_id), repository=repository.get("url"), name=named,
+        )
+    except Exception:  # noqa: BLE001 - the workflow is in SwarmCloud; a lost record line never fails its answer
+        pass
     created: dict[str, Any] = with_console({"workflow_id": workflow_id}, workflow)
     created.update({
+        # The workspace it runs in, from the API's document (SC-ROWS): the
+        # label of every row /sc:swarmcloud starts for it.
+        "workspace": workflows.workspace_of(workflow, fallback=envelope.get("tenant_id")),
         "steps": steps,
         "dispatch": envelope.get("dispatch"),
         "repository": repository,
@@ -3333,6 +4130,8 @@ def _workflow_created(
     if task_ids:
         created["follow_with"] = "swarm_follow"
         created["follow_live_with"] = follow_command(task_ids)
+    # A workflow now exists for this session to follow (SC-AUTO-WATCH).
+    created.update(_submitted_session_fields())
     return json.dumps(created, indent=2)
 
 
@@ -3376,6 +4175,9 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         # The inputs this profile DECLARES, and nothing else, refused by name
         # before anything travels (#142).
         inputs = catalogue.check_inputs(profile, args.get("inputs"), where="swarm_dispatch")
+        credentials = check_mcp_credentials(
+            args.get("mcp_credentials"), (inputs or {}).get("mcp_servers"), where="swarm_dispatch"
+        )
         strategy = _dispatch_strategy(args.get("strategy"))
         # WHAT IS CLONED, decided before anything travels: the caller's repo,
         # or -- only with `infer: true` -- the checkout this bridge runs in,
@@ -3400,7 +4202,9 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         lane = {"lane": args.get("label") or "this task",
                 "files": _declared_files(args.get("files"), "swarm_dispatch")}
         territory, checks = _territory_of_units(client, [(repository.url, lane)])
-        task = client.dispatch(
+        task = without_credentials(_send_task(
+            client,
+            credentials,
             prompt=args["prompt"],
             runner_profile=profile,
             repository_url=repository.url,
@@ -3408,7 +4212,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             metadata={"unit": args["label"]} if args.get("label") else None,
             inputs=inputs or None,
             strategy=strategy,
-        )
+        ))
         task_id = task_id_of(task)
         if not task_id:
             # Raised rather than returned, because a task id is what every tool
@@ -3444,6 +4248,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             }, task)
         # Its live row, started by the session from this reply (#830).
         reply["rows"] = _dispatch_rows([(task_id, args.get("label") or None, task)])
+        reply.update(_submitted_session_fields())
         reply.update(territory)
         for check in checks:
             _remember_territory(client, check, [(lane["lane"], task_id)])
@@ -3553,8 +4358,11 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             task = client.task(t)
             # `console`: the API's link to this task, as served, in every
             # state -- a QUEUED task is the one a person opens it to watch.
+            # `workspace`: the tenant the task runs in, from its own document
+            # (SC-ROWS), which `/sc status` prints first on the task's line.
             rows.append(with_console(
-                {"task_id": t, "state": task.get("state"), "masked": masked_counts(task)}, task
+                {"task_id": t, "workspace": workflows.workspace_of(task), "state": task.get("state"),
+                 "masked": masked_counts(task)}, task
             ))
         return json.dumps(rows, indent=2)
 
@@ -3602,6 +4410,24 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         # `catalogue_source` -- see `catalogue.served_catalogue`.
         return json.dumps(catalogue.served_catalogue(client), indent=2)
 
+    if name == "swarm_mcp_servers":
+        from . import render
+        from .sc import mcp_servers, mcp_servers_lines
+
+        view = mcp_servers(client)
+        return json.dumps({**view, "text": render.join(mcp_servers_lines(view))}, indent=2)
+
+    if name == "swarm_keys":
+        view = keys.key_status(client, args.get("provider", "typesafe"))
+        return json.dumps({**view, "text": keys.status_text(view)}, indent=2)
+
+    if name == "swarm_key_set_link":
+        # The url and its expiry, nothing else: `keys.key_set_link` copies
+        # those two fields, so not even the API's `path` reaches a transcript.
+        return json.dumps(
+            keys.key_set_link(client, args.get("provider"), args.get("scope", "user")), indent=2
+        )
+
     if name == "swarm_tenants":
         # Two GETs. A `tenant` setting the caller is not a member of comes back
         # as the API's 403, unchanged, through `_tool_error_text`.
@@ -3634,7 +4460,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         return json.dumps(read, indent=2)
 
     if name == "swarm_workflow_launch":
-        from . import launch
+        from . import launch, watch
 
         given = sorted(k for k in ("spec", "spec_path", "attach") if args.get(k) is not None)
         if len(given) != 1:
@@ -3642,17 +4468,42 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
                 f"swarm_workflow_launch takes exactly one of `spec`, `spec_path` or `attach`; "
                 f"it was given {given or 'none'}. Nothing was written"
             )
-        if args.get("attach") is not None:
-            target = _text_arg(args, "attach", name)
+        filters = sorted(k for k in ("repository", "new_only", "exclude") if args.get(k) is not None)
+        target = _text_arg(args, "attach", name) if args.get("attach") is not None else None
+        if filters and target not in ("all", "--all"):
+            raise SwarmError(
+                f"swarm_workflow_launch takes {filters} only with attach \"all\". Nothing was written"
+            )
+        # EVERY LAUNCH ARMS THE WATCH (SC-AUTO-WATCH, owner 2026-10-14): a spec
+        # about to run, a workflow attached, or an attach-all that launched at
+        # least one run puts work in front of this session, so the reply
+        # carries `arm_watch` -- null when nothing was launched or the
+        # project's watch is explicitly off.
+        if target is not None:
             if target in ("all", "--all"):
-                return json.dumps(launch.for_all(client), indent=2, default=str)
-            return json.dumps(launch.for_attach(client, target), indent=2)
+                if not filters:
+                    attached = launch.for_all(client)
+                else:
+                    exclude = args.get("exclude")
+                    if exclude is not None and not (
+                        isinstance(exclude, list) and all(isinstance(i, str) for i in exclude)
+                    ):
+                        raise SwarmError("swarm_workflow_launch: `exclude` is a list of ids. Nothing was written")
+                    attached = launch.for_all(
+                        client,
+                        repository=args.get("repository"),
+                        new_only=_flag(args, "new_only"),
+                        exclude=exclude,
+                    )
+                attached.update(watch.arm_fields(bool(attached.get("launches"))))
+                return json.dumps(attached, indent=2, default=str)
+            return json.dumps({**launch.for_attach(client, target), **watch.arm_fields(True)}, indent=2)
         document = (
             _read_spec_file(str(args["spec_path"]), base=checkout.directory())["spec"]
             if args.get("spec_path") is not None
             else args["spec"]
         )
-        return json.dumps(launch.for_spec(document), indent=2)
+        return json.dumps({**launch.for_spec(document, client), **watch.arm_fields(True)}, indent=2)
 
     if name == "swarm_apply":
         repo = Path(args.get("repo") or ".").resolve()
@@ -3757,6 +4608,9 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
                 "title": workflows.check_title(args.get("title"), where="swarm_workflow"),
             }
             repo, ref = args.get("repo"), args.get("ref")
+        credentials = check_mcp_credentials(
+            args.get("mcp_credentials"), _step_servers(fields["steps"]), where="swarm_workflow"
+        )
         repository = checkout.resolve(
             repo=repo, ref=ref, infer=_flag(args, "infer")
         )
@@ -3780,9 +4634,14 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             title=fields["title"],
             # Only a whole spec carries `merge`; the `steps` form never did.
             merge=fields.get("merge"),
+            # Nor `after` (SPEED-D3).
+            after=fields.get("after"),
+            mcp_credentials=credentials,
         )
-        reply = _workflow_created(envelope, placed=placed, repository=repository.as_dict(),
-                                  digest=digest, expected_digest=expected_digest)
+        reply = _workflow_created(without_credentials(envelope), placed=placed, repository=repository.as_dict(),
+                                  digest=digest, expected_digest=expected_digest,
+                                  given=[str(step.get("step_id")) for step in fields["steps"]],
+                                  name=fields["title"] or fields["label"])
         if not territory and not checks:
             return reply
         created = json.loads(reply)
@@ -3827,10 +4686,60 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         reported["bridge_version"] = bridge_version()
         return json.dumps(reported, indent=2)
 
+    if name == "swarm_inputs":
+        from . import awaitinput
+
+        return json.dumps(awaitinput.waiting(client, args.get("limit")), indent=2, default=str)
+
+    if name == "swarm_workflow_input":
+        # THE ANSWER IS THE PERSON'S (docs/design/human-steps.md §4.2): typed
+        # into the host's elicitation, never read from `args`, which
+        # `_refuse_unknown_arguments` has already held to the step and files.
+        from . import awaitinput
+
+        return json.dumps(
+            awaitinput.answer(
+                client, _text_arg(args, "workflow_id", name), _text_arg(args, "step_id", name),
+                args.get("files"), can_elicit=_HOST_CAN_ELICIT.is_set(), elicit=_elicit,
+            ),
+            indent=2,
+            default=str,
+        )
+
+    if name == "swarm_check":
+        from . import check
+
+        return json.dumps(
+            check.run(
+                client,
+                repository=args.get("repository"),
+                stale_minutes=args.get("stale_minutes"),
+                tenants=args.get("tenants"),
+            ),
+            indent=2,
+            default=str,
+        )
+
+    if name == "swarm_check_schedule":
+        from . import watch
+
+        return json.dumps(watch.tool(args), indent=2)
+
     if name == "swarm_workflows":
-        from .sc import running_tasks, running_workflows
+        from . import session
+        from .sc import mark_session, running_tasks, running_workflows
+
+        from .launch import named_workspaces
 
         listing = running_workflows(client)
+        names = workflows.workspace_names(client)
+        named_workspaces(listing["workflows"], names)
+        # THE WHOLE TENANT, MARKED (SC-SESSION-SCOPE): `this_session` on each
+        # entry is what /sc:swarmcloud's attach-all keeps, and what
+        # `/sc workflows` says is this Claude Code session's.
+        sid = session.current()
+        mark_session(listing["workflows"], sid)
+        listing["session"] = session.describe(sid)
         # The caller's running SINGLE tasks beside them (#830), so the LIST
         # row of `/sc attach --all` can give each a row. A failed read is said,
         # never an empty list.
@@ -3840,7 +4749,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             listing["single_tasks"] = []
             listing["single_tasks_error"] = str(exc)
         else:
-            listing["single_tasks"] = singles["tasks"]
+            listing["single_tasks"] = mark_session(named_workspaces(singles["tasks"], names), sid)
             listing["single_tasks_count"] = singles["count"]
             if not singles["complete"]:
                 listing["single_tasks_incomplete_because"] = singles.get("incomplete_because")
@@ -3855,6 +4764,9 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
 
     if name in _RUN_TOOLS:
         return _run_tool(client, name, args)
+
+    if name in _SCHEDULE_TOOLS:
+        return _schedule_tool(client, name, args)
 
     if name in _SETUP_TOOLS:
         return _setup_tool(client, name, args)
@@ -3972,10 +4884,82 @@ def _tool_error_text(exc: SwarmError) -> str:
 #: to the host.
 _WRITE_LOCK = threading.Lock()
 
-#: How many tool calls may be in flight at once. A workflow of a dozen steps is
-#: a dozen `sc:step` agents, each holding a `swarm_follow` open for its window,
-#: plus the session's own calls; this leaves room for all of them.
+#: How many QUICK tool calls may be in flight at once: every call that answers
+#: from a read or two -- a submit, a check, a status, a listing. Holds never
+#: run here (`HOLD_CALLS`), so this many is a ceiling on the session's own
+#: concurrent work, not on how many rows it can watch. 32 was the ceiling for
+#: everything before #1437, and with ~17 workflows' rows holding 60-85
+#: `swarm_follow`s every submit and check queued behind them for up to 30 min.
 MAX_CONCURRENT_CALLS = 32
+
+#: How many HOLDS may be in flight at once (`_holds`): one per live row, and a
+#: 5-step workflow keeps 5. 256 is 50 five-step workflows -- three times the 17
+#: measured on #1437 -- and a parked hold costs one mostly idle thread, its
+#: stack and, since the shared reads, nothing per poll beyond its tasks' one
+#: read. `SWARM_MCP_MAX_HOLDS` moves it, held to 32-1024: under 32 a single big
+#: workflow's rows would queue again, over 1024 threads is a host problem.
+HOLD_CALLS_DEFAULT = 256
+HOLD_CALLS_BOUNDS = (32, 1024)
+
+#: The client class `serve` paces, held apart from the `SwarmClient` name a
+#: test replaces with a stand-in.
+_PACED_CLIENT = SwarmClient
+
+
+def _hold_calls(environ: Any = None) -> int:
+    """`SWARM_MCP_MAX_HOLDS`, read once by `serve`, clamped to `HOLD_CALLS_BOUNDS`."""
+    raw = (os.environ if environ is None else environ).get("SWARM_MCP_MAX_HOLDS", "")
+    try:
+        value = int(str(raw).strip())
+    except ValueError:
+        return HOLD_CALLS_DEFAULT
+    low, high = HOLD_CALLS_BOUNDS
+    return max(low, min(high, value))
+
+
+def _waits(args: dict[str, Any], name: str, default: int) -> bool:
+    """Does this argument ask the call to wait? Absent means `default`; a value
+    that is not a number is taken as waiting, because the classifier must never
+    put a call that might block on the quick lane -- the tool refuses or
+    defaults it either way."""
+    value = args.get(name)
+    if value is None:
+        return default > 0
+    try:
+        return int(value) > 0
+    except (TypeError, ValueError):
+        return True
+
+
+def _holds(name: str, args: Any) -> bool:
+    """Whether this tool call may block for longer than a few reads -- a HOLD,
+    which runs on the hold lane so it can never occupy a quick worker.
+
+    Every tool that blocks is named here, with the argument that makes it:
+
+    * `swarm_follow` with `wait_seconds` > 0, or with `parents` (a step whose
+      parents still run holds even on its first call, up to 30 minutes);
+    * `swarm_wait` unless `timeout_seconds` is 0 (default 3600);
+    * `swarm_collect` unless `wait_seconds` is 0 (default 3600);
+    * `swarm_setup_status` with `wait_for_github_seconds` > 0;
+    * `swarm_account_remove`, which waits up to `ELICIT_TIMEOUT_SECONDS` for
+      the host's human to type a label;
+    * `swarm_workflow_input`, which waits up to
+      `awaitinput.ELICIT_TIMEOUT_SECONDS` for the person to fill the form in.
+
+    Everything else answers from a bounded number of reads and is quick.
+    """
+    if not isinstance(args, dict):
+        args = {}
+    if name == "swarm_follow":
+        return _waits(args, "wait_seconds", 0) or bool(args.get("parents"))
+    if name == "swarm_wait":
+        return _waits(args, "timeout_seconds", 3600)
+    if name == "swarm_collect":
+        return _waits(args, "wait_seconds", 3600)
+    if name == "swarm_setup_status":
+        return _waits(args, "wait_for_github_seconds", 0)
+    return name in ("swarm_account_remove", "swarm_workflow_input")
 
 
 #: How often a running tool call tells the host it is alive. Claude Code
@@ -4064,8 +5048,9 @@ def _error(message_id: Any, code: int, message: str) -> None:
 
 
 #: WHETHER THE HOST CAN ASK ITS HUMAN A QUESTION (MCP elicitation), as its
-#: `initialize` declared. Read only by `swarm_account_remove`: a host that
-#: cannot ask gets a refusal naming the terminal command, never a confirmation
+#: `initialize` declared. Read by `swarm_account_remove` and
+#: `swarm_workflow_input`: a host that cannot ask gets a refusal naming the
+#: terminal command or the console link, never a confirmation or an answer
 #: the calling agent could supply itself.
 _HOST_CAN_ELICIT = threading.Event()
 
@@ -4081,11 +5066,13 @@ _ELICITING: dict[str, tuple[threading.Event, list[dict[str, Any]]]] = {}
 _ELICIT_LOCK = threading.Lock()
 
 
-def _elicit(message: str, schema: dict[str, Any]) -> dict[str, Any] | None:
+def _elicit(
+    message: str, schema: dict[str, Any], *, timeout: float = ELICIT_TIMEOUT_SECONDS
+) -> dict[str, Any] | None:
     """Ask the host's human through the host (`elicitation/create`).
 
     The host's whole JSON-RPC response, or None when none came within
-    `ELICIT_TIMEOUT_SECONDS`. The answer is typed by the person at the host,
+    `timeout` seconds (`ELICIT_TIMEOUT_SECONDS` unless the caller says). The answer is typed by the person at the host,
     into the host's own prompt: the model that made the tool call neither sees
     the request nor writes its answer.
     """
@@ -4104,7 +5091,7 @@ def _elicit(message: str, schema: dict[str, Any]) -> dict[str, Any] | None:
         with _WRITE_LOCK:
             sys.stdout.write(line)
             sys.stdout.flush()
-        if not answered.wait(ELICIT_TIMEOUT_SECONDS):
+        if not answered.wait(timeout):
             return None
         return box[0]
     finally:
@@ -4174,7 +5161,12 @@ def _human_typed_label(account: dict[str, Any], label: str) -> None:
 def serve(stdin=None, stdout=None) -> int:
     """The stdio loop. One JSON-RPC message per line, both directions.
 
-    TOOL CALLS RUN CONCURRENTLY, and answer in the order they finish. This loop
+    TOOL CALLS RUN CONCURRENTLY, and answer in the order they finish, on TWO
+    LANES (#1437): a hold (`_holds`) runs on its own pool of `HOLD_CALLS`, and
+    every other call on a quick pool of `MAX_CONCURRENT_CALLS` that no hold can
+    occupy -- so a submit or a check answers at once however many rows hold.
+    The hold pool's threads are marked (`enter_hold_lane`), so the client's
+    rate gate serves a quick call's request before a hold's. This loop
     answered one call at a time, so one `swarm_wait` -- which blocks for up to
     an hour by design -- held every other tool call in the session behind it,
     and a workflow's step agents, each following its own task, would each have
@@ -4199,7 +5191,14 @@ def serve(stdin=None, stdout=None) -> int:
     def _client() -> SwarmClient:
         with building:
             if "client" not in held:
-                held["client"] = SwarmClient(tenant=tenant)
+                client = SwarmClient(tenant=tenant)
+                # SHARED READS AND A RATE GATE, for the bridge only (#1437):
+                # every hold of this process is one principal at swarm-api's
+                # 20/s. Only the real client is paced; a test's stand-in for
+                # it is served as it is.
+                if isinstance(client, _PACED_CLIENT):
+                    client.pace_for_bridge()
+                held["client"] = client
             return held["client"]
 
     def _answer(message_id: Any, params: dict[str, Any]) -> None:
@@ -4232,7 +5231,10 @@ def serve(stdin=None, stdout=None) -> int:
 
     with ThreadPoolExecutor(
         max_workers=MAX_CONCURRENT_CALLS, thread_name_prefix="swarm-mcp-call"
-    ) as calls:
+    ) as calls, ThreadPoolExecutor(
+        max_workers=_hold_calls(), thread_name_prefix="swarm-mcp-hold",
+        initializer=enter_hold_lane,
+    ) as holds:
         for line in stream:
             line = line.strip()
             if not line:
@@ -4264,7 +5266,9 @@ def serve(stdin=None, stdout=None) -> int:
             elif method == "tools/list":
                 _respond(message_id, {"tools": TOOLS})
             elif method == "tools/call":
-                calls.submit(_answer, message_id, message.get("params") or {})
+                params = message.get("params") or {}
+                lane = holds if _holds(params.get("name", ""), params.get("arguments")) else calls
+                lane.submit(_answer, message_id, params)
             elif method is None and message_id is not None:
                 # A RESPONSE, to a request this bridge sent (an elicitation).
                 # A response is never answered, whatever it matches.

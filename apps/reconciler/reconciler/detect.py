@@ -544,6 +544,9 @@ def detect_stale_leases(
             if ended is not None
             else {}
         )
+        crash = _crash_exit(snapshot, lease.attempt_id, ended)
+        if crash is not None:
+            ended_detail["exit_code"] = crash[0]
         findings.append(
             Finding(
                 kind=kind,
@@ -551,12 +554,7 @@ def detect_stale_leases(
                     f"lease silent for {silent:.0f}s "
                     f"(grace {config.heartbeat_grace_seconds}s, expired={expired}, "
                     f"dispatch_overdue={overdue_dispatch})"
-                    + (
-                        f"; its execution has ended ({ended.phase.value.lower()}): "
-                        "the worker is lost"
-                        if ended is not None
-                        else ""
-                    )
+                    + (_ended_words(ended, crash) if ended is not None else "")
                 ),
                 task_id=lease.task_id,
                 lease_id=lease.lease_id,
@@ -574,6 +572,45 @@ def detect_stale_leases(
             )
         )
     return findings
+
+
+def _crash_exit(
+    snapshot: ControlSnapshot, attempt_id: str, ended: ExecutionView | None
+) -> tuple[int, str] | None:
+    """The exit code and backend detail of a worker that CRASHED, or None.
+
+    On 2026-10-16 every step that hit #1438 was reclaimed as "its execution has
+    ended (failed): the worker is lost", while this pass's own termination read
+    (`Reconciler._read_terminations`, the "read how an execution ended" line)
+    held exit code 1, "container worker: Error". "Lost" sent the owner looking
+    at the platform; "crashed (exit 1)" points at the worker's own error.
+
+    Only from what that read already put in `snapshot.terminations` -- no second
+    read. A crash is a FAILED execution with a known, non-zero exit code that
+    was not evicted. An unknown exit code, a CANCELLED execution or an eviction
+    keeps today's words: none of those is evidence the worker's code failed.
+    """
+    if ended is None or ended.phase is not ExecutionPhase.FAILED:
+        return None
+    termination = (getattr(snapshot, "terminations", None) or {}).get(attempt_id)
+    if termination is None or getattr(termination, "eviction", None):
+        return None
+    exit_code = getattr(termination, "exit_code", None)
+    if not isinstance(exit_code, int) or isinstance(exit_code, bool) or exit_code == 0:
+        return None
+    return exit_code, _one_line(getattr(termination, "detail", "") or "")
+
+
+def _ended_words(ended: ExecutionView, crash: tuple[int, str] | None) -> str:
+    """The stale-lease reason's tail for a lease whose execution has ended."""
+    if crash is None:
+        return f"; its execution has ended ({ended.phase.value.lower()}): the worker is lost"
+    exit_code, detail = crash
+    said = f" ({detail})" if detail else ""
+    return (
+        f"; its execution ended with exit code {exit_code}{said}: "
+        "the worker crashed before writing its end"
+    )
 
 
 def detect_missing_executions(
@@ -2444,6 +2481,12 @@ def _dependencies_met(
     in the workflow. A parent this pass did not read, or that belongs to
     another tenant, is not a satisfied one.
     """
+    if task.held_for_pull_requests:
+        # SPEED-D3: a root step of a workflow submitted with `after` depends
+        # on no step, and waits for a pull request to merge. Only the gate
+        # says when it may start; once it says `merged`, this rule is the
+        # backstop for the scheduler's sweep as for any other step.
+        return None
     parents = task.depends_on or tuple(
         by_step[name].task_id
         for name in by_step[step_id].depends_on

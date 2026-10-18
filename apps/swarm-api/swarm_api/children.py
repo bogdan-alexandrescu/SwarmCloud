@@ -59,6 +59,8 @@ from . import gitidentity
 from .auth import bearer_tokens
 from .childkey import (
     CHILD_KEYS,
+    PURPOSE_CHILD,
+    PURPOSE_STATE,
     WORKER_UNPROTECTED,
     AttemptTuple,
     ChildKeys,
@@ -74,6 +76,7 @@ from .store import EVENTS, LEASES, TASKS, Store, first_cancel_target
 from .validation import (
     CHILD_CASCADE_METADATA_KEY,
     CHILD_REQUEST_ID_METADATA_KEY,
+    mcp_server_names,
     resolve_dispatch_options,
 )
 
@@ -177,6 +180,9 @@ class ChildSpec(_Strict):
     model: str | None = Field(default=None, max_length=128)
     timeout_seconds: int | None = Field(default=None, ge=1, le=86_400)
     repository_ref: str | None = Field(default=None, max_length=256)
+    #: The child's model class, by name, as `TaskCreate.model_class` (#1435).
+    #: None: the CHILD profile's default, never the parent's class (R3).
+    model_class: str | None = Field(default=None, max_length=32)
 
 
 class _AttemptFields(_Strict):
@@ -257,7 +263,24 @@ def _lease_is_live(
         return False
     expires = lease.get("expires_at")
     if isinstance(expires, datetime) and expires <= now:
-        return False
+        # NOT YET ALIVE IS NOT EXPIRED. A lease is written with
+        # `heartbeat_at: None` and `expires_at = created_at + 120 s`, and until
+        # the worker's first beat the reconciler judges it by
+        # `dispatch_deadline` alone (`reconciler/detect.py`
+        # `detect_stale_leases`). The worker registers its child key, and opens
+        # its live session, before that beat, so a pod that took longer than
+        # 120 s to start was refused here on a lease nothing else considered
+        # dead: task_23cc2e82178640709a45, 2026-10-12, 154 s from dispatch to
+        # STARTING, `child_key_window_closed`, no live browser (LB-KEYRACE).
+        # The fence is unchanged -- task, lease, attempt, generation and
+        # `released_at` are checked above; this is only the liveness clock.
+        deadline = lease.get("dispatch_deadline")
+        if not (
+            lease.get("heartbeat_at") is None
+            and isinstance(deadline, datetime)
+            and deadline > now
+        ):
+            return False
     return True
 
 
@@ -329,19 +352,27 @@ class ChildService:
             "has no attempt"
         )
 
-    def _registration(self, attempt: AttemptTuple) -> dict[str, Any] | None:
-        """The trusted registration for `attempt`: attested, matching, with a key."""
+    def _registration(
+        self, attempt: AttemptTuple, purpose: str = PURPOSE_CHILD
+    ) -> dict[str, Any] | None:
+        """The trusted registration for `attempt`: attested, matching, with a
+        key that may sign for `purpose`.
+
+        Every existing caller asks for CHILD, which a v1 registration and a
+        protected v2 one (`state/open`, docs/design/tenant-settings-integrity.md
+        §4.5) both grant. Only the state routes ask for STATE, which a v1
+        registration never grants: it was attested before state proofs existed.
+        """
         for reg_id in self._keys.registration_ids(attempt):
             snap = self._db.collection(CHILD_KEYS).document(reg_id).get()
             if not snap.exists:
                 continue
             doc = snap.to_dict() or {}
-            if not attempt.matches(doc) or not self._keys.attestation_holds(attempt, doc):
-                # A rewritten registration: a denial for this attempt, never a
-                # key of the writer's choosing (§3.2 step 4).
+            # A rewritten registration, a tombstone (§5 F12) or a key not
+            # registered for `purpose`: a denial for this attempt, never a key
+            # of the writer's choosing (§3.2 step 4).
+            if purpose not in self._keys.purposes_of(attempt, doc):
                 return None
-            if not valid_public_key(doc.get("public_key")):
-                return None  # a tombstone (§5 F12)
             return doc
         return None
 
@@ -372,6 +403,17 @@ class ChildService:
     # -- §6.1a: the registration ------------------------------------------
 
     def register_key(self, authorization: str | None, attempt_id: str, raw: bytes) -> dict:
+        """§6.1a. DEPTH-AGNOSTIC ON PURPOSE: a child task's key registers too.
+
+        The attempt key proves "the worker, not the agent" for every signed
+        call, not only for submitting children: the git tools are signed with it
+        (docs/runner-git-tools.md §1.4, lane G2), and the scheduler issues a
+        child the nonce when its profile offers them. So nothing here reads
+        `parent_task_id`. The depth limit is `submit`'s, read from the task
+        document in its own transaction (`ChildDepthExceeded`); a registered key
+        does not lift it. Refusing a child here would quietly take the git tools
+        away from every fan-out lane.
+        """
         self._require_configured()
         body: ChildKeyRegistration = parse_body(ChildKeyRegistration, raw)
         self.authenticate_worker(authorization, body.tenant_id)
@@ -393,28 +435,67 @@ class ChildService:
         else:
             raise ValidationFailed("send a public_key, or key null with refused")
 
+        now = self._now()
+        self._write_registration(
+            attempt,
+            {
+                "public_key": public_key,
+                "refused": refused,
+                "attestation": self._keys.attest(attempt, public_key, refused),
+            },
+            window=(TaskState.STARTING,),
+            now=now,
+        )
+        # Nothing secret is returned: not the nonce, the attestation or the registration id.
+        # `search_tool`: whether this worker names the search tool to its agent
+        # (docs/search-tool.md). The flag, and a key to sign the calls with; the
+        # route re-checks both, and the profile, on every call.
+        search_tool = bool(public_key) and bool(getattr(self._settings, "search_tool_enabled", False))
+        return {"registered": "key" if public_key else "tombstone", "attempt_id": attempt_id,
+                "search_tool": search_tool}
+
+    def _write_registration(
+        self,
+        attempt: AttemptTuple,
+        fields: dict[str, Any],
+        *,
+        window: tuple[TaskState, ...],
+        now: datetime,
+        same_key: Callable[[dict[str, Any]], bool] | None = None,
+    ) -> bool:
+        """Write `attempt`'s registration once, in one transaction, while the
+        task is in `window` under this attempt's live lease.
+
+        Returns False when `same_key` recognises the registration already
+        stored (a retried `state/open` whose answer was lost): nothing is
+        written and the caller answers as if it had been. Anything else
+        already stored is `ChildKeyTaken`: first wins, once per generation.
+        """
         task_ref = self._db.collection(TASKS).document(attempt.task_id)
         lease_ref = self._db.collection(LEASES).document(attempt.lease_id)
         slots = [self._db.collection(CHILD_KEYS).document(i) for i in self._keys.registration_ids(attempt)]
-        now = self._now()
-        attestation = self._keys.attest(attempt, public_key, refused)
+        names = " or ".join(state.value for state in window)
 
         @firestore.transactional
-        def _apply(txn: Any) -> None:
+        def _apply(txn: Any) -> bool:
             task_snap = _snapshot(txn.get(task_ref))
             lease_snap = _snapshot(txn.get(lease_ref))
             slot_snaps = [_snapshot(txn.get(ref)) for ref in slots]
             task = task_snap.to_dict() if task_snap.exists else None
             lease = lease_snap.to_dict() if lease_snap.exists else None
-            if any(s.exists for s in slot_snaps):
+            for snap in slot_snaps:
+                if not snap.exists:
+                    continue
+                if same_key is not None and same_key(snap.to_dict() or {}):
+                    return False
                 raise ChildKeyTaken("this attempt's child key is already registered")
             if (
                 task is None
-                or task.get("state") != TaskState.STARTING.value
+                or task.get("state") not in {state.value for state in window}
                 or not _lease_is_live(task, lease, attempt, now)
             ):
                 raise ChildKeyWindowClosed(
-                    "a child key is registered only while the task is STARTING under "
+                    f"a key is registered only while the task is {names} under "
                     "this attempt's live lease"
                 )
             txn.set(
@@ -425,16 +506,59 @@ class ChildService:
                     "attempt_id": attempt.attempt_id,
                     "lease_id": attempt.lease_id,
                     "generation": attempt.generation,
-                    "public_key": public_key,
-                    "refused": refused,
-                    "attestation": attestation,
+                    **fields,
                     "created_at": now,
                 },
             )
+            return True
 
-        _apply(self._db.transaction())
-        # Nothing secret is returned: not the nonce, the attestation or the registration id.
-        return {"registered": "key" if public_key else "tombstone", "attempt_id": attempt_id}
+        return bool(_apply(self._db.transaction()))
+
+    def register_state_key(
+        self, attempt: AttemptTuple, *, nonce: str, public_key: str, unprotected: bool
+    ) -> dict[str, Any]:
+        """`state/open`'s registration (docs/design/tenant-settings-integrity.md §4.3, §4.5).
+
+        The caller has authenticated the worker. This spends the nonce on a v2
+        registration: the window is LEASED, DISPATCHED or STARTING under this
+        attempt's live lease, because `state/open` is the worker's FIRST call,
+        made before it writes anything. A key from a protected heap may sign
+        for children and state; one from an unprotected heap (owner decision
+        Q4) is flagged `unprotected` and may sign for STATE only -- such a
+        worker has registered a tombstone and run without children since
+        §5 F12, and this keeps that. A retry carrying the same key and flag
+        is answered as the first was.
+        """
+        self._require_configured()
+        if not self._keys.verify_nonce(attempt, nonce):
+            raise ChildKeyUnproven("the registration nonce does not verify for this attempt")
+        if not valid_public_key(public_key):
+            raise ValidationFailed("public_key must be a base64url Ed25519 public key")
+        purposes = (PURPOSE_STATE,) if unprotected else (PURPOSE_CHILD, PURPOSE_STATE)
+
+        def _same(doc: dict[str, Any]) -> bool:
+            return (
+                doc.get("public_key") == public_key
+                and doc.get("unprotected") is unprotected
+                and self._keys.purposes_of(attempt, doc) == frozenset(purposes)
+            )
+
+        created = self._write_registration(
+            attempt,
+            {
+                "version": 2,
+                "public_key": public_key,
+                "refused": None,
+                "purpose": list(purposes),
+                "unprotected": unprotected,
+                "attestation": self._keys.attest_v2(attempt, public_key, purposes, unprotected),
+            },
+            window=(TaskState.LEASED, TaskState.DISPATCHED, TaskState.STARTING),
+            now=self._now(),
+            same_key=_same,
+        )
+        return {"registered": "key", "purpose": list(purposes), "unprotected": unprotected,
+                "created": created}
 
     # -- §6.1: the submission ---------------------------------------------
 
@@ -602,9 +726,16 @@ class ChildService:
             runner_profile=spec.runner_profile,
             input=spec.input,
             model=spec.model,
+            model_class=spec.model_class,
             timeout_seconds=timeout,
         )
         repository_ref = spec.repository_ref or parent.repository_ref
+        # Q7 of #1433 (docs/design/registered-mcp-servers.md §4.3): a child
+        # names only servers its parent named, and uses the credential rows
+        # the parent's submission stored, the parent's own or its workflow's
+        # (the attach reads the same owners, from the child's signed
+        # `parent_task_id`). It has no `mcp_credentials` of its own.
+        mcp_inherited = self._mcp_inheritance(parent) if mcp_server_names(spec.input) else None
         task = self._submissions._build_task(
             spec=create,
             tenant=tenant,
@@ -627,6 +758,7 @@ class ChildService:
             priority=parent.priority,
             repository_url=parent.repository_url,
             repository_ref=repository_ref,
+            mcp_inherited=mcp_inherited,
         )
         # A child's timeout is never above its parent's, whatever the profile.
         task = replace(
@@ -647,6 +779,23 @@ class ChildService:
         # (contract request 42).
         self._submissions._sign([task])
         return task
+
+    def _mcp_inheritance(self, parent: Task) -> Any:
+        """The parent's servers as its SIGNED spec names them, and whose
+        credential rows a child may use. The agent can rewrite its own task
+        document, so a list read from a parent whose signature does not
+        verify is no list: the child inherits no server."""
+        from .service import McpInheritance
+        from .verdictpublish import spec_refusal
+
+        snap = self._db.collection(TASKS).document(parent.id).get()
+        doc = (snap.to_dict() or {}) if snap.exists else {}
+        signed = (doc.get("tenant_id") == parent.tenant_id
+                  and spec_refusal(self._settings, doc, parent.id) is None)
+        return McpInheritance(
+            servers=tuple(mcp_server_names(doc.get("input"))) if signed else (),
+            owners=tuple(o for o in (parent.id, parent.workflow_id or "") if o),
+        )
 
     # -- §6.2: the listing for a resumed worker ----------------------------
 

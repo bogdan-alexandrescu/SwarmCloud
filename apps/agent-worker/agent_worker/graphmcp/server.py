@@ -29,7 +29,8 @@ PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 #: Shown to the model once; counted in the schema budget with the tools.
 INSTRUCTIONS = ("Read-only code graph of this repository at the indexed commit. Every "
                 "answer starts with freshness; rows marked stale are on paths changed "
-                "since the index. Answers page at 4 KiB: pass next_cursor as cursor.")
+                "since the index or in this step. Answers page at 4 KiB: pass "
+                "next_cursor as cursor. call_graph walks calls; index pages any layer.")
 
 PARSE_ERROR = -32700
 INVALID_REQUEST = -32600

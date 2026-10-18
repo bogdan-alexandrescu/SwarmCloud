@@ -255,6 +255,9 @@ describe('Pool limits says what a change does, from figures it has (L2)', () => 
 
 describe('Pool limits says "not recorded" where a pool carries no record (L2)', () => {
   it('reads not recorded for Last changed and for History, with the reason on hover', async () => {
+    // The admin pool read answered and holds no record for these pools: the
+    // "nobody has changed it" case, which alone is the dash (VQA V078).
+    api.loadAdminPools.mockResolvedValue({ status: 'ok', data: { pools: [] }, fetchedAt: Date.now() })
     const side = await open('tenant:eng')
     const marks = [...side.querySelectorAll('.adm-not-recorded')]
     expect(marks.map((m) => m.textContent)).toEqual(['not recorded', 'not recorded'])

@@ -19,8 +19,11 @@ life. It lives in this process and nowhere else.
 
 from __future__ import annotations
 
+import copy
+import email.utils
 import json
 import os
+import random
 import re
 import subprocess
 import threading
@@ -80,6 +83,9 @@ class SwarmError(RuntimeError):
         #: one refusal from another must not do it by reading the sentence.
         self.code = code
         self.detail = detail
+        #: Seconds a 429's `Retry-After` asked for, when it named any; read by
+        #: the bridge's retry (`SwarmClient._request_retrying`).
+        self.retry_after: float | None = None
 
 
 def _run(argv: list[str], *, timeout: int = 60) -> str:
@@ -597,6 +603,24 @@ def unwrap_task(payload: Any) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+#: `session.METADATA_KEY`, here because `session` imports `config`, which
+#: imports this module.
+SESSION_KEY = "claude_session"
+
+
+def session_tag() -> dict[str, str]:
+    """`{claude_session: <this Claude Code session>}`, or `{}` when unknown
+    (`session.current`)."""
+    from . import session
+
+    return session.tag()
+
+
+def _refused_field(exc: SwarmError, field: str) -> bool:
+    """A 422 that names `field`: a deployment whose schema forbids it."""
+    return exc.status == 422 and field in str(exc)
+
+
 def task_payload(
     *,
     prompt: str,
@@ -622,7 +646,10 @@ def task_payload(
     payload: dict[str, Any] = {
         "runner_profile": runner_profile,
         "input": {**(inputs or {}), "prompt": prompt},
-        "metadata": {"origin": "swarm-mcp", **(metadata or {})},
+        # The Claude Code session that sent it (SC-SESSION-SCOPE): what makes
+        # `/sc check`, `/sc attach --all` and the watch count it as that
+        # session's own and no other's (`session.tag`, empty when unknown).
+        "metadata": {"origin": "swarm-mcp", **session_tag(), **(metadata or {})},
     }
     if repository_url:
         payload["repository_url"] = repository_url
@@ -737,9 +764,18 @@ def chosen_tenant(flag: str | None, environ: Any = None) -> str | None:
     THE FLAG WINS, as every other option here beats its variable. Blank is no
     choice at all -- `SWARM_TENANT=` in a shell profile must not become an
     empty header, which is a difference on the wire for nothing. Read by the
-    CLI per invocation and by the MCP server once at start; `SwarmClient`
-    never reads it itself, so `sc`, which offers no such option, is not
-    quietly moved to another tenant.
+    CLI and by `sc` once per invocation, and by the MCP server once at start;
+    `SwarmClient` never reads it itself, so a caller that names its tenant (or
+    deliberately none) is never moved behind its back.
+
+    `sc` READS IT TOO (SC-TENANT, owner decision 2026-10-12: "sc reads
+    SWARM_TENANT"). Once #1204 made a person's ready personal workspace their
+    default tenant, a tool that sends no header moved off the group it had
+    always read; `sc` sending none would have split one person's view
+    between their personal workspace (`sc`) and their group (the bridge, the
+    plugin, `swarm`). The sc plugin's `tenant` option reaches the bridge and
+    its SessionStart hook as this same variable, and a SWARM_TENANT already in
+    Claude Code's environment wins over that option.
     """
     env = os.environ if environ is None else environ
     for value in (flag, env.get("SWARM_TENANT")):
@@ -763,6 +799,260 @@ def project_id() -> str:
     if not value or value == "(unset)":
         raise SwarmError("no project: set PROJECT_ID, or run `gcloud config set project`")
     return value
+
+
+# --------------------------------------------------------------------------
+# The bridge's pacing: shared reads, a rate gate, a 429 retry (#1437)
+# --------------------------------------------------------------------------
+#
+# ONE BRIDGE IS ONE PRINCIPAL. swarm-api limits each caller to
+# `core.requests_per_second` = 20 with a burst of `rate_limit_burst` = 40
+# (apps/swarm-api/swarm_api/deps.py, TokenBucketLimiter), and every row a
+# Claude Code session holds -- 60 to 85 of them with ~17 workflows attached,
+# measured 2026-10-16 -- reads through this one process. Each hold re-read its
+# routes every `progress.POLL_SECONDS`, nothing was shared between holds on
+# the same task, and the API answered 429. Three things here, switched on by
+# `SwarmClient.pace_for_bridge` and by nothing else: the CLI makes a handful
+# of calls per command, and the test suite's fake transports change a task
+# between two reads with no real time passing, which a cache would hide.
+
+#: How long one read of a shared route serves every caller. Equal to
+#: `progress.POLL_SECONDS` (5 s; a test holds the two together, and this
+#: module cannot import that one): a hold never polls faster than that, so a
+#: hold reads at most one poll's age -- what it would have seen anyway, had
+#: its poll landed a moment earlier -- and N holds on one task cost one read
+#: per poll instead of N.
+SHARED_READ_TTL_SECONDS = 5.0
+
+#: THE ROUTES THE HOLDS REPEAT, and only those: the task document, the
+#: workflow document, a task's events page and its live log window. Matched on
+#: the path with its query, so two different pages or windows are two keys.
+#: Every other GET -- artifacts, answers, attempts, listings, the tenant -- and
+#: every write goes to the API each time.
+_SHARED_ROUTES = (
+    re.compile(r"^/v1/tasks/(?!batch\b)[^/?]+(\?.*)?$"),
+    re.compile(r"^/v1/tasks/[^/?]+/events(\?.*)?$"),
+    re.compile(r"^/v1/tasks/[^/?]+/logs(\?.*)?$"),
+    re.compile(r"^/v1/workflows/[^/?]+(\?.*)?$"),
+)
+
+
+def _shared_route(path: str) -> bool:
+    return any(route.match(path) for route in _SHARED_ROUTES)
+
+
+#: The bridge's own ceiling, below swarm-api's 20/s and 40 so that the console
+#: in the same browser -- the same principal -- keeps 5/s and 10 of burst. The
+#: environment may move them (`SWARM_MCP_RATE_PER_SECOND`,
+#: `SWARM_MCP_RATE_BURST`), never past the API's own figures: a gate above the
+#: limit it exists to stay under is no gate.
+RATE_PER_SECOND_DEFAULT = 15.0
+RATE_BURST_DEFAULT = 30
+_API_RATE_PER_SECOND = 20.0
+_API_RATE_BURST = 40
+
+#: HOW QUICK CALLS GO FIRST: ONE BUCKET WITH A RESERVE, not two buckets. A
+#: hold takes a token only while more than this many would remain, and never
+#: while a quick call is waiting for one; a quick call may take the last. Two
+#: buckets would split the rate for good -- a `swarm_check` that fans out a
+#: dozen reads would be held to the quick share even with no row open -- where
+#: the reserve gives holds the whole rate while nothing else asks, and keeps a
+#: third of the burst for the call a person is waiting on.
+RATE_HOLD_RESERVE_FRACTION = 1 / 3
+
+#: A GET answered 429 is tried again after the response's `Retry-After`, else
+#: after these delays (each stretched by up to `RETRY_JITTER` so that sixty
+#: holds refused together do not come back together), and after the last one
+#: the 429 is reported as it always was. Never a write: a POST the API may
+#: have acted on is not the client's to repeat. `Retry-After` is honoured up
+#: to `RETRY_AFTER_CAP_SECONDS`; past that the call reports rather than sits.
+RETRY_429_DELAYS = (2.0, 4.0, 8.0)
+RETRY_JITTER = 0.25
+RETRY_AFTER_CAP_SECONDS = 60.0
+
+#: Which lane the current thread serves: the bridge's hold pool marks its
+#: threads at start (`enter_hold_lane`), and the rate gate reads it.
+_LANE = threading.local()
+
+
+def enter_hold_lane() -> None:
+    """Mark this thread as one of the bridge's HOLD threads, for good: the
+    hold pool's initializer, so every request a hold makes yields to quick ones."""
+    _LANE.hold = True
+
+
+def in_hold_lane() -> bool:
+    return bool(getattr(_LANE, "hold", False))
+
+
+def _env_number(environ: Any, name: str, default: float, low: float, high: float) -> float:
+    raw = str(environ.get(name, "") or "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    if value != value:  # NaN
+        return default
+    return max(low, min(high, value))
+
+
+class RateGate:
+    """A token bucket: `rate` per second, `burst` at most, with a `reserve`
+    a hold may not spend (see `RATE_HOLD_RESERVE_FRACTION`)."""
+
+    def __init__(
+        self,
+        rate: float,
+        burst: int,
+        *,
+        reserve: int | None = None,
+        clock: Any = time.monotonic,
+    ) -> None:
+        self.rate = float(rate)
+        self.burst = max(1, int(burst))
+        default_reserve = int(self.burst * RATE_HOLD_RESERVE_FRACTION)
+        self.reserve = max(0, min(self.burst - 1, default_reserve if reserve is None else int(reserve)))
+        self._clock = clock
+        self._tokens = float(self.burst)
+        self._stamp = clock()
+        self._cond = threading.Condition()
+        self._quick_waiting = 0
+
+    def _refill(self) -> None:
+        now = self._clock()
+        self._tokens = min(float(self.burst), self._tokens + (now - self._stamp) * self.rate)
+        self._stamp = now
+
+    def take(self, *, hold: bool = False) -> None:
+        """Return once this caller has a token."""
+        with self._cond:
+            floor = 1.0 + (self.reserve if hold else 0)
+            counted = False
+            try:
+                while True:
+                    self._refill()
+                    if self._tokens >= floor and (not hold or self._quick_waiting == 0):
+                        self._tokens -= 1.0
+                        return
+                    if not hold and not counted:
+                        self._quick_waiting += 1
+                        counted = True
+                    short = max(floor - self._tokens, 0.0)
+                    self._cond.wait(timeout=max(short / self.rate, 0.001))
+            finally:
+                if counted:
+                    self._quick_waiting -= 1
+                    self._cond.notify_all()
+
+
+class _Flight:
+    __slots__ = ("done", "value", "error", "hold", "generation")
+
+    def __init__(self, hold: bool, generation: int) -> None:
+        self.done = threading.Event()
+        self.value: Any = None
+        self.error: BaseException | None = None
+        self.hold = hold
+        # The write count when this read began: a read begun before a write
+        # is not joined after it.
+        self.generation = generation
+
+
+class SharedReads:
+    """One read per key per `ttl` for every caller, and single-flight: a
+    caller of a key already being read waits for that answer.
+
+    A QUICK CALLER NEVER WAITS ON A HOLD'S FLIGHT. A hold's read may be queued
+    at the rate gate behind the reserve, and a quick call joining it would
+    then wait behind a hold -- the one thing the two lanes exist to prevent.
+    It reads for itself, and a hold joins either kind.
+
+    Every answer is a deep copy, so no caller can change what the next is
+    handed. A write anywhere clears the cache (`invalidate`), and a read that
+    was in flight across a write is answered but not kept: after a cancel or a
+    submit, the next read sees what the write did.
+    """
+
+    def __init__(self, ttl: float = SHARED_READ_TTL_SECONDS, *, clock: Any = time.monotonic) -> None:
+        self.ttl = float(ttl)
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._kept: dict[Any, tuple[float, Any]] = {}
+        self._flying: dict[tuple[Any, bool], _Flight] = {}
+        self._generation = 0
+
+    def invalidate(self) -> None:
+        with self._lock:
+            self._generation += 1
+            self._kept.clear()
+
+    def read(self, key: Any, fetch: Any, *, hold: bool = False) -> Any:
+        with self._lock:
+            now = self._clock()
+            kept = self._kept.get(key)
+            if kept is not None and kept[0] > now:
+                return copy.deepcopy(kept[1])
+            flight = self._flying.get((key, False))
+            if flight is not None and flight.generation != self._generation:
+                flight = None
+            if flight is None and hold:
+                flight = self._flying.get((key, True))
+                if flight is not None and flight.generation != self._generation:
+                    flight = None
+            leading = flight is None
+            if leading:
+                generation = self._generation
+                flight = _Flight(hold, generation)
+                # A flight begun before a write is left to finish for its own
+                # waiters; this one replaces it as the key's current flight.
+                self._flying[(key, hold)] = flight
+        assert flight is not None
+        if not leading:
+            flight.done.wait()
+            if flight.error is not None:
+                raise flight.error
+            return copy.deepcopy(flight.value)
+        try:
+            value = fetch()
+        except BaseException as exc:
+            flight.error = exc
+            raise
+        else:
+            flight.value = value
+            with self._lock:
+                if generation == self._generation:
+                    now = self._clock()
+                    for stale in [k for k, (until, _) in self._kept.items() if until <= now]:
+                        del self._kept[stale]
+                    self._kept[key] = (now + self.ttl, value)
+            return copy.deepcopy(value)
+        finally:
+            with self._lock:
+                if self._flying.get((key, flight.hold)) is flight:
+                    del self._flying[(key, flight.hold)]
+            flight.done.set()
+
+
+def _retry_after(exc: Any) -> float | None:
+    """Seconds from a response's `Retry-After` (a number or an HTTP date), or None."""
+    headers = getattr(exc, "headers", None)
+    raw = headers.get("Retry-After") if headers is not None else None
+    if not raw:
+        return None
+    raw = str(raw).strip()
+    try:
+        seconds = float(raw)
+    except ValueError:
+        try:
+            when = email.utils.parsedate_to_datetime(raw)
+        except (TypeError, ValueError):
+            return None
+        if when is None:
+            return None
+        seconds = when.timestamp() - time.time()
+    if seconds != seconds:  # NaN
+        return None
+    return max(0.0, seconds)
 
 
 class SwarmClient:
@@ -823,6 +1113,10 @@ class SwarmClient:
         #: take it themselves.
         self._mint_lock = threading.RLock()
         self._signed_in: Any = None
+        #: The bridge's pacing (`pace_for_bridge`); None everywhere else.
+        self._shared: SharedReads | None = None
+        self._gate: RateGate | None = None
+        self._sleep: Any = time.sleep
 
         if self.tier is _auth.Tier.IAP:
             # The audience IAP accepts is its OAuth client id, never the
@@ -1123,8 +1417,86 @@ class SwarmClient:
         with self._mint_lock:
             return self._token is not None or self._access is not None
 
+    # -- pacing ------------------------------------------------------------
+    def pace_for_bridge(
+        self,
+        *,
+        environ: Any = None,
+        ttl: float = SHARED_READ_TTL_SECONDS,
+        clock: Any = time.monotonic,
+        sleep: Any = time.sleep,
+    ) -> None:
+        """Share the holds' reads, stay under the API's rate, and retry a GET's
+        429 -- what the MCP bridge needs and a one-shot command does not (see
+        the block above `RateGate`). The rate and burst come from
+        `SWARM_MCP_RATE_PER_SECOND` and `SWARM_MCP_RATE_BURST`, held to at most
+        the API's own 20 and 40."""
+        env = os.environ if environ is None else environ
+        rate = _env_number(env, "SWARM_MCP_RATE_PER_SECOND", RATE_PER_SECOND_DEFAULT,
+                           0.5, _API_RATE_PER_SECOND)
+        burst = int(_env_number(env, "SWARM_MCP_RATE_BURST", RATE_BURST_DEFAULT,
+                                1, _API_RATE_BURST))
+        self._shared = SharedReads(ttl, clock=clock)
+        self._gate = RateGate(rate, burst, clock=clock)
+        self._sleep = sleep
+
     # -- transport ---------------------------------------------------------
     def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        payload: dict[str, Any] | None = None,
+        timeout: int = 60,
+    ) -> Any:
+        """One API call, through the bridge's pacing when it is on.
+
+        A GET of a shared route is answered from the shared read
+        (`SharedReads`), keyed by method, path with query, and the tenant
+        header, so no tenant is handed another's answer. Any other method
+        clears the shared reads once it has been sent.
+        """
+        shared = self._shared
+        if shared is None:
+            return self._request_once(method, path, payload=payload, timeout=timeout)
+        if method == "GET" and payload is None and _shared_route(path):
+            key = (method, path, self.tenant or "")
+            return shared.read(
+                key,
+                lambda: self._request_retrying(method, path, payload=payload, timeout=timeout),
+                hold=in_hold_lane(),
+            )
+        try:
+            return self._request_retrying(method, path, payload=payload, timeout=timeout)
+        finally:
+            if method != "GET":
+                shared.invalidate()
+
+    def _request_retrying(
+        self,
+        method: str,
+        path: str,
+        *,
+        payload: dict[str, Any] | None,
+        timeout: int,
+    ) -> Any:
+        """`_request_once`, and for a GET answered 429, up to
+        `len(RETRY_429_DELAYS)` more tries (`RETRY_429_DELAYS`)."""
+        tried = 0
+        while True:
+            try:
+                return self._request_once(method, path, payload=payload, timeout=timeout)
+            except SwarmError as exc:
+                if exc.status != 429 or method != "GET" or tried >= len(RETRY_429_DELAYS):
+                    raise
+                if exc.retry_after is not None:
+                    delay = min(exc.retry_after, RETRY_AFTER_CAP_SECONDS)
+                else:
+                    delay = RETRY_429_DELAYS[tried] * (1.0 + random.uniform(0.0, RETRY_JITTER))
+                tried += 1
+                self._sleep(delay)
+
+    def _request_once(
         self,
         method: str,
         path: str,
@@ -1157,6 +1529,8 @@ class SwarmClient:
         payload: dict[str, Any] | None,
         timeout: int,
     ) -> Any:
+        if self._gate is not None:
+            self._gate.take(hold=in_hold_lane())
         url = f"{self.base_url}{path}"
         body = json.dumps(payload).encode() if payload is not None else None
         req = urllib.request.Request(url, data=body, method=method)
@@ -1204,9 +1578,12 @@ class SwarmClient:
                     "deployment the steps are docs/runbooks/iap-desktop-client.md"
                 )
             code, detail = (None, None) if edge else _error_fields(raw)
-            raise SwarmError(
+            error = SwarmError(
                 message, status=exc.code, edge=edge, code=code, detail=detail
-            ) from exc
+            )
+            if exc.code == 429:
+                error.retry_after = _retry_after(exc)
+            raise error from exc
         except urllib.error.URLError as exc:
             raise SwarmError(f"could not reach {self.base_url}: {exc.reason}") from exc
 
@@ -1536,9 +1913,28 @@ class SwarmClient:
         }
         if fix_rounds is not None:
             payload["fix_rounds"] = fix_rounds
+        # The session that asked (SC-SESSION-SCOPE). swarm-api copies it onto
+        # the planner task and every workflow the run starts, CI-fix rounds
+        # included, so the whole run counts as this session's own.
+        payload.update(session_tag())
         try:
             data = self.request("POST", "/v1/runs", payload=payload)
         except SwarmError as exc:
+            if SESSION_KEY in payload and _refused_field(exc, SESSION_KEY):
+                # A deployment older than the field refuses it as an extra
+                # (RunCreate forbids extras). The run is still the caller's to
+                # start; it is then untagged, and the answer says so.
+                del payload[SESSION_KEY]
+                try:
+                    data = self.request("POST", "/v1/runs", payload=payload)
+                except SwarmError as again:
+                    raise run_refusal(again) from again
+                run = unwrap_run(data, "POST /v1/runs")
+                run["session_tag"] = (
+                    "not stored: this deployment does not take `claude_session` on a run yet, so "
+                    "the run is untagged and `/sc check` will not count it as this session's"
+                )
+                return run
             raise run_refusal(exc) from exc
         return unwrap_run(data, "POST /v1/runs")
 
@@ -1698,19 +2094,36 @@ def tenant_listing(client: Any) -> dict[str, Any]:
     default; with a choice it is the choice, or the API's 403 refusing it,
     which propagates unchanged. `chosen` is what was asked for, None when
     nothing was. Two GETs, nothing written.
+
+    `is_default` marks the tenant a request naming none acts in, and
+    `default_source` says why (`profile`, `personal`, `first_group`, or
+    `unavailable` when the preferences could not be read and such a request
+    is refused 503): both the API's, from `tenants/mine`'s default entry
+    (docs/design/user-profile.md §4.5). An API older than that marks no
+    entry; its first entry is the headerless one by the route's documented
+    order, so that one is marked and `default_source` is None, not a guess.
     """
     from .render import tenant_of
 
     mine = client.tenants_mine()
     current = tenant_of(client.request("GET", "/v1/tenants/me"))
+    marked = any("is_default" in entry for entry in mine)
+    default = next(
+        (entry for index, entry in enumerate(mine)
+         if (entry.get("is_default") is True if marked else index == 0)),
+        None,
+    )
     return {
         "current": current,
         "chosen": getattr(client, "tenant", None),
+        "default": default.get("tenant_id") if default else None,
+        "default_source": default.get("default_source") if default else None,
         "tenants": [
             {
                 "tenant_id": entry.get("tenant_id"),
                 "display_name": entry.get("display_name"),
                 "current": entry.get("tenant_id") == current,
+                "is_default": entry is default,
             }
             for entry in mine
         ],

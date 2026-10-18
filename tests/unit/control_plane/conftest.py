@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from swarm_common.config import Settings
 from swarm_common.models import Tenant
 
+from swarm_api import forge_limits
 from swarm_api.auth import StaticTokenVerifier
 from swarm_api.credentials import InMemoryCredentials
 from swarm_api.deps import build_context
@@ -83,6 +84,16 @@ def api_settings(**overrides: Any) -> ApiSettings:
     return ApiSettings(**base)
 
 
+@pytest.fixture(autouse=True)
+def _fresh_quota_ledger():
+    """`forge_limits.QUOTAS` is the process's one ledger (QUOTA-THROTTLE): a
+    hold one test's rate-limited answer set must not defer the next test's
+    reads."""
+    forge_limits.QUOTAS.clear()
+    yield
+    forge_limits.QUOTAS.clear()
+
+
 @pytest.fixture
 def db() -> FakeFirestore:
     return FakeFirestore()
@@ -134,7 +145,7 @@ class NoForgeTokens:
     submission (lane U9 item 4), and the default context must not reach
     Secret Manager to find that out. A test about the read injects its own."""
 
-    def token_for(self, tenant: Tenant) -> str:
+    def token_for(self, tenant: Tenant, *, person=None) -> str:
         from swarm_api.forge import NoForgeCredential
 
         raise NoForgeCredential(f"tenant {tenant.tenant_id!r} has no forge credential in this test")

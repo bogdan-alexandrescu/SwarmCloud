@@ -20,6 +20,7 @@ import { ledgerFixture } from '../outcomes.fixture'
 import { alignedWords, instantLabel, type Outcomes } from '../outcomes'
 import type { AttemptRow, AttemptsPage, Task, TaskPage } from '../types'
 import type { WorkflowRead } from '../api'
+import { byIdVia } from './workflowsById'
 
 const api = vi.hoisted(() => ({
   loadAttemptsPage: vi.fn(),
@@ -27,6 +28,7 @@ const api = vi.hoisted(() => ({
   loadTasks: vi.fn(),
   loadTask: vi.fn(),
   loadWorkflow: vi.fn(),
+  loadWorkflowsById: vi.fn(),
   loadOutcomes: vi.fn(),
 }))
 vi.mock('../api', async (importOriginal) => {
@@ -35,6 +37,7 @@ vi.mock('../api', async (importOriginal) => {
 })
 
 const { TimelineLanesScreen, WORKFLOW_READS_AT_ONCE, readQueue, withBackoff } = await import('../TimelineLanes')
+const { WORKFLOW_IDS_PER_READ } = await import('../api')
 
 const ok = <T,>(data: T): Result<T> => ({ status: 'ok', data, fetchedAt: Date.now() })
 const refused = <T,>(httpStatus: number): Result<T> => ({
@@ -73,6 +76,7 @@ function workflowRead(wf: string): WorkflowRead {
 }
 
 beforeEach(() => {
+  api.loadWorkflowsById.mockImplementation(byIdVia(api.loadWorkflow))
   api.loadAttemptsPage.mockResolvedValue(
     ok({ tenant_id: 'eng', read_at: new Date(NOW).toISOString(), attempts: TASKS.map((t, i) => attempt(t.id, i)), next_page_token: null, coverage: { scope: 'page' } } as AttemptsPage),
   )
@@ -133,28 +137,63 @@ describe('G3-07: workflow reads, at most four at once, a 429 asked again', () =>
     expect(always).toHaveBeenCalledTimes(3)
   })
 
-  it('never has more than four workflow reads in flight on the screen', async () => {
+  it('asks for every workflow the lanes name in one read, not one each (live QA CH-6)', async () => {
+    api.loadWorkflow.mockImplementation(async (wf: string) => ok(workflowRead(wf)))
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    await waitFor(() => expect(document.querySelectorAll('.tl-row.is-group a').length).toBe(WFS.length))
+    // Before CH-6: one `GET /v1/workflows/{id}` per workflow, 10 here.
+    expect(api.loadWorkflowsById).toHaveBeenCalledTimes(1)
+    expect([...api.loadWorkflowsById.mock.calls[0]![0]].sort()).toEqual(WFS)
+    expect(api.loadWorkflowsById.mock.calls.flatMap((c) => [...c[0]])).toHaveLength(WFS.length)
+  })
+
+  it('asks in chunks of the route\'s cap, at most four reads in flight', async () => {
+    const many = Array.from({ length: WORKFLOW_IDS_PER_READ * 2 + 3 }, (_, i) => `wf_m${String(i).padStart(4, '0')}`)
+    const tasks = many.map((wf, i) => task(`task_m${i}`, wf))
+    api.loadTasks.mockResolvedValue(ok({ tasks } as TaskPage))
+    api.loadAttemptsPage.mockResolvedValue(
+      ok({ tenant_id: 'eng', read_at: new Date(NOW).toISOString(), attempts: tasks.map((t, i) => attempt(t.id, i)), next_page_token: null, coverage: { scope: 'page' } } as AttemptsPage),
+    )
     let active = 0
     let most = 0
-    api.loadWorkflow.mockImplementation(async (wf: string) => {
+    const via = byIdVia(api.loadWorkflow)
+    api.loadWorkflow.mockImplementation(async (wf: string) => ok(workflowRead(wf)))
+    api.loadWorkflowsById.mockImplementation(async (ids: readonly string[]) => {
       active += 1
       most = Math.max(most, active)
       await new Promise((r) => setTimeout(r, 5))
       active -= 1
-      return ok(workflowRead(wf))
+      return via(ids)
     })
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
-    await waitFor(() => expect(api.loadWorkflow).toHaveBeenCalledTimes(WFS.length))
-    await waitFor(() => expect(document.querySelectorAll('.tl-row.is-group a').length).toBe(WFS.length))
+    await waitFor(() => expect(api.loadWorkflowsById.mock.calls.flatMap((c) => [...c[0]])).toHaveLength(many.length))
+    const sizes = api.loadWorkflowsById.mock.calls.map((c) => c[0].length)
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(WORKFLOW_IDS_PER_READ)
+    expect(sizes.length).toBe(3)
+    expect(new Set(api.loadWorkflowsById.mock.calls.flatMap((c) => [...c[0]])).size).toBe(many.length)
     expect(most).toBeLessThanOrEqual(WORKFLOW_READS_AT_ONCE)
     expect(WORKFLOW_READS_AT_ONCE).toBe(4)
+    expect(WORKFLOW_IDS_PER_READ).toBe(50)
+    // Every chunk answered before the next case starts counting.
+    await waitFor(() => expect(api.loadWorkflow).toHaveBeenCalledTimes(many.length))
+  })
+
+  it('reads each workflow on its own where the API does not take ids', async () => {
+    api.loadWorkflow.mockImplementation(async (wf: string) => ok(workflowRead(wf)))
+    api.loadWorkflowsById.mockResolvedValue(ok({ batched: false, reads: new Map(), missing: [] }))
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    await waitFor(() => expect(document.querySelectorAll('.tl-row.is-group a').length).toBe(WFS.length))
+    await waitFor(() => expect(api.loadWorkflow).toHaveBeenCalledTimes(WFS.length))
+    await waitFor(() =>
+      expect(document.querySelector(`.tl-row.is-group[data-group="${WFS[0]}"] small`)!.textContent).toBe('3 steps · succeeded'),
+    )
   })
 
   it('says a read still refused after its retries is rate-limited, with the route in the title only, and retries it', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
-    api.loadWorkflow.mockImplementation(async (wf: string) => (wf === WFS[0] ? refused(429) : ok(workflowRead(wf))))
+    api.loadWorkflowsById.mockResolvedValue(refused(429))
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
-    await waitFor(() => expect(api.loadWorkflow.mock.calls.some((c) => c[0] === WFS[0])).toBe(true))
+    await waitFor(() => expect(api.loadWorkflowsById).toHaveBeenCalled())
     // The three waits, 1 + 3 + 9 s, each a step of the fake clock.
     for (let i = 0; i < 4; i += 1) {
       await act(async () => {
@@ -168,14 +207,15 @@ describe('G3-07: workflow reads, at most four at once, a 429 asked again', () =>
     })
     expect(head.textContent).toBe('steps not read: rate-limited · retry')
     expect(head.textContent).not.toContain('/v1/workflows')
-    expect(head.title).toBe(`/v1/workflows/${WFS[0]} answered 429`)
-    const asked = api.loadWorkflow.mock.calls.filter((c) => c[0] === WFS[0]).length
-    expect(asked, 'the 429 was asked again before it was said').toBe(4)
+    expect(head.title).toBe(`/v1/workflows?ids=${WFS[0]} answered 429`)
+    expect(api.loadWorkflowsById, 'the 429 was asked again before it was said').toHaveBeenCalledTimes(4)
     api.loadWorkflow.mockImplementation(async (wf: string) => ok(workflowRead(wf)))
+    api.loadWorkflowsById.mockImplementation(byIdVia(api.loadWorkflow))
     fireEvent.click(head.querySelector('button')!)
     await waitFor(() =>
       expect(document.querySelector(`.tl-row.is-group[data-group="${WFS[0]}"] small`)!.textContent).toBe('3 steps · succeeded'),
     )
+    expect(api.loadWorkflowsById.mock.calls.at(-1)![0]).toEqual([WFS[0]])
   })
 })
 

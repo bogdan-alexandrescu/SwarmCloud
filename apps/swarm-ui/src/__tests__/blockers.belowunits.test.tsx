@@ -1,11 +1,14 @@
 // A POOL WHOSE LIMIT IS BELOW WHAT ONE TASK WEIGHS IS NOT A BUSY POOL (#66).
 //
 // THE DEFECT. Admission adds a task's WEIGHT -- its resource class's `units`,
-// standard 1, browser 2, large 4 -- to every pool it must clear, and refuses
+// standard 1, browser 1, large 4 -- to every pool it must clear, and refuses
 // when `active + units > limit` (`evaluate_capacity`, admission.py). So with
-// `resource:browser` at limit 1, a browser task (2 units) is refused on every
-// drain: 0 + 2 > 1 with nothing running at all. The refusal carries the full
-// pool's reason, RESOURCE_CLASS_LIMIT, and a positive `limit`, so every screen
+// `resource:large` at limit 1, a large task (4 units) is refused on every
+// drain: 0 + 4 > 1 with nothing running at all. (#66's own repro was a browser
+// task, 2 units, under `resource:browser` at 1; contract request 79 made the
+// browser class 1 unit, which a limit of 1 admits, so the case moved to large.)
+// The refusal carries the full pool's reason, RESOURCE_CLASS_LIMIT, and a
+// positive `limit`, so every screen
 // that reads a blocker drew it as FULL -- "0 of 1 units in use", filed under
 // "eligible, no room", which tells the reader to wait. No wait clears it.
 //
@@ -44,7 +47,7 @@ const { ProfileFacts } = await import('../Submit')
 
 const CLASSES: ResourceClasses = {
   standard: { name: 'standard', cpu: 4, memory_gib: 8, disk_gib: 4, units: 1 },
-  browser: { name: 'browser', cpu: 8, memory_gib: 16, disk_gib: 8, units: 2 },
+  browser: { name: 'browser', cpu: 4, memory_gib: 8, disk_gib: 4, units: 1 },
   large: { name: 'large', cpu: 8, memory_gib: 32, disk_gib: 16, units: 4 },
 }
 
@@ -61,21 +64,21 @@ function pool(over: Partial<Pool> & { name: string }): Pool {
 }
 
 function blocker(over: Partial<ProfileBlocker>): ProfileBlocker {
-  return { pool: 'resource:browser', reason: 'RESOURCE_CLASS_LIMIT', limit: 1, active: 0, group: 'no_room', ...over }
+  return { pool: 'resource:large', reason: 'RESOURCE_CLASS_LIMIT', limit: 1, active: 0, group: 'no_room', ...over }
 }
 
 function admission(b: ProfileBlocker): ProfileAdmission {
   return {
-    units: 2, headroom: 0, basis: 'measured', blockers: [b], binding: [b.pool],
+    units: 4, headroom: 0, basis: 'measured', blockers: [b], binding: [b.pool],
     counterfactual: [], complete: true, unread: [], uncapped: [],
   }
 }
 
-/** The `browser` profile, refused by `resource:browser` as `b` says. */
-function browser(b: ProfileBlocker): RunnerProfile {
+/** A profile of the `large` class, refused by `resource:large` as `b` says. */
+function heavy(b: ProfileBlocker): RunnerProfile {
   return {
-    resource_class: 'browser', backend: 'GKE_AUTOPILOT', provider: null, units: 2,
-    pools: ['global', 'tenant:eng', 'resource:browser'], admission: admission(b),
+    resource_class: 'large', backend: 'GKE_AUTOPILOT', provider: null, units: 4,
+    pools: ['global', 'tenant:eng', 'resource:large'], admission: admission(b),
   }
 }
 
@@ -89,7 +92,7 @@ function capacity(b: ProfileBlocker): Capacity {
         active: b.active, available: b.limit === null ? null : Math.max(0, b.limit - b.active),
       }),
     ],
-    runner_profiles: { browser: browser(b) },
+    runner_profiles: { heavy: heavy(b) },
     tenant_id: 'eng',
     generated_at: '2026-09-28T10:00:00Z',
   }
@@ -107,12 +110,12 @@ const RAISE = /(somebody|someone|a person) (has|needs) to raise/i
 // Submit: the "right now" box
 // ---------------------------------------------------------------------------
 
-describe('Submit, the right-now box for a browser task', () => {
+describe('Submit, the right-now box for a large task', () => {
   it('says the task can never be admitted, not "held down by, 0 of 1 in use"', async () => {
     serve(blocker({}))
     const b = blocker({})
     const { container } = render(
-      <ProfileFacts name="browser" profile={browser(b)} pools={capacity(b).pools} />,
+      <ProfileFacts name="heavy" profile={heavy(b)} pools={capacity(b).pools} />,
     )
     await waitFor(() => expect(container.textContent).toMatch(NEVER), { timeout: 3000 })
     expect(container.textContent).toMatch(RAISE)
@@ -128,7 +131,7 @@ describe('Submit, the right-now box for a browser task', () => {
   it('keeps `full` for a pool at a ceiling one task fits under', async () => {
     serve(blocker({ limit: 4, active: 3 }))
     const b = blocker({ limit: 4, active: 3 })
-    const { container } = render(<ProfileFacts name="browser" profile={browser(b)} pools={capacity(b).pools} />)
+    const { container } = render(<ProfileFacts name="heavy" profile={heavy(b)} pools={capacity(b).pools} />)
     await waitFor(() => expect(container.querySelector('.blocker-list .tag.full')).not.toBeNull(), { timeout: 3000 })
     expect(container.textContent).toMatch(/3 of 4 units in use/)
     expect(container.textContent).not.toMatch(NEVER)
@@ -138,7 +141,7 @@ describe('Submit, the right-now box for a browser task', () => {
   it('keeps `limit 0` for a pool set to zero', async () => {
     serve(blocker({ limit: 0, active: 0 }))
     const b = blocker({ limit: 0, active: 0 })
-    const { container } = render(<ProfileFacts name="browser" profile={browser(b)} pools={capacity(b).pools} />)
+    const { container } = render(<ProfileFacts name="heavy" profile={heavy(b)} pools={capacity(b).pools} />)
     await waitFor(() => expect(container.querySelector('.blocker-list .tag')).not.toBeNull(), { timeout: 3000 })
     expect(container.querySelector('.blocker-list .tag')!.textContent?.trim()).toBe('limit 0')
     expect(container.textContent).not.toMatch(NEVER)
@@ -155,7 +158,7 @@ describe('Submit, the right-now box for a browser task', () => {
       error: { kind: 'unreachable', httpStatus: null, code: null, message: 'The API could not be reached.' },
     })
     const b = blocker({})
-    const { container } = render(<ProfileFacts name="browser" profile={browser(b)} pools={capacity(b).pools} />)
+    const { container } = render(<ProfileFacts name="heavy" profile={heavy(b)} pools={capacity(b).pools} />)
     await waitFor(() => expect(container.querySelector('.blocker-list')).not.toBeNull(), { timeout: 3000 })
     expect(container.textContent).not.toMatch(NEVER)
   })

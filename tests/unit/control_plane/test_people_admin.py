@@ -626,6 +626,342 @@ def test_a_non_admin_cannot_lend(client, db, pool) -> None:
 
 
 # --------------------------------------------------------------------------
+# a loan to a workspace still being set up (LOAN-NEW, part of #1194)
+# --------------------------------------------------------------------------
+#
+# Measured 2026-10-13 01:08Z: lending to a workspace approved an hour earlier,
+# still provisioning, answered 422 "could not grant the borrowers of ... read
+# access to its secret: InvalidArgument". The broker grants the borrower's
+# worker account (`swarm-agent-worker-<tenant>`) before it lists it, and that
+# account is created by the workspace job; IAM refuses a member that does not
+# exist yet. So a loan to a workspace that is not ready is recorded pending and
+# applied by the sweep once the job has marked the workspace ready.
+
+CAROL_MEMBER = ("serviceAccount:swarm-agent-worker-u-carol@saga-agents-staging"
+                ".iam.gserviceaccount.com")
+
+
+class RefusingPool(FakePool):
+    """A broker whose secret grant fails: the 422 the real client raises."""
+
+    def __init__(self, *accounts: dict[str, Any], reason: str) -> None:
+        super().__init__(*accounts)
+        self.reason = reason
+
+    def set_lending(self, account_id: str, *, lend_to: list[str]) -> dict[str, Any]:
+        from swarm_api.errors import ValidationFailed
+        self.calls.append(("set_lending", account_id, tuple(lend_to)))
+        raise ValidationFailed(self.reason)
+
+
+INVALID_ARGUMENT = ("could not grant the borrowers of acct-eng read access to its secret: "
+                    "InvalidArgument. Lending is unchanged.")
+
+
+def _grants(pool) -> list[tuple]:
+    return [c for c in pool.calls if c[0] == "set_lending"]
+
+
+@pytest.mark.parametrize("state", ["requested", "approved", "applying", "needs_owner", "failed"])
+def test_a_loan_to_a_workspace_not_ready_is_pending_and_calls_no_iam(
+        client, db, pool, state) -> None:
+    seed_tenant(db, "eng")
+    pool.accounts["acct-eng"] = _pool_account("acct-eng", "eng")
+    _record(db, state=state)
+    client.post("/v1/workspace/loan-request", headers=auth_header("carol"))
+    response = _loan(client, "acct-eng", True)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["state"] == "pending" and body["changed"] is True
+    assert "will apply when the workspace is ready" in body["message"]
+    assert _grants(pool) == [] and pool.accounts["acct-eng"]["lend_to"] == []
+    [pending] = db.docs["pending_loans/u-carol"]["loans"]
+    assert (pending["account_id"], pending["owner_tenant"], pending["by"]) == (
+        "acct-eng", "eng", ROOT)
+    # The person's request stays open until the loan is real.
+    assert db.docs["loan_requests/u-carol"]["state"] == "requested"
+    [entry] = _audit(db, "lend_pending")
+    assert entry["detail"] == {"account_id": "acct-eng", "owner_tenant": "eng"}
+    assert _audit(db, "lend") == []
+
+
+def test_a_pending_loan_twice_is_one_pending_loan(client, db, pool) -> None:
+    seed_tenant(db, "eng")
+    pool.accounts["acct-eng"] = _pool_account("acct-eng", "eng")
+    _record(db, state="applying")
+    _loan(client, "acct-eng", True)
+    again = _loan(client, "acct-eng", True)
+    assert again.status_code == 200 and again.json()["changed"] is False
+    assert again.json()["state"] == "pending"
+    assert len(db.docs["pending_loans/u-carol"]["loans"]) == 1
+    assert len(_audit(db, "lend_pending")) == 1
+
+
+def test_the_sweep_applies_a_pending_loan_once_the_workspace_is_ready(client, db, pool) -> None:
+    seed_tenant(db, "eng")
+    pool.accounts["acct-eng"] = _pool_account("acct-eng", "eng", lend_to=("research",))
+    _record(db, state="applying")
+    client.post("/v1/workspace/loan-request", headers=auth_header("carol"))
+    _loan(client, "acct-eng", True)
+    # Still provisioning: the sweep waits and calls no IAM.
+    body = client.post("/v1/admin/workspaces/sweep", headers=SWEEPER_HEADERS).json()
+    assert body["loans"] == {"applied": 0, "failed": 0, "waiting": 1, "dropped": 0}
+    assert _grants(pool) == []
+    # The job marks it ready (swarm-api never writes `ready`).
+    db.docs["workspaces/u-carol"]["state"] = "ready"
+    body = client.post("/v1/admin/workspaces/sweep", headers=SWEEPER_HEADERS).json()
+    assert body["loans"] == {"applied": 1, "failed": 0, "waiting": 0, "dropped": 0}
+    assert _grants(pool) == [("set_lending", "acct-eng", ("research", "u-carol"))]
+    assert pool.accounts["acct-eng"]["lend_to"] == ["research", "u-carol"]
+    assert db.docs.get("pending_loans/u-carol", {}).get("loans", []) == []
+    loan = db.docs["loan_requests/u-carol"]
+    assert loan["state"] == "lent" and loan["decision"]["account_id"] == "acct-eng"
+    [entry] = _audit(db, "lend")
+    assert entry["by"] == ROOT and entry["target_workspace_id"] == CAROL_WS
+    assert entry["detail"] == {"account_id": "acct-eng", "owner_tenant": "eng",
+                               "pending_since": entry["detail"]["pending_since"]}
+    # Applied once: a third sweep grants nothing more.
+    body = client.post("/v1/admin/workspaces/sweep", headers=SWEEPER_HEADERS).json()
+    assert body["loans"] == {"applied": 0, "failed": 0, "waiting": 0, "dropped": 0}
+    assert len(_grants(pool)) == 1
+
+
+def test_a_pending_loan_whose_grant_fails_on_ready_stays_pending_with_the_reason(
+        client, db, monkeypatch) -> None:
+    # The member-naming reason is LOAN_GRANT_FAILED's message, which ships off.
+    monkeypatch.setenv("REFUSAL_LOAN_GRANT_FAILED", "on")
+    seed_tenant(db, "eng")
+    refusing = RefusingPool(_pool_account("acct-eng", "eng"), reason=INVALID_ARGUMENT)
+    client.app.state.account_pool = refusing
+    _record(db, state="approved")
+    _loan(client, "acct-eng", True)
+    db.docs["workspaces/u-carol"]["state"] = "ready"
+    body = client.post("/v1/admin/workspaces/sweep", headers=SWEEPER_HEADERS).json()
+    assert body["loans"] == {"applied": 0, "failed": 1, "waiting": 0, "dropped": 0}
+    [pending] = db.docs["pending_loans/u-carol"]["loans"]
+    assert CAROL_MEMBER in pending["last_error"] and "InvalidArgument" in pending["last_error"]
+    assert refusing.accounts["acct-eng"]["lend_to"] == []
+    assert _audit(db, "lend") == []
+
+
+def test_reclaiming_a_pending_loan_drops_it_and_calls_no_iam(client, db, pool) -> None:
+    seed_tenant(db, "eng")
+    pool.accounts["acct-eng"] = _pool_account("acct-eng", "eng")
+    _record(db, state="applying")
+    _loan(client, "acct-eng", True)
+    response = _loan(client, "acct-eng", False)
+    assert response.status_code == 200, response.text
+    assert response.json()["changed"] is True and response.json()["state"] == "reclaimed"
+    assert db.docs["pending_loans/u-carol"]["loans"] == []
+    assert _grants(pool) == []
+    assert len(_audit(db, "reclaim_pending")) == 1
+    db.docs["workspaces/u-carol"]["state"] = "ready"
+    client.post("/v1/admin/workspaces/sweep", headers=SWEEPER_HEADERS)
+    assert _grants(pool) == [] and pool.accounts["acct-eng"]["lend_to"] == []
+
+
+def test_a_loan_to_a_ready_workspace_is_granted_at_once(client, db, pool) -> None:
+    seed_tenant(db, "eng")
+    pool.accounts["acct-eng"] = _pool_account("acct-eng", "eng")
+    _record(db, state="ready")
+    response = _loan(client, "acct-eng", True)
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "applied"
+    assert _grants(pool) == [("set_lending", "acct-eng", ("u-carol",))]
+    assert "pending_loans/u-carol" not in db.docs
+    assert _audit(db, "lend_pending") == []
+
+
+def test_a_failed_grant_on_a_ready_workspace_names_the_member_and_the_reason(
+        client, db, monkeypatch) -> None:
+    monkeypatch.setenv("REFUSAL_LOAN_GRANT_FAILED", "on")
+    seed_tenant(db, "eng")
+    refusing = RefusingPool(_pool_account("acct-eng", "eng"), reason=INVALID_ARGUMENT)
+    client.app.state.account_pool = refusing
+    _record(db, state="ready")
+    response = _loan(client, "acct-eng", True)
+    assert response.status_code == 422, response.text
+    body = response.json()
+    assert body["code"] == "LOAN_GRANT_FAILED"
+    assert CAROL_MEMBER in body["message"] and "InvalidArgument" in body["message"]
+    assert body["detail"] == {"workspace_id": CAROL_WS, "account_id": "acct-eng",
+                              "member": CAROL_MEMBER, "reason": INVALID_ARGUMENT}
+    # All or nothing: no loan, no pending loan, no audit entry.
+    assert refusing.accounts["acct-eng"]["lend_to"] == []
+    assert "pending_loans/u-carol" not in db.docs
+    assert _audit(db) == []
+
+
+def test_a_failed_grant_is_the_brokers_own_refusal_until_its_switch_is_on(
+        client, db, monkeypatch) -> None:
+    """Ships off (swarm_api.refusals): the code LOAN_GRANT_FAILED is not served."""
+    monkeypatch.delenv("REFUSAL_LOAN_GRANT_FAILED", raising=False)
+    seed_tenant(db, "eng")
+    client.app.state.account_pool = RefusingPool(_pool_account("acct-eng", "eng"),
+                                                 reason=INVALID_ARGUMENT)
+    _record(db, state="ready")
+    response = _loan(client, "acct-eng", True)
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] != "LOAN_GRANT_FAILED"
+    assert _audit(db) == []
+
+
+def test_a_pending_loan_whose_account_is_gone_is_dropped_and_audited(client, db, pool) -> None:
+    seed_tenant(db, "eng")
+    pool.accounts["acct-eng"] = _pool_account("acct-eng", "eng")
+    _record(db, state="applying")
+    _loan(client, "acct-eng", True)
+    del pool.accounts["acct-eng"]
+    db.docs["workspaces/u-carol"]["state"] = "ready"
+    body = client.post("/v1/admin/workspaces/sweep", headers=SWEEPER_HEADERS).json()
+    assert body["loans"] == {"applied": 0, "failed": 0, "waiting": 0, "dropped": 1}
+    assert db.docs["pending_loans/u-carol"]["loans"] == []
+    assert _grants(pool) == [] and len(_audit(db, "lend_pending_dropped")) == 1
+
+
+def test_no_pending_loan_log_line_names_the_person(client, db, caplog) -> None:
+    seed_tenant(db, "eng")
+    refusing = RefusingPool(_pool_account("acct-eng", "eng"), reason=INVALID_ARGUMENT)
+    client.app.state.account_pool = refusing
+    _record(db, state="applying")
+    with caplog.at_level(logging.DEBUG, logger="swarm_api"):
+        _loan(client, "acct-eng", True)
+        db.docs["workspaces/u-carol"]["state"] = "ready"
+        client.post("/v1/admin/workspaces/sweep", headers=SWEEPER_HEADERS)
+    lines = [r.getMessage() for r in caplog.records if r.name == "swarm_api.people"]
+    assert any("pending loan not applied" in line for line in lines), lines
+    for line in lines:
+        assert "@" not in line and "u-carol" not in line, line
+
+
+def test_the_list_shows_a_pending_loan_on_the_persons_row(client, db, pool) -> None:
+    seed_tenant(db, "eng")
+    pool.accounts["acct-eng"] = _pool_account("acct-eng", "eng")
+    _record(db, state="applying")
+    _loan(client, "acct-eng", True)
+    body = client.get("/v1/admin/people", headers=auth_header("root")).json()
+    [row] = [r for r in body["people"] if (r.get("workspace") or {}).get("workspace_id") == CAROL_WS]
+    [pending] = row["pending_loans"]
+    assert (pending["account_id"], pending["owner_tenant"]) == ("acct-eng", "eng")
+    assert pending["last_error"] is None
+
+
+# --------------------------------------------------------------------------
+# decline a loan request (LOAN-DECLINE, part of #1206)
+# --------------------------------------------------------------------------
+
+def _decline(client, user: str = "root", **body):
+    return client.post(f"/v1/admin/people/{CAROL_WS}/loan/decline", headers=auth_header(user),
+                       json=body)
+
+
+def test_an_admin_declines_a_loan_request_and_it_is_recorded_and_audited(client, db) -> None:
+    _record(db, state="ready")
+    client.post("/v1/workspace/loan-request", headers=auth_header("carol"))
+    request_id = db.docs["loan_requests/u-carol"]["request_id"]
+    response = _decline(client, reason="  Use the eng team's account.  ")
+    assert response.status_code == 200, response.text
+    assert response.json() == {"workspace_id": CAROL_WS, "state": "declined",
+                               "reason": "Use the eng team's account."}
+    loan = db.docs["loan_requests/u-carol"]
+    assert loan["state"] == people_mod.LOAN_DECLINED == "declined"
+    decision = loan["decision"]
+    assert decision["by"] == ROOT and decision["reason"] == "Use the eng team's account."
+    assert decision["verdict"] == "declined" and isinstance(decision["at"], datetime)
+    [entry] = _audit(db, "loan_declined")
+    assert entry["target_workspace_id"] == CAROL_WS and entry["by"] == ROOT
+    # The reason is on the request; the audit keeps its length, not a second copy.
+    assert entry["detail"] == {"request_id": request_id, "reason_length": 27}
+
+
+def test_a_decline_without_a_reason_is_recorded_with_none(client, db) -> None:
+    _record(db, state="ready")
+    client.post("/v1/workspace/loan-request", headers=auth_header("carol"))
+    response = client.post(f"/v1/admin/people/{CAROL_WS}/loan/decline",
+                           headers=auth_header("root"))
+    assert response.status_code == 200, response.text
+    assert db.docs["loan_requests/u-carol"]["decision"]["reason"] is None
+    assert _audit(db, "loan_declined")[0]["detail"]["reason_length"] == 0
+
+
+def test_declining_with_no_open_request_is_a_409_and_writes_nothing(client, db, pool) -> None:
+    _record(db, state="ready")
+    response = _decline(client)
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == "LOAN_REQUEST_NOT_OPEN"
+    # Lent already: closed, so not declinable either.
+    seed_tenant(db, "eng")
+    pool.accounts["acct-eng"] = _pool_account("acct-eng", "eng")
+    client.post("/v1/workspace/loan-request", headers=auth_header("carol"))
+    assert _loan(client, "acct-eng", True).status_code == 200
+    response = _decline(client)
+    assert response.status_code == 409
+    assert db.docs["loan_requests/u-carol"]["state"] == "lent"
+    assert _audit(db, "loan_declined") == []
+
+
+def test_a_declined_request_cannot_be_declined_twice(client, db) -> None:
+    _record(db, state="ready")
+    client.post("/v1/workspace/loan-request", headers=auth_header("carol"))
+    assert _decline(client).status_code == 200
+    assert _decline(client).status_code == 409
+    assert len(_audit(db, "loan_declined")) == 1
+
+
+@pytest.mark.parametrize("user", ["carol", "alice"])
+def test_a_non_admin_cannot_decline_a_loan_request(client, db, user) -> None:
+    _record(db, state="ready")
+    client.post("/v1/workspace/loan-request", headers=auth_header("carol"))
+    response = _decline(client, user)
+    assert response.status_code == 403
+    assert db.docs["loan_requests/u-carol"]["state"] == "requested"
+    assert _audit(db, "loan_declined") == []
+
+
+def test_a_decline_reason_over_its_limit_is_refused(client, db) -> None:
+    _record(db, state="ready")
+    client.post("/v1/workspace/loan-request", headers=auth_header("carol"))
+    response = _decline(client, reason="x" * (people_mod.MAX_LOAN_REASON + 1))
+    assert response.status_code == 422
+    assert db.docs["loan_requests/u-carol"]["state"] == "requested"
+
+
+def test_a_declined_person_may_ask_again_and_the_list_shows_each_state(client, db) -> None:
+    _record(db, state="ready")
+    client.post("/v1/workspace/loan-request", headers=auth_header("carol"))
+    assert _decline(client, reason="not this week").status_code == 200
+
+    def row() -> dict:
+        body = client.get("/v1/admin/people", headers=auth_header("root")).json()
+        [found] = [r for r in body["people"]
+                   if (r.get("workspace") or {}).get("workspace_id") == CAROL_WS]
+        return found
+
+    declined = row()["loan_request"]
+    assert declined["state"] == "declined" and declined["reason"] == "not this week"
+    assert declined["decided_at"] is not None
+    assert ROOT not in json.dumps(row())  # decision.by never reaches the list
+    again = client.post("/v1/workspace/loan-request", headers=auth_header("carol"))
+    assert again.status_code == 202, again.text
+    loan = db.docs["loan_requests/u-carol"]
+    assert loan["state"] == "requested" and loan["decision"] is None
+    assert loan["history"][-1]["state"] == "declined"
+    assert row()["loan_request"]["state"] == "requested"
+
+
+def test_declining_leaves_a_pending_loan_where_it_is(client, db, pool) -> None:
+    # LOAN-NEW's pending loan is the lending, not the request: declining the
+    # request does not cancel it; only a reclaim does.
+    seed_tenant(db, "eng")
+    pool.accounts["acct-eng"] = _pool_account("acct-eng", "eng")
+    _record(db, state="applying")
+    client.post("/v1/workspace/loan-request", headers=auth_header("carol"))
+    _loan(client, "acct-eng", True)
+    assert _decline(client).status_code == 200
+    assert [p["account_id"] for p in db.docs["pending_loans/u-carol"]["loans"]] == ["acct-eng"]
+
+
+# --------------------------------------------------------------------------
 # the sweep
 # --------------------------------------------------------------------------
 
@@ -746,6 +1082,43 @@ def test_the_list_shows_everyone_with_teams_github_workspace_account_and_activit
     # decision.by never leaves Firestore; the tenant ids are names.
     assert ROOT not in json.dumps(body["people"])
     assert all("tenant_id" not in r["workspace"] for r in body["people"])
+
+
+def test_the_list_names_each_account_lent_to_a_person_and_nothing_secret(client, db) -> None:
+    """PEOPLE-LOAN-VIEW (owner 2026-10-13): `lent_by` is the owner TENANTS,
+    so the console said "lent by eng" and never which account. The row now
+    carries each lent account's id, label and owner (with the owner's display
+    name), read from the same `accounts` query; never a secret's name."""
+    seed_tenant(db, "eng")
+    db.docs["tenants/eng"]["display_name"] = "Engineering"
+    seed_tenant(db, "ops")
+    _person(db, "u-hal", "hal@saga.xyz")
+    _person(db, "u-ivy", "ivy@saga.xyz")
+    secret_ref = "swarm-tenant-eng-" + "claude"
+    lent = _pool_account("eng:devops-main", "eng", lend_to=("u-hal",))
+    lent.update(label="devops main", secret_name=secret_ref, secret_version="7")
+    db.docs["accounts/eng:devops-main"] = lent
+    db.docs["accounts/ops-1"] = {**_pool_account("ops-1", "ops", lend_to=("u-hal",)), "label": None}
+    # Another provider's account and one owned by the borrower are not lent.
+    db.docs["accounts/eng-gpt"] = {**_pool_account("eng-gpt", "eng", lend_to=("u-hal",)),
+                                   "provider": "openai"}
+    db.docs["accounts/hal-own"] = _pool_account("hal-own", "u-hal", lend_to=("u-hal",))
+
+    body = client.get("/v1/admin/people", headers=auth_header("root")).json()
+    rows = {r["email"]: r for r in body["people"]}
+    hal = rows["hal@saga.xyz"]["claude_account"]
+    # MUTATION: drop `lent_accounts`, or key it by owner tenant alone.
+    assert hal["lent_accounts"] == [
+        {"account_id": "eng:devops-main", "label": "devops main", "owner_tenant": "eng",
+         "owner_name": "Engineering", "state": "AVAILABLE"},
+        {"account_id": "ops-1", "label": None, "owner_tenant": "ops",
+         "owner_name": "ops", "state": "AVAILABLE"},
+    ]
+    assert hal["lent_by"] == ["eng", "ops"]
+    assert rows["ivy@saga.xyz"]["claude_account"]["lent_accounts"] == []
+    # MUTATION: return the account document as it is.
+    text = json.dumps(body["people"])
+    assert secret_ref not in text and "secret" not in text
 
 
 def test_the_list_carries_the_last_audit_entries_newest_first(client, db) -> None:

@@ -4,7 +4,7 @@
 #
 # Usage: scripts/acceptance/run.sh [--only <group>[,<group>...]] [--list]
 #
-#   groups   mock  generic  claude-code  workflow  browser
+#   groups   mock  generic  claude-code  workflow  browser  live-browser  git-tools
 #   --only   run these groups only (repeatable, or comma-separated)
 #   --list   print every group and check, touch nothing, exit 0
 #
@@ -75,8 +75,14 @@ source "${REPO_ROOT}/scripts/acceptance/groups/workflow.sh"
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=groups/browser.sh
 source "${REPO_ROOT}/scripts/acceptance/groups/browser.sh"
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=groups/live-browser.sh
+source "${REPO_ROOT}/scripts/acceptance/groups/live-browser.sh"
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=groups/git-tools.sh
+source "${REPO_ROOT}/scripts/acceptance/groups/git-tools.sh"
 
-ALL_GROUPS=(mock generic claude-code workflow browser)
+ALL_GROUPS=(mock generic claude-code workflow browser live-browser git-tools)
 
 #: A group `--only` accepts that is NEVER in ALL_GROUPS and never appears in
 #: --list's output or a normal run's group list. It does no platform work and

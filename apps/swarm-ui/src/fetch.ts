@@ -54,6 +54,35 @@ export interface ApiError {
   detail?: unknown
   /** From `Retry-After` on a 429. Honour it rather than retrying into the wall. */
   retryAfterSeconds?: number
+  /**
+   * The method of a WRITE that failed; absent on a read (visual QA V010,
+   * 2026-10-11). `write()` sets it on every error it returns, so the failure
+   * panel can tell "the platform could not be read" from "this change was
+   * refused" without each caller saying which: a refused 422 drew "This is a
+   * failure to read the platform", a `not read` mark, and a Try again that
+   * resubmitted the same invalid input. A caller that posts with its own
+   * `fetch` (Submit.tsx) sets it beside `classifyFailure`. PATCH is the
+   * schedule edit route `write()` also accepts (docs/schedules.md §7.1).
+   */
+  method?: 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+}
+
+/** Whether a failure is a write's: see `ApiError.method`. */
+export function isWriteFailure(e: ApiError): boolean {
+  return e.method !== undefined
+}
+
+/**
+ * Whether the platform ANSWERED a write with a refusal, so nothing was
+ * changed and resending the same input gets the same answer. A 5xx, a 429 or
+ * a request that never arrived is not one: the change may or may not have
+ * been made.
+ */
+export function writeRefused(e: ApiError): boolean {
+  return (
+    isWriteFailure(e) &&
+    (e.kind === 'invalid' || e.kind === 'conflict' || e.kind === 'not_found' || e.kind === 'forbidden')
+  )
 }
 
 /**
@@ -182,11 +211,31 @@ export function errorHeading(e: ApiError): string {
  * whole bug, one layer up.
  */
 export function errorReassurance(e: ApiError): string {
+  // A WRITE IS NOT A READ (visual QA V010). The read sentence below, under a
+  // refused change, told the person their platform could not be read when it
+  // had just answered them. What a write needs is whether the change happened.
+  if (isWriteFailure(e)) {
+    if (writeRefused(e)) {
+      return 'The platform refused this change, so nothing was changed. Sending the same input again gets the same answer.'
+    }
+    if (e.kind === 'unreachable') {
+      return 'The request may never have reached the platform. Read the page again to see whether the change was made before sending it again.'
+    }
+    return 'The platform did not confirm this change. Read the page again to see whether it was made before sending it again.'
+  }
   if (e.kind === 'not_found') {
     // store.py:369-379 deliberately returns the same 404 whether the task does
     // not exist or belongs to another tenant, so the copy must not promise
     // which one it was.
-    return 'This task does not exist, or it belongs to another tenant. The API returns the same answer for both.'
+    //
+    // AND IT MUST NOT SAY "TASK" (visual QA V007, 2026-10-11). The same panel
+    // draws a 404 on an account, a run and an issue preview, and "This task
+    // does not exist" under an account's history named a thing nobody asked
+    // for. The server's message above this line says WHAT was not found;
+    // this says only what a 404 can and cannot tell. A 404 is an answer, not
+    // a failed read, so reading again gets the same one (`FailedPanel` offers
+    // no Try again for it).
+    return 'It does not exist, or it belongs to another tenant: the API gives the same answer for both. Reading it again gets the same answer.'
   }
   if (e.kind === 'unreachable') {
     return 'The request never reached the platform, so this says nothing about what is running.'
@@ -596,6 +645,10 @@ export function forgetProbes(): void {
   for (const fn of screenListeners) fn()
   // And the last tenant switch, which is about one page of one test's app.
   lastSwitch = null
+  // And the reads in flight: one test's request that never settled must not
+  // be joined by the next test's read of the same URL.
+  inFlight.clear()
+  settled.clear()
 }
 
 // ---------------------------------------------------------------------------
@@ -751,6 +804,206 @@ export interface FetchOptions {
   frame?: boolean
 }
 
+// ---------------------------------------------------------------------------
+// One request for identical reads in flight (live QA CH-20, 2026-10-11)
+// ---------------------------------------------------------------------------
+// The shell and the page each read `/v1/stats`, `/v1/capacity`,
+// `/v1/approvals` and `/v1/tenants/me` on load, and a finished agent's page
+// asked for its task 3 times and its attempts 4 times: components that mount
+// together, each asking for the same URL in the same instant. A GET that is
+// already in flight for the same URL, under the same tenant, is now JOINED
+// rather than sent again: one request, and every caller classifies the one
+// answer itself, so each still records its probe, settles its screen read and
+// applies its own `previous` and `isEmpty`.
+//
+// AND A JUST-SETTLED ANSWER, FOR THE ROUTES A PAGE LOAD ASKS FOR TWICE IN A
+// ROW. A finished agent's page reads its task and attempts in two waves: the
+// head first, then the panes it mounts once the head has landed, each asking
+// again for what the head just read -- never in flight together, so joining
+// alone left task 2, attempts 2. A read of a route in `REUSED_ROUTES` takes a
+// SUCCESSFUL answer that settled under `REUSE_SETTLED_MS` ago instead of
+// asking again, and keeps that answer's own `fetchedAt`, so its age is the
+// age of the data and never reads younger than it is. A failure is never
+// reused, so Try again always asks; a poll asks every 10 s or slower, so it
+// never meets its own last answer; and a WRITE starts a new generation
+// (`writes`): a read asked after a change was sent never takes, or joins, an
+// answer asked for before it, which would draw the state from before the
+// change as the state after it.
+//
+// Each caller gets its own copy of the body after the first, so a caller that
+// mutates what it was given cannot change another's. A caller's `signal`
+// abandons ITS wait at once; the request itself is aborted only when every
+// caller waiting on it has abandoned it.
+
+/**
+ * How old a successful answer may be for a read of a `REUSED_ROUTES` route to
+ * take it rather than ask again (live QA CH-20). Long enough to span one page
+ * load's second wave of reads, which the QA counted in the first 4 s; short
+ * enough that no poll (10 s and slower) ever meets its own last answer.
+ */
+export const REUSE_SETTLED_MS = 2_000
+
+/**
+ * The routes a page load reads in waves (CH-20): the shell's reads every page
+ * repeats, and the agent page's task, attempts, events and checkpoints. Keyed
+ * by `ApiRoute.template`, which has any literal query removed; the reuse
+ * itself is keyed by the full URL, so a different query is a different read.
+ */
+export const REUSED_ROUTES: ReadonlySet<string> = new Set([
+  '/v1/stats',
+  '/v1/capacity',
+  '/v1/approvals',
+  '/v1/tenants/me',
+  '/v1/tenants/mine',
+  '/v1/resource-classes',
+  '/v1/tasks/{id}',
+  '/v1/tasks/{id}/attempts',
+  '/v1/tasks/{id}/events',
+  '/v1/tasks/{id}/checkpoints',
+])
+
+/** What one GET brought back, before anyone classified it. */
+type Arrival =
+  | { kind: 'threw'; message: string }
+  | {
+      kind: 'answered'
+      /** When it arrived: a reused answer keeps it as its `fetchedAt`. */
+      at: number
+      status: number
+      ok: boolean
+      isJson: boolean
+      retryAfter: string | null
+      /** null when no body was read: a 2xx that is not JSON, or a non-JSON error. */
+      body: { read: true; value: unknown } | { read: false; message: string } | null
+    }
+
+interface InFlight {
+  readonly fetcher: typeof fetch
+  readonly promise: Promise<Arrival>
+  readonly controller: AbortController
+  waiting: number
+  handedOut: number
+}
+
+const inFlight = new Map<string, InFlight>()
+/** The last successful answer per read, for `REUSED_ROUTES` (see above). */
+const settled = new Map<string, { fetcher: typeof fetch; arrival: Arrival }>()
+/** Bumped by every write: reads asked after a write never join one asked before it. */
+let writes = 0
+
+function copyOf<T>(v: T): T {
+  if (typeof structuredClone === 'function') return structuredClone(v)
+  return JSON.parse(JSON.stringify(v)) as T
+}
+
+/** A read's fetch options that never vary: the IAP cookie, same origin only. */
+const READ_INIT = { sameOrigin: 'same-origin' } as const satisfies Record<string, RequestCredentials>
+
+async function send(fetcher: typeof fetch, url: string, signal: AbortSignal): Promise<Arrival> {
+  let res: Response
+  try {
+    res = await fetcher(url, {
+      headers: apiHeaders({ accept: 'application/json' }),
+      // Behind IAP the browser already holds the session cookie; nothing here
+      // handles tokens, and nothing here should.
+      credentials: READ_INIT.sameOrigin,
+      signal,
+    })
+  } catch (err) {
+    return { kind: 'threw', message: err instanceof Error ? err.message : 'The request did not complete.' }
+  }
+  const isJson = (res.headers.get('content-type') ?? '').includes('application/json')
+  const answered = { kind: 'answered' as const, at: 0, status: res.status, ok: res.ok, isJson, retryAfter: res.headers.get('retry-after') }
+  if (!isJson) return { ...answered, at: Date.now(), body: null }
+  try {
+    const value = (await res.json()) as unknown
+    return { ...answered, at: Date.now(), body: { read: true, value } }
+  } catch (err) {
+    return { ...answered, at: Date.now(), body: { read: false, message: err instanceof Error ? err.message : 'The response body was not readable.' } }
+  }
+}
+
+/** A copy of an arrival's body, so no two callers hold the same object. */
+function handOut(a: Arrival): Arrival {
+  return a.kind !== 'answered' || a.body === null || !a.body.read ? a : { ...a, body: { read: true, value: copyOf(a.body.value) } }
+}
+
+/**
+ * The answer to `GET url` under `tenant`: a just-settled one when `reuse` and
+ * there is one, else the one in flight, else a new request.
+ */
+function arrive(url: string, tenant: string | null, signal: AbortSignal | undefined, reuse: boolean): Promise<Arrival> {
+  const key = `${writes}\n${tenant ?? ''}\n${url}`
+  const fetcher = globalThis.fetch
+  const kept = reuse ? settled.get(key) : undefined
+  if (kept !== undefined && kept.fetcher === fetcher && kept.arrival.kind === 'answered' && Date.now() - kept.arrival.at < REUSE_SETTLED_MS) {
+    return Promise.resolve(handOut(kept.arrival))
+  }
+  let entry = inFlight.get(key)
+  // A replaced `fetch` (a test's stub) is a different transport: never joined.
+  if (entry !== undefined && entry.fetcher !== fetcher) entry = undefined
+  if (entry === undefined) {
+    const controller = new AbortController()
+    const made: InFlight = { fetcher, controller, waiting: 0, handedOut: 0, promise: send(fetcher, url, controller.signal) }
+    void made.promise.then((a) => {
+      if (inFlight.get(key) === made) inFlight.delete(key)
+      // Only a success is kept: a failure is asked again by whoever asks next.
+      if (a.kind === 'answered' && a.ok && a.isJson && a.body?.read === true) settled.set(key, { fetcher, arrival: a })
+      else settled.delete(key)
+    })
+    inFlight.set(key, made)
+    entry = made
+  }
+  const shared = entry
+  shared.waiting += 1
+  return new Promise<Arrival>((resolve) => {
+    let done = false
+    const abandon = () => {
+      if (done) return
+      done = true
+      shared.waiting -= 1
+      if (shared.waiting === 0) {
+        if (inFlight.get(key) === shared) inFlight.delete(key)
+        shared.controller.abort()
+      }
+      const why = signal?.reason
+      resolve({ kind: 'threw', message: why instanceof Error ? why.message : 'The request was aborted.' })
+    }
+    if (signal?.aborted) {
+      abandon()
+      return
+    }
+    signal?.addEventListener('abort', abandon, { once: true })
+    void shared.promise.then((a) => {
+      if (done) return
+      done = true
+      signal?.removeEventListener('abort', abandon)
+      shared.handedOut += 1
+      // The first caller's copy too, once the answer may be kept for reuse.
+      resolve(shared.handedOut === 1 && !reuse ? a : handOut(a))
+    })
+  })
+}
+
+/**
+ * Drop every kept answer and abandon every read in flight: sign-out
+ * (signoutState.ts). The page is about to be left, but a read that lands in the
+ * moment before is one person's data, and nothing of it should be handed to a
+ * caller after they asked to leave. Bumping `writes` keys every later read
+ * apart from anything asked before.
+ */
+export function forgetReads(): void {
+  for (const entry of inFlight.values()) entry.controller.abort()
+  inFlight.clear()
+  settled.clear()
+  writes += 1
+}
+
+/** How many distinct GETs are in flight: for tests of the de-duplication. */
+export function readsInFlight(): number {
+  return inFlight.size
+}
+
 /**
  * Perform one read and classify it completely.
  *
@@ -775,6 +1028,8 @@ export async function read<T>(
     status: number | null,
     kind: ApiErrorKind | null,
     ok: boolean,
+    /** When the data arrived, for a reused answer older than this read. */
+    at: number = Date.now(),
   ): void => {
     recordProbe({
       path: target.template,
@@ -783,31 +1038,18 @@ export async function read<T>(
       lastKind: kind,
       lastLatencyMs: Date.now() - startedAt,
       lastAttemptAt: Date.now(),
-      lastSuccessAt: ok ? Date.now() : null,
+      lastSuccessAt: ok ? Math.min(at, Date.now()) : null,
     })
     settle(ok ? 'ok' : kind === 'admin_required' ? 'admin' : 'failed')
   }
 
   const tenant = chosenTenant()
-  let res: Response
-  try {
-    res = await fetch(target.url, {
-      headers: apiHeaders({ accept: 'application/json' }),
-      // Behind IAP the browser already holds the session cookie; nothing here
-      // handles tokens, and nothing here should.
-      credentials: 'same-origin',
-      signal: opts.signal,
-    })
-  } catch (err) {
+  const arrived = await arrive(target.url, tenant, opts.signal, REUSED_ROUTES.has(target.template))
+  if (arrived.kind === 'threw') {
     // DNS, TLS, offline, CORS preflight, abort. Emphatically NOT "no data",
     // and distinct from every 4xx: this one is never the user's fault.
     note(null, 'unreachable', false)
-    return asStale({
-      kind: 'unreachable',
-      httpStatus: null,
-      code: null,
-      message: err instanceof Error ? err.message : 'The request did not complete.',
-    })
+    return asStale({ kind: 'unreachable', httpStatus: null, code: null, message: arrived.message })
   }
 
   // THE ROW THAT MATTERS MOST.
@@ -820,66 +1062,59 @@ export async function read<T>(
   // browser.
   //
   // So the content-type is checked BEFORE the body, on every response
-  // including 2xx.
-  const contentType = res.headers.get('content-type') ?? ''
-  const isJson = contentType.includes('application/json')
-
-  if (res.ok && !isJson) {
-    note(res.status, 'session_expired', false)
+  // including 2xx (`arrive` reads no body that is not JSON).
+  if (arrived.ok && !arrived.isJson) {
+    note(arrived.status, 'session_expired', false)
     return asStale({
       kind: 'session_expired',
-      httpStatus: res.status,
+      httpStatus: arrived.status,
       code: null,
       message:
         'The API answered with a page instead of data, which is how an expired sign-in arrives. Reload to sign in again.',
     })
   }
 
-  if (!res.ok) {
+  if (!arrived.ok) {
     let env: ErrorEnvelope | null = null
-    if (isJson) {
-      try {
-        const body: unknown = await res.json()
-        if (isRecord(body)) {
-          // A bare FastAPI 500 is `{"detail": "Internal Server Error"}` -- no
-          // `code`, no `message`. Map its `detail` into the message so the
-          // panel is not blank, but leave `code` null.
-          env =
-            typeof body.message === 'string'
-              ? (body as ErrorEnvelope)
-              : { message: typeof body.detail === 'string' ? body.detail : undefined }
-        }
-      } catch {
-        // A body we cannot read is not a body that changes the diagnosis.
-      }
+    const body = arrived.body
+    if (body !== null && body.read && isRecord(body.value)) {
+      // A bare FastAPI 500 is `{"detail": "Internal Server Error"}` -- no
+      // `code`, no `message`. Map its `detail` into the message so the
+      // panel is not blank, but leave `code` null. A body we cannot read is
+      // not a body that changes the diagnosis.
+      const v = body.value
+      env =
+        typeof v.message === 'string'
+          ? (v as ErrorEnvelope)
+          : { message: typeof v.detail === 'string' ? v.detail : undefined }
     }
-    const ra = Number(res.headers.get('retry-after'))
-    const err = classifyFailure(res.status, env, Number.isFinite(ra) && ra > 0 ? ra : undefined)
-    note(res.status, err.kind, false)
+    const ra = Number(arrived.retryAfter)
+    const err = classifyFailure(arrived.status, env, Number.isFinite(ra) && ra > 0 ? ra : undefined)
+    note(arrived.status, err.kind, false)
     // A stored tenant the caller is no longer in: dropped, and this READ asked
     // once more under the default. Only when the drop took: storage that
     // refused the removal still holds the refused value, and asking again with
     // it would be refused again, forever.
-    if (dropRefusedTenant(res.status, err.code, tenant) && chosenTenant() !== tenant) return read(target, isEmpty, opts)
+    if (dropRefusedTenant(arrived.status, err.code, tenant) && chosenTenant() !== tenant) return read(target, isEmpty, opts)
     return asStale(err)
   }
 
-  let data: T
-  try {
-    data = (await res.json()) as T
-  } catch (err) {
+  if (arrived.body === null || !arrived.body.read) {
     // 2xx, content-type said JSON, body was not. Truncation or a proxy.
-    note(res.status, 'server_error', false)
+    note(arrived.status, 'server_error', false)
     return asStale({
       kind: 'server_error',
-      httpStatus: res.status,
+      httpStatus: arrived.status,
       code: null,
-      message: err instanceof Error ? err.message : 'The response body was not readable.',
+      message: arrived.body?.read === false ? arrived.body.message : 'The response body was not readable.',
     })
   }
+  const data = arrived.body.value as T
 
-  note(res.status, null, true)
-  const fetchedAt = Date.now()
+  note(arrived.status, null, true, arrived.at)
+  // When the answer ARRIVED: a just-settled answer taken for this read keeps
+  // its own age (`REUSE_SETTLED_MS`), never the moment it was handed over.
+  const fetchedAt = arrived.at
   // `generated_at` when the body carries one: the age that matters is the
   // server's, not the moment the bytes arrived here.
   const serverAt =
@@ -902,9 +1137,13 @@ export async function read<T>(
  */
 export async function write(
   target: ApiRoute,
-  method: 'POST' | 'PUT' | 'DELETE',
+  // PATCH for `PATCH /v1/schedules/{id}` (docs/schedules.md §7.1), the one
+  // edit route that carries a revision rather than replacing the document.
+  method: 'POST' | 'PUT' | 'PATCH' | 'DELETE',
   body?: unknown,
 ): Promise<Result<unknown>> {
+  // A read asked from here on never joins one asked before this change (`arrive`).
+  writes += 1
   const startedAt = Date.now()
   // A write registers in the tab-wide registry and not as the screen's read:
   // the head's age is "how old are the figures on this page", and a write
@@ -941,6 +1180,7 @@ export async function write(
         httpStatus: null,
         code: null,
         message: err instanceof Error ? err.message : 'The request did not complete.',
+        method,
       },
     }
   }
@@ -957,6 +1197,7 @@ export async function write(
         code: null,
         message:
           'The API answered with a page instead of data, which is how an expired sign-in arrives. Your change was NOT saved. Reload to sign in again.',
+        method,
       },
     }
   }
@@ -977,7 +1218,7 @@ export async function write(
       }
     }
     const ra = Number(res.headers.get('retry-after'))
-    const error = classifyFailure(res.status, env, Number.isFinite(ra) && ra > 0 ? ra : undefined)
+    const error: ApiError = { ...classifyFailure(res.status, env, Number.isFinite(ra) && ra > 0 ? ra : undefined), method }
     note(res.status, error.kind, false)
     // Dropped, but a WRITE is not retried: the person chose that tenant for
     // this change, and quietly filing it under the default instead is the one

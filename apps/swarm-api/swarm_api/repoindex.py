@@ -41,7 +41,7 @@ THE POLL (lane RI4, §3.3). `RepoIndex.poll` is `POST /v1/admin/repositories/
 poll`, called every five minutes per tenant by the `repo_index_poll` Cloud
 Scheduler job. Per registration: settle, read the head with the last ETag
 (`read_head_if_changed`; a 304 costs no rate limit), store it, and queue a
-run when `poll_trigger` says `change` or `interval`. The queueing is `_start`,
+run when `poll_decision` says `change` or `interval`. The queueing is `_start`,
 the same claim "Index now" takes, so the poll and a person can never both
 submit, and a run in flight turns a newer head into the pending one. A run is
 submitted as the registration's creator in its tenant, never as the
@@ -112,6 +112,7 @@ from .errors import ApiError, Conflict, Gone, NotFound, UpstreamUnavailable, Val
 from .forge import (
     GITHUB_API_HOST,
     MAX_RESPONSE_BYTES,
+    FirestoreSlotIndex,
     ForgeReadError,
     ForgeTokens,
     GitHubIssues,
@@ -121,8 +122,11 @@ from .forge import (
     github_headers,
     is_pinned_host,
     neutral_line,
+    service_slot,
     urllib_probe_send,
 )
+from . import forge_limits, indexfailure
+from .forge_installation import InstallationSource, read_credential
 from .gittokens import GitTokens
 from .json_masking import redact_json_window
 from .objects import ObjectAbsent, ObjectUnreadable
@@ -135,7 +139,10 @@ from .repositories import (
     INTERVAL_HOURS_DEFAULT,
     MIN_CHANGE_INTERVAL_DEFAULT,
     ON_CHANGE_DEFAULT,
+    ON_CHANGE_POLLED,
+    ON_CHANGE_PUSHED,
     Repositories,
+    settle_relation,
 )
 from .schemas import TaskCreate
 from .task_input import masking_for
@@ -831,18 +838,20 @@ def _repo_url(record: Mapping[str, Any]) -> str:
 
 
 def read_head(
-    record: Mapping[str, Any], tenant: Tenant, *, tokens: ForgeTokens, forge: GitHubIssues
+    record: Mapping[str, Any], tenant: Tenant, *, tokens: ForgeTokens, forge: GitHubIssues,
+    person: str | None = None,
 ) -> str:
     """The default branch's head sha: `GET /repos/{o}/{r}/git/ref/heads/{branch}`.
 
     Read with the token that resolves for the repository: under R2 (PICKS.md,
     2026-10-05) a repository token, then the tenant's; repository tokens do not
-    exist yet (git-tokens.md, GT1-GT5), so it is the tenant's.
+    exist yet (git-tokens.md, GT1-GT5), so it is the slot `forge.resolve_forge_slot`
+    picks: `person`'s own, the tenant's, or a personal tenant's owner's.
     """
     branch = record["default_branch"]
     what = f"the head of {record['owner']}/{record['repo']}@{branch}"
     url = f"{_repo_url(record)}/git/ref/heads/{quote(branch, safe='/')}"
-    token = tokens.token_for(tenant)
+    token = tokens.token_for(tenant, person=person)
     try:
         data = _forge_json(forge, url, token, what)
     except IssueNotFound:
@@ -876,7 +885,8 @@ _ETAG = re.compile(r'^(W/)?"[\x21\x23-\x7e]{1,128}"$')
 
 def read_head_if_changed(
     record: Mapping[str, Any], tenant: Tenant, *, etag: str | None, known_sha: str | None,
-    tokens: ForgeTokens, forge: GitHubIssues,
+    tokens: ForgeTokens, forge: GitHubIssues, installations: InstallationSource | None = None,
+    defer_percent: float | None = None, now: datetime | None = None,
 ) -> HeadRead:
     """The poll's read: `GET /repos/{o}/{r}/commits/{branch}`, conditional on the ETag.
 
@@ -890,13 +900,35 @@ def read_head_if_changed(
     the ETag is a header. The token resolves as `read_head`'s does (R2, with
     no repository token readable by swarm-api yet: the tenant's), goes to the
     one Authorization header, and the header map is cleared after the send.
+
+    `installations` (#1483): when the repository's owner has an App
+    installation, the poll reads as the App, on its quota, rather than as the
+    person whose token the tenant's slot holds. An owner with none, or a
+    mint that failed, keeps the tenant's token.
+
+    QUOTA-THROTTLE (#1483): the answer updates the credential's quota in
+    `forge_limits.QUOTAS`; a rate-limited 403 or 429 is `read_failed`, never
+    `no_access`. `defer_percent` (the poll's, which is background): when the
+    credential is under it, or held, nothing is sent and
+    `forge_limits.QuotaDeferred` is raised.
     """
     branch = record["default_branch"]
     what = f"the head of {record['owner']}/{record['repo']}@{branch}"
     url = f"{_repo_url(record)}/commits/{quote(branch, safe='/')}"
     if not is_pinned_host(url):
         raise IssueReadFailed(f"{what} is not on {GITHUB_API_HOST}; no token is sent there")
-    headers = github_headers(tokens.token_for(tenant))
+    token, credential = read_credential(installations, tenant.tenant_id, str(record["owner"]),
+                                        str(record["repo"]))
+    if not token:
+        credential = forge_limits.tenant_credential(tenant.tenant_id)
+    if defer_percent is not None:
+        deferral = forge_limits.QUOTAS.defer(
+            credential, defer_percent, now=now or datetime.now(timezone.utc))
+        if deferral is not None:
+            token = ""
+            raise forge_limits.QuotaDeferred(deferral)
+    headers = github_headers(token or tokens.token_for(tenant))
+    token = ""
     headers["Accept"] = SHA_MEDIA_TYPE
     if etag and known_sha:
         headers["If-None-Match"] = etag
@@ -910,6 +942,12 @@ def read_head_if_changed(
     finally:
         headers.clear()
     status = answer.status
+    limited = forge_limits.QUOTAS.observe_answer(answer, credential=credential)
+    if limited is not None:
+        when = forge_limits.until(limited)
+        raise IssueReadFailed(
+            f"GitHub is limiting requests for the credential that reads {what}, so it was "
+            f"not read (HTTP {status})" + (f"; it resets at {when}" if when else ""))
     tag = (answer.headers or {}).get("etag")
     tag = tag if isinstance(tag, str) and _ETAG.match(tag) else None
     if status == 304 and known_sha:
@@ -934,6 +972,10 @@ def read_head_if_changed(
     if not _SHA.match(head):
         raise HeadUnreadable(f"GitHub's answer for {what} names no commit")
     return HeadRead(sha=head, etag=tag, not_modified=False)
+
+
+#: The poll's held reason when its credential's GitHub quota is low or held.
+QUOTA_DEFERRED = "quota_deferred"
 
 
 def _int_or(value: Any, default: int) -> int:
@@ -965,35 +1007,71 @@ def interval_due(
     return base is None or now - base >= timedelta(hours=hours)
 
 
-def poll_trigger(
+@dataclass(frozen=True)
+class PollDecision:
+    """What the poll decided for one head: the trigger it queues a run with
+    (`change` or `interval`), or None and the reason it queues nothing.
+
+    `reason` is the trigger when there is one, otherwise one of
+    `no_head`, `current` (the head IS the built index and the interval is not
+    due), `throttled` (the head moved but `min_change_interval_minutes` has not
+    passed since the newest run was queued) or `on_change_off`. It is stored on
+    the registration as `index.last_poll` (live QA AUT-7), so "why is the index
+    behind?" is answered by the document, not by a log search.
+    """
+
+    trigger: str | None
+    reason: str
+
+
+def poll_decision(
     index: Mapping[str, Any], head: str | None, *, newest_run: Mapping[str, Any] | None,
     created_at: Any, now: datetime,
-) -> str | None:
-    """`change`, `interval` or None: whether the poll queues a run of `head` (§3.3).
+) -> PollDecision:
+    """Whether the poll queues a run of `head`, and why (§3.3). Pure.
 
-    CHANGE when `on_change` is `poll`, the head is neither the promoted index
-    nor the commit the newest run was given (so a head is indexed once, and a
-    run that failed on it is retried by the interval, not every tick), and
-    `min_change_interval_minutes` has passed since that run was queued.
-    INTERVAL when `interval_due`. Pure: the caller settles and reads first.
+    CHANGE when `on_change` is `poll` or `webhook` (poll and push, graph-service.md
+    §6.2), the head is not the BUILT index
+    (`current_sha`, what promotion recorded), and `min_change_interval_minutes`
+    has passed since the newest run was queued. Only the built index counts:
+    a run that was given this head and then failed, was refused at promotion
+    or went missing built nothing, so the head is still unbuilt and is queued
+    again once the throttle allows. Live QA AUT-7 (2026-10-11): the rule
+    used to also skip a head equal to the newest run's commit, so one failed
+    run on a head left the index behind until the 24-hour interval, while
+    every poll read the head (a 304, by then) and queued nothing. Whether the
+    read was a 304 plays no part here: a 304 stands for the head last read,
+    which is compared like any other.
+
+    INTERVAL when `interval_due`. The caller settles and reads first, and
+    keeps a run in flight from being duplicated.
     """
     if not head:
-        return None
-    last_sha = (newest_run or {}).get("commit_sha")
-    last_queued = _parse_time((newest_run or {}).get("queued_at"))
-    if (
-        index.get("on_change", ON_CHANGE_DEFAULT) == "poll"
-        and head != index.get("current_sha")
-        and head != last_sha
-    ):
+        return PollDecision(None, "no_head")
+    behind = head != index.get("current_sha")
+    on_change = index.get("on_change", ON_CHANGE_DEFAULT) in ON_CHANGE_POLLED
+    if on_change and behind:
+        last_queued = _parse_time((newest_run or {}).get("queued_at"))
         minimum = timedelta(minutes=_int_or(
             index.get("min_change_interval_minutes"), MIN_CHANGE_INTERVAL_DEFAULT
         ))
         if last_queued is None or now - last_queued >= minimum:
-            return "change"
+            return PollDecision("change", "change")
     if interval_due(index, newest_run=newest_run, created_at=created_at, now=now):
-        return "interval"
-    return None
+        return PollDecision("interval", "interval")
+    if not behind:
+        return PollDecision(None, "current")
+    return PollDecision(None, "throttled" if on_change else "on_change_off")
+
+
+def poll_trigger(
+    index: Mapping[str, Any], head: str | None, *, newest_run: Mapping[str, Any] | None,
+    created_at: Any, now: datetime,
+) -> str | None:
+    """`change`, `interval` or None: `poll_decision`'s trigger alone."""
+    return poll_decision(
+        index, head, newest_run=newest_run, created_at=created_at, now=now
+    ).trigger
 
 
 @dataclass
@@ -1008,6 +1086,11 @@ class PollReport:
     skipped: int = 0
     truncated: bool = False
     failures: list[dict[str, str]] = field(default_factory=list)
+    #: Why the registrations that queued nothing did not, by reason
+    #: (`PollDecision.reason`, `paused`, `in_flight`, `backoff` -- INDEX-FAIL's
+    #: stop after repeated access failures): a tick that read every
+    #: head and built none says why, not just `submitted: 0` (AUT-7).
+    held: dict[str, int] = field(default_factory=dict)
     #: The pass's git token re-verification (git-tokens.md §5.3,
     #: `GitTokens.reverify`), or `{"error": <type>}` when it raised.
     git_tokens: dict[str, Any] = field(default_factory=dict)
@@ -1017,13 +1100,14 @@ class PollReport:
             "registrations": self.registrations, "read": self.read,
             "not_modified": self.not_modified, "submitted": self.submitted,
             "coalesced": self.coalesced, "skipped": self.skipped,
-            "truncated": self.truncated, "git_tokens": dict(self.git_tokens),
+            "truncated": self.truncated, "held": dict(self.held),
+            "git_tokens": dict(self.git_tokens),
         }
 
 
 def read_relation(
     record: Mapping[str, Any], tenant: Tenant, base: str, head: str, *,
-    tokens: ForgeTokens, forge: GitHubIssues,
+    tokens: ForgeTokens, forge: GitHubIssues, person: str | None = None,
 ) -> dict[str, Any]:
     """How `head` relates to `base`: GitHub's compare, `{base}...{head}`.
 
@@ -1035,7 +1119,7 @@ def read_relation(
     """
     what = f"the commits between {base[:12]} and {head[:12]}"
     url = f"{_repo_url(record)}/compare/{base}...{head}?per_page=1"
-    token = tokens.token_for(tenant)
+    token = tokens.token_for(tenant, person=person)
     try:
         data = _forge_json(forge, url, token, what)
     except IssueNotFound:
@@ -1603,7 +1687,48 @@ def select_tests(document: Mapping[str, Any], paths: Sequence[str]) -> dict[str,
     }
 
 
-def coverage(document: Mapping[str, Any]) -> dict[str, Any]:
+def capped_counts(truncated: Any) -> dict[str, Any]:
+    """Which of the coverage block's counts are a cut, not a total (RSA-4).
+
+    The indexer cuts `test_map` to fit its size budget and names it in
+    `truncated`; a card that showed `test_map_edges` alone read the cut
+    ("1,000 edges") as the repository's whole map. `truncated` is every list
+    the indexer cut, and `test_map_edges_capped` says the edge count is a
+    lower bound. A coverage block stored before these two keys existed is
+    filled in by `RepoIndex.served_coverage` from the promoted version.
+    """
+    cut = sorted({str(name) for name in truncated or []})
+    return {"truncated": cut, "test_map_edges_capped": "test_map" in cut}
+
+
+#: A language whose server was meant to run and did not finish (RSA-6): its
+#: edges are tree-sitter's only, and an impact or a test selection that
+#: touches it falls back to the full suite. `unsupported` (no server exists)
+#: and `not_run` are not a degraded run of this index, so they are not here.
+DEGRADED_LANGUAGE_STATUSES = ("timed_out", "failing")
+
+
+def degraded_languages(rows: Any) -> list[dict[str, Any]]:
+    """The languages a run left at `ast` because their server timed out or
+    failed, most files first: what the list card and the Overview warn about
+    without the reader opening Settings (live QA RSA-6).
+
+    `status` is the LANGUAGE SERVER's; the row's `parsed`/`timed_out`/...
+    counters are tree-sitter's per-file parse, which is why a language can
+    be `timed_out` with `timed_out: 0` -- `impact.languages_table` says so.
+    """
+    out = [
+        {"language": row.get("language"), "status": row.get("status"),
+         "files": row.get("files"), "reason": row.get("reason")}
+        for row in rows or []
+        if isinstance(row, Mapping) and row.get("status") in DEGRADED_LANGUAGE_STATUSES
+    ]
+    return sorted(out, key=lambda r: (-(r["files"] if isinstance(r["files"], int) else 0),
+                                      str(r["language"])))
+
+
+def coverage(document: Mapping[str, Any],
+             manifest: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """The list card's "tests mapped": modules with at least one test-map edge.
 
     `basis` says whose count it is. "extractor": the document's
@@ -1618,6 +1743,10 @@ def coverage(document: Mapping[str, Any]) -> dict[str, Any]:
     behind = {
         "test_map_edges": len(sources),
         "always_tests": len(document.get("always_tests") or []),
+        **capped_counts(document.get("truncated")),
+        # The graph's table when there is one, as `languages_table` reads it.
+        "degraded_languages": degraded_languages(
+            (manifest or {}).get("languages") or document.get("languages")),
     }
     block = document.get("test_coverage")
     if isinstance(block, Mapping):
@@ -1910,8 +2039,14 @@ class RepoIndex:
         tokens: ForgeTokens,
         forge: GitHubIssues,
         now: Callable[[], datetime],
+        installations: InstallationSource | None = None,
+        quota_percent: float = forge_limits.DEFAULT_DEFER_PERCENT,
     ) -> None:
         self._db = db
+        self._installations = installations
+        #: The poll is a background read: under this percent of its
+        #: credential's GitHub quota it waits (QUOTA-THROTTLE).
+        self._quota_percent = quota_percent
         self._store = store
         self._submissions = submissions
         self._inspection = inspection
@@ -1925,6 +2060,8 @@ class RepoIndex:
         return cls(
             ctx.db, store=ctx.store, submissions=ctx.submissions, inspection=ctx.inspection,
             tokens=ctx.forge_tokens, forge=ctx.forge, now=ctx.now,
+            installations=getattr(ctx, "forge_installations", None),
+            quota_percent=forge_limits.defer_percent(ctx),
         )
 
     # -- references --------------------------------------------------------
@@ -2103,8 +2240,10 @@ class RepoIndex:
         try:
             choice = self._choose(tenant_id, repo_id, sha, kind)
             # A service submission (owner's D4 for automation, 2026-10-07): the
-            # index runs with the tenant token whoever registered the
-            # repository, so it does not stop when they hold no grant (#780 OB7).
+            # index runs with the tenant's own slot whoever registered the
+            # repository, so it does not stop when they hold no grant (#780
+            # OB7) -- its `-git` token, or in a personal workspace with none
+            # its owner's GitHub connection (`forge.service_slot`, INDEX-CRED).
             submission = self._submissions.submit_tasks(
                 auth, [indexer_task(record, sha, choice.kind, base_sha=choice.base_sha)],
                 service_submission=True,
@@ -2155,7 +2294,11 @@ class RepoIndex:
             )
         # Settle first: a run that ended since the last read frees the slot.
         self.settle(tenant_id, repo_id)
-        head = read_head(record, tenant, tokens=self._tokens, forge=self._forge)
+        # A person pressed Index now: the poll's back-off lifts (INDEX-FAIL).
+        # After settling, so a failure it records cannot set it again first.
+        self._resume(tenant_id, repo_id, why="index_now")
+        head = read_head(record, tenant, tokens=self._tokens, forge=self._forge,
+                         person=auth.email)
         run, coalesced = self._start(
             auth, tenant_id, record, head, kind=kind, trigger="manual",
             requested_by=auth.email, head_read=True, from_pending=False,
@@ -2274,6 +2417,11 @@ class RepoIndex:
             if cause is None and task.last_error:
                 cause = neutral_line(task.last_error, 300)
             self._end_run(tenant_id, repo_id, run, state=state, end_cause=cause)
+            if state == TaskState.FAILED.value:
+                # INDEX-FAIL: the cause goes on the registration, where the
+                # card reads it and the poll decides whether to stop. A
+                # CANCELLED run says nothing about the repository.
+                self._record_failure(tenant_id, repo_id, run, task)
             log.info("repo index run tenant=%s repo_id=%s task=%s ended=%s",
                      tenant_id, repo_id, task.id, state)
         elif run.get("state") != state:
@@ -2423,13 +2571,18 @@ class RepoIndex:
                 index.update(
                     current_sha=new, current_digest=digest, current_task_id=task.id,
                     current_built_at=document["built_at"], last_indexed_at=now,
-                    last_kind=document["kind"], coverage=coverage(document),
+                    last_kind=document["kind"], coverage=coverage(document, manifest),
                 )
                 if document["kind"] == "full":
                     # What `full_every_days` counts from (§3.3, `choose_kind`).
                     index["last_full_at"] = now
+                # The stored compare was of the previous index; RSA-3.
+                index = settle_relation(index)
             if index.get("in_flight_task_id") == task.id:
                 index["in_flight_task_id"] = None
+            # The clone and the build worked, promoted or superseded: the
+            # failure streak and any poll back-off end (INDEX-FAIL).
+            index = indexfailure.after_success(index)
             txn.update(repo_ref, {"index": index})
             outcome = "promoted" if decision == "promote" else "superseded"
             txn.update(run_ref, {
@@ -2461,8 +2614,11 @@ class RepoIndex:
                  tenant_id, repo_id, task.id, new[:12], outcome)
 
     # -- freshness ---------------------------------------------------------
-    def refresh_relation(self, tenant_id: str, repo_id: str, tenant: Tenant) -> None:
-        """Compare the promoted index with the head once per pair, and keep it."""
+    def refresh_relation(self, tenant_id: str, repo_id: str, tenant: Tenant, *,
+                         person: str | None = None) -> None:
+        """Compare the promoted index with the head once per pair, and keep it.
+
+        `person`: who is looking, whose own slot the compare prefers."""
         record = self.registrations.get(tenant_id, repo_id)
         index = record.get("index") or {}
         current, head = index.get("current_sha"), index.get("head_sha")
@@ -2473,7 +2629,7 @@ class RepoIndex:
             return
         try:
             found = read_relation(record, tenant, current, head, tokens=self._tokens,
-                                  forge=self._forge)
+                                  forge=self._forge, person=person)
         except ForgeReadError as unread:
             log.info("repo index freshness tenant=%s repo_id=%s compare=%s",
                      tenant_id, repo_id, unread.code)
@@ -2496,6 +2652,35 @@ class RepoIndex:
             txn.update(ref, {"index": fresh})
 
         _apply(transaction)
+
+    def served_coverage(self, record: Mapping[str, Any]) -> dict[str, Any] | None:
+        """The registration's coverage block, saying which counts are capped.
+
+        Promotion stores `capped_counts` in the block; one promoted before
+        that is completed here from the current version's `truncated`, so a
+        card never reads a cut count as a total (RSA-4). None when there is
+        no coverage yet.
+        """
+        index = record.get("index") or {}
+        block = index.get("coverage")
+        if not isinstance(block, Mapping):
+            return None
+        served = dict(block)
+        # Recorded at promotion from the graph's language table; a block
+        # promoted before that has no reading -- None, never "none degraded"
+        # -- until the next index run records one.
+        served.setdefault("degraded_languages", None)
+        if "test_map_edges_capped" in served:
+            return served
+        current = index.get("current_sha")
+        version = None
+        if current and _SHA.match(current):
+            snap = self._version_ref(str(record.get("repo_id")), current).get()
+            version = snap.to_dict() if snap.exists else None
+        if version is None:
+            # Unknown, not "not capped": the version that would say is gone.
+            return {**served, "truncated": None, "test_map_edges_capped": None}
+        return {**served, **capped_counts(version.get("truncated"))}
 
     # -- reading a version -------------------------------------------------
     def version(self, tenant_id: str, repo_id: str, sha: str | None = None
@@ -2636,6 +2821,8 @@ class RepoIndex:
             # an unconditional read and no ETag, and a 304 against a tag for
             # some other head would vouch for the wrong commit.
             index["etag_sha"] = read.sha
+            # A new head makes the stored compare another pair's (RSA-3).
+            index = settle_relation(index)
             txn.update(ref, {"index": index})
 
         _apply(transaction)
@@ -2668,19 +2855,7 @@ class RepoIndex:
                 report.registrations += 1
                 seen.append((str(record.get("repo_id") or ""),
                              f"{record.get('owner')}/{record.get('repo')}"))
-                try:
-                    self._poll_one(tenant_id, record, tenant, owner_auth, report)
-                except ApiError as failed:
-                    code = failed.code
-                except Exception as failed:  # one registration never stops the pass
-                    code = "internal"
-                    log.warning("repo index poll tenant=%s repo_id=%s error=%s",
-                                tenant_id, record.get("repo_id"), type(failed).__name__)
-                else:
-                    continue
-                report.failures.append({"repo_id": record["repo_id"], "code": code})
-                log.info("repo index poll tenant=%s repo_id=%s outcome=%s",
-                         tenant_id, record["repo_id"], code)
+                self._poll_guarded(tenant_id, record, tenant, owner_auth, report)
             if report.truncated or token is None:
                 break
         # git-tokens.md §5.3: the daily token x repository re-verification
@@ -2704,33 +2879,146 @@ class RepoIndex:
         )
         return report
 
+    def push(
+        self, forge: str, owner: str, repo: str, *,
+        owner_auth_for: Callable[[str], Callable[[Mapping[str, Any]], AuthContext]],
+        page_size: int, clock: Callable[[], float] = time.monotonic,
+    ) -> PollReport:
+        """A push to `owner/repo`'s default branch: poll it now, in every
+        workspace that registered it (docs/design/graph-service.md §6.2).
+
+        A HINT THAT MAKES THE NEXT POLL HAPPEN NOW, not a new decision path:
+        each registration goes through `_poll_one`, exactly as a tick does, so
+        the push and the poll can never disagree. That path re-reads the head
+        with the registration's OWN tenant's token, honours `paused`,
+        `backoff`, the in-flight rule and `min_change_interval_minutes`, and
+        submits only as `owner_auth_for(tenant_id)(record)` -- the
+        registration's creator, in the tenant the stored document names
+        (decision 3, invariant 9). Two workspaces that registered one public
+        repository each get their own read, their own run and their own index.
+
+        Nothing of the push but the name arrives here, so no commit sha from a
+        payload is read, trusted or stored. Only registrations whose
+        `on_change` is `webhook` are polled; `poll` and `off` are counted as
+        held (`on_change_<value>`) and not read. Bounded like a tick
+        (`POLL_MAX_REGISTRATIONS`, `POLL_BUDGET_SECONDS`): what a truncated
+        push leaves, the next tick reads.
+        """
+        report = PollReport()
+        started = clock()
+        auths: dict[str, Callable[[Mapping[str, Any]], AuthContext]] = {}
+        for record in self.registrations.registrations_of(forge, owner, repo,
+                                                          page_size=page_size):
+            if (report.registrations >= POLL_MAX_REGISTRATIONS
+                    or clock() - started >= POLL_BUDGET_SECONDS):
+                report.truncated = True
+                break
+            report.registrations += 1
+            tenant_id = str(record["tenant_id"])
+            on_change = (record.get("index") or {}).get("on_change", ON_CHANGE_DEFAULT)
+            if on_change != ON_CHANGE_PUSHED:
+                reason = f"on_change_{on_change}"
+                report.held[reason] = report.held.get(reason, 0) + 1
+                continue
+            if tenant_id not in auths:
+                auths[tenant_id] = owner_auth_for(tenant_id)
+            self._poll_guarded(tenant_id, record, self.tenant(tenant_id),
+                               auths[tenant_id], report)
+        log.info(
+            "repo index push registrations=%d read=%d submitted=%d coalesced=%d "
+            "failures=%d truncated=%s", report.registrations, report.read,
+            report.submitted, report.coalesced, len(report.failures), report.truncated,
+        )
+        return report
+
+    def _poll_guarded(
+        self, tenant_id: str, record: Mapping[str, Any], tenant: Tenant,
+        owner_auth: Callable[[Mapping[str, Any]], AuthContext], report: PollReport,
+    ) -> None:
+        """`_poll_one`, with one registration's failure reported by code and
+        stored as its `last_poll`, never raised: the pass goes on."""
+        try:
+            self._poll_one(tenant_id, record, tenant, owner_auth, report)
+        except ApiError as failed:
+            code = failed.code
+        except Exception as failed:  # one registration never stops the pass
+            code = "internal"
+            log.warning("repo index poll tenant=%s repo_id=%s error=%s",
+                        tenant_id, record.get("repo_id"), type(failed).__name__)
+        else:
+            return
+        report.failures.append({"repo_id": record["repo_id"], "code": code})
+        self._record_poll(tenant_id, record["repo_id"], head=None,
+                          outcome="failed", reason=code)
+        log.info("repo index poll tenant=%s repo_id=%s outcome=%s",
+                 tenant_id, record["repo_id"], code)
+
     def _poll_one(
         self, tenant_id: str, record: Mapping[str, Any], tenant: Tenant,
         owner_auth: Callable[[Mapping[str, Any]], AuthContext], report: PollReport,
     ) -> None:
+        repo_id = record["repo_id"]
+        outcome, reason, head = self._decide_one(tenant_id, record, tenant, owner_auth, report)
+        if outcome == "held":
+            report.held[reason] = report.held.get(reason, 0) + 1
+        self._record_poll(tenant_id, repo_id, head=head, outcome=outcome, reason=reason)
+        log.info("repo index poll tenant=%s repo_id=%s head=%s outcome=%s reason=%s",
+                 tenant_id, repo_id, (head or "-")[:12], outcome, reason)
+
+    def _decide_one(
+        self, tenant_id: str, record: Mapping[str, Any], tenant: Tenant,
+        owner_auth: Callable[[Mapping[str, Any]], AuthContext], report: PollReport,
+    ) -> tuple[str, str, str | None]:
+        """Settle, read, decide and queue for one registration: (outcome, reason, head).
+
+        `outcome` is `queued` (a run was submitted), `pending` (a run is in
+        flight and this head is recorded to follow it) or `held` (nothing was
+        queued, and `reason` says why).
+        """
         repo_id = record["repo_id"]
         # Settle first: a run that ended since the last tick is promoted and
         # frees the slot, so the decision below reads what is really in flight.
         self.settle(tenant_id, repo_id, tenant=tenant)
         record = self.registrations.get(tenant_id, repo_id)
         index: Mapping[str, Any] = record.get("index") or {}
+        head = index.get("head_sha")
         if index.get("paused"):
             report.skipped += 1
-            return
+            return "held", "paused", head
+        backoff = index.get("backoff")
+        if backoff:
+            # INDEX-FAIL: runs of this repository keep failing because its
+            # credential cannot read it, so the poll queues none until the
+            # tenant's git credentials change (or Index now lifts it).
+            if not indexfailure.credential_changed(backoff, self._credential_mark(tenant_id)):
+                report.skipped += 1
+                return "held", "backoff", head
+            self._resume(tenant_id, repo_id, why="credential_changed")
+            record = self.registrations.get(tenant_id, repo_id)
+            index = record.get("index") or {}
         newest = next(iter(self.runs(tenant_id, repo_id, limit=1)), None)
-        head = index.get("head_sha")
-        reads = index.get("on_change", ON_CHANGE_DEFAULT) == "poll" or interval_due(
+        reads = index.get("on_change", ON_CHANGE_DEFAULT) in ON_CHANGE_POLLED or interval_due(
             index, newest_run=newest, created_at=record.get("created_at"), now=self._now()
         )
         if reads:
             etag = index.get("etag") if head and index.get("etag_sha") == head else None
-            read = read_head_if_changed(
-                record, tenant, etag=etag, known_sha=head,
-                tokens=self._tokens, forge=self._forge,
-            )
+            try:
+                read = read_head_if_changed(
+                    record, tenant, etag=etag, known_sha=head,
+                    tokens=self._tokens, forge=self._forge, installations=self._installations,
+                    defer_percent=self._quota_percent, now=self._now(),
+                )
+            except forge_limits.QuotaDeferred as deferred:
+                # Not read: the head stands as last read, and the next tick
+                # after the reset reads it.
+                forge_limits.log_deferred("repo index poll", tenant_id, deferred.deferral)
+                return "held", QUOTA_DEFERRED, head
             self._record_head(tenant_id, repo_id, read)
             report.read += 1
             report.not_modified += int(read.not_modified)
+            # A 304 stands for the head last read: it is decided on below
+            # exactly as a 200 is, against the built index, so a head read
+            # once and not built is not hidden by every later 304 (AUT-7).
             head = read.sha
             if not read.not_modified:
                 # §5.1: `behind_by` is read when the head is polled.
@@ -2738,9 +3026,10 @@ class RepoIndex:
             record = self.registrations.get(tenant_id, repo_id)
             index = record.get("index") or {}
         now = self._now()
-        trigger = poll_trigger(
+        decision = poll_decision(
             index, head, newest_run=newest, created_at=record.get("created_at"), now=now
         )
+        trigger = decision.trigger
         in_flight = index.get("in_flight_task_id")
         busy = bool(in_flight) and not _claim_expired(index, now)
         if busy:
@@ -2750,24 +3039,24 @@ class RepoIndex:
             # counts from that run's queueing, so a run still queued after
             # `interval_hours` (it is priority -50, behind all tenant work)
             # would otherwise be followed by a second run of the same commit.
-            if trigger is None or head in (
-                index.get("pending_sha"), self._in_flight_sha(in_flight, newest)
-            ):
-                return
+            if trigger is None:
+                return "held", decision.reason, head
+            if head in (index.get("pending_sha"), self._in_flight_sha(in_flight, newest)):
+                return "held", "in_flight", head
             self._start(
                 owner_auth(record), tenant_id, record, head, kind="incremental", trigger=trigger,
                 requested_by=POLL_REQUESTED_BY, head_read=False, from_pending=False,
             )
             report.coalesced += 1
-            return
+            return "pending", trigger, head
         pending = index.get("pending_sha")
         if not trigger and pending and pending == index.get("current_sha"):
             # The pending head is already the promoted index: nothing to run.
             self._drop_pending(tenant_id, repo_id, pending)
-            return
+            return "held", "current", head
         sha = head if trigger else pending
         if not sha:
-            return
+            return "held", decision.reason, head
         # A claim clears the pending head: a newer head supersedes it, and
         # the pending one itself is this run when nothing newer triggered.
         _run, coalesced = self._start(
@@ -2779,9 +3068,98 @@ class RepoIndex:
         )
         if coalesced:
             report.coalesced += 1
-        else:
-            report.submitted += 1
+            return "pending", trigger or "pending", head
+        report.submitted += 1
+        return "queued", trigger or "pending", head
 
+    # -- failures and the poll's back-off (INDEX-FAIL) ----------------------
+    def _credential_mark(self, tenant_id: str) -> str | None:
+        """`indexfailure.credential_mark` of the tenant's git tokens and of
+        the slot its index runs clone with (`forge.service_slot`, the rule
+        `SubmissionService._resolve_forge` applies to them), or None when
+        they cannot be read (which never lifts a back-off)."""
+        try:
+            slot = service_slot(self.tenant(tenant_id), FirestoreSlotIndex(self._db))
+            return indexfailure.credential_mark(
+                GitTokens(self._db, now=self._now).list(tenant_id), slot=slot.provider)
+        except Exception as failed:
+            log.warning("repo index credential mark tenant=%s error=%s",
+                        tenant_id, type(failed).__name__)
+            return None
+
+    def _update_index(self, tenant_id: str, repo_id: str,
+                      change: Callable[[dict[str, Any]], dict[str, Any]]) -> None:
+        """`index = change(index)` on the registration, in one transaction."""
+        ref = self._repo_ref(repo_id)
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> None:
+            snap = _snapshot(txn.get(ref))
+            data = snap.to_dict() if snap.exists else None
+            if data is None or data.get("tenant_id") != tenant_id:
+                return
+            index = dict(data.get("index") or {})
+            changed = change(index)
+            if changed != index:
+                txn.update(ref, {"index": changed})
+
+        _apply(transaction)
+
+    def _record_failure(self, tenant_id: str, repo_id: str, run: Mapping[str, Any],
+                        task: Any) -> None:
+        """`index.last_failure`, the streak and, at the threshold, the back-off.
+        Never fails the settle: it is a reading."""
+        now = self._now()
+        end_cause = task.end_cause.value if getattr(task, "end_cause", None) else None
+        failure = indexfailure.failure_record(
+            task_id=run["task_id"], commit_sha=run.get("commit_sha"), at=now,
+            last_error=getattr(task, "last_error", None), end_cause=end_cause,
+        )
+        mark = (self._credential_mark(tenant_id)
+                if failure["class"] == indexfailure.ACCESS else None)
+        try:
+            self._update_index(tenant_id, repo_id, lambda index: indexfailure.after_failure(
+                index, failure, credential=mark, at=now))
+        except Exception as failed:
+            log.warning("repo index failure tenant=%s repo_id=%s error=%s",
+                        tenant_id, repo_id, type(failed).__name__)
+            return
+        log.info("repo index failure tenant=%s repo_id=%s task=%s class=%s",
+                 tenant_id, repo_id, run["task_id"], failure["class"])
+
+    def _resume(self, tenant_id: str, repo_id: str, *, why: str) -> None:
+        """Lift the poll's back-off, if there is one."""
+        record = self.registrations.get(tenant_id, repo_id)
+        if not (record.get("index") or {}).get("backoff"):
+            return
+        self._update_index(tenant_id, repo_id, indexfailure.resumed)
+        log.info("repo index backoff lifted tenant=%s repo_id=%s why=%s",
+                 tenant_id, repo_id, why)
+
+    def _record_poll(self, tenant_id: str, repo_id: str, *, head: str | None,
+                     outcome: str, reason: str) -> None:
+        """Store this tick's decision as `index.last_poll`: when, which head,
+        what was done and why. Never fails the poll: it is a reading."""
+        ref = self._repo_ref(repo_id)
+        entry = {"at": self._now(), "head_sha": head, "outcome": outcome, "reason": reason}
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> None:
+            snap = _snapshot(txn.get(ref))
+            data = snap.to_dict() if snap.exists else None
+            if data is None or data.get("tenant_id") != tenant_id:
+                return
+            index = dict(data.get("index") or {})
+            index["last_poll"] = entry
+            txn.update(ref, {"index": index})
+
+        try:
+            _apply(transaction)
+        except Exception as failed:
+            log.warning("repo index poll tenant=%s repo_id=%s last_poll=%s",
+                        tenant_id, repo_id, type(failed).__name__)
 
     def _in_flight_sha(self, in_flight: Any, newest: Mapping[str, Any] | None) -> str | None:
         """The commit the run holding the in-flight slot was given, if known."""
@@ -2831,7 +3209,7 @@ __all__ = [
     "PollReport", "RUNS_COLLECTION", "RepoIndex",
     "RepoIndexSpec", "SCHEMA", "SelectRequest", "check_run_kind", "content_digest", "coverage", "freshness",
     "graph_destination", "indexer_prompt", "indexer_task", "interval_due", "parse_index",
-    "poll_trigger",
+    "PollDecision", "poll_decision", "poll_trigger",
     "promotion_decision", "read_head", "read_head_if_changed", "read_relation", "render_markdown", "run_to_api", "select_tests",
     "staleness_line", "version_to_api",
     "TEST_MAP_PAGE_DEFAULT", "TEST_MAP_PAGE_MAX", "history_depth", "page_test_map",

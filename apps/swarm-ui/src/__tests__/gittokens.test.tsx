@@ -9,18 +9,24 @@
 //   * a token's value is NEVER on the page -- not in text, an attribute, a
 //     title, an aria-label or a copy button -- even when the API serves one;
 //     the page has no field that could take one (no paste box);
-//   * registering a slot creates its RECORD (POST /v1/git-tokens, scope and
+//   * registering creates the token entry (POST /v1/git-tokens, scope and
 //     repo only) and shows the secret's name and the exact
-//     `scripts/create-secrets.sh --stdin` command; Rotate shows the command
-//     for an existing slot; the only copy button copies the secret's NAME;
+//     `scripts/create-secrets.sh --stdin` command, read from the answer the
+//     API actually sends -- `{token, store_command, note}` (GT-GUIDE: it read
+//     `git_token` and reported every create as a failure); Rotate shows the
+//     command for an existing entry; the only copy button copies the NAME;
+//   * GT-GUIDE: the terminal path is folded behind "Use a personal access
+//     token instead (advanced)"; the team (tenant) token, and a repository's,
+//     which the API registers for an admin only, are offered to an admin only,
+//     and Rotate is offered only where the caller may register;
+//   * GT-GUIDE: a token GitHub's App renews says "renews automatically", not
+//     "Expires today"; one whose renewal failed says that;
 //   * the permission grid: grouped by repository, the resolving token
 //     marked, each cell ok / missing / unknown with its reason as the cell's
 //     title, expires-in and last verified; an unknown cell is never ok;
 //   * Verify all re-probes every token;
 //   * a route that is not there yet is "not served yet", naming it;
 //   * at 390 the grid becomes per-repository cards;
-//   * G4-22: the register card is ONE entry point, folded behind the header's
-//     "Register token" button (or opened by Rotate), never always open;
 //   * G4-17: at 1440 the grid fits its card: the capability heads wrap in
 //     72 px columns and the last head is "Verified", never clipped.
 
@@ -58,11 +64,15 @@ const TOKENS = {
       last4: '19c2',
       expires_at: null,
       verified_at: ago(5 * HOUR),
+      yours: true,
     }),
   ],
 }
 
 const REPOS = { repositories: [repo(), repo({ repo_id: 'repo_1111111111111111', repo: 'example-web' })] }
+
+const PAT = 'Use a personal access token instead (advanced)'
+const TEAM = 'Team token for eng (admins only)'
 
 async function mount(view: string, go = vi.fn()) {
   vi.stubEnv('VITE_LIVE', '1')
@@ -76,13 +86,37 @@ afterEach(() => vi.unstubAllEnvs())
 
 const tokCards = () => Array.from(document.querySelectorAll<HTMLElement>('.ur-toks > .ur-tok'))
 
-function tokenRoutes(extra: (m: string, url: string, body: unknown) => { status: number; body: unknown } | null = () => null) {
+const ME = (isAdmin: boolean) => ({
+  tenant: { tenant_id: 'eng', kind: 'group' },
+  principal: { email: 'operator@swarm.example.com', domain: 'swarm.example.com', groups: [], is_admin: isAdmin },
+})
+
+function tokenRoutes(
+  extra: (m: string, url: string, body: unknown) => { status: number; body: unknown } | null = () => null,
+  { admin = false }: { admin?: boolean } = {},
+) {
   return serve((m, url, body) => {
     if (m === 'GET' && url === '/v1/git-tokens') return { status: 200, body: TOKENS }
     if (m === 'GET' && url === '/v1/repositories') return { status: 200, body: REPOS }
+    if (m === 'GET' && url.startsWith('/v1/tenants/me')) return { status: 200, body: ME(admin) }
     return extra(m, url, body)
   })
 }
+
+/** What POST /v1/git-tokens answers (routes/gittokens.py `register_git_token`). */
+function created(record: Record<string, unknown>) {
+  const t = token(record)
+  return {
+    status: 201,
+    body: {
+      token: t,
+      store_command: `scripts/create-secrets.sh --tenant eng --provider ${String(t.provider_suffix)} --stdin`,
+      note: "this registered the slot's record only; store the token with the command, which reads it from stdin.",
+    },
+  }
+}
+
+const open = (name: string) => fireEvent.click(screen.getByRole('button', { name }))
 
 describe('Git tokens are cards by scope (pick B)', () => {
   it('draws one card per token with scope, owner, forge, kind and last 4, expiry, last verified and repos covered', async () => {
@@ -124,6 +158,7 @@ describe('Git tokens are cards by scope (pick B)', () => {
     tokenRoutes()
     await mount('page=tokens')
     await waitFor(() => expect(tokCards()).toHaveLength(3), WAIT)
+    open(PAT)
     expect(tokenShapedIn(document.documentElement.outerHTML)).toEqual([])
     // No paste box: no text input, textarea or password field anywhere.
     expect(document.querySelectorAll('textarea, input[type="password"], input[type="text"], input:not([type])')).toHaveLength(0)
@@ -133,12 +168,39 @@ describe('Git tokens are cards by scope (pick B)', () => {
     }
   })
 
-  it('Rotate shows the exact create-secrets command for that slot, and the only copy button copies the NAME', async () => {
+  it('a token the App renews says "renews automatically", never "Expires today"; a failed renewal says so', async () => {
+    const soon = new Date(Date.now() + 2 * HOUR).toISOString()
+    serve((m, url) => {
+      if (m === 'GET' && url === '/v1/git-tokens') {
+        return {
+          status: 200,
+          body: {
+            git_tokens: [
+              token({ token_id: 'tok_app', scope: 'user', user: 'devops@swarm.example.com', kind: 'app_user', forge_login: 'octo-dev', last4: null, expires_at: soon, yours: true }),
+              token({ token_id: 'tok_old', scope: 'user', user: 'other@swarm.example.com', kind: 'app_user', forge_login: 'octo-old', last4: null, expires_at: ago(3 * HOUR), state: 'expired' }),
+            ],
+          },
+        }
+      }
+      return null
+    })
+    await mount('page=tokens')
+    await waitFor(() => expect(tokCards()).toHaveLength(2), WAIT)
+    const [live, dead] = tokCards()
+    expect(visible(live!)).toContain('GitHub App (user)')
+    expect(visible(live!)).toContain('renews automatically')
+    expect(visible(live!)).not.toContain('today')
+    expect(live!.querySelector('.ur-bad')).toBeNull()
+    expect(visible(dead!)).toContain('Renewal failed: reconnect GitHub')
+    expect(dead!.querySelector('.ur-bad')).not.toBeNull()
+  })
+
+  it('Rotate shows the exact create-secrets command for that entry, and the only copy button copies the NAME', async () => {
     const writeText = vi.fn(async () => undefined)
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
-    tokenRoutes()
+    tokenRoutes(undefined, { admin: true })
     await mount('page=tokens')
-    await waitFor(() => expect(tokCards()).toHaveLength(3), WAIT)
+    await waitFor(() => expect(within(tokCards()[1]!).queryByRole('button', { name: 'Rotate' })).not.toBeNull(), WAIT)
     fireEvent.click(within(tokCards()[1]!).getByRole('button', { name: 'Rotate' }))
     const reg = document.querySelector('.ur-reg')!
     expect(visible(reg.querySelector('.ur-secret code'))).toBe('swarm-tenant-eng-git-r-0a1b2c3d4e5f6071')
@@ -149,44 +211,87 @@ describe('Git tokens are cards by scope (pick B)', () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('swarm-tenant-eng-git-r-0a1b2c3d4e5f6071'), WAIT)
   })
 
-  it('after Rotate, the scope the radio shows is the scope Create posts', async () => {
-    const calls = tokenRoutes((m, url) => (m === 'POST' && url === '/v1/git-tokens' ? { status: 201, body: token({ token_id: 'tok_new2', scope: 'repository', repo_ids: ['repo_1111111111111111'] }) } : null))
+  it('Rotate is offered only on the entries the caller may register: their own, or every one for an admin', async () => {
+    tokenRoutes()
     await mount('page=tokens')
     await waitFor(() => expect(tokCards()).toHaveLength(3), WAIT)
-    // Rotate the TENANT card: the radio shows Tenant and no repository select.
-    fireEvent.click(within(tokCards()[0]!).getByRole('button', { name: 'Rotate' }))
+    expect(tokCards().map((c) => within(c).queryByRole('button', { name: 'Rotate' }) !== null)).toEqual([false, false, true])
+  })
+
+  it('after Rotate, the scope the radio shows is the scope Create posts', async () => {
+    const calls = tokenRoutes((m, url) => (m === 'POST' && url === '/v1/git-tokens' ? created({ token_id: 'tok_new2', scope: 'repository', repo_ids: ['repo_1111111111111111'] }) : null), { admin: true })
+    await mount('page=tokens')
+    await waitFor(() => expect(within(tokCards()[1]!).queryByRole('button', { name: 'Rotate' })).not.toBeNull(), WAIT)
+    // Rotate the REPOSITORY card: the radio shows One repository.
+    fireEvent.click(within(tokCards()[1]!).getByRole('button', { name: 'Rotate' }))
     const reg = document.querySelector<HTMLElement>('.ur-reg')!
-    expect(within(reg).getByRole('radio', { name: 'Tenant' }).getAttribute('aria-checked')).toBe('true')
+    expect(within(reg).getByRole('radio', { name: 'One repository' }).getAttribute('aria-checked')).toBe('true')
+    // Picking Me forgets the rotated entry; picking One repository again drives the select and Create.
+    fireEvent.click(within(reg).getByRole('radio', { name: 'Me' }))
+    expect(within(reg).getByRole('radio', { name: 'Me' }).getAttribute('aria-checked')).toBe('true')
     expect(within(reg).queryByRole('combobox', { name: 'Repository' })).toBeNull()
-    // Picking Repository forgets the rotated slot and drives the select and Create.
-    fireEvent.click(within(reg).getByRole('radio', { name: 'Repository' }))
-    expect(within(reg).getByRole('radio', { name: 'Repository' }).getAttribute('aria-checked')).toBe('true')
-    expect(within(reg).getByRole('radio', { name: 'Tenant' }).getAttribute('aria-checked')).toBe('false')
     expect(reg.querySelector('pre.ur-term')).toBeNull()
+    fireEvent.click(within(reg).getByRole('radio', { name: 'One repository' }))
     fireEvent.change(within(reg).getByRole('combobox', { name: 'Repository' }), { target: { value: 'repo_1111111111111111' } })
-    fireEvent.click(within(reg).getByRole('button', { name: 'Create the slot' }))
+    fireEvent.click(within(reg).getByRole('button', { name: 'Create the token entry' }))
     await waitFor(() => expect(calls.some((c) => c.method === 'POST')).toBe(true), WAIT)
     expect(calls.find((c) => c.method === 'POST')!.body).toEqual({ scope: 'repository', repo_id: 'repo_1111111111111111' })
   })
 
-  it('after Rotate of a user slot, Create without touching the radio posts that scope', async () => {
-    const calls = tokenRoutes((m, url) => (m === 'POST' && url === '/v1/git-tokens' ? { status: 201, body: token({ token_id: 'tok_new3' }) } : null))
+  it('after Rotate of your own entry, Create without touching the radio posts that scope', async () => {
+    const calls = tokenRoutes((m, url) => (m === 'POST' && url === '/v1/git-tokens' ? created({ token_id: 'tok_new3', scope: 'user' }) : null))
     await mount('page=tokens')
     await waitFor(() => expect(tokCards()).toHaveLength(3), WAIT)
     fireEvent.click(within(tokCards()[2]!).getByRole('button', { name: 'Rotate' }))
     const reg = document.querySelector<HTMLElement>('.ur-reg')!
-    expect(within(reg).getByRole('radio', { name: 'User (me)' }).getAttribute('aria-checked')).toBe('true')
-    fireEvent.click(within(reg).getByRole('button', { name: 'Create the slot' }))
+    // A non-admin may create their own entry only, so there is no choice to show.
+    expect(within(reg).queryByRole('radio')).toBeNull()
+    expect(visible(reg.querySelector('pre.ur-term'))).toBe('$ scripts/create-secrets.sh --tenant eng --provider git-u-89abcdef01234567 --stdin')
+    fireEvent.click(within(reg).getByRole('button', { name: 'Create the token entry' }))
     await waitFor(() => expect(calls.some((c) => c.method === 'POST')).toBe(true), WAIT)
     expect(calls.find((c) => c.method === 'POST')!.body).toEqual({ scope: 'user' })
   })
 
-  it('registering a slot posts the scope and repository only, then shows the name and the command', async () => {
+  it('creating your own entry reads the answer the API sends, {token, store_command}, and shows the name and the command', async () => {
     const calls = tokenRoutes((m, url) =>
       m === 'POST' && url === '/v1/git-tokens'
-        ? {
-            status: 201,
-            body: token({
+        ? created({
+            token_id: 'tok_mine',
+            scope: 'user',
+            user: 'devops@swarm.example.com',
+            provider_suffix: 'git-u-0123456789abcdef',
+            secret_name: 'swarm-tenant-eng-git-u-0123456789abcdef',
+            last4: null,
+            state: 'unverified',
+          })
+        : null,
+    )
+    await mount('page=tokens')
+    await waitFor(() => expect(tokCards()).toHaveLength(3), WAIT)
+    open(PAT)
+    const reg = document.querySelector<HTMLElement>('.ur-reg')!
+    expect(visible(reg)).toContain('value never enters the console')
+    // A non-admin is offered their own entry only: the API registers the
+    // team's and a repository's for an admin, and refused them after the click.
+    expect(within(reg).queryByRole('radio', { name: 'One repository' })).toBeNull()
+    expect(within(reg).queryByRole('radio', { name: /tenant|team/i })).toBeNull()
+    fireEvent.click(within(reg).getByRole('button', { name: 'Create the token entry' }))
+    await waitFor(() => expect(reg.querySelector('pre.ur-term')).not.toBeNull(), WAIT)
+    expect(calls.find((c) => c.method === 'POST')!.body).toEqual({ scope: 'user' })
+    expect(visible(reg)).not.toContain('was not created')
+    expect(visible(reg)).not.toMatch(/\bslot\b|\brecord\b/)
+    expect(visible(reg.querySelector('.ur-secret code'))).toBe('swarm-tenant-eng-git-u-0123456789abcdef')
+    expect(visible(reg.querySelector('pre.ur-term'))).toBe('$ scripts/create-secrets.sh --tenant eng --provider git-u-0123456789abcdef --stdin')
+    expect(tokenShapedIn(document.documentElement.outerHTML)).toEqual([])
+  })
+
+  it("an admin registers a repository's entry, and the team token in its own section", async () => {
+    const calls = tokenRoutes(
+      (m, url, body) => {
+        if (m !== 'POST' || url !== '/v1/git-tokens') return null
+        return (body as { scope: string }).scope === 'tenant'
+          ? created({ token_id: 'tok_team', scope: 'tenant' })
+          : created({
               token_id: 'tok_new',
               scope: 'repository',
               repo_ids: ['repo_1111111111111111'],
@@ -194,68 +299,78 @@ describe('Git tokens are cards by scope (pick B)', () => {
               secret_name: 'swarm-tenant-eng-git-r-1111111111111111',
               last4: null,
               state: 'unverified',
-            }),
-          }
-        : null,
+            })
+      },
+      { admin: true },
     )
     await mount('page=tokens')
-    await waitFor(() => expect(tokCards()).toHaveLength(3), WAIT)
-    fireEvent.click(screen.getByRole('button', { name: 'Register token' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: TEAM })).not.toBeNull(), WAIT)
+    open(PAT)
     const reg = document.querySelector<HTMLElement>('.ur-reg')!
-    expect(visible(reg.querySelector('h2'))).toBe('Register token: from your terminal')
-    expect(visible(reg)).toContain('value never enters the console')
-    fireEvent.click(within(reg).getByRole('radio', { name: 'Repository' }))
+    fireEvent.click(within(reg).getByRole('radio', { name: 'One repository' }))
     fireEvent.change(within(reg).getByRole('combobox', { name: 'Repository' }), { target: { value: 'repo_1111111111111111' } })
-    fireEvent.click(within(reg).getByRole('button', { name: 'Create the slot' }))
+    fireEvent.click(within(reg).getByRole('button', { name: 'Create the token entry' }))
     await waitFor(() => expect(reg.querySelector('pre.ur-term')).not.toBeNull(), WAIT)
-    const post = calls.find((c) => c.method === 'POST')!
-    expect(post.body).toEqual({ scope: 'repository', repo_id: 'repo_1111111111111111' })
-    expect(visible(reg.querySelector('.ur-secret code'))).toBe('swarm-tenant-eng-git-r-1111111111111111')
+    expect(calls.find((c) => c.method === 'POST')!.body).toEqual({ scope: 'repository', repo_id: 'repo_1111111111111111' })
     expect(visible(reg.querySelector('pre.ur-term'))).toBe('$ scripts/create-secrets.sh --tenant eng --provider git-r-1111111111111111 --stdin')
-    expect(tokenShapedIn(document.documentElement.outerHTML)).toEqual([])
+
+    open(TEAM)
+    const team = document.querySelector<HTMLElement>('.ur-reg-team')!
+    expect(within(team).queryByRole('radio')).toBeNull()
+    fireEvent.click(within(team).getByRole('button', { name: 'Create the token entry' }))
+    await waitFor(() => expect(team.querySelector('pre.ur-term')).not.toBeNull(), WAIT)
+    expect(calls.filter((c) => c.method === 'POST').map((c) => c.body)).toContainEqual({ scope: 'tenant' })
+  })
+
+  it('a non-admin is never offered the team token', async () => {
+    tokenRoutes()
+    await mount('page=tokens')
+    await waitFor(() => expect(tokCards()).toHaveLength(3), WAIT)
+    expect(screen.queryByRole('button', { name: TEAM })).toBeNull()
+    expect(screen.queryByText(/admins only/)).toBeNull()
   })
 
   it('the token route not being there yet is "not served yet", naming it', async () => {
     serve(() => null)
     await mount('page=tokens')
     await waitFor(() => expect(document.querySelector('[data-notserved="GET /v1/git-tokens"]')).not.toBeNull(), WAIT)
-    // The command-line path still opens: it needs only the slot's record.
-    fireEvent.click(screen.getByRole('button', { name: 'Register token' }))
+    // The command-line path still opens: it needs only the entry it creates.
+    open(PAT)
     expect(document.querySelector('.ur-reg')).not.toBeNull()
   })
 
-  it('G4-22: the register card is folded behind the header button, its one entry point; Rotate opens it too', async () => {
-    tokenRoutes()
+  it('G4-22: the terminal path is folded behind one disclosure; Rotate opens it too', async () => {
+    tokenRoutes(undefined, { admin: true })
     await mount('page=tokens')
-    await waitFor(() => expect(tokCards()).toHaveLength(3), WAIT)
-    const open = screen.getByRole('button', { name: 'Register token' })
-    // Folded on arrival: one entry point, not a button and an open card.
+    await waitFor(() => expect(within(tokCards()[1]!).queryByRole('button', { name: 'Rotate' })).not.toBeNull(), WAIT)
+    const toggle = screen.getByRole('button', { name: PAT })
+    // Folded on arrival.
     expect(document.querySelector('.ur-reg')).toBeNull()
-    expect(open.getAttribute('aria-expanded')).toBe('false')
-    fireEvent.click(open)
-    expect(open.getAttribute('aria-expanded')).toBe('true')
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
     const reg = document.querySelector<HTMLElement>('.ur-reg')!
-    expect(reg.id).toBe(open.getAttribute('aria-controls'))
-    expect(visible(reg.querySelector('h2'))).toBe('Register token: from your terminal')
+    expect(reg.id).toBe(toggle.getAttribute('aria-controls'))
     // The same button folds it again.
-    fireEvent.click(open)
+    fireEvent.click(toggle)
     expect(document.querySelector('.ur-reg')).toBeNull()
-    expect(open.getAttribute('aria-expanded')).toBe('false')
-    // Rotate opens the card on that slot's command.
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    // Rotate opens it on that entry's command.
     fireEvent.click(within(tokCards()[1]!).getByRole('button', { name: 'Rotate' }))
-    expect(open.getAttribute('aria-expanded')).toBe('true')
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
     expect(visible(document.querySelector('.ur-reg pre.ur-term'))).toBe('$ scripts/create-secrets.sh --tenant eng --provider git-r-0a1b2c3d4e5f6071 --stdin')
-    // Still exactly one control that says "Register token".
-    expect(screen.getAllByRole('button', { name: /register token/i })).toHaveLength(1)
+    // No second way in: the header carries no Register button any more.
+    expect(screen.queryByRole('button', { name: /register token/i })).toBeNull()
   })
 
-  it('no tokens is an empty state that points at the command line', async () => {
+  it('no tokens is an empty state that points at the steps and the terminal path', async () => {
     serve((m, url) => (m === 'GET' && url === '/v1/git-tokens' ? { status: 200, body: { git_tokens: [] } } : null))
     await mount('page=tokens')
-    // The token region's empty state, not the first on the page: the Connect
-    // GitHub card above it (#780) draws its own when its route is not served.
+    // The token region's empty state, not the first on the page: the steps
+    // card above it draws its own when its route is not served.
     const empties = () => Array.from(document.querySelectorAll('.c-emp')).map(visible)
     await waitFor(() => expect(empties().some((t) => t.includes('No git tokens registered'))).toBe(true), WAIT)
+    expect(empties().join(' ')).not.toMatch(/\bslot\b/)
   })
 })
 

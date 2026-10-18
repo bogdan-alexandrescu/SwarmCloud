@@ -735,7 +735,7 @@ describe('Accounts, with every help card closed', () => {
     expect(mark, 'the empty pool carries no absence mark').not.toBeNull()
     expect(mark!.className).toContain('is-zero')
     expect(mark!.className).not.toContain('is-unread')
-    expect(textOf(mark)).toBe('real zero')
+    expect(textOf(mark)).toBe('none')
     // A measured zero may print a 0; it may never print a figure that was not
     // measured. Nothing here counted anything, so nothing here is a digit.
     expect(textOf(panel)).not.toMatch(/\d/)

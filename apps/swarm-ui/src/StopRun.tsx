@@ -1,8 +1,10 @@
-import { useState } from 'react'
+import { Fragment, useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 
 import { cancelTask } from './api'
 import { Button } from './components'
 import { errorHeading, type ApiError } from './fetch'
+import { trapTab } from './focus'
 import {
   TERMINAL_STATES,
   canBeStopped,
@@ -171,13 +173,48 @@ function earlierWorkSentence(task: { latest_checkpoint?: string | null }): strin
         'logs earlier attempts uploaded are left where they are.'
 }
 
-/** Steps that share the workflow and do not depend on the one being stopped. */
+/**
+ * Steps that share the workflow, do not depend on the one being stopped, and
+ * have not already ended.
+ *
+ * "KEEPS RUNNING" IS A CLAIM ABOUT STEPS THAT ARE STILL GOING (live QA WF-4,
+ * 2026-10-11). Every non-downstream step was listed, so stopping a parked
+ * `merge` said `keeps running: implement, review, fix, re-review` over four
+ * steps that had SUCCEEDED or been skipped by verdict. With the task read
+ * (`taskById`), a step whose task is in a terminal state is left out. A step
+ * with no task yet has not ended and is kept, and so is one whose task this
+ * read did not reach: the read cannot say it ended. With no `taskById` at all
+ * nothing is known, and the list is every non-downstream step as before.
+ */
 export function survivorsOf(
   step: WorkflowStep,
   steps: WorkflowStep[],
+  taskById: ReadonlyMap<string, Task> | null = null,
 ): WorkflowStep[] {
   const doomed = new Set(dependentsOf(step, steps).map((s) => s.step_id))
-  return steps.filter((s) => s.step_id !== step.step_id && !doomed.has(s.step_id))
+  return steps.filter((s) => {
+    if (s.step_id === step.step_id || doomed.has(s.step_id)) return false
+    const t = s.task_id ? taskById?.get(s.task_id) : undefined
+    return t === undefined || !TERMINAL_STATES.has(t.state)
+  })
+}
+
+/**
+ * Step ids as one run of text: `review, fix, merge`. One element, so a flex
+ * fact row (`.ctl-fact`) lays out ONE item and its gap does not land before
+ * each comma (live QA WF-14: `review , fix , re-review`).
+ */
+function StepIdList({ steps }: { steps: readonly WorkflowStep[] }) {
+  return (
+    <span className="stop-steps">
+      {steps.map((s, i) => (
+        <Fragment key={s.step_id}>
+          {i > 0 && ', '}
+          <code>{s.step_id}</code>
+        </Fragment>
+      ))}
+    </span>
+  )
 }
 
 export interface StopRunProps {
@@ -187,10 +224,31 @@ export interface StopRunProps {
   /** The workflow this task is a step of, when it is one. */
   workflow?: Workflow | null
   step?: WorkflowStep | null
+  /** The workflow's task read, so `keeps running` leaves out steps that already ended. */
+  taskById?: ReadonlyMap<string, Task> | null
   /** Re-read the screen after the request is recorded. */
   reload: () => void
   /** `inline` sits on a graph node; `panel` sits in the run detail. */
   variant?: 'inline' | 'panel'
+  /**
+   * Open the confirmation as a modal over the page instead of in place.
+   *
+   * THE GRAPH NODE ASKS FOR THIS, AND NOTHING ELSE DOES (V001, #1038). In
+   * place on a node the dialog grew upward out of a 221px strip: its title
+   * and its facts were above the canvas's clip, the buttons spilled out of
+   * the card, and focus stayed on `<body>` because the button that held it
+   * had been replaced. `styles.css` said the answer in advance -- "if the
+   * wrapped dialog ever needs more room than this, the answer is to move it
+   * out of the card" -- and this is that move. The pick panel and the run
+   * detail have the width, so they keep the in-place dialog.
+   */
+  overlay?: boolean
+  /**
+   * The button's word. `stop` in a row and on a graph node; the agent header
+   * says `Stop`, as the live-browser mockup's "Copy link · Take control ·
+   * Stop" does (owner decision 2026-10-12, LB-UX1).
+   */
+  label?: string
 }
 
 export function StopRun({
@@ -198,10 +256,34 @@ export function StopRun({
   what,
   workflow = null,
   step = null,
+  taskById = null,
   reload,
   variant = 'panel',
+  overlay = false,
+  label = 'stop',
 }: StopRunProps) {
   const [open, setOpen] = useState(false)
+  const buttonId = useId()
+  const box = useRef<HTMLDivElement | null>(null)
+  const refocus = useRef(false)
+  // FOCUS GOES INTO THE DIALOG WHEN IT OPENS AND BACK TO THE BUTTON WHEN IT
+  // CLOSES. The button that held focus is unmounted by the very click that
+  // opens the dialog, so without this focus fell to `<body>` and a keyboard
+  // reader had to Tab the whole page again to reach the question (V001). The
+  // dialog box itself takes focus, not its first button: the first button is
+  // the destructive one, and Enter pressed twice must not stop a task. The
+  // button is a new element after closing, so it is found again by its id.
+  useEffect(() => {
+    if (open) {
+      box.current?.focus()
+      refocus.current = true
+      return
+    }
+    if (refocus.current) {
+      refocus.current = false
+      document.getElementById(buttonId)?.focus()
+    }
+  }, [open, buttonId])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<ApiError | null>(null)
   const [outcome, setOutcome] = useState<'requested' | 'released' | null>(null)
@@ -232,7 +314,7 @@ export function StopRun({
 
   const live = stoppingEndsALiveAttempt(task)
   const doomed = workflow && step ? dependentsOf(step, workflow.steps) : []
-  const survivors = workflow && step ? survivorsOf(step, workflow.steps) : []
+  const survivors = workflow && step ? survivorsOf(step, workflow.steps, taskById) : []
 
   const run = async () => {
     setBusy(true)
@@ -301,17 +383,24 @@ export function StopRun({
     )
   }
 
-  if (!open) {
-    return (
-      // The canonical button (components.html A). In a row or on a graph node
-      // it is QUIET until opened (B28) -- the plain small button, whose 28px
-      // the node's slot is measured for; in an agent's header, where there is
-      // one, it is the danger outline: a destructive action that will still ask.
-      <Button kind={variant === 'inline' ? 'secondary' : 'danger'} size={variant === 'inline' ? 'sm' : 'md'} className="run-stop-btn" onClick={() => setOpen(true)}>
-        stop
-      </Button>
-    )
-  }
+  // The canonical button (components.html A). In a row or on a graph node
+  // it is QUIET until opened (B28) -- the plain small button, whose 28px
+  // the node's slot is measured for; in an agent's header, where there is
+  // one, it is the danger outline: a destructive action that will still ask.
+  const stopButton = (
+    <Button
+      kind={variant === 'inline' ? 'secondary' : 'danger'}
+      size={variant === 'inline' ? 'sm' : 'md'}
+      id={buttonId}
+      className="run-stop-btn"
+      aria-haspopup={overlay ? 'dialog' : undefined}
+      aria-expanded={overlay ? open : undefined}
+      onClick={() => setOpen(true)}
+    >
+      {label}
+    </Button>
+  )
+  if (!open) return stopButton
 
   // FOUR PARAGRAPHS BECAME FOUR FACTS, AND EVERY CLAIM SURVIVES.
   //
@@ -356,8 +445,26 @@ export function StopRun({
   const earlierWorkFact = task.latest_checkpoint
     ? 'an earlier attempt checkpointed — not resumed once stopped'
     : 'an earlier attempt ran — not resumed once stopped'
-  return (
-    <div className="stop-confirm" role="group" aria-label={`Stop ${what}`}>
+  const close = () => {
+    if (!busy) setOpen(false)
+  }
+  const confirm = (
+    <div
+      className={overlay ? 'stop-confirm is-overlay' : 'stop-confirm'}
+      role={overlay ? 'dialog' : 'group'}
+      aria-modal={overlay ? true : undefined}
+      aria-label={`Stop ${what}`}
+      tabIndex={-1}
+      ref={box}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') {
+          e.stopPropagation()
+          close()
+          return
+        }
+        if (overlay) trapTab(e, box.current)
+      }}
+    >
       <h4>Stop {what}?</h4>
 
       <ul
@@ -390,37 +497,45 @@ export function StopRun({
       >
         <li className="ctl-fact">
           <b>stops</b>
-          <code>{task.id}</code>
-          {step !== null && (
-            <>
-              {' '}
-              step <code>{step.step_id}</code>
-            </>
-          )}
+          <span className="stop-val">
+            <code>{task.id}</code>
+            {step !== null && (
+              <>
+                {' '}
+                step <code>{step.step_id}</code>
+              </>
+            )}
+          </span>
         </li>
         {task.attempt_count > 0 && (
           <li className="ctl-fact">
             <b>attempt</b>
-            {task.attempt_count} of {task.max_attempts}, not resumed
+            <span className="stop-val">
+              {task.attempt_count} of {task.max_attempts}, not resumed
+            </span>
           </li>
         )}
         <li className="ctl-fact">
           <b>work so far</b>
-          {earlier
-            ? earlierWorkFact
-            : !live
-              ? 'none to harvest'
-              : started
-                ? 'kept — checkpoint, artifacts and logs are uploaded first'
-                : 'none — no worker has ever started this task'}
+          <span className="stop-val">
+            {earlier
+              ? earlierWorkFact
+              : !live
+                ? 'none to harvest'
+                : started
+                  ? 'kept — checkpoint, artifacts and logs are uploaded first'
+                  : 'none — no worker has ever started this task'}
+          </span>
         </li>
         <li className="ctl-fact">
           <b>takes effect</b>
-          {!live
-            ? 'at once'
-            : started
-              ? "at the worker's next heartbeat, not now"
-              : 'when a worker starts, or when the reconciler finishes it — not now'}
+          <span className="stop-val">
+            {!live
+              ? 'at once'
+              : started
+                ? "at the worker's next heartbeat, not now"
+                : 'when a worker starts, or when the reconciler finishes it — not now'}
+          </span>
         </li>
       </ul>
 
@@ -433,26 +548,16 @@ export function StopRun({
         <ul className="ctl-facts stop-facts stop-blast">
           <li className={doomed.length > 0 ? 'ctl-fact' : 'ctl-fact is-absent'}>
             <b>once stopped, also cancels</b>
-            {doomed.length === 0 ? (
-              'nothing — no other step depends on this one'
-            ) : (
-              doomed.map((s, i) => (
-                <span key={s.step_id}>
-                  {i > 0 && ', '}
-                  <code>{s.step_id}</code>
-                </span>
-              ))
-            )}
+            <span className="stop-val">
+              {doomed.length === 0 ? 'nothing — no other step depends on this one' : <StepIdList steps={doomed} />}
+            </span>
           </li>
           {survivors.length > 0 && (
             <li className="ctl-fact">
               <b>keeps running</b>
-              {survivors.map((s, i) => (
-                <span key={s.step_id}>
-                  {i > 0 && ', '}
-                  <code>{s.step_id}</code>
-                </span>
-              ))}
+              <span className="stop-val">
+                <StepIdList steps={survivors} />
+              </span>
             </li>
           )}
         </ul>
@@ -462,7 +567,7 @@ export function StopRun({
         <Button kind="danger-filled" disabled={busy} onClick={() => void run()}>
           {busy ? 'stopping…' : `stop ${what}`}
         </Button>
-        <Button kind="ghost" disabled={busy} onClick={() => setOpen(false)}>
+        <Button kind="ghost" disabled={busy} onClick={close}>
           keep running
         </Button>
       </div>
@@ -475,5 +580,26 @@ export function StopRun({
         </p>
       )}
     </div>
+  )
+  if (!overlay) return confirm
+  // ON A GRAPH NODE THE BUTTON STAYS WHERE IT WAS and the question opens over
+  // the page, on the same scrim every other dialog here uses. The scrim closes
+  // it like "keep running" does -- never like "stop", which only its own
+  // button may do.
+  const modal: ReactNode = (
+    <div
+      className="c-scrim stop-scrim"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) close()
+      }}
+    >
+      {confirm}
+    </div>
+  )
+  return (
+    <>
+      {stopButton}
+      {typeof document === 'undefined' ? modal : createPortal(modal, document.body)}
+    </>
   )
 }

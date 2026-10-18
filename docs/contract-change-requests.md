@@ -66,16 +66,52 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 55 | `profiles.py`: a temporary `claude-code-gke` profile, the canary for request 53 | REMOVED 2026-10-08 (the switch replaced it); accepted and applied 2026-10-07 |
 | 56 | `profiles.py`: the `mock` profile cannot write its artifact before a simulated park, so #166's carry cannot be proven live | APPLIED 2026-10-08 (accepted by the owner 2026-10-08) |
 | 57 | `profiles.py`: `url_refusal` accepts site-local, Teredo and other reserved IPv6 ranges, two internal names and a trailing double dot, and a refused URL's 422 can echo its userinfo (#349) | APPLIED 2026-10-08 (accepted by the owner 2026-10-08) |
-| 58 | `specsign.py`: `3600` and `3600.0` have the same canonical bytes, so a rewrite of an integer field to a float keeps the signature valid (#346 box 53) | proposed |
-| 59 | `specsign.py`: a spec nested past Python's recursion limit raises `RecursionError` instead of `SpecNotCanonical` (#346 box 55) | proposed |
-| 60 | `profiles.py`: a worker-action profile with `secrets`, a GKE backend or a plain-string `worker_action` passes `__post_init__` (#453 box 87) | proposed |
-| 61 | `profiles.py`: `url_refusal` still accepts the benchmarking and deprecated ORCHID ranges of `2001::/23`, the remainder of #346 box 42 after request 57 | proposed |
+| 58 | `specsign.py`: `3600` and `3600.0` have the same canonical bytes, so a rewrite of an integer field to a float keeps the signature valid (#346 box 53) | ACCEPTED by the owner 2026-10-11 and APPLIED by the pull request that adds this line (proposed 2026-10-09) |
+| 59 | `specsign.py`: a spec nested past Python's recursion limit raises `RecursionError` instead of `SpecNotCanonical` (#346 box 55) | ACCEPTED by the owner 2026-10-11 and APPLIED by the pull request that adds this line (proposed 2026-10-09) |
+| 60 | `profiles.py`: a worker-action profile with `secrets`, a GKE backend or a plain-string `worker_action` passes `__post_init__` (#453 box 87) | ACCEPTED by the owner 2026-10-11, applied in this PR (item 2 scoped to `post-verdict`, per its amendment, so `merge` on GKE still imports) |
+| 61 | `profiles.py`: `url_refusal` still accepts the benchmarking and deprecated ORCHID ranges of `2001::/23`, the remainder of #346 box 42 after request 57 | ACCEPTED by the owner 2026-10-11, applied in this PR |
 | 62 | `states.py`: a merge step waiting for its repository's merge slot parks as `CI_PENDING`, a reason that says it waits for CI | proposed |
 | 63 | `profiles.py`: indexer runs on GKE_AUTOPILOT (canary for #939) | ACCEPTED by the owner 2026-10-10 and APPLIED by the pull request that adds this line |
 | 64 | `profiles.py`: generic runs on GKE_AUTOPILOT (#939 option A) | ACCEPTED by the owner 2026-10-10 and APPLIED by the pull request that adds this line, held until the indexer canary is measured |
 | 65 | `profiles.py`: codex runs on GKE_AUTOPILOT (#939 option A) | ACCEPTED by the owner 2026-10-10 and APPLIED by the pull request that adds this line, held until the indexer canary is measured |
 | 66 | `profiles.py`: merge runs on GKE_AUTOPILOT (#939 option A); post-verdict and claude-code-review stay on CLOUD_RUN_JOB | ACCEPTED by the owner 2026-10-10 and APPLIED by the pull request that adds this line, held until the indexer canary is measured; conflicts with proposed request 60's item 2 (see 60's amendment) |
 | 67 | `profiles.py`: a `claude-code-browser` runner profile, claude-code on agent-runtime-browser | ACCEPTED by the owner 2026-10-11 and APPLIED by the pull request that adds this line |
+| 68 | `states.py`: `ParkReason.HUMAN_REQUIRED`, a live-browser hand-off parked when nobody came within the hold (LB-A) | ACCEPTED by the owner 2026-10-11 (#1030) and APPLIED by the pull request that adds this line |
+| 69 | `states.py`: the four `human_*` hand-off `EventType` members (LB-B) | ACCEPTED by the owner 2026-10-11 (#1030) and APPLIED by the pull request that adds this line |
+| 70 | `models.py`: `Task.human_wait`, the hand-off a holding task waits on, as a field and not a new state (LB-C) | ACCEPTED by the owner 2026-10-11 (#1030) and APPLIED by the pull request that adds this line |
+| 71 | `profiles.py`: `RunnerProfile.live_browser`, True only on `claude-code-browser`, valid only on a GKE_AUTOPILOT profile (LB-D) | ACCEPTED by the owner 2026-10-11 (#1030) and APPLIED by the pull request that adds this line |
+| 72 | `profiles.py`: the `post-verdict` and `claude-code-review` comments name per-tenant accounts that no longer exist | proposed |
+| 74 | `states.py`: `EventType.STARTUP_PROGRESS`, the browser agent's start-up steps (STARTUP-API) | ACCEPTED by the owner 2026-10-13 and APPLIED by the pull request that adds this line |
+| 75 | `models.py`: `Workflow.fix_rounds` and `WorkflowStep.spawned_by`, a merge step's fix rounds as workflow fields (SPEED-D2) | proposed; worked around |
+| 76 | `models.py`/`states.py`: `Workflow.after` and `ParkReason.PULL_REQUEST_PENDING`, a workflow that waits for pull requests to merge (SPEED-D3) | proposed; worked around |
+| 77 | `profiles.py`: `claude-code-browser` declares the input `browser_tool` (auto, playwright, dev-browser, jev), the live browser's tool picked by name (BSTATUS-API) | ACCEPTED by the owner 2026-10-14 ("Picker on Submit, Auto by default"), APPLIED by this PR |
+| 78 | `models.py` / `states.py`: a workspace's merge mode on `Tenant`, and a park reason for a merge step waiting on its merge train (TRAIN-WS) | proposed; worked around |
+| 79 | `profiles.py`: the `browser` resource class shrinks from 8 vCPU / 16 GiB to 4 vCPU / 8 GiB, and from 2 units to 1 (MEASURE, BROWSER-CLASS) | ACCEPTED by the owner 2026-10-14 and APPLIED by the pull request that adds this line |
+| 80 | `profiles.py`: `RunnerProfile.secret_slots`, `SecretSlot` and `SECRET_KINDS`, the workspace-secret slots a profile may consume (workspace secrets request A, part of #1347) | ACCEPTED by the owner 2026-10-14 and APPLIED by the pull request that adds this line (proposed 2026-10-14; accepted on PR #1354) |
+| 81 | `profiles.py`: `RUNTIME_TOOLS`, the runtime tools (`jev-browser`, `dev-browser`, `playwright`), their secret slots and the `browser_tool` values that launch them (workspace secrets request B, part of #1347) | ACCEPTED by the owner 2026-10-14 and APPLIED by the pull request that adds this line (proposed 2026-10-14; accepted on PR #1354) |
+| 82 | `models.py`: `SECRET_CONSUMER_KINDS`, `PLATFORM_COMPONENTS` and `consumer_name`, one spelling of a secret consumer (workspace secrets request C, part of #1347) | ACCEPTED by the owner 2026-10-14 and APPLIED by the pull request that adds this line (proposed 2026-10-14; accepted on PR #1354) |
+| 83 | `states.py`: no new park reason; a required secret slot with no grant parks `CREDENTIAL_MISSING` (workspace secrets request D, part of #1347) | ACCEPTED by the owner 2026-10-14 and APPLIED by the pull request that adds this line (proposed 2026-10-14; accepted on PR #1354) |
+| 84 | `profiles.py`: `claude-code-review` is the one CLOUD_RUN_JOB profile that carries the Jev client; move it to GKE_AUTOPILOT, or retire it under request 50 (JUDGE-GKE, part of #1347) | ACCEPTED as (b) by the owner 2026-10-16 (on PR 1422): retired under request 50, not moved; nothing to apply |
+| 85 | `states.py`: `WORKER_TRANSITIONS` and `worker_may_transition`, the transitions a tenant worker may request (ISO-CONTRACT, tenant settings integrity request A, part of #1457) | ACCEPTED by the owner 2026-10-17 (PR 1464) and APPLIED by the pull request that adds this line |
+| 86 | `specsign.py`: `canonical_settings_block`, `SETTINGS_MAC_FIELDS` and `SETTINGS_PURPOSE`, the bytes a `workspace_settings` MAC covers (ISO-CONTRACT, tenant settings integrity request B, part of #1457) | ACCEPTED by the owner 2026-10-17 (PR 1464, Q2: the interim MAC) and APPLIED by the pull request that adds this line |
+| 87 | `models.py`: `Tenant.service_account`, `.namespace` and `.gcs_prefix` are records, not authority (ISO-CONTRACT, tenant settings integrity request C, part of #1457) | ACCEPTED by the owner 2026-10-17 (PR 1464) and APPLIED by the pull request that adds this line (comments only) |
+| 88 | `profiles.py`: `claude-code`, `codex` and `claude-code-browser` declare the input `mcp_servers`, from a dict of its own (MCP-CONTRACT, registered MCP servers request M1, part of #1433) | ACCEPTED by the owner 2026-10-17 (PR 1466) and APPLIED by the pull request that adds this line |
+| 89 | `models.py` / `profiles.py`: `mcp` is a secret-consumer kind, with one slot, `auth` (`MCP_SECRET_SLOTS`) (MCP-CONTRACT, registered MCP servers request M2, part of #1433) | ACCEPTED by the owner 2026-10-17 (PR 1466) and APPLIED by the pull request that adds this line |
+| 90 | `models.py`: `MCP_SERVER_NAME`, `RESERVED_MCP_SERVER_NAMES` and `RESERVED_MCP_SERVER_PREFIX`, one spelling for an MCP server's name (MCP-CONTRACT, registered MCP servers request M3, part of #1433) | ACCEPTED by the owner 2026-10-17 (PR 1466) and APPLIED by the pull request that adds this line |
+| 91 | No new spec format, park reason or event type for registered MCP servers (MCP-CONTRACT, registered MCP servers request M4, part of #1433) | ACCEPTED by the owner 2026-10-17 (PR 1466); requests no change, so nothing to apply |
+| 92 | `states.py`: `ParkReason.AWAITING_INPUT`, a workflow step waiting for a person's answer (HW-CONTRACT, human steps request A, part of #1436) | ACCEPTED by the owner 2026-10-17 (Q1, on PR 1462/1493) and APPLIED by the pull request that adds this line |
+| 93 | `profiles.py`: `RunnerProfile.control_plane`, a catalogue profile the platform never leases (HW-CONTRACT, human steps request B, part of #1436) | ACCEPTED by the owner 2026-10-17 (Q10, on PR 1493) and APPLIED by the pull request that adds this line |
+| 94 | `profiles.py`: the `await-input` catalogue entry, shipped unavailable (HW-CONTRACT, human steps request C, part of #1436) | ACCEPTED by the owner 2026-10-17 (on PR 1493) and APPLIED by the pull request that adds this line; `available=True` is request D, which the owner applies after HW-ACCEPT, and is not filed or applied here |
+| 95 | `models.py`: `Task.additional_repositories`, the registered repositories a step reads beside its own, with `check_additional_repositories` and a shape ceiling of 10 (MR-CONTRACT, multi-repository steps request A, part of #1434) | ACCEPTED by the owner 2026-10-17 (PR 1461; ceiling 10, the operative limit a platform setting) and APPLIED by the pull request that adds this line |
+| 96 | `specsign.py`: spec format 4 covers `additional_repositories`, signed at 4 only when the list is set (MR-CONTRACT, multi-repository steps request B, part of #1434) | ACCEPTED by the owner 2026-10-17 (PR 1461) and APPLIED by the pull request that adds this line |
+| 97 | No change to `WorkflowStep`, `Workflow` or `profiles.py` for multi-repository steps (MR-CONTRACT, multi-repository steps request C, part of #1434) | ACCEPTED by the owner 2026-10-17 (PR 1461); requests no change, so nothing to apply |
+| 98 | `states.py`: QUEUED -> FAILED, a task that can never run ends at admission with no lease (MCP-FAILED-EDGE, part of #1433) | ACCEPTED by the owner 2026-10-18 (answering PR 1504's question) and APPLIED by the pull request that adds this line; KEPT by the owner 2026-10-18 when accepting request 99. No writer today: no task is stored QUEUED, so admission writes request 99's edges instead |
+| 99 | `states.py`: READY -> FAILED and PARKED -> FAILED, the two states admission and the credential sweep actually hold (MCP-FAILED-EDGE, part of #1433) | ACCEPTED by the owner 2026-10-18 (on PR 1530) and APPLIED by the pull request that adds this line (MCP-FAILED-EDGE-B); admission writes READY -> FAILED, the credential sweep PARKED -> FAILED |
+| 100 | `profiles.py`: `ModelClass` and `MODEL_CLASSES`, the four model classes a step may name (MODEL-CONTRACT, model per step request A, part of #1435) | ACCEPTED by the owner 2026-10-17 (PR 1509) and APPLIED by the pull request that adds this line |
+| 101 | `profiles.py`: `RunnerProfile.model_classes`, `default_model_class` and `step_model_class`, each profile's classes and the one resolution rule (MODEL-CONTRACT, model per step request B, part of #1435) | ACCEPTED by the owner 2026-10-17 (PR 1509) and APPLIED by the pull request that adds this line |
+| 102 | `models.py`: `Task.model_class` and `WorkflowStep.model_class`, the class a step asked for (MODEL-CONTRACT, model per step request C, part of #1435) | ACCEPTED by the owner 2026-10-17 (PR 1509) and APPLIED by the pull request that adds this line |
+| 103 | `models.py`: `Attempt.model`, the model ID an attempt's agent was started with (MODEL-CONTRACT, model per step request D, part of #1435) | ACCEPTED by the owner 2026-10-17 (PR 1509) and APPLIED by the pull request that adds this line |
+| 104 | `specsign.py`: spec format 5 covers `model_class`, signed at 5 only when a class is set (MODEL-CONTRACT, model per step request E, part of #1435) | ACCEPTED by the owner 2026-10-17 (PR 1509) and APPLIED by the pull request that adds this line |
 
 ---
 
@@ -9963,12 +9999,15 @@ The four gaps stay, each behind its other control, and the docstring's
 
 ## 58. `specsign.py`: `3600` and `3600.0` have the same canonical bytes, so a rewrite of an integer field to a float keeps the signature valid (#346 box 53)
 
-**Status:** proposed, filed 2026-10-09 for
+**Status:** ACCEPTED by the owner 2026-10-11, applied in this PR -- the
+diff below, and the non-frozen half (the worker reads its input as
+`check_inputs` returns it; swarm-api's 422 names the reason). Already-signed
+specs keep verifying: no value with a canonical form changes its bytes, and
+no signer writes a float in either field (swarm-api's schemas declare both
+`int`). Was: proposed, filed 2026-10-09 for
 [#346 box 53](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/346#issuecomment-5901303466)
 (the #353 security review), by the owner's decision of 2026-10-09 that the
-2026-10-09 epic triage's frozen-contract findings get requests, not edits. A
-request, not a change: nothing under `apps/common/swarm_common/` is edited by
-it, and the owner accepts or refuses it.
+2026-10-09 epic triage's frozen-contract findings get requests, not edits.
 
 ### What is true today
 
@@ -10105,11 +10144,11 @@ reader of those fields has to keep doing so, and nothing tells it to.
 
 ## 59. `specsign.py`: a spec nested past Python's recursion limit raises `RecursionError` instead of `SpecNotCanonical` (#346 box 55)
 
-**Status:** proposed, filed 2026-10-09 for
+**Status:** ACCEPTED by the owner 2026-10-11, applied in this PR -- the
+diff below, and swarm-api's 422 message names the depth. Was: proposed, filed
+2026-10-09 for
 [#346 box 55](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/346#issuecomment-5901303857)
-(the #353 security review), by the owner's decision of 2026-10-09. A
-request, not a change: nothing under `apps/common/swarm_common/` is edited by
-it.
+(the #353 security review), by the owner's decision of 2026-10-09.
 
 ### What is true today
 
@@ -10216,11 +10255,16 @@ that met one would answer 500 rather than 422.
 
 ## 60. `profiles.py`: a worker-action profile with `secrets`, a GKE backend or a plain-string `worker_action` passes `__post_init__` (#453 box 87)
 
-**Status:** proposed, filed 2026-10-09 for
+**Status:** ACCEPTED by the owner 2026-10-11, applied in this PR. Item 2
+is applied as its amendment below allows: scoped to `WorkerAction.POST_VERDICT`,
+the one action that runs as its own Cloud Run Job's service account, so
+`merge` on `GKE_AUTOPILOT` (request 66) still constructs. Items 1 and 3 are
+applied as written, for every worker action.
+
+Filed 2026-10-09 as a proposal for
 [#453 box 87](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/453#issuecomment-5944064436)
 (the #462 review probe: "tighten before any worker-action profile is
-enabled"), by the owner's decision of 2026-10-09. A request, not a change:
-nothing under `apps/common/swarm_common/` is edited by it.
+enabled"), by the owner's decision of 2026-10-09.
 
 ### What is true today
 
@@ -10342,11 +10386,12 @@ worker identity would construct, dispatch and run.
 
 ## 61. `profiles.py`: `url_refusal` still accepts the benchmarking and deprecated ORCHID ranges of `2001::/23`, the remainder of #346 box 42 after request 57
 
-**Status:** proposed, filed 2026-10-09 for
+**Status:** ACCEPTED by the owner 2026-10-11, applied in this PR.
+
+Filed 2026-10-09 as a proposal for
 [#346 box 42](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/346#issuecomment-5895194106)
 (the #345 security review, tracked in #349), by the owner's decision of
-2026-10-09. A request, not a change: nothing under
-`apps/common/swarm_common/` is edited by it.
+2026-10-09.
 
 ### What is true today
 
@@ -10861,3 +10906,2683 @@ class, on-demand only, checkpointing as claude-code's. **9**: the tenant's own
 namespace, KSA and secret, as claude-code's. **10**: a caller names
 `claude-code-browser`; the image, class and backend are the catalogue's, and a
 task that sends an image is refused as every task is.
+
+---
+
+## 68. `states.py`: `ParkReason.HUMAN_REQUIRED`, a live-browser hand-off parked when nobody came within the hold (LB-A)
+
+**Status:** ACCEPTED by the owner 2026-10-11 (#1030, the answers to Q1-Q13,
+every recommendation taken), and APPLIED by the pull request that adds this
+entry (lane LB-L0).
+
+### Why
+
+docs/design/live-browser.md section 4.3. A browser agent that needs a person
+to sign in holds its pod for a bounded time (`human_hold_seconds`, 10 minutes,
+Q3). If nobody takes control within it, invariant 4 forbids sleeping on: the
+worker checkpoints, wipes the browser, parks, releases its lease and exits,
+exactly as the quota path does. The park needs a reason, and no existing one
+fits: the scheduler promotes every existing reason by its own rule (a window
+resets, a dependency ends), and nothing but a person should promote this one.
+`MANUAL_PAUSE`, the obvious candidate, is promoted by
+`Scheduler._promote_manual_pauses` once the pool it names is resumed, so a
+hand-off parked under it would be re-admitted with nobody there to sign in.
+
+### The change
+
+```python
+class ParkReason(str, Enum):
+    ...
+    HUMAN_REQUIRED = "HUMAN_REQUIRED"
+```
+
+Promoted ONLY by swarm-api's `human-ready` route (lane L10); no sweep and no
+timer promotes it. Past `human_park_max_seconds` (24 hours, Q4) a sweep
+dead-letters it with `end_cause: human_wait_expired`. `RUNNING -> PARKED`,
+`PARKED -> READY` and `PARKED -> DEAD_LETTERED` are already legal transitions,
+so `_ALLOWED` does not change.
+
+The non-frozen follow-ups, in the same pull request, because the contract-parity
+script and the unit tests hold every restatement of `ParkReason` to the enum:
+`apps/swarm-ui/src/types.ts` (the union, `PARK_REASONS`, the
+`PARK_NEEDS_A_PERSON` group, `REASON_COPY`), the pill words `PARK_WORD` in
+`apps/swarm-ui/src/components/StatePill.tsx`, and the MCP
+progress sentences (`swarm_mcp.progress._PARKED_BECAUSE`,
+`swarm_mcp.compact._WAITS_FOR`).
+
+### Rollback
+
+Delete the member and its restatements. A task document parked under it
+would then decode to an unknown reason, so roll back only when none is
+parked.
+
+### What it would break
+
+Nothing that exists: a new member. A reader with an exhaustive table of park
+reasons is held to the enum by the parity script or a test, and gets its row
+in this change.
+
+### Invariants
+
+**1**: a `PARKED(HUMAN_REQUIRED)` task holds no lease and creates no demand;
+`PARKED` is in `PENDING_STATES` and the capacity sets are unchanged. **4**:
+this is the reason the park exists. 2, 3 and 5-10 unchanged.
+
+---
+
+## 69. `states.py`: the four `human_*` hand-off `EventType` members (LB-B)
+
+**Status:** ACCEPTED by the owner 2026-10-11 (#1030), and APPLIED by the pull
+request that adds this entry (lane LB-L0).
+
+### Why
+
+docs/design/live-browser.md sections 4.1 and 4.2: the hand-off has four
+moments a reader of the event timeline must be able to tell apart -- the agent
+asked, a person took control, control ended, the wait is over -- and the task
+stays `RUNNING` throughout (Q2), so the state history cannot show them.
+
+### The change
+
+```python
+class EventType(str, Enum):
+    ...
+    HUMAN_HANDOFF_REQUESTED = "human_handoff_requested"
+    HUMAN_CONTROL_TAKEN = "human_control_taken"
+    HUMAN_CONTROL_RETURNED = "human_control_returned"
+    HUMAN_HANDOFF_RESOLVED = "human_handoff_resolved"
+```
+
+Written by swarm-api (lanes L9 and L10). Control ending without a Return press
+(renewal lapsed, idle, preempted, membership lapsed, cancelled, hold expired)
+is `human_control_returned` with its cause in `detail`, not a fifth type.
+
+### Rollback
+
+Delete the four members. Events already stored with these values would then
+be read as unknown types by any reader that decodes strictly.
+
+### What it would break
+
+Nothing: new members, written by code that does not exist yet.
+
+### Invariants
+
+None touched: an event is a record, and creates no demand and holds nothing.
+
+---
+
+## 70. `models.py`: `Task.human_wait`, the hand-off a holding task waits on, as a field and not a new state (LB-C)
+
+**Status:** ACCEPTED by the owner 2026-10-11 (#1030; Q2 answered "the
+field"), and APPLIED by the pull request that adds this entry (lane LB-L0).
+The alternative the design offered, a `TaskState.WAITING_FOR_HUMAN` in
+`CONCURRENCY_STATES`, was NOT taken and is not applied.
+
+### Why
+
+docs/design/live-browser.md section 4.3, "Why a field and not a new task
+state". While the pod holds, the console and `sc status` need the reason, the
+expected site, the deadline and who is in control. A new state would have had
+to join `CONCURRENCY_STATES` and gain transitions, and every reader that asks
+"is this attempt running?" -- the reconciler's heartbeat and stale-generation
+checks, the worker's fence checks, release, the UI's state lists, this
+repository's parity script -- would have had to learn it; one that was missed
+would reclaim a holding task or oversubscribe its pool. The field carries the
+same information and changes no reader that does not want it.
+
+### The change
+
+```python
+@dataclass
+class Task:
+    ...
+    human_wait: dict[str, Any] | None = None
+```
+
+Keys: `reason` (at most 200 characters, redacted before it is stored),
+`expect` (a host `url_refusal` accepts, or None), `requested_at`, `deadline`,
+`controller` (None, or `{email, since, renew_by}`). None when nothing is
+waiting, and on every document written before it, which therefore decodes
+exactly as it did. WRITTEN BY swarm-api ONLY, from a worker route signed with
+the attempt key; never accepted from a caller. Not in the spec signature: it
+is attempt state, not the task's spec, and changes during the attempt. The
+shape is not validated in `__post_init__`, so a document a later writer
+extends is never refused on decode; swarm-api, its only writer, validates it.
+
+Both codecs (`swarm_api.codec`, `scheduler.codec`) decode it here -- a dict,
+or None for anything else -- so a decode-and-rewrite never clears a live
+hand-off. `task_to_api` does not serve it: lane L10, which writes the field,
+decides its public shape.
+
+### Rollback
+
+Delete the field. Nothing reads it until lane L10 lands.
+
+### What it would break
+
+Nothing: an optional field with a None default.
+
+### Invariants
+
+**1, 3**: a holding task is `RUNNING`, holds its lease and is counted from
+`LEASED` like any other attempt; no state was added, so no capacity set
+changed. 2 and 4-10 unchanged (4 is kept by the bounded hold and request 68).
+
+---
+
+## 71. `profiles.py`: `RunnerProfile.live_browser`, True only on `claude-code-browser`, valid only on a GKE_AUTOPILOT profile (LB-D)
+
+**Status:** ACCEPTED by the owner 2026-10-11 (#1030), and APPLIED by the pull
+request that adds this entry (lane LB-L0).
+
+### Why
+
+docs/design/live-browser.md sections 3 and 8.1. Whether a task's pod runs the
+display sidecar, and whether swarm-api will open a live session for it, has to
+be a property of the catalogue: a caller names a profile and nothing else
+(invariant 10), and lane L5's dispatcher and lane L9's API both need one place
+to read it.
+
+### The change
+
+```python
+@dataclass(frozen=True)
+class RunnerProfile:
+    ...
+    live_browser: bool = False
+
+    def __post_init__(self) -> None:
+        ...
+        if self.live_browser and self.backend is not Backend.GKE_AUTOPILOT:
+            raise ValueError(...)
+```
+
+and `live_browser=True` on `claude-code-browser`, the only profile that sets
+it. The check is on the profile's STATED backend, so `AUTO` is refused too:
+`resolve_backend` sends the `browser` class (8 vCPU, 16 GiB) to Cloud Run
+Jobs, where the sidecar and its second uid do not exist, and a profile whose
+hand-off cannot work must not resolve there silently. For the same reason
+`claude-code-browser` must stay out of the Cloud Run fallback list
+(`cloud_run_fallback_profiles`, `terraform/infra/locals.tf`).
+
+### Rollback
+
+Delete the field, the check and the one `live_browser=True`. Nothing reads it
+until lanes L5 and L9 land.
+
+### What it would break
+
+Nothing: a defaulted field. `claude-code-browser` now differs from
+`claude-code` in four fields, not three (request 67).
+
+### Invariants
+
+**10**: a caller still names a profile; whether it is live is the catalogue's,
+and there is no input, field or parameter by which a caller asks for a live
+browser on another profile. 1-9 unchanged.
+
+---
+
+## 72. `profiles.py`: the `post-verdict` and `claude-code-review` comments name per-tenant accounts that no longer exist
+
+**Status:** ACCEPTED by the owner 2026-10-11, applied in this PR. Filed
+2026-10-11 by the stale-name audit lane. A comment fix only; no field changes.
+
+### What is true today
+
+`apps/common/swarm_common/profiles.py` says, in the `"post-verdict"` entry,
+that its secret is read "as `swarm-<tenant>-post-verdict`, the Job's own
+service account", and, above `"claude-code-review"`, that the profile has its
+own "Job and service account, `swarm-<tenant>-review`". Neither account
+exists: `terraform/infra/variables.tf` (the retired #295 App keys validation)
+records that the per-tenant merge and post-verdict accounts are gone, and
+docs/merge-step.md §3 "What this supersedes" lists the `-merge`,
+`-post-verdict` and `-review` accounts as superseded. Both profiles are
+`available=False` with no Job for any tenant (`profiles_without_a_job`).
+
+### Why
+
+A reader of the frozen catalogue is told an identity exists that no
+Terraform creates. The docs that said the same were marked as history in the
+same change that files this request; the frozen file cannot be edited by a
+lane.
+
+### The requested change
+
+Comments only, in `apps/common/swarm_common/profiles.py`:
+
+* `"post-verdict"`: replace "as `swarm-<tenant>-post-verdict`, the Job's own
+  service account" with a note that the per-tenant post-verdict account was
+  retired with the #295 design (docs/merge-step.md §3) and the profile has no
+  Job;
+* above `"claude-code-review"`: drop "and so its Job and service account,
+  `swarm-<tenant>-review`" (the profile has no Job and that account is gone).
+
+### What it would break if accepted
+
+Nothing: no value, type or field changes, so no component written against the
+contract sees a difference.
+
+### If it is declined
+
+The two comments keep naming accounts that do not exist; the docs say they
+are history.
+
+### Invariants
+
+None touched: a comment change in the catalogue alters no admission, lease,
+fencing, checkpoint or isolation behaviour.
+
+---
+
+## 73. `models.py`: `Task.start_problem`, why the current attempt's pod is not starting (F1-POD)
+
+**Status:** REQUESTED 2026-10-12 by lane F1-POD. Not applied: the record
+lives in `metadata.start_problem` until this is decided, which works today
+and changes no frozen type.
+
+### What is true today
+
+On 2026-10-11 between 20:58 and 21:05 PDT every claude-code-browser pod's
+`livegate` sidecar crash-looped for about three minutes while the task read
+only "dispatched". The reconciler now reads the pod of a DISPATCHED or
+STARTING task and records the worst container -- `{container, reason,
+restarts, message (<= 300 chars), pod_started, attempt_id, seen_at}` -- as
+`metadata.start_problem` (`reconciler.startproblem`,
+`ControlStore.record_start_problem`). swarm-api reserves the key
+(`validation.START_PROBLEM_METADATA_KEY`), masks every string in it in both
+copies it serves, and lifts it to a top-level `start_problem` on the task
+read (`codec.start_problem_to_api`), as `dispatch` is lifted from
+`metadata.dispatch`.
+
+### Why a field would be better
+
+`metadata` is a map several writers rewrite whole (the worker's refund
+counters, swarm-api's hand-off marks, the reconciler's eviction counter), so
+each of them has to carry this key through untouched, inside a transaction;
+a writer that rebuilt `metadata` from a decoded copy taken before the
+reconciler's write would drop it. A field is not in that map.
+
+### The requested change
+
+```python
+@dataclass
+class Task:
+    ...
+    start_problem: dict[str, Any] | None = None
+```
+
+Same keys as above. Written ONLY by the reconciler; never accepted from a
+caller; not in the spec signature (attempt state, written during the
+attempt). Not validated in `__post_init__`, as `human_wait` is not.
+
+### What it would break if accepted
+
+Nothing: an optional field with a None default. The reconciler and swarm-api
+would read the field first and `metadata.start_problem` second for one
+release, then the metadata key would be retired from
+`RESERVED_METADATA_KEYS`.
+
+### If it is declined
+
+The record stays in `metadata.start_problem`, which is what ships.
+
+### Invariants
+
+**1-3** unchanged: it is a record, not a state; nothing that writes it moves
+a state, a lease or a pool. **9**: it is on the tenant's own task and served
+only through the tenant-scoped task routes, masked. 4-8 and 10 unchanged.
+
+---
+
+## 74. `states.py`: `EventType.STARTUP_PROGRESS`, the browser agent's start-up steps (STARTUP-API)
+
+**Status:** ACCEPTED by the owner 2026-10-13 ("we should put a progress bar
+when the browser agent is starting up the browser so you get a sense of
+progress as it comes up"; detail "Stages + real pod steps", carried as "One
+new event type"), and APPLIED by the pull request that adds this entry (lane
+STARTUP-API).
+
+### Why
+
+A `claude-code-browser` attempt spends a minute or more between `dispatched`
+and a first picture in the Browser tab: the pod is scheduled, the image is
+pulled, the `display` sidecar launches Chromium and waits for CDP, the worker
+container starts, and only then does the live stream paint. The task's state
+history shows none of it -- the task reads DISPATCHED, then STARTING, then
+RUNNING -- so the console had nothing to draw a progress bar from. The steps
+are moments in one attempt, not states (the task does not change state for
+any of them), so they are events, as the hand-off moments of entry 69 are.
+
+### The change
+
+```python
+class EventType(str, Enum):
+    ...
+    STARTUP_PROGRESS = "startup_progress"
+```
+
+`detail` is `{"step": <step>, "attempt_id": ..., "generation": ...}`, the
+steps in order `pod_scheduled`, `image_pulling`, `image_pulled`,
+`container_started` (written by the reconciler from the GKE pod's status,
+`reconciler.startsteps`), then `browser_launching`, `browser_ready`,
+`first_frame` (written by the worker from the live gate's `status`,
+`agent_worker.handoff.HandoffPath.note_startup`). Each step at most once per
+attempt; a step from a generation that is no longer the task's is not
+written. One type with the step in `detail`, not seven types: the existing
+`lease_acquired`, `dispatched`, `starting` and `running` events stay as they
+are and are the bar's first stages. swarm-api serves the steps of the current
+attempt with a per-profile estimate at `GET /v1/tasks/{id}/startup`.
+
+### Rollback
+
+Delete the member. Events already stored with this value would then fail to
+decode in `swarm_api.codec.event_from_dict` (`EventType(data["type"])`), so a
+rollback must first delete the stored `startup_progress` events, or ship a
+decoder that skips unknown types.
+
+### What it would break
+
+Nothing: a new member, written by code that ships with it. No reader matches
+every type exhaustively (`reconciler.progress` reads named types only, and
+the stuck rule's clock starts at `starting`/`running`/`checkpoint_restored`,
+never at this). No shell, jq or TypeScript copy of `EventType` exists to keep
+in step (`scripts/lib/check-contract-parity.sh` restates none; the console's
+`TaskEvent.type` is a plain string).
+
+### Invariants
+
+**1-3** untouched: an event is a record; writing it creates no demand, holds
+nothing and moves no state, lease or pool. **5**: the reconciler writes a pod
+step only inside a transaction that finds the task still on the lease and
+generation the pod was read for, and the worker writes only while it is not
+fenced; the route serves only the current attempt's generation. 4, 6-10
+unchanged.
+
+## 75. `models.py`: `Workflow.fix_rounds` and `WorkflowStep.spawned_by` (SPEED-D2)
+
+**Status:** proposed, and worked around without it by the pull request that
+adds this entry (lane SPEED-D2, owner decision 2026-10-14 "Auto fix rounds").
+Nothing under `apps/common/swarm_common/` was edited.
+
+### Why
+
+A lane workflow's merge step now spends up to `fix_rounds` agent rounds (2 by
+default) on a red or conflicting pull request, and each round is shown as a
+step of the lane's workflow (docs/merge-step.md "Revised 2026-10-14"). Two
+facts about that have no home in the frozen `Workflow`:
+
+1. **The budget.** `Workflow` carries no metadata, so the spec's `fix_rounds`
+   is stored only on the merge TASK (`metadata.merge_fix_rounds`, which the
+   wake tick and the worker read). A reader of the workflow alone cannot say
+   how many rounds it was given.
+2. **Which steps the platform appended.** A round's step is an ordinary
+   `WorkflowStep`. The rollup must not let a round's FAILED fail a workflow
+   whose merge then succeeded, so it has to tell a round from a caller's step.
+   Today it does so by the step id's shape, `ci-fix:<n>` / `conflict-fix:<n>`
+   (`swarm_rollup.FIX_ROUND_STEP_RE`), which works only because a caller's
+   step id may not hold `:` (`WorkflowStepCreate.step_id`'s pattern). The
+   input could not carry the mark: the reconciler decodes steps without it.
+
+### The change
+
+```python
+@dataclass
+class WorkflowStep:
+    ...
+    #: The step id of the platform step that appended this one (a merge
+    #: step's fix round names the merge step), or None for a submitted step.
+    spawned_by: str | None = None
+
+@dataclass
+class Workflow:
+    ...
+    #: Agent fix rounds the merge step may spend on a red pull request;
+    #: None when the workflow has no merge step.
+    fix_rounds: int | None = None
+```
+
+`swarm_rollup.is_fix_round_step` would then read `spawned_by`, and the
+step-id shape would stop carrying meaning.
+
+### Rollback
+
+Delete the two fields; both default to None, and the workaround above is
+what would remain.
+
+### What it would break
+
+Nothing: two defaulted fields. `codec.workflow_from_dict` and
+`reconciler.model.WorkflowView.from_doc` would have to decode `spawned_by`
+for the rollup to read it; until they do, the step-id rule stays.
+
+### Invariants
+
+**1-3** untouched: a field records a decision; a round is an ordinary task
+admitted like any other. 4-10 unchanged.
+
+## 76. `models.py`/`states.py`: `Workflow.after` and `ParkReason.PULL_REQUEST_PENDING` (SPEED-D3)
+
+**Status:** proposed, and worked around without it by the pull request that
+adds this entry (lane SPEED-D3, owner decision 2026-10-14, delivery speed
+plan D3). Nothing under `apps/common/swarm_common/` was edited.
+
+### Why
+
+A workflow spec may now say `"after": {"pr": 41}` (or a list): no step starts
+until each named pull request of the workflow's own repository has merged,
+and one closed without merging fails the workflow (docs/workflows.md
+"Waiting for a pull request: `after`"). Two facts about that have no home in
+the frozen contract:
+
+1. **What the workflow waits for.** `Workflow` carries no metadata, so the
+   numbers live on each ROOT step's task as `metadata.after_prs`
+   (`swarm_api.prgate`), with the gate's state (`waiting`, `merged`,
+   `closed`). A reader of the workflow alone cannot say what it waits for;
+   the API reads it back off the step tasks (`codec.workflow_to_api`'s
+   `after_pull_requests`).
+2. **Why a root step is parked.** No `ParkReason` says "waiting for a pull
+   request", so a gated root is parked on `DEPENDENCY_INCOMPLETE` with no
+   `depends_on`. Every reader that promotes that reason had to learn the
+   gate: the scheduler's dependency sweep (`scheduler.loop.after_prs_hold`)
+   and the reconciler's DEPENDENCIES_MET rule
+   (`reconciler.model.held_for_pull_requests`), which would otherwise have
+   promoted a root that "depends on no step" after its grace. Each restates
+   the key and the `merged` state, held equal by
+   tests/unit/control_plane/test_workflow_after_pr.py. A third promoter added
+   later without that check would start a held workflow.
+
+### The change
+
+```python
+# states.py
+class ParkReason(str, Enum):
+    ...
+    #: A workflow submitted with `after` waits for pull requests of its own
+    #: repository to merge. Marked by swarm-api's wake tick, promoted by the
+    #: scheduler on the mark; never promoted by the dependency rule.
+    PULL_REQUEST_PENDING = "PULL_REQUEST_PENDING"
+
+# models.py
+@dataclass
+class Workflow:
+    ...
+    #: Pull request numbers of the workflow's repository that must merge
+    #: before any step starts; empty for a workflow without `after`.
+    after: list[int] = field(default_factory=list)
+```
+
+The gate's state would stay on the root tasks (it is written per task, in a
+guarded transaction, by the tick); only the park reason and the declaration
+move.
+
+### Rollback
+
+Delete the reason and the field. Every park written with the reason would
+need rewriting to `DEPENDENCY_INCOMPLETE` first, which is the workaround
+above.
+
+### What it would break
+
+A new `ParkReason` value is read by every surface that names park reasons:
+the console's state pills and blockers (`apps/swarm-ui/src/types.ts`), the
+bridge's progress text (`swarm_mcp.progress`, `swarm_mcp.compact`) and
+`test_every_park_has_an_unparker.py`, which requires a sweep for each. The
+field is defaulted and decodes old documents unchanged.
+
+### Invariants
+
+**1** kept either way: a gated root is PARKED, holding no lease, no pool
+count and no execution. **3** untouched: nothing is counted before LEASED.
+**9**: the tick reads with the named tenant's own `-git` token, only that
+tenant's parks. 2, 4-8 and 10 unchanged.
+
+---
+
+## 77. `profiles.py`: `claude-code-browser` declares the input `browser_tool` (BSTATUS-API)
+
+**Status:** ACCEPTED by the owner 2026-10-14 ("Picker on Submit, Auto by
+default"), APPLIED by this PR (lane BSTATUS-API, part of #1030).
+
+### Why
+
+The live-browser agent can drive its browser with three tools: the
+Playwright MCP server (`browser_*` tools), the dev-browser CLI (DEVB-INSTALL)
+and the jev-browser MCP server (JEV-IMAGE, JEV-RUNNER). Each is better at
+something different, and jev sends page text to TypeSafe, which a person may
+not want for a given task. The owner's decision: the Submit form offers
+"Browser tool: Auto / Playwright / dev-browser / Jev", Auto by default. What
+a caller may send a runner is the catalogue's declaration (contract request
+25), so the choice has to be declared here or the API refuses it as an
+undeclared key.
+
+### The change
+
+In `apps/common/swarm_common/profiles.py`, `claude-code-browser` takes
+`_CLAUDE_CODE_BROWSER_INPUTS` instead of `_CLI_AGENT_INPUTS`: claude-code's
+inputs plus one key.
+
+```python
+_CLAUDE_CODE_BROWSER_INPUTS: dict[str, RunnerInput] = {
+    **_CLI_AGENT_INPUTS,
+    "browser_tool": RunnerInput(
+        "string",
+        choices=("auto", "playwright", "dev-browser", "jev"),
+        means="the live browser's tool: auto (every tool available; the default), ...",
+    ),
+}
+```
+
+Absent means `auto`. Nothing else in `swarm_common` changes.
+
+The non-frozen follow-ups, in the same pull request: the runner's mapping
+from name to registration (`agent_worker/browser_tools.py`,
+`runners/claude_code.py`); the API's refusal of `jev` when no TypeSafe key
+resolves or jev is not installed (`browser_tool_unavailable`, behind its
+switch); the client tag the three wrappers put on the CDP endpoint and the
+gate's attribution; the `browser` object on the live-session read; and a
+section in `scripts/lib/check-contract-parity.sh` that holds every
+restatement of the four names (the runner's, the API's, the gate's tags and
+the wrappers') to these choices.
+
+### Rollback
+
+Put `inputs=_CLI_AGENT_INPUTS` back. A task stored with `browser_tool`
+keeps it in its input; the runner reads only the names it knows and falls
+back to `auto` for anything else, so an old task still runs.
+
+### What it would break
+
+Nothing that exists: a new optional key on one profile. The Submit form's
+`SUGGESTED` table may now offer it (section 13 of the parity script allows
+any declared key). A caller who already sent `browser_tool` was refused with
+422 `invalid_input`; now it is accepted.
+
+### Invariants
+
+**10** is the point: a caller names one of four options, never a command, a
+binary, an MCP config or a URL; the image's wrappers and the runner own what
+each name runs. 1-9 unchanged: the same profile, image, class, backend and
+secrets.
+
+
+## 78. `models.py` / `states.py`: a workspace's merge mode, and a merge-train park reason (TRAIN-WS)
+
+**Status:** proposed, and worked around without it by the pull request that
+adds this entry (lane TRAIN-WS, owner decision 2026-10-14: "the merge train
+should be a setting users manage on their own workspace and admins on all
+workspaces"). Nothing under `apps/common/swarm_common/` was edited.
+
+### Why
+
+A workspace now chooses how its lane pull requests land -- directly, or in
+merge trains (docs/merge-trains.md). Two facts about that have no home in
+the frozen contract:
+
+1. **The setting.** A workspace is a `Tenant`, which is frozen and has no
+   field for its merge mode, train size or max train age. They are stored in
+   swarm-api's own `workspace_settings/{tenant_id}` (field `merge`, beside JUDGE-SELECT's `judgment_backend`) (`swarm_api.mergesettings`),
+   and a repository's override in its registration (`repositories/{id}`
+   `merge_mode`, swarm-api's own registry, not the contract). Every reader
+   goes through `mergesettings.settings_of`, which reads a malformed value as
+   the default, so nothing breaks; but a tenant's merge policy is a property
+   of the tenant that the contract cannot describe.
+2. **The wait.** A merge step whose pull request is registered for a train
+   parks `CI_PENDING` with the code `merge_train_waiting`, as a step waiting
+   for the merge slot parks `CI_PENDING` with `merge_slot_wait` (request 62).
+   It is not waiting for CI: its checks were green when it registered.
+   Both the CI wake tick and anything that reads park reasons must know the
+   code to tell the two apart.
+
+### The change
+
+```python
+@dataclass
+class Tenant:
+    ...
+    #: How this workspace's merge steps land their pull requests:
+    #: "direct" (default) or "train"; and the train's shape.
+    merge_mode: str = "direct"
+    merge_train_size: int = 4
+    merge_train_max_age_minutes: int = 90
+
+class ParkReason(str, Enum):
+    ...
+    MERGE_TRAIN = "MERGE_TRAIN"   # waiting for its repository's merge train
+```
+
+### Rollback
+
+Delete the fields and the member. The workaround above is what would remain.
+
+### What it would break
+
+Nothing: defaulted fields and a new enum member. `codec` would decode the
+three fields; the scheduler's `_promote_ci_waits` would promote
+`MERGE_TRAIN` parks on the same wake marker, and `mergewake` would stop
+needing to skip a code.
+
+### Invariants
+
+**1** preserved: a waiting train and its parked steps hold no lease and no
+pool count; only the coordinator's per-tenant tick reads them. **2-3**
+untouched: a merge step is admitted like any other. **5** preserved: the
+step's registration is a fenced transaction. 4, 6-10 unchanged.
+
+## 79. `profiles.py`: the `browser` resource class shrinks from 8 vCPU / 16 GiB to 4 vCPU / 8 GiB, and from 2 units to 1 (MEASURE, BROWSER-CLASS)
+
+**Status:** ACCEPTED by the owner 2026-10-14 and APPLIED by the pull request
+that adds this line. Accepted at about 18:10 PDT ("File the request now"), on
+the measurement in [browser-startup-speed.md §11](browser-startup-speed.md),
+with `units` kept at 2 as written below; amended by the owner at about 22:55
+PDT ("Drop to 1") to `units=1`. Lane BROWSER-CLASS applied the one line, as
+amended:
+
+```python
+    "browser": ResourceClass("browser", cpu=4, memory_gib=8, disk_gib=4, units=1),
+```
+
+### Amendment: `units` drops to 1 (owner, 2026-10-14 ~22:55 PDT)
+
+The request as filed (below) kept `units` at 2 so that pool accounting would
+not move with the resize, and called lowering it "a separate decision". The
+owner took that decision the same evening: **"Drop to 1"**. A browser agent
+now weighs what a `standard` one does, which is consistent with what it now
+is: the same 4 vCPU / 8 GiB.
+
+**Why it doubles browser concurrency per pool.** Admission reserves a task's
+`units` in every pool it requires, in one transaction (invariants 2 and 3),
+and a pool admits while `active + units <= limit`. Every pool a browser agent
+requires (`global`, `tenant:<t>`, `resource:browser`, `runner:<profile>`,
+`backend:GKE_AUTOPILOT`, `provider:anthropic`, `provider:anthropic:tenant:<t>`)
+therefore held `floor(limit / 2)` browser agents and now holds `limit`. A
+`resource:browser` pool of 20, as `dev.tfvars` and `prod.tfvars` set it,
+admitted 10 browser agents and now admits 20. No pool limit changed with this
+request: the doubling is entirely the weight. `resource:browser` stays its
+own pool, and is now the one ceiling that tells browser concurrency apart
+from `standard`'s, since the two cost the same.
+
+**What else it moved.**
+
+* **The live display sidecar's split.** `LIVE_DISPLAY_SHARE["browser"]`
+  (`apps/scheduler/scheduler/dispatch.py`) was display 5 vCPU / 10 GiB and
+  worker 3 / 6, the design's starting split, which cannot fit 4 / 8. It is now
+  display 3 vCPU / 5 GiB and worker 1 vCPU / 3 GiB, sized from §11's
+  per-container peaks (display 1.90 cores / 1.48 GiB, worker 0.55 cores /
+  0.37 GiB). Both containers keep `requests == limits` and sum to the class.
+  The sidecar's resident tmpfs (`/dev/shm` 2, profile 1, `/tmp` 0.25 GiB)
+  plus its measured peak is 4.73 of its 5 GiB, so a page heavier than any
+  sampled, or a 1 GiB download in flight at that peak, is an OOM kill that
+  checkpointing (invariant 8) bounds.
+* **The GKE disk layout did not move.** `GKE_DISK["browser"]` stays
+  4 + 2 + 2 = 8 GiB of disk-backed `emptyDir`s, outside the memory limit.
+  `disk_gib` sizes Cloud Run's memory tmpfs; on GKE it was only ever equal to
+  that layout's total by coincidence of the old numbers.
+* **`scripts/pool-limit.sh`'s below-units warning** can no longer fire for
+  `browser` (#66's case): a limit of 1 now admits one browser agent. No
+  profile in the catalogue reaches a class above 1 unit, so the warning stays
+  for `large` only.
+
+**Invariants, as amended.** **7** preserved: request and limit stay equal on
+every container. **1-3**: admission and reservation count units exactly as
+before, all-or-nothing across every pool, from `LEASED`; what changes is the
+number, 1 per browser agent instead of 2. **8** is what bounds an OOM's cost.
+4, 5, 6, 9, 10 unchanged.
+
+### As filed (2026-10-14 ~18:10 PDT, before the amendment)
+
+### Why
+
+Both profiles on the `browser` class (`browser` and `claude-code-browser`)
+are given 8 vCPU and 16 GiB as request and limit, because requests == limits
+(invariant 7). On 2026-10-15 at 01:00 UTC, while the live-browser QA matrix
+was running, eight `kubectl top` samples of four `browser` pods peaked at
+**2.13 cores and 1.85 GiB** for the whole pod. The display sidecar peaked at
+1.90 cores and 1.48 GiB, the worker at 0.55 cores and 0.37 GiB. That is under
+80 % of 4 vCPU / 8 GiB. Every browser agent is therefore paying for about
+four times the CPU and eight times the memory it was seen to use.
+
+### The change
+
+```python
+RESOURCE_CLASSES = {
+    ...
+    "browser": ResourceClass("browser", cpu=4, memory_gib=8, disk_gib=4, units=2),
+}
+```
+
+The class keeps its name, so neither profile changes. The workspace is a
+tmpfs carved out of memory (see the comment above `RESOURCE_CLASSES`), so
+`disk_gib` drops with it: 4 GiB of tmpfs leaves 4 GiB for processes, against
+a measured peak of 1.85 GiB. **`units` stays 2** in this request, so pool
+accounting (invariants 2 and 3) does not move with the resize. Lowering it
+to 1 would admit twice as many browser agents into the same pools, and that
+is a separate decision.
+
+### Rollback
+
+Restore `cpu=8, memory_gib=16, disk_gib=8`. A running pod keeps the size it
+was created with; the next dispatch takes the restored size.
+
+### What it would break
+
+* **A page heavier than any sampled.** Eight samples 15 s apart miss peaks
+  between them, and four pods are not a load test. A browser agent that
+  needs more than 8 GiB, or a download filling the 4 GiB tmpfs, is now
+  OOM-killed or out of space where before it was not. The worker's
+  checkpointing (invariant 8) bounds the loss to the last checkpoint.
+* **The Cloud Run path.** `ResourceClass` validates against the Cloud Run
+  Jobs ceiling; 4/8 is inside it, so nothing there is refused.
+* **Tests that pin the catalogue's numbers** (`tests/unit` asserting the
+  `browser` class's cpu or memory) must change with it; the lane names them.
+
+### Invariants
+
+**7** preserved: request and limit stay equal, only smaller. **1-3**
+unchanged: `units` is kept, so admission and reservation count the same.
+**6** unchanged (no Spot). **8** is what limits an OOM's cost. 4, 5, 9, 10
+unchanged.
+
+
+## 80. `profiles.py`: a runner profile declares the secret slots it may consume, and the vocabulary of secret kinds (SEC-CONTRACT, workspace secrets request A)
+
+**Status:** ACCEPTED by the owner 2026-10-14 and APPLIED by the pull request that adds this line. Filed by lane SEC-CONTRACT, phase 0 of
+[docs/design/workspace-secrets.md](design/workspace-secrets.md) (§7 request A),
+part of #1347. Proposed 2026-10-14 (workspace secrets, owner decisions
+2026-10-14), accepted on PR #1354 at about 23:20 PDT.
+
+### Why
+
+A workspace secret is granted to a *consumer* by checkbox (design §2.2), and
+a consumer takes it through a *slot*: a named place with the kinds of secret
+it accepts and whether the consumer can run without it (§2.4). Three readers
+must agree on one declaration of a profile's slots:
+
+1. **The console** renders the grant matrix and disables a cell whose slot
+   cannot take the secret's kind ("jev-browser reads an API key").
+2. **swarm-api** refuses a grant to a slot the consumer does not have, or of
+   a kind the slot refuses (422, SEC-STORE-API), and decides at release time
+   which slot each released secret lands in (§3.3 step 4).
+3. **The worker** refuses any released item whose slot its own catalogue does
+   not have (§3.4, the defence in depth kept under option B), and parks a
+   task whose `required` slot has no enabled grant as `CREDENTIAL_MISSING`
+   before it leases (§4.2).
+
+Today a profile declares only `secrets`, the env-var names of its runner's
+provider key (`RunnerProfile.secrets`, which stays as it is: §7 "Not
+requested", §6.3). There is nowhere to say "this profile takes arbitrary
+workspace files" or "this slot must be filled". Restated in each reader, the
+three copies drift, which is exactly what request 25 did for `inputs`: one
+declaration, read by swarm-api and the plugin.
+
+The kind vocabulary belongs with it. `SecretSlot.kinds` names kinds, and a
+kind spelt `api-key` in the console and `api_key` in the worker would make
+every grant refuse silently. The design's kinds (§2.1) are `api_key`,
+`bearer_token`, `basic_auth`, `oauth_client` and `opaque`, plus
+`forge_token` for the read-only legacy forge rows (§6.2), which no slot but
+`component:git`'s accepts.
+
+### The change
+
+```python
+#: Contract request 80 (workspace secrets, docs/design/workspace-secrets.md
+#: §2.1): the kinds a workspace secret can be. A kind decides the value's
+#: SHAPE (basic_auth is a JSON object of exactly username and password,
+#: oauth_client of exactly client_id and client_secret) and which slots may
+#: take it; never behaviour. `forge_token` is listed so a forge row has a
+#: kind, and is accepted by no profile or tool slot (owner rule 2026-09-25:
+#: a forge token is never readable by the agent).
+SECRET_KINDS: tuple[str, ...] = (
+    "api_key", "bearer_token", "basic_auth", "oauth_client", "opaque", "forge_token",
+)
+_SLOT_NAME = re.compile(r"[a-z][a-z0-9-]{0,31}")
+
+
+@dataclass(frozen=True)
+class SecretSlot:
+    """A place a consumer takes a workspace secret (design §2.4).
+
+    The slot's NAME is the key it is declared under and becomes a directory
+    (`private/secrets/<slot>/<name>`, design §4.1), so it is a short
+    lower-case word. A grant names one slot; a release lands each secret in
+    its grant's slot and nowhere else."""
+
+    kinds: tuple[str, ...]
+    means: str
+    #: True when the consumer cannot run without it: the task parks
+    #: CREDENTIAL_MISSING before it leases, at no cost (invariant 1), and
+    #: starts by itself once a grant is ticked. False (the default) starts
+    #: without it.
+    required: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.kinds:
+            raise ValueError("a secret slot accepts at least one kind")
+        unknown = [k for k in self.kinds if k not in SECRET_KINDS]
+        if unknown:
+            raise ValueError(f"secret slot: unknown kind(s) {unknown}")
+        if "forge_token" in self.kinds:
+            raise ValueError(
+                "secret slot: a forge token is never granted to a profile or a tool "
+                "(contract request 80)"
+            )
+        if not self.means.strip():
+            raise ValueError("secret slot: `means` says what the consumer does with it")
+
+
+#: The slot every agent profile declares: any non-forge kind, one 0600 file
+#: per secret, listed by name in the manifest the runner is pointed at.
+_FILES_SLOT = SecretSlot(
+    kinds=("api_key", "bearer_token", "basic_auth", "oauth_client", "opaque"),
+    means="one file per granted secret under private/secrets/files/, named in "
+          "the manifest at $SWARM_SECRETS_MANIFEST; never in the environment",
+)
+
+
+@dataclass(frozen=True)
+class RunnerProfile:
+    ...
+    #: Contract request 80: the workspace-secret slots this profile's
+    #: attempts may be released into, by slot name. Empty (the default)
+    #: means a grant to `profile:<name>` is refused at write time. NOT the
+    #: provider key (`secrets` above, unchanged). Excluded from the hash, as
+    #: `inputs` is: a mapping is not hashable.
+    secret_slots: Mapping[str, SecretSlot] = field(default_factory=dict, hash=False)
+
+    def __post_init__(self) -> None:
+        ...
+        if self.worker_action is not None:
+            ...
+            if self.secret_slots:
+                raise ValueError(
+                    f"runner {self.name}: a worker_action profile runs no agent and "
+                    "takes no workspace secret (contract request 80)"
+                )
+        for slot, declared in self.secret_slots.items():
+            if not _SLOT_NAME.fullmatch(slot):
+                raise ValueError(f"runner {self.name}: secret slot {slot!r} is not a slot name")
+            if not isinstance(declared, SecretSlot):
+                raise ValueError(f"runner {self.name}: secret slot {slot!r} is not a SecretSlot")
+
+
+RUNNER_PROFILES = {
+    # Every profile that runs an agent declares `files`; none is required.
+    "claude-code":         RunnerProfile(..., secret_slots={"files": _FILES_SLOT}),
+    "codex":               RunnerProfile(..., secret_slots={"files": _FILES_SLOT}),
+    "browser":             RunnerProfile(..., secret_slots={"files": _FILES_SLOT}),
+    "claude-code-review":  RunnerProfile(..., secret_slots={"files": _FILES_SLOT}),
+    "indexer":             RunnerProfile(..., secret_slots={"files": _FILES_SLOT}),
+    "claude-code-browser": RunnerProfile(..., secret_slots={"files": _FILES_SLOT}),
+    # mock, generic, merge, post-verdict: no slots.
+}
+```
+
+**Two corrections to the design's sketch, found by reading the catalogue at
+`78fab43`:**
+
+* **`browser` does not reach `typesafe` "through its tools".** §7 says
+  `claude-code-browser` and `browser` declare `typesafe` through request B's
+  tools. Only `claude-code-browser` declares the `browser_tool` input
+  (`_CLAUDE_CODE_BROWSER_INPUTS`, request 77). `browser` runs
+  `agent_worker.runners.browser`, a scripted runner driven by `url` and
+  `actions` (`_BROWSER_INPUTS`) that launches none of the three tools. So
+  `browser` declares `files` only, and no tool consumer is ever derived for
+  it (request 81). Request 81 is the only place `typesafe` is declared.
+* **`mock` and `generic` declare nothing.** The design's consumer list
+  (§2.3) leaves them out without saying why. `mock` exists so the smoke
+  path works before a tenant registers anything (`provider=None`).
+  `generic` runs one of six fixed commands (`_GENERIC_COMMANDS`) with no
+  agent to read a manifest, so giving it secrets would hand files to a
+  process that cannot use them by name.
+
+### Rollback
+
+Delete `SecretSlot`, `SECRET_KINDS`, `_FILES_SLOT`, the `secret_slots`
+field and its checks. Nothing in the contract reads them. A reader built
+on them (SEC-STORE-API, SEC-RELEASE) then refuses every grant to a profile
+as "no such slot", which fails closed: no secret is released.
+
+### What it would break
+
+* **Nothing that exists.** It is a defaulted field and a new class. `codec`
+  does not serialise `RunnerProfile`. `hash=False` keeps profiles hashable,
+  as `inputs` does.
+* **The profile catalogue's mirrors.** The plugin's and UI's copies of the
+  catalogue (the parity checks behind `scripts/lib/check-contract-parity.sh`)
+  do not carry slots, and need not until SEC-UI renders the matrix, which
+  reads `GET /v1/workspace/secrets/consumers` rather than a mirror (§2.3).
+* **Tests that construct a `worker_action` profile with arbitrary fields**
+  keep passing: a default-empty mapping trips no check.
+* **The red tests §8 names for this lane:** a `worker_action` profile with
+  a slot raises; a slot with an unknown kind or with `forge_token` raises.
+
+### Invariants
+
+**10** is the reason for the shape. A slot is a catalogue property. A
+caller names a profile and cannot add a slot, an image, a path or a
+command. **9** preserved: a slot says *where* a secret lands, never *whose*;
+which workspace's secrets fill it is decided by the release's
+`tenant_id == task.tenant_id` bound (§3.3), not here. **1** preserved: a
+`required` slot with no grant parks before the lease, holding nothing.
+**5** unchanged: the release that fills slots is fenced on the generation
+(request 82 and SEC-RELEASE), and a slot declaration fences nothing.
+2-4 and 6-8 untouched.
+
+## 81. `profiles.py`: `RUNTIME_TOOLS`, the catalogue of runtime tools, their secret slots and the `browser_tool` values that launch them (SEC-CONTRACT, workspace secrets request B)
+
+**Status:** ACCEPTED by the owner 2026-10-14 and APPLIED by the pull request that adds this line. Filed by lane SEC-CONTRACT (design §7 request B), part of #1347.
+Proposed 2026-10-14, accepted on PR #1354 at about 23:20 PDT. The
+import-time checks are `_check_runtime_tools`, called on the catalogue.
+
+### Why
+
+The owner's own example is a grant to a tool: "only allow access to it for a
+specific runtime job type and image like jev-browser". A grant to
+`tool:jev-browser` has to mean the same tool to swarm-api, which derives an
+attempt's consumers from its signed spec (§2.3), and to the worker, which
+re-checks every released item against its catalogue (§3.4). Today the tool
+names exist in three spellings and none is a catalogue:
+
+* the frozen `browser_tool` input's choices on `claude-code-browser`:
+  `auto`, `playwright`, `dev-browser`, `jev` (request 77);
+* the worker's `agent_worker.browser_tools.TOOLS = ("playwright",
+  "dev-browser", "jev")`, outside the contract;
+* the design's consumer names, `jev-browser`, `dev-browser`, `playwright`.
+  `jev` is spelt `jev-browser` there because that is the program the secret
+  reaches.
+
+This makes it the tool-level checkbox the design recommends option B for
+(§3.6): an attempt with `browser_tool: playwright` is **not** released the
+jev-browser key. That rule is only as good as the mapping from a signed
+`browser_tool` value to the tools it launches, so the mapping has to be
+frozen too, not left for each reader to restate. `auto` launches all three
+(request 77's `means`).
+
+### The change
+
+```python
+#: Contract request 81 (workspace secrets, design §2.3): a program the
+#: platform launches INSIDE an attempt that can be granted a workspace
+#: secret on its own. A tool is a NAME, never an image or a command
+#: (invariant 10): the agent can start any process in its pod, so a grant
+#: is matched against the signed spec's `browser_tool`, never against a
+#: process name.
+@dataclass(frozen=True)
+class RuntimeTool:
+    name: str
+    #: The profiles whose attempts can launch this tool.
+    profiles: tuple[str, ...]
+    #: The `browser_tool` input values that launch it, on those profiles.
+    #: An attempt whose signed value is not listed never launches it, and is
+    #: never released a secret granted only to it.
+    launched_by: tuple[str, ...]
+    secret_slots: Mapping[str, SecretSlot] = field(default_factory=dict, hash=False)
+
+
+RUNTIME_TOOLS: Mapping[str, RuntimeTool] = MappingProxyType({
+    "jev-browser": RuntimeTool(
+        name="jev-browser",
+        profiles=("claude-code-browser",),
+        launched_by=("auto", "jev"),
+        secret_slots={"typesafe": SecretSlot(
+            kinds=("api_key",),
+            means="the TypeSafe key jev_launch.py puts in the jev process's own "
+                  "environment; jev sends page text to TypeSafe",
+        )},
+    ),
+    "dev-browser": RuntimeTool(
+        name="dev-browser", profiles=("claude-code-browser",),
+        launched_by=("auto", "dev-browser"),
+    ),
+    "playwright": RuntimeTool(
+        name="playwright", profiles=("claude-code-browser",),
+        # The fallback under every choice (request 77's `means`).
+        launched_by=("auto", "playwright", "dev-browser", "jev"),
+    ),
+})
+
+
+def tools_launched(profile: RunnerProfile, inputs: Mapping[str, Any]) -> tuple[str, ...]:
+    """The RUNTIME_TOOLS an attempt of `profile` with signed `inputs` launches.
+
+    `browser_tool` absent is `auto` (request 77). Empty for a profile that no
+    tool lists. Read by swarm-api's release and by the worker's re-check, so
+    the two derive the same set."""
+    selected = inputs.get("browser_tool", "auto")
+    return tuple(
+        t.name for t in RUNTIME_TOOLS.values()
+        if profile.name in t.profiles and selected in t.launched_by
+    )
+```
+
+`jev-browser` with no `typesafe` grant still launches as today. Its slot is
+optional, which keeps `browser_tools.choose`'s `no_key` path, where jev is
+not registered and Playwright is used. A tool slot is never `required`,
+because the profile runs without the tool.
+
+**Import-time checks** (in the module, where the catalogue's other
+cross-checks are). Every name in a tool's `profiles` is a key of
+`RUNNER_PROFILES` that declares `browser_tool`. Every `launched_by` value
+is one of that input's choices. Every `browser_tool` choice except `auto`
+is in some tool's `launched_by`. That last check is the red test §8 names
+("every `browser_tool` choice but `auto` maps to a `RUNTIME_TOOLS`
+entry"): it fails the import the day a fifth choice is added without a
+tool.
+
+### Rollback
+
+Delete `RuntimeTool`, `RUNTIME_TOOLS`, `tools_launched` and the import-time
+checks. A release built on them then derives no `tool:` consumer, so a
+secret granted only to a tool is released to nobody (fail closed), and jev
+falls back to today's read through `jevkey` while the §6.1 switch is off.
+
+### What it would break
+
+* **Nothing that exists.** These are new names. `browser_tools.TOOLS` in
+  the worker keeps the short spelling `jev`, the input value. The consumer
+  name `jev-browser` is the catalogue key, and `launched_by` is the bridge
+  between the two. A worker lane may later read `RUNTIME_TOOLS` instead of
+  its own tuple; this request does not require it.
+* **Adding a `browser_tool` choice** now needs a `RUNTIME_TOOLS` edit in the
+  same change, or the import fails. That coupling is deliberate.
+* **A spelling decision for the owner.** The consumer is `tool:jev-browser`
+  while the input value is `jev`. The design chose the program's name. If
+  the owner prefers one spelling, the cheaper change is to key the
+  catalogue `jev`, since the input is already frozen and filed in task
+  documents.
+
+### Invariants
+
+**10** is preserved by construction: the tool is derived from the signed
+`browser_tool` value, a catalogue choice the caller picked by name, and is
+never read from the request or the pod. **9** preserved: the catalogue is
+platform-wide and holds no tenant data. **5** unchanged: what an attempt is
+derived from is its signed spec, verified by `specsign` before the worker
+acts on it. 1-4 and 6-8 untouched.
+
+**Stated limit, not hidden** (design §3.6). The boundary is the attempt. In
+a `claude-code-browser` attempt with `browser_tool: auto`, the jev-browser
+key is a file in a pod whose agent runs as the same uid, so the agent can
+read it. The tool checkbox decides **which attempts** receive a secret, not
+which process inside an attempt can read it. Only the later `inject` mode
+(§3.5) narrows that.
+
+## 82. `models.py`: the secret consumer's spelling, `consumer_name`, and the platform component list (SEC-CONTRACT, workspace secrets request C)
+
+**Status:** ACCEPTED by the owner 2026-10-14 and APPLIED by the pull request that adds this line. Filed by lane SEC-CONTRACT (design §7 request C), part of #1347.
+Proposed 2026-10-14, accepted on PR #1354 at about 23:20 PDT.
+`is_secret_consumer` is applied beside the catalogue in `profiles.py`, as
+"Where it lives" says, so `profiles.py` now imports `models.py`.
+`parse_consumer`'s message echoes nothing, as this entry says, so
+`consumer_name`'s own refusal is replaced rather than propagated (the
+sketch below would have propagated it).
+
+### Why
+
+A grant's consumer is a string that is stored in many places: a Firestore
+document id (`workspace_secret_grants/{secret_id}~{consumer}`), a field on
+it, a URL path segment (`PUT /v1/workspace/secrets/{name}/grants/{consumer}`),
+a release row's `consumers` and an audit detail. swarm-api writes it, the
+worker re-derives it, and the console renders it. That is the reason
+`Tenant.secret_name` is frozen: one spelling, or a grant written as
+`tool/jev-browser` silently matches no release.
+
+The spelling also carries the separation the design depends on.
+`profile:indexer` (the agent profile) and `component:indexer` (the
+platform's index step) are different consumers with the same bare name, so
+the kind prefix is part of the identity. A parser that drops it widens a
+grant. And `component:git` is fixed to forge tokens (§6.2), so the
+component list has to be closed: an open list is how a forge token reaches
+an unnamed step.
+
+### The change
+
+```python
+#: Contract request 82 (workspace secrets, design §2.3). A workspace secret
+#: is granted to a CONSUMER, spelt "<kind>:<name>". `profile:` names a key of
+#: RUNNER_PROFILES, `tool:` a key of RUNTIME_TOOLS (request 81), `component:`
+#: one of PLATFORM_COMPONENTS. Never an image, a command or a path
+#: (invariant 10).
+SECRET_CONSUMER_KINDS: tuple[str, ...] = ("profile", "tool", "component")
+
+#: Platform steps that take a workspace secret themselves, outside any
+#: agent. `judge` reads private/jev-key for TypeSafe judging; `merge` and
+#: `indexer` are the worker's own steps; `git` takes forge tokens only and is
+#: never offered a non-forge secret (design §6.2).
+PLATFORM_COMPONENTS: tuple[str, ...] = ("judge", "merge", "indexer", "git")
+
+_CONSUMER_NAME = re.compile(r"[a-z][a-z0-9-]{0,62}")
+
+
+def consumer_name(kind: str, name: str) -> str:
+    """The one spelling of a secret consumer: "<kind>:<name>".
+
+    Checks the kind, the name's characters and, for `component`, the closed
+    list. Membership of `profile` and `tool` names is checked against the
+    catalogue by its reader (`profiles.py` imports this module, not the
+    reverse, so this function cannot see RUNNER_PROFILES). A consumer
+    name holds only `[a-z0-9-]` and one `:`, so it is safe in a Firestore
+    id and a URL segment without escaping."""
+    if kind not in SECRET_CONSUMER_KINDS:
+        raise ValueError(f"unknown secret consumer kind {kind!r}")
+    if not _CONSUMER_NAME.fullmatch(name):
+        raise ValueError(f"secret consumer name {name!r} is not [a-z0-9-]")
+    if kind == "component" and name not in PLATFORM_COMPONENTS:
+        raise ValueError(f"unknown platform component {name!r}")
+    return f"{kind}:{name}"
+
+
+def parse_consumer(consumer: str) -> tuple[str, str]:
+    """The inverse of consumer_name; raises on anything consumer_name would
+    not have produced, so `parse_consumer(consumer_name(k, n)) == (k, n)`
+    and no other string parses."""
+    kind, sep, name = consumer.partition(":")
+    if not sep or consumer_name(kind, name) != consumer:
+        raise ValueError("not a secret consumer name")
+    return kind, name
+```
+
+The error messages echo the kind and name a caller sent. Those are
+catalogue words a member typed into a grant URL, never secret material.
+`parse_consumer`'s message deliberately echoes nothing, because it is fed
+stored ids.
+
+**Where it lives.** §7 says `models.py`. That works because `models.py`
+imports only `states.py` and `profiles.py` imports neither, so the
+catalogue-membership check that needs `RUNNER_PROFILES` and
+`RUNTIME_TOOLS` is a short helper beside them in `profiles.py`
+(`is_secret_consumer(consumer) -> bool`), applied by SEC-STORE-API on
+write and SEC-RELEASE on read. The owner may prefer all of it in
+`profiles.py`, which is equally valid. The spelling must be frozen either
+way.
+
+### Rollback
+
+Delete the two tuples and the two functions. The readers built on them
+(SEC-STORE-API, SEC-RELEASE) would have to carry the spelling themselves,
+which is the drift this request exists to prevent.
+
+### What it would break
+
+* **Nothing that exists.** These are new names, and no Firestore document
+  carries a consumer yet.
+* **Renaming a profile or a tool** now orphans its grants: they stay in
+  Firestore, disabled in effect because no attempt derives that consumer
+  any more. That fails closed. A rename lane must migrate grant ids in the
+  same change, and the request records that so nobody learns it from a
+  user.
+* **The red test §8 names:** `consumer_name` round-trips through
+  `parse_consumer` for every catalogue consumer, and refuses
+  `component:anything-else`, an uppercase name, a second `:`, and an empty
+  kind.
+
+### Invariants
+
+**10** is the point. A consumer is a name from a platform list, so a
+workspace member who writes a grant chooses *which named consumer*, never
+what runs. **9** preserved: a consumer carries no tenant. The tenant of a
+grant is its own field, and the release bounds its query by
+`tenant_id == task.tenant_id`, taken from the task and not from the
+request (§3.3 step 3). Nothing here can name another workspace. **5**: the
+release that reads grants by consumer is fenced on the attempt's
+generation (SEC-RELEASE), so a stale worker is released nothing whatever
+its consumers. 1-4 and 6-8 untouched.
+
+## 83. `states.py`: no new park reason for a missing workspace secret; a required slot with no grant parks `CREDENTIAL_MISSING` (SEC-CONTRACT, workspace secrets request D)
+
+**Status:** ACCEPTED by the owner 2026-10-14 and APPLIED by the pull request that adds this line. Filed by lane SEC-CONTRACT (design §7 request D), part of #1347.
+Proposed 2026-10-14, accepted on PR #1354 at about 23:20 PDT. It requests
+**no change**, and none was made: `ParkReason.CREDENTIAL_MISSING` exists
+(`states.py`) and `scheduler/credentials.py` parks it before any lease. It
+is recorded so that no lane adds a park reason, and so the owner's
+acceptance covers the reuse explicitly.
+
+### Why
+
+A `required` slot (request 80) with no enabled grant must stop the task
+before it leases, at no cost, and start it by itself once someone ticks the
+grant (design §4.2). That is exactly what `ParkReason.CREDENTIAL_MISSING`
+already means for a missing runner provider key. A tenant whose
+`Tenant.credentials` lacks the profile's `provider` parks the step
+`CREDENTIAL_MISSING` (`models.py`, the comment on `Tenant.credentials`),
+and the scheduler promotes it when the credential appears. A second reason
+(`SECRET_MISSING`, `GRANT_MISSING`) would make every reader of park reasons
+(the scheduler's promotion, the console's park text, the outcome ledger)
+learn a new member that means the same thing. A wake path keyed on the old
+reason would also leave the new one parked for ever.
+
+What distinguishes the two cases for a person is the park's **code** and
+message, as `merge_slot_wait` distinguishes a `CI_PENDING` (request 62).
+The proposed code `secret_grant_missing` names the slot and the consumer,
+never a value. Writing it belongs to the scheduler's admission, not the
+contract: `scheduler/credentials.py` already parks `CREDENTIAL_MISSING`
+before any lease, and its credential sweep returns such a park to `READY`
+once the credential exists.
+
+### The change
+
+```python
+# None. ParkReason is unchanged:
+class ParkReason(str, Enum):
+    ...
+    CREDENTIAL_MISSING = "CREDENTIAL_MISSING"   # also: a required secret slot has no enabled grant
+```
+
+The comment is the only edit, and it is optional. Applying the request
+means accepting the reuse.
+
+### Rollback
+
+Nothing to roll back. If the owner declines, the alternative is a new
+member with its own wake path in the scheduler, filed as a new request.
+
+### What it would break
+
+Nothing. **It places one obligation on the build lanes.** The scheduler's
+credential check (`scheduler/credentials.py`) must count an enabled grant
+for a required slot, and its sweep must promote such a park once the grant
+is ticked, the way it promotes a park once a provider key is registered.
+Otherwise "starts by itself" (§4.2) is false. That belongs to the
+scheduler and SEC-STORE-API, not the contract. §8 names no lane for it, so
+the PR body raises it.
+
+### Invariants
+
+**1** is why it exists. The park happens before the lease, so a task
+missing a required secret holds no capacity and no pod. **2-3** unchanged:
+it is never admitted, so nothing is reserved or counted. **4** unchanged:
+it is not a long provider wait inside a worker. 5-10 untouched.
+
+## 84. `profiles.py`: `claude-code-review` is the one CLOUD_RUN_JOB profile that carries the Jev client; move it to GKE_AUTOPILOT, or retire it under request 50 (JUDGE-GKE)
+
+**Status:** ACCEPTED as (b) by the owner 2026-10-16 (~11:35 PDT, on PR 1422 and
+#1347): `claude-code-review` is retired under request 50 and is not moved, so
+`profiles.py` is unchanged; it must move to GKE before it is ever re-enabled.
+Filed 2026-10-16 by lane JUDGE-GKE, part of #1347, after the
+owner's decision of 2026-10-16 (~11:20 PDT, on #1347): every attempt that
+judges with TypeSafe runs on GKE, so the key never enters a pod and
+SEC-RETIRE can remove every tenant worker's `-typesafe` grant.
+
+### What is true today
+
+The worker's Jev client (`agent_worker/judge/`) is set up by
+`graphstage.prepare`, only for a runner in `graphstage.GRAPH_RUNNERS`
+(`runners.claude_code`, `runners.codex`) and never for an index run. In the
+catalogue that is `claude-code`, `codex`, `claude-code-browser` and
+`claude-code-review`. The first three are GKE_AUTOPILOT (requests 53, 65,
+67). `claude-code-review` is CLOUD_RUN_JOB, and no other CLOUD_RUN_JOB
+profile carries the client: `mock` runs the mock runner, and `post-verdict`
+is a worker action that runs no agent.
+
+`claude-code-review` is also `available=False` (the #295 chain is off for
+every tenant) and has no Job (`profiles_without_a_job` in
+`terraform/infra/locals.tf`). It can dispatch nowhere today. The scheduler's
+guard (`scheduler.dispatch.typesafe_judge_needs_gke`, lane JUDGE-GKE) would
+refuse it on Cloud Run anyway whenever the forwarder serves its tenant and
+the workspace judges with TypeSafe. So this request changes what the
+catalogue says, not what can run.
+
+### The change
+
+Either of these. The owner picks one.
+
+**(a) Move it to GKE, as `claude-code` moved in request 53.**
+
+```python
+_CLAUDE_CODE_REVIEW = RunnerProfile(
+    name="claude-code-review",
+    ...
+    backend=Backend.GKE_AUTOPILOT,   # was CLOUD_RUN_JOB: its judge reaches the
+                                     # TypeSafe forwarder only from GKE
+    ...
+)
+```
+
+**(b) Leave it on Cloud Run, and let request 50 retire it.** Then it simply
+never judges with TypeSafe: it never runs. If it is ever re-enabled, it must
+move to GKE first. Until it does, the scheduler's guard refuses a
+TypeSafe-judging attempt of it at dispatch: each refusal returns the task to
+READY, and at the retry cap it ends FAILED with `typesafe_judge_needs_gke`.
+
+The lane recommends (b). The profile is retired in all but name, request 50
+already removes it, and moving a profile that cannot run buys nothing.
+
+### Rollback
+
+(a) is one line back to CLOUD_RUN_JOB. (b) changes nothing.
+
+### What it would break
+
+(a) Nothing that runs: the profile is unavailable and has no Job. The
+Terraform catalogue mirror (`runner_profiles` in `terraform/infra/locals.tf`,
+held field for field by `tests/terraform/catalogue.tftest.hcl`) and
+`tests/unit/control_plane/test_internet_profiles_on_gke.py`, which lists the profiles that stay on Cloud Run, must
+follow in the same pull request. (b) Nothing.
+
+### Invariants
+
+**1** unchanged: a refused attempt is returned to READY and holds no
+capacity. **2** unchanged: the guard runs before anything is created, and
+the lease it returns gives back every pool it reserved. **6** and **7**
+unchanged: GKE runs on demand with `requests == limits`, as every
+GKE_AUTOPILOT profile does. **10** unchanged: the backend stays the
+catalogue's, never a caller's.
+
+## 85. `states.py`: `WORKER_TRANSITIONS`, the transitions a tenant worker may request (ISO-CONTRACT, tenant settings integrity request A)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1464, design B) and APPLIED by the pull request that adds this line. Filed by lane ISO-SETTINGS-DESIGN
+([tenant-settings-integrity.md](design/tenant-settings-integrity.md) §5 request A), applied by lane ISO-CONTRACT, part of #1457.
+The applied set differs from the design's sketch in the way the request
+itself directs ("the building lane reads `control.py` and `handoff.py` again
+and lists exactly the edges they use"); see "The change".
+
+### Why
+
+Design B moves every worker state write behind worker-only swarm-api routes,
+`/v1/attempts/{attempt_id}/state/...`, and each route permits only the
+transitions a worker makes today (design §4.4). The agent can mint its
+worker's ID token, so without that subset the routes would let an agent move
+its own task anywhere `_ALLOWED` permits: back to READY for another attempt,
+or into DEAD_LETTERED. The route, the worker's client and the scheduler and
+reconciler tests all need the subset, and until now it was implied only by
+`control.py`'s call sites. One spelling, in the contract, or each restatement
+drifts.
+
+### The change
+
+```python
+WORKER_TRANSITIONS: frozenset[tuple[TaskState, TaskState]] = frozenset({
+    (TaskState.LEASED, TaskState.DISPATCHED),
+    (TaskState.DISPATCHED, TaskState.STARTING),
+    (TaskState.STARTING, TaskState.RUNNING),
+    *((s, t) for s in (TaskState.LEASED, TaskState.DISPATCHED, TaskState.STARTING)
+             for t in (TaskState.FAILED, TaskState.CANCELLED)),
+    *((TaskState.RUNNING, t) for t in (TaskState.PARKED, TaskState.READY,
+          TaskState.SUCCEEDED, TaskState.FAILED, TaskState.CANCELLED)),
+})
+
+def worker_may_transition(frm: TaskState, to: TaskState) -> bool:
+    return (frm, to) in WORKER_TRANSITIONS and can_transition(frm, to)
+```
+
+Each edge, and the worker code that writes it (read 2026-10-17 at `766b9af`):
+
+* LEASED→DISPATCHED→STARTING→RUNNING: `ControlPlane.advance_to_starting`,
+  `advance_to_running`.
+* LEASED, DISPATCHED or STARTING to FAILED: the crash handler's
+  `_safe_finish` in `lifecycle.py`, for an exception before the walk ends.
+* LEASED, DISPATCHED or STARTING to CANCELLED: `lifecycle._run`'s
+  "cancelled before execution started", at whatever state the worker read. A
+  restarted container of the same generation reads STARTING.
+* RUNNING→PARKED: `park`, `await_park`, the CI park and `handoff`'s human park.
+* RUNNING→READY: `fail_retryably`, and `handoff`'s human park when a person
+  returned control. That park reads RUNNING and writes READY in one fenced
+  transaction. It never writes PARKED→READY.
+* RUNNING to SUCCEEDED, FAILED or CANCELLED: `finish`.
+
+**Where it differs from the design's sketch, and why:**
+
+* **PARKED→READY is not in the set.** The sketch named it for the
+  hand-off's "person returned control". The worker's code makes that edge as
+  RUNNING→READY (`handoff.py`, `assert_transition(current, TaskState.READY)`
+  with `current` the RUNNING task). PARKED→READY is swarm-api's `human-ready`,
+  a person's route, so a worker that asked for it would be re-queueing a task
+  that holds no capacity. That is the scheduler's decision or a person's
+  (invariant 1).
+* **STARTING→READY is not in the set.** No worker path writes it. A worker
+  that cannot start leaves the requeue to the reconciler
+  (`_exit_unavailable_before_runner`, `_exit_interrupted_before_runner`).
+* **STARTING→PARKED, STARTING→SUCCEEDED and both edges into DEAD_LETTERED
+  are not in the set.** `_ALLOWED` refuses them, and the request says such an
+  edge is dropped, not added to `_ALLOWED`.
+* **The pre-running FAILED and CANCELLED edges are in the set.** The sketch
+  did not list them, but the worker writes them.
+
+**Tests:** `tests/unit/common/test_worker_transitions.py`.
+`worker_may_transition(RUNNING, LEASED)` is false. Every edge is in `_ALLOWED`.
+The set equals the edge table above, and the function equals membership and
+legality over all 144 pairs. No edge enters LEASED or DEAD_LETTERED, or leaves
+a state that holds no capacity.
+
+### Rollback
+
+Delete the constant and the function. Nothing reads them until ISO-STATE-API
+builds the routes.
+
+### What it would break
+
+Nothing. Both are new names. **One obligation falls on the build lanes:** a
+worker edge added later (a new park path, say) must join this set in the same
+change, or the state route refuses it once the tenant's cutover switch is on.
+Before the switch nothing reads the set, so what a running worker can do is
+unchanged.
+
+### Invariants
+
+**5**: the routes run the fence on every edge in the set, in the transaction
+that writes. **1**: no edge moves a task that holds no capacity, and every edge
+into PARKED or READY is paired with a release in the same transaction (design
+§4.2). **3**: no edge enters LEASED, which only admission writes. 2, 4 and 6-10
+are untouched.
+
+## 86. `specsign.py`: a canonical form for a `workspace_settings` block (ISO-CONTRACT, tenant settings integrity request B)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1464; owner question Q2 chose phase 0 plus the interim MAC on `workspace_settings`) and APPLIED by the pull request that adds this line. Filed by lane ISO-SETTINGS-DESIGN
+([tenant-settings-integrity.md](design/tenant-settings-integrity.md) §5 request B), applied by lane ISO-CONTRACT, part of #1457.
+
+### Why
+
+#1457: a tenant worker can write `workspace_settings/<B>.judgment_backend`,
+and the scheduler and swarm-api act on it. Until design B removes the
+worker's Firestore access, swarm-api MACs the fields the control plane acts
+on, and every reader verifies the MAC. The scheduler (`judgment.py`,
+`dispatch.py`) and swarm-api (`judgment.py`, `typesafe_ticket.py`,
+`mergesettings.py`, `codeintel.py`) must compute identical bytes, and the only
+code they share is `swarm_common`. `specsign` already owns JCS and purpose
+separation.
+
+### The change
+
+```python
+SETTINGS_PURPOSE = "swarm.settings/v1"
+
+SETTINGS_MAC_FIELDS: Mapping[str, tuple[str, ...]] = MappingProxyType({
+    "top": ("judgment_backend",),
+    "merge": ("mode", "train_size", "max_train_age_minutes"),
+    "code_intelligence": ("jev", "context", "context_ab", "graph_delivery",
+                          "judgment_backend"),
+})
+
+def canonical_settings_block(*, tenant_id: str, block: str,
+                             fields: Mapping[str, Any]) -> bytes:
+    """JCS of {"purpose": "swarm.settings/v1", "tenant_id", "block", "fields"}."""
+```
+
+The function projects `fields` onto the block's list. A listed key that is
+absent is `null`, and any other key is not in the bytes. An unknown block, a
+missing tenant or a `fields` that is not a map is `SpecNotCanonical`. These
+three refusals were added in applying the request: each removes an input no
+writer sends, so no MAC can be computed over an ambiguous tenant or block. The
+purpose was named `SETTINGS_PURPOSE`, as `SPEC_PURPOSE` is named. The mapping
+is read-only (`MappingProxyType`), so no reader can widen another's list at
+runtime.
+
+The MAC is `HMAC-SHA256(swarm-settings-key, canonical_settings_block(...))`.
+It is not in the contract, because its key is not. The field names were
+checked against the writers on 2026-10-17: `mergesettings.py` `as_dict`
+writes `mode`, `train_size` and `max_train_age_minutes`, and `codeintel.py`
+names `jev`, `context`, `context_ab` and `graph_delivery`.
+
+**Tests:** `tests/unit/common/test_settings_block.py`. Two tenants with the
+same fields get different bytes. A key outside the list does not change the
+bytes. A changed covered value does. The block name is inside the bytes. The
+form is JCS with its own purpose, and the lists are the request's and
+read-only.
+
+### Rollback
+
+Delete the function, the constant and the purpose. Readers then fall back to
+"unset".
+
+### What it would break
+
+Nothing until a reader verifies, and no reader does yet: ISO-SCHED and
+ISO-SETTINGS-MAC build them, each behind its tenant's cutover. **Once a reader
+verifies, every unsigned document reads as unset**, so ISO-SETTINGS-MAC runs
+its re-sign pass over `workspace_settings` before switching readers on. A
+change to a block's list changes that block's bytes, and every stored MAC of
+it must be re-signed in the same rollout.
+
+### Invariants
+
+**9** is the point: a block copied from tenant A's document onto B's does not
+verify, because the tenant is inside the bytes. 1-8 and 10 are untouched.
+
+## 87. `models.py`: `Tenant.service_account`, `.namespace` and `.gcs_prefix` are records, not authority (ISO-CONTRACT, tenant settings integrity request C)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1464, phase 0 "derive, don't read") and APPLIED by the pull request that adds this line. Comments only; no field removed or retyped. Filed by lane ISO-SETTINGS-DESIGN
+([tenant-settings-integrity.md](design/tenant-settings-integrity.md) §5 request C), applied by lane ISO-CONTRACT, part of #1457.
+
+### Why
+
+A tenant identity can rewrite its own `tenants/<id>` document. A dispatcher
+that ran the next attempt as the stored `service_account`, or in the stored
+`namespace`, would run tenant A's attempt as tenant B (design §1.3, rows 1-3).
+Phase 0 makes every reader derive these values from `tenant_id`. The frozen
+`Tenant` type is where a future reader learns whether it may trust them;
+contract request 43 made `identity.worker_service_account_id` public for the
+same reason.
+
+### The change
+
+```python
+service_account: str | None = None  # RECORD ONLY: dispatch derives it with
+                                    # identity.worker_service_account_id. A
+                                    # tenant identity can rewrite this field.
+gcs_prefix: str | None = None       # RECORD ONLY: derived from tenant_id.
+namespace: str | None = None        # RECORD ONLY: derived from the template.
+```
+
+A `#:` paragraph above the three says why, in one place.
+
+**Tests:** `tests/unit/common/test_tenant_records.py`. Each field's line
+carries `RECORD ONLY`, and each still defaults to `None`.
+
+### Rollback, what it would break
+
+None. These are comments.
+
+### Invariants
+
+**9**. Nothing else is touched.
+
+**Not requested, and not applied:** a new `identity` function,
+or any change to `admission.py` or `config.py` (design §5, "Not requested").
+
+
+## 88. `profiles.py`: `claude-code`, `codex` and `claude-code-browser` declare the input `mcp_servers` (MCP-CONTRACT, registered MCP servers request M1)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1466) and APPLIED by the
+pull request that adds this line. Filed by lane CALLER-MCP-DESIGN
+([registered-mcp-servers.md](design/registered-mcp-servers.md) §5 request
+M1), applied by lane MCP-CONTRACT, part of #1433.
+
+### Why
+
+A step names the registered MCP servers its agent may call, by name. What a
+caller may send a runner is the catalogue's declaration (request 25), read by
+swarm-api's `check_inputs`, the plugin and the console, and a key inside
+`input` is covered by the spec signature (every format since request 34's
+format 1; request 91 records that it stays at format 3), so the
+worker can trust the list it reads from Firestore.
+
+### The change
+
+A dict of its own, `_MCP_SERVER_INPUTS`, holding one key:
+
+```python
+"mcp_servers": RunnerInput(
+    "list", minimum=1, maximum=4,
+    items=RunnerInput("string", maximum=31),
+    means="registered MCP servers, by name, the agent may call during its run; ...",
+)
+```
+
+`_CLI_AGENT_MCP_INPUTS` is `_CLI_AGENT_INPUTS` plus it, and is the `inputs=` of
+`claude-code` and `codex`; `_CLAUDE_CODE_BROWSER_INPUTS` spreads it too.
+`_CLI_AGENT_INPUTS` itself is not edited, so `indexer` and
+`claude-code-review`, which share it, do not gain the key: the indexer runs
+no prompt a caller wrote, and a review step reads the diff it was given. Had
+the key gone into `_CLI_AGENT_INPUTS`, both would have taken it, and an empty
+`allowed_profiles` (design §4.2) would have let them reach a server.
+
+31 is `MCP_SERVER_NAME`'s length (request 90). Membership is checked by
+swarm-api against the tenant's registry, which changes at runtime, so the
+names are not `choices`.
+
+**Tests:** `tests/unit/common/test_mcp_contract.py`: accepted on the three
+profiles; refused on `browser`, `merge`, `indexer` and `claude-code-review`
+as an undeclared key; `issue` still accepted on `indexer` and
+`claude-code-review`, whose inputs stay exactly `{"issue"}`; five names, none,
+a non-string, a bare string and a 32-character name refused for a bound.
+
+### Rollback
+
+Put `inputs=_CLI_AGENT_INPUTS` back on `claude-code` and `codex`, and drop the
+spread from `_CLAUDE_CODE_BROWSER_INPUTS`. A task stored with the key fails
+`check_inputs` on any re-validation, so roll back only with the registry
+disabled.
+
+### What it would break
+
+Nothing that exists: a task without the key is unchanged. Eleven unit tests
+in six files outside this lane's territory restated the old declarations.
+The lane left them for the operator's `mcp-contract-operator.patch`; the
+pull request's first CI run was red on exactly these eleven, and its CI fix
+updated them in the same pull request:
+
+* `tests/unit/common/test_workspace_secret_contract.py`
+  `test_consumer_kinds_and_platform_components` (the three kinds, request 89);
+* `tests/unit/common/test_worker_action_profiles.py`
+  `test_claude_code_review_is_claude_code_but_its_name_and_never_restore_checkpoint`;
+* `tests/unit/control_plane/test_claude_code_browser_profile.py`
+  `test_it_accepts_the_issue_input_like_claude_code`;
+* `tests/unit/control_plane/test_indexer_profile.py`
+  `test_the_indexer_profile_is_claude_code_on_the_indexer_image`;
+* `tests/unit/control_plane/test_issue_input.py`
+  `test_the_cli_agent_profiles_declare_issue_and_nothing_else` (claude-code, codex);
+* `tests/unit/mcp/test_runner_inputs.py`
+  `test_the_profiles_view_says_what_each_profile_takes`,
+  `test_the_declaring_profiles_and_no_declaration_names_execution_detail` and
+  `test_every_declared_input_is_one_its_runner_reads` (no runner reads the key
+  until the worker lane; the patch names it as one exemption);
+* `tests/unit/mcp/test_runner_input_prose.py`, twice: the generated
+  `runner-inputs` tables for claude-code, codex and claude-code-browser in
+  `docs/workflows.md` and `plugin/README.md`, which the patch regenerates.
+
+Until lane MCP-SUBMIT merges,
+swarm-api's `check_inputs` accepts the key on the three profiles and the
+worker does not read it; MCP-SUBMIT refuses every `mcp_servers` with
+`mcp_unavailable` while `SWARM_MCP_SERVERS` is off.
+
+### Invariants
+
+**10** is why it exists: names, never a URL or a command. **5**: the list is
+signed, so a worker never attaches a server a tampered task document added.
+1-4 and 6-9 untouched.
+
+
+## 89. `models.py` / `profiles.py`: `mcp` is a secret-consumer kind with one slot, `auth` (MCP-CONTRACT, registered MCP servers request M2)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1466) and APPLIED by the
+pull request that adds this line. Filed by lane CALLER-MCP-DESIGN (design §5
+request M2), applied by lane MCP-CONTRACT, part of #1433.
+
+### Why
+
+A long-lived MCP credential is a workspace secret granted to the server that
+uses it (design §4.5). Requests 80-82 made a consumer's spelling and slots
+contract, so swarm-api, the worker and the console read one declaration; a
+registered MCP server is a fourth kind of consumer.
+
+### The change
+
+```python
+# models.py
+SECRET_CONSUMER_KINDS: tuple[str, ...] = ("profile", "tool", "component", "mcp")
+
+# profiles.py
+MCP_SECRET_SLOTS: Mapping[str, SecretSlot] = MappingProxyType({
+    "auth": SecretSlot(
+        kinds=("api_key", "bearer_token"),
+        means="the relay adds it as the registered server's auth header; never a file",
+    ),
+})
+```
+
+`consumer_name("mcp", name)` checks `name` against `MCP_SERVER_NAME` and the
+reserved names (request 90), so `parse_consumer` accepts exactly the `mcp:`
+spellings a registration may take. `is_secret_consumer` returns False for
+every `mcp:` consumer: the name is a tenant's registration, not a catalogue
+entry, so the catalogue cannot vouch for it, and swarm-api checks the
+registry itself. Without that branch `mcp:judge` would have fallen through to
+the platform-component check and passed.
+
+**Tests:** `tests/unit/common/test_mcp_contract.py`: `consumer_name("mcp", "kb")`
+round-trips through `parse_consumer`; `is_secret_consumer` is False for
+`mcp:kb`, `mcp:judge` and `mcp:indexer`; the slot is `auth` alone, optional,
+of two kinds, and read-only.
+
+### Rollback
+
+Remove the member and the slots. Grants already written to `mcp:` consumers
+stop parsing and are dropped by the release and the attach as unknown, which
+disables them safely.
+
+### What it would break
+
+`parse_consumer` accepts a fourth prefix; a reader that switched on the three
+kinds exhaustively must handle `mcp` (the release's `attempt_consumers` must
+exclude it, design §4.5, lane MCP-API). Until MCP-API, a grant to an `mcp:`
+consumer is refused on write, because swarm-api's consumer catalogue
+(`workspace_secrets.CONSUMERS_BY_NAME`) lists none.
+
+### Invariants
+
+**9**: a grant is still bounded by its own `tenant_id`. **10**: a consumer is
+still a name. 1-8 untouched.
+
+
+## 90. `models.py`: one spelling for an MCP server's name (MCP-CONTRACT, registered MCP servers request M3)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1466) and APPLIED by the
+pull request that adds this line. Filed by lane CALLER-MCP-DESIGN (design §5
+request M3), applied by lane MCP-CONTRACT, part of #1433.
+
+### Why
+
+The name is written by swarm-api (registration) and read by the worker, where
+it becomes a server key in the CLI's MCP config and a path segment of the
+relay, and by the plugin. It must never collide with a server the worker
+registers itself.
+
+### The change
+
+```python
+MCP_SERVER_NAME = re.compile(r"[a-z][a-z0-9-]{0,30}")
+#: Names the worker registers itself; a registration may not take them.
+RESERVED_MCP_SERVER_NAMES: tuple[str, ...] = ("playwright", "jev")
+RESERVED_MCP_SERVER_PREFIX = "swarm-"
+```
+
+`consumer_name` applies all three to an `mcp:` name (request 89). The
+registration's check (lane MCP-API) applies the same three.
+
+**Tests:** `tests/unit/common/test_mcp_contract.py`: `swarm-git` and
+`swarm-graph` match the pattern and are refused by the reserved prefix;
+`playwright` and `jev` by the list; upper case, a leading digit or hyphen, a
+dot, a slash, an underscore and 32 characters by the pattern.
+
+### Rollback
+
+Remove the constants and the check in `consumer_name`; each reader would then
+restate them, which is the drift the contract exists to stop.
+
+### What it would break
+
+Nothing; new names.
+
+### Invariants
+
+**10**: a server is named, never addressed. 1-9 untouched.
+
+
+## 91. No new spec format, park reason or event type for registered MCP servers (MCP-CONTRACT, registered MCP servers request M4)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1466). Requests no
+change, so nothing is applied; recorded so no lane adds one. Filed by lane
+CALLER-MCP-DESIGN (design §5 request M4), part of #1433.
+
+* **Spec signing:** `input` is already in `canonical_step_spec`, so
+  `mcp_servers` is signed by format 3. The credential is not in the task and
+  must not be signed into it. `SPEC_FORMAT` stays 3. Held by
+  `tests/unit/common/test_mcp_contract.py`: the canonical spec of a task with
+  `mcp_servers` differs from the same task's without, and carries the list.
+* **Park reason:** a disabled registration parks `CREDENTIAL_MISSING`, with
+  code `mcp_server_unavailable`, exactly as request 83 reused it for a missing
+  secret grant.
+* **Event types:** the relay logs `mcp_call` as a structured log line, not a
+  task event; the attach's audit is its own collection. `EventType` is
+  unchanged.
+
+**Not requested:** `Tenant.secret_name` already spells `mcpc-<hex>`; `Task`
+gains no field; `RunnerProfile.secrets` is unchanged.
+
+
+## 92. `states.py`: `ParkReason.AWAITING_INPUT`, a workflow step waiting for a person's answer (HW-CONTRACT, human steps request A)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (Q1, on PR 1462; the design
+merged as PR 1493) and APPLIED by the pull request that adds this line. Filed
+by the design (docs/design/human-steps.md §5 request A), applied by lane
+HW-CONTRACT, part of #1436. The design numbered it 85 ("the next free
+number"); 85-91 were filed by ISO-CONTRACT and MCP-CONTRACT before this lane
+ran, so it is 92 here and the design's §5 letter is the stable name.
+
+### What is true today
+
+An `await-input` step must be durably parked, at no cost, and ended only by a
+member's answer, its declared expiry, or a cancel. No existing reason fits.
+`HUMAN_REQUIRED` already has a promoter (`human-ready`, to READY), a 24-hour
+dead-letter sweep (`Scheduler._expire_human_waits`), a bell item
+(`notifications.py::handoffs`) and plugin wording, and all four are wrong for
+this step (design §3.4). Request 68 refused to reuse `MANUAL_PAUSE` for the
+same reason.
+
+### The change
+
+```python
+class ParkReason(str, Enum):
+    ...
+    AWAITING_INPUT = "AWAITING_INPUT"
+```
+
+Never promoted to READY, and never read by the HUMAN_REQUIRED sweep,
+`human-ready` or the browser bell: swarm-api ends it PARKED -> SUCCEEDED on
+the answer or on its declared default, PARKED -> DEAD_LETTERED on expiry (at
+most 24 hours), PARKED -> CANCELLED on a cancel. `_ALLOWED` is unchanged:
+every one of those edges is legal today.
+
+**Restatements in the same pull request**, held by
+`scripts/lib/check-contract-parity.sh` and the UI's exhaustive tables:
+`apps/swarm-ui/src/types.ts` (the union, `PARK_REASONS`,
+`PARK_NEEDS_A_PERSON`, `REASON_COPY`),
+`apps/swarm-ui/src/components/StatePill.tsx` (`PARK_WORD`, "waiting for a
+member"), `apps/swarm-mcp/swarm_mcp/progress.py::_PARKED_BECAUSE` and
+`apps/swarm-mcp/swarm_mcp/compact.py::_WAITS_FOR`.
+
+**The readers parity test**, `tests/unit/common/test_awaiting_input_readers.py`:
+every non-test file under `apps/` and `scripts/` that names `HUMAN_REQUIRED`
+must name `AWAITING_INPUT` or be on the test's list with its reason; and the
+human-wait sweep, `human-ready` and the `handoffs` bell source each leave an
+`AWAITING_INPUT` task untouched (a 25-hour-old park is not dead-lettered,
+`human-ready` is 409 `not_waiting_for_a_person`, the bell derives nothing).
+
+**Tests:** `tests/unit/common/test_await_input_contract.py` (the member, and
+that it holds no capacity) and the readers test above.
+
+### Rollback
+
+Delete the member, its restatements and the readers test, but only when no
+task is parked under it, because such a document would decode to an unknown
+reason.
+
+### What it would break
+
+Nothing that exists: it is a new member, and readers with exhaustive tables
+gain their row in the same change. A future file that branches on
+`HUMAN_REQUIRED` without deciding about the new member fails the readers test
+until it does, which is the intent.
+
+### Invariants
+
+**1**: a `PARKED(AWAITING_INPUT)` task holds no lease and creates no demand,
+because `PARKED` is in `PENDING_STATES` and not in `CONCURRENCY_STATES`.
+**4**: no worker waits. 2, 3 and 5-10 are unchanged.
+
+
+## 93. `profiles.py`: `RunnerProfile.control_plane`, a catalogue profile the platform never leases (HW-CONTRACT, human steps request B)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (the Q10 answer on PR 1493
+accepted the design it serves) and APPLIED by the pull request that adds this
+line. Design §5 request B (numbered 86 there; see entry 92 on the number),
+applied by lane HW-CONTRACT, part of #1436.
+
+### What is true today
+
+A step type is chosen by profile name (invariant 10), and every reader (the
+console, the bridge, the outcome ledger) already labels a step by its
+profile. But `RunnerProfile.__post_init__` allowed an empty `runner_argv` only
+on a `worker_action` profile, and a worker action is performed by the worker,
+in a container, under a lease.
+
+### The change
+
+```python
+    control_plane: bool = False
+```
+
+True says the opposite of `worker_action`: **nothing ever runs this profile,
+anywhere**; the control plane ends its tasks itself. In `__post_init__` the
+empty-`runner_argv` refusal admits `control_plane`, and a `control_plane`
+profile is refused if it sets `runner_argv`, `worker_action`, `provider`,
+`secrets`, `secret_slots`, `inputs` or `live_browser`. The scheduler's
+admission backstop (lane HW-SCHED) reads it so a step of such a profile is
+never leased.
+
+**Restatements in the same pull request:** `terraform/infra/locals.tf`
+mirrors the catalogue field by field (`runner_profiles`, held by
+`tests/terraform/catalogue.tftest.hcl`), and every `control_plane` profile is
+in `profiles_without_a_job`, held by
+`tests/unit/common/test_await_input_contract.py`.
+
+**Tests:** `tests/unit/common/test_await_input_contract.py`: each of the seven
+fields raises on a `control_plane` profile; an empty `runner_argv` is admitted
+on one and still refused on a profile that is neither; every existing profile
+is `control_plane=False`.
+
+### Rollback
+
+Delete the field and its checks, once no profile sets it (request 94 rolled
+back first).
+
+### What it would break
+
+Nothing: the default is False, and every existing profile is unchanged.
+
+### Invariants
+
+**1, 2, 3**: the field exists to prevent a lease. **10**: the caller still
+names a profile, and the field is the catalogue's own, never a caller's.
+
+
+## 94. `profiles.py`: the `await-input` catalogue entry, shipped unavailable (HW-CONTRACT, human steps request C)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1493) and APPLIED by the
+pull request that adds this line. Design §5 request C (numbered 87 there; see
+entry 92 on the number), applied by lane HW-CONTRACT, part of #1436.
+**Request D** (`available=True`, `disabled_reason` removed) is NOT filed or
+applied here: the owner applies it after lane HW-ACCEPT is green on dev.
+
+### What is true today
+
+No catalogue entry names a step that waits for a person.
+
+### The change
+
+```python
+    "await-input": RunnerProfile(
+        name="await-input",
+        image="agent-runtime-base",   # never pulled: control_plane
+        resource_class="standard",    # never reserved: control_plane
+        backend=Backend.CLOUD_RUN_JOB,
+        runner_argv=(),
+        control_plane=True,
+        provider=None,
+        secrets=(),
+        timeout_seconds=300,          # unused; the wait is await_input's (at most 24 h)
+        inputs={},
+        available=False,
+        disabled_reason="await-input steps are being built (docs/design/human-steps.md)",
+    ),
+```
+
+`terraform/infra/locals.tf` mirrors it in `runner_profiles` and adds it to
+`profiles_without_a_job`, so no Job is ever created for it.
+
+**Why unavailable.** Lanes HW-API-SUBMIT and HW-SCHED read the field and the
+reason, so the contract lands first. Until every build lane has merged, a
+submission naming `await-input` is refused, and `available=False` is the
+refusal that already exists (`validation.validate_runner_profile`), with its
+reason served to the caller. Nothing merged here changes behaviour while it
+is unavailable.
+
+**Tests:** `tests/unit/common/test_await_input_contract.py`: the entry is
+`control_plane`, unavailable with a reason, runs nothing and declares
+nothing, and is in `profiles_without_a_job`;
+`tests/terraform/catalogue.tftest.hcl`: eleven profiles, its pool exists, and
+no tenant gets a Job for it.
+
+### Rollback
+
+Delete the entry and its Terraform mirror. No task can name it while it is
+unavailable.
+
+### What it would break
+
+Nothing. Profile pickers list it as disabled, with the reason shown, as they
+list `post-verdict`.
+
+### Invariants
+
+As request 93.
+
+
+## 95. `models.py`: `Task.additional_repositories`, the registered repositories a step reads beside its own (MR-CONTRACT, multi-repository steps request A)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1461, with the decisions
+in its comments) and APPLIED by the pull request that adds this line. Filed
+by the design (docs/design/multi-repository-steps.md §5 request A), applied
+by lane MR-CONTRACT, part of #1434. The design wrote `<n>`; 95 is the next
+free number on main at 2c0d5a7, and the design's §5 letter is the stable name.
+
+**Changed from the design.** The design's `MAX_ADDITIONAL_REPOSITORIES = 4`
+is not in the contract. The owner made the count limit (default 5) and the
+total size budget (default 6 GiB) PLATFORM SETTINGS, editable at run time
+and read by swarm-api at submission, never a code constant. The contract
+keeps only `ADDITIONAL_REPOSITORIES_CEILING = 10` (owner, 2026-10-17 ~01:00
+UTC): a guard on the document's shape, the top of the setting's accepted
+range (1-10), never the operative limit. swarm-api refuses a step over the
+setting `too_many_additional_repositories`, naming the current limit. The
+entry's `forge_credential_source` values are named here too
+(`ADDITIONAL_REPOSITORY_SOURCES`), from swarm-api's `ForgeSlot.source`.
+
+### Why
+
+A step that reasons over a product spread across repositories needs to
+check them out at commits fixed at submission. The task is the only document
+the worker reads its spec from, and the signed spec is what makes a
+rewritten list fail (invariant 5). An `input` key would be signed but
+untyped, and every reader would re-validate a caller-shaped dict. A
+`metadata` key outside `SIGNED_METADATA_KEYS` is not signed at all. The
+entries carry `forge_credential` and `commit`, which only swarm-api may
+write, as request 54's `forge_credential` is.
+
+### The change
+
+```python
+ADDITIONAL_REPOSITORY_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,62}")
+ADDITIONAL_REPOSITORIES_CEILING = 10          # shape guard; the limit is a setting
+ADDITIONAL_FORGE_CREDENTIAL = re.compile(r"git(-u-[0-9a-f]{16})?")   # never git-r-
+ADDITIONAL_REPOSITORY_SOURCES = ("tenant", "owner", "person")
+ADDITIONAL_REPOSITORY_KEYS = (
+    "name", "repo_id", "repository", "repository_url", "ref", "commit",
+    "forge_credential", "forge_credential_source", "size_kib",
+)
+
+def check_additional_repositories(value: Any) -> None: ...
+
+@dataclass
+class Task:
+    ...
+    additional_repositories: list[dict[str, Any]] | None = None
+    # __post_init__ calls check_additional_repositories
+```
+
+`check_additional_repositories` accepts None or a list of at most the
+ceiling, each entry exactly the keys above. `name` and `repo_id` must be
+unique. `repository_url` must be `https://github.com/` + `repository`, and
+`ref` must not be an option. `commit` is a 40-hex lower-case sha, and
+`size_kib` a non-negative int, not a bool. Its message names the key and the
+entry's index, never a value. `to_firestore` is unchanged: `asdict` writes
+the list.
+
+**Tests:** `tests/unit/common/test_additional_repositories_contract.py`.
+Each of these raises: a name of `..`, a `git-r-` slot, a short commit, a
+duplicate name or repo_id, and one entry over the ceiling. The message never
+carries the value. An old document decodes with None.
+`tests/unit/common/test_specsign_covers.py::test_every_task_field_is_signed_or_named_unsigned`
+fails when a `Task` field is neither in the signed projection nor named
+unsigned with its reason.
+
+### Rollback
+
+Remove the field and the names. A document that carries the field then fails
+to decode wherever `Task(**doc)` is used, so first stop swarm-api writing it
+(`settings.additional_repositories_enabled`, default off) and let those
+tasks end.
+
+### What it would break
+
+Nothing that exists. `Task(**doc)` on an old document leaves it None, and
+`__post_init__` refuses a malformed list, which no writer produces. A reader
+that walks task fields generically (the codec, the reconciler's raw reads)
+sees one more key.
+
+### Invariants
+
+**5**: the field is inside the signature (request 96). **9**: `repo_id` is a
+tenant-scoped hash, and the slot is the task's own tenant's. **10**: the
+field holds names and commits, never an image, command, resource or backend
+parameter, and swarm-api writes it, never a caller. 1-4 and 6-8 untouched.
+
+
+## 96. `specsign.py`: spec format 4 covers `additional_repositories` (MR-CONTRACT, multi-repository steps request B)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1461) and APPLIED by the
+pull request that adds this line. Filed by the design (§5 request B), applied
+by lane MR-CONTRACT, part of #1434. Format 4 is the next free format: main's
+newest was 3 (request 54). Request 86 (ISO-CONTRACT) added the settings-block
+MAC with its own purpose string, not a spec format, and request 91 recorded
+that MCP servers add none.
+
+### Why
+
+If the list is not in the signed bytes, any identity that can write the task
+document can rewrite it, the tenant's worker account included. A repointed
+commit, or a repository the tenant registered but this step was never given,
+would go unnoticed. Request 54 had the same reason for format 3.
+
+### The change
+
+```python
+SPEC_FORMAT = 4
+SPEC_FORMATS = (1, 2, 3, 4)
+_FORMAT_4_FIELDS = ("additional_repositories",)
+```
+
+* `canonical_step_spec`: at formats 1-3, a set list (non-None, non-empty)
+  raises `SpecNotCanonical`, as a format-3 field does below 3. At 4 the list
+  is projected as stored, in submission order, and the order is in the bytes.
+* `signing_format`: 4 only when the list is set. A task without it keeps
+  signing at 1, 2 or 3, with byte-identical canonical forms (pinned in
+  `test_specsign.py::PRE_FORMAT_4_DIGESTS`), so a worker built before format
+  4 verifies every task that does not use the feature. **Rollout order:
+  workers first, then swarm-api** (and the flag stays off until then), as for
+  formats 2 and 3.
+
+**Tests:** `tests/unit/common/test_specsign.py` holds format 4's golden
+bytes and the pre-format-4 digests of formats 1-3. It also checks that a set
+list at 1-3 has no canonical form.
+`tests/unit/common/test_additional_repositories_contract.py` checks that a
+rewritten commit, entry, order or slot changes the format-4 digest, and that
+a real P-256 signature stops verifying. `test_specsign_covers.py` runs its
+integer-field checks at every format, including 4.
+`tests/unit/common/test_mcp_contract.py` asserted `SPEC_FORMAT == 3` as
+request 91's "MCP adds no format". It now asserts that `mcp_servers` does not
+change `signing_format`, which is what request 91 meant.
+
+### Rollback
+
+Return `SPEC_FORMAT` to 3 and `SPEC_FORMATS` to `(1, 2, 3)`. A document
+already signed at 4 then fails verification (`SPEC_SIGNATURE_INVALID`) on
+every worker, so first stop the writer (request 95's flag) and let those
+tasks end.
+
+### What it would break
+
+Nothing signed today: formats 1-3 project the bytes they did. A worker built
+before format 4 refuses a format-4 task as `unknown_format`, which is why
+workers roll out first.
+
+### Invariants
+
+**5**: a rewritten list fails the worker's check before the agent runs.
+Others untouched.
+
+
+## 97. No change to `WorkflowStep`, `Workflow` or `profiles.py` for multi-repository steps (MR-CONTRACT, multi-repository steps request C)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1461). Requests no
+change, so nothing is applied. Recorded so no lane makes one. Part of #1434.
+
+* **`WorkflowStep` / `Workflow` gain no field.** The primary repository is
+  not on them either. swarm-api's submission schemas carry the workflow's
+  default list and a step's replacement list (`[]` = none) to each task, so
+  the step has one source of truth.
+* **No new resource class and no profile flag.** Only GKE agent profiles take
+  additional repositories (the owner's Q4). swarm-api derives that from
+  `profiles.resolve_backend` and `worker_action`, which the catalogue
+  already states. The Cloud Run profiles refuse them.
+* **No limit in the contract.** The count limit and the size budget are
+  platform settings (request 95). Only the shape ceiling is frozen.
+
+
+## 98. `states.py`: QUEUED -> FAILED, a task that can never run ends at admission with no lease (MCP-FAILED-EDGE, part of #1433)
+
+**Status:** ACCEPTED by the owner 2026-10-18 (~01:40 UTC, answering lane
+MCP-SCHED's question on PR 1504) and APPLIED by the pull request that adds
+this line. **No reader can write it yet**: the scheduler never holds a task in
+QUEUED (see "Who reads it"), so the behaviour the owner asked for needed
+request 99 as well. The owner accepted 99 on 2026-10-18 and kept this edge
+beside it; 99 is what ends such a task FAILED now, and nothing writes
+QUEUED -> FAILED.
+
+### Why
+
+[registered-mcp-servers.md](design/registered-mcp-servers.md) §4.10
+("Expiry in the queue"): a task whose per-run MCP credential expired, was
+destroyed or is missing before it is admitted fails `mcp_credential_expired`
+at admission, with no lease. It cannot park, because nobody can hand a queued
+task a new value; it cannot be dead-lettered either, because it did not fail
+its way there through attempts (the owner: "not a dead-letter, not a permanent
+park"). `_ALLOWED` had no edge from a waiting state to FAILED, so MCP-SCHED
+shipped the stopgap: such a task parks CREDENTIAL_MISSING and the credential
+sweep never promotes it. That holds no capacity (invariant 1), but it never
+ends: a workflow step blocks its workflow and a parent waits on its child.
+
+### The change
+
+```python
+TaskState.QUEUED: frozenset(
+    {TaskState.READY, TaskState.PARKED, TaskState.CANCELLED, TaskState.FAILED}
+),
+```
+
+One edge, nothing else.
+
+### Who reads it
+
+The one reader meant to use it is scheduler admission,
+`apps/scheduler/scheduler/loop.py` `Scheduler._admit_one`, on a
+`CredentialAnswer.terminal` answer (`scheduler/credentials.py`, from
+`McpAnswer.terminal` in `scheduler/mcp_admission.py`). **But the task
+admission reads is READY, not QUEUED**: `SchedulerStore.ready_tasks` selects
+`state == "READY"`, and swarm-api stores a new task as READY or PARKED, only
+walking SUBMITTED -> QUEUED in memory (`swarm_api/service.py`, "walk the real
+state machine even though only the end state is stored"). The credential
+sweep, `Scheduler._promote_credentials`, reads PARKED. Neither READY -> QUEUED
+nor PARKED -> QUEUED is an edge, so "promote to QUEUED, then fail" is not a
+path either. So the reader that would write QUEUED -> FAILED has no QUEUED
+task to write it on; request 99 asks for the edges it does have.
+
+Every other reader of `_ALLOWED` / `can_transition`, read 2026-10-18 at
+`5ad3656`, is unchanged by the edge:
+
+* `swarm_api/store.py` `_final_workflow_states`: asks only about edges OUT of
+  a terminal state; FAILED's row is unchanged.
+* `swarm_api/verdictpublish.py`, `scheduler/loop.py` (`PARKED -> SUCCEEDED`),
+  `reconciler/store.py` (`PARKED -> READY`), `reconciler/checkpoints.py`
+  (`state -> READY`): other edges.
+* `reconciler/store.py` `repair_task_state`: repairs tasks with attempts,
+  never a QUEUED one.
+* `states.worker_may_transition`: QUEUED is not in `WORKER_TRANSITIONS`, so a
+  worker still cannot ask for it (request 85).
+* `scripts/lib/check-contract-parity.sh` restates the state sets, not the
+  transition table, so it has nothing to follow.
+
+### Retry
+
+FAILED -> READY stays an edge, and `mcp_credential_expired` must never take
+it. Today nothing writes FAILED -> READY at all: the scheduler has no retry
+policy module, the worker's retry is RUNNING -> READY (`fail_retryably`) and
+the reconciler's is a requeue of a live attempt (`repair_task_state`, capped by
+`retries_exhausted`). A task failed at admission has no attempt, so neither
+path can reach it. If a FAILED -> READY writer is ever added, it must treat
+`mcp_credential_expired` and `mcp_credential_missing` as permanent.
+
+**Tests:** `tests/unit/common/test_queued_to_failed.py`: QUEUED -> FAILED is
+allowed; all 144 pairs equal the table above, so no other edge appeared; READY,
+PARKED and SUBMITTED still cannot reach FAILED; QUEUED is the only source of
+FAILED outside the concurrency states.
+
+### Rollback
+
+Remove `TaskState.FAILED` from the QUEUED row. Nothing writes it.
+
+### What it would break
+
+Nothing: no code writes the edge, and every reader is listed above.
+
+### Invariants
+
+**1, 2, 3**: the edge leaves a state that holds nothing for a terminal one,
+so there is no lease, no reservation and nothing for concurrency to count.
+**5**: no attempt, so no generation to fence. Others untouched.
+
+
+## 99. `states.py`: READY -> FAILED and PARKED -> FAILED, the two states admission and the credential sweep actually hold (MCP-FAILED-EDGE, part of #1433)
+
+**Status:** proposed 2026-10-18 by lane MCP-FAILED-EDGE. ACCEPTED by the
+owner 2026-10-18, on that lane's PR 1530, keeping request 98 as it is, and
+APPLIED by the pull request that adds this line (lane MCP-FAILED-EDGE-B, part
+of #1433). The two rows below are the only lines of `apps/common/swarm_common/`
+it changes, with a comment naming this request.
+
+### What writes each edge (applied)
+
+| edge | request | writer |
+|---|---|---|
+| QUEUED -> FAILED | 98 | **none.** Kept by the owner; a task is never stored QUEUED while it waits, so the scheduler has nothing to write it on |
+| READY -> FAILED | 99 | `Scheduler._admit_one` (`apps/scheduler/scheduler/loop.py`), on a `CredentialAnswer.terminal` answer, after the credential question and before `acquire_lease` |
+| PARKED -> FAILED | 99 | `Scheduler._promote_credentials`, on a CREDENTIAL_MISSING park whose answer is terminal: a park MCP-SCHED's stopgap left, or one parked for a disabled server whose credential then expired |
+
+Both go through `Scheduler._fail_unrunnable` to one guarded write,
+`SchedulerStore.fail_before_lease` (`apps/scheduler/scheduler/store.py`),
+which refuses any source but READY or PARKED. It writes `state` FAILED,
+`last_error` the terminal code (`mcp_credential_expired` for a row expired or
+destroyed, i.e. revoked; `mcp_credential_missing` for no row), `completed_at`,
+`end_cause` None, and clears `park_reason`, `next_eligible_at` and
+`blocked_by`, guarded on the state and park reason the drain read, then a
+`failed` event naming the servers and codes only. It takes no lease, reads no
+pool and leaves `attempt_count` alone.
+
+**Never retried.** FAILED -> READY stays in the table and nothing writes it
+on such a task: `SchedulerStore.promote_to_ready`, the scheduler's only READY
+writer, now refuses any source but PARKED (its guard would otherwise match a
+FAILED snapshot, whose park reason is None like READY's), and
+`tests/unit/scheduler/test_mcp_admission.py` scans `apps/` for any writer
+naming FAILED -> READY.
+
+**Not done here:** `end_cause` stays None. A dedicated `EndCause` value is a
+further `models.py` request, not filed.
+
+### Why
+
+Request 98 was accepted so that admission ends a task with an expired per-run
+MCP credential FAILED, with no lease. Admission holds that task in READY, and
+the credential sweep in PARKED (request 98, "Who reads it"), so the edges that
+do what the owner asked are:
+
+* **READY -> FAILED**, written by `Scheduler._admit_one` on a
+  `CredentialAnswer.terminal` answer, before `acquire_lease`;
+* **PARKED -> FAILED**, written by `Scheduler._promote_credentials` on a
+  CREDENTIAL_MISSING park whose answer has become terminal (every park
+  MCP-SCHED's stopgap left behind is one).
+
+The alternative, READY -> QUEUED and PARKED -> QUEUED followed by request 98's
+edge, adds two edges that move a task backwards through admission for no
+purpose but to reach a third, and lets any writer re-queue a waiting task.
+
+### The change
+
+```python
+TaskState.PARKED: frozenset(
+    {TaskState.READY, TaskState.CANCELLED, TaskState.DEAD_LETTERED,
+     TaskState.SUCCEEDED, TaskState.FAILED}
+),
+TaskState.READY: frozenset(
+    {TaskState.LEASED, TaskState.PARKED, TaskState.CANCELLED, TaskState.FAILED}
+),
+```
+
+Request 98's QUEUED -> FAILED then has no writer, and can be kept (swarm-api
+walks QUEUED in memory, so a submission-time refusal could use it) or rolled
+back.
+
+### What it needs outside the contract
+
+* A guarded store write, applied as `SchedulerStore.fail_before_lease`
+  beside `SchedulerStore.cancel` (`apps/scheduler/scheduler/store.py`): FAILED,
+  `completed_at`, `last_error` = the code, `park_reason` and `blocked_by`
+  cleared, a FAILED event carrying the refusal detail (server names and codes
+  only), guarded on the state the drain read.
+* An `end_cause`. `EndCause` has no value for "a credential nobody can
+  replace"; the write can carry None (the ledger falls back to `last_error`),
+  or a new value, which is a further `models.py` request.
+* `loop.py` calls `_note_ended` and drops the workflow's cached verdict, as
+  the dispatch-failure branch of `_admit_one` does for its own FAILED write.
+
+### What it would break
+
+`test_parked_to_succeeded.py` pins the PARKED row and
+`test_queued_to_failed.py` the whole table; both change with it.
+`swarm_api/store.py` `_final_workflow_states` is unchanged (edges out of
+terminal states). A PARKED or READY task reaching FAILED is a new shape for
+the console's waiting lists, which already read state, not history.
+
+**Tests:** `tests/unit/common/test_queued_to_failed.py` pins all 144 pairs
+of the table with 98 and 99 both present, and that QUEUED, READY and PARKED
+are the only sources of FAILED outside the concurrency states;
+`test_parked_to_succeeded.py` pins the PARKED row;
+`tests/unit/scheduler/test_mcp_admission.py` ends a task FAILED from READY
+and from PARKED for an expired, destroyed and missing row, with no lease, no
+pool moved, no attempt and no retry over two further drains.
+
+### Rollback
+
+Remove `TaskState.FAILED` from the READY and PARKED rows and the two calls to
+`_fail_unrunnable`; such a task then parks CREDENTIAL_MISSING for good again,
+which the owner rejected on 2026-10-18.
+
+### Invariants
+
+**1, 2, 3**: both edges leave states that hold nothing and are written before
+any lease, so nothing is reserved or released. **5**: no attempt, no
+generation.
+
+
+## 100. `profiles.py`: `ModelClass` and `MODEL_CLASSES`, the four model classes a step may name (MODEL-CONTRACT, model per step request A)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1509, with the decisions
+recorded there and on PR 1460) and APPLIED by the pull request that adds this
+line. Filed by the design (docs/design/model-per-step.md §5 request A),
+applied by lane MODEL-CONTRACT, part of #1435. The design wrote "85 to 89 at
+this reading"; 100 to 104 are the next free numbers on main at a989111, and
+the design's §5 letter is the stable name.
+
+### Why
+
+Since #226 every claude-code step runs the pinned `claude-opus-5-5`, so a step
+that classifies feedback or reformats a document costs what a deep-reasoning
+step costs (#1435). Invariant 10 forbids a caller from naming a model ID, so a
+step names a CLASS by a name that must have one spelling across swarm-api's
+validation, the signed spec, the scheduler's dispatch, the worker's check, the
+API, the console and the plugin. That is why the `resource_class` vocabulary
+is frozen, and it applies equally here. The vocabulary is what a caller is
+promised; the IDs behind it are Terraform's (`runner_models` in
+terraform/infra/locals.tf, keyed by class), so a model release is an edit
+there and a release, never a contract request (owner, Q1 (a)).
+
+### The change
+
+```python
+@dataclass(frozen=True)
+class ModelClass:
+    name: str
+    family: str      # the family word in claude-<family>-<major>[-<minor>]
+    min_major: int   # the oldest generation a pin of this class may name
+
+    def admits(self, model_id: str) -> bool:
+        # claude-<family>-<major>[-<minor>][-<8-digit date>], major >= min_major;
+        # anything that is not a str is refused.
+
+MODEL_CLASSES: dict[str, ModelClass] = {
+    "opus": ModelClass("opus", "opus", 5),       # the default: coding, implementation
+    "fable": ModelClass("fable", "fable", 5),    # planning ("Fable 5+")
+    "sonnet": ModelClass("sonnet", "sonnet", 5),
+    "haiku": ModelClass("haiku", "haiku", 5),
+}
+```
+
+The pins the owner chose for them (Terraform, not here): opus
+`claude-opus-5-5`, fable `claude-fable-5-1`, sonnet `claude-sonnet-5-5`,
+haiku `claude-haiku-5-5`. `admits` has one addition to the design's text: a
+value that is not a string is refused rather than raising `TypeError`, so a
+malformed environment map reaches its reader's own refusal.
+
+**Tests:** `tests/unit/common/test_model_classes.py`: the vocabulary is
+exactly the four; `fable` admits `claude-fable-5-1` and `claude-fable-6` and
+not `claude-opus-5-5`; `sonnet` does not admit `claude-sonnet-4-6` (below the
+floor); `haiku` admits `claude-haiku-5-5-20261001` and not
+`claude-haiku-5-5[1m]`. `scripts/lib/check-contract-parity.sh` section 17
+applies `admits` to Terraform's `runner_models`, and fails on a class with no
+pin, a pin under a name the vocabulary lacks, or a pin its class refuses.
+
+### Rollback
+
+Delete the dict and the class. Requests 101, 102 and 104 depend on it and go
+with it.
+
+### What it would break
+
+Nothing that runs: it is a new name.
+
+### Invariants
+
+**10** is the reason: a closed vocabulary of names, never a model ID. 1 to 9
+are untouched.
+
+
+## 101. `profiles.py`: `RunnerProfile.model_classes`, `default_model_class` and `step_model_class` (MODEL-CONTRACT, model per step request B)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1509, with the decisions
+recorded there and on PR 1460) and APPLIED by the pull request that adds this
+line. Filed by the design (docs/design/model-per-step.md §5 request B),
+applied by lane MODEL-CONTRACT, part of #1435. The design wrote "85 to 89 at
+this reading"; 100 to 104 are the next free numbers on main at a989111, and
+the design's §5 letter is the stable name.
+
+**Changed from the design.** The two fields come LAST in `RunnerProfile`, after
+`control_plane` (request 93), not after `secret_slots`: request 93 had added a
+field there since the design was written, and the end of the class is where
+no positional construction can change meaning (the reason `Attempt`'s
+additions give). `model_classes` naming a class twice is also refused.
+
+### Why
+
+Each profile must say which classes it accepts and which one a step gets when
+it names none, so that swarm-api, the scheduler and the worker resolve a
+step's class by one rule rather than three. Owner's Q3: every
+claude-code-family profile accepts all four classes; R3: a step naming no
+class runs its profile's default, opus.
+
+### The change
+
+```python
+# RunnerProfile, last:
+    model_classes: tuple[str, ...] = ()
+    default_model_class: str | None = None
+
+def step_model_class(profile: RunnerProfile, requested: str | None) -> str | None:
+    """`requested` if the profile accepts it, the profile's default if None,
+    None for a profile with no classes; ValueError naming the accepted classes
+    otherwise."""
+```
+
+`__post_init__` refuses: a name outside `MODEL_CLASSES`; a name listed twice;
+a default outside the profile's own `model_classes`; classes without a
+default, or a default without classes; and classes on a `worker_action`
+profile or on a profile whose `provider` is not `anthropic`. `claude-code`,
+`claude-code-browser` and `indexer` set
+`model_classes=("opus", "fable", "sonnet", "haiku"), default_model_class="opus"`.
+`claude-code-review` (retired under request 50, request 84 (b)) sets
+`("opus",)` and `"opus"`: it keeps the pin it has today and gains nothing.
+`codex`, `mock`, `generic`, `browser`, `merge`, `post-verdict` and
+`await-input` set neither. `step_model_class` refuses a name outside the
+vocabulary, any name on a profile with no classes, and a name the profile
+does not accept, each with its own message, so swarm-api can answer
+`unknown_model_class` and `model_class_not_accepted` from them.
+
+The Terraform mirror (`runner_profiles` in terraform/infra/locals.tf) gains
+both fields in the same change. The Jobs' `MODEL` and the scheduler's
+`WORKER_MODELS` read each profile's default class from it.
+
+**Tests:** `tests/unit/common/test_model_classes.py`: a `merge` profile with
+classes raises; codex and mock with classes raise; a default outside the
+list, classes without a default and a default without classes raise; every
+available profile whose `runner_argv` is the claude_code runner has all four
+classes and `opus`; `step_model_class` returns `opus` for None on
+`claude-code` and `haiku` for `haiku`, and raises for `haiku` on
+`claude-code-review` and for anything on `codex`.
+`tests/terraform/catalogue.tftest.hcl` (`the_mirror_carries_each_profiles_model_classes`)
+holds the mirror's values, and `check-contract-parity.sh` section 17 compares
+the mirror to the imported catalogue, profile by profile.
+
+### Rollback
+
+Delete the two fields and the function, with the mirror's two fields.
+Request 102's fields would have no rule to resolve against, so 102 goes with
+it.
+
+### What it would break
+
+Nothing that runs: two fields with defaults. The mirror and its tests change
+with it, in this change.
+
+### Invariants
+
+**10**: the classes are catalogue data, and a request names one of them.
+**6, 7**: the profiles' backend, Spot strategy and resources are untouched.
+1 to 5, 8 and 9 are untouched.
+
+
+## 102. `models.py`: `Task.model_class` and `WorkflowStep.model_class` (MODEL-CONTRACT, model per step request C)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1509, with the decisions
+recorded there and on PR 1460) and APPLIED by the pull request that adds this
+line. Filed by the design (docs/design/model-per-step.md §5 request C),
+applied by lane MODEL-CONTRACT, part of #1435. The design wrote "85 to 89 at
+this reading"; 100 to 104 are the next free numbers on main at a989111, and
+the design's §5 letter is the stable name.
+
+**Changed from the design.** Both fields come LAST in their classes, not after
+`Task.model` and `WorkflowStep.resource_class`, for the reason request 101
+gives: a field inserted mid-class moves every positional argument after it.
+
+### Why
+
+The class a step asked for is a fact about the task. It must survive retries,
+be signed, and be read by the scheduler at dispatch and by the worker at
+start. `Task.model` cannot carry it: that is an ID, a record of a pin at
+submission.
+
+### The change
+
+```python
+# Task, last:
+    model_class: str | None = None   # None: the profile's default_model_class
+
+# WorkflowStep, last:
+    model_class: str | None = None
+```
+
+swarm-api writes `Task.model_class` at submission only when it differs from
+the profile's default (MODEL-API); it is signed at spec format 5 (request
+104) and resolved by `profiles.step_model_class`.
+
+**Tests:** `tests/unit/common/test_model_classes.py`: a task names no class by
+default and its stored document carries `model_class: None`; a task's class
+reaches `to_firestore()`; a workflow step keeps the class it names. The codec
+round trip the design names (`swarm_api.codec.task_from_dict` reading
+`model_class` back, request 54's precedent) is MODEL-API's: the codec is in
+its territory, not this lane's.
+
+### Rollback
+
+Delete both fields. A stored value is then ignored and every step runs its
+profile's default. Request 104's format 5 must go first, or a format-5 task
+would fail verification on a worker whose `Task` lacked the field.
+
+### What it would break
+
+Nothing that decodes today: two optional fields with defaults.
+`tests/unit/common/test_specsign_covers.py::test_every_task_field_is_signed_or_named_unsigned`
+sees the new field inside the format-5 projection, as it must.
+
+### Invariants
+
+**1 to 3**: a field, not a pool, so admission is unchanged. **5**: signed,
+and fixed across attempts. **8**: a checkpoint never crosses a class.
+**10**: a name from the frozen vocabulary.
+
+
+## 103. `models.py`: `Attempt.model`, the model ID an attempt's agent was started with (MODEL-CONTRACT, model per step request D)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1509, with the decisions
+recorded there and on PR 1460) and APPLIED by the pull request that adds this
+line. Filed by the design (docs/design/model-per-step.md §5 request D),
+applied by lane MODEL-CONTRACT, part of #1435. The design wrote "85 to 89 at
+this reading"; 100 to 104 are the next free numbers on main at a989111, and
+the design's §5 letter is the stable name.
+
+### Why
+
+"What did this attempt run" must be a fact about the attempt. Neither
+`runner_profile` nor `model_class` answers it once a pin changes.
+`control.record_spend` writes only fields the frozen `Attempt` declares, so
+the worker cannot add it alone.
+
+### The change
+
+```python
+# Attempt, last:
+    model: str | None = None
+```
+
+Written by the worker at attempt start after its generation check
+(MODEL-WORKER). None: no model (mock, generic, browser, worker actions), or
+an attempt written before the field existed.
+
+**Tests:** `tests/unit/common/test_model_classes.py`: an attempt records no
+model by default and carries one it is given. The `attempt_from_dict` to
+`attempt_to_api` round trip the design names is MODEL-API's (`swarm_api.codec`).
+
+### Rollback
+
+Delete the field. Readers fall back to the runner summary's `usage.models`.
+
+### What it would break
+
+Nothing: an optional field with a default.
+
+### Invariants
+
+**5**: written after the fencing check, so a stale worker never writes it. 1
+to 4 and 6 to 10 are untouched.
+
+
+## 104. `specsign.py`: spec format 5 covers `model_class` (MODEL-CONTRACT, model per step request E)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1509, with the decisions
+recorded there and on PR 1460) and APPLIED by the pull request that adds this
+line. Filed by the design (docs/design/model-per-step.md §5 request E),
+applied by lane MODEL-CONTRACT, part of #1435. The design wrote "85 to 89 at
+this reading"; 100 to 104 are the next free numbers on main at a989111, and
+the design's §5 letter is the stable name.
+
+**Changed from the design.** The design named this format 4. Request 96
+(MR-CONTRACT) took format 4 for `additional_repositories` before this lane
+ran, so `model_class` is format 5: format 4's projection plus `model_class`.
+The design's rollback named an API gate (`model_classes_enabled`); the owner
+dropped every enablement flag (R4, 2026-10-17), so no such gate exists and
+lane order alone keeps format 5 unwritten until the worker that verifies it
+has shipped (MODEL-WORKER before MODEL-API).
+
+### Why
+
+The worker acts on the class, and the scheduler dispatches by it. A field the
+worker acts on must be inside the signature (request 34's rule,
+`tests/unit/common/test_specsign_covers.py`). Without it, anyone who can write
+the tenant's task document could move a step to another class, and the step
+would run on a model nobody submitted under a signature that still verifies.
+
+### The change
+
+```python
+SPEC_FORMAT = 5
+SPEC_FORMATS = (1, 2, 3, 4, 5)
+_FORMAT_5_FIELDS = ("model_class",)
+```
+
+`signing_format` returns 5 when `model_class` is set (non-None), and otherwise
+falls through to its existing rule. `canonical_step_spec` refuses
+(`SpecNotCanonical`) a document at formats 1 to 4 that sets `model_class`,
+and includes the field in the projection at format 5.
+
+**Tests:** `tests/unit/common/test_specsign.py`: a format-5 document has the
+pinned bytes and verifies; rewriting its `model_class` (or removing it)
+changes the digest; a document at formats 1 to 4 with `model_class` added is
+`SpecNotCanonical`; a task with no class (absent or None) signs at the format
+it signed at before, with the SHA-256 of formats 1 to 4 pinned as computed
+before this change (at a989111).
+
+### Rollback
+
+Stop writing format 5 (swarm-api stores no non-default class), then remove
+the format once no stored task carries it. A worker that loses format 5 while
+such a task is queued refuses it as `unknown_format`, failing closed.
+
+### What it would break
+
+Nothing for a task without a class: its format and bytes are unchanged, and
+nothing sets `model_class` until MODEL-API. A worker built before format 5
+refuses a format-5 task; the design's §4.3 order (worker first, then the API)
+is what retires those workers before anything writes one. Tests that pinned
+`SPEC_FORMAT == 4` or listed one document per format change with it.
+
+### Invariants
+
+**5**: the class is fixed with the attempt's other signed fields. **10**: the
+signature is what makes the caller's named class the only one that can run.
+1 to 4 and 6 to 9 are untouched.

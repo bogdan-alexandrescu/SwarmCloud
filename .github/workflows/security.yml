@@ -45,10 +45,16 @@ env:
   TRIVY_VERSION: "0.74.0"
   CHECKOV_VERSION: "3.3.17"
 
+# RUNNERS (owner decision 2026-10-14). A job that holds no cloud identity
+# (id-token) runs on the self-hosted `bogdan-ci` VMs through the one guarded
+# `runs-on` expression: a fork's pull request, or the repo variable
+# SELF_HOSTED_CI set to `off` (the capacity escape hatch), sends it to
+# GitHub-hosted ubuntu-24.04 instead. Every job that stays hosted is listed,
+# with why, in tests/unit/scripts/test_fork_prs_off_self_hosted.py.
 jobs:
   filesystem:
     name: trivy (repo)
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # Uploads SARIF to code scanning: the only reason this job holds
     # security-events: write.
     permissions:
@@ -57,18 +63,27 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: install trivy
+        # Explicit and pinned, not aquasecurity/trivy-action: that action's
+        # setup restores its binary from actions/cache at /home/runner/.local/bin,
+        # which exists on GitHub's image but not on the self-hosted VM, so the
+        # cache "hit" extracted nowhere and `trivy` was missing (exit 127, then
+        # no trivy-fs.sarif). The install goes into the job's temp dir (the
+        # self-hosted runner user cannot write /usr/local/bin) and works the same
+        # on both runner kinds.
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh" \
+            | sh -s -- -b "${RUNNER_TEMP}/bin" "v${TRIVY_VERSION}"
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+
       - name: trivy filesystem scan
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          scan-type: fs
-          scan-ref: .
-          scanners: vuln,secret,misconfig
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          format: sarif
-          output: trivy-fs.sarif
-          exit-code: "0"        # report everything; the gate is the next step
-          version: v${{ env.TRIVY_VERSION }}
+        # Report everything (exit 0); the gate is the step after the upload.
+        run: |
+          set -euo pipefail
+          trivy fs --scanners vuln,secret,misconfig --severity HIGH,CRITICAL \
+            --ignore-unfixed --format sarif --output trivy-fs.sarif \
+            --exit-code 0 --no-progress .
 
       - name: upload SARIF
         uses: github/codeql-action/upload-sarif@v4
@@ -77,24 +92,21 @@ jobs:
           sarif_file: trivy-fs.sarif
           category: trivy-fs
 
-      - name: fail on fixable HIGH/CRITICAL
-        # --ignore-unfixed on purpose: failing a build for a vulnerability with
-        # no available fix teaches people to ignore the build, and the finding is
-        # still recorded in the Security tab above.
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          scan-type: fs
-          scan-ref: .
-          scanners: vuln,secret
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          format: table
-          exit-code: "1"
-          version: v${{ env.TRIVY_VERSION }}
+      - name: fail on fixable HIGH/CRITICAL new against the base branch
+        # Only findings the base branch's scan of the same target does not
+        # have, compared by rule id + package + target, never by line (PR 1186
+        # had main's alerts re-attributed to its edited FROM lines; #1194).
+        # No base (push, schedule): every finding fails. Every finding is still
+        # in the Security tab above. scripts/trivy-new-findings.sh says why.
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: |
+          set -euo pipefail
+          scripts/trivy-new-findings.sh gate --base "${BASE_SHA}"
 
   secrets:
     name: secret scan
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -105,8 +117,11 @@ jobs:
       - name: trivy secret scan (history)
         run: |
           set -euo pipefail
+          # Into the job's temp dir, not /usr/local/bin: the self-hosted VM's
+          # runner user cannot write there (GitHub's image lets it).
           curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh" \
-            | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
+            | sh -s -- -b "${RUNNER_TEMP}/bin" "v${TRIVY_VERSION}"
+          export PATH="${RUNNER_TEMP}/bin:${PATH}"
           trivy fs --scanners secret --severity HIGH,CRITICAL --exit-code 1 --no-progress .
 
       - name: no service account keys in the repository
@@ -131,7 +146,7 @@ jobs:
 
   iac:
     name: checkov (terraform + kubernetes)
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # Uploads SARIF to code scanning: the only reason this job holds
     # security-events: write.
     permissions:
@@ -224,7 +239,7 @@ jobs:
 
   policy:
     name: platform policy assertions
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     steps:
       - uses: actions/checkout@v5
 
@@ -288,7 +303,22 @@ jobs:
             echo "::error::a public IAM member is granted in the Terraform"
             exit 1
           fi
-          echo "no public bindings"
+          # THE ONE DECIDED EXCEPTION (owner answer Q3 on #1384, GS-HOOKS):
+          # the GitHub push receiver swarm-github-hooks, whose public invoker
+          # is held in terraform/infra/github_hooks.tf's local
+          # `github_hooks_public_invoker`. Any other `name = "allUsers"`
+          # assignment in terraform/ -- a local, a default, an argument --
+          # fails here (a comparison, `!=` or `==`, does not), so the
+          # exception cannot quietly grow.
+          public="$(grep -rnIE '(^|[^!=<>])=[[:space:]]*\[?[[:space:]]*"(allUsers|allAuthenticatedUsers)"' \
+               --exclude-dir=.git --exclude-dir=.terraform --include='*.tf' --include='*.tfvars' terraform 2>/dev/null \
+             | grep -vE '^terraform/infra/github_hooks\.tf:[0-9]+:[[:space:]]*github_hooks_public_invoker[[:space:]]*=[[:space:]]*"allUsers"$' || true)"
+          if [ -n "${public}" ]; then
+            printf '%s\n' "${public}"
+            echo "::error::a public IAM member is assigned in the Terraform outside the GitHub push receiver"
+            exit 1
+          fi
+          echo "no public bindings beyond the GitHub push receiver's"
 
       - name: destroy guard still catches offenders
         # This guard is the only thing between `make destroy` and another team's
@@ -344,7 +374,14 @@ jobs:
           status=0
           # workspace-apply too: it is the toolchain of swarm-workspace-deployer, the
           # one identity here with project-wide account-IAM power (docs/workspaces.md §2.4).
-          for image in agent-runtime-base agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler workspace-apply; do
+          # swarm-live too: the live relay carries a person's keystrokes during a sign-in,
+          # and ffmpeg is the largest third-party surface any control-plane image ships.
+          # swarm-egress too (EGRESS-BUILD): it holds the vendor credential and relays
+          # every proxied browser byte.
+          # swarm-typesafe-fwd too (SEC-INJECT-B, PR 1385): it holds every tenant's TypeSafe key in memory.
+          # swarm-graph too (GS-ROLL, part of #1384): it verifies every agent's graph ticket and serves every tenant's index.
+          # swarm-github-hooks too (GS-HOOKS, part of #1384): the one public service, running as the rollup sweeper account.
+          for image in agent-runtime-base agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler workspace-apply swarm-live swarm-egress swarm-typesafe-fwd swarm-graph swarm-github-hooks; do
             echo "==> ${image}:dev"
             trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
               --exit-code 1 --no-progress "${repo}/${image}:dev" || status=1

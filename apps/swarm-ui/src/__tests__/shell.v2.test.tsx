@@ -37,7 +37,7 @@ const ME: Me = {
     credentials: ['anthropic'],
     service_account: null,
     gcs_prefix: 'tenants/eng',
-    namespace: 'swarm-eng',
+    namespace: 'swarm-tenant-eng',
   },
   principal: { email: 'operator@example.com', domain: 'example.com', groups: [], is_admin: false },
   environment: 'dev',
@@ -70,7 +70,7 @@ async function at(path: string): Promise<HTMLElement> {
 // #503 Shell: the panel's page rows have icons and counts
 // ---------------------------------------------------------------------------
 
-describe('#503: the panel draws an icon per page and a count beside Live, Waiting and Workflows', () => {
+describe('#503: the panel draws an icon per page and a count beside Live and Waiting', () => {
   it('draws an icon on every page row', async () => {
     // MUTATION: drop `<Icon name={p.icon} />` from PanelPages.
     const c = await at('/agents/live')
@@ -91,13 +91,18 @@ describe('#503: the panel draws an icon per page and a count beside Live, Waitin
     expect([counts.live?.n, counts.waiting?.n]).toEqual([5, 2])
   })
 
-  it('draws the Workflows count as a dash with its reason: no route serves it', async () => {
-    // MUTATION: draw 0, or nothing, for a figure nobody measured.
+  it('draws no mark beside a row nobody counts: Workflows and Recent alike', async () => {
+    // Visual QA V150 (2026-10-11): Workflows carried a dash whose reason was
+    // only in a tooltip, beside a Recent that carried nothing -- two ways of
+    // not counting. A dash is for a count that was asked for and could not
+    // be read. MUTATION: draw a 0, or put the Workflows dash back.
     const c = await at('/agents/live')
     const wf = [...c.querySelectorAll('.sk-panel .sk-pk')].find((r) => r.textContent?.includes('Workflows'))!
-    const cnt = wf.querySelector('.sk-cnt')!
-    expect(cnt.textContent).toBe('—')
-    expect(cnt.getAttribute('title')).toMatch(/^not served/)
+    expect(wf.querySelector('.sk-cnt'), 'a mark beside Workflows').toBeNull()
+    const recent = [...c.querySelectorAll('.sk-panel .sk-kid')].find((k) => k.querySelector('span')?.textContent === 'Recent')!
+    expect(recent.querySelector('.sk-cnt'), 'a mark beside Recent').toBeNull()
+    expect(recent.getAttribute('title')).toMatch(/not counted/)
+    expect(panelCounts({ status: 'loading', since: 0 }, { status: 'loading', since: 0 }).workflows).toBeUndefined()
   })
 
   it('never draws a failed read as 0', () => {
@@ -154,7 +159,7 @@ describe('#503: the panel lights the current page, not its parent', () => {
 // ---------------------------------------------------------------------------
 
 describe('#503: every spine item is a link, so it opens in a new tab and copies', () => {
-  it('draws Submit, the four sections, Help and API reads as anchors with a path', async () => {
+  it('draws Submit, the five sections, Help and API reads as anchors with a path', async () => {
     // MUTATION: put `<button data-sec>` back.
     const c = await at('/overview')
     const spine = c.querySelector('.sk-spine')!
@@ -164,6 +169,7 @@ describe('#503: every spine item is a link, so it opens in a new tab and copies'
       Submit: '/submit',
       Overview: '/overview',
       Work: '/agents',
+      Automate: '/automate/schedules',
       Capacity: '/capacity/pools',
       Admin: '/admin/limits',
       Help: '/help',
@@ -190,7 +196,7 @@ describe('#503: every spine item is a link, so it opens in a new tab and copies'
     // MUTATION: drop a clause from `routedClick`, or bind onClick without it.
     const c = await at('/overview')
     const sections = [...c.querySelectorAll<HTMLAnchorElement>('.sk-spine a[data-sec]')]
-    expect(sections).toHaveLength(4)
+    expect(sections).toHaveLength(5)
     for (const a of sections) {
       const e = new MouseEvent('click', { bubbles: true, cancelable: true, ...init })
       a.dispatchEvent(e)
@@ -400,7 +406,7 @@ describe('states.html C: the takeover replaces the content area and keeps the na
     expect(panel).toBeTruthy()
     // The page is gone; the nav is not.
     expect(c.querySelector('main.work')).toBeNull()
-    expect(c.querySelectorAll('.sk-spine a[data-sec]')).toHaveLength(4)
+    expect(c.querySelectorAll('.sk-spine a[data-sec]')).toHaveLength(5)
     expect(c.querySelector('.sk-panel')).not.toBeNull()
     // The meter claims nothing during a whole-app state.
     expect(c.querySelector('.sk-meter b')?.textContent).toBe('not read')

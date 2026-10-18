@@ -362,7 +362,7 @@ describe('Overview draws the band’s three states, never a zero for an unread c
 })
 
 describe('Overview draws its empty states through the shared empty state', () => {
-  it('a failed read is marked `not read`, a real zero `real zero`, inside the card', async () => {
+  it('a failed read is marked `not read`, a real zero `none`, inside the card', async () => {
     renderOverview({
       loadCapacity: {
         status: 'error',
@@ -385,9 +385,9 @@ describe('Overview draws its empty states through the shared empty state', () =>
     )
     expect(zero, 'an empty task list is not a real-zero empty state').toBeTruthy()
     expect(zero!.classList.contains('is-failed')).toBe(false)
-    expect(zero!.querySelector('.ctl-mark.is-zero')?.textContent).toBe('real zero')
+    expect(zero!.querySelector('.ctl-mark.is-zero')?.textContent).toBe('none')
     // The sentence is the mark's accessible name, not a paragraph.
-    expect(zero!.querySelector('.ctl-mark')?.getAttribute('aria-label')).toMatch(/real zero/i)
+    expect(zero!.querySelector('.ctl-mark')?.getAttribute('aria-label')).toMatch(/read succeeded/i)
     expect(zero!.querySelector('p')).toBeNull()
   })
 })

@@ -24,19 +24,24 @@ scripts/acceptance/run.sh --only generic,browser  # several
 ./scripts/verify-remote.sh acceptance/claude-code
 ./scripts/verify-remote.sh acceptance/workflow
 ./scripts/verify-remote.sh acceptance/browser
+./scripts/verify-remote.sh acceptance/live-browser
+./scripts/verify-remote.sh acceptance/git-tools
 ```
 
 `verify-remote.sh` runs `scripts/<target>.sh` in the `swarm-verify` job and
 passes no arguments, so each group has a wrapper, `scripts/acceptance/<group>.sh`.
 That also gives each group its own execution and its own 30-minute timeout
-(`terraform/infra/verify.tf`); the five together would not fit in one.
+(`terraform/infra/verify.tf`); the seven together would not fit in one.
 
 Each check prints `PASS`, `FAIL` or `SKIP` with a one-line reason and the task
 id, and the run exits non-zero when any check failed. `accept.yml` runs every
-group after a dev release completes, one matrix job per group in two waves
-that fit the smoke tenant's ceiling, after its own warm and smoke. A `FAIL`
-fails that group's job and opens (or updates) the one acceptance issue; it no
-longer fails the release ([ci.md, "The release timeline"](ci.md#the-release-timeline)).
+group but live-browser after a dev release completes, one matrix job per group
+in two waves that fit the smoke tenant's ceiling, after its own warm and smoke.
+A `FAIL` fails that group's job and opens (or updates) the one acceptance
+issue; it no longer fails the release ([ci.md, "The release timeline"](ci.md#the-release-timeline)).
+live-browser runs every three hours instead, off the red path, and files its
+own issue, until it passes five scheduled runs in a row
+([ci.md, "live-browser runs on a schedule"](ci.md#live-browser-runs-on-a-schedule)).
 
 ## What accept.yml's identity may run
 
@@ -245,6 +250,128 @@ suite runs without `python3`, the pixel checks SKIP saying so. It decodes at
 most the top 4000 rows (`--max-rows`): a real site's full-page screenshot can
 be tens of thousands of rows, which pure Python unfilters in minutes, and
 whether a page rendered is decided at its top.
+
+### live-browser
+
+One `claude-code-browser` task, and a scripted person who signs in on its
+browser (docs/design/live-browser.md, section 9, lane LB-L13). The shell half
+is `scripts/acceptance/groups/live-browser.sh`: it submits the task and waits
+on it with the suite's own settle, so a closed pool or a missing credential is
+the same SKIP as everywhere else. The person is
+`tests/acceptance/test_live_browser.py`, standard library only (the
+swarm-verify image has `python3` and no pip): a websocket client, an RFB 3.8
+viewer and a GCS reader, written out. It runs beside the settle wait and is
+told the settled state through a file. It reports one verdict per check.
+
+**The page is served inside the agent's own pod.** Nothing this repository
+owns serves HTML as HTML on the internet (see browser, above), so
+the agent runs `python3 -m http.server` on `127.0.0.1:8765` over
+`tests/acceptance/fixtures/` and opens `login.html` in the platform's
+Chromium through `$SWARM_CDP_ENDPOINT`. The sidecar's Chromium shares the
+pod's network namespace, so it reaches loopback; nothing leaves the pod.
+
+**The password is made at run time, inside the viewer process, and never
+leaves it.** It is not in this shell, an argv, the environment, a log or the
+results file. It is typed as RFB key events, lower-case letters and digits
+only, each its own unshifted keysym. The page has no `name` on the field and
+cancels the submission, so nothing is requested with it. What the page shows
+after the sign-in is 12 hex digits of its SHA-256. The agent reports that
+code, which proves the typing reached the page without the agent ever
+holding the value.
+
+| check | asserts | why that and not less |
+|---|---|---|
+| hand-off | `GET /v1/tasks/{id}/live/session` shows the session `available` with a `human_wait` (Q2: the field, not a state) | a hand-off the console cannot see is a hand-off nobody answers |
+| another tenant | as a member of another tenant (the identity's other membership from `GET /v1/tenants/mine`, or `SWARM_ACCEPTANCE_OTHER_TENANT`), the task, `live/session`, `live/ticket`, `live/control` and `live/audit` are each a 404; a real viewer ticket whose `tenant_id` is rewritten to that tenant is closed `4404` on the socket | LB-2 and invariant 9. A 403 would confirm the task exists, and a ticket that could be pointed at a tenant the caller also belongs to would select it |
+| frames painted | the viewer opens `wss://.../v1/live/{session}/stream` with the ticket as its first message (never in the URL), takes control, clicks the field and types. In every frame that shows the page, the field's box -- found from the cyan marker 80 CSS px above it -- is entirely the mask's `#222222`, and no pixel of the field's own magenta is on screen. At least one such frame arrived while the person typed | LB-3: masked before anything leaves the pod. The marker shows the page is on screen, so a frame the mask blanked whole (a stale report, section 5.3) is not counted as a pass |
+| recording painted | segments `rec-<13 digits>.live.webm` exist under the task's `attempts/<a>/live/`, nothing else under `live/` but `actions-*.live.jsonl`; decoded with `ffmpeg` at 5 fps, every recorded frame that shows the page has the same box painted (VP8 is lossy: within 24 per channel, 95% of the box) | LB-4 records the masked stream; a recorder that took frames from anywhere else would show it here |
+| returned | after Return control, the task `SUCCEEDED`, its answer and its `session-code.txt` output carry the code only the typed password makes, and `human_handoff_requested`, `human_control_taken`, `human_control_returned` and `human_handoff_resolved` are among its events | control came back and the agent carried on from the signed-in page, rather than the task ending some other way |
+| no password | the password is in no object under `tenants/<t>/tasks/<task>/`, read from the bucket itself (not through the API, which redacts on the way out), gzip members decompressed: the transcript (`logs/agent_stdout.log`), every other log, every checkpoint archive, every output and the recording. Nor in the task document, its events, its live audit and session, or its answer. Each of transcript, logs, checkpoints and outputs must have at least one object read, and an object that could not be read FAILS the check | section 5.4: the agent's CDP is paused while a person types and the fields are cleared before it resumes. An unread category is not a clean one |
+
+**SKIP, not PASS:** a task the platform holds (closed pool, no credential);
+a deployment that dispatches the profile with no live path, recognised by the
+agent's own report of `swarm-handoff`'s refusal code `no_live_path`
+(`enable_live_browser` or `LIVE_BROWSER_SIDECAR` off); an identity that is a
+member of no tenant but smoke; and the recording's frames where there is no
+`ffmpeg`. Any other refusal from `swarm-handoff` (`gate_unavailable`,
+`no_live_session`, ...) is a FAIL: the path was on and did not work.
+
+**The swarm-verify image carries no `ffmpeg`, so in the release the recording
+check SKIPs after confirming the segments exist, and says so.** The frames
+the viewer judges are the stream the relay records: the relay's recorder is
+one more RFB client of the same gate (`swarm_live/recorder.py`). Decoding the
+VP8 itself needs a decoder this image does not have, and adding one is a
+question for the owner (its CVE surface is the reason the image has no Cloud
+SDK either). A local run with `ffmpeg` on `PATH` judges them.
+
+It needs a second `swarm-verify` execution of its own (`scripts/acceptance/
+live-browser.sh`). Its one task peaks the group at 1. It ran in wave 2 of
+`accept.yml` until 2026-10-14, when it failed 18 of 34 post-release runs. It
+now runs on `accept.yml`'s schedule, every three hours, and reports to an
+issue of its own. It goes back into wave 2 when
+`scripts/accept-live-browser-streak.sh` says it passed five in a row
+([ci.md, "live-browser runs on a schedule"](ci.md#live-browser-runs-on-a-schedule)).
+
+### git-tools
+
+The runner git tools' acceptance (#1225; docs/runner-git-tools.md, section 7,
+lane G7): five checks, one per row of that lane. The shell half is
+`scripts/acceptance/groups/git-tools.sh`: it submits the tasks, waits on them
+with the suite's own settle, and saves each task's state, document,
+`GET /v1/tasks/{id}/git-calls` audit and two artifacts under one directory.
+The judge is `tests/acceptance/test_runner_git_tools.py`, standard library
+only, which also writes the prompts, so what a task is asked and what is read
+back are written once. Its offline tests are
+`tests/unit/scripts/test_runner_git_tools_acceptance.py`.
+
+**Platform facts come from swarm-api's audit, not from the agent.** A fetch's
+resolved sha, a push's old and new sha and `rewrite`, a `pr_checks` read's
+pull request and head: all are read from the audit rows. Two things only the
+agent sees are read from its `git-answers.jsonl`. The first is a refusal the
+WORKER answers before any request leaves: a push to a branch the task may not
+push never reaches swarm-api, so it is never audited. The second is the paths
+a rebase listed as conflicted. Each is cross-checked against the audit: no
+push of that task ever reached the forge, and the branch it aimed at did not
+move.
+
+**Planting the conflict without a token.** The suite holds no GitHub
+credential, and only `sandbox-sync.sh` writes to the sandbox. So
+`sandbox-sync.sh` points the branch `acceptance/git-tools-base` at the parent
+of the newest commit on main that ADDED `tests/acceptance/fixtures/git-tools/
+planted.txt`. It makes no commit: the base is a commit main already has. The
+branch is outside `swarm/`, so no task can push it.
+
+The lane task clones that base and adds its own `planted.txt`, so its pull
+request conflicts with main. The conflict lives in the lane's own commit,
+which the worker wrote. A sandbox commit would carry a foreign author, which
+the push's authorship check refuses.
+
+| check | asserts | why that and not less |
+|---|---|---|
+| rebase | a `direct-pr` continuation of the lane's pull request fetches its branch (so swarm-api records the tip to lease), `git_rebase_onto main` lists `planted.txt` as conflicted, the agent resolves it, the audited push replaced exactly the fetched tip with `rewrite: true` (Q1 = A), `pr_checks` read the lane's pull request at the pushed head, and the lane ended `SUCCEEDED`. Its `env_report.py` artifact, names only, shows no forge credential: no name `env \| grep -i token` would find except `CLAUDE_CODE_OAUTH_TOKEN` (owner, 2026-10-13), no `GH_TOKEN`, `GITHUB_TOKEN` or `GIT_*` credential variable, no `GIT_CONFIG_KEY_<n>` naming a credential helper, extra header or `insteadOf`, and no value shaped like a GitHub token or private key | #1225's first acceptance item, end to end. The report prints names, never values, because the environment holds the Claude login. The agent cannot know the forge slot's value, so a value is judged by its shape |
+| read_private | the reader reads an allowlisted repository's file at a branch, then at the sha that read resolved to, both audited `ok`. When that repository is the sandbox, the content must be this build's `planted.txt`. A repository on no list, and on no forge, is refused `repo_not_allowlisted` | the allowlist is the gate (Q3 = A). The refused control shows the check could have come out the other way |
+| push to main | the reader's push to `main` is answered `protected_branch` or `not_this_tasks_branch`, swarm-api accepted no push of the reader's at all, and main's tip, fetched through the tools before and after, is the same | a refusal the agent was told about is not enough. The branch must not have moved |
+| push to another task's branch | the same, aimed at the lane's branch. The branch may move only by the rebase lane's own audited pushes, because the two run at the same time | another task's branch is exactly what `not_this_tasks_branch` exists for |
+| a failed push fails | an `integrate` contributor pushes its branch mid-task, then commits off it (`git reset --hard HEAD~1`), so its final push cannot fast-forward and is refused, never forced. The step ends `FAILED` with `publish_failed:` (G1), not `SUCCEEDED`. If the mid-task push never landed, the check FAILs saying the failure was never set up. If the final push succeeded, it FAILs saying a new way to fail a push is needed | #1225's lost final pushes were contributors that read `SUCCEEDED` with no branch |
+
+The reader is `collect` with `carrier: branches`, so it MAY push its own
+branch. A strategy that pushes nothing is refused `strategy_pushes_nothing`
+before the branch rule is ever asked.
+
+**On GitHub.** The lane's pull request carries `acceptance-git-tools: rebase`
+in its body, and `github-verify.sh` judges it as its own kind. Its head must
+contain main, it must change exactly `planted.txt` and `lane.txt`, and
+`planted.txt` at its head must be main's line followed by the lane's.
+
+**SKIP, not PASS:** a task the platform held (closed pool, no credential),
+and `read_private` when no repository in the smoke tenant is
+`readable_by_tasks`. Only a platform admin can set that, with
+`PATCH /v1/repositories/{id}`, so the suite never sets it itself.
+
+It runs in wave 2 of `accept.yml` (`scripts/acceptance/git-tools.sh`), with
+a peak of five tasks. The lane runs first, because both later tasks need its
+branch. In the worst case its two settles take the job's whole 30 minutes;
+the claude-code tasks it runs take a few minutes each.
 
 ## Pull requests on the sandbox
 

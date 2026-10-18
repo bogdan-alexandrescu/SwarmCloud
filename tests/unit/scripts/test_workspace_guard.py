@@ -159,10 +159,14 @@ def test_every_rule_has_a_case_to_refuse_and_a_case_to_allow() -> None:
     assert not missing, f"rules without a case: {missing}"
 
 
-def test_the_wd9_fallback_ships_off() -> None:
-    # On, C5 would let the job add project-level roles per person; the
-    # principal-set grant makes that unnecessary (docs/workspaces.md §2.3, WD9).
-    assert RULE_DOC["wd9_fallback"] is False
+def test_the_wd9_fallback_ships_on() -> None:
+    # On (owner decision 2026-10-12, PR 1217): W0 found that IAM offers no
+    # principal set naming exactly the personal workers, so no principal-set
+    # grant exists and the job itself grants each person's worker its
+    # Firestore, telemetry and bucket-metadata roles (C5, C4's bucket-metadata
+    # shape). Off, a workspace reaches ready and its first task fails on its
+    # first Firestore call. docs/workspaces.md §2.3, WD9.
+    assert RULE_DOC["wd9_fallback"] is True
 
 
 def test_the_self_test_fails_when_a_rule_is_loosened(tmp_path: Path) -> None:

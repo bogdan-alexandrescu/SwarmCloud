@@ -320,6 +320,22 @@ def test_every_service_written_key_is_reserved_in_one_place():
         "disk_evictions",
         # A schedule firing's mark on its work (docs/schedules.md §2.7, S2).
         "schedule",
+        # The live-browser hand-off (docs/design/live-browser.md §4.3, LB-L10):
+        # the park-refund counter, the "a person is ready" mark, the count.
+        "human_wait_resumes",
+        "human_ready",
+        "human_handoffs",
+        # A person's return during an attempt, which its park reads (LB-RETURN).
+        "human_returned",
+        # Why the pod is not starting, the reconciler's record (F1-POD).
+        "start_problem",
+        # The owner's answers to the agent's questions (TASK-ANSWERS).
+        "owner_answers",
+        # Whose GitHub credential a service submission runs with (INDEX-CRED).
+        "forge_credential_source",
+        # The pull requests a workflow waits for, and the tick's reading of
+        # them (`after`, SPEED-D3).
+        "after_prs",
     )
 
 

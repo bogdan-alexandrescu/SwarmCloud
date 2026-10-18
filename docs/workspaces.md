@@ -76,6 +76,7 @@ What it settles, one line each:
   `u-bogdan` moves out of state with a plan that destroys nothing (§3.3).
 * **The database and bucket-metadata roles are granted once**, to the set of
   all personal worker identities, if W0 confirms IAM supports it (WD9, §2.3).
+  **W0 found IAM does not support it, so the WD9 fallback is ON** (owner decision 2026-10-12, PR 1217): the job grants each person's worker its database, telemetry and bucket-metadata roles at A5 (`wd9_fallback: true` in `scripts/lib/workspace-calls.json`).
 * **A ready workspace runs nothing until the person adds a Claude account or
   an admin lends one** (§5, WD6).
 * **One gate, in the two submission methods every create path goes through**,
@@ -757,16 +758,52 @@ re-decision it is the runtime identity of one Cloud Run job,
 
 | role | on | why | bound by |
 |---|---|---|---|
-| custom `swarmWorkspaceAccountAdmin` (`iam.serviceAccounts.create`, `.get`, `.list`, `.getIamPolicy`, `.setIamPolicy`) | **the project** | create a person's worker account and write its Workload Identity and act-as bindings, before any per-account grant can exist | **nothing in IAM** (§2.4). It has no `delete`, `disable`, `keys.create`, `getAccessToken`, `signBlob` or `actAs`. Its use is bounded by the call guard and watched by the alert (§2.4). **Accepted by the owner, 2026-10-08** |
-| custom `swarmWorkspaceProjectReader` (`resourcemanager.projects.getIamPolicy`, `iam.roles.get`) | project | the script's reads of the project policy and of the two custom roles | read only |
+| custom `swarmWorkspaceAccountAdmin` (`iam.serviceAccounts.create`, `.get`, `.list`, `.getIamPolicy`, `.setIamPolicy`, and `iam.serviceAccountKeys.list`) | **the project** | create a person's worker account and write its Workload Identity and act-as bindings, before any per-account grant can exist; list an account's user-managed key ids, which the squat inspection (#334) does in A2 on an existing account and in A9 on every run | **nothing in IAM** (§2.4). It has no `delete`, `disable`, `keys.create`, `keys.upload`, `getAccessToken`, `signBlob` or `actAs`; the key listing returns ids and dates, never key material. Its use is bounded by the call guard and watched by the alert (§2.4). **Accepted by the owner, 2026-10-08** |
+| custom `swarmWorkspaceProjectReader` (`resourcemanager.projects.getIamPolicy`, `iam.roles.get`) | project | the WD9 fallback's read of the project policy before it adds the worker's three roles. `iam.roles.get` is held and no call of the job uses it (the operator path's); it stays, as the grants change adds-only | read only |
 | `roles/resourcemanager.projectIamAdmin`, **conditioned** | project | **fallback only** (WD9): add the worker's database and telemetry roles per person | `hasOnly([...])` over exactly the worker Firestore custom role, `roles/logging.logWriter` and `roles/monitoring.metricWriter`, the pattern `terraform/bootstrap/deployer_conditions.tf` uses. **Not granted** when W0 confirms the principal-set grant |
 | custom `swarmWorkspaceBucketIam` (`storage.buckets.get`, `.getIamPolicy`, `.setIamPolicy`) | **the artifact bucket only** | the worker's two prefix-conditioned object grants (and, on the fallback, the bucket-metadata role) | the bucket. Not `roles/storage.legacyBucketReader`, which carries `storage.objects.list` |
-| `roles/storage.objectCreator`, **conditioned** | the artifact bucket, to `tenants/` | the `.tenant` marker object the script writes | the prefix; no read, no delete |
+| `roles/storage.objectCreator`, **conditioned** | the artifact bucket, to `tenants/` | the `.tenant` marker object A5 writes, with ONE Storage JSON API upload carrying `ifGenerationMatch=0`, a create that can never replace. Not `gcloud storage cp`, which reads the destination object first (below) | the prefix; no read, no delete |
 | custom `swarmWorkspaceSecretBinder` (`secretmanager.secrets.get`, `.getIamPolicy`, `.setIamPolicy`) | project, **conditioned** | bind the worker to its forge slot | `resource.name.startsWith("projects/<number>/secrets/swarm-tenant-u-")`, the full-name form `terraform/bootstrap/forge_user_slots.tf` writes |
 | custom `swarmForgeSlotCreator` (exists) | project | create the empty slot and its twin | the project; creation is checked there. The same role swarm-api holds |
-| custom `swarmWorkspaceFirestore` (`datastore.entities.get`, `.list`, `.create`, `.update`, `datastore.databases.getMetadata`) | project | read the record and `admin_roles/`, write progress, the tenant and pool documents | **the project**; Firestore ignores conditions on the data plane (`scripts/register-tenant.sh` §3). No `delete` |
+| custom `swarmWorkspaceFirestore` (`datastore.entities.get`, `.list`, `.create`, `.update`, `datastore.databases.get`) | project | read the record and `admin_roles/`, write progress, the tenant and pool documents; `databases.get` is what Firestore checks for the A1 claim's `beginTransaction` and its `rollback` | **the project**; Firestore ignores conditions on the data plane (`scripts/register-tenant.sh` §3). No `delete`. Exactly the permissions the job's calls need, held there by `tests/unit/scripts/test_workspace_firestore_permissions.py` (below) |
 | `roles/container.clusterViewer`, **conditioned** | project, to the swarm cluster's resource name | `get-credentials` for the namespace step | the expression `terraform/modules/iam/bindings.tf` builds; nothing on the other team's cluster |
 | `roles/logging.logWriter` | project | a Cloud Build build wrote its log as its identity. **A Cloud Run job does not need it for its own output**: Cloud Run collects the container's stdout and stderr itself. W0b confirms that on one execution; then W4b drops the row, and the bootstrap's role-list validation with it | write only |
+
+**`swarmWorkspaceFirestore` follows the job's calls, not Firestore's role
+names.** Until 2026-10-13 it held `datastore.databases.getMetadata` and not
+`datastore.databases.get`, and every execution for the first self-service
+workspace (w-7f9285: vkb8q, n6hv8, 7srrk) stopped at A1 with `beginTransaction`
+→ 403 `PERMISSION_DENIED`. The names mislead: in Google's table
+(firestore/docs/security/iam) `databases.get` is what `beginTransaction` and
+`rollback` check, and `getMetadata` is `projects.databases.get`, which the job
+never calls and its call guard refuses. No execution had completed A1 before,
+because u-bogdan's workspace was moved by an operator run, so the create path's
+Firestore grants had never been exercised. `test_workspace_firestore_permissions.py`
+now walks every Firestore call `register-tenant.sh --workspace` makes and every
+Firestore shape `scripts/lib/workspace-calls.json` admits, maps each to its
+permission, and fails when the role lacks one or holds one no call needs.
+
+**Every other call is walked the same way** (WS-WALK, 2026-10-13). With A1
+fixed, w-7f9285's next execution (`swarm-workspace-apply-trhmh`, 01:40Z) got
+through A2-A4 and died at A5: `gcloud storage cp - gs://<bucket>/tenants/u-devops/.tenant`
+→ 403, no `storage.objects.get`. The deployer holds a create on `tenants/` and,
+on purpose, no object read, and `gcloud storage cp` reads the destination before
+it uploads; no flag of it skips that read. So A5 writes the marker with one JSON
+API upload, `ifGenerationMatch=0`, which needs `storage.objects.create` alone.
+An existing marker answers **412**, and A5 treats that as done: comparing its
+content would need the read this avoids, and nothing reads the marker (it only
+materialises the prefix; offboarding deletes it with the rest, B6).
+`tests/unit/scripts/test_workspace_deployer_walk.py` then walks every gcloud and
+raw curl call in the code the job runs (the script to its `workspace_main; exit 0`,
+`scripts/lib/forge-slot.sh`, and the `kubernetes/` scripts A7 runs) and every
+shape the guard admits, the WD9 fallback's included; maps each to the
+permissions Google checks and the resource it is checked on; and fails unless a
+grant above carries the permission and reaches the resource, by its scope or its
+condition. It found one more gap no execution had reached: the squat
+inspection's `keys list` needs `iam.serviceAccountKeys.list`, so A9 would have
+failed every create. The same walk fails on a guard shape that reaches a cloud
+API and that no call of the job makes (§2.5). Kubernetes RBAC is held by
+`test_register_tenant_workspace.py` against a full run's calls.
 
 The image pull grant on the builder image's repository (`swarmImagePuller`,
 `workspace_deployer_pull` in `terraform/bootstrap/workspace_deployer.tf`) goes
@@ -994,15 +1031,24 @@ call shapes. A call is allowed only if one rule matches it whole:
 | rule | allows | refused example |
 |---|---|---|
 | C0 | nothing by default: a call matching no rule stops the run | `gcloud compute instances list` |
-| C1 | reads (`describe`, `get-iam-policy`, `list` filtered to this account, `kubectl get`, Firestore `GET`) of this workspace's resources, and of the fixed shared resources the script reads: the project's policy, the two custom roles, the artifact bucket, the swarm cluster's credentials, `kube-system`'s two DNS objects. Before A1 has written the expectation file, the only calls allowed are A1's own: the `runQuery` on `workspaces` for the given workspace id, reads of `admin_roles/`, and the claim's transaction on that one record | `gcloud iam service-accounts get-iam-policy` on another tenant's account |
+| C1 | reads (`describe`, `get-iam-policy`, `list` filtered to this account, `kubectl get`, Firestore `GET`) of this workspace's resources, and of the fixed shared resources the script reads: the project's policy (WD9 fallback), the artifact bucket's policy, the swarm cluster's credentials, `kube-system`'s two DNS objects. Before A1 has written the expectation file, the only calls allowed are A1's own: the `runQuery` on `workspaces` for the given workspace id, reads of `admin_roles/`, and the claim's transaction on that one record | `gcloud iam service-accounts get-iam-policy` on another tenant's account |
 | C2 | `gcloud iam service-accounts create <id>` where `<id>` is the expected worker account id, and nothing else on accounts: no `delete`, `disable`, `update`, `keys …` or `set-iam-policy` | creating `swarm-agent-worker-u-bob` |
 | C3 | `gcloud iam service-accounts add-iam-policy-binding <the expected worker email>` with role `workloadIdentityUser` and a member that is one of the two expected Kubernetes service accounts in `swarm-tenant-<tenant>`, or role `serviceAccountUser` and a member that is the scheduler or the reconciler | a binding on any other account, or `serviceAccountTokenCreator` |
-| C4 | `gcloud storage buckets add-iam-policy-binding gs://<artifact bucket>` with member the expected worker, role `objectViewer` or `objectUser`, and a condition **string-equal** to the expected expression for `tenants/<tenant>/` (these are the fixed shared resource's prefix-conditioned per-person bindings); `gcloud storage cp - gs://<bucket>/tenants/<tenant>/.tenant`. On the WD9 fallback only: the bucket-metadata role for the expected worker | a condition naming another prefix, or any other member |
+| C4 | `gcloud storage buckets add-iam-policy-binding gs://<artifact bucket>` with member the expected worker, role `objectViewer` or `objectUser`, and a condition **string-equal** to the expected expression for `tenants/<tenant>/` (these are the fixed shared resource's prefix-conditioned per-person bindings); the `.tenant` marker as one `curl` `POST` to the Storage JSON API's upload URL for `tenants/<tenant>/.tenant` with `ifGenerationMatch=0`, its body naming the expected tenant and workspace, its bearer header on stdin. `gcloud storage cp` is not allowed: it reads the object first. On the WD9 fallback only: the bucket-metadata role for the expected worker | a condition naming another prefix, any other member, or a marker upload without `ifGenerationMatch=0` |
 | C5 | **WD9 fallback only:** `gcloud projects add-iam-policy-binding` with member the expected worker and a role among the worker Firestore role, `logWriter`, `metricWriter`. Under the principal-set grant this rule is off, and any project IAM call stops the run | `roles/editor` |
 | C6 | `gcloud secrets create` of the expected forge slot names, and `add-iam-policy-binding` on them with member the expected worker and role `secretAccessor` | a binding on `swarm-tenant-eng-git` |
-| C7 | `kubectl apply`, `create` or `patch` whose every object (the guard reads the `-f` file or stdin) is the `Namespace` `swarm-tenant-<tenant>` or is in that namespace, plus the server dry-run that precedes it; the admission policy of §2.3 checks the same server-side | an object in `swarm-system` |
+| C7 | `kubectl apply` whose every object (the guard reads the `-f` file or stdin) is the `Namespace` `swarm-tenant-<tenant>` or is in that namespace, plus the server dry-run that precedes it; the admission policy of §2.3 checks the same server-side | an object in `swarm-system` |
 | C8 | `curl` `PATCH` or `commit` to the Firestore REST API on exactly `tenants/<tenant>`, `pools/tenant:<tenant>` and `workspaces/<tenant>`, and the metadata server's token endpoint | a write to another tenant's pool |
 | C9 | never: any `remove-iam-policy-binding`, `set-iam-policy`, `delete`, `disable`, `keys create` or Firestore `DELETE`, whatever its target | the script's legacy repair path that removes an unconditioned bucket binding |
+
+**The rules admit what the job makes and nothing more.** Until WS-WALK
+(2026-10-13) C1 also allowed `iam service-accounts list`, `iam roles describe`,
+`storage buckets describe` and `secrets versions list`, and C7 `kubectl create`,
+`diff` and `patch`, none of which the job runs (the operator path makes the
+gcloud reads; `kubernetes/apply.sh` diffs only without `--confirm`). They are
+C0 `known_unused` entries now, saying why, and two tests keep it so:
+`test_workspace_deployer_walk.py` for the gcloud and curl shapes, and
+`test_register_tenant_workspace.py` for kubectl's verbs against a full run.
 
 **Stopping.** On a refusal the guard prints the rule it fell through to and the
 call, through `redact`, to the job's private log; exits non-zero before the
@@ -1606,9 +1652,10 @@ $ /sc:run "fix the flaky test"
 | `POST /v1/admin/workspaces/{workspace_id}/deny` | admin | §1.3; body `{reason}` |
 | `POST /v1/admin/workspaces/{workspace_id}/retry` | admin | from `failed` or `needs_owner`: publishes again |
 | `PUT /v1/admin/workspaces/{workspace_id}/limits` | admin | §6.4's ceiling; body `{max_active}` only |
-| `PUT /v1/admin/people/{workspace_id}/loan` | admin | lend or reclaim an account (§6.4) |
+| `PUT /v1/admin/people/{workspace_id}/loan` | admin | lend or reclaim an account (§6.4); a lend to a workspace not yet `ready` answers `state: "pending"` and is applied by the sweep |
+| `POST /v1/admin/people/{workspace_id}/loan/decline` | admin | decline the person's open loan request (§6.4); body `{reason?}`, at most 200 characters; 409 `LOAN_REQUEST_NOT_OPEN` when none is open |
 | `PUT /v1/admin/admins/{email}` and `DELETE` | admin | grant or remove admin (§6.5) |
-| `POST /v1/admin/workspaces/sweep` | the rollup sweeper (`swarm-workspace-sweep`, every 10 minutes) | §2.2's dispatch sweep |
+| `POST /v1/admin/workspaces/sweep` | the rollup sweeper (`swarm-workspace-sweep`, every 10 minutes) | §2.2's dispatch sweep, then the pending loans of every workspace now `ready` (§6.4) |
 | `GET /v1/onboarding` | (exists) | gains the `workspace` and `claude_account` steps |
 
 Admin routes address a person by **workspace id**, so a URL in a browser
@@ -1671,6 +1718,51 @@ the platform owner" with the step the guard stopped at; a `failed` row has **Ret
   submission, the gate's account check applies (§5.4). A person's *own*
   account is never lendable or reclaimable here; its owner keeps the existing
   `PUT /v1/accounts/{id}/lending`.
+
+  **A lend to a workspace that is not `ready` is pending, not refused**
+  (LOAN-NEW, part of #1194). The quota broker grants the borrower's worker
+  account, `swarm-agent-worker-<tenant>`, read access to the account's secret
+  *before* it adds the borrower to `lend_to`, so the pool never assigns an
+  account its worker cannot read (the 2026-10-06 failure). That worker account
+  is created by the workspace job, and IAM refuses a grant to a member that
+  does not exist: on 2026-10-13 a lend to a workspace approved an hour earlier
+  and still provisioning answered 422 `could not grant the borrowers of … read
+  access to its secret: InvalidArgument`. So while the record is anything but
+  `ready`, a lend calls no IAM and writes `pending_loans/{tenant_id}` and a
+  `lend_pending` audit entry in one transaction, read against the record's
+  state in that transaction, and answers `200` with `state: "pending"` and
+  "the loan will apply when the workspace is ready". The dispatch sweep
+  (§2.2, every 10 minutes) then lends each pending loan of a `ready`
+  workspace through the same broker call, and only after the broker answered
+  removes it, closes the loan request and writes `lend` (with
+  `pending_since`): a loan is pending or lent, never half of each. A grant
+  the broker refuses stays pending with the reason in `last_error`, which
+  the person's People row shows under `pending_loans`, and is tried again on
+  the next sweep; a pending loan whose account is gone is dropped
+  (`lend_pending_dropped`). **Reclaim** cancels a pending loan
+  (`reclaim_pending`). A lend to a workspace that *is* `ready` is granted at
+  once as before (`state: "applied"`), and if the broker refuses it the answer
+  is 422 `LOAN_GRANT_FAILED`, naming the member it asked IAM to grant and the
+  broker's reason: there, that service account should exist.
+
+  **A loan request may be declined** (LOAN-DECLINE, owner 2026-10-12, part
+  of #1206). Until then a request closed only when an account was lent
+  against it, so one an admin would not grant stayed in "Waiting for you"
+  with no way to answer it. **Decline** (`POST
+  /v1/admin/people/{workspace_id}/loan/decline`) moves an open request to
+  `declined` with the admin, the time and an optional short reason in its
+  decision, and writes a `loan_declined` audit entry (the reason's length,
+  not a second copy of it) in the same transaction. With no open request,
+  because none was made or it was already lent or declined, it is 409
+  `LOAN_REQUEST_NOT_OPEN`. The person is told in their notification feed
+  (`account`: "Your request to borrow a Claude account was declined", with
+  the reason, never who declined; docs/notifications.md), and the admins'
+  "asks for a Claude account" item is gone because the request is no longer
+  `requested`. People's row reads "loan declined" until the person asks
+  again: a new `POST /v1/workspace/loan-request` re-opens it as `requested`
+  and keeps the declined one in `history`. Declining calls no broker and
+  does not touch `pending_loans`. A pending loan is a lending an admin has
+  already decided, and only **Reclaim** cancels it.
 
 **4. Admins.** §6.5.
 
@@ -1835,7 +1927,8 @@ makes every install do steps Terraform cannot:
   that connection's token. On 2026-10-10 it took two bootstrap applies (PRs
   993 and 1005) and a narrowing the same night, because the first prefix also
   matched the platform's own GitHub App secrets
-  (`terraform/bootstrap/cloudbuild_connection.tf`);
+  (`terraform/bootstrap/cloudbuild_connection.tf`, deleted by W11 on
+  2026-10-13);
 * possibly a private pool, so a build can reach a GKE control plane under
   `master_authorized_cidrs` (W0's open question, never verified).
 
@@ -1855,7 +1948,7 @@ A Cloud Run job:
 Pub/Sub subscription; the build file `scripts/cloudbuild/workspace-apply.yaml`
 (its three steps become the job's entrypoint, §2.2); the repository connection
 `swarm-github` and the two grants to Cloud Build's service agent in
-`terraform/bootstrap/cloudbuild_connection.tf`; the safeguard wording "usable
+`terraform/bootstrap/cloudbuild_connection.tf` (deleted by W11); the safeguard wording "usable
 only by that Cloud Build trigger, which builds only `main`", which now reads
 "usable only by that Cloud Run job, which runs only the image the owner pinned"
 (§2.4 safeguard 1); and W0's private-pool question (§10). The Pub/Sub topic
@@ -2033,7 +2126,7 @@ phases. New files are named without their root.
 | W6b | 6 | **the job's image and entrypoint**: `images/workspace-apply/Dockerfile` copies in, read-only under `/opt/swarm`, `scripts/register-tenant.sh`, `scripts/lib/`, `kubernetes/`, `apps/common/swarm_common` and `quota_broker`, and sets no `ENTRYPOINT` the job relies on (the job's `command` is W4b's); new `entry.py` (§2.2 step 0: discard the environment, metadata-server project and region, `CLOUD_RUN_EXECUTION` checked against `WS_BUILD_RE`, task count one, own 1800-second deadline, `execve` with the fixed environment); new `scripts/workspace-apply.sh` (steps 1 to 3, the build file's lines, with the two-argument check and exit 3 as success), which replaces `scripts/cloudbuild/workspace-apply.yaml`, deleted; `register-tenant.sh`'s header and `BUILD_ID` wording; CODEOWNERS on `entry.py`, `scripts/workspace-apply.sh` and the Dockerfile in place of the build file; the PR-check expectation that the guard and the script now rebuild `workspace-apply`; a unit test that every environment variable handed to `entry.py` is gone in the child, that any argument list but `[<w-id>, <mode>]` is refused, and that a task count other than one is refused | `images/workspace-apply/Dockerfile`, new `images/workspace-apply/entry.py`, new `scripts/workspace-apply.sh`, `scripts/cloudbuild/workspace-apply.yaml` (deleted), `scripts/register-tenant.sh` (comments and the `BUILD_ID` message only), `.github/CODEOWNERS`, `tests/unit/scripts/test_build_images_pr_check.py`, `tests/unit/scripts/test_register_tenant_workspace.py`, new `tests/unit/scripts/test_workspace_apply_entry.py` | W6 (built) |
 | W4b | 7 | **Terraform, owner-approved once**: in `workspace_deployer.tf`, `google_cloud_run_v2_job.workspace_apply` in place of `google_cloudbuild_trigger.workspace_apply` (the image by digest, `command` `python3 -I /opt/swarm/entry.py`, one task, `max_retries = 0`, timeout 1800s, direct VPC egress `ALL_TRAFFIC` into the swarm subnet with the worker network tag, so `modules/network`'s worker-ingress deny covers it, `managed-by=swarm-terraform`) and its authoritative `google_cloud_run_v2_job_iam_policy` naming the chosen dispatcher only; the sink and exclusion filter re-targeted at `resource.type="cloud_run_job" AND resource.labels.job_name="swarm-workspace-apply"`; `workspace_deployer_pull` removed, and `roles/logging.logWriter` if W0b (4) says so; `workspace_apply_builder_image` renamed `workspace_apply_image`, `workspace_apply_repository` removed, the swarm subnet named; the alerts of §2.4 re-targeted, plus the alert on a `jobs.run` from any other caller. **Option (ii):** new `workspace_dispatch.tf` (the account `swarm-workspace-dispatch` with its policy written empty, the workflow, the Eventarc trigger on the existing topic, the run role on the job, the invoker grant) and the workflow's source, and the Workflows and Eventarc APIs in infra's service list. **Option (i):** the topic and its publisher binding removed, and swarm-api's run role bound on the job. `terraform test` for each | `terraform/bootstrap/workspace_deployer.tf`, `terraform/bootstrap/variables.tf`, `terraform/modules/monitoring/workspace_alerts.tf`, `scripts/lib/unlabelable-types.json` (drop `google_cloudbuild_trigger`), `tests/terraform/workspace_deployer.tftest.hcl`, `tests/terraform/personal_workspaces_absent.tftest.hcl`; option (ii) adds new `terraform/bootstrap/workspace_dispatch.tf`, new `terraform/bootstrap/workflows/workspace-apply.yaml`, `terraform/infra/main.tf` (the service list only) and new `tests/terraform/workspace_dispatch.tftest.hcl` | W0b (1), W6b (its image promoted, for the digest), the owner's choice |
 | W7b | 7 | **swarm-api. Option (i):** `publish_workspace.py` becomes a caller of `jobs.run` on the one job with the two arguments (same `publish` contract: returns False, never raises, a failure stays `approved` for the sweep), its settings, and the Cloud Run client dependency. **Option (ii):** the module docstring's "Cloud Build trigger" becomes "Eventarc and Workflows start the Cloud Run job", and nothing else | `apps/swarm-api/swarm_api/publish_workspace.py`; option (i) adds `apps/swarm-api/swarm_api/settings.py`, `apps/swarm-api/pyproject.toml` and the publish tests under `tests/unit/control_plane/` | the owner's choice |
-| W11 | 9 | **removal, once the job ships** (the first execution has reached A9 and W0b (4) to (6) are dated): delete `terraform/bootstrap/cloudbuild_connection.tf` (its two custom roles and the two grants to Cloud Build's service agent) and any assertion that names it; the owner then deletes the `swarm-github` connection (`gcloud builds connections delete swarm-github --region=us-central1`), the `swarm-github-github-oauthtoken-*` secret Google's agent made for it, which deleting a connection does not remove, and uninstalls Google's Cloud Build GitHub App from the repository. `cloudbuild.googleapis.com` stays enabled: the release builds every image with Cloud Build | `terraform/bootstrap/cloudbuild_connection.tf` (deleted), `tests/terraform/` (none names it, read 2026-10-10) | W4b applied, W10 |
+| W11 | 9 | **removal, once the job ships** (the first execution has reached A9 and W0b (4) to (6) are dated): delete `terraform/bootstrap/cloudbuild_connection.tf` (its two custom roles and the two grants to Cloud Build's service agent) and any assertion that names it; the owner then deletes the `swarm-github` connection (`gcloud builds connections delete swarm-github --region=us-central1`), the `swarm-github-github-oauthtoken-*` secret Google's agent made for it, which deleting a connection does not remove, and uninstalls Google's Cloud Build GitHub App from the repository. `cloudbuild.googleapis.com` stays enabled: the release builds every image with Cloud Build. **Terraform half done 2026-10-13**, after the job took w-7f9285 through A1 to A9 to ready at 05:05Z: the file is deleted (a plain deletion, so the owner's next bootstrap apply destroys its four resources; `removed.tf`'s `destroy = false` is for grants that must stay live, and these must not), and `tests/unit/scripts/test_cloudbuild_connection_retired.py` holds every name it declared out of `terraform/`. **The owner's half is open**: the bootstrap apply and the three steps of "W11: retiring the Cloud Build connection" below | `terraform/bootstrap/cloudbuild_connection.tf` (deleted), `terraform/bootstrap/workspace_deployer.tf` (its comment), new `tests/unit/scripts/test_cloudbuild_connection_retired.py`, `tests/terraform/` (none names it, read 2026-10-10 and again 2026-10-13) | W4b applied, W10 |
 | — | later | deprovisioning (§7), with its own guard mode | — | the owner's decision then |
 
 **The owner's one-time steps** (shrunk by the 2026-10-10 re-decision):
@@ -2065,16 +2158,85 @@ phases. New files are named without their root.
 * **Moving the image** is a bootstrap apply that changes
   `workspace_apply_image` to the digest the release promoted. It is the step
   that lets a merged change to the guard, the script or the entrypoint reach
-  the identity (§2.4 R1).
-* **W11, after the job ships:** delete the `swarm-github` connection, its
-  OAuth secret, and Google's Cloud Build App from the repository.
+  the identity (§2.4 R1). Until the owner takes it, the release's deploy check
+  (`scripts/lib/deploy.sh`) reports the job as "awaiting owner re-pin", names
+  both digests and this command, and passes -- but only while the job runs a
+  digest some release promoted; any other digest still fails the release.
+  "Some release promoted" means the digest carries a `<channel>-promoted-*`
+  tag, which `scripts/push-images.sh` adds to every digest it promotes. That
+  mark began on 2026-10-11 and nothing backfills it, so a digest promoted
+  before then -- the one the job ran when marks began, among them -- fails as
+  "no release promoted" until it is marked once. The failure prints the
+  command; confirm the promotion in that release's log first, then run
+  `gcloud artifacts docker tags add <repo>/workspace-apply@sha256:<digest>
+  <repo>/workspace-apply:dev-promoted-pre-mark-<digest> --project <project>`.
+  Marking a digest no release promoted is exactly what the check exists to
+  refuse, so the confirmation is not optional.
+* **W11, now that the job has shipped:** delete the `swarm-github`
+  connection, apply bootstrap, delete the connection's OAuth secret, and
+  uninstall Google's Cloud Build App from the repository, in that order
+  ("W11: retiring the Cloud Build connection", below).
 
 **Removal note.** The `swarm-github` Cloud Build connection and the grants in
-`terraform/bootstrap/cloudbuild_connection.tf` exist only for the Cloud Build
+`terraform/bootstrap/cloudbuild_connection.tf` existed only for the Cloud Build
 trigger. They are **deleted once the job ships** (W11): not before, so a
 rollback to the trigger stays possible until the first execution has made a
 workspace end to end, and not long after, because the condition there admits
-Google's agent to set IAM on a secret prefix nothing else needs.
+Google's agent to set IAM on a secret prefix nothing else needs. The job
+shipped on 2026-10-13 (w-7f9285 reached ready at 05:05Z through the job), and
+the file was deleted the same day.
+
+### W11: retiring the Cloud Build connection
+
+The Terraform half is merged; what is left is the owner's, because it is a
+bootstrap apply, a credential Google's agent made, and an App installed on
+the repository. Every command names the shared project explicitly and touches
+only names this platform made. Do them in this order.
+
+1. **Delete the connection**, while its agent still holds the grants, so the
+   delete cannot fail on a permission the apply has just removed:
+
+   ```bash
+   gcloud builds connections delete swarm-github --region=us-central1 \
+     --project=saga-agents-staging
+   ```
+
+   Nothing reads it: the job needs no forge connection, and the release
+   builds images from an uploaded source, not from a connection.
+
+2. **Apply bootstrap** from `main` (`make bootstrap`). Its plan must read
+   **0 to add, 0 to change, 4 to destroy**, and the four are exactly:
+
+   * `google_project_iam_member.cloudbuild_connection_secret_create[0]`
+   * `google_project_iam_member.cloudbuild_connection_secret_policy[0]`
+   * `google_project_iam_custom_role.cloudbuild_connection_secret_create[0]`
+     (`swarmCloudBuildConnectionSecretCreate`)
+   * `google_project_iam_custom_role.cloudbuild_connection_secret_policy[0]`
+     (`swarmCloudBuildConnectionSecretPolicy`)
+
+   Anything else in the destroy list is not this change: stop. A destroyed
+   custom role is soft-deleted, and its id cannot be reused for 37 days.
+
+3. **Delete the connection's OAuth secret.** Deleting a connection does not
+   remove it. List it by its exact prefix first, and delete only what that
+   prints. The prefix is `swarm-github-github-oauthtoken-`, never
+   `swarm-github-`: that also matches `swarm-github-app-*`, the platform's own
+   GitHub App credentials.
+
+   ```bash
+   gcloud secrets list --project=saga-agents-staging \
+     --filter='name~^projects/[0-9]+/secrets/swarm-github-github-oauthtoken-' \
+     --format='value(name.basename())'
+   gcloud secrets delete <each name printed above> --project=saga-agents-staging
+   ```
+
+4. **Uninstall Google's Cloud Build GitHub App** ("Google Cloud Build") from
+   the repository: on GitHub, Settings → Applications → Installed GitHub
+   Apps → Google Cloud Build → Configure, then remove this repository, or
+   uninstall the App if this was the only repository it was given.
+
+`cloudbuild.googleapis.com` stays enabled throughout: the release builds every
+image with Cloud Build.
 
 After those, **no person's onboarding needs the owner**, unless the guard stops
 a run. W3, W4, W6 and W7 get the one review (credentials, tenant isolation,

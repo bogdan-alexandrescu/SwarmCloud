@@ -45,6 +45,13 @@ export { ISSUE_FORM, TASK_FORM, WORKFLOW_FORM }
  */
 const KEYS: Readonly<Record<string, string>> = Object.fromEntries(shortcutsIn('submit').map((s) => [s.key, s.to!]))
 
+/**
+ * EACH CARD'S KEYCAP, FROM THE SAME TABLE (live QA SUB-19): the caps were
+ * typed into the cards, so a cap and the key that works could differ. A form
+ * the table has no key for draws no cap rather than a guessed one.
+ */
+const CAP: Readonly<Record<string, string>> = Object.fromEntries(shortcutsIn('submit').map((s) => [s.to!, s.label]))
+
 /** What sits over the page and owns the keyboard: the same list as N's. */
 const OVER_THE_PAGE = '[role="dialog"], [aria-modal="true"], aside.adm-side'
 
@@ -124,20 +131,20 @@ export function SubmitChooser({ go }: { go: (to: string) => void }) {
             One agent, one runner. It lands READY or PARKED and costs nothing until the scheduler admits it.
           </p>
           <span className="sb-row">
-            <Button kind="primary" aria-keyshortcuts="T" onClick={() => go(TASK_FORM)}>
+            <Button kind="primary" aria-keyshortcuts={CAP[TASK_FORM]} onClick={() => go(TASK_FORM)}>
               Start a task
             </Button>
-            <kbd className="sb-kbd">T</kbd>
+            {CAP[TASK_FORM] !== undefined && <kbd className="sb-kbd">{CAP[TASK_FORM]}</kbd>}
           </span>
         </div>
         <div className="sb-card sb-choice">
           <h2><WorkflowGlyph />Submit a workflow</h2>
           <p className="sb-note">Steps in stages that hand work to each other, opening one PR or one per step.</p>
           <span className="sb-row">
-            <Button aria-keyshortcuts="W" onClick={() => go(WORKFLOW_FORM)}>
+            <Button aria-keyshortcuts={CAP[WORKFLOW_FORM]} onClick={() => go(WORKFLOW_FORM)}>
               Start a workflow
             </Button>
-            <kbd className="sb-kbd">W</kbd>
+            {CAP[WORKFLOW_FORM] !== undefined && <kbd className="sb-kbd">{CAP[WORKFLOW_FORM]}</kbd>}
           </span>
         </div>
         <div className="sb-card sb-choice">
@@ -146,10 +153,10 @@ export function SubmitChooser({ go }: { go: (to: string) => void }) {
             Name an issue. A planner reads it and writes a plan; once the plan is approved it runs as a workflow.
           </p>
           <span className="sb-row">
-            <Button aria-keyshortcuts="I" onClick={() => go(ISSUE_FORM)}>
+            <Button aria-keyshortcuts={CAP[ISSUE_FORM]} onClick={() => go(ISSUE_FORM)}>
               Start from an issue
             </Button>
-            <kbd className="sb-kbd">I</kbd>
+            {CAP[ISSUE_FORM] !== undefined && <kbd className="sb-kbd">{CAP[ISSUE_FORM]}</kbd>}
           </span>
         </div>
       </div>
@@ -158,7 +165,7 @@ export function SubmitChooser({ go }: { go: (to: string) => void }) {
           <h2 className="sb-card-h" id="submit-recent-h">Start from a recent one</h2>
           <HelpCard topic="recent-submissions" />
         </div>
-        <RecentSubmissions go={go} read={recent.read} />
+        <RecentSubmissions go={go} read={recent.read} reading={recent.reading} onRetry={recent.reload} />
       </section>
       <p className="sb-note sb-foot">
         The spine&rsquo;s Submit button opens this page; <kbd className="sb-kbd">N</kbd> from anywhere does too.
@@ -169,6 +176,19 @@ export function SubmitChooser({ go }: { go: (to: string) => void }) {
 
 /** How many of your submissions the card lists. */
 export const RECENT_SHOWN = 5
+
+/**
+ * HOW MUCH THE CARD READS TO LIST FIVE (live QA SUB-6). It read the tenant's
+ * newest 200 tasks, 100 workflows and a full page of runs -- about 6 MB and
+ * 7.5 s on the live tenant -- to filter five rows out in the browser. Tasks
+ * are now asked for as YOURS (`submitted_by=me`, applied in the query), full
+ * rows still, because a workflow's name is its steps' `metadata.unit`. The
+ * workflow and run routes take no submitter filter, so they are a smaller
+ * window of the tenant's newest, and the card names that window as before.
+ */
+export const RECENT_TASKS_READ = 30
+export const RECENT_WORKFLOWS_READ = 20
+export const RECENT_RUNS_READ = 20
 
 export interface RecentSubmission {
   kind: 'task' | 'workflow' | 'issue run'
@@ -181,7 +201,7 @@ export interface RecentSubmission {
 
 type RecentRead =
   | { kind: 'reading' }
-  | { kind: 'who-unread'; why: string }
+  | { kind: 'who-unread'; why: string; unread: string[] }
   | { kind: 'read'; items: RecentSubmission[]; looked: string[]; unread: string[] }
 
 function okData<T>(r: Result<T>): T | null {
@@ -201,7 +221,7 @@ export function recentSubmissions(
   email: string,
   tasks: readonly Task[] | null,
   workflows: readonly import('./types').Workflow[] | null,
-  runs: readonly import('./types').IssueRun[] | null,
+  runs: readonly import('./types').IssueRunSummary[] | null,
 ): RecentSubmission[] {
   const mine = (who: string | null | undefined) => typeof who === 'string' && who.toLowerCase() === email.toLowerCase()
   const byId = new Map((tasks ?? []).map((t) => [t.id, t]))
@@ -237,13 +257,20 @@ function useRecentRead(): { read: RecentRead; readAt: number | null; reading: bo
   useEffect(() => {
     let live = true
     setReading(true)
-    void Promise.all([loadMe(), loadTasks(), loadWorkflows(), loadRuns()]).then(([me, tasks, workflows, runs]) => {
+    void Promise.all([
+      loadMe(),
+      loadTasks(RECENT_TASKS_READ, { submittedBy: 'me' }),
+      loadWorkflows(RECENT_WORKFLOWS_READ),
+      loadRuns(null, RECENT_RUNS_READ),
+    ]).then(([me, tasks, workflows, runs]) => {
       if (!live) return
       setReading(false)
       const who = okData(me)
+      const unread = [unreadWhy('Tasks', tasks), unreadWhy('Workflows', workflows), unreadWhy('Issue runs', runs)]
+        .filter((x): x is string => x !== null)
       if (who === null) {
         setReadAt(null)
-        setRead({ kind: 'who-unread', why: me.status === 'error' ? me.error.message : 'the read returned nothing' })
+        setRead({ kind: 'who-unread', why: me.status === 'error' ? me.error.message : 'the read returned nothing', unread })
         return
       }
       const ats = [me, tasks, workflows, runs].flatMap((r) => (r.status === 'ok' || r.status === 'stale' || r.status === 'empty' ? [r.fetchedAt] : []))
@@ -251,13 +278,16 @@ function useRecentRead(): { read: RecentRead; readAt: number | null; reading: bo
       const t = tasks.status === 'empty' ? [] : (okData(tasks)?.tasks ?? null)
       const w = workflows.status === 'empty' ? [] : (okData(workflows)?.workflows ?? null)
       const r = runs.status === 'empty' ? [] : (okData(runs)?.runs ?? null)
+      // A WINDOW THAT HELD NOTHING IS NOT A WINDOW (VQA V135): "Among the
+      // newest 0 tasks, 0 workflows, 0 issue runs" under "None of yours yet."
+      // said nothing twice. Only a window that held something is named.
       const looked = [
-        t === null ? null : `the newest ${t.length} task${t.length === 1 ? '' : 's'}`,
-        w === null ? null : `${w.length} workflow${w.length === 1 ? '' : 's'}`,
-        r === null ? null : `${r.length} issue run${r.length === 1 ? '' : 's'}`,
+        t === null || t.length === 0 ? null : `your newest ${t.length} task${t.length === 1 ? '' : 's'}`,
+        // Whose window each is, said per window: the tasks are yours, the
+        // workflows and runs the tenant's (live QA SUB-6).
+        w === null || w.length === 0 ? null : `the tenant\u2019s newest ${w.length} workflow${w.length === 1 ? '' : 's'}`,
+        r === null || r.length === 0 ? null : `its newest ${r.length} issue run${r.length === 1 ? '' : 's'}`,
       ].filter((x): x is string => x !== null)
-      const unread = [unreadWhy('Tasks', tasks), unreadWhy('Workflows', workflows), unreadWhy('Issue runs', runs)]
-        .filter((x): x is string => x !== null)
       setRead({ kind: 'read', items: recentSubmissions(who.principal.email, t, w, r), looked, unread })
     })
     return () => {
@@ -268,7 +298,30 @@ function useRecentRead(): { read: RecentRead; readAt: number | null; reading: bo
   return { read, readAt, reading, reload }
 }
 
-function RecentSubmissions({ go, read }: { go: (to: string) => void; read: RecentRead }) {
+/**
+ * THE READS THAT FAILED, EACH ON ITS OWN LINE, AND ONE "Try again" (VQA V136):
+ * the card said only "who you are is unknown" while the task read beside it
+ * had failed too, and offered nothing to do about either.
+ */
+function UnreadLines({ unread, reading, onRetry }: { unread: readonly string[]; reading: boolean; onRetry: () => void }) {
+  return (
+    <>
+      {unread.map((u) => (
+        <p key={u} className="sb-note sb-recent-scope"><Dash why={u} /> {u}</p>
+      ))}
+      <p className="sb-row sb-recent-scope">
+        <Button size="sm" className="sb-recent-retry" busy={reading ? 'Reading…' : false} onClick={onRetry}>Try again</Button>
+      </p>
+    </>
+  )
+}
+
+function RecentSubmissions({ go, read, reading, onRetry }: {
+  go: (to: string) => void
+  read: RecentRead
+  reading: boolean
+  onRetry: () => void
+}) {
   if (read.kind === 'reading') {
     return (
       <p className="sb-empty" aria-busy="true">
@@ -280,19 +333,26 @@ function RecentSubmissions({ go, read }: { go: (to: string) => void; read: Recen
   if (read.kind === 'who-unread') {
     // WHO YOU ARE IS UNREAD: nothing can be called yours, so nothing is listed.
     return (
-      <p className="sb-empty">
-        <Dash why={`Who you are could not be read (${read.why}), so your submissions cannot be told from anyone else's.`} />
-        <span>Not read: who you are is unknown here.</span>
-      </p>
+      <>
+        <p className="sb-empty">
+          <Dash why={`Who you are could not be read (${read.why}), so your submissions cannot be told from anyone else's.`} />
+          <span>Not read: who you are is unknown here ({read.why}), so nothing can be called yours.</span>
+        </p>
+        <UnreadLines unread={read.unread} reading={reading} onRetry={onRetry} />
+      </>
     )
   }
-  const scope = read.looked.length === 0 ? null : `Among ${read.looked.join(', ')} this tenant has.`
+  const scope = read.looked.length === 0 ? null : `Among ${read.looked.join(', ')}.`
   return (
     <>
       {read.items.length === 0 ? (
         <p className="sb-empty">
           <NamedMark mark="queued" hue="neu" />
-          <span>{read.unread.length === 0 ? 'None of yours yet.' : 'None of yours in what was read.'}</span>
+          <span>
+            {read.unread.length > 0
+              ? 'None of yours in what was read.'
+              : read.looked.length === 0 ? 'Nothing has been submitted here yet.' : 'None of yours yet.'}
+          </span>
         </p>
       ) : (
         <ul className="sb-recent-list">
@@ -310,9 +370,7 @@ function RecentSubmissions({ go, read }: { go: (to: string) => void; read: Recen
         </ul>
       )}
       {scope !== null && <p className="sb-note sb-recent-scope">{scope}</p>}
-      {read.unread.map((u) => (
-        <p key={u} className="sb-note sb-recent-scope"><Dash why={u} /> {u}</p>
-      ))}
+      {read.unread.length > 0 && <UnreadLines unread={read.unread} reading={reading} onRetry={onRetry} />}
     </>
   )
 }

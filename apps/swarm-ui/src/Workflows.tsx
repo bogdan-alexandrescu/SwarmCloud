@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type CSSProperties,
   type ReactNode,
 } from 'react'
 
@@ -16,6 +17,7 @@ import {
   loadWorkflowBoard,
   loadTaskEventsPage,
   loadWorkflowUsage,
+  loadOlderWorkflows,
   type CancelWorkflowResult,
   type ResourceClasses,
   type StepUsage,
@@ -24,6 +26,7 @@ import {
 } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
 import {
+  LIVE_CARD_H,
   autoTier,
   censusWord,
   criticalPath,
@@ -112,6 +115,7 @@ import {
   tokenKindsCell,
   tokenKindsTotal,
   workflowLabel,
+  listRowName,
   workflowPullRequest,
   mergeCardOf,
   VIEW_LABEL,
@@ -120,11 +124,12 @@ import {
   type WorkflowPullRequest,
   type WorkflowView,
 } from './stepviews'
-import type { Result } from './fetch'
+import { errorHeading, type ApiError, type Result } from './fetch'
 import { STATE_MARK, StateMark } from './marks'
 import { Button, Chip, NamedMark, ProgressBar, Segmented, Tabs, TypedConfirm, type ChipTone } from './components'
 import { offerNewestWorkflows, recentName, rememberWorkflow, RECENT_WORKFLOWS_EVENT } from './Spine'
 import { StopRun } from './StopRun'
+import { LiveThumb, showsLiveThumb, type OpenLive } from './LiveThumb'
 import { AGE_TICK_MS, useNow as useSharedClock } from './useNow'
 import { useInView } from './useInView'
 import {
@@ -146,9 +151,11 @@ import {
   workflowHeaderState,
   workflowStartText,
   TERMINAL_STATES,
+  CONCURRENCY_STATES,
 } from './types'
 import {
   MergeStepCard,
+  MoreRight,
   SourceNote,
   StepInspector,
   StrayMark,
@@ -176,6 +183,7 @@ import {
   BUCKET_FILTERS,
   BUCKET_LABEL,
   derivedStateOf,
+  EMPTY_QUERY,
   listHref,
   matchesFilters,
   ownersOf,
@@ -351,6 +359,24 @@ export function WorkflowsScreen({
   const setView = useCallback((v: string) => (onView !== undefined ? onView(v) : setLocalView(v)), [onView])
   const query = useMemo(() => parseWorkflowQuery(current), [current])
   const choose = useCallback((next: WorkflowQuery) => setView(workflowQueryString(next)), [setView])
+  // ANOTHER WORKFLOW, OR ANOTHER VIEW OF ONE, IS A NEW HISTORY ENTRY (live QA
+  // WF-7 and WF-17, 2026-10-11). `onView` is a route change the app writes
+  // with `replaceState`, which is right for a filter or a sort, so moving to
+  // an older workflow with the same-step scrubber, or from Table to Changes,
+  // replaced the entry and Back skipped the page the reader had been on. The
+  // new address is pushed first; the app's normalising write then finds it
+  // already in the bar. Only with an app router: a screen that keeps its own
+  // address (`onView` absent) has no history to push to.
+  const go = useCallback(
+    (next: WorkflowQuery) => {
+      if (onView !== undefined && next.wf !== null && typeof window !== 'undefined') {
+        const href = workflowHref(next.wf, next, next.tab)
+        if (`${window.location.pathname}${window.location.search}` !== href) window.history.pushState(null, '', href)
+      }
+      setView(workflowQueryString(next))
+    },
+    [onView, setView],
+  )
   // THE CHANGES TAB'S STEP FILTER AND OPEN FILE (`?step=&file=`) ride on the
   // address beside the query, and only on that tab: any other choice is
   // written by `workflowQueryString`, which drops them.
@@ -388,11 +414,20 @@ export function WorkflowsScreen({
           // THE PAGE'S OWN SKELETON (#113): its head row with the actions
           // disabled, its view tabs and a body card, so the board lands under
           // the tabs instead of pushing them in above generic rows.
-          skeleton={<WorkflowPageSkeleton id={id} query={query} choose={choose} />}
+          skeleton={<WorkflowPageSkeleton id={id} query={query} choose={go} />}
           empty={{ heading: 'No workflows', body: 'Individually submitted tasks appear under Agents.' }}
         >
           {(d) => (
-            <WorkflowPage board={d} id={id} query={query} choose={choose} stores={stores} changesAt={changesAt} onChangesAt={chooseChanges} />
+            <WorkflowPage
+              board={d}
+              id={id}
+              query={query}
+              choose={choose}
+              go={go}
+              stores={stores}
+              changesAt={changesAt}
+              onChangesAt={chooseChanges}
+            />
           )}
         </Screen>
       </>
@@ -411,10 +446,19 @@ export function WorkflowsScreen({
       // THE LIST'S OWN SKELETON (#113): its toolbar, disabled, and its table
       // head, so the first row lands where the skeleton's first row was.
       skeleton={<WorkflowListSkeleton query={query} />}
-      summary={(d) => listSummary(d.workflows)}
+      summary={(d) => listSummary(d)}
+      // THE EMPTY LIST SAYS WHERE A WORKFLOW COMES FROM (V110, #1038). It was
+      // one line about where tasks go, and nothing about how to start the
+      // thing this screen lists; the link is the Submit › workflow form.
       empty={{
         heading: 'No workflows',
-        body: 'Individually submitted tasks appear under Agents.',
+        body: (
+          <>
+            A workflow is a set of steps submitted together, run in the order their dependencies give, and this read found
+            none. Individually submitted tasks appear under Agents.
+          </>
+        ),
+        link: { href: '#work/new-workflow', label: 'Submit a workflow' },
       }}
     >
       {(d) => <WorkflowList board={d} query={query} choose={choose} />}
@@ -461,19 +505,75 @@ export function startedPhrase(started: { text: string; kind: 'never' | 'unread' 
   return `started ${started.text}`
 }
 
-/** `2 running · 31 finished · 1 failed`, the list's count note over its first card (#138). */
-function listSummary(workflows: readonly Workflow[]): string {
-  const c = bucketCounts(workflows)
-  return `${c.running} running · ${c.finished} finished · ${c.failed} failed`
+/**
+ * `2 running · 1 parked · 31 finished · 1 failed`, the list's count note over
+ * its first card (#138).
+ *
+ * PARKED IS SAID APART FROM RUNNING (live QA WF-10, 2026-10-11): the Running
+ * bucket holds every workflow not yet ended, so `7 running` counted two rows
+ * whose own mark said `parked`. Waiting or queued work is said the same way.
+ * AND IT SAYS WHAT IT COUNTED (WF-2): with older workflows on the server the
+ * figures are of the newest read, never the tenant's totals.
+ */
+export function listSummary(d: Pick<WorkflowBoard, 'workflows' | 'nextPageToken'>): string {
+  const c = bucketCounts(d.workflows)
+  let parked = 0
+  let waiting = 0
+  for (const w of d.workflows) {
+    if (bucketOf(w) !== 'running') continue
+    const s = derivedStateOf(w)
+    if (s === 'PARKED') parked += 1
+    else if (s === 'READY' || s === 'QUEUED' || s === 'SUBMITTED') waiting += 1
+  }
+  const parts = [`${c.running - parked - waiting} running`]
+  if (parked > 0) parts.push(`${parked} parked`)
+  if (waiting > 0) parts.push(`${waiting} waiting`)
+  parts.push(`${c.finished} finished`, `${c.failed} failed`)
+  const of = d.nextPageToken ? ` · of the ${d.workflows.length} newest` : ''
+  return `${parts.join(' · ')}${of}`
 }
 
 /**
- * ONE WORKFLOW'S READ: the board, so the page can scrub the same step across
- * other workflows and its states join through the same task read. A workflow
- * past the board's 100 is read on its own (`GET /v1/workflows/{id}`) and
- * joined in, so a pasted link to an old workflow still opens it.
+ * ONE WORKFLOW'S READ: `GET /v1/workflows/{id}`, ITS OWN, AND NOTHING ELSE
+ * (live QA CH-21, 2026-10-11). The page waited on the board -- `GET
+ * /v1/workflows?limit=100`, the slowest read in the console at 3.1-4.0 s --
+ * before it drew the one workflow it is about. It now draws from its own read,
+ * which carries the workflow and its step tasks, and the board the same-step
+ * scrubber needs is read beside it once the page is up (`useBoardAround`).
+ *
+ * A 404 is said as one (WF-18c). Any other failure of the page's own read
+ * falls back to the board, which may still hold the row, exactly as before.
  */
 export async function loadWorkflowPage(id: string): Promise<Result<WorkflowBoard>> {
+  const one = await loadWorkflow(id)
+  if (one.status === 'ok' || one.status === 'stale') {
+    const data: WorkflowBoard = {
+      workflows: [one.data.workflow],
+      taskById: new Map(one.data.tasks.map((t) => [t.id, t])),
+      statesDetail: null,
+    }
+    return one.status === 'ok'
+      ? { status: 'ok', fetchedAt: one.fetchedAt, serverAt: one.serverAt, data }
+      : { status: 'stale', data, fetchedAt: one.fetchedAt, error: one.error }
+  }
+  if (one.status === 'error' && one.error.kind === 'not_found') {
+    const data: PageBoard = { workflows: [], taskById: new Map(), statesDetail: null, pageMiss: one.error }
+    return { status: 'ok', fetchedAt: Date.now(), data }
+  }
+  return joinWorkflowPage(await loadWorkflowBoard(), one, id)
+}
+
+/**
+ * The board, with one workflow's own read joined in: the page's fallback when
+ * its own read failed, and the shape `useBoardAround` draws once the board has
+ * landed. A workflow past the board's 100 is joined in from its own read, so a
+ * pasted link to an old workflow still opens it.
+ */
+export function joinWorkflowPage(
+  b: Result<WorkflowBoard>,
+  one: Result<{ workflow: Workflow; tasks: Task[] }>,
+  id: string,
+): Result<WorkflowBoard> {
   // THE PAGE'S OWN STEPS ARE READ BY ID, EVERY TIME (owner QA R8,
   // 2026-10-04). The board joins states through `GET /v1/tasks?limit=200`, a
   // window of the tenant's newest tasks, so an older workflow's steps fell
@@ -482,7 +582,6 @@ export async function loadWorkflowPage(id: string): Promise<Result<WorkflowBoard
   // exit 0, 2m 56s and $0.89 for the same step. `GET /v1/workflows/{id}`
   // returns the workflow's own step tasks, so they are joined whether or not
   // the window reached them.
-  const [b, one] = await Promise.all([loadWorkflowBoard(), loadWorkflow(id)])
   if (b.status === 'loading' || b.status === 'error') {
     // No board: the page is still its own workflow, if that read answered.
     if (one.status !== 'ok' && one.status !== 'stale') return b
@@ -492,7 +591,15 @@ export async function loadWorkflowPage(id: string): Promise<Result<WorkflowBoard
       data: { workflows: [one.data.workflow], taskById: new Map(one.data.tasks.map((t) => [t.id, t])), statesDetail: null },
     }
   }
-  if (one.status !== 'ok' && one.status !== 'stale') return b
+  if (one.status !== 'ok' && one.status !== 'stale') {
+    // WHY THE PAGE'S OWN READ FAILED travels with the board (WF-18c), so a 404
+    // is said as one rather than as "could not be read on its own".
+    if (one.status === 'error' && (b.status === 'ok' || b.status === 'stale')) {
+      const data: PageBoard = { ...b.data, pageMiss: one.error }
+      return { ...b, data }
+    }
+    return b
+  }
   const base: WorkflowBoard =
     b.status === 'ok' || b.status === 'stale' ? b.data : { workflows: [], taskById: new Map(), statesDetail: null }
   // A task read that failed stays failed for the OTHER workflows: their
@@ -501,16 +608,25 @@ export async function loadWorkflowPage(id: string): Promise<Result<WorkflowBoard
   // absent from it -- still read as unread, never "not started".
   const taskById = new Map(base.taskById ?? [])
   for (const t of one.data.tasks) taskById.set(t.id, t)
+  // THE PAGE'S OWN ROW IS ITS OWN READ, in the board's place for it: the
+  // list row carries no step input (`view=summary`), and the two may have
+  // been read seconds apart.
   const inBoard = base.workflows.some((w) => w.workflow_id === id)
+  const own = one.data.workflow
   return {
     status: 'ok',
     fetchedAt: b.status === 'ok' || b.status === 'stale' ? b.fetchedAt : one.fetchedAt,
     data: {
       ...base,
-      workflows: inBoard ? base.workflows : [...base.workflows, one.data.workflow],
+      workflows: inBoard ? base.workflows.map((w) => (w.workflow_id === id ? own : w)) : [...base.workflows, own],
       taskById: base.taskById === null && one.data.tasks.length === 0 ? null : taskById,
     },
   }
+}
+
+/** A workflow page's board, with why its own workflow's read failed, when it did (WF-18c). */
+interface PageBoard extends WorkflowBoard {
+  readonly pageMiss?: ApiError
 }
 
 /** The step the inspector is on, and how it got there. */
@@ -968,6 +1084,25 @@ function failedClauses(failed: number, workflow: Workflow, taskById: ReadonlyMap
  * workflow is over -- and a request whose outcome was not read is still a
  * request, so the tag stays exactly as it was before this check existed.
  */
+/**
+ * WHAT PULL REQUEST THE WORKFLOW WAITS FOR (lane SPEED-D3): the API's sentence
+ * while it waits, or once one closed unmerged; null once released, and for a
+ * workflow submitted without `after`. Its steps read PARKED on a dependency,
+ * which alone says "a step it depends on has not finished" -- and none has run.
+ */
+export function pullRequestWait(workflow: Workflow): string | null {
+  const wait = workflow.after_pull_requests
+  if (wait === undefined || (wait.state !== 'waiting' && wait.state !== 'closed')) return null
+  return wait.text || null
+}
+
+/** `pullRequestWait` as the tag the list row and the page head draw. */
+export function PullRequestWaitTag({ workflow }: { workflow: Workflow }) {
+  const text = pullRequestWait(workflow)
+  if (text === null) return null
+  return <span className="tag wait">{text}</span>
+}
+
 function cancelPending(workflow: Workflow): boolean {
   if (!workflow.cancel_requested) return false
   const roll = workflow.rollup
@@ -1072,6 +1207,7 @@ export function WorkflowCard({
   tableFilter = null,
   onStageTable,
   onClearFilter,
+  openLive,
 }: {
   workflow: Workflow
   taskById: ReadonlyMap<string, Task> | null
@@ -1132,6 +1268,11 @@ export function WorkflowCard({
   tableFilter?: StageFilter | null
   onStageTable?: (level: number, word: string) => void
   onClearFilter?: () => void
+  /**
+   * How a running browser node's live card opens its socket (LiveThumb.tsx).
+   * OPTIONAL: the real one everywhere but a test, which hands in a fake.
+   */
+  openLive?: OpenLive
 }) {
   const roll = rollupLine(workflow, taskById)
   // WHEN IT STARTED (#376): the earliest step task's `started_at` -- the
@@ -1144,7 +1285,12 @@ export function WorkflowCard({
   const strays = straysOf(workflow, taskById)
   const unreadable = unreadableOf(workflow, taskById)
   const sectionRef = useRef<HTMLElement | null>(null)
-  const narrow = useNarrow()
+  const viewportNarrow = useNarrow()
+  // THE SPLIT'S OWN WIDTH, NOT ONLY THE VIEWPORT'S (V099, V100; #1038). See
+  // `DOCK_MIN_PX`: at 1440 the page's column is ~1,020px, so docking by the
+  // viewport alone gave the Table ~600px of step cards and the Timeline ~420px
+  // beside a 405px panel. Unmeasured (0, jsdom) is the desktop's answer.
+  const [splitRef, splitWidth] = useBoxWidth()
 
   // THE LOCAL FALLBACKS, used only when the caller holds no store. The board
   // always passes both, so on the real screen these are never read.
@@ -1155,6 +1301,7 @@ export function WorkflowCard({
   // workflow's page, drawn there in place of the board (WorkflowChanges.tsx),
   // so a card that is somehow asked for it draws its graph.
   const view = asked === 'changes' ? 'graph' : asked
+  const narrow = viewportNarrow || (splitWidth > 0 && splitWidth < (view === 'table' ? DOCK_MIN_PX.table : DOCK_MIN_PX.timeline))
   const chooseView = (v: WorkflowView) => (onView !== undefined ? onView(workflow.workflow_id, v) : setLocalView(v))
   const picked = onPick !== undefined ? (pickedProp ?? null) : localPick
   // WHETHER A READER HAS PICKED A STEP ON THIS CARD (QA G3-28): the page's
@@ -1265,6 +1412,7 @@ export function WorkflowCard({
                 onPick={pickStep}
                 reload={reload}
                 onStageTable={page ? onStageTable : undefined}
+                openLive={openLive}
               />
               {page && <WfPhoneStages workflow={workflow} taskById={taskById} picked={picked} onPick={pickStep} />}
             </div>
@@ -1303,7 +1451,7 @@ export function WorkflowCard({
             picked row or track. The split is drawn whether or not a step is
             picked, so picking one never remounts the table and its sort. */}
         {view === 'graph' ? null : (
-          <div className={`wf-split is-rows${picked !== null && !narrow ? ' has-panel' : ''}`}>
+          <div ref={splitRef} className={`wf-split is-rows${picked !== null && !narrow ? ' has-panel' : ''}`}>
             <div className="wf-split-main">
               <WorkflowSteps
                 workflow={workflow}
@@ -1352,6 +1500,36 @@ function atNarrowWidth(): boolean {
 
 function useNarrow(): boolean {
   return useSyncExternalStore(subscribeNarrow, atNarrowWidth, () => false)
+}
+
+/**
+ * HOW WIDE THE TABLE'S OR THE TIMELINE'S SPLIT MUST BE FOR THE INSPECTOR TO
+ * DOCK BESIDE IT (V099, V100; #1038). `DOCK_QUERY` asks the viewport, but on a
+ * workflow's page the split is the viewport less the rail, the nav and the
+ * card's padding -- ~1,020px at 1440 -- and the docked panel's 300-400px
+ * column then took what the view needed: the step table fell below its 980px
+ * container query (`wf-steps`, styles/workflows.css) into stacked cards, and
+ * the Timeline's tracks were ~420px. Below these widths the inspector opens
+ * under the picked row or track instead, exactly as it does below 1100px.
+ *
+ *   table:    980 (the table's row layout) + 12 (gap) + 400 (panel) = 1,392
+ *   timeline: 700 (tracks a run's minutes read across) + 12 + 400 = 1,112
+ */
+export const DOCK_MIN_PX = { table: 1392, timeline: 1112 } as const
+
+/** A box's content width, kept current; 0 until measured (and always in jsdom). */
+function useBoxWidth(): [(el: HTMLElement | null) => void, number] {
+  const [el, setEl] = useState<HTMLElement | null>(null)
+  const [width, setWidth] = useState(0)
+  useEffect(() => {
+    if (el === null || typeof ResizeObserver === 'undefined') return
+    const measure = () => setWidth(el.clientWidth)
+    measure()
+    const watch = new ResizeObserver(measure)
+    watch.observe(el)
+    return () => watch.disconnect()
+  }, [el])
+  return [setEl, width]
 }
 
 /**
@@ -1602,9 +1780,11 @@ function Spend({ spend, short = false }: { spend: WorkflowSpend; short?: boolean
   return (
     <span className="wf-spend" title={note} aria-label={note}>
       {money(spend.usd)}
+      {/* SPELLED OUT (live QA WF-25, 2026-10-11): a bare `1/2` beside a
+          dollar figure read as a fraction of it, explained only on hover. */}
       {partial && (
         <span className="wf-spend-cov">
-          {spend.covered}/{due}
+          {spend.covered} of {due} reported
         </span>
       )}
     </span>
@@ -1621,13 +1801,6 @@ function money(v: number): string {
   return usd(v)
 }
 
-/** A task id cut to its kind and its last five characters: `task_…18680`. */
-export function integratorShort(id: string): string {
-  const m = /^([A-Za-z]+_)(.*)$/.exec(id)
-  const prefix = m === null ? '' : m[1]!
-  const rest = m === null ? id : m[2]!
-  return rest.length <= 6 ? id : `${prefix}…${rest.slice(-5)}`
-}
 
 /**
  * HOW MANY PULL REQUESTS THIS WORKFLOW IS GOING TO PRODUCE.
@@ -1751,12 +1924,18 @@ function WorkflowDispatch({
           <li className="ctl-fact">
             <b>integrator</b>
             <a
-              className="ctl-link wf-integrator"
+              className="ctl-link wf-integrator id"
               href={`#work/task/${encodeURIComponent(integratorTaskId)}`}
               title={integratorTaskId}
               aria-label={`Open the integrator task ${integratorTaskId}`}
             >
-              {integratorShort(integratorTaskId)}
+              {/* THE WHOLE ID (V102, #1038). It was cut to `task_…18680` in a row
+                  with hundreds of pixels free; a task id is the thing a reader
+                  copies, and a cut one cannot be pasted. `.wf-integrator`
+                  (styles/workflows.css) ellipses it only where the row is
+                  narrower than the id; the whole id is the title. `.id`: it is
+                  drawn as the identifier it is, in mono. */}
+              {integratorTaskId}
             </a>
           </li>
         )}
@@ -2010,7 +2189,12 @@ function WorkflowSteps({
           // THE SAMPLE MARK QUALIFIES THESE FIGURES, SO IT IS IN THIS TABLE'S
           // HEAD ROW, inside the card (walkthrough A, 2026-10-03): it was a
           // chip in a strip above the card, floating apart from what it qualifies.
-          head={usage.kind === 'ready' && usage.usage !== null ? <SampleNote usage={usage.usage} workflow={workflow} /> : null}
+          // CALLED, NOT RENDERED (V203, #1427): `head` is null when every task
+          // was sampled, so the table draws no head row. As a component it was
+          // an element that rendered nothing, and the table drew an empty
+          // 32px row and its margin -- a ~45px band between the facts and
+          // the table, where the Graph has its toolbar.
+          head={usage.kind === 'ready' && usage.usage !== null ? SampleNote(usage.usage, workflow) : null}
         />
         <p className="wf-table-total">
           <span>Total</span> <Spend spend={spend} />
@@ -2163,7 +2347,15 @@ function StepCardExtras({
     <>
       {task !== null && (
         <div className="wf-inspect-acts" role="group" aria-label="Stop step">
-          <StopRun task={task} what={`step ${step.step_id}`} workflow={workflow} step={step} reload={reload} variant="inline" />
+          <StopRun
+            task={task}
+            what={`step ${step.step_id}`}
+            workflow={workflow}
+            step={step}
+            taskById={taskById}
+            reload={reload}
+            variant="inline"
+          />
         </div>
       )}
       {verdict !== null && <VerdictCard verdict={verdict} />}
@@ -2609,9 +2801,10 @@ function MiniMarks({ layout, taskById }: { layout: DagLayout; taskById: Readonly
  * strand the map the same way.
  *
  * "SCROLLS" MEANS IT HAS SOMEWHERE TO GO, not only that its style allows it:
- * `.wf-canvas-wrap` is `overflow-x: auto`, which computes `overflow-y` to
- * `auto` too, and it is the canvas's own wrapper -- exactly as tall as the
- * canvas, so scrolling it moves nothing.
+ * `.wf-canvas-wrap` is `overflow: auto` and held to the screen's height (V034),
+ * so a canvas taller than that scrolls inside the wrapper and the wrapper is
+ * the port; a canvas that fits leaves it with nowhere to go, and the search
+ * walks on to the frame.
  */
 export function scrollPortOf(el: Element): HTMLElement | null {
   for (let p = el.parentElement; p !== null; p = p.parentElement) {
@@ -2784,9 +2977,16 @@ function CriticalPathNote({ path, total }: { path: CriticalPath; total: number }
     )
   }
   const took = formatDuration(path.seconds * 1000)
+  // RUN TIME, SAID AS RUN TIME (live QA WF-22, 2026-10-11): the sum is of the
+  // chain's run times only, so a workflow that took 51m 36s, 39m 57s of it a
+  // merge waiting on CI, read `critical path · 10m 49s` as if it had
+  // finished in eleven minutes. Waits are not on it, and the words say so.
   return (
-    <p className="wf-critical" title="The chain of dependent steps whose measured run times sum longest. Its edges are drawn heavier.">
-      <span className="wf-critical-h">critical path · {took}</span>{' '}
+    <p
+      className="wf-critical"
+      title="The chain of dependent steps whose measured run times sum longest. Its edges are drawn heavier. Only run time is summed: waits for capacity, for parents and for CI are not, so the workflow's wall-clock duration can be much longer."
+    >
+      <span className="wf-critical-h">critical path · {took} run time</span>{' '}
       <span className="wf-critical-chain">{path.steps.join(' → ')}</span>
     </p>
   )
@@ -2894,6 +3094,7 @@ function WorkflowGraph({
   onPick,
   reload,
   onStageTable,
+  openLive,
 }: {
   workflow: Workflow
   taskById: ReadonlyMap<string, Task> | null
@@ -2914,6 +3115,8 @@ function WorkflowGraph({
    * elsewhere the counts are words, not controls.
    */
   onStageTable?: (level: number, word: string) => void
+  /** The live card's socket (`WorkflowCard`'s `openLive`). */
+  openLive?: OpenLive
 }) {
   const now = useNow()
   const enteredAt = useEnteredAt(workflow.steps, taskById)
@@ -2960,6 +3163,18 @@ function WorkflowGraph({
       })
       .map((s) => s.step_id),
   )
+  // THE STEPS WHOSE NODE CARRIES THE LIVE BROWSER CARD (LB-UX2b, live-browser.md
+  // §6): a RUNNING task on a live-browser profile. The layout reserves the
+  // card's height (`LIVE_CARD_H`) on exactly these, so the card overlaps
+  // nothing, and `autoTier` counts it when it asks whether the graph fits.
+  const live = new Set(
+    workflow.steps
+      .filter((s) => {
+        const st = stepState(s, taskById)
+        return st.kind === 'state' && showsLiveThumb(s.runner_profile, st.state, st.task.id)
+      })
+      .map((s) => s.step_id),
+  )
   // THE DETAILS PANEL TAKES ITS COLUMN FROM THE GRAPH (#330 item 5). While a
   // step is picked the panel stands on the right, so under Auto the graph is
   // laid out for what is left beside it rather than scrolling sideways under
@@ -2967,13 +3182,13 @@ function WorkflowGraph({
   // keeps its full-width layout, and one without is laid out with `band`
   // false, so no stage -- the picked step's included -- vanishes into a band
   // because the panel opened. A tier the reader chose is left as chosen.
-  const fullAuto = autoTier(workflow.steps, CANVAS_COLUMN, noted, true, settled)
+  const fullAuto = autoTier(workflow.steps, CANVAS_COLUMN, noted, true, settled, live)
   const beside =
     picked !== null &&
     zoom === 'auto' &&
-    !layoutOf(workflow.steps, undefined, fullAuto, noted, CANVAS_COLUMN, settled).wide.some(Boolean)
+    !layoutOf(workflow.steps, undefined, fullAuto, noted, CANVAS_COLUMN, settled, live).wide.some(Boolean)
   const column = beside ? CANVAS_COLUMN - PANEL_COLUMN : CANVAS_COLUMN
-  const auto = beside ? autoTier(workflow.steps, column, noted, false, settled) : fullAuto
+  const auto = beside ? autoTier(workflow.steps, column, noted, false, settled, live) : fullAuto
   const tier: ZoomTier = zoom === 'auto' ? auto : zoom
   // A STAGE BAND HOLDING THE PICKED STEP OPENS TO IT (WF-10, epic #83). When
   // the scrubber carries a step into this workflow, or a step picked in the
@@ -2996,7 +3211,7 @@ function WorkflowGraph({
   const arrived = useRef<string | null>(null)
   const opensOnArrival = arrived.current !== arrival && pickedLevel >= 0 && !expandedStages.has(pickedLevel)
   const shownStages = opensOnArrival ? new Set([...expandedStages, pickedLevel]) : expandedStages
-  const layout = layoutOf(workflow.steps, shownStages, tier, noted, column, settled)
+  const layout = layoutOf(workflow.steps, shownStages, tier, noted, column, settled, live)
   // HOW EACH EDGE IS PAINTED. Not always the pair's own kind: every edge into
   // or out of a COLLAPSED stage shares one path, so those are painted as one
   // edge with the weakest claim any of them can support -- see `edgeKinds`.
@@ -3348,6 +3563,7 @@ function WorkflowGraph({
                     picked={picked === n.step.step_id}
                     onPick={onPick}
                     workflow={workflow}
+                    taskById={taskById}
                     now={now}
                     enteredAt={enteredAt}
                     usage={usage}
@@ -3356,6 +3572,8 @@ function WorkflowGraph({
                     y={n.y}
                     w={layout.nodeW}
                     h={n.h}
+                    live={live.has(n.step.step_id)}
+                    openLive={openLive}
                     reload={reload}
                     onHover={setHovered}
                   />
@@ -3811,6 +4029,7 @@ function StepNode({
   picked,
   onPick,
   workflow,
+  taskById,
   now,
   enteredAt,
   usage,
@@ -3819,6 +4038,8 @@ function StepNode({
   y,
   w,
   h,
+  live = false,
+  openLive,
   reload,
   onHover,
 }: {
@@ -3839,6 +4060,8 @@ function StepNode({
   /** Put this step in the inspector, or take it out again (WF-7). */
   onPick: (stepId: string) => void
   workflow: Workflow
+  /** The task read, so the stop dialog names only the steps still going. */
+  taskById: ReadonlyMap<string, Task> | null
   now: number
   /** When the step's task entered its state, from its events (`useEnteredAt`); null: not read. */
   enteredAt: (task: Task) => number | null
@@ -3860,6 +4083,13 @@ function StepNode({
   reload: () => void
   /** The pointer or focus is on this card (null: it left), so the graph lights its edges. */
   onHover?: (stepId: string | null) => void
+  /**
+   * The node carries the inline live browser card (LB-UX2b). `layoutOf` was
+   * told (`live`), so `h` already counts `LIVE_CARD_H`.
+   */
+  live?: boolean
+  /** The live card's socket (`WorkflowCard`'s `openLive`); undefined is the real one. */
+  openLive?: OpenLive
 }) {
   const p = present(state)
   // THE BRAND LOOK (rebrand 2026-10-01): the node's mark and its tint, from
@@ -4092,8 +4322,16 @@ function StepNode({
     </>
   )
 
+  const liveTask = live && state.kind === 'state' ? state.task.id : null
   return (
-    <div className="node-slot" style={{ left: x, top: y, width: w, height: h }}>
+    <div
+      className={`node-slot${liveTask !== null ? ' has-live' : ''}`}
+      style={
+        liveTask !== null
+          ? ({ left: x, top: y, width: w, height: h, '--node-live-h': `${LIVE_CARD_H}px` } as CSSProperties)
+          : { left: x, top: y, width: w, height: h }
+      }
+    >
       <button
         type="button"
         className={`node ${p.tone} ${lookClass(look)} zoom-${tier}${picked ? ' is-picked' : ''}${skipped ? ' is-skipped' : ''}${state.kind === 'state' && TERMINAL_STATES.has(state.task.state) ? ' is-settled' : ''}`}
@@ -4132,6 +4370,18 @@ function StepNode({
           (WF-7) and a button may not live inside one. It sits in the strip `.node`
           reserves at its foot, so it overlaps nothing -- `NODE_H` counts that
           strip. */}
+      {/* THE LIVE BROWSER CARD, INLINE IN THE NODE (LB-UX2b, live-browser.md
+          §6, the owner's chosen mockup): the step's browser at about 1 fps,
+          Open Browser tab and ⤢ Theater. A SIBLING OF THE CARD, NOT A CHILD,
+          for the stop control's reason: its links may not sit inside the
+          node's `<button>`. It is laid into the room `.node` reserves above
+          the stop strip (styles/workflows.css), so it overlaps nothing.
+          `key` is the task: a retried step's new task is a new stream. */}
+      {liveTask !== null && (
+        <div className="node-live">
+          <LiveThumb key={liveTask} taskId={liveTask} workflowId={workflow.workflow_id} open={openLive} />
+        </div>
+      )}
       {state.kind === 'state' && (
         <div className="node-stop">
           <StopRun
@@ -4139,8 +4389,10 @@ function StepNode({
             what={`step ${step.step_id}`}
             workflow={workflow}
             step={step}
+            taskById={taskById}
             reload={reload}
             variant="inline"
+            overlay
           />
         </div>
       )}
@@ -4663,8 +4915,12 @@ function NodeSource({ f, pending }: { f: StepFigures; pending: boolean }) {
  * contains the words `not zero`: that clause is the entire reason this
  * component exists and it does not get to become implicit just because it
  * stopped being visible ink.
+ *
+ * CALLED, NOT RENDERED (V203, #1427), so the table's `head` is null when it is
+ * silent; it keeps its component's name because
+ * test_workflow_step_measurements.py reads this function by it.
  */
-function SampleNote({ usage, workflow }: { usage: WorkflowUsage; workflow: Workflow }) {
+function SampleNote(usage: WorkflowUsage, workflow: Workflow): ReactNode {
   // THIS WORKFLOW'S TASKS ONLY (QA G3-05). The read is the board's -- every
   // workflow's tasks, this one's first under the ceiling -- and the mark
   // printed `12/296 sampled` over a three-step table whose three steps all
@@ -4772,7 +5028,13 @@ function WorkflowListFilters({
         label="Which workflows"
         disabled={off}
         value={query.state}
-        options={BUCKET_FILTERS.map((b) => ({ key: b, label: BUCKET_LABEL[b], ...(counts !== null ? { count: counts[b] } : {}) }))}
+        options={BUCKET_FILTERS.map((b) => ({
+          key: b,
+          label: BUCKET_LABEL[b],
+          ...(counts !== null ? { count: counts[b] } : {}),
+          // WF-10: Running is every workflow not yet ended, parked and queued included.
+          ...(b === 'running' ? { title: 'Every workflow that has not ended: running, parked or waiting to start' } : {}),
+        }))}
         onChange={(b) => choose({ ...query, state: b })}
       />
       <input
@@ -4890,15 +5152,33 @@ function WorkflowList({
   query: WorkflowQuery
   choose: (q: WorkflowQuery) => void
 }) {
+  // THE ROWS: the board's newest 100, and every older page the reader asked
+  // for (WF-2). Everything below -- counts, sorts, search -- is over these.
+  const older = useOlderWorkflows(board)
+  const all = older.all
   const reads = useRowReads(board)
   const taskById = reads.taskById
   const labels = useMemo(
-    () => new Map(board.workflows.map((w) => [w.workflow_id, workflowLabel(w, taskById)] as const)),
-    [board.workflows, taskById],
+    () => new Map(all.map((w) => [w.workflow_id, workflowLabel(w, taskById)] as const)),
+    [all, taskById],
   )
+  const searching = query.q.trim() !== ''
+  // A SEARCH READS EVERY ROW'S STEPS, NOT ONLY THE ROWS IN VIEW (live QA WF-1,
+  // S1, 2026-10-11). A row's name is its step tasks' `metadata.unit`, and a
+  // row the task window missed learns it only from its own read, which was
+  // started when the row scrolled into view. So typing the name of row 82 on a
+  // fresh load found nothing and said "no match among the 100 newest", a false
+  // negative read as a measured absence. The first keystroke now asks for
+  // every unread row (`useRowReads` keeps a few in flight at once), and until
+  // they land the list says how many names it has not read yet.
+  const { want } = reads
+  useEffect(() => {
+    if (!searching) return
+    for (const w of all) if (!stepsRead(w, taskById)) want(w)
+  }, [searching, all, taskById, want])
   // The segment's counts follow the OTHER filters, so "Failed 2" means two
   // failed workflows of priya's, when owner is priya.
-  const filtered = board.workflows.filter((w) => matchesFilters(w, labels.get(w.workflow_id) ?? null, query))
+  const filtered = all.filter((w) => listMatches(w, labels.get(w.workflow_id) ?? null, query))
   const counts = bucketCounts(filtered)
   const rows = sortWorkflows(
     query.state === 'all' ? filtered : filtered.filter((w) => bucketOf(w) === query.state),
@@ -4909,10 +5189,27 @@ function WorkflowList({
   // rather than as a dash in every cell of every row the window missed.
   const unread = rows.filter((w) => !stepsRead(w, taskById))
   const failedReads = unread.filter((w) => reads.failed.has(w.workflow_id)).length
+  // THE ROWS A SEARCH CANNOT YET JUDGE (WF-1): they pass every other filter,
+  // their name is not known, and their read has not failed. They are being
+  // read; a "no match" over them would be a guess.
+  const unjudged = searching
+    ? all.filter(
+        (w) =>
+          !filtered.includes(w) &&
+          (query.state === 'all' || bucketOf(w) === query.state) &&
+          matchesFilters(w, null, { ...query, q: '' }) &&
+          labels.get(w.workflow_id) === null &&
+          !stepsRead(w, taskById) &&
+          !reads.failed.has(w.workflow_id),
+      ).length
+    : 0
+  // A pasted workflow id the read does not hold (WF-3): its page reads it by id.
+  const pastedId = query.q.trim()
+  const outside = WORKFLOW_ID.test(pastedId) && !all.some((w) => w.workflow_id === pastedId) ? pastedId : null
   // A filter value the read no longer holds stays offered, so the control
   // never silently shows "anyone" while the list is still filtered by one.
-  const owners = withChosen(ownersOf(board.workflows), query.owner)
-  const profiles = withChosen(profilesOf(board.workflows), query.profile)
+  const owners = withChosen(ownersOf(all), query.owner)
+  const profiles = withChosen(profilesOf(all), query.profile)
   const filteredAtAll = query.q !== '' || query.owner !== '' || query.profile !== ''
   // THE ROWS' COST, BY THE TABLE'S RULE (WF-5): attempt telemetry where the
   // read carried a cost, the step's result where it did not. Read for the rows
@@ -4925,6 +5222,9 @@ function WorkflowList({
   // canvas's own 1Hz `useNow` above is scoped to an open card; holding it
   // here would re-render every row once a second.
   const now = useSharedClock(AGE_TICK_MS)
+  // WHAT THE LIST HOLDS, said wherever a figure could read as a total (WF-2):
+  // `the 100 newest`, or every workflow once no older page is left.
+  const scope = older.more === null ? `all ${all.length}` : `the ${all.length} newest`
 
   // RECENT (5) BEFORE ANYTHING WAS OPENED (#503): the list read's five newest,
   // by name, with the state this read derived, fill the panel's switcher
@@ -4938,23 +5238,41 @@ function WorkflowList({
     )
   }, [board.workflows, labels])
 
+  const which = query.state === 'all' ? '' : `${BUCKET_LABEL[query.state].toLowerCase()} `
   return (
     <div className="wfl">
       <WorkflowListFilters query={query} choose={choose} counts={counts} owners={owners} profiles={profiles} />
+      {older.more !== null && (
+        <CountNote>
+          Counts and order are of {scope} workflows; older ones are on the server and not read yet
+        </CountNote>
+      )}
       {unread.length > 0 && (
         <CountNote>
-          {rows.length - unread.length} of {rows.length} rows have their steps read; older rows show ids only until they
-          scroll into view{failedReads > 0 ? `; ${failedReads} could not be read` : ''}
+          {rows.length - unread.length} of {rows.length} rows have their steps read;{' '}
+          {searching ? 'the rest are being read for the search' : 'older rows show ids only until they scroll into view'}
+          {failedReads > 0 ? `; ${failedReads} could not be read` : ''}
         </CountNote>
+      )}
+      {outside !== null && (
+        <p className="wfl-outside" data-fact="pasted-id">
+          <Id title={outside}>{outside}</Id> is not among {scope} workflows read.{' '}
+          <a className="ctl-link" href={workflowHref(outside, EMPTY_QUERY)}>
+            Open its page →
+          </a>
+        </p>
       )}
       {rows.length === 0 ? (
         <p className="wfl-none">
-          {/* WHAT WAS SEARCHED (QA G3-21): the filters run over the rows this
-              read holds, the newest 100, so "no match" is never a claim about
-              older workflows. */}
-          {filteredAtAll
-            ? `No ${query.state === 'all' ? '' : `${BUCKET_LABEL[query.state].toLowerCase()} `}match among the ${board.workflows.length} newest workflows read; older ones are not searched.`
-            : `No ${query.state === 'all' ? '' : `${BUCKET_LABEL[query.state].toLowerCase()} `}workflow in this read.`}
+          {/* WHAT WAS SEARCHED (QA G3-21; live QA WF-1): the filters run over
+              the rows this list holds, so "no match" is never a claim about
+              older workflows, nor about rows whose names are still being
+              read. */}
+          {!filteredAtAll
+            ? `No ${which}workflow in this read.`
+            : unjudged > 0
+              ? `No ${which}match yet: ${unjudged} of the ${all.length} workflows have not had their names read; searching them as they arrive.`
+              : `No ${which}match among ${scope} workflows read${older.more === null ? '.' : '; older ones are not searched until they are read.'}`}
           {filteredAtAll && (
             <Button size="sm" onClick={() => choose({ ...query, q: '', owner: '', profile: '' })}>
               Clear the filters
@@ -4962,7 +5280,7 @@ function WorkflowList({
           )}
         </p>
       ) : (
-        <div className="table-wrap is-scroll wfl-scroll">
+        <MoreRight className="table-wrap is-scroll wfl-scroll">
           <table className="wfl-table">
             <ListHead />
             <tbody>
@@ -4975,19 +5293,111 @@ function WorkflowList({
                   telemetry={telemetry}
                   query={query}
                   now={now}
+                  pending={!stepsRead(w, taskById) && !reads.failed.has(w.workflow_id)}
                   onSeen={stepsRead(w, board.taskById) ? null : reads.want}
                 />
               ))}
             </tbody>
           </table>
-        </div>
+        </MoreRight>
       )}
       <p className="wfl-foot">
-        {rows.length} of {board.workflows.length} read · {SORT_LABEL[query.sort]} · 100 per read
+        {rows.length} of {all.length} read · {SORT_LABEL[query.sort]} · 100 per read
+        {older.more === null ? (
+          ' · no older workflows'
+        ) : (
+          <>
+            {' · '}
+            <Button size="sm" disabled={older.read.kind === 'reading'} onClick={older.more}>
+              {older.read.kind === 'reading' ? 'reading older workflows…' : 'Load 100 older'}
+            </Button>
+          </>
+        )}
+        {older.read.kind === 'failed' && <span className="warn-text"> The older read failed: {older.read.detail}</span>}
       </p>
     </div>
   )
 }
+
+/** A workflow id pasted whole (WF-3): `wf_` and twenty hex digits. */
+const WORKFLOW_ID = /^wf_[0-9a-f]{20}$/
+
+/**
+ * THE LIST'S FILTERS, WITH A STEP'S TASK ID FOUND TOO (live QA WF-3,
+ * 2026-10-11). The box is "Find a workflow or step", and a step is as often
+ * known by its task id -- the one an agent, a log or a PR names -- as by its
+ * step id, but `task_dbe3…` matched nothing on a row that held it. The other
+ * filters stay `matchesFilters`'s; this only widens what the search text
+ * may hit.
+ */
+export function listMatches(w: Workflow, label: string | null, query: WorkflowQuery): boolean {
+  if (matchesFilters(w, label, query)) return true
+  const needle = query.q.trim().toLowerCase()
+  if (needle === '' || !matchesFilters(w, label, { ...query, q: '' })) return false
+  return w.steps.some((s) => typeof s.task_id === 'string' && s.task_id.toLowerCase().includes(needle))
+}
+
+/** Where the older-workflow read is. */
+type OlderRead = { kind: 'idle' } | { kind: 'reading' } | { kind: 'failed'; detail: string }
+
+/**
+ * THE WORKFLOWS PAST THE FIRST 100, READ ON ASKING (live QA WF-2, 2026-10-11).
+ * The list read the newest 100 and stopped, though the API had answered with
+ * a `next_page_token`, so `Failed 15` stood for 52 and "oldest first" sorted
+ * the oldest of the newest 100. "Load 100 older" follows the token.
+ *
+ * WHAT THE BOARD HELD WHEN THE READER ASKED IS KEPT TOO. The board re-reads
+ * its first page every 10s while anything runs; a workflow pushed off that
+ * page by a newer one would otherwise fall between the first page and the
+ * older pages, which start after the row the first read ended on. The board's
+ * own copy wins for any workflow it still holds: it is the fresher read.
+ */
+function useOlderWorkflows(board: WorkflowBoard): {
+  all: readonly Workflow[]
+  more: (() => void) | null
+  read: OlderRead
+} {
+  const [kept, setKept] = useState<readonly Workflow[]>([])
+  // Undefined: no older page read yet, so the board's own token says what is next.
+  const [token, setToken] = useState<string | null | undefined>(undefined)
+  const [read, setRead] = useState<OlderRead>({ kind: 'idle' })
+  const live = useRef(true)
+  useEffect(() => {
+    live.current = true
+    return () => {
+      live.current = false
+    }
+  }, [])
+  const next = token === undefined ? (board.nextPageToken ?? null) : token
+  const reading = read.kind === 'reading'
+  const more = useCallback(() => {
+    if (next === null || reading) return
+    const held = board.workflows
+    setRead({ kind: 'reading' })
+    void loadOlderWorkflows(next).then((r) => {
+      if (!live.current) return
+      if (r.status === 'ok' || r.status === 'stale' || r.status === 'empty') {
+        const page = r.status === 'empty' ? [] : r.data.workflows
+        setKept((k) => [...new Map([...k, ...held, ...page].map((w) => [w.workflow_id, w] as const)).values()])
+        setToken(r.status === 'empty' ? null : (r.data.next_page_token ?? null))
+        setRead({ kind: 'idle' })
+      } else if (r.status === 'error') {
+        setRead({ kind: 'failed', detail: r.error.message })
+      } else {
+        setRead({ kind: 'failed', detail: 'The read did not complete.' })
+      }
+    })
+  }, [next, reading, board.workflows])
+  const all = useMemo(() => {
+    if (kept.length === 0) return board.workflows
+    const ids = new Set(board.workflows.map((w) => w.workflow_id))
+    return [...board.workflows, ...kept.filter((w) => !ids.has(w.workflow_id))]
+  }, [board.workflows, kept])
+  return { all, more: next === null ? null : more, read }
+}
+
+/** How many rows' steps are read at once: a search asks for every unread row (WF-1). */
+const ROW_READS_AT_ONCE = 6
 
 /**
  * ONE ROW'S STEPS, READ AS IT SCROLLS IN (QA G3-06, 2026-10-07). The board
@@ -4995,11 +5405,12 @@ function WorkflowList({
  * rows read `wf_… · — · start not read · not read` while the workflow's own
  * page showed its title, start and $0.62. A row the window missed reads
  * `GET /v1/workflows/{id}` -- the page's own read, so the row and the page
- * agree, cost totals included -- once it is near the viewport, and its tasks
- * join the board's. The window's copy wins where both hold a task: it is the
- * fresher read. A finished row reads once; a running one again on each board
- * read (each read is new `Workflow` objects), so its cost does not freeze at
- * the first look.
+ * agree, cost totals included -- once it is near the viewport, or once a
+ * search needs its name (WF-1), and its tasks join the board's. The window's
+ * copy wins where both hold a task: it is the fresher read. A finished row
+ * reads once; a running one again on each board read (each read is new
+ * `Workflow` objects), so its cost does not freeze at the first look. At most
+ * `ROW_READS_AT_ONCE` are in flight; the rest queue.
  */
 function useRowReads(board: WorkflowBoard): {
   taskById: ReadonlyMap<string, Task> | null
@@ -5010,6 +5421,8 @@ function useRowReads(board: WorkflowBoard): {
   const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set())
   const askedIds = useRef(new Set<string>())
   const askedReads = useRef(new WeakSet<Workflow>())
+  const queue = useRef<string[]>([])
+  const inFlight = useRef(0)
   const live = useRef(true)
   useEffect(() => {
     live.current = true
@@ -5017,34 +5430,47 @@ function useRowReads(board: WorkflowBoard): {
       live.current = false
     }
   }, [])
-  const want = useCallback((w: Workflow) => {
-    const id = w.workflow_id
-    if (bucketOf(w) === 'running') {
-      if (askedReads.current.has(w)) return
-      askedReads.current.add(w)
-    } else {
-      if (askedIds.current.has(id)) return
-      askedIds.current.add(id)
+  const pump = useCallback(() => {
+    while (inFlight.current < ROW_READS_AT_ONCE && queue.current.length > 0) {
+      const id = queue.current.shift() as string
+      inFlight.current += 1
+      void loadWorkflow(id).then((r) => {
+        inFlight.current -= 1
+        if (!live.current) return
+        if (r.status === 'ok' || r.status === 'stale') {
+          setExtra((m) => {
+            const next = new Map(m)
+            for (const t of r.data.tasks) next.set(t.id, t)
+            return next
+          })
+          setFailed((f) => {
+            if (!f.has(id)) return f
+            const next = new Set(f)
+            next.delete(id)
+            return next
+          })
+        } else {
+          setFailed((f) => (f.has(id) ? f : new Set(f).add(id)))
+        }
+        pump()
+      })
     }
-    void loadWorkflow(id).then((r) => {
-      if (!live.current) return
-      if (r.status === 'ok' || r.status === 'stale') {
-        setExtra((m) => {
-          const next = new Map(m)
-          for (const t of r.data.tasks) next.set(t.id, t)
-          return next
-        })
-        setFailed((f) => {
-          if (!f.has(id)) return f
-          const next = new Set(f)
-          next.delete(id)
-          return next
-        })
-      } else {
-        setFailed((f) => (f.has(id) ? f : new Set(f).add(id)))
-      }
-    })
   }, [])
+  const want = useCallback(
+    (w: Workflow) => {
+      const id = w.workflow_id
+      if (bucketOf(w) === 'running') {
+        if (askedReads.current.has(w)) return
+        askedReads.current.add(w)
+      } else {
+        if (askedIds.current.has(id)) return
+        askedIds.current.add(id)
+      }
+      if (!queue.current.includes(id)) queue.current.push(id)
+      pump()
+    },
+    [pump],
+  )
   const taskById = useMemo(() => {
     if (extra.size === 0) return board.taskById
     const out = new Map(extra)
@@ -5065,6 +5491,7 @@ function WorkflowListRow({
   telemetry,
   query,
   now,
+  pending,
   onSeen,
 }: {
   workflow: Workflow
@@ -5074,6 +5501,8 @@ function WorkflowListRow({
   telemetry: ReadonlyMap<string, StepUsage> | null
   query: WorkflowQuery
   now: number
+  /** The row's steps are not read yet and their read has not failed: it is queued, or waits to scroll in (WF-11). */
+  pending: boolean
   /** Set when the board's window missed this row's steps: read them once it is in view (G3-06). */
   onSeen: ((w: Workflow) => void) | null
 }) {
@@ -5081,7 +5510,9 @@ function WorkflowListRow({
   useEffect(() => {
     if (onSeen !== null && inView) onSeen(workflow)
   }, [onSeen, inView, workflow])
-  const why = rowWhy(workflow, taskById)
+  const why = listRowWhy(workflow, taskById, pending)
+  // A row known to have no label or title is "Untitled workflow", id under it.
+  const named = listRowName(workflow.workflow_id, label, stepsRead(workflow, taskById))
   const roll = rollupLine(workflow, taskById)
   const spend = workflowSpend(workflow.steps, taskById, telemetry)
   const failed = why !== null && (why.kind === 'failed' || why.kind === 'failed-unread')
@@ -5090,7 +5521,13 @@ function WorkflowListRow({
   // same words the open card's head uses (#376). DURATION is wall clock from
   // submission (`workflowDuration`), so the two columns share one origin.
   const started = workflowStartText(workflow, taskById, now)
-  const dur = workflowDuration(workflow, taskById, now)
+  const read = workflowDuration(workflow, taskById, now)
+  // NOT READ YET IS NOT A FAILED READ (live QA WF-11): the legend's `not read`
+  // means the read failed, and a row whose read has not been made yet said it.
+  const dur =
+    pending && read.ms === null && read.text === 'not read'
+      ? { ...read, text: 'not yet read', title: "this row's steps are read when it scrolls into view" }
+      : read
   return (
     <tr ref={seenRef} className={`wfl-row${failed ? ' is-failed' : ''}`} data-workflow={workflow.workflow_id}>
       {/* EVERY CELL NAMES ITS COLUMN (browser QA D8): the sheet sizes State,
@@ -5100,10 +5537,10 @@ function WorkflowListRow({
         <WorkflowStateMark workflow={workflow} />
       </td>
       <td className="wfl-name" data-col="workflow">
-        <a href={workflowHref(workflow.workflow_id, query)} title={label ?? workflow.workflow_id}>
-          {label ?? workflow.workflow_id}
+        <a href={workflowHref(workflow.workflow_id, query)} title={named.name}>
+          {named.name}
         </a>
-        {label !== null && <Id title={workflow.workflow_id}>{workflow.workflow_id}</Id>}
+        {named.showId && <Id title={workflow.workflow_id}>{workflow.workflow_id}</Id>}
         {/* Drawn at ≤560 only, where the done, failed and age columns are
             off the right edge (#109); the cells say it wide, so hidden from
             assistive technology to keep one reading of each fact. */}
@@ -5117,6 +5554,7 @@ function WorkflowListRow({
           <Mix steps={workflow.steps} />
         </span>
         {why !== null && <RowWhyLine why={why} />}
+        <PullRequestWaitTag workflow={workflow} />
         {cancelPending(workflow) && <span className="tag wait">cancel requested</span>}
       </td>
       <td className="wfl-shape" data-col="shape" title={shapeOf(workflow.steps).label}>
@@ -5185,9 +5623,48 @@ function StageGlyph({ steps, taskById }: { steps: readonly WorkflowStep[]; taskB
   )
 }
 
+/** The list row's second line: `rowWhy`, or the step that is running (WF-9). */
+type ListWhy = RowWhy | { kind: 'running'; step: string }
+
+/**
+ * THE ROW'S SECOND LINE, AS THE LIST SAYS IT. `rowWhy`, with two corrections.
+ *
+ * A RUNNING WORKFLOW NAMES ITS RUNNING STEP (live QA WF-9, 2026-10-11).
+ * `rowWhy` names the first parked step, so a workflow whose `implement` was
+ * running read `review parked · Waiting on an earlier step in its workflow`:
+ * the downstream step's wait, which is the running one's consequence. A step
+ * holding capacity (CONCURRENCY_STATES) is what the row is doing, and the
+ * line says that instead.
+ *
+ * A FAILING STEP NOT READ YET IS NOT "NOT IN THE TASK READ" (WF-11): that
+ * wording is for a read that missed it, and a row that has not been read yet
+ * fills in when it scrolls into view.
+ */
+function listRowWhy(w: Workflow, taskById: ReadonlyMap<string, Task> | null, pending: boolean): ListWhy | null {
+  const why = rowWhy(w, taskById)
+  if (why === null) return null
+  if (why.kind === 'failed-unread' && pending) {
+    return { kind: 'failed-unread', why: 'the failing step is read when this row scrolls into view' }
+  }
+  if (why.kind === 'parked') {
+    const running = w.steps.find((s) => {
+      const st = stepState(s, taskById)
+      return st.kind === 'state' && CONCURRENCY_STATES.has(st.state)
+    })
+    if (running !== undefined) return { kind: 'running', step: running.step_id }
+  }
+  return why
+}
+
 /** The row's second line. The step is bold; the cause is the task's own words. */
-function RowWhyLine({ why }: { why: RowWhy }) {
+function RowWhyLine({ why }: { why: ListWhy }) {
   switch (why.kind) {
+    case 'running':
+      return (
+        <span className="wfl-why">
+          <b>{why.step}</b> running
+        </span>
+      )
     case 'failed':
       return (
         <span className="wfl-why is-bad">
@@ -5248,11 +5725,44 @@ function StepsDone({ workflow, roll }: { workflow: Workflow; roll: Rollup }) {
  * under them, or the Table, or the Timeline -- the board machinery focused on
  * this one workflow, so every node, row and inspector reads exactly as it did.
  */
+/**
+ * THE BOARD AROUND ONE WORKFLOW'S PAGE, read once the page is up (live QA
+ * CH-21). The page draws from its own read (`loadWorkflowPage`); the same-step
+ * scrubber and the attempt read's sample need the other workflows, which come
+ * from the board -- the slow list read -- and are joined in when it lands.
+ * Until then, or if it fails, the page is its own workflow alone. Read once
+ * per page open: the page's poll re-reads its own workflow, not the list.
+ */
+function useBoardAround(own: WorkflowBoard, id: string): WorkflowBoard {
+  const [around, setAround] = useState<Result<WorkflowBoard> | null>(null)
+  // A page whose own read failed already holds the board, or says why not.
+  const missed = (own as PageBoard).pageMiss !== undefined
+  useEffect(() => {
+    let live = true
+    setAround(null)
+    if (missed) return
+    void loadWorkflowBoard().then((r) => {
+      if (live) setAround(r)
+    })
+    return () => {
+      live = false
+    }
+  }, [id, missed])
+  return useMemo(() => {
+    if (missed) return own
+    const row = own.workflows.find((w) => w.workflow_id === id)
+    if (around === null || row === undefined) return own
+    const joined = joinWorkflowPage(around, { status: 'ok', fetchedAt: Date.now(), data: { workflow: row, tasks: Array.from(own.taskById?.values() ?? []) } }, id)
+    return joined.status === 'ok' || joined.status === 'stale' ? joined.data : own
+  }, [own, around, id, missed])
+}
+
 function WorkflowPage({
-  board,
+  board: own,
   id,
   query,
   choose,
+  go,
   stores,
   changesAt,
   onChangesAt,
@@ -5261,11 +5771,14 @@ function WorkflowPage({
   id: string
   query: WorkflowQuery
   choose: (q: WorkflowQuery) => void
+  /** Like `choose`, as a new history entry: another workflow or another tab (WF-7, WF-17). */
+  go: (q: WorkflowQuery) => void
   stores: BoardStores
   /** The Changes tab's step filter and open file, from the address. */
   changesAt: ChangesAt
   onChangesAt: (at: ChangesAt) => void
 }) {
+  const board = useBoardAround(own, id)
   const workflow = board.workflows.find((w) => w.workflow_id === id) ?? null
   const found = workflow !== null
   const derived = workflow === null ? null : derivedStateOf(workflow)
@@ -5300,20 +5813,33 @@ function WorkflowPage({
       view: query.tab,
       // A tab change puts the Table's stage filter down: it belongs to the
       // band count that opened it, not to the Table.
-      onView: (v) => choose({ ...query, tab: v, stage: null, stepState: null }),
-      onOpen: (target, v) => choose({ ...query, wf: target, tab: v, stage: null, stepState: null }),
+      onView: (v) => go({ ...query, tab: v, stage: null, stepState: null }),
+      onOpen: (target, v) => go({ ...query, wf: target, tab: v, stage: null, stepState: null }),
       filter: query.tab === 'table' && query.stage !== null && query.stepState !== null ? { level: query.stage, word: query.stepState } : null,
       onStageTable: (level, word) => choose({ ...query, tab: 'table', stage: level, stepState: word }),
       onClearFilter: () => choose({ ...query, stage: null, stepState: null }),
     }),
-    [id, query, choose],
+    [id, query, choose, go],
   )
 
   if (workflow === null) {
+    // A 404 IS SAID AS ONE (live QA WF-18c, 2026-10-11): "not in this read
+    // ... could not be read on its own either" for an id that does not
+    // exist, where the agents pane says `Not found · HTTP 404`.
+    const miss = (board as PageBoard).pageMiss
+    if (miss !== undefined && miss.kind === 'not_found') {
+      return (
+        <p className="wfp-missing">
+          <strong>Not found · HTTP {miss.httpStatus ?? 404}</strong>. No workflow <Id title={id}>{id}</Id> exists in this
+          tenant. <a href={listHref(query)}>Back to the list</a>
+        </p>
+      )
+    }
     return (
       <p className="wfp-missing">
         Workflow <Id title={id}>{id}</Id> is not in this read: the list reads the newest 100 workflows, and it could
-        not be read on its own either. <a href={listHref(query)}>Back to the list</a>
+        not be read on its own either{miss !== undefined ? ` (${errorHeading(miss)}: ${miss.message})` : ''}.{' '}
+        <a href={listHref(query)}>Back to the list</a>
       </p>
     )
   }
@@ -5352,20 +5878,45 @@ const PAGE_SKELETON_LINES: readonly number[] = [42, 88, 76, 64, 82, 58]
  */
 function WorkflowPageSkeleton({ id, query, choose }: { id: string; query: WorkflowQuery; choose: (q: WorkflowQuery) => void }) {
   return (
+    <>
+    {/* THE COUNT NOTE'S LINE (V103, #1038). The loaded page opens with the
+        census note `Screen` draws over the first card (`pageSummary`), and the
+        skeleton drew nothing there: the tabs jumped down by that line and its
+        margin, 25px at 1440, the moment the read landed. The same
+        `.c-count-note`, holding a bar instead of the census, keeps the line.
+        A phone column wraps the census onto a second line, so the second bar
+        is drawn there only (styles/workflows.css). */}
+    <p className="c-count-note wfp-skel-sum" aria-hidden="true">
+      <span className="wfl-skel" style={{ width: '24em' }} />
+      <span className="wfl-skel wfp-skel-sum-2" style={{ width: '14em' }} />
+    </p>
     <div className="wfp is-loading" aria-busy="true">
       <div className="wfp-head">
         <div className="wfp-chips" aria-hidden="true">
-          {PAGE_SKELETON_CHIPS.map((w, i) => (
-            <span key={i} className="c-chip">
-              <span className="wfl-skel" style={{ width: `${w}em` }} />
-            </span>
-          ))}
+          {PAGE_SKELETON_CHIPS.map((w, i) => {
+            const chip = (
+              <span key={i} className="c-chip">
+                <span className="wfl-skel" style={{ width: `${w}em` }} />
+              </span>
+            )
+            // THE COST BAR IS IN THE COST'S SLOT (V103, #1427), which a phone
+            // gives a line of its own in both states (styles/workflows.css).
+            return i === PAGE_SKELETON_CHIPS.length - 1 ? (
+              <span key={i} className="wfp-cost">
+                {chip}
+              </span>
+            ) : (
+              chip
+            )
+          })}
         </div>
         <span className="wfp-actions">
           <Button disabled>Copy link</Button>
-          <Button kind="danger" disabled>
-            Cancel workflow
-          </Button>
+          {/* NO CANCEL BUTTON BEFORE THE STATE IS KNOWN (live QA WF-18a,
+              2026-10-11): a disabled "Cancel workflow" was drawn on every
+              page while it read, a succeeded or a nonexistent workflow's
+              included. A bar holds its place, and says nothing. */}
+          <span className="wfl-skel wfp-skel-act" aria-hidden="true" style={{ width: '9em' }} />
         </span>
       </div>
       <WfTabs id={id} query={query} view={query.tab} steps={null} onView={(v) => choose({ ...query, tab: v, stage: null, stepState: null })} />
@@ -5375,6 +5926,7 @@ function WorkflowPageSkeleton({ id, query, choose }: { id: string; query: Workfl
         ))}
       </div>
     </div>
+    </>
   )
 }
 
@@ -5461,6 +6013,7 @@ function WorkflowHead({
           <Chip>{spend.usd === null ? <span className="wf-cell is-absent">cost not reported</span> : <Spend spend={spend} />}</Chip>
         </span>
         {label !== null && <Id title={workflow.workflow_id}>{workflow.workflow_id}</Id>}
+        <PullRequestWaitTag workflow={workflow} />
         {cancelPending(workflow) && <span className="tag wait">cancel requested</span>}
       </div>
       <span className="wfp-actions">
@@ -5564,29 +6117,36 @@ export function CancelWorkflow({
       Cancel workflow
     </Button>
   )
-  if (phase === 'idle') return trigger
   const reset = () => {
     setError(null)
     setPhase('idle')
   }
+  // ONE TREE IN EVERY PHASE (live QA WF-15, 2026-10-11). Idle returned the
+  // button bare and asking returned it inside a fragment, so React mounted a
+  // NEW button the moment the dialog opened: the dialog remembered a detached
+  // opener, and Esc sent focus to an earlier node's stop button instead of
+  // back here. The trigger now keeps its element whatever the phase.
+  //
   // WHILE A STEP RUNS: the canonical typed confirm (components.html A,
   // states.html C §12), with this page's own account of what cancelling does.
-  if (typedConfirm) {
+  if (phase === 'idle' || typedConfirm) {
     return (
       <>
         {trigger}
-        <TypedConfirm
-          title="Cancel this workflow?"
-          name={workflow.workflow_id}
-          verb="Cancel the workflow"
-          keep="Keep it running"
-          onConfirm={() => void send()}
-          onClose={reset}
-          busy={phase === 'sending' ? 'Cancelling…' : false}
-          error={phase === 'failed' && error !== null ? `The cancel was not recorded: ${error}` : undefined}
-        >
-          <p>{cancelConsequence(workflow, taskById)}</p>
-        </TypedConfirm>
+        {phase !== 'idle' && (
+          <TypedConfirm
+            title="Cancel this workflow?"
+            name={workflow.workflow_id}
+            verb="Cancel the workflow"
+            keep="Keep it running"
+            onConfirm={() => void send()}
+            onClose={reset}
+            busy={phase === 'sending' ? 'Cancelling…' : false}
+            error={phase === 'failed' && error !== null ? `The cancel was not recorded: ${error}` : undefined}
+          >
+            <p>{cancelConsequence(workflow, taskById)}</p>
+          </TypedConfirm>
+        )}
       </>
     )
   }

@@ -354,7 +354,8 @@ locals {
   # deployer's own roles are among the refused: they are granted by this root,
   # which the owner applies, never by CI. Re-read 2026-09-25 08:52 UTC: 67
   # distinct roles in the policy, and with swarmSecretLister off the list, 14
-  # grantable and 53 refused.
+  # grantable until #1430 and 53 refused. #1430 turned swarmGithubHooksDedup
+  # on, so the list makes 15 grantable once the owner applies it.
   #
   # NOT SCOPED BY THIS: two of the listed roles also have a member that is not
   # ours -- roles/logging.logWriter and roles/monitoring.metricWriter are held
@@ -391,6 +392,16 @@ locals {
         "worker_firestore",
       ] : module.custom_role_ids.names[key]
     ],
+    # The GitHub push receiver's create-only Firestore role, which
+    # terraform/infra/github_hooks.tf grants (github_hooks_role.tf, HOOKS-ROLE,
+    # part of #1384). On the list only once this root defines it: with
+    # enable_github_hooks_dedup_role off the list, and so every chunk below, is
+    # what it was, and the plan changes nothing. On, it is one more role in the
+    # sorted list, which shifts the chunk boundary and replaces both chunks,
+    # new grant first (create_before_destroy, below). The committed
+    # terraform.tfvars records the flag as true (#1430), so an apply of it is the
+    # on list and the prose counts are of that list.
+    var.enable_github_hooks_dedup_role ? [module.custom_role_ids.names["github_hooks_dedup"]] : [],
   )
 
   deployer_conditions = {
@@ -401,7 +412,8 @@ locals {
   }
 
   # roles/resourcemanager.projectIamAdmin's hasOnly() would need every one of
-  # the 14 deployer_grantable_project_roles in one list (15 until #69's owner
+  # the 15 deployer_grantable_project_roles in one list (14 with
+  # enable_github_hooks_dedup_role off, and 15 until #69's owner
   # decision of 2026-09-25, which #150 delivered, took swarmSecretLister off --
   # still over the limit either way), and GCP's linter
   # (LintValidationUnits/ListLengthCheck) refuses a hasOnly() list over 10

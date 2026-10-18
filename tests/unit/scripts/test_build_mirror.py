@@ -1,0 +1,369 @@
+"""The build mirrors exist and the refresh script fills them (OPS-MIRROR part A;
+part of #1030).
+
+THE FAILURE THIS PINS. On 2026-10-12 three release image builds failed on
+fetches outside Google inside Cloud Build: twice a ghcr.io timeout pulling the
+uv image, once a github.com 504 downloading shellcheck in agent-runtime-base.
+
+Part A creates what the builds will read, and nothing reads it yet:
+
+  * two Artifact Registry REMOTE repositories, terraform/infra/build_mirror.tf
+    -- `swarm-mirror-ghcr` (upstream https://ghcr.io) and
+    `swarm-mirror-dockerhub` (Docker Hub);
+  * a GCS bucket, `swarm-build-mirror-<project>`, for the release tarballs at
+    their upstream path, listed with their sha256 in
+    images/agent-runtime-base/tool-mirror.sha256;
+  * scripts/refresh-build-mirror.sh, which the operator runs to fill the
+    bucket from upstream, refusing anything whose sha256 does not match.
+
+The tests that the Dockerfiles, scripts/build-images.sh and Cloud Build read
+the mirrors are part B's (test_build_mirror_switch.py).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from .test_build_images_concurrency import _sandbox
+
+
+REPO = Path(__file__).resolve().parents[3]
+DOCKERFILES = sorted([*REPO.glob("apps/*/Dockerfile"), *REPO.glob("images/*/Dockerfile")])
+BASE_DOCKERFILE = REPO / "images" / "agent-runtime-base" / "Dockerfile"
+MANIFEST = REPO / "images" / "agent-runtime-base" / "tool-mirror.sha256"
+MIRROR_TF = REPO / "terraform" / "infra" / "build_mirror.tf"
+COMMON = REPO / "scripts" / "lib" / "common.sh"
+LIB = REPO / "scripts" / "lib" / "build-mirror.sh"
+REFRESH = REPO / "scripts" / "refresh-build-mirror.sh"
+RUNBOOK = REPO / "docs" / "runbooks" / "build-mirror.md"
+RUNBOOK_INDEX = REPO / "docs" / "runbooks" / "README.md"
+DEV_TFVARS = REPO / "terraform" / "environments" / "dev" / "dev.tfvars"
+
+
+def _tfvar(name: str) -> str:
+    m = re.search(rf'^{name}\s*=\s*"([^"]+)"', DEV_TFVARS.read_text(), flags=re.M)
+    assert m, f"{name} is not set in {DEV_TFVARS.relative_to(REPO)}"
+    return m.group(1)
+
+
+PROJECT = _tfvar("project_id")
+REGION = _tfvar("region")
+MIRROR_HOST = f"{REGION}-docker.pkg.dev/{PROJECT}"
+#: The build argument each Dockerfile names a mirror by -> the upstream it
+#: stands in for. A pull request's local build passes the upstream instead.
+MIRRORS = {
+    "MIRROR_DOCKER_HUB": (f"{MIRROR_HOST}/swarm-mirror-dockerhub", "docker.io"),
+    "MIRROR_GHCR": (f"{MIRROR_HOST}/swarm-mirror-ghcr", "ghcr.io"),
+}
+#: Hosts the tool mirror's objects come from. An object's name IS its upstream
+#: URL without `https://`, so the refresh needs no second list.
+TOOL_HOSTS = ("github.com", "releases.hashicorp.com")
+#: The GitHub-hosted tools the base image fetched on 2026-10-12.
+GITHUB_TOOLS = (
+    "cli/cli", "opentofu/opentofu", "terraform-linters/tflint",
+    "koalaman/shellcheck", "aquasecurity/trivy",
+)
+
+FORBIDDEN = re.compile(
+    r"ghcr\.io|docker\.io|https?://(?:[a-z0-9-]+\.)*github(?:usercontent)?\.com", re.I
+)
+
+
+# --------------------------------------------------------------------------- #
+# Reading a Dockerfile.
+# --------------------------------------------------------------------------- #
+
+
+def _code_lines(text: str) -> list[str]:
+    """Logical instructions, continuations joined, comment lines dropped
+    (a comment inside a continued RUN is dropped by Docker too)."""
+    out: list[str] = []
+    cur: list[str] = []
+    for raw in text.splitlines():
+        s = raw.strip()
+        if s.startswith("#") or (not s and not cur):
+            continue
+        cur.append(s.rstrip("\\").rstrip())
+        if not s.endswith("\\"):
+            out.append(" ".join(cur))
+            cur = []
+    if cur:
+        out.append(" ".join(cur))
+    return out
+
+
+def _global_args(text: str) -> dict[str, str]:
+    """`ARG NAME=default` before the first FROM: what a FROM may expand."""
+    args: dict[str, str] = {}
+    for line in _code_lines(text):
+        if re.match(r"FROM\s", line, re.I):
+            break
+        m = re.match(r"ARG\s+([A-Za-z_][A-Za-z0-9_]*)=(\S+)$", line)
+        if m:
+            args[m.group(1)] = _render(m.group(2), args)
+    return args
+
+
+def _all_args(text: str) -> dict[str, str]:
+    args: dict[str, str] = {}
+    for line in _code_lines(text):
+        m = re.match(r"ARG\s+([A-Za-z_][A-Za-z0-9_]*)=(\S+)$", line)
+        if m:
+            args[m.group(1)] = _render(m.group(2), args)
+    return args
+
+
+def _render(value: str, args: dict[str, str]) -> str:
+    return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", lambda m: args.get(m.group(1), m.group(0)), value)
+
+
+def _syntax(text: str) -> str | None:
+    first = text.splitlines()[0] if text else ""
+    m = re.match(r"#\s*syntax\s*=\s*(\S+)", first)
+    return m.group(1) if m else None
+
+
+def _rel(path: Path) -> str:
+    return str(path.relative_to(REPO))
+
+
+def _manifest_rows(path: Path = MANIFEST) -> list[tuple[str, str]]:
+    rows = []
+    for line in path.read_text().splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        sha, obj = line.split(None, 1)
+        rows.append((sha, obj.strip()))
+    return rows
+
+
+
+
+def test_the_mirrors_are_the_ones_terraform_declares() -> None:
+    tf = MIRROR_TF.read_text()
+    repos = re.findall(
+        r'resource\s+"google_artifact_registry_repository"\s+"[a-z_]+"\s*\{(.*?)\n\}', tf, flags=re.S
+    )
+    assert len(repos) == 2, f"expected two remote repositories in {_rel(MIRROR_TF)}, found {len(repos)}"
+    by_id = {}
+    for body in repos:
+        rid = re.search(r'repository_id\s*=\s*"\$\{var\.name_prefix\}-([a-z-]+)"', body)
+        assert rid, body[:200]
+        by_id[rid.group(1)] = body
+        assert re.search(r'mode\s*=\s*"REMOTE_REPOSITORY"', body)
+        assert re.search(r'format\s*=\s*"DOCKER"', body)
+        assert re.search(r"labels\s*=\s*local\.labels", body), "every resource carries managed-by"
+    assert set(by_id) == {"mirror-ghcr", "mirror-dockerhub"}, sorted(by_id)
+    assert re.search(r'uri\s*=\s*"https://ghcr\.io"', by_id["mirror-ghcr"])
+    assert re.search(r'public_repository\s*=\s*"DOCKER_HUB"', by_id["mirror-dockerhub"])
+    # The Dockerfiles name the repositories terraform creates under the
+    # default prefix, in the dev project.
+    prefix = re.search(
+        r'variable\s+"name_prefix"\s*\{.*?default\s*=\s*"([^"]+)"', (REPO / "terraform/infra/variables.tf").read_text(), re.S
+    ).group(1)
+    for name, (ref, _) in MIRRORS.items():
+        assert ref.split("/")[-1].startswith(prefix + "-mirror-"), (name, ref)
+
+
+def test_the_tool_bucket_is_terraform_managed_and_grants_nothing() -> None:
+    tf = MIRROR_TF.read_text()
+    bucket = re.search(r'resource\s+"google_storage_bucket"\s+"build_mirror"\s*\{(.*?)\n\}', tf, flags=re.S)
+    assert bucket, f"{_rel(MIRROR_TF)} declares no google_storage_bucket.build_mirror"
+    body = bucket.group(1)
+    assert re.search(r'name\s*=\s*"\$\{var\.name_prefix\}-build-mirror-\$\{var\.project_id\}"', body)
+    assert re.search(r'public_access_prevention\s*=\s*"enforced"', body)
+    assert re.search(r"uniform_bucket_level_access\s*=\s*true", body)
+    assert "labels" in body and "local.labels" in body
+    # The build runs as the project's default compute account, which already
+    # reads both (roles/editor, docs/ci.md); no grant is added here.
+    assert not re.search(r'resource\s+"google_[a-z_]*iam_[a-z_]+"', tf), "no IAM in the mirror file"
+    # common.sh names the bucket the way terraform does.
+    assert 'BUILD_MIRROR_BUCKET="${BUILD_MIRROR_BUCKET:-swarm-build-mirror-${PROJECT_ID}}"' in COMMON.read_text()
+
+
+
+
+def _fake_content(obj: str) -> bytes:
+    return f"fake https://{obj}\n".encode()
+
+
+def _fake_manifest(root: Path) -> list[tuple[str, str]]:
+    """Rewrite the sandbox's manifest with the sha256 of each object's fake
+    content, so fakes can serve a file that verifies."""
+    rows = [(hashlib.sha256(_fake_content(obj)).hexdigest(), obj) for _, obj in _manifest_rows()]
+    (root / MANIFEST.relative_to(REPO)).write_text("".join(f"{s}  {o}\n" for s, o in rows))
+    return rows
+
+
+def _env(tmp_path: Path, bindir: Path, **extra: str) -> dict[str, str]:
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    env = {
+        **os.environ,
+        "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+        "HOME": str(home),
+        "SWARM_ENV_FILE": str(tmp_path / "no-such.env"),
+        "PROJECT_ID": "swarm-test-project",
+        "REGION": "us-central1",
+        "ENVIRONMENT": "dev",
+        "NO_COLOR": "1",
+        "ALLOW_DIRTY_BUILD": "1",
+        "FAKE_EVENTS": str(tmp_path / "events.jsonl"),
+        "FAKE_BUILD_SECONDS": "0.05",
+        "BUILD_PARALLELISM": "2",
+        "BUILD_POLL_INTERVAL": "0.1",
+        "BUILD_SUBMIT_STAGGER": "0",
+        "SWARM_PYTHON": sys.executable,
+        **extra,
+    }
+    env.pop("GITHUB_ACTIONS", None)
+    return env
+
+
+def _write_tool(bindir: Path, name: str, body: str) -> None:
+    bindir.mkdir(exist_ok=True)
+    path = bindir / name
+    path.write_text(body.replace("{python}", sys.executable))
+    path.chmod(0o755)
+
+
+BUCKET = "swarm-build-mirror-swarm-test-project"
+
+
+FAKE_CURL = r'''#!{python}
+import json, os, sys
+args = sys.argv[1:]
+out = args[args.index("-o") + 1] if "-o" in args else None
+url = [a for a in args if a.startswith("http")][-1]
+with open(os.environ["FAKE_CURL_LOG"], "a") as fh:
+    fh.write(json.dumps({"url": url}) + "\n")
+body = ("fake " + url + "\n").encode()
+if url in os.environ.get("FAKE_CURL_TAMPER", "").split(","):
+    body = b"tampered\n"
+if out:
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    with open(out, "wb") as fh:
+        fh.write(body)
+else:
+    sys.stdout.buffer.write(body)
+'''
+
+
+# gcloud for the refresh: `storage objects describe` answers from a directory,
+# `storage cp LOCAL gs://...` uploads into it, and every call is logged.
+REFRESH_GCLOUD = r'''#!{python}
+import json, os, shutil, sys
+args = sys.argv[1:]
+with open(os.environ["FAKE_GCLOUD_LOG"], "a") as fh:
+    fh.write(json.dumps(args) + "\n")
+root = os.environ["FAKE_BUCKET_DIR"]
+if args[:3] == ["storage", "objects", "describe"]:
+    path = os.path.join(root, args[3][len("gs://"):])
+    if os.path.isfile(path):
+        print("name: x")
+        sys.exit(0)
+    print("ERROR: (gcloud.storage.objects.describe) gs://x not found: 404.", file=sys.stderr)
+    sys.exit(1)
+if args[:2] == ["storage", "cp"]:
+    src, dst = [a for a in args[2:] if not a.startswith("-")][:2]
+    path = os.path.join(root, dst[len("gs://"):])
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    shutil.copyfile(src, path)
+    sys.exit(0)
+if args[:4] == ["artifacts", "docker", "images", "describe"]:
+    if args[4] in os.environ.get("FAKE_MISSING_IMAGES", "").split(","):
+        print("ERROR: NOT_FOUND", file=sys.stderr)
+        sys.exit(1)
+    print("image_summary: {}")
+    sys.exit(0)
+print("fake gcloud: unhandled " + " ".join(args), file=sys.stderr)
+sys.exit(2)
+'''
+
+
+def _refresh(tmp_path: Path, *argv: str, present: tuple[str, ...] = (), tamper: str = "", missing_images: str = ""):
+    root = _sandbox(tmp_path)
+    rows = _fake_manifest(root)
+    bucket = tmp_path / "bucket"
+    for obj in present:
+        p = bucket / BUCKET / obj
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(_fake_content(obj))
+    bindir = tmp_path / "bin"
+    _write_tool(bindir, "gcloud", REFRESH_GCLOUD)
+    _write_tool(bindir, "curl", FAKE_CURL)
+    glog, clog = tmp_path / "gcloud.jsonl", tmp_path / "curl.jsonl"
+    proc = subprocess.run(
+        ["bash", str(root / "scripts" / "refresh-build-mirror.sh"), *argv],
+        env=_env(tmp_path, bindir, FAKE_GCLOUD_LOG=str(glog), FAKE_CURL_LOG=str(clog),
+                 FAKE_BUCKET_DIR=str(bucket), FAKE_CURL_TAMPER=tamper, FAKE_MISSING_IMAGES=missing_images),
+        capture_output=True, text=True, timeout=120, check=False,
+    )
+    calls = [json.loads(x) for x in glog.read_text().splitlines()] if glog.exists() else []
+    urls = [json.loads(x)["url"] for x in clog.read_text().splitlines()] if clog.exists() else []
+    return rows, bucket, proc, calls, urls
+
+
+def test_the_refresh_script_is_a_house_script() -> None:
+    assert os.access(REFRESH, os.X_OK), f"{_rel(REFRESH)} is not executable"
+    lines = [ln for ln in REFRESH.read_text().splitlines() if ln.strip() and not ln.startswith("#")]
+    assert lines[0] == "set -euo pipefail"
+    assert "lib/common.sh" in REFRESH.read_text()
+
+
+def test_the_refresh_uploads_every_missing_object_after_checking_its_sha256(tmp_path: Path) -> None:
+    rows, bucket, proc, calls, urls = _refresh(tmp_path, "--tools-only", present=(_manifest_rows()[0][1],))
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    # What was already there is not fetched again.
+    assert sorted(urls) == sorted(f"https://{obj}" for _, obj in rows[1:])
+    for sha, obj in rows:
+        assert hashlib.sha256((bucket / BUCKET / obj).read_bytes()).hexdigest() == sha, obj
+
+
+def test_the_refresh_refuses_an_upstream_file_with_the_wrong_sha256(tmp_path: Path) -> None:
+    bad = _manifest_rows()[1][1]
+    rows, bucket, proc, calls, _ = _refresh(tmp_path, "--tools-only", tamper=f"https://{bad}")
+    assert proc.returncode != 0
+    assert bad in proc.stderr, proc.stderr[-2000:]
+    assert not (bucket / BUCKET / bad).exists(), "a file that failed its sha256 was uploaded"
+    # Every other object still went up: one bad release does not stall the rest.
+    for _, obj in rows:
+        if obj != bad:
+            assert (bucket / BUCKET / obj).exists(), obj
+
+
+def test_the_refresh_check_names_every_missing_object_and_changes_nothing(tmp_path: Path) -> None:
+    rows, bucket, proc, calls, urls = _refresh(
+        tmp_path, "--check", "--tools-only", present=tuple(o for _, o in _manifest_rows()[1:])
+    )
+    assert proc.returncode != 0
+    assert f"gs://{BUCKET}/{rows[0][1]}" in proc.stderr, proc.stderr[-2000:]
+    assert urls == [], "--check fetched from upstream"
+    assert not [c for c in calls if c[:2] == ["storage", "cp"]], "--check uploaded"
+
+
+
+def test_the_runbook_is_indexed_and_names_the_script() -> None:
+    assert RUNBOOK.exists()
+    text = RUNBOOK.read_text()
+    assert "scripts/refresh-build-mirror.sh" in text
+    assert "build-mirror.md" in RUNBOOK_INDEX.read_text()
+
+
+@pytest.mark.skipif(shutil.which("shellcheck") is None, reason="shellcheck not installed")
+def test_the_new_scripts_are_shellcheck_clean() -> None:
+    done = subprocess.run(
+        ["shellcheck", "-x", str(REFRESH), str(LIB)], cwd=REPO / "scripts",
+        capture_output=True, text=True, check=False,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+

@@ -113,9 +113,9 @@ describe('#138: one head shape -- title left, actions right, no sub-line', () =>
     await advance(0)
     const control = () => document.querySelector('.c-phead .c-acts .c-refresh') as HTMLButtonElement
     expect(control()).not.toBeNull()
-    expect(control().textContent).toBe('⟳ 0 s')
+    expect(control().textContent).toBe('⟳ read 0 s ago')
     await advance(12_000)
-    expect(control().textContent, 'the age did not tick').toBe('⟳ 10 s')
+    expect(control().textContent, 'the age did not tick').toBe('⟳ read 10 s ago')
     expect(control().getAttribute('aria-label')).toMatch(/^Refresh · read 10 s ago/)
   })
 })
@@ -138,9 +138,9 @@ describe('#98: a page that is not a `Screen` still carries its age on its refres
       </PageHead>,
     )
     const control = (): HTMLButtonElement => document.querySelector<HTMLButtonElement>('.c-phead > .c-acts > .c-refresh')!
-    expect(control().textContent).toBe('⟳ 5 s')
+    expect(control().textContent).toBe('⟳ read 5 s ago')
     await advance(10_000)
-    expect(control().textContent, 'the age did not tick').toBe('⟳ 15 s')
+    expect(control().textContent, 'the age did not tick').toBe('⟳ read 15 s ago')
     fireEvent.click(control())
     expect(reload[0]).toHaveBeenCalledTimes(1)
     expect(reload[1]).toHaveBeenCalledTimes(1)

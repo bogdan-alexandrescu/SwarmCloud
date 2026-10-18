@@ -18,6 +18,7 @@ import {
   type RowOutcome,
 } from './outcomes'
 import { Mark } from './primitives'
+import { agentPath } from './OverviewRegions'
 
 /**
  * THE TASKS BEHIND ONE TIMELINE FIGURE (#116).
@@ -65,9 +66,14 @@ export function OpenLink({ link, className, children }: { link: RowLink; classNa
   )
 }
 
-/** The task's address: its drawer, under the explicit `task/` form. */
-export function taskHref(id: string): string {
-  return `#work/task/${encodeURIComponent(id)}`
+/**
+ * The task's address: its page under the Agents list that holds it. A path,
+ * not the legacy `#work/task/<id>` (live QA RT-30, 2026-10-11): that form
+ * redirected on every click and showed a hash URL on hover. Every row here
+ * has ended, so it is the Recent list's.
+ */
+export function taskHref(id: string, state: EndedRow['state'] = 'FAILED'): string {
+  return agentPath({ id, state })
 }
 
 /** Where the figure was, in words: one bucket, or the span. */
@@ -213,7 +219,7 @@ export function EndedRowsCard({
               {rows.rows.map((r) => (
                 <tr key={`${r.tenant_id}/${r.id}`} data-id={r.id}>
                   <th scope="row">
-                    <a className="ctl-link mono" href={taskHref(r.id)} title={r.id}>
+                    <a className="ctl-link mono" href={taskHref(r.id, r.state)} title={r.id}>
                       {r.step_id ?? shortTaskId(r.id)}
                     </a>
                     {r.state === 'DEAD_LETTERED' && <span className="ol-q"> · dead-lettered</span>}

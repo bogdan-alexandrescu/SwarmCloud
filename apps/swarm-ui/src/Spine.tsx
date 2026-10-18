@@ -21,9 +21,9 @@
  * Production draws a red pill and a 3px red bar across the top; the pill shows
  * only what was measured (`classifyEnvironment`), never a hardcoded word.
  */
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
+import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
 import { AGENT_TABS, type AgentTab } from './agentlist'
-import { loadCapacity, loadMe, loadMyTenants, loadStats, type TenantChoice } from './api'
+import { loadApprovals, loadCapacity, loadMe, loadMyTenants, loadStats, type TenantChoice } from './api'
 import { classifyEnvironment, envTreatment, servedEnvironment, SwarmMark } from './Brand'
 import { Banner, Button, NamedMark, Toaster, acknowledge, routedClick } from './components'
 import { chooseTenant, chosenTenant, clearTenantSwitch, errorHeading, noteTenantSwitch, probeSnapshot, subscribeProbes, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, type Result } from './fetch'
@@ -33,9 +33,15 @@ import { addressToPath } from './paths'
 import { shortcut, typedIntoField } from './shortcuts'
 import type { Capacity, Me, Stats, TaskState } from './types'
 import { ThemeToggle } from './ThemeToggle'
+import { SignOutButton, SignedBackIn } from './SignOut'
+import { iapFronted, signingOut } from './signoutState'
 import { AppTakeover, OfflineBanner, wholeAppFault, useOnline } from './AppStates'
+import { feedData, notificationsSnapshot, subscribeNotifications } from './notificationFeed'
 
-export type SpineSection = 'overview' | 'work' | 'capacity' | 'admin' | 'help' | 'api' | null
+export type SpineSection = 'overview' | 'work' | 'automate' | 'capacity' | 'admin' | 'help' | 'api' | null
+
+/** The spine sections that draw a panel of pages. */
+type PanelSection = 'work' | 'automate' | 'capacity' | 'admin'
 
 /** One page in the panel: its label, its icon, the address `go()` takes, and its children. */
 interface PanelPage {
@@ -59,7 +65,7 @@ const AGENT_LABEL: Readonly<Record<AgentTab, string>> = { live: 'Live', waiting:
  * The panel's pages, per spine section (common.py NAV). The `to` values are
  * router addresses, so they resolve exactly as a click on the old rail did.
  */
-export const PANEL_PAGES: Readonly<Record<'work' | 'capacity' | 'admin', PanelPage[]>> = {
+export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
   work: [
     {
       key: 'agents',
@@ -79,6 +85,12 @@ export const PANEL_PAGES: Readonly<Record<'work' | 'capacity' | 'admin', PanelPa
     // #780 OB8 (onboarding.html): Setup until it is done, then Access.
     { key: 'setup', label: 'Setup', icon: 'setup', to: 'work/setup' },
     { key: 'access', label: 'Access', icon: 'access', to: 'work/access' },
+  ],
+  // docs/schedules.md §6.1 (SD1): the section's two pages. Approvals carries
+  // the inbox count, as the section does on the spine.
+  automate: [
+    { key: 'schedules', label: 'Schedules', icon: 'schedules', to: 'automate/schedules' },
+    { key: 'approvals', label: 'Approvals', icon: 'approvals', to: 'automate/approvals' },
   ],
   capacity: [
     {
@@ -112,11 +124,28 @@ export const PANEL_PAGES: Readonly<Record<'work' | 'capacity' | 'admin', PanelPa
     // missing here, so an admin reached it only by typing /admin/people --
     // the Runs defect visual QA Q7 caught, again.
     { key: 'people', label: 'People', icon: 'people', to: 'admin/people' },
+    // No Schedules here since SCHED-ONE-PAGE (owner decision 2026-10-13):
+    // every tenant's schedules are Automate › Schedules, All tenants.
   ],
 }
 
+/**
+ * Submit's pages (CH-17): the chooser and its three forms, by the route tab
+ * each has (`''` is the chooser at /submit). Their labels are the forms'
+ * own headings on the chooser.
+ */
+const SUBMIT_PAGES: readonly { tab: string; label: string; icon: string; to: string }[] = [
+  { tab: '', label: 'Choose what to submit', icon: 'submit', to: 'submit' },
+  { tab: 'new', label: 'A task', icon: 'work', to: 'work/new' },
+  { tab: 'new-workflow', label: 'A workflow', icon: 'workflows', to: 'work/new-workflow' },
+  { tab: 'new-issue', label: 'From a GitHub issue', icon: 'runs', to: 'work/new-issue' },
+]
+
+/** Each panel's heading: its spine section's label. */
+export const PANEL_TITLE: Readonly<Record<PanelSection, string>> = { work: 'Work', automate: 'Automate', capacity: 'Capacity', admin: 'Admin' }
+
 /** Which panel row a route's tab belongs to: a child's tab belongs to its parent. */
-function rowFor(section: 'work' | 'capacity' | 'admin', tab: string): string {
+function rowFor(section: PanelSection, tab: string): string {
   if (section === 'work' && (tab === 'running' || tab === '')) return 'agents'
   if (section === 'capacity' && tab === 'profiles') return 'pools'
   if (section === 'capacity' && tab === 'quota') return 'accounts'
@@ -129,7 +158,7 @@ function rowFor(section: 'work' | 'capacity' | 'admin', tab: string): string {
  * page -- one of its children is. `agentTab` is the Agents list's own tab,
  * which the route's tab (`running`) does not carry.
  */
-export function litPage(section: 'work' | 'capacity' | 'admin', tab: string, agentTab: AgentTab): { row: string; kid: string | null } {
+export function litPage(section: PanelSection, tab: string, agentTab: AgentTab): { row: string; kid: string | null } {
   const row = rowFor(section, tab)
   const page = PANEL_PAGES[section].find((p) => p.key === row)
   if (page?.kids === undefined) return { row, kid: null }
@@ -154,7 +183,7 @@ export const OVERVIEW_JUMPS: readonly { id: string; label: string }[] = [
   { id: 'ov-running', label: 'Running now' },
   { id: 'ov-waiting', label: 'Waiting, and why' },
   { id: 'ov-failures', label: 'Recent failures' },
-  { id: 'ov-spend', label: 'Cost so far' },
+  { id: 'ov-spend', label: 'Recent token cost' },
   { id: 'ov-headroom', label: 'Headroom' },
   { id: 'ov-pools', label: 'Pools' },
 ]
@@ -200,6 +229,71 @@ export function writePref(key: string, value: string | null): void {
 const COLLAPSED_KEY = 'swarm.shell.collapsed'
 
 /**
+ * THE TABLET BAND STARTS COLLAPSED (live QA CH-1, 2026-10-11). Between the
+ * phone layout (below 760px) and about 1100px the open panel left the page
+ * NARROWER than the phone layout does: 500px of content at 820, 440 at 760,
+ * against 720 at 720 -- and tables only stack at the phone breakpoint, so
+ * Tenants, Workflows, Runs and Pools scrolled sideways inside their cards.
+ * In this band the shell is the spine and its flyouts on every load, and
+ * `Expand the panel` opens the panel for this visit only: the stored choice
+ * (`COLLAPSED_KEY`) is the desktop's, and a tablet's expand does not change it.
+ */
+export const TABLET_QUERY = '(min-width: 760px) and (max-width: 1099px)'
+
+function subscribeTablet(fn: () => void): () => void {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return () => {}
+  const query = window.matchMedia(TABLET_QUERY)
+  query.addEventListener?.('change', fn)
+  return () => query.removeEventListener?.('change', fn)
+}
+
+/** False where there is no `matchMedia` (jsdom), which is the desktop's answer. */
+function tabletNow(): boolean {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia(TABLET_QUERY).matches
+}
+
+/** The phone band, where the spine becomes the 44px phone header (the same width as Notifications.tsx's). */
+const PHONE_QUERY = '(max-width: 759px)'
+
+function subscribePhone(fn: () => void): () => void {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return () => {}
+  const query = window.matchMedia(PHONE_QUERY)
+  query.addEventListener?.('change', fn)
+  return () => query.removeEventListener?.('change', fn)
+}
+
+function phoneNow(): boolean {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia(PHONE_QUERY).matches
+}
+
+/** The page scroller's id: the skip link's target (CH-15). */
+const CONTENT_ID = 'swarm-page'
+
+/** The address a scroll position is kept under: the path and query, not the in-page hash. */
+function addressNow(): string {
+  return typeof window === 'undefined' ? '' : window.location.pathname + window.location.search
+}
+
+/**
+ * The page's own heading, else the scroller itself: where focus goes when the
+ * page changes, the skip link is used or `Top` is pressed (CH-5, CH-13,
+ * CH-15). A heading is made focusable without entering the tab order.
+ */
+function focusPage(scroller: HTMLElement | null): void {
+  if (scroller === null) return
+  const h = scroller.querySelector<HTMLElement>('h1')
+  if (h !== null && !h.hasAttribute('tabindex')) h.setAttribute('tabindex', '-1')
+  ;(h ?? scroller).focus({ preventScroll: true })
+}
+
+/** Whether focus sits in the shell's own chrome (spine, panel, flyout, phone bar, tenant list) or nowhere. */
+function focusInChrome(): boolean {
+  const a = document.activeElement
+  if (a === null || a === document.body) return true
+  return a.closest('.sk-side, .sk-flyout, .sk-pbar, .sk-tpop, .sk-skip') !== null
+}
+
+/**
  * THE TENANT NAMES `/v1/tenants/me` HAS GIVEN IN THIS BROWSER, by tenant id
  * (QA G1-06, 2026-10-07). `/v1/tenants/mine` names each tenant by its
  * registered group's email -- it reads nothing, by design -- so the shell
@@ -235,14 +329,19 @@ export interface NamedTenantChoice extends TenantChoice {
   group: string
 }
 
+/** What the switcher calls the caller's own personal workspace (#1200), whatever its tenant document says. */
+export const OWN_WORKSPACE_LABEL = 'Your workspace'
+
 /**
  * The one name the shell draws for a tenant: the current tenant's from `me`,
  * another's as `me` last gave it in this browser, and the group email only
- * for a tenant never acted as here. The id is always the secondary line.
+ * for a tenant never acted as here. The caller's own personal workspace
+ * (`kind: user`) is always "Your workspace". The id is always the secondary line.
  */
 export function nameTenants(choices: readonly TenantChoice[], me: Me | null): NamedTenantChoice[] {
   const known = knownTenantNames()
   return choices.map((c) => {
+    if (c.kind === 'user') return { tenant_id: c.tenant_id, display_name: OWN_WORKSPACE_LABEL, group: OWN_WORKSPACE_LABEL }
     const current = me !== null && me.tenant.tenant_id === c.tenant_id ? me.tenant.display_name || null : null
     return { tenant_id: c.tenant_id, display_name: current ?? known[c.tenant_id] ?? c.display_name, group: c.display_name }
   })
@@ -299,9 +398,36 @@ function readRecent(key: string): RecentWorkflow[] {
   }
 }
 
+/**
+ * THE TENANT `me` NAMED WHILE NO TENANT WAS CHOSEN: the caller's default
+ * (live QA CH-3). Learned by the shell, so the stores below can tell the
+ * default tenant's list from another's.
+ */
+export const DEFAULT_TENANT_KEY = 'swarm.tenant.default'
+
+/** Record the tenant the API acts as when no tenant is chosen. */
+export function learnDefaultTenant(id: string): void {
+  if (readPref(DEFAULT_TENANT_KEY) === id) return
+  writePref(DEFAULT_TENANT_KEY, id)
+  announce()
+}
+
+/**
+ * RECENT IS KEPT PER TENANT (live QA CH-3, 2026-10-11). It was one list for
+ * the browser, so after a switch to `smoke` the panel still offered eng's
+ * five workflows, and a workflow page opened from it was headed with eng's
+ * name above smoke's 404. The default tenant keeps the bare key -- the list
+ * every browser already holds was written under it -- and any other tenant
+ * has its own, suffixed with its id.
+ */
+export function recentKey(key: string): string {
+  const t = chosenTenant()
+  return t === null || t === readPref(DEFAULT_TENANT_KEY) ? key : `${key}:${t}`
+}
+
 /** The workflows opened in this browser, newest first: what `rememberWorkflow` keeps. */
 function openedWorkflows(): RecentWorkflow[] {
-  return readRecent(RECENT_WORKFLOWS_KEY)
+  return readRecent(recentKey(RECENT_WORKFLOWS_KEY))
 }
 
 /**
@@ -311,7 +437,7 @@ function openedWorkflows(): RecentWorkflow[] {
  * the freshest state and name either store holds for it.
  */
 export function recentWorkflows(): RecentWorkflow[] {
-  const newest = readRecent(NEWEST_WORKFLOWS_KEY)
+  const newest = readRecent(recentKey(NEWEST_WORKFLOWS_KEY))
   const fresh = new Map(newest.map((w) => [w.id, w] as const))
   const opened = openedWorkflows().map((w) => {
     const f = fresh.get(w.id)
@@ -353,7 +479,7 @@ export function rememberWorkflow(id: string, state: TaskState | null = null, nam
     if (fresh) announce()
     return
   }
-  writePref(RECENT_WORKFLOWS_KEY, JSON.stringify(next))
+  writePref(recentKey(RECENT_WORKFLOWS_KEY), JSON.stringify(next))
   announce()
 }
 
@@ -378,12 +504,12 @@ export function offerNewestWorkflows(board: readonly RecentWorkflow[]): void {
     return f === undefined ? w : { id: w.id, state: f.state, name: f.name ?? w.name }
   })
   if (JSON.stringify(opened) !== JSON.stringify(before)) {
-    writePref(RECENT_WORKFLOWS_KEY, JSON.stringify(opened))
+    writePref(recentKey(RECENT_WORKFLOWS_KEY), JSON.stringify(opened))
     changed = true
   }
   const next = board.slice(0, 5).map((w) => ({ id: w.id, state: w.state, name: w.name }))
-  if (readPref(NEWEST_WORKFLOWS_KEY) !== JSON.stringify(next)) {
-    writePref(NEWEST_WORKFLOWS_KEY, JSON.stringify(next))
+  if (readPref(recentKey(NEWEST_WORKFLOWS_KEY)) !== JSON.stringify(next)) {
+    writePref(recentKey(NEWEST_WORKFLOWS_KEY), JSON.stringify(next))
     changed = true
   }
   if (changed) announce()
@@ -474,6 +600,22 @@ const SUBMIT_SHORTCUT = shortcut('anywhere', 'n')
 const HELP_SHORTCUT = shortcut('anywhere', '?')
 const loadFrameCapacity = () => loadCapacity({ frame: true })
 const loadFrameStats = () => loadStats({ frame: true })
+const loadFrameApprovals = () => loadApprovals({ frame: true })
+
+/**
+ * THE AUTOMATE BADGE (docs/schedules.md §6.1): how many items wait in the
+ * approvals inbox, plans of issue runs included. Nothing while the read is in
+ * flight or when nothing waits -- a measured zero is no badge, the way a pool
+ * that is not full draws no dot. A FAILED read is a dash with its reason,
+ * never a 0: "nothing waits" and "could not ask" are opposite facts.
+ */
+export function approvalsBadge(r: Result<{ approvals: unknown[] }>): PanelCount | null {
+  if (r.status === 'error') return { n: null, why: `Approvals not read: ${errorHeading(r.error)}` }
+  const d = dataOf(r)
+  if (d === null || d.approvals.length === 0) return null
+  const n = d.approvals.length
+  return { n, alert: true, why: `${n} waiting for approval` }
+}
 
 function dataOf<T>(r: Result<T>): T | null {
   return r.status === 'ok' || r.status === 'stale' ? r.data : null
@@ -548,9 +690,15 @@ const WAITING_STATES = ['QUEUED', 'READY', 'PARKED'] as const
  *                  re-read every 30s with the meter. Live is LEASED through
  *                  RUNNING, so it agrees with how concurrency is counted
  *                  (invariant 3), not with RUNNING alone.
- *   Workflows      NOT SERVED: no route counts a tenant's workflows (the list
- *                  read pages 100 with a rollup budget, far too heavy for the
- *                  frame), so the row carries a dash and says so.
+ *   Workflows,     NO COUNT AT ALL (visual QA V150, 2026-10-11). No route
+ *   Recent         counts a tenant's workflows (the list read pages 100 with
+ *                  a rollup budget, far too heavy for the frame), and Recent
+ *                  is a window of finished agents, not a population. The
+ *                  Workflows row carried a dash whose reason lived only in a
+ *                  tooltip, beside a Recent row that carried nothing: two
+ *                  ways of not counting. A dash is for a count that WAS
+ *                  asked for and could not be read (Live and Waiting, below);
+ *                  a row nobody counts draws no mark, never a 0.
  *   Pools          the amber count of pools full or paused, derived from the
  *                  capacity read the meter already made; nothing when none is.
  *
@@ -591,7 +739,6 @@ export function panelCounts(
     out.live = live === null ? { n: null, why: 'not read: a state is missing from the counts' } : { n: live }
     out.waiting = waiting === null ? { n: null, why: 'not read: a state is missing from the counts' } : { n: waiting }
   }
-  out.workflows = { n: null, why: 'not served: no route counts this tenant’s workflows' }
   const c = dataOf(cap)
   if (c === null) {
     if (cap.status === 'error') out.pools = { n: null, why: `not read: ${errorHeading(cap.error)}` }
@@ -748,6 +895,27 @@ const ICONS: Readonly<Record<string, ReactNode>> = {
     </>
   ),
   counts: <path d="M9 4 7 20M17 4l-2 16M4.5 9h16M3.5 15h16" />,
+  // docs/schedules.md §6.1: a loop for the section, a clock for its Schedules page.
+  automate: (
+    <>
+      <path d="M19.5 12a7.5 7.5 0 0 1-13.2 4.9M4.5 12a7.5 7.5 0 0 1 13.2-4.9" />
+      <path d="M17.7 3.5v3.6h-3.6M6.3 20.5v-3.6h3.6" />
+    </>
+  ),
+  schedules: (
+    <>
+      <circle cx="12" cy="12" r="8" />
+      <path d="M12 7.5V12l3 2" />
+    </>
+  ),
+  // §6.1: a tray with a tick, for the inbox of things waiting on a person.
+  approvals: (
+    <>
+      <path d="M4 13.5h4.5l1.5 2.5h4l1.5-2.5H20" />
+      <path d="M4 13.5 6.5 5h11l2.5 8.5V19H4z" />
+      <path d="m9.5 9.5 2 2 3.5-3.5" />
+    </>
+  ),
   people: (
     <>
       <circle cx="12" cy="7.5" r="3.5" />
@@ -755,6 +923,14 @@ const ICONS: Readonly<Record<string, ReactNode>> = {
     </>
   ),
   swap: <path d="m7 9 5-5 5 5M7 15l5 5 5-5" />,
+  // #1206: the header bar's bell, and the tick its empty state and a finished update draw.
+  bell: (
+    <>
+      <path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z" />
+      <path d="M10 20.5a2 2 0 0 0 4 0" />
+    </>
+  ),
+  check: <path d="m5 12.5 4.5 4.5L19 7.5" />,
   search: (
     <>
       <circle cx="11" cy="11" r="6.5" />
@@ -778,6 +954,7 @@ export function Icon({ name, className = 'sk-ic' }: { name: string; className?: 
 const SPINE: readonly { key: Exclude<SpineSection, null>; label: string; to: string }[] = [
   { key: 'overview', label: 'Overview', to: 'overview/now' },
   { key: 'work', label: 'Work', to: 'work/running' },
+  { key: 'automate', label: 'Automate', to: 'automate/schedules' },
   { key: 'capacity', label: 'Capacity', to: 'capacity/pools' },
   { key: 'admin', label: 'Admin', to: 'admin/limits' },
 ]
@@ -806,6 +983,15 @@ export interface ShellProps {
   /** The spine's foot: Help and API reads, drawn by App (see `ctl-nav-util`). */
   foot: ReactNode
   /**
+   * THE NOTIFICATION BELL (#1206), drawn by App -- Notifications.tsx imports
+   * from this file, so it is handed in rather than imported. Placed ONCE, in
+   * the shell's own chrome (visual QA V178, 2026-10-16): at the spine's foot
+   * from 760px up, in the phone header below it. It used to be the only thing
+   * in a 48px header bar over every section page -- an empty band above the
+   * title at 1440, a second sticky band under the phone header at 390.
+   */
+  bell?: ReactNode
+  /**
    * The API-reads strip, drawn as the last row of the CONTENT column -- not a
    * full-width bar under the spine and the panel (#503: it cut the spine's
    * avatar off at 1440x900; the V2 frames have no bottom bar).
@@ -818,6 +1004,11 @@ export interface ShellProps {
    * form says which tenant it will now submit as.
    */
   keepOnSwitch?: boolean
+  /**
+   * The route's address. A change is a new page: focus moves to it when it was
+   * in the chrome (CH-15), and Back restores the scroll it was left at (CH-5).
+   */
+  place?: string
   children: ReactNode
 }
 
@@ -844,8 +1035,10 @@ export function SkyShell({
   onApiFilter,
   missing = false,
   foot,
+  bell = null,
   dock,
   keepOnSwitch = false,
+  place = '',
   children,
 }: ShellProps) {
   // THE CHOSEN TENANT (fetch.ts), null for the default. Every read sends it;
@@ -859,6 +1052,13 @@ export function SkyShell({
   // A capped list re-reads the stats with each of its own reads (D27).
   const [stats] = useFrameRead(loadFrameStats, 30_000, `${tenant ?? ''}:${fromList !== null && !fromList.whole ? fromList.at : ''}`)
   const [mine, rereadMine] = useFrameRead(loadFrameTenants, null)
+  // Once a minute: the inbox route syncs the tenant's held firings as it reads.
+  const [inbox] = useFrameRead(loadFrameApprovals, 60_000, tenant ?? '')
+  const waiting = approvalsBadge(inbox)
+  // #1206: the notification feed's admin count, from the store the header's
+  // bell reads too (notificationFeed.ts), so the two never disagree.
+  const notes = useSyncExternalStore(subscribeNotifications, notificationsSnapshot, notificationsSnapshot)
+  const adminPending = feedData(notes)?.admin_pending ?? 0
   const who = dataOf(me)
   const admin = who?.principal.is_admin === true
   const env = classifyEnvironment(
@@ -867,15 +1067,27 @@ export function SkyShell({
     who === null ? null : servedEnvironment(who),
   )
   const t = envTreatment(env)
+  // SIGN OUT (owner 2026-10-14) only where there is an IAP session to end:
+  // never on `npm run dev` (signoutState.ts `iapFronted`), and never before the
+  // identity it would sign out has been read.
+  const canSignOut = who !== null && iapFronted(typeof window === 'undefined' ? '' : window.location.hostname)
   const meter = meterOf(dataOf(cap))
-  const counts = panelCounts(stats, cap, fromList)
+  // The Approvals page carries the inbox count the Automate section does (§6.1).
+  const counts = waiting === null ? panelCounts(stats, cap, fromList) : { ...panelCounts(stats, cap, fromList), approvals: waiting }
   const online = useOnline()
   const probes = useSyncExternalStore(subscribeProbes, probeSnapshot, probeSnapshot)
   const fault = wholeAppFault(me, probes)
   // A retry from the takeover re-reads the frame AND the page under it.
   const [attempt, setAttempt] = useState(0)
 
-  const [collapsed, setCollapsed] = useState(() => readPref(COLLAPSED_KEY) === '1')
+  const tablet = useSyncExternalStore(subscribeTablet, tabletNow, () => false)
+  const phone = useSyncExternalStore(subscribePhone, phoneNow, () => false)
+  const menuNoteId = useId()
+  const [pinned, setPinned] = useState(() => readPref(COLLAPSED_KEY) === '1')
+  // The tablet's expand, for this visit and this band only (CH-1).
+  const [tabletOpen, setTabletOpen] = useState(false)
+  useEffect(() => setTabletOpen(false), [tablet])
+  const collapsed = tablet ? !tabletOpen : pinned
   const [drawer, setDrawer] = useState(false)
   const [fly, setFly] = useState<Exclude<SpineSection, null> | null>(null)
   /** Where the tenant list is open: beside the panel block, beside the spine's tile, or the phone's sheet. */
@@ -885,6 +1097,13 @@ export function SkyShell({
   const flyRef = useRef<HTMLDivElement>(null)
   const openerRef = useRef<HTMLButtonElement | null>(null)
   const appRef = useRef<HTMLDivElement | null>(null)
+  const jumpedTo = useRef<HTMLElement | null>(null)
+  const placed = useRef(false)
+  const titleNow = useRef(title)
+  titleNow.current = title
+  const [arrived, setArrived] = useState('')
+  /** Which collapse control to focus once the panel has been swapped (CH-9). */
+  const refocusToggle = useRef<'expand' | 'collapse' | null>(null)
   const scrollerRef = useRef<HTMLDivElement | null>(null)
   const [scroll, setScroll] = useState<PageScroll>('top')
 
@@ -893,20 +1112,89 @@ export function SkyShell({
   // the spine and the panel sit beside it, the dock under it. Read on every
   // scroll event, which is a comparison and a state write that React drops
   // when the band has not changed.
+  //
+  // EACH ADDRESS KEEPS THE SCROLL IT WAS LEFT AT (live QA CH-5, 2026-10-11).
+  // The page scrolls in this element, not the document, so the browser's own
+  // restoration never applied: scrolled to 4000, a trip to Capacity and Back
+  // came back at 0. Recorded per address on every scroll, read when `popstate`
+  // says the address is a history entry, and put back once the page is tall
+  // enough to hold it -- its reads land after the route does.
+  const scrolledAt = useRef(new Map<string, number>())
+  const restoreTo = useRef<number | null>(null)
   useEffect(() => {
     const scroller = scrollerRef.current
     if (scroller === null) return
-    const onScroll = () => setScroll(scrollBand(scroller.scrollTop, scroller.clientHeight))
+    const onScroll = () => {
+      setScroll(scrollBand(scroller.scrollTop, scroller.clientHeight))
+      scrolledAt.current.set(addressNow(), scroller.scrollTop)
+    }
     onScroll()
+    const onPop = () => {
+      restoreTo.current = scrolledAt.current.get(addressNow()) ?? 0
+    }
     scroller.addEventListener('scroll', onScroll, { passive: true })
-    return () => scroller.removeEventListener('scroll', onScroll)
+    window.addEventListener('popstate', onPop)
+    return () => {
+      scroller.removeEventListener('scroll', onScroll)
+      window.removeEventListener('popstate', onPop)
+    }
   }, [])
+  // `Top` MOVES FOCUS AS WELL AS THE PAGE (CH-13): it unmounts itself once
+  // the page is at the top, which dropped focus to <body>; and the jump's
+  // hash went too, or a reload went straight back down to the section.
   const toTop = () => {
     const scroller = scrollerRef.current
     if (scroller === null) return
     scroller.scrollTop = 0
     setScroll('top')
+    if (window.location.hash !== '') window.history.replaceState(window.history.state, '', addressNow())
+    focusPage(scroller)
   }
+
+  // A NEW PAGE TAKES FOCUS FROM THE CHROME (live QA CH-15, CH-5). Focus stayed
+  // on the rail link that was clicked, so the next Tab walked the rest of the
+  // rail, and after a load focus sat on <body>, where PageDown, Space and End
+  // scroll the document -- which does not scroll; `.ctl-scroll` does. When
+  // focus is in the chrome or nowhere, it moves to the page's heading (else
+  // the scroller), inside the scroller, so the keys scroll the page and a
+  // screen reader reads where it landed. Focus inside the page -- a tab, a
+  // filter, a form -- is left where it is. On a Back or Forward the scroll
+  // the address was left at is put back (CH-5).
+  useEffect(() => {
+    const scroller = scrollerRef.current
+    if (scroller === null) return
+    if (focusInChrome()) focusPage(scroller)
+    // SAID, as well as focused (CH-15): a page with no heading yet takes
+    // focus on its scroller, which has no name to read. Not on the first
+    // load, which the browser announces by the document title.
+    if (placed.current) setArrived(titleNow.current)
+    placed.current = true
+    const want = restoreTo.current
+    restoreTo.current = null
+    if (want === null) return
+    let tries = 0
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const stop = () => {
+      if (timer !== undefined) clearTimeout(timer)
+      timer = undefined
+    }
+    const step = () => {
+      scroller.scrollTop = want
+      if (Math.abs(scroller.scrollTop - want) < 2 || ++tries > 30) return stop()
+      timer = setTimeout(step, 100)
+    }
+    step()
+    // The reader's own scroll wins over a restore still waiting for the page.
+    scroller.addEventListener('wheel', stop, { passive: true, once: true })
+    scroller.addEventListener('touchstart', stop, { passive: true, once: true })
+    window.addEventListener('keydown', stop, { once: true })
+    return () => {
+      stop()
+      scroller.removeEventListener('wheel', stop)
+      scroller.removeEventListener('touchstart', stop)
+      window.removeEventListener('keydown', stop)
+    }
+  }, [place])
 
   // THE PHONE DRAWER IS A DIALOG IN BEHAVIOUR: focus moves into it on open, Tab
   // wraps inside it, Escape closes it, and focus returns to the button that
@@ -922,6 +1210,9 @@ export function SkyShell({
     focusables()[0]?.focus()
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        // THE INNERMOST FIRST (CH-11): the tenant sheet over the drawer
+        // takes the key on its own capture listener and marks it used.
+        if (e.defaultPrevented) return
         e.preventDefault()
         setDrawer(false)
         return
@@ -943,7 +1234,12 @@ export function SkyShell({
     document.addEventListener('keydown', onKey)
     return () => {
       document.removeEventListener('keydown', onKey)
-      openerRef.current?.focus()
+      // An "On this page" jump hands focus to the section it went to (CH-12);
+      // every other way of closing returns it to the menu button.
+      const to = jumpedTo.current
+      jumpedTo.current = null
+      if (to !== null) to.focus({ preventScroll: true })
+      else openerRef.current?.focus()
     }
   }, [drawer])
 
@@ -955,7 +1251,12 @@ export function SkyShell({
     if (flyTimer.current !== undefined) clearTimeout(flyTimer.current)
     const was = fly
     setFly(null)
-    if (refocus && was !== null) sideRef.current?.querySelector<HTMLElement>(`[data-sec="${was}"]`)?.focus()
+    if (refocus && was !== null) {
+      // Handed back, the section does not open its flyout again on that focus.
+      quietFocus.current = true
+      sideRef.current?.querySelector<HTMLElement>(`[data-sec="${was}"]`)?.focus()
+      quietFocus.current = false
+    }
   }
   const onFlyBlur = (e: ReactFocusEvent) => {
     const to = e.relatedTarget instanceof Node ? e.relatedTarget : null
@@ -968,13 +1269,94 @@ export function SkyShell({
     e.stopPropagation()
     closeFly(true)
   }
+  // THE FLYOUT IS IN THE TAB ORDER, RIGHT AFTER ITS SECTION (live QA CH-8).
+  // It is drawn outside the spine, so Tab went from Work straight to
+  // Automate and its pages were mouse-only. From an open flyout's section,
+  // Tab or ArrowRight enters it; inside it, the arrows move, Tab past its
+  // last control goes on to the next spine item, Shift+Tab past its first
+  // and ArrowLeft go back to the section.
+  const flyItems = () => Array.from(flyRef.current?.querySelectorAll<HTMLElement>('a[href], button') ?? [])
+  const enterFly = useRef(false)
+  const quietFocus = useRef(false)
+  useEffect(() => {
+    if (fly === null || !enterFly.current) return
+    enterFly.current = false
+    flyItems()[0]?.focus()
+  }, [fly])
+  const onSectionKey = (e: ReactKeyboardEvent, key: Exclude<SpineSection, null>) => {
+    if (!collapsed || drawer || !(key in PANEL_PAGES)) return
+    const forward = (e.key === 'Tab' && !e.shiftKey) || e.key === 'ArrowRight'
+    if (!forward || e.altKey || e.ctrlKey || e.metaKey) return
+    e.preventDefault()
+    if (flyTimer.current !== undefined) clearTimeout(flyTimer.current)
+    if (fly === key && flyItems().length > 0) {
+      flyItems()[0]!.focus()
+      return
+    }
+    enterFly.current = true
+    setFly(key)
+  }
+  const onFlyoutKey = (e: ReactKeyboardEvent) => {
+    onFlyKey(e)
+    if (e.defaultPrevented || fly === null) return
+    const items = flyItems()
+    const at = items.indexOf(document.activeElement as HTMLElement)
+    const section = sideRef.current?.querySelector<HTMLElement>(`[data-sec="${fly}"]`) ?? null
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault()
+      const n = items.length
+      items[(at + (e.key === 'ArrowDown' ? 1 : n - 1) + n) % n]?.focus()
+    } else if (e.key === 'ArrowLeft' || (e.key === 'Tab' && e.shiftKey && at === 0)) {
+      e.preventDefault()
+      closeFly(true)
+    } else if (e.key === 'Tab' && !e.shiftKey && at === items.length - 1 && section !== null) {
+      const rail = Array.from(sideRef.current?.querySelectorAll<HTMLElement>('.sk-spine a[href], .sk-spine button:not([disabled])') ?? [])
+      const next = rail[rail.indexOf(section) + 1]
+      if (next === undefined) return
+      e.preventDefault()
+      next.focus()
+    }
+  }
 
   const toggle = useCallback(() => {
-    setCollapsed((c) => {
+    if (tablet) {
+      setTabletOpen((o) => !o)
+      return
+    }
+    setPinned((c) => {
       writePref(COLLAPSED_KEY, c ? null : '1')
       return !c
     })
-  }, [])
+  }, [tablet])
+  // THE PRESSED CONTROL IS UNMOUNTED BY ITS OWN PRESS (live QA CH-9): focus
+  // fell to <body>. Its counterpart takes it once the swap has drawn.
+  const flip = useCallback(() => {
+    refocusToggle.current = collapsed ? 'collapse' : 'expand'
+    toggle()
+  }, [collapsed, toggle])
+  useEffect(() => {
+    const which = refocusToggle.current
+    refocusToggle.current = null
+    if (which !== null) sideRef.current?.querySelector<HTMLElement>(`.sk-${which}`)?.focus()
+  }, [collapsed])
+
+  // AN "ON THIS PAGE" JUMP MOVES FOCUS TO THE SECTION (live QA CH-12): it was
+  // left on the panel link -- or, on a phone, on the menu button the closing
+  // drawer handed it to -- so a keyboard or screen-reader user stayed at the
+  // top of a page that had scrolled away from them.
+  const onJump = useCallback(
+    (id: string) => {
+      jumpTo(id)
+      const target = document.getElementById(id)
+      if (target === null) return
+      if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1')
+      if (drawer) {
+        jumpedTo.current = target
+        setDrawer(false)
+      } else target.focus({ preventScroll: true })
+    },
+    [drawer],
+  )
 
   // A navigation closes the phone drawer, any flyout and the tenant list.
   const nav = useCallback(
@@ -1026,8 +1408,13 @@ export function SkyShell({
   // ---- the tenant switch (intake-tenants.html 2A) --------------------------
   const choices = useMemo(() => nameTenants(dataOf(mine) ?? [], who), [mine, who])
   useEffect(() => {
+    // Not after Sign out: its clear is what made `tenant` null, and the old `me`
+    // would write both stores straight back (signoutState.ts `signingOut`).
+    if (signingOut()) return
     if (who !== null && who.tenant.display_name) learnTenantName(who.tenant.tenant_id, who.tenant.display_name)
-  }, [who])
+    // With no tenant chosen, `me` names the default: Recent keeps its list under the bare key (CH-3).
+    if (who !== null && tenant === null) learnDefaultTenant(who.tenant.tenant_id)
+  }, [who, tenant])
   const switchable = who !== null && choices.length > 1
   // THE SWITCH ON A KEPT FORM, for the banner over it and its button's words.
   const switched = useSyncExternalStore(subscribeTenantSwitch, tenantSwitchSnapshot, tenantSwitchSnapshot)
@@ -1040,7 +1427,8 @@ export function SkyShell({
     (to: TenantChoice) => {
       setPicker(null)
       if (who === null || to.tenant_id === who.tenant.tenant_id) return
-      const from = { id: who.tenant.tenant_id, name: who.tenant.display_name ?? who.tenant.tenant_id }
+      const named = choices.find((c) => c.tenant_id === who.tenant.tenant_id)
+      const from = { id: who.tenant.tenant_id, name: named?.display_name ?? who.tenant.display_name ?? who.tenant.tenant_id }
       noteTenantSwitch({ from, to: { id: to.tenant_id, name: to.display_name }, kept: keepOnSwitch })
       chooseTenant(to.tenant_id)
       // A TOAST, because it acknowledges what the viewer just did -- and it
@@ -1058,7 +1446,7 @@ export function SkyShell({
         },
       )
     },
-    [who, keepOnSwitch],
+    [who, keepOnSwitch, choices],
   )
 
   const spine = (
@@ -1087,20 +1475,55 @@ export function SkyShell({
             key={s.key}
             data-sec={s.key}
             className={`sk-ri${on ? ' is-on' : ''}`}
-            aria-current={on ? 'page' : undefined}
+            // A 404 LIGHTS THE NEAREST SECTION BUT IS ON NO PAGE (live QA
+            // CH-14): the section is drawn lit as the way back, never
+            // announced as where the reader is.
+            aria-current={on && !missing ? 'page' : undefined}
             title={checking ? `${s.label} (checking access)` : locked ? `${s.label} (admins only)` : s.label}
             {...routed(s.to, () => {
-              // Collapsed, a click on a section opens the panel again.
-              if (collapsed) toggle()
+              // COLLAPSED, A CLICK ON THE SECTION YOU ARE IN OPENS ITS PAGES
+              // (visual QA V083, 2026-10-11). It expanded the panel, so with
+              // no hover -- a touch screen -- the only way between the four
+              // Admin pages was to undo the collapse. The flyout opens at
+              // once and stays until a choice, Escape or a click elsewhere;
+              // `Open the panel` in it, and the spine's own expand, still
+              // undo the collapse. Overview has no pages, so it expands.
+              if (collapsed && on && s.key !== 'overview' && !drawer) {
+                if (flyTimer.current !== undefined) clearTimeout(flyTimer.current)
+                setFly(s.key)
+                return
+              }
+              // Collapsed, a click on another section opens the panel again --
+              // but not in the tablet band, which is collapsed for room (CH-1).
+              if (collapsed && !tablet) toggle()
               if (!(collapsed && on)) nav(s.to)
             })}
             onMouseEnter={() => hover(s.key)}
             onMouseLeave={() => hover(null)}
-            onFocus={() => hover(s.key)}
+            onFocus={() => {
+              // Focus opens the flyout at once, so the Tab that follows can enter it (CH-8).
+              if (!collapsed || drawer || quietFocus.current) return
+              if (flyTimer.current !== undefined) clearTimeout(flyTimer.current)
+              setFly(s.key)
+            }}
+            onKeyDown={(e) => onSectionKey(e, s.key)}
           >
             <Icon name={s.key} />
             <small>{s.label}</small>
             {s.key === 'capacity' && meter?.warn != null && <i className="sk-dot" title={meter.warn} />}
+            {s.key === 'automate' && waiting !== null && (
+              <i className={waiting.n === null ? 'sk-badge is-unread' : 'sk-badge'} title={waiting.why} aria-label={waiting.why}>
+                {waiting.n === null ? '—' : waiting.n}
+              </i>
+            )}
+            {/* #1206: requests waiting on ANY admin, as a pill at the item's
+                top-right. Gated on the session read as well as the count: a
+                pill is never drawn over a locked Admin. */}
+            {s.key === 'admin' && admin && adminPending > 0 && (
+              <i className="sk-badge sk-apill" title={`${adminPending} waiting for an admin`} aria-label={`${adminPending} waiting for an admin`}>
+                {adminPending}
+              </i>
+            )}
             {locked && <Icon name="lock" className="sk-ic sk-lkd" />}
           </a>
         )
@@ -1110,11 +1533,17 @@ export function SkyShell({
           bring it back was to click a section. The panel's own collapse
           control, mirrored, at the spine's foot. */}
       {collapsed && !drawer && (
-        <button type="button" className="sk-ibtn sk-expand" aria-label="Expand the panel" title="Expand the panel" onClick={toggle}>
+        <button type="button" className="sk-ibtn sk-expand" aria-label="Expand the panel" title="Expand the panel" onClick={flip}>
           <Icon name="expand" />
         </button>
       )}
+      {/* THE BELL AT THE FOOT, above Help, from 760px up (V178): always on
+          screen, as it was in the sticky bar, and no band over the page. Its
+          drop-down opens beside the spine (styles/notifications.css). */}
+      {!phone && bell !== null && <div className="sk-bell">{bell}</div>}
       {foot}
+      {/* Collapsed, the avatar is the person: Sign out sits beside it, as an icon. */}
+      {collapsed && !drawer && canSignOut && <SignOutButton email={who.principal.email} compact />}
       <span className="sk-av" title={who?.principal.email ?? 'not read'} aria-hidden>
         {initials(who?.principal.email ?? '')}
         {fault !== null && <i className="sk-av-dot" />}
@@ -1135,6 +1564,7 @@ export function SkyShell({
       apiFailuresOnly={apiFailuresOnly}
       onApiFilter={onApiFilter}
       missing={missing}
+      onJump={onJump}
     />
   )
 
@@ -1145,19 +1575,70 @@ export function SkyShell({
           Swarm<span>Cloud</span>
         </span>
         <EnvPill label={t.label} prod={t.bar} title={t.explain} />
-        <button type="button" className="sk-ibtn sk-collapse" aria-label="Collapse the panel" title="Collapse the panel" onClick={toggle}>
+        <button type="button" className={COLLAPSE_CLASS} aria-label="Collapse the panel" title="Collapse the panel" onClick={flip}>
           <Icon name="collapse" />
         </button>
+        {/* THE DRAWER'S OWN CLOSE (live QA CH-12): the menu button that
+            opened it sits under it. Escape and the scrim still close it. */}
+        {drawer && (
+          <button type="button" className="sk-ibtn sk-dclose" aria-label="Close the menu" title="Close the menu" onClick={() => setDrawer(false)}>
+            <span aria-hidden>&times;</span>
+          </button>
+        )}
       </div>
       <TenantBlock me={me} mine={mine} onRetryList={rereadMine} open={picker === 'panel'} onOpen={() => setPicker(picker === 'panel' ? null : 'panel')} />
       <div className="sk-pscroll">{pages}</div>
       <Meter meter={meter} read={cap.status === 'error' || fault !== null ? 'unread' : cap.status === 'loading' ? 'loading' : 'landed'} />
       <div className="sk-pfoot">
         <span className="sk-pfrow">
-          <b>{who === null ? (me.status === 'loading' ? 'reading…' : 'not read') : who.principal.email.split('@')[0]}</b>
+          <b title={who?.principal.email.split('@')[0]}>{who === null ? (me.status === 'loading' ? 'reading…' : 'not read') : who.principal.email.split('@')[0]}</b>
           {admin && <span className="sk-adm">admin</span>}
+          {canSignOut && <SignOutButton email={who.principal.email} />}
         </span>
-        {who !== null && <small>{who.principal.email}</small>}
+        {/* One line each, cut, whole in the title (styles.css `.sk-pfoot`, V054). */}
+        {who !== null && <small title={who.principal.email}>{who.principal.email}</small>}
+        {/* SETTINGS › API KEYS (KEYS-UI): the person's own keys, so it sits
+            under their name rather than among the sections (App.tsx SETTINGS). */}
+        <a
+          className={`sk-pset${place.startsWith('/settings/keys') ? ' is-on' : ''}`}
+          aria-current={place.startsWith('/settings/keys') ? 'page' : undefined}
+          href={addressToPath('settings/keys')}
+          onClick={(e) => {
+            if (!routedClick(e)) return
+            e.preventDefault()
+            nav('settings/keys')
+          }}
+        >
+          Settings › API keys
+        </a>
+        {/* SETTINGS › WORKSPACE (CTXQ-UI): the selected workspace's own
+            settings, Code intelligence first (App.tsx WORKSPACE_TAB). */}
+        <a
+          className={`sk-pset${place === '/settings/workspace' ? ' is-on' : ''}`}
+          aria-current={place === '/settings/workspace' ? 'page' : undefined}
+          href={addressToPath('settings/workspace')}
+          onClick={(e) => {
+            if (!routedClick(e)) return
+            e.preventDefault()
+            nav('settings/workspace')
+          }}
+        >
+          Settings › Workspace
+        </a>
+        {/* SETTINGS › MCP SERVERS (MCP-UI-NAV): the workspace's registered MCP
+            servers, beside Workspace (registered-mcp-servers.md §4.11; App.tsx MCP_TAB). */}
+        <a
+          className={`sk-pset${place === '/settings/mcp-servers' ? ' is-on' : ''}`}
+          aria-current={place === '/settings/mcp-servers' ? 'page' : undefined}
+          href={addressToPath('settings/mcp-servers')}
+          onClick={(e) => {
+            if (!routedClick(e)) return
+            e.preventDefault()
+            nav('settings/mcp-servers')
+          }}
+        >
+          Settings › MCP servers
+        </a>
         <ThemeToggle />
       </div>
     </nav>
@@ -1193,10 +1674,47 @@ export function SkyShell({
       className={`sk-app${collapsed ? ' is-collapsed' : ''}${drawer ? ' has-drawer' : ''}${scroll === 'top' ? '' : ' is-scrolled'}`}
       data-env={env.kind}
     >
+      {/* THE FIRST TAB GOES TO THE PAGE (live QA CH-15): before this, to the
+          logo, Submit, seven spine links, the tenant card and every panel
+          row. Hidden until it has focus. */}
+      <a
+        className="sk-skip"
+        // An element's fragment, not a route: built from the id it targets.
+        href={`#${CONTENT_ID}`}
+        onClick={(e) => {
+          e.preventDefault()
+          focusPage(scrollerRef.current)
+        }}
+      >
+        Skip to the page
+      </a>
       {t.bar && <div className="sk-prodbar" aria-hidden />}
       <header className="sk-pbar">
-        <button type="button" className="sk-ibtn" aria-label="Open the menu" aria-expanded={drawer} ref={openerRef} onClick={() => setDrawer(true)}>
+        {/* APPROVALS WAITING SHOW ON THE MENU BUTTON (visual QA V237,
+            2026-10-16): the spine's Automate badge is inside the drawer, so
+            on a phone nothing said they waited until the drawer was open.
+            The same count, on the button that opens it; its name stays
+            "Open the menu" and the count is its description. */}
+        <button
+          type="button"
+          className="sk-ibtn"
+          aria-label="Open the menu"
+          aria-describedby={waiting !== null ? menuNoteId : undefined}
+          aria-expanded={drawer}
+          ref={openerRef}
+          onClick={() => setDrawer(true)}
+        >
           <Icon name="menu" />
+          {waiting !== null && (
+            <>
+              <i className={waiting.n === null ? 'sk-badge sk-mbadge is-unread' : 'sk-badge sk-mbadge'} aria-hidden="true">
+                {waiting.n === null ? '—' : waiting.n}
+              </i>
+              <span className="sk-vh" id={menuNoteId}>
+                {waiting.why}
+              </span>
+            </>
+          )}
         </button>
         <SwarmMark size={22} paint="sky" />
         <b>{title}</b>
@@ -1205,7 +1723,7 @@ export function SkyShell({
         {who !== null &&
           (switchable ? (
             <button type="button" className="sk-tchip" aria-haspopup="dialog" aria-expanded={picker === 'sheet'} onClick={() => setPicker('sheet')}>
-              {who.tenant.display_name ?? who.tenant.tenant_id}
+              <span className="sk-tcn">{who.tenant.display_name ?? who.tenant.tenant_id}</span>
               <Icon name="swap" />
             </button>
           ) : (
@@ -1219,20 +1737,65 @@ export function SkyShell({
             hairline tag as the panel's foot, last in the one row, after the
             environment it sits beside. */}
         {admin && <span className="sk-adm">admin</span>}
+        {/* THE BELL JOINS THE PHONE HEADER (V178): one 44px band, not a
+            second sticky one under it. After the tags, before `Top`. */}
+        {phone && bell !== null && <span className="sk-pbell">{bell}</span>}
+        {/* A WAY BACK UP, once the page is more than a screen long and the
+            reader is past the first screen of it (#139). Drawn below 760px
+            only (styles.css): above it the spine never scrolls away.
+
+            IN THE HEADER, NOT OVER THE PAGE (visual QA V009, 2026-10-11). It
+            was a pill floating at the foot of the scrollport, and at 400px
+            it sat on whatever scrolled under it -- a stacked record's value,
+            a refusal's last lines, Overview's pool figures. No room the
+            scroller reserves can stop that mid-page; the header is already
+            on screen whenever `Top` is (compacted to 36px by then), so here
+            it covers nothing and costs no chrome. Last in the row, after the
+            tags; the title gives way first. */}
+        {scroll === 'far' && (
+          <button type="button" className="sk-top" onClick={toTop} aria-label="Back to the top of the page">
+            &#8593; Top
+          </button>
+        )}
       </header>
       {drawer && <div className="sk-scrim" onClick={() => setDrawer(false)} aria-hidden />}
-      <div className="sk-side" ref={sideRef}>
+      {/* THE DRAWER IS A DIALOG TO ASSISTIVE TECHNOLOGY TOO (CH-12), as it
+          already was to the keyboard: focus moves in, Tab stays in it. */}
+      <div
+        className="sk-side"
+        ref={sideRef}
+        role={drawer ? 'dialog' : undefined}
+        aria-modal={drawer ? true : undefined}
+        aria-label={drawer ? 'Menu' : undefined}
+      >
         {spine}
         {!collapsed || drawer ? panel : null}
       </div>
       {collapsed && fly !== null && !drawer && (
-        <Flyout section={fly} tab={section === fly ? tab : ''} agentTab={agentTab} nav={nav} onEnter={() => hover(fly)} onLeave={() => hover(null)} flyRef={flyRef} onBlur={onFlyBlur} onKeyDown={onFlyKey} />
+        <Flyout
+          section={fly}
+          tab={section === fly ? tab : ''}
+          agentTab={agentTab}
+          nav={nav}
+          onExpand={() => {
+            setFly(null)
+            refocusToggle.current = 'collapse'
+            toggle()
+          }}
+          onEnter={() => hover(fly)}
+          onLeave={() => hover(null)}
+          flyRef={flyRef}
+          onBlur={onFlyBlur}
+          onKeyDown={onFlyoutKey}
+        />
       )}
       {picker !== null && who !== null && switchable && (
         <TenantPicker at={picker} current={who.tenant.tenant_id} choices={choices} onChoose={choose} onClose={() => setPicker(null)} />
       )}
       <div className="sk-main">
-        <div className="ctl-scroll" ref={scrollerRef}>
+        {/* Focusable, never in the tab order: where focus goes when the page
+            has no heading yet, so the keyboard scrolls it (CH-5). */}
+        <div className="ctl-scroll" ref={scrollerRef} id={CONTENT_ID} tabIndex={-1}>
           {!online && <OfflineBanner />}
           {fault !== null ? (
             // A WHOLE-APP STATE TAKES OVER THE CONTENT AREA ONLY (states.html
@@ -1248,23 +1811,19 @@ export function SkyShell({
           ) : (
             <>
               {keptBanner}
+              {who !== null && <SignedBackIn key={who.principal.email} email={who.principal.email} />}
               {/* Keyed on the chosen tenant: a switch is a fresh screen, every
                   read of it made again with the new X-Swarm-Tenant -- except
                   a kept form, which re-reads in place. */}
               <Fragment key={`${keepOnSwitch ? 'kept' : (tenant ?? '')}:${attempt}`}>{children}</Fragment>
             </>
           )}
-          {/* A WAY BACK UP, once the page is more than a screen long and the
-              reader is past the first screen of it (#139). Drawn below 760px
-              only (styles.css): above it the spine never scrolls away. */}
-          {scroll === 'far' && (
-            <button type="button" className="sk-top" onClick={toTop}>
-              &#8593; Top
-            </button>
-          )}
         </div>
         {dock}
       </div>
+      <p className="sk-vh" role="status" aria-live="polite">
+        {arrived}
+      </p>
       <Toaster />
     </div>
   )
@@ -1362,8 +1921,9 @@ function TenantBlock({
       () => setSaid('copy refused; select the id instead'),
     )
   }
-  const name = who.tenant.display_name ?? id
   const choices = dataOf(mine) ?? []
+  const own = choices.some((c) => c.kind === 'user' && c.tenant_id === id)
+  const name = own ? OWN_WORKSPACE_LABEL : (who.tenant.display_name ?? id)
   const copyId = (
     <>
       <button type="button" className="sk-cp" aria-label={`Copy tenant id ${id}`} title={id} onClick={copy}>
@@ -1469,11 +2029,16 @@ function TenantPicker({
   const box = useRef<HTMLDivElement | null>(null)
   const close = useRef(onClose)
   close.current = onClose
+  /** False once focus left by Tab: it stays where the reader sent it. */
+  const giveBack = useRef(true)
   useEffect(() => {
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
     box.current?.querySelector<HTMLElement>('button[aria-current="true"], button')?.focus()
+    // CAPTURE, so the innermost layer takes Escape first (live QA CH-11): the
+    // phone drawer under the sheet listens on the same document, and one
+    // Escape closed both.
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' && !e.defaultPrevented) {
         e.preventDefault()
         close.current()
       }
@@ -1484,16 +2049,38 @@ function TenantPicker({
       if (box.current?.contains(t) === true || t.closest('.sk-tsw, .sk-ttile, .sk-tchip') !== null) return
       close.current()
     }
-    document.addEventListener('keydown', onKey)
+    document.addEventListener('keydown', onKey, true)
     document.addEventListener('pointerdown', onDown)
     return () => {
-      document.removeEventListener('keydown', onKey)
+      document.removeEventListener('keydown', onKey, true)
       document.removeEventListener('pointerdown', onDown)
-      opener?.focus()
+      if (giveBack.current) opener?.focus()
     }
   }, [])
+  // FOCUS LEAVING CLOSES IT, AND THE ARROWS MOVE IN IT (live QA CH-7). Tab
+  // walked out into the page with the list still open (`aria-expanded`
+  // true), where Escape no longer reached it; and a list of choices offered
+  // no ArrowUp or ArrowDown.
+  const onBlur = (e: ReactFocusEvent) => {
+    const to = e.relatedTarget
+    if (!(to instanceof Element) || box.current?.contains(to) === true) return
+    // Its own trigger toggles it on the click that follows.
+    if (to.closest('.sk-tsw, .sk-ttile, .sk-tchip') !== null) return
+    giveBack.current = false
+    close.current()
+  }
+  const onKeyDown = (e: ReactKeyboardEvent) => {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'Home' && e.key !== 'End') return
+    const items = Array.from(box.current?.querySelectorAll<HTMLElement>('.sk-to') ?? [])
+    if (items.length === 0) return
+    e.preventDefault()
+    const at = items.indexOf(document.activeElement as HTMLElement)
+    const n = items.length
+    const next = e.key === 'Home' ? 0 : e.key === 'End' ? n - 1 : (at + (e.key === 'ArrowDown' ? 1 : n - 1) + n) % n
+    items[next]?.focus()
+  }
   const list = (
-    <div className={`sk-tpop is-${at}`} role="dialog" aria-modal={at === 'sheet' ? true : undefined} aria-label="Act as" ref={box}>
+    <div className={`sk-tpop is-${at}`} role="dialog" aria-modal={at === 'sheet' ? true : undefined} aria-label="Act as" ref={box} onBlur={onBlur} onKeyDown={onKeyDown}>
       {at === 'sheet' && <span className="sk-grab" aria-hidden />}
       <span className="sk-th">
         Act as · {choices.length} tenants you are a member of
@@ -1584,6 +2171,7 @@ function PanelPages({
   apiFailuresOnly,
   onApiFilter,
   missing,
+  onJump,
 }: {
   section: SpineSection
   tab: string
@@ -1596,6 +2184,8 @@ function PanelPages({
   apiFailuresOnly: boolean
   onApiFilter?: (failuresOnly: boolean) => void
   missing: boolean
+  /** An Overview jump: scrolls to the section, closes the phone drawer and moves focus there. */
+  onJump?: (id: string) => void
 }) {
   // A 404 lit as Overview has none of Overview's cards to jump to.
   if (section === 'overview' && missing) return null
@@ -1611,7 +2201,12 @@ function PanelPages({
             onClick={(e) => {
               if (!routedClick(e)) return
               e.preventDefault()
-              jumpTo(j.id)
+              // THE PHONE DRAWER CLOSES ON A JUMP (live QA OV-5, 2026-10-11):
+              // the page scrolled behind it and the drawer still covered the
+              // card, so the tap looked like it did nothing. A navigation
+              // closes it (`nav`); a jump is one too.
+              if (onJump === undefined) jumpTo(j.id)
+              else onJump(j.id)
             }}
           >
             <span className="sk-pl">{j.label}</span>
@@ -1651,14 +2246,34 @@ function PanelPages({
       </>
     )
   }
-  // Submit is work: its pages are Work's, with nothing lit.
-  const sec = section ?? 'work'
+  // SUBMIT DRAWS ITS OWN PAGES (live QA CH-17): it drew Work's, headed
+  // "Work" with nothing lit, while the spine marked Submit -- another
+  // section's navigation under the place you are. The chooser and its three
+  // forms, the one you are on lit.
+  if (section === null) {
+    return (
+      <>
+        <div className="sk-pt">Submit</div>
+        {SUBMIT_PAGES.map((p) => {
+          const on = !missing && p.tab === tab
+          return (
+            <a key={p.to} className={`sk-pk${on ? ' is-on' : ''}`} aria-current={on ? 'page' : undefined} {...routed(p.to, () => nav(p.to))}>
+              <Icon name={p.icon} />
+              <span className="sk-pl">{p.label}</span>
+            </a>
+          )
+        })}
+      </>
+    )
+  }
+  const sec = section
   // The lock is drawn until the session read says admin (as on the spine);
   // the rows are disabled, and "admins only" said, only once it says not.
   const shut = sec === 'admin' && !admin
   const locked = shut && known
-  const title = sec === 'work' ? 'Work' : sec === 'capacity' ? 'Capacity' : 'Admin'
-  const lit = section === null ? { row: '', kid: null } : litPage(sec, tab, agentTab)
+  const title = PANEL_TITLE[sec]
+  // A 404 is on no page, though its section is drawn (CH-14).
+  const lit = missing ? { row: '', kid: null } : litPage(sec, tab, agentTab)
   return (
     <>
       <div className="sk-pt">
@@ -1697,8 +2312,25 @@ function PanelPages({
                 {p.kids.map((k) => {
                   const kidOn = k.key === lit.kid
                   return (
-                    <a key={k.key} className={`sk-kid${kidOn ? ' is-on' : ''}`} aria-current={kidOn ? 'page' : undefined} {...routed(k.to, () => nav(k.to))}>
+                    <a
+                      key={k.key}
+                      className={`sk-kid${kidOn ? ' is-on' : ''}`}
+                      aria-current={kidOn ? 'page' : undefined}
+                      // Why Recent has no number beside Live and Waiting (V150).
+                      title={p.key === 'agents' && k.key === 'recent' ? 'Finished agents, newest first: a window, so it is not counted' : undefined}
+                      {...routed(k.to, () => nav(k.to))}
+                    >
                       <span>{k.label}</span>
+                      {/* AND IN WORDS (visual QA V150, 2026-10-16): beside a tab
+                          that says "Recent 17", a bare row read as a count
+                          missing. The tab counts the rows read; nothing
+                          totals the finished. Hidden from a screen reader,
+                          which has the title. */}
+                      {p.key === 'agents' && k.key === 'recent' && (
+                        <small className="sk-knote" aria-hidden="true">
+                          not totalled
+                        </small>
+                      )}
                       {k.admin === true && <span className="sk-adm">admin</span>}
                       {p.key === 'agents' && <CountMark c={counts[k.key]} />}
                     </a>
@@ -1729,11 +2361,14 @@ function PanelPages({
  */
 function RecentWorkflows({ nav }: { nav: (to: string) => void }) {
   const [items, setItems] = useState<RecentWorkflow[]>(recentWorkflows)
+  // A tenant switch is a different list (CH-3): read the new tenant's at once.
+  const tenant = useSyncExternalStore(subscribeTenant, chosenTenant, chosenTenant)
   useEffect(() => {
     const again = () => setItems(recentWorkflows())
+    again()
     globalThis.addEventListener?.(RECENT_WORKFLOWS_EVENT, again)
     return () => globalThis.removeEventListener?.(RECENT_WORKFLOWS_EVENT, again)
-  }, [])
+  }, [tenant])
   if (items.length === 0) return null
   const open = openWorkflowId()
   return (
@@ -1789,6 +2424,8 @@ function RecentWorkflows({ nav }: { nav: (to: string) => void }) {
  * then refuses the diff (owner rule, 2026-10-02).
  */
 const RECENT_NAME_CLASS = ['sk', 'recent', 'id'].join('-')
+/** The panel's collapse control's classes, built from parts for the same reason. */
+const COLLAPSE_CLASS = ['sk-ibtn', ['sk', 'collapse'].join('-')].join(' ')
 /** "All workflows →"'s class, built from parts for the same reason. */
 const RECENT_ALL_CLASS = ['sk', 'recent', 'all'].join('-')
 
@@ -1808,6 +2445,7 @@ function Flyout({
   tab,
   agentTab,
   nav,
+  onExpand,
   onEnter,
   onLeave,
   flyRef,
@@ -1818,15 +2456,17 @@ function Flyout({
   tab: string
   agentTab: AgentTab
   nav: (to: string) => void
+  /** Undo the collapse: the panel comes back and the flyout goes. */
+  onExpand: () => void
   onEnter: () => void
   onLeave: () => void
   flyRef: RefObject<HTMLDivElement>
   onBlur: (e: ReactFocusEvent) => void
   onKeyDown: (e: ReactKeyboardEvent) => void
 }) {
-  if (section !== 'work' && section !== 'capacity' && section !== 'admin') return null
+  if (section !== 'work' && section !== 'automate' && section !== 'capacity' && section !== 'admin') return null
   const lit = tab === '' ? { row: '', kid: null } : litPage(section, tab, agentTab)
-  const name = section === 'work' ? 'Work' : section === 'capacity' ? 'Capacity' : 'Admin'
+  const name = PANEL_TITLE[section]
   // A plain labelled group of links, not role="menu": a menu promises arrow
   // keys and roving focus, which this does not have. Tab walks it.
   return (
@@ -1840,7 +2480,12 @@ function Flyout({
           </a>
         )
       })}
-      <em>Click the section to open the panel again</em>
+      {/* A CONTROL, NOT AN INSTRUCTION (V083): "Click the section to open
+          the panel again" stopped being true when a click on the section
+          became the way to open this list without a pointer that hovers. */}
+      <button type="button" className="sk-unfold" onClick={onExpand}>
+        Open the panel
+      </button>
     </div>
   )
 }

@@ -436,8 +436,9 @@ def test_each_runner_module_is_executable_as_the_catalogue_names_it():
     from swarm_common.profiles import RUNNER_PROFILES
 
     for profile in RUNNER_PROFILES.values():
-        if profile.worker_action is not None:
+        if profile.worker_action is not None or profile.control_plane:
             # Contract requests 33 and 35: no runner child, so no module.
+            # Contract request 93: a control_plane profile runs nothing at all.
             assert profile.runner_argv == (), profile.name
             continue
         module = profile.runner_argv[-1]
@@ -665,6 +666,10 @@ def test_the_claude_code_runner_passes_max_turns_through_as_a_flag(tmp_path, mon
         return {"summary": "ok"}
 
     monkeypatch.setattr(claude_code, "run_cli_agent", fake_run)
+    # Run inside a SwarmCloud browser attempt, this process has the hand-off's
+    # variables, which the runner passes on; this test is about the flags.
+    for name in (claude_code.HANDOFF_ENV, *claude_code.AGENT_PASSTHROUGH_ENV):
+        monkeypatch.delenv(name, raising=False)
 
     claude_code.body(make_ctx(tmp_path, {"prompt": "hi"}))
     assert captured["extra"] == []

@@ -265,7 +265,13 @@ after the area run: it runs the repo-wide guard set
 (`test_docs_describe_what_was_built`, `test_docs_spec_amendments`, the UI
 route seam in `test_runtimes_screen.py`, `test_specsign_covers`) and every unit
 test file that names a changed path, in one `pytest -n auto` call, then
-`scripts/lib/check-contract-parity.sh` — about a minute, under ten. A narrowed
+`scripts/lib/check-contract-parity.sh` — about a minute for the guard set
+alone, each pytest call held to 540 s. A selection that weighs more than 540
+CI-seconds (`unit_test_durations.json`) is not one call: run without
+`--shard`, it runs as parts one after another, each its own call under the
+540 s limit, so the whole can pass ten minutes; `--shard k/n` runs the k-th
+part alone, and an agent whose command limit is ten minutes runs the n parts
+as n commands, which the script's warning spells out. A narrowed
 area run never reaches those guards, and they were most of the 25% of lane PRs
 red on their first CI run (#642). Any brief, wherever it is written, names it.
 
@@ -273,11 +279,11 @@ What the CI jobs cover, so you know what you are waiting for:
 
 | workflow | jobs |
 |---|---|
-| `application.yml` | shell · python (unit) · ui (typecheck + component) · integration (emulator) · manifests · build images |
+| `application.yml` | shell · ruff · python (unit; a pull request runs the tests its change reaches) · ui (typecheck + component) · integration (emulator) · manifests · build images (main; skips the tests a run of the identical tree passed) · record the tested tree |
 | `terraform.yml` | fmt/validate/tflint · `terraform test` (86 assertions) · checkov · plan (main only) |
 | `security.yml` | filesystem · secrets · iac · policy · images (scheduled) |
 | `release.yml` | verify · build · infrastructure · deploy (push to main, env-gated) |
-| `accept.yml` | what dev runs · warm, smoke and GKE proof · acceptance (5 groups, two waves) · report (a red run opens or updates one `bug` issue); after `release` completes on main |
+| `accept.yml` | what dev runs · warm, smoke and GKE proof · acceptance (6 groups, two waves) · report (a red run opens or updates one `bug` issue); after `release` completes on main. The 7th group, live-browser, runs every three hours off the red path with its own issue until `scripts/accept-live-browser-streak.sh` says five in a row ([docs/ci.md](docs/ci.md#live-browser-runs-on-a-schedule)) |
 
 `make test` is fully offline — no credentials, no emulator, nothing created. It
 runs the unit tests, `terraform test` over `tests/terraform` (86 assertions

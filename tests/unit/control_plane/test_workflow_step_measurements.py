@@ -289,7 +289,8 @@ def test_the_step_node_reaches_its_inputs_and_outputs():
     # test_workflow_graph_screen.py for why the constant is the thing to read.
     work = re.search(r"export const WORK = '([a-z-]+)'", src("App.tsx"))
     assert work, "App.tsx no longer exports a WORK section id"
-    assert f"#{work.group(1)}/task/" in code, "a picked step links nowhere"
+    # LIVE QA WF-21: the address goes through the path table, not a hash.
+    assert f"addressToPath(`{work.group(1)}/task/" in code, "a picked step links nowhere"
     # The drawer that route opens is the one whose tabs are the input and
     # output and the attempts: the router resolves `task/<id>` and
     # `task/<id>/attempts` to the same drawer.

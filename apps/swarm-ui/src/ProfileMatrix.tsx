@@ -68,7 +68,10 @@ export function bindingOf(profile: RunnerProfile): string[] {
  * else the one with the least room -- the one that matters to this row.
  */
 export function matrixRow(profile: RunnerProfile, byName: ReadonlyMap<string, Pool>): MatrixCell[] {
-  const binding = new Set(bindingOf(profile))
+  // A DISABLED PROFILE HAS NOTHING THAT RUNS OUT FIRST (live QA CAP-10): it
+  // cannot start at all, its Runs out first says `none · disabled`, and an
+  // outlined cell beside that contradicted it and the legend.
+  const binding = new Set(profile.available === false ? [] : bindingOf(profile))
   const unread = new Set(profile.admission?.unread ?? [])
   return POOL_FAMILY_ORDER.map((family) => {
     const names = profile.pools.filter((p) => poolKind(p) === family)
@@ -97,7 +100,7 @@ export function matrixRow(profile: RunnerProfile, byName: ReadonlyMap<string, Po
 /**
  * How many more tasks of a profile ONE pool has room for: its free units over
  * the profile's units, rounded down (#124). Per task, never per unit -- a
- * browser task weighs 2, so 3 free units fit 1. NULL when the pool was not
+ * large task weighs 4, so 7 free units fit 1. NULL when the pool was not
  * read or has no limit set: not measured, never a 0. A PAUSED pool fits 0:
  * `available` stays positive while it is paused (it is ceiling minus active),
  * but admission refuses it, and the server prices it with `resume`.
@@ -182,16 +185,23 @@ export function ProfileMatrix({ capacity }: { capacity: Capacity }) {
               const head = headroomFor(profile)
               const off = profile.available === false
               const isOpen = open === name
-              const binds = bindingOf(profile)
+              const binds = off ? [] : bindingOf(profile)
               const among = [...profile.pools, ...binds]
               return (
                 <Fragment key={name}>
                   <tr role="row" className={isOpen ? 'is-open' : undefined} data-profile={name}>
                     <th role="rowheader" scope="row">
+                      {/* THE NAME IS CUT, NOT THE TABLE (visual QA V031): one
+                          long profile name widened this no-wrap column and
+                          pushed Can start and Runs out first -- the answer --
+                          off the right edge at 1440. The button is held to a
+                          width (styles/capacity.css) and the name ellipsizes;
+                          the title has it whole. */}
                       <button
                         type="button"
                         className="cap-mx-toggle"
                         aria-expanded={isOpen}
+                        title={name}
                         onClick={() => setOpen(isOpen ? null : name)}
                       >
                         <span aria-hidden="true">{isOpen ? '▾' : '▸'}</span> <span className="mono">{name}</span>
@@ -216,7 +226,21 @@ export function ProfileMatrix({ capacity }: { capacity: Capacity }) {
                       )}
                     </td>
                     <td role="cell" data-label="Runs out first" className="cap-mx-first">
-                      {!off &&
+                      {/* NEVER AN EMPTY FIELD (visual QA V033). A disabled
+                          profile, or one whose headroom was not measured, drew
+                          the key and nothing after it -- on a phone a label
+                          with no value reads as a value that failed to load.
+                          Disabled says why there is no pool to name; unmeasured
+                          is the console's em dash, as Can start beside it is. */}
+                      {off ? (
+                        <i className="ctl-em cap-mx-none">none · disabled</i>
+                      ) : binds.length === 0 ? (
+                        head.agents === null ? (
+                          <span className="ctl-em" aria-label="not measured">—</span>
+                        ) : (
+                          <i className="ctl-em cap-mx-none">no pool runs out</i>
+                        )
+                      ) : (
                         binds.map((b) => {
                           const row = byName.get(b) ?? null
                           const fits = fitsIn(row, profile.units)
@@ -232,7 +256,8 @@ export function ProfileMatrix({ capacity }: { capacity: Capacity }) {
                               <small>{fits === null ? 'fits —' : `fits ${fits}`}</small>
                             </span>
                           )
-                        })}
+                        })
+                      )}
                     </td>
                   </tr>
                   {isOpen && (
@@ -259,8 +284,13 @@ export function ProfileMatrix({ capacity }: { capacity: Capacity }) {
           </tbody>
         </table>
       </div>
+      {/* THE NOTE DESCRIBES WHAT IS DRAWN (visual QA V033). A phone draws no
+          per-pool cell, so "each cell" and "the outlined cell" named nothing
+          on its screen; there it says where the per-pool figures went. */}
       <p className="cap-mx-note">
-        Each cell is the units free in that pool, leased/ceiling under it. The outlined cell runs out first.
+        {phone
+          ? 'Runs out first names the pool with leased/ceiling units. Open a profile for every pool it clears.'
+          : 'Each cell is the units free in that pool, leased/ceiling under it. The outlined cell runs out first.'}
       </p>
     </div>
   )
@@ -347,6 +377,13 @@ function FitsTable({
   )
 }
 
+/**
+ * One family cell. ITS FIGURES ARE ONE BOX, `.cap-mx-v` (visual QA V090): the
+ * binding outline was drawn on the cell, so it was as wide as its column --
+ * `Resource classes` drew a wider box than `Global` -- and 4px from the next
+ * row's. Drawn on a box of one minimum width, right-aligned in the cell, every
+ * outline is the same size and the cell's own padding separates two rows.
+ */
 function MatrixCellView({ cell }: { cell: MatrixCell }) {
   const label = FAMILY_TITLE[cell.family]
   if (cell.absent === 'none') {
@@ -367,7 +404,7 @@ function MatrixCellView({ cell }: { cell: MatrixCell }) {
         className={cell.binding ? 'is-num is-binding' : 'is-num'}
         title={cell.pool ?? undefined}
       >
-        {cell.absent === 'unread' ? '—' : 'uncapped'}
+        <span className="cap-mx-v">{cell.absent === 'unread' ? '—' : 'uncapped'}</span>
       </td>
     )
   }
@@ -383,8 +420,10 @@ function MatrixCellView({ cell }: { cell: MatrixCell }) {
         className={cell.binding ? 'is-num is-binding' : 'is-num'}
         title={cell.pool ?? undefined}
       >
-        <b className="cap-mx-zero">no limit set</b>
-        <small>{`${r.active}/—`}</small>
+        <span className="cap-mx-v">
+          <b className="cap-mx-zero">no limit set</b>
+          <small>{`${r.active}/—`}</small>
+        </span>
       </td>
     )
   }
@@ -396,8 +435,10 @@ function MatrixCellView({ cell }: { cell: MatrixCell }) {
       className={cell.binding ? 'is-num is-binding' : 'is-num'}
       title={cell.pool ?? undefined}
     >
-      <b className={r.available <= 0 ? 'cap-mx-zero' : undefined}>{r.available}</b>
-      <small>{`${r.active}/${r.effective_limit}`}</small>
+      <span className="cap-mx-v">
+        <b className={r.available <= 0 ? 'cap-mx-zero' : undefined}>{r.available}</b>
+        <small>{`${r.active}/${r.effective_limit}`}</small>
+      </span>
     </td>
   )
 }

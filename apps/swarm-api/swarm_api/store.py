@@ -55,6 +55,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.admission import _snapshot, release_lease_in_transaction
 from swarm_common.models import (
+    ADDITIONAL_REPOSITORIES_CEILING,
     Attempt,
     EndCause,
     Lease,
@@ -92,6 +93,7 @@ from .codec import (
     workflow_from_dict,
     workflow_to_firestore,
 )
+from . import refusals
 from .errors import Conflict, NotFound, Unpageable, ValidationFailed
 from .executioncancel import ExecutionTarget
 
@@ -123,7 +125,51 @@ SETTINGS_DOC = "settings"
 #:                     (contract request 47). OFF until an operator turns it
 #:                     on: a merge lands code on a default branch, and the
 #:                     owner made it opt-in (2026-10-04).
-PLATFORM_SETTINGS_DEFAULTS: dict[str, Any] = {"merge_by_default": False}
+#:   max_additional_repositories
+#:                     the most additional repositories one step may read
+#:                     (docs/design/multi-repository-steps.md, #1434). 5: the
+#:                     owner's figure of 2026-10-17, raised from the design's
+#:                     4 and made a setting rather than a constant so it moves
+#:                     without a deploy. Accepted 1 to the frozen contract's
+#:                     ADDITIONAL_REPOSITORIES_CEILING (10), which is the
+#:                     document-shape guard and never the operative limit.
+#:   additional_repositories_budget_gib
+#:                     the size, in GiB, the additional repositories of one
+#:                     step may total, by the forge's estimate at submission
+#:                     and by the worker's measurement at the clone
+#:                     (`agent_worker.extrarepos.BUDGET_SETTING` reads this
+#:                     key). 6: the design's share of the 20 GiB cache volume
+#:                     (§4.6), leaving 14 GiB for tool caches and TMPDIR.
+#:                     Accepted 1 to 20: a budget past the volume's size is
+#:                     one the worker can never meet.
+PLATFORM_SETTINGS_DEFAULTS: dict[str, Any] = {
+    "merge_by_default": False,
+    "max_additional_repositories": 5,
+    "additional_repositories_budget_gib": 6,
+}
+
+#: The accepted range of each integer setting, inclusive. A stored value
+#: outside it, or of another type, reads as the default: an admin's typo
+#: written straight to Firestore must not lift the limit it was meant to set.
+#: `schemas.PlatformSettingsRequest` refuses the same ranges at the route.
+PLATFORM_SETTINGS_RANGES: dict[str, tuple[int, int]] = {
+    "max_additional_repositories": (1, ADDITIONAL_REPOSITORIES_CEILING),
+    "additional_repositories_budget_gib": (1, 20),
+}
+
+
+def _platform_setting(key: str, data: dict[str, Any]) -> Any:
+    """One setting as stored, or its default when unset or malformed."""
+    default = PLATFORM_SETTINGS_DEFAULTS[key]
+    if key not in data:
+        return default
+    value = data[key]
+    if isinstance(default, bool):
+        return bool(value)
+    low, high = PLATFORM_SETTINGS_RANGES[key]
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        return default
+    return value
 
 #: Firestore caps a write batch at 500 operations. Each task costs two (the
 #: document and its `submitted` event), so a chunk of 200 tasks is the ceiling.
@@ -371,6 +417,17 @@ def decode_cursor(token: str | None) -> datetime | None:
         # would tell a caller their own tasks had disappeared.
         raise ValidationFailed("page_token is not a valid cursor") from None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+class WorkflowNotInTenant(NotFound):
+    """A workflow exists, but not in the tenant this call resolved to.
+
+    Still a 404, so no caller that treats it as absent changes behaviour; the
+    code is what lets a caller that launched it re-read with the launch's
+    tenant (`Store.get_workflow`).
+    """
+
+    code = "workflow_not_in_tenant"
 
 
 @dataclass(frozen=True)
@@ -1587,17 +1644,68 @@ class Store:
     def get_workflow(
         self, tenant_id: str, workflow_id: str, *, submitted_by: str | None
     ) -> Workflow:
-        """One workflow of this tenant; `submitted_by` exactly as on `get_task`."""
+        """One workflow of this tenant; `submitted_by` exactly as on `get_task`.
+
+        ANOTHER TENANT'S WORKFLOW IS `workflow_not_in_tenant`, not a bare
+        `not_found` (docs/runner-git-tools.md §6.3). Three coordinator status
+        reads answered 404 while the workflows' steps kept running, and the
+        coordinator re-ran the review locally: a caller whose resolved tenant
+        had moved (#1204's personal-workspace default, a bridge restarted with
+        another `SWARM_TENANT`) could not tell "gone" from "look elsewhere".
+        The answer names the tenant THE CALL resolved to -- the caller's own
+        choice, so it reveals nothing -- and never the one the workflow is
+        stored under. A missing document and another submitter's workflow keep
+        the bare answer.
+        """
         snap = self._db.collection(WORKFLOWS).document(workflow_id).get()
         if not snap.exists:
             raise NotFound(f"workflow {workflow_id!r} not found")
         data = snap.to_dict()
         if data.get("tenant_id") != tenant_id:
+            # Switched (observer proposal I): a NEW refusal ships report-only.
+            # Off, `refuse` logs and returns, and the answer is the bare
+            # not-found this branch gave before the code existed.
+            refusals.refuse(
+                WorkflowNotInTenant(
+                    f"workflow {workflow_id!r} is not in tenant {tenant_id!r}, the tenant "
+                    "this call resolved to; read it with X-Swarm-Tenant naming the tenant "
+                    "it was launched in",
+                    detail={"workflow_id": workflow_id, "tenant_id": tenant_id},
+                )
+            )
             raise NotFound(f"workflow {workflow_id!r} not found")
         workflow = workflow_from_dict(data)
         if submitted_by is not None and workflow.submitted_by != submitted_by:
             raise NotFound(f"workflow {workflow_id!r} not found")
         return workflow
+
+    def workflows_by_id(
+        self, tenant_id: str, workflow_ids: Sequence[str], *, submitted_by: str | None
+    ) -> list[Workflow]:
+        """This tenant's workflows among `workflow_ids`, in the order asked.
+
+        `get_all` in chunks of 100, as `tasks_by_id` reads, for
+        `GET /v1/workflows?ids=` (live QA CH-6): the Timeline asked for 52
+        workflows one request each. Tenant- and `submitted_by`-checked exactly
+        as `get_workflow`: one that is missing, another tenant's or not the
+        caller's is simply not in the answer, and the three are not told apart.
+        """
+        wanted = list(dict.fromkeys(i for i in workflow_ids if i))
+        collection = self._db.collection(WORKFLOWS)
+        found: dict[str, Workflow] = {}
+        for start in range(0, len(wanted), 100):
+            chunk = wanted[start : start + 100]
+            for snap in self._db.get_all([collection.document(i) for i in chunk]):
+                if not snap.exists:
+                    continue
+                data = snap.to_dict()
+                if data.get("tenant_id") != tenant_id:
+                    continue
+                workflow = workflow_from_dict(data)
+                if submitted_by is not None and workflow.submitted_by != submitted_by:
+                    continue
+                found[workflow.workflow_id] = workflow
+        return [found[i] for i in wanted if i in found]
 
     @staticmethod
     def stored_states_for(
@@ -1724,10 +1832,21 @@ class Store:
         tasks: dict[str, Task] = {}
         absent: list[str] = []
         reads = 0
+        # ONE ROUND TRIP PER HUNDRED STEPS, NOT ONE PER STEP (live QA CH-21,
+        # 2026-10-11): `GET /v1/workflows?limit=100` took 3.1-4.0 s, the
+        # slowest read in the console, because every step of every workflow on
+        # the page was a sequential point read. `get_all` in chunks of 100, as
+        # `tasks_by_id` reads; the documents read, and `reads`, are the same.
+        collection = self._db.collection(TASKS)
+        snaps: dict[str, Any] = {}
+        for start in range(0, len(wanted), 100):
+            chunk = wanted[start : start + 100]
+            for snap in self._db.get_all([collection.document(task_id) for task_id in chunk]):
+                snaps[snap.id] = snap
         for task_id in wanted:
-            snap = self._db.collection(TASKS).document(task_id).get()
+            snap = snaps.get(task_id)
             reads += 1
-            if not snap.exists:
+            if snap is None or not snap.exists:
                 absent.append(task_id)
                 continue
             data = snap.to_dict()
@@ -2250,10 +2369,8 @@ class Store:
         """
         snap = self._db.collection(CONTROL).document(SETTINGS_DOC).get()
         data = dict(snap.to_dict() or {}) if snap.exists else {}
-        out: dict[str, Any] = {
-            key: (bool(data[key]) if key in data else default)
-            for key, default in PLATFORM_SETTINGS_DEFAULTS.items()
-        }
+        out: dict[str, Any] = {key: _platform_setting(key, data)
+                               for key in PLATFORM_SETTINGS_DEFAULTS}
         out["updated_at"] = data.get("updated_at")
         out["updated_by"] = data.get("updated_by")
         out["settings_document"] = "present" if snap.exists else "missing"
@@ -2264,6 +2381,11 @@ class Store:
         unknown = sorted(set(changes) - set(PLATFORM_SETTINGS_DEFAULTS))
         if unknown:
             raise ValueError(f"unknown platform settings: {', '.join(unknown)}")
+        for key, (low, high) in PLATFORM_SETTINGS_RANGES.items():
+            value = changes.get(key)
+            if key in changes and (isinstance(value, bool) or not isinstance(value, int)
+                                   or not low <= value <= high):
+                raise ValueError(f"{key} is an integer from {low} to {high}")
         payload = {**changes, "updated_at": self._now(), "updated_by": by}
         self._db.collection(CONTROL).document(SETTINGS_DOC).set(payload, merge=True)
         return self.get_platform_settings()

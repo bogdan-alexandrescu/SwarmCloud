@@ -251,8 +251,8 @@ def test_the_golden_vector():
     canonical = canonical_step_spec(GOLDEN_DOC, task_id="task_0123456789abcdef", spec_format=1)
     assert canonical == GOLDEN_BYTES
     assert spec_digest(canonical).hex() == GOLDEN_SHA256
-    assert specsign.SPEC_FORMAT == 3
-    assert specsign.SPEC_FORMATS == (1, 2, 3)
+    assert specsign.SPEC_FORMAT == 5
+    assert specsign.SPEC_FORMATS == (1, 2, 3, 4, 5)
     assert specsign.SPEC_PURPOSE == "swarm.step-spec"
 
 
@@ -289,7 +289,9 @@ def test_a_task_that_names_no_parent_is_signed_at_format_1():
 
 def test_an_unknown_format_has_no_projection():
     with pytest.raises(specsign.SpecNotCanonical):
-        canonical_step_spec(GOLDEN_DOC, task_id="task_x", spec_format=4)
+        canonical_step_spec(
+            GOLDEN_DOC, task_id="task_x", spec_format=max(specsign.SPEC_FORMATS) + 1
+        )
 
 
 def test_the_task_id_is_the_one_read_by_never_the_documents_own():
@@ -384,18 +386,22 @@ def test_format_3_covers_the_forge_fields():
     assert specsign.signing_format(doc) == 3
     assert specsign.signing_format({**GOLDEN_DOC, "forge_access": "write"}) == 3
     assert specsign.signing_format({**GOLDEN_DOC, "forge_credential": "git"}) == 3
-    canonical = canonical_step_spec(doc, task_id="task_0123456789abcdef")
+    canonical = canonical_step_spec(doc, task_id="task_0123456789abcdef", spec_format=3)
     assert canonical == GOLDEN_BYTES_V3
     for key, value in {
         "forge_credential": "git-u-" + "fedcba9876543210",
         "forge_access": "write",
         "parent_task_id": "task_other",
     }.items():
-        rewritten = canonical_step_spec({**doc, key: value}, task_id="task_0123456789abcdef")
+        rewritten = canonical_step_spec(
+            {**doc, key: value}, task_id="task_0123456789abcdef", spec_format=3
+        )
         assert spec_digest(rewritten) != spec_digest(canonical), key
     # Removing a field is a rewrite too: None is not the value that was signed.
     for key in FORGE:
-        rewritten = canonical_step_spec({**doc, key: None}, task_id="task_0123456789abcdef")
+        rewritten = canonical_step_spec(
+            {**doc, key: None}, task_id="task_0123456789abcdef", spec_format=3
+        )
         assert spec_digest(rewritten) != spec_digest(canonical), key
 
 
@@ -408,3 +414,146 @@ def test_a_forge_field_added_to_an_older_format_has_no_canonical_form(spec_forma
     doc = {**CHILD_DOC, key: FORGE[key]}
     with pytest.raises(SpecNotCanonical):
         canonical_step_spec(doc, task_id="task_0123456789abcdef", spec_format=spec_format)
+
+
+# ---------------------------------------------------------------------------
+# Format 4: the additional repositories (contract request 96, MULTI-REPO B)
+# ---------------------------------------------------------------------------
+
+#: SHA-256 of formats 1-3's canonical bytes, computed by the code BEFORE format
+#: 4 existed (2026-10-18, at 2c0d5a7) and pinned here: a signature swarm-api
+#: made then is over exactly these digests, so format 4 cannot have moved them.
+PRE_FORMAT_4_DIGESTS = {
+    1: "86d2a8f146e6f700c19d6ed76ca53fd0e861c43b2793eb76f5301d688f785f4e",
+    2: "6db82cf17b794a27ee4e975130d43fbc94ae957b443297c0597abb6a9f2e6ef3",
+    3: "6467e402bcc8f904be57fb2a8588f8c6f0b4a7a04d12adfb53a5dfe430b5301f",
+}
+
+EXTRA = {
+    "name": "web",
+    "repo_id": "repo_" + "0123456789abcdef",
+    "repository": "acme/web",
+    "repository_url": "https://github.com/acme/web",
+    "ref": "main",
+    "commit": "a" * 40,
+    "forge_credential": "git",
+    "forge_credential_source": "tenant",
+    "size_kib": 1024,
+}
+
+
+@pytest.mark.parametrize("extra", [{}, {"additional_repositories": None},
+                                   {"additional_repositories": []}],
+                         ids=["absent", "none", "empty"])
+@pytest.mark.parametrize(
+    "spec_format,doc",
+    [(1, GOLDEN_DOC), (2, CHILD_DOC), (3, {**GOLDEN_DOC, **FORGE})],
+    ids=["f1", "f2", "f3"],
+)
+def test_a_task_with_no_additional_repositories_keeps_its_pre_format_4_bytes(spec_format, doc, extra):
+    """Absent, None or empty, the list changes nothing: the signer still picks
+    the old format, and a worker built before format 4 still verifies it."""
+    stored = {**doc, **extra}
+    assert specsign.signing_format(stored) == spec_format
+    canonical = canonical_step_spec(stored, task_id="task_0123456789abcdef", spec_format=spec_format)
+    assert spec_digest(canonical).hex() == PRE_FORMAT_4_DIGESTS[spec_format]
+
+
+GOLDEN_BYTES_V4 = GOLDEN_BYTES_V3.replace(b'"format":3,', b'"format":4,').replace(
+    b'{"depends_on":',
+    b'{"additional_repositories":['
+    + json.dumps(EXTRA, sort_keys=True, separators=(",", ":")).encode()
+    + b'],"depends_on":',
+)
+
+
+def test_format_4_covers_the_additional_repositories():
+    doc = {**GOLDEN_DOC, **FORGE, "additional_repositories": [EXTRA]}
+    assert specsign.signing_format(doc) == 4
+    assert specsign.signing_format({**GOLDEN_DOC, "additional_repositories": [EXTRA]}) == 4
+    canonical = canonical_step_spec(doc, task_id="task_0123456789abcdef", spec_format=4)
+    assert canonical == GOLDEN_BYTES_V4
+    rewritten = canonical_step_spec(
+        {**doc, "additional_repositories": [{**EXTRA, "commit": "b" * 40}]},
+        task_id="task_0123456789abcdef",
+        spec_format=4,
+    )
+    assert spec_digest(rewritten) != spec_digest(canonical)
+
+
+@pytest.mark.parametrize("spec_format,doc", [(1, GOLDEN_DOC), (2, CHILD_DOC), (3, {**GOLDEN_DOC, **FORGE})],
+                         ids=["f1", "f2", "f3"])
+def test_additional_repositories_added_to_an_older_format_have_no_canonical_form(spec_format, doc):
+    with pytest.raises(SpecNotCanonical):
+        canonical_step_spec(
+            {**doc, "additional_repositories": [EXTRA]},
+            task_id="task_0123456789abcdef",
+            spec_format=spec_format,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Format 5: the model class (contract request E of docs/design/model-per-step.md,
+# part of #1435). The design named it format 4; request 96 took 4 first.
+# ---------------------------------------------------------------------------
+
+#: SHA-256 of formats 1-4's canonical bytes, computed by the code BEFORE format
+#: 5 existed (2026-10-18, at a989111) and pinned here: a signature swarm-api
+#: made then is over exactly these digests, so format 5 cannot have moved them.
+PRE_FORMAT_5_DIGESTS = {
+    **PRE_FORMAT_4_DIGESTS,
+    4: "e5a3ee7efd9d9b7fe8d1bd1785739fc66ef7fe56dfbab715606087196fe38f30",
+}
+
+MULTI_DOC = {**GOLDEN_DOC, **FORGE, "additional_repositories": [EXTRA]}
+OLDER_FORMATS = [(1, GOLDEN_DOC), (2, CHILD_DOC), (3, {**GOLDEN_DOC, **FORGE}), (4, MULTI_DOC)]
+
+
+@pytest.mark.parametrize("extra", [{}, {"model_class": None}], ids=["absent", "none"])
+@pytest.mark.parametrize("spec_format,doc", OLDER_FORMATS, ids=["f1", "f2", "f3", "f4"])
+def test_a_task_with_no_model_class_keeps_its_pre_format_5_bytes(spec_format, doc, extra):
+    """Signing is unaffected while nothing sets `model_class`: the signer picks
+    the format it picked before, and that format projects the old bytes."""
+    stored = {**doc, **extra}
+    assert specsign.signing_format(stored) == spec_format
+    canonical = canonical_step_spec(stored, task_id="task_0123456789abcdef", spec_format=spec_format)
+    assert spec_digest(canonical).hex() == PRE_FORMAT_5_DIGESTS[spec_format]
+
+
+GOLDEN_BYTES_V5 = GOLDEN_BYTES_V4.replace(b'"format":4,', b'"format":5,').replace(
+    b'"model":null,', b'"model":null,"model_class":"sonnet",'
+)
+
+
+def test_format_5_covers_the_model_class():
+    doc = {**MULTI_DOC, "model_class": "sonnet"}
+    assert specsign.signing_format(doc) == 5
+    # A class alone is enough: format 5 is the oldest that covers it.
+    assert specsign.signing_format({**GOLDEN_DOC, "model_class": "fable"}) == 5
+    canonical = canonical_step_spec(doc, task_id="task_0123456789abcdef", spec_format=5)
+    assert canonical == GOLDEN_BYTES_V5
+    for value in ("haiku", "opus", None):
+        rewritten = canonical_step_spec(
+            {**doc, "model_class": value}, task_id="task_0123456789abcdef", spec_format=5
+        )
+        assert spec_digest(rewritten) != spec_digest(canonical), value
+
+
+def test_a_format_5_document_with_no_extra_repositories_carries_them_as_null():
+    got = canonical_step_spec(
+        {**GOLDEN_DOC, "model_class": "fable"}, task_id="task_0123456789abcdef", spec_format=5
+    )
+    assert b'"model_class":"fable"' in got
+    assert b'"additional_repositories":null' in got
+
+
+@pytest.mark.parametrize("spec_format,doc", OLDER_FORMATS, ids=["f1", "f2", "f3", "f4"])
+def test_a_model_class_added_to_an_older_format_has_no_canonical_form(spec_format, doc):
+    """The worker acts on the class, so adding one to a task signed without it
+    must fail verification rather than fall outside the signed bytes."""
+    with pytest.raises(SpecNotCanonical, match="model_class"):
+        canonical_step_spec(
+            {**doc, "model_class": "haiku"},
+            task_id="task_0123456789abcdef",
+            spec_format=spec_format,
+        )

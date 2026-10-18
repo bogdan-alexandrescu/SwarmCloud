@@ -127,10 +127,9 @@ beforeEach(() => {
   vi.spyOn(Date, 'now').mockReturnValue(T0)
   api.loadWorkflowBoard.mockResolvedValue({ status: 'ok', data: fixture(), fetchedAt: T0 } satisfies Result<WorkflowBoard>)
   api.loadWorkflowUsage.mockResolvedValue({ status: 'empty', fetchedAt: T0 } satisfies Result<WorkflowUsage>)
-  api.loadWorkflow.mockResolvedValue({
-    status: 'error',
-    error: { kind: 'not_found', httpStatus: 404, code: null, message: 'no such workflow' },
-  })
+  // The page reads its own workflow first (live QA CH-21), as the API serves
+  // it: the row and its step tasks, and a 404 only for an id it does not have.
+  serveOwn(fixture())
   try {
     window.localStorage.clear()
   } catch {
@@ -438,6 +437,19 @@ function serve(workflows: Workflow[], taskById: Map<string, Task> | null = new M
     data: { workflows, taskById, statesDetail: null },
     fetchedAt: T0,
   } satisfies Result<WorkflowBoard>)
+  serveOwn({ workflows, taskById, statesDetail: null })
+}
+
+/** Serve each of the board's workflows as its own read, the page's first (live QA CH-21). */
+function serveOwn(board: WorkflowBoard): void {
+  api.loadWorkflow.mockImplementation(async (id: string) => {
+    const w = board.workflows.find((x) => x.workflow_id === id)
+    if (w === undefined) {
+      return { status: 'error', error: { kind: 'not_found', httpStatus: 404, code: null, message: 'no such workflow' } }
+    }
+    const tasks = w.steps.map((st) => (st.task_id ? board.taskById?.get(st.task_id) : undefined)).filter((t) => t !== undefined)
+    return { status: 'ok', data: { workflow: w, tasks }, fetchedAt: T0 }
+  })
 }
 
 /** The list row for `id`, once the list has drawn it. */
@@ -501,19 +513,39 @@ describe('#330: the list row leads with the label', () => {
     expect(id!.getAttribute('title')).toBe('wf_5e5ad3b6f7da4299a839')
   })
 
-  // Was 'falls back to the id alone when there is no label, or no task was read'.
+  // Was 'falls back to the id alone when there is no label'. Owner report
+  // 2026-10-11: a merge workflow listed as its bare id. A row whose steps were
+  // read and carry neither a label nor a title is "Untitled workflow", the id under it.
   for (const [what, tasks] of [
     ['no unit in the metadata', labelled(null).tasks],
     ['a blank unit', labelled('   ').tasks],
-    ['no task read', null],
   ] as const) {
-    it(`falls back to the id alone: ${what}`, async () => {
+    it(`a read row with no name is "Untitled workflow", the id under it: ${what}`, async () => {
       serve([labelled(null).w], tasks)
       const name = (await listRow('wf_5e5ad3b6f7da4299a839')).querySelector<HTMLElement>('.wfl-name')!
-      expect(name.querySelector('a')!.textContent).toBe('wf_5e5ad3b6f7da4299a839')
-      expect(name.querySelector('.id'), 'the id is printed twice').toBeNull()
+      expect(name.querySelector('a')!.textContent).toBe('Untitled workflow')
+      const id = name.querySelector<HTMLElement>('.id')
+      expect(id, 'the untitled row dropped its id').toBeTruthy()
+      expect(id!.textContent).toBe('wf_5e5ad3b6f7da4299a839')
     })
   }
+
+  it('a row that carries only a title leads with the title', async () => {
+    const { w, tasks } = labelled(null)
+    for (const t of tasks.values()) t.metadata = { origin: 'swarm-mcp', title: 'Merge PR 1127' }
+    serve([w], tasks)
+    const name = (await listRow(w.workflow_id)).querySelector<HTMLElement>('.wfl-name')!
+    expect(name.querySelector('a')!.textContent).toBe('Merge PR 1127')
+    expect(name.querySelector('.id')!.textContent).toBe('wf_5e5ad3b6f7da4299a839')
+  })
+
+  // An unread row does not know its name: "Untitled" would be a guess.
+  it('falls back to the id alone while no task is read', async () => {
+    serve([labelled(null).w], null)
+    const name = (await listRow('wf_5e5ad3b6f7da4299a839')).querySelector<HTMLElement>('.wfl-name')!
+    expect(name.querySelector('a')!.textContent).toBe('wf_5e5ad3b6f7da4299a839')
+    expect(name.querySelector('.id'), 'the id is printed twice').toBeNull()
+  })
 })
 
 describe('#330: the page head links the pull request the run opened', () => {
@@ -738,7 +770,7 @@ describe('the list row: shape, runners and spend', () => {
   it('never shows a partial total without its coverage', async () => {
     const cell = await spendCell([0.0642, null, null])
     expect(cell.textContent).toContain('$0.0642')
-    expect(cell.querySelector('.wf-spend-cov')!.textContent).toBe('1/3')
+    expect(cell.querySelector('.wf-spend-cov')!.textContent).toBe('1 of 3 reported')
     expect(cell.getAttribute('title')).toContain('floor rather than the total')
   })
 })

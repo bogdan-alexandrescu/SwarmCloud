@@ -5,9 +5,9 @@
  *   - The side editor's heading read "global / global": the label and the
  *     pool name under it are the same word for `global`. The name is drawn
  *     under the label only when it says something the label does not.
- *   - With the editor open the families column is ~660px, and "In use
+ *   - With the editor open the families column was ~660px, and "In use
  *     (units)" wrapped in its 12% (79px) column. The column holds its head
- *     on one line at that width, and the head does not wrap.
+ *     on one line at the narrowest open width, and the head does not wrap.
  *
  * MUTATIONS: draw the sub-name unconditionally, put the In use column back to
  * 12%, or let its head wrap -- each turns a case red.
@@ -27,8 +27,15 @@ const { AdminSettingsScreen } = await import('../AdminSettings')
 
 const WAIT = { timeout: 5000 } as const
 const WIDE = { width: 1440 }
-/** The families column at 1440 with the editor open (styles/admin.css). */
-const FAMILIES_OPEN = 660
+/**
+ * The narrowest families column with the editor open. It was 660, the
+ * families' share of 1440 beside an editor in a grid column of its own; since
+ * VQA V024 the editor floats over the families from 1280px and they keep the
+ * work column's whole width, which at 1280 (the 84+236px nav and the work
+ * column's padding off it, as at 1440's 1024) is about 864px. Below 1280 the
+ * editor is in the flow and the families are wider still.
+ */
+const FAMILIES_OPEN = 864
 
 beforeEach(() => {
   api.loadCapacity.mockReset()

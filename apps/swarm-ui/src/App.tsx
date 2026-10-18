@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { agentListPath, agentListQuery, parseAgentList, useAgentName, type AgentList } from './agentlist'
+import { agentList, agentListPath, agentListQuery, parseAgentList, useAgentName, type AgentList, type AgentTab } from './agentlist'
 import { AccountsScreen } from './Accounts'
 import { ActivityScreen, TenantsScreen } from './Activity'
 import { AdminSettingsScreen } from './AdminSettings'
@@ -29,12 +29,16 @@ import {
   type ScreenReads,
 } from './fetch'
 import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCard'
-import { HELP_ROUTE } from './help'
-import { GITHUB_CALLBACK_ADDRESS, SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, pathToAddress } from './paths'
+import { HELP as HELP_TOPICS, HELP_GROUPS, HELP_ROUTE, TOPIC_IDS, type TopicId } from './help'
+import { GITHUB_CALLBACK_ADDRESS, KEY_LINK_ADDRESS, SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, keyLinkScope, keyLinkToken, pathToAddress } from './paths'
 import { GitHubCallbackScreen } from './GitHubConnect'
+import { ProviderKeysScreen } from './ProviderKeys'
+import { WorkspaceSettingsScreen } from './CodeIntelligence'
+import { McpServersScreen } from './McpServers'
 import { NotFound, nearestPath } from './NotFound'
 import { fmtLatency } from './panes'
 import { Icon, SkyShell, type SpineSection } from './Spine'
+import { NotificationBell } from './Notifications'
 import { routedClick, Segmented, ToneMark } from './components'
 import { Mark } from './primitives'
 import { HelpScreen, helpPageOf } from './HelpSection'
@@ -53,6 +57,8 @@ import { SubmitChooser } from './SubmitChooser'
 import { SubmitWorkflowScreen } from './SubmitWorkflow'
 import { IssueSubmitScreen } from './IssueSubmit'
 import { RunsScreen } from './Runs'
+import { ALL_TENANTS_SCHEDULES, NEW_SCHEDULE, SchedulesScreen, WaitingOnYouCard } from './Schedules'
+import { ApprovalsScreen } from './Approvals'
 import { RepositoriesScreen } from './Repositories'
 import { AGE_TICK_MS, useNow } from './useNow'
 import { WorkflowsScreen } from './Workflows'
@@ -75,7 +81,18 @@ import { WorkflowsScreen } from './Workflows'
  * Variables) both name the noun and let the tabs be the views, and this still
  * does the same -- with three of them rather than six:
  *
- *   Overview · Work · Capacity · Admin
+ *   Overview · Work · Automate · Capacity · Admin
+ *
+ * AUTOMATE IS THE ONE SECTION ADDED SINCE THE COLLAPSE, AND IT IS THE OWNER'S
+ * DECISION, NOT A WIDENING (docs/schedules.md §6.1, SD1, 2026-10-08). The
+ * argument below for few sections still stands; what Automate passes is the
+ * membership test that argument sets. It is a different QUESTION from Work's
+ * -- "what runs by itself, and what is waiting on me", against "what is
+ * running" -- and it is two pages, Schedules and Approvals, rather than the
+ * one-pane section navigation.html and repositories.html refused. Folding
+ * Schedules into Work as a tab (P1, the recommendation) was drawn and not
+ * chosen. A schedule is not a run: what it makes is ordinary work, listed in
+ * Work like any other, and Automate lists the thing that makes it.
  *
  * THREE SECTIONS, AND OVERVIEW IS THE LANDING SCREEN RATHER THAN A FOURTH
  * QUESTION. It was six -- Overview, Work, Runtimes, Capacity, History, Admin
@@ -325,6 +342,22 @@ export const SECTIONS: SectionDef[] = [
     ],
   },
   {
+    // docs/schedules.md §6.1 (SD1, owner decision 2026-10-08): the section
+    // that holds what runs by itself. A LITERAL id for the reason given on
+    // Work: test_nav_headings_agree.py reads this array with a regex.
+    // Approvals is its second page, `/approvals` (§6.1), and the question's
+    // last clause is its. ONE SCHEDULES PAGE (SCHED-ONE-PAGE, owner decision
+    // 2026-10-13, §6.1): an admin's every-tenant view is Schedules' "All
+    // tenants" switch (`?scope=all`), not a second Schedules tab under Admin.
+    id: 'automate',
+    label: 'Automate',
+    question: 'What runs here by itself, on a schedule, and what is waiting on me to approve?',
+    tabs: [
+      { id: 'schedules', label: 'Schedules' },
+      { id: 'approvals', label: 'Approvals' },
+    ],
+  },
+  {
     // BACK TO `capacity`, which this section was called before an earlier
     // pass renamed it to `pools`. That rename is what produced `Pools > Pools`
     // -- it named the parent after its first child -- so this is not churn for
@@ -440,8 +473,13 @@ export const SECTIONS: SectionDef[] = [
     // arrives wanting to know. It asks what each tab answers, in tab order.
     // docs/web-ui/redesign.md §2 carries the same words, and
     // tests/sections.test.ts holds the two together.
+    // The cross-tenant schedules view sat here from 2026-10-11 until the owner
+    // asked why schedules were in Admin and in Automate (SCHED-ONE-PAGE,
+    // 2026-10-13, docs/schedules.md §6.1): it is Automate › Schedules' "All
+    // tenants" now, and its clause went with it. The platform's own ticks
+    // moved to Platform counts, and the clause after its count asks for them.
     question:
-      'What is each ceiling set to, who is registered to use this platform, how many tasks are in each state, and who is waiting for a workspace?',
+      'What is each ceiling set to, who is registered to use this platform, how many tasks are in each state, what does the platform run on its own, and who is waiting for a workspace?',
     tabs: [
       { id: 'limits', label: 'Pool limits', admin: true },
       { id: 'tenants', label: 'Tenants', admin: true },
@@ -469,11 +507,66 @@ const REFERENCE = 'reference'
 const SUBMIT = SUBMIT_ADDRESS
 
 /**
+ * WHAT THE SUBMIT PAGES ANSWER, behind the title's `?` (V062, owner decision
+ * Q2 on #1038, 2026-10-11). The `?` keeps SECTION-level help everywhere else,
+ * but the chooser and its three forms used to borrow Work's question -- "what
+ * is running, what has already run" -- on a page where nothing has run yet.
+ * Submit is not a section (it has no tabs and no rail entry), so this is the
+ * question alone, in the shape `SectionQuestion` reads.
+ */
+const SUBMIT_HELP: SectionQuestionDef = {
+  id: SUBMIT,
+  label: 'Submit',
+  question:
+    'What can I start — a task, a workflow or a GitHub issue — on which runner, and will it run now or wait for room?',
+}
+
+/**
  * The GitHub App's callback page (`/onboarding/github/callback`, #780 OB3).
  * Not a section and not a tab -- GitHub sends the browser here, nothing in the
  * nav does -- so no nav tab, and no issue-form "Where" entry, follows it.
  */
 const GITHUB_CALLBACK = GITHUB_CALLBACK_ADDRESS
+
+/**
+ * SETTINGS › API KEYS (KEYS-UI, owner request 2026-10-14;
+ * docs/provider-keys.md). Not a section, for the reason API reads is not one:
+ * it is a thing you set once, not a thing you work in, and a fifth section
+ * would sit beside the questions people arrive with. It is reached from the
+ * panel's foot, beside the person's own name, because the first key on it is
+ * theirs. Two addresses: the page, `settings/keys`, and the one-time link
+ * `/sc` mints, `settings/keys/typesafe?scope=..` (the token never enters the
+ * address, paths.ts `KEY_LINK_ADDRESS`), which opens the same page.
+ *
+ * `#settings` and `#settings/<anything else>` still land on Pool limits
+ * (LEGACY, MOVED_PANES): only these two exact addresses are this page.
+ */
+const SETTINGS = 'settings'
+const KEYS_TAB = 'keys'
+/** The link's tab: the same page, opened from a one-time link. */
+const KEY_LINK_TAB = KEY_LINK_ADDRESS.slice(SETTINGS.length + 1)
+const SETTINGS_LABEL = 'Settings'
+/** The page's `<h1>` and the second half of its name in the issue forms. */
+const KEYS_LABEL = 'API keys'
+/**
+ * SETTINGS › WORKSPACE (CTXQ-UI; docs/design/context-quality.md §4.7): the
+ * selected workspace's own settings -- Code intelligence, OFF by default for
+ * Jev, and what leaves the platform when it is on. Beside API keys and not a
+ * section, for the reason API keys is not one. One exact address, like the
+ * keys page: `#settings/<anything else>` still lands on Pool limits.
+ */
+const WORKSPACE_TAB = 'workspace'
+/** The page's `<h1>` and the second half of its name in the issue forms. */
+const WORKSPACE_LABEL = 'Workspace'
+/**
+ * SETTINGS › MCP SERVERS (MCP-UI; docs/design/registered-mcp-servers.md
+ * §4.11): the workspace's registered MCP servers, which a task names on
+ * Submit. A sibling of Workspace and not a section, for the same reason. One
+ * exact address: `#settings/<anything else>` still lands on Pool limits.
+ */
+const MCP_TAB = 'mcp-servers'
+/** The page's `<h1>` and the head's crumb. */
+const MCP_LABEL = 'MCP servers'
 
 /**
  * The utility button's label AND the heading of the screen it opens. One
@@ -661,10 +754,19 @@ export const LEGACY_HEADS: readonly string[] = [
  * and transcript, live while it runs. Its address is
  * `#work/task/<id>/artifacts`, as `attempts` is `#work/task/<id>/attempts`.
  */
-export type TaskPane = 'detail' | 'logs' | 'children' | 'attempts' | 'artifacts' | 'checkpoints' | 'changes'
+export type TaskPane = 'detail' | 'logs' | 'children' | 'attempts' | 'artifacts' | 'checkpoints' | 'changes' | 'browser'
 
 /** The address segment each non-default pane is written with. `detail` has none. */
-const PANE_SEGMENTS: readonly TaskPane[] = ['logs', 'children', 'attempts', 'artifacts', 'checkpoints', 'changes']
+const PANE_SEGMENTS: readonly TaskPane[] = ['logs', 'children', 'attempts', 'artifacts', 'checkpoints', 'changes', 'browser']
+
+/**
+ * THE DETAILS TAB'S OWN NAME IS AN ADDRESS TOO (QA12-17, live-browser QA p12):
+ * `/agents/live/<id>/details` read as a task called `<id>/details` and drew a
+ * 404. Every other tab is reached at its lower-cased name; Details is written
+ * with no segment, and these two spellings of it are read as that and written
+ * back without it.
+ */
+const DETAIL_SEGMENTS: readonly string[] = ['details', 'detail']
 
 export interface Route {
   /** A section id, or REFERENCE. */
@@ -707,6 +809,28 @@ export interface Route {
   page?: 'outcomes' | null
   /** A path this console has no page for: drawn as not-found, kept in the bar (NotFound.tsx). */
   missing?: string | null
+  /**
+   * The Browser tab opens in the theater (`/agents/<tab>/<id>/browser?theater=1`,
+   * live-browser.md §6). Read on arrival only: the bar is rewritten without it,
+   * so Esc out of the theater and a reload land on the tab, not back in it.
+   */
+  theater?: boolean
+  /**
+   * The address spelled Details out (`/agents/<tab>/<id>/details`, QA14-UI):
+   * read on arrival only, like `theater`, so a running agent opened there
+   * stays on Details instead of taking the running default (Browser or Logs).
+   * The bar is still written back without the segment.
+   */
+  detailNamed?: boolean
+}
+
+/** What `SectionQuestion` reads off a section: its name and its question. */
+type SectionQuestionDef = Pick<SectionDef, 'id' | 'label' | 'question'>
+
+/** The Submit chooser or one of its three forms (`work/new*`). */
+function isSubmitPage(at: Pick<Route, 'sectionId' | 'tab'>): boolean {
+  return at.sectionId === SUBMIT
+    || (at.sectionId === WORK && (at.tab === 'new' || at.tab === 'new-workflow' || at.tab === 'new-issue'))
 }
 
 function sectionOf(id: string): SectionDef | null {
@@ -790,9 +914,22 @@ export function fromAddress(full: string): Route {
   // opening an agent inspector for an agent called "counts".
   const moved = MOVED_PANES[seg.join('/')]
   if (moved) return { sectionId: moved.section, tab: moved.tab, ...blank }
+  // ADMIN › SCHEDULES FOLDED INTO AUTOMATE › SCHEDULES (SCHED-ONE-PAGE, owner
+  // decision 2026-10-13): its old address opens the All tenants view, which a
+  // MOVED_PANES entry cannot say -- the destination carries a query.
+  if (hash === 'admin/schedules') return fromAddress(ALL_TENANTS_SCHEDULES)
 
   if (head === REFERENCE) return { sectionId: REFERENCE, tab: '', ...blank }
   if (hash === GITHUB_CALLBACK) return { sectionId: GITHUB_CALLBACK, tab: '', ...blank }
+  // Settings › API keys and its one-time link, before LEGACY reads `settings`
+  // as the eleven-item nav's Pool limits. Only the link's scope is kept.
+  if (hash === `${SETTINGS}/${KEYS_TAB}`) return { sectionId: SETTINGS, tab: KEYS_TAB, ...blank }
+  if (hash === `${SETTINGS}/${WORKSPACE_TAB}`) return { sectionId: SETTINGS, tab: WORKSPACE_TAB, ...blank }
+  if (hash === `${SETTINGS}/${MCP_TAB}`) return { sectionId: SETTINGS, tab: MCP_TAB, ...blank }
+  if (hash === KEY_LINK_ADDRESS) {
+    const scope = keyLinkScope(query)
+    return { sectionId: SETTINGS, tab: KEY_LINK_TAB, ...blank, ...(scope === null ? {} : { view: `scope=${scope}` }) }
+  }
   // The Submit chooser (/submit): two large choices, opened by the spine's
   // Submit and by N.
   if (head === SUBMIT && tail.length === 0) return { sectionId: SUBMIT, tab: '', ...blank }
@@ -824,7 +961,8 @@ export function fromAddress(full: string): Route {
       rest = rest.slice(0, -1)
     }
     const last = rest[rest.length - 1]
-    const pane = PANE_SEGMENTS.find((p) => p === last) ?? null
+    // A pane needs an id before it: a lone `details` is still read as it was.
+    const pane = PANE_SEGMENTS.find((p) => p === last) ?? (rest.length > 1 && DETAIL_SEGMENTS.includes(last ?? '') ? 'detail' : null)
     // Task ids are opaque and may contain characters that were encoded on the
     // way in, so the remaining segments are rejoined rather than assumed to
     // be one.
@@ -835,6 +973,8 @@ export function fromAddress(full: string): Route {
         tab: 'running',
         taskId: decodeURIComponent(id),
         taskPane: pane ?? 'detail',
+        ...(pane === 'browser' && new URLSearchParams(query).get('theater') === '1' ? { theater: true } : {}),
+        ...(pane === 'detail' ? { detailNamed: true } : {}),
         ...(artifact !== null && artifact !== '' ? { artifact } : {}),
         ...(file !== null && file !== '' ? { file } : {}),
       }
@@ -902,6 +1042,7 @@ export function fromAddress(full: string): Route {
 
 const ADMIN_SECTION = 'admin'
 const LIMITS_TAB = 'limits'
+const AUTOMATE = 'automate'
 
 /**
  * The query keys a pane's address carries, and no other: the `?pool=` a link
@@ -910,6 +1051,13 @@ const LIMITS_TAB = 'limits'
  */
 function keptKeys(sectionId: string, tab: string): readonly string[] {
   if (sectionId === ADMIN_SECTION && tab === LIMITS_TAB) return ['pool']
+  // One schedule rides on the list's address (`/automate/schedules/<id>`,
+  // paths.ts), with its tab and its editor (AUT-11).
+  // `scope=all` is the admin's All tenants view (SCHED-ONE-PAGE), linkable.
+  if (sectionId === AUTOMATE && tab === 'schedules') return ['schedule', 'tab', 'edit', 'scope']
+  // One inbox item rides on the page's address (`/approvals/<id>`, paths.ts),
+  // and the inbox's kind filter beside it (AUT-15).
+  if (sectionId === AUTOMATE && tab === 'approvals') return ['approval', 'kind']
   if (sectionId !== CAPACITY) return []
   if (tab === 'pools') return ['pool']
   if (tab === 'holders') return ['pool', 'tenant']
@@ -939,6 +1087,7 @@ export function canonical(r: Route): string {
   if (r.sectionId === REFERENCE) return REFERENCE
   if (r.sectionId === SUBMIT) return SUBMIT
   if (r.sectionId === GITHUB_CALLBACK) return GITHUB_CALLBACK
+  if (r.sectionId === SETTINGS) return r.view ? `${SETTINGS}/${r.tab}?${r.view}` : `${SETTINGS}/${r.tab}`
   if (r.sectionId === HELP) return r.tab === '' ? HELP : `${HELP}/${r.tab}`
   // A list address is written only while no drawer is open: the drawer's own
   // address wins above, and the list it was opened from is kept by App.
@@ -1004,6 +1153,14 @@ export function App() {
   // closed to bare `/agents` while the list behind it still showed, say,
   // Recent · failed. Written during render, so the close address is never one
   // route behind; the write is idempotent, so a double render is harmless.
+  // The fragment the page was opened at, read before the normalise effect
+  // rewrites the bar to its path: `useState(fromLocation)` already applied it.
+  const mountHash = useRef(typeof window === 'undefined' ? '' : window.location.hash)
+  // THE KEY LINK'S TOKEN, read before the normalise effect below rewrites the
+  // bar without it (paths.ts `KEY_LINK_ADDRESS`): the key page may mount
+  // later than this render, behind a takeover, and would find it gone. Held
+  // here and handed to that page, never written into a route.
+  const keyLink = useRef(typeof window === 'undefined' ? null : keyLinkToken(window.location.pathname, window.location.search))
   const lastList = useRef<AgentList | null>(at.list ?? null)
   if (at.taskId === null) lastList.current = at.list ?? null
 
@@ -1043,9 +1200,38 @@ export function App() {
   )
 
   useEffect(() => {
+    // A hashchange for the fragment this mount already read is the echo of
+    // that same assignment (a script sets the hash, then renders; the event is
+    // queued and lands after). Replayed from its newURL it would undo whatever
+    // the reader did in between -- an agent closed by its breadcrumb opened
+    // again. It is swallowed once, and only for a moment, so a fragment typed
+    // later is still a navigation.
+    let echo: string | null = mountHash.current === '' ? null : mountHash.current
+    const echoTimer = setTimeout(() => {
+      echo = null
+    }, 250)
     const onPop = () => setAt(fromLocation())
-    const onHash = () => {
-      if (isLegacyHash(window.location.hash, LEGACY_HEADS, window.location.pathname)) setAt(fromHash())
+    // The fragment the event names, not the one the bar holds now: the
+    // normalise effect (or the list following an agent's group) may already
+    // have rewritten the address to its path, which drops the fragment, and a
+    // hashchange read from the bar then found nothing and the navigation was
+    // lost -- an agent closed by hash stayed open (CH-2).
+    const onHash = (e?: Event) => {
+      let hash = window.location.hash
+      const next = (e as HashChangeEvent | undefined)?.newURL
+      if (typeof next === 'string') {
+        try {
+          hash = new URL(next).hash
+        } catch {
+          /* keep the bar's own */
+        }
+      }
+      if (echo !== null && hash === echo) {
+        echo = null
+        return
+      }
+      echo = null
+      if (isLegacyHash(hash, LEGACY_HEADS, window.location.pathname)) setAt(fromAddress(hash.replace(/^#/, '')))
     }
     // A click on an old-style `href="#work/..."` link, or on a same-origin
     // path, is a navigation: pushed, so Back returns to where it was made.
@@ -1067,6 +1253,7 @@ export function App() {
     window.addEventListener('hashchange', onHash)
     document.addEventListener('click', onClick)
     return () => {
+      clearTimeout(echoTimer)
       window.removeEventListener('popstate', onPop)
       window.removeEventListener('hashchange', onHash)
       document.removeEventListener('click', onClick)
@@ -1101,6 +1288,18 @@ export function App() {
     setAt((r) => ({ ...r, list }))
   }, [])
 
+  // THE LIST FOLLOWS THE OPEN AGENT'S GROUP (QA12-26, live-browser QA p12):
+  // a task opened under Live that parks belongs to Waiting, and the back link
+  // said `‹ Live` beside a list that no longer held it. The split reports the
+  // group its state puts it in; the list's tab, the back link and the address
+  // move there, written in place like a tab click. The toggles are kept; the
+  // Recent state filter is dropped, so the row is not hidden by it.
+  const onGroup = useCallback((tab: AgentTab) => {
+    const was = lastList.current
+    if (was?.tab === tab) return
+    onList(agentList(tab, null, { grouped: was?.grouped === true, failedFirst: was?.failedFirst === true }))
+  }, [onList])
+
   // THE TIMELINE'S AND THE WORKFLOWS LIST'S FILTERS ARE A ROUTE CHANGE TOO
   // (#185), written the same way.
   const onView = useCallback((view: string) => {
@@ -1110,9 +1309,10 @@ export function App() {
   const [apiFailuresOnly, setApiFailuresOnly] = useState(false)
 
   const section = sectionOf(at.sectionId)
-  // The `?` by the title asks the section's question; the Submit chooser is
-  // Work's (its forms are Work tabs), so it asks Work's.
-  const helpSection = section ?? (at.sectionId === SUBMIT ? sectionOf(WORK) : null)
+  // The `?` by the title asks the section's question, except on the Submit
+  // chooser and its three forms (V062): their forms are Work tabs, but Work's
+  // question is about what has run, so they ask Submit's own.
+  const helpSection = isSubmitPage(at) ? SUBMIT_HELP : section
   const inspector = at.taskId !== null
   const listAddress = canonical({
     sectionId: WORK,
@@ -1134,11 +1334,22 @@ export function App() {
           ? REFERENCE_LABEL
           : at.sectionId === GITHUB_CALLBACK
             ? 'Connect GitHub'
-            : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
-  const object = at.missing ? null : openObjectOf(at)
+            : at.sectionId === SETTINGS
+              ? at.tab === WORKSPACE_TAB
+                ? WORKSPACE_LABEL
+                : at.tab === MCP_TAB
+                  ? MCP_LABEL
+                  : KEYS_LABEL
+              : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
+  const object = at.missing ? null : documentObjectOf(at)
   useEffect(() => {
     document.title = documentTitleOf(title, object)
   }, [title, object])
+  // THE HEADER BAR IS DRAWN ONLY WHERE IT HOLDS A TRAIL (visual QA V178,
+  // 2026-10-16): inside an open object, the one place `Head` draws. The frame
+  // says so (`has-ctl-bar`), which sets `--ctl-bar-h` for the sticky heads
+  // that sit under the bar (styles/notifications.css).
+  const trail = openObjectOf(at) !== null
 
   return (
     // THE FRAME: the spine and the panel, and beside them the content column
@@ -1146,7 +1357,7 @@ export function App() {
     // (§3.4, §11.3). A bar that occupies its height rather than painting over
     // whatever lands under it, and that runs under the content only: under
     // the spine it cut the avatar off at 1440x900 (#503).
-    <div className="ctl-frame">
+    <div className={`ctl-frame${trail ? ' has-ctl-bar' : ''}`}>
         <SkyShell
           section={spineOf(at.missing ? missingSection(at.missing) : at.sectionId, at.tab)}
           tab={at.tab}
@@ -1161,6 +1372,11 @@ export function App() {
           // AN UNSENT FORM IS KEPT ON A TENANT SWITCH (intake-tenants.html
           // 2A): the two submit forms re-read under the new tenant in place.
           keepOnSwitch={at.sectionId === WORK && (at.tab === 'new' || at.tab === 'new-workflow')}
+          place={pathFor(at)}
+          // THE BELL (#1206) is the shell's to place: the spine's foot, or the
+          // phone header (V178). It was the only thing in a header bar drawn
+          // over every page, so a section page carried an empty 48px band.
+          bell={<NotificationBell go={go} />}
           foot={
             // THE UTILITY CORNER: Help and API reads at the spine's foot,
             // links like every spine item (#503). `ctl-nav-util` is
@@ -1198,11 +1414,19 @@ export function App() {
               head with no age of its own; a `Screen` carries its own on its
               refresh control and claims it (#98). */}
           <FrameAge.Provider value={true}>
-          <SectionHelp.Provider value={helpSection === null ? null : <SectionQuestion section={helpSection} />}>
+          <SectionHelp.Provider value={helpSection === null ? null : <SectionQuestion section={helpSection} topic={PAGE_TOPIC[`${at.sectionId}/${at.tab}`] ?? null} />}>
           <HeadAgeProvider at={at}>
+          {/* THE HEADER BAR (#1206, proposal A), over both the page and an
+              open agent beside it: the trail and the frame's age (`Head`).
+              Only inside an open object, where `Head` draws (V178): the bell
+              it also held is in the spine's foot or the phone header now. */}
+          {trail && (
+            <header className="ctl-bar">
+              <Head at={at} section={section} title={title} closeTo={listAddress} go={go} />
+            </header>
+          )}
           <div className={`app${inspector ? ' has-inspector' : ''}`}>
             <main className="work">
-              <Head at={at} section={section} title={title} closeTo={listAddress} go={go} />
 
               {section === null ? (
                 at.sectionId === HELP ? (
@@ -1211,6 +1435,12 @@ export function App() {
                   <SubmitChooser go={go} />
                 ) : at.sectionId === GITHUB_CALLBACK ? (
                   <GitHubCallbackScreen go={go} />
+                ) : at.sectionId === SETTINGS && at.tab === WORKSPACE_TAB ? (
+                  <WorkspaceSettingsScreen />
+                ) : at.sectionId === SETTINGS && at.tab === MCP_TAB ? (
+                  <McpServersScreen />
+                ) : at.sectionId === SETTINGS ? (
+                  <ProviderKeysScreen link={at.tab === KEY_LINK_TAB ? { scope: keyLinkScope(at.view ?? ''), token: keyLink.current } : null} />
                 ) : (
                   <ReferenceScreen failuresOnly={apiFailuresOnly} />
                 )
@@ -1245,8 +1475,11 @@ export function App() {
                 pane={at.taskPane}
                 artifact={at.artifact ?? null}
                 file={at.file ?? null}
+                theater={at.theater === true}
+                detailNamed={at.detailNamed === true}
                 closeTo={listAddress}
                 go={go}
+                onGroup={onGroup}
                 base={`${WORK}/task/${encodeURIComponent(at.taskId)}`}
               />
             )}
@@ -1275,6 +1508,8 @@ export function spineOf(sectionId: string, tab = ''): SpineSection {
       return null
     case WORK:
       return tab === 'new' || tab === 'new-workflow' || tab === 'new-issue' ? null : 'work'
+    case AUTOMATE:
+      return 'automate'
     case CAPACITY:
       return 'capacity'
     case ADMIN_SECTION:
@@ -1365,9 +1600,9 @@ function Head({
   const tab = section?.tabs.find((t) => t.id === at.tab) ?? null
   // THE SUBMIT PAGES' TRAIL IS SUBMIT (submit.html): the chooser is a page
   // of its own, not API reads (#503), and the two forms lead back to it.
-  const submitForm = at.sectionId === WORK && (at.tab === 'new' || at.tab === 'new-workflow' || at.tab === 'new-issue')
-  const head = at.sectionId === SUBMIT || submitForm ? 'Submit'
-    : section?.label ?? (at.sectionId === HELP ? 'Help' : REFERENCE_LABEL)
+  const submitForm = at.sectionId === WORK && isSubmitPage(at)
+  const head = isSubmitPage(at) ? 'Submit'
+    : section?.label ?? (at.sectionId === HELP ? 'Help' : at.sectionId === SETTINGS ? SETTINGS_LABEL : REFERENCE_LABEL)
   const home = submitForm ? SUBMIT : section === null ? at.sectionId : `${section.id}/${firstTab(section)}`
   // The open agent by its name once its split has read it (walkthrough G).
   const named = useAgentName(at.taskId)
@@ -1520,6 +1755,33 @@ export function openObjectOf(at: Route): string | null {
 }
 
 /**
+ * WHAT A DOCUMENT TITLE NAMES BEFORE THE PAGE (live QA CH-16, 2026-10-11): the
+ * open object (`openObjectOf`), and on the pages that have no object but are
+ * still one of many -- a repository, a schedule or the new-schedule form, an
+ * inbox item, a help topic or group -- that one's name. They were titled by
+ * their section alone ("Repositories · SwarmCloud", "Help · SwarmCloud"), so
+ * tabs and history could not tell two of them apart. Title only: the head's
+ * breadcrumb still follows `openObjectOf`.
+ */
+export function documentObjectOf(at: Route): string | null {
+  const open = openObjectOf(at)
+  if (open !== null) return open
+  if (at.sectionId === HELP && at.tab !== '') {
+    if ((TOPIC_IDS as readonly string[]).includes(at.tab)) return HELP_TOPICS[at.tab as TopicId].title
+    return HELP_GROUPS.find((g) => g.id === at.tab)?.title ?? null
+  }
+  if (!at.view) return null
+  const q = new URLSearchParams(at.view)
+  if (at.sectionId === WORK && at.tab === 'repositories') return q.get('repo') || null
+  if (at.sectionId === AUTOMATE && at.tab === 'schedules') {
+    const id = q.get('schedule')
+    return id === NEW_SCHEDULE ? 'New schedule' : id || null
+  }
+  if (at.sectionId === AUTOMATE && at.tab === 'approvals') return q.get('approval') || null
+  return null
+}
+
+/**
  * The screen's own read age, in the head (CH-2). See `Head` for the four
  * sentences; the rule under all of them is that the head never shows an age
  * for data this screen has not received -- not the frame's identity read, not
@@ -1592,7 +1854,18 @@ function ScreenAge({ at, reads, now }: { at: Route; reads: ScreenReads; now: num
  * question and nothing to follow. `Help →` goes to the top of the Help page,
  * because the question is about a section and no single topic answers it.
  */
-function SectionQuestion({ section }: { section: SectionDef }) {
+/**
+ * A PAGE WITH A TOPIC OF ITS OWN (AUT-14). Schedules and Approvals share the
+ * Automate section's question, so their `?` read alike and led to the top of
+ * Help. Each also says its own topic's card text, and `Help →` opens that
+ * topic rather than the index.
+ */
+const PAGE_TOPIC: Readonly<Record<string, TopicId>> = {
+  'automate/schedules': 'schedules',
+  'automate/approvals': 'approvals',
+}
+
+function SectionQuestion({ section, topic = null }: { section: SectionQuestionDef; topic?: TopicId | null }) {
   // THE CARD IS MEASURED THROUGH `cardRef`, and before it existed this card
   // was not measured at all. `useEdgeSafePlacement` used to look for the card
   // under the ANCHOR, and this one is portalled to `document.body` below, so
@@ -1618,12 +1891,13 @@ function SectionQuestion({ section }: { section: SectionDef }) {
     >
       <strong className="ctl-q-title">{section.label} answers</strong>
       <span className="ctl-q-body">{section.question}</span>
+      {topic !== null && <span className="ctl-q-body" data-topic={topic}>{HELP_TOPICS[topic].short}</span>}
       {/* Inline, from tokens, like the topic cards' own link: styles.css is
           another lane's this pass, and an inline style reaches no other
           element. */}
       <a
         className="ctl-link"
-        href={`#${HELP}`}
+        href={topic === null ? `#${HELP}` : `#${HELP_TOPICS[topic].anchor}`}
         style={{
           display: 'inline-block',
           marginTop: 'var(--ctl-s2)',
@@ -1741,7 +2015,7 @@ function SectionBody({
   if (`${sectionId}/${tab}` === 'work/timeline' && page === 'outcomes') return <ActivityScreen view={view} onView={onView} />
   switch (`${sectionId}/${tab}`) {
     case 'overview/now':
-      return <OverviewScreen setup={<SetupCard />} />
+      return <OverviewScreen setup={<SetupCard />} waitingOnYou={<WaitingOnYouCard go={go} />} />
 
     case 'work/running':
       return <AgentsScreen {...agentsProps} />
@@ -1763,6 +2037,11 @@ function SectionBody({
       return <OnboardingScreen />
     case 'work/access':
       return <AccessScreen />
+
+    case 'automate/schedules':
+      return <SchedulesScreen view={view} go={go} />
+    case 'automate/approvals':
+      return <ApprovalsScreen view={view} go={go} />
 
     case 'capacity/pools':
       return <CapacityScreen />

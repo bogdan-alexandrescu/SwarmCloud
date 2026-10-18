@@ -21,6 +21,15 @@ the tick (`POST /v1/admin/schedules/tick`) is `routes/schedule_tick.py`. A
 `PATCH` asking for `gate.merge: auto` is refused 422 `use_merge_switch` by
 `schedules.resolve_gate`, so the switch's audit cannot be bypassed here.
 
+WHO MAY WRITE (docs/design/workspace-roles.md §4.1, §4.8; lane
+ROLES-GATES-AUTOMATE). Every write here -- create, edit, delete, pause,
+pause-all, resume, take-ownership, run -- needs the role `member` in the
+selected workspace (`_member`), checked before anything is read or written. A
+`viewer` is `role_member_required`, a NEW refusal on existing routes, so it
+goes through its switch: off, the write goes through and the log names who
+would have been refused. The preview and every read stay open to a viewer.
+The firing itself checks its OWNER's role (`schedulefire.owner_acts_as`).
+
 TENANT-SCOPED (§5.1, invariant 9). The tenant on every route comes from
 `tenant_scope` (a read) or `tenant_for` (a create), never from the body:
 `ScheduleCreate` refuses `tenant_id` and `owner` by name. Every read compares
@@ -74,7 +83,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
 from swarm_common.admission import _snapshot
 
-from .. import cronexpr, schedulefire, schedules, scheduletypes
+from .. import cronexpr, roles, schedulefire, schedules, scheduletypes
 from ..auth import AuthContext
 from ..deps import AppContext, admin_auth, current_auth, get_context, paged_limit, tenant_scope
 from ..errors import Conflict, NoClaudeAccount, NotFound, WorkspaceNotReady
@@ -229,6 +238,13 @@ def _read(ctx: AppContext, tenant_id: str | None, schedule_id: str) -> dict[str,
     return _owned(_schedule_ref(ctx, schedule_id).get(), tenant_id, schedule_id)
 
 
+def _member(ctx: AppContext, auth: AuthContext) -> None:
+    """The role gate on every write here (workspace-roles.md §4.8):
+    `role_member_required` for a `viewer`, through its switch."""
+    if ctx.roles is not None:
+        ctx.roles.require(auth, roles.MEMBER)
+
+
 def _audit(txn: Any, ctx: AppContext, doc: Mapping[str, Any], action: str, by: str, at: datetime,
            detail: Mapping[str, Any] | None = None) -> None:
     """One `schedule_audit` entry, in `txn` (§4.8). Append-only: never updated."""
@@ -345,6 +361,18 @@ def _check_grants(ctx: AppContext, doc: Mapping[str, Any], owner: str) -> None:
         )
 
 
+def _check_file_issues(ctx: AppContext, doc: Mapping[str, Any], owner: str) -> None:
+    """§3.4: an observer that files issues names a registered repository its owner can
+    write (owner decision 2026-10-11). The firing checks it again before it writes."""
+    if doc.get("type") != "observer":
+        return
+    # Imported here: schedtypes/__init__.py keeps an executor out of every
+    # import but its own type's.
+    from ..schedtypes import observer
+
+    observer.check_file_issues(ctx, {**doc, "owner": owner})
+
+
 def _words(cron: str | None) -> str | None:
     try:
         return cronexpr.words(cronexpr.parse(cron or ""))
@@ -380,12 +408,55 @@ def _spend_today(doc: Mapping[str, Any], now: datetime) -> dict[str, Any]:
     }
 
 
-def schedule_to_api(doc: Mapping[str, Any], now: datetime, *, pending: int = 0) -> dict[str, Any]:
+def _budget_use(doc: Mapping[str, Any], now: datetime, live: list[Mapping[str, Any]]) -> dict[str, Any] | None:
+    """Today's burn as the tick's budget gate counts it (§4.3), for the console's bar.
+
+    Four parts of `per_day_usd`: what was reported; each attempt that never
+    reported a cost, counted at `per_run_usd` (an unknown cost is the cap,
+    never zero); each live work item, reserved at `per_run_usd`; and what is
+    left. `live` is the schedule's `created` firings, and every work item they
+    made counts -- `Ticker._finish` sums exactly that, so this is the
+    reservation the next firing's gate would see, short of whatever the tick's
+    next advance ends. None when the budget lacks a figure to count against.
+    """
+    budget = doc.get("budget") or {}
+    if budget.get("per_run_usd") is None or budget.get("per_day_usd") is None:
+        return None
+    spend = _spend_today(doc, now)
+    live_items = sum(len(f.get("work") or []) for f in live)
+    unreported = int(spend["unreported_attempts"])
+    unreported_usd = schedules.reserved_usd(budget, live_items=0, unreported_attempts=unreported)
+    live_usd = schedules.reserved_usd(budget, live_items=live_items, unreported_attempts=0)
+    cents = round(float(budget["per_day_usd"]) * 100) - round(spend["reported_usd"] * 100) \
+        - round(unreported_usd * 100) - round(live_usd * 100)
+    return {
+        "day": spend["day"],
+        "per_day_usd": float(budget["per_day_usd"]),
+        "per_run_usd": float(budget["per_run_usd"]),
+        "reported_usd": spend["reported_usd"],
+        "unreported_attempts": unreported,
+        "unreported_usd": unreported_usd,
+        "live_firings": len(live),
+        "live_items": live_items,
+        "live_usd": live_usd,
+        # Never negative: a day can end above `per_day_usd` (§4.3), and then
+        # nothing is free; the console draws the parts past the day's figure.
+        "free_usd": max(0, cents) / 100,
+    }
+
+
+def schedule_to_api(doc: Mapping[str, Any], now: datetime, *, pending: int = 0,
+                    live: list[Mapping[str, Any]] | None = None) -> dict[str, Any]:
+    """The stored fields and what is computed on read. `live` (the schedule's
+    `created` firings) is read only by the one-schedule route, which then
+    serves `budget_use`; the list does not scan each schedule's firings."""
     out = _json(dict(doc))
     out["words"] = _words(doc.get("cron"))
     out["tier"] = _tier(doc)
     out["spend_today"] = _spend_today(doc, now)
     out["pending_approvals"] = pending
+    if live is not None:
+        out["budget_use"] = _budget_use(doc, now, live)
     return out
 
 
@@ -511,6 +582,7 @@ def create_schedule(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     """§7.1 create. The tenant, owner and actor fields come from the verified token."""
+    _member(ctx, auth)
     request = schedules.parse_create(body)
     # The create path's tenant resolution, as `POST /v1/runs` uses: it refuses
     # a disabled tenant and a secret admin's, and checks the principal.
@@ -544,6 +616,7 @@ def create_schedule(
     draft = build([], schedules.SCHEDULES_PER_TENANT)
     _check_approvers(ctx, tenant, draft["gate"])
     _check_grants(ctx, draft, auth.email)
+    _check_file_issues(ctx, draft, auth.email)
 
     tenant_ref = _tenant_ref(ctx, tenant_id)
     key = _request_key(request.client_request_id) if request.client_request_id else None
@@ -586,8 +659,12 @@ def get_schedule(
     doc = _read(ctx, tenant_id, schedule_id)
     firings = _history(ctx, tenant_id, schedule_id, HISTORY)
     pending = sum(1 for f in firings if f.get("state") == schedulefire.AWAITING_APPROVAL)
+    # Every `created` firing, not only those among the newest 50: a live one
+    # older than the history still holds its reservation.
+    live = [f for f in schedulefire.Ticker(ctx)._of_schedule(schedule_id, [schedulefire.CREATED])
+            if f.get("tenant_id") == tenant_id]
     return {
-        "schedule": schedule_to_api(doc, _now(ctx), pending=pending),
+        "schedule": schedule_to_api(doc, _now(ctx), pending=pending, live=live),
         "firings": [firing_to_api(f) for f in firings],
     }
 
@@ -605,6 +682,7 @@ def patch_schedule(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     """§7.1 edit, carrying `revision`; a stale one is 409 `schedule_changed`."""
+    _member(ctx, auth)
     stored = _read(ctx, tenant_id, schedule_id)
     patch = schedules.parse_patch(body)
     registered, platform_repository = _registrations(ctx, tenant_id, patch.scope)
@@ -624,6 +702,7 @@ def patch_schedule(
         _check_approvers(ctx, tenant, draft["gate"], stored["gate"])
     if draft["scope"] != stored["scope"] or draft["params"] != stored["params"]:
         _check_grants(ctx, draft, str(stored.get("owner") or ""))
+        _check_file_issues(ctx, draft, str(stored.get("owner") or ""))
 
     ref = _schedule_ref(ctx, schedule_id)
     tenant_ref = _tenant_ref(ctx, tenant_id)
@@ -657,6 +736,7 @@ def delete_schedule(
 ) -> dict:
     """§1.3: a hard delete, with the schedule's name typed. Firings and audit stay;
     work the schedule already made is ordinary work and is not cancelled."""
+    _member(ctx, auth)
     stored = _read(ctx, tenant_id, schedule_id)
     if confirm is None or confirm.strip() != stored["name"]:
         raise ScheduleInvalid("confirmation_required", "type the schedule's name in `confirm` to delete it")
@@ -737,6 +817,7 @@ def pause_schedule(
 ) -> dict:
     """§2.11: no new firings. Live work continues -- unless `cancel_live`, typed
     with the schedule's name, which also cancels the work of its live firings."""
+    _member(ctx, auth)
     request = _verb(PauseIn, body)
     if request.cancel_live:
         stored = _read(ctx, tenant_id, schedule_id)
@@ -862,6 +943,7 @@ def pause_all_schedules(
 ) -> dict:
     """§2.11: a member pauses every enabled schedule of their own tenant, typed
     with the tenant id. Live work continues."""
+    _member(ctx, auth)
     request = _verb(PauseAllIn, body)
     if request.confirm != tenant_id:
         raise ScheduleInvalid("confirmation_required",
@@ -877,6 +959,7 @@ def resume_schedule(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     """§1.3: from `paused` or `auto_paused`. A `disabled` one only an admin re-enables."""
+    _member(ctx, auth)
 
     def change(doc: Mapping[str, Any], now: datetime) -> dict[str, Any] | None:
         if doc["state"] == "disabled":
@@ -898,8 +981,10 @@ def take_ownership(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     """§1.1: the caller becomes the member firings submit as. Audited."""
+    _member(ctx, auth)
     stored = _read(ctx, tenant_id, schedule_id)
     _check_grants(ctx, stored, auth.email)
+    _check_file_issues(ctx, stored, auth.email)
 
     def change(doc: Mapping[str, Any], now: datetime) -> dict[str, Any] | None:
         if doc.get("owner") == auth.email:
@@ -921,6 +1006,7 @@ def run_schedule(
     """§7.1: a `run_now` firing, under the gate's `run` point, the overlap and the
     budget -- the tick's own finish (`Ticker.fire_now`), as the schedule's
     stored owner, never as the caller."""
+    _member(ctx, auth)
     request = _verb(RunIn, body)
     doc = _read(ctx, tenant_id, schedule_id)
     if doc["state"] == "disabled":

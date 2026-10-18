@@ -78,8 +78,12 @@ run "nothing_under_repos_is_cold_stored_or_deleted_by_age" {
   # Every Delete on LIVE objects is keyed on customTime alone, which an
   # object under repos/ never carries: no `age`, no `created_before`, no
   # `num_newer_versions`. Any of those would match an unstamped index copy.
-  # The one exception is the clone-bundle rule, bound to suffixes no repos/
-  # key ends with (clone_bundle_lifecycle.tftest.hcl holds it there).
+  #
+  # The one exception is confined by SUFFIX: the live browser's 7-day rule
+  # (docs/design/live-browser.md §7, lane LB-L8) is keyed on `age` and matches
+  # only `.live.webm` and `.live.jsonl`. It is exempt here on the condition,
+  # held just below, that no suffix it names can end an index copy or a graph
+  # blob; live.tftest.hcl holds the rule itself.
   assert {
     condition = alltrue([
       for r in google_storage_bucket.artifacts.lifecycle_rule :
@@ -90,6 +94,17 @@ run "nothing_under_repos_is_cold_stored_or_deleted_by_age" {
       && length(coalesce(one(r.condition).matches_suffix, [])) == 0
     ])
     error_message = "a Delete rule on live objects that is not keyed on customTime alone can reach tenants/<t>/repos/"
+  }
+
+  assert {
+    condition = alltrue(flatten([
+      for r in google_storage_bucket.artifacts.lifecycle_rule : [
+        for s in coalesce(one(r.condition).matches_suffix, []) :
+        startswith(s, ".live.") && !endswith(var.repos_index_object, s) && !endswith(var.repos_blob_object, s)
+      ]
+      if one(r.action).type == "Delete"
+    ]))
+    error_message = "a suffix-scoped Delete names a suffix other than the live browser's .live.* recordings, or one that ends an object under tenants/<t>/repos/"
   }
 }
 

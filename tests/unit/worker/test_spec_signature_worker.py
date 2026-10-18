@@ -444,6 +444,66 @@ def test_a_value_with_no_canonical_form_is_refused_not_canonical(
     _assert_refused(db, witness, "not_canonical", rc=rc)
 
 
+@pytest.mark.parametrize("key", ["timeout_seconds", "max_attempts"])
+def test_an_integer_field_rewritten_to_a_float_is_refused_not_canonical(
+    key, db, worker_factory, witness
+):
+    """Contract request 58. JCS gives 3600 and 3600.0 the same bytes, so
+    before it this rewrite kept a valid signature and the task ran."""
+    seed_attempt(db, task_id=TASK)
+    doc = spec_keys.sign_document(db.doc(f"tasks/{TASK}"), TASK)
+    assert isinstance(doc[key], int) and not isinstance(doc[key], bool)
+    doc[key] = float(doc[key])
+    worker, _, _ = worker_factory(task_id=TASK)
+    rc = worker.run()
+    _assert_refused(db, witness, "not_canonical", rc=rc)
+
+
+def test_a_spec_nested_past_the_bound_is_refused_not_canonical(db, worker_factory, witness):
+    """Contract request 59: a refusal with an end cause, not a crash. 40 is
+    past `specsign.MAX_DEPTH` and inside the recursion limit of the fake
+    store's own copies; 2,000 is held at the contract
+    (tests/unit/common/test_specsign_covers.py)."""
+    seed_attempt(db, task_id=TASK)
+    doc = spec_keys.sign_document(db.doc(f"tasks/{TASK}"), TASK)
+    deep: Any = 0
+    for _ in range(40):
+        deep = [deep]
+    doc["input"]["planted"] = deep
+    worker, _, _ = worker_factory(task_id=TASK)
+    rc = worker.run()
+    _assert_refused(db, witness, "not_canonical", rc=rc)
+
+
+def test_an_integer_input_stored_as_a_float_is_read_as_the_integer_that_was_signed():
+    """Contract request 58's input half. `input` keeps JCS's bytes (a `number`
+    input may legitimately be `2.0`), so `issue: 265.0` verifies as the `265`
+    that was signed; the worker then reads the input as `check_inputs`
+    returns it, so the issue it names is 265 and not "no issue"."""
+    task: dict[str, Any] = {"input": {"prompt": "review the change", "issue": 265.0}}
+    before = specsign.jcs(task["input"])
+    assert lifecycle._as_issue_number(task["input"]["issue"]) is None, "the premise"
+
+    lifecycle._read_input_as_checked(task, "claude-code")
+
+    assert task["input"] == {"prompt": "review the change", "issue": 265}
+    assert type(task["input"]["issue"]) is int
+    assert lifecycle._as_issue_number(task["input"]["issue"]) == 265
+    # The same canonical bytes: the verified document still verifies.
+    assert specsign.jcs(task["input"]) == before
+
+
+def test_a_number_input_keeps_its_float_and_no_input_stays_absent():
+    task: dict[str, Any] = {"input": {"prompt": "x", "steps": 2.0, "sleep_seconds": 2.0}}
+    lifecycle._read_input_as_checked(task, "mock")
+    assert task["input"] == {"prompt": "x", "steps": 2, "sleep_seconds": 2.0}
+    assert type(task["input"]["steps"]) is int
+    assert type(task["input"]["sleep_seconds"]) is float
+    absent: dict[str, Any] = {}
+    lifecycle._read_input_as_checked(absent, "mock")
+    assert absent == {}
+
+
 # ---------------------------------------------------------------------------
 # The order of the checks, and of the phase
 # ---------------------------------------------------------------------------

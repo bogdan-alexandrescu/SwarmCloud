@@ -353,7 +353,7 @@ describe('O1: Waiting, and why groups by reason', () => {
       ['queued', '3'],
       ['parked', '2'],
     ])
-    expect(text(rows[0]!.querySelector('.ov-wt small'))).toMatch(/wf_refactor 2 · wf_docs 1/)
+    expect(text(rows[0]!.querySelector('.ov-wt small'))).toMatch(/wf_refactor ×2 · wf_docs ×1/)
     expect(text(el.querySelector('#ov-waiting'))).not.toMatch(/tsk_/)
   })
 })
@@ -372,7 +372,8 @@ describe('O1: Headroom keeps its rows inside the card', () => {
     expect(text(tiles[1]!.querySelector('small'))).toBe('binds your tenant')
     // The pools are their own full-width card now (browser QA N17).
     expect(card.querySelectorAll('.ov-pl').length).toBe(0)
-    expect([...el.querySelectorAll('#ov-pools .ov-pl')].map((p) => text(p.querySelector('b')))).toEqual(['31/40', '4/4', '14/20'])
+    // BUSIEST FIRST (live QA OV-15, 2026-10-11): by share of the ceiling used.
+    expect([...el.querySelectorAll('#ov-pools .ov-pl')].map((p) => text(p.querySelector('b')))).toEqual(['4/4', '31/40', '14/20'])
     const acc = text(card.querySelector('.ov-acc'))
     expect(acc).toMatch(/2 of 3 usable/)
     expect(acc).toMatch(/1 needs sign-in/)

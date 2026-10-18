@@ -42,9 +42,13 @@ INVARIANTS, each by construction here:
 
 WHAT IS NOT HERE. Each type's executor (`swarm_api/schedtypes/<type>.py`,
 lanes S6 and S10) decides what a firing creates; this module defines the seam
-they implement (`Firing`, `load_executor`). Approvals (S5) turn an
-`awaiting_approval` firing into work; until S5 an `approve` run gate holds the
-firing there with no work. The tenant routes (S3) call `fire_now`.
+they implement (`Firing`, `load_executor`). An `approve` run gate holds the
+firing at `awaiting_approval` with no work; the approval itself is lane S5's
+(`approvals.firing_move` records `run_approval` on the firing in the
+decision's transaction), and the tick then finishes the approved firing like
+a claimed one (`_finish_approved`), only while the approval is the firing's
+own tenant's, approved, and for the digest it would run with. The tenant
+routes (S3) call `fire_now`.
 """
 
 from __future__ import annotations
@@ -57,7 +61,7 @@ import os
 import time
 import uuid
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
@@ -67,11 +71,19 @@ from swarm_common.admission import _snapshot
 from swarm_common.identity import Principal
 from swarm_common.states import TaskState
 
-from . import cronexpr, refusals, scheduletypes, schedules
+from . import cronexpr, refusals, roles, schedaudit, scheduletypes, schedules
 from .attempt_totals import totals_for
 from .auth import AuthContext
-from .errors import ApiError, Conflict, Forbidden, NotFound, UpstreamUnavailable
-from .issueruns import TERMINAL_RUN_STATES, IssueRuns, RunState
+from .errors import (
+    ApiError,
+    Conflict,
+    Forbidden,
+    NotFound,
+    RoleMemberRequired,
+    RoleUnavailable,
+    UpstreamUnavailable,
+)
+from .issueruns import TERMINAL_RUN_STATES, IssueRuns, RunState, planning_refusal
 from .repoindex import POLL_BUDGET_SECONDS
 from .repositories import Repositories
 from .schemas import TaskCreate, WorkflowCreate
@@ -151,6 +163,11 @@ OVERLAP = "OVERLAP"
 BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
 MISSED_SLOT = "MISSED_SLOT"
 OWNER_NOT_MEMBER = "OWNER_NOT_MEMBER"
+#: The owner is still a member, and a grant holds them at `viewer`
+#: (docs/design/workspace-roles.md §4.8): a firing submits as its owner, and
+#: a viewer submits nothing. Raised as `role_member_required` behind its
+#: switch; this is the skip and auto-pause code it leaves on the schedule.
+OWNER_ROLE_NARROWED = "OWNER_ROLE_NARROWED"
 REPOSITORY_NOT_GRANTED = "REPOSITORY_NOT_GRANTED"
 SCHEDULES_DISABLED = "SCHEDULES_DISABLED"
 DRY_RUN = "DRY_RUN"
@@ -158,10 +175,36 @@ SCHEDULE_NOT_ENABLED = "SCHEDULE_NOT_ENABLED"
 TYPE_UNAVAILABLE = "TYPE_UNAVAILABLE"
 RUN_OVER_BUDGET = "RUN_OVER_BUDGET"
 CONSECUTIVE_FAILURES = "CONSECUTIVE_FAILURES"
+#: A real firing that created no work (#1133). Its outcome stays `succeeded`
+#: -- nothing failed -- but the skip says why nothing started: the executor's
+#: own reason (`Firing.explain`), or `executor_created_nothing` when it gave
+#: none. Without it a firing whose every repository read failed looked
+#: exactly like one with nothing due.
+NOTHING_STARTED = "NOTHING_STARTED"
+
+#: The `schedule_audit` action written when the tick pauses a schedule whose
+#: owner a grant narrowed to `viewer` (workspace-roles.md §4.8).
+AUTO_PAUSED = "auto_paused"
+#: `platform_admin_acted`'s `route` for a firing whose owner acts only as a
+#: platform admin (workspace-roles.md §4.2.4): a template no HTTP route has.
+FIRING_ROUTE = "schedule_firing"
+
+#: The `schedule_audit` action written when an approved firing is held back
+#: because its approval does not release it, once per approval and digest.
+RUN_APPROVAL_REFUSED = "run_approval_refused"
+#: Why, in that entry's `detail.code`: the approval record is missing, another
+#: tenant's, of another kind or for another firing; it is not approved; or the
+#: digest approved is not the one the firing would run with. The last is the
+#: approvals route's own 409 code for the same case.
+APPROVAL_NOT_FOUND = "approval_not_found"
+APPROVAL_NOT_APPROVED = "approval_not_approved"
+APPROVAL_CHANGED = "approval_changed"
 
 #: What a person reads for each auto-pause (§1.3).
 PAUSE_COPY = {
     OWNER_NOT_MEMBER: "Paused: its owner is no longer a member of this tenant; take ownership to resume",
+    OWNER_ROLE_NARROWED: "Paused: its owner's role in this workspace is viewer; a member can take "
+                         "ownership to resume",
     RUN_OVER_BUDGET: "Paused: a run cost more than its per-run budget",
     CONSECUTIVE_FAILURES: "Paused after {n} failed runs in a row",
     TYPE_UNAVAILABLE: "Disabled: its type is no longer in the catalogue",
@@ -217,6 +260,7 @@ def member_auth(
     email: str,
     subject: str,
     not_member: Callable[[str], Exception],
+    reach: bool = False,
 ) -> AuthContext:
     """The AuthContext of a stored member, in a stored tenant, NOW a member.
 
@@ -232,12 +276,25 @@ def member_auth(
     (`Authenticator.is_tenant_member`). Not a member: `not_member(message)`
     is raised. The lookup failing: `UpstreamUnavailable`, untouched, so the
     caller retries rather than deciding either way.
+
+    `reach` asks `Authenticator.may_act_in` instead (docs/design/
+    workspace-roles.md §4.2.3): a platform admin who is not in a GROUP
+    tenant's group still acts there (Q5), and the context comes back with
+    `tenant_via == "platform_admin"` so the caller writes the audit row
+    §4.2.4 requires. Nothing else widens: `is_admin` stays False, a personal
+    tenant is never reached, and losing the platform role is `not_member` at
+    the next call. Off (the default), membership is asked exactly as before,
+    so a caller that has not opted in is unchanged.
     """
     tenant = ctx.store.get_tenant(tenant_id)
     if tenant is None:
         raise NotFound(f"tenant {tenant_id!r} not found")
     email = (email or "").strip().lower()
-    if not ctx.authenticator.is_tenant_member(email, tenant):
+    if reach:
+        via = ctx.authenticator.may_act_in(email, tenant)
+    else:
+        via = "member" if ctx.authenticator.is_tenant_member(email, tenant) else ""
+    if not via:
         raise not_member(
             f"{email or '(not recorded)'} is no longer a member of tenant {tenant_id!r}, "
             "so nothing is submitted on their behalf"
@@ -253,18 +310,71 @@ def member_auth(
         tenant_id=tenant_id,
         is_admin=False,
         tenant_principal=tenant.principal,
+        tenant_via=roles.VIA_PLATFORM_ADMIN if via == "platform_admin" else "",
     )
 
 
 def schedule_owner_auth(ctx: Any, schedule: Mapping[str, Any]) -> AuthContext:
-    """§2.7: the schedule's stored `owner`, in its stored `tenant_id`, while a member."""
+    """§2.7: the schedule's stored `owner`, in its stored `tenant_id`, while a
+    member -- or, in a group tenant, while a platform admin (workspace-roles.md
+    §4.2.3, Q5), with `tenant_via == "platform_admin"`."""
     return member_auth(
         ctx,
         tenant_id=str(schedule["tenant_id"]),
         email=str(schedule.get("owner") or ""),
         subject=f"schedule:{schedule['schedule_id']}",
         not_member=ScheduleOwnerNotMember,
+        reach=True,
     )
+
+
+def owner_acts_as(ctx: Any, owner: AuthContext, schedule: Mapping[str, Any]) -> str:
+    """Whether the stored owner may submit NOW, by their role in the
+    schedule's workspace (docs/design/workspace-roles.md §4.8): "" as an
+    ordinary member, "platform_admin" when only their platform role lets the
+    firing through (so it must be audited, §4.2.4), and `RoleMemberRequired`
+    raised -- through its switch -- when a grant holds them at `viewer`.
+
+    * Reached as a non-member platform admin (`tenant_via`): `admin` by rule
+      (Q5), no grant read.
+    * Otherwise the role is read FRESH: a narrowing made a minute ago must
+      stop the next firing, and the tick has no caller to retry for.
+    * Below `member`, a platform admin still passes (Q5: a grant naming them
+      is inert while they are one), asked of every admin source past its
+      cache; one lookup, only after a grant has said no.
+    * The switch off: the firing goes ahead and `refusal report-only
+      code=role_member_required` names the owner, the tenant and the role.
+    * A role that cannot be read: with the switch on, `RoleUnavailable`
+      (503) propagates and the firing stays claimed for the next tick; off,
+      the firing goes ahead as it did before roles existed.
+    """
+    if owner.tenant_via == roles.VIA_PLATFORM_ADMIN:
+        return roles.VIA_PLATFORM_ADMIN
+    store = getattr(ctx, "roles", None)
+    if store is None:
+        return ""
+    code = RoleMemberRequired.code
+    try:
+        me = store.resolve(owner, fresh=True)
+    except RoleUnavailable:
+        if refusals.enforced(code):
+            raise
+        log.warning("role unavailable report-only code=%s tenant=%s email=%s schedule=%s",
+                    code, owner.tenant_id, owner.email, schedule.get("schedule_id"))
+        return ""
+    if roles.at_least(me.role, roles.MEMBER):
+        return ""
+    if not roles.is_personal(owner) and ctx.authenticator.holds_platform_admin(owner.email, fresh=True):
+        return roles.VIA_PLATFORM_ADMIN
+    enforced = refusals.enforced(code)
+    ctx.metrics.role_refusals.labels(code=code, enforced=str(enforced).lower()).inc()
+    refusals.refuse(RoleMemberRequired(
+        f"The owner of schedule {schedule.get('schedule_id')} ({owner.email}) holds "
+        f"{me.role} in {owner.tenant_id}; a firing needs member or above. Nothing was submitted.",
+        detail={"tenant_id": owner.tenant_id, "role": me.role, "required": roles.MEMBER,
+                "source": me.source, "admins": []},
+    ))
+    return ""
 
 
 # --------------------------------------------------------------------------
@@ -280,6 +390,10 @@ class Executor(Protocol):
     issue-run creation with `firing.mark`), at most `firing.room` items, and
     returns the work entries those return. `[]` is an answer: nothing was
     due (a sweep with no candidates), and the firing ends `succeeded`.
+
+    `create` may call `firing.explain(detail)` with the selection it made, in
+    `dry_run`'s shape; the firing records it as `selection`, and when no work
+    was made its `detail["reason"]` is the `NOTHING_STARTED` skip's (#1133).
 
     `dry_run(firing)` returns, as data, what `create` would have made. It
     submits nothing, writes nothing to GitHub and never runs an agent (§2.8).
@@ -321,6 +435,13 @@ class Firing:
     #: Persists a non-task work item on the firing the moment it exists, so a
     #: finisher after a crash adopts it rather than doing it again (§2.2).
     record: Callable[[dict[str, Any]], None] = lambda item: None
+    #: What `create` selected and why, set by `explain` (#1133).
+    explanation: dict[str, Any] | None = None
+
+    def explain(self, detail: Mapping[str, Any]) -> None:
+        """Record the selection `create` made: stored on the firing as
+        `selection`, and the `NOTHING_STARTED` skip's detail when no work was made."""
+        self.explanation = dict(detail)
 
     @property
     def mark(self) -> dict[str, Any]:
@@ -701,6 +822,8 @@ class Ticker:
         if self._clock() - started < TICK_BUDGET_SECONDS:
             self._finish_stale(now, report, started)
         if self._clock() - started < TICK_BUDGET_SECONDS:
+            self._finish_approved(now, report, started)
+        if self._clock() - started < TICK_BUDGET_SECONDS:
             self._advance_live(now, report, started)
         else:
             report.truncated = True
@@ -837,9 +960,10 @@ class Ticker:
     # -- 2. finish (§2.7) ---------------------------------------------------
 
     def finish(self, fid: str, now: datetime, report: TickReport, *, dry_run: bool = False) -> str | None:
-        """Turn a claimed (or released queued) firing into work, or a skip, a
-        refusal or a hold. Returns the state it moved to, or None when another
-        finisher holds it or it is no longer claimed."""
+        """Turn a claimed (or released queued, or approved) firing into work,
+        or a skip, a refusal or a hold. Returns the state it moved to, or None
+        when another finisher holds it, it is no longer claimed, or its
+        approval does not release it."""
         firing = self._lease(fid)
         if firing is None:
             return None
@@ -853,7 +977,13 @@ class Ticker:
         return state
 
     def _lease(self, fid: str) -> dict[str, Any] | None:
-        """Hold a claimed firing for FINISH_LEASE from NOW, the wall clock."""
+        """Hold a claimed firing for FINISH_LEASE from NOW, the wall clock.
+
+        An `awaiting_approval` firing is leased too, but only when its
+        `run_approval` releases it (`_approval_refusal`), checked in this
+        transaction; one that does not stays held, and the refusal is audited
+        once per approval and digest, never on every tick.
+        """
         ref = self._firing_ref(fid)
         wall = _aware(self.ctx.now())
         token = uuid.uuid4().hex
@@ -864,7 +994,12 @@ class Ticker:
             if not snap.exists:
                 return None
             doc = snap.to_dict() or {}
-            if doc.get("state") != CLAIMED:
+            if doc.get("state") == AWAITING_APPROVAL and doc.get("run_approval"):
+                refusal = self._approval_refusal(txn, doc)
+                if refusal is not None:
+                    self._audit_refusal(txn, ref, doc, wall, refusal)
+                    return None
+            elif doc.get("state") != CLAIMED:
                 return None
             held = _aware(doc.get("finishing_until"))
             if held is not None and held > wall:
@@ -876,6 +1011,74 @@ class Ticker:
         if doc is not None:
             self._leases[fid] = token
         return doc
+
+    def _approval_refusal(self, txn: Any, firing: Mapping[str, Any]) -> tuple[str, dict[str, Any]] | None:
+        """Why the firing's `run_approval` does not release it, or None when it does.
+
+        It releases the firing only when its digest is the firing's
+        `params_digest`, and the record it names is this firing's own: in the
+        firing's tenant, a `run` approval, for this firing, named on the
+        firing, decided `approved`, at the same digest. The field alone is
+        never trusted: the record is the decision, written with its audit in
+        the decision's transaction (`approvals.decide`).
+        """
+        # Imported here: `approvals` imports this module.
+        from . import approvals
+
+        approval = firing.get("run_approval") or {}
+        approval_id = approval.get("approval_id")
+        detail: dict[str, Any] = {"approval_id": approval_id, "digest": approval.get("digest"),
+                                  "params_digest": firing.get("params_digest")}
+        if not approval.get("digest") or approval.get("digest") != firing.get("params_digest"):
+            return APPROVAL_CHANGED, detail
+        if not approval_id or approval_id != firing.get("approval_id"):
+            return APPROVAL_NOT_FOUND, detail
+        snap = _snapshot(txn.get(self.db.collection(approvals.COLLECTION).document(str(approval_id))))
+        record = (snap.to_dict() or {}) if snap.exists else {}
+        if record.get("tenant_id") != firing.get("tenant_id") or record.get("kind") != approvals.RUN \
+                or (record.get("subject") or {}).get("firing_id") != firing.get("firing_id"):
+            return APPROVAL_NOT_FOUND, detail
+        if record.get("state") != approvals.APPROVED:
+            return APPROVAL_NOT_APPROVED, {**detail, "state": record.get("state")}
+        if record.get("digest") != approval.get("digest"):
+            return APPROVAL_CHANGED, detail
+        return None
+
+    def _audit_refusal(self, txn: Any, ref: Any, firing: Mapping[str, Any], now: datetime,
+                       refusal: tuple[str, Mapping[str, Any]]) -> None:
+        """The held firing's audit entry and its `run_approval_refused`, once per refusal."""
+        code, detail = refusal
+        marker = {"code": code, "approval_id": detail.get("approval_id"), "digest": detail.get("digest"),
+                  "params_digest": detail.get("params_digest")}
+        seen = dict(firing.get("run_approval_refused") or {})
+        seen.pop("at", None)
+        if seen == marker:
+            return
+        schedaudit.append(
+            txn, self.db, schedule_id=str(firing.get("schedule_id")), tenant_id=str(firing.get("tenant_id")),
+            action=RUN_APPROVAL_REFUSED, by=TICK_ACTOR, at=now,
+            detail={"firing_id": firing.get("firing_id"), **dict(detail), "code": code},
+        )
+        txn.update(ref, {"run_approval_refused": {**marker, "at": now}})
+        log.warning("schedule firing %s: approval does not release it (%s)", firing.get("firing_id"), code)
+
+    def _hold_approved(self, fid: str, now: datetime, report: TickReport,
+                       refusal: tuple[str, Mapping[str, Any]]) -> str:
+        """An approved firing whose digest at finish is not the one approved:
+        it stays `awaiting_approval`, the lease is given back, and it is audited."""
+        ref = self._firing_ref(fid)
+
+        @firestore.transactional
+        def _apply(txn: Any) -> None:
+            doc = _snapshot(txn.get(ref)).to_dict() or {}
+            if not self._holds(fid, doc):
+                raise Conflict(f"firing {fid} is held by another finisher")
+            self._audit_refusal(txn, ref, doc, now, refusal)
+            txn.update(ref, {"finishing_until": None, "finisher": None})
+
+        _apply(self.db.transaction())
+        report.held += 1
+        return AWAITING_APPROVAL
 
     def _holds(self, fid: str, doc: Mapping[str, Any]) -> bool:
         token = self._leases.get(fid)
@@ -941,6 +1144,19 @@ class Ticker:
                       detail={"owner": schedule.get("owner")}, schedule=schedule)
             self.pause(schedule["schedule_id"], OWNER_NOT_MEMBER, now)
             return SKIPPED
+        # And by their role there NOW (workspace-roles.md §4.8): a viewer
+        # submits nothing, so neither does a firing they own.
+        try:
+            acts_as = owner_acts_as(self.ctx, owner, schedule)
+        except RoleMemberRequired as refused:
+            role = (refused.detail or {}).get("role")
+            self._end(fid, now, report, state=SKIPPED, code=OWNER_ROLE_NARROWED,
+                      detail={"owner": schedule.get("owner"), "role": role}, schedule=schedule)
+            self.pause(schedule["schedule_id"], OWNER_ROLE_NARROWED, now, audit={
+                "code": OWNER_ROLE_NARROWED, "owner": schedule.get("owner"), "role": role,
+                "firing_id": fid,
+            })
+            return SKIPPED
         # Work already carrying this firing's mark (§2.2): adopted, never
         # created twice.
         adopted = self._adopt(schedule, fid)
@@ -962,6 +1178,15 @@ class Ticker:
             return self._refused(fid, now, report, schedule, REPOSITORY_NOT_GRANTED,
                                  {"repo_ids": missing})
         digest = params_digest(schedule, repo_ids)
+        # An approved firing runs only what was approved: the scope or
+        # parameters it would run with now must give the digest approved.
+        approved = firing.get("state") == AWAITING_APPROVAL
+        if approved and digest != (firing.get("run_approval") or {}).get("digest"):
+            return self._hold_approved(fid, now, report, (APPROVAL_CHANGED, {
+                "approval_id": (firing.get("run_approval") or {}).get("approval_id"),
+                "digest": (firing.get("run_approval") or {}).get("digest"),
+                "params_digest": digest,
+            }))
         # Budget (§4.3): a firing gate, never an admission control.
         budget = schedule["budget"]
         spend = schedules.spend_for(schedule.get("spend"), schedules.spend_day(now, schedule["timezone"]))
@@ -988,11 +1213,17 @@ class Ticker:
             output = executor.dry_run(handle)
             return self._end(fid, now, report, state=SKIPPED, code=DRY_RUN, detail=detail_missing,
                              schedule=schedule, extra={"dry_run": output, "params_digest": digest})
-        if (schedule.get("gate") or {}).get("run") == "approve":
+        if (schedule.get("gate") or {}).get("run") == "approve" and not approved:
             # §1.4: held as a document and nothing else. The approval record
             # and its inbox are lane S5's; nothing is submitted here.
             report.held += 1
             return self._move(fid, now, report, AWAITING_APPROVAL, {"params_digest": digest})
+        if acts_as == roles.VIA_PLATFORM_ADMIN:
+            # §4.2.4: an owner who acts here only as a platform admin has a
+            # `platform_admin_acted` row written BEFORE anything is submitted.
+            # A row that cannot be written is a 503 that propagates: the
+            # firing stays claimed, and the work is never created unaudited.
+            self._audit_platform_admin(owner, schedule, fid)
         try:
             work = executor.create(handle) or []
         except ApiError as exc:
@@ -1008,7 +1239,8 @@ class Ticker:
                                      extra={**detail_missing, "refusal": {"code": exc.code}})
             return self._refused(fid, now, report, schedule, exc.code,
                                  {"message": exc.message, **detail_missing})
-        return self._created(fid, now, report, work, schedule, digest=digest, extra=detail_missing)
+        return self._created(fid, now, report, work, schedule, digest=digest, extra=detail_missing,
+                             selection=handle.explanation)
 
     def _scope(self, schedule: Mapping[str, Any]) -> tuple[list[str], list[str]]:
         """(registered now, no longer registered). `all` lists every registration NOW."""
@@ -1083,14 +1315,16 @@ class Ticker:
 
     def _move(self, fid: str, now: datetime, report: TickReport, state: str,
               patch: Mapping[str, Any]) -> str:
-        """claimed -> `state`, only from claimed; the history says when and by whom."""
+        """claimed -> `state`, only from claimed, or from an approved
+        `awaiting_approval` this finisher leased; the history says when and by whom."""
         ref = self._firing_ref(fid)
 
         @firestore.transactional
         def _apply(txn: Any) -> None:
             snap = _snapshot(txn.get(ref))
             doc = snap.to_dict() or {}
-            if doc.get("state") != CLAIMED:
+            approved = doc.get("state") == AWAITING_APPROVAL and bool(doc.get("run_approval"))
+            if doc.get("state") != CLAIMED and not approved:
                 raise Conflict(f"firing {fid} is {doc.get('state')}, not claimed")
             if not self._holds(fid, doc):
                 raise Conflict(f"firing {fid} is held by another finisher")
@@ -1128,13 +1362,19 @@ class Ticker:
 
     def _created(self, fid: str, now: datetime, report: TickReport, work: list[dict[str, Any]],
                  schedule: Mapping[str, Any], *, digest: str | None,
-                 extra: Mapping[str, Any] | None = None) -> str:
+                 extra: Mapping[str, Any] | None = None,
+                 selection: Mapping[str, Any] | None = None) -> str:
         patch: dict[str, Any] = {"work": work, "params_digest": digest}
+        if selection is not None:
+            patch["selection"] = dict(selection)
         if extra and extra.get("refusal"):
             # Part of the work was made and then a submission was refused.
             patch["skip"] = {"code": extra["refusal"]["code"], "detail": dict(extra)}
         elif extra and extra.get("skipped_repos"):
             patch["skip"] = {"code": REPOSITORY_NOT_GRANTED, "detail": dict(extra)}
+        elif not work:
+            # Never a silent success (#1133): an empty firing says why.
+            patch["skip"] = {"code": NOTHING_STARTED, "detail": nothing_started(selection)}
         self._move(fid, now, report, CREATED, patch)
         report.fired += 1
         snap = self._firing_ref(fid).get()
@@ -1202,10 +1442,23 @@ class Ticker:
             except ConsecutiveFailures:
                 self.pause(schedule_id, CONSECUTIVE_FAILURES, now, n=pause_after[0])
 
+    def _audit_platform_admin(self, owner: AuthContext, schedule: Mapping[str, Any], fid: str) -> None:
+        store = getattr(self.ctx, "roles", None)
+        if store is None:
+            return
+        # The owner's context is never an admin's (`member_auth`); the audit
+        # asks `is_admin` only to know a platform admin is acting, which
+        # `owner_acts_as` has just established with a fresh lookup.
+        store.audit_platform_admin(
+            replace(owner, is_admin=True), method="POST", route=FIRING_ROUTE,
+            path_params={"schedule_id": str(schedule["schedule_id"]), "firing_id": fid})
+
     def pause(self, schedule_id: str, code: str, now: datetime, *, state: str = "auto_paused",
-              n: int | None = None) -> bool:
+              n: int | None = None, audit: Mapping[str, Any] | None = None) -> bool:
         """§1.3: `auto_paused` (or `disabled`) with its code. Only an ENABLED
-        schedule moves: a person's pause is not overwritten by the tick's."""
+        schedule moves: a person's pause is not overwritten by the tick's.
+        `audit`, when given, is the detail of an `auto_paused` entry in
+        `schedule_audit`, written in the same transaction as the pause."""
         ref = self._schedule_ref(schedule_id)
         reason = PAUSE_COPY[code].format(n=n if n is not None else CONSECUTIVE_FAILURES_DEFAULT)
 
@@ -1224,6 +1477,10 @@ class Ticker:
                 "updated_by": TICK_ACTOR,
                 "updated_at": now,
             })
+            if audit is not None:
+                schedaudit.append(txn, self.db, schedule_id=schedule_id,
+                                  tenant_id=str(doc.get("tenant_id") or ""), action=AUTO_PAUSED,
+                                  by=TICK_ACTOR, at=now, detail={**dict(audit), "reason": reason})
             return True
 
         moved = _apply(self.db.transaction())
@@ -1236,7 +1493,16 @@ class Ticker:
     def advance(self, firing: Mapping[str, Any], now: datetime, report: TickReport, *,
                 release_queued: bool = True) -> str | None:
         """End a `created` firing whose work has all ended. Returns its outcome,
-        or None while any of its work is live."""
+        or None while any of its work is live.
+
+        An issue run that FAILED AT PLANNING with a refusal that is a property
+        of its issue (`issueruns.PLANNING_REFUSALS`: a plan that changes
+        `.github/workflows/`) is listed under the firing's `refused_runs` with
+        its code and left out of the outcome: the refusal was correct, and a
+        `failed` firing read as the schedule being broken (2026-10-12, #1030's
+        run_21bcbaba3ba14235832a). A firing whose only runs were refused ends
+        `succeeded`; one where every other run failed still ends `failed`.
+        """
         if firing.get("state") != CREATED:
             return firing.get("outcome")
         tenant_id = firing["tenant_id"]
@@ -1249,6 +1515,7 @@ class Ticker:
                 by_workflow.setdefault(task["workflow_id"], []).append(task)
         outcomes: list[str] = []
         per_item_tasks: list[list[str]] = []
+        refused_runs: list[dict[str, Any]] = []
         for item in work:
             kind = item.get("kind")
             if kind == "api_action":
@@ -1256,9 +1523,15 @@ class Ticker:
                 per_item_tasks.append([])
                 continue
             if kind == "issue_run":
-                outcome = self._issue_run_outcome(tenant_id, str(item.get("id")))
+                outcome, refused = self._issue_run_end(tenant_id, str(item.get("id")))
                 if outcome is None:
                     return None
+                if refused is not None:
+                    # Refused at planning for what the issue asks (#1030's
+                    # `.github/workflows/` plan): an answer about the issue,
+                    # not a failure of the schedule. Recorded, not counted.
+                    refused_runs.append(refused)
+                    continue
                 outcomes.append(outcome)
                 per_item_tasks.append([])
                 continue
@@ -1291,7 +1564,7 @@ class Ticker:
             except RunOverBudget:
                 over = True
                 outcome, code = "failed", RUN_OVER_BUDGET
-        if not self._done(firing["firing_id"], now, outcome, cost, code):
+        if not self._done(firing["firing_id"], now, outcome, cost, code, refused_runs=refused_runs):
             return outcome
         report.advanced += 1
         if schedule is not None:
@@ -1303,17 +1576,23 @@ class Ticker:
                 self._release_queued(schedule["schedule_id"], now, report)
         return outcome
 
-    def _issue_run_outcome(self, tenant_id: str, run_id: str) -> str | None:
-        """Advances the run first (§2.9: the tick reaches every tenant's runs)."""
+    def _issue_run_end(self, tenant_id: str, run_id: str) -> tuple[str | None, dict[str, Any] | None]:
+        """The run's outcome, and its `refused_runs` entry when it failed at
+        planning with a `PLANNING_REFUSALS` code (None otherwise). Advances
+        the run first (§2.9: the tick reaches every tenant's runs)."""
         from .routes.runs import advance_run  # the route module imports this one's deps
 
         try:
             run = IssueRuns(self.db, now=self.ctx.now).get(tenant_id, run_id)
         except NotFound:
-            return "failed"
+            return "failed", None
         if run.state not in TERMINAL_RUN_STATES:
             run = advance_run(self.ctx, tenant_id, run)
-        return run_outcome(run.state.value if hasattr(run.state, "value") else str(run.state))
+        outcome = run_outcome(run.state.value if hasattr(run.state, "value") else str(run.state))
+        code = planning_refusal(run)
+        if outcome is None or code is None:
+            return outcome, None
+        return outcome, {"run_id": run.id, "issue": run.issue.short, "code": code}
 
     def _cost(self, tenant_id: str, per_item_tasks: list[list[str]]) -> dict[str, Any]:
         """§4.3: reported cost summed; an attempt with no cost is counted, not zero."""
@@ -1338,7 +1617,8 @@ class Ticker:
             per_item.append(round(item_cost, 6) if known else None)
         return {"reported_usd": round(reported, 6), "unreported_attempts": unreported, "per_item": per_item}
 
-    def _done(self, fid: str, now: datetime, outcome: str, cost: Mapping[str, Any], code: str | None) -> bool:
+    def _done(self, fid: str, now: datetime, outcome: str, cost: Mapping[str, Any], code: str | None,
+              *, refused_runs: Sequence[Mapping[str, Any]] = ()) -> bool:
         ref = self._firing_ref(fid)
 
         @firestore.transactional
@@ -1357,6 +1637,8 @@ class Ticker:
             }
             if code:
                 patch["skip"] = {"code": code, "detail": {"per_item_usd": list(cost["per_item"])}}
+            if refused_runs:
+                patch["refused_runs"] = [dict(r) for r in refused_runs]
             txn.update(ref, patch)
             return True
 
@@ -1407,6 +1689,23 @@ class Ticker:
             except Exception as exc:
                 self._failed(report, firing["firing_id"], exc)
 
+    def _finish_approved(self, now: datetime, report: TickReport, started: float) -> None:
+        """`awaiting_approval` firings that carry a `run_approval`, finished
+        by this tick under the gate they were claimed with. An unapproved one
+        is not touched; `_lease` decides whether the approval releases it.
+        The filter comes before the page: the scan is platform-wide, and
+        ADVANCE_PAGE older unapproved (or digest-mismatched) firings would
+        otherwise fill every slot and an approved one would never run."""
+        approved = [f for f in self._by_state(AWAITING_APPROVAL) if f.get("run_approval")]
+        for firing in approved[:ADVANCE_PAGE]:
+            if self._clock() - started >= TICK_BUDGET_SECONDS:
+                report.truncated = True
+                return
+            try:
+                self.finish(firing["firing_id"], now, report)
+            except Exception as exc:
+                self._failed(report, firing["firing_id"], exc)
+
     def _advance_live(self, now: datetime, report: TickReport, started: float) -> None:
         for firing in self._by_state(CREATED)[:ADVANCE_PAGE]:
             if self._clock() - started >= TICK_BUDGET_SECONDS:
@@ -1416,6 +1715,12 @@ class Ticker:
                 self.advance(firing, now, report)
             except Exception as exc:
                 self._failed(report, firing["firing_id"], exc)
+        # §4.9 (lane S12): the pending approvals' GitHub threads, read for
+        # `/swarmcloud approve <digest>` comments. Bounded by the inbox and
+        # by what is left of the tick; it never raises.
+        from .ghapprove import poll
+
+        poll(self.ctx, out_of_time=lambda: self._clock() - started >= TICK_BUDGET_SECONDS)
 
     def _write_report(self, now: datetime, report: TickReport) -> None:
         """§2.10: `schedule_ticks/{unix_minute}`, 7 days, for the admin view's tick health."""
@@ -1445,6 +1750,19 @@ class Ticker:
         self.finish(fid, now, report, dry_run=dry_run)
         snap = self._firing_ref(fid).get()
         return snap.to_dict() or {}
+
+
+#: The summary fields of an executor's explanation the `NOTHING_STARTED`
+#: skip repeats; the whole explanation is the firing's `selection`.
+_NOTHING_STARTED_FIELDS = ("reason", "bound", "room", "limits", "passed_over_by_reason",
+                           "failures", "truncated", "start_failures", "own_live")
+
+
+def nothing_started(selection: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The `NOTHING_STARTED` skip's detail: the executor's reason, or that it gave none."""
+    if not selection or not selection.get("reason"):
+        return {"reason": "executor_created_nothing"}
+    return {k: selection[k] for k in _NOTHING_STARTED_FIELDS if k in selection}
 
 
 def _last_firing(record: Mapping[str, Any]) -> dict[str, Any]:
@@ -1480,6 +1798,8 @@ __all__ = [
     "fair_pick",
     "firing_id",
     "load_executor",
+    "nothing_started",
+    "owner_acts_as",
     "member_auth",
     "params_digest",
     "plan_slots",

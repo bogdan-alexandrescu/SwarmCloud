@@ -396,13 +396,13 @@ describe('Holders leads with the table, its filter, and drift per pool under it 
     expect(document.querySelector('.hold-callout')?.textContent ?? '').toContain('runner:codex')
   })
 
-  it('draws dispatched and awaiting as the half disc of the holding-capacity family', async () => {
+  it('draws dispatched and leased as the half disc of the holding-capacity family', async () => {
     api.loadHolders.mockResolvedValue(
       ok(holders([lease(1, ['global']), lease(2, ['global'], { dispatch_state: 'LEASED' })], [pool('global', 2, 10)])),
     )
     render(<HoldersScreen />)
     const table = (await screen.findByText('Every holder', undefined, WAIT)).closest('section')!
-    const cells = [...table.querySelectorAll('td[data-label="Dispatch"]')]
+    const cells = [...table.querySelectorAll('td[data-label="Lease written"]')]
     expect(cells).toHaveLength(2)
     for (const c of cells) {
       const mark = c.querySelector('[data-mark]')
@@ -410,7 +410,7 @@ describe('Holders leads with the table, its filter, and drift per pool under it 
       expect(mark?.getAttribute('data-hue')).toBe('live')
       expect(c.querySelectorAll('[data-mark]').length, 'a second mark, the old grey dot chip, is still drawn').toBe(1)
     }
-    expect(cells.map((c) => c.textContent).sort()).toEqual(['awaiting', 'dispatched'])
+    expect(cells.map((c) => c.textContent).sort()).toEqual(['dispatched', 'leased'])
   })
 
   it('narrows to one tenant when its filter is pressed', async () => {

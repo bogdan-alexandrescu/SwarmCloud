@@ -171,7 +171,10 @@ describe('#94: the inspector is headed by the step, with the id kept and copyabl
       a.textContent?.includes('wf_a25f6eb11a5b40bd8b58'),
     )
     expect(link, 'the workflow id is not a link').toBeTruthy()
-    expect(link!.getAttribute('href')).toBe('#work/workflows?wf=wf_a25f6eb11a5b40bd8b58')
+    // THE PAGE'S OWN PATH (live QA WA-21): it was `#work/workflows?wf=…`,
+    // reached through the legacy hash redirect while hover and Copy link
+    // showed a URL that is not the workflow's.
+    expect(link!.getAttribute('href')).toBe('/workflows/wf_a25f6eb11a5b40bd8b58')
   })
 })
 

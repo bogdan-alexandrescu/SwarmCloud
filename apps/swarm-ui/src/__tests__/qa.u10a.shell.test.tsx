@@ -65,8 +65,13 @@ describe('D25: Submit reads as the place you are on', () => {
       const cta = c.querySelector('.sk-spine .sk-cta')!
       expect(cta.getAttribute('aria-current')).toBe('page')
       expect(c.querySelector('.sk-spine .sk-ri.is-on'), 'a spine section is lit on Submit').toBeNull()
-      expect(c.querySelector('.sk-panel [aria-current="page"]'), 'a panel page is lit on Submit').toBeNull()
-      expect(c.querySelector('.sk-panel .sk-pk.is-on, .sk-panel .sk-kid.is-on'), 'a panel page is lit on Submit').toBeNull()
+      // The panel is Submit's own (live QA CH-17): headed Submit, listing the
+      // chooser and its three forms, the one open lit -- never Work's pages.
+      const panel = c.querySelector<HTMLElement>('.sk-panel')!
+      expect(panel.querySelector('.sk-pt')?.textContent).toBe('Submit')
+      const lit = [...panel.querySelectorAll<HTMLAnchorElement>('[aria-current="page"]')].map((a) => a.getAttribute('href'))
+      expect(lit, 'Submit lit some other page than the one open').toEqual([path])
+      expect(panel.querySelector('a[href="/agents/live"], a[href="/workflows"]'), 'Work’s pages are drawn on Submit').toBeNull()
     })
   }
 

@@ -1041,7 +1041,7 @@ function Files({ v }: { v: ArtifactsView }) {
     body =
       entries.length === 0 ? (
         <p className="att-none">
-          <Mark kind="zero" say="The last attempt uploaded no files. The list is complete and empty, not missing." /> none
+          <Mark kind="zero" say="The last attempt uploaded no files. The list is complete and empty, not missing." /> nothing
           uploaded
         </p>
       ) : null

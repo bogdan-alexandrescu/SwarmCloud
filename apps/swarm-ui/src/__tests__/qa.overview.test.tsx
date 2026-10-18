@@ -32,7 +32,9 @@ describe('Q5: a check card is a short title, two lines and a link', () => {
     expect(Overview.splitHeadline('Dispatch is paused platform-wide')).toEqual({ title: 'Dispatch is paused platform-wide', ids: null })
   })
 
-  it('draws the title on one line, the ids on the next, cut, and keeps the whole headline as its name', () => {
+  // The title was one line until visual QA V143 (2026-10-11): a phone cut it
+  // before its noun. It is two lines now, clamped, and the ids stay one.
+  it('draws the title in at most two lines, the ids on one, cut, and keeps the whole headline as its name', () => {
     const p: Problem = { severity: 'bad', n: 21, headline: HEADLINE, detail: 'All still have attempts left and may retry.', href: '#work/running/recent/failed', linkLabel: 'failed agents' }
     const { container } = render(<Overview.CheckCard problem={p} />)
     const b = container.querySelector('.ov-att-t b')!
@@ -42,10 +44,11 @@ describe('Q5: a check card is a short title, two lines and a link', () => {
     expect(ids.textContent).toMatch(/wf_422ecd715f19465c8283/)
     expect(ids.getAttribute('title')).toBe(ids.textContent)
     expect(container.querySelector('a')!.getAttribute('aria-label')).toBe(`${HEADLINE}. ${p.detail}`)
-    for (const el of [b, ids]) {
-      expect(painted(el, 'white-space', WIDE), el.className || el.tagName).toBe('nowrap')
-      expect(painted(el, 'text-overflow', WIDE), el.className || el.tagName).toBe('ellipsis')
-    }
+    expect(painted(ids, 'white-space', WIDE)).toBe('nowrap')
+    expect(painted(ids, 'text-overflow', WIDE)).toBe('ellipsis')
+    expect(painted(b, '-webkit-line-clamp', WIDE)).toBe('2')
+    expect(painted(b, 'overflow', WIDE)).toBe('hidden')
+    expect(painted(b, 'white-space', WIDE) ?? 'normal').not.toBe('nowrap')
     // Regular-size title, not a heading-sized run of bold.
     expect(painted(b, ['font-size', 'font'], WIDE)).toMatch(/--t-meta/)
   })

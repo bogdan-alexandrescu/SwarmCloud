@@ -1,0 +1,55 @@
+# The TypeSafe forwarder's one path out of a tenant namespace: TCP 8080 to the
+# swarm-typesafe-fwd pods in swarm-system, from a pod the dispatcher labelled
+# `swarm-typesafe: inject`, and nothing else (docs/design/workspace-secrets.md
+# §3.5, SEC-MIGRATE-TYPESAFE; lane TS-MIGRATE-POD, part of #1347;
+# kubernetes/swarm-system/swarm-typesafe-fwd.yaml).
+#
+# Built exactly like `swarm-allow-judge-egress`, for the same reason: the
+# internet rule in `allow-egress.yaml` is an ipBlock, and "Pod traffic is never
+# covered by an ipBlock rule", so reaching a pod in swarm-system needs a pod
+# selector naming ONE destination. The forwarder's Service is headless on 8080,
+# so a pod dials the forwarder's pod and its 8080 directly.
+#
+# WHY A LABEL. `swarm-typesafe: inject` is set by the dispatcher
+# (scheduler.dispatch `typesafe_forwarder_on`) on a GKE live-browser pod whose
+# workspace chose the TypeSafe judgment backend, only while
+# typesafe_forwarder.enabled and its tenant is in typesafe_forwarder.tenants --
+# never by a caller (invariant 10). A pod without it has no route to the
+# forwarder; its DNS and direct internet still come from the existing policy.
+# NetworkPolicies are unions, so this adds exactly that path and removes
+# nothing.
+#
+# THE OTHER SIDE. `swarm-typesafe-fwd-ingress` admits the same label from a
+# namespace labelled `app.kubernetes.io/part-of: swarm` with a `swarm-tenant`
+# label (every tenant namespace, namespaces/tenant-namespace.yaml), on 8080.
+# tests/unit/scripts/test_typesafe_fwd_netpol.py holds the two equal.
+#
+# Before the release that renders this, the owner re-applies
+# `kubernetes/apply.sh --policies`: the workspace deployer's scope policy must
+# name it, or every `u-*` onboarding is refused.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: swarm-allow-typesafe-fwd
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-terraform
+    swarm-tenant: __TENANT_ID__
+spec:
+  podSelector:
+    matchLabels:
+      swarm-typesafe: "inject"
+  policyTypes:
+    - Egress
+  egress:
+    # ONE peer with BOTH selectors: the forwarder pods in swarm-system.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: swarm-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: swarm-typesafe-fwd
+      ports:
+        - protocol: TCP
+          port: 8080

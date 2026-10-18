@@ -317,10 +317,14 @@ test('a real zero says so in words, not only in a border colour', () => {
   // `no attempt yet - <state>` and moved the explanation into the panel's own
   // copy, where it still says nothing has been admitted FOR THIS TASK yet.
   // What must hold is that the surface states nothing was admitted and calls
-  // the zero real; which words carry it is the redesign's to choose.
+  // the zero real; which words carry it is the redesign's to choose. The
+  // zero is the `.ctl-mark.is-zero` mark (its word is `none`), and no
+  // sentence on the surface says "real zero" any more (owner, 2026-10-11).
   assert.ok(/no attempt yet/i.test(markup), 'the surface no longer says no attempt has been made')
   assert.ok(/nothing has been admitted/i.test(markup), 'the surface no longer says nothing was admitted')
-  assert.ok(markup.includes('real zero'), 'nothing on the surface says this zero is real')
+  assert.ok(markup.includes('ctl-mark is-zero'), 'nothing on the surface marks this zero as a measured one')
+  assert.ok(!markup.includes('ctl-mark is-unread'), 'a measured zero is drawn as a failed read')
+  assert.ok(!/aria-label="[^"]*real zero/i.test(markup), 'a sentence on the surface still says "real zero"')
   // The state it was measured in is a fact about THIS task and stays -- IN THE
   // HEADING, spelled as the chip beside it reads (AG-28). This asserted only
   // that `PARKED` was somewhere in the markup, which the state chip satisfies
@@ -620,9 +624,10 @@ test('an unstarted waiting task keeps its wait, because its whole age is one', (
 
 test('the error banner names the scheduler for a cascade cancel, not the agent', () => {
   // BREAK IT: fall back to `agent, at finish` for any text the prefixes do
-  // not recognise -- the old rule. No agent existed to write this.
+  // not recognise -- the old rule. No agent existed to write this. A cancel
+  // is not an error, so its text is a reason (live QA WA-6, 2026-10-11).
   const markup = plain(surface(cascade()))
-  assert.ok(markup.includes('Error written by <b>scheduler · cancel</b>'), 'the cascade cancel is not attributed to the scheduler')
+  assert.ok(markup.includes('Reason written by <b>scheduler · cancel</b>'), 'the cascade cancel is not attributed to the scheduler')
   assert.ok(!markup.includes('agent, at finish'), 'a task that never ran blames its agent')
 })
 
@@ -656,6 +661,10 @@ test('a finished task that never ran has nothing-ran as its output, a real zero'
   const markup = plain(surface(cascade()))
   assert.ok(markup.includes('nothing ran · cancelled'), 'the output panel does not say nothing ran')
   assert.ok(!markup.includes('finished with no summary'), 'a task that never ran is drawn as a missing summary')
+  // Plain words, no coined term: the mark carries "measured, not failed".
+  const raw = surface(cascade())
+  assert.ok(raw.includes('aria-label="No attempt of this task ever started, so there is no result summary."'), 'the never-ran sentence is not the plain one')
+  assert.ok(!/aria-label="[^"]*real zero/i.test(raw), 'a sentence on this surface still says "real zero"')
 })
 
 // ---------------------------------------------------------------------------

@@ -35,6 +35,37 @@ export const REFERENCE_ADDRESS = 'reference'
 export const GITHUB_CALLBACK_ADDRESS = 'onboarding/github/callback'
 export const GITHUB_CALLBACK_PATH = '/onboarding/github/callback'
 
+/**
+ * THE TYPESAFE KEY FORM'S ONE-TIME LINK (KEYS-UI; docs/provider-keys.md §3):
+ * `POST /v1/provider-keys/typesafe/links` answers
+ * `/settings/keys/typesafe?scope=user|tenant&t=<token>`, and `/sc` hands that
+ * to the person so the key never passes through Claude. Not in FIXED: nothing
+ * in the console links to it and the not-found page must never offer it.
+ * ITS TOKEN IS NEVER PART OF THE ADDRESS, exactly like the GitHub callback's
+ * `code`: the address is what the router writes back into the bar, so the
+ * token is dropped here and only `scope` is kept. The form reads the token off
+ * the bar once, itself (ProviderKeys.tsx `takeLinkToken`).
+ */
+export const KEY_LINK_ADDRESS = 'settings/keys/typesafe'
+export const KEY_LINK_PATH = '/settings/keys/typesafe'
+
+/**
+ * The link's token, read off a location: only on KEY_LINK_PATH, so a `t` on
+ * any other page is never taken for one. App reads it once, before its
+ * normalise effect rewrites the bar without it.
+ */
+export function keyLinkToken(pathname: string, search: string): string | null {
+  if (pathname.replace(/\/+$/, '') !== KEY_LINK_PATH) return null
+  const t = new URLSearchParams(search).get('t')
+  return t === null || t === '' ? null : t
+}
+
+/** The scopes a key link may name; anything else is dropped, not guessed at. */
+export function keyLinkScope(query: string): 'user' | 'tenant' | null {
+  const scope = new URLSearchParams(query).get('scope')
+  return scope === 'user' || scope === 'tenant' ? scope : null
+}
+
 /** Address -> path for the panes that are one fixed path each. */
 /** Exported for the not-found page, which offers the nearest of these (NotFound.tsx). */
 export const FIXED: Readonly<Record<string, string>> = {
@@ -54,6 +85,12 @@ export const FIXED: Readonly<Record<string, string>> = {
   // #780 OB8: the onboarding checklist and the steady-state Access page.
   'work/setup': '/setup',
   'work/access': '/access',
+  // docs/schedules.md §6.1 (SD1): Automate › Schedules. One schedule is
+  // `/automate/schedules/<id>`, below.
+  'automate/schedules': '/automate/schedules',
+  // §6.1: "Approvals is a page of its own at `/approvals`". One item is
+  // `/approvals/<id>`, below.
+  'automate/approvals': '/approvals',
   submit: '/submit',
   'capacity/pools': '/capacity/pools',
   'capacity/profiles': '/capacity/pools/profiles',
@@ -66,6 +103,18 @@ export const FIXED: Readonly<Record<string, string>> = {
   'admin/counts': '/admin/counts',
   // #847 W8: Admin › People, everyone who has signed in and their workspace requests.
   'admin/people': '/admin/people',
+  // KEYS-UI: Settings › API keys, the person's own provider keys and, for an
+  // admin, the tenant's. Not a section: reached from the panel's foot by the
+  // person's name. Its one-time link is KEY_LINK_PATH, above.
+  'settings/keys': '/settings/keys',
+  // CTXQ-UI: Settings › Workspace, the selected workspace's own settings
+  // (Code intelligence). Beside API keys at the panel's foot, for the same
+  // reason: set once, not worked in.
+  'settings/workspace': '/settings/workspace',
+  // MCP-UI: Settings › MCP servers, the workspace's registered MCP servers
+  // (docs/design/registered-mcp-servers.md §4.11). A sibling of Workspace, for
+  // the same reason: registered once, then named by tasks.
+  'settings/mcp-servers': '/settings/mcp-servers',
   [HELP_ROUTE]: '/help',
   reference: '/api-reads',
 }
@@ -83,8 +132,12 @@ const FIXED_BACK: Readonly<Record<string, string>> = Object.fromEntries(
  */
 export const SECTION_ROOTS: Readonly<Record<string, string>> = {
   '/work': 'work/running',
+  '/automate': 'automate/schedules',
   '/capacity': 'capacity/pools',
   '/admin': 'admin/limits',
+  // Not a section, but `/settings` is the head of its two paths, and a person
+  // trimming the link back to it should land on the page rather than a 404.
+  '/settings': 'settings/keys',
 }
 
 const GROUP_IDS: readonly string[] = HELP_GROUPS.map((g) => g.id)
@@ -99,8 +152,10 @@ export function helpGroupOf(topic: string): string | null {
  * `changes` is the agent's Changes tab (design docs/design/diff-viewer.md §2
  * variant 2): `/agents/<tab>/<id>/changes`, and `/changes/<file>` with the open
  * file as ONE encoded segment, so a link can name the file it is about.
+ * `browser` is the live browser's tab (live-browser.md §6, LB-UX1):
+ * `/agents/<tab>/<id>/browser`, and `?theater=1` there opens the theater.
  */
-export const TASK_PANES = ['logs', 'children', 'attempts', 'artifacts', 'checkpoints', 'changes'] as const
+export const TASK_PANES = ['logs', 'children', 'attempts', 'artifacts', 'checkpoints', 'changes', 'browser'] as const
 
 function isAgentTab(s: string | undefined): s is AgentTab {
   return (AGENT_TABS as readonly string[]).includes(s ?? '')
@@ -220,6 +275,28 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
     // `run_console_url`, held to this line by test_issue_writeback.py).
     if (run !== null && run !== '') return `/runs/${encodeURIComponent(run)}`
   }
+  // One schedule rides on the list's query as `schedule=<id>`: `/automate/schedules/<id>`.
+  // Its tab rides as `?tab=`, and its editor is a segment, `/edit` (AUT-11).
+  if (bare === 'automate/schedules' && query !== '') {
+    const q = new URLSearchParams(query)
+    const id = q.get('schedule')
+    if (id !== null && id !== '') {
+      const base = `/automate/schedules/${encodeURIComponent(id)}${q.get('edit') === '1' ? '/edit' : ''}`
+      const tab = q.get('tab')
+      return tab === null || tab === '' ? base : `${base}?${new URLSearchParams({ tab }).toString()}`
+    }
+  }
+  // One inbox item rides on the page's query as `approval=<id>`: `/approvals/<id>`,
+  // keeping the inbox's kind filter as `?kind=` (AUT-15).
+  if (bare === 'automate/approvals' && query !== '') {
+    const q = new URLSearchParams(query)
+    const id = q.get('approval')
+    if (id !== null && id !== '') {
+      const kind = q.get('kind')
+      const base = `/approvals/${encodeURIComponent(id)}`
+      return kind === null || kind === '' ? base : `${base}?${new URLSearchParams({ kind }).toString()}`
+    }
+  }
   // Work › Repositories (repositories.html): the page rides on the tab's query.
   if (bare === 'work/repositories' && query !== '') {
     const q = new URLSearchParams(query)
@@ -248,6 +325,11 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
     return group === null ? `/help/${tail}` : `/help/${group}#${tail}`
   }
   if (bare === GITHUB_CALLBACK_ADDRESS) return GITHUB_CALLBACK_PATH
+  // The key link keeps its scope and nothing else (`pathToAddress` dropped the token).
+  if (bare === KEY_LINK_ADDRESS) {
+    const scope = keyLinkScope(query)
+    return scope === null ? KEY_LINK_PATH : `${KEY_LINK_PATH}?scope=${scope}`
+  }
   const fixed = FIXED[bare]
   if (fixed !== undefined) return query === '' ? fixed : `${fixed}?${query}`
   return '/overview'
@@ -285,7 +367,13 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
       const list = listFromQuery(tab, query)
       if (rest.length > 0) {
         const named = list.state !== null || agentListQuery(list) !== ''
-        return { address: `work/task/${rest.join('/')}`, agentTab: tab, ...(named ? { list } : {}) }
+        // THE THEATER RIDES ON THE BROWSER TAB'S QUERY (live-browser.md §6):
+        // the graph card, the hand-off banner and a shared link open
+        // `/agents/<tab>/<id>/browser?theater=1`. The rest of the query is
+        // the list's, read above.
+        const theater = rest[rest.length - 1] === 'browser' && new URLSearchParams(query).get('theater') === '1'
+        const address = `work/task/${rest.join('/')}`
+        return { address: theater ? `${address}?theater=1` : address, agentTab: tab, ...(named ? { list } : {}) }
       }
       // The state is kept as written, as it always was: a misspelt one lands
       // on the plain list through `parseAgentList`, not here.
@@ -327,6 +415,21 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
     return plain(`work/runs?${params.toString()}`)
   }
 
+  if (seg[0] === 'automate' && seg[1] === 'schedules' && seg[2] !== undefined && seg[2] !== '' && (seg.length === 3 || (seg.length === 4 && seg[3] === 'edit'))) {
+    const q = new URLSearchParams({ schedule: decodeURIComponent(seg[2]) })
+    const tab = new URLSearchParams(query).get('tab')
+    if (tab !== null && tab !== '') q.set('tab', tab)
+    if (seg.length === 4) q.set('edit', '1')
+    return plain(`automate/schedules?${q.toString()}`)
+  }
+
+  if (seg[0] === 'approvals' && seg.length === 2 && seg[1] !== '') {
+    const q = new URLSearchParams({ approval: decodeURIComponent(seg[1]!) })
+    const kind = new URLSearchParams(query).get('kind')
+    if (kind !== null && kind !== '') q.set('kind', kind)
+    return plain(`automate/approvals?${q.toString()}`)
+  }
+
   if (seg[0] === 'repositories' && seg.length >= 2) {
     const at = (q: Record<string, string>) => plain(`work/repositories?${new URLSearchParams(q).toString()}`)
     if (seg[1] === 'register' && seg.length === 2) return at({ page: 'register' })
@@ -352,6 +455,17 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
   // The callback's query (`code`, `state`, `error`) is dropped HERE, so the
   // route never holds it and the router's normalise writes a bare path.
   if (path === GITHUB_CALLBACK_PATH) return plain(GITHUB_CALLBACK_ADDRESS)
+  // THE KEY LINK'S TOKEN (`t`) IS DROPPED HERE, for the same reason: only the
+  // scope enters the route, so no address the router writes can carry it.
+  if (path === KEY_LINK_PATH) {
+    const scope = keyLinkScope(query)
+    return plain(scope === null ? KEY_LINK_ADDRESS : `${KEY_LINK_ADDRESS}?scope=${scope}`)
+  }
+
+  // ADMIN › SCHEDULES IS GONE (SCHED-ONE-PAGE, owner decision 2026-10-13):
+  // every tenant's schedules are Automate › Schedules' All tenants view, and
+  // its old path lands there, the bar rewritten once by App's normalise.
+  if (path === '/admin/schedules') return plain('automate/schedules?scope=all')
 
   const fixed = FIXED_BACK[path] ?? SECTION_ROOTS[path]
   if (fixed === undefined) return null

@@ -111,6 +111,7 @@ from .validation import (
     IssueRef,
     is_merge_step,
     merge_repository,
+    workflow_label,
 )
 
 #: The shape `swarm_common.models.new_id("task")` mints. Checked here rather
@@ -307,6 +308,27 @@ class NamedPull:
     base: str | None = None
 
 
+#: The name a `merge_pr` workflow is stored under when its caller gave none
+#: (owner report 2026-10-11): without it Claude Code titled the run, and the
+#: console listed it, by its bare `wf_` id. No "#" before the number, because
+#: GitHub can read "#N" in some places as a reference to that issue.
+MERGE_PR_LABEL = "Merge PR {number}"
+
+
+def with_merge_pr_label(spec: WorkflowCreate) -> WorkflowCreate:
+    """`spec` with `metadata.unit` = "Merge PR <number>" when it is a `merge_pr`
+    workflow whose metadata holds no label or title, else `spec` unchanged.
+
+    So a merge workflow submitted from any client -- the plugin, the stranded-PR
+    redrive, a bare `curl` -- is never nameless. A caller's own `unit` or `title`
+    is kept as given: this only fills the gap.
+    """
+    if spec.merge_pr is None or workflow_label(spec.metadata) is not None:
+        return spec
+    metadata = {**spec.metadata, "unit": MERGE_PR_LABEL.format(number=spec.merge_pr.number)}
+    return spec.model_copy(update={"metadata": metadata})
+
+
 def _check_merge_pr_shape(spec: WorkflowCreate) -> None:
     """Every refusal that needs no read, in the order a caller fixes them."""
     detail = {"merge_pr": spec.merge_pr.model_dump() if spec.merge_pr else None}
@@ -385,11 +407,14 @@ def resolve_merge_pr(
     repositories: Repositories,
     tokens: Any,
     writer: GitHubWriter,
+    person: str | None = None,
 ) -> NamedPull | None:
     """Check `spec.merge_pr` against the registry and GitHub, or None when absent.
 
-    `tokens` is the API's `forge.ForgeTokens`: the tenant's own `-git`
-    secret, read here once and dropped. A tenant with none is 409
+    `tokens` is the API's `forge.ForgeTokens`: the slot
+    `forge.resolve_forge_slot` picks for `person` in the tenant (their own,
+    the tenant's `-git`, or a personal tenant's owner's), read here once and
+    dropped. A tenant with none is 409
     `NoForgeCredential`, raised by the reader; a GitHub answer that is
     neither the pull request nor "not found" propagates as the writer's own
     error. Every refusal of the request itself is `DispatchOptionError`
@@ -404,7 +429,7 @@ def resolve_merge_pr(
     full_name = f"{owner}/{repo}"
     number, wanted = named.number, named.head_sha
     detail: dict[str, Any] = {"repository": full_name, "number": number, "head_sha": wanted}
-    token = tokens.token_for(tenant)
+    token = tokens.token_for(tenant, person=person)
     try:
         pull = writer.read_pull(IssueRef(owner=owner, repo=repo, number=number), number, token)
     except ForgeWriteNotFound:

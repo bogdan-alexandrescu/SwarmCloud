@@ -6,6 +6,7 @@
     kubernetes/render.py job --tenant eng --profile browser \
         --task task_9f3a --attempt att_7b21 --lease lease_c4 --generation 3
     kubernetes/render.py identity --tenant eng   # namespace, GSA, KSA
+    kubernetes/render.py swarm-system            # the live relay's ingress
 
 Every manifest here is a template with `__TOKEN__` placeholders rather than a
 Helm chart or a kustomization, for one reason: the file on disk has to be
@@ -96,6 +97,8 @@ sys.path.insert(0, str(REPO / "apps" / "quota-broker"))
 sys.path.insert(0, str(REPO / "apps" / "scheduler"))
 from quota_broker.accounts import _LABEL as _ACCOUNT_LABEL  # noqa: E402
 from scheduler.dispatch import (  # noqa: E402
+    CACHE_STORAGE_CLASS,
+    CACHE_VOLUME_GIB,
     backend_deadline_seconds,
     gke_disk,
     gke_ephemeral_storage_gib,
@@ -284,11 +287,22 @@ _VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
         r"^(offline-render-not-for-apply|operator-supplied"
         r"|gke/[a-z][a-z0-9-]{4,28}[a-z0-9]/[a-z0-9-]{1,63}/[a-z0-9-]{1,63})$"
     ),
+    # swarm-api's Direct VPC egress range, admitted to the live relay in
+    # swarm-system; `swarm_system_values` parses it and holds it to one private
+    # subnet. The source names where apply.sh read it:
+    # run/<project>/<region>/<service>/<subnetwork>.
+    "SWARM_API_EGRESS_CIDR": re.compile(r"^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$"),
+    "SWARM_API_EGRESS_SOURCE": re.compile(
+        r"^(offline-render-not-for-apply|operator-supplied"
+        r"|run/[a-z][a-z0-9-]{4,28}[a-z0-9]/[a-z]+-[a-z]+[0-9]/[a-z][a-z0-9-]{0,62}/[a-z][a-z0-9-]{0,62})$"
+    ),
     "QUOTA_PODS": re.compile(r"^[0-9]{1,6}$"),
     "QUOTA_JOBS": re.compile(r"^[0-9]{1,6}$"),
     "QUOTA_CPU": re.compile(r"^[0-9]{1,6}m?$"),
     "QUOTA_MEMORY": re.compile(r"^[0-9]{1,9}(Ki|Mi|Gi|Ti|K|M|G|T)?$"),
     "QUOTA_EPHEMERAL": re.compile(r"^[0-9]{1,9}(Ki|Mi|Gi|Ti|K|M|G|T)?$"),
+    "QUOTA_CACHE_STORAGE": re.compile(r"^[0-9]{1,9}Gi$"),
+    "CACHE_STORAGE_CLASS": re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"),
     # Firestore document ids. Underscores are legal here and are exactly why the
     # label spellings have to be sanitised separately.
     "TASK_ID": re.compile(r"^[A-Za-z0-9._-]{1,128}$"),
@@ -304,6 +318,7 @@ _VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
     "MEMORY": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
     "DISK": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
     "TMP_DISK": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
+    "CACHE_DISK": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
     "HOME_DISK": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
     "EPHEMERAL": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
     "TIMEOUT_SECONDS": re.compile(r"^[0-9]{1,8}$"),
@@ -361,6 +376,29 @@ TENANT_FILES = (
     "rbac/dispatcher-rbac.yaml",
     "network-policies/default-deny.yaml",
     "network-policies/allow-egress.yaml",
+    # The live browser's path to its relay (docs/design/live-browser.md §8.3).
+    # LAST, so every document before it renders exactly as it did before the
+    # live browser existed (test_live_netpol.py holds the digests).
+    "network-policies/allow-live-egress.yaml",
+    # The proxied browser's path to swarm-egress (docs/browser-egress.md §2.5).
+    # After the live path, for the same reason: everything before it renders
+    # as it did before browser egress existed.
+    "network-policies/allow-egress-proxy.yaml",
+    # The internal judge's path to the tailnet forwarder (lane JUDGE-NET,
+    # kubernetes/swarm-system/tailscale-egress.yaml). Last, for the same
+    # reason: everything before it renders as it did before.
+    "network-policies/allow-judge-egress.yaml",
+    # Every agent pod's path to the shared graph service (lane GS-INFRA,
+    # docs/design/graph-service.md §2.1). Last, for the same reason: everything
+    # before it renders as it did before. It opens nothing until swarm-graph is
+    # deployed in swarm-system (terraform/infra/graph_service.tf, off by default).
+    "network-policies/allow-graph-service.yaml",
+    # A TypeSafe-backed pod's path to the TypeSafe forwarder (lane
+    # TS-MIGRATE-POD, docs/design/workspace-secrets.md §3.5). Last, for the
+    # same reason: everything before it renders as it did before. It opens
+    # nothing until the dispatcher labels a pod `swarm-typesafe: inject`
+    # (typesafe_forwarder.enabled, off by default).
+    "network-policies/allow-typesafe-fwd.yaml",
 )
 
 #: The older worker identity -- LEGACY_KSA_NAME's ServiceAccount and the
@@ -407,10 +445,26 @@ def tenant_files(bound: Iterable[str] = ()) -> tuple[str, ...]:
 #: namespace and nothing yet narrows it to `swarm-tenant-u-*`
 #: (docs/workspaces.md §2.3).
 POLICY_FILES = (
+    # The cache's StorageClass (CACHE-PVC): cluster-scoped, so it is applied
+    # with these and not per tenant. First: nothing here depends on it, and a
+    # worker pod dispatched before it exists waits Pending for a class.
+    "storage/cache-storage-class.yaml",
     "policies/pod-security.yaml",
     "policies/workspace-provisioner-scope.yaml",
     "rbac/provisioner-rbac.yaml",
 )
+
+#: `swarm-system`'s NetworkPolicies, which `kubernetes/apply.sh --swarm-system`
+#: applies: a default deny for ingress, and TCP 8080 to the live relay from
+#: labelled tenant pods and from swarm-api's Direct VPC egress range
+#: (docs/design/live-browser.md §8.3). The namespace and the relay are lane
+#: L8's (`kubernetes/swarm-system/`); these two only decide who reaches them.
+SWARM_SYSTEM_FILES = ("network-policies/swarm-system-live.yaml",)
+
+#: What an offline `swarm-system` render admits when it is told no range:
+#: RFC 5737 TEST-NET-3, never a plausible subnet, and marked with
+#: OFFLINE_NETWORK_SOURCE so `kubernetes/apply.sh` refuses to apply it.
+OFFLINE_SWARM_API_EGRESS_CIDR = "203.0.113.128/25"
 
 #: The keyless identity the `swarm-workspace-apply` Cloud Build job runs as
 #: (docs/workspaces.md §2.3). Its account id is fixed by the bootstrap layer.
@@ -597,6 +651,62 @@ def network_values(args: argparse.Namespace) -> dict[str, str]:
     return {**given, "NETWORK_SOURCE": source or "operator-supplied"}
 
 
+#: The only space swarm-api's Direct VPC egress range may come from: a GCP
+#: subnet's primary range is RFC 1918 here (terraform's `subnet_cidr`,
+#: 10.40.0.0/20 in dev, 10.60.0.0/20 in prod). Anything wider or public would
+#: admit the internet's addresses to the relay the moment any path carried
+#: them, which is not a value to accept on the strength of a flag.
+_PRIVATE_SPACE = tuple(
+    ipaddress.IPv4Network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+)
+
+
+def swarm_system_values(args: argparse.Namespace) -> dict[str, str]:
+    """swarm-api's egress range for `swarm-system-live.yaml`: given, or offline.
+
+    Given, it must be one canonical private subnet and arrive with the source
+    apply.sh read it from. None given renders OFFLINE_SWARM_API_EGRESS_CIDR,
+    marked not-for-apply -- the same contract as the tenant network.
+    """
+    cidr = str(getattr(args, "swarm_api_egress_cidr", "") or "")
+    source = str(getattr(args, "swarm_api_egress_source", "") or "")
+    if not cidr:
+        if source:
+            raise RenderError(
+                f"render: --swarm-api-egress-source {source!r} names where the range came "
+                "from, but no --swarm-api-egress-cidr was passed with it."
+            )
+        return check_values(
+            {
+                "SWARM_API_EGRESS_CIDR": OFFLINE_SWARM_API_EGRESS_CIDR,
+                "SWARM_API_EGRESS_SOURCE": OFFLINE_NETWORK_SOURCE,
+            }
+        )
+    if source == OFFLINE_NETWORK_SOURCE:
+        raise RenderError(
+            f"render: --swarm-api-egress-source {OFFLINE_NETWORK_SOURCE} marks a render with NO "
+            "range; this one was given one. Name where it came from."
+        )
+    # Shape first: check_values refuses a newline or anything else that is not
+    # a CIDR before it is parsed or echoed into an error.
+    check_values({"SWARM_API_EGRESS_CIDR": cidr})
+    try:
+        network = ipaddress.IPv4Network(cidr, strict=True)
+    except ValueError as exc:
+        raise RenderError(
+            f"render: --swarm-api-egress-cidr {cidr!r} is not one canonical IPv4 subnet: {exc}"
+        ) from exc
+    if not any(network.subnet_of(space) for space in _PRIVATE_SPACE):
+        raise RenderError(
+            f"render: --swarm-api-egress-cidr {network} is not inside RFC 1918 space. It is "
+            "admitted to the live relay on 8080; swarm-api's Direct VPC egress subnet is "
+            "private, and a public or wider range is not that subnet."
+        )
+    return check_values(
+        {"SWARM_API_EGRESS_CIDR": str(network), "SWARM_API_EGRESS_SOURCE": source or "operator-supplied"}
+    )
+
+
 def tenant_values(args: argparse.Namespace) -> dict[str, str]:
     tenant = args.tenant
     namespace = args.namespace or f"{NAMESPACE_PREFIX}{tenant}"
@@ -657,6 +767,13 @@ def tenant_values(args: argparse.Namespace) -> dict[str, str]:
         "QUOTA_CPU": str(args.quota_cpu),
         "QUOTA_MEMORY": args.quota_memory,
         "QUOTA_EPHEMERAL": args.quota_ephemeral,
+        # The cache's network disks (CACHE-PVC): one claim per Job, because the
+        # claim is the pod's and a finished Job keeps its pod for
+        # ttlSecondsAfterFinished. Derived, not a flag: it is a consequence of
+        # the jobs quota and the dispatcher's CACHE_VOLUME_GIB, never a third
+        # number to keep in step with them.
+        "QUOTA_CACHE_STORAGE": f"{args.quota_jobs * CACHE_VOLUME_GIB}Gi",
+        "CACHE_STORAGE_CLASS": CACHE_STORAGE_CLASS,
     }
 
 
@@ -695,6 +812,9 @@ def policy_values(args: argparse.Namespace) -> dict[str, str]:
             "RECONCILER_UID": args.reconciler_uid or reconciler,
             "WORKSPACE_DEPLOYER_GSA": deployer,
             "WORKSPACE_DEPLOYER_UID": args.workspace_deployer_uid or deployer,
+            # The dispatcher's own name for the cache's class, so the
+            # StorageClass applied and the claim every pod makes cannot differ.
+            "CACHE_STORAGE_CLASS": CACHE_STORAGE_CLASS,
         }
     )
 
@@ -895,13 +1015,15 @@ def render_job(args: argparse.Namespace) -> str:
             f"{args.registry}/{profile.image}:{args.tag}",
             "CPU": str(int(rc.cpu)),
             "MEMORY": f"{rc.memory_gib}Gi",
-            # The scratch volumes' sizeLimits -- workspace, /tmp, HOME -- and
-            # the whole pod's ephemeral-storage, their sum. The dispatcher's
+            # The local scratch volumes' sizeLimits -- workspace, /tmp, HOME --
+            # and the whole pod's ephemeral-storage, their sum; and the cache's
+            # network-disk claim (CACHE-PVC), which is not in that sum. The dispatcher's
             # own numbers (GkeDisk), imported, so the YAML cannot drift from
             # what runs: until 2026-10-07 the browser template's 8 + 2 + 4 GiB
             # of volumes sat under an 8 GiB pod limit (contract request 53).
             "DISK": f"{gke_disk(rc).workspace_gib}Gi",
             "TMP_DISK": f"{gke_disk(rc).tmp_gib}Gi",
+            "CACHE_DISK": f"{CACHE_VOLUME_GIB}Gi",
             "HOME_DISK": f"{gke_disk(rc).home_gib}Gi",
             "EPHEMERAL": f"{gke_ephemeral_storage_gib(rc)}Gi",
             # The LIFECYCLE's deadline (TASK_TIMEOUT_SECONDS) and the JOB's are
@@ -1174,6 +1296,31 @@ def main(argv: list[str] | None = None) -> int:
     )
     add_tenant_arguments(identity)
 
+    # swarm-system's ingress (docs/design/live-browser.md §8.3). Its one input
+    # is READ by kubernetes/apply.sh --swarm-system from swarm-api's service
+    # and subnet, and refused on that script's command line, like the tenant
+    # network.
+    system = sub.add_parser(
+        "swarm-system",
+        help="swarm-system's default-deny ingress and the live relay's TCP 8080",
+        allow_abbrev=False,
+    )
+    system.add_argument(
+        "--swarm-api-egress-cidr",
+        default="",
+        help=(
+            "swarm-api's Direct VPC egress subnet range: the ipCidrRange of the "
+            "subnetwork in the run.googleapis.com/network-interfaces annotation of "
+            "`gcloud run services describe swarm-api`. Omitted, renders a "
+            "documentation range marked not-for-apply."
+        ),
+    )
+    system.add_argument(
+        "--swarm-api-egress-source",
+        default="",
+        help="where the range came from: run/<project>/<region>/<service>/<subnetwork> from apply.sh",
+    )
+
     job = sub.add_parser("job", help="one worker Job", allow_abbrev=False)
     add_tenant_arguments(job)
     job.add_argument("--profile", required=True, choices=sorted(RUNNER_PROFILES))
@@ -1235,13 +1382,18 @@ def main(argv: list[str] | None = None) -> int:
         values = tenant_values(args)
         if values["NETWORK_SOURCE"] == OFFLINE_NETWORK_SOURCE:
             # stderr, so the render on stdout stays a clean manifest for the
-            # lint and checkov callers that pipe it.
+            # lint and checkov callers that pipe it. ONE line starting `# `:
+            # a caller that captures stderr with stdout (the SwarmCloud
+            # worker's pre-publish checkov does) still holds a YAML file, where
+            # a bare warning line made the whole render unparseable and checkov
+            # reported every job pod as having no NetworkPolicy (CKV2_K8S_6).
             print(
-                f"render: WARNING: no cluster network was given, so the egress policy "
+                f"# render: WARNING: no cluster network was given, so the egress policy "
                 f"carries documentation addresses and is marked {OFFLINE_NETWORK_SOURCE}. "
                 "Fine for lint; wrong for a cluster. kubernetes/apply.sh reads the real "
                 "values from the cluster.",
                 file=sys.stderr,
+                flush=True,
             )
         # Validated BEFORE anything is written, so a bad output renders nothing.
         spec_data = (
@@ -1258,6 +1410,18 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(f"{values['NAMESPACE']} {values['GSA_EMAIL']} {values['KSA_NAME']}\n")
     elif args.command == "policies":
         sys.stdout.write(render_files(POLICY_FILES, policy_values(args)))
+    elif args.command == "swarm-system":
+        values = swarm_system_values(args)
+        if values["SWARM_API_EGRESS_SOURCE"] == OFFLINE_NETWORK_SOURCE:
+            # One `# ` line, for the reason the tenant render's warning gives.
+            print(
+                "# render: WARNING: no swarm-api egress range was given, so the relay's ingress "
+                f"admits a documentation range and is marked {OFFLINE_NETWORK_SOURCE}. Fine for "
+                "lint; wrong for a cluster. kubernetes/apply.sh --swarm-system reads the real one.",
+                file=sys.stderr,
+                flush=True,
+            )
+        sys.stdout.write(render_files(SWARM_SYSTEM_FILES, values))
     elif args.command == "job":
         sys.stdout.write(render_job(args))
     return 0

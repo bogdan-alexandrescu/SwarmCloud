@@ -1,0 +1,71 @@
+{
+  "live_browser": true,
+  "session": {
+    "session_id": "live_att_fafe0d6de50c4ff39de9",
+    "state": "closed",
+    "closed_reason": "cancelled",
+    "origin": null,
+    "human_wait": null,
+    "controller": null,
+    "open_to_members": false,
+    "device": null,
+    "presets": [
+      {
+        "name": "desktop",
+        "width": 1440,
+        "height": 900,
+        "scale": 1.0,
+        "mobile": false
+      },
+      {
+        "name": "iphone-15",
+        "width": 393,
+        "height": 852,
+        "scale": 3.0,
+        "mobile": true
+      },
+      {
+        "name": "pixel-8",
+        "width": 412,
+        "height": 915,
+        "scale": 2.625,
+        "mobile": true
+      },
+      {
+        "name": "iphone-se",
+        "width": 375,
+        "height": 667,
+        "scale": 2.0,
+        "mobile": true
+      },
+      {
+        "name": "ipad-7",
+        "width": 810,
+        "height": 1080,
+        "scale": 2.0,
+        "mobile": true
+      }
+    ],
+    "you": {
+      "email": "alice@saga.xyz",
+      "can_control": false,
+      "can_preempt": false,
+      "can_open": false,
+      "can_switch_device": false
+    },
+    "agent_connected_at": null,
+    "agent_connections": null,
+    "first_frame_at": null
+  },
+  "browser": {
+    "tool_selected": "auto",
+    "tools_available": [],
+    "tool_last_used": null,
+    "jev": {
+      "enabled": false,
+      "reason": null,
+      "key_scope": null
+    },
+    "egress": null
+  }
+}

@@ -27,7 +27,7 @@ class AnyTenantTokens:
         self.asked: list[str] = []
         self.issued: dict[str, str] = {}
 
-    def token_for(self, tenant) -> str:
+    def token_for(self, tenant, *, person=None) -> str:
         secret_id = tenant.secret_name(forge.GIT_PROVIDER)
         self.asked.append(secret_id)
         if secret_id in self.missing:
@@ -58,7 +58,7 @@ class GitHub:
         *,
         issues: list[dict[str, Any]] | None = None,
         pulls: list[dict[str, Any]] | None = None,
-        files: dict[int, list[str]] | None = None,
+        files: dict[int, list[Any]] | None = None,
         status: dict[str, int] | None = None,
         raises: Exception | None = None,
     ) -> None:
@@ -87,10 +87,17 @@ class GitHub:
         if path.endswith("/issues"):
             data: list[Any] = self.issues
         elif path.endswith("/pulls"):
-            data = self.pulls
+            # An entry with no `state` is open, as every fixture before the
+            # sweep's recently-merged read (`state=closed`) was written.
+            wanted = query.get("state", ["open"])[0]
+            data = [p for p in self.pulls if wanted == "all" or p.get("state", "open") == wanted]
         elif path.endswith("/files"):
             number = int(path.rstrip("/").split("/")[-2])
-            data = [{"filename": name} for name in self.files.get(number, [])]
+            # An entry is a name, or `(name, patch)` for a file the forge sends a patch for.
+            data = [
+                {"filename": e} if isinstance(e, str) else {"filename": e[0], "patch": e[1]}
+                for e in self.files.get(number, [])
+            ]
         else:
             return 404, b"{}"
         chunk = data[(page - 1) * per_page: page * per_page]
@@ -112,6 +119,10 @@ class GitHubWrites:
         #: `(method, path)` -> the status that one route answers instead, so a
         #: test can refuse one write (closing an issue) and not the others.
         self.refuse: dict[tuple[str, str], int] = {}
+        #: A method, or one `(method, path)`, whose request RAISES this
+        #: instead of answering -- GitHub unreachable (a `URLError`, a
+        #: timeout), which the shipped client maps, not the test.
+        self.raise_for: dict[Any, BaseException] = {}
         self.comments: dict[int, dict[str, Any]] = {}
         self.pulls: dict[int, dict[str, Any]] = {}
         #: Each issue an `already_on_main` run closed (#646), by number: the
@@ -133,6 +144,16 @@ class GitHubWrites:
         #: a pull request opened from an already-pushed branch reads and makes.
         self.default_branch = "main"
         self.branches: dict[str, str] = {}
+        #: Lane SPEED-D2: the Actions jobs a re-run was asked of
+        #: (`actions/jobs/<id>/rerun`), in order, and what that route answers
+        #: -- 403 by default, a credential without `actions: write`, so a
+        #: test that never asked for a re-run sees the round it always did.
+        self.reruns: list[int] = []
+        self.rerun_answer = 403
+        #: The files each pull request changes, and the files its base
+        #: changed since the branch left it (`compare/<head>...<base>`).
+        self.pull_file_names: dict[int, list[str]] = {}
+        self.base_changed: list[str] = []
 
     def writes(self) -> list[tuple[str, str]]:
         return [(m, urlparse(u).path) for m, u, _, _ in self.calls if m != "GET"]
@@ -154,11 +175,32 @@ class GitHubWrites:
         if method in self.status:
             return self.status[method], json.dumps({"message": "refused"}).encode()
         parsed = urlparse(url)
+        for key in (method, (method, parsed.path)):
+            if key in self.raise_for:
+                raise self.raise_for[key]
         if (method, parsed.path) in self.refuse:
             return self.refuse[(method, parsed.path)], json.dumps({"message": "refused"}).encode()
         parts = parsed.path.strip("/").split("/")  # repos/o/r/...
         rest = parts[3:]
         payload = json.loads(body.decode()) if body else {}
+        if rest == ["issues"]:
+            # Opening an issue (the observer's epic) and listing them, newest first.
+            repository = "/".join(parts[1:3])
+            if method == "POST":
+                self._next += 1
+                self.issues[self._next] = {
+                    "number": self._next, "state": "open", "repository": repository,
+                    "title": payload["title"], "body": payload["body"],
+                    "labels": [{"name": name} for name in payload.get("labels", [])],
+                    "html_url": f"https://github.com/{repository}/issues/{self._next}",
+                }
+                return 201, json.dumps(self.issues[self._next]).encode()
+            query = parse_qs(parsed.query)
+            page = int(query.get("page", ["1"])[0])
+            per_page = int(query.get("per_page", ["30"])[0])
+            listed = sorted((i for i in self.issues.values() if i.get("repository") == repository),
+                            key=lambda i: -i["number"])
+            return 200, json.dumps(listed[(page - 1) * per_page: page * per_page]).encode()
         if rest[:1] == ["issues"] and len(rest) == 3 and rest[2] == "comments":
             number = int(rest[1])
             if method == "POST":
@@ -224,6 +266,19 @@ class GitHubWrites:
         query = parse_qs(parsed.query)
         page = int(query.get("page", ["1"])[0])
         per_page = int(query.get("per_page", ["30"])[0])
+        if rest[:2] == ["actions", "jobs"] and len(rest) == 4 and rest[3] == "rerun":
+            if method != "POST":
+                return 404, b"{}"
+            if self.rerun_answer != 201:
+                return self.rerun_answer, json.dumps({"message": "refused"}).encode()
+            self.reruns.append(int(rest[2]))
+            return 201, b"{}"
+        if rest[:1] == ["pulls"] and len(rest) == 3 and rest[2] == "files":
+            names = self.pull_file_names.get(int(rest[1]), [])
+            chunk = names[(page - 1) * per_page: page * per_page]
+            return 200, json.dumps([{"filename": n} for n in chunk]).encode()
+        if rest[:1] == ["compare"] and len(rest) >= 2:
+            return 200, json.dumps({"files": [{"filename": n} for n in self.base_changed]}).encode()
         if rest[:2] == ["rules", "branches"]:
             return 200, json.dumps(self.rules).encode()
         if rest[:1] == ["commits"] and len(rest) == 3 and rest[2] == "check-runs":

@@ -24,8 +24,9 @@ Three reasons, in the order they cost the most:
    client silently drops manifest fields — and a Homebrew checkov 3.3.10 that
    raises on import and shadows the 3.3.17 the checks need. `common.sh` carries
    `kubectl_bin` and `prefer_local_bin` precisely because of those two. The
-   runner is pinned to `ubuntu-24.04` with a pinned tool version per job; the
-   laptop is whatever it has drifted into since the last `brew upgrade`.
+   runner is a known image (the `bogdan-ci` VM image, or GitHub-hosted
+   `ubuntu-24.04`; see [Where jobs run](#where-jobs-run)) with a pinned tool
+   version per job; the laptop is whatever it has drifted into since the last `brew upgrade`.
 2. **A gate that runs in one place can be believed by everyone.** A mutation
    proven in CI is proven for every future reader of the branch. A mutation
    proven on a laptop is proven once, to one person, and the proof is a sentence
@@ -38,11 +39,11 @@ Three reasons, in the order they cost the most:
 
 | workflow | runs on | jobs |
 |---|---|---|
-| `application.yml` | push to `main`; **every** pull request (no path filter since 2026-10-07: its `ci-gate` job is the required check). Its `what this change reaches` job skips every other job unless the change touches `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml`, `accept.yml`, `iam-refusal-probe.yml`, `ci-fix.yml`, `auto-merge.yml`, `.dockerignore`, `.gcloudignore` or the workflow itself ([below](#the-merge-pipelines-wall-time)) | `what this change reaches` · `shellcheck` · `release workflow wiring (actionlint)` (also lints `accept.yml`, `iam-refusal-probe.yml`, `ci-fix.yml` and `auto-merge.yml`) · `format / unit tests` (stands for `lock / contract / format / bridge install` and the four `unit tests (k/4)` shards) · `swarm-ui typecheck / component tests` (stands for `swarm-ui typecheck / build` and the four `swarm-ui component tests (k/4)` shards) · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) · `build changed images without pushing` (**pull requests only** — [below](#images-are-built-on-a-pull-request-without-pushing)) · `ci-gate` — `needs` every job above but the two name-keepers `format / unit tests` and `swarm-ui typecheck / component tests` (whose own `needs` it holds; [below](#where-pull-request-ci-time-goes-2026-10-09)) and passes only when each passed or was skipped by its own `if:`, then waits for this commit's `terraform.yml` run ([below](#the-ruleset-on-main-and-ci-gate)) |
+| `application.yml` | push to `main`; **every** pull request (no path filter since 2026-10-07: its `ci-gate` job is the required check). Its `what this change reaches` job skips every other job unless the change touches `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml`, `accept.yml`, `iam-refusal-probe.yml`, `ci-fix.yml`, `auto-merge.yml`, `.dockerignore`, `.gcloudignore` or the workflow itself ([below](#the-merge-pipelines-wall-time)) | `what this change reaches` · `shellcheck` · `release workflow wiring (actionlint)` (also lints `accept.yml`, `iam-refusal-probe.yml`, `ci-fix.yml` and `auto-merge.yml`) · `ruff check` ([below](#ruff-lint-is-the-house-python-linter-and-formatting-is-not-adopted)) · `format / unit tests` (stands for `lock / contract / format / bridge install` and the four `unit tests (k/4)` shards) · `swarm-ui typecheck / component tests` (stands for `swarm-ui typecheck / build` and the four `swarm-ui component tests (k/4)` shards) · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) · `build changed images without pushing` (**pull requests only** — [below](#images-are-built-on-a-pull-request-without-pushing)) · `record the tested tree` (every run but main's: what it passed, keyed by its tree, which main's push run reuses — [below](#main-reuses-the-tested-tree)) · `ci-gate` — `needs` every job above but the two name-keepers `format / unit tests` and `swarm-ui typecheck / component tests` (whose own `needs` it holds; [below](#where-pull-request-ci-time-goes-2026-10-09)) and passes only when each passed or was skipped by its own `if:`, then waits for this commit's `terraform.yml` run ([below](#the-ruleset-on-main-and-ci-gate)) |
 | `terraform.yml` | push to `main`; pull requests touching `terraform/`, `tests/terraform/`, the plan guard, the destroy guard, the unlabelable-type list or the workflow itself | `fmt / validate / tflint` · `terraform test` · `checkov` · `plan` (**not** on a pull request) · `plan (not run on a pull request)` |
 | `security.yml` | every pull request; push to `main`; Mondays 06:00 UTC | `trivy (repo)` · `secret scan` · `checkov (terraform + kubernetes)` · `platform policy assertions` · `trivy (published images)` (schedule / dispatch only) |
 | `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` (**dispatch only** — on a push CI proved the same SHA, [below](#the-release-timeline)) · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming `dev` or `prod` — prod waits here) · `promote` · `terraform apply` · `terraform apply, IAM (dev-iam)` (dev only, and only when the plan changes IAM — the owner approves it [below](#a-dev-release-that-changes-iam-waits-for-the-owner)) · `deploy` (verifies the digests; **on prod** also warms, smokes and proves GKE) — the apply and deploy jobs only after `approval` succeeded, and on prod only in the attempt it succeeded in · `prod approval is from an earlier attempt` (runs only on a partial re-run of prod, and fails it) |
-| `accept.yml` | `release` **completing** on `main` (`workflow_run`), or manual dispatch on `main`; accepting jobs in `accept-dev-<job>` groups, cancel-in-progress ([below](#the-release-timeline)) | `what dev runs` (the SHA in `releases/dev/applied.json`) · `warm, smoke and GKE proof (dev)` · `put the deployed commit's fixtures on the sandbox` · `acceptance (<group>)` × 5, in two waves · `read back and sweep the sandbox` · `report what was accepted` (a red run opens or updates one `bug` issue) — dev only, as its own identity, never the deployer |
+| `accept.yml` | `release` **completing** on `main` (`workflow_run`), or manual dispatch on `main` (scope `all`); accepting jobs in `accept-dev-<job>` groups, cancel-in-progress ([below](#the-release-timeline)). Also **every three hours** (`schedule`) and on a dispatch with scope `live-browser`, for the live-browser group alone ([below](#live-browser-runs-on-a-schedule)) | `what dev runs` (the SHA in `releases/dev/applied.json`) · `warm, smoke and GKE proof (dev)` · `put the deployed commit's fixtures on the sandbox` · `acceptance (<group>)` × 6, in two waves · `read back and sweep the sandbox` · `report what was accepted` (a red run opens or updates one `bug` issue). On the schedule: `acceptance (live-browser, scheduled)` · `report the scheduled live-browser group` (its own `bug` issue) — dev only, as its own identity, never the deployer |
 | `hotfix.yml` | push to `main` on the same paths as `release.yml`; or manual dispatch on `main`. Acts only for a pull request merged with the `hotfix` label ([below](#hotfix-releases)) | `is this a hotfix` (reads the label; no Google identity) · `images and scan (dev, hotfix)` · `promote (dev, hotfix)` · `terraform apply (dev, hotfix)` (fails on a plan that changes IAM) · `deploy and smoke (dev, hotfix)` — dev only, concurrency group `hotfix-dev`, release.yml's own stages from `.github/actions/release-*` |
 | `ci-fix.yml` | `application` **completing red on a `swarm/<task-id>` branch** of this repository (`workflow_run`, so only as the file is on `main`) ([below](#the-ci-fixer)) | `fix a red SwarmCloud pull request` |
 | `auto-merge.yml` | `pull_request_target` when a label is added (acts only on `ready`) and when a pull request is merged; `workflow_run: completed` of every pull-request workflow, and the `workflow_dispatch` that sends ([below](#a-ready-pull-request-is-merged-by-github-not-by-a-session)) | `queue for auto-merge` (refuses a `[swarm] task_` title, an unprotected base branch, a failing check or a missing merge App, with a comment; waits while a check still runs; otherwise enables native squash auto-merge under the PR's title); `re-evaluate ready pull requests when a run finishes` dispatches it again for each `ready` pull request at a finished run's head ([below](#a-ready-label-that-lands-while-checks-run-is-re-evaluated), #697); on `closed`, `close the merged pull request's issues` closes the open issues a merge's closing keywords name ([below](#a-merge-closes-the-issues-its-keywords-name), #621). **To be retired** once the workflow `merge` step is proven (owner, 2026-10-04) |
@@ -63,6 +64,184 @@ Three details in that table are easy to misread and each has bitten someone:
 * **`security.yml` has no path filter at all**, so it runs on every pull
   request. It is the one workflow that cannot be avoided by touching the wrong
   directory, which is deliberate for a security gate.
+
+## Where jobs run
+
+Owner decision, 2026-10-14: *"make sure we use CI runners for all jobs moving
+forward if capacity allows"*. GitHub-hosted `ubuntu-24.04` had saturated (76
+jobs queued at 13:05Z) while the self-hosted pool had room. That pool is
+ephemeral GCE VMs with the `bogdan-ci` label (e2-standard-8, one VM per job,
+image built by sagaxyz/ai-studio `deploy/ci-runners/vm/provision-image.sh`).
+
+**Every job runs on the pool except one class: jobs that hold a Google cloud
+identity through workload identity** (`id-token: write` with
+`google-github-actions/auth`). Those are the release, hotfix and acceptance
+jobs that deploy or touch the cloud, `build images`, `terraform plan`, the
+IAM refusal probe, the CI fixer and the scheduled image scan. They stay
+GitHub-hosted, the rule PR 1184 set for release.yml.
+
+Every other job spells `runs-on` as one guarded expression:
+
+```
+${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+```
+
+* **A fork's pull request never reaches the VMs** (owner decision 2026-10-12).
+  The repository is public, and a returning contributor's fork PR runs
+  without approval.
+**The short form, for three workflows no fork can start.** accept.yml,
+auto-merge.yml and merge-train.yml (schedule, `workflow_run` of a `train/`
+branch, dispatch; no `pull_request`) spell `runs-on` without the fork clause:
+
+```
+${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+```
+
+The long form's text cannot sit in those files: test_auto_merge_workflow.py
+forbids `pull_request.head.repo` in auto-merge.yml (the workflow must never
+touch a pull request's code, so it must not even read the fork's repository),
+and test_acceptance_target.py forbids `github.repository` anywhere in
+accept.yml (it must not name the public repository). The clause is dead weight
+there anyway, because of the triggers:
+
+* accept.yml starts from `workflow_run` (a completed release on main) and
+  `workflow_dispatch` only, never from a pull request.
+* auto-merge.yml runs on `pull_request_target` (the base branch's own workflow
+  file, with no checkout of the pull request), `workflow_run`, `check_suite`
+  and dispatch. It has no `pull_request` trigger, the only event that runs a
+  fork's copy of a workflow file.
+
+Every other workflow can be started by a fork's `pull_request`, so it keeps the
+long form. The short form is accepted only for a file listed in
+`SHORT_FORM_WORKFLOWS` in the test, and only while that file's `on:` has no
+`pull_request`: adding one makes the test fail, which is the reminder to put
+the fork clause back.
+
+* **The capacity escape hatch.** Set the repo variable `SELF_HOSTED_CI` to
+  `off` (`gh variable set SELF_HOSTED_CI --body off`) and every guarded job
+  goes back to `ubuntu-24.04`. Use it when the pool is down or out of quota.
+  Its default is `on`, and an unset variable also means the pool.
+
+**Secrets on the VMs: the residual risk, accepted.** Two kinds of job hold a
+repository secret and run on the pool all the same:
+
+* auto-merge.yml `enable` and `disable`, and merge-train.yml `tick`, hold the
+  merge App's private key (`secrets.MERGE_APP_PRIVATE_KEY`, with
+  `vars.MERGE_APP_ID`);
+* accept.yml `sandbox` and `sandbox-results` hold `SWARM_SANDBOX_GITHUB_TOKEN`.
+
+While such a job runs, its secret is in the VM's memory and on its disk.
+Anyone with IAP SSH (the VMs' one ingress rule) or disk-snapshot rights in
+saga-ci-runners could read it there. The VM is single-use and is deleted
+afterwards, but that window is real. The owner accepted it on 2026-10-14. No
+other secret may go on a guarded job.
+
+`tests/unit/scripts/test_fork_prs_off_self_hosted.py` holds all of this:
+
+* every job is either on the guarded expression or listed as hosted, with a
+  reason the test checks against the job;
+* no guarded job has `id-token: write`;
+* no guarded job holds a secret beyond its `GUARDED_SECRETS` entry;
+* the expression is evaluated for push, same-repository and fork pull
+  requests, with the hatch on and off;
+* the short form is accepted only for the `SHORT_FORM_WORKFLOWS` files, whose
+  triggers it reads from the workflow itself.
+
+A new job that silently uses a hosted image fails CI, and so does one that
+puts a credential on the pool.
+
+What the VM image differs in: `/usr/local/bin` is not writable by the
+runner user, so a job installs a tool into `$RUNNER_TEMP` (security.yml does
+this for trivy, which is installed by an explicit pinned step rather than
+aquasecurity/trivy-action: that action restores its binary from a cache at
+`/home/runner/.local/bin`, which the VM does not have, so the scan found no
+`trivy`; and the shell job installs kubectl with azure/setup-kubectl, since
+the VM has none). It has `gh`, `unzip`, docker with buildx, `jq` and
+`shellcheck`, passwordless sudo, and a writable tool cache. Anything else
+comes from a setup action.
+
+### CI falls back to GitHub-hosted runners on its own
+
+Measured 2026-10-17 (part of #1483): runner-dispatcher registers the pool's
+runners as the owner's GitHub user. When that user's quota ran out
+(`generate-jitconfig` 403 from 02:00 UTC) its sweep read
+`per_target: {swarmcloud: 0}`, and every pull request's checks stayed queued
+for hours until someone set the escape hatch by hand. The hatch is now set by
+`.github/workflows/runner-fallback.yml`, every 10 minutes and on dispatch:
+
+* **Off.** A job of another workflow that asked for `bogdan-ci` has been
+  queued more than 10 minutes, and no `bogdan-ci` job is running or started
+  in that time: the judge sets `SELF_HOSTED_CI=off`, then cancels every run
+  still queued on the pool and re-runs its cancelled jobs, so they land on
+  `ubuntu-24.04`. **A run with any job in progress is never cancelled**
+  (cancelling a run cancels all of it, and a release, accept or hotfix run
+  can have a hosted deploy running while a later job waits for the pool): it
+  is a "held: run N has a job in progress" summary line and is reconsidered
+  next tick. One run that cannot be cancelled or re-run (finished meanwhile,
+  needs fork approval, too old; `rerun-failed-jobs` answering 403, 409 or
+  422 is "nothing to re-run") is a summary line naming the run and the
+  status, and the loop goes on. No new run is started after 10 minutes, so
+  the job ends inside its 15-minute timeout; the summary says how many were
+  left for the next tick. A run is re-run once: one whose latest attempt
+  `github-actions[bot]` started is not touched again. A job queued on a
+  hosted label never counts, because hosted saturation is why the pool
+  exists.
+* **On again.** While the hatch is off nothing asks the pool for a runner,
+  and the dispatcher starts one VM per queued job, so an empty runner list
+  says nothing. So the workflow's `probe` job, the one job that targets
+  `bogdan-ci` directly, runs only while the hatch is off. When every probe
+  since the flip has been picked up for at least 15 minutes, two probes or
+  more, the judge sets the variable back to `on`. It writes `on`, the
+  default, rather than deleting it, because the variable's `updated_at` is
+  the hysteresis clock. A probe still queued after 10 minutes breaks the
+  streak, and the judge cancels its run.
+* **Hysteresis.** The variable never changes more than once per 30 minutes.
+  A flip that is due but held is logged too.
+* **The thresholds** are `QUEUED_MINUTES`, `RECOVER_MINUTES` and
+  `HYSTERESIS_MINUTES` in the workflow's `env`.
+  `tests/unit/scripts/test_runner_fallback_workflow.py` pins them and runs
+  the judge's own decision function against fake GitHub answers.
+
+Every flip, held flip and re-run is a line in the run's job summary.
+
+**Calls per tick.** The reads are ordered by cost. The judge reads the
+variable and the queued runs first (2 calls, plus one per extra 100 runs, up
+to 5 pages). With the hatch on and no queued run older than 10 minutes, which
+is the steady state, the tick ends there: **2 calls**, no job listed. The
+price of that is that a pool job queued inside a run that is already in
+progress is only seen once some queued run is older than 10 minutes. In an
+outage (hatch off, or a queued run older than 10 minutes) it also lists the
+in-progress runs (1 call) and the jobs of every active run (1 call each),
+and while off the probe runs of the last 2 hours and their jobs (1 + up to
+30 calls); each re-run is then about 3 calls plus up to 24 status polls. All
+of it is the workflow's GITHUB_TOKEN, not a person's quota.
+
+**The judge never runs on the pool it judges.** It is pinned to
+`ubuntu-24.04` and does not follow the hatch, because a judge queued behind
+the outage could never report it. Hosted minutes are free on a public
+repository.
+
+**Two tokens.** The GITHUB_TOKEN carries `actions: write` and nothing else:
+it reads runs and jobs, cancels and re-runs. It has no `variables` scope, so
+the variable is read and written with the merge App's installation token,
+minted with `permission-variables: write` only. That token draws on the App's
+quota, not a person's. **Owner step, once:** give the merge App the
+repository permission *Variables: Read and write*
+([runbook](runbooks/merge-app.md)). Until then the token mint fails and the
+run is red. A red run is how a missing permission shows itself, and the hatch
+can still be set by hand.
+
+**A hand-set `off` does not stick.** The judge reverts it once the probes
+show 15 minutes of service. To pin the hatch, set the repository variable
+`RUNNER_FALLBACK` to `manual`: the judge still reads and writes its summary,
+saying what it *would* do, but never flips `SELF_HOSTED_CI`, never cancels a
+run and never re-runs one. Unset, or any other value, is automatic. The
+reason it exists: an operator holding CI on hosted runners on purpose, for
+example while the dispatcher is being replaced, must not be flipped back
+because the old pool happens to answer a probe. Delete the variable (or set
+it to `auto`) to hand the hatch back to the judge. Disabling the workflow
+(`gh workflow disable runner-fallback.yml`) also stops it, but loses the
+summary.
 
 ## Why terraform does not plan on a pull request
 
@@ -324,6 +503,24 @@ and ages from `built_at`, never from the record's own commit. Otherwise a
 change made two builds ago could hide behind a build that reused its image.
 The job's summary lists every image as rebuilt or reused.
 
+**The release checks the record before it promotes it** (lane REL-SKIP, part
+of #1194, owner-approved 2026-10-12). Release run 38273482069 on `f816e09b`
+built nothing and failed, and nothing on the release side checked whether the
+digests it was offered matched the commit. So `build-images.sh --reuse-ci` now
+runs the same plan over CI's record of this commit. Each reused digest is
+diffed from its own `built_from` to this commit, over that image's inputs, so
+a stale one is caught whatever HEAD~1 or the last good release was. A digest
+this commit changed is built in the release, under `only` too. Only those
+images are built, plus the ones built FROM them; every other digest is kept.
+The release never compares with HEAD~1 or with the last release. A release
+that failed, was cancelled or was superseded therefore cannot make a later one
+skip an image. A record whose every digest was built from this commit needs no
+check. A docs-only push builds nothing. The release checks out one commit, so
+the check first fetches the history it diffs against. `release-images` sets up
+uv so that a digest kept across a `uv.lock` change is judged by its own
+`uv export`, as it was in CI
+(`tests/unit/scripts/test_release_rebuilds_stale_images.py`).
+
 **A reused image reports the commit that built it, not the release.** The
 `GIT_SHA` and `BUILD_TIME` build args are baked in when a digest is built, and
 re-tagging does not change a digest. So on a reused image, swarm-api's
@@ -374,6 +571,38 @@ summary and the manifest's `incremental.full_build`:
   (`--reuse-ci or-build`, which is never incremental). `swarm-ui` bakes its
   environment in, and prod is always built whole;
 * the **working tree is dirty**, so git cannot say what changed.
+
+**An image whose Dockerfile upgrades OS packages is rebuilt by every main
+build and every release.** This was the owner's decision on 2026-10-14 ("force a fresh apt
+layer", on every release). It costs about 7 extra minutes per release.
+`APT_REFRESH` names the build: the commit plus the GitHub run id and attempt,
+or the commit and the time outside Actions. `BUILD_APT_REFRESH` overrides it.
+The manifest records it per image as `apt_refresh`. A digest of such an image
+is reused only when its `apt_refresh` is this build's, which no other run's
+is. So `plan_incremental` rebuilds every one of them, and the release's reuse
+check does too, even from a record CI built whole for the same commit. An
+image built FROM one is rebuilt with it. One that upgrades nothing
+(swarm-verify) is still reused. Which images upgrade is read from their
+Dockerfiles (`upgrades_os_packages`), not listed.
+A digest CI built from the commit being released is that commit's own
+build, not a reuse: the 7-day age limit and the unrecorded-build-args rule are
+not asked of it, and it is not re-tagged (it already carries the tag), so a
+release rebuilds only the OS-upgrading images and those built FROM them.
+
+The cause it removes: releases 38535875750 and 38540997006 refused
+workspace-apply over curl/libcurl4t64 `8.14.1-2+deb13u5` (CVE-2026-8286, HIGH,
+fixed in `+deb13u7`). Its Dockerfile runs `apt-get upgrade`, but its log read
+`workspace-apply reuse no input changed since 346f2725df43`. The digest was
+built on 2026-10-13, before Debian shipped the fix, and nothing in the tree
+changes when Debian does.
+
+The build passes `--build-arg APT_REFRESH` (workspace-apply's recipe as
+`_APT_REFRESH`). Every apt or apk upgrade `RUN` names it, so no layer cache
+serves an older upgrade either. workspace-apply's apt `RUN` also fails its own
+build when a simulated `apt-get dist-upgrade` still has something to install,
+which catches a package `apt-get upgrade` kept back. The scan stays strict:
+nothing is ignored or pinned. `test_build_images_apt_refresh.py` holds all of
+this.
 
 **What this does not prove.** The tests (`test_build_images_incremental.py`,
 `test_ci_built_images.py`) run the real scripts against a fake `gcloud` that
@@ -838,7 +1067,7 @@ dev-iam job on its own asks again and re-applies the same held plan.
 while `dev-iam` waits. So the next dev release queues behind it, and GitHub
 keeps only the newest pending run in a group. A rejected or abandoned IAM
 release therefore delays routine dev releases until it ends. Reject or cancel
-it, rather than leaving it waiting.
+it, rather than leaving it waiting ([measured](#a-held-dev-iam-plan-cancels-every-release-behind-it)).
 
 **The environment is a repository setting the owner creates.** GitHub
 creates an environment a workflow names if it does not exist, with no
@@ -886,6 +1115,46 @@ classification can write. It checks four things:
 It cannot show that `dev-iam` has its reviewer (run the read-back above), nor
 that GitHub and Terraform behave as documented. The first dev release with an
 IAM change after this lands is that proof.
+
+### A held dev-iam plan cancels every release behind it
+
+**Measured 2026-10-11.** Release run 38115700349 (`3f6dbd26`, started 05:43Z)
+stopped at `terraform apply, IAM (dev-iam)`. Its held plan carried a Cloud
+Storage IAM condition written with `matches()`, which those conditions do not
+support, so IAM would have refused it on approval (#1057 replaced it with
+`extract()`). While it waited it held `release-dev`. 20 consecutive releases,
+06:02Z to 08:40Z, ended `cancelled`, and nothing merged in that window reached
+dev. Rejecting the held deployment at 09:0xZ let the next release, 38126514258, run.
+
+**Why every release, not just its own.** `release.yml` sets
+`cancel-in-progress: false`, so a running release is never displaced (two
+applies would contend for the state lock). But GitHub keeps only **one**
+pending run per concurrency group: each newer release cancels the pending one
+before it. A waiting dev-iam job therefore turns every merge behind it into a
+`cancelled` run. A string of `cancelled` dev releases, none of them red, is the
+signature. Find the holder with:
+
+```bash
+gh run list --workflow release.yml --status waiting
+```
+
+**Reject instead of approving when** either holds:
+
+* **main has moved past it.** The held plan was made from an older commit.
+  Approving applies that old plan, or fails as stale, and the release behind it
+  would plan from current main anyway.
+* **its plan would fail.** Approval does not check the plan; IAM checks it at
+  apply. Lint each IAM condition in the held plan's commit first with
+  `iamPolicies:lintPolicy` (the summary's rows name role and member, not the
+  condition), as `terraform/modules/iam/bindings.tf` records: it
+  answered `ConditionCompileCheck`, severity `ERROR`, for the `matches()` form,
+  and `{}` for the `extract()` one.
+
+**Rejecting applies nothing.** The dev-iam job is the only one that applies a
+held plan, and a rejection ends it before it starts, so `deploy` never runs and
+the run ends failed. The pending release then takes the group and replans from
+current main. If that plan still changes IAM, it holds again, now with a plan
+worth reading.
 
 ## The release timeline
 
@@ -936,10 +1205,12 @@ held the lock, and every later push queued behind it. `release-dev` is
   whose `verify` did not succeed starts nothing that promotes, applies or
   deploys. On a push, the plugin tag waits for `images and scan`, which found
   CI's record.
-* **C. The five groups run in parallel**, as matrix jobs with `fail-fast:
-  false`, one swarm-verify execution each.
+* **C. The groups run in parallel**, as matrix jobs with `fail-fast:
+  false`, one swarm-verify execution each. There were five when this was
+  measured; six run now (git-tools joined, and live-browser left for its own
+  schedule), in the two waves below.
 
-### Five at once does not fit, so it is two waves
+### Six at once does not fit, so it is two waves
 
 The suite submits for the `smoke` tenant. Its ceiling is **20** concurrent
 tasks: `max_active = capacity_units = 20` in `dev.tfvars`, `tenants.smoke`.
@@ -952,19 +1223,85 @@ Each group's peak of tasks in flight, read from its group file:
 | workflow | ~4 | four workflow roots |
 | claude-code | ~3 | three tasks |
 | browser | ~3 | three tasks |
+| git-tools | ~5 | its lane and a two-step build workflow, then the build pair beside the rebase lane and the reader |
+| live-browser | 1 | one task; on a schedule since 2026-10-14, not in a wave ([below](#live-browser-runs-on-a-schedule)) |
 
-Together that is about 31, over the ceiling. A task over the ceiling queues
+Without live-browser that is about 36, over the ceiling. A task over the ceiling queues
 rather than fails (invariant 1: `QUEUED` costs nothing). But every check has a
 settle deadline, and time spent in the queue comes out of it. So the groups
 run in **two waves**:
 
 * **wave 1**: `mock`, `workflow` and `browser`, a peak of about 20;
-* **wave 2**: `generic` and `claude-code`, about 11. It starts when wave 1
-  ends, whatever wave 1 concluded.
+* **wave 2**: `generic`, `claude-code` and `git-tools`, about 16. It starts
+  when wave 1 ends, whatever wave 1 concluded.
 
 `test_each_wave_fits_the_smoke_tenant_s_ceiling` reads the ceiling from
-`dev.tfvars`. It fails if a wave's peaks exceed it, and also if all five
-would fit in one wave.
+`dev.tfvars`. It fails if a wave's peaks exceed it, and also if all six
+groups would fit in one wave.
+
+### live-browser runs on a schedule
+
+**Owner decision, 2026-10-14 (lane SPEED-C2): take the live-browser group off
+the red path until it is stable.** Read that day: `accept.yml` had run 159
+times; 43 runs completed and **21 of them failed (49%)**. The `acceptance
+(live-browser)` job failed **18 of 34** runs; every other group failed 0-3
+times. Each red run opens or updates the one acceptance `bug` issue, so most
+of that issue's history was one group's noise, and a real regression in
+another group read as more of the same.
+
+So live-browser is in neither wave. `accept.yml`'s `live-browser` job runs it
+**every three hours** (`schedule`, at :41) and on a dispatch with scope
+`live-browser`. It reads what dev runs from `releases/dev/applied.json`, checks
+that commit out and runs `verify-remote.sh acceptance/live-browser`, as the
+waves would. `live-browser-report` files a red result on **its own** `bug`
+issue: `scripts/accept-report.sh` with `ACCEPT_KIND=live-browser` finds that
+issue by its own marker, never the post-release one. The scheduled run is not
+an accepting job:
+
+* it has no `target`, `quiesce`, smoke or sandbox sync, and cancels nothing;
+* the post-release `report` does not need it, so it cannot turn that run red;
+* its concurrency group is `accept-live-browser`, not an `accept-dev-` one.
+
+A post-release run's `quiesce` cancels every other in-progress `accept.yml` run
+and every running `swarm-verify` execution. That includes a scheduled
+live-browser run in flight. A cancelled scheduled run files nothing and does
+not count toward the streak. Its peak of one task fits beside either wave if
+the two overlap.
+
+**Coming back.** `scripts/accept-live-browser-streak.sh` reads the completed
+scheduled runs of `accept.yml` on `main`, newest first. It counts successes
+until the first run that did not succeed. A cancelled or skipped run neither
+counts nor breaks the streak. A dispatch is a probe and is not counted.
+It prints `streak=`, `need=` and `promote=` and exits 0 at **five in a row**
+(`--need` changes the number) or 3 below it. When it says `promote=true`, the
+operator moves the group back:
+
+1. put `live-browser` back in `acceptance-2`'s matrix in `accept.yml`;
+2. remove the `schedule` trigger, the `scope` input, and the `live-browser`
+   and `live-browser-report` jobs, and take `SCHEDULED_GROUPS` out of
+   `tests/unit/scripts/test_release_acceptance_job.py`;
+3. close the live-browser issue with that pull request.
+
+The streak only says the group passed five times in a row. The causes below
+are why it failed, and a later lane fixes them.
+
+**Why it failed (14 failed live-browser jobs read, 2026-10-12 to 10-14).** Five
+distinct causes, some in the same run:
+
+| cause | runs | where |
+|---|---|---|
+| `returned`: the task was still **`PARKED`** at the 900 s deadline, after the hand-off, the take-over and the typing had all passed | 5 (every run from 2026-10-14 00:24 on) | began with HANDOFF-POLICY (PR 1264), which parks a hold after one unwatched minute: `apps/swarm-api/swarm_api/handoff.py` (`HUMAN_UNWATCHED_SECONDS`, `opening_deadline`), the worker's park in `apps/agent-worker/agent_worker/lifecycle.py` (`park_human_required`). The scripted viewer (`tests/acceptance/test_live_browser.py`) holds control through the wait, so either it does not count as watching, or a returned task is not woken from the park |
+| `recording`: "2 object(s) under live/ are not recording segments" | 8 | **harness bug, fixed here.** The stray check matched any `/live/` in the object name, so it counted the worker's log tails `logs/live/agent_stdout.tail.log` and `agent_stderr.tail.log` (`agent_worker/runners/streams.py`). It now judges only `<attempt>/live/` (`stray_live_objects`) |
+| `returned`: the task succeeded, but its answer and `session-code.txt` do not hold the code the typed password makes | 4, plus 1 whose reason was lost (below) | the agent's second read of `#code` after `swarm-handoff wait` exits 0, through the live browser as BROWSER-ENFORCE (PR 1248) reshaped it: `images/agent-runtime-browser/swarm_browser.py`, `swarm-handoff` |
+| `handoff`: the task ended `SUCCEEDED` without asking for help | 3 (2026-10-12 to 10-13 03:18, none since) | the agent skipped `swarm-handoff request`; the prompt is `LIVE_BROWSER_PROMPT` in `scripts/acceptance/groups/live-browser.sh` |
+| `handoff`: still `RUNNING` at the deadline | 1 | one run, 2026-10-12 14:52 |
+
+One more harness bug blanked the reasons in all of these. 13 of the 14 logs
+print `sed: unmatched '#'` once per check. `redact` (`scripts/lib/common.sh`)
+is a `sed -E` program with `#` delimiters, and busybox sed cannot compile it.
+The `swarm-verify` image is Alpine, so every reason piped through `redact`
+came out empty. It failed closed: nothing leaked, but the reason was lost. The
+image now installs GNU `sed` (`images/swarm-verify/Dockerfile`).
 
 ### The timeline now (expected, not yet measured)
 
@@ -1464,7 +1801,7 @@ exercised, and this is what was found, not proof that there is nothing else.
 | 3 | `roles/iam.serviceAccountAdmin` (unscopable) carries `iam.serviceAccounts.setIamPolicy`. CI can grant itself `serviceAccountTokenCreator` on an account that reads logs (the compute account above, or `209012342332@cloudbuild`, which holds `roles/cloudbuild.builds.builder`) and act as it. | **not by a condition, which cannot scope IAM resources; closed by granting the role per account** (#334, owner decision 2026-09-29): only on the accounts `terraform/infra` manages, none of which reads logs ([below](#the-deployers-service-account-grants)). **Closed once applied.** |
 | 4 | `roles/logging.configWriter` keeps sinks and exclusions project-wide even when scoped. A sink can route every log to a `swarm-` bucket (`storage.admin`) or a Pub/Sub topic (`pubsub.admin`) that CI reads. | **no** |
 | 5 | `roles/logging.configWriter` unconditioned holds `logging.views.update`: CI can rewrite this view's filter, or make another view, and read the result through the grant. | yes, once `roles/logging.configWriter` is in `deployer_scoped_roles` |
-| 6 | `roles/resourcemanager.projectIamAdmin` unconditioned lets CI grant itself `roles/logging.viewer`, or any other role that reads logs. Scoped, it may modify only the roles terraform/infra grants: 14 since 2026-09-25, when `swarmSecretLister` left the list (#69) because its project-wide `secrets.setIamPolicy` reaches the other team's secrets and `terraform/bootstrap` now makes the broker's grant of it. None of the 14 reads a log entry: the nine predefined ones are absent from [`log-reading-roles.json`](../terraform/bootstrap/log-reading-roles.json), and the five custom ones carry no `logging.` permission ([`platform_roles.tf`](../terraform/bootstrap/platform_roles.tf)). | yes, once `roles/resourcemanager.projectIamAdmin` is in `deployer_scoped_roles` **and** route 2 is closed. Before route 2 closes, `roleAdmin` could widen one of the grantable custom roles, or add `resourcemanager.projects.setIamPolicy` to a role CI holds unconditioned, and the condition would never be evaluated. Route 2 closed with the owner's bootstrap apply of 2026-09-28 in [the runbook](runbooks/custom-roles-to-bootstrap.md#what-actually-happened-dates). |
+| 6 | `roles/resourcemanager.projectIamAdmin` unconditioned lets CI grant itself `roles/logging.viewer`, or any other role that reads logs. Scoped, it may modify only the roles terraform/infra grants: 15 since #1430 turned `swarmGithubHooksDedup` on (14 from 2026-09-25, when `swarmSecretLister` left the list (#69) because its project-wide `secrets.setIamPolicy` reaches the other team's secrets and `terraform/bootstrap` now makes the broker's grant of it). None of the 15 reads a log entry: the nine predefined ones are absent from [`log-reading-roles.json`](../terraform/bootstrap/log-reading-roles.json), the five custom ones carry no `logging.` permission ([`platform_roles.tf`](../terraform/bootstrap/platform_roles.tf)), and `swarmGithubHooksDedup` holds `datastore.entities.create` alone ([`github_hooks_role.tf`](../terraform/bootstrap/github_hooks_role.tf)). | yes, once `roles/resourcemanager.projectIamAdmin` is in `deployer_scoped_roles` **and** route 2 is closed. Before route 2 closes, `roleAdmin` could widen one of the grantable custom roles, or add `resourcemanager.projects.setIamPolicy` to a role CI holds unconditioned, and the condition would never be evaluated. Route 2 closed with the owner's bootstrap apply of 2026-09-28 in [the runbook](runbooks/custom-roles-to-bootstrap.md#what-actually-happened-dates). |
 
 What bounds routes 1 and 4 today is the ref pin, not IAM: only a workflow
 on `refs/heads/main` can mint the deployer's token, so each route has to be
@@ -1651,8 +1988,8 @@ Once PR #73's targeted apply lands, the deployer's `projectIamAdmin` carries the
 `modifiedGrantsByRole` condition in
 [`deployer_conditions.tf`](../terraform/bootstrap/deployer_conditions.tf) --
 as of #275, chunked into two bindings rather than one: `hasOnly()` refuses a
-list over 10 elements, and the 14 grantable roles (15 until #150 took
-`swarmSecretLister` off) do not fit in a single call. Every chunk still authorises only a `setIamPolicy` whose modified
+list over 10 elements, and the 15 grantable roles (14 until #1430 turned
+`swarmGithubHooksDedup` on, and 15 until #150 took `swarmSecretLister` off) do not fit in a single call. Every chunk still authorises only a `setIamPolicy` whose modified
 roles stay inside it, which is what each Terraform-issued call already does.
 
 **The live project also still holds the deployer's UNCONDITIONED
@@ -1737,7 +2074,7 @@ whole expression is matched, and the list is parsed, for that reason. Before
   show that the route is shut: what shuts it is the binding's absence, since
   the owner's bootstrap apply of 2026-09-28 destroyed it.
 * **Who a listed role goes to.** `hasOnly` limits which roles change, not whose
-  grant changes. CI can still grant any of the 14, unconditioned, to
+  grant changes. CI can still grant any of the 15, unconditioned, to
   anyone.
 * **Routes through other identities.** Routes 1 and 3 in
   [the table above](#what-the-view-does-not-bound-the-deployer-can-reach-every-log)
@@ -2272,6 +2609,26 @@ it in its group, so a burst of finishing runs must not cancel a queued
 `synchronize` run of the `disable` job. An operator can send the same
 dispatch by hand (Actions → auto-merge → *Run workflow*, `pr`) to make it
 look again; it is a request to look, not a `ready`.
+
+### `ready-on-green` is marked `ready` by CI, not by a session
+
+Owner decision, 2026-10-17: on that day an operator's laptop ran ~20 watcher
+loops (`gh pr view` every 60-90 s per pull request) only to add `ready` once
+a pull request went green, spending the owner's personal GitHub quota. A pull
+request labelled `ready-on-green` now gets that from the `ready-on-green` job
+in `auto-merge.yml`. It runs on the events `requeue` runs on (a pull
+request's `workflow_run` finishing, any `check_suite`), for the
+`ready-on-green` pull requests at that head, and every 15 minutes for all of
+them as the backstop. Green is judged at the head GitHub reports for each
+pull request with main's `scripts/merge-train.sh judge`: every required
+check finished well and nothing that ran failed. The head is read again just
+before labelling, so a push since is not promoted. Green adds `ready` and
+removes `ready-on-green` with the merge App's token, never the GITHUB_TOKEN:
+GitHub raises no `labeled` event for a label the GITHUB_TOKEN adds, so the
+`enable` job, and with it auto-merge, would never start. A red head is left
+alone, with one comment per head naming the failing checks; a `[swarm]
+task_` title is skipped, as the gate would refuse it; without the merge App
+the job does not run.
 
 ### Why the merge uses a GitHub App token, not the GITHUB_TOKEN
 
@@ -2927,6 +3284,221 @@ run going from **935 s to ~835 s**. By class:
 The first runs after this lands are the measurement: re-read them with the
 same two calls and correct this table.
 
+## Flaky tests and the quarantine
+
+**Owner decision, 2026-10-14: "Fix the known flakes and quarantine new
+ones".** A flake costs a merge a rerun, and with strict up-to-date merging
+every merge behind it waits too. A flake is also invisible in a pull
+request's final state: the rerun went green, and only the run's earlier
+attempt remembers the red job.
+
+### What was measured (2026-10-14)
+
+`scripts/flaky-report.sh --limit 1000` over `application.yml`, the 1,000 runs
+from 2026-10-10 to 2026-10-14: 8 runs failed at a commit and then passed at
+the same commit. By job and cause:
+
+| job | times | test or step | cause | done |
+|---|---:|---|---|---|
+| `unit tests (2/4)` | 2 | `test_live_api.py::test_the_viewer_socket_extends_the_hold_while_it_is_open` (PRs 1267 and 1268) | the test left the socket's `with` as soon as it read the close, but the app still writes its `viewer_left` audit after closing; leaving the `with` makes the TestClient cancel the app's task mid-teardown, which surfaced as `CancelledError` from the portal | fixed: the test waits for the `viewer_left` row inside the session, as do the two other socket tests with the same shape |
+| `unit tests (2/4)` | 1 | `test_forge_token_isolation.py::test_no_agent_process_is_alive_when_the_publish_token_is_used` | `_pid_alive` called only a `Z` process dead: a read while init reaped the killed daemon saw `X (dead)`, or failed with ESRCH and fell back to `kill(pid, 0)`, which succeeds on a zombie -- so a process the reaper had already seen dead read as alive a moment later | fixed: every state after death reads dead |
+| `release workflow wiring (actionlint)` | 2 | the actionlint download | rhysd's download script curls the release tarball with no `-f` and no retry; GitHub's release download answered an error page (92 bytes; 1,812 bytes after 19 s) and `tar` read it as the archive (`gzip: stdin: not in gzip format`) | fixed: the tarball is fetched directly with `-f` and retries, checked against its pinned sha256, and cached |
+| `build images` | 1 | `agent-runtime-base` | a Cloud Build docker step exited 22 (curl's HTTP-error status) | not fixed: a network fetch in the image build |
+| `build changed images without pushing` | 1 | `agent-runtime-indexer` | `proxy.golang.org` reset the stream (`INTERNAL_ERROR`) mid-download | not fixed: a network fetch in the image build |
+| `integration tests (emulator)` | 1 | the emulator install | `gcloud components install cloud-firestore-emulator` failed to download | not fixed: a network fetch in the job's setup |
+
+The last three are downloads, not tests: the remedy for those is a pin, a
+mirror or a retry in the job that fetches, not the quarantine list.
+
+### The quarantine
+
+A test that flakes and whose cause is not known yet is **quarantined**, not
+skipped, while its issue is worked:
+
+* **`tests/flaky.txt`** is the list, checked in. One test per line: its pytest
+  node id from the repository root, its issue (`#N`), and the date it was
+  added. A bare id quarantines every parameter of a test; an id with `[...]`
+  only that case. The operator edits it; **CI never does**, so nothing leaves
+  the gate without a person and an issue behind it.
+* **`tests/unit/conftest.py`** marks every listed test `flaky` at collection
+  (the marker is registered in `pyproject.toml`), through
+  `tests/unit/flaky_quarantine.py`. A malformed list stops collection with its
+  line number rather than quarantine the wrong thing.
+* **The unit job** runs the gating suite with `-m "not flaky"`, then runs the
+  shard's quarantined tests in `quarantined unit tests (report only, never fail
+  the gate)`. That step's failure is a warning annotation and a line in the
+  step summary; it never fails the job. A quarantined test therefore still
+  runs on every pull request, so the day it starts failing every time --
+  a real defect, not a flake -- shows up there.
+* **`tests/unit/scripts/test_flaky_quarantine.py`** holds the parser, the
+  marking, the job's two steps, and that every listed test exists: a renamed
+  test would otherwise leave its entry quarantining nothing while the real
+  flake gates again.
+
+The list covers `tests/unit` only. The UI suite and the integration suite have
+no quarantine; a flake there is fixed at its cause.
+
+### Finding candidates
+
+```bash
+scripts/flaky-report.sh                 # the last 300 application.yml runs
+scripts/flaky-report.sh --limit 1000    # further back
+scripts/flaky-report.sh --no-logs       # jobs only, no log downloads
+```
+
+It reads every earlier attempt of a run that was rerun green (`gh run list`
+shows only a run's latest attempt), and every failed run at a commit where
+another run passed, and prints each failed job with the failing pytest or
+vitest ids its log names. It is read-only. Then:
+
+1. fix the cause if it can be found now -- that is the default;
+2. otherwise file an issue, add the line to `tests/flaky.txt`, and link the
+   issue to the line; the fix removes the line.
+
+## Main reuses the tested tree
+
+**Owner decision 2026-10-14 (the delivery speed plan, B1).** Measured over the
+last 150 pull requests: `application.yml`'s pull-request run took a median
+7.6 min, main's push run 12.8 min, and merge to deployed 26.7 min -- the
+release waits for the push run's `build images` (6.5 min), which waited
+behind about 5 min of unit shards that re-tested **the exact tree the pull
+request had already tested**. With strict up-to-date merging, a squash merge
+commits the tree of the pull request's merge commit, and that merge commit is
+what the pull request's run checked out.
+
+So every run but main's own -- a pull request, a merge-train branch, a queue
+entry -- ends with `record the tested tree`, which uploads the artifact
+`tested-tree-<tree hash>`: the tree, the commit, the event, the `changes`
+job's python mode and every test job that concluded `success`
+([`scripts/lib/ci_reuse.py`](../scripts/lib/ci_reuse.py) `record`). It is in
+`ci-gate`'s `needs`, so the record exists before the pull request can merge.
+
+On a push to main, the `changes` job's `reuse` step looks the commit's tree up
+(`ci_reuse.py find`) and writes `reused`, the JSON list of jobs this run
+skips; each test job's `if:` ends in
+`!contains(fromJSON(needs.changes.outputs.reused || '[]'), '<job>')`. A job
+skipped by its own `if:` reads as passed to `format / unit tests`, to `build
+images` and to `ci-gate`, so `build images` starts as soon as what was not
+reused has passed -- with nothing reused, exactly as before. The summary says
+`reused from run N` and lists the jobs.
+
+**Exact or nothing.** A job is reused only when all of these hold, and any
+doubt -- no record, an API that cannot be read, a record that disagrees --
+reuses nothing:
+
+* a record of **this exact tree hash**, from a run of
+  `.github/workflows/application.yml` in this repository (never a fork's),
+  whose conclusion is `success`;
+* the run is tied to this commit: a `pull_request` run **at the head of the
+  pull request this commit merged**, as the API names it; or a `push` (a
+  merge-train branch) or `merge_group` run whose own commit has this tree, as
+  git computes it in the job;
+* the job concluded `success` in the record **and** in the API's list of that
+  run's jobs, every shard of a matrix job 1..N with none missing; a job the
+  run skipped (a pull request that did not reach the UI) runs again;
+* for the unit shards, the run ran **the whole suite** (`python=all`). A pull
+  request's selected subset ([below](#a-pull-request-runs-the-unit-tests-its-change-reaches))
+  is never main's full run. So main reuses the unit shards from a merge-train
+  run, a queue entry, or a pull request whose selection fell back to the
+  whole suite; it reuses the other jobs from any up-to-date pull request.
+
+**Not done, and why: pull-request images tagged by tree.** The plan's better
+form had a pull request's final-head run push its images tagged by tree hash,
+and the release scan and promote those. A pull request has no Google identity
+(owner decision 2026-10-05, [below](#why-there-is-no-pull-request-identity)), so
+it cannot push anything, and giving it one is the change that section exists
+to refuse. Main still builds -- only the images its commit changed
+([above](#main-builds-only-the-images-a-commit-changed)) -- and the release
+still promotes exactly what main built, including the per-release OS-package
+refresh of PR 1279.
+
+## A pull request runs the unit tests its change reaches
+
+**Owner decision 2026-10-14 (the delivery speed plan, B2).** On a pull request
+whose change reaches beyond `docs/` and `apps/swarm-ui/` (`python=all`), the
+`changes` job's `select` step narrows the unit shards to `python=selected`:
+the files [`scripts/lib/select_unit_tests.py`](../scripts/lib/select_unit_tests.py)
+says the change reaches, which are
+
+* everything `scripts/changed-guards.sh --list` selects for the same diff --
+  the repository-wide guard set and every test whose text names a changed
+  path, the same selection a SwarmCloud agent runs before it finishes;
+* every test that imports a changed module through any chain of imports under
+  `apps/`, `scripts/` and `tests/unit` (relative imports resolved; a changed
+  `__init__.py` reaches every importer of its package);
+* every test naming a script that sources a changed script, transitively
+  (a change to `scripts/lib/common.sh` reaches the tests of every script that
+  sources it), and a generic basename (`Dockerfile`, `__init__.py`) only
+  beside one of its directories' names;
+* when the change also touches `docs/` or `apps/swarm-ui/`, the pick step's
+  own area readers, as a docs-only change picks them.
+
+**It falls back to the whole suite**, and says why in the job summary, when a
+selection is not one it can vouch for: a workflow, composite action,
+`conftest.py`, `pyproject.toml`, `uv.lock`, `tests/flaky.txt` or the
+quarantine module changed (each changes how every test runs); the frozen
+contract changed (every component imports it); more than 40 paths changed
+(of the last 150 merged pull requests, measured 2026-10-14: median 7 files,
+p95 23, one over 40); or the
+selection is already half the suite, when the rest costs little and a whole
+run is one main can reuse ([above](#main-reuses-the-tested-tree)).
+
+**A miss costs a red main, never an untested release.** Main's push run, a
+merge-train run and a queue entry pass the diff's `python=all` straight
+through and run every file, and main reuses unit shards only from a run of the
+whole suite. `lock / contract / format / bridge install` still runs on a
+selected pull request.
+
+## A pull request scans the images it builds
+
+**Owner decision 2026-10-14 (the delivery speed plan, C3).** Two release
+blockers were first seen after a merge: PR 1276 merged without its tool-mirror
+object uploaded, so main's Cloud Build failed at its `tool-mirror` step; and a
+Debian curl CVE stopped every release at the promotion scan for hours.
+
+**The scan.** `build changed images without pushing` installs trivy at
+`release.yml`'s pin (a test holds the two equal) and passes
+`BUILD_ONLY_SCAN=scripts/scan-image-layout.sh` to `build-images.sh
+--build-only --local`. Each image the replay builds is exported to an OCI
+layout and scanned as soon as it is built, with the release's own policy --
+fixable HIGH and CRITICAL findings, `.trivyignore.yaml` honoured -- read from
+[`scripts/lib/image-scan.sh`](../scripts/lib/image-scan.sh), which
+`push-images.sh --scan` reads too, so the two scans cannot drift. A finding
+fails the build and names the image; a leaf's layout is removed after its
+scan.
+
+**The tool mirror.** `refresh-build-mirror.sh --check` reads the bucket, which
+a pull request cannot. The job instead runs the offline check that holds
+`images/agent-runtime-base/tool-mirror.sha256` equal to the Dockerfiles' pins,
+and names every row the pull request **adds** -- a warning annotation and a
+line in its summary -- as an object the operator uploads with
+`scripts/refresh-build-mirror.sh --tools-only` before the merge
+([runbook](runbooks/build-mirror.md)). It is a warning, not a failure: the
+job cannot see whether the upload happened.
+
+**Main fills the bucket itself (owner decision 2026-10-14, on PR 1298).**
+Main's `build images` job, which holds the deployer's identity, runs
+`scripts/refresh-build-mirror.sh --tools-only` before it builds. That uploads
+every manifest object the bucket lacks, each downloaded from its upstream URL
+and checked against its pinned sha256 first. A mismatch is refused and fails
+the step, naming the object. An object already there is left alone, nothing
+is ever deleted, and no image is pulled through (`--tools-only`). The step
+never runs on a pull request or a queue entry, where the job itself is
+skipped. So a merged manifest row no longer fails main's build; the PR
+warning above says the object will be uploaded from upstream at the merge.
+
+**The scan blocks (owner decision 2026-10-14).** A fixable HIGH or CRITICAL
+finding fails the pull request's image job, the same rule as the release's
+promotion scan, even when the CVE is new upstream and unrelated to the change.
+
+**Download retries.** The three fetches PR 1281 measured failing runs now
+retry, bounded: every `curl -fsSL` in a Dockerfile carries `--retry 5
+--retry-all-errors --retry-connrefused` (the `build images` exit 22 was an
+HTTP error, which curl retries only with `--retry-all-errors`); the indexer's
+`build_server` -- `go mod download` and `go get` against proxy.golang.org --
+runs up to three times, 15 and 30 s apart; and the Firestore emulator install
+in `integration tests (emulator)` tries four times, 10, 20 and 40 s apart.
+
 ## Merging through the merge queue
 
 **Owner decision, 2026-10-08 (observer proposal G).** Since 2026-10-07, main
@@ -3412,6 +3984,32 @@ Until steps 1-3 are done the acceptance job fails at `acc_require_tenant`
 with the sentence that names this section, and nothing is submitted: a red
 acceptance job, not a quiet return to eng.
 
+## ruff lint is the house Python linter, and formatting is not adopted
+
+ruff is the house linter (owner decision 2026-10-14, "Adopt ruff"), configured
+once in the root `pyproject.toml` under `[tool.ruff]` and pinned exactly in
+its dev group, so a lane, the pre-publish gate and CI lint with the same
+binary: `uv run ruff check .` for the repository, or `uv run ruff check
+<files>` for a change. The rule set is deliberately small -- pyflakes and the
+pycodestyle errors that are always bugs (`E4`, `E7`, `E9`, `F`), selected
+explicitly because ruff's own default set has grown past that -- so it reports
+defects (an unused import, an undefined name, an f-string with no
+placeholder), never taste; widening it is a decision of its own, with its
+churn measured first. `apps/common/swarm_common/` is frozen, so its unused
+imports are ignored there rather than fixed. **`ruff format` is NOT adopted**:
+a repository-wide reformat would conflict with every open lane, so
+`[tool.ruff.format]` excludes every file and `force-exclude` keeps that true
+when files are named explicitly, which is how the pre-publish gate
+(`apps/agent-worker/agent_worker/prepublish.py`) runs `ruff format --check`
+on a lane's changed Python -- without it every lane touching Python would be
+told to reformat what it touched. `tests/unit/scripts/test_ruff_config.py`
+holds the pin, the lock, the rule set and the format exclusion. The CI job
+that runs it is `ruff check` in `application.yml` (SPEED-B, 2026-10-14):
+`uv run --frozen --only-dev ruff check --output-format github .`, which
+installs the dev group alone -- the pinned ruff with it -- so it takes
+seconds, and annotates each finding on its line. It is in `ci-gate`'s
+`needs`, so it is required the way every job there is.
+
 ## The finishing sequence
 
 ```bash
@@ -3432,12 +4030,14 @@ demonstrate that — not by running the mutation here.
 
 The laptop rule above does not bind an agent in a SwarmCloud container
 (CLAUDE.md, "A SwarmCloud agent is not this machine"): it runs the unit tests
-for its area, then this one command:
+for its area, then this one command (as `--shard` parts when its selection
+is heavy, below):
 
 ```bash
 scripts/changed-guards.sh            # diff = origin/main...HEAD + work tree
 scripts/changed-guards.sh --list     # print the selection, run nothing
 scripts/changed-guards.sh --base <rev> | --files <list>|-
+scripts/changed-guards.sh --shard k/n  # run the k-th of n parts of the selection
 ```
 
 **Why.** On 2026-10-05, 33 of 131 lane PRs (25%) were red on their first CI
@@ -3456,10 +4056,33 @@ text names a changed path by repo-relative path or basename. A generic basename
 half the suite. It runs them in **one** `pytest -q -n auto -p no:warnings` call
 (collecting `tests/unit/scripts` whole costs ~135 s, so files, not
 directories), then `scripts/lib/check-contract-parity.sh`, with 540 s and 60 s
-deadlines so the whole stays under the ten minutes a lane allows a command. It
+deadlines so one call stays under the ten minutes a lane allows a command. It
 prints the last lines of the output and keeps the full log only on failure. An
 empty diff runs nothing and exits 0; a base that does not resolve exits 2
 rather than reading as an empty diff.
+
+**A heavy selection runs in parts, each under the 540 s limit** (#1334, PR
+1415). The 540 s is not raised for a selection that needs longer: lane
+GS-HOOKS's 79 files (2,603 tests) all passed in 595 s on 6 cores, and past
+600 s an agent's own command limit kills the run with no `ran past` line and
+no faulthandler frames to name what held it. So the script weighs its
+selection in CI-seconds from `tests/unit/scripts/unit_test_durations.json` (a
+file with no weight counts at the median) and, past `SHARD_HINT_WEIGHT` (540
+CI-seconds, about 400 s in a 6-core container, measured 2026-10-16 at ~0.73 s
+a CI-second), it does not make one call:
+
+* **Without `--shard`** it warns, then runs the selection as
+  ⌈weight / 540⌉ parts (at least two), **one after another**, each its own
+  pytest call under the 540 s limit, so a hang still ends and a passing
+  selection completes however many files it names. The whole run is then up
+  to parts × 540 s: longer than ten minutes, by design. It exits 1 if any part
+  failed.
+* **`--shard k/n`** runs the k-th of n parts alone. The parts are cut the way
+  CI cuts its unit shards (longest file first onto the lightest part), and the
+  cut is deterministic, so the n commands together run every selected file
+  once; the contract-parity check runs in part 1 only. An agent whose command
+  limit is ten minutes runs the parts this way, as n separate commands: the
+  warning prints the exact `--shard 1/n ... --shard n/n` lines to run.
 
 **When it runs past 540 s it names the test** (box 102 of #888: lanes SPEC-GKE
 and BRIDGE-BACKEND hit the cap on 2026-10-08 and nothing said which test held
@@ -3477,6 +4100,13 @@ tests in 166-181 s, under the cap): the slowest was
 `test_ui_changes_gate.py::test_the_shared_reading_of_the_list_agrees_with_the_step`
 at 80 s, then `test_release_acceptance_job.py::test_the_acceptance_scripts_are_shellcheck_clean`
 at 41 s and four `test_build_images_incremental.py` tests at 22-25 s each.
+That first one no longer exists as one test (2026-10-11): it looped over a
+sample under each APP_PATHS pattern and a near miss of each, building a
+scratch repository and running the `changes` step for every sample serially,
+so `-n auto` could not spread it. It is now parametrised over those samples,
+one case each, which xdist spreads across workers; the property and the
+sample set are unchanged, and a separate test fails if the sample list is
+empty or is not two per pattern (an empty parametrisation would only skip).
 
 **What it does not do.** It does not replace the area run (a test that imports
 a changed module without naming its file is not selected), it does not run

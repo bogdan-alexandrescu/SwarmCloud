@@ -1,7 +1,24 @@
 import './styles/overview.css'
 import './styles/names.css'
-import { LifecycleBand, RecentFailures, WaitingWhy, agentPath, failuresOf, rowLabel, useRowTitles, waitGroups } from './OverviewRegions'
+import {
+  ENDED_BADLY,
+  LifecycleBand,
+  RecentFailures,
+  WaitingWhy,
+  agentPath,
+  failuresOf,
+  readWhy,
+  rowLabel,
+  stateView,
+  useRowTitles,
+  waitGroups,
+  type OverviewTaskPage,
+  type StateRead,
+} from './OverviewRegions'
 import { addressToPath } from './paths'
+import { HUMAN_PARK_MAX_MS, HandoffBanner, handoffOf, needsYou } from './Handoff'
+import { LiveControl } from './LiveBrowser'
+import { browserTabPath } from './LiveThumb'
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   loadAccountPool,
@@ -11,11 +28,14 @@ import {
   loadSpend,
   loadStats,
   loadTasks,
+  loadTasksInState,
   loadWorkflows,
+  loadLiveSession,
   TASK_PAGE_LIMIT,
+  type LiveSession,
   type SpendRollup,
 } from './api'
-import { PHONE_PAGE_LIMIT } from './agentlist'
+import { PHONE_PAGE_LIMIT, agentKind, shortTaskId } from './agentlist'
 import { totalCostCell, totalCostOf } from './dag'
 import { usd } from './measure'
 import { blindness, deriveChecks, type Check, type Problem } from './checks'
@@ -29,6 +49,7 @@ import { AGED_AFTER_MS, CountNote, PageHead, RefreshControl, staleFoot, timeAgo,
 import { AGE_TICK_MS, PageClock, usePageClock, useNow as useAgeClock } from './useNow'
 import {
   CONCURRENCY_STATES,
+  ageSpan,
   bindingWindow,
   formatDuration,
   leaseLiveliness,
@@ -37,6 +58,7 @@ import {
   needsAHuman,
   overCeiling,
   poolLabel,
+  poolLabelAmong,
   readingOf,
   unreadableFor,
   type AccountsPage,
@@ -86,9 +108,12 @@ import {
  *     checks are DERIVED from state that exists, re-derived on every read.
  *
  * `setup` is the onboarding card (#780 OB8, Entry A), passed in by App rather
- * than imported here, so this screen reads only its own routes.
+ * than imported here, so this screen reads only its own routes. `waitingOnYou` is
+ * Automate's "Waiting on you" card (docs/schedules.md §6.1), passed in the
+ * same way and for the same reason: it reads the approvals inbox, and draws
+ * nothing unless something waits.
  */
-export function OverviewScreen({ setup }: { setup?: ReactNode } = {}) {
+export function OverviewScreen({ setup, waitingOnYou }: { setup?: ReactNode; waitingOnYou?: ReactNode } = {}) {
   // THREE REFRESH CADENCES, on purpose. `live` drives the six cheap reads
   // every twenty seconds; `counted` drives `/v1/stats` -- twelve count()
   // queries -- every sixty (OV-16, owner decision 2026-09-25); `heavy` drives
@@ -172,10 +197,22 @@ export function OverviewScreen({ setup }: { setup?: ReactNode } = {}) {
     const at = ageOf(r)
     return at === null ? m : m === null ? at : Math.max(m, at)
   }, null)
-  const tenant = dataOf(tasks)?.tenant_id ?? null
+  // THE TENANT FROM WHICHEVER READ CARRIED IT (visual QA V142, 2026-10-11):
+  // the note said `tenant —` off the task read alone while Headroom's foot,
+  // two cards down, named the tenant off the pool read. The task read's id
+  // first, then the account read's, then the capacity read's own id or its
+  // tenant-scoped pool names; the dash is left for a page where none did.
+  const tenant =
+    dataOf(tasks)?.tenant_id ||
+    dataOf(accounts)?.tenant_id ||
+    dataOf(capacity)?.tenant_id ||
+    tenantOfPools(dataOf(capacity)) ||
+    null
   const page = dataOf(tasks)?.tasks ?? null
   const waiting = page === null ? null : waitGroups(page)
-  const failures = page === null ? null : failuresOf(page, Date.now())
+  const read = dataOf(tasks)
+  const ended = read === null ? null : stateView(read, ENDED_BADLY)
+  const failures = ended === null ? null : failuresOf(ended.rows, Date.now(), ended)
   const spent = dataOf(spend)
 
   return (
@@ -217,7 +254,7 @@ export function OverviewScreen({ setup }: { setup?: ReactNode } = {}) {
           <span className="ov-reading">tenant reading…</span>
         ) : tenant === null ? (
           <>
-            tenant <i className="ctl-em" title="The task read carried no tenant id.">&mdash;</i>
+            tenant <i className="ctl-em" title="No read carried a tenant id: not the task list, the account pool or the capacity read.">&mdash;</i>
           </>
         ) : (
           `tenant ${tenant}`
@@ -239,8 +276,14 @@ export function OverviewScreen({ setup }: { setup?: ReactNode } = {}) {
           while its read is pending or failed. */}
       {setup}
 
+      {waitingOnYou}
+
       <section className="ov-lead" id="ov-needs" aria-labelledby="ov-needs-h">
         <NeedsALook checks={checks} />
+        {/* THE HAND-OFF BANNER (docs/design/live-browser.md §6, lane LB-L12):
+            an agent stopped until a person signs in, one card each, under
+            the checks and in the same lead. Nothing at all when none is. */}
+        {read !== null && <HandoffCards tasks={handoffRows(read)} />}
       </section>
 
       <LifecycleBand stats={stats} tasks={tasks} />
@@ -306,7 +349,7 @@ export function OverviewScreen({ setup }: { setup?: ReactNode } = {}) {
             under Headroom, a long pool list made that card ~1100px taller than
             Waiting beside it, and the left column was blank for all of it. */}
         <section className="ctl-card ov-card ov-pools" id="ov-pools">
-          <CardHead title="Pools" href="/capacity/pools" cta="Pools" />
+          <CardHead title="Pools" note={poolsNote(dataOf(capacity))} href="/capacity/pools" cta="Pools" />
           <PoolsBody state={capacity} />
         </section>
       </div>
@@ -409,13 +452,58 @@ const STATS_POLL_MS = 60_000
  * task ids and `attempt_count` alone; its figures come from each task's
  * attempts read.
  *
- * 50 on a phone was §2.5's interim rule until `view=summary` existed. It
- * stays: the agent list caps its phone page at the same 50, and this screen
- * counts over the page the list shows (OV-10), so the two move together or
- * not at all.
+ * 50 on a phone was §2.5's interim rule until `view=summary` existed. Since
+ * live QA CH-4 (2026-10-11) the phone page is the full page too
+ * (`PHONE_PAGE_LIMIT` is `TASK_PAGE_LIMIT`, pageLimits.ts), and this screen
+ * still counts over the page the list shows (OV-10): the two moved together.
  */
-function loadListPage(): Promise<Result<TaskPage>> {
-  return loadTasks(phoneWidth() ? PHONE_PAGE_LIMIT : TASK_PAGE_LIMIT, { view: 'summary' })
+async function loadListPage(): Promise<Result<OverviewTaskPage>> {
+  const page = await loadTasks(phoneWidth() ? PHONE_PAGE_LIMIT : TASK_PAGE_LIMIT, { view: 'summary' })
+  if (page.status !== 'ok' && page.status !== 'stale') return page
+  if ((page.data.next_page_token ?? null) === null) return page
+  const byState = await loadStateReads()
+  return { ...page, data: { ...page.data, byState } }
+}
+
+/**
+ * THE STATES THE OVERVIEW MUST NOT MISS, read by state when the page has more
+ * behind it (live QA OV-1/OV-2/OV-4/OV-7, 2026-10-11).
+ *
+ * The page is the newest-created N. A task created before it that is running
+ * now, or that failed in the last hour, is not on it: a phone said `0 failed ·
+ * real zero` while 11 tasks had failed, dropped the failed-tasks check, and
+ * listed 4 of the 5 running agents. The four capacity-holding states and the
+ * three ways of ending badly are each one `?state=` read (an indexed query,
+ * `tasks-tenant-state-created`), in the summary view, at the api's full page.
+ *
+ * ONLY WHEN THE PAGE IS NOT EVERY TASK: a page with no next page already holds
+ * every one of these, so a small tenant pays nothing for this. SUCCEEDED is
+ * not read: 3,600 rows all-time, and nothing on this screen lists it.
+ *
+ * A state read that fails is left out, and the cards that needed it fall back
+ * to the page and say they are partial. It never fails the page: the page is
+ * still a reading, and "8/8 reads" still counts the page.
+ */
+/** The four states that hold capacity (CONTRACT invariant 1), in lifecycle order. */
+const HOLDING: readonly TaskState[] = ['LEASED', 'DISPATCHED', 'STARTING', 'RUNNING']
+
+const OVERVIEW_STATE_READS: readonly TaskState[] = [...HOLDING, ...ENDED_BADLY]
+
+async function loadStateReads(): Promise<StateRead[]> {
+  const reads = await Promise.all(
+    OVERVIEW_STATE_READS.map(async (state): Promise<StateRead | null> => {
+      try {
+        const r = await loadTasksInState(state, { limit: TASK_PAGE_LIMIT, view: 'summary' })
+        if (r.status === 'empty') return { state, tasks: [], complete: true }
+        if (r.status !== 'ok') return null
+        return { state, tasks: r.data.tasks, complete: (r.data.next_page_token ?? null) === null }
+      } catch {
+        // A read that threw is a read that did not land: the page stands alone.
+        return null
+      }
+    }),
+  )
+  return reads.filter((r): r is StateRead => r !== null)
 }
 
 // ---------------------------------------------------------------------------
@@ -748,6 +836,33 @@ function Reading({ rows = 3 }: { rows?: number }) {
  *   - WHILE A CHECK IS STILL READING (OV-9) no count is drawn: the pending
  *     mark, because a count taken before every check ran is not the count.
  */
+/**
+ * HOW MANY CARDS THE LEAD LAST DREW, so the skeleton holds that much room
+ * (visual QA V176, 2026-10-16). The row held one ~80px skeleton card until
+ * every check ran, then ten cards landed and everything below jumped: CLS
+ * 0.297 at 1440 and 0.685 at 400, where Agents measures 0.001-0.004. A fixed
+ * reservation is wrong one way or the other -- eight held cards collapsing
+ * to one jumped as far as one growing to ten -- so the row reserves what it
+ * last settled at, and one card before it has ever settled.
+ *
+ * IN MEMORY, FOR THIS PAGE LOAD: coming back to the Overview from another
+ * screen holds the room; a reload starts from one card again. Keeping it
+ * across reloads is a `swarm.` storage key, and every such key must be
+ * classified for sign-out in signoutState.ts, which is not this lane's file
+ * (asked in VQA2-R12's PR). A height hint and nothing else: the skeleton is
+ * `aria-hidden`, so the number is never drawn or read out as a count.
+ */
+const NEEDS_ROOM_MAX = 12
+let needsHeld: number | null = null
+
+export function needsRoom(): number {
+  return needsHeld ?? 1
+}
+
+export function keepNeedsRoom(cards: number): void {
+  needsHeld = Math.min(Math.max(cards, 1), NEEDS_ROOM_MAX)
+}
+
 function NeedsALook({ checks }: { checks: Check[] }) {
   const problems = checks
     .flatMap((c) => (c.status === 'found' ? c.problems : []))
@@ -758,6 +873,12 @@ function NeedsALook({ checks }: { checks: Check[] }) {
   const found = checks.filter((c) => c.status === 'found').length
   const ran = clear.length + found
   const blindSay = blind.map((c) => `${c.label.toLowerCase()} — ${c.why}`).join('; ')
+  // Read once a mount, so a poll's redraw does not change what is held.
+  const [held] = useState(needsRoom)
+  const settled = reading.length === 0
+  useEffect(() => {
+    if (settled) keepNeedsRoom(problems.length)
+  }, [settled, problems.length])
 
   return (
     <>
@@ -784,7 +905,10 @@ function NeedsALook({ checks }: { checks: Check[] }) {
             <span className={blind.every((c) => c.admin) ? 'ov-info' : 'ov-warn'}> · {blind.length} blind</span>
           )}
         </span>
-        {blind.length > 0 && reading.length === 0 && (
+        {/* ONE PARTIAL MARK (visual QA V141, 2026-10-11): with no problem to
+            draw, the absence below already carries the partial mark and the
+            same sentence, so a second pill on the head line only repeated it. */}
+        {blind.length > 0 && reading.length === 0 && problems.length > 0 && (
           <Mark
             kind="partial"
             say={`${blind.length} of ${checks.length} checks could not run, so this row is over the ${ran} that did: ${blindSay}`}
@@ -797,18 +921,24 @@ function NeedsALook({ checks }: { checks: Check[] }) {
         // 2026-10-03): the pending mark here was an empty dashed box the
         // width of the row, which read as a broken input. Still no count:
         // the sentence is the row's accessible name.
+        //
+        // AS MANY SKELETON CARDS AS THE ROW LAST DREW (visual QA V176,
+        // `needsRoom`), in the same grid, so what lands is the height that
+        // was held.
         <div
           className="ov-atts"
           aria-busy="true"
           aria-label={`${reading.length} of ${checks.length} checks are still reading: ${reading.map((c) => c.label.toLowerCase()).join(', ')}. No count is drawn until they have run.`}
         >
-          <div className="ov-att is-skel" aria-hidden="true">
-            <span className="ov-att-t">
-              <Skeleton title width="45%" />
-              <Skeleton width="85%" />
-              <Skeleton width="60%" />
-            </span>
-          </div>
+          {Array.from({ length: held }, (_, i) => (
+            <div className="ov-att is-skel" aria-hidden="true" key={i}>
+              <span className="ov-att-t">
+                <Skeleton title width="45%" />
+                <Skeleton width="85%" />
+                <Skeleton width="60%" />
+              </span>
+            </div>
+          ))}
         </div>
       ) : problems.length > 0 ? (
         <div className="ov-atts">
@@ -833,6 +963,202 @@ function NeedsALook({ checks }: { checks: Check[] }) {
 }
 
 /**
+ * The rows a hand-off can be on: the page, and the RUNNING state read when
+ * the page is not every task (`loadStateReads`), so an agent created before
+ * the page that is holding for a person now is not missed. A parked hand-off
+ * older than the page is; the Agents list's Waiting tab still has it.
+ */
+function handoffRows(read: OverviewTaskPage): Task[] {
+  const seen = new Set(read.tasks.map((t) => t.id))
+  const running = read.byState?.find((r) => r.state === 'RUNNING')?.tasks ?? []
+  return [...read.tasks, ...running.filter((t) => !seen.has(t.id))]
+}
+
+/**
+ * Open an agent from outside the router's reach: write its path and let App
+ * read it back, as Back does (`popstate`).
+ */
+function openAgentPath(t: Pick<Task, 'id' | 'state'>): void {
+  openPath(agentPath(t))
+}
+
+function openPath(path: string): void {
+  window.history.pushState(null, '', path)
+  window.dispatchEvent(new PopStateEvent('popstate'))
+}
+
+/**
+ * "NEEDS YOU": ONE HAND-OFF BANNER PER AGENT WAITING FOR A PERSON (§6). The
+ * reason, the expected site and the time left, under a line that says WHICH
+ * agent is waiting (`HandoffWho`). A parked card's "I'm ready" calls
+ * `human-ready` and opens the agent, which is where its browser comes back
+ * (`onOpen`, by default the agent's own page); a held card offers Take
+ * control. Either way that action comes first and Open second (QA12-28).
+ *
+ * OLDEST-WAITING FIRST, AT MOST THREE (visual QA pass 5, U2, 2026-10-12; lane
+ * LB-V5). Five parked hand-offs drew five identical cards, held ones first
+ * and then by deadline. The agent that has waited longest is the one closest
+ * to being given up, so it leads; a held hand-off, minutes old by
+ * construction, falls behind the parked ones it is younger than. Past
+ * `HANDOFF_CARDS` the rest are one "+N more waiting" link to the Agents
+ * list's Waiting tab, which lists every one of them -- a summary page that
+ * grows a yellow card per agent pushes everything else on it off the screen.
+ *
+ * `now` is for a test; on the screen the cards keep their own 1s clock,
+ * mounted only while there is a card to tick.
+ */
+export function HandoffCards({
+  tasks,
+  now,
+  onOpen,
+}: {
+  tasks: readonly Task[]
+  now?: number
+  onOpen?: (taskId: string) => void
+}) {
+  const waiting = tasks.filter(needsYou).sort((a, b) => {
+    const wa = waitingSince(a) ?? Infinity
+    const wb = waitingSince(b) ?? Infinity
+    if (wa !== wb) return wa - wb
+    const ha = handoffOf(a)!
+    const hb = handoffOf(b)!
+    if (ha.phase !== hb.phase) return ha.phase === 'hold' ? -1 : 1
+    return (ha.deadline ?? Infinity) - (hb.deadline ?? Infinity)
+  })
+  if (waiting.length === 0) return null
+  return <HandoffCardList waiting={waiting} now={now} onOpen={onOpen} />
+}
+
+/** How many hand-off cards Needs a look draws before "+N more waiting". */
+const HANDOFF_CARDS = 3
+
+/**
+ * WHEN THE AGENT STARTED WAITING, epoch ms; null when nothing says. A held
+ * hand-off carries the instant it asked (`human_wait.requested_at`). The park
+ * clears `human_wait`, so a parked one is counted from the park instant
+ * (`handoffOf`'s, the dead-letter deadline less its 24 hours): that is up to
+ * one hold (10 minutes) short of when it asked, never longer, and costs no
+ * event read per card.
+ */
+function waitingSince(t: Task): number | null {
+  const h = handoffOf(t)
+  if (h === null) return null
+  if (h.phase === 'parked') return h.deadline === null ? null : h.deadline - HUMAN_PARK_MAX_MS
+  const v = Date.parse(t.human_wait?.requested_at ?? '')
+  return Number.isFinite(v) ? v : null
+}
+
+function HandoffCardList({
+  waiting,
+  now,
+  onOpen,
+}: {
+  waiting: Task[]
+  now: number | undefined
+  onOpen: ((taskId: string) => void) | undefined
+}) {
+  const tick = useNow()
+  const at = now ?? tick
+  const shown = waiting.slice(0, HANDOFF_CARDS)
+  const more = waiting.length - shown.length
+  const titleOf = useRowTitles(shown)
+  return (
+    <div className="ov-handoffs" aria-label={`${waiting.length} ${waiting.length === 1 ? 'agent is' : 'agents are'} waiting for a person`}>
+      {shown.map((t) => {
+        const who = handoffWho(t, titleOf(t), at)
+        return (
+          <div key={t.id} className="ov-handoff" role="group" aria-label={who}>
+            <p className="ov-handoff-who" title={t.id}>
+              {who}
+            </p>
+            <HandoffBanner
+              task={t}
+              now={at}
+              onReady={(id) => (onOpen !== undefined ? onOpen(id) : openAgentPath({ id, state: 'READY' }))}
+            >
+              {/* QA12-28: Take control (the banner's own I'm ready on a park), then
+                  Open, then anything secondary -- one order on every card. */}
+              {handoffOf(t)?.phase === 'hold' && <HandoffTakeControl taskId={t.id} />}
+              <a className="ov-att-go" href={agentPath(t)} title={`Open ${rowLabel(t, null)}`}>
+                Open &rarr;
+              </a>
+            </HandoffBanner>
+          </div>
+        )
+      })}
+      {more > 0 && (
+        <a className="ov-handoffs-more" href="/agents/waiting">
+          +{more} more waiting
+        </a>
+      )}
+    </div>
+  )
+}
+
+/**
+ * WHO IS WAITING, in one line: `<agent name> · <short task id> · waiting
+ * <age>`, then the workflow's label when the run has one. The name is the
+ * step a workflow gave it, or what a lone agent is (`agentKind`) -- not
+ * `agentName`, whose lone form already ends in the short id and would print
+ * it twice. The label is the row title the Running card reads
+ * (`useRowTitles`), once a session per workflow.
+ */
+function handoffWho(t: Task, title: string | null, now: number): string {
+  const since = waitingSince(t)
+  return [
+    t.step_id ?? agentKind(t.runner_profile),
+    shortTaskId(t.id),
+    since === null ? 'waiting' : `waiting ${ageSpan(now - since)}`,
+    ...(title === null ? [] : [title]),
+  ].join(' · ')
+}
+
+/**
+ * TAKE CONTROL ON THE "NEEDS A LOOK" CARD (owner, 2026-10-12; lane LB-UX3).
+ * The agent header's own button (`LiveControl`), so the ask, the second ask
+ * on the wrong site and the audited `confirmed_mismatch` are that one
+ * component's, not a copy. Drawn only on a held hand-off -- a parked one has
+ * no browser to take -- and only once the session read says this person may
+ * take control (`you.can_control`); swarm-api still decides on the take.
+ *
+ * Read once per card, not polled: the Overview's own poll re-mounts nothing,
+ * and a two-second read per waiting agent on a summary page would be the
+ * Browser tab's cost without its canvas. A stale "may" is harmless: the take
+ * is refused and the button says why.
+ *
+ * Once the take has gone through -- `LiveControl` re-reads, and the read says
+ * this person is now in control -- the agent's Browser tab opens, which is
+ * where the canvas they now control is. Its own `LiveControl` takes over the
+ * renewal (§4.2) as this card unmounts.
+ */
+function HandoffTakeControl({ taskId }: { taskId: string }) {
+  const [session, setSession] = useState<LiveSession | null>(null)
+  const readSession = useCallback(
+    (afterTake: boolean) => {
+      let live = true
+      void loadLiveSession(taskId).then((r) => {
+        if (!live || (r.status !== 'ok' && r.status !== 'stale')) return
+        const s = r.data.session ?? null
+        if (afterTake && s !== null && s.controller !== null && s.controller.email === s.you.email) {
+          openPath(browserTabPath(taskId))
+          return
+        }
+        setSession(s)
+      })
+      return () => {
+        live = false
+      }
+    },
+    [taskId],
+  )
+  useEffect(() => readSession(false), [readSession])
+  if (session === null || session.state !== 'open' || !session.you.can_control) return null
+  // Already theirs (taken in another tab): the card has nothing to offer.
+  if (session.controller !== null && session.controller.email === session.you.email) return null
+  return <LiveControl taskId={taskId} session={session} reload={() => void readSession(true)} />
+}
+
+/**
  * One problem as O1's check card. The mark repeats the severity as a shape --
  * the amber triangle for a warning, the red diamond for a failure -- because
  * roughly 8% of male viewers cannot separate the two inks. The detail is the
@@ -845,6 +1171,10 @@ export function CheckCard({ problem: p }: { problem: Problem }) {
   // one line, cut with an ellipsis and whole in its title; the detail is the
   // third. The whole headline stays the card's accessible name.
   const { title, ids } = splitHeadline(p.headline)
+  // A DASH NEVER STARTS A LINE (visual QA V140, 2026-10-11): the space before
+  // ` — ` is a no-break space, so the dash ends the clause it follows and a
+  // clamped line cannot open on a lone "—…".
+  const detail = keepDash(p.detail)
   return (
     <a className={`ov-att is-${p.severity}`} href={toPath(p.href)} aria-label={`${p.headline}. ${p.detail}`}>
       {p.severity === 'bad' ? <BadMark /> : <WarnMark />}
@@ -852,11 +1182,11 @@ export function CheckCard({ problem: p }: { problem: Problem }) {
         <b title={p.headline}>{title}</b>
         {ids !== null && (
           <small className="ov-att-ids" title={ids}>
-            {ids}
+            {keepDash(ids)}
           </small>
         )}
         <small className={ids === null ? undefined : 'is-one'} title={p.detail}>
-          {p.detail}
+          {detail}
         </small>
       </span>
       <span className="ov-att-go">{p.linkLabel ?? 'Open'} &rarr;</span>
@@ -877,6 +1207,11 @@ export function CheckCard({ problem: p }: { problem: Problem }) {
  */
 export function toPath(href: string): string {
   return href.startsWith('#') ? addressToPath(href.slice(1)) : href
+}
+
+/** ` — ` with a no-break space before the dash, so the dash cannot open a line. */
+export function keepDash(text: string): string {
+  return text.replace(/ — /g, '\u00a0— ')
 }
 
 export function splitHeadline(headline: string): { title: string; ids: string | null } {
@@ -947,6 +1282,14 @@ function HeadroomBody({ capacity, accounts }: { capacity: Result<Capacity>; acco
   )
 }
 
+/** The calling tenant, read off the tenant-scoped pool names; null when none is. */
+export function tenantOfPools(cap: Capacity | null): string | null {
+  if (cap === null) return null
+  return (
+    cap.pools.map((p) => /(?:^|:)tenant:([^:]+)/.exec(p.name)?.[1]).find((t): t is string => Boolean(t)) ?? null
+  )
+}
+
 function CapacityStacks({ state }: { state: Result<Capacity> }) {
   const now = usePageClock()
   if (state.status === 'loading') return <Reading rows={3} />
@@ -958,7 +1301,9 @@ function CapacityStacks({ state }: { state: Result<Capacity> }) {
         heading="Pool state unread"
         say={`${b.why} No figure here is a claim about room.`}
         explain={b.admin ? 'admin-gate-not-failure' : 'read-failed'}
-      />
+      >
+        {readWhy(b)}
+      </CardAbsent>
     )
   }
   if (state.status === 'empty') {
@@ -966,7 +1311,7 @@ function CapacityStacks({ state }: { state: Result<Capacity> }) {
       <CardAbsent
         kind="zero"
         heading="No pools exist"
-        say="The read succeeded and returned nothing. This is a real zero, not a failure to read."
+        say="The read succeeded: no capacity pool exists."
         explain="capacity"
       />
     )
@@ -977,9 +1322,7 @@ function CapacityStacks({ state }: { state: Result<Capacity> }) {
   const profiles = Object.entries(cap.runner_profiles).sort(([a], [b]) => a.localeCompare(b))
   // `/v1/capacity` carries no tenant id of its own, so whose view this is is
   // read off the tenant-scoped pool names rather than assumed.
-  const tenant = cap.pools
-    .map((p) => /(?:^|:)tenant:([^:]+)/.exec(p.name)?.[1])
-    .find((t): t is string => Boolean(t))
+  const tenant = tenantOfPools(cap) ?? undefined
 
   return (
     <>
@@ -998,8 +1341,11 @@ function CapacityStacks({ state }: { state: Result<Capacity> }) {
       )}
       <p className="ov-foot">
         <FootRun>
-          <span>{countOf(cap.pools.length, 'pool')}</span>
-          <span>{tenant === undefined ? 'no tenant pool read' : `tenant ${tenant}`}</span>
+          {/* WHOSE VIEW, NOT WHOSE POOLS (live QA OV-15, 2026-10-11): "30
+              pools · tenant eng" read as thirty pools of eng's, over a list
+              an admin reads with every tenant's pools in it. */}
+          <span>{countOf(cap.pools.length, 'pool')} read</span>
+          <span>{tenant === undefined ? 'no tenant pool read' : `profiles as tenant ${tenant}`}</span>
           {footFor(state, 'not read', now) !== null && <span>{footFor(state, 'not read', now)}</span>}
         </FootRun>
       </p>
@@ -1014,20 +1360,60 @@ function CapacityStacks({ state }: { state: Result<Capacity> }) {
  */
 function PoolsBody({ state }: { state: Result<Capacity> }) {
   if (state.status === 'loading') return <Reading rows={2} />
-  if (state.status !== 'ok') {
+  // THE SAME ABSENCE AS EVERY OTHER CARD'S (visual QA V141/V142, 2026-10-11):
+  // this card said its failure and its zero as a line of em text while
+  // Headroom, reading the same pools, drew the mark and heading. One read,
+  // one picture.
+  if (state.status === 'error') {
+    const b = blindness(state.error)
     return (
-      <p className="ctl-em" title={state.status === 'error' ? `${blindness(state.error).why}` : undefined}>
-        {state.status === 'empty' ? 'No pools exist: the read succeeded and returned nothing.' : '— not read; see Headroom'}
-      </p>
+      <CardAbsent
+        kind={b.admin ? 'admin' : 'failed'}
+        heading="Pool state unread"
+        say={`${b.why} No figure here is a claim about room.`}
+      >
+        {readWhy(b)}
+      </CardAbsent>
+    )
+  }
+  if (state.status === 'empty') {
+    return (
+      <CardAbsent
+        kind="zero"
+        heading="No pools exist"
+        say="The read succeeded: no capacity pool exists."
+      />
     )
   }
   return (
     <div className="ov-pls">
-      {state.data.pools.map((p) => (
+      {busiestFirst(state.data.pools).map((p) => (
         <PoolRow key={p.name} pool={p} />
       ))}
     </div>
   )
+}
+
+/**
+ * BUSIEST FIRST (live QA OV-15, 2026-10-11): alphabetically, the pools at
+ * 5/40 sat among thirty rows of 0/N and did not stand out. By share of the
+ * ceiling used, then units in use, then name; a pool with no limit set has no
+ * share and goes after every one that does, by units.
+ */
+export function busiestFirst(pools: readonly Pool[]): Pool[] {
+  const share = (p: Pool) => (p.effective_limit !== null && p.effective_limit > 0 ? p.active / p.effective_limit : -1)
+  return [...pools].sort((a, b) => share(b) - share(a) || b.active - a.active || a.name.localeCompare(b.name))
+}
+
+/**
+ * The Pools card's note: how many, in which order, and how many sit below
+ * their configured hard ceiling -- the "lowered" Capacity › Pools shows.
+ */
+function poolsNote(cap: Capacity | null): string | undefined {
+  if (cap === null) return undefined
+  // Capacity › Pools' own test (Capacity.tsx), so the two screens agree.
+  const lowered = cap.pools.filter((p) => p.effective_limit !== null && p.hard_limit !== null && p.effective_limit < p.hard_limit).length
+  return [countOf(cap.pools.length, 'pool'), 'busiest first', ...(lowered > 0 ? [`${lowered} lowered`] : [])].join(' · ')
 }
 
 /**
@@ -1062,6 +1448,12 @@ export function ProfileTile({
   }
   const h = headroomFor(profile)
   const binding = h.binding !== null ? (byName.get(h.binding) ?? null) : null
+  // EVERY BINDING POOL, EACH TOLD APART (live QA OV-12, 2026-10-11): the tile
+  // read "binds GKE_AUTOPILOT" while `/v1/capacity` gave the anthropic pool
+  // as binding too, and "binds browser" could be `resource:browser` or
+  // `runner:browser` -- both bound. Raising either one alone admits nothing.
+  const binds = profile.admission?.binding.length ? profile.admission.binding : h.binding !== null ? [h.binding] : []
+  const bindWords = binds.map((b) => (poolLabelAmong(b, binds) === poolLabel(b) ? bindingLabel(b, tenant) : poolLabelAmong(b, binds))).join(' + ')
   const paused = binding !== null && isPaused(binding)
   // More than one pool can refuse at once, and "refusing" rather than "full":
   // one of them may be PAUSED, which has the opposite remedy.
@@ -1075,7 +1467,7 @@ export function ProfileTile({
         : paused
           ? `${bindingLabel(binding.name, tenant)} paused`
           : h.binding !== null
-            ? `binds ${bindingLabel(h.binding, tenant)}`
+            ? `binds ${bindWords}`
             : h.missing.length > 0
               ? `${countOf(h.missing.length, 'pool')} uncapped`
               : 'nothing binds'
@@ -1088,7 +1480,7 @@ export function ProfileTile({
         (h.blockers.length > 0
           ? ` Refusing: ${h.blockers.map((b) => `${b.pool} (${b.active}/${b.limit ?? 'no limit set'})`).join(', ')}.`
           : h.binding !== null
-            ? ` Bound by ${h.binding}.`
+            ? ` Bound by ${binds.join(' and ')}.`
             : '')
   return (
     <div className="ov-hp" title={long}>
@@ -1123,7 +1515,17 @@ export function PoolRow({ pool: p }: { pool: Pool }) {
       : known && ratio >= 0.8
         ? 'is-warn'
         : undefined
-  const say = `${poolLabel(p.name)}: ${p.active} of ${limit === null ? 'no limit set' : `${limit}`} units in use${paused ? ', paused' : ''}`
+  // FULL IS SAID ON THE FIGURE (visual QA V057, owner decision Q3,
+  // 2026-10-11): the phone hides the track, which was the only place a full
+  // pool showed, so `5/5` takes the bad tone itself.
+  const full = limit !== null && limit > 0 && p.active >= limit
+  // NEARLY FULL IS SAID ON THE FIGURE TOO (visual QA V057, owner decision Q4,
+  // 2026-10-16): at >=80% the hidden track is toned warn, and the phone read
+  // `4/5` as plainly as `0/5`. The figure takes the warn tone at the same
+  // threshold as the track, so the two widths agree; a paused pool keeps its
+  // own tone and is not warned about.
+  const near = !full && !paused && known && ratio >= 0.8
+  const say = `${poolLabel(p.name)}: ${p.active} of ${limit === null ? 'no limit set' : `${limit}`} units in use${full ? ', full' : near ? ', nearly full' : ''}${paused ? ', paused' : ''}`
   return (
     <div className="ov-pl" title={say}>
       <span className="ov-idc" title={p.name}>
@@ -1135,7 +1537,7 @@ export function PoolRow({ pool: p }: { pool: Pool }) {
         zeroTitle={`Measured: 0 of ${limit} in use on ${p.name}.`}
         meter={known ? { label: say, now: p.active, max: limit } : { label: say, now: p.active, max: 0 }}
       />
-      <b>
+      <b className={full ? 'is-full' : near ? 'is-near' : undefined}>
         {p.active}/{limit === null ? <span className="ctl-em" title="No limit set: not a ceiling of 0.">&mdash;</span> : limit}
       </b>
     </div>
@@ -1161,7 +1563,9 @@ function AccountLine({ state }: { state: Result<AccountsPage> }) {
         heading="Account pool unread"
         say={`${b.why} This says nothing about whether the accounts have room.`}
         explain={b.admin ? 'admin-gate-not-failure' : 'read-failed'}
-      />
+      >
+        {readWhy(b)}
+      </CardAbsent>
     )
   }
   if (state.status === 'empty') {
@@ -1169,7 +1573,7 @@ function AccountLine({ state }: { state: Result<AccountsPage> }) {
       <CardAbsent
         kind="zero"
         heading="No account registered"
-        say="The read succeeded and returned nothing. This is a real zero, not a failure to read."
+        say="The read succeeded: no subscription account is registered."
         explain="park-on-missing-credential"
       />
     )
@@ -1200,9 +1604,12 @@ function AccountLine({ state }: { state: Result<AccountsPage> }) {
           has reset since it was read is kept out of `best` -- a projection is
           not headroom -- and it is usually the one with the most room, so the
           line says which ones it left out rather than reading as if they had none. */}
+      {/* NO TYPED `·` (visual QA V145, 2026-10-11): the line is a wrapping
+          flex row whose gap separates its items, and the dot this clause
+          opened with was left alone at the start of a line when it wrapped. */}
       {pool.projected.length > 0 && (
         <span className="ov-acc-proj" title="Their last figure describes a window that has since reset or gone stale, so it is not counted as room. Accounts shows them with ~.">
-          · {pool.projected.length} projected ({pool.projected.join(', ')}) not counted
+          {pool.projected.length} projected ({pool.projected.join(', ')}) not counted
         </span>
       )}
       {signIn > 0 && <WarnMark label={`${signIn} needs sign-in`} />}
@@ -1222,6 +1629,7 @@ function AccountLine({ state }: { state: Result<AccountsPage> }) {
  * the landing page and the card does not set the height of its grid row.
  */
 const RUNNING_ROWS = 8
+
 
 /**
  * Why the Cost so far column is a dash for a row served without attempt
@@ -1276,13 +1684,20 @@ function CostSoFar({ task }: { task: Task }) {
  * `/v1/stats`'s. An agent running for two days while 200 newer tasks were
  * created is counted and not listed, so the foot prints both when they
  * differ, with the count's age.
+ *
+ * READ BY STATE WHEN THE PAGE IS NOT EVERY TASK (live QA OV-4, 2026-10-11):
+ * a phone listed 4 running agents under "Holding capacity 5", because the
+ * fifth was created before its 50 newest. The four capacity-holding states
+ * are read by state then (`OVERVIEW_STATE_READS`), so the list is every
+ * agent holding capacity, and the page's caveat is left for a state read
+ * that did not land.
  */
 function RunningCard({
   tasks,
   stats,
   leases,
 }: {
-  tasks: Result<TaskPage>
+  tasks: Result<OverviewTaskPage>
   stats: Result<Stats>
   leases: Result<LeasePage>
 }) {
@@ -1290,11 +1705,13 @@ function RunningCard({
   const page = dataOf(tasks)
   const silent = silentByTask(leases)
   const leased = leasedAtByTask(leases)
+  const view = page === null ? null : stateView(page, HOLDING)
+  // Every capacity-holding task was read: a whole page, or every state read.
+  const whole = view !== null && HOLDING.every((s) => view.whole(s))
   const running =
-    page === null
+    view === null
       ? []
-      : page.tasks
-          .filter((t) => CONCURRENCY_STATES.has(t.state))
+      : view.rows
           // A SILENT worker first (#92), then the longest-running.
           .sort((a, b) => Number(silent.has(b.id)) - Number(silent.has(a.id)) || startKey(a) - startKey(b))
   const titleOf = useRowTitles(running)
@@ -1325,7 +1742,9 @@ function RunningCard({
           heading="Task list unread"
           say={`${b.why} This card is blind; it is not reporting that nothing is running.`}
           explain={b.admin ? 'admin-gate-not-failure' : 'read-failed'}
-        />
+        >
+          {readWhy(b)}
+        </CardAbsent>
       </>
     )
   }
@@ -1336,7 +1755,7 @@ function RunningCard({
         <CardAbsent
           kind="zero"
           heading="No task exists"
-          say="The read succeeded and returned nothing. This is a real zero, not a failure to read."
+          say="The read succeeded: this tenant has no tasks."
           explain="absent-vs-zero"
         />
       </>
@@ -1358,9 +1777,7 @@ function RunningCard({
   const foot = (
     <p className="ov-foot">
       <FootRun>
-        <span>
-          {running.length} of {page.tasks.length} newest
-        </span>
+        <span>{whole ? `${running.length} read by state` : `${running.length} of ${page.tasks.length} newest`}</span>
         {counted !== null && counted !== running.length && <span>stats say {counted}</span>}
         {counted !== null && counted !== running.length && countedAge !== null && <span>counted {countedAge}</span>}
       </FootRun>
@@ -1375,7 +1792,9 @@ function RunningCard({
           kind="zero"
           heading="Nothing running"
           say={
-            `No task on the ${page.tasks.length} most recently created is in LEASED, DISPATCHED, STARTING or RUNNING. ` +
+            (whole && (page.next_page_token ?? null) !== null
+              ? 'No task is in LEASED, DISPATCHED, STARTING or RUNNING: each of those states was read on its own. '
+              : `No task on the ${page.tasks.length} most recently created is in LEASED, DISPATCHED, STARTING or RUNNING. `) +
             (counted === null
               ? 'The exact count could not be read, so this is the page’s answer rather than the platform’s.'
               : counted === 0
@@ -1432,37 +1851,58 @@ function RunningCard({
       {/* THE PHONE'S LIST (O1 390 frame): mark, name, elapsed. The sheet shows
           one of the two, by width. */}
       <ul className="ov-prun" aria-label="Running now">
-        {running.map((t) => (
-          <li key={t.id}>
-            <StateMark state={t.state} />
-            <span className="ov-prun-m">
-              <a className="ov-prun-n" href={agentPath(t)} title={`${rowLabel(t, titleOf(t))} · ${t.id}`}>
-                {rowLabel(t, titleOf(t))}
-              </a>
-              {/* THE SECOND LINE IS THE DESKTOP'S STATE AND PROFILE COLUMNS
-                  (QA G1-08, 2026-10-07): a dot and "implement" twice could
-                  not be told apart. State, profile, and the workflow by its
-                  short id, whole in the link's title. */}
-              <span className="ov-prun-sub">
-                {t.state.toLowerCase().replace('_', '-')} · {t.runner_profile}
-                {t.workflow_id && (
-                  <>
-                    {' · '}
-                    <a className="ctl-link ov-wf" href={`/workflows/${encodeURIComponent(t.workflow_id)}`} title={t.step_id ? `step ${t.step_id} of ${t.workflow_id}` : t.workflow_id}>
-                      {shortWorkflowId(t.workflow_id)}
-                    </a>
-                  </>
-                )}
-              </span>
-            </span>
-            <em>
-              <Runtime task={t} leasedAt={leased.get(t.id)} />
-            </em>
-          </li>
+        {shown.map((t) => (
+          <PhoneRunRow key={t.id} task={t} title={titleOf(t)} leasedAt={leased.get(t.id)} />
         ))}
       </ul>
+      {/* THE SAME EIGHT ROWS, THEN "N MORE", ON A PHONE (visual QA V177,
+          2026-10-16): the list mapped every task, so 47 holding agents drew
+          a 1,804px list while the table beside it stopped at eight. The rest
+          are in place under the same disclosure, closed. */}
+      {running.length > shown.length && (
+        <details className="ov-more ov-prun-more">
+          <summary>{running.length - shown.length} more</summary>
+          <ul className="ov-prun" aria-label="Running now, the rest">
+            {running.slice(RUNNING_ROWS).map((t) => (
+              <PhoneRunRow key={t.id} task={t} title={titleOf(t)} leasedAt={leased.get(t.id)} />
+            ))}
+          </ul>
+        </details>
+      )}
       {foot}
     </>
+  )
+}
+
+/** One row of the phone's Running list (O1 390 frame): mark, name, elapsed. */
+function PhoneRunRow({ task: t, title, leasedAt }: { task: Task; title: string | null; leasedAt: string | undefined }) {
+  return (
+    <li>
+      <StateMark state={t.state} />
+      <span className="ov-prun-m">
+        <a className="ov-prun-n" href={agentPath(t)} title={`${rowLabel(t, title)} · ${t.id}`}>
+          {rowLabel(t, title)}
+        </a>
+        {/* THE SECOND LINE IS THE DESKTOP'S STATE AND PROFILE COLUMNS
+            (QA G1-08, 2026-10-07): a dot and "implement" twice could
+            not be told apart. State, profile, and the workflow by its
+            short id, whole in the link's title. */}
+        <span className="ov-prun-sub">
+          {t.state.toLowerCase().replace('_', '-')} · {t.runner_profile}
+          {t.workflow_id && (
+            <>
+              {' · '}
+              <a className="ctl-link ov-wf" href={`/workflows/${encodeURIComponent(t.workflow_id)}`} title={t.step_id ? `step ${t.step_id} of ${t.workflow_id}` : t.workflow_id}>
+                {shortWorkflowId(t.workflow_id)}
+              </a>
+            </>
+          )}
+        </span>
+      </span>
+      <em>
+        <Runtime task={t} leasedAt={leasedAt} />
+      </em>
+    </li>
   )
 }
 
@@ -1638,7 +2078,9 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
           kind={b.admin ? 'admin' : 'failed'}
           heading="Spend unassembled"
           say={`Spend is summed from the attempts of the most recent tasks, and the task list itself could not be read. ${b.why} No attempt read was made, so nothing here is a statement about spend.`}
-        />
+        >
+          {readWhy(b)}
+        </CardAbsent>
       )
     }
     return (
@@ -1647,7 +2089,9 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
         heading="No attempt read completed"
         say={`${errorHeading(state.error)} — ${state.error.message} No figure is shown.`}
         explain="read-failed"
-      />
+      >
+        {readWhy({ why: `${errorHeading(state.error)} — ${state.error.message}` })}
+      </CardAbsent>
     )
   }
   if (state.status === 'empty') {
@@ -1659,7 +2103,7 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
         <CardAbsent
           kind="zero"
           heading="No task exists"
-          say="The task read succeeded and returned nothing — a real zero, so there are no attempts to sum."
+          say="The task read succeeded and found no tasks, so there are no attempts to sum."
           explain="absent-vs-zero"
         />
       )
@@ -1668,7 +2112,7 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
       <CardAbsent
         kind="zero"
         heading="No task has run"
-        say="Every task on the page has an attempt count of 0 — a real zero."
+        say="Every task on the page has an attempt count of 0: none of them has started."
         explain="attempt-documents"
       />
     )
@@ -1932,7 +2376,7 @@ export function accountHeadroom(state: Result<AccountsPage>): {
       pct: null,
       best: null,
       sub: 'no account is registered, so the subscription pool supplies nothing',
-      foot: 'read succeeded · a real zero',
+      foot: 'read succeeded',
       reading: false,
       absent: 'no accounts',
       usable: 0,

@@ -1,0 +1,128 @@
+# `swarm-system`: nothing gets in, except TCP 8080 to the live-browser relay
+# (docs/design/live-browser.md §3.3 and §8.3; lane LB-L6, part of #1030).
+#
+# Rendered by `kubernetes/render.py swarm-system` and applied by
+# `kubernetes/apply.sh --swarm-system`, NOT with a tenant: this namespace holds
+# the platform's own relay, `swarm-live` (a single-replica StatefulSet, lane
+# L8's `kubernetes/swarm-system/swarm-live.yaml`), which carries frames, input
+# and the person's keystrokes during a sign-in. Two sources may open a socket
+# to it, both on 8080, and nothing may open one to anything else here:
+#
+#   * the live gate in a tenant's live-browser pod, which dials out with a
+#     tunnel ticket (§3.3 step 2). Admitted by ONE peer carrying both
+#     selectors: a namespace a tenant render made AND a pod the dispatcher
+#     labelled `swarm-live: enabled`. Two peers would be an OR -- every pod in
+#     every tenant namespace, or a pod so labelled in ANY namespace;
+#   * swarm-api, which proxies a viewer's websocket after authenticating it
+#     (§3.3 step 3, relay shape R2, Q9). swarm-api is Cloud Run, not a pod, so
+#     it arrives from its Direct VPC egress subnet and is admitted by an
+#     `ipBlock` of that subnet's range. On Dataplane V2 "Pod traffic is never
+#     covered by an ipBlock rule" (`allow-egress.yaml` records it), so this
+#     rule admits no pod at all, labelled or not.
+#
+# THE RANGE IS RENDERED, NEVER WRITTEN HERE, like the tenant policy's cluster
+# network. apply.sh reads swarm-api's subnetwork from the service itself
+# (`gcloud run services describe`, the run.googleapis.com/network-interfaces
+# annotation) and that subnetwork's ipCidrRange, passes both to render.py, and
+# after --confirm compares the applied policy with them
+# (`kubernetes/network_parity.py --live-ingress`). The annotations record what
+# the object was rendered for.
+#
+# WHAT THAT RANGE ALSO HOLDS, stated plainly. terraform gives swarm-api no
+# subnet of its own: every Cloud Run service and job here uses
+# `module.network.subnetwork_id`, the cluster's primary subnet (the GKE nodes'
+# range). So the ipBlock admits, on 8080, anything that egresses from that
+# subnet -- the scheduler, the reconciler, the broker, Cloud Run worker jobs,
+# and the nodes. None of them holds a ticket, and the relay authorises nothing
+# without one (§3.3: it "verifies tickets it did not mint against a key it
+# shares only with swarm-api"). A swarm-api-only subnet would narrow this to
+# exactly swarm-api, with no change here: apply.sh reads whichever subnet the
+# service names.
+#
+# TCP 8080, PLAIN WS, since owner decision 2026-10-11 (b) (live-browser.md
+# §3.3): browsers never reach the relay, swarm-api proxies them to it, and the
+# relay serves no TLS. Built on 8443 by L6; moved with the relay (LB-L8e).
+#
+# THE RELAY MANIFEST CARRIES THE SAME ALLOW, as `swarm-live-ingress`
+# (kubernetes/swarm-system/swarm-live.yaml, rendered by terraform/infra/live.tf
+# with terraform's subnet range), so the relay is ingress-isolated from the
+# moment it exists, before this file follows it in the same apply. Two copies
+# on purpose, and held together: apply.sh refuses when terraform's range is not
+# the one it read from swarm-api, and network_parity.py judges both with one
+# function. NetworkPolicies are unions, so the copy widens nothing.
+#
+# Egress from swarm-system is not restricted by this file. The relay writes
+# segments to GCS and reads its session document (§3.3, §7); its egress is
+# lane L8's to measure, and a default-deny egress here before that would
+# break the relay silently, the way the 2026-09-24 DNS rule broke workers.
+#
+# NOT MEASURED, and the risks to watch when L8 brings the relay up: kubelet
+# probes and the internal load balancer's health checks reach a pod from the
+# node or from Google's health-check ranges. Dataplane V2 admits the node's
+# own probes; whether the load balancer L8 chooses needs its health-check
+# ranges admitted depends on that choice (a passthrough Service with
+# externalTrafficPolicy Cluster checks the node, not the pod), and is L8's
+# to measure and add here as its own rule, on its own port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: swarm-system-default-deny-ingress
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+spec:
+  # Every pod in swarm-system, including any later component that does not
+  # know this policy exists: a new listener here is closed until a policy
+  # opens it on purpose.
+  podSelector: {}
+  # Ingress-isolated with no `ingress:` key: no rule, so no source. Not
+  # `ingress: []`, which the API server stores as none and every apply would
+  # re-send (default-deny.yaml records the measurement).
+  policyTypes:
+    - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: swarm-allow-live-ingress
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+  annotations:
+    # `run/<project>/<region>/<service>/<subnetwork>` when apply.sh read the
+    # range from swarm-api, `offline-render-not-for-apply` for a render given
+    # none (lint, CI); apply.sh refuses to apply the latter.
+    swarm.saga.xyz/network-source: __SWARM_API_EGRESS_SOURCE__
+    swarm.saga.xyz/swarm-api-egress-cidr: __SWARM_API_EGRESS_CIDR__
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: swarm-live
+  policyTypes:
+    - Ingress
+  ingress:
+    # The live gate in a tenant's live-browser pod. `swarm-tenant` is a label
+    # `namespaces/tenant-namespace.yaml` sets on every tenant namespace and
+    # nothing else here carries; `app.kubernetes.io/part-of: swarm` narrows it
+    # to namespaces the platform made. `swarm-live: enabled` must equal
+    # scheduler.dispatch.LIVE_POD_LABEL. One peer, both selectors.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: swarm
+            matchExpressions:
+              - key: swarm-tenant
+                operator: Exists
+          podSelector:
+            matchLabels:
+              swarm-live: "enabled"
+      ports:
+        - protocol: TCP
+          port: 8080
+    # swarm-api's Direct VPC egress subnet, RENDERED (see the header).
+    - from:
+        - ipBlock:
+            cidr: __SWARM_API_EGRESS_CIDR__
+      ports:
+        - protocol: TCP
+          port: 8080

@@ -41,20 +41,29 @@
 #   scripts/lib/workspace-guard.sh check [--report-only] -- TOOL ARGS...
 #   scripts/lib/workspace-guard.sh run [--report-only] TOOL ARGS...   (the shims)
 #   scripts/lib/workspace-guard.sh self-test [--json] [--case NAME]
+#   scripts/lib/workspace-guard.sh self-test --replay PLAN.jsonl      (judges only)
 #
 # The owner's report-only run, from the repository root:
 #   PATH="$PWD/scripts/lib/guard-bin:$PATH" SWARM_CALL_GUARD=<file> \
 #     SWARM_CALL_GUARD_MODE=report-only scripts/register-tenant.sh --workspace w-…
 set -euo pipefail
+# This file's directory by parameter expansion, not dirname: every judged call
+# is one start of this file, and each process it starts is paid ~129 times a
+# workspace (GUARD-SPEED, #1334). `cd` and `pwd` normalise what is left.
+case "${BASH_SOURCE[0]}" in
+  */*) GUARD_SELF_DIR="${BASH_SOURCE[0]%/*}"; GUARD_SELF_DIR="${GUARD_SELF_DIR:-/}" ;;
+  *)   GUARD_SELF_DIR="." ;;
+esac
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=common.sh
-source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
+source "$(cd -- "${GUARD_SELF_DIR}" && pwd)/common.sh"
 
 GUARD_RULES="${SWARM_LIB_DIR}/workspace-calls.json"
 GUARD_CASES="${SWARM_LIB_DIR}/workspace-guard-cases.json"
 GUARD_BIN_DIR="${SWARM_LIB_DIR}/guard-bin"
 # The rules the judge reads. Only the self-test points it elsewhere (a copy with
-# the WD9 fallback on, to prove C5 both ways); it is a shell variable and not an
+# the WD9 fallback on and one with it off, to prove C4's bucket-metadata shape
+# and C5 both ways whichever the live switch says); it is a shell variable and not an
 # environment knob, so nothing outside this process can swap the rules.
 GUARD_RULES_ACTIVE="${GUARD_RULES}"
 GUARD_REFUSED_RC=86
@@ -76,12 +85,28 @@ GUARD_MANIFEST_GIVEN=0
 # The judge. One jq program over (rules, expectation, call). jq because the
 # repository's other guards are jq (destroy-guard.jq, iam-plan.jq) and the rules
 # are JSON; kept in this file so the guard is one reviewed unit.
+#
+# It is the ONLY jq a judged call starts. The call's arguments arrive as jq's
+# positional arguments, the condition files as --rawfile pairs, the manifest
+# reader's output as text and the deny-list as common.sh's lines, and the
+# program builds from them the values seven separate jq starts used to (lane
+# GUARD-SPEED, #1334). tests/unit/scripts/test_workspace_guard_corpus.py holds
+# every verdict to what the guard said before that change, byte for byte.
 # ---------------------------------------------------------------------------
 # shellcheck disable=SC2016  # a jq program: its $names are jq's, not the shell's
 GUARD_JQ='
 def has_el($x): any(.[]; . == $x);
 def first_of(f): [limit(1; f)] | .[0];
 def unresolved: type == "string" and contains("\u0001");
+
+# The deny-list twice, from SHARED_DENY_LIST in common.sh (one entry a line)
+# and nowhere else: whole, for naming the cluster of a context, and as
+# destroy-guard.jq takes it, for scanning arguments -- guard_deny_json in
+# common.sh, which drops the bare `default` and adds `(default)`.
+# test_workspace_guard_corpus.py holds this to what guard_deny_json prints,
+# entry by entry.
+def deny_whole: $deny_list | split("\n");
+def deny_scan: [deny_whole[] | select(. != "default")] + ["(default)"];
 
 # "{key}" -> the expectation value. A key the expectation does not hold (yet)
 # becomes a byte no real argument carries, so the shape cannot match.
@@ -142,7 +167,7 @@ def ctx_fail($c; $e; $p):
   | (if ($flag | length) > 0 then $flag[-1] else $c.context end) as $ctx
   | if ($flag | length) > 1 then "--context is given more than once"
     elif ($ctx // "") == "" then "no kubectl context is selected"
-    elif ($deny_raw | has_el($ctx | split("_") | last)) then
+    elif (deny_whole | has_el($ctx | split("_") | last)) then
       "context \($ctx) is the cluster \($ctx | split("_") | last), which belongs to another team (SHARED_DENY_LIST)"
     elif (($e.contexts // []) | has_el($ctx)) | not then
       "context \($ctx) is not the swarm cluster (\(($e.contexts // []) | join(" or ") | if . == "" then "<not in the expectation yet>" else . end))"
@@ -266,6 +291,10 @@ def body_fail($s; $b; $e; $rules):
         (if ($j | keys_within(["options"])) then empty else "beginTransaction takes only options" end)
       elif $kind == "transaction_id" then
         (if ($j | keys_within(["transaction"])) then empty else "rollback takes only a transaction" end)
+      elif $kind == "marker" then
+        # The .tenant marker of A5: the tenant and the workspace it is for, nothing else.
+        (if $j == {tenant_id: ($e.tenant_id // null), workspace_id: ($e.workspace_id // null)} then empty
+         else "the marker names \($j | tojson), not the tenant and workspace this job is for" end)
       elif $kind == "runquery_workspace" then
         if ($j | keys_within(["structuredQuery", "transaction", "newTransaction", "readTime"])) | not then
           "runQuery carries a field the guard does not judge"
@@ -304,7 +333,7 @@ def eval_curl($s; $c; $e; $rules):
   | curl_target($e; $p) as $t
   | curl_method($p) as $m
   | ($m == $s.method
-     and (if $s.url then $t.kind == "other"
+     and (if $s.url then ($t.kind == "other" and $t.path == ($s.url | tpl($e) | split("?") | .[0]))
           elif $s.op then ($t.kind == "op" and $t.op == $s.op)
           elif $s.doc then $t.kind == "doc"
           else false end)) as $near
@@ -316,8 +345,8 @@ def eval_curl($s; $c; $e; $rules):
            | if (($s.headers // $rules.tools.curl.default_headers) | has_el($h)) then empty
              else "header \($h | split(":")[0] | tojson) is not one this call sends" end),
         ((($p.fl["-K"] // []) + ($p.fl["--config"] // [])) as $k
-           | if $s.url then (if ($k | length) > 0 then "the metadata server is asked with no curl config" else empty end)
-             elif ($k | length) != 1 or $k[0] != "-" then "a Firestore call reads its bearer header from -K -, exactly once"
+           | if $s.url and (($s.auth // false) | not) then (if ($k | length) > 0 then "the metadata server is asked with no curl config" else empty end)
+             elif ($k | length) != 1 or $k[0] != "-" then "an authenticated call reads its bearer header from -K -, exactly once"
              elif $c.config != "ok" then "the curl config on stdin holds a line other than the one Authorization header"
              else empty end),
         (if $s.url then (if $t.url == ($s.url | tpl($e)) then empty else "the URL is not \($s.url)" end)
@@ -350,7 +379,7 @@ def never($c; $rules):
     else null end;
 
 def deny_hit($c):
-  first_of($c.argv[] as $a | $deny[] as $d
+  first_of($c.argv[] as $a | deny_scan[] as $d
     | if ($d | test("^[A-Za-z0-9.@-]+$")) then
         (if any(($a | [splits("[^A-Za-z0-9.@-]+")])[]; . == $d) then $d else empty end)
       else (if ($a | contains($d)) then $d else empty end) end);
@@ -362,6 +391,17 @@ def command_words($c; $rules):
 
 ($rules_in[0]) as $rules
 | ($e_in[0]) as $e
+| $ARGS.positional as $argv
+# {path: content} for every --condition-from-file, in argument order.
+| (reduce range($ncond) as $i ({}; . + {($ARGS.named["cp\($i)"]): $ARGS.named["cf\($i)"]})) as $files
+# What the manifest reader printed, read as JSON; output that is not a JSON
+# value, or is null or false, is a manifest that could not be read.
+| (if $objects_read then
+     (($objects_text | try fromjson catch null)) as $o
+     | if $o == null or $o == false then {o: null, err: "the manifest could not be read"} else {o: $o, err: $objects_error} end
+   else {o: null, err: $objects_error} end) as $read
+| $read.o as $objects
+| $read.err as $objects_error
 | {tool: $tool, argv: $argv, files: $files, objects: $objects,
    objects_error: (if $objects_error == "" then null else $objects_error end),
    context: $context, config: $config, stopped: $stopped} as $c
@@ -590,17 +630,32 @@ guard_write_private() {
 # The kubeconfig's current-context, read from the file rather than asked of
 # kubectl, so judging a call never runs one. kubectl takes it from the first
 # file in $KUBECONFIG that sets it.
+#
+# Read by the shell, line by line, rather than `sed | sed | tr` (three starts a
+# kubectl call, GUARD-SPEED): the first line that starts `current-context:`,
+# what follows it with the leading whitespace dropped, then every quote YAML may
+# put around the name and every whitespace byte deleted. No context name
+# carries either. Sets GUARD_CONTEXT.
+GUARD_CONTEXT=""
 guard_current_context() {
-  local files="${KUBECONFIG:-${HOME}/.kube/config}" file ctx
+  local files="${KUBECONFIG:-${HOME}/.kube/config}" file line ctx drop
   local -a list=()
+  GUARD_CONTEXT=""
   IFS=':' read -r -a list <<<"${files}"
   for file in ${list[@]+"${list[@]}"}; do
     [[ -n "${file}" && -f "${file}" && -r "${file}" ]] || continue
-    # tr drops the quotes YAML may put around the name (\047 is the single
-    # one) and any whitespace; no context name carries either.
-    ctx="$(sed -n 's/^current-context:[[:space:]]*//p' "${file}" | sed -n '1p' | tr -d '"\047[:space:]')"
+    ctx=""
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+      [[ "${line}" == current-context:* ]] || continue
+      ctx="${line#current-context:}"
+      ctx="${ctx#"${ctx%%[![:space:]]*}"}"
+      for drop in '"' "'" ' ' $'\t' $'\n' $'\v' $'\f' $'\r'; do
+        ctx="${ctx//"${drop}"/}"
+      done
+      break
+    done <"${file}"
     if [[ -n "${ctx}" ]]; then
-      printf '%s' "${ctx}"
+      GUARD_CONTEXT="${ctx}"
       return 0
     fi
   done
@@ -662,14 +717,21 @@ guard_curl_config_ok() {
       fi
     fi
     return 1
-  done < <(printf '%s' "${GUARD_STDIN}")
+  done <<<"${GUARD_STDIN}"
   [[ "${seen}" -eq 1 ]]
 }
 
-# {path: content} for every --condition-from-file, so C4 can compare the
-# condition's expression with the one this tenant's grant must carry.
+# Every readable --condition-from-file, as jq arguments the judge turns into
+# {path: content}, so C4 can compare the condition's expression with the one
+# this tenant's grant must carry: `--arg cpN PATH --rawfile cfN PATH` each, in
+# GUARD_COND_ARGS, and their count in GUARD_COND_N. The judge's own jq reads
+# the files; no jq of its own a file (GUARD-SPEED).
+GUARD_COND_N=0
+GUARD_COND_ARGS=()
 guard_condition_files() {
-  local json='{}' next=0 arg path
+  local next=0 arg path
+  GUARD_COND_N=0
+  GUARD_COND_ARGS=()
   for arg in "$@"; do
     path=""
     if [[ "${next}" -eq 1 ]]; then
@@ -682,10 +744,10 @@ guard_condition_files() {
       continue
     fi
     if [[ -f "${path}" && -r "${path}" ]]; then
-      json="$(printf '%s' "${json}" | jq -c --arg p "${path}" --rawfile c "${path}" '. + {($p): $c}')"
+      GUARD_COND_ARGS+=(--arg "cp${GUARD_COND_N}" "${path}" --rawfile "cf${GUARD_COND_N}" "${path}")
+      GUARD_COND_N=$((GUARD_COND_N + 1))
     fi
   done
-  printf '%s' "${json}"
 }
 
 # Every manifest a kubectl call names, concatenated: -f FILE, -f - (stdin).
@@ -717,7 +779,7 @@ guard_kubectl_manifest() {
     elif [[ "${value}" == *://* ]]; then
       GUARD_MANIFEST_ERR="a manifest named by URL is refused: the guard judges only what it reads"
     elif [[ -f "${value}" && -r "${value}" ]]; then
-      content="$(cat -- "${value}")"
+      content="$(<"${value}")"
       GUARD_MANIFEST+="${content}"$'\n---\n'
     else
       GUARD_MANIFEST_ERR="-f ${value} is not a readable file (a directory is applied whole), so it is refused"
@@ -725,29 +787,56 @@ guard_kubectl_manifest() {
   done
 }
 
-# Resolves symlinks by hand: macOS readlink has no -f.
+# dirname(1) and basename(1), by parameter expansion: a dirname was a process
+# start, seven of them a judged call (GUARD-SPEED). Same answers as coreutils,
+# trailing and repeated slashes included; test_workspace_guard_corpus.py holds
+# them to it. Set GUARD_DIRNAME / GUARD_BASENAME.
+guard_dirname() {
+  local p="$1"
+  while [[ "${p}" == */ && "${p}" != / ]]; do p="${p%/}"; done
+  case "${p}" in
+    */*) p="${p%/*}"
+         while [[ "${p}" == */ ]]; do p="${p%/}"; done
+         GUARD_DIRNAME="${p:-/}" ;;
+    *)   GUARD_DIRNAME="." ;;
+  esac
+}
+guard_basename() {
+  local p="$1"
+  while [[ "${p}" == */ && "${p}" != / ]]; do p="${p%/}"; done
+  if [[ "${p}" == / ]]; then GUARD_BASENAME="/"; else GUARD_BASENAME="${p##*/}"; fi
+}
+
+# Resolves symlinks by hand: macOS readlink has no -f. Sets GUARD_RESOLVED_DIR
+# (physical, from pwd -P) and GUARD_RESOLVED (that directory, a slash, and the
+# name), so a caller compares the directory without a dirname of its own.
 guard_resolve() {
   local path="$1" link
   while [[ -L "${path}" ]]; do
     link="$(readlink "${path}")"
     case "${link}" in
       /*) path="${link}" ;;
-      *)  path="$(dirname -- "${path}")/${link}" ;;
+      *)  guard_dirname "${path}"; path="${GUARD_DIRNAME}/${link}" ;;
     esac
   done
-  printf '%s/%s' "$(cd -- "$(dirname -- "${path}")" && pwd -P)" "$(basename -- "${path}")"
+  guard_dirname "${path}"
+  guard_basename "${path}"
+  GUARD_RESOLVED_DIR="$(cd -- "${GUARD_DIRNAME}" && pwd -P)"
+  GUARD_RESOLVED="${GUARD_RESOLVED_DIR}/${GUARD_BASENAME}"
 }
 
 # The real binary, by absolute path, never a shim: the first TOOL on $PATH
 # outside guard-bin/ (kubectl: $SWARM_KUBECTL first, as kubectl_bin reads it).
+# Sets GUARD_REAL_BIN; returns 1 when there is none.
 guard_real_bin() {
-  local tool="$1" guard_dir dir cand resolved
+  local tool="$1" guard_dir dir cand
+  GUARD_REAL_BIN=""
   guard_dir="$(cd -- "${GUARD_BIN_DIR}" && pwd -P)"
   local -a dirs=()
   if [[ "${tool}" == "kubectl" && "${SWARM_KUBECTL:-}" == /* && -x "${SWARM_KUBECTL}" ]]; then
-    resolved="$(guard_resolve "${SWARM_KUBECTL}")"
-    if [[ "$(dirname -- "${resolved}")" != "${guard_dir}" ]]; then
-      printf '%s' "${resolved}"
+    guard_resolve "${SWARM_KUBECTL}"
+    if [[ "${GUARD_RESOLVED_DIR}" != "${guard_dir}" ]]; then
+      GUARD_REAL_BIN="${GUARD_RESOLVED}"
       return 0
     fi
   fi
@@ -756,22 +845,22 @@ guard_real_bin() {
     [[ "${dir}" == /* && -d "${dir}" ]] || continue
     cand="${dir}/${tool}"
     [[ -f "${cand}" && -x "${cand}" ]] || continue
-    resolved="$(guard_resolve "${cand}")"
-    [[ "$(dirname -- "${resolved}")" == "${guard_dir}" ]] && continue
-    printf '%s' "${resolved}"
+    guard_resolve "${cand}"
+    [[ "${GUARD_RESOLVED_DIR}" == "${guard_dir}" ]] && continue
+    GUARD_REAL_BIN="${GUARD_RESOLVED}"
     return 0
   done
   return 1
 }
 
-# The deny-list twice, from common.sh and nowhere else: as destroy-guard.jq
-# takes it (guard_deny_json: `(default)` added, the bare `default` dropped) for
-# scanning arguments, and whole for naming a context's cluster. Once per process.
-GUARD_DENY_JSON=""
-GUARD_DENY_RAW=""
+# The deny-list from common.sh and nowhere else, one entry a line, for the
+# judge to read whole and as destroy-guard.jq takes it (deny_whole and
+# deny_scan in GUARD_JQ). Joined by the shell: the four jq and the grep the
+# two JSON forms took are gone (GUARD-SPEED).
+GUARD_DENY_LINES=""
 guard_deny_lists() {
-  [[ -n "${GUARD_DENY_JSON}" ]] || GUARD_DENY_JSON="$(guard_deny_json)"
-  [[ -n "${GUARD_DENY_RAW}" ]] || GUARD_DENY_RAW="$(printf '%s\n' "${SHARED_DENY_LIST[@]}" | jq -R . | jq -sc .)"
+  local IFS=$'\n'
+  GUARD_DENY_LINES="${SHARED_DENY_LIST[*]}"
 }
 
 # ---------------------------------------------------------------------------
@@ -801,27 +890,28 @@ guard_judge() {
     *) GUARD_REASON="the guard wraps gcloud, kubectl and curl, not '${tool}'"; return 0 ;;
   esac
 
-  local -a named=()
-  local i=0 arg
-  for arg in "$@"; do
-    named+=(--arg "a${i}" "${arg}")
-    i=$((i + 1))
-  done
-  local argv_json files_json='{}' objects_json='null' objects_err="" context="" config="none"
-  argv_json="$(jq -nc ${named[@]+"${named[@]}"} --argjson n "$#" '[range($n) as $i | $ARGS.named["a\($i)"]]')"
+  # The arguments go to the judge as jq's positional arguments, after --args
+  # --, so an argument that looks like a jq option is still only an argument.
+  local objects_text="" objects_read=false objects_err="" context="" config="none"
+  GUARD_COND_N=0
+  GUARD_COND_ARGS=()
 
   case "${tool}" in
     gcloud)
-      files_json="$(guard_condition_files "$@")" ;;
+      guard_condition_files "$@" ;;
     kubectl)
-      context="$(guard_current_context)"
+      guard_current_context
+      context="${GUARD_CONTEXT}"
       guard_kubectl_manifest "$@"
       if [[ "${GUARD_MANIFEST_GIVEN}" -eq 1 ]]; then
         if [[ -n "${GUARD_MANIFEST_ERR}" ]]; then
           objects_err="${GUARD_MANIFEST_ERR}"
-        elif ! objects_json="$(printf '%s' "${GUARD_MANIFEST}" | python3 -c "${GUARD_MANIFEST_PY}")" \
-             || ! printf '%s' "${objects_json}" | jq -e . >/dev/null 2>&1; then
-          objects_json='null'
+        elif objects_text="$(printf '%s' "${GUARD_MANIFEST}" | python3 -c "${GUARD_MANIFEST_PY}")"; then
+          # The judge reads it as JSON; what is not JSON, null or false is "the
+          # manifest could not be read", as `jq -e .` used to decide here.
+          objects_read=true
+        else
+          objects_text=""
           objects_err="the manifest could not be read"
         fi
       fi ;;
@@ -838,18 +928,18 @@ guard_judge() {
         --slurpfile rules_in "${GUARD_RULES_ACTIVE}" \
         --slurpfile e_in "${exp}" \
         --arg tool "${tool}" \
-        --argjson argv "${argv_json}" \
-        --argjson files "${files_json}" \
-        --argjson objects "${objects_json}" \
+        ${GUARD_COND_ARGS[@]+"${GUARD_COND_ARGS[@]}"} \
+        --argjson ncond "${GUARD_COND_N}" \
+        --arg objects_text "${objects_text}" \
+        --argjson objects_read "${objects_read}" \
         --arg objects_error "${objects_err}" \
         --arg context "${context}" \
         --arg config "${config}" \
         --argjson stopped "${stopped}" \
         --arg env_impersonate "${CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT:-}" \
         --arg env_project "${CLOUDSDK_CORE_PROJECT:-}" \
-        --argjson deny "${GUARD_DENY_JSON}" \
-        --argjson deny_raw "${GUARD_DENY_RAW}" \
-        "${GUARD_JQ}" 2>&1)"; then
+        --arg deny_list "${GUARD_DENY_LINES}" \
+        "${GUARD_JQ}" --args -- "$@" 2>&1)"; then
     GUARD_REASON="the guard could not judge this call: $(printf '%s' "${result}" | sed -n '1p')"
     return 0
   fi
@@ -888,6 +978,8 @@ guard_report_refusal() {
     || err "could not write the stop file ${stop}; the refusal above still stands"
 }
 
+# Sets GUARD_REPORT_ONLY (0 or 1). A variable, not $( ): no subshell a call.
+GUARD_REPORT_ONLY=0
 guard_report_only_wanted() {
   local flag="$1"
   local want=0
@@ -896,7 +988,7 @@ guard_report_only_wanted() {
     warn "workspace-guard: report-only was asked for under SWARM_CALL_GUARD_ENFORCE=1; enforcing"
     want=0
   fi
-  printf '%s' "${want}"
+  GUARD_REPORT_ONLY="${want}"
 }
 
 # ---------------------------------------------------------------------------
@@ -908,7 +1000,8 @@ cmd_run() {
   if [[ "${1:-}" == "--report-only" ]]; then flag=1; shift; fi
   [[ $# -ge 1 ]] || die "usage: workspace-guard.sh run [--report-only] TOOL ARGS..."
   local report_only tool="$1"; shift
-  report_only="$(guard_report_only_wanted "${flag}")"
+  guard_report_only_wanted "${flag}"
+  report_only="${GUARD_REPORT_ONLY}"
   if guard_wants_stdin "${tool}" "$@"; then guard_read_stdin; fi
   guard_judge "${tool}" "$@"
   if [[ "${GUARD_VERDICT}" != "allow" ]]; then
@@ -916,8 +1009,9 @@ cmd_run() {
     [[ "${report_only}" -eq 1 ]] || exit "${GUARD_REFUSED_RC}"
   fi
   local real
-  real="$(guard_real_bin "${tool}")" \
+  guard_real_bin "${tool}" \
     || die "workspace-guard: no ${tool} found on PATH outside scripts/lib/guard-bin/"
+  real="${GUARD_REAL_BIN}"
   # curl reads ~/.curlrc unless -q comes first, and a .curlrc line (a url, a
   # request method, data) would be part of the call without being in the
   # arguments this guard just judged.
@@ -941,7 +1035,8 @@ cmd_check() {
   done
   [[ $# -ge 1 ]] || die "usage: workspace-guard.sh check [--report-only] -- TOOL ARGS..."
   local report_only tool="$1"; shift
-  report_only="$(guard_report_only_wanted "${flag}")"
+  guard_report_only_wanted "${flag}"
+  report_only="${GUARD_REPORT_ONLY}"
   if guard_wants_stdin "${tool}" "$@"; then guard_read_stdin; fi
   guard_judge "${tool}" "$@"
   if [[ "${GUARD_VERDICT}" == "allow" ]]; then
@@ -1082,6 +1177,7 @@ cmd_expect() {
         bucket_url: "gs://\($bucket)",
         gcs_prefix: $prefix,
         marker_url: "gs://\($bucket)/\($prefix)/.tenant",
+        marker_upload_url: "https://storage.googleapis.com/upload/storage/v1/b/\($bucket)/o?uploadType=media&ifGenerationMatch=0&name=\("\($prefix)/.tenant" | @uri)",
         read_expr: $read_expr,
         write_expr: $write_expr,
         forge_slot: $forge_slot,
@@ -1136,12 +1232,64 @@ GUARD_COVERAGE_JQ='
     | ["allow", "refuse"][] as $x
     | select(([$c[] | select(.rule == $id and .expect == $x)] | length) == 0)
     | "\($id) has no case it must \($x)"'
+# One line of a replay plan as shell assignments (see guard_replay).
+# shellcheck disable=SC2016
+GUARD_REPLAY_JQ='
+      "R_TOOL=\(.tool | @sh)",
+      "R_EXPECT=\(.expect | @sh)",
+      "R_KUBECONFIG=\(.kubeconfig | @sh)",
+      "R_FALLBACK=\(.wd9_fallback | tostring | @sh)",
+      "R_HAS_STDIN=\(if .stdin == null then "0" else "1" end | @sh)",
+      "R_STDIN=\((.stdin // "") | @sh)",
+      "R_IMPERSONATE=\(.env_impersonate | @sh)",
+      "R_PROJECT=\(.env_project | @sh)",
+      "R_ARGV=(\(.argv | map(@sh) | join(" ")))"'
+
+# The verdict corpus (tests/unit/scripts/test_workspace_guard_corpus.py): every
+# call the guard's tests have fed it, judged again in this one process, one
+# verdict per line as JSON. The plan names, per call, the expectation file, the
+# kubeconfig and the stdin the call had, all of which the test writes; the
+# rules are the shipped ones with the WD9 switch as the call saw it. It judges
+# and prints; nothing is run, and no stop file is written.
+guard_replay() {
+  local plan="$1" line assignments
+  [[ -f "${plan}" && -r "${plan}" ]] || die "self-test --replay needs a readable plan file"
+  local tmp
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/swarm-workspace-guard.XXXXXX")"
+  # shellcheck disable=SC2064  # expand now: the path is fixed for this run
+  trap "rm -rf '${tmp}'" EXIT
+  jq '.wd9_fallback = true' "${GUARD_RULES}" >"${tmp}/rules-fallback.json"
+  jq '.wd9_fallback = false' "${GUARD_RULES}" >"${tmp}/rules-principal-set.json"
+  local R_TOOL R_EXPECT R_KUBECONFIG R_FALLBACK R_HAS_STDIN R_STDIN R_IMPERSONATE R_PROJECT
+  local -a R_ARGV=()
+  local visited=0
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ -n "${line}" ]] || continue
+    assignments="$(printf '%s' "${line}" | jq -r "${GUARD_REPLAY_JQ}")"
+    eval "${assignments}"
+    GUARD_RULES_ACTIVE="${tmp}/rules-principal-set.json"
+    [[ "${R_FALLBACK}" == "true" ]] && GUARD_RULES_ACTIVE="${tmp}/rules-fallback.json"
+    GUARD_STDIN="${R_STDIN}"
+    GUARD_HAS_STDIN="${R_HAS_STDIN}"
+    SWARM_CALL_GUARD="${R_EXPECT}" KUBECONFIG="${R_KUBECONFIG}" \
+      CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT="${R_IMPERSONATE}" CLOUDSDK_CORE_PROJECT="${R_PROJECT}" \
+      guard_judge "${R_TOOL}" ${R_ARGV[@]+"${R_ARGV[@]}"}
+    GUARD_RULES_ACTIVE="${GUARD_RULES}"
+    jq -nc --arg verdict "${GUARD_VERDICT}" --arg rule "${GUARD_RULE}" \
+          --arg command "${GUARD_COMMAND}" --arg reason "${GUARD_REASON}" \
+      '[$verdict, $rule, $command, $reason]'
+    visited=$((visited + 1))
+  done <"${plan}"
+  [[ "${visited}" -gt 0 ]] || die "self-test --replay visited no call"
+}
+
 cmd_self_test() {
   local json=0 only=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --json) json=1; shift ;;
       --case) only="${2:-}"; shift 2 ;;
+      --replay) guard_replay "${2:-}"; return 0 ;;
       *) die "unknown argument to self-test: $1" ;;
     esac
   done
@@ -1168,6 +1316,7 @@ cmd_self_test() {
   cmd_expect --record "${tmp}/record.json" 2>/dev/null
   cp "${SWARM_CALL_GUARD}" "${tmp}/ready.json"
   jq '.wd9_fallback = true' "${GUARD_RULES}" >"${tmp}/rules-fallback.json"
+  jq '.wd9_fallback = false' "${GUARD_RULES}" >"${tmp}/rules-principal-set.json"
 
   # Built at run time, never a literal: nothing here may look like a credential.
   # {auth_config} is the config line fs_request really writes, around it.
@@ -1213,7 +1362,10 @@ cmd_self_test() {
     if [[ "${CASE_PHASE}" == "stopped" ]]; then
       printf '{"state":"needs_owner","rule":"C2"}\n' >"${SWARM_CALL_GUARD}.stop"
     fi
-    GUARD_RULES_ACTIVE="${GUARD_RULES}"
+    # A case without wd9_fallback is judged under the principal-set grant, not
+    # under whatever the live switch says: the owner turned the fallback on
+    # (2026-10-12), and the cases proving refusal without it must still refuse.
+    GUARD_RULES_ACTIVE="${tmp}/rules-principal-set.json"
     [[ "${CASE_FALLBACK}" == "true" ]] && GUARD_RULES_ACTIVE="${tmp}/rules-fallback.json"
     GUARD_STDIN="${CASE_STDIN}"
     GUARD_HAS_STDIN="${CASE_HAS_STDIN}"
@@ -1290,6 +1442,6 @@ case "${SUBCOMMAND}" in
   check)     cmd_check "$@" ;;
   run)       cmd_run "$@" ;;
   self-test|--self-test) cmd_self_test "$@" ;;
-  -h|--help) sed -n '2,49p' "$0" ;;
+  -h|--help) sed -n '2,48p' "$0" ;;
   *) die "unknown subcommand: ${SUBCOMMAND}" ;;
 esac

@@ -98,10 +98,22 @@
   font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-dim);
   border: 1px solid var(--line); border-radius: 999px; padding: 0 6px;
 }
-.sbf-runners.is-cards .sbf-runner-name { font: 600 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text); }
+/* 500, THE HEAVIEST DM MONO THERE IS (VQA V125). main.tsx bundles 400 and
+   500, and the family ships nothing above 500; a 600 here made Chrome
+   synthesise a smeared bold from the 500 face. */
+.sbf-runners.is-cards .sbf-runner-name { font: 500 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text); }
 .sbf-runners.is-cards .sbf-runner-facts,
 .sbf-runners.is-cards .sbf-runner-room {
   font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim);
+}
+/* THE POOL HOLDING A RUNNER AT ZERO (VQA V126): `.mono` set it at 14px inside
+   these 12px facts and `.id` would break it mid-id at 1280. Mono at the fact's
+   own size, kept whole -- it moves to the next line as one id, and a holder
+   longer than its card is cut with its full name in the title. */
+.sbf-runner-holder {
+  display: inline-block; max-width: 100%; vertical-align: bottom;
+  font-family: var(--mono); font-size: inherit;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .sbf-runners.is-cards .sbf-runner-off { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 
@@ -115,6 +127,15 @@
   display: inline-flex; align-items: center; min-height: 32px; padding: 0 2px;
   cursor: pointer; color: var(--text-dim); font: 500 var(--t-meta)/var(--lh-meta) var(--font);
 }
+/* A DISCLOSURE THAT LOOKS LIKE ONE (VQA V128, as `.wfb-more` in styles.css).
+   `inline-flex` takes the summary out of `display: list-item`, and with it the
+   browser's triangle: "Other runners (4 …)" read as a caption. The marker is
+   drawn instead, a shape that turns on open. */
+.sbf-runners-more > summary { list-style: none; }
+.sbf-runners-more > summary::-webkit-details-marker { display: none; }
+.sbf-runners-more > summary::marker { content: ''; }
+.sbf-runners-more > summary::before { content: '\25B8'; margin-right: 6px; }
+.sbf-runners-more[open] > summary::before { content: '\25BE'; }
 .sbf-runners-more > summary:hover { color: var(--text); }
 .sbf-runners-more > summary:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
 .sbf-runners-more > .sbf-runners-why { display: inline-flex; align-items: center; gap: 4px; margin: 0 0 6px; }
@@ -134,6 +155,87 @@
    frame draws (`.btn.pri.dis`), not a grey bar (#503). */
 .sb-note { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 
+/* WHAT THE CLICK DID, UNDER THE BUTTON (VQA V002/V049, owner decision Q1 on
+   #1038). Every submit form draws its outcome here; the panel's own gap is
+   the space above it, and its parts keep the same 12px between them that the
+   steps keep -- the card sat flush on step 1 when it lived in the build
+   column. A 300px panel, so any unbroken id or address wraps rather than
+   widening it. */
+.sbf-send > .sbf-outcome { display: grid; gap: 12px; min-width: 0; overflow-wrap: anywhere; }
+.sbf-outcome > .state { margin: 0; }
+/* THE CARD SPEAKS AT THE PANEL'S SIZE (live QA SUB-7). `.state p` is the
+   full-page lead, 16px: in a 260px card "That is not a running agent" was set
+   larger than the facts beside it, and the task id broke with one letter on
+   its second line. The panel's facts are meta; the id is micro mono, which
+   holds a 25-character id on one line at that width, and still wraps rather
+   than widening the panel when an id is longer. (0,2,1), so it outranks
+   `.state p` (0,1,1) on specificity rather than on order. */
+.sbf-outcome > .state { padding: 12px; }
+.sbf-outcome > .state p { font-size: var(--t-meta); line-height: var(--lh-meta); }
+.sbf-outcome > .state p.sbf-id { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text); }
+.sbf-outcome > .state p.sbf-woke { margin-top: 8px; }
+/* A FACT IS ITS KEY AND ONE VALUE, AND THE VALUE WRAPS INSIDE ITSELF (VQA
+   V174, V250). A wrapping row of loose parts under the panel's `space-between`
+   set "direct-pr" mid-row, a lone "/" at the edge and "checkpoints" on a line
+   of its own, and in the Created card "checkpoints" floated mid-row beside
+   its mark. A value of several parts is now one element (`.dsp-fact-v`), the
+   row does not wrap, and the value is the box that wraps, right-aligned.
+   A `<code>` stays whole (live QA SUB-8: the slot's `overflow-wrap: anywhere`
+   reached it and the card printed "collec / t"); only the id, which can be
+   longer than the card, still breaks anywhere.
+   THE CARD'S SIZE (VQA V174): the facts were the 14px body beside the card's
+   13px sentences, and the 13px mono values read larger than both. Sans at
+   meta, mono a step under it -- the panel's own pairing (V129) one step down.
+   (0,3,0) and up: `.sbf-send .ctl-fact` in styles.css is (0,2,0) and loads
+   after this sheet. */
+.sbf-send > .sbf-outcome .ctl-fact { flex-wrap: nowrap; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.sbf-send > .sbf-outcome .ctl-fact > :not(b) { min-width: 0; }
+.sbf-send > .sbf-outcome .ctl-fact code { font-size: var(--t-micro); white-space: nowrap; overflow-wrap: normal; }
+.sbf-send > .sbf-outcome .ctl-fact .mono { font-size: var(--t-micro); }
+/* EVERY PART OF THE CARD IS 8px FROM THE LAST (VQA V174, V250, V254). The
+   facts lists are `margin: 0` in the panel, so "progress —" touched "accepted
+   as", the task id touched the sentence above it and the facts below, and a
+   422's last fact touched "Nothing was created…". */
+.sbf-send > .sbf-outcome > .state > * + * { margin-top: 8px; }
+/* A TASK ID IS SPLIT EVENLY WHEN IT MUST BE SPLIT (VQA V250): a 36-character
+   id at 1440 left "d4" alone on its second line. Every character is a break
+   opportunity, and the lines are balanced, so a long id is two even halves. */
+.sbf-send > .sbf-outcome > .state p.sbf-id { word-break: break-all; text-wrap: balance; }
+/* THE SLOT TAKES FOCUS AFTER A CLICK (VQA V255); from the keyboard it shows. */
+.sbf-send > .sbf-outcome:focus { outline: none; }
+.sbf-send > .sbf-outcome:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: var(--radius); }
+/* The steps a refusal names (V051), each a way to its card. */
+.sbf-refused { margin: 0; padding-left: 16px; display: grid; gap: 4px; }
+
+/* A VALUE THE PANEL CUTS (VQA V130): one line, an ellipsis, the whole value in
+   its title -- the issue panel's rule for its reference (`.in-send .ctl-fact
+   code`, intake.css). A repository address `repositorySlug` cannot shorten
+   wrapped over eight lines here. */
+.sbf-send .ctl-fact { max-width: 100%; }
+.sbf-send .ctl-fact > code.sbf-cut {
+  display: inline-block; min-width: 0; max-width: 100%; vertical-align: bottom;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal;
+}
+
+/* "N steps not ready: a, b, c" (VQA V131): a name and its comma are one
+   unbroken run, so no line opens on a comma. */
+.sbf-gap-i { white-space: nowrap; }
+
+/* THE POOLS IN "ROOM FOR N MORE" ARE DM MONO (VQA V257): a bare `<code>` took
+   the browser's generic `monospace` at 14px. At the meta step beside the 14px
+   sans, the send panel's pairing (V129): mono is not louder than the words. */
+.sbf-room code { font-family: var(--mono); font-size: var(--t-meta); }
+
+/* ---- the issue form (intake.css owns the rest) --------------------------- */
+/* A FAILED PREVIEW READ IS 12px UNDER THE INPUT ROW (VQA V251), as a 404's
+   `.in-refusal` is; the panel sat flush. */
+.in-read-failed { margin-top: 12px; }
+/* THE REFERENCE AND ITS DOT ARE ONE RUN OF TEXT (VQA V252). The item is a flex
+   row in intake.css, where a wrapped reference is one box and the dot another,
+   left at the card's right edge; as a block of inline text the dot follows the
+   last line, held by the no-break space before it. (0,3,0) over (0,2,0). */
+.in-meta > .in-meta-i.is-ref { display: block; }
+
 /* ---- the workflow form (G1) ---------------------------------------------- */
 /* A stage is a dashed band (the frame's `.stage`); its steps are cards. */
 .sbf-build .wfb-stage {
@@ -149,7 +251,7 @@
   padding: 8px 10px;
 }
 /* A STEP WITH NO RUNNER IS FLAGGED ON ITS EDGE, and its select and the
-   summary's "not ready" name it in words. */
+   summary's "not ready" name it in words. So is a step the API refused (V051). */
 .wfb-steps > .wfb-step.is-bad { border-color: var(--warn-ink); }
 
 .sb-runner-select {
@@ -158,6 +260,14 @@
   border-radius: var(--ctl-radius-sm);
 }
 .sb-runner-select[aria-invalid='true'] { color: var(--text-dim); }
+/* The runner's size is one run (VQA V127): its own dots never open a line. */
+.wfb-cost > .sb-runner-size { white-space: nowrap; }
+/* AND THE LINE IS TEXT, NOT A FLEX ROW (VQA2 V127). `.wfb-cost` is a wrapping
+   flex row in styles.css, so each " · " between the facts was an anonymous
+   item of its own: the no-break space in it could hold it to nothing, and a
+   line ended on "Cloud Run ·" while the next opened on "· anthropic key
+   present". In inline flow the space binds the dot to the fact before it. */
+.wfb-step > .wfb-cost { display: block; }
 
 /* "If a step fails" and "Priority", in step 2 (G1 frames 7-8). */
 .sb-step .sb-sub {
@@ -172,7 +282,10 @@
    caller. What this group adds is the explanation under each title: the
    muted token at the body size, regular weight -- the strategy's bold line is
    its pull-request count, which is the decision; this is a description. */
-.dsp-option-say { font-size: var(--t-body); line-height: var(--lh-body); color: var(--text-dim); }
+/* AT THE META SIZE (VQA V253): at the body size these were 14px in the card
+   under the merge options' 13px `.dsp-count`, two description sizes in one
+   card. The muted ink is still what tells it from a pull-request count. */
+.dsp-option-say { font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
 .sb-prio { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .sb-prio > input { width: 92px; min-height: 32px; border-radius: var(--ctl-radius-sm); font-family: var(--mono); }
 .sb-prio > small { flex: 1 1 260px; }
@@ -263,6 +376,53 @@
 /* "+ ADD SETTING": THE KEY OVER ITS NOTE (D34). Key and note side by side
    squeezed both into two ragged columns; the note now sits under its key,
    left-aligned, in a list wide enough for a sentence. */
-.sbf-addset > .sbf-addset-list { width: min(420px, 100%); }
+.sbf-addset > .sbf-addset-list { width: min(420px, 100%); scroll-margin-bottom: 12px; }
 .sbf-addset-list > .sbf-addset-item { flex-direction: column; align-items: flex-start; gap: 2px; }
 .sbf-addset-list > .sbf-addset-item em { text-align: left; }
+
+/* A SETTING'S "remove" IS ON ITS NAME'S LINE AND AFTER ITS FIELD IN TAB ORDER
+   (live QA SUB-17). The button follows the value in the DOM, so a keyboard
+   meets the setting before the way to delete it; the grid draws it back
+   beside the name, where it was. Every other part of the row spans both
+   columns and is placed below row 1, in its source order. */
+.sbf-field.has-remove { grid-template-columns: auto 1fr; column-gap: var(--ctl-s2); }
+.sbf-field.has-remove > * { grid-column: 1 / -1; }
+.sbf-field.has-remove > .sbf-key { grid-row: 1; grid-column: 1; }
+.sbf-field.has-remove > .sbf-remove { grid-row: 1; grid-column: 2; justify-self: start; align-self: center; }
+
+/* THE BROWSER TOOL (BSTATUS-SUBMIT, owner decision 2026-10-14). A segmented
+   control of native radios: the radio is hidden visually but keeps the
+   keyboard, the focus and the role; its label is the segment. One row on a
+   desktop; two to a row on a phone, where four segments of
+   "dev-browser"-length text overflow a 390px card. Colours are the theme's
+   tokens only, so both themes read the checked segment the same way. */
+.btp { display: grid; gap: 4px; margin: 0 0 12px; }
+.btp-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.btp-h { font: 600 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+.btp-seg {
+  display: grid; grid-template-columns: repeat(4, auto); justify-content: start;
+  border: 1px solid var(--ctl-bd); border-radius: var(--r-ctl); overflow: hidden; background: var(--surface);
+}
+.btp-opt {
+  position: relative; display: flex; align-items: center; justify-content: center; min-height: var(--h-ctl);
+  padding: 0 12px; border-right: 1px solid var(--line); cursor: pointer; white-space: nowrap;
+  font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); background: var(--surface);
+}
+.btp-opt:last-child { border-right: 0; }
+.btp-opt > input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: inherit; }
+.btp-opt:hover:not(.is-off) { color: var(--text); }
+.btp-opt.is-on { background: var(--sk-acs); color: var(--sk-ac); font-weight: 600; }
+.btp-opt.is-off { opacity: .45; cursor: not-allowed; }
+.btp-opt:focus-within { outline: 2px solid var(--sk-ac); outline-offset: -2px; }
+.btp-hint, .btp-jev-off, .btp-net { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.btp-hint:empty { display: none; }
+.btp-notice {
+  margin: 0; padding: 4px 8px; border-left: 2px solid var(--info); background: var(--surface-2);
+  font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text);
+}
+
+@media (max-width: 560px) {
+  .btp-seg { grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
+  .btp-opt { min-height: 44px; border-bottom: 1px solid var(--line); }
+  .btp-opt:nth-child(2n) { border-right: 0; }
+}

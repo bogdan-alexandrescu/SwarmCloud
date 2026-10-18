@@ -67,6 +67,9 @@ function visibleText(root: Element): string {
     // An id drawn as an id -- one token alone in a code, mono or id element,
     // like the step a workflow integrates through -- is the user's data.
     if (n.parentElement?.matches('code, .mono, .id') && /^\s*[\w.-]+\s*$/.test(t)) continue
+    // An issue's `#N` is the user's reference, drawn on its own so the repository
+    // is the part a narrow cell cuts (.rn-refcut-n); it is not a number we print.
+    if (n.parentElement?.matches('.rn-refcut-n') && /^#\d+$/.test(t)) continue
     words.push(t)
   }
   return words.join(' ').replace(/gs:\/\/\S+/g, ' ').replace(/\s+/g, ' ')
@@ -79,6 +82,10 @@ function findings(text: string): string[] {
     for (const m of text.matchAll(g)) {
       const hit = m[0].trim()
       if (what === 'a code identifier' && TOKENS.has(hit)) continue
+      // A task or workflow id is the user's data, as the header says. The
+      // demo's ids are words (`task_wf_plan`), not hex, and the Recent list
+      // a finished agent's page now opens beside it (QA12-26) prints them.
+      if (what === 'a code identifier' && /^(?:task|wf)_/.test(hit)) continue
       const at = m.index ?? 0
       out.push(`${what}: "${hit}" in "…${text.slice(Math.max(0, at - 50), at + 60).trim()}…"`)
     }

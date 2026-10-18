@@ -22,9 +22,12 @@ network, no emulator.
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 
 import json
+import urllib.error
 
 from swarm_api import issueci, issueruns
 
@@ -122,6 +125,51 @@ def test_green_with_the_keyword_written_submits_one_merge_continuing_the_integra
     # GitHub reports it merged: DONE.
     writes.pulls[PR]["merged"] = True
     writes.pulls[PR]["state"] = "closed"
+    done = _read(client, clock, running["id"])
+    assert done["state"] == "DONE" and done["green_sha"] == SHA_A
+
+
+def test_a_green_run_whose_merge_is_in_flight_is_not_failed_by_the_checking_deadline(
+    client, db, objects, writes, clock,
+):
+    # RUNS (2026-10-12): the deadline ends a run nobody can move on. A green
+    # `auto_merge` run waits on its merge -- or on a person's merge approval
+    # -- and both end it themselves.
+    running = _checking(client, db, objects, writes)
+    writes.check(SHA_A, "unit", "success")
+    assert _read(client, clock, running["id"])["state"] == "CHECKING"
+    assert len(_merge_workflows(db)) == 1
+
+    clock.at += timedelta(seconds=issueci.CHECKING_DEADLINE_SECONDS) * 2
+    run = _read(client, clock, running["id"])
+    assert run["state"] == "CHECKING" and len(_merge_workflows(db)) == 1
+
+
+def test_a_green_run_whose_reads_then_fail_transiently_is_not_failed_by_the_deadline(
+    client, db, objects, writes, clock,
+):
+    # WRITEBACK (2026-10-12): checks green on GitHub, the merge in flight, and
+    # then GitHub unreachable. What blocks the run is the wire, not its CI: it
+    # keeps waiting on its merge, retrying the read, and says why.
+    running = _checking(client, db, objects, writes)
+    writes.check(SHA_A, "unit", "success")
+    assert _read(client, clock, running["id"])["state"] == "CHECKING"
+    assert len(_merge_workflows(db)) == 1
+
+    writes.raise_for["GET"] = urllib.error.URLError(TimeoutError("timed out"))
+    stuck = _read(client, clock, running["id"])
+    assert stuck["pull_request"]["read_error"].startswith("GitHub writeback failing since ")
+
+    clock.at += timedelta(seconds=issueci.CHECKING_DEADLINE_SECONDS) * 2
+    run = _read(client, clock, running["id"])
+    assert run["state"] == "CHECKING", run.get("error")
+    assert run["pull_request"]["checks"] == "green"
+    assert run["pull_request"]["read_attempts"] == 2
+
+    del writes.raise_for["GET"]
+    writes.pulls[PR]["merged"] = True
+    writes.pulls[PR]["state"] = "closed"
+    clock.at += timedelta(seconds=issueci.READ_BACKOFF_MAX_SECONDS)
     done = _read(client, clock, running["id"])
     assert done["state"] == "DONE" and done["green_sha"] == SHA_A
 

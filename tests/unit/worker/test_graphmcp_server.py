@@ -73,7 +73,7 @@ def rows(answer: dict, rel: str | None = None) -> list[dict]:
 
 # --- the transport ------------------------------------------------------------
 
-def test_the_server_speaks_mcp_over_stdio_with_the_six_tools(built):
+def test_the_server_speaks_mcp_over_stdio_with_the_ten_tools(built):
     repo, snapshot, document = built
     graph = gf.StdioServer(snapshot, workdir=repo)
     try:
@@ -87,7 +87,8 @@ def test_the_server_speaks_mcp_over_stdio_with_the_six_tools(built):
         assert graph.request("ping")["result"] == {}
         listed = graph.request("tools/list")["result"]["tools"]
         assert [t["name"] for t in listed] == ["search", "context", "impact", "tests_for",
-                                               "neighbours", "territory"]
+                                               "neighbours", "territory", "similar_changes",
+                                               "rules_for", "call_graph", "index"]
         text, failed = graph.call("context", {"symbol": LOAD_USER})
         assert not failed
         assert json.loads(text)["freshness"]["index_sha"] == document["commit_sha"]

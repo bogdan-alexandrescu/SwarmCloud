@@ -1,0 +1,70 @@
+==> 23 changed path(s) in origin/main...HEAD and the work tree; 39 test file(s) read them or guard the repository:
+tests/unit/scripts/test_docs_describe_what_was_built.py
+tests/unit/scripts/test_docs_spec_amendments.py
+tests/unit/control_plane/test_runtimes_screen.py
+tests/unit/common/test_specsign_covers.py
+tests/unit/control_plane/test_comment_truth_177.py
+tests/unit/control_plane/test_continuation_scope_is_narrow.py
+tests/unit/control_plane/test_forge_slot_resolution.py
+tests/unit/control_plane/test_forgeperms.py
+tests/unit/control_plane/test_git_token_probe.py
+tests/unit/control_plane/test_git_token_registry.py
+tests/unit/control_plane/test_git_token_resolution.py
+tests/unit/control_plane/test_git_token_reverify.py
+tests/unit/control_plane/test_issue_preview.py
+tests/unit/control_plane/test_issue_run_keeps_the_issue_read.py
+tests/unit/control_plane/test_issue_runs.py
+tests/unit/control_plane/test_issue_writeback.py
+tests/unit/control_plane/test_not_ready_long_reason.py
+tests/unit/control_plane/test_pool_admin_is_narrow.py
+tests/unit/control_plane/test_repository_merge_policy.py
+tests/unit/control_plane/test_repository_test_map.py
+tests/unit/control_plane/test_schedtypes_observer.py
+tests/unit/control_plane/test_spec_signing_every_submitter.py
+tests/unit/control_plane/test_tenant_isolation.py
+tests/unit/control_plane/test_verdict_publish.py
+tests/unit/control_plane/test_waker_topic_path.py
+tests/unit/mcp/test_plugin_commands.py
+tests/unit/scripts/test_auto_merge_workflow.py
+tests/unit/scripts/test_docs_record_what_shipped.py
+tests/unit/scripts/test_lane_queue_design_doc.py
+tests/unit/scripts/test_merge_step_docs.py
+tests/unit/scripts/test_onboarding_docs_and_mockup.py
+tests/unit/scripts/test_onboarding_migration.py
+tests/unit/scripts/test_register_tenant_forge_reader.py
+tests/unit/scripts/test_repo_index_design_doc.py
+tests/unit/worker/test_forge_no_redirect.py
+tests/unit/worker/test_merge_action.py
+tests/unit/worker/test_reconciler_service.py
+tests/unit/worker/test_repo_index_module_calls.py
+tests/unit/worker/test_repo_index_search.py
+bash scripts/lib/check-contract-parity.sh
+
+== pytest: 39 file(s), -n auto ==
+........................................................................ [ 63%]
+........................................................................ [ 67%]
+........................................................................ [ 71%]
+........................................................................ [ 75%]
+........................................................................ [ 78%]
+........................................................................ [ 82%]
+........................................................................ [ 86%]
+........................................................................ [ 90%]
+........................................................................ [ 94%]
+........................................................................ [ 98%]
+.......................                                                  [100%]/workspace/att_3efff9c1024640279107/work/repo/.venv/lib/python3.11/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+  from starlette.testclient import TestClient as TestClient  # noqa
+
+============================= slowest 10 durations =============================
+9.49s call     tests/unit/control_plane/test_spec_signing_every_submitter.py::test_only_the_signing_paths_create_a_task_document
+7.57s call     tests/unit/scripts/test_register_tenant_forge_reader.py::test_the_touched_scripts_are_shellcheck_clean
+5.46s call     tests/unit/scripts/test_docs_spec_amendments.py::test_every_citation_is_a_symbol_or_an_anchor_that_resolves[contract-change-requests.md]
+4.17s call     tests/unit/scripts/test_register_tenant_forge_reader.py::test_a_full_registration_rerun_with_the_binding_present_adds_nothing_for_swarm_api
+4.09s call     tests/unit/scripts/test_register_tenant_forge_reader.py::test_add_provider_git_binds_the_worker_and_swarm_api_on_that_one_secret
+3.99s call     tests/unit/scripts/test_register_tenant_forge_reader.py::test_a_full_registration_with_git_binds_swarm_api_on_git_alone
+3.85s call     tests/unit/scripts/test_docs_spec_amendments.py::test_every_citation_is_a_symbol_or_an_anchor_that_resolves[child-tasks.md]
+3.63s call     tests/unit/worker/test_merge_action.py::test_the_step_closes_what_close_merged_issues_sh_closes[beyond_a_page]
+3.52s call     tests/unit/worker/test_forge_no_redirect.py::test_no_module_that_handles_the_forge_token_builds_its_own_opener[apps/swarm-api/swarm_api]
+3.50s call     tests/unit/scripts/test_docs_record_what_shipped.py::test_every_python_test_issue_runs_cites_exists
+1823 passed in 156.19s (0:02:36)
+  ok 39 guard and source-reading test file(s) and contract parity pass
+exit=0

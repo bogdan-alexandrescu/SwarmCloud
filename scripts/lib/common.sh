@@ -173,6 +173,12 @@ load_env() {
   # the bucket under its real name, and the next run says the same thing.
   ARTIFACT_BUCKET="${ARTIFACT_BUCKET:-swarm-artifacts-${PROJECT_ID}}"
   ARTIFACT_REGISTRY="${ARTIFACT_REGISTRY:-swarm-images}"
+  # The release files image builds read instead of GitHub downloads, matching
+  # terraform/infra/build_mirror.tf:
+  #   name = "${var.name_prefix}-build-mirror-${var.project_id}"
+  # Filled by scripts/refresh-build-mirror.sh; read by build-images.sh's
+  # Cloud Build step (lib/build-mirror.sh, docs/runbooks/build-mirror.md).
+  BUILD_MIRROR_BUCKET="${BUILD_MIRROR_BUCKET:-swarm-build-mirror-${PROJECT_ID}}"
   # The swarm's OWN state bucket, created by terraform/bootstrap. Deliberately
   # not saga-agents-terraform-state-staging: that bucket belongs to another team
   # (it is on the deny-list below) and putting our state in it would make our
@@ -215,7 +221,7 @@ load_env() {
   IMAGE_REPO="${IMAGE_REPO:-${IMAGE_HOST}/${PROJECT_ID}/${ARTIFACT_REGISTRY}}"
 
   export PROJECT_ID REGION ZONE ENVIRONMENT FIRESTORE_DATABASE ARTIFACT_BUCKET
-  export ARTIFACT_REGISTRY TF_STATE_BUCKET TF_STATE_PREFIX TF_BOOTSTRAP_STATE_PREFIX GKE_CLUSTER GKE_LOCATION
+  export ARTIFACT_REGISTRY BUILD_MIRROR_BUCKET TF_STATE_BUCKET TF_STATE_PREFIX TF_BOOTSTRAP_STATE_PREFIX GKE_CLUSTER GKE_LOCATION
   export PUBSUB_TOPIC SCHEDULER_JOB API_SERVICE SCHEDULER_SERVICE QUOTA_SERVICE RECONCILER_SERVICE
   export API_PREFIX HTTP_TIMEOUT API_HOST IMAGE_HOST IMAGE_REPO
 
@@ -324,6 +330,50 @@ guard_deny_json() {
 # platform in this project would need its own; the default is what
 # terraform/infra names every resource with.
 guard_name_prefix() { printf '%s' "${SWARM_NAME_PREFIX:-swarm-}"; }
+
+# ---------------------------------------------------------------------------
+# Images a release promotes, and jobs a release may not move
+# ---------------------------------------------------------------------------
+#
+# OWNER-PINNED JOBS. A Cloud Run job here is created by terraform/bootstrap and
+# runs the image the OWNER pinned there by digest -- never what a release
+# promoted. By design (docs/workspaces.md, "only the owner's bootstrap apply
+# moves that digest", and §2.4 R1): swarm-workspace-apply runs as a privileged
+# account, so a merge alone must never change what it runs. After any release
+# that rebuilds its image the job therefore LAGS the promoted digest until the
+# owner re-pins it, and that is the design working, not a broken deploy.
+#
+# deploy.sh reads this list, and only this list, to tell that lag (a warning
+# and "owner action pending") from a job on an image nobody released (still a
+# failure). Each entry is JOB=VARIABLE: the job's name, and the
+# terraform/bootstrap variable that pins its image -- the one the owner sets.
+# tests/unit/scripts/test_owner_pinned_jobs.py holds this to every
+# google_cloud_run_v2_job terraform/bootstrap declares.
+OWNER_PINNED_JOBS=(
+  "swarm-workspace-apply=workspace_apply_image"
+)
+
+# owner_pinned_job_variable JOB -- the bootstrap variable that pins JOB's
+# image, or return 1 when a release (terraform/infra) pins it instead.
+owner_pinned_job_variable() {
+  local entry
+  for entry in "${OWNER_PINNED_JOBS[@]}"; do
+    if [[ "${entry%%=*}" == "$1" ]]; then
+      printf '%s\n' "${entry#*=}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# THE PROMOTION MARK. Moving `:<channel>` leaves no trace of the digest it
+# moved away from, so nothing could answer "did some earlier release promote
+# this digest?". push-images.sh therefore also tags every digest it promotes
+# `<channel>-promoted-<release tag>`, a tag that never moves; deploy.sh asks
+# for it before it calls a lagging owner-pinned job "awaiting re-pin" rather
+# than "an image nobody released". Compared exactly, never through gcloud's
+# word-matching `tags:` filter (see push-images.sh, digest_for).
+promotion_mark_prefix() { printf '%s-promoted-' "$1"; }
 
 # ---------------------------------------------------------------------------
 # Is a shared resource still there?
@@ -582,6 +632,29 @@ tf_root() {
   local dir="${REPO_ROOT}/terraform/infra"
   [[ -d "${dir}" ]] || die "no terraform root: ${dir}"
   printf '%s' "${dir}"
+}
+
+# Where terraform keeps a root's initialised state (backend config, providers):
+# `.terraform` under the root, unless TF_DATA_DIR says otherwise -- terraform's
+# own override, relative to the root when it is not absolute.
+tf_data_dir() {
+  local root
+  root="$(tf_root)"
+  case "${TF_DATA_DIR:-}" in
+    "") printf '%s/.terraform' "${root}" ;;
+    /*) printf '%s' "${TF_DATA_DIR}" ;;
+    *)  printf '%s/%s' "${root}" "${TF_DATA_DIR}" ;;
+  esac
+}
+
+tf_initialised() { [[ -d "$(tf_data_dir)" ]]; }
+
+# The exact command that initialises terraform/infra for this environment, as
+# `make tf-init` runs it: this environment's state, in the swarm's own bucket.
+# Printed for an operator to run, so it names the root relative to the repo.
+tf_init_command() {
+  printf 'terraform -chdir=terraform/infra init -input=false -reconfigure -backend-config=bucket=%s -backend-config=prefix=%s' \
+    "${TF_STATE_BUCKET}" "${TF_STATE_PREFIX}"
 }
 
 # The variables for this environment. Absent is fatal rather than defaulted:
@@ -1111,12 +1184,130 @@ api_url() {
 # Nothing is lost by sending an access token: IAP sends the backend NO
 # Authorization header of its own and swarm-api authenticates the caller from
 # `X-Goog-IAP-JWT-Assertion` instead (apps/swarm-api/swarm_api/deps.py:198).
+#
+# A LAPTOP AT THE FRONT DOOR PRESENTS ITS `sc login` SIGN-IN, not the
+# operator's gcloud access token (#1334). That token is the third row above --
+# 401, error 900 -- and it is what this function handed out until 2026-10-16,
+# so scripts/startup-measure.sh and scripts/browser-bench.sh failed their first
+# request from a laptop while the same bodies went through `SwarmClient`, 60/60.
+# A Google-managed IAP client admits a program only through an allow-listed
+# client; the Desktop client `sc login` signs in with is that client
+# (apps/swarm-mcp/swarm_mcp/signin.py, terraform/bootstrap/
+# iap_programmatic_clients.tf), and IAP forwards the operator's OWN identity,
+# so the API files the work under their tenant. SWARM_IMPERSONATE_SA (CI, and
+# an operator acting for the verification tenants) and Cloud Run's metadata
+# server keep the access-token path above, unchanged.
+#
+# Prefer api_auth_header, which hands curl a header FILE; this prints the bare
+# token for the callers that still build an auth_config from it.
 api_credential() {
   if api_is_front_door; then
-    access_token
+    if _api_uses_signin; then
+      local file line=""
+      file="$(mktemp "${TMPDIR:-/tmp}/swarm-auth.XXXXXX")"
+      api_auth_header "${file}" || { rm -f "${file}"; return 1; }
+      IFS= read -r line <"${file}" || true
+      rm -f "${file}"
+      printf '%s' "${line#"${_API_AUTH_PREFIX} "}"
+    else
+      access_token
+    fi
   else
     id_token
   fi
+}
+
+# True when this shell reaches the front door as a signed-in person: not CI's
+# impersonated service account, not a Cloud Run service account.
+_api_uses_signin() {
+  [[ -z "${SWARM_IMPERSONATE_SA:-}${K_SERVICE:-}${CLOUD_RUN_JOB:-}" ]] && api_is_front_door
+}
+
+# _signin_mint FILE -- write the Authorization header (Bearer scheme, the ID
+# token) for this front door into FILE, mode 0600, from the sign-in `sc login` cached. Returns 3 when
+# there is none. Prints nothing: the token goes from swarm_mcp's refresh
+# straight into the file, and never into argv, stdout or a log.
+#
+# SWARM_URL is the address the API is reached at, so swarm_mcp's resolver
+# (config.resolve, layer 2) picks the context signed in to THIS deployment --
+# a token minted for one front door is never sent to another.
+_signin_mint() {
+  local file="$1" rc=0 errors
+  local py=()
+  read -r -a py <<<"$(swarm_python)"
+  [[ "${#py[@]}" -gt 0 ]] || return 4
+  errors="$(mktemp "${TMPDIR:-/tmp}/swarm-signin.XXXXXX")"
+  SWARM_URL="$(api_url)" "${py[@]}" - "${file}" 2>"${errors}" <<'PY' || rc=$?
+import os
+import sys
+
+path = sys.argv[1]
+try:
+    from swarm_mcp import config, signin
+except ImportError as exc:
+    print(f"swarm_mcp is not importable ({type(exc).__name__}); run: uv sync", file=sys.stderr)
+    sys.exit(4)
+try:
+    deployment = config.resolve()
+    if deployment is None or not deployment.client_id:
+        sys.exit(3)
+    token = signin.SignedIn(deployment).id_token()
+except signin.SignInRequired:
+    sys.exit(3)
+except Exception as exc:  # noqa: BLE001 - reported by type and message, never by value
+    print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
+    sys.exit(4)
+fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w") as fh:
+    fh.write("Authorization: Bearer " + token + "\n")
+PY
+  [[ ! -s "${errors}" ]] || redact <"${errors}" >&2 || true
+  rm -f "${errors}"
+  return "${rc}"
+}
+
+# api_auth_header FILE -- the Authorization header for the API, in FILE (0600),
+# for `curl -H @FILE`; the caller removes FILE when the request returns.
+#
+# The sign-in is minted once per shell and re-minted after _SIGNIN_TTL
+# seconds, inside the ID token's hour: one browser-bench batch is 60 requests,
+# and each mint is a Python start and a round trip to Google. Like
+# _ACCESS_TOKEN, the cache lives in this shell's memory; a $(...) caller mints
+# its own.
+_SIGNIN_HEADER=""
+_SIGNIN_AT=0
+#: The header line's name and scheme; the credential follows one space.
+_API_AUTH_PREFIX="Authorization: Bearer"
+#: 45 minutes: swarm_mcp refreshes 5 minutes before expiry, so a header this
+#: old still has at least 10 minutes left on it.
+_SIGNIN_TTL=2700
+api_auth_header() {
+  local file="$1" token rc=0
+  : >"${file}"
+  chmod 600 "${file}"
+  if _api_uses_signin; then
+    if [[ -n "${_SIGNIN_HEADER}" && $((SECONDS - _SIGNIN_AT)) -lt ${_SIGNIN_TTL} ]]; then
+      printf '%s\n' "${_SIGNIN_HEADER}" >"${file}"
+      return 0
+    fi
+    _signin_mint "${file}" || rc=$?
+    if [[ "${rc}" -eq 3 ]]; then
+      err "no sign-in for $(api_url): its front door (IAP) refuses a gcloud user token (401, error 900)."
+      err "Sign in as yourself once, then re-run -- run: uv run sc login"
+      err "(CI and the verification tenants use SWARM_IMPERSONATE_SA instead; .env.example says which.)"
+      return 1
+    elif [[ "${rc}" -ne 0 ]]; then
+      err "could not read the \`sc login\` sign-in for $(api_url) (see above); run: uv run sc login"
+      return 1
+    fi
+    IFS= read -r _SIGNIN_HEADER <"${file}" || true
+    [[ -n "${_SIGNIN_HEADER}" ]] || { err "the sign-in helper wrote no header; run: uv run sc login"; return 1; }
+    _SIGNIN_AT=${SECONDS}
+    return 0
+  fi
+  token="$(api_credential)" || return 1
+  [[ -n "${token}" ]] || return 1
+  printf '%s %s\n' "${_API_AUTH_PREFIX}" "${token}" >"${file}"
 }
 
 # Turn IAP's refusal into the sentence that names the fix.
@@ -1153,24 +1344,28 @@ _api_explain_iap() {
 API_STATUS=0
 api_request() {
   local method="$1" path="$2" body="${3:-}"
-  local url token response
+  local url response header
   local tenant_header=()
   url="$(api_url)${path}"
-  token="$(api_credential)"
   [[ -z "${SWARM_API_TENANT:-}" ]] || tenant_header=(-H "X-Swarm-Tenant: ${SWARM_API_TENANT}")
 
-  # -K - : the Authorization header arrives on stdin, never in argv. See
-  # auth_config above for why that distinction matters for an ID token.
+  # -H @file: the Authorization header arrives from a 0600 file, never in
+  # argv (see auth_config above for why that matters), and the file is gone
+  # when the request returns. api_auth_header says why a credential is missing;
+  # without one there is no request to make.
+  header="$(mktemp "${TMPDIR:-/tmp}/swarm-auth.XXXXXX")"
+  api_auth_header "${header}" || { rm -f "${header}"; API_STATUS=0; exit 1; }
   if [[ -n "${body}" ]]; then
-    response="$(auth_config "${token}" | curl -sS -m "${HTTP_TIMEOUT}" -K - \
+    response="$(curl -sS -m "${HTTP_TIMEOUT}" -H @"${header}" \
       -w $'\n%{http_code}' -X "${method}" \
       -H "Content-Type: application/json" ${tenant_header[@]+"${tenant_header[@]}"} \
-      --data-binary "${body}" "${url}")" || { API_STATUS=0; return 1; }
+      --data-binary "${body}" "${url}")" || { rm -f "${header}"; API_STATUS=0; return 1; }
   else
-    response="$(auth_config "${token}" | curl -sS -m "${HTTP_TIMEOUT}" -K - \
+    response="$(curl -sS -m "${HTTP_TIMEOUT}" -H @"${header}" \
       -w $'\n%{http_code}' -X "${method}" ${tenant_header[@]+"${tenant_header[@]}"} \
-      "${url}")" || { API_STATUS=0; return 1; }
+      "${url}")" || { rm -f "${header}"; API_STATUS=0; return 1; }
   fi
+  rm -f "${header}"
 
   API_STATUS="${response##*$'\n'}"
   local payload="${response%$'\n'*}"
@@ -1199,8 +1394,13 @@ api_reachable() {
   # The header goes in through `-K -`, not argv, for the reason auth_config
   # explains: this line used to interpolate the token straight into curl's
   # command line, where every process on the box can read it out of ps.
-  auth_config "$(api_credential)" | curl -sS -m 10 -K - -o /dev/null -w '%{http_code}' \
-    "$(api_url)/readyz" 2>/dev/null | grep -q '^2'
+  local header rc=0
+  header="$(mktemp "${TMPDIR:-/tmp}/swarm-auth.XXXXXX")"
+  api_auth_header "${header}" || { rm -f "${header}"; return 1; }
+  curl -sS -m 10 -H @"${header}" -o /dev/null -w '%{http_code}' \
+    "$(api_url)/readyz" 2>/dev/null | grep -q '^2' || rc=$?
+  rm -f "${header}"
+  return "${rc}"
 }
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,14 @@
+{
+  "name": "swarm-jev-browser",
+  "version": "0.0.0",
+  "private": true,
+  "description": "jev-browser 0.2.0, pinned, for agent-runtime-browser; patched by patches/ to attach to the live browser over CDP and never launch one (JEV-IMAGE, part of #1030).",
+  "license": "MIT",
+  "dependencies": {
+    "jev-browser": "0.2.0",
+    "playwright": "1.63.0"
+  },
+  "overrides": {
+    "playwright": "1.63.0"
+  }
+}

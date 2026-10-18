@@ -400,6 +400,19 @@ def test_the_fixture_exercises_the_branches_live_data_never_would(client):
     )
 
 
+#: Fields the route serves ahead of the screen, each with the lane that renders
+#: it. An entry is a decision with an end, as `UNDECLARED_BY_DESIGN` in
+#: test_ui_api_field_contract.py: lane MODEL-API (#1435) serves each profile's
+#: model classes so the plugin and callers can read them, and the "Model
+#: classes" column is lane MODEL-UI's (docs/design/model-per-step.md §4.8, §6),
+#: which removes these three when Runtimes.tsx reads them.
+SERVED_AHEAD_OF_THE_SCREEN = {
+    "model_classes": "the profile's model classes (#1435); rendered by lane MODEL-UI",
+    "default_model_class": "the class a step naming none runs (#1435); rendered by lane MODEL-UI",
+    "models": "each class's pinned model ID (#1435); rendered by lane MODEL-UI",
+}
+
+
 def test_the_screen_reads_every_field_the_route_publishes():
     """A published field no screen reads is the same gap, one field wide.
 
@@ -412,7 +425,10 @@ def test_the_screen_reads_every_field_the_route_publishes():
     text = path.read_text()
 
     fields = _interface_fields(_src(TYPES_TS), "Runtime")
-    unread = [f for f in fields if not re.search(rf"\.{re.escape(f)}\b", text)]
+    unread = [f for f in fields if not re.search(rf"\.{re.escape(f)}\b", text)
+              and f not in SERVED_AHEAD_OF_THE_SCREEN]
+    stale = [f for f in SERVED_AHEAD_OF_THE_SCREEN if re.search(rf"\.{re.escape(f)}\b", text)]
+    assert not stale, f"{path} reads {stale}: remove them from SERVED_AHEAD_OF_THE_SCREEN"
     assert not unread, (
         f"{path} never reads {unread}, which /v1/runtimes publishes. A field "
         "served and not shown is the route's gap moved one layer up."

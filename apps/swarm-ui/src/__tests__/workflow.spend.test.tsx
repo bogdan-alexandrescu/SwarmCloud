@@ -20,6 +20,7 @@ import { render, waitFor } from '@testing-library/react'
 import type { Result } from '../fetch'
 import type { StepUsage, WorkflowBoard, WorkflowUsage } from '../api'
 import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
+import { ownFromBoard } from './workflowsById'
 
 const api = vi.hoisted(() => ({
   loadWorkflowBoard: vi.fn(),
@@ -135,10 +136,7 @@ beforeEach(() => {
       tasksRequested: 2,
     },
   } satisfies Result<WorkflowUsage>)
-  api.loadWorkflow.mockResolvedValue({
-    status: 'error',
-    error: { kind: 'not_found', httpStatus: 404, code: null, message: 'no such workflow' },
-  })
+  api.loadWorkflow.mockImplementation(ownFromBoard(api.loadWorkflowBoard))
 })
 
 describe('one workflow, one total (WF-5)', () => {

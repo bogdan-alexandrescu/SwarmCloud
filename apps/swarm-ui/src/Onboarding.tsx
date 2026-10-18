@@ -6,6 +6,7 @@ import { ConnectButton, connectionOf, Refusal } from './GitHubConnect'
 import { WorkspaceStepDetail, waitingOf } from './OnboardingWorkspace'
 import { addressToPath } from './paths'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
+import { GitHubPermissions } from './PermissionCards'
 import { PageHead } from './Shell'
 import type { AppInstalledEvidence, OnboardingDoc, OnboardingIssue, OnboardingStep, OnboardingStepName, OnboardingStepState, WorkspaceView } from './types'
 import { timeAgo } from './types'
@@ -302,10 +303,14 @@ function stepBarLabel(doc: OnboardingDoc): string {
   return `${doneCount(doc)} of ${required} ${word}setup steps done`
 }
 
-/** The steps' states as one bar (optional ones too): a glance at how far along this person is. */
+/**
+ * The steps' states as one bar (optional ones too): a glance at how far along this person is. One segment per step
+ * the API sent, on one row: the column count is the step count (visual QA V041), never a fixed six.
+ */
 export function StepBar({ doc }: { doc: OnboardingDoc }) {
+  const n = Math.max(doc.steps.length, 1)
   return (
-    <div className="ob-bar" role="img" aria-label={stepBarLabel(doc)}>
+    <div className="ob-bar" role="img" aria-label={stepBarLabel(doc)} style={{ gridTemplateColumns: `repeat(${n}, minmax(0, 1fr))` }}>
       {doc.steps.map((s) => (
         <i key={s.step} className={`is-${s.state}`} />
       ))}
@@ -329,19 +334,33 @@ export function Checklist({ doc, reload }: { doc: OnboardingDoc; reload: () => v
       {doc.steps.map((s) => {
         const issues: OnboardingIssue[] = Array.isArray(s.issues) ? s.issues : []
         const next = doc.next_step === s.step
+        // A step with nothing to say on its line (the workspace step draws its own detail) gets its check time
+        // alone, not after a separator with nothing before it (RSA-25).
+        const line = stepLine(s, doc)
+        const said = line !== null && line !== undefined && line !== '' && line !== false
+        // A line with nothing on it is not drawn (visual QA V228): an empty `p.ob-line` doubled the gap under the
+        // title of a step whose body says it all (the Claude-account step).
+        const at = s.checked_at !== null && s.state !== 'todo'
         return (
           <li key={s.step} className={`ob-step is-${s.state}${next ? ' is-next' : ''}`} data-step={s.step} data-state={s.state} aria-current={next ? 'step' : undefined}>
             <ToneMark tone={stepTone(s)} hidden />
             <div className="ob-step-main">
               <p className="ob-step-h">
-                <b>{STEP_LABEL[s.step] ?? s.step}</b> <code>{s.step}</code>
+                {/* The title only: the step's id is the API's name for it, not copy (RSA-25). It stays on `data-step`. */}
+                <b>{STEP_LABEL[s.step] ?? s.step}</b>
                 <span className="ob-state">{STATE_WORD[s.state] ?? s.state}</span>
                 {next && <Chip>next</Chip>}
               </p>
-              <p className="ur-hint ob-line">
-                {stepLine(s, doc)}
-                {s.checked_at !== null && s.state !== 'todo' && <span className="ob-at"> · checked {timeAgo(s.checked_at)}</span>}
-              </p>
+              {(said || at) && (
+                <p className="ur-hint ob-line">
+                  {line}
+                  {at && (
+                    <span className="ob-at">
+                      {said ? ' · ' : ''}checked {timeAgo(s.checked_at!)}
+                    </span>
+                  )}
+                </p>
+              )}
               {issues.map((i, n) => (
                 <IssueCopy key={`${i.code}:${i.owner ?? ''}:${i.repository ?? ''}:${n}`} code={i.code} copy={i.copy} url={i.url} />
               ))}
@@ -447,9 +466,7 @@ export function OnboardingScreen() {
               title={d.complete ? 'Setup is complete' : 'Set up SwarmCloud'}
               action={
                 <span className="ur-acts">
-                  <Chip>
-                    {countLabel(d)}
-                  </Chip>
+                  <Chip className="ob-count">{countLabel(d)}</Chip>
                   {d.dismissed === true && !d.complete && <ShowOnOverview reload={doc.reload} />}
                 </span>
               }
@@ -468,6 +485,8 @@ export function OnboardingScreen() {
           )
         }
       </UrRegion>
+      {/* Setup › GitHub (#1086, design 2 "Org cards"): what the App and each org grant, below the checklist. */}
+      <GitHubPermissions />
     </div>
   )
 }

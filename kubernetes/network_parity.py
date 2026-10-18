@@ -27,6 +27,25 @@ TWO THINGS ARE COMPARED, because they fail differently:
     reachable on UDP and TCP 53, and both live ranges must be excepted from the
     internet rule and reachable through no rule that is not DNS-only. An
     annotation can say anything; the spec is what anetd enforces.
+
+THE LIVE BROWSER'S PATH (docs/design/live-browser.md §8.3, lane LB-L6), with
+`--live-ingress`. `kubernetes/apply.sh --swarm-system --confirm` lists the
+NetworkPolicies in `swarm-system` and passes swarm-api's Direct VPC egress
+range, read from the service, as `swarm_api_egress_cidr`. The relay's ingress
+policy must admit exactly that range and labelled tenant pods, on TCP 8080
+only, and the namespace's default deny must be there beside it. So must the
+relay manifest's own copy of that allow (`swarm-live-ingress`, rendered by
+terraform/infra/live.tf from the subnet terraform gives swarm-api): the same
+shape, judged by the same function, against the same range read from the
+service -- which is how a terraform subnet that is not the one swarm-api
+actually egresses from is caught.
+
+The shape rules for those policies -- `check_live_egress`, `check_live_ingress`
+and `check_system_deny` -- live here, once: tests/unit/scripts/test_live_netpol.py
+judges the RENDERED policies with the same functions, so a rule cannot be
+restated in the tests and drift from what is checked against the cluster.
+They compare exact shapes, not "allows at least": every widening -- a second
+port, a peer split into two (an OR), a selector dropped -- is a failure.
 """
 
 from __future__ import annotations
@@ -50,6 +69,138 @@ RENDERED = (
 )
 
 DNS = {("UDP", 53), ("TCP", 53)}
+
+# -- the live browser's path (LB-L6) ------------------------------------------
+
+#: The tenant policy (network-policies/allow-live-egress.yaml) and the two in
+#: swarm-system (network-policies/swarm-system-live.yaml).
+LIVE_EGRESS_POLICY = "swarm-allow-live-egress"
+LIVE_INGRESS_POLICY = "swarm-allow-live-ingress"
+SYSTEM_DENY_POLICY = "swarm-system-default-deny-ingress"
+#: The relay manifest's own ingress policy (kubernetes/swarm-system/swarm-live.yaml,
+#: rendered by terraform/infra/live.tf; lane LB-L8e). The same allow as
+#: LIVE_INGRESS_POLICY, so the relay is ingress-isolated from the moment its
+#: manifest is applied, before apply.sh's policies follow it.
+RELAY_INGRESS_POLICY = "swarm-live-ingress"
+SYSTEM_NAMESPACE = "swarm-system"
+API_CIDR_ANNOTATION = "swarm.saga.xyz/swarm-api-egress-cidr"
+
+#: The relay's one port: plain ws on TCP 8080, fixed for both integration
+#: lanes by owner decision 2026-10-11 (b) (docs/design/live-browser.md §3.3;
+#: swarm_live.main.PORT).
+LIVE_PORT = 8080
+LIVE_PORTS = [{"protocol": "TCP", "port": LIVE_PORT}]
+#: The pods the dispatcher marks live (scheduler.dispatch.LIVE_POD_LABEL; the
+#: test holds the two together -- this file is stdlib-only and cannot import it).
+LIVE_POD_SELECTOR = {"matchLabels": {"swarm-live": "enabled"}}
+#: The relay's pods, in SYSTEM_NAMESPACE.
+RELAY_POD_SELECTOR = {"matchLabels": {"app.kubernetes.io/name": "swarm-live"}}
+RELAY_PEER = {
+    "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": SYSTEM_NAMESPACE}},
+    "podSelector": RELAY_POD_SELECTOR,
+}
+#: A namespace a tenant render made: namespaces/tenant-namespace.yaml sets both.
+TENANT_NAMESPACE_SELECTOR = {
+    "matchLabels": {"app.kubernetes.io/part-of": "swarm"},
+    "matchExpressions": [{"key": "swarm-tenant", "operator": "Exists"}],
+}
+TENANT_POD_PEER = {"namespaceSelector": TENANT_NAMESPACE_SELECTOR, "podSelector": LIVE_POD_SELECTOR}
+
+
+def namespace_selector_matches(selector: dict[str, Any], labels: dict[str, str]) -> bool:
+    """Whether a namespace with `labels` matches `selector` (matchLabels and the
+    Exists/DoesNotExist/In/NotIn expressions Kubernetes defines)."""
+    if any(labels.get(k) != v for k, v in (selector.get("matchLabels") or {}).items()):
+        return False
+    for expression in selector.get("matchExpressions") or []:
+        key, operator = expression.get("key"), expression.get("operator")
+        values = expression.get("values") or []
+        if operator == "Exists" and key not in labels:
+            return False
+        if operator == "DoesNotExist" and key in labels:
+            return False
+        if operator == "In" and labels.get(key) not in values:
+            return False
+        if operator == "NotIn" and key in labels and labels[key] in values:
+            return False
+    return True
+
+
+def _rules_admit_only(
+    rules: list[dict[str, Any]], side: str, allowed: list[dict[str, Any]], what: str
+) -> list[str]:
+    """Every rule is LIVE_PORTS exactly, and every peer is one of `allowed`
+    exactly. A rule with no ports allows every port; one with no peers allows
+    every source or destination."""
+    problems: list[str] = []
+    if not rules:
+        problems.append(f"{what}: no rule at all -- the path this policy exists for is closed")
+    for i, rule in enumerate(rules):
+        if rule.get("ports") != LIVE_PORTS:
+            problems.append(
+                f"{what}: rule {i} allows {rule.get('ports') or 'every port'}, not exactly TCP {LIVE_PORT}"
+            )
+        peers = rule.get(side)
+        if not peers:
+            problems.append(f"{what}: rule {i} names no peer, which is every peer")
+            continue
+        for peer in peers:
+            if peer not in allowed:
+                problems.append(f"{what}: rule {i} admits {json.dumps(peer, sort_keys=True)}")
+    return problems
+
+
+def check_live_egress(policy: dict[str, Any]) -> list[str]:
+    """`swarm-allow-live-egress`: a labelled pod may reach the relay on 8080,
+    and the policy grants nothing more."""
+    what = LIVE_EGRESS_POLICY
+    spec = policy.get("spec") or {}
+    problems: list[str] = []
+    if spec.get("podSelector") != LIVE_POD_SELECTOR:
+        problems.append(f"{what}: selects {spec.get('podSelector')}, not {LIVE_POD_SELECTOR}")
+    if spec.get("policyTypes") != ["Egress"]:
+        problems.append(f"{what}: policyTypes {spec.get('policyTypes')}, not ['Egress']")
+    if "ingress" in spec:
+        problems.append(f"{what}: carries ingress rules; a worker listens on nothing")
+    problems += _rules_admit_only(spec.get("egress") or [], "to", [RELAY_PEER], what)
+    return problems
+
+
+def check_live_ingress(policy: dict[str, Any], api_cidr: str, what: str = LIVE_INGRESS_POLICY) -> list[str]:
+    """`swarm-allow-live-ingress` (or the relay manifest's `swarm-live-ingress`,
+    named by `what`): the relay admits labelled tenant pods and swarm-api's
+    range `api_cidr`, on 8080, and nothing else."""
+    metadata = policy.get("metadata") or {}
+    spec = policy.get("spec") or {}
+    problems: list[str] = []
+    if metadata.get("namespace") != SYSTEM_NAMESPACE:
+        problems.append(f"{what}: in namespace {metadata.get('namespace')}, not {SYSTEM_NAMESPACE}")
+    recorded = (metadata.get("annotations") or {}).get(API_CIDR_ANNOTATION)
+    if recorded != api_cidr:
+        problems.append(f"{API_CIDR_ANNOTATION}: rendered {recorded}, swarm-api's is {api_cidr}")
+    if spec.get("podSelector") != RELAY_POD_SELECTOR:
+        problems.append(f"{what}: selects {spec.get('podSelector')}, not {RELAY_POD_SELECTOR}")
+    if spec.get("policyTypes") != ["Ingress"]:
+        problems.append(f"{what}: policyTypes {spec.get('policyTypes')}, not ['Ingress']")
+    rules = spec.get("ingress") or []
+    api_peer = {"ipBlock": {"cidr": api_cidr}}
+    problems += _rules_admit_only(rules, "from", [TENANT_POD_PEER, api_peer], what)
+    peers = [peer for rule in rules for peer in rule.get("from") or []]
+    for wanted, name in ((TENANT_POD_PEER, "labelled tenant pods"), (api_peer, f"swarm-api's {api_cidr}")):
+        if wanted not in peers:
+            problems.append(f"{what}: does not admit {name}")
+    return problems
+
+
+def check_system_deny(policy: dict[str, Any]) -> list[str]:
+    """`swarm-system-default-deny-ingress`: every pod, ingress-isolated, no rule."""
+    what = SYSTEM_DENY_POLICY
+    problems: list[str] = []
+    if (policy.get("metadata") or {}).get("namespace") != SYSTEM_NAMESPACE:
+        problems.append(f"{what}: not in {SYSTEM_NAMESPACE}")
+    if policy.get("spec") != {"podSelector": {}, "policyTypes": ["Ingress"]}:
+        problems.append(f"{what}: spec is {json.dumps(policy.get('spec'), sort_keys=True)}, not a bare deny")
+    return problems
 
 
 def _ports(rule: dict[str, Any]) -> set[tuple[str, Any]]:
@@ -152,15 +303,61 @@ def _items(document: Any) -> list[dict[str, Any]]:
     return list(document.get("items") or [])
 
 
+def _main_live_ingress(live: dict[str, Any], items: list[dict[str, Any]]) -> int:
+    """The relay's ingress in swarm-system, against swarm-api's live range."""
+    api_cidr = live.get("swarm_api_egress_cidr")
+    source = live.get("source", "swarm-api's subnet")
+    if not api_cidr:
+        print("FAIL the live input has no swarm_api_egress_cidr; nothing was compared")
+        return 1
+    in_system = {
+        (p.get("metadata") or {}).get("name"): p
+        for p in items
+        if (p.get("metadata") or {}).get("namespace") == SYSTEM_NAMESPACE
+    }
+    differ = 0
+    checks = (
+        (SYSTEM_DENY_POLICY, check_system_deny),
+        (LIVE_INGRESS_POLICY, lambda policy: check_live_ingress(policy, api_cidr)),
+        (RELAY_INGRESS_POLICY, lambda policy: check_live_ingress(policy, api_cidr, RELAY_INGRESS_POLICY)),
+    )
+    for name, check in checks:
+        where = f"{SYSTEM_NAMESPACE}/{name}"
+        policy = in_system.get(name)
+        # A missing object is a failure, never a pass: an allow without the
+        # deny is not isolation, and a deny without the allow closes the relay.
+        problems = check(policy) if policy is not None else [f"{where} does not exist"]
+        if problems:
+            differ += 1
+            print(f"FAIL {where}")
+            for problem in problems:
+                print(f"       {problem}")
+        else:
+            print(f"  ok {where} matches {api_cidr} ({source})")
+    print(f"compared {len(checks)} policies in {SYSTEM_NAMESPACE} with {source}: {differ} differ")
+    return 1 if differ else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--live", required=True, help="JSON: pod_cidr, service_cidr, cluster_dns_ip, node_local_dns_ip, source")
     parser.add_argument("--policies", required=True, help="`kubectl get networkpolicies -o json` output")
     parser.add_argument("--namespace-prefix", default="swarm-tenant-")
+    parser.add_argument(
+        "--live-ingress",
+        action="store_true",
+        help=(
+            f"compare {SYSTEM_NAMESPACE}'s {LIVE_INGRESS_POLICY}, {RELAY_INGRESS_POLICY} and {SYSTEM_DENY_POLICY} with "
+            "--live's swarm_api_egress_cidr instead of the tenant egress policies"
+        ),
+    )
     args = parser.parse_args(argv)
 
     with open(args.live, encoding="utf-8") as handle:
         live = json.load(handle)
+    if args.live_ingress:
+        with open(args.policies, encoding="utf-8") as handle:
+            return _main_live_ingress(live, _items(json.load(handle)))
     missing = [key for key, _ in RENDERED if not live.get(key)]
     if missing:
         print(f"FAIL the live network is incomplete: missing {', '.join(missing)}")

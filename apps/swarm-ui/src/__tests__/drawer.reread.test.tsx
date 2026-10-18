@@ -570,21 +570,24 @@ describe('the Agents list reads the phone page at phone width (§2.5)', () => {
   }
 
   /**
-   * §2.5: a 200-row page is 2-4 MB, and the list re-reads every 5s while Live
-   * holds a row -- "the phone build must cap at limit=50 and say 'showing the
-   * 50 most recent' rather than ship a 4 MB poll." It shipped the 4 MB poll.
+   * §2.5: a 200-row page of FULL rows is 2-4 MB, and "the phone build must cap
+   * at limit=50" until `view=summary` existed. It exists (#168), and the cap
+   * made the phone's counts a quarter of the desktop's at the same minute --
+   * "failed 0+" against "failed 6+" (live QA CH-4, 2026-10-11). The phone
+   * reads the same summary page as a wide screen.
+   *
+   * MUTATIONS: put `PHONE_PAGE_LIMIT` back to 50; drop `{ view: 'summary' }`
+   * from `loadAgentsPage`.
    */
-  it('asks for 50 rows at phone width and says the list is the most recent', async () => {
+  it('asks for the full summary page at phone width too, so its counts are the desktop\'s', async () => {
     fakeClock()
     media(true)
     api.loadTasks.mockImplementation(async () => page())
     const { container } = render(<AgentsScreen onOpen={() => {}} />)
     await advance(0)
-    // #168: and in the summary view, so the 50 rows carry no input,
-    // metadata or result_summary. MUTATION: drop `{ view: 'summary' }` from
-    // `loadAgentsPage`.
-    expect(api.loadTasks, 'the phone read asked for the full 200-row page, or for full rows').toHaveBeenCalledWith(50, { view: 'summary' })
-    expect(container.querySelector('.ag-scope')?.textContent).toMatch(/showing the 3 most recent/)
+    expect(api.loadTasks.mock.calls.map((c) => c[0] as unknown)).toEqual([200])
+    expect(api.loadTasks, 'the phone read asked for full rows').toHaveBeenCalledWith(200, { view: 'summary' })
+    expect(container.querySelector('.ag-scope')?.textContent).not.toMatch(/At this width the list reads/)
   })
 
   /** The control: the same page on a wide screen is the full page, as before. */

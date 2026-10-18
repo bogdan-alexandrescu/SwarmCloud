@@ -14,10 +14,10 @@ wave (#453).
 It also holds what the document must not lose: the SYN-backoff reading stays
 labelled an inference, the fields to read to confirm the estimated saving are
 named, (b) stays recorded as open and not started rather than quietly
-dropped, and (c) -- built for #940 by PR #983 -- is recorded as built but not
-yet measured, pointing at docs/clone-bundles.md, until #940's acceptance
-number is taken. Before that PR this test held (c) at "not started", so the
-document had to keep saying a built feature was not started.
+dropped, and (c) -- built for #940 by PR #983, measured, and retired on
+2026-10-11 -- is recorded as retired with the measurement that retired it,
+pointing at docs/clone-bundles.md. A section still saying "built" would send
+the next reader looking for a clone path that is no longer there.
 """
 
 from __future__ import annotations
@@ -168,13 +168,17 @@ def test_b_is_recorded_open_and_not_started():
     assert "open" in section.lower(), "(b) is not marked open"
 
 
-def test_c_is_recorded_built_and_not_yet_measured():
-    """(c) shipped as clone bundles (#940); its acceptance number needs a release.
+def test_c_is_recorded_retired_with_the_measurement_that_retired_it():
+    """(c) shipped as clone bundles (#940) and was retired on 2026-10-11.
 
-    "Not yet measured" stays until the measurement is posted on #940, and the
-    section points at the document that owns the design and the measurement."""
+    The section says so, gives the numbers the decision rests on (forge p50
+    3.19 s against bundle+delta p50 4.69 s), and points at the document that
+    records the retirement."""
     section = _section(_text(), "(c)")
-    assert "**Status: built, not yet measured.**" in section, "(c) is not marked built, not yet measured"
+    assert "**Status: retired 2026-10-11.**" in section, "(c) is not marked retired"
+    assert "built, not yet measured" not in section, "(c) still says it is awaiting a measurement"
+    for number in ("3.19 s", "4.69 s", "#939"):
+        assert number in section, f"(c) does not give {number}, which the retirement rests on"
     assert "#940" in section, "(c) does not name #940"
     assert "](../clone-bundles.md" in section, "(c) does not link docs/clone-bundles.md"
     assert (DOC.parent.parent / "clone-bundles.md").is_file()

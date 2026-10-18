@@ -1,6 +1,10 @@
-# syntax=docker/dockerfile:1.7
+# syntax=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 #
 # agent-runtime-base -- the image every non-browser runner profile runs in.
+#
+# It is built twice. `--build-arg INSTALL_CODEX=0` makes
+# agent-runtime-base-nocodex, the base agent-runtime-browser is built FROM
+# (scripts/build-images.sh; BROWSER-NO-CODEX, owner decision 2026-10-13).
 #
 # Build from the REPOSITORY ROOT, because the worker and the frozen contract
 # package are both part of the image:
@@ -46,18 +50,27 @@ ARG NODE_IMAGE=node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b26014
 # (GHSA-4w2j-m93h-cj5j, GHSA-82j2-j2ch-gfr8) that failed the promote scan
 # on /usr/local/bin/uv and /usr/local/bin/uvx. Nothing else in the image
 # carries a Rust binary, which is why these two were the last to appear.
-ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.12.15@sha256:62f8c047d0a0e9ece6b53fc63df902585a67a47a7f318ddec4a37db586edc8e3
+ARG UV_IMAGE=astral-sh/uv:0.12.15@sha256:62f8c047d0a0e9ece6b53fc63df902585a67a47a7f318ddec4a37db586edc8e3
+# Every base is pulled through this project's Artifact Registry mirrors,
+# never from Docker Hub or ghcr.io directly: on 2026-10-12 three release
+# builds failed inside Cloud Build on ghcr.io timeouts and a github.com 504.
+# Remote repositories (terraform/infra/build_mirror.tf) serve the same
+# digests. A pull request's local build, which has no Google identity,
+# passes the upstream registries here instead (scripts/lib/build-mirror.sh).
+# docs/runbooks/build-mirror.md.
+ARG MIRROR_DOCKER_HUB=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub
+ARG MIRROR_GHCR=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-ghcr
 
 # ---------------------------------------------------------------------------
 # uv and Node arrive as pinned images rather than as curl | sh
 # ---------------------------------------------------------------------------
-FROM ${UV_IMAGE} AS uvbin
-FROM ${NODE_IMAGE} AS nodebin
+FROM ${MIRROR_GHCR}/${UV_IMAGE} AS uvbin
+FROM ${MIRROR_DOCKER_HUB}/library/${NODE_IMAGE} AS nodebin
 
 # ---------------------------------------------------------------------------
 # builder: compile wheels, produce /opt/venv
 # ---------------------------------------------------------------------------
-FROM ${PYTHON_IMAGE} AS builder
+FROM ${MIRROR_DOCKER_HUB}/library/${PYTHON_IMAGE} AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -65,7 +78,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
     UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1
 
-RUN apt-get update \
+# APT_REFRESH: the build scripts/build-images.sh makes this layer in (every
+# main build and release), so the upgrade below is never an older build's
+# (owner decision 2026-10-14).
+ARG APT_REFRESH=unset
+RUN echo "apt layer of ${APT_REFRESH}" \
+ && apt-get update \
  && apt-get upgrade --no-install-recommends -y \
  && apt-get install --no-install-recommends -y \
       build-essential \
@@ -164,7 +182,7 @@ RUN uv pip check --python /opt/venv/bin/python
 # ---------------------------------------------------------------------------
 # runtime
 # ---------------------------------------------------------------------------
-FROM ${PYTHON_IMAGE} AS runtime
+FROM ${MIRROR_DOCKER_HUB}/library/${PYTHON_IMAGE} AS runtime
 
 # Re-declared: an ARG is scoped to the stage that declares it, so the builder's
 # copies above are not visible here.
@@ -176,7 +194,22 @@ ARG INSTALL_AGENT_CLIS=1
 # as unrecognized_model, so every claude-code task failed (task_2ad43c35a18448fca83b).
 ARG CLAUDE_CODE_VERSION=2.1.283
 ARG CODEX_VERSION=0.154.0
+# 1 (the default, and every runner profile but the browser's): codex is
+# installed beside Claude Code. 0: the same image without it -- the build
+# `agent-runtime-base-nocodex` that agent-runtime-browser is built FROM
+# (BROWSER-NO-CODEX, owner decision 2026-10-13, docs/browser-startup-speed.md
+# §2.3). codex is 129.7 MB as a layer and `claude-code-browser` never runs it;
+# a derived image cannot drop an inherited layer (deleting adds a whiteout and
+# the bytes are still pulled), so it has to be left out HERE, by this argument.
+ARG INSTALL_CODEX=1
 
+# PYTHONDONTWRITEBYTECODE=1 stays on, deliberately, now that the build
+# precompiles (the compileall step below): it is about RUNTIME writes. The
+# agent runs as uid 10001 and cannot write the root-owned stdlib or venv
+# anyway, so all it would ever write is a __pycache__ beside a tenant's own
+# code in /workspace -- files that land in the agent's diff and its
+# checkpoint. The bytecode every Python start actually needs is the stdlib's
+# and the venv's, and the build writes that once, as root (#1334).
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -199,7 +232,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # CVEs, not a safe one. `install` alone never touches a package that is already
 # present, which is how libpcre2-8-0 sat at 10.42-1 with a fixed 10.42-1+deb12u1
 # available and failed the promote scan on every image at once.
-RUN apt-get update \
+# APT_REFRESH: the build scripts/build-images.sh makes this layer in (every
+# main build and release), so the upgrade below is never an older build's
+# (owner decision 2026-10-14).
+ARG APT_REFRESH=unset
+RUN echo "apt layer of ${APT_REFRESH}" \
+ && apt-get update \
  && apt-get upgrade --no-install-recommends -y \
  && apt-get install --no-install-recommends -y \
       bash \
@@ -208,7 +246,6 @@ RUN apt-get update \
       curl \
       fd-find \
       git \
-      jq \
       less \
       make \
       openssh-client \
@@ -353,13 +390,13 @@ RUN BE_DIR=/usr/local/lib/node_modules/npm/node_modules/brace-expansion \
  && UNDICI_TGZ="/tmp/undici-${UNDICI_VERSION}.tgz" \
  && TAR_TGZ="/tmp/tar-${TAR_VERSION}.tgz" \
  && IPADDR_TGZ="/tmp/ip-address-${IP_ADDRESS_VERSION}.tgz" \
- && curl -fsSL -o "${BE_TGZ}" \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o "${BE_TGZ}" \
       "https://registry.npmjs.org/brace-expansion/-/brace-expansion-${BRACE_EXPANSION_VERSION}.tgz" \
- && curl -fsSL -o "${UNDICI_TGZ}" \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o "${UNDICI_TGZ}" \
       "https://registry.npmjs.org/undici/-/undici-${UNDICI_VERSION}.tgz" \
- && curl -fsSL -o "${TAR_TGZ}" \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o "${TAR_TGZ}" \
       "https://registry.npmjs.org/tar/-/tar-${TAR_VERSION}.tgz" \
- && curl -fsSL -o "${IPADDR_TGZ}" \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o "${IPADDR_TGZ}" \
       "https://registry.npmjs.org/ip-address/-/ip-address-${IP_ADDRESS_VERSION}.tgz" \
  && echo "${BRACE_EXPANSION_SHA512}  ${BE_TGZ}" | sha512sum -c - \
  && echo "${UNDICI_SHA512}  ${UNDICI_TGZ}" | sha512sum -c - \
@@ -442,6 +479,32 @@ RUN /usr/local/bin/python3 -m pip install --no-cache-dir --upgrade \
       "setuptools>=${SETUPTOOLS_VERSION}" "wheel>=${WHEEL_VERSION}"
 COPY --from=builder /opt/venv /opt/venv
 
+# Precompile the stdlib and the venv. The base image deletes every .pyc it
+# ships, and PYTHONDONTWRITEBYTECODE=1 (above) stops one being cached, so
+# without this every Python start in an agent container compiled the stdlib it
+# imported, again: 0.21 s per call of a small Python tool against 0.08 s with
+# a bytecode cache, measured by lane FIX-TESTS (PR 1415, #1334). CI runners
+# never paid it; every lane in this image did.
+#
+# Compiled BY /opt/venv/bin/python, the first python on PATH -- the one the
+# ENTRYPOINT, gcloud's launcher and every agent run -- because a .pyc carries
+# its interpreter's magic number and a cache for another Python is never read.
+# The paths are asked of that interpreter, not spelled out: its stdlib
+# (/usr/local/lib/python3.11, with the base's own site-packages under it,
+# where setuptools and wheel were just upgraded) and its purelib, the venv's
+# site-packages. The builder installed the venv with UV_COMPILE_BYTECODE=1, so
+# compileall finds those up to date and rewrites nothing the COPY already
+# carries. After every install into either tree, and a failed compile fails
+# the build. The last line proves the cache is there for the interpreter that
+# runs, in this RUN (a check-only RUN can write a duplicate layer, PR 1239).
+RUN py=/opt/venv/bin/python \
+ && "$py" -m compileall -q -j 0 \
+      "$("$py" -c 'import sysconfig; print(sysconfig.get_path("stdlib"))')" \
+      "$("$py" -c 'import sysconfig; print(sysconfig.get_path("purelib"))')" \
+ && "$py" -c "import importlib.util, json, os; \
+assert os.path.exists(importlib.util.cache_from_source(json.__file__)), 'no stdlib bytecode for ' + json.__file__; \
+print('stdlib bytecode ok')"
+
 # ---------------------------------------------------------------------------
 # The infrastructure toolbox (docs/BUILD_PROMPT_V2.md §2.12)
 # ---------------------------------------------------------------------------
@@ -475,6 +538,12 @@ COPY --from=builder /opt/venv /opt/venv
 # bash with pipefail from here on: every `echo <sha> <file> | sha256sum -c -`
 # below is a pipe, and so is the smoke step's output, and a pipe whose first
 # command failed must not pass on the last one's exit status.
+# EVERY DOWNLOAD HERE RETRIES (2026-10-14, PR 1281's flake table): `curl -fsSL
+# --retry 5 --retry-all-errors --retry-connrefused`, 1+2+4+8+16 s of backoff at
+# most. --retry-all-errors is what makes an HTTP error (curl's exit 22, which
+# failed one main build of this image in run 38245452463) retry at all. A
+# file that is really gone still fails, ~31 s later, and every download is
+# still checked against its pinned checksum after it lands.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Google Cloud: gcloud, the GKE auth plugin, kubectl.
@@ -528,11 +597,11 @@ ARG KUBECTL_SHA256=33bc88a24c3b09cf55bfd59e6ca977881b61fc3f25ab65bc80c65b4302486
 # ldconfig and start-stop-daemon, which live there and which the runtime PATH
 # deliberately omits; /usr/local/bin is there for the postinst's python3.
 RUN mkdir -p /tmp/toolbox \
- && curl -fsSL -o /tmp/toolbox/google-cloud-cli.deb \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/google-cloud-cli.deb \
       "https://packages.cloud.google.com/apt/pool/cloud-sdk/google-cloud-cli_${GCLOUD_VERSION}-0_amd64_${GCLOUD_POOL_ID}.deb" \
- && curl -fsSL -o /tmp/toolbox/gke-gcloud-auth-plugin.deb \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/gke-gcloud-auth-plugin.deb \
       "https://packages.cloud.google.com/apt/pool/cloud-sdk/google-cloud-cli-gke-gcloud-auth-plugin_${GCLOUD_VERSION}-0_amd64_${GKE_PLUGIN_POOL_ID}.deb" \
- && curl -fsSL -o /tmp/toolbox/kubectl \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/kubectl \
       "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
  && echo "${GCLOUD_SHA256}  /tmp/toolbox/google-cloud-cli.deb" | sha256sum -c - \
  && echo "${GKE_PLUGIN_SHA256}  /tmp/toolbox/gke-gcloud-auth-plugin.deb" | sha256sum -c - \
@@ -546,6 +615,20 @@ RUN mkdir -p /tmp/toolbox \
  && install -o root -g root -m 0755 /tmp/toolbox/kubectl /usr/local/bin/kubectl \
  && rm -rf /tmp/toolbox
 
+# THE TOOL MIRROR. gh here, and terraform, tofu, tflint, shellcheck and trivy
+# below, are read from build/tool-mirror, bind-mounted at /tmp/tool-mirror for
+# the RUN that installs them and never copied into a layer. Each file sits at
+# its upstream URL without `https://` and is checked against the same sha256
+# as when it was downloaded from upstream. Cloud Build copies them in from
+# gs://swarm-build-mirror-<project> before this build (scripts/lib/
+# build-mirror.sh), and a missing object fails that step by name; a pull
+# request's local build reads them from upstream against the same list,
+# tool-mirror.sha256 beside this file, which a test holds equal to the pins
+# here (tests/unit/scripts/test_build_mirror.py). Why: on 2026-10-12 a
+# release build failed on a github.com 504 fetching shellcheck. Bumping a pin
+# here means a new line there and `scripts/refresh-build-mirror.sh`
+# (docs/runbooks/build-mirror.md).
+#
 # GitHub and Docker CLIs.
 #
 # gh 2.102.0: the newest release (https://api.github.com/repos/cli/cli/releases/latest,
@@ -562,10 +645,11 @@ ARG GH_SHA256=bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386
 # (buildx, compose), and with no daemon. Scan: clean.
 ARG DOCKER_CLI_VERSION=29.8.2
 ARG DOCKER_CLI_SHA256=ff99352d3b95ebaaf94bcdf65026714a1a72a44a999a9fc83f1386c3f30f33d6
-RUN mkdir -p /tmp/toolbox \
- && curl -fsSL -o /tmp/toolbox/gh.tar.gz \
-      "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
- && curl -fsSL -o /tmp/toolbox/docker-ce-cli.deb \
+RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
+    mkdir -p /tmp/toolbox \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/gh.tar.gz \
+      "file:///tmp/tool-mirror/github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/docker-ce-cli.deb \
       "https://download.docker.com/linux/debian/dists/bookworm/pool/stable/amd64/docker-ce-cli_${DOCKER_CLI_VERSION}-1~debian.12~bookworm_amd64.deb" \
  && echo "${GH_SHA256}  /tmp/toolbox/gh.tar.gz" | sha256sum -c - \
  && echo "${DOCKER_CLI_SHA256}  /tmp/toolbox/docker-ce-cli.deb" | sha256sum -c - \
@@ -637,22 +721,23 @@ ARG TOFU_VERSION=1.13.1
 ARG TOFU_SHA256=378ada19d4bc70c43732004e8159be771b23b9a5afdf059e5f8a2b3fa2c70a69
 ARG TFLINT_VERSION=0.64.0
 ARG TFLINT_SHA256=cca9d13e2e1d7a2c627af60ff899a3c9b74212899416aeb96ec764d2ef954537
-RUN mkdir -p /tmp/toolbox \
- && curl -fsSL -o /tmp/toolbox/terraform.zip \
-      "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip" \
+RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
+    mkdir -p /tmp/toolbox \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/terraform.zip \
+      "file:///tmp/tool-mirror/releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip" \
  && echo "${TERRAFORM_SHA256}  /tmp/toolbox/terraform.zip" | sha256sum -c - \
  && unzip -q /tmp/toolbox/terraform.zip terraform -d /tmp/toolbox \
  && install -o root -g root -m 0755 /tmp/toolbox/terraform /usr/local/bin/terraform \
  && if [ "${INSTALL_TOFU}" = "1" ]; then \
-      curl -fsSL -o /tmp/toolbox/tofu.tar.gz \
-        "https://github.com/opentofu/opentofu/releases/download/v${TOFU_VERSION}/tofu_${TOFU_VERSION}_linux_amd64.tar.gz" \
+      curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/tofu.tar.gz \
+        "file:///tmp/tool-mirror/github.com/opentofu/opentofu/releases/download/v${TOFU_VERSION}/tofu_${TOFU_VERSION}_linux_amd64.tar.gz" \
       && echo "${TOFU_SHA256}  /tmp/toolbox/tofu.tar.gz" | sha256sum -c - \
       && tar -xzf /tmp/toolbox/tofu.tar.gz -C /tmp/toolbox tofu \
       && install -o root -g root -m 0755 /tmp/toolbox/tofu /usr/local/bin/tofu ; \
     fi \
  && if [ "${INSTALL_TFLINT}" = "1" ]; then \
-      curl -fsSL -o /tmp/toolbox/tflint.zip \
-        "https://github.com/terraform-linters/tflint/releases/download/v${TFLINT_VERSION}/tflint_linux_amd64.zip" \
+      curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/tflint.zip \
+        "file:///tmp/tool-mirror/github.com/terraform-linters/tflint/releases/download/v${TFLINT_VERSION}/tflint_linux_amd64.zip" \
       && echo "${TFLINT_SHA256}  /tmp/toolbox/tflint.zip" | sha256sum -c - \
       && unzip -q /tmp/toolbox/tflint.zip tflint -d /tmp/toolbox \
       && install -o root -g root -m 0755 /tmp/toolbox/tflint /usr/local/bin/tflint ; \
@@ -680,19 +765,44 @@ ARG SHELLCHECK_VERSION=0.11.0
 ARG SHELLCHECK_SHA256=b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6
 ARG TRIVY_VERSION=0.75.0
 ARG TRIVY_SHA256=c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f
-RUN mkdir -p /tmp/toolbox \
- && curl -fsSL -o /tmp/toolbox/shellcheck.tar.gz \
-      "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.gz" \
+RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
+    mkdir -p /tmp/toolbox \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/shellcheck.tar.gz \
+      "file:///tmp/tool-mirror/github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.gz" \
  && echo "${SHELLCHECK_SHA256}  /tmp/toolbox/shellcheck.tar.gz" | sha256sum -c - \
  && tar -xzf /tmp/toolbox/shellcheck.tar.gz -C /tmp/toolbox --strip-components=1 \
       "shellcheck-v${SHELLCHECK_VERSION}/shellcheck" \
  && install -o root -g root -m 0755 /tmp/toolbox/shellcheck /usr/local/bin/shellcheck \
- && curl -fsSL -o /tmp/toolbox/trivy.tar.gz \
-      "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/trivy.tar.gz \
+      "file:///tmp/tool-mirror/github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
  && echo "${TRIVY_SHA256}  /tmp/toolbox/trivy.tar.gz" | sha256sum -c - \
  && tar -xzf /tmp/toolbox/trivy.tar.gz -C /tmp/toolbox trivy \
  && install -o root -g root -m 0755 /tmp/toolbox/trivy /usr/local/bin/trivy \
  && rm -rf /tmp/toolbox
+
+# jq 1.7.1, the release's static linux/amd64 binary, in place of Debian
+# bookworm's jq 1.6 (which apt installed above until #1334). Two reasons: an
+# agent running this repository's scripts got 1.6's behaviour where CI's
+# runners have 1.7, and 1.6 takes 27 ms to start (lane FIX-TESTS, PR 1415)
+# on every one of the many jq calls a script makes: 50 calls of `jq .` took
+# 1.39 s with Debian's 1.6 and 0.26 s with this binary, in a SwarmCloud agent
+# container on 2026-10-17. /usr/local/bin precedes /usr/bin on PATH, and nothing
+# installs Debian's jq any more, so there is one jq. Checksum from the
+# vendor's own https://github.com/jqlang/jq/releases/download/jq-1.7.1/sha256sum.txt
+# (jq-linux-amd64), recomputed over the downloaded file on 2026-10-17. A
+# static C binary, which trivy has no analyzer for, as with shellcheck.
+# Read from the tool mirror like the tools above; the build fails if the
+# installed binary does not report the pinned version.
+ARG JQ_VERSION=1.7.1
+ARG JQ_SHA256=5942c9b0934e510ee61eb3e30273f1b3fe2590df93933a93d7c58b81d19c8ff5
+RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
+    mkdir -p /tmp/toolbox \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/jq \
+      "file:///tmp/tool-mirror/github.com/jqlang/jq/releases/download/jq-${JQ_VERSION}/jq-linux-amd64" \
+ && echo "${JQ_SHA256}  /tmp/toolbox/jq" | sha256sum -c - \
+ && install -o root -g root -m 0755 /tmp/toolbox/jq /usr/local/bin/jq \
+ && rm -rf /tmp/toolbox \
+ && test "$(/usr/local/bin/jq --version)" = "jq-${JQ_VERSION}"
 
 # checkov is Python, so it gets its OWN environment (/opt/uv-tools/checkov,
 # entry point in /usr/local/bin) and can never change the worker's /opt/venv
@@ -716,11 +826,18 @@ RUN UV_TOOL_DIR=/opt/uv-tools UV_TOOL_BIN_DIR=/usr/local/bin UV_PYTHON_DOWNLOADS
 # The coding-agent CLIs the claude-code and codex runner profiles start. Both
 # are optional at build time so the base image can be rebuilt in an environment
 # with no npm registry access; the runners fail with a clear message if absent.
+#
+# codex is left out IN THIS RUN when INSTALL_CODEX=0, never removed by a later
+# one: a later RUN would only white it out, and a check-only RUN can write a
+# duplicate layer (PR 1239). With the default the command is the one it always
+# was: one `npm install -g` of both CLIs.
 RUN if [ "${INSTALL_AGENT_CLIS}" = "1" ]; then \
-      mkdir -p "${NPM_CONFIG_PREFIX}" \
+      codex="" \
+      && if [ "${INSTALL_CODEX}" = "1" ]; then codex="@openai/codex@${CODEX_VERSION}"; fi \
+      && mkdir -p "${NPM_CONFIG_PREFIX}" \
       && npm install -g --no-audit --no-fund \
            "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
-           "@openai/codex@${CODEX_VERSION}" \
+           ${codex:+"${codex}"} \
       && npm cache clean --force ; \
     fi
 
@@ -741,14 +858,22 @@ WORKDIR /workspace
 # nothing about the patch level, so the build asserts it rather than a resume
 # discovering it. `agent_worker.checkpoint` refuses to import without the
 # filter too; this line names the cause in the build log.
+#
+# And a worker that cannot import its own runners is broken in a way that must
+# not reach production, so the build proves it can.
+#
+# ONE RUN, not two. A check-only RUN leaves a ~100-byte layer holding only the
+# etc/ directory entry, and two that finish in the same second write the SAME
+# layer: 2 of the 30 newest digests of this image repeated one here (read
+# 2026-10-13), and so did every browser and indexer image built on them. GKE
+# does not stream an image with a duplicate layer (docs/browser-startup-
+# speed.md §2.4), and the release refuses one (scripts/image-sizes.sh
+# --duplicate-layers; tests/unit/scripts/test_image_streaming.py).
 RUN python -c "import sys, tarfile; \
 assert sys.version_info >= (3, 11, 4), 'Python %s: the checkpoint restore needs 3.11.4 or later' % sys.version.split()[0]; \
 assert hasattr(tarfile, 'data_filter'), 'tarfile.data_filter is missing'; \
-print('python', sys.version.split()[0])"
-
-# A worker that cannot import its own runners is broken in a way that must not
-# reach production, so the build proves it can.
-RUN python -c "import agent_worker, agent_worker.runners.mock, agent_worker.lifecycle; print('agent-worker', agent_worker.__version__)"
+print('python', sys.version.split()[0])" \
+ && python -c "import agent_worker, agent_worker.runners.mock, agent_worker.lifecycle; print('agent-worker', agent_worker.__version__)"
 
 # Every program the generic runner's catalogue names must exist in this image,
 # or the first tenant to submit the documented use case discovers it instead of

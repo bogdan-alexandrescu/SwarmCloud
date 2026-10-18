@@ -64,6 +64,7 @@ SHA = "c0ffee" * 6 + "abcd"
 OTHER_SHA = "0badc0de" * 5
 IMAGES = [
     "agent-runtime-base",
+    "agent-runtime-base-nocodex",
     "agent-runtime-browser",
     "agent-runtime-indexer",
     "swarm-api",
@@ -72,6 +73,13 @@ IMAGES = [
     "swarm-reconciler",
     "swarm-ui",
     "swarm-verify",
+    "swarm-live",
+    "swarm-egress",
+    "swarm-typesafe-fwd",
+    "swarm-graph",
+    # The public GitHub push receiver (GS-HOOKS, part of #1384),
+    # apps/swarm-github-hooks/Dockerfile.
+    "swarm-github-hooks",
     "workspace-apply",
 ]
 
@@ -478,7 +486,7 @@ def test_a_failed_build_is_reported_and_never_rebuilt(tmp_path, if_absent):
     assert not [e for e in events if e["event"] == "download"]
     summary = _last_line(proc)
     assert "failed" in summary and "failure" in summary, summary
-    assert f"/actions/runs/103/job/" in summary, f"the last line does not link the failed job: {summary!r}"
+    assert "/actions/runs/103/job/" in summary, f"the last line does not link the failed job: {summary!r}"
 
 
 def cancelled_before_it_started(run_id: int) -> dict:
@@ -627,6 +635,10 @@ def _git_sandbox(tmp_path: Path) -> tuple[Path, str]:
     root = tmp_path / "repo"
     shutil.copytree(REPO / "scripts", root / "scripts")
     shutil.copytree(REPO / "images", root / "images")
+    # A recipe may also sit beside its app (apps/swarm-live/Dockerfile).
+    for recipe in REPO.glob("apps/*/Dockerfile"):
+        (root / recipe.parent.relative_to(REPO)).mkdir(parents=True, exist_ok=True)
+        shutil.copy2(recipe, root / recipe.relative_to(REPO))
     git = ["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
            "-c", "commit.gpgsign=false"]
     subprocess.run([*git, "init", "-q"], check=True)
@@ -646,14 +658,45 @@ def build(tmp_path: Path, mode: str, world_for) -> tuple[subprocess.CompletedPro
     return proc, root / "build" / "images-dev.json", _events(tmp_path), head
 
 
-def test_a_release_that_reuses_ci_submits_no_cloud_build(tmp_path):
-    proc, manifest, events, head = build(
-        tmp_path, "only", lambda head: {"runs": [ci_run(201, sha=head)]}
-    )
+def _record_as_pushed(head: str) -> dict:
+    """CI's record of `head`, each digest the one this file's fake gcloud
+    reports for `<image>:<tag>`, as Artifact Registry would for what CI pushed."""
+    import hashlib
+
+    record = record_for(sha=head)
+    for entry in record["images"]:
+        digest = "sha256:" + hashlib.sha256(f"{entry['image']}@{head[:12]}".encode()).hexdigest()
+        entry.update(digest=digest, ref=f"{entry['image']}@{digest}")
+    return record
+
+
+def test_a_release_that_reuses_ci_rebuilds_only_the_os_upgrading_images(tmp_path):
+    """Owner decision 2026-10-14: every release refreshes the OS packages of
+    each image that upgrades them (APT_REFRESH, build-images.sh), even when CI
+    built that image from this very commit, and rebuilds the images built FROM
+    them. Every other image is CI's digest, unbuilt and unchanged -- this
+    record is weeks old, and its age is no reason to rebuild what this commit's
+    own build made."""
+    from .test_build_images_apt_refresh import NO_UPGRADE, REBUILT
+
+    records = {}
+
+    def world(head):
+        records["ci"] = _record_as_pushed(head)
+        return {"runs": [ci_run(201, sha=head, record=records["ci"])]}
+
+    proc, manifest, events, head = build(tmp_path, "only", world)
     assert proc.returncode == 0, proc.stderr[-3000:]
-    submitted = [e["target"] for e in events if e["event"] == "builds-submit"]
-    assert not submitted, f"the release submitted {submitted} although CI had built this commit"
-    assert json.loads(manifest.read_text()) == record_for(sha=head), "the manifest is not CI's record"
+    submitted = {e["target"] for e in events if e["event"] == "builds-submit"}
+    assert submitted == REBUILT, f"the release submitted {sorted(submitted)}"
+    assert not [e for e in events if e["event"] == "gcloud-unhandled"], events
+    got = {i["name"]: i for i in json.loads(manifest.read_text())["images"]}
+    offered = {i["name"]: i for i in records["ci"]["images"]}
+    for name in NO_UPGRADE:
+        assert got[name]["digest"] == offered[name]["digest"], f"{name} is not CI's digest: {got[name]}"
+        assert got[name]["reused"] is True and got[name]["built_from"] == head, got[name]
+    for name in REBUILT:
+        assert got[name]["reused"] is False and got[name]["built_from"] == head, got[name]
 
 
 def test_a_push_release_whose_commit_ci_never_built_builds_nothing_and_says_so(tmp_path):
@@ -870,3 +913,20 @@ def test_previous_takes_no_if_absent(tmp_path):
         env=env, capture_output=True, text=True, timeout=60, check=False,
     )
     assert proc.returncode == 1 and "--if-absent" in proc.stderr
+
+
+def test_main_builds_even_when_a_needed_check_was_skipped_by_its_paths():
+    """`build images` needs python, shell and manifests, and shell and manifests
+    are skipped on a commit that touches no shell or Kubernetes file. Without
+    `!cancelled() && !failure()` GitHub skips a job whose needs were skipped, so
+    on 2026-10-14 main commit adc51c0f built nothing and every release after it
+    refused it ("CI never built adc51c0f ... its 'build images' job was
+    skipped"). A skipped check is not a failed one; a failed one must still stop
+    the build. MUTATION: drop either guard from the job's `if:`."""
+    jobs = _workflow("application.yml")["jobs"]
+    builds = [job for job in jobs.values() if job.get("name") == "build images"]
+    assert len(builds) == 1, [job.get("name") for job in jobs.values()]
+    condition = str(builds[0].get("if", ""))
+    assert "!cancelled()" in condition and "!failure()" in condition, condition
+    # Still never on a pull request: a PR builds without pushing in its own job.
+    assert "github.event_name != 'pull_request'" in condition, condition

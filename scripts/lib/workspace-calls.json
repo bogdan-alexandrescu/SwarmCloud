@@ -1,6 +1,6 @@
 {
   "about": "The call guard's rules (docs/workspaces.md §2.5). scripts/lib/workspace-guard.sh judges every gcloud, kubectl and curl call the workspace job makes against these shapes; a call is allowed only if ONE shape matches it whole, every flag included. Values in braces are filled from the expectation file A1 writes from the approved workspace record; a shape naming a value the file does not hold yet matches nothing, so before A1 only A1's own reads can run. scripts/lib/workspace-guard-cases.json holds a call each rule must refuse and one it must allow, and tests/unit/scripts/test_workspace_guard.py runs them.",
-  "wd9_fallback": false,
+  "wd9_fallback": true,
   "wd9_fallback_why": "Off while the WD9 principal-set grant gives every personal worker its database, bucket-metadata and telemetry roles once (docs/workspaces.md §2.3). Turn it on only if W0 finds that grant impossible; then C5 and the bucket-metadata shape of C4 start to allow, and nothing else changes.",
   "tools": {
     "gcloud": {
@@ -39,8 +39,6 @@
   "kube_kinds": ["Namespace", "ServiceAccount", "ResourceQuota", "LimitRange", "NetworkPolicy", "Role", "RoleBinding"],
   "kube_kind_words_why": "The namespaced kinds a tenant namespace holds, as kubectl spells them. Namespace is not among them: it is cluster-scoped, so -n would not confine it, and its own shapes name it.",
   "kube_kind_words": ["serviceaccount", "serviceaccounts", "sa", "resourcequota", "resourcequotas", "quota", "limitrange", "limitranges", "limits", "networkpolicy", "networkpolicies", "netpol", "role", "roles", "rolebinding", "rolebindings"],
-  "kube_patch_kind_words": ["serviceaccount", "serviceaccounts", "sa", "resourcequota", "resourcequotas", "quota", "limitrange", "limitranges", "limits", "networkpolicy", "networkpolicies", "netpol"],
-  "kube_patch_kind_words_why": "A patch's payload is not read by the guard, so a Role or RoleBinding is changed only by apply, whose whole object the guard and the scope admission policy both see.",
   "kube_role_names": ["swarm-worker", "swarm-dispatcher", "swarm-reaper"],
   "rules": [
     {
@@ -48,7 +46,17 @@
       "summary": "Nothing by default: a call no shape below matches stops the run. So does any argument naming a resource on the shared deny-list (scripts/lib/common.sh SHARED_DENY_LIST), whatever the call.",
       "known_unused": [
         {"tool": "gcloud", "command": ["identity", "groups", "describe"], "why": "register-tenant.sh checks a GROUP exists (§1); --workspace registers a person and skips it (docs/workspaces.md §4.1)"},
-        {"tool": "gcloud", "command": ["secrets", "update"], "why": "printed as advice to an operator when a provider secret is unlabelled; --workspace grants no provider secret (§8)"}
+        {"tool": "gcloud", "command": ["secrets", "update"], "why": "printed as advice to an operator when a provider secret is unlabelled; --workspace grants no provider secret (§8)"},
+        {"tool": "gcloud", "command": ["run", "services", "describe"], "why": "kubernetes/apply.sh --swarm-system reads swarm-api's Direct VPC egress subnet for the live relay's ingress (docs/design/live-browser.md §8.3); --workspace runs apply.sh --tenant only"},
+        {"tool": "gcloud", "command": ["compute", "networks", "subnets", "describe"], "why": "kubernetes/apply.sh --swarm-system reads that subnet's range for the live relay's ingress (docs/design/live-browser.md §8.3); --workspace runs apply.sh --tenant only"},
+        {"tool": "gcloud", "command": ["storage", "cp"], "why": "the operator path's .tenant marker. gcloud storage cp reads the destination object before it uploads (storage.objects.get), which the deployer does not hold: w-7f9285's A5, 2026-10-13. --workspace writes its marker with C4's one create-only upload instead (WS-WALK)"},
+        {"tool": "gcloud", "command": ["iam", "roles", "describe"], "why": "the operator path asks whether the worker Firestore and bucket-metadata roles exist; --workspace grants them only on the WD9 fallback, by name, and never describes them (WS-WALK)"},
+        {"tool": "gcloud", "command": ["storage", "buckets", "describe"], "why": "the operator path asks whether the artifact bucket exists; --workspace reads only its policy (WS-WALK)"},
+        {"tool": "gcloud", "command": ["secrets", "versions", "list"], "why": "the operator path checks a provider secret has a version; --workspace makes the forge slot empty and never lists its versions, which the deployer cannot (no secretmanager.versions.list) (WS-WALK)"},
+        {"tool": "kubectl", "command": ["diff"], "why": "kubernetes/apply.sh diffs only without --confirm; A7 always passes --confirm"},
+        {"tool": "gcloud", "command": ["secrets", "versions", "access", "latest"], "why": "kubernetes/apply.sh --swarm-system --confirm reads swarm-tailscale-oauth to sync it into swarm-system/operator-oauth (docs/runbooks/tailscale-egress.md; JUDGE-NET); --workspace runs apply.sh --tenant only"},
+        {"tool": "kubectl", "command": ["create"], "why": "kubernetes/apply.sh --swarm-system --confirm builds swarm-system/operator-oauth with kubectl create secret --dry-run=client (JUDGE-NET); --workspace runs apply.sh --tenant only"},
+        {"tool": "kubectl", "command": ["label"], "why": "kubernetes/apply.sh --swarm-system --confirm labels that Secret with kubectl label --local (JUDGE-NET); --workspace runs apply.sh --tenant only"}
       ],
       "shapes": []
     },
@@ -63,14 +71,10 @@
         {"tool": "gcloud", "command": ["iam", "service-accounts", "describe"], "args": [["{worker_email}", "{scheduler_email}", "{reconciler_email}"]]},
         {"tool": "gcloud", "command": ["iam", "service-accounts", "get-iam-policy"], "args": ["{worker_email}"]},
         {"tool": "gcloud", "command": ["iam", "service-accounts", "keys", "list"], "args": [], "flags": {"--iam-account": "{worker_email}", "--managed-by": "*"}, "require": ["--iam-account"]},
-        {"tool": "gcloud", "command": ["iam", "service-accounts", "list"], "args": [], "flags": {"--filter": ["email:{worker_email}", "email={worker_email}"]}, "require": ["--filter"]},
-        {"tool": "gcloud", "command": ["iam", "roles", "describe"], "args": [["{firestore_role_id}", "{bucket_metadata_role_id}", "{firestore_role}", "{bucket_metadata_role}"]]},
         {"tool": "gcloud", "command": ["projects", "get-iam-policy"], "args": ["{project_id}"], "flags": {"--flatten": "*", "--filter": "*"}},
-        {"tool": "gcloud", "command": ["storage", "buckets", "describe"], "args": ["{bucket_url}"]},
         {"tool": "gcloud", "command": ["storage", "buckets", "get-iam-policy"], "args": ["{bucket_url}"]},
         {"tool": "gcloud", "command": ["secrets", "describe"], "args": [["{forge_slot}", "{forge_slot_twin}"]]},
         {"tool": "gcloud", "command": ["secrets", "get-iam-policy"], "args": [["{forge_slot}", "{forge_slot_twin}"]]},
-        {"tool": "gcloud", "command": ["secrets", "versions", "list"], "args": [["{forge_slot}", "{forge_slot_twin}"]], "flags": {"--filter": "*", "--limit": "*"}},
         {"tool": "gcloud", "command": ["container", "clusters", "describe"], "args": ["{gke_cluster}"], "flags": {"--location": "{gke_location}", "--region": "{gke_location}", "--zone": "{gke_location}"}},
         {"tool": "gcloud", "command": ["container", "clusters", "get-credentials"], "args": ["{gke_cluster}"], "flags": {"--location": "{gke_location}", "--region": "{gke_location}", "--zone": "{gke_location}", "--internal-ip": true, "--dns-endpoint": true}},
 
@@ -108,12 +112,12 @@
     },
     {
       "id": "C4",
-      "summary": "The artifact bucket's two prefix-conditioned grants for the expected worker, each condition string-equal to the expression register-tenant.sh renders for tenants/<tenant>/, and the .tenant marker object. On the WD9 fallback only, the bucket-metadata role.",
+      "summary": "The artifact bucket's two prefix-conditioned grants for the expected worker, each condition string-equal to the expression register-tenant.sh renders for tenants/<tenant>/, and the .tenant marker object, written create-only (an existing marker is left as it is). On the WD9 fallback only, the bucket-metadata role.",
       "shapes": [
         {"tool": "gcloud", "command": ["storage", "buckets", "add-iam-policy-binding"], "args": ["{bucket_url}"], "flags": {"--member": "serviceAccount:{worker_email}", "--role": "roles/storage.objectViewer", "--condition-from-file": {"file_expression": "{read_expr}"}}, "require": ["--member", "--role", "--condition-from-file"]},
         {"tool": "gcloud", "command": ["storage", "buckets", "add-iam-policy-binding"], "args": ["{bucket_url}"], "flags": {"--member": "serviceAccount:{worker_email}", "--role": "roles/storage.objectUser", "--condition-from-file": {"file_expression": "{write_expr}"}}, "require": ["--member", "--role", "--condition-from-file"]},
         {"tool": "gcloud", "command": ["storage", "buckets", "add-iam-policy-binding"], "args": ["{bucket_url}"], "flags": {"--member": "serviceAccount:{worker_email}", "--role": "{bucket_metadata_role}", "--condition": "None"}, "require": ["--member", "--role", "--condition"], "fallback_only": true},
-        {"tool": "gcloud", "command": ["storage", "cp"], "args": ["-", "{marker_url}"]}
+        {"tool": "curl", "method": "POST", "url": "{marker_upload_url}", "auth": true, "body": "marker", "why": "one Storage JSON API upload with ifGenerationMatch=0: a create that can never replace, so storage.objects.create on tenants/ is all it needs. gcloud storage cp read the destination first (storage.objects.get), which the deployer does not hold (WS-WALK)"}
       ]
     },
     {
@@ -133,13 +137,9 @@
     },
     {
       "id": "C7",
-      "summary": "kubectl apply, create, diff or patch whose every object is the Namespace swarm-tenant-<tenant> or one of a tenant namespace's kinds inside it (the guard reads -f or stdin), on the swarm cluster's context only.",
+      "summary": "kubectl apply (a dry run included) whose every object is the Namespace swarm-tenant-<tenant> or one of a tenant namespace's kinds inside it (the guard reads -f or stdin), on the swarm cluster's context only.",
       "shapes": [
-        {"tool": "kubectl", "command": ["apply"], "args": [], "flags": {"-f": "*", "--filename": "*", "--dry-run": ["client", "server", "none"], "--validate": "*", "-o": "*", "--output": "*", "-n": "{namespace}", "--namespace": "{namespace}"}, "require_one": ["-f", "--filename"], "objects": true},
-        {"tool": "kubectl", "command": ["create"], "args": [], "flags": {"-f": "*", "--filename": "*", "--dry-run": ["client", "server", "none"], "--validate": "*", "-o": "*", "--output": "*", "-n": "{namespace}", "--namespace": "{namespace}"}, "require_one": ["-f", "--filename"], "objects": true},
-        {"tool": "kubectl", "command": ["diff"], "args": [], "flags": {"-f": "*", "--filename": "*", "-n": "{namespace}", "--namespace": "{namespace}"}, "require_one": ["-f", "--filename"], "objects": true},
-        {"tool": "kubectl", "command": ["patch"], "args": [["namespace", "namespaces", "ns"], "{namespace}"], "flags": {"--type": "*", "-p": "*", "--patch": "*", "--dry-run": ["client", "server", "none"], "-o": "*", "--output": "*"}, "require_one": ["-p", "--patch"]},
-        {"tool": "kubectl", "command": ["patch"], "args": [{"rules_list": "kube_patch_kind_words"}, "*"], "flags": {"--type": "*", "-p": "*", "--patch": "*", "--dry-run": ["client", "server", "none"], "-o": "*", "--output": "*", "-n": "{namespace}", "--namespace": "{namespace}"}, "require_one": ["-n", "--namespace"]}
+        {"tool": "kubectl", "command": ["apply"], "args": [], "flags": {"-f": "*", "--filename": "*", "--dry-run": ["client", "server", "none"], "--validate": "*", "-o": "*", "--output": "*", "-n": "{namespace}", "--namespace": "{namespace}"}, "require_one": ["-f", "--filename"], "objects": true}
       ]
     },
     {

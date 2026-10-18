@@ -26,6 +26,7 @@ import STYLES from '../styles.css?raw'
 import { App } from '../App'
 import type { Result } from '../fetch'
 import type { Me, TaskPage } from '../types'
+import type { NotificationFeed } from '../api'
 import { cascade, type CascadeEnv, type Declared } from './cssgate'
 import { expandLocal, painted, TABLES } from './marks'
 import { task } from './runfixture'
@@ -82,7 +83,7 @@ function me(isAdmin: boolean): Me {
       credentials: [],
       service_account: 'swarm-agent-worker-u-phone@example.iam.gserviceaccount.com',
       gcs_prefix: 'tenants/u-phone',
-      namespace: 'swarm-u-phone',
+      namespace: 'swarm-tenant-u-phone',
     },
     principal: { email: 'someone@saga.xyz', groups: [], is_admin: isAdmin },
   } as unknown as Me
@@ -276,15 +277,19 @@ describe('#139 at 390: the header row never widens the page', () => {
 
 describe('#139 at 390: a long page has a way back to the top', () => {
   it('offers `Top` past a screen of a long page, and it goes there', async () => {
-    // MUTATION: never render `.sk-top`, hide it at 390, or make it do nothing.
+    // MUTATION: never render `.sk-top`, hide it at 390, make it do nothing,
+    // or float it over the page again (visual QA V009: at 400px it covered
+    // figures and text that scrolled under it; it rides in the header now).
     const c = await at('/help')
     const scroller = c.querySelector<HTMLElement>('.ctl-scroll')!
     expect(c.querySelector('.sk-top')).toBeNull()
     await scrollTo(scroller, 6000)
     const top = c.querySelector<HTMLElement>('.sk-top')
     expect(top, 'a long page has no `Top`').not.toBeNull()
-    expect(painted(top!, 'display', PHONE)).toBe('flex')
-    expect(painted(top!, 'position', PHONE)).toBe('sticky')
+    expect(top!.parentElement?.classList.contains('sk-pbar'), '`Top` is not in the phone header').toBe(true)
+    expect(scroller.contains(top!), '`Top` floats over the page').toBe(false)
+    expect(painted(top!, 'display', PHONE)).toBe('inline-flex')
+    expect(painted(top!, 'position', PHONE), 'positioned only to anchor its hit area').toBe('relative')
     expect(painted(top!, 'display', WIDE)).toBe('none')
     await act(async () => {
       fireEvent.click(top!)
@@ -488,7 +493,14 @@ describe('#139 at 390: the first Agents row starts above the midpoint', () => {
     // The agents read answers this test alone: a scoped mock and a fresh App,
     // since a file-wide `vi.mock` outlives `shellAs`'s `resetModules`.
     vi.resetModules()
-    vi.doMock('../api', async (importOriginal) => ({ ...(await importOriginal<typeof import('../api')>()), loadTasks: () => Promise.resolve(page) }))
+    // And the notification feed answers (#1206), so the bell is drawn -- in
+    // the phone header since V178, where it adds no band of its own.
+    const feed = { status: 'ok', data: { items: [], unread_needs_you: 0, unread_updates: 0, admin_pending: 0, read_at: new Date().toISOString() }, fetchedAt: Date.now() } satisfies Result<NotificationFeed>
+    vi.doMock('../api', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('../api')>()),
+      loadTasks: () => Promise.resolve(page),
+      loadNotifications: () => Promise.resolve(feed),
+    }))
     const { App: Stubbed } = await import('../App')
     const c = await at('/agents', Stubbed)
     const row = await waitFor(() => {
@@ -497,6 +509,8 @@ describe('#139 at 390: the first Agents row starts above the midpoint', () => {
       return el!
     })
     expect(row.textContent, 'the first row is not the stubbed live agent').toContain('phone139')
+    await waitFor(() => expect(c.querySelector('.nt-bell'), 'the shell drew no bell').not.toBeNull())
+    expect(c.querySelector('.ctl-bar'), 'a header bar over a section page (V178)').toBeNull()
     const app = c.querySelector<HTMLElement>('.sk-app')!
     expect(app.contains(row)).toBe(true)
 
@@ -522,11 +536,15 @@ describe('#139 at 390: the first Agents row starts above the midpoint', () => {
     // The boxes the issue names, in the order they stack: the header, the
     // drawer (out of the flow until opened), the page head, the count, the
     // tabs strip and the list's own toolbar. A box added above the first row
-    // fails here before it can slip into the sum unnoticed.
-    expect(above).toEqual(['.sk-pbar', '.sk-side', '.c-phead', '.c-count-note', '.ag-list-tabs', '.ctl-toolbar'])
+    // fails here before it can slip into the sum unnoticed. The skip link
+    // (CH-15) is absolute, off-screen until focused, and counted as 0px.
+    // The header bar (#1206, proposal A) is drawn only inside an open object
+    // since V178, so a list page stacks no band between the header and the
+    // page head; a bar that came back would be counted here.
+    expect(above).toEqual(['.sk-skip', '.sk-pbar', '.sk-side', '.c-phead', '.c-count-note', '.ag-list-tabs', '.ctl-toolbar'])
     // The row's margin, 7 ancestors' top edges (.rows, its list, .work, .app,
-    // .ctl-scroll, .sk-main, .sk-app) and the 6 boxes above.
-    expect(blocks.length, 'the walk did not visit every block above the row').toBe(14)
+    // .ctl-scroll, .sk-main, .sk-app) and the 7 boxes above, the skip link's 0px among them.
+    expect(blocks.length, 'the walk did not visit every block above the row').toBe(15)
     for (const b of blocks) expect(Number.isFinite(b.px) && b.px >= 0, `${b.what} came to ${b.px}`).toBe(true)
     // The ones that carry the budget must have come to something.
     for (const what of ['header.sk-pbar', 'div.c-phead', 'div.ag-list-tabs']) {

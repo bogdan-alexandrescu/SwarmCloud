@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { loadReadableRepositories, loadRunnerProfiles, registerRepository, runRepositoryIndex, type RegisterRepositoryBody } from './api'
 import { Banner, Button, Card, EmptyState } from './components'
-import { normRepo, type Readable, type ReadableList } from './RepositoriesData'
+import { normRepo, triggerLabel, TRIGGER_OPTIONS, WEBHOOK_NOTE, type ChangeTrigger, type Readable, type ReadableList } from './RepositoriesData'
 import { LIST, UrCrumb, UrNavButton, UrRadio, UrRefresh, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
 import { PageHead } from './Shell'
 import { timeAgo } from './types'
@@ -21,8 +21,18 @@ import { timeAgo } from './types'
  * platform cannot clone is refused there and the refusal is shown in the
  * API's words: that refusal is what names SSO or a token policy (OB0b).
  * NO CREDENTIAL IS ASKED FOR OR SHOWN:
- * the list names the secret it was read with by NAME (`swarm-tenant-eng-git`),
- * and the registration record holds no credential field (repo-index.md §1).
+ * a capped list names the secret it was read with by NAME
+ * (`swarm-tenant-eng-git`), and the registration record holds no credential
+ * field (repo-index.md §1). The filter's placeholder does not: it is user copy
+ * on every visit, and a person's connection secret
+ * (`swarm-tenant-eng-git-u-<hash>`) is an internal identifier that was cut off
+ * mid-hash on a phone (live QA RSA-12, 2026-10-11).
+ *
+ * THREE STEPS, AND THE THIRD IS SHOWN (live QA RSA-9, 2026-10-11). The stepper
+ * named "3 Register" while step 2's button posted the registration -- and,
+ * by default, queued a full index run that holds capacity while it runs --
+ * with no step 3 ever drawn. Step 3 is a review of exactly what will be sent,
+ * and its button is the only one that writes.
  *
  * Runner profiles are offered BY NAME from the catalogue (invariant 10): a
  * registration narrows what may run in the repository and never says what a
@@ -38,7 +48,6 @@ const INTERVALS = [
 ] as const
 type IntervalKey = (typeof INTERVALS)[number]['key']
 
-type Trigger = 'poll' | 'webhook' | 'off'
 
 /** repo-index.md §1: a registration's profiles default to claude-code. */
 const DEFAULT_PROFILE = 'claude-code'
@@ -49,11 +58,12 @@ export function RegisterRepository({ go }: { go: (to: string) => void }) {
   const [owner, setOwner] = useState<string | null>(null)
   const [picked, setPicked] = useState<Readable | null>(null)
   const [typed, setTyped] = useState('')
-  const [step, setStep] = useState<1 | 2>(1)
+  const [step, setStep] = useState<1 | 2 | 3>(1)
   const name = picked === null ? null : `${picked.owner}/${picked.repo}`
   const byName = typedRepository(typed)
   // A typed name is the pick while the field holds one; choosing a row empties the field.
   const chosen = typed.trim() !== '' ? byName : picked
+  const typedWrong = typed.trim() !== '' && byName === null
 
   return (
     <div className="ur-page ur-register">
@@ -83,9 +93,15 @@ export function RegisterRepository({ go }: { go: (to: string) => void }) {
           </span>
         )}
         <span aria-hidden> › </span>
-        <span>
-          <i>3</i> Register
-        </span>
+        {step === 3 ? (
+          <b>
+            <i>3</i> Register
+          </b>
+        ) : (
+          <span>
+            <i>3</i> Register
+          </span>
+        )}
       </div>
       {step === 1 ? (
         <>
@@ -135,7 +151,7 @@ export function RegisterRepository({ go }: { go: (to: string) => void }) {
                       type="search"
                       className="ur-search"
                       aria-label="Filter repositories"
-                      placeholder={`Filter the ${n} repositories ${by} can read`}
+                      placeholder={`Filter the ${n} readable repositories`}
                       value={filter}
                       onChange={(e) => setFilter(e.target.value)}
                     />
@@ -189,8 +205,16 @@ export function RegisterRepository({ go }: { go: (to: string) => void }) {
               autoComplete="off"
               spellCheck={false}
               value={typed}
+              aria-invalid={typedWrong || undefined}
+              aria-describedby={typedWrong ? 'ur-typed-why' : undefined}
               onChange={(e) => setTyped(e.target.value)}
             />
+            {/* RSA-13: a value that is not owner/repo said nothing; Next just went grey. */}
+            {typedWrong && (
+              <p className="ur-hint is-warn" id="ur-typed-why" role="status">
+                Type it as owner/repo: one slash, no spaces, for example <code>example-org/example-api</code>.
+              </p>
+            )}
             <p className="ur-hint">
               Registering reads the repository on GitHub first. If SwarmCloud cannot reach it, the refusal says why, in
               GitHub's terms.
@@ -214,7 +238,9 @@ export function RegisterRepository({ go }: { go: (to: string) => void }) {
           </div>
         </>
       ) : (
-        picked !== null && <ScheduleStep picked={picked} go={go} onBack={() => setStep(1)} />
+        picked !== null && (
+          <ScheduleStep picked={picked} go={go} reviewing={step === 3} onReview={() => setStep(3)} onBack={() => setStep(step === 3 ? 2 : 1)} />
+        )
       )}
     </div>
   )
@@ -255,16 +281,34 @@ function listNote(list: ReadableList, by: string): string | null {
   )
 }
 
+/**
+ * A row's note. An unread last push says nothing: the readable list does not
+ * carry `pushed_at` today, so "last push not read" was on all 227 rows and
+ * told the person nothing (live QA RSA-11, 2026-10-11).
+ */
 function pickNote(r: Readable): string {
   const vis = (r.visibility ?? 'visibility not read') + (r.archived === true ? ' · archived' : '')
-  return r.pushed_at === null ? `${vis} · last push not read` : `${vis} · pushed ${timeAgo(r.pushed_at)}`
+  return r.pushed_at === null ? vis : `${vis} · pushed ${timeAgo(r.pushed_at)}`
 }
 
-function ScheduleStep({ picked, go, onBack }: { picked: Readable; go: (to: string) => void; onBack: () => void }) {
+function ScheduleStep({
+  picked,
+  go,
+  reviewing,
+  onReview,
+  onBack,
+}: {
+  picked: Readable
+  go: (to: string) => void
+  /** Step 3: the choices below, read back, with the one button that writes. */
+  reviewing: boolean
+  onReview: () => void
+  onBack: () => void
+}) {
   const profiles = useUrRead(loadRunnerProfiles, 'profiles')
   const [chosen, setChosen] = useState<string[] | null>(null)
   const [every, setEvery] = useState<IntervalKey>('24')
-  const [trigger, setTrigger] = useState<Trigger>('poll')
+  const [trigger, setTrigger] = useState<ChangeTrigger>('poll')
   const [firstIndex, setFirstIndex] = useState(true)
   const [busy, setBusy] = useState(false)
   const [refused, setRefused] = useState<string | null>(null)
@@ -310,6 +354,32 @@ function ScheduleStep({ picked, go, onBack }: { picked: Readable; go: (to: strin
 
   return (
     <Card className="ur-form" title={full}>
+      {reviewing ? (
+        <div className="ur-fgrid ur-review" role="group" aria-label={`What registering ${full} sends`}>
+          <div className="ur-fl">Repository</div>
+          <div data-review="repository">
+            {full} · {picked.default_branch !== null ? `default branch ${picked.default_branch}` : 'the default branch GitHub names'}
+          </div>
+          <div className="ur-fl">Runner profiles</div>
+          <div data-review="profiles">
+            {names === null
+              ? 'Not sent: the profile catalogue was not read, so the registration keeps its default'
+              : selected.length === 0
+                ? 'None: no runner profile may work in it'
+                : selected.join(', ')}
+          </div>
+          <div className="ur-fl">Re-index every</div>
+          <div data-review="interval">{every === 'off' ? 'Off: no scheduled re-index' : INTERVALS.find((i) => i.key === every)?.label}</div>
+          <div className="ur-fl">Change trigger</div>
+          <div data-review="trigger">{triggerLabel(trigger)}</div>
+          <div className="ur-fl">First index</div>
+          <div data-review="first-index">
+            {firstIndex
+              ? "A full index run is queued straight after. It holds a slot of this tenant's capacity while it runs."
+              : 'Not queued now.'}
+          </div>
+        </div>
+      ) : (
       <div className="ur-fgrid">
         <div className="ur-fl">
           Runner profiles<small>which may work in it</small>
@@ -339,17 +409,9 @@ function ScheduleStep({ picked, go, onBack }: { picked: Readable; go: (to: strin
         </div>
         <div className="ur-fl">Change trigger</div>
         <div>
-          <UrRadio<Trigger>
-            label="Change trigger"
-            options={[
-              { key: 'poll', label: 'Poll the default branch (every 5 min)' },
-              { key: 'webhook', label: 'Webhook · phase 3', disabled: true, title: 'Webhooks come in phase 3 (repo-index.md §3.3)' },
-              { key: 'off', label: 'Off' },
-            ]}
-            value={trigger}
-            onChange={setTrigger}
-          />
+          <UrRadio<ChangeTrigger> label="Change trigger" options={TRIGGER_OPTIONS} value={trigger} onChange={setTrigger} />
           <p className="ur-hint">At most one change-triggered run every 30 min; ten pushes in a minute cost one run.</p>
+          <p className="ur-hint">{WEBHOOK_NOTE}</p>
         </div>
         <div className="ur-fl">First index</div>
         <div>
@@ -362,6 +424,7 @@ function ScheduleStep({ picked, go, onBack }: { picked: Readable; go: (to: strin
           </p>
         </div>
       </div>
+      )}
       {refused !== null && (
         <Banner
           tone="bad"
@@ -381,9 +444,15 @@ function ScheduleStep({ picked, go, onBack }: { picked: Readable; go: (to: strin
         <Button kind="ghost" onClick={onBack}>
           Back
         </Button>
-        <Button kind="primary" busy={busy} onClick={() => void submit()}>
-          {`Register ${full}`}
-        </Button>
+        {reviewing ? (
+          <Button kind="primary" busy={busy} onClick={() => void submit()}>
+            {`Register ${full}`}
+          </Button>
+        ) : (
+          <Button kind="primary" onClick={onReview}>
+            Next: review
+          </Button>
+        )}
       </div>
     </Card>
   )

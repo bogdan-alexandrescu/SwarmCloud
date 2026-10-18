@@ -57,6 +57,9 @@ export const PARK_WORD: Readonly<Record<ParkReason, string>> = {
   CREDENTIAL_MISSING: 'credential missing',
   CHILDREN_INCOMPLETE: 'waiting on its helpers',
   CI_PENDING: 'waiting for CI',
+  HUMAN_REQUIRED: 'waiting for you',
+  // Contract request 92: any member of the step's tenant may answer, so not "you".
+  AWAITING_INPUT: 'waiting for a member',
 }
 
 function isParkReason(v: string): v is ParkReason {

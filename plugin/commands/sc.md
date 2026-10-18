@@ -1,6 +1,6 @@
 ---
 description: SwarmCloud cluster state — accounts, capacity, agents, trouble
-argument-hint: "[accounts|agents|capacity|trouble|task <id>|runs|run show <run>|plan show <run>]"
+argument-hint: "[accounts|agents|capacity|trouble|check|watch [interval]|task <id>|runs|run show <run>|plan show <run>|schedules|schedules show <name>|approvals|mcp-servers]"
 allowed-tools:
   - Bash(uv run sc)
   - Bash(uv run sc overview:*)
@@ -13,6 +13,13 @@ allowed-tools:
   - Bash(uv run sc runs:*)
   - Bash(uv run sc run show:*)
   - Bash(uv run sc plan show:*)
+  - Bash(uv run sc schedules)
+  - Bash(uv run sc schedules --json)
+  - Bash(uv run sc schedules show:*)
+  - Bash(uv run sc schedules preview:*)
+  - Bash(uv run sc approvals)
+  - Bash(uv run sc approvals --json)
+  - Bash(uv run sc mcp-servers:*)
   - Bash(uv run swarm doctor:*)
 ---
 
@@ -26,13 +33,57 @@ With no arguments that is the overview. Other views: `accounts`, `agents`,
 `capacity`, `task <id>`, `trouble`, `whoami`, and for issue runs (#454)
 `runs`, `run show <run>` and `plan show <run>`.
 
+If the arguments are `check`, `watch [interval]` or `watch off`, do **not**
+run them here: `sc` has no such view. They are the `sc` skill's verbs -- one
+`swarm_check` read and the attach of this project's running workflows, and
+the CronCreate schedule `swarm_check_schedule` hands back -- so follow that
+skill's `check` and `watch` sections.
+
+If the arguments are `inputs` or `answer <wf_id> <step_id> [file ...]`, do
+**not** run them here: `sc` has no such view. `inputs` is one `swarm_inputs`
+read of the workflow steps waiting for a person's answer; `answer` is
+`swarm_workflow_input`, which asks the operator for the answer in this host's
+own form and sends only what they type there and the files they tick. Follow
+the `sc` skill's `inputs` and `answer` sections, and never pass the answer
+yourself: the tool refuses a call that carries one.
+
 If the arguments are `run --issue ...` or `plan approve|edit|reject ...`, do
 **not** run them here: they create an issue run or act on its plan, so they
 are not views. Use the `sc` skill's `run --issue` and `plan` verbs, which say
 what they submit first and approve only the plan digest the operator was
 shown, or tell the operator the command (`uv run sc plan approve <run>` prints
-the plan and asks them to type `approve`). `--auto-merge` is visible but
-disabled: the API refuses it until #295.
+the plan and asks them to type `approve`). `--auto-merge` merges the run's
+pull request with the `merge` step (#295, enabled by contract request 47); the
+API refuses it only while the `merge` profile is disabled, and prints why.
+
+For schedules and the approval inbox (docs/schedules.md §7.3) the views are
+`uv run sc schedules` (the console's table), `uv run sc schedules show <name>`
+(one schedule and its last 10 firings), `uv run sc schedules preview "<cron>"`
+(the cron in words and its next slots) and `uv run sc approvals` (what waits
+for a person: firings, plans, merges, holds). `uv run sc approvals` is also how
+a session learns what is waiting: read it when the operator asks, or when
+`sc schedules` shows a pending count -- there is no session loop to run.
+
+If the arguments are `schedules new|pause|resume|run ...` or
+`approvals approve|reject ...`, do **not** run them here: they create a
+schedule, stop or start one, fire one, or decide an approval, so they are not
+views and this command is not granted them. Use the MCP tools
+(`swarm_schedule_create`, `swarm_schedule_pause`, `swarm_schedule_resume`,
+`swarm_schedule_run_now`, `swarm_schedule_approve`, `swarm_schedule_reject`),
+which say what they write first and approve only the digest the operator was
+shown, or tell the operator the command: `sc approvals approve <id>` prints
+the item and its digest and asks them to type `approve`. A schedule names a
+type from the catalogue (`swarm_schedule_types`); no image or command is
+accepted.
+
+`uv run sc mcp-servers` lists the MCP servers this workspace registered: the
+names a claude-code or codex step may put in `inputs.mcp_servers`, each one's
+auth mode (`dispatch` means a dispatch must bring that server's
+`mcp_credentials` entry), allowed profiles and tools, and the egress addresses
+its operator allowlists. It only reads. There is no `sc` command and no MCP tool
+that registers a server or stores its credential: an admin registers one in the
+console (Settings › Workspace › MCP servers). If the operator wants a server
+registered, tell them that; never ask them for a credential to store.
 
 If the arguments are `login`, `logout` or `context ...`, do **not** run them.
 They are not views: they change the operator's own sign-in, or which cluster
@@ -40,6 +91,14 @@ every later call reaches, so they are theirs to run. Tell them the command
 (`uv run sc login` opens a browser and waits for them) and stop. This command
 is granted each view by name, not `sc` as a whole, for exactly that reason, so
 running one of those would stop at a permission prompt anyway.
+
+If the arguments are `key set ...` or `keys set ...`, do **not** run them.
+They store a TypeSafe key, and the key never passes through this session: tell
+the operator to run `uv run sc key set typesafe` (`--tenant` for the tenant's
+key, `--stdin` to pipe it) in their own terminal, where it asks for the key at
+a hidden prompt and prints only `stored: version N` -- or use the `sc` skill's
+`keys set` verb, which hands them a one-time console link instead. Never ask
+for the key.
 
 Then read the output using the rules in the `sc` skill, which matter more than
 the numbers themselves:

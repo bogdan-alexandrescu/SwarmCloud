@@ -21,6 +21,9 @@ registration is by hand. Everything around it is code:
 | the refresh sweep, `swarm-forge-refresh`, every 15 minutes | `terraform/modules/scheduler/jobs.tf` (`forge_refresh`), switched on by `enable_forge_refresh` | the release, once lane OB3 ships |
 | the `forge_grants` and `forge_orgs` indexes on (`tenant_id`, `user_hash`) | `terraform/modules/firestore/indexes.tf` | the release |
 | the values of the client secret and the private key | Secret Manager only, by `scripts/create-secrets.sh --github-app <slot> --stdin` | the owner, from a terminal |
+| the push receiver's create-only Firestore role `swarmGithubHooksDedup` (`datastore.entities.create`) and the deployer's right to grant it | `terraform/bootstrap/github_hooks_role.tf` and `deployer_conditions.tf`, switched on by `enable_github_hooks_dedup_role` ([Step 9](#step-9-the-push-webhook), step 2) | the owner, `scripts/bootstrap.sh` |
+| the push receiver `swarm-github-hooks`, its webhook secret's container and reader, its binding to that role and the delivery TTL | `terraform/infra/github_hooks.tf`, switched on by `enable_github_hooks` ([Step 9](#step-9-the-push-webhook), step 3) | the release, held at `dev-iam` |
+| the webhook secret's value | Secret Manager only, by `scripts/create-secrets.sh --github-app-webhook-secret --stdin` | the owner, from a terminal |
 
 ## The rule this page exists to keep
 
@@ -155,7 +158,7 @@ Fill in exactly:
 | Enable Device Flow | unticked | the plugin reuses the browser sign-in or a pasted one-time code (onboarding.md §3.2), never device flow |
 | Setup URL | empty (GitHub greys it out once the box above is ticked) | the callback URL serves both |
 | Redirect on update | unticked | changing the repository selection at GitHub needs no new code; the Access page reads installations when it loads |
-| Webhook → Active | **unticked**, off | the design needs no webhook: nothing here receives GitHub events, and an endpoint that accepts them would be a new unauthenticated door |
+| Webhook → Active | **unticked** at registration, off -- until [Step 9](#step-9-the-push-webhook) | nothing receives GitHub events until the receiver `swarm-github-hooks` is deployed and holds the webhook secret; Step 9 turns it on, for `push` only |
 | Where can this GitHub App be installed? | **Any account** | each user installs it on their own account and on each org they enable; "Only on this account" would refuse every other org |
 
 **Repository permissions**, per owner decision D8 (everything not listed:
@@ -171,7 +174,7 @@ No access):
   request when a tenant asks for it
 
 **Organization permissions** and **Account permissions**: none. **Subscribe
-to events**: none (there is no webhook).
+to events**: none at registration; Step 9 subscribes `push` and nothing else.
 
 Create the App. GitHub shows its settings page.
 
@@ -309,6 +312,144 @@ IAM evaluates: set `enable_forge_user_slots = false` and apply bootstrap.
 Then submit a task as that user in a group tenant: it clones and pushes
 through the broker, and swarm-api logs `forge credential released decision=released`
 with the secret's name and no value.
+
+## Step 9: the push webhook
+
+**Why:** owner answer Q3 on
+[#1384](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/1384)
+(2026-10-15): a push to a registered repository's default branch makes its
+index poll happen now, instead of at the next five-minute tick
+([docs/design/graph-service.md](../design/graph-service.md) §6.2). The
+five-minute poll stays: GitHub does not retry a failed delivery, and the poll
+is the fallback for every one that is lost.
+
+**What the door is.** swarm-api sits behind IAP, which GitHub cannot pass, so
+the receiver is its own Cloud Run service, `swarm-github-hooks`, with ingress
+`all` and `allUsers` holding `run.invoker` on that service alone -- the "new
+unauthenticated door" this page used to refuse, kept as narrow as a door can
+be. It accepts only `POST /github/events`, a body of at most 1 MiB, and a
+valid `X-Hub-Signature-256` (HMAC-SHA256 of the raw body under the webhook
+secret, compared in constant time); anything unsigned or badly signed is a 401
+that never reaches Firestore or swarm-api. A `ping` is a 204, every other
+event a 204 that is dropped. It keeps only a non-deleting push to
+`refs/heads/<default branch>`, records `github_deliveries/<X-GitHub-Delivery>`
+with `create()` (a redelivery is a 200 and nothing more; the document expires
+after 7 days), and forwards the repository's `full_name` -- never the
+payload's commit -- to swarm-api's `POST /v1/admin/repositories/push`, which
+re-reads the head with each workspace's own token.
+
+**THE IDENTITY, AND ITS BLAST RADIUS.** Owner decision 2026-10-16, recorded on
+#1384: the receiver **runs as the rollup sweeper account**
+(`swarm-rollup-sweeper`, `module.scheduler.rollup_sweeper_email`) and calls
+swarm-api as it; `POST /v1/admin/repositories/push` was added to that account's
+route allow-list (`ROLLUP_SWEEPER_ROUTES` in
+`apps/swarm-api/swarm_api/auth.py`). A dedicated identity was recommended and
+declined. So a **compromised receiver -- a public-facing service -- holds every
+route the sweeper holds, for every tenant**: the workflow rollup, the run
+advance, the repository poll and push, the merge wake, the GitHub user-token
+refresh sweep, the workspace dispatch sweep, the `task_finished` push, the
+stranded-PR sweep and the workspace-secrets rotation sweep. For the dedup's
+`create()` it also holds the custom role `swarmGithubHooksDedup`, which grants
+`datastore.entities.create` and nothing else (HOOKS-ROLE, PR 1423; owner
+decision 2026-10-16, which replaced `roles/datastore.user`). Firestore
+evaluates no IAM condition on documents, so the role's single permission is
+what narrows it: it may create a document in any collection, and it can read,
+query, update or delete none. None of those routes accepts an image, a command or a
+secret value, and none makes the caller an admin or a member; that is the
+whole of the mitigation. If the receiver is ever suspected, set
+`enable_github_hooks = false` and release: the service, its public invoker,
+the secret's reader and the Firestore role go with it, and the five-minute
+poll carries on alone.
+
+In this order:
+
+1. **The image.** Every release builds and promotes `swarm-github-hooks`
+   (`scripts/build-images.sh`, `scripts/push-images.sh`), so `image_refs`
+   carries its digest from the first release after GS-HOOKS merged.
+
+2. **The dedup role (the bootstrap, which the owner applies).** Set
+   `enable_github_hooks_dedup_role = true` in
+   `terraform/bootstrap/terraform.tfvars`, plan, read the rows and apply with
+   `scripts/bootstrap.sh`. The plan adds `swarmGithubHooksDedup`
+   (`datastore.entities.create` only; `terraform/bootstrap/github_hooks_role.tf`)
+   and adds it to the deployer's grantable project roles
+   (`terraform/bootstrap/deployer_conditions.tf`). Do this first: step 3's
+   binding names the role, and the deployer may grant only what that list holds.
+
+3. **The receiver and its IAM (a release, held at dev-iam).** Set in
+   `dev.tfvars`:
+
+   ```hcl
+   enable_github_hooks = true
+   ```
+
+   The plan adds the service, `allUsers` → `roles/run.invoker` on it, the
+   webhook secret's container (no version) with the sweeper account as its one
+   accessor, the sweeper account's binding to `swarmGithubHooksDedup`, and the TTL policy
+   on `github_deliveries.expires_at`. The IAM rows wait at the `dev-iam` gate
+   for the owner. The service starts without the secret's value: it reads it
+   at run time, so until step 4 every signed delivery is a 503, not a revision
+   that fails to start. `terraform -chdir=terraform/infra output github_hooks`
+   then names the secret (`webhook_secret`: `swarm-github-app-webhook-secret`,
+   declared in `terraform/infra/github_hooks.tf`) and the URL (`webhook_url`).
+
+4. **Store the webhook secret.** Choose it on the App's settings page, in the
+   **Webhook secret** field (a long random string; GitHub never shows it again
+   once saved), and paste the same value at the hidden prompt:
+
+   ```bash
+   scripts/create-secrets.sh --github-app-webhook-secret --stdin
+   ```
+
+   It refuses an argument, a file, an empty value and a container Terraform
+   has not made (step 2 first), keeps the value exactly as typed except the
+   paste's trailing newline, and prints the version number, never the value.
+   Check without reading anything back, with `<secret>` the output's
+   `webhook_secret`:
+
+   ```bash
+   gcloud secrets versions list <secret> --project saga-agents-staging --filter=state=ENABLED --format='value(name)'
+   gcloud secrets get-iam-policy <secret> --project saga-agents-staging --format='value(bindings.members)'
+   ```
+
+   The first prints one version; the second prints the rollup sweeper account
+   alone.
+
+5. **Tick the webhook at GitHub.** On the App's settings page:
+
+   | field | value |
+   |---|---|
+   | Webhook → Active | **ticked** |
+   | Webhook URL | the output's `webhook_url`: the service's URL followed by `/github/events` |
+   | Webhook secret | the value stored in step 3 |
+   | SSL verification | enabled |
+
+   Then **Permissions & events → Subscribe to events**: tick **Push** and
+   nothing else (it needs the Contents permission the App already holds).
+   Save. GitHub sends a `ping`, which the receiver answers 204: the App's
+   **Advanced → Recent Deliveries** shows it green. A red ping is a 401 (the
+   two secrets differ: store it again) or a 503 (the receiver has not read the
+   secret yet: it re-reads at most once a minute; wait one and redeliver).
+
+6. **A registration opts in.** A push is read only for a repository
+   registration whose `on_change` is `webhook` ("poll and push");
+   `poll` stays poll only, and `off` neither. Set it with the registration's
+   `PATCH /v1/repositories/<repo_id>` and the body
+   `{"index": {"on_change": "webhook"}}` (`repositories.IndexSettings`); a
+   script uses that same call. The console offers it too (HOOKS-UI, PR 1410):
+   the register form's **Change trigger** offers **Webhook · on push to the
+   default branch** at registration, and a repository's settings change it in
+   place with that same PATCH, carrying `index.on_change` alone. Both show the
+   note that the App's webhook must be ticked (this step).
+   `min_change_interval_minutes` (default 30) applies to pushes as well, so a
+   busy default branch does not queue a run per merge.
+
+**Rotating the webhook secret.** GitHub holds one webhook secret at a time, so
+there is a short gap: change it at GitHub, store the same value with step 3's
+command, and the receiver reads it on the first delivery that fails to verify
+(at most one re-read a minute). A delivery lost in between is caught by the
+next five-minute poll. Then disable the old version by hand
+(`gcloud secrets versions disable <N> --secret <secret>`).
 
 ## Rotating
 

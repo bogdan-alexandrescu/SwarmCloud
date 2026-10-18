@@ -10,14 +10,23 @@ index of the run's repository says about the change:
                  finding naming it (UNKNOWN when none resolved, never "safe")
     TESTS        test files that call or cover the planned files: a changed
                  symbol with none, and none added, is a finding naming it
+    SIBLINGS     existing code beside the symbols the plan names that does
+                 the same kind of thing: by what both call, or by name
+                 (lane CTXQ-RV; absent when there is none)
     SEAMS        files nearly every change touches: review effort goes here
     === END REVIEW IMPACT <run_id> ===
 
     === TESTED CODE <nonce> <commit_sha> ===            (each CI fix round)
-    the staleness line, then per failing test the application symbols it
-    exercises (the reverse of the index's `symbol_test_map`, and the test's
-    own direct calls), each with its file, and whether the run's plan
-    declared that file
+    the staleness line, then
+    EARLIER FIXES      the commits that fixed these same tests before, from
+                       the index's history layer (lane CTXQ-RV; absent when
+                       there is none)
+    per failing test the application symbols it exercises (the reverse of
+    the index's `symbol_test_map`, and the test's own direct calls), each
+    with its file, and whether the run's plan declared that file, then
+    OUTSIDE THE PLAN   the planned symbols those tests exercise that files
+                       the plan did not declare call or test (lane CTXQ-RV;
+                       absent when there is none)
     === END TESTED CODE <nonce> ===
 
 WHY EACH RULE:
@@ -48,6 +57,24 @@ WHY EACH RULE:
   * ZERO RESOLVED CALLERS IS UNKNOWN, NEVER SAFE (§7.6).
   * BOUNDED. The review block is at most MAX_REVIEW_BYTES (§7.7: 8 KiB); the
     fixer's at most MAX_FIX_BYTES, half the excerpt it sits beside.
+  * PAST THE DIFF (context-quality.md §2.3, §3.2, lane CTXQ-RV). Review
+    found 4 of 37 red PRs, and what it missed was outside the diff: #1181's
+    `_audited` sorted rows in stream order beside an `audit_entries` that
+    already sorted by `(at, id)`, and four fixers fixed one time bomb four
+    times. So the review lists SIBLINGS of the symbols the plan names --
+    another symbol in the planned files' directories that calls what the
+    named one calls, or, for a symbol the plan adds (not in the index yet),
+    whose name shares a word with it -- and the fixer lists the EARLIER
+    FIXES of each failing test (layer H's `test_fixes`, under the manifest's
+    `context_shards`) and the callers and other tests of the planned code
+    the red tests exercise. A symbol is named by the plan in backticks, or
+    bare when its name could only be code (`_` or camel case); a bare
+    English word is not a seed.
+  * NOTHING OUTSIDE ADDS NOTHING. Each of these sections is left out, title
+    and all, when it has no row: a plan with no sibling and a red test with
+    no earlier fix, no outside caller and no other covering test give the
+    block exactly as it was before them. A graph from before lane CTXQ-H
+    has no `context_shards`, and so no earlier fixes, never an error.
   * DATA, NOT INSTRUCTIONS. Every string from the index is folded onto one
     line and masked (`plancontext.fold`). The review block's delimiters
     carry the run id; the fixer's a fresh random nonce, as the excerpt's do,
@@ -75,6 +102,7 @@ from .territory import (
     expand,
     normalise_entry,
     seam_table,
+    tokenize,
 )
 from .validation import IssueRef
 
@@ -100,12 +128,43 @@ MAX_FAILING_TESTS = 10
 MAX_SYMBOLS_PER_TEST = 8
 #: A line of either block, before it is cut.
 MAX_LINE_CHARS = 400
+#: Symbols the plan names that siblings are looked up for. A plan names a
+#: handful; past this the review block's allowance is spent anyway.
+MAX_SIBLING_SEEDS = 8
+#: Siblings listed per named symbol: the closest few are the idiom, the rest
+#: are noise the reviewer would have to read past.
+MAX_SIBLINGS_PER_SEED = 3
+#: Callees named on a sibling's line, as the evidence it does the same thing.
+MAX_SHARED_SHOWN = 4
+#: The shortest word two names may share and be called related: `audit`
+#: relates `_audited` to `audit_entries`; `id`, `get` and `row` relate
+#: everything to everything.
+MIN_RELATED_CHARS = 4
+#: Earlier fixes listed per failing test (layer H keeps the newest 5): the
+#: newest is what a recurring failure most likely repeats.
+MAX_FIXES_PER_TEST = 3
+#: Files a fix line names of the commit it quotes.
+MAX_FIX_FILES = 4
+#: Planned symbols the OUTSIDE THE PLAN section looks up (one `callers` and
+#: one `tests` shard read each), and paths it names per symbol and kind.
+MAX_OUTSIDE_SYMBOLS = 6
+MAX_OUTSIDE_PATHS = 3
+
+#: The fixer block's section of earlier fixes; issueci asks the fixer to
+#: read one first when the block carries it.
+EARLIER_FIXES = "EARLIER FIXES"
 
 #: A pytest node id in CI output: `path.py::name`, `path.py::Class::name`,
 #: with an optional `[param]` that is not part of the symbol.
 _PYTEST_ID = re.compile(r"(?<![\w/.-])((?:[\w.-]+/)*[\w.-]+\.py)::([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)")
 #: Any repository path in CI output; kept only when it names a test file.
 _ANY_PATH = re.compile(r"(?<![\w/:.-])((?:[\w.-]+/)+[\w.-]*\w\.[A-Za-z0-9]{1,8})(?![\w/])")
+#: A symbol the plan names in backticks: `name`, `Class.name`, `name()`.
+_CODE_SPAN = re.compile(r"`([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?:\(\))?`")
+_WORD = re.compile(r"[A-Za-z_]\w*")
+_CAMEL_HUMP = re.compile(r"[a-z0-9][A-Z]")
+#: A `context_shards` entry's blob name, as the writer writes it.
+_BLOB = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 # --------------------------------------------------------------------------
@@ -212,6 +271,138 @@ def planned_tests(plan: Mapping[str, Any] | None) -> list[str]:
 
 
 # --------------------------------------------------------------------------
+# siblings: how neighbouring code already does the same thing (lane CTXQ-RV)
+# --------------------------------------------------------------------------
+
+def _qualified(symbol_id: str) -> str:
+    """`path#Class.name@12` -> `Class.name`; an id with no `#` is its own name."""
+    if "#" not in symbol_id:
+        return symbol_id
+    return symbol_id.split("#", 1)[1].split("@", 1)[0]
+
+
+def _could_only_be_code(name: str) -> bool:
+    return "_" in name or "." in name or bool(_CAMEL_HUMP.search(name))
+
+
+def _plan_text(plan: Mapping[str, Any]) -> str:
+    parts = [str(plan.get("summary") or "")]
+    parts += [str(r) for r in plan.get("requirements") or []]
+    for step in plan.get("steps") or []:
+        if isinstance(step, Mapping):
+            parts += [str(step.get("title") or ""), str(step.get("prompt") or "")]
+    return "\n".join(parts)
+
+
+def _name_terms(qualified: str) -> set[str]:
+    """The words of a symbol's own name: `LiveService._audited` gives `audited`."""
+    return set(tokenize(qualified.rsplit(".", 1)[-1]))
+
+
+def _related(a: set[str], b: set[str]) -> list[str]:
+    """The words two names share, a word matching its own longer form (`audit`, `audited`)."""
+    shared = set()
+    for x in a:
+        for y in b:
+            short, long_ = (x, y) if len(x) <= len(y) else (y, x)
+            if len(short) >= MIN_RELATED_CHARS and long_.startswith(short):
+                shared.add(short)
+    return sorted(shared)
+
+
+def _callees_by_symbol(graph: Graph, module: str) -> dict[str, set[str]]:
+    """symbol id -> what it calls, by fact edges, tests left out: one `callees` shard."""
+    out: dict[str, set[str]] = {}
+    for edge in graph.shard("callees", module):
+        frm, to = edge.get("from"), edge.get("to")
+        if (isinstance(frm, str) and isinstance(to, str) and _fact_edge(edge)
+                and not is_test_file(to.split("#", 1)[0], ())):
+            out.setdefault(frm, set()).add(to)
+    return out
+
+
+def sibling_lines(graph: Graph, plan: Mapping[str, Any] | None) -> list[str]:
+    """The review's SIBLINGS rows for the symbols `plan` names in its files; [] for none.
+
+    A symbol the plan names that the index has (in a planned file) is paired
+    with the symbols of its directory that call what it calls, or whose name
+    shares a word with it; one the index has not seen (the plan adds it) only
+    by name. Closest first: shared callees, then shared words, then the same
+    file.
+    """
+    plan = plan or {}
+    files = [e for e in planned_entries(plan) if not e.endswith("/")]
+    text = _plan_text(plan)
+    spans = list(dict.fromkeys(m.group(1) for m in _CODE_SPAN.finditer(text)))
+    span_names = set(spans) | {n.rsplit(".", 1)[-1] for n in spans}
+    words = set(_WORD.findall(text))
+    pool: dict[str, dict[str, Any]] = {}
+    modules: list[str] = []
+    indexed_files: list[str] = []
+    seeds: list[tuple[str, str | None]] = []
+    known: set[str] = set()
+    for path in files:
+        module = module_of(path)
+        rows = [s for s in graph.symbols(module) if isinstance(s.get("id"), str)]
+        own = [s for s in rows if s.get("path") == path]
+        if not own:
+            continue
+        indexed_files.append(path)
+        if module not in modules:
+            modules.append(module)
+            for row in rows:
+                if not is_test_file(str(row.get("path") or ""), ()):
+                    pool.setdefault(row["id"], row)
+        for row in own:
+            name = _qualified(row["id"])
+            last = name.rsplit(".", 1)[-1]
+            known.update((name, last))
+            if (name in span_names or last in span_names
+                    or (len(last) >= MIN_RELATED_CHARS and _could_only_be_code(last)
+                        and last in words)):
+                seeds.append((name, row["id"]))
+    if not indexed_files:
+        return []
+    for name in spans:
+        if (name not in known and name.rsplit(".", 1)[-1] not in known
+                and _could_only_be_code(name)):
+            seeds.append((name, None))
+    callees: dict[str, set[str]] = {}
+    for module in modules:
+        callees.update(_callees_by_symbol(graph, module))
+    lines: list[str] = []
+    for name, seed_id in seeds[:MAX_SIBLING_SEEDS]:
+        terms = _name_terms(name)
+        calls = callees.get(seed_id, set()) if seed_id else set()
+        scored = []
+        for cand_id, row in pool.items():
+            cand = _qualified(cand_id)
+            if cand_id == seed_id or cand == name:
+                continue
+            shared = sorted(calls & callees.get(cand_id, set()))
+            words_shared = _related(terms, _name_terms(cand))
+            if not shared and not words_shared:
+                continue
+            same_file = row.get("path") in indexed_files
+            scored.append(((-2 * len(shared) - len(words_shared), not same_file, cand_id),
+                           cand_id, row, shared, words_shared))
+        scored.sort(key=lambda item: item[0])
+        for _key, cand_id, row, shared, words_shared in scored[:MAX_SIBLINGS_PER_SEED]:
+            where = f"{row.get('path')}:{row.get('start_line')}" if row.get("start_line") \
+                else str(row.get("path"))
+            why = []
+            if shared:
+                why.append("both call " + ", ".join(
+                    f"`{_qualified(c)}`" for c in shared[:MAX_SHARED_SHOWN]))
+            if words_shared:
+                why.append("names share " + ", ".join(f"`{w}`" for w in words_shared))
+            new = " (new: not in the index yet)" if seed_id is None else ""
+            lines.append(_line(f"- `{name}`{new} and `{_qualified(cand_id)}` at `{where}`: "
+                               + "; ".join(why)))
+    return lines
+
+
+# --------------------------------------------------------------------------
 # the review's IMPACT block (§4.3)
 # --------------------------------------------------------------------------
 
@@ -221,8 +412,12 @@ def review_markers(run_id: str, sha: str) -> tuple[str, str]:
 
 def review_block(graph: Graph, *, run_id: str, sha: str, first_line: str,
                  plan: Mapping[str, Any], seams: Mapping[str, Mapping[str, Any]],
+                 siblings: list[str] | None = None,
                  cap: int = MAX_REVIEW_BYTES) -> str | None:
-    """The review's impact block for `plan`, or None when the plan declares no file."""
+    """The review's impact block for `plan`, or None when the plan declares no file.
+
+    `siblings` is `sibling_lines(graph, plan)`; none leaves the section out.
+    """
     entries = planned_entries(plan)
     if not entries:
         return None
@@ -262,6 +457,13 @@ def review_block(graph: Graph, *, run_id: str, sha: str, first_line: str,
     if named:
         body += [""] + _section("TESTS the plan said its steps add (check each exists):",
                                 [_line(f"- {t}") for t in named])
+    if siblings:
+        body += [""] + _section(
+            "SIBLINGS: existing code beside the symbols the plan names that does the same "
+            "kind of thing, by what both call or by name. Read each, and compare how the "
+            "change does it (ordering, filtering, escaping, error handling, fencing) with how "
+            "the sibling does; name a difference with no stated reason in `findings`, naming "
+            "both:", siblings)
     seam_lines = [
         _line(f"- `{row['path']}` ({row['where']}; " + ", ".join(row["reasons"])
               + f"; fan-in {row['fan_in']}, fan-out {row['fan_out']})")
@@ -303,8 +505,10 @@ def read_review_context(ctx: Any, tenant_id: str, run: Any) -> str | None:
         seams = index.service.graphs.view(
             (tenant_id, index.repo_id, index.graph.digest, version.get("digest"), "seams"),
             compute)
+        plan = run.plan or {}
         block = review_block(index.graph, run_id=run.id, sha=index.sha,
-                             first_line=index.first_line, plan=run.plan or {}, seams=seams)
+                             first_line=index.first_line, plan=plan, seams=seams,
+                             siblings=sibling_lines(index.graph, plan))
         if block is not None:
             log.info("review context tenant=%s run=%s sha=%s bytes=%d", tenant_id, run.id,
                      index.sha[:12], len(block.encode("utf-8")))
@@ -410,11 +614,98 @@ def tested_symbols(graph: Graph, test: FailingTest,
     return found, own
 
 
+def _context_rows(graph: Graph, layer: str, key: str) -> list[dict[str, Any]]:
+    """One shard of a context layer (lane CTXQ-H's `context_shards`), or [] without one.
+
+    Read through `Graph._load`, the loader that checks a blob against its
+    name before inflating it, as `territory.index_rows` reads `index_shards`.
+    A manifest from before CTXQ-H has no `context_shards`: no rows.
+    """
+    table = graph.manifest.get("context_shards")
+    entries = table.get(layer) if isinstance(table, Mapping) else None
+    entry = entries.get(key) if isinstance(entries, Mapping) else None
+    blob = entry.get("blob") if isinstance(entry, Mapping) else None
+    if not isinstance(blob, str) or not _BLOB.match(blob):
+        return []
+    return graph._load(blob)  # noqa: SLF001 -- repograph gives the loader no public name yet
+
+
+def earlier_fixes(graph: Graph, tests: list[FailingTest]) -> dict[str, list[dict[str, Any]]]:
+    """test file -> the commits that fixed it before, newest first (layer H `test_fixes`)."""
+    out: dict[str, list[dict[str, Any]]] = {}
+    shards: dict[str, list[dict[str, Any]]] = {}
+    for test in tests:
+        if test.path in out:
+            continue
+        module = module_of(test.path)
+        if module not in shards:
+            shards[module] = _context_rows(graph, "test_fixes", module)
+        rows = [r for r in shards[module] if r.get("test") == test.path]
+        if rows:
+            out[test.path] = rows[:MAX_FIXES_PER_TEST]
+    return out
+
+
+def _fix_line(path: str, row: Mapping[str, Any]) -> str:
+    pr = row.get("pr")
+    number = f"#{pr} " if isinstance(pr, int) and not isinstance(pr, bool) else ""
+    commit = str(row.get("sha") or "")[:12]
+    date = str(row.get("date") or "")[:10]
+    files = [str(f) for f in row.get("files") or [] if str(f) != path]
+    also = ("; it also changed " + ", ".join(f"`{f}`" for f in files[:MAX_FIX_FILES])
+            + (f" and {len(files) - MAX_FIX_FILES} more" if len(files) > MAX_FIX_FILES else "")
+            if files else "")
+    return _line(f"- `{path}`: {number}`{commit}` {date} ({row.get('why') or 'fix'}): "
+                 f"{row.get('subject') or ''}{also}")
+
+
+def outside_lines(graph: Graph, symbols: list[str], planned: list[str],
+                  failing: list[str]) -> list[str]:
+    """Per planned `symbols`: the files the plan did not declare that call it, and the
+    tests other than the `failing` files that cover it; [] when there is none."""
+    lines: list[str] = []
+    for symbol in symbols[:MAX_OUTSIDE_SYMBOLS]:
+        callers: list[str] = []
+        tests: list[str] = []
+        for edge in graph.callers(symbol):
+            frm = edge.get("from")
+            if not isinstance(frm, str) or frm.startswith("external:") or not _fact_edge(edge):
+                continue
+            path = frm.split("#", 1)[0]
+            if is_test_file(path, ()):
+                if path not in failing and path not in tests:
+                    tests.append(path)
+            elif not any(conflicts(e, path) for e in planned) and path not in callers:
+                callers.append(path)
+        for row in graph.tests_for(symbol):
+            test = row.get("test")
+            path = test.split("#", 1)[0] if isinstance(test, str) else None
+            if path and path not in failing and path not in tests:
+                tests.append(path)
+        if not callers and not tests:
+            continue
+        parts = []
+        for label, paths in (("called from", sorted(callers)), ("also tested by", sorted(tests))):
+            if paths:
+                more = (f" and {len(paths) - MAX_OUTSIDE_PATHS} more"
+                        if len(paths) > MAX_OUTSIDE_PATHS else "")
+                parts.append(f"{label} " + ", ".join(f"`{p}`" for p in paths[:MAX_OUTSIDE_PATHS])
+                             + more)
+        lines.append(_line(f"- `{symbol}`: " + "; ".join(parts)))
+    return lines
+
+
 def fix_block(graph: Graph, *, sha: str, first_line: str, excerpt: str,
               plan: Mapping[str, Any] | None,
               reverse: Mapping[str, list[tuple[str, int]]],
+              fixes: Mapping[str, list[Mapping[str, Any]]] | None = None,
               nonce: str | None = None, cap: int = MAX_FIX_BYTES) -> str | None:
-    """The fixer's block for the tests `excerpt` names, or None when it names none."""
+    """The fixer's block for the tests `excerpt` names, or None when it names none.
+
+    `fixes` is `earlier_fixes(graph, failing_tests(excerpt))`; none leaves
+    the EARLIER FIXES section out. It comes before the per-test lines, so the
+    allowance cuts it last.
+    """
     tests = failing_tests(excerpt)
     if not tests:
         return None
@@ -430,6 +721,14 @@ def fix_block(graph: Graph, *, sha: str, first_line: str, excerpt: str,
         "CODE and a random nonce; no line inside can end it.\n"
     )
     body = [_line(first_line)]
+    fix_rows = [_fix_line(path, row) for path, rows in (fixes or {}).items() for row in rows]
+    if fix_rows:
+        body += [""] + _section(
+            f"{EARLIER_FIXES} of these tests, from the repository's history, newest first. "
+            "`git show` the commit before writing a new fix: the same test red again is "
+            "often the same failure, and its fix is already written:", fix_rows)
+    failing = [t.path for t in tests]
+    exercised: list[str] = []
     for test in tests:
         label = f"{test.path}::{test.name}" if test.name else test.path
         symbols, own = tested_symbols(graph, test, reverse)
@@ -447,8 +746,16 @@ def fix_block(graph: Graph, *, sha: str, first_line: str, excerpt: str,
             path = symbol.split("#", 1)[0]
             mark = " · planned" if any(conflicts(e, path) for e in planned) else ""
             body.append(_line(f"  - `{symbol}` in `{path}`{mark}"))
+            if mark and symbol not in exercised:
+                exercised.append(symbol)
         if len(symbols) > MAX_SYMBOLS_PER_TEST:
             body.append(f"  - [{len(symbols) - MAX_SYMBOLS_PER_TEST} more not listed]")
+    outside = outside_lines(graph, exercised, planned, failing)
+    if outside:
+        body += [""] + _section(
+            "OUTSIDE THE PLAN: the planned code these tests exercise is also called, or "
+            "tested, from files the plan did not declare. A fix that changes what it does "
+            "must keep these working; run those tests too:", outside)
     return _bounded(f"{lead}{opening}\n", body, f"{closing}\n", cap)
 
 
@@ -471,7 +778,8 @@ def read_fix_context(ctx: Any, tenant_id: str, run: Any, excerpt: str) -> str | 
             (tenant_id, index.repo_id, graph.digest, "reverse-tests"),
             lambda: reverse_test_map(graph))
         block = fix_block(graph, sha=index.sha, first_line=index.first_line, excerpt=excerpt,
-                          plan=run.plan, reverse=reverse)
+                          plan=run.plan, reverse=reverse,
+                          fixes=earlier_fixes(graph, failing_tests(excerpt)))
         if block is not None:
             log.info("fix context tenant=%s run=%s sha=%s bytes=%d", tenant_id, run.id,
                      index.sha[:12], len(block.encode("utf-8")))
@@ -481,7 +789,8 @@ def read_fix_context(ctx: Any, tenant_id: str, run: Any, excerpt: str) -> str | 
 
 
 __all__ = [
-    "MAX_FIX_BYTES", "MAX_REVIEW_BYTES", "FailingTest", "failing_tests", "fix_block",
-    "planned_entries", "read_fix_context", "read_review_context", "reverse_test_map",
-    "review_block", "review_markers", "tested_symbols",
+    "EARLIER_FIXES", "MAX_FIX_BYTES", "MAX_REVIEW_BYTES", "FailingTest", "earlier_fixes",
+    "failing_tests", "fix_block", "outside_lines", "planned_entries", "read_fix_context",
+    "read_review_context", "reverse_test_map", "review_block", "review_markers",
+    "sibling_lines", "tested_symbols",
 ]

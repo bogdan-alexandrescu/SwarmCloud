@@ -32,6 +32,7 @@ import type { WorkflowRead } from '../api'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
 import TIMELINE_CSS from '../styles/timeline.css?raw'
+import { byIdVia } from './workflowsById'
 
 const api = vi.hoisted(() => ({
   loadAttemptsPage: vi.fn(),
@@ -39,6 +40,7 @@ const api = vi.hoisted(() => ({
   loadTasks: vi.fn(),
   loadTask: vi.fn(),
   loadWorkflow: vi.fn(),
+  loadWorkflowsById: vi.fn(),
   loadOutcomes: vi.fn(),
 }))
 vi.mock('../api', async (importOriginal) => {
@@ -88,6 +90,7 @@ function workflowRead(wf: string): WorkflowRead {
 }
 
 beforeEach(() => {
+  api.loadWorkflowsById.mockImplementation(byIdVia(api.loadWorkflow))
   api.loadAttemptsPage.mockResolvedValue(
     ok({
       tenant_id: 'eng',
@@ -118,10 +121,12 @@ async function drawn(props: { onView?: (q: string) => void } = {}): Promise<void
 describe('G3-02: a verdict-skipped step reads `not run (verdict MERGE)` in Lanes', () => {
   it('prints the verdict where the duration was, and the ran step keeps its duration', async () => {
     await drawn()
-    const fix = document.querySelector('[data-lane="task_fix"] .tl-lab b')!
+    const fix = document.querySelector('[data-lane="task_fix"] .tl-lab')!
     expect(fix.textContent).toContain('not run (verdict MERGE)')
     expect(fix.textContent, 'a skipped step is not a run with a duration').not.toMatch(/·\s*1m\b/)
     expect(fix.querySelector('.tl-dur')!.getAttribute('title')).toContain('skipped by verdict')
+    // RT-9: the note is not on the name's line, where it squeezed `fix` to `f.`
+    expect(fix.querySelector('b')!.textContent).not.toContain('not run')
     const review = document.querySelector('[data-lane="task_review"] .tl-dur')!
     expect(review.textContent).toMatch(/^ · 5\dm/)
   })
@@ -130,7 +135,7 @@ describe('G3-02: a verdict-skipped step reads `not run (verdict MERGE)` in Lanes
     const bare = { ...FIX, result_summary: { verdict_gate: { agent_ran: false } } } as unknown as Task
     api.loadTasks.mockResolvedValue(ok({ tasks: [REVIEW, bare, SOLO] } as TaskPage))
     await drawn()
-    expect(document.querySelector('[data-lane="task_fix"] .tl-dur')!.textContent).toBe(' · not run (verdict —)')
+    expect(document.querySelector('[data-lane="task_fix"] .tl-dur')!.textContent).toBe('not run (verdict —)')
   })
 })
 

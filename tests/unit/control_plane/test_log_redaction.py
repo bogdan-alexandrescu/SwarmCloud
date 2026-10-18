@@ -769,19 +769,58 @@ def test_an_escaped_empty_value_is_left_alone_by_both_filters():
     assert _house_filter([deeper]) == [deeper]
 
 
+#: How much slower four times the input may be. Linear work grows 4x and
+#: quadratic 16x; 8 is the geometric middle, so either has to be thrown off by
+#: a factor of 2 before it reads as the other. The bound is a RATIO because a
+#: wall-clock limit measured the runner: four 256 KiB runs took 1.2 s alone and
+#: 6.7 s inside `scripts/changed-guards.sh` beside 2,600 other tests (#1334).
+_GROWTH_BOUND = 8.0
+
+
+def _backslash_texts(size: int) -> tuple[str, ...]:
+    run = "\\" * size
+    return (run, "password=" + run + "x", '"' + run + '"api_key": "v"', run + '"')
+
+
+def _growth(scan, size: int, repeats: int = 5) -> float:
+    """time(4 x size) / time(size) for `scan` over the backslash texts.
+
+    Each size's time is the fastest of `repeats`, taken alternately, so a burst
+    of load from a neighbouring test inflates one sample, not one size."""
+    best = {size: float("inf"), 4 * size: float("inf")}
+    texts = {n: _backslash_texts(n) for n in best}
+    for _ in range(repeats):
+        for n in best:
+            started = time.perf_counter()
+            for text in texts[n]:
+                scan(text)
+            best[n] = min(best[n], time.perf_counter() - started)
+    return best[4 * size] / best[size]
+
+
+#: The defect the bound in `redaction.py` prevents, kept small: an unbounded
+#: run before the key, tried at every position of the text, rescans the rest
+#: of the run from each one. Bounded, the same pattern is the fix.
+_QUADRATIC_KEY = re.compile(r'(\\*)"?api_key')
+_BOUNDED_KEY = re.compile(r'(\\{0,15})"?api_key')
+
+
+def test_the_growth_check_fails_a_quadratic_scan_and_passes_a_linear_one():
+    """The check below is only worth its bound if it can tell the two apart."""
+    quadratic = _growth(_QUADRATIC_KEY.search, 1024)
+    assert quadratic > _GROWTH_BOUND, f"a quadratic scan grew only {quadratic:.1f}x"
+    linear = _growth(_BOUNDED_KEY.search, 16 * 1024)
+    assert linear < _GROWTH_BOUND, f"a linear scan grew {linear:.1f}x"
+
+
 def test_a_long_run_of_backslashes_is_linear_not_quadratic():
     """The run before the key is tried at every position of the text, so it is
     bounded (`\\\\{0,15}`); unbounded, 256 KiB of backslashes -- text an agent
     chooses, on an instance every tenant shares -- rescans the rest of the run
-    from each of its positions."""
-    import time
-
-    run = "\\" * (256 * 1024)
-    started = time.monotonic()
-    for text in (run, "password=" + run + "x", '"' + run + '"api_key": "v"', run + '"'):
-        redact(text)
-    elapsed = time.monotonic() - started
-    assert elapsed < 5.0, f"four 256 KiB runs of backslashes took {elapsed:.1f}s"
+    from each of its positions. 16 KiB against 64 KiB: 1 KiB of the quadratic
+    form already takes as long as 16 KiB of the bounded one."""
+    growth = _growth(redact, 16 * 1024)
+    assert growth < _GROWTH_BOUND, f"four times the backslashes took {growth:.1f}x as long"
 
 
 def test_the_transcripts_old_call_on_a_tool_input_no_longer_serves_the_value():

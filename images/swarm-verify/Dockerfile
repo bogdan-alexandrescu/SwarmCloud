@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 #
 # swarm-verify -- the verification targets, packaged to run INSIDE the VPC.
 #
@@ -50,7 +50,15 @@
 # id_token() both take their credentials from the metadata server when
 # K_SERVICE or CLOUD_RUN_JOB is set, so nothing here needs a key file either.
 
-FROM alpine:3.20
+# Pulled through this project's Docker Hub mirror, never from Docker Hub
+# directly (terraform/infra/build_mirror.tf, docs/runbooks/build-mirror.md),
+# and by digest: this was the one base here named by tag alone. The digest is
+# Docker Hub's alpine:3.20 index, read on 2026-10-12. A pull request's local
+# build passes MIRROR_DOCKER_HUB=docker.io instead (scripts/lib/build-mirror.sh).
+ARG MIRROR_DOCKER_HUB=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub
+ARG ALPINE_IMAGE=alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+
+FROM ${MIRROR_DOCKER_HUB}/library/${ALPINE_IMAGE}
 
 # bash because every script declares `#!/usr/bin/env bash` and relies on
 # arrays and `set -o pipefail`; ash would silently mis-execute them.
@@ -70,7 +78,14 @@ FROM alpine:3.20
 # the fixture patch was byte-correct and still reported FAIL. This is not the
 # gcloud/Cloud-SDK tradeoff above: git alone, with no Python dependency chain,
 # carries no comparable CVE surface.
-RUN apk add --no-cache bash curl jq coreutils ca-certificates python3 git
+# sed (GNU) because `redact` in scripts/lib/common.sh is one sed -E program
+# with `#` delimiters and back-references that busybox sed refuses to compile
+# ("sed: unmatched '#'"). Without it every acceptance reason piped through
+# redact came out EMPTY: 13 of the 14 failed live-browser runs read on
+# 2026-10-14 printed that error once per check (lane SPEED-C2). It fails
+# closed -- nothing leaked, the reason was lost -- which is still a check
+# that cannot say why it failed.
+RUN apk add --no-cache bash curl jq coreutils ca-certificates python3 git sed
 
 WORKDIR /swarm
 
@@ -84,6 +99,15 @@ COPY Makefile /swarm/Makefile
 # cannot be read from there; sandbox-sync.sh puts this same commit's copy on
 # the sandbox's main before the suite runs, so the two are the same bytes.
 COPY tests/acceptance/fixtures/ /swarm/tests/acceptance/fixtures/
+# The live-browser group's scripted viewer (scripts/acceptance/groups/
+# live-browser.sh runs it with python3): standard library only, so it needs
+# nothing the image does not already carry.
+COPY tests/acceptance/test_live_browser.py /swarm/tests/acceptance/test_live_browser.py
+# The git-tools group's prompts and judge (scripts/acceptance/groups/
+# git-tools.sh runs it with python3 for every prompt and verdict): standard
+# library only. Missing from the image from PR 1269 until 2026-10-15, every
+# git-tools check failed "the judge wrote no verdict" with an empty prompt.
+COPY tests/acceptance/test_runner_git_tools.py /swarm/tests/acceptance/test_runner_git_tools.py
 
 # Fail loudly at build time rather than at 3am if a script lost its bit.
 RUN chmod +x /swarm/scripts/*.sh /swarm/scripts/lib/*.sh 2>/dev/null || true

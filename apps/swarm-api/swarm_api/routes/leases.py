@@ -25,7 +25,9 @@ an operator who wants one number per row; a list line that read that fallback
 would call a booting agent "silent for four minutes". Before the first beat the
 reconciler judges a lease by its dispatch deadline alone
 (`reconciler/detect.py` `detect_stale_leases`), which is what
-`dispatch_overdue` carries.
+`dispatch_overdue` carries -- cleared by a first beat or by the task reaching
+STARTING or RUNNING (`codec.lease_dispatch_overdue`), never by the lease's
+own state, which stops at DISPATCHED.
 
 THE GRACE ARRIVES WITH THE DATA and is resolved by the admin route's own
 `_heartbeat_grace_seconds`, the one the reconciler parity test holds, so there
@@ -43,6 +45,7 @@ from fastapi import APIRouter, Depends
 
 from swarm_common.states import CONCURRENCY_STATES
 
+from ..codec import lease_dispatch_overdue, lease_task_is_current
 from ..deps import AppContext, get_context, submission_scope, tenant_scope
 from .admin import _heartbeat_grace_seconds
 
@@ -79,12 +82,7 @@ def list_lease_heartbeats(
             continue
         if task.state not in CONCURRENCY_STATES:
             continue
-        current = (
-            task.current_lease_id == lease.lease_id
-            if task.current_lease_id is not None
-            else task.current_generation == lease.generation
-        )
-        if not current:
+        if not lease_task_is_current(lease, task):
             continue
         silent_seconds = (
             None
@@ -109,7 +107,7 @@ def list_lease_heartbeats(
                 "silent_seconds": silent_seconds,
                 "silent": silent_seconds is not None and silent_seconds > grace,
                 "expired": lease.is_expired(now),
-                "dispatch_overdue": lease.dispatch_overdue(now),
+                "dispatch_overdue": lease_dispatch_overdue(lease, task, now),
             }
         )
 

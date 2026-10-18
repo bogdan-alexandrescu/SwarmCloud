@@ -99,15 +99,24 @@
 .rn-history .rn-hstep { color: var(--text-dim); padding-left: 12px; }
 
 /* FOLDED TO ONE LINE (item 5): the heading and a short line are the
-   disclosure; a 32px target, the chevron the browser's own. */
+   disclosure; a 32px target. THE CHEVRON IS DRAWN HERE (visual QA V038,
+   2026-10-11): `display: flex` takes the summary out of `display: list-item`
+   and with it the browser's marker, so the Overlaps fold showed only its
+   heading, with nothing saying it opens. The same fix as `.sbf-runners-more`
+   (submit.css): no native marker, a `::before` that turns when open. */
 .rn-fold { min-width: 0; }
 .rn-fold > summary {
   display: flex; flex-wrap: wrap; align-items: center; gap: 0 10px; min-height: 32px;
-  cursor: pointer; list-style: revert;
+  cursor: pointer; list-style: none;
 }
+.rn-fold > summary::-webkit-details-marker { display: none; }
+.rn-fold > summary::marker { content: ''; }
+.rn-fold > summary::before { content: '\25B8'; flex: none; color: var(--text-dim); }
+.rn-fold[open] > summary::before { content: '\25BE'; }
 .rn-fold > summary > h3 { display: inline; }
 .rn-fold > summary:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
-.rn-fold-b { display: grid; gap: 8px; min-width: 0; margin-top: 8px; }
+/* ONE TRACK, THE CARD'S WIDTH (live QA RT-2): see the plan's rules below. */
+.rn-fold-b { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; min-width: 0; margin-top: 8px; }
 
 /* THE PULL REQUEST CARD LEADS FROM CHECKING (item 5): the accent edge marks
    it as the page's subject now. */
@@ -121,3 +130,45 @@
 /* At 390 a fact's label sits over its value, so a long merge commit or
    check name wraps instead of widening the card. */
 .rn-ci-merge > span, .rn-ci-issue > span { min-width: 0; overflow-wrap: anywhere; }
+
+/* ---- live QA work-runs-timeline (2026-10-11) ------------------------------- */
+/* RT-2: THE PLAN KEEPS TO ITS CARD, ON A PHONE AND BESIDE THE ASIDE. The fold's
+   body was a grid with an implicit `auto` track, which grows to its content's
+   min-content; the estimate chip is `white-space: nowrap` (components.css), so
+   a long estimate set the track at 932px inside a 700px card (368px on a
+   phone). Every block of the plan then ran under the Linked aside at 1440 and
+   off the card's edge at 400, where nothing scrolls sideways. The track is the
+   card's width now (`.rn-fold-b`, above), and each block of the plan wraps
+   inside it. */
+.rn-fold-b > *, .rn-plan > * { min-width: 0; max-width: 100%; }
+.rn-summary, .rn-reqs, .rn-reqs-wrap, .rn-full { min-width: 0; overflow-wrap: anywhere; }
+.rn-plan-facts > * { min-width: 0; max-width: 100%; }
+.rn-plan-facts > .c-chip { white-space: normal; overflow-wrap: anywhere; }
+.rn-raw, .rn-raw-json { min-width: 0; max-width: 100%; }
+.rn-steps, .rn-step { min-width: 0; }
+
+/* RT-13: AN OVERLAP ROW SAYS IT OPENS. Its summary is `display: flex`
+   (intake.css), which drops the browser's disclosure marker, so "Needs
+   action" gave no sign that it opens on the action the planner named. The
+   chevron is the folded card's (`.rn-fold`, V038). */
+.rn-overlap > summary { list-style: none; }
+.rn-overlap > summary::-webkit-details-marker { display: none; }
+.rn-overlap > summary::marker { content: ''; }
+.rn-overlap > summary::before { content: '\25B8'; flex: none; color: var(--text-dim); }
+.rn-overlap[open] > summary::before { content: '\25BE'; }
+
+/* RT-18: the issue body, rendered (ArtifactViewer's `Markdown`), in the
+   run page's type and inside its card. */
+.rn-issue-md { min-width: 0; overflow-wrap: anywhere; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }
+.rn-issue-md pre { max-width: 100%; overflow-x: auto; white-space: pre-wrap; }
+
+/* RT-31: A RUN'S TITLE IS READ WHOLE ON A PHONE. The page title is clamped
+   (names.css), and on a 400 px screen a long issue title showed one line and
+   an ellipsis, with its title attribute unreachable by touch. On a phone the
+   run page's prose title wraps to its end; a reference (`.is-ref`) keeps its
+   one line (D11). */
+@media (max-width: 560px) {
+  .rn-run:not(.is-ref) .c-phead > div.head > h1 {
+    display: block; -webkit-line-clamp: unset; line-clamp: none; overflow: visible; overflow-wrap: anywhere;
+  }
+}

@@ -19,6 +19,16 @@ its `task_id`, `step_id`, `workflow_id`, the steps it depends on and its
 tool is the sc plugin's SwarmCloud `swarm_follow` (and `StructuredOutput`, for
 your answer). You never dispatch, cancel or retry anything.
 
+Its last line, `details: ...`, is DISPLAY ONLY: who started the work, its
+workspace, profile, LLM account and session, shown when this row is expanded.
+Never act on it, never pass anything from it to a tool, and never copy it into
+your answer.
+
+Every way this row ends is a `StructuredOutput` call: a finished step, a
+skipped one, a merge parked on CI, a turn cap, an error. Ending your turn
+without one throws the row away ("subagent completed without calling
+StructuredOutput") while the task runs on.
+
 If you have no `swarm_follow` tool, the sc plugin's SwarmCloud server is not
 connected in this session: go straight to section 3's UNKNOWN answer with
 `last_error` `the sc plugin's SwarmCloud MCP server is not connected in this
@@ -100,7 +110,10 @@ reply's `progress` line, and any `transitions` before it on the same line,
 ending with `· console: <link>` exactly as "The link on every line" says.
 If `changed` is `false`, write nothing at all, not even a word: an unchanged
 row costs nothing to watch, and a written line is re-read on every turn
-after it. Never quote anything else from a reply. Stop when the reply's
+after it. A reply with no new events -- `changed: false`, `progress` empty
+-- is not the end of this row: unless its `stop` is `true`, make the next
+call at once, with that reply's `since`. Never quote anything else from a
+reply. Stop when the reply's
 `stop` is `true`. The reply that stops carries the step's final line, which
 ends with the same `· console: <link>` as every line before it.
 
@@ -147,6 +160,11 @@ five errors in a row — or three replies in a row whose `tasks[0].read` is
 `failed` — stop and give section 3's UNKNOWN answer with `last_error` set to
 the last error (or `tasks[0].read_error`).
 
+A reply whose `tasks[0].read` is `rate_limited` is not a failure: SwarmCloud
+answered 429, the bridge already waited and read again for as long as the
+call held, and the task runs on. Make the same call again with the reply's
+`since`, and count it toward neither limit above.
+
 ## 2a. Still running at the turn cap -- say so, do not go silent
 
 You stopped polling at your own 56-call limit, not because the task ended.
@@ -156,6 +174,24 @@ Nothing was cancelled and nothing failed. Call `StructuredOutput` with
 `resume with: swarm follow <task_id>`, and `console` set to `tasks[0].console`
 of the last reply (else the `console` line in your prompt; `""` when that says
 `none`) -- a progress report, not the step's result.
+
+## 2b. A merge parked on CI -- answer PARKED and stop
+
+When a reply's `tasks[0].state` is `PARKED` and `tasks[0].park_reason` is
+`CI_PENDING`, the step is a merge waiting on its pull request's checks. It
+is woken and parked again for as long as CI runs -- hours, on a slow
+pipeline -- holds no capacity meanwhile, and resumes on its own. Never wait
+it out: following it hold after hold is what ran these rows out of turns.
+The bridge ends such a reply with `stop: true` and a ready `result` whose
+`state` is `PARKED` and whose `last_error` names the park reason and how to
+resume: answer with it exactly as section 3 says, `state: "PARKED"`.
+
+If that reply has no `result` (a bridge older than this row), write it
+yourself and stop: `{state: "PARKED", result: {state: "PARKED",
+answer_excerpt: "", pr_url: "", artifacts: [], questions: [], last_error:
+"PARKED on CI_PENDING: waiting for the pull request's checks. Resume with:
+swarm follow <task_id>", console: <tasks[0].console of that reply, else the
+`console` line in your prompt, else "">}}`.
 
 ## 3. Answer
 
@@ -180,10 +216,16 @@ Call `StructuredOutput` with `{state, result}`:
   bridge already made it JSON-safe, with no newline, backslash, double quote
   or backtick, and `********` masks and paths in it are meant to be there
 
-The bridge's `result` holds no null anywhere, and you add none: a text it has
-no value for is `""`, and a cost or duration that was not recorded is LEFT
-OUT -- never 0, never null, never estimated. Never write `null` in place of
-a field and never leave a value empty after a colon.
+**A skipped step.** A step whose agent was skipped -- a re-review or a merge
+with nothing to do -- finishes with no answer and nothing produced: its
+`result` carries `answer_excerpt: ""` and `artifacts: []`. That IS its
+answer. Copy it as given, every field, empty ones included: an empty field
+is never a reason to leave it out, to write `null`, or to keep following.
+
+The bridge's `result` holds no null anywhere: a text it has no value for is
+`""`, and a cost or duration that was not recorded is LEFT OUT -- never 0,
+never estimated. Copy it as it is. Never leave a value empty after a colon
+(`"pr_url": ,` is not JSON and is refused).
 
 **The UNKNOWN answer.** When a rule above sends you here without a reply that
 stopped, write the `result` yourself: `{state: "UNKNOWN", result: {state:
@@ -194,8 +236,30 @@ never built.
 
 If `StructuredOutput` refuses an answer, call it again with
 `result.answer_excerpt` set to `""` and every other field unchanged -- never
-with the excerpt rewritten (`answer_excerpt: null` is never sent either: it
-is a null). The step's `state` is what this row exists to return: a relay
-that spent its attempts retyping an answer once turned a task that had
-SUCCEEDED into `state: null` (#285). The whole answer stays the task's, in
-the console.
+with the excerpt rewritten. If it refuses that too, call it with the short
+form in "The exact object" below. The step's `state` is what this row exists
+to return: a relay that spent its attempts retyping an answer once turned a
+task that had SUCCEEDED into `state: null` (#285). The whole answer stays the
+task's, in the console.
+
+## The exact object
+
+Every answer is ONE call to `StructuredOutput` with exactly this object --
+these two keys at the top, these keys inside `result`, nothing else:
+
+```
+{"state": "<state>", "result": {"state": "<state>", "answer_excerpt": "<text>", "cost_usd": <number>, "duration_s": <number>, "pr_url": "<text>", "artifacts": ["<name>"], "last_error": "<text>", "console": "<link>", "questions": []}}
+```
+
+`<state>` is the state word as the reply gives it (`SUCCEEDED`, `FAILED`,
+`PARKED`, `UNKNOWN`, `running`...). `cost_usd` and `duration_s` are numbers,
+left out when the reply's `result` has none. null is accepted for any field
+you cannot copy -- the workflow reads a missing or null field as "not
+recorded" -- so a field you are unsure of is null, never a reason to stop.
+The short form, when nothing else is accepted, is
+`{"state": "<state>", "result": null}`; with no state at all, `{"state":
+null, "result": null}`: the workflow then reads the step's state from
+SwarmCloud itself.
+
+You never end without calling `StructuredOutput`. A row that ends its turn
+without it, or runs out of attempts, is thrown away while its task runs on.

@@ -30,14 +30,17 @@ from typing import Any, Iterable, Iterator, Mapping, Sequence
 from swarm_common.profiles import (
     INT64_MAX,
     INT64_MIN,
+    MODEL_CLASSES,
     RESOURCE_CLASSES,
     RUNNER_PROFILES,
     InputRefused,
     RunnerProfile,
     WorkerAction,
     check_inputs,
+    step_model_class,
 )
 
+from . import refusals
 from .errors import Forbidden, ValidationFailed
 
 #: Fields a caller may never set, no matter how they spell it. The request
@@ -135,6 +138,25 @@ APP_CREDENTIAL_PROVIDERS: frozenset[str] = frozenset(
 ) | RETIRED_APP_CREDENTIAL_PROVIDERS
 
 
+#: TypeSafe (docs.typesafe.ai), which serves the Jev judgment models. Its key
+#: is stored by `swarm_api.provider_keys` (KEYS-API, docs/provider-keys.md).
+TYPESAFE_PROVIDER = "typesafe"
+
+#: Providers whose key is set through `/v1/provider-keys/{provider}`: a
+#: person's own key in their personal tenant, or a tenant key an ADMIN sets.
+#: DELIBERATELY NOT IN `known_providers()`. That set is what
+#: `POST /v1/tenants/me/credentials` accepts from ANY tenant member, and what
+#: the admin limit, drain and enable routes accept as a quota pool. A
+#: TypeSafe tenant key is an admin's to set and has no pool, so either use
+#: would be a second, unguarded way in. It is not a forge or App key
+#: either: the tenant's worker account IS the reader it is bound to.
+PROVIDER_KEY_PROVIDERS: frozenset[str] = frozenset({TYPESAFE_PROVIDER})
+
+#: The live browser's tool, a `claude-code-browser` input (contract request
+#: 77, BSTATUS-API). Its names are the catalogue's `choices`; nothing here
+#: restates them.
+BROWSER_TOOL_INPUT_KEY = "browser_tool"
+
 def validate_runner_profile(name: str) -> RunnerProfile:
     profile = RUNNER_PROFILES.get(name)
     if profile is None:
@@ -208,6 +230,150 @@ def validate_resource_class_override(profile: RunnerProfile, requested: str | No
             detail={"larger_in": larger},
         )
     return requested
+
+
+class UnknownModelClass(ValidationFailed):
+    """422 `unknown_model_class`: the name is not one of `MODEL_CLASSES`.
+
+    A model ID sent as a class (`"claude-opus-5-5"`) lands here too: a class
+    is a name from the frozen vocabulary, never an ID (invariant 10)."""
+
+    code = "unknown_model_class"
+
+
+class ModelClassNotAccepted(ValidationFailed):
+    """422 `model_class_not_accepted`: a class the profile does not run."""
+
+    code = "model_class_not_accepted"
+
+
+class ModelClassNotYetAvailable(ValidationFailed):
+    """422 `model_class_not_yet_available`: this deployment pins no model for
+    the class (WORKER_CLASS_MODELS is unset), so it cannot be named yet."""
+
+    code = "model_class_not_yet_available"
+
+
+class ModelIsChosenByModelClass(ValidationFailed):
+    """422 `model_is_chosen_by_model_class`: `model` is not the pin of the
+    step's class. The model is the class's, never the caller's (invariant 10,
+    owner's Q4 of #1435); the message names the `model_class` to send."""
+
+    code = "model_is_chosen_by_model_class"
+
+
+def validate_model_class(
+    profile: RunnerProfile, requested: str | None, *, step_id: str | None = None,
+) -> str | None:
+    """The class a step on `profile` runs, by the frozen
+    `profiles.step_model_class` (docs/design/model-per-step.md §4.4): the
+    requested one if the profile accepts it, its default when none is named,
+    None for a profile that runs no Claude model. Refused with a stable code
+    otherwise, and the refusal names what may be sent."""
+    try:
+        return step_model_class(profile, requested)
+    except ValueError:
+        pass
+    where = {"step_id": step_id} if step_id is not None else {}
+    if requested not in MODEL_CLASSES:
+        raise UnknownModelClass(
+            f"unknown model_class {requested!r}: a model class is one of "
+            f"{', '.join(MODEL_CLASSES)}, never a model ID",
+            detail={"model_class": requested, "known_model_classes": list(MODEL_CLASSES),
+                    **where},
+        )
+    if not profile.model_classes:
+        message = (f"runner_profile {profile.name!r} runs no Claude model, so a step on "
+                   "it names no model_class")
+    else:
+        message = (f"runner_profile {profile.name!r} does not accept model_class "
+                   f"{requested!r}; it accepts {', '.join(profile.model_classes)}")
+    raise ModelClassNotAccepted(
+        message,
+        detail={"runner_profile": profile.name, "model_class": requested,
+                "accepted_model_classes": list(profile.model_classes), **where},
+    )
+
+
+def stored_model_class(profile: RunnerProfile, resolved: str | None) -> str | None:
+    """What `Task.model_class` stores: the class only when it differs from the
+    profile's default (§4.3). Naming the default stores nothing, so the task
+    keeps the bytes, and the signing format, it had before classes existed;
+    only a step that asks for another class is signed at the format that
+    covers `model_class`."""
+    if resolved is None or resolved == profile.default_model_class:
+        return None
+    return resolved
+
+
+def check_model_class_available(
+    profile: RunnerProfile, resolved: str | None, class_models: Mapping[str, str], *,
+    step_id: str | None = None,
+) -> None:
+    """A class other than the profile's default only once this deployment pins
+    it (WORKER_CLASS_MODELS). No flag gates the classes (owner decision R4,
+    2026-10-17); what is refused here is a class with no pin to record or
+    serve, which is the local emulator loop's case and a deployment's whose
+    terraform predates `runner_models` by class. The scheduler would refuse
+    such a step at dispatch, after admission took its lease; this refuses it
+    before anything is stored."""
+    if stored_model_class(profile, resolved) is None or resolved in class_models:
+        return
+    raise ModelClassNotYetAvailable(
+        f"model_class {resolved!r} is not available on this deployment yet: no model is "
+        f"pinned for it; a step on {profile.name!r} that names none runs "
+        f"{profile.default_model_class!r}",
+        detail={"runner_profile": profile.name, "model_class": resolved,
+                "default_model_class": profile.default_model_class,
+                **({"step_id": step_id} if step_id is not None else {})},
+    )
+
+
+def resolve_task_model(
+    profile: RunnerProfile, resolved: str | None, requested_model: str | None,
+    class_models: Mapping[str, str], *, step_id: str | None = None,
+) -> str | None:
+    """`Task.model`: the pin of the step's class, at submission (owner's Q4).
+
+    A `model` equal to that pin is accepted; any other value is refused
+    `model_is_chosen_by_model_class` once its refusal switch is on, and the
+    refusal names the `model_class` that would run it, or lists the profile's
+    classes and their models. `Task.model` is a record, not a
+    selector: the scheduler resolves the class's pin again at dispatch and
+    `Attempt.model` records what ran (§4.5, R6).
+
+    A profile with no classes, or a deployment with no class map, has no pin to
+    fill or compare against, so `model` is recorded as sent, as before: it
+    selects nothing on any path (the scheduler never reads it into `MODEL`).
+    """
+    if resolved is None or resolved not in class_models:
+        return requested_model
+    pin = class_models[resolved]
+    if requested_model is None or requested_model == pin:
+        return pin
+    where = {"step_id": step_id} if step_id is not None else {}
+    models = {name: class_models[name] for name in profile.model_classes if name in class_models}
+    named = next((name for name, model_id in models.items() if model_id == requested_model), None)
+    if named is not None:
+        error = ModelIsChosenByModelClass(
+            f"model is chosen by model_class: to run {requested_model}, send "
+            f'model_class: "{named}"',
+            detail={"model": requested_model, "model_class": named,
+                    "runner_profile": profile.name, **where},
+        )
+    else:
+        error = ModelIsChosenByModelClass(
+            f"model is chosen by model_class, and {requested_model!r} is the pin of no class "
+            f"{profile.name!r} runs: send model_class, one of "
+            + ", ".join(f"{name} ({model_id})" for name, model_id in models.items()),
+            detail={"model": requested_model, "runner_profile": profile.name,
+                    "models": models, **where},
+        )
+    # A switch, report-only until turned on (`refusals.SWITCHES`): it can
+    # refuse a caller that sends `model` today. Past it, the caller's string
+    # is recorded as sent, as before this check.
+    refusals.refuse(error)
+    return requested_model
 
 
 def firestore_size(payload: Any) -> int:
@@ -635,6 +801,11 @@ REREVIEW_PREAMBLE = (
 #: worker spells it `agent_worker.merge.MERGE_TARGET_FIELD`;
 #: tests/unit/worker/test_merge_action.py holds the two equal.
 MERGE_TARGET_FIELD = "merge_target"
+#: `merge_target.merge_mode` (TRAIN-WS, docs/merge-trains.md §5.1): the
+#: two modes a workspace merges in. Defined here, where the signed block is
+#: built, and imported by `mergesettings`; only TRAIN is ever written.
+MERGE_MODE_DIRECT = "direct"
+MERGE_MODE_TRAIN = "train"
 
 #: The forge hosts a merge step can act on: github.com, the only host the
 #: tenant's token is ever sent to (`agent_worker.forge.may_receive_forge_token`,
@@ -662,8 +833,10 @@ MERGE_STEP_ID = "merge"
 #: continuation before the merge step refuses `checks_failed` (MS7 spends
 #: them). NOT reserved: the caller writes it, and it is stored as written.
 MERGE_FIX_ROUNDS_KEY = "merge_fix_rounds"
-#: Absent means 0: a red check refuses at once, which is what the built step
-#: does. 5 bounds what one pull request can spend on fix agents before a
+#: Absent ON A STORED MERGE TASK means 0: a red check refuses at once, which
+#: is what the built step did before SPEED-D2. Submission now stamps every
+#: merge task with `resolve_fix_rounds` (2 for a lane by default), so 0 is
+#: what an older task, or one whose key was deleted, reads as. 5 bounds what one pull request can spend on fix agents before a
 #: person looks at it; each round is a full agent attempt.
 MERGE_FIX_ROUNDS_DEFAULT = 0
 MERGE_FIX_ROUNDS_MAX = 5
@@ -701,6 +874,82 @@ def resolve_merge_fix_rounds(
             detail={"field": field, "accepted": bounds, "merge_step": False},
         )
     return value
+
+
+#: The fix rounds a workflow with a merge step gets when neither its spec's
+#: `fix_rounds` nor its `metadata.merge_fix_rounds` names a number (lane
+#: SPEED-D2, owner decision 2026-10-14 "Auto fix rounds"). Two, measured: of
+#: the last 150 merged pull requests 0.52 runs per PR came back red and the
+#: operator dispatched a fixer by hand five times in one day, and the PR-side
+#: fixer's own bound is two (`cifix.DEFAULT_MAX_ATTEMPTS`). A second red at
+#: the head a round pushed is a question for a person, not a third agent.
+#: Not 0, which is `MERGE_FIX_ROUNDS_DEFAULT`: that is what an ABSENT key on
+#: a stored merge task reads as, and every merge task this resolution stamps
+#: carries the number, so the two never meet.
+LANE_FIX_ROUNDS_DEFAULT = 2
+#: The workflow metadata key an issue run's workflows carry
+#: (`issueci.merge_workflow`, `issueruns.compile_plan`). An issue run fixes
+#: red CI with its own loop (`--fix-rounds`, `issueci._start_round`) before it
+#: submits its merge, so its merge step keeps no rounds of its own unless
+#: asked: two loops on one pull request would race each other's pushes.
+ISSUE_RUN_METADATA_KEY = "issue_run"
+
+
+def resolve_fix_rounds(
+    fix_rounds: int | None, metadata: Mapping[str, Any], *, merge_step: bool,
+    named_pull: bool = False,
+) -> int | None:
+    """The fix rounds a workflow's merge step may spend, or None with no merge step.
+
+    `fix_rounds` is the spec's field (`WorkflowCreate.fix_rounds`, 0-5,
+    typed there); `metadata` the workflow's, whose `merge_fix_rounds`
+    (`resolve_merge_fix_rounds`, checked per step) says the same thing the
+    older way. Both given and different is refused, rather than one quietly
+    winning. Neither given: `LANE_FIX_ROUNDS_DEFAULT`, or 0 for an issue
+    run's workflow. `fix_rounds` with no merge step is refused, as the
+    metadata key is. A `merge_pr` workflow (`named_pull`, #352) gets 0 and
+    refuses any other number, as `continuation.resolve_merge_pr` refuses the
+    metadata key: its branch is no SwarmCloud task's, so no round could push
+    to it, and rounds asked for and never possible would park the worker on
+    `ci_fix_pending` until its six-hour bound.
+
+    The number lives on the merge TASK as `metadata.merge_fix_rounds`, which
+    the wake tick and the worker already read: the frozen `Workflow` has no
+    field for it (docs/contract-change-requests.md entry 75).
+    """
+    stated = resolve_merge_fix_rounds(metadata, merge_step=merge_step)
+    explicit = MERGE_FIX_ROUNDS_KEY in metadata
+    if fix_rounds is not None and not merge_step:
+        raise DispatchOptionError(
+            f"fix_rounds is {fix_rounds}, but this workflow has no merge step to spend "
+            f"fix rounds before. Set metadata.{MERGE_METADATA_KEY} to 'on', or remove "
+            "fix_rounds.",
+            detail={"field": "fix_rounds", "merge_step": False},
+        )
+    if fix_rounds is not None and explicit and fix_rounds != stated:
+        raise DispatchOptionError(
+            f"fix_rounds is {fix_rounds} and metadata.{MERGE_FIX_ROUNDS_KEY} is {stated}: "
+            "they name the same budget. Give one of them.",
+            detail={"field": "fix_rounds", "metadata": f"metadata.{MERGE_FIX_ROUNDS_KEY}"},
+        )
+    if not merge_step:
+        return None
+    if named_pull:
+        if fix_rounds:
+            raise DispatchOptionError(
+                f"merge_pr takes no fix_rounds (it is {fix_rounds}): a fix round continues "
+                "the task whose branch the pull request is on, and a named pull request's "
+                "branch is no task's. Remove fix_rounds, or set it to 0.",
+                detail={"field": "fix_rounds", "merge_pr": True},
+            )
+        return MERGE_FIX_ROUNDS_DEFAULT
+    if fix_rounds is not None:
+        return fix_rounds
+    if explicit:
+        return stated
+    if ISSUE_RUN_METADATA_KEY in metadata:
+        return MERGE_FIX_ROUNDS_DEFAULT
+    return LANE_FIX_ROUNDS_DEFAULT
 
 
 def merge_repository(repository_url: str | None) -> tuple[str, str] | None:
@@ -770,6 +1019,16 @@ DEFAULT_CARRIER = "checkpoints"
 #: form: a caller who already sends `metadata.strategy` for their own purposes
 #: must not have it silently overwritten by the platform.
 DISPATCH_METADATA_KEY = "dispatch"
+#: The record a merge step's conflict fix round is submitted with
+#: (`mergewake._on_conflict`, #1076): round, merge task, head, pull request.
+#: A caller's metadata as far as signing goes, so the worker never reads it.
+CONFLICT_ROUND_METADATA_KEY = "merge_conflict_round"
+#: The dispatch block's mark of a conflict fix round (#1321), copied from
+#: the record above at submission, on a continuation only. Inside the signed
+#: block, so the worker may act on it: it checks, before the round pushes,
+#: that the branch now stands on the default branch's head. The worker spells
+#: it `agent_worker.lifecycle.CONFLICT_ROUND_FIELD`.
+CONFLICT_ROUND_FIELD = "conflict_round"
 
 #: The key inside `task.metadata` the worker stages declared inputs from:
 #: `{upstream TASK id: filename}`. Written by workflow expansion only
@@ -835,6 +1094,36 @@ STARTUP_REFUNDS_METADATA_KEY = "startup_refunds"
 #: tests/unit/worker/test_worker_evicted.py holds them equal.
 DISK_EVICTIONS_METADATA_KEY = "disk_evictions"
 
+#: Why the current attempt's GKE pod is not starting (F1-POD,
+#: `reconciler.startproblem.START_PROBLEM_KEY`): the container, kubelet's
+#: reason, its restarts and message. Written and cleared only by the
+#: reconciler; a caller who set it would put a false "Pod not starting" on its
+#: task's page. Restated for the reason STARTUP_REFUNDS_METADATA_KEY is;
+#: tests/unit/reconciler/test_pod_start_problem.py holds them equal.
+START_PROBLEM_METADATA_KEY = "start_problem"
+
+#: The owner's answers to the questions the task's agent asked (lane
+#: TASK-ANSWERS, owner decision 2026-10-13, part of #1206): one entry per
+#: answered question, `{question_index, question, choice, text, by, at,
+#: history}`. Written only by POST /v1/tasks/{task_id}/answers
+#: (`agent_questions.answer_question`); a caller who set it at submission
+#: would put words in the owner's mouth that the launcher then acts on.
+#: In metadata, as `start_problem` is, because the frozen `Task` has no field
+#: for it and an additive key changes no reader that does not want it.
+OWNER_ANSWERS_METADATA_KEY = "owner_answers"
+
+#: Whose slot a service submission's task runs with (INDEX-CRED, part of
+#: #1041): `tenant` (the tenant's `-git` token) or `owner` (a personal
+#: tenant's owner's GitHub connection, `forge.service_slot`). Written only by
+#: `SubmissionService._resolve_forge`, before the spec is signed, and read by
+#: `codec.forge_credential_source`: the slot name alone (`git-u-<hex>`) cannot
+#: tell the owner's connection run on the tenant's behalf from a person's
+#: own task, and a caller who set it would mislabel whose credential ran.
+#: Not signed (`swarm_common.specsign.SIGNED_METADATA_KEYS` is frozen): it is
+#: a label no worker acts on, and it says `owner` only beside a `git-u-`
+#: `forge_credential`, which IS signed.
+FORGE_SOURCE_METADATA_KEY = "forge_credential_source"
+
 #: Child tasks (contract request 14, docs/design/child-tasks.md §6.4). The
 #: agent's `request_id` on a child, written once by the children route and read
 #: by its dedupe; the awaits refunded so far on a parent, written by the
@@ -863,6 +1152,36 @@ MERGE_WAIT_METADATA_KEY = "merge_wait"
 #: no worker acts on it, only swarm-api reads it.
 SCHEDULE_METADATA_KEY = "schedule"
 
+#: The live-browser hand-off (docs/design/live-browser.md §4.3, lane LB-L10):
+#: the parks refunded so far, written by the worker's HUMAN_REQUIRED park, as
+#: `child_await_resumes` is by the await's; the mark that a person pressed
+#: "I'm ready to sign in" (`human-ready`), which tells the next attempt's worker
+#: to open the hand-off at once; and the hand-offs one attempt has asked for,
+#: the cap swarm-api enforces from the task document. A caller who set the first
+#: would buy a free attempt; the second, a hand-off nobody asked for; the third,
+#: a cap of its choosing. `swarm_api.handoff` imports these; the worker restates
+#: the first two (lane L4).
+HUMAN_WAIT_RESUMES_METADATA_KEY = "human_wait_resumes"
+HUMAN_READY_METADATA_KEY = "human_ready"
+HUMAN_HANDOFFS_METADATA_KEY = "human_handoffs"
+#: LB-RETURN: a person returned control while an attempt ran; the worker's park
+#: of exactly that attempt reads it and re-queues READY instead. A caller who
+#: set it would turn a park into a free re-queue.
+HUMAN_RETURNED_METADATA_KEY = "human_returned"
+
+#: The pull requests a workflow's root step waits for before it may start
+#: (`after`, lane SPEED-D3, `swarm_api.prgate`): written by `submit_workflow`
+#: from the spec's `after` and then only by the wake tick. A caller who set
+#: it would start a held workflow early or hold one nobody asked to.
+AFTER_PRS_METADATA_KEY = "after_prs"
+
+#: An `await-input` step's wait and its answer (docs/design/human-steps.md
+#: §4.7): `opened_at`, `expires_at` and the answer's record, written only by
+#: the platform (the scheduler's park, swarm-api's answer route). A caller who
+#: set it would hand the step an answer nobody gave, or an expiry nobody chose.
+#: The DECLARATION is not here: it is `metadata.dispatch.await_input`, signed.
+AWAIT_INPUT_METADATA_KEY = "await_input"
+
 #: Every key inside `task.metadata` this service writes and a caller may not,
 #: in the order a refusal names them. One tuple, checked by one function, so a
 #: caller who sent several is told about all of them in one 422 rather than one
@@ -879,7 +1198,25 @@ RESERVED_METADATA_KEYS = (
     MERGE_WAIT_METADATA_KEY,
     DISK_EVICTIONS_METADATA_KEY,
     SCHEDULE_METADATA_KEY,
+    HUMAN_WAIT_RESUMES_METADATA_KEY,
+    HUMAN_READY_METADATA_KEY,
+    HUMAN_HANDOFFS_METADATA_KEY,
+    HUMAN_RETURNED_METADATA_KEY,
+    START_PROBLEM_METADATA_KEY,
+    OWNER_ANSWERS_METADATA_KEY,
+    FORGE_SOURCE_METADATA_KEY,
+    AFTER_PRS_METADATA_KEY,
 )
+
+#: Reserved like every key above, and refused by the same function in the
+#: same 422, but NOT YET IN `RESERVED_METADATA_KEYS`. That tuple is two more
+#: things besides a refusal list: `task_input.PLATFORM_METADATA_KEYS` (served
+#: as stored, unmasked) and, less the counters, the spec signature's key set
+#: (tests/unit/common/test_specsign_covers.py). `metadata.await_input` is
+#: written by no one yet: the lane that writes it (HW-API-ANSWER) decides how
+#: it is served, and moves it into that tuple with the parity test's entry.
+#: Until then nothing a caller sends can reach the store under it.
+REFUSED_UNWRITTEN_METADATA_KEYS = (AWAIT_INPUT_METADATA_KEY,)
 
 #: Strategies and carriers that cannot work without somewhere to push to.
 _NEEDS_REPOSITORY_STRATEGIES = ("direct-pr", "integrate", "single-pr")
@@ -1262,6 +1599,10 @@ class DispatchOptions:
     #: tenant's `findings_epic` setting at submission. Here, inside the signed
     #: block, so no agent of the tenant can point the worker at another issue.
     findings_epic: int | None = None
+    #: A merge step's conflict fix round (#1321): set by `submit_workflow` on
+    #: a continuation whose metadata carries `CONFLICT_ROUND_METADATA_KEY`.
+    #: Written only when true, inside the signed block.
+    conflict_round: bool = False
     #: `(upstream TASK id, upstream STEP id)` for every `input_from` entry of a
     #: step that opted in to `input_layout: "by_parent"` (#75), else empty. The
     #: worker sees only task ids in `metadata.input_from`; this is how it learns
@@ -1292,6 +1633,11 @@ class DispatchOptions:
     #: For a `merge_pr` workflow (#352) it names no task: `number` and
     #: `head_sha`, the pull request and the head the caller named, instead.
     merge_target: tuple[tuple[str, Any], ...] = ()
+    #: An `await-input` step's declaration (docs/design/human-steps.md §4.1),
+    #: as `resolve_await_input` normalised it, on that step only. Inside the
+    #: dispatch block, so the spec signature covers what the person is asked,
+    #: how long the step waits and what happens at expiry. Not hashed: a map.
+    await_input: Mapping[str, Any] | None = field(default=None, hash=False)
 
     @property
     def needs_repository(self) -> bool:
@@ -1331,6 +1677,10 @@ class DispatchOptions:
             findings_epic=findings_epic if gate_task_id and findings_epic else None,
         )
 
+    def with_await_input(self, block: Mapping[str, Any] | None) -> "DispatchOptions":
+        """This `await-input` step's normalised declaration; None on every other step."""
+        return replace(self, await_input=block)
+
     def with_input_parents(self, parents: Mapping[str, str]) -> "DispatchOptions":
         """This step's `{upstream task id: upstream step id}`, for a `by_parent` step."""
         return replace(self, input_parents=tuple(sorted(parents.items())))
@@ -1362,6 +1712,7 @@ class DispatchOptions:
         number: int | None = None,
         head_sha: str | None = None,
         pull_request_workflow: str | None = None,
+        merge_mode: str | None = None,
     ) -> "DispatchOptions":
         """The `merge` step's target, already resolved to task ids. No role:
         it runs no agent, clones nothing and is integrated by nobody.
@@ -1377,7 +1728,16 @@ class DispatchOptions:
 
         A merge-only continuation names `pull_request_workflow` too: the
         continued task's own workflow, which the worker verifies that task's
-        signed spec against instead of the merge's (#900). It has no review."""
+        signed spec against instead of the merge's (#900). It has no review.
+
+        `merge_mode` is the workspace's effective merge mode for this
+        repository (TRAIN-WS, `mergesettings.effective_mode`), read at
+        submission. Only `train` is written: direct is the absence of the
+        key, so a workspace that never chose trains stores exactly the block
+        it stored before, and the worker merges as it always has."""
+        if merge_mode not in (None, MERGE_MODE_DIRECT, MERGE_MODE_TRAIN):
+            raise ValueError(f"unknown merge mode {merge_mode!r}")
+        train = [("merge_mode", MERGE_MODE_TRAIN)] if merge_mode == MERGE_MODE_TRAIN else []
         target: list[tuple[str, Any]]
         if pull_request is None:
             if number is None or head_sha is None:
@@ -1385,7 +1745,8 @@ class DispatchOptions:
             target = [("number", number), ("head_sha", head_sha)]
             if base:
                 target.append(("base", base))
-            return replace(self, role=None, integrates=(), merge_target=tuple(target))
+            return replace(self, role=None, integrates=(),
+                           merge_target=tuple(target + train))
         target = [("pull_request", pull_request)]
         if pull_request_workflow is not None:
             if review is not None or verdict_file is not None:
@@ -1395,7 +1756,7 @@ class DispatchOptions:
             target += [("review", review), ("verdict_file", verdict_file)]
         if base:
             target.append(("base", base))
-        return replace(self, role=None, integrates=(), merge_target=tuple(target))
+        return replace(self, role=None, integrates=(), merge_target=tuple(target + train))
 
     def to_metadata(self) -> dict[str, Any]:
         """The `task.metadata["dispatch"]` block, exactly as the worker reads it."""
@@ -1446,6 +1807,14 @@ class DispatchOptions:
         # every other step stores exactly the block it stored before.
         if self.merge_target:
             block[MERGE_TARGET_FIELD] = dict(self.merge_target)
+        # Absent on every step but a conflict fix round (#1321), so every
+        # other step stores exactly the block it stored before.
+        if self.conflict_round:
+            block[CONFLICT_ROUND_FIELD] = True
+        # Absent on every step but an `await-input` step (HW-API-SUBMIT), so
+        # every other step stores exactly the block it stored before.
+        if self.await_input is not None:
+            block[AWAIT_INPUT_FIELD] = json.loads(json.dumps(self.await_input))
         return block
 
 
@@ -1547,6 +1916,53 @@ _RESERVED_BECAUSE = {
         "the reconciler, to count attempts lost to the pod passing its own disk "
         "limit (#893). Drop the key from metadata."
     ),
+    START_PROBLEM_METADATA_KEY: (
+        f"metadata.{START_PROBLEM_METADATA_KEY} is reserved: it is set only by "
+        "the reconciler, to say why the task's pod is not starting. Drop the key "
+        "from metadata."
+    ),
+    HUMAN_WAIT_RESUMES_METADATA_KEY: (
+        f"metadata.{HUMAN_WAIT_RESUMES_METADATA_KEY} is reserved: it is set only by "
+        "the worker, to count the live-browser hand-off parks whose attempt was "
+        "refunded. Drop the key from metadata."
+    ),
+    HUMAN_READY_METADATA_KEY: (
+        f"metadata.{HUMAN_READY_METADATA_KEY} is reserved: it is set only by "
+        "POST /v1/tasks/{task_id}/human-ready, when a person says they are ready to "
+        "sign in. Drop the key from metadata."
+    ),
+    HUMAN_HANDOFFS_METADATA_KEY: (
+        f"metadata.{HUMAN_HANDOFFS_METADATA_KEY} is reserved: it counts the "
+        "live-browser hand-offs an attempt asked for, written only by the worker's "
+        "hand-off route. Drop the key from metadata."
+    ),
+    HUMAN_RETURNED_METADATA_KEY: (
+        f"metadata.{HUMAN_RETURNED_METADATA_KEY} is reserved: it records a person's "
+        "return of the live browser during an attempt, written only by "
+        "POST /v1/tasks/{task_id}/live/control/return. Drop the key from metadata."
+    ),
+    OWNER_ANSWERS_METADATA_KEY: (
+        f"metadata.{OWNER_ANSWERS_METADATA_KEY} is reserved: it holds the owner's "
+        "answers to the agent's questions, written only by "
+        "POST /v1/tasks/{task_id}/answers. Drop the key from metadata."
+    ),
+    FORGE_SOURCE_METADATA_KEY: (
+        f"metadata.{FORGE_SOURCE_METADATA_KEY} is reserved: it says whose GitHub "
+        "credential a service submission runs with, written only by submission. "
+        "Drop the key from metadata."
+    ),
+    AWAIT_INPUT_METADATA_KEY: (
+        f"metadata.{AWAIT_INPUT_METADATA_KEY} is reserved: it records an "
+        "`await-input` step's wait and the answer it was given, written only by "
+        "the platform. Declare the wait as the step's own `await_input` field "
+        "(POST /v1/workflows) instead."
+    ),
+    AFTER_PRS_METADATA_KEY: (
+        f"metadata.{AFTER_PRS_METADATA_KEY} is reserved: it records the pull "
+        "requests a workflow waits for, written from the spec's `after` and then "
+        "only by the platform's wake tick. Name them in `after` instead, e.g. "
+        '"after": {"pr": 41}.'
+    ),
 }
 
 
@@ -1614,7 +2030,10 @@ def reject_reserved_metadata(metadata: dict[str, Any]) -> None:
     order, so a caller who sent several learns about all of them from one
     refusal.
     """
-    present = [key for key in RESERVED_METADATA_KEYS if key in metadata]
+    present = [
+        key for key in RESERVED_METADATA_KEYS + REFUSED_UNWRITTEN_METADATA_KEYS
+        if key in metadata
+    ]
     allowed = _SCHEDULE_MARK.get()
     if allowed is not None and metadata.get(SCHEDULE_METADATA_KEY) == allowed:
         present.remove(SCHEDULE_METADATA_KEY)
@@ -2670,6 +3089,76 @@ def repository_not_granted(refused: Sequence[tuple[str | None, str]]) -> Reposit
 
 
 # --------------------------------------------------------------------------
+# A step's additional repositories (#1434, docs/design/multi-repository-steps.md §4.1)
+# --------------------------------------------------------------------------
+#
+# Every one is refused at submission, before anything is stored and before
+# any capacity is asked for (invariant 1), by `extrarepos`. Each is new with
+# the field and raised only for a submission that names it, behind
+# `ApiSettings.additional_repositories_enabled` (off by default), so no
+# existing caller can be refused by any of them. A message names the
+# caller's own `owner/repo` and never a URL, a slot or a token.
+
+
+class AdditionalRepositoriesDisabled(ValidationFailed):
+    """The submission names additional repositories and this deployment has
+    not turned them on (ADDITIONAL_REPOSITORIES_ENABLED)."""
+
+    code = "additional_repositories_disabled"
+
+
+class RepositoryNotRegistered(ValidationFailed):
+    """No registration of this repository in the caller's tenant: one answer
+    whether or not another tenant registered it."""
+
+    code = "repository_not_registered"
+
+
+class RepositoryNotReadableByTasks(Forbidden):
+    """Registered, but an admin has not let its tenant's tasks read it
+    (`readable_by_tasks`, the gate `read_private` uses; owner's Q1), or it is
+    archived."""
+
+    code = "repository_not_readable_by_tasks"
+
+
+class AdditionalRepositoryUnreadable(ValidationFailed):
+    """The slot the worker would clone it with cannot read it, or its ref
+    names no commit. One sentence for both, as `read_private`'s
+    `repo_not_allowlisted`: a repository readable only through its own
+    `git-r-` token is refused here too (owner's Q2)."""
+
+    code = "additional_repository_unreadable"
+
+
+class AdditionalRepositoryDuplicate(ValidationFailed):
+    """Two entries name one repository or one directory, or an entry names
+    the task's own repository."""
+
+    code = "additional_repository_duplicate"
+
+
+class TooManyAdditionalRepositories(ValidationFailed):
+    """More entries than the platform setting `max_additional_repositories`."""
+
+    code = "too_many_additional_repositories"
+
+
+class AdditionalRepositoriesTooLarge(ValidationFailed):
+    """The forge's reported sizes total more than the platform setting
+    `additional_repositories_budget_gib`."""
+
+    code = "additional_repositories_too_large"
+
+
+class AdditionalRepositoriesUnsupportedProfile(ValidationFailed):
+    """The step's profile does not take additional repositories: only GKE
+    agent profiles do (owner's Q4; design §4.3)."""
+
+    code = "additional_repositories_unsupported_profile"
+
+
+# --------------------------------------------------------------------------
 # Workflow DAG
 # --------------------------------------------------------------------------
 
@@ -3151,3 +3640,508 @@ def topological_order(steps: Sequence[StepSpec]) -> list[str]:
         # request path; it is a guard against a future caller skipping that.
         raise DagError("workflow dependency graph contains a cycle")
     return out
+
+
+# --------------------------------------------------------------------------
+# `await-input` steps (docs/design/human-steps.md §4.1, lane HW-API-SUBMIT)
+# --------------------------------------------------------------------------
+
+#: The catalogue profile of a step that waits for a tenant member's answer
+#: (contract request 94). The only profile `await_input` is valid on, and it
+#: requires one.
+AWAIT_INPUT_PROFILE = "await-input"
+
+#: The key of the step's declaration inside `metadata.dispatch` (§4.7).
+AWAIT_INPUT_FIELD = "await_input"
+
+#: The longest a step may wait: 24 hours, the owner's Q4, which is the bound
+#: the scheduler holds a `HUMAN_REQUIRED` park to
+#: (`apps/scheduler/scheduler/loop.py`, `HUMAN_PARK_MAX_SECONDS`). swarm-api
+#: does not carry the scheduler, so the number is restated here, and
+#: tests/unit/control_plane/test_await_input_submission.py imports both and
+#: fails if they differ.
+AWAIT_INPUT_MAX_SECONDS = 86_400
+#: The shortest: five minutes. A shorter wait is a race with the person
+#: opening the page, not a question.
+AWAIT_INPUT_MIN_SECONDS = 300
+#: A reminder at most hourly (§4.5): the bell is derived on read, and an
+#: item that advanced every few minutes would be noise, not a reminder.
+AWAIT_INPUT_REMIND_MIN_SECONDS = 3_600
+#: Files one answer may carry (Q6, §4.1): ten keeps the manifest entry and
+#: the upload form small.
+AWAIT_INPUT_MAX_FILES = 10
+#: Addresses whose bell a wait rings (§4.5). Not who may answer: any member
+#: may (Q2).
+AWAIT_INPUT_MAX_REMIND = 10
+#: A declared default is part of the signed spec, so it is held to a size
+#: the dispatch block can carry (§4.1).
+AWAIT_INPUT_DEFAULT_MAX_BYTES = 16 * 1024
+
+#: The answer's shapes, and the artifact each is written as when the author
+#: names none (§4.1).
+AWAIT_INPUT_ARTIFACTS: Mapping[str, str] = {
+    "verdict": "verdict.json",
+    "answers": "answers.json",
+    "text": "input.json",
+}
+AWAIT_INPUT_FORMS = tuple(AWAIT_INPUT_ARTIFACTS)
+AWAIT_INPUT_ON_EXPIRE = ("fail", "default")
+
+#: The upstream file a `form: "answers"` step must stage: the agent's
+#: questions are the form only when the step stages them explicitly (Q11).
+QUESTIONS_FILENAME = "questions.json"
+
+#: The worker's bounds on a verdict (`agent_worker/verdict.py`,
+#: `MAX_FINDINGS`, `MAX_FINDING_CHARS`), which a verdict default is held to
+#: so a downstream `when` reads it as it reads an agent's (§4.6).
+AWAIT_VERDICT_MAX_FINDINGS = 50
+AWAIT_VERDICT_MAX_FINDING_CHARS = 1_000
+#: TASK-ANSWERS' bound on one answer's free text (§4.6).
+AWAIT_ANSWER_MAX_TEXT_CHARS = 2_000
+
+#: §4.1: a filename dependants stage by, and whose stem names the
+#: attachments' directory, so no separator, no leading dot.
+_AWAIT_ARTIFACT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+_AWAIT_ADDRESS_RE = re.compile(r"^[^@\s]+@[^@\s]+$")
+
+#: Every key the block may carry, in the order a refusal checks them.
+AWAIT_INPUT_KEYS = (
+    "form", "artifact", "max_files", "expires_after_seconds", "on_expire",
+    "default", "remind_after_seconds", "remind",
+)
+
+#: The first draft's who-may-answer list. Q2 replaced it with tenant
+#: membership, so it is refused BY NAME, pointing at `remind`: a caller who
+#: meant it as a restriction learns it is not one rather than believing it
+#: holds (§4.1).
+AWAIT_INPUT_RETIRED_KEYS = ("assignees",)
+
+#: A step's fields that mean something only to a container, and so nothing
+#: on an `await-input` step, which never runs one (§4.1). Each is refused
+#: naming itself when set to anything but its default.
+AWAIT_STEP_REFUSED_FIELDS = (
+    "resource_class", "timeout_seconds", "builds_on", "when",
+    "allow_empty_diff", "pr_role", "merges",
+)
+
+
+class AwaitInputRefused(ValidationFailed):
+    """422 `validation_failed`: an `await-input` step, or its block, refused.
+
+    `detail.field` names what was refused (`await_input.<key>` inside the
+    block, the step's own field otherwise), and `detail.step_id` the step.
+    The established code, not a new one: a new 4xx code ships behind a
+    switch (`swarm_api.refusals`, test_new_refusals_ship_off.py), and the
+    field is what a caller branches on here.
+    """
+
+
+def _await_refused(step_id: str | None, field_name: str, message: str) -> AwaitInputRefused:
+    detail: dict[str, Any] = {"field": field_name}
+    prefix = ""
+    if step_id is not None:
+        detail["step_id"] = step_id
+        prefix = f"step {step_id!r}: "
+    return AwaitInputRefused(prefix + message, detail=detail)
+
+
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def refuse_control_plane_outside_workflow(
+    profile: RunnerProfile, *, workflow_id: str | None
+) -> None:
+    """A `control_plane` profile is a workflow step or nothing (§4.1).
+
+    Its task is ended by the platform on a person's answer, and what it
+    hands on is staged by the steps after it. As a task, a batch entry or a
+    child it would have no step to answer and nobody to hand anything to.
+    """
+    if profile.control_plane and workflow_id is None:
+        raise _await_refused(
+            None, "runner_profile",
+            f"runner_profile {profile.name!r} is a workflow step that waits for a "
+            "person's answer; it is valid only inside a workflow (POST /v1/workflows)",
+        )
+
+
+def refuse_control_plane_integrator(
+    profile: RunnerProfile, *, step_id: str
+) -> None:
+    """Under `integrate`, the final step applies the others' patches and opens
+    the pull request. A `control_plane` step runs nothing, so it cannot."""
+    if profile.control_plane:
+        raise _await_refused(
+            step_id, "runner_profile",
+            f"runner_profile {profile.name!r} runs no container, so it cannot be "
+            "the step that integrates the others under strategy 'integrate'. Add "
+            "the step that acts on the answer after it.",
+        )
+
+
+def _await_default(
+    form: str, default: Any, *, step_id: str
+) -> dict[str, Any]:
+    """`default`, checked against `form` (§4.1, §4.6), normalised."""
+    field_name = "await_input.default"
+
+    def refused(message: str) -> AwaitInputRefused:
+        return _await_refused(step_id, field_name, message)
+
+    if not isinstance(default, dict):
+        raise refused("await_input.default must be a JSON object shaped like the form")
+    allowed = {"verdict": {"verdict", "findings"}, "answers": {"answers"}, "text": {"text"}}[form]
+    extra = sorted(set(default) - allowed)
+    if extra:
+        raise refused(
+            f"await_input.default for form {form!r} takes only {sorted(allowed)}, "
+            f"not {extra}; a default carries no files"
+        )
+    try:
+        encoded = json.dumps(default, ensure_ascii=False, separators=(",", ":"),
+                             allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError):
+        raise refused("await_input.default is not plain JSON") from None
+    if len(encoded) > AWAIT_INPUT_DEFAULT_MAX_BYTES:
+        raise refused(
+            f"await_input.default is {len(encoded)} bytes; at most "
+            f"{AWAIT_INPUT_DEFAULT_MAX_BYTES} are signed into the step"
+        )
+    if form == "verdict":
+        verdict = default.get("verdict")
+        if verdict not in REVIEW_VERDICTS:
+            raise refused(f"await_input.default.verdict must be one of {list(REVIEW_VERDICTS)}")
+        findings = default.get("findings", [])
+        if not isinstance(findings, list) or not all(isinstance(f, str) for f in findings):
+            raise refused("await_input.default.findings must be a list of strings")
+        if len(findings) > AWAIT_VERDICT_MAX_FINDINGS:
+            raise refused(
+                f"await_input.default.findings has {len(findings)} entries; at most "
+                f"{AWAIT_VERDICT_MAX_FINDINGS}"
+            )
+        if any(len(f) > AWAIT_VERDICT_MAX_FINDING_CHARS for f in findings):
+            raise refused(
+                f"each of await_input.default.findings is at most "
+                f"{AWAIT_VERDICT_MAX_FINDING_CHARS} characters"
+            )
+        return {"verdict": verdict, "findings": list(findings)}
+    if form == "answers":
+        answers = default.get("answers")
+        if not isinstance(answers, list) or not answers:
+            raise refused("await_input.default.answers must be a non-empty list")
+        normalised = []
+        for position, answer in enumerate(answers):
+            where = f"await_input.default.answers[{position}]"
+            if not isinstance(answer, dict):
+                raise refused(f"{where} must be an object")
+            unknown = sorted(set(answer) - {"question_index", "choice", "text"})
+            if unknown:
+                raise refused(f"{where} takes question_index, choice and text, not {unknown}")
+            index = answer.get("question_index")
+            choice = answer.get("choice")
+            text = answer.get("text")
+            if not _is_int(index) or index < 0:
+                raise refused(f"{where}.question_index must be a non-negative integer")
+            if choice is not None and not isinstance(choice, str):
+                raise refused(f"{where}.choice must be a string or null")
+            if text is not None and not isinstance(text, str):
+                raise refused(f"{where}.text must be a string or null")
+            if not (choice or (text or "").strip()):
+                raise refused(f"{where} needs a choice or a text")
+            if text is not None and len(text) > AWAIT_ANSWER_MAX_TEXT_CHARS:
+                raise refused(
+                    f"{where}.text is at most {AWAIT_ANSWER_MAX_TEXT_CHARS} characters"
+                )
+            normalised.append({"question_index": index, "choice": choice, "text": text})
+        return {"answers": normalised}
+    text = default.get("text")
+    if not isinstance(text, str):
+        raise refused("await_input.default.text must be a string")
+    return {"text": text}
+
+
+def resolve_await_input(
+    profile: RunnerProfile,
+    raw: Any,
+    *,
+    step_id: str,
+    container_fields: Mapping[str, Any],
+    input_from: Mapping[str, str],
+    submitted_by: str,
+    allowed_domains: Iterable[str],
+    allowed_users: Iterable[str] = (),
+) -> dict[str, Any] | None:
+    """One workflow step's `await_input`, checked and normalised (§4.1).
+
+    Returns the block as `metadata.dispatch.await_input` stores it --
+    every key present, defaults filled in, `remind` lower-cased -- or None
+    for a step of any other profile, which may not carry one. Every refusal
+    is a 422 `validation_failed` whose `detail.field` names the field.
+
+    `container_fields` is the step's own `AWAIT_STEP_REFUSED_FIELDS`, by
+    name; `allowed_domains` and `allowed_users` are who may sign in at all,
+    which is what "an address in the platform's hosted domain" means for
+    `remind` in a deployment with no domain of its own.
+    """
+    if profile.name != AWAIT_INPUT_PROFILE:
+        if raw is not None:
+            raise _await_refused(
+                step_id, "await_input",
+                f"await_input is valid only on a step whose runner_profile is "
+                f"{AWAIT_INPUT_PROFILE!r}, not {profile.name!r}",
+            )
+        return None
+    for name in AWAIT_STEP_REFUSED_FIELDS:
+        value = container_fields.get(name)
+        if value is not None and value is not False:
+            raise _await_refused(
+                step_id, name,
+                f"{name} means nothing on an {AWAIT_INPUT_PROFILE!r} step, which runs "
+                "no container; drop it",
+            )
+    if raw is None:
+        raise _await_refused(
+            step_id, "await_input",
+            f"a step whose runner_profile is {AWAIT_INPUT_PROFILE!r} needs an await_input "
+            f"block: form, expires_after_seconds and on_expire at least",
+        )
+    if not isinstance(raw, dict):
+        raise _await_refused(step_id, "await_input", "await_input must be a JSON object")
+    for key in AWAIT_INPUT_RETIRED_KEYS:
+        if key in raw:
+            raise _await_refused(
+                step_id, f"await_input.{key}",
+                "await_input.assignees is not a field: any member of the step's tenant "
+                "may answer. To choose whose bell is rung, name them in "
+                "await_input.remind; that rings them and restricts nobody.",
+            )
+    for key in raw:
+        if key not in AWAIT_INPUT_KEYS:
+            raise _await_refused(
+                step_id, f"await_input.{key}",
+                f"await_input does not take {key!r}; it takes {list(AWAIT_INPUT_KEYS)}",
+            )
+
+    form = raw.get("form")
+    if form not in AWAIT_INPUT_FORMS:
+        raise _await_refused(
+            step_id, "await_input.form",
+            f"await_input.form is required and must be one of {list(AWAIT_INPUT_FORMS)}",
+        )
+
+    artifact = raw.get("artifact", AWAIT_INPUT_ARTIFACTS[form])
+    if not isinstance(artifact, str) or not _AWAIT_ARTIFACT_RE.match(artifact):
+        raise _await_refused(
+            step_id, "await_input.artifact",
+            "await_input.artifact must be a filename of letters, digits, '_', '.' "
+            "and '-', at most 128 characters, starting with a letter or a digit",
+        )
+
+    max_files = raw.get("max_files", AWAIT_INPUT_MAX_FILES)
+    if not _is_int(max_files) or not 0 <= max_files <= AWAIT_INPUT_MAX_FILES:
+        raise _await_refused(
+            step_id, "await_input.max_files",
+            f"await_input.max_files must be an integer from 0 to {AWAIT_INPUT_MAX_FILES}",
+        )
+
+    expires = raw.get("expires_after_seconds")
+    if not _is_int(expires) or not (
+        AWAIT_INPUT_MIN_SECONDS <= expires <= AWAIT_INPUT_MAX_SECONDS
+    ):
+        raise _await_refused(
+            step_id, "await_input.expires_after_seconds",
+            "await_input.expires_after_seconds is required: an integer from "
+            f"{AWAIT_INPUT_MIN_SECONDS} to {AWAIT_INPUT_MAX_SECONDS} (24 hours)",
+        )
+
+    on_expire = raw.get("on_expire")
+    if on_expire not in AWAIT_INPUT_ON_EXPIRE:
+        raise _await_refused(
+            step_id, "await_input.on_expire",
+            f"await_input.on_expire is required and must be one of {list(AWAIT_INPUT_ON_EXPIRE)}",
+        )
+
+    default: dict[str, Any] | None = None
+    if on_expire == "default":
+        if raw.get("default") is None:
+            raise _await_refused(
+                step_id, "await_input.default",
+                "on_expire 'default' needs await_input.default, the answer the step "
+                "ends with when nobody answers",
+            )
+        default = _await_default(form, raw["default"], step_id=step_id)
+    elif raw.get("default") is not None:
+        raise _await_refused(
+            step_id, "await_input.default",
+            "await_input.default is used only with on_expire 'default'; with 'fail' "
+            "drop it",
+        )
+
+    remind_after = raw.get("remind_after_seconds")
+    if remind_after is not None and (
+        not _is_int(remind_after)
+        or not AWAIT_INPUT_REMIND_MIN_SECONDS <= remind_after <= expires
+    ):
+        raise _await_refused(
+            step_id, "await_input.remind_after_seconds",
+            "await_input.remind_after_seconds is null or an integer from "
+            f"{AWAIT_INPUT_REMIND_MIN_SECONDS} to expires_after_seconds ({expires})",
+        )
+
+    remind_raw = raw.get("remind", [submitted_by])
+    if not isinstance(remind_raw, list) or len(remind_raw) > AWAIT_INPUT_MAX_REMIND:
+        raise _await_refused(
+            step_id, "await_input.remind",
+            f"await_input.remind must be a list of at most {AWAIT_INPUT_MAX_REMIND} addresses",
+        )
+    domains = {d.strip().lower() for d in allowed_domains if d.strip()}
+    users = {u.strip().lower() for u in allowed_users if u.strip()}
+    remind: list[str] = []
+    for entry in remind_raw:
+        address = entry.strip().lower() if isinstance(entry, str) else ""
+        if not _AWAIT_ADDRESS_RE.match(address) or (
+            address.rsplit("@", 1)[1] not in domains and address not in users
+        ):
+            raise _await_refused(
+                step_id, "await_input.remind",
+                f"await_input.remind entry {_short_echo(entry)} is not an address in "
+                "this platform's allowed domains",
+            )
+        if address not in remind:
+            remind.append(address)
+
+    if form == "answers":
+        sources = [src for src, name in input_from.items() if name == QUESTIONS_FILENAME]
+        if len(sources) != 1:
+            raise _await_refused(
+                step_id, "await_input.form",
+                f"form 'answers' asks an upstream agent's questions, so the step must "
+                f"stage exactly one {QUESTIONS_FILENAME!r} in input_from; it stages "
+                f"{len(sources)}",
+            )
+
+    return {
+        "form": form,
+        "artifact": artifact,
+        "max_files": max_files,
+        "expires_after_seconds": expires,
+        "on_expire": on_expire,
+        "default": default,
+        "remind_after_seconds": remind_after,
+        "remind": remind,
+    }
+
+
+# --------------------------------------------------------------------------
+# Registered MCP servers (docs/design/registered-mcp-servers.md §4.3,
+# lane MCP-SUBMIT, part of #1433)
+# --------------------------------------------------------------------------
+#
+# A step names servers BY NAME in `input.mcp_servers` (contract request 88),
+# never a URL, a header or a command (invariant 10); a per-run credential for
+# a `dispatch` server travels beside the task in `mcp_credentials`, never in
+# it. The registry reads are `SubmissionService`'s; what is here is pure, so
+# `schedules.py` can hold the same rules with no Firestore client.
+#
+# Every refusal names the field, the rule and the server's NAME, never a
+# credential's value, its length or any part of it.
+
+#: The profile-declared input that names a step's servers.
+MCP_SERVERS_INPUT_KEY = "mcp_servers"
+
+#: `mcp_servers.MODE_DISPATCH`, the one auth mode whose key the caller sends
+#: per run. Restated so this module imports no Firestore client;
+#: tests/unit/control_plane/test_mcp_submit.py holds the two equal.
+MCP_DISPATCH_MODE = "dispatch"
+
+
+class McpServerUnregistered(ValidationFailed):
+    """Not registered for this tenant, or registered and disabled: one code
+    for both, so the answer does not say whether another tenant has the name."""
+
+    code = "mcp_server_unregistered"
+
+
+class McpServerProfileRefused(Forbidden):
+    """Registered, but its `allowed_profiles` does not include this profile."""
+
+    code = "mcp_server_profile_refused"
+
+
+class McpServerNotInherited(ValidationFailed):
+    """A child named a server its parent's signed input does not name (Q7):
+    the agent writing a child's spec is the party a credential is kept from,
+    so it may not widen what its tree reaches."""
+
+    code = "mcp_server_not_inherited"
+
+
+class McpCredentialMissing(ValidationFailed):
+    """A `dispatch` server with no per-run credential to use."""
+
+    code = "mcp_credential_missing"
+
+
+class McpCredentialUnexpected(ValidationFailed):
+    """A credential for a server the submission does not name, or for one
+    whose key is not the caller's to send (`none`, `workspace_secret`)."""
+
+    code = "mcp_credential_unexpected"
+
+
+def mcp_server_names(payload: Mapping[str, Any] | None) -> list[str]:
+    """The servers an input names, in order, once each. Its type and bounds
+    are the catalogue's (`validate_runner_input`), checked before this runs."""
+    raw = (payload or {}).get(MCP_SERVERS_INPUT_KEY)
+    if not isinstance(raw, list):
+        return []
+    return list(dict.fromkeys(n for n in raw if isinstance(n, str)))
+
+
+def _mcp_detail(step_id: str | None, **detail: Any) -> dict[str, Any]:
+    if step_id is not None:
+        detail["step_id"] = step_id
+    return detail
+
+
+def _mcp_where(step_id: str | None) -> str:
+    return f"step {step_id!r}: " if step_id is not None else ""
+
+
+def refuse_unexpected_mcp_credentials(
+    credentials: Mapping[str, Any] | None, modes: Mapping[str, Any],
+) -> None:
+    """Every key of `credentials` is a server the submission names whose
+    auth mode is `dispatch`; `modes` maps every named server to its mode."""
+    unexpected = sorted(k for k in (credentials or {}) if modes.get(k) != MCP_DISPATCH_MODE)
+    if unexpected:
+        raise McpCredentialUnexpected(
+            "mcp_credentials carries a credential for a server the submission does not "
+            "name in input.mcp_servers, or for one whose auth mode is not `dispatch` "
+            "(its key is the workspace's, or it takes none); nothing was stored",
+            detail={"field": "mcp_credentials", "servers": unexpected})
+
+
+def refuse_missing_mcp_credentials(
+    names: Sequence[str], modes: Mapping[str, Any], available: Iterable[str], *,
+    step_id: str | None = None,
+) -> None:
+    """Every `dispatch` server in `names` has a credential in `available`."""
+    have = set(available)
+    missing = [n for n in names if modes.get(n) == MCP_DISPATCH_MODE and n not in have]
+    if missing:
+        raise McpCredentialMissing(
+            f"{_mcp_where(step_id)}input.mcp_servers names a `dispatch` server whose "
+            "per-run credential is the caller's to send in mcp_credentials, and none was "
+            "sent; nothing was stored",
+            detail=_mcp_detail(step_id, field="mcp_credentials", servers=missing))
+
+
+def refuse_uninherited_mcp_servers(names: Sequence[str], parent_names: Sequence[str]) -> None:
+    """A child's servers are a subset of its parent's (Q7)."""
+    added = [n for n in names if n not in set(parent_names)]
+    if added:
+        raise McpServerNotInherited(
+            "a child task may name only MCP servers its parent named; it cannot add one",
+            detail={"field": "input.mcp_servers", "servers": added})

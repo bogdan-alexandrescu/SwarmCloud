@@ -1,0 +1,275 @@
+# swarm-live: the live browser's relay (docs/design/live-browser.md §3.3, §7,
+# §8; lanes LB-L8 and LB-L8e, part of #1030).
+#
+# The meeting point of a live session: a tenant pod's live gate dials IN to it
+# with a tunnel ticket, swarm-api proxies a viewer's websocket IN to it with a
+# viewer ticket, and it joins the two and records the masked frames to the
+# artifact bucket. It holds no task state; a restart drops every live session
+# for the seconds it takes to come back, both ends reconnect, and nothing
+# about any task changes.
+#
+# A TEMPLATE. Its double-underscore placeholders are filled by terraform/infra/live.tf
+# from that root's own values (the image digest, the bucket, the key's name, the
+# reserved address, swarm-api's subnet range) and the result is its
+# `swarm_live_manifest` output:
+#
+#   terraform -chdir=terraform/infra output -raw swarm_live_manifest
+#
+# `kubernetes/apply.sh --swarm-system` applies it, FIRST, and the namespace's
+# policies (network-policies/swarm-system-live.yaml) after it in the same
+# apply: this creates the namespace they go into.
+#
+# APPLY IT TO swarm-autopilot ONLY. `agents-staging` in the same project is
+# another team's cluster (CLAUDE.md rule 2; the deny-list is
+# scripts/lib/common.sh's, and apply.sh refuses any context that resolves to a
+# cluster on it).
+#
+# WHY A ONE-REPLICA STATEFULSET AND NOT A DEPLOYMENT OR CLOUD RUN. Both ends of
+# a session must meet in the same process (§3.3). A StatefulSet of one replica
+# is at most one pod, through a rollout too: the old pod is gone before the
+# new one starts. A Deployment's rolling update overlaps two pods, and a Cloud
+# Run service with max_instances = 1 overlaps two revisions, and either way the
+# gate and the viewer can land on different processes. Scale-out, when it is
+# measured to be needed, is sharding by session_id across named replicas.
+#
+# WHO IT RUNS AS. The KSA `swarm-live` in `swarm-system`, which holds its two
+# grants directly as a Workload Identity Federation for GKE principal
+# (live.tf): create-only on the artifact bucket under an attempt's live/ key
+# with the two recording suffixes, and read on swarm-live-key. Nothing else:
+# no Kubernetes RBAC (no Role, no binding, no API token mounted), no
+# Firestore, no Google service account.
+#
+# WHO REACHES IT. TCP 8080, plain ws, from a labelled live-browser pod in a
+# tenant namespace and from swarm-api's egress range, and from nothing else
+# (owner decision 2026-10-11 (b), live-browser.md §3.3): browsers never reach
+# the relay; they open wss to swarm-api, which proxies them here over the
+# internal load balancer below. No TLS and no certificate anywhere on this
+# hop, so nothing below mounts one. The NetworkPolicy in this file and
+# network-policies/swarm-system-live.yaml admit the same two sources; this one
+# is here so the relay is closed from its first apply.
+#
+# THE RELAY'S SETTINGS are the names apps/swarm-live/swarm_live/main.py reads:
+# PROJECT_ID and ARTIFACT_BUCKET through swarm_common.config.Settings, and
+# SWARM_LIVE_KEY_SECRET (decision (c)). Its port is not a setting:
+# swarm_live.main.PORT is 8080 for both integration lanes. The command is the
+# image's entrypoint (apps/swarm-live/Dockerfile).
+#
+# NOT MEASURED: the resource size, below. No relay has run on this cluster yet
+# (§11: "No measurement backs ... the relay's capacity").
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    # The relay carries frames, input and a person's keystrokes during a
+    # sign-in: the strictest pod standard, enforced, not merely warned.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: swarm-live
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/name: swarm-live
+# The relay never calls the Kubernetes API, so it carries no API token. GKE's
+# metadata server still answers it as this KSA, which is all Workload Identity
+# needs.
+automountServiceAccountToken: false
+---
+# Who may reach the relay, from the moment it exists: labelled tenant pods and
+# swarm-api's Direct VPC egress range, on 8080, nothing else. The same shape as
+# network-policies/swarm-system-live.yaml's swarm-allow-live-ingress, judged by
+# the same function (kubernetes/network_parity.py check_live_ingress). The
+# range is terraform's own subnet, the one every Cloud Run service here
+# egresses from (terraform/modules/cloud_run network_interfaces); apply.sh
+# refuses when it is not the range it reads from swarm-api's service.
+#
+# Before the Services and the StatefulSet, so the pod is never selected by no
+# policy at all.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: swarm-live-ingress
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+  annotations:
+    swarm.saga.xyz/network-source: terraform/__PROJECT_ID__/subnet_cidr
+    swarm.saga.xyz/swarm-api-egress-cidr: __SWARM_API_EGRESS_CIDR__
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: swarm-live
+  policyTypes:
+    - Ingress
+  ingress:
+    # The live gate in a tenant's live-browser pod: ONE peer, both selectors
+    # (two would be an OR). `swarm-live: enabled` is
+    # scheduler.dispatch.LIVE_POD_LABEL.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: swarm
+            matchExpressions:
+              - key: swarm-tenant
+                operator: Exists
+          podSelector:
+            matchLabels:
+              swarm-live: "enabled"
+      ports:
+        - protocol: TCP
+          port: 8080
+    # swarm-api, which arrives from its Direct VPC egress subnet.
+    - from:
+        - ipBlock:
+            cidr: __SWARM_API_EGRESS_CIDR__
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# The governing Service of the StatefulSet, and the gate's address:
+# ws://swarm-live.swarm-system.svc.cluster.local:8080. Headless, so the name
+# resolves to the pod itself and the tenant egress policy's pod selector
+# (network-policies/allow-live-egress.yaml) is what admits the connection.
+apiVersion: v1
+kind: Service
+metadata:
+  name: swarm-live
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/name: swarm-live
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: swarm-live
+  ports:
+    - name: ws
+      protocol: TCP
+      port: 8080
+      targetPort: 8080
+---
+# swarm-api's address: SWARM_LIVE_URL, ws://<this address>:8080. swarm-api is
+# Cloud Run and cannot resolve a cluster Service; it reaches the VPC by Direct
+# VPC egress, and this internal passthrough load balancer puts the relay on the
+# address live.tf reserved.
+# externalTrafficPolicy Cluster: the load balancer health-checks the nodes,
+# not the pod, so swarm-system's ingress policy needs no health-check range.
+apiVersion: v1
+kind: Service
+metadata:
+  name: swarm-live-internal
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/name: swarm-live
+  annotations:
+    networking.gke.io/load-balancer-type: "Internal"
+spec:
+  type: LoadBalancer
+  loadBalancerIP: __SWARM_LIVE_ILB_IP__
+  externalTrafficPolicy: Cluster
+  selector:
+    app.kubernetes.io/name: swarm-live
+  ports:
+    - name: ws
+      protocol: TCP
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: swarm-live
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/name: swarm-live
+spec:
+  replicas: 1
+  serviceName: swarm-live
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: swarm-live
+  template:
+    metadata:
+      labels:
+        managed-by: swarm-terraform
+        app.kubernetes.io/name: swarm-live
+    spec:
+      serviceAccountName: swarm-live
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: relay
+          image: __SWARM_LIVE_IMAGE__
+          ports:
+            - name: ws
+              containerPort: 8080
+              protocol: TCP
+          # Read through swarm_common.config.Settings, as every service reads
+          # them: PROJECT_ID for the storage client, and the bucket the
+          # recorder writes segments to, under
+          # tenants/<t>/tasks/<task>/attempts/<a>/live/ (§7). Settings
+          # defaults the bucket to "<PROJECT_ID>-swarm-artifacts", which is
+          # not this root's name for it, so it is always given.
+          env:
+            - name: PROJECT_ID
+              value: __PROJECT_ID__
+            - name: ARTIFACT_BUCKET
+              value: __ARTIFACT_BUCKET__
+            # A Secret Manager REFERENCE, read at run time with the pod's
+            # own identity; never the key itself, which stays out of the pod
+            # spec, the environment and every log.
+            - name: SWARM_LIVE_KEY_SECRET
+              value: __LIVE_KEY_VERSION__
+          # Invariant 7: requests == limits, no bursting.
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+              ephemeral-storage: 1Gi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+              ephemeral-storage: 1Gi
+          # /healthz answers once the relay has read its key and is serving.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      # One volume, and no secret, certificate or key among them: the key is
+      # read from Secret Manager into memory, and the relay serves no TLS.
+      volumes:
+        # Segments are encoded here before upload: memory, inside the limit
+        # above, and gone with the pod.
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 512Mi

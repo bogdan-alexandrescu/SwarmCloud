@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 #
 # swarm-ui -- the static web UI, served behind the same load balancer as swarm-api.
 #
@@ -52,9 +52,17 @@
 # by digest, and the ui job reading it from this file.
 ARG NODE_IMAGE=node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553
 ARG NGINX_IMAGE=nginxinc/nginx-unprivileged:1.31.6-alpine@sha256:b54ac358b83fc6c965793fd271839b4ea4cdb6e99895bb19618cbc2ca152d972
+# Every base is pulled through this project's Artifact Registry mirrors,
+# never from Docker Hub or ghcr.io directly: on 2026-10-12 three release
+# builds failed inside Cloud Build on ghcr.io timeouts and a github.com 504.
+# Remote repositories (terraform/infra/build_mirror.tf) serve the same
+# digests. A pull request's local build, which has no Google identity,
+# passes the upstream registries here instead (scripts/lib/build-mirror.sh).
+# docs/runbooks/build-mirror.md.
+ARG MIRROR_DOCKER_HUB=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub
 
 # --- build -----------------------------------------------------------------
-FROM ${NODE_IMAGE} AS build
+FROM ${MIRROR_DOCKER_HUB}/library/${NODE_IMAGE} AS build
 
 WORKDIR /build
 
@@ -84,7 +92,7 @@ RUN npm run build
 # nginx-unprivileged rather than nginx: it listens on 8080 and runs as a
 # non-root uid out of the box, matching the posture of the other four images
 # without a templated config or a chown pass. Its ARG is at the top of the file.
-FROM ${NGINX_IMAGE}
+FROM ${MIRROR_DOCKER_HUB}/${NGINX_IMAGE}
 
 # THE BASE LAGS ALPINE, SO THE FIXED PACKAGE IS TAKEN FROM ALPINE DIRECTLY.
 #
@@ -101,8 +109,16 @@ FROM ${NGINX_IMAGE}
 # pcre2 10.48-r0 (CVE-2026-103111, HIGH, fixed in 10.49-r0); same reason, same fix.
 # Releases 37812320090 and 37816339298 (2026-10-08) refused it over tiff 4.7.1-r0
 # (CVE-2026-4775, HIGH, fixed in 4.7.2-r0), holding every merge since 09:37Z.
+# Releases 39158785934, 39161799433 and 39162254559 (2026-10-18) refused it over
+# libx11 1.8.13-r0 (CVE-2026-88806, HIGH, fixed in 1.8.14-r0), holding every merge
+# since 17:33Z.
 USER root
-RUN apk upgrade --no-cache libexpat pcre2 tiff
+# APT_REFRESH: the build scripts/build-images.sh makes this layer in (every
+# main build and release), so the upgrade below is never an older build's
+# (owner decision 2026-10-14).
+ARG APT_REFRESH=unset
+RUN echo "apk layer of ${APT_REFRESH}" \
+ && apk upgrade --no-cache libexpat pcre2 tiff libx11
 USER 101
 
 COPY images/swarm-ui/nginx.conf /etc/nginx/conf.d/default.conf

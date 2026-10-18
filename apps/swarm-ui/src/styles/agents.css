@@ -69,7 +69,36 @@
   padding: 0 4px;
   color: var(--text-dim);
 }
-.ag-find { flex: 1 1 200px; min-width: 0; display: flex; }
+/* THE SCOPE AT THE SEARCH BOX'S END (V147): `26 loaded` was the toolbar's
+   last item and, on any wrap, a line of its own. Inside the find group it
+   stays on the line that takes the slack. */
+.ag-find { flex: 1 1 200px; min-width: 0; display: flex; align-items: center; gap: var(--ctl-s2); }
+/* THE SEARCH BOX KEEPS ITS WIDTH; THE CONTROLS WRAP (live QA WA-10, 1440x900).
+   With every control on one line the box shrank to "Find by name or t", the
+   scope was cut to `200 loaded · mo…` and Started dropped alone to a second
+   row. The find group now asks for 22em and gives way only to 16em, the
+   scope is whole, and the controls after it are never squeezed: when they do
+   not fit they go to the next line together. Beside an open agent the list is
+   380px, so the find group takes the first line to itself. */
+.ag-list-head > .ag-find { flex: 1 1 22em; min-width: min(100%, 16em); }
+/* THE CONTROLS ARE ONE FLEX ITEM (V147, VQA2-R13). The rule above sized the
+   find group, but every control after it was still its own item, so at 1440
+   on Recent (and with Group by workflow) `Started` dropped alone to a second
+   row all the same. `.ag-tools` is one item whose size is all its controls:
+   it shares the find group's line when they all fit and goes to the next
+   line whole when they do not. Inside it the checkboxes and `Started` are
+   `.ag-tools-tail`, which never breaks, so a list too narrow for the group
+   still ends its last line with company. */
+.ag-tools { flex: 0 1 auto; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); }
+.ag-tools-tail { flex: none; display: flex; align-items: center; gap: var(--ctl-s2); white-space: nowrap; }
+.ag-tools > .ag-filter,
+.ag-tools-tail > .ag-filter,
+.ag-tools-tail > .ag-sort,
+.ag-tools > .c-seg { flex: none; }
+/* BESIDE AN OPEN AGENT the list is 380px: `«` and the find group share the
+   first line and the controls take the next. The find group used to be
+   `flex-basis: 100%`, which left `«` on a row of its own above it (V147). */
+.app.has-inspector > .work .ag-list-head > .ag-tools { flex-basis: 100%; }
 .ag-find > input {
   flex: 1;
   min-width: 0;
@@ -83,6 +112,12 @@
 }
 .ag-find > input:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
 .ag-filter-k { color: var(--text-dim); font-size: var(--t-meta); }
+.ag-find > .ag-scope { flex: none; white-space: nowrap; }
+/* THE PROFILE SELECT IS CAPPED (V061, visual QA #1038). A native select is as
+   wide as its longest option, so one long profile name made it ~450px and
+   pushed every other control down a line. The chosen value ellipsises; the
+   whole of it is the select's title and the open list's own width. */
+.ag-list-head .ag-filter select { max-width: 16em; min-width: 0; text-overflow: ellipsis; }
 
 /* --- the compact row, at every width ------------------------------------- */
 /* LINE ONE is the mark, the name and the elapsed time; LINE TWO profile ·
@@ -118,6 +153,21 @@
 .row.is-compact > .when { grid-column: age; white-space: nowrap; }
 .row.is-compact > .cr-sub,
 .row.is-compact > .why { grid-column: name / -1; }
+/* TWO LINES, AT EVERY WIDTH (V061, visual QA #1038). The clamp was the
+   phone's alone (styles.css), so on a wide list a failed row printed its
+   whole multi-line error. The sentence is whole in the span's title and on
+   the agent's own panel, one click away. `.is-same` is one line already. */
+.row.is-compact > .why:not(.is-same) {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+/* A FAILED ROW'S REASON IS RED (V146), in the text-safe red its mark's word
+   uses; it was --warn amber beside a red mark and a red rule. */
+.row.is-compact > .why.is-bad { color: var(--bad-ink); }
 .cr-sub {
   min-width: 0;
   overflow: hidden;
@@ -204,6 +254,8 @@
   :root[data-agent-list='strip'] .app.has-inspector > .work .ag-wait-group > h2,
   :root[data-agent-list='strip'] .app.has-inspector > .work .section.group > h2,
   :root[data-agent-list='strip'] .app.has-inspector > .work .group-why,
+  :root[data-agent-list='strip'] .app.has-inspector > .work .ag-more,
+  :root[data-agent-list='strip'] .app.has-inspector > .work .ag-idfound-say,
   :root[data-agent-list='strip'] .app.has-inspector > .work .ctl-empty { display: none; }
   /* THE STRIP SHOWS ITS ONE CONTROL, CLEANLY (U11a D28, owner QA
      2026-10-04). At 64px the list's head scrolled away with the rows,
@@ -234,6 +286,25 @@
   }
   :root[data-agent-list='strip'] .app.has-inspector > .work .ag-collapse { padding: 0 8px; }
   :root[data-agent-list='strip'] .app.has-inspector > .work .ag-collapse > kbd { display: none; }
+  /* THE PROVENANCE LINE STEPS ASIDE TOO (V059, visual QA #1038). Opening
+     Changes folds the list to this strip, and `26 loaded · 3 live · <tenant>`
+     (`Screen`'s count note) was squeezed into its 64px over four lines. It
+     goes the way the page head went: hidden, kept for a screen reader. */
+  :root[data-agent-list='strip'] .app.has-inspector > .work .c-count-note {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  /* AND THE WAY BACK MOVES INTO THE AGENT (V059). With the breadcrumb and the
+     page title out of the strip, nothing on screen named the list or led back
+     to it but the » that unfolds it. The agent's own back link -- drawn only
+     where the agent covers the list -- is drawn over its header while the
+     list is folded: `‹ Agents`, the section the breadcrumb named. */
+  :root[data-agent-list='strip'] .app.has-inspector > .ag-split > .ctl-agent-back { display: inline-flex; }
 }
 
 /* THE DIVIDER HAS A HANDLE YOU CAN SEE (#503: a transparent 6px grip). The
@@ -317,8 +388,17 @@
 /* THE ✕ IS AN ITEM OF THE ACTION ROW, after Copy link (walkthrough B): the
    column's sticky band drew it over Copy link. */
 .ag-head-actions > .drawer-close { position: static; margin: 0; flex: none; }
-.ag-head-copied { font-size: var(--t-micro); color: var(--text-dim); }
+/* THE COPY'S ANSWER IS THE BUTTON'S OWN LABEL (live QA WA-14); this region
+   is always mounted and says it to a screen reader, drawn nowhere. */
+.ag-head-copied { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .ag-head-stop .stop-confirm { flex-basis: 100%; }
+/* AN OPEN STOP CONFIRM HANGS FROM THE TOP OF THE ROW (live QA WA-13a). The
+   row centres its items, so the confirm's height pushed the title down and
+   left Copy link and ✕ floating halfway down the box. With it open, the row
+   and the actions align to the top: the title stays on line 1 and the
+   buttons stay level with it. */
+.ag-head-row:has(.stop-confirm),
+.ag-head-actions:has(.stop-confirm) { align-items: flex-start; }
 /* THE META LINE: profile · class · workflow · account, then the dispatch
    chips. Sans; a `·` between facts, none before the copy
    button or the chips. */
@@ -753,6 +833,12 @@
 @media (min-width: 1100px) {
   .ctl-agent-back { display: none; }
 }
+/* NOR A DIVIDER TO DRAG (V148, visual QA #1038). Where the agent covers the
+   list there is no list beside it to resize, and the grip's handle showed as
+   a sliver down the drawer's left edge on a phone. */
+@media (max-width: 1099px) {
+  .ag-split > .ag-divider { display: none; }
+}
 /* ON A PHONE THE LIST AND THE AGENT ARE TWO PAGES (agents.html V1): with an
    agent open the list is not drawn behind it, and the back link replaces the
    close cross. */
@@ -775,10 +861,16 @@
   .ag-head-actions { margin-inline-start: 0; }
   /* The back link replaces the ✕ on a phone, as it did on the column. */
   .ag-head-actions > .drawer-close { display: none; }
-  /* THE AGENT'S TABS WRAP (U11a D39, owner QA at 390px): the strip
-     scrolled sideways and was cut at `Chi`, and the fade that said so was
-     missed. On a phone every tab is on screen, on as many lines as it takes. */
-  .c-tabs.ag-split-tabs { flex-wrap: wrap; overflow-x: visible; }
+  /* THE AGENT'S TABS ARE ONE ROW (V148, visual QA #1038). They wrapped
+     (U11a D39) because a strip cut at `Chi` with a missed fade hid tabs; on
+     two ragged rows they read as two strips, with the open tab's underline
+     floating mid-block. One row, packed tighter, scrolls sideways where it
+     must: the edge says `›` where more lies beyond (`AgTabsEdge`), and the
+     open tab is scrolled into view, so no tab is ever chosen and unseen. */
+  .c-tabs.ag-split-tabs { flex-wrap: nowrap; overflow-x: auto; gap: 0; }
+  .c-tabs.ag-split-tabs > a,
+  .c-tabs.ag-split-tabs > button,
+  .ag-tabs-more { padding-inline: 8px; gap: 4px; }
   /* THE HEADER SCROLLS AWAY ON A PHONE (G2-01, QA 2026-10-07). At 390x844
      the header -- state, title, id, facts, chips -- and the two rows of
      tabs held y 0-373 and never moved, so with the stat strip stuck under
@@ -796,7 +888,21 @@
    nothing to say it scrolls. AgentSplit `AgTabsEdge` marks which end has more
    beyond it; that edge fades into the page with a chevron. Not a control: the
    strip itself scrolls, and a pointer passes through. */
-.ag-tabs-edge { position: relative; min-width: 0; }
+.ag-tabs-edge { position: relative; min-width: 0; display: flex; align-items: stretch; }
+.ag-tabs-edge > .ag-split-tabs { flex: 1 1 auto; min-width: 0; }
+
+/* THE BAR FITS (QA12-18, live-browser QA p12): at 1440 with the list open
+   the strip was cut at `C ›`. AgentSplit `AgTabsEdge` keeps the tabs that fit
+   on the bar and puts the rest under More, at its end, on the bar's own
+   underline; More opens the shared `.c-menu` under it. */
+.ag-tabs-more-host { flex: none; margin: var(--ctl-s2) 0 var(--ctl-s3); border-bottom: 1px solid var(--line); }
+.ag-tabs-more { display: flex; gap: 6px; align-items: center; padding: 8px 12px; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; background: none; color: var(--text-dim); font: var(--t-meta)/var(--lh-meta) var(--font); white-space: nowrap; cursor: pointer; }
+.ag-tabs-more em { font: normal 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.ag-tabs-more[aria-expanded='true'] { color: var(--text); }
+.ag-tabs-more:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+.ag-tabs-menu { min-width: 180px; }
+.ag-tabs-menu > .c-menu-item { justify-content: space-between; flex-wrap: nowrap; }
+.ag-tabs-menu > .c-menu-item em { font: normal 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
 .ag-tabs-edge[data-more~='end']::after,
 .ag-tabs-edge[data-more~='start']::before {
   position: absolute;
@@ -893,8 +999,11 @@
    off its age. */
 .app.has-inspector > .work .c-phead .c-acts > .c-refresh { flex: 0 1 auto; }
 
-/* A CANCELLED RUN'S SPAN IS A MARK WITH ITS SENTENCE AS ITS TITLE (D20). */
-.cr-sub .when-note { text-decoration: underline dotted; text-underline-offset: 2px; cursor: help; }
+/* A CANCELLED RUN'S SPAN IS A NOTE WITH ITS SENTENCE AS ITS TITLE (D20).
+   NOT UNDERLINED (live QA WA-22): `mock · bogdan · to cancel`, dotted, read
+   as an action, a link to cancel something. It is a qualifier of the elapsed
+   figure, so it is drawn as one: muted and plain. */
+.cr-sub .when-note { color: var(--text-faint); }
 
 /* `SAME REASON` (G2-24, dev QA 2026-10-07): a row whose reason is the row
    above's, in the same workflow, says so in place of a blank. Muted and at
@@ -906,3 +1015,65 @@
   line-height: var(--lh-micro);
   color: var(--text-dim);
 }
+
+/* --- load more, and a task found by its id (live QA WA-1, WA-2) ---------- */
+.ag-more { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); padding: var(--ctl-s3) 0; }
+.ag-more-btn {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--ctl-bd);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: var(--t-meta)/var(--lh-meta) var(--font);
+  cursor: pointer;
+}
+.ag-more-btn:hover { background: var(--surface-2); }
+.ag-more-btn:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.ag-more-btn:disabled { cursor: progress; color: var(--text-dim); }
+.ag-more-note { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.ag-more-note.is-bad { color: var(--s-bad); }
+.ag-idfound-say { margin: var(--ctl-s2) 0; color: var(--text-dim); font-size: var(--t-meta); line-height: var(--lh-meta); }
+/* A CANCEL ON REQUEST, IN THE LEADING CARD (live QA WA-6): what the task
+   recorded is a note under who asked, not an error in the red-ruled box. */
+.dt-cancel-note { margin: 0; color: var(--text-dim); font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
+.dt-who .is-absent { color: var(--text-faint); }
+.dt-err.is-neu { border-color: var(--line); }
+
+/* --- the live-browser hand-off (live-browser.md §6, lane LB-L12) -------- */
+/* A row waiting for a person is yellow, as the banner is: the warning's own
+   tokens, so light and dark follow the theme. The rule at its left edge says
+   it without the colour. */
+.row.is-compact.is-needs-you {
+  background: var(--s-warnb);
+  box-shadow: inset 3px 0 0 var(--s-warn);
+}
+.ho-strip { padding: var(--ctl-s2) 0; }
+.ho-facts, .ho-masked, .ho-starting, .ho-refused { display: block; }
+.ho-masked { color: var(--text-dim); font-size: var(--t-micro); }
+.ho-refused { color: var(--bad); }
+
+/* --- a live-browser task's recordings (§7) ------------------------------ */
+.rec-panel { margin-top: var(--ctl-s3); }
+.rec-note, .rec-absent, .rec-dropped { color: var(--text-dim); }
+.rec-list { list-style: none; margin: 0; padding: 0; }
+.rec-list > li { padding: var(--ctl-s1) 0; border-top: 1px solid var(--line); }
+.rec-player { display: block; width: 100%; max-height: 60vh; margin-top: var(--ctl-s1); background: var(--bg); }
+
+/* A LIVE BROWSER ROW'S DEVICE OUTLINE (live-browser.md §6; LB-UX3): a static
+   phone, tablet or desktop shape in the session's orientation, at the start of
+   line two. Not a stream: see `DeviceThumb`. `unknown` is dashed -- the gate
+   has not reported the device -- rather than a guessed desktop. */
+.ag-device {
+  display: inline-block; vertical-align: -2px; margin-right: 6px; box-sizing: border-box;
+  border: 1.5px solid var(--text-dim); border-radius: 2px;
+}
+.ag-device.is-phone.is-portrait { width: 8px; height: 13px; border-radius: 2px; }
+.ag-device.is-phone.is-landscape { width: 13px; height: 8px; border-radius: 2px; }
+.ag-device.is-tablet.is-portrait { width: 10px; height: 13px; }
+.ag-device.is-tablet.is-landscape { width: 13px; height: 10px; }
+.ag-device.is-desktop { width: 15px; height: 10px; border-bottom-width: 3px; border-radius: 1px; }
+.ag-device.is-desktop.is-portrait { width: 10px; height: 14px; }
+.ag-device.is-unknown { width: 12px; height: 10px; border-style: dashed; }
+
+.ag-theater-all { white-space: nowrap; font-size: var(--t-meta); }

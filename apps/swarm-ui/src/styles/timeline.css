@@ -74,9 +74,16 @@
 /* BOUNDED (QA G3-31): a picker's summary grew with each value ticked and a
    long workflow id widened its select, so one choice moved every control
    after it. Each holds a ceiling and ends in an ellipsis; the full value is
-   in the open checklist and the select's own list. */
+   in the open checklist and the select's own list.
+   AND A FLOOR, SO DATA ARRIVING MOVES NOTHING EITHER (VQA V104): the select
+   was as wide as its longest option, so it grew from `any` to a workflow id
+   when the rows landed and pushed Group by onto a second line, ~40px of
+   shift under the reader. The workflow select has a WIDTH (Group by's
+   options are fixed words, so it cannot grow); a picker's `all 0` ->
+   `all 12` keeps a floor that holds a two-digit count. */
 .tl-flt i {
   display: inline-block;
+  min-width: 3.5em;
   max-width: 12em;
   overflow: hidden;
   font-style: normal;
@@ -92,6 +99,7 @@
   background: transparent;
   border: 0;
 }
+.tl-flt select.tl-wf-sel { width: 11em; }
 .tl-pick > summary { cursor: pointer; list-style: none; }
 .tl-pick > summary::-webkit-details-marker { display: none; }
 .tl-pop {
@@ -111,6 +119,20 @@
   color: var(--text);
 }
 .tl-pop label { display: flex; align-items: center; gap: 6px; min-height: 28px; }
+
+/* ---- Outcomes: a table wider than its card says so (VQA V109) ----
+   Reliability, Workflows that failed and the Table view are `.is-scroll`
+   tables that scroll inside their card; at 400 they were cut mid-value
+   ("Subr…") at the card's edge with no cue that the row went on. The right
+   edge fades while columns are off it (`MoreRight`, the step table's #109
+   cue), and only then. Here because Outcomes imports this sheet (through
+   `TimelinePages`) and the hub sheet's `.is-scroll` blocks are another lane's. */
+.ol-table.has-more,
+.ol-reliability .is-scroll.has-more,
+.ol-workflows .is-scroll.has-more {
+  -webkit-mask-image: linear-gradient(to left, transparent 0, #000 var(--ctl-s5));
+  mask-image: linear-gradient(to left, transparent 0, #000 var(--ctl-s5));
+}
 
 /* ---- notes, strip, legend ---- */
 .tl-note,
@@ -150,6 +172,10 @@
   font-variant-numeric: tabular-nums;
 }
 .tl-x { display: inline-flex; gap: 6px; align-items: baseline; }
+/* A finished total's parts wrap BETWEEN parts, each a figure, its word and
+   its separator on one line (VQA V105: a bare "·" was orphaned per line). */
+.tl-ended { flex-wrap: wrap; }
+.tl-xp { white-space: nowrap; }
 .tl-dash { color: var(--text-faint); }
 .tl-legend {
   display: flex;
@@ -253,6 +279,12 @@
   text-overflow: ellipsis;
 }
 .tl-lab .tl-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* A LONE AGENT KEEPS ITS ID (VQA2 V212, 2026-10-16): `claude-code task ·
+   a073aff5` lost its id to the ellipsis, and the id is all that tells two
+   standalone lanes apart. The kind gives way; the id never wraps or cuts. */
+.tl-lab .tl-name.is-split { display: inline-flex; align-items: baseline; flex: 0 1 auto; }
+.tl-name-k { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tl-name-id { flex: none; white-space: pre; }
 .tl-lab .tl-dur { flex: none; font: var(--t-micro) / var(--lh-micro) var(--mono); font-weight: 400; color: var(--text-dim); white-space: pre; }
 .tl-lab small {
   font: var(--t-micro) / var(--lh-micro) var(--mono);
@@ -380,10 +412,14 @@
    five-minute attempt is a third of a percent of the track, and the bars
    read as nothing but their end marks. A pixel floor keeps the shortest
    attempt a bar, and the fill is the brand's capacity hue (timeline.html A),
-   not a wash too pale to find. */
+   not a wash too pale to find.
+   THE FLOOR IS WHAT IS PAINTED (VQA2 V039, 2026-10-16): 8px here, the 5px
+   padding and the borders painted 12-13px, and the lanes' layout, which
+   keeps bars inside the track and apart, needs the true floor. Equal to
+   `BAR_MIN_PX` in TimelineLanes.tsx. */
 .tl-seg.is-hold,
 .tl-seg.is-cut,
-.tl-seg.is-park { min-width: 8px; }
+.tl-seg.is-park { min-width: 14px; }
 .tl-seg.is-hold {
   height: 20px;
   border-radius: 6px;

@@ -46,10 +46,21 @@ the check run's own output is still the excerpt.
 Since #646 it also CLOSES an issue (`close_issue`, `issues: write`): an
 issue run whose build found every planned requirement already met on main.
 
+Since the observer files its proposals (docs/schedules.md §3.4) it also
+OPENS an issue (`create_issue`, `issues: write`) and finds one it opened by
+the marker its body begins with (`find_issue`): one epic per observer report,
+in the repository the schedule names, with the same tenant credential.
+
 Since #748 it also OPENS a pull request from a branch that is already pushed
 (`create_branch`, `open_pull`, `contents: write` and `pull_requests: write`):
 a MERGE verdict's integrator, published by swarm-api without a worker
 (`verdictpublish`).
+
+WHICH FAILURE IS WORTH RETRYING (WRITEBACK, 2026-10-12): GitHub unreachable,
+a timeout, a 5xx or a rate limit is `ForgeUnreachable` (`is_transient`); a 401
+or a 403 that is not a rate limit is the credential itself
+(`is_credential_refusal`). The CI loop backs off on the first and fails the run
+at once on the second.
 
 WHAT THIS DOES NOT DO: decide anything. Which comment to write, when, and what
 it says is `issuesync` and `issuecomments`; this is the wire.
@@ -65,6 +76,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 from urllib.parse import quote, urlparse
 
+from . import forge_limits
 from .errors import ApiError
 from .forge import (
     GITHUB_API_HOST,
@@ -119,6 +131,49 @@ class ChecksForbidden(ForgeWriteForbidden):
     code = "checks_forbidden"
 
 
+class ForgeUnreachable(ForgeWriteError):
+    """GitHub could not be reached, timed out, answered 5xx or rate-limited.
+
+    WRITEBACK (2026-10-12): the one failure worth retrying. Its code stays
+    `writeback_failed`, which every reader already knows; the type is what
+    says a later attempt may work (`is_transient`). run_0d784c412dbc421a98ec
+    sat CHECKING 12 hours on "could not be sent to GitHub (URLError)" with
+    nothing telling that apart from a credential that would never work.
+    """
+
+
+class ForgeRateLimited(ForgeUnreachable):
+    """GitHub limited the request (`forge_limits.rate_limit`): transient, and
+    `reset` says when GitHub said it may be asked again (None when it did
+    not). QUOTA-THROTTLE: a background sweep stops on the first one and
+    holds itself until `reset` rather than asking again every park."""
+
+    def __init__(self, message: str, *, reset: Any = None) -> None:
+        super().__init__(message)
+        self.reset = reset
+
+
+def is_transient(error: BaseException) -> bool:
+    """Whether a later attempt of the same request may work."""
+    return isinstance(error, ForgeUnreachable)
+
+
+def is_credential_refusal(error: BaseException) -> bool:
+    """Whether GitHub refused the credential itself (401, or a 403 that is not
+    a rate limit): nothing changes until a person changes the credential."""
+    return isinstance(error, (ForgeWriteUnauthorized, ForgeWriteForbidden))
+
+
+def _transport_name(exc: BaseException) -> str:
+    """The type of a transport failure, and of its cause when urllib wraps one
+    ("URLError: TimeoutError"). Types only: a message can quote the request."""
+    name = type(exc).__name__
+    reason = getattr(exc, "reason", None)
+    if isinstance(exc, urllib.error.URLError) and isinstance(reason, BaseException):
+        return f"{name}: {type(reason).__name__}"
+    return name
+
+
 #: What each write needs, named in the 403's sentence.
 ISSUES_WRITE = "issues: write"
 PULLS_WRITE = "pull_requests: write"
@@ -128,6 +183,14 @@ CONTENTS_WRITE = "contents: write"
 CHECKS_READ = "checks: read"
 STATUSES_READ = "statuses: read"
 RULES_READ = "metadata: read"
+#: Re-running a failed Actions job (lane SPEED-D2: a flake costs no agent).
+ACTIONS_WRITE = "actions: write"
+#: A pull request's file list, and a comparison of two commits.
+PULLS_READ = "pull_requests: read"
+CONTENTS_READ = "contents: read"
+#: Pages of a pull request's files read: GitHub serves at most 3000, and a
+#: conflict round's prompt names far fewer than the 300 these hold.
+MAX_FILE_PAGES = 3
 
 #: Pages of check runs read at one sha. A head with more than 500 check runs
 #: is read as far as that, which is far past any repository's CI.
@@ -145,14 +208,24 @@ LOG_HOST_SUFFIXES = (".actions.githubusercontent.com", ".blob.core.windows.net")
 # the wire
 # --------------------------------------------------------------------------
 
-#: `(method, url, headers, body or None, timeout) -> (status, body bytes)`.
-#: Injected by the tests; `_urllib_send` in production.
-WriteSend = Callable[[str, str, dict[str, str], "bytes | None", float], "tuple[int, bytes]"]
+#: `(method, url, headers, body or None, timeout) -> (status, body bytes)` or
+#: `(status, body bytes, response headers)`. Injected by the tests;
+#: `_urllib_send` in production, which answers the headers too: GitHub's
+#: `X-RateLimit-*` are what `forge_limits.QUOTAS` is kept from.
+WriteSend = Callable[[str, str, dict[str, str], "bytes | None", float], "tuple[Any, ...]"]
+
+
+def _response_headers(response: Any) -> dict[str, str]:
+    raw = getattr(response, "headers", None)
+    try:
+        return {str(k): str(v) for k, v in raw.items()} if raw is not None else {}
+    except Exception:
+        return {}
 
 
 def _urllib_send(
     method: str, url: str, headers: dict[str, str], body: bytes | None, timeout: float
-) -> tuple[int, bytes]:
+) -> tuple[int, bytes, dict[str, str]]:
     if not is_pinned_host(url):
         raise ForgeWriteError(
             f"the forge client sends the tenant's credential to {GITHUB_API_HOST} only"
@@ -160,13 +233,14 @@ def _urllib_send(
     request = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
         with _OPENER.open(request, timeout=timeout) as response:
-            return response.status, response.read(MAX_RESPONSE_BYTES + 1)
+            return (response.status, response.read(MAX_RESPONSE_BYTES + 1),
+                    _response_headers(response))
     except urllib.error.HTTPError as answer:
         try:
             raw = answer.read(MAX_RESPONSE_BYTES + 1)
         except Exception:
             raw = b""
-        return answer.code, raw
+        return answer.code, raw, _response_headers(answer)
 
 
 #: `(url, headers, timeout) -> (status, Location or "")`: one authenticated GET
@@ -220,6 +294,35 @@ class CommentRef:
 
 
 @dataclass(frozen=True)
+class IssueCreated:
+    """One issue as GitHub answered it: its number and its page."""
+
+    number: int
+    url: str
+
+
+@dataclass(frozen=True)
+class BranchMerge:
+    """GitHub's answer to merging a commit into a branch (`POST /merges`).
+
+    `sha` the merge commit it made; None with `conflict` False when the
+    branch already contained the commit (204); `conflict` True on a 409."""
+
+    sha: str | None
+    conflict: bool = False
+    message: str = ""
+
+
+@dataclass(frozen=True)
+class PullMerge:
+    """GitHub's answer to merging a pull request: merged, or why not."""
+
+    merged: bool
+    sha: str | None = None
+    message: str = ""
+
+
+@dataclass(frozen=True)
 class PullSnapshot:
     number: int
     url: str
@@ -240,6 +343,12 @@ class PullSnapshot:
     #: When GitHub says it merged (ISO 8601, UTC), "" while it has not: the
     #: run page prints it beside "merged" (#503).
     merged_at: str = ""
+    #: GitHub's `mergeable` -- True, False, or None while it has not computed
+    #: it -- and `mergeable_state` (`dirty` on a conflict). The merge step's
+    #: wake tick reads them first: GitHub runs no checks on a pull request
+    #: that conflicts with its base (#1076).
+    mergeable: bool | None = None
+    mergeable_state: str = ""
 
 
 def _int(value: Any) -> int | None:
@@ -266,6 +375,14 @@ def _comment(data: Any, what: str) -> CommentRef:
     )
 
 
+def _issue(ref: IssueRef, data: Any, what: str) -> IssueCreated:
+    if not isinstance(data, dict) or _int(data.get("number")) is None:
+        raise ForgeWriteError(f"GitHub's answer for {what} is not an issue")
+    number = int(data["number"])
+    url = data.get("html_url")
+    return IssueCreated(number=number, url=url if isinstance(url, str) else f"{ref.repository_url}/issues/{number}")
+
+
 def _pull(ref: IssueRef, data: Any, what: str) -> PullSnapshot:
     if not isinstance(data, dict) or _int(data.get("number")) is None:
         raise ForgeWriteError(f"GitHub's answer for {what} is not a pull request")
@@ -290,6 +407,9 @@ def _pull(ref: IssueRef, data: Any, what: str) -> PullSnapshot:
         head_repo=_full_name(head),
         base_repo=_full_name(base),
         merged_at=merged_at if isinstance(merged_at, str) else "",
+        mergeable=data.get("mergeable") if isinstance(data.get("mergeable"), bool) else None,
+        mergeable_state=(data.get("mergeable_state")
+                         if isinstance(data.get("mergeable_state"), str) else ""),
     )
 
 
@@ -328,20 +448,33 @@ class GitHubWriter:
             body = json.dumps(payload).encode("utf-8")
             headers["Content-Type"] = "application/json"
         try:
-            status, raw = self._send(method, url, headers, body, self._timeout)
+            sent = self._send(method, url, headers, body, self._timeout)
         except ForgeWriteError:
             raise
         except Exception as exc:
             # The type only: a transport's message can quote the request.
-            raise ForgeWriteError(
-                f"{what} could not be sent to GitHub ({type(exc).__name__})"
+            raise ForgeUnreachable(
+                f"{what} could not be sent to GitHub ({_transport_name(exc)})"
             ) from None
+        status, raw = sent[0], sent[1]
+        # QUOTA-THROTTLE: every answer updates the quota of the credential
+        # the caller acts as (`forge_limits.acting_as`); the rate-limit
+        # reading is `forge_limits`', the one place it is made.
+        limited = forge_limits.QUOTAS.observe_answer(forge_limits.Answer(
+            status, sent[2] if len(sent) > 2 and sent[2] else {}, raw))
+        if limited is not None:
+            when = forge_limits.until(limited)
+            raise ForgeRateLimited(
+                f"GitHub's rate limit held back {what} for now (HTTP {status})"
+                + (f"; it resets at {when}" if when else ""), reset=limited.reset)
         if status == 401:
             raise ForgeWriteUnauthorized(
                 f"GitHub refused the tenant's forge credential for {what} (HTTP 401): "
                 "it is invalid or has expired; store a new one with "
                 "scripts/create-secrets.sh --stdin"
             )
+        if status >= 500:
+            raise ForgeUnreachable(f"GitHub answered HTTP {status} for {what}")
         if status == 403:
             raise forbidden(
                 f"GitHub refused the tenant's forge credential for {what} (HTTP 403): "
@@ -443,6 +576,50 @@ class GitHubWriter:
             payload={"state": "closed", "state_reason": "completed"},
         )
 
+    def create_issue(
+        self, ref: IssueRef, *, title: str, body: str, labels: tuple[str, ...] = (), token: str
+    ) -> IssueCreated:
+        """Open an issue in `ref`'s repository (`ref.number` is not read).
+
+        GitHub drops a label silently when the credential cannot set labels;
+        the issue is still opened, and `find_issue` does not filter on one.
+        """
+        what = f"a new issue in {ref.repository}"
+        data = self._call(
+            "POST", self._url(ref, "issues"), token, what, needs=ISSUES_WRITE,
+            payload={"title": title, "body": body, "labels": list(labels)}, ok=(201,),
+        )
+        return _issue(ref, data, what)
+
+    def find_issue(self, ref: IssueRef, marker: str, token: str) -> IssueCreated | None:
+        """The OLDEST issue in `ref`'s repository whose body BEGINS with `marker`.
+
+        How a retry finds the issue it opened when the number it stored was
+        lost (an open that succeeded and a Firestore write that did not):
+        `find_comment`'s rule, for an issue. Newest first, at most
+        `MAX_COMMENT_PAGES` pages: ours was opened moments before the write
+        that lost it. Pull requests, which GitHub lists here too, are skipped.
+        """
+        what = f"the issues of {ref.repository}"
+        url = self._url(ref, "issues")
+        found: IssueCreated | None = None
+        for page in range(1, MAX_COMMENT_PAGES + 1):
+            entries = self._call(
+                "GET", f"{url}?state=all&sort=created&direction=desc&per_page={PAGE_SIZE}&page={page}",
+                token, what, needs=ISSUES_WRITE,
+            )
+            if not isinstance(entries, list):
+                raise ForgeWriteError(f"GitHub's answer for {what} is not a list")
+            for entry in entries:
+                if not isinstance(entry, dict) or "pull_request" in entry:
+                    continue
+                body = entry.get("body")
+                if isinstance(body, str) and body.startswith(marker):
+                    found = _issue(ref, entry, what)  # newest first: the last match is the oldest
+            if len(entries) < PAGE_SIZE:
+                break
+        return found
+
     # -- pull requests ----------------------------------------------------------
 
     def read_pull(self, ref: IssueRef, number: int, token: str) -> PullSnapshot:
@@ -516,7 +693,8 @@ class GitHubWriter:
         return _pull(ref, entries[0], what) if entries else None
 
     def open_pull(
-        self, ref: IssueRef, *, head: str, base: str, title: str, body: str, token: str
+        self, ref: IssueRef, *, head: str, base: str, title: str, body: str, token: str,
+        draft: bool = False,
     ) -> tuple[PullSnapshot, bool]:
         """Open a pull request from `head` into `base`: `(it, True)`, or
         `(the open one already there, False)` when GitHub refuses a second.
@@ -529,7 +707,7 @@ class GitHubWriter:
             data = self._call(
                 "POST", self._url(ref, "pulls"), token, what, needs=PULLS_WRITE,
                 payload={"title": title, "head": head, "base": base, "body": body,
-                         "draft": False},
+                         "draft": draft},
                 ok=(201,),
             )
         except (ForgeWriteForbidden, ForgeWriteUnauthorized):
@@ -594,6 +772,130 @@ class GitHubWriter:
         if not isinstance(entries, list):
             raise ForgeWriteError(f"GitHub's answer for {what} is not a list of statuses")
         return [entry for entry in entries if isinstance(entry, dict)]
+
+    def rerun_job(self, ref: IssueRef, job_id: int, token: str) -> None:
+        """Ask GitHub to re-run one Actions job at the same commit (SPEED-D2).
+
+        An Actions check run's id is its job's id. GitHub answers 201 and
+        makes a new check run of the same name at the same sha, which
+        `check_runs` (`filter=latest`) then reads in place of the failed one.
+        """
+        self._call(
+            "POST", self._url(ref, f"actions/jobs/{int(job_id)}/rerun"), token,
+            f"a re-run of Actions job {int(job_id)}", needs=ACTIONS_WRITE,
+            payload={}, ok=(201, 204),
+        )
+
+    def pull_files(self, ref: IssueRef, number: int, token: str) -> list[str]:
+        """The paths pull request `number` changes, up to MAX_FILE_PAGES pages."""
+        what = f"the files of {ref.repository}#{int(number)}"
+        names: list[str] = []
+        for page in range(1, MAX_FILE_PAGES + 1):
+            data = self._call(
+                "GET", self._url(ref, f"pulls/{int(number)}/files?per_page={PAGE_SIZE}&page={page}"),
+                token, what, needs=PULLS_READ,
+            )
+            if not isinstance(data, list):
+                raise ForgeWriteError(f"GitHub's answer for {what} is not a list")
+            names += [str(f["filename"]) for f in data
+                      if isinstance(f, dict) and isinstance(f.get("filename"), str)]
+            if len(data) < PAGE_SIZE:
+                break
+        return names
+
+    # -- a merge train's branch and landings (TRAIN-WS, docs/merge-trains.md §4) --
+
+    def merge_into_branch(
+        self, ref: IssueRef, *, branch: str, head: str, message: str, token: str
+    ) -> BranchMerge:
+        """Merge commit `head` into `branch` on GitHub (`POST /merges`)."""
+        what = f"a merge of {head[:12]} into {branch} of {ref.repository}"
+        data = self._call(
+            "POST", self._url(ref, "merges"), token, what, needs=CONTENTS_WRITE,
+            payload={"base": branch, "head": head, "commit_message": message},
+            ok=(201, 204, 409),
+        )
+        if data is None:
+            return BranchMerge(sha=None)
+        sha = data.get("sha") if isinstance(data, dict) else None
+        if isinstance(sha, str) and sha:
+            return BranchMerge(sha=sha)
+        text = data.get("message") if isinstance(data, dict) else None
+        return BranchMerge(sha=None, conflict=True,
+                           message=text if isinstance(text, str) else "merge conflict")
+
+    def merge_pull(
+        self, ref: IssueRef, number: int, *, sha: str, title: str, message: str, token: str
+    ) -> PullMerge:
+        """Squash-merge pull request `number`, pinned to head `sha`.
+
+        GitHub's refusals (405 not mergeable, 409 head moved, 422 invalid)
+        are answers, returned unmerged with GitHub's message; anything else
+        raises as every call here does."""
+        what = f"the merge of {ref.repository}#{int(number)}"
+        data = self._call(
+            "PUT", self._url(ref, f"pulls/{int(number)}/merge"), token, what,
+            needs=CONTENTS_WRITE,
+            payload={"merge_method": "squash", "sha": sha, "commit_title": title,
+                     "commit_message": message},
+            ok=(200, 405, 409, 422),
+        )
+        data = data if isinstance(data, dict) else {}
+        text = data.get("message")
+        merged_sha = data.get("sha")
+        return PullMerge(merged=data.get("merged") is True,
+                         sha=merged_sha if isinstance(merged_sha, str) else None,
+                         message=text if isinstance(text, str) else "")
+
+    def commit_tree(self, ref: IssueRef, sha: str, token: str) -> str:
+        """The tree commit `sha` points at (`git/commits/{sha}`)."""
+        what = f"the commit {sha[:12]} of {ref.repository}"
+        data = self._call(
+            "GET", self._url(ref, f"git/commits/{quote(sha, safe='')}"), token, what,
+            needs=PULLS_WRITE,
+        )
+        tree = data.get("tree") if isinstance(data, dict) else None
+        tree_sha = tree.get("sha") if isinstance(tree, dict) else None
+        if not isinstance(tree_sha, str) or not tree_sha:
+            raise ForgeWriteError(f"GitHub's answer for {what} names no tree")
+        return tree_sha
+
+    def close_pull(self, ref: IssueRef, number: int, token: str) -> None:
+        self._call(
+            "PATCH", self._url(ref, f"pulls/{int(number)}"), token,
+            f"closing {ref.repository}#{int(number)}", needs=PULLS_WRITE,
+            payload={"state": "closed"},
+        )
+
+    def delete_branch(self, ref: IssueRef, branch: str, token: str) -> bool:
+        """Delete `branch`; False when it was already gone."""
+        try:
+            self._call(
+                "DELETE", self._url(ref, f"git/refs/heads/{quote(branch, safe='/')}"), token,
+                f"the branch {branch} of {ref.repository}", needs=CONTENTS_WRITE, ok=(204,),
+            )
+        except ForgeWriteNotFound:
+            return False
+        return True
+
+    def compare_files(self, ref: IssueRef, base: str, head: str, token: str) -> list[str]:
+        """The paths changed from the merge base of `base` and `head` to `head`.
+
+        GitHub's three-dot comparison, so `compare_files(ref, pr_head, base_branch)`
+        is what the base branch changed since the pull request's branch left it.
+        """
+        what = f"the comparison {base[:40]}...{head[:200]} of {ref.repository}"
+        data = self._call(
+            "GET",
+            self._url(ref, f"compare/{quote(base, safe='')}...{quote(head, safe='/')}"
+                           f"?per_page={PAGE_SIZE}"),
+            token, what, needs=CONTENTS_READ,
+        )
+        files = data.get("files") if isinstance(data, dict) else None
+        if not isinstance(files, list):
+            raise ForgeWriteError(f"GitHub's answer for {what} lists no files")
+        return [str(f["filename"]) for f in files
+                if isinstance(f, dict) and isinstance(f.get("filename"), str)]
 
     def check_annotations(self, ref: IssueRef, check_run_id: int, token: str) -> list[dict[str, Any]]:
         """Up to MAX_ANNOTATIONS annotations of one check run."""

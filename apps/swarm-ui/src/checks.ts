@@ -1,4 +1,5 @@
 import { PHONE_PAGE_LIMIT, TASK_PAGE_LIMIT } from './pageLimits'
+import { hhmmUtc, stateView, type OverviewTaskPage } from './overviewReads'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
 import {
   CONCURRENCY_STATES,
@@ -133,7 +134,8 @@ export interface StalledWorkflows {
 /** The reads every check is derived from. One per panel-independent route. */
 export interface CheckInputs {
   capacity: Result<Capacity>
-  tasks: Result<TaskPage>
+  /** The Overview's page, with its state reads when the page is not every task. */
+  tasks: Result<OverviewTaskPage>
   leases: Result<LeasePage>
   providers: Result<ProvidersPage>
   accounts: Result<AccountsPage>
@@ -154,6 +156,8 @@ export interface CheckInputs {
  * Both stay; each figure now says that the other width reads another window.
  */
 export function windowNote(phonePage: boolean, phoneRows: number, wideRows: number): string {
+  // ONE WINDOW AT EVERY WIDTH (live QA CH-4): nothing to say about another.
+  if (phoneRows === wideRows) return ''
   return phonePage
     ? ` · a phone reads the newest ${phoneRows}, a wider screen the newest ${wideRows}`
     : ` · a phone reads only the newest ${phoneRows}`
@@ -195,7 +199,7 @@ export function deriveChecks(s: CheckInputs, now: number): Check[] {
     quotaCheck(s.providers, now),
     accountCheck(s.accounts),
     poolCheck(s.capacity),
-    failureCheck(s.tasks, now, s.phonePage ?? false),
+    failureCheck(s.tasks, s.stats, now, s.phonePage ?? false),
   ]
 }
 
@@ -488,8 +492,19 @@ function poolCheck(capacity: Result<Capacity>): Check {
  * sense the API can serve cheaply, and the headline's N says which page. It is
  * not the tenant's total and does not claim to be; the exact per-state count
  * lives on Platform counts.
+ *
+ * A PAGE WITH MORE BEHIND IT IS NOT ASKED ALONE (live QA OV-2, 2026-10-11).
+ * A phone's 50 newest held no FAILED row while 11 tasks had failed in the
+ * last 24h -- created earlier, failed since -- and this check said clear:
+ * "checks 8/8 · 2 found something" against 3 on the desktop. So when the
+ * page is not every task the Overview also reads FAILED by state, and this
+ * counts the FAILED tasks that ENDED in the last 24h, over that read. A
+ * FAILED read that has more behind it makes the figure `≥N`. When that read
+ * did not land, the page answers alone, and a page with no failure on it is
+ * clear only if `/v1/stats` counts no FAILED task at all; otherwise it is
+ * blind, never "none".
  */
-function failureCheck(tasks: Result<TaskPage>, now: number, phonePage: boolean): Check {
+function failureCheck(tasks: Result<OverviewTaskPage>, stats: Result<Stats>, now: number, phonePage: boolean): Check {
   const label = 'Failures'
   if (tasks.status === 'loading') return { label, status: 'reading' }
   if (tasks.status === 'error') return { label, status: 'blind', ...blindness(tasks.error) }
@@ -498,62 +513,116 @@ function failureCheck(tasks: Result<TaskPage>, now: number, phonePage: boolean):
   }
 
   const rows = tasks.data.tasks
-  const failed = rows.filter((t) => t.state === 'FAILED')
-  const exhausted = failed.filter((t) => t.attempt_count >= t.max_attempts)
+  const pageWhole = (tasks.data.next_page_token ?? null) === null
+  const byState = tasks.data.byState?.find((r) => r.state === 'FAILED')
+  const widths = windowNote(phonePage, PHONE_PAGE_LIMIT, TASK_PAGE_LIMIT)
+
+  if (!pageWhole && byState !== undefined) {
+    const view = stateView(tasks.data, ['FAILED'])
+    const failed = newestEndedFirst(view.rows.filter((t) => endedWithin(t, now, DAY_MS)))
+    const whole = view.whole('FAILED')
+    const reach = whole ? 'every FAILED task read' : `FAILED tasks created since ${hhmmUtc(view.since ?? '')} read`
+    if (failed.length === 0) {
+      return { label, status: 'clear', note: `no task FAILED in the last 24 hours · ${reach}` }
+    }
+    return { label, status: 'found', problems: [failedProblem(failed, now, `${whole ? '' : '≥'}${failed.length}`, ` in the last 24 hours${whole ? '' : ` · ${reach}`}`)] }
+  }
+
+  const failed = newestEndedFirst(rows.filter((t) => t.state === 'FAILED'))
 
   if (failed.length === 0) {
+    if (!pageWhole) {
+      // THE PAGE IS NOT EVERY TASK AND THE FAILED READ DID NOT LAND. Only an
+      // exact count of zero clears it.
+      const st = stats.status === 'ok' || stats.status === 'stale' ? stats.data : null
+      const counted = st?.tasks_by_state.FAILED
+      if (counted !== 0) {
+        return {
+          label,
+          status: 'blind',
+          admin: false,
+          why:
+            typeof counted === 'number'
+              ? `None of the ${rows.length} most recently created tasks is FAILED, but the state counts say ${counted} FAILED in all and the read of FAILED tasks did not land, so whether any failed recently is not established.`
+              : `None of the ${rows.length} most recently created tasks is FAILED, but more tasks exist beyond them and neither the read of FAILED tasks nor the state counts landed, so whether any failed recently is not established.`,
+        }
+      }
+      return { label, status: 'clear', note: `the state counts say no task has ever FAILED${widths}` }
+    }
     return {
       label,
       status: 'clear',
-      note: `none of the ${rows.length} most recently created tasks is FAILED${windowNote(phonePage, PHONE_PAGE_LIMIT, TASK_PAGE_LIMIT)}`,
+      note: `none of the ${rows.length} most recently created tasks is FAILED${widths}`,
     }
   }
 
+  return { label, status: 'found', problems: [failedProblem(failed, now, String(failed.length), ` among the ${rows.length} most recent`, widths)] }
+}
+
+/**
+ * The one failures item: how many, how fresh, from which workflow, and the
+ * newest one's error.
+ *
+ * `failed` IS NEWEST-ENDED FIRST (live QA OV-3, 2026-10-11): the headline's
+ * "newest 15m ago" is the newest END, and the detail's "Newest:" was the
+ * first row in creation order -- another, older failure's error.
+ */
+function failedProblem(failed: Task[], now: number, count: string, scope: string, widths = ''): Problem {
+  const exhausted = failed.filter((t) => t.attempt_count >= t.max_attempts)
   return {
-    label,
-    status: 'found',
-    problems: [
-      {
-        severity: 'bad',
-        n: failed.length,
-        // HOW FRESH, AND FROM WHICH WORKFLOW (#92, #90). A count with no age
-        // stays open until newer tasks push the failures off the page, so
-        // "21 failed" reads the same two minutes and two days later. And a
-        // failed workflow was only ever a share of this count; it is named
-        // here, in this item, rather than in a second item restating the same
-        // failures in another voice.
-        headline:
-          `${failed.length} failed task${failed.length === 1 ? '' : 's'} among the ${rows.length} most recent` +
-          newestFailureClause(failed, now) +
-          workflowClause(failed) +
-          windowNote(phonePage, PHONE_PAGE_LIMIT, TASK_PAGE_LIMIT),
-        // FAILED IS TERMINAL (QA G1-04, 2026-10-07). The detail read "All
-        // still have attempts left and may retry" beside an error saying the
-        // task failed without a retry: attempts left is not a retry coming.
-        // A retryable failure with attempts left goes back to READY
-        // (agent_worker/control.py), so FAILED is written only once nothing
-        // will run it again: TERMINAL_STATES holds it, and no writer moves it
-        // back. The attempt count says why, never whether.
-        detail: `${terminalClause(failed.length, exhausted.length)} Newest: ${failed[0]?.last_error ?? 'no error was recorded'}`,
-        // A failed agent is a row in the agent list, not an entry on a board
-        // of its own. THE ADDRESS OPENS EXACTLY THAT LIST (OV-10): the Recent
-        // tab filtered to FAILED. The tab used to be component state the hash
-        // could not carry, so this said "agents · Recent tab" -- a how-to --
-        // and landed on Live whenever anything ran. The word names the
-        // destination, as OV-11 set for the card heads.
-        //
-        // THE SAME POPULATION AS THE COUNT. The list filters client-side over
-        // the same task page this check counts -- `/v1/tasks?limit=200`, or
-        // the 50-row phone page at phone width, where the Overview reads the
-        // list's page too -- deliberately not `loadTasksInState`: a
-        // server-side FAILED list is a different, larger population under the
-        // same number. The two can differ only by what changed between the
-        // reads, and the headline says "among the N most recent".
-        href: '#work/running/recent/failed',
-        linkLabel: 'failed agents',
-      },
-    ],
+    severity: 'bad',
+    n: failed.length,
+    // HOW FRESH, AND FROM WHICH WORKFLOW (#92, #90). A count with no age
+    // stays open until newer tasks push the failures off the page, so
+    // "21 failed" reads the same two minutes and two days later. And a
+    // failed workflow was only ever a share of this count; it is named
+    // here, in this item, rather than in a second item restating the same
+    // failures in another voice.
+    headline:
+      `${count} failed task${failed.length === 1 ? '' : 's'}${scope}` +
+      newestFailureClause(failed, now) +
+      workflowClause(failed) +
+      widths,
+    // FAILED IS TERMINAL (QA G1-04, 2026-10-07). The detail read "All
+    // still have attempts left and may retry" beside an error saying the
+    // task failed without a retry: attempts left is not a retry coming.
+    // A retryable failure with attempts left goes back to READY
+    // (agent_worker/control.py), so FAILED is written only once nothing
+    // will run it again: TERMINAL_STATES holds it, and no writer moves it
+    // back. The attempt count says why, never whether.
+    detail: `${terminalClause(failed.length, exhausted.length)} Newest: ${failed[0]?.last_error ?? 'no error was recorded'}`,
+    // A failed agent is a row in the agent list, not an entry on a board
+    // of its own. THE ADDRESS OPENS EXACTLY THAT LIST (OV-10): the Recent
+    // tab filtered to FAILED. The tab used to be component state the hash
+    // could not carry, so this said "agents · Recent tab" -- a how-to --
+    // and landed on Live whenever anything ran. The word names the
+    // destination, as OV-11 set for the card heads.
+    //
+    // THE LIST FILTERS ITS OWN PAGE client-side. Where this item counts the
+    // FAILED read rather than the page (OV-2) the list can show fewer: its
+    // page is the newest-created N, and the headline says which population
+    // this count is.
+    href: '#work/running/recent/failed',
+    linkLabel: 'failed agents',
   }
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+function endedMs(t: Task): number | null {
+  if (t.completed_at === null) return null
+  const v = new Date(t.completed_at).getTime()
+  return Number.isFinite(v) ? v : null
+}
+
+function endedWithin(t: Task, now: number, span: number): boolean {
+  const v = endedMs(t)
+  return v !== null && now - v <= span
+}
+
+/** Newest recorded end first; a task with no recorded end after every dated one. */
+export function newestEndedFirst(rows: readonly Task[]): Task[] {
+  return [...rows].sort((a, b) => (endedMs(b) ?? -Infinity) - (endedMs(a) ?? -Infinity))
 }
 
 /** At most three names, then how many more: a headline, not a list. */
@@ -756,26 +825,43 @@ function workflowCheck(workflows: Result<WorkflowPage>, now: number): Check {
   const problems: Problem[] = []
   if (stalled.length > 0) {
     // Worst first, so the detail names the one that has been stopped longest.
-    const worst = [...stalled].sort(
+    const byQuiet = [...stalled].sort(
       (a, b) => (secondsSince(b.updated_at, now) ?? 0) - (secondsSince(a.updated_at, now) ?? 0),
-    )[0] as Workflow
+    )
+    const worst = byQuiet[0] as Workflow
     // A READY step is ELIGIBLE and is being picked up by nothing, which is a
     // fault. A workflow whose steps are all parked or not started is waiting on
     // something `parkedCheck` below names, and waiting is not the same as
     // broken.
     const eligible = stalled.filter((w) => countOf(w, 'READY') > 0)
+    // THE AGE, NOT THE THRESHOLD, AND EVERY ONE NAMED (live QA OV-9,
+    // 2026-10-11): the headline said "has not advanced in 12 minutes" -- the
+    // threshold -- while the detail said "last changed 21m ago", and with two
+    // stalled the detail named one and "Open" went to the unfiltered list.
+    // The headline carries the longest quiet; the detail names up to three;
+    // one stalled workflow opens that workflow.
+    const quiet = secondsSince(worst.updated_at, now) ?? 0
+    const longest = quiet < 3600 ? `${Math.floor(quiet / 60)} minutes` : formatDuration(quiet * 1000)
+    const others = byQuiet.slice(1)
     problems.push({
       severity: eligible.length > 0 ? 'bad' : 'warn',
       n: stalled.length,
-      headline: `${stalled.length} workflow${stalled.length === 1 ? ' has' : 's have'} not advanced in ${WORKFLOW_STALL_MINUTES} minutes`,
+      headline:
+        stalled.length === 1
+          ? `1 workflow has not advanced for ${longest}`
+          : `${stalled.length} workflows have not advanced for ${WORKFLOW_STALL_MINUTES} minutes or more, the longest ${longest}`,
       detail:
         `${worst.workflow_id} last changed ${timeAgo(worst.updated_at, now)} and has ${describeSteps(worst)}. ` +
+        (others.length > 0
+          ? `Also ${others.slice(0, 2).map((w) => `${w.workflow_id} (${timeAgo(w.updated_at, now)})`).join(', ')}${others.length > 2 ? ` and ${others.length - 2} more` : ''}. `
+          : '') +
         `No step of any of them is LEASED, DISPATCHED, STARTING or RUNNING, so none is holding capacity and none is costing anything — ` +
         `this is a progress problem, not a full pool. ` +
         (eligible.length > 0
           ? `${eligible.length} ${eligible.length === 1 ? 'has a step' : 'have steps'} READY: eligible, and picked up by nothing.`
           : 'Every stalled step is parked or not yet started; the parked check says on what.'),
-      href: '#work/workflows',
+      href: stalled.length === 1 ? `#work/workflows?wf=${encodeURIComponent(worst.workflow_id)}` : '#work/workflows',
+      ...(stalled.length === 1 ? { linkLabel: 'workflow' } : {}),
     })
   }
 
@@ -1008,7 +1094,10 @@ function whyEach(rows: Task[]): string {
   }
   return [...counts.entries()]
     .sort((a, b) => b[1] - a[1])
-    .map(([reason, n]) => `${reason}${n > 1 ? ` ×${n}` : ''} — ${reasonCopy(reason)}`)
+    // NO TRAILING STOP (live QA OV-8, 2026-10-11): `reasonCopy` is a
+    // sentence and ends in one, and every caller follows this with ". ",
+    // so the parked item read "Holds no capacity.. The first becomes...".
+    .map(([reason, n]) => `${reason}${n > 1 ? ` ×${n}` : ''} — ${reasonCopy(reason).replace(/\.+$/, '')}`)
     .join(' · ')
 }
 

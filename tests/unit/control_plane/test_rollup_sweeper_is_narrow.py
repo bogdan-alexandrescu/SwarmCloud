@@ -81,23 +81,41 @@ DECIDED = frozenset({
     ("POST", "/v1/admin/forge/refresh"),
     ("POST", "/v1/admin/workspaces/sweep"),
     ("POST", "/v1/admin/tasks/finished"),
-    # The issue sweeper (owner decisions 2026-10-08, jobs.tf `issue_sweep`):
-    # it starts issue runs only in the named tenant, each as its repository
-    # registration's creator, never as the sweeper, and only while
-    # SWEEP_ENABLED and the tenant's own switch are on. Like the repository
-    # poll, nobody else may call it (test_issue_sweep.py).
-    ("POST", "/v1/admin/issues/sweep"),
+    # NOT POST /v1/admin/issues/sweep: the issue sweeper's job and route were
+    # removed on 2026-10-12 (Schedules S9, second change), replaced by the
+    # tenant's `issue-sweep` schedule, which the schedule tick fires.
     # The stranded-PR sweep (part of #295, jobs.tf `stranded_pr_sweep`): it
     # reads only the named tenant's pull requests and writes only its
     # `stranded_prs` document; a redrive from this identity is refused
     # (test_stranded_prs.py), so it can submit nothing.
     ("POST", "/v1/admin/stranded-prs/sweep"),
+    # The workspace secrets rotation sweep (#1347, owner decision Q5;
+    # jobs.tf `secrets_rotation_sweep`): it disables previous versions whose
+    # 24-hour grace has passed and never destroys one. It reads no value,
+    # grants nothing, submits nothing, and takes no argument: what it may
+    # disable is fixed by the records' own `disable_after`.
+    ("POST", "/v1/admin/workspace-secrets/rotation-sweep"),
+    # The GitHub push hint (docs/design/graph-service.md §6.2; owner decision
+    # 2026-10-16 on #1384, lane GS-HOOKS): the public receiver
+    # swarm-github-hooks RUNS AS this account and forwards a verified push's
+    # repository name here. The route reads no payload sha, takes no tenant,
+    # and only polls now what the five-minute poll would poll anyway, each
+    # registration with its own workspace's token. The owner accepted that a
+    # public-facing service then holds every route in this set.
+    ("POST", "/v1/admin/repositories/push"),
+    # The per-run MCP credential sweep (docs/design/registered-mcp-servers.md
+    # §4.4, owner decision Q2 of #1433; jobs.tf, lane MCP-IAM): it deletes the
+    # `-mcpc-` secret of a credential whose task ended or whose expiry passed,
+    # and marks the row. It takes no argument, reads no value, submits
+    # nothing and grants nothing; what it may destroy is fixed by each row.
+    ("POST", "/v1/admin/mcp-credentials/sweep"),
 })
 
 REFUSED = [r for r in SWEPT if r not in DECIDED]
 
 
-def _context(db, tokens, group_map, objects, *, verified: Any = True) -> AppContext:
+def _context(db, tokens, group_map, objects, *, verified: Any = True,
+             **extra: Any) -> AppContext:
     tokens = dict(tokens)
     tokens["token-sweeper"] = {
         "email": SWEEPER,
@@ -105,7 +123,7 @@ def _context(db, tokens, group_map, objects, *, verified: Any = True) -> AppCont
         "sub": "sub-sweeper",
     }
     return build_context(
-        settings=api_settings(rollup_sweeper_users=(SWEEPER,)),
+        settings=api_settings(rollup_sweeper_users=(SWEEPER,), **extra),
         db=db,
         verifier=StaticTokenVerifier(tokens),
         groups=StaticGroups(group_map),
@@ -136,6 +154,165 @@ def test_the_sweep_is_not_empty_and_contains_the_decided_route() -> None:
     assert len(REFUSED) > 20, f"the refused sweep is implausibly small: {len(REFUSED)}"
     assert ("PUT", "/v1/admin/tenants/{tenant_id}/limits") in REFUSED
     assert ("POST", "/v1/tasks") in REFUSED
+
+
+def test_the_rotation_sweep_is_the_only_workspace_secrets_route_the_sweeper_reaches() -> None:
+    """#1347 added ONE route. Every other workspace-secrets route -- the
+    writes, the grants, the form links, the listing -- stays refused to this
+    identity, so a leaked sweeper token can disable a version only once its
+    grace has passed, and can read, add, grant or delete nothing."""
+    def is_secrets_route(route: tuple[str, str]) -> bool:
+        path = route[1]
+        return path.startswith("/v1/workspace/secrets") or "/workspace-secrets/" in path
+
+    reached = {r for r in ROLLUP_SWEEPER_ROUTES if is_secrets_route(r)}
+    assert reached == {("POST", "/v1/admin/workspace-secrets/rotation-sweep")}
+    refused = [r for r in REFUSED if is_secrets_route(r)]
+    assert len(refused) >= 5, f"the workspace-secrets routes were not swept: {refused}"
+    assert ("PUT", "/v1/workspace/secrets/{name}/value") in refused
+    assert ("DELETE", "/v1/workspace/secrets/{name}") in refused
+
+
+class _RecordingWriter:
+    """The rotation sweep's Secret Manager writer, recording what it is
+    asked; nothing here may create, add or destroy."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def create_secret(self, tenant_id: str, secret_id: str) -> None:
+        raise AssertionError("the rotation sweep never creates a secret")
+
+    def add_version(self, secret_id: str, payload: bytes) -> str:
+        raise AssertionError("the rotation sweep never adds a version")
+
+    def disable_version(self, version: str) -> None:
+        self.calls.append(("disable_version", version))
+
+    def destroy_versions(self, secret_id: str) -> int:
+        raise AssertionError("the rotation sweep never destroys")
+
+
+def test_the_sweeper_runs_the_rotation_sweep(db, sweeper_context) -> None:
+    """What swarm-workspace-secrets-rotation-sweep does each hour, through
+    the real app: a version past its grace is disabled, by the sweeper."""
+    from datetime import timedelta
+
+    from swarm_api.workspace_secrets import ROTATION_GRACE, SECRETS_COLLECTION
+
+    now = sweeper_context.now()
+    secret_id = "swarm-tenant-eng-wsec-" + "0" * 16
+    db.docs[f"{SECRETS_COLLECTION}/{secret_id}"] = {
+        "secret_id": secret_id, "tenant_id": "eng", "name": "typesafe-key", "state": "active",
+        "current_version": f"projects/test/secrets/{secret_id}/versions/2",
+        "versions": [
+            {"version": f"projects/test/secrets/{secret_id}/versions/1", "state": "enabled",
+             "disable_after": now - ROTATION_GRACE - timedelta(minutes=1)},
+            {"version": f"projects/test/secrets/{secret_id}/versions/2", "state": "enabled",
+             "disable_after": None},
+        ],
+    }
+    app = create_app(sweeper_context)
+    writer = _RecordingWriter()
+    app.state.workspace_secret_writer = writer
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post("/v1/admin/workspace-secrets/rotation-sweep", headers=SWEEPER_HEADERS)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["disabled"] == 1, response.text
+    assert writer.calls == [("disable_version", f"projects/test/secrets/{secret_id}/versions/1")]
+    states = [v["state"] for v in db.docs[f"{SECRETS_COLLECTION}/{secret_id}"]["versions"]]
+    assert states == ["disabled", "enabled"]
+
+
+def test_the_sweeper_runs_the_mcp_credential_sweep(db, tokens, group_map, objects) -> None:
+    """What the 10-minute MCP credential sweep job does, through the real app:
+    a terminal task's per-run credential is deleted and its row marked, by
+    the sweeper (design registered-mcp-servers.md §4.4)."""
+    from datetime import timedelta
+
+    from swarm_api.mcp_credentials import COLLECTION, RowKeys
+
+    from .test_child_tasks_api import KEY
+
+    seed_tenant(db, "eng")
+    sweeper_context = _context(db, tokens, group_map, objects, child_key=KEY)
+    now = sweeper_context.now()
+    secret_id = "swarm-tenant-eng-mcpc-" + "0" * 16
+    seed_task(db, task_id="t_done", tenant_id="eng", state="SUCCEEDED")
+    row = {
+        "owner_id": "t_done", "owner_kind": "task", "tenant_id": "eng",
+        "server_id": "mcp_0000000000000000", "name": "kb", "secret_id": secret_id,
+        "version": f"projects/test/secrets/{secret_id}/versions/1",
+        "expires_at": (now + timedelta(hours=1)).replace(microsecond=0), "state": "live",
+    }
+    row["attestation"] = RowKeys(KEY).sign(row)
+    db.docs[f"{COLLECTION}/t_done~mcp_0000000000000000"] = row
+    deleted: list[str] = []
+
+    class _Writer:
+        def create_secret(self, *args: Any) -> None:
+            raise AssertionError("the sweep never creates a secret")
+
+        def add_version(self, *args: Any) -> str:
+            raise AssertionError("the sweep never adds a version")
+
+        def delete_secret(self, secret: str) -> None:
+            deleted.append(secret)
+
+    app = create_app(sweeper_context)
+    app.state.mcp_credential_writer = _Writer()
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.post("/v1/admin/mcp-credentials/sweep", headers=SWEEPER_HEADERS)
+    assert response.status_code == 200, response.text
+    assert response.json()["destroyed"] == 1
+    assert deleted == [secret_id]
+    assert db.docs[f"{COLLECTION}/t_done~mcp_0000000000000000"]["state"] == "destroyed"
+
+
+def test_the_mcp_sweep_is_the_only_mcp_route_the_sweeper_reaches() -> None:
+    """MCP-API added ONE route for this identity. Registering, changing or
+    reading a server stays refused to it."""
+    reached = {r for r in ROLLUP_SWEEPER_ROUTES if "mcp" in r[1]}
+    assert reached == {("POST", "/v1/admin/mcp-credentials/sweep")}
+    refused = [r for r in REFUSED if r[1].startswith("/v1/mcp-servers")]
+    assert len(refused) >= 4, f"the MCP server routes were not swept: {refused}"
+
+
+def test_the_sweeper_reaches_the_push_route(db, sweeper_client) -> None:
+    """GS-HOOKS: the receiver calls POST /v1/admin/repositories/push as the
+    sweeper, through the real app's route allow-list (the push route's own
+    tests override the caller and so never met that list). A push for a
+    repository nobody registered polls nothing and answers 200."""
+    response = sweeper_client.post(
+        "/v1/admin/repositories/push",
+        json={"forge": "github", "full_name": "nobody-registered/this-repository"},
+        headers=SWEEPER_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    assert "rollup sweeper may not call" not in response.text
+
+
+def test_the_push_route_is_still_the_sweepers_alone(db, sweeper_client) -> None:
+    """The control: naming the route in the allow-list opened it to the
+    sweeper, not to a member, whose push is refused by the route itself."""
+    response = sweeper_client.post(
+        "/v1/admin/repositories/push",
+        json={"forge": "github", "full_name": "nobody-registered/this-repository"},
+        headers=auth_header("alice"),
+    )
+    assert response.status_code == 403, response.text
+
+
+def test_the_push_route_is_the_only_repository_route_the_sweeper_gained() -> None:
+    """GS-HOOKS added ONE route. Registering, editing, deleting or indexing a
+    repository stays refused to this identity, so the public receiver that
+    holds it can poll now and nothing else on repositories."""
+    reached = {r for r in ROLLUP_SWEEPER_ROUTES if "/repositories" in r[1]}
+    assert reached == {("POST", "/v1/admin/repositories/poll"), ("POST", "/v1/admin/repositories/push")}
+    refused = [r for r in REFUSED if "/repositories" in r[1]]
+    assert len(refused) >= 3, f"the repository routes were not swept: {refused}"
 
 
 def test_the_sweeper_converges_a_workflow_nobody_looked_at(db, sweeper_client) -> None:
