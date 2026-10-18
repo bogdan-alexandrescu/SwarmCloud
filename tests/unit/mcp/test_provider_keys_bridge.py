@@ -53,7 +53,8 @@ def _key() -> str:
     failed for that reason rather than the one it pins (#1499). The "-"-led
     shapes are spelled out in the refusal test instead, where they are always
     exercised."""
-    return secrets.token_urlsafe(30)
+    value = secrets.token_urlsafe(30)
+    return "k" + value[1:] if value.startswith("-") else value
 
 
 def test_a_fake_key_never_starts_with_a_dash(monkeypatch):
