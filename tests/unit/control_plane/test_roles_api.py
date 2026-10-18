@@ -111,6 +111,13 @@ def client(app_ctx, db, probe_calls):
         probe_calls.append(platform_rows())
         return {"ok": True}
 
+    # The shape of the routes whose path names the workspace they change
+    # (merge settings, code intelligence, the judgment backend).
+    @app.put("/v1/workspaces/{tenant_id}/probe")
+    def probe_workspace(tenant_id: str, body: dict, auth=Depends(current_auth)) -> dict:
+        probe_calls.append(platform_rows())
+        return {"ok": True}
+
     return Kept(app, raise_server_exceptions=False)
 
 
@@ -387,6 +394,18 @@ def test_a_narrowed_member_platform_admins_audit_failure_is_503(client, db, prob
                             json={"runner_profile": "mock", "input": {"prompt": "hi"}})
     assert submitted.status_code == 503
     assert probe_calls == [] and db.paths("tasks/") == tasks_before
+
+
+def test_a_route_naming_its_workspace_is_audited_against_that_workspace(client, db):
+    """root's selected tenant is eng, where its own role (member) is enough
+    for a member write; research it is not in; u-carol is no group."""
+    for tenant_id in ("eng", "research", "u-carol"):
+        response = client.put(f"/v1/workspaces/{tenant_id}/probe", headers=h("root"), json={})
+        assert response.status_code == 200, response.text
+    rows = audit_rows(db, "platform_admin_acted")
+    assert [(r["target_tenant_id"], r["detail"]["reach"]) for r in rows] == [
+        ("research", "non_member")]
+    assert rows[0]["detail"]["path_params"] == {"tenant_id": "research"}
 
 
 def test_a_non_platform_admin_is_never_audited(client, db):

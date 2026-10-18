@@ -691,32 +691,47 @@ class RoleStore:
         * a non-member (`tenant_via == "platform_admin"`): every write a
           `platform_admin_acted` row, every read one `platform_admin_viewed`
           row per (admin, tenant, UTC hour) on this instance;
-        * a member whose own grant is below what the route needs, who passes
-          only as a platform admin: the same (Q12). A member narrowed below
-          `member` also gets the hourly read row, so being added to the group
-          as a viewer is never a way out of the audit;
-        * a member whose own role is enough, and a personal workspace: none.
+        * a member whom a grant has narrowed below `member` (to `viewer`),
+          for a write their own role cannot make and so passes only as a
+          platform admin: the same, and the hourly row for reads (Q12) -- so
+          being added to the group as a viewer is never a way out of the
+          audit;
+        * a member whose own role is enough, a member at the default
+          `member` (no grant narrowed them, §4.2.1), and a personal
+          workspace: none.
 
         A grant read that fails is treated as "would have refused": the row
         is written, so an unknown answer costs a row, never the audit.
         """
-        if not auth.is_admin or is_personal(auth):
+        if not auth.is_admin:
             return None
+        target = self._target(auth, route, path_params)
+        if target is None:
+            return None
+        tenant_id, member = target
         method = (method or "").upper()
         write = method not in _READS
         reach = "non_member"
-        if auth.tenant_via != VIA_PLATFORM_ADMIN:
+        if member:
             needed = required_role(method, route)
             if needed is None:
                 return None
-            floor = needed if write else MEMBER
+            # Audited only once a GRANT has narrowed them below `member`,
+            # the role everyone holds with no grant (§4.2.1: "no, unless a
+            # grant narrowed them below what the action needs"). A member
+            # platform admin at the default `member` doing an admin-level
+            # write is how such writes are made today, and each carries its
+            # own audit row; one narrowed to `viewer` is recorded for every
+            # write their own role cannot make and, hourly, for reads.
+            floor = (needed if rank(needed) < RANK[MEMBER] else MEMBER) if write else MEMBER
             try:
-                own = self.person_role(auth.tenant_id, auth.email).role
+                own = self.person_role(tenant_id, auth.email).role
             except RoleUnavailable:
                 own = None
             if at_least(own, floor):
                 return None
             reach = "role_below"
+        auth = replace(auth, tenant_id=tenant_id)
         now = self._now()
         if write:
             row = {
@@ -749,6 +764,34 @@ class RoleStore:
             self._viewed = {k for k in self._viewed if k[2] == hour}
             self._viewed.add(seen)
         return AUDIT_PLATFORM_ADMIN_VIEWED
+
+    def _target(self, auth: AuthContext, route: str | None,
+                path_params: Mapping[str, Any] | None) -> tuple[str, bool] | None:
+        """(the group workspace the request acts in, whether the caller is a
+        member of it), or None when it acts in no group workspace.
+
+        The selected tenant, except on `/v1/workspaces/{tenant_id}/...`,
+        whose path names the workspace it changes (merge settings, code
+        intelligence, the judgment backend): there the path's tenant is the
+        one acted in, whatever the header selected. A member of it is
+        audited only when their own role falls short; a registered group
+        workspace they are not in is audited as a non-member's; anything
+        else -- their own personal workspace, another person's, an id no
+        group registers -- is no group workspace."""
+        named = (path_params or {}).get("tenant_id")
+        if (route or "").startswith("/v1/workspaces/{tenant_id}") and isinstance(named, str) \
+                and named != auth.tenant_id:
+            principal = dict(auth.tenant_choices).get(named)
+            if principal is not None:
+                if principal.strip().lower() == (auth.email or "").strip().lower():
+                    return None
+                return named, True
+            if named in registered_group_tenants(self._settings):
+                return named, False
+            return None
+        if is_personal(auth):
+            return None
+        return auth.tenant_id, auth.tenant_via != VIA_PLATFORM_ADMIN
 
     def _write_platform_row(self, row: dict[str, Any]) -> None:
         try:
