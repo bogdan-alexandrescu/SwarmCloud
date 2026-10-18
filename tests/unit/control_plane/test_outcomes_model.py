@@ -206,3 +206,20 @@ def test_rows_for_one_model_list_that_models_tasks():
     days[("eng", DAY)] = DayResult("sealed", ended=[opus, legacy])
     made = _Fold(params=params, tenants=["eng"], days=days, main_days=SEVEN_DAYS, generated_at=NOW)
     assert [row["id"] for row in made.ended_rows(params)["rows"]] == ["b"]
+
+
+def test_a_day_stored_before_the_model_columns_is_derived_again():
+    """A day stored under DERIVE_VERSION 7 has no model columns: served as
+    is, every task in it would read "not recorded". It is re-derived."""
+    from swarm_api import outcomes
+
+    base = {
+        "derive_version": 7,
+        "classifier_version": outcomes.CLASSIFIER_VERSION,
+        "built_at": T0,
+        "sealed": True,
+        "ended": '{"cols":[],"rows":[]}',
+        "arrived": '{"cols":[],"rows":[]}',
+    }
+    assert outcomes.DERIVE_VERSION == 8
+    assert outcomes._decode_stored(base, []) is None
