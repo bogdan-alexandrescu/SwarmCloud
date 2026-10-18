@@ -372,7 +372,8 @@ variable "tenants" {
   # the workspace job and live outside Terraform state, so a plan can never
   # change or destroy one; a person in this map would be in state, and in a
   # public tfvars file besides (§2.6). So a `kind = "user"` tenant must be a
-  # SERVICE account's -- swarm-verify's u-sw-c90291 is the one there is.
+  # SERVICE account's -- swarm-verify's u-sw-c90291 and, since 2026-10-18
+  # (#1568), oracle-api's u-or-9a0792.
   validation {
     condition = alltrue([
       for t, v in var.tenants :

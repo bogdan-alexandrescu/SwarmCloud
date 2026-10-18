@@ -811,6 +811,50 @@ them, and its work failed at dispatch. With `WORKSPACE_GATE` on, they are made
 only by the workspace job, after an admin's approval, together with
 everything behind them: [§7](#7-a-persons-personal-workspace).
 
+### Service tenants: a service account's own `u-` tenant
+
+A service account in no registered group resolves the same way, to
+`tenant_id_for_user(<its email>)`. Its tenant is not a workspace: the workspace
+gate exempts service identities, and the tenant is declared in
+`terraform/environments/dev/dev.tfvars` as `kind = "user"` with the account as
+its principal. `terraform/infra/variables.tf` admits a user-kind tenant only for
+a service account. Two exist:
+
+| Tenant | Principal | Why it is its own tenant |
+|---|---|---|
+| `u-sw-c90291` | `swarm-verify@saga-agents-staging.iam.gserviceaccount.com` | The verification gate's suites (smoke, e2e, race) run on the `mock` profile and need a tenant with jobs to dispatch to. |
+| `u-or-9a0792` | `oracle-api@saga-agents-staging.iam.gserviceaccount.com` | The oracle-api client application submits workflows on its own behalf (owner decision 2026-10-18, #1568). |
+
+**oracle-api is never a member of `eng@saga.xyz`, and never a
+`service_accounts` listing under it.** Either would file its work in eng, under
+eng's worker account, eng's provider keys, eng's GCS prefix and eng's
+namespace (invariant 9), and against eng's ceiling. As its own tenant it
+reaches nothing of anybody else's. It is in no registered group, so it has no
+membership for `X-Swarm-Tenant` to choose, and a header naming `eng` is a
+`403 tenant_not_member`.
+
+Each service tenant has to be admitted in three places, and the three must
+agree:
+
+1. **The front door.** `frontend_iap_members` in
+   `terraform/bootstrap/terraform.tfvars` grants it
+   `roles/iap.httpsResourceAccessor` on both IAP backends. The owner applies
+   that layer. The committed line is the record of the apply, because a `-var`
+   not written there makes the next bootstrap plan remove the grant.
+2. **swarm-api's domain check.** A service account's domain is never
+   `saga.xyz`, so it is listed in `ALLOWED_USERS`
+   (`terraform/infra/locals.tf`). That list widens which verified identities are
+   admitted, never whether the token was verified.
+3. **The tenant.** It is declared in `dev.tfvars` under the id the frozen
+   module computes. Both ids carry a digest, because each address is lossy and
+   too long to slug. They are recomputed by a test (`test_oracle_api_tenant.py`,
+   `test_verify_identity_grants.py`) and never typed in from memory.
+
+Both tenants declare **no providers** and run at 4/8. swarm-verify's suites
+need no key. oracle-api is lent a pool Claude account by the owner instead of
+holding a key of its own. Its forge token is `swarm-tenant-u-or-9a0792-git`,
+stored with `scripts/create-secrets.sh --stdin` and never in the repository.
+
 ### Tenant ids are capped at 11 characters
 
 A GCP service account id is capped at 30 characters. The identity is
@@ -837,6 +881,8 @@ that share a long prefix still get different ids.
 | `eng.team@saga.xyz` | `eng-9aef5b` |
 | `alice@saga.xyz` | `u-alice` |
 | `alice.smith@saga.xyz` | `u-al-36b536` |
+| `swarm-verify@saga-agents-staging.iam.gserviceaccount.com` | `u-sw-c90291` |
+| `oracle-api@saga-agents-staging.iam.gserviceaccount.com` | `u-or-9a0792` |
 
 The cost is readability: past 11 characters an id is mostly digest. This
 section used to record an unresolved conflict here — the frozen module capped

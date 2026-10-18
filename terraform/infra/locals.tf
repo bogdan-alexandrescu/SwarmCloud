@@ -896,7 +896,17 @@ locals {
       # This widens WHICH verified identities are admitted, never whether an
       # identity was verified: auth.py:331 consults this only after the token
       # has been checked, and the address it compares comes from that token.
-      ALLOWED_USERS = google_service_account.verify.email
+      #
+      # oracle-api, by owner decision 2026-10-18 (#1568), signed off at merge:
+      # the orchestrating client application submits workflows as its own
+      # tenant, u-or-9a0792 (dev.tfvars), and never as a member of eng. It is
+      # in no registered group, so once admitted here it resolves to that
+      # tenant alone. A literal, not derived: the account is not this root's,
+      # and the owner's decision names this exact address.
+      ALLOWED_USERS = join(",", [
+        google_service_account.verify.email,
+        "oracle-api@saga-agents-staging.iam.gserviceaccount.com",
+      ])
 
       # The same principals terraform already refuses to let own a DECLARED
       # tenant, handed to the runtime so it can refuse the ones terraform
