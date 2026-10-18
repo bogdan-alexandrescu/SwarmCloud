@@ -165,6 +165,49 @@ describe('Settings › MCP servers', () => {
     expect(r.container.textContent).not.toMatch(/credential value/i)
   })
 
+  // MCP-UI-WF (§4.11 "last used"): MCP-API-B serves `last_attached_at` on
+  // every server, the newest attach of THIS workspace's tasks, or null when
+  // there is none. Null is a fact -- no task has used it -- so it reads
+  // "never", not a dash that reads as "unknown".
+  it('draws a "Last used" column: when a server was last attached, and "never" for null', async () => {
+    const at = new Date(Date.now() - 3 * 3600_000).toISOString()
+    api(list({ canManage: false, servers: [server('kb', { last_attached_at: at }), server('docs', { last_attached_at: null })] }))
+    const { McpServersScreen } = await load()
+    const { timeAgo } = await import('../types')
+    render(<McpServersScreen />)
+    const table = await screen.findByRole('table', { name: /registered mcp servers/i })
+    const heads = within(table).getAllByRole('columnheader').map((h) => visible(h))
+    expect(heads).toContain('Last used')
+    const col = heads.indexOf('Last used')
+    const cell = (name: string) => {
+      const row = within(table).getAllByRole('row').find((r) => visible(r.querySelector('th[scope="row"] code')) === name)!
+      return row.children[col] as HTMLElement
+    }
+    expect(visible(cell('kb'))).toBe(timeAgo(at))
+    expect(visible(cell('docs'))).toBe('never')
+  })
+
+  it('does not say "never" when the API says its read of recent attaches was cut off', async () => {
+    api({ ...list({ canManage: false, servers: [server('docs', { last_attached_at: null })] }), last_attached_complete: false })
+    const { McpServersScreen } = await load()
+    render(<McpServersScreen />)
+    const table = await screen.findByRole('table', { name: /registered mcp servers/i })
+    const col = within(table).getAllByRole('columnheader').map((h) => visible(h)).indexOf('Last used')
+    const row = within(table).getAllByRole('row')[1]!
+    expect(visible(row.children[col] as HTMLElement)).toBe('not recently')
+  })
+
+  it('says the API does not serve it rather than "never" when `last_attached_at` is absent', async () => {
+    api(list({ canManage: false, servers: [server('docs')] }))
+    const { McpServersScreen } = await load()
+    render(<McpServersScreen />)
+    const table = await screen.findByRole('table', { name: /registered mcp servers/i })
+    const col = within(table).getAllByRole('columnheader').map((h) => visible(h)).indexOf('Last used')
+    expect(col).toBeGreaterThan(-1)
+    const row = within(table).getAllByRole('row')[1]!
+    expect(visible(row.children[col] as HTMLElement)).toBe('not served')
+  })
+
   it('says the feature is off when the API answers a write with mcp_unavailable', async () => {
     api(list({ canManage: true }), (m) =>
       m === 'PATCH' ? { status: 503, body: { code: 'mcp_unavailable', message: 'Registered MCP servers are not enabled on this platform.' } } : null,
