@@ -367,6 +367,47 @@ tenants = {
     capacity_units  = 8
   }
 
+  # The oracle-api client application's own tenant (owner decision
+  # 2026-10-18, #1568), modelled on u-sw-c90291 above.
+  #
+  # ITS OWN TENANT, NEVER A MEMBER OF eng@saga.xyz. The account is an
+  # orchestrating client that submits workflows on its own behalf. In eng it
+  # would run as eng's worker account with eng's provider keys, GCS prefix and
+  # namespace (invariant 9), and its work would count against eng's ceiling.
+  # Nor is it a service_accounts listing under eng: a listed account files its
+  # work in that group's tenant. Here it reaches nothing of anybody else's:
+  # it is in no registered group, so swarm-api resolves it to the personal id
+  # below and no X-Swarm-Tenant header can select eng for it.
+  #
+  # THE KEY IS COMPUTED, as u-sw-c90291's is: tenant_id_for_user gives
+  # `oracle-api@saga-agents-staging.iam.gserviceaccount.com` `u-or-9a0792`
+  # (lossy and too long, so it carries a digest). Recomputed on main on
+  # 2026-10-18 and held by tests/unit/scripts/test_oracle_api_tenant.py; a
+  # rename of the account or the project changes it.
+  #
+  # Admitted at the front door by frontend_iap_members in
+  # terraform/bootstrap/terraform.tfvars, and past swarm-api's domain check by
+  # ALLOWED_USERS in terraform/infra/locals.tf.
+  #
+  # No providers and 4/8, swarm-verify's pattern. The owner lends it a pool
+  # Claude account rather than registering a key it would hold itself, and a
+  # lent account needs no declared provider (the pool's own waits apply). A
+  # declared anthropic would also lift provider:anthropic's floor to 4 x
+  # provider_tenant = 160, above pool_limits.providers.anthropic, and fail the
+  # plan. Its git token is swarm-tenant-u-or-9a0792-git, stored with
+  # scripts/create-secrets.sh --stdin and never in this repository. If its
+  # limits need changing, PUT /v1/admin/limits/tenant/u-or-9a0792: like every
+  # tenant document, these are only the values it is born with.
+  u-or-9a0792 = {
+    kind            = "user"
+    principal       = "oracle-api@saga-agents-staging.iam.gserviceaccount.com"
+    display_name    = "Oracle API"
+    directory_group = false
+    providers       = []
+    max_active      = 4
+    capacity_units  = 8
+  }
+
   # u-bogdan IS NO LONGER HERE (lane W9 of #847, 2026-10-09). It was the
   # owner's personal fallback tenant -- `u-<local part>`, which a caller in no
   # registered group resolves to -- declared here so a laptop smoke run had

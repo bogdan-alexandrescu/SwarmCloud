@@ -134,9 +134,17 @@ deployer_scoped_roles = ["roles/resourcemanager.projectIamAdmin"]
 #                      SWARM_IMPERSONATE_SA reach the API through the load
 #                      balancer. Before this IAP answered 403 "Access denied.
 #                      For user swarm-verify@...".
+#   oracle-api      -- owner decision 2026-10-18 (#1568): the orchestrating
+#                      client application submits workflows as its own tenant,
+#                      u-or-9a0792 (terraform/environments/dev/dev.tfvars),
+#                      the swarm-verify pattern, and never as a member of
+#                      eng@saga.xyz. The owner applies this himself; the line
+#                      is the record of that apply, because a -var not
+#                      written here makes the next bootstrap plan remove it.
 frontend_iap_members = [
   "domain:saga.xyz",
   "serviceAccount:swarm-verify@saga-agents-staging.iam.gserviceaccount.com",
+  "serviceAccount:oracle-api@saga-agents-staging.iam.gserviceaccount.com",
   "serviceAccount:swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com",
 ]
 
