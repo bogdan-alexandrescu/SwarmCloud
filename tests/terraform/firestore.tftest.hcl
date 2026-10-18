@@ -451,3 +451,47 @@ run "the_mcp_last_attach_read_has_its_index" {
     error_message = "mcp_attach_releases needs (tenant_id, at DESC): tenant_id is the equality filter and the tenant boundary, at the order"
   }
 }
+
+run "workspace_roles_have_their_indexes" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  # docs/design/workspace-roles.md §4.4: a person's role is the newest valid
+  # grant, read in pages of 20 with one query:
+  #   workspace_role_grants where tenant_id == T and subject in (E, "*")
+  #     order by granted_at DESC
+  # Without this index the read fails, and every role check that reads a
+  # grant answers role_unavailable.
+  assert {
+    condition = (
+      google_firestore_index.this["workspace-role-grants-tenant-subject-granted"].collection == "workspace_role_grants" &&
+      google_firestore_index.this["workspace-role-grants-tenant-subject-granted"].query_scope == "COLLECTION" &&
+      length(google_firestore_index.this["workspace-role-grants-tenant-subject-granted"].fields) == 3 &&
+      google_firestore_index.this["workspace-role-grants-tenant-subject-granted"].fields[0].field_path == "tenant_id" &&
+      google_firestore_index.this["workspace-role-grants-tenant-subject-granted"].fields[0].order == "ASCENDING" &&
+      google_firestore_index.this["workspace-role-grants-tenant-subject-granted"].fields[1].field_path == "subject" &&
+      google_firestore_index.this["workspace-role-grants-tenant-subject-granted"].fields[1].order == "ASCENDING" &&
+      google_firestore_index.this["workspace-role-grants-tenant-subject-granted"].fields[2].field_path == "granted_at" &&
+      google_firestore_index.this["workspace-role-grants-tenant-subject-granted"].fields[2].order == "DESCENDING"
+    )
+    error_message = "workspace_role_grants needs (tenant_id, subject, granted_at DESC): the newest grant per (tenant, subject) is the role"
+  }
+
+  # The workspace audit list:
+  #   admin_audit where target_tenant_id == T order by at DESC limit N
+  assert {
+    condition = (
+      google_firestore_index.this["admin-audit-target-tenant-at"].collection == "admin_audit" &&
+      google_firestore_index.this["admin-audit-target-tenant-at"].query_scope == "COLLECTION" &&
+      length(google_firestore_index.this["admin-audit-target-tenant-at"].fields) == 2 &&
+      google_firestore_index.this["admin-audit-target-tenant-at"].fields[0].field_path == "target_tenant_id" &&
+      google_firestore_index.this["admin-audit-target-tenant-at"].fields[0].order == "ASCENDING" &&
+      google_firestore_index.this["admin-audit-target-tenant-at"].fields[1].field_path == "at" &&
+      google_firestore_index.this["admin-audit-target-tenant-at"].fields[1].order == "DESCENDING"
+    )
+    error_message = "admin_audit needs (target_tenant_id, at DESC) for a workspace's audit list, newest first"
+  }
+}
