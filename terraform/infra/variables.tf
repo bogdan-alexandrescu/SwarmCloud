@@ -886,6 +886,26 @@ variable "search_provider" {
   }
 }
 
+variable "mcp_servers_enabled" {
+  description = <<-EOT
+    swarm-api's SWARM_MCP_SERVERS (docs/design/registered-mcp-servers.md §6,
+    #1433): whether a workspace may register MCP servers and a claude-code or
+    codex step may name them in `input.mcp_servers`. Rendered "on" or "off":
+    swarm_api.mcp_servers.mcp_servers_enabled() reads exactly "on" as on and
+    anything else as off. OFF by default, as that function is: off, a
+    registration write, an `mcp_servers` submission and an attempt's
+    mcp:attach are each 503 `mcp_unavailable`, and nothing is stored. On, it
+    also creates swarm-mcp-credentials-sweep (modules/scheduler/jobs.tf), the
+    10-minute job that deletes a per-run credential once its task ends (owner
+    decision Q2). Turn it on only where the owner has applied
+    terraform/bootstrap's enable_mcp_credentials: without that grant swarm-api
+    cannot read a stored credential at attach, so every attempt naming a
+    `dispatch` server fails before its agent starts.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "workspace_apply_publish" {
   description = <<-EOT
     swarm-api's WORKSPACE_APPLY_PUBLISH: whether approving a personal

@@ -525,6 +525,17 @@ module "scheduler" {
   # every rotated-out value enabled for ever.
   enable_secrets_rotation_sweep = true
 
+  # #1433 (owner decision Q2): swarm-mcp-credentials-sweep, every 10 minutes,
+  # deletes a per-run MCP credential once its task has ended. It follows
+  # var.mcp_servers_enabled rather than being a literal like the two sweeps
+  # above: it is the feature's own job, and an environment that never turns
+  # the feature on stores no credential for it to delete. Turning the
+  # feature OFF after credentials were stored removes the job with it; each
+  # stored credential's Secret Manager ttl (its expires_in plus 5 minutes, at
+  # most 24 h 5 min) then removes it, as design §4.4 provides for a sweep
+  # that never runs.
+  enable_mcp_credentials_sweep = var.mcp_servers_enabled
+
   # The API publishes a wake message on submission; the reconciler republishes
   # when it returns reclaimed work to READY.
   publisher_members = {

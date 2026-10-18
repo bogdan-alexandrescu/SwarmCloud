@@ -214,3 +214,16 @@ enable_typesafe_forwarder_read = true
 # it. ON 2026-10-16, before terraform/infra's enable_github_hooks, whose binding
 # names this role (docs/runbooks/github-app.md, Step 9 step 2).
 enable_github_hooks_dedup_role = true
+
+# MCP-IAM (PR 1503, #1433; mcp_credentials.tf): swarm-api alone may read and
+# delete swarm-tenant-<t>-mcpc-* secrets and their versions, under one
+# extract() condition, so an attempt's mcp:attach can hand its relay the
+# caller's per-run credential and the sweep can delete it when the task ends.
+# NOT YET APPLIED when this line was committed (read 2026-10-18 22:03Z:
+# swarmMcpCredentialAccessor does not exist). The owner applies it before the
+# release that sets dev's mcp_servers_enabled; lint the condition with
+# iamPolicies:lintPolicy first. The plan is 2 adds / 0 changes / 0 destroys:
+# the role (secretmanager.secrets.delete, secretmanager.versions.access) and
+# its conditioned member for swarm-api. Recorded here in the same change so a
+# later bootstrap plan from main keeps them rather than destroying them.
+enable_mcp_credentials = true
