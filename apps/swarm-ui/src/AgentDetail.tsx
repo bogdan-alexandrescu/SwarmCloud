@@ -20,6 +20,7 @@ import { TokenSpendChart } from './charts/TokenSpend'
 import { agentName, workflowHref } from './agentlist'
 import { resultIsNewest, stepCostOf, totalCostOf } from './dag'
 import { DecisionCard } from './DecisionCard'
+import { AdditionalRepositoryRows } from './Dispatch'
 import { QuestionsCard } from './QuestionsCard'
 import { handoffOf } from './Handoff'
 import { pullRequestOf } from './decision'
@@ -4706,6 +4707,10 @@ function Input({ run, readAt }: { run: AgentRun; readAt: number | null }) {
             {task.repository_ref && ` @ ${task.repository_ref}`}
           </span>
         </li>
+        {/* THE REPOSITORIES IT READS BESIDE ITS OWN (#1434), each with the
+            commit it was pinned to at submission: the code the agent read,
+            whatever its ref names today. None drawn when it reads none. */}
+        <AdditionalRepositoryRows task={task} />
         {/* Recorded for attribution. It selects NOTHING about the container --
             image, command and resource spec all come from the profile. */}
         <li className={`ctl-fact${task.model === null ? ' is-absent' : ''}`}>

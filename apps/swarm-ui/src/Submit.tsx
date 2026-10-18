@@ -9,7 +9,22 @@ import {
   verdictCopy,
   verdictNeedsAPerson,
 } from './Blockers'
-import { DispatchChoice, DispatchFacts, REPOSITORY_SCHEMES, refusedSayId, repositorySchemeRefused, type DispatchDraft } from './Dispatch'
+import {
+  AdditionalRepositoriesPicker,
+  AdditionalRepositoryFacts,
+  DispatchChoice,
+  DispatchFacts,
+  REPOSITORY_SCHEMES,
+  additionalRepositoriesBody,
+  loadTaskReadableRepositories,
+  offeredPicks,
+  refusedSayId,
+  repositorySchemeRefused,
+  takesAdditionalRepositories,
+  type AdditionalRepositoryPick,
+  type DispatchDraft,
+  type TaskReadableList,
+} from './Dispatch'
 import { WorkspaceRefusalBanner, workspaceRefusal } from './WorkspaceRefusal'
 import { apiHeaders, chosenTenant, classifyFailure, dropRefusedTenant, isPaused, type ApiError, type Result } from './fetch'
 import { HELP } from './help'
@@ -90,7 +105,7 @@ import { Button } from './components'
  * in the body -- including the three the dispatch control owns, whose refusals
  * would otherwise all land as "the API refused and did not say which field".
  */
-const FIELDS = ['runner_profile', 'input', 'strategy', 'carrier', 'repository_url'] as const
+const FIELDS = ['runner_profile', 'input', 'strategy', 'carrier', 'repository_url', 'additional_repositories'] as const
 type Field = (typeof FIELDS)[number]
 
 type Outcome =
@@ -192,6 +207,9 @@ function attribute(env: Record<string, unknown>, message: string):
     else if (detail.missing === 'repository_url') fields.repository_url = message
     else if (Array.isArray(detail.accepted_strategies)) fields.strategy = message
     else if (typeof detail.max_bytes === 'number') fields.input = message
+    // Every refusal of `extrarepos` (too many, not registered, unreadable,
+    // too large, disabled, unsupported profile) names its field this way.
+    else if (detail.field === 'additional_repositories') fields.additional_repositories = message
   }
   return { fields, unattributed: Object.keys(fields).length === 0 ? message : null }
 }
@@ -1058,6 +1076,21 @@ function Form({ capacity }: { capacity: Capacity }) {
     setMcpFilled(new Set())
   }
 
+  // ADDITIONAL REPOSITORIES (MR-UI, #1434): drawn only for a runner that
+  // takes them (`takesAdditionalRepositories`), offering the workspace's
+  // registrations a task may read. The list is read once, and only once such
+  // a runner is chosen; a pick it no longer offers is not sent.
+  const takesExtra = takesAdditionalRepositories(profile)
+  const [extraList, setExtraList] = useState<Result<TaskReadableList> | null>(null)
+  const [extraPicks, setExtraPicks] = useState<AdditionalRepositoryPick[]>([])
+  const extraAsked = useRef(false)
+  useEffect(() => {
+    if (!takesExtra || extraAsked.current) return
+    extraAsked.current = true
+    void loadTaskReadableRepositories().then(setExtraList)
+  }, [takesExtra])
+  const extraSent = takesExtra ? additionalRepositoriesBody(offeredPicks(extraPicks, extraList)) : []
+
   const pick = (name: string) => {
     setChosen(name)
     setBrowserTool(AUTO)
@@ -1103,7 +1136,7 @@ function Form({ capacity }: { capacity: Capacity }) {
   // button is "Submit another" for as long as the form still says exactly
   // what was sent (VQA V048, owner decision Q1 on #1038): one more click on an
   // unchanged form was a duplicate task. Any edit makes it a new request.
-  const draftKey = JSON.stringify([chosen, built.ok ? built.input : null, dispatch.strategy, dispatch.carrier, repo])
+  const draftKey = JSON.stringify([chosen, built.ok ? built.input : null, dispatch.strategy, dispatch.carrier, repo, extraSent])
   const [sentKey, setSentKey] = useState<string | null>(null)
   const justSent = outcome.kind === 'created' && sentKey === draftKey
   // AND A 422 IS NOT "READY TO SEND" (VQA V002): the panel said so over a live
@@ -1119,6 +1152,7 @@ function Form({ capacity }: { capacity: Capacity }) {
     setBrowserTool(AUTO)
     setMcpPicked([])
     setMcpLifetimes({})
+    setExtraPicks([])
     forgetCredentials()
     setFields([])
     setDispatch({ strategy: DEFAULT_STRATEGY, carrier: DEFAULT_CARRIER, repositoryUrl: '' })
@@ -1221,6 +1255,9 @@ function Form({ capacity }: { capacity: Capacity }) {
         // validator, and `""` fails it with a message about URL schemes rather
         // than about the field being empty.
         ...(repo === '' ? {} : { repository_url: repo }),
+        // Omitted when none is picked: an absent list and `[]` both read none,
+        // and with the API's flag off only a non-empty one is refused.
+        ...(extraSent.length === 0 ? {} : { additional_repositories: extraSent }),
         // BESIDE `input`, never in it: `input` is stored and shown, and the
         // credential is neither (§4.3). Omitted when no `dispatch` server is picked.
         ...(Object.keys(credentials).length === 0 ? {} : { mcp_credentials: credentials }),
@@ -1276,6 +1313,10 @@ function Form({ capacity }: { capacity: Capacity }) {
                   lifetimes={mcpLifetimes} onLifetime={(name, seconds) => setMcpLifetimes((was) => ({ ...was, [name]: seconds }))} />
               )}
               <InputFields profile={chosen} fields={fields} required={required} onChange={setFields} idPrefix={TASK_FIELDS} />
+              {takesExtra && (
+                <AdditionalRepositoriesPicker list={extraList} picks={extraPicks} onChange={setExtraPicks}
+                  error={bad.additional_repositories} />
+              )}
             </>
           )}
           {bad.input && <p id={refusedSayId('input')} tabIndex={-1} className="warn-text" role="alert">{bad.input}</p>}
@@ -1563,6 +1604,7 @@ export function ProfileFacts({ name, profile, pools }: { name: string; profile: 
 /** What the panel calls each field a refusal can name: its facts' own keys. */
 const FIELD_WORD: Record<Field, string> = {
   runner_profile: 'runner', input: 'input', strategy: 'result', carrier: 'carrier', repository_url: 'repository',
+  additional_repositories: 'additional repositories',
 }
 
 /**
@@ -1619,6 +1661,10 @@ function Created({ task, woke }: { task: Task; woke: boolean }) {
           for; `task.dispatch` is what was stored, and a caller who is about to
           wait for a pull request should be told from the second one. */}
       <DispatchFacts task={task} />
+      {/* AND THE COMMIT EACH ADDITIONAL REPOSITORY WAS PINNED TO, off the 201:
+          the ref was resolved at submission, so this is the code the agent
+          reads even if the branch moves before it starts. */}
+      <AdditionalRepositoryFacts task={task} />
       {/* A SENTENCE, SET AS ONE (live QA SUB-7): it was a `checked-at` line,
           which is the micro MONOSPACE of a read's age, not prose. */}
       <p className="sbf-woke">

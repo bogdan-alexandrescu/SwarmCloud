@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useId, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react'
 import { loadAdminPools, loadCapacity, loadMe, setPoolLimit, storeOwnerToken } from './api'
 import { Button, Card } from './components'
-import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
+import { errorHeading, isPaused, read, route, write, type ApiError, type Result } from './fetch'
 import { Refusal } from './GitHubConnect'
 import { ACCESS } from './Onboarding'
 import { addressToPath } from './paths'
@@ -18,6 +18,7 @@ import {
   type Capacity,
   type Me,
   type OwnerTokenResponse,
+  type PlatformSettings,
   type Pool,
   type PoolKind,
 } from './types'
@@ -169,6 +170,7 @@ export function AdminSettingsScreen() {
           />
         )}
       </Screen>
+      <AdditionalRepositoryLimitsCard />
       <FallbackTokenCard />
     </>
   )
@@ -1636,6 +1638,140 @@ export function FallbackTokenCard() {
           {stored.org.owner} is enabled through your token
           {stored.token.forge_login !== null ? `, as @${stored.token.forge_login}` : ''}. Its value is in Secret Manager
           and is not shown again. Choose its repositories on <a className="c-link" href={addressToPath(ACCESS)}>Access</a>.
+        </p>
+      )}
+    </Card>
+  )
+}
+
+/** The two platform settings this card edits, in the order it draws them. */
+const REPO_LIMITS = [
+  { key: 'max_additional_repositories', label: 'Most additional repositories per step', unit: '' },
+  { key: 'additional_repositories_budget_gib', label: 'Size budget per step, GiB', unit: ' GiB' },
+] as const
+type RepoLimitKey = (typeof REPO_LIMITS)[number]['key']
+
+/** A typed value as a whole number of at least 1, or null. The upper bound is
+ *  the API's to name: it refuses a value past its range with 422. */
+function wholeAtLeastOne(typed: string): number | null {
+  const t = typed.trim()
+  if (!/^\d+$/.test(t)) return null
+  const n = Number(t)
+  return n >= 1 ? n : null
+}
+
+/**
+ * ADDITIONAL REPOSITORIES' TWO LIMITS (#1434, owner 2026-10-17): how many
+ * repositories one step may read beside its own (default 5), and the GiB they
+ * may total (default 6). PLATFORM SETTINGS, NOT CONSTANTS: the owner moved
+ * them out of the design's code so an admin changes them live, here, where
+ * the other run-time ceilings are edited. `PUT /v1/admin/settings` with only
+ * the values that changed, so a save never rewrites a setting this card did
+ * not touch (`merge_by_default` lives in the same document).
+ *
+ * What the save did is read off its RESPONSE -- the settings as stored -- not
+ * off the form: the form says what was asked, the response what holds.
+ */
+export function AdditionalRepositoryLimitsCard() {
+  const id = useId()
+  const inFlight = useRef(false)
+  const [settings, setSettings] = useState<Result<PlatformSettings> | null>(null)
+  const [typed, setTyped] = useState<Record<RepoLimitKey, string>>({ max_additional_repositories: '', additional_repositories_budget_gib: '' })
+  const [busy, setBusy] = useState(false)
+  const [refused, setRefused] = useState<ApiError | null>(null)
+  const [savedAt, setSavedAt] = useState<PlatformSettings | null>(null)
+
+  const take = (s: PlatformSettings) => {
+    setTyped({
+      max_additional_repositories: String(s.max_additional_repositories),
+      additional_repositories_budget_gib: String(s.additional_repositories_budget_gib),
+    })
+  }
+  useEffect(() => {
+    let live = true
+    void read<PlatformSettings>(route('/v1/admin/settings'), () => false).then((r) => {
+      if (!live) return
+      setSettings(r)
+      if (r.status === 'ok' || r.status === 'stale') take(r.data)
+    })
+    return () => {
+      live = false
+    }
+  }, [])
+
+  const data = settings !== null && (settings.status === 'ok' || settings.status === 'stale') ? settings.data : null
+  const values = REPO_LIMITS.map((l) => ({ ...l, n: wholeAtLeastOne(typed[l.key]) }))
+  const changes: Partial<Record<RepoLimitKey, number>> = {}
+  for (const v of values) if (data !== null && v.n !== null && v.n !== data[v.key]) changes[v.key] = v.n
+  const invalid = values.some((v) => v.n === null)
+  const nothing = Object.keys(changes).length === 0
+
+  async function save(e: FormEvent) {
+    e.preventDefault()
+    if (inFlight.current || invalid || nothing) return
+    inFlight.current = true
+    setBusy(true)
+    setRefused(null)
+    setSavedAt(null)
+    const r = await write(route('/v1/admin/settings'), 'PUT', changes)
+    inFlight.current = false
+    setBusy(false)
+    if (r.status === 'error') {
+      setRefused(r.error)
+      return
+    }
+    if (r.status === 'ok' && typeof r.data === 'object' && r.data !== null) {
+      const stored = r.data as PlatformSettings
+      setSettings({ status: 'ok', data: stored, fetchedAt: r.fetchedAt })
+      take(stored)
+      setSavedAt(stored)
+    }
+  }
+
+  return (
+    <Card className="adm-repo-limits" title="Additional repositories" level={2}>
+      <p className="ur-small">
+        What one step may read beside its own repository. Checked at every submission, so a change applies to the next
+        one; a task already submitted keeps what it was pinned with.
+      </p>
+      {settings === null || settings.status === 'loading' ? (
+        <p className="ur-small">Reading the platform settings…</p>
+      ) : data === null ? (
+        settings.status === 'error' && settings.error.httpStatus === 403 ? (
+          <p className="ur-small">Only a platform admin reads and changes these.</p>
+        ) : (
+          <p className="warn-text" role="alert">
+            The platform settings could not be read{settings.status === 'error' ? `: ${settings.error.message}` : ''}.
+          </p>
+        )
+      ) : (
+        <form className="adm-token-form" onSubmit={(e) => void save(e)}>
+          {values.map((v) => (
+            <label key={v.key} htmlFor={`${id}-${v.key}`} className="ur-small">
+              {v.label}
+              <input id={`${id}-${v.key}`} type="number" min={1} step={1} className="mono"
+                value={typed[v.key]} disabled={busy} aria-invalid={v.n === null || undefined}
+                onChange={(e) => {
+                  setSavedAt(null)
+                  setTyped((was) => ({ ...was, [v.key]: e.target.value }))
+                }} />
+            </label>
+          ))}
+          <Button type="submit" kind="primary" size="sm" busy={busy} disabled={invalid || nothing}>
+            Save limits
+          </Button>
+        </form>
+      )}
+      {data !== null && invalid && <p className="warn-text">Each limit is a whole number, 1 or more.</p>}
+      {data !== null && data.settings_document === 'missing' && savedAt === null && (
+        <p className="ur-small">Both are at their defaults: nobody has set them.</p>
+      )}
+      {refused !== null && <Refusal error={refused} title="The limits were not saved" />}
+      {savedAt !== null && (
+        <p className="ur-small" role="status">
+          Saved: at most {savedAt.max_additional_repositories} additional{' '}
+          {savedAt.max_additional_repositories === 1 ? 'repository' : 'repositories'} per step,{' '}
+          {savedAt.additional_repositories_budget_gib} GiB in total.
         </p>
       )}
     </Card>
