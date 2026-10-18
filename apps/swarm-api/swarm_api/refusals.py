@@ -344,6 +344,18 @@ SWITCHES: dict[str, Switch] = {
         "refused only second deliveries of one failure, and the CI-fix callers read the 409 "
         "as that failure being handled",
     ),
+    # #1435 (docs/design/model-per-step.md §4.4, owner's Q4): a `model` that
+    # is not the pin of the step's model class. It can refuse a caller that
+    # exists today -- `swarm dispatch --model` sends attribution, and any
+    # string was recorded -- so it ships off. Off, the caller's `model` is
+    # recorded as sent, as before; it selects nothing on any path.
+    "model_is_chosen_by_model_class": Switch(
+        code="model_is_chosen_by_model_class",
+        why="a task, child or plugin dispatch whose `model` is not the pin of its model "
+        "class is refused 422 naming the model_class to send. On once the plugin's "
+        "--model-class has shipped (MODEL-PLUGIN) and the log shows no caller still "
+        "sending a model of its own",
+    ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",
         why="a schedule pauses after N failed or refused firings in a row (§4.4, default "

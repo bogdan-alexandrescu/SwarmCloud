@@ -80,7 +80,7 @@ REQUEST_ID = re.compile(r"^[a-z0-9-]{1,64}$")
 #: and by the route's strict model.
 CHILD_FIELDS = frozenset(
     {"runner_profile", "resource_class", "input", "provider", "model", "timeout_seconds",
-     "repository_ref"}
+     "repository_ref", "model_class"}
 )
 #: `swarm_api.childkey.REQUEST_PURPOSE` and the proof headers, restated.
 REQUEST_PURPOSE = "swarm-child-req/v1"
@@ -121,9 +121,12 @@ writing the same id again never makes a second child.
 
 `runner_profile` is required and names a profile, never an image or a
 command. `input` is the child's input, `{"prompt": ...}` for the CLI agents.
-`resource_class`, `provider`, `model`, `timeout_seconds` and `repository_ref`
-are optional; nothing else is accepted. A child works on this task's
-repository, runs no longer than this task, and is at most 256 KiB as a file.
+`resource_class`, `provider`, `model`, `timeout_seconds`, `repository_ref`
+and `model_class` are optional; nothing else is accepted. `model_class` names
+the model a claude-code child runs, `opus`, `fable`, `sonnet` or `haiku`;
+without it the child runs its own profile's default, never this task's. A
+child works on this task's repository, runs no longer than this task, and is
+at most 256 KiB as a file.
 
 ## Read the answer
 

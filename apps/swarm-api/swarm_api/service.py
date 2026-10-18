@@ -157,6 +157,10 @@ from .validation import (
     validate_batch_size,
     validate_dag,
     validate_input_size,
+    check_model_class_available,
+    resolve_task_model,
+    stored_model_class,
+    validate_model_class,
     validate_resource_class_override,
     validate_runner_input,
     validate_runner_profile,
@@ -661,6 +665,15 @@ class SubmissionService:
         validate_storable(spec.metadata, label="metadata")
         resource_class = validate_resource_class_override(profile, resource_class_override)
         timeout = validate_timeout(profile, spec.timeout_seconds)
+        # The model class, by name, and `Task.model` from its pin (#1435,
+        # docs/design/model-per-step.md §4.4). For a task, a batch entry, a
+        # workflow step and a child alike: each reaches here with its own
+        # `model_class`, and a child naming none runs its OWN profile's
+        # default, never its parent's (owner's R3).
+        class_models = self._settings.worker_class_models
+        model_class = validate_model_class(profile, spec.model_class, step_id=step_id)
+        check_model_class_available(profile, model_class, class_models, step_id=step_id)
+        model = resolve_task_model(profile, model_class, spec.model, class_models, step_id=step_id)
 
         # `dispatch` is resolved by the CALLER of this method, because the rules
         # differ by scale: a standalone task may not ask for `integrate`, and a
@@ -708,7 +721,7 @@ class SubmissionService:
             input=dict(spec.input),
             submitted_by=submitted_by,
             provider=profile.provider,
-            model=spec.model,
+            model=model,
             priority=spec.priority if priority is None else priority,
             metadata=metadata,
             # Exactly one of these two is ever set. A standalone task carries
@@ -723,6 +736,11 @@ class SubmissionService:
             workflow_id=workflow_id,
             step_id=step_id,
             depends_on=list(depends_on),
+            # Only a class other than the profile's default is stored, so a
+            # default step keeps the bytes and the signing format it had
+            # before classes existed; a stored class is signed at the format
+            # that covers it (`specsign.signing_format`).
+            model_class=stored_model_class(profile, model_class),
         )
 
     # -- registered MCP servers (docs/design/registered-mcp-servers.md) --------
@@ -1212,6 +1230,8 @@ class SubmissionService:
         # Topological order, so a child task document is never written before
         # the parent it names in `depends_on`.
         step_task_id: dict[str, str] = {}
+        # Each step's stored model class, copied to its `WorkflowStep` (#1435).
+        step_model_class: dict[str, str | None] = {}
         # Read once, at submission (#638): the gated step files its review's
         # minors on this issue, and a later change reaches later workflows.
         findings_epic = self._store.get_findings_epic(tenant.tenant_id)
@@ -1296,6 +1316,7 @@ class SubmissionService:
                            and step_id == merge_plan.merge_step else {}),
                     },
                     timeout_seconds=source.timeout_seconds,
+                    model_class=source.model_class,
                     # A merge step waits for CI by failing its attempt while a
                     # required check runs, so it gets more attempts than an
                     # agent step (`MERGE_STEP_MAX_ATTEMPTS`, contract request 47).
@@ -1337,6 +1358,7 @@ class SubmissionService:
                     step_task_id[src]: filename for src, filename in source.input_from.items()
                 }
             step_task_id[step_id] = task.id
+            step_model_class[step_id] = task.model_class
             tasks.append(task)
 
         for source in spec.steps:
@@ -1350,6 +1372,8 @@ class SubmissionService:
                     input_from=dict(source.input_from),
                     timeout_seconds=source.timeout_seconds,
                     task_id=step_task_id[source.step_id],
+                    # Its task's stored class: None for the profile's default.
+                    model_class=step_model_class[source.step_id],
                 )
             )
 

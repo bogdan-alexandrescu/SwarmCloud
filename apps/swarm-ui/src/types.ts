@@ -1935,6 +1935,19 @@ export interface Runtime {
   timeout_seconds: number
   resource_class: string
   /**
+   * The model classes a step on this profile may send as `model_class`, BY
+   * NAME (docs/design/model-per-step.md §4.4, #1435). `[]` on a profile that
+   * runs no Claude model. Optional only until lane MODEL-UI renders them.
+   */
+  model_classes?: string[]
+  /** What a step naming no class runs; null when `model_classes` is empty. */
+  default_model_class?: string | null
+  /**
+   * Class -> the model ID it runs, from the deployment's terraform pin. `{}`
+   * on a classless profile, and on a deployment that pins none yet.
+   */
+  models?: Record<string, string>
+  /**
    * The class resolved inline. Field-identical to a `/v1/resource-classes`
    * entry, and `test_sizing_agrees_with_the_resource_classes_route` asserts the
    * two routes never disagree -- so the same type is reused rather than a

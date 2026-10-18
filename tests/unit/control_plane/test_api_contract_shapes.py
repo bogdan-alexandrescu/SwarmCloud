@@ -295,8 +295,12 @@ CODECS: tuple[Codec, ...] = (
         # (TASK-ANSWERS) is lifted out of `metadata.owner_answers` the same
         # way: `codec.owner_answers_to_api`. `claude_session` (SC-SESSION-SCOPE)
         # is lifted out of `metadata.claude_session`: `codec.claude_session_of`.
+        # `model_class_defaulted` (#1435, MODEL-API) says the served
+        # `model_class` is the profile's default because none was stored:
+        # `codec.served_model_class`.
         api_computed=(
             "dispatch", "start_problem", "owner_answers", "claude_session",
+            "model_class_defaulted",
             "input_redaction_count", "metadata_redaction_count",
             "last_error_redaction_count", "result_summary_redaction_count",
             "repository_url_redaction_count", "waiting_for", "account", "links",

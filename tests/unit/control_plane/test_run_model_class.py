@@ -136,7 +136,16 @@ def _staged(plan: dict) -> dict:
 # the planner
 # --------------------------------------------------------------------------
 
-def test_a_runs_model_class_reaches_its_planner_task(classed, client, api_context, submitted):
+def test_a_runs_model_class_reaches_its_planner_task(
+    classed, client, api_context, submitted, monkeypatch
+):
+    # A deployment that pins a model for every class: with none pinned, MODEL-API
+    # refuses a non-default class `model_class_not_yet_available` at submission.
+    service = api_context.submissions
+    monkeypatch.setattr(service, "_settings", dataclasses.replace(
+        service._settings,
+        worker_class_models={name: f"claude-{name}-pin" for name in PROFILE.model_classes},
+    ))
     body = _ClassedRun(issue=REF, model_class="fable")
     made = runs_route.create_run(body, Response(), auth=_alice(), ctx=api_context)
     assert made["run"]["state"] == "PLANNING"
