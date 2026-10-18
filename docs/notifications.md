@@ -11,12 +11,12 @@ NOTIF-UI draws it.
 
 ```
 GET  /v1/notifications            -> {items, unread_needs_you, unread_updates,
-                                      admin_pending, read_at, partial}
+                                      admin_pending, muted, read_at, partial}
 POST /v1/notifications/read       {"ids": [...]} -> {"ok": true}
 POST /v1/notifications/read-all   -> {"ok": true}
 ```
 
-Each item is `{id, group, needs_you, title, detail, href, at, read}`. `href`
+Each item is `{id, group, topic, needs_you, title, detail, href, at, read}`. `href`
 is a console path (`/admin/people`, `/agents/live/<task>/browser`). The feed
 lists the needs-you items first, oldest first, and then the updates, newest
 first: at most 50, all from the last 7 days.
@@ -24,7 +24,9 @@ first: at most 50, all from the last 7 days.
 `read_at` is when the person last pressed "mark all read". It is `null` if
 they never have. `partial` is `true` when at least one source could not be
 read: the feed still serves the other sources, and the failure is logged
-under the source's name.
+under the source's name. It is also `true` when the person's preferences could
+not be read (see below). `muted` is `{needs_you, updates}`, how many items the
+person's muted topics took out of the list.
 
 ## Why derived, not stored
 
@@ -111,6 +113,73 @@ Some notes on what each group deliberately leaves out:
   own stores, so there is nothing to derive an item from. An issue run's IAM
   hard stop is different: it is a hold on the run (`issueruns.STOP_IAM`), so
   it already appears as an `approval` item of kind `hold`.
+
+## The person's preferences: topics, muting and reminders
+
+Settings › Profile saves which topics a person mutes and how often a read
+item rings again (docs/design/user-profile.md §4.6, lane PROFILE-BELL). The
+feed is still derived: the preferences are a filter applied **after** every
+source has run, and a reminder is a read mark that ages out. Nothing is
+queued, stored or sent, so "derived, never stored" still holds.
+
+**Topics.** A topic is a finer cut than a group. The groups stay as they are,
+because the bell's layout uses them.
+
+| topic | needs you | derived by |
+|---|---|---|
+| `approval` | yes | the `approval` group |
+| `waiting_step` | yes | an await-input step whose `remind` names the person |
+| `question` | yes | a hand-off, and an agent's unanswered questions |
+| `failed` | no | a task or workflow that ended failed, cancelled or dead-lettered |
+| `finished` | no | everything else that ended: succeeded, a pull request merged |
+| `account` | GitHub yes, others no | the `account` group |
+| `admin` | yes, admins only | the `admin` group |
+
+The list is `preferences.TOPICS`, the one a saved mute is checked against, so
+the bell can never carry a topic Profile cannot mute.
+
+**Every topic may be muted (owner, Q3), needs-you topics included.** A muted
+item leaves the list and the badge (`unread_needs_you`), and is counted in
+`muted`. The bell shows a quiet "N muted items need you" line when
+`muted.needs_you` is above zero, so a muted approval is quiet, never
+invisible. Updates are cut to 50 *after* muting, so a person who mutes
+`finished` sees the failures the successes used to push out.
+`admin_pending` drives the Admin pill, not the bell, and is counted before
+muting: an admin who mutes `admin` still sees the pill.
+
+**"Mark all read" marks what was shown.** With nothing muted it still sets
+`all_read_at`. With a mute in force it marks only the ids shown and leaves
+`all_read_at` as it was, because a muted item was never seen: unmuted later,
+it is unread, which is true.
+
+**Reminders age a read mark out.** `as_set` (the default) is the behaviour
+above: a read item stays read. At `every_4h` or `daily`, a read mark, or
+`all_read_at`, keeps a **needs-you** item read only while it is younger than
+4 hours or a day; after that the item is unread again, and keeps coming back
+until whatever it is about resolves and it stops deriving. Updates never
+re-ring. `never` re-rings nothing. Both periods are inside the 30 days marks
+are kept, so no new retention is needed.
+
+**A waiting step's reminder period is the person's when they chose one, and
+its author's otherwise (owner, Q4).** At `every_4h` or `daily` its
+`k = floor((now - opened_at) / period)` uses that period, even when the
+author declared none. At `as_set` it uses the author's `remind_after_seconds`,
+as before. At `never`, `k` is held at 0. The id still rotates per period, and
+the step still waits in the approvals inbox and on the workflow for everyone,
+whatever one person's bell does.
+
+**The preferences come from authentication** (`AuthContext.preferences`), so
+the bell never reads the document a second time. When they cannot be read:
+
+* a request that names no workspace never reaches the bell. The bell's items
+  are a workspace's, so serving it would mean guessing the workspace, which
+  is the silent fallback the owner ruled out (Q9). Authentication answers 503
+  `preferences_unavailable`, before any source runs; the route is not in
+  `auth.PREFERENCE_FREE_ROUTES`;
+* a request that names its workspace with `X-Swarm-Tenant` is served
+  **unfiltered**, at `as_set`, with `partial: true`. Muting is a convenience,
+  and telling too much is the safe failure once the workspace is the one the
+  person chose.
 
 ## Tenant isolation (invariant 9)
 

@@ -120,7 +120,9 @@ describe('V096 and V208: the run head is the workflow page\'s', () => {
     for (const env of [DESKTOP, PHONE]) {
       it(`keeps the \`?\` after ${c.name} and the actions on its row when they fit, at ${env.width}px`, async () => {
         const { container } = await mountRun(c.over)
-        expect(container.querySelector('.rn-run')!.className).toBe(c.cls)
+        // The heading reaches the screen from RunPage's effect, a render after
+        // `.rn-history` is drawn: until then the page is titled by its run id.
+        await waitFor(() => expect(container.querySelector('.rn-run')!.className).toBe(c.cls), WAIT)
         const head = container.querySelector('.rn-run .c-phead')!
         const block = head.querySelector(':scope > div.head')!
         // One block that shrinks to the column, the `?` inside it after the title.
