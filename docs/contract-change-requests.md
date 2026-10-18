@@ -105,6 +105,8 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 95 | `models.py`: `Task.additional_repositories`, the registered repositories a step reads beside its own, with `check_additional_repositories` and a shape ceiling of 10 (MR-CONTRACT, multi-repository steps request A, part of #1434) | ACCEPTED by the owner 2026-10-17 (PR 1461; ceiling 10, the operative limit a platform setting) and APPLIED by the pull request that adds this line |
 | 96 | `specsign.py`: spec format 4 covers `additional_repositories`, signed at 4 only when the list is set (MR-CONTRACT, multi-repository steps request B, part of #1434) | ACCEPTED by the owner 2026-10-17 (PR 1461) and APPLIED by the pull request that adds this line |
 | 97 | No change to `WorkflowStep`, `Workflow` or `profiles.py` for multi-repository steps (MR-CONTRACT, multi-repository steps request C, part of #1434) | ACCEPTED by the owner 2026-10-17 (PR 1461); requests no change, so nothing to apply |
+| 98 | `states.py`: QUEUED -> FAILED, a task that can never run ends at admission with no lease (MCP-FAILED-EDGE, part of #1433) | ACCEPTED by the owner 2026-10-18 (answering PR 1504's question) and APPLIED by the pull request that adds this line; KEPT by the owner 2026-10-18 when accepting request 99. No writer today: no task is stored QUEUED, so admission writes request 99's edges instead |
+| 99 | `states.py`: READY -> FAILED and PARKED -> FAILED, the two states admission and the credential sweep actually hold (MCP-FAILED-EDGE, part of #1433) | ACCEPTED by the owner 2026-10-18 (on PR 1530) and APPLIED by the pull request that adds this line (MCP-FAILED-EDGE-B); admission writes READY -> FAILED, the credential sweep PARKED -> FAILED |
 
 ---
 
@@ -13049,3 +13051,207 @@ change, so nothing is applied. Recorded so no lane makes one. Part of #1434.
   already states. The Cloud Run profiles refuse them.
 * **No limit in the contract.** The count limit and the size budget are
   platform settings (request 95). Only the shape ceiling is frozen.
+
+
+## 98. `states.py`: QUEUED -> FAILED, a task that can never run ends at admission with no lease (MCP-FAILED-EDGE, part of #1433)
+
+**Status:** ACCEPTED by the owner 2026-10-18 (~01:40 UTC, answering lane
+MCP-SCHED's question on PR 1504) and APPLIED by the pull request that adds
+this line. **No reader can write it yet**: the scheduler never holds a task in
+QUEUED (see "Who reads it"), so the behaviour the owner asked for needed
+request 99 as well. The owner accepted 99 on 2026-10-18 and kept this edge
+beside it; 99 is what ends such a task FAILED now, and nothing writes
+QUEUED -> FAILED.
+
+### Why
+
+[registered-mcp-servers.md](design/registered-mcp-servers.md) §4.10
+("Expiry in the queue"): a task whose per-run MCP credential expired, was
+destroyed or is missing before it is admitted fails `mcp_credential_expired`
+at admission, with no lease. It cannot park, because nobody can hand a queued
+task a new value; it cannot be dead-lettered either, because it did not fail
+its way there through attempts (the owner: "not a dead-letter, not a permanent
+park"). `_ALLOWED` had no edge from a waiting state to FAILED, so MCP-SCHED
+shipped the stopgap: such a task parks CREDENTIAL_MISSING and the credential
+sweep never promotes it. That holds no capacity (invariant 1), but it never
+ends: a workflow step blocks its workflow and a parent waits on its child.
+
+### The change
+
+```python
+TaskState.QUEUED: frozenset(
+    {TaskState.READY, TaskState.PARKED, TaskState.CANCELLED, TaskState.FAILED}
+),
+```
+
+One edge, nothing else.
+
+### Who reads it
+
+The one reader meant to use it is scheduler admission,
+`apps/scheduler/scheduler/loop.py` `Scheduler._admit_one`, on a
+`CredentialAnswer.terminal` answer (`scheduler/credentials.py`, from
+`McpAnswer.terminal` in `scheduler/mcp_admission.py`). **But the task
+admission reads is READY, not QUEUED**: `SchedulerStore.ready_tasks` selects
+`state == "READY"`, and swarm-api stores a new task as READY or PARKED, only
+walking SUBMITTED -> QUEUED in memory (`swarm_api/service.py`, "walk the real
+state machine even though only the end state is stored"). The credential
+sweep, `Scheduler._promote_credentials`, reads PARKED. Neither READY -> QUEUED
+nor PARKED -> QUEUED is an edge, so "promote to QUEUED, then fail" is not a
+path either. So the reader that would write QUEUED -> FAILED has no QUEUED
+task to write it on; request 99 asks for the edges it does have.
+
+Every other reader of `_ALLOWED` / `can_transition`, read 2026-10-18 at
+`5ad3656`, is unchanged by the edge:
+
+* `swarm_api/store.py` `_final_workflow_states`: asks only about edges OUT of
+  a terminal state; FAILED's row is unchanged.
+* `swarm_api/verdictpublish.py`, `scheduler/loop.py` (`PARKED -> SUCCEEDED`),
+  `reconciler/store.py` (`PARKED -> READY`), `reconciler/checkpoints.py`
+  (`state -> READY`): other edges.
+* `reconciler/store.py` `repair_task_state`: repairs tasks with attempts,
+  never a QUEUED one.
+* `states.worker_may_transition`: QUEUED is not in `WORKER_TRANSITIONS`, so a
+  worker still cannot ask for it (request 85).
+* `scripts/lib/check-contract-parity.sh` restates the state sets, not the
+  transition table, so it has nothing to follow.
+
+### Retry
+
+FAILED -> READY stays an edge, and `mcp_credential_expired` must never take
+it. Today nothing writes FAILED -> READY at all: the scheduler has no retry
+policy module, the worker's retry is RUNNING -> READY (`fail_retryably`) and
+the reconciler's is a requeue of a live attempt (`repair_task_state`, capped by
+`retries_exhausted`). A task failed at admission has no attempt, so neither
+path can reach it. If a FAILED -> READY writer is ever added, it must treat
+`mcp_credential_expired` and `mcp_credential_missing` as permanent.
+
+**Tests:** `tests/unit/common/test_queued_to_failed.py`: QUEUED -> FAILED is
+allowed; all 144 pairs equal the table above, so no other edge appeared; READY,
+PARKED and SUBMITTED still cannot reach FAILED; QUEUED is the only source of
+FAILED outside the concurrency states.
+
+### Rollback
+
+Remove `TaskState.FAILED` from the QUEUED row. Nothing writes it.
+
+### What it would break
+
+Nothing: no code writes the edge, and every reader is listed above.
+
+### Invariants
+
+**1, 2, 3**: the edge leaves a state that holds nothing for a terminal one,
+so there is no lease, no reservation and nothing for concurrency to count.
+**5**: no attempt, so no generation to fence. Others untouched.
+
+
+## 99. `states.py`: READY -> FAILED and PARKED -> FAILED, the two states admission and the credential sweep actually hold (MCP-FAILED-EDGE, part of #1433)
+
+**Status:** proposed 2026-10-18 by lane MCP-FAILED-EDGE. ACCEPTED by the
+owner 2026-10-18, on that lane's PR 1530, keeping request 98 as it is, and
+APPLIED by the pull request that adds this line (lane MCP-FAILED-EDGE-B, part
+of #1433). The two rows below are the only lines of `apps/common/swarm_common/`
+it changes, with a comment naming this request.
+
+### What writes each edge (applied)
+
+| edge | request | writer |
+|---|---|---|
+| QUEUED -> FAILED | 98 | **none.** Kept by the owner; a task is never stored QUEUED while it waits, so the scheduler has nothing to write it on |
+| READY -> FAILED | 99 | `Scheduler._admit_one` (`apps/scheduler/scheduler/loop.py`), on a `CredentialAnswer.terminal` answer, after the credential question and before `acquire_lease` |
+| PARKED -> FAILED | 99 | `Scheduler._promote_credentials`, on a CREDENTIAL_MISSING park whose answer is terminal: a park MCP-SCHED's stopgap left, or one parked for a disabled server whose credential then expired |
+
+Both go through `Scheduler._fail_unrunnable` to one guarded write,
+`SchedulerStore.fail_before_lease` (`apps/scheduler/scheduler/store.py`),
+which refuses any source but READY or PARKED. It writes `state` FAILED,
+`last_error` the terminal code (`mcp_credential_expired` for a row expired or
+destroyed, i.e. revoked; `mcp_credential_missing` for no row), `completed_at`,
+`end_cause` None, and clears `park_reason`, `next_eligible_at` and
+`blocked_by`, guarded on the state and park reason the drain read, then a
+`failed` event naming the servers and codes only. It takes no lease, reads no
+pool and leaves `attempt_count` alone.
+
+**Never retried.** FAILED -> READY stays in the table and nothing writes it
+on such a task: `SchedulerStore.promote_to_ready`, the scheduler's only READY
+writer, now refuses any source but PARKED (its guard would otherwise match a
+FAILED snapshot, whose park reason is None like READY's), and
+`tests/unit/scheduler/test_mcp_admission.py` scans `apps/` for any writer
+naming FAILED -> READY.
+
+**Not done here:** `end_cause` stays None. A dedicated `EndCause` value is a
+further `models.py` request, not filed.
+
+### Why
+
+Request 98 was accepted so that admission ends a task with an expired per-run
+MCP credential FAILED, with no lease. Admission holds that task in READY, and
+the credential sweep in PARKED (request 98, "Who reads it"), so the edges that
+do what the owner asked are:
+
+* **READY -> FAILED**, written by `Scheduler._admit_one` on a
+  `CredentialAnswer.terminal` answer, before `acquire_lease`;
+* **PARKED -> FAILED**, written by `Scheduler._promote_credentials` on a
+  CREDENTIAL_MISSING park whose answer has become terminal (every park
+  MCP-SCHED's stopgap left behind is one).
+
+The alternative, READY -> QUEUED and PARKED -> QUEUED followed by request 98's
+edge, adds two edges that move a task backwards through admission for no
+purpose but to reach a third, and lets any writer re-queue a waiting task.
+
+### The change
+
+```python
+TaskState.PARKED: frozenset(
+    {TaskState.READY, TaskState.CANCELLED, TaskState.DEAD_LETTERED,
+     TaskState.SUCCEEDED, TaskState.FAILED}
+),
+TaskState.READY: frozenset(
+    {TaskState.LEASED, TaskState.PARKED, TaskState.CANCELLED, TaskState.FAILED}
+),
+```
+
+Request 98's QUEUED -> FAILED then has no writer, and can be kept (swarm-api
+walks QUEUED in memory, so a submission-time refusal could use it) or rolled
+back.
+
+### What it needs outside the contract
+
+* A guarded store write, applied as `SchedulerStore.fail_before_lease`
+  beside `SchedulerStore.cancel` (`apps/scheduler/scheduler/store.py`): FAILED,
+  `completed_at`, `last_error` = the code, `park_reason` and `blocked_by`
+  cleared, a FAILED event carrying the refusal detail (server names and codes
+  only), guarded on the state the drain read.
+* An `end_cause`. `EndCause` has no value for "a credential nobody can
+  replace"; the write can carry None (the ledger falls back to `last_error`),
+  or a new value, which is a further `models.py` request.
+* `loop.py` calls `_note_ended` and drops the workflow's cached verdict, as
+  the dispatch-failure branch of `_admit_one` does for its own FAILED write.
+
+### What it would break
+
+`test_parked_to_succeeded.py` pins the PARKED row and
+`test_queued_to_failed.py` the whole table; both change with it.
+`swarm_api/store.py` `_final_workflow_states` is unchanged (edges out of
+terminal states). A PARKED or READY task reaching FAILED is a new shape for
+the console's waiting lists, which already read state, not history.
+
+**Tests:** `tests/unit/common/test_queued_to_failed.py` pins all 144 pairs
+of the table with 98 and 99 both present, and that QUEUED, READY and PARKED
+are the only sources of FAILED outside the concurrency states;
+`test_parked_to_succeeded.py` pins the PARKED row;
+`tests/unit/scheduler/test_mcp_admission.py` ends a task FAILED from READY
+and from PARKED for an expired, destroyed and missing row, with no lease, no
+pool moved, no attempt and no retry over two further drains.
+
+### Rollback
+
+Remove `TaskState.FAILED` from the READY and PARKED rows and the two calls to
+`_fail_unrunnable`; such a task then parks CREDENTIAL_MISSING for good again,
+which the owner rejected on 2026-10-18.
+
+### Invariants
+
+**1, 2, 3**: both edges leave states that hold nothing and are written before
+any lease, so nothing is reserved or released. **5**: no attempt, no
+generation.

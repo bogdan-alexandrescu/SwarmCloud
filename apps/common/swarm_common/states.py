@@ -64,14 +64,33 @@ PENDING_STATES: frozenset[TaskState] = frozenset(
 
 _ALLOWED: dict[TaskState, frozenset[TaskState]] = {
     TaskState.SUBMITTED: frozenset({TaskState.QUEUED, TaskState.CANCELLED}),
-    TaskState.QUEUED: frozenset({TaskState.READY, TaskState.PARKED, TaskState.CANCELLED}),
+    # QUEUED -> FAILED: a task that can never run ends at admission with no
+    # lease, as registered-mcp-servers.md §4.10 says of a per-run MCP
+    # credential that expired in the queue (contract request 98, accepted by
+    # the owner 2026-10-18). It held nothing, so there is nothing to release.
+    TaskState.QUEUED: frozenset(
+        {TaskState.READY, TaskState.PARKED, TaskState.CANCELLED, TaskState.FAILED}
+    ),
     # PARKED -> SUCCEEDED: a step the control plane finishes without a worker
     # (#748, contract request 52). It held no lease, so there is nothing to
     # release; only swarm-api writes it, guarded on its own claim.
+    # READY -> FAILED and PARKED -> FAILED: the same ending in the two states
+    # admission and the credential sweep actually hold a task in (contract
+    # request 99, accepted by the owner 2026-10-18). Only the scheduler writes
+    # them, for a per-run MCP credential that expired or was revoked; the task
+    # holds no lease in either, so nothing is reserved or released.
     TaskState.PARKED: frozenset(
-        {TaskState.READY, TaskState.CANCELLED, TaskState.DEAD_LETTERED, TaskState.SUCCEEDED}
+        {
+            TaskState.READY,
+            TaskState.CANCELLED,
+            TaskState.DEAD_LETTERED,
+            TaskState.SUCCEEDED,
+            TaskState.FAILED,
+        }
     ),
-    TaskState.READY: frozenset({TaskState.LEASED, TaskState.PARKED, TaskState.CANCELLED}),
+    TaskState.READY: frozenset(
+        {TaskState.LEASED, TaskState.PARKED, TaskState.CANCELLED, TaskState.FAILED}
+    ),
     # A lease can be lost before dispatch (reconciler reclaim, limit reduction,
     # cancellation) which returns the task to READY without an attempt.
     TaskState.LEASED: frozenset(

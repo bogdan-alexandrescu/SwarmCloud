@@ -135,18 +135,17 @@ class McpAnswer:
     @property
     def terminal(self) -> bool:
         """THE TASK CAN NEVER RUN: a credential nobody can replace. §4.10 ends
-        it FAILED `mcp_credential_expired` with no lease. Admission
-        (`loop.py`) parks every answer that is not runnable, and the frozen
-        state machine has no READY -> FAILED edge
-        (`swarm_common.states._ALLOWED`), so today such a task parks
-        CREDENTIAL_MISSING with this code and is never promoted: no lease and
-        no cost (invariant 1), but no end either: a workflow step would block
-        its workflow and a parent would wait on its child. Ending it is the
-        owner's question in the MCP-SCHED pull request (questions.json):
-        (a) admission (`loop.py`) dead-letters a terminal answer, QUEUED ->
-        PARKED -> DEAD_LETTERED being legal today, or (b) a contract change
-        request for a QUEUED -> FAILED edge. Until it is answered,
-        tests/unit/scheduler/test_mcp_admission.py pins the park."""
+        it FAILED `mcp_credential_expired` with no lease. The owner chose a
+        FAILED edge over a dead-letter (2026-10-18), and contract request 98
+        added QUEUED -> FAILED. But admission (`loop.py`) holds the task in
+        READY and the credential sweep in PARKED, and the frozen state machine
+        has neither READY -> FAILED nor PARKED -> FAILED
+        (`swarm_common.states._ALLOWED`; request 99 asks for both). So such a
+        task still parks CREDENTIAL_MISSING with this code and is never
+        promoted: no lease and no cost (invariant 1), but no end either: a
+        workflow step blocks its workflow and a parent waits on its child.
+        tests/unit/scheduler/test_mcp_admission.py pins the park, and goes red
+        the day either edge exists."""
         return any(r.code in _TERMINAL for r in self.refusals)
 
     @property

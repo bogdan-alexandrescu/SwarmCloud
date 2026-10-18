@@ -8,7 +8,8 @@ existing credential park and before any lease,
     server's name, and the credential sweep returns it to READY once the
     registration is enabled again;
   * a `dispatch` server whose credential row is destroyed or past `expires_at`
-    is never leased: `mcp_credential_expired`, no lease, no retry.
+    is never leased: it ends FAILED `mcp_credential_expired` from READY or
+    PARKED (contract request 99), no lease, no reservation, no retry.
 
 and §4.6: the attach route is signed with the attempt key, so
 `dispatch.worker_env` issues the key's registration nonce to a task whose
@@ -24,6 +25,7 @@ swarm-api in any case.
 from __future__ import annotations
 
 import hashlib
+import re
 import secrets
 import sys
 from dataclasses import replace
@@ -50,7 +52,7 @@ from control_plane.fakes import FakeFirestore  # noqa: E402
 
 from swarm_common.models import Lease, Task, Tenant  # noqa: E402
 from swarm_common.profiles import RUNNER_PROFILES  # noqa: E402
-from swarm_common.states import TaskState  # noqa: E402
+from swarm_common.states import InvalidTransition, TaskState, can_transition  # noqa: E402
 
 from scheduler import dispatch as dispatch_mod  # noqa: E402
 from scheduler import loop as loop_mod  # noqa: E402
@@ -343,7 +345,7 @@ def test_another_tenants_row_is_no_credential(db, make_scheduler, dispatcher):
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
+EXPIRED_ROWS = pytest.mark.parametrize(
     "why, row",
     [
         ("expired", {"expires_in": -timedelta(seconds=1)}),
@@ -351,39 +353,142 @@ def test_another_tenants_row_is_no_credential(db, make_scheduler, dispatcher):
         ("missing", None),
     ],
 )
-def test_an_expired_credential_is_never_leased(db, make_scheduler, dispatcher, why, row):
-    """§4.10 and the brief say FAILED with no lease. The frozen state machine
-    has no QUEUED/READY -> FAILED edge and admission's park is `loop.py`'s,
-    outside this lane, so what holds today is pinned exactly: PARKED
-    CREDENTIAL_MISSING with the terminal code, no lease, and the same state
-    after every later drain. Which terminal state it should end in
-    (DEAD_LETTERED via `loop.py`, or FAILED via a contract change) is the
-    owner's question in the MCP-SCHED pull request; this test changes with
-    that answer."""
+
+
+def test_a_waiting_task_may_end_failed_without_a_lease():
+    """Contract request 99 (accepted by the owner 2026-10-18): the two states
+    admission and the credential sweep hold a task in may reach FAILED. This
+    replaces the tripwire that pinned both edges absent."""
+    assert can_transition(TaskState.READY, TaskState.FAILED)
+    assert can_transition(TaskState.PARKED, TaskState.FAILED)
+
+
+@EXPIRED_ROWS
+@pytest.mark.parametrize("start", ["READY", "PARKED"])
+def test_an_expired_credential_is_never_leased(db, make_scheduler, dispatcher, why, row, start):
+    """§4.10: FAILED with the terminal code, no lease, no retry. From READY it
+    is admission's write; from PARKED (a CREDENTIAL_MISSING park left before
+    request 99, or one parked for a disabled server whose credential then
+    expired) it is the credential sweep's. Either way one guarded write, no
+    lease, no pool moved, nothing LEASED to count (invariants 1, 2 and 3),
+    and no later drain ever returns it to READY, even once a live credential
+    row appears for it."""
     world(db)
     register(db)
     if row is not None:
         credential_row(db, "task_expired", **row)
-    task(db, "task_expired")
+    parked = {"park_reason": "CREDENTIAL_MISSING"} if start == "PARKED" else {}
+    task(db, "task_expired", state=start, **parked)
 
     report = make_scheduler().drain()
 
-    doc = db.docs["tasks/task_expired"]
-    assert (doc["state"], doc["park_reason"]) == ("PARKED", "CREDENTIAL_MISSING"), doc
-    assert report.parked == 1
-    assert_reserved_nothing(db, dispatcher)
-    detail = events(db, "task_expired", "parked")[-1]["detail"]
     code = "mcp_credential_missing" if why == "missing" else "mcp_credential_expired"
-    assert detail["code"] == code
-    assert detail["mcp_servers"] == [{"name": "kb", "code": code, "why": why}]
-
-    # Nobody can hand a queued task a new value, so the sweep never promotes it.
-    register(db, enabled=True)
-    report = make_scheduler().drain()
-    assert report.promoted_credentials == 0
     doc = db.docs["tasks/task_expired"]
-    assert (doc["state"], doc["park_reason"]) == ("PARKED", "CREDENTIAL_MISSING"), doc
+    assert (doc["state"], doc["last_error"]) == ("FAILED", code), doc
+    assert doc["park_reason"] is None and doc["end_cause"] is None
+    assert doc["completed_at"] is not None
+    assert doc["attempt_count"] == 0, "no attempt ran"
+    assert doc.get("current_lease_id") is None
+    assert report.failed_unrunnable == 1
+    assert (report.leased, report.parked, report.promoted_credentials) == (0, 0, 0)
     assert_reserved_nothing(db, dispatcher)
+    assert [p for p in db.docs if p.startswith("attempts/")] == []
+    failed = events(db, "task_expired", "failed")
+    assert len(failed) == 1
+    assert failed[0]["detail"]["reason"] == code
+    assert failed[0]["detail"]["mcp_servers"] == [{"name": "kb", "code": code, "why": why}]
+    assert events(db, "task_expired", "parked") == []
+    assert events(db, "task_expired", "ready") == []
+
+    # NEVER RETRIED. A live row now exists and the server is enabled, so a
+    # retry would admit it; nothing reads a FAILED task back to READY.
+    credential_row(db, "task_expired")
+    for _ in range(2):
+        report = make_scheduler().drain()
+        assert report.failed_unrunnable == 0
+    doc = db.docs["tasks/task_expired"]
+    assert (doc["state"], doc["last_error"]) == ("FAILED", code), doc
+    assert events(db, "task_expired", "ready") == []
+    assert len(events(db, "task_expired", "failed")) == 1
+    assert_reserved_nothing(db, dispatcher)
+
+
+def test_the_store_never_promotes_a_failed_task(db):
+    """`promote_to_ready` is the scheduler's one READY writer, and its guard
+    matches a FAILED snapshot as readily as a PARKED one (no park reason on
+    either side), while the table allows FAILED -> READY. So it refuses
+    anything but PARKED, and a task ended before its lease cannot be retried
+    through it."""
+    world(db)
+    register(db)
+    task(db, "task_dead", state="FAILED")
+    db.docs["tasks/task_dead"]["last_error"] = "mcp_credential_expired"
+    store = SchedulerStore(db)
+    snapshot = store.get_task("task_dead")
+    before = dict(db.docs["tasks/task_dead"])
+
+    with pytest.raises(InvalidTransition):
+        store.promote_to_ready(snapshot, detail={"reason": "credential_available"})
+
+    assert db.docs["tasks/task_dead"] == before
+    assert events(db, "task_dead", "ready") == []
+
+
+#: A write whose source is FAILED and whose target is READY, spelled the
+#: ways this repository spells a transition.
+_FAILED_TO_READY = re.compile(
+    r"(?:assert|can)_transition\(\s*TaskState\.FAILED\s*,\s*TaskState\.READY"
+    r"|\(\s*TaskState\.FAILED\s*,\s*TaskState\.READY\s*\)"
+)
+
+
+def test_no_writer_moves_a_failed_task_back_to_ready():
+    """The table keeps FAILED -> READY, and no component writes it: every
+    READY write is from PARKED (`promote_to_ready`, swarm-api's `human-ready`,
+    the reconciler's dependency promotion) or from a lease being returned.
+    This holds that so: a writer that names the edge must first say why a
+    task ended `mcp_credential_expired` may not take it."""
+    apps = Path(__file__).resolve().parents[3] / "apps"
+    common = apps / "common" / "swarm_common"
+    scanned = 0
+    found: list[str] = []
+    for path in sorted(apps.rglob("*.py")):
+        if common in path.parents:
+            continue
+        scanned += 1
+        text = path.read_text(encoding="utf-8")
+        found += [f"{path.relative_to(apps)}" for _ in _FAILED_TO_READY.finditer(text)]
+    assert scanned > 100, scanned
+    assert found == []
+
+
+def test_a_task_leased_meanwhile_is_not_failed(db):
+    """Guarded on the state read: if another scheduler leased the task between
+    this drain's read and its write, FAILED over LEASED would be a terminal
+    task holding a lease. The write is skipped and nothing else is touched."""
+    world(db)
+    task(db, "task_raced")
+    store = SchedulerStore(db)
+    snapshot = store.get_task("task_raced")
+    db.docs["tasks/task_raced"]["state"] = "LEASED"
+
+    outcome = store.fail_before_lease(snapshot, "mcp_credential_expired")
+
+    assert not outcome.applied
+    assert db.docs["tasks/task_raced"]["state"] == "LEASED"
+    assert events(db, "task_raced", "failed") == []
+
+
+@pytest.mark.parametrize("state", ["SUBMITTED", "QUEUED", "LEASED", "RUNNING", "FAILED"])
+def test_only_ready_or_parked_is_failed_before_a_lease(db, state):
+    world(db)
+    task(db, "task_other", state=state)
+    store = SchedulerStore(db)
+    snapshot = store.get_task("task_other")
+
+    with pytest.raises(InvalidTransition):
+        store.fail_before_lease(snapshot, "mcp_credential_expired")
+    assert db.docs["tasks/task_other"]["state"] == state
 
 
 def test_the_expired_answer_is_terminal_and_the_disabled_one_is_not(db):
