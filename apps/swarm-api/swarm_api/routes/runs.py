@@ -86,6 +86,7 @@ from ..issueruns import (
     planner_task,
     auto_merge_default,
     refuse_auto_merge,
+    refuse_planner_model_class,
     run_summary,
     territory_overlap,
     widen_hold,
@@ -711,6 +712,11 @@ def create_run(
     # already made.
     if body.auto_merge is not None:
         refuse_auto_merge(body.auto_merge)
+    # The planner's class (#1435). Read with getattr: `RunCreate` is lane
+    # MODEL-API's schema, and until it declares the field a body naming one
+    # is refused there, so this is None and the planner is today's.
+    model_class = getattr(body, "model_class", None)
+    refuse_planner_model_class(model_class)
     ref = parse_issue_ref(body.issue)
     # The repository's open work, read with THIS caller's tenant's forge
     # token (invariant 9) before anything is created: a 403 or 404 refuses
@@ -746,6 +752,7 @@ def create_run(
     run = start_run(
         ctx, auth, ref, open_work=open_work, plan_approval=body.plan_approval,
         auto_merge=auto_merge, fix_rounds=body.fix_rounds, claude_session=body.claude_session,
+        model_class=model_class,
     )
     response.headers["Location"] = f"/v1/runs/{run.id}"
     return {"run": run.to_api()}
@@ -764,6 +771,7 @@ def start_run(
     schedule: dict | None = None,
     merge_approval: str | None = None,
     claude_session: str | None = None,
+    model_class: str | None = None,
 ) -> IssueRun:
     """The planner task, then the run document, then the first write-back.
 
@@ -785,6 +793,11 @@ def start_run(
     `claude_session` (SC-SESSION-SCOPE) is the Claude Code session the caller
     tagged the run with: on the planner and on the run, which copies it onto
     every workflow it starts.
+
+    `model_class` is the PLANNER's class (`RunCreate.model_class`, #1435),
+    checked by the caller (`refuse_planner_model_class`), and by
+    `submit_tasks` once lane MODEL-API's `TaskCreate` carries it. None runs the profile's default (`opus`). The plan's
+    steps take theirs from the plan (`issueruns.PlanStep.model_class`).
     """
     if merge_approval not in (None, "required"):
         raise ValueError(f"merge_approval is 'required' or None, not {merge_approval!r}")
@@ -805,7 +818,7 @@ def start_run(
     # sit PLANNING for ever.
     submission = ctx.submissions.submit_tasks(
         auth, [planner_task(ref, run_id, open_work, context=context.section,
-                            claude_session=claude_session)]
+                            claude_session=claude_session, model_class=model_class)]
     )
     planner = submission.tasks[0]
     now = ctx.now()

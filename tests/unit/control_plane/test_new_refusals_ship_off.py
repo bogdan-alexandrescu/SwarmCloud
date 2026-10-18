@@ -313,6 +313,16 @@ NOT_SWITCHABLE_CODES = frozenset({
     "display_name_invalid",
     "display_name_reserved",
     "display_name_taken",
+    # An issue run's planner class (MODEL-RUNS, docs/design/model-per-step.md
+    # §4.4, part of #1435), as MR-API's codes above: raised only for a
+    # POST /v1/runs body that names `model_class`, a field `RunCreate` gains
+    # in lane MODEL-API, so no existing caller can be refused by them.
+    # Continuing past either is not the request let through: an unknown
+    # class, or one the planner's profile does not run, has no model to run,
+    # and `submit_tasks` would refuse it later as a schema error, after the
+    # issue's open work was read.
+    "unknown_model_class",
+    "model_class_not_accepted",
 })
 
 #: What the guard lets through without a switch.
