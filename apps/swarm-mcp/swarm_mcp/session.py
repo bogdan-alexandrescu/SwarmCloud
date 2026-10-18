@@ -52,7 +52,8 @@ dispatched from a project is appended to that project's `launched.jsonl`
 (`swarm_mcp.launch.record`, beside the run copies in
 `<project>/.claude/sc-swarmcloud-runs/`). `/sc check`, `/sc attach --all` and
 the SessionStart attach keep work that is BOTH tagged with this session AND in
-that record (`ownership` with a `record`), so work this project launched
+that record (`ownership` with a `record`; a submission is recorded by the
+workflow id SwarmCloud answered with, SC-TITLES-B), so work this project launched
 against another repository is kept although the origin-repository filter
 would drop it. The repository filter stays only as the fallback for this
 session's work the record does not hold -- work launched before the record
@@ -168,7 +169,9 @@ def owner_of_tasks(tasks: Iterable[Any]) -> str | None:
 class Record:
     """This project's `launched.jsonl`, as `ownership` reads it: the workflow
     and task ids launched from here, and `(claude_session, name)` for each
-    submission recorded before SwarmCloud named its workflow."""
+    submission recorded before SwarmCloud named its workflow -- a line only a
+    bridge older than SC-TITLES-B writes: a submission is now recorded by the
+    id SwarmCloud answers with (`server._workflow_created`)."""
 
     ids: frozenset[str] = frozenset()
     submitted: frozenset[tuple[str, str]] = frozenset()
@@ -225,9 +228,11 @@ def stored_name(envelope: Any, ident: Any) -> str:
 
 
 def recorded(record: Record | None, ident: Any, name: Any, sid: str | None) -> bool:
-    """Is this work in the project's record: its id, or -- a workflow this
-    session submitted, recorded before it had an id -- this session's
-    submission of that `name`."""
+    """Is this work in the project's record: by its id first; else -- only
+    for a line written before SC-TITLES-B, when a submission was recorded
+    before SwarmCloud named it -- this session's submission of that `name`.
+    A submission recorded by id adds no name, so a same-named workflow this
+    session did not submit here is not taken for it."""
     if record is None:
         return False
     if ident and str(ident) in record.ids:

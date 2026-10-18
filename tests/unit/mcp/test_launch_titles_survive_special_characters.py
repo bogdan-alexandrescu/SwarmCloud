@@ -121,8 +121,9 @@ def test_every_hostile_title_names_a_valid_file_in_the_project_and_a_record_line
     """SC-TITLES (#1511): each copy is `SC-<slug>-<12 hex>.js` inside the
     project's `.claude/sc-swarmcloud-runs/`, whatever the title holds -- no
     separator, dot-dot or non-ASCII character reaches the file name -- and
-    each spec launch's `launched.jsonl` line is one JSON object that reads
-    back with the run's title."""
+    each spec submission's `launched.jsonl` line (written by workflow id when
+    `swarm_workflow` is answered, SC-TITLES-B) is one JSON object that reads
+    back with the title its launch showed."""
     project = tmp_path / "project"
     project.mkdir()
     monkeypatch.setenv(launch.PROJECT_DIR_ENV, str(project))
@@ -134,8 +135,11 @@ def test_every_hostile_title_names_a_valid_file_in_the_project_and_a_record_line
         assert re.fullmatch(r"SC-[A-Za-z0-9]+(-[A-Za-z0-9]+)*-[0-9a-f]{12}\.js", script.name), script.name
     got = _read(tmp_path, scripts)
     assert [m["name"] for m in got] == HOSTILE_TITLES + ["SC · ../../up · 1 step"]
-    replies = [json.loads(server._call(_Recorder(), "swarm_workflow_launch", {"spec": {**_FIXTURE["chain"], "title": t}}))
-               for t in HOSTILE_TITLES]
+    replies = []
+    for title in HOSTILE_TITLES:
+        spec = {**_FIXTURE["chain"], "title": title}
+        replies.append(json.loads(server._call(_Recorder(), "swarm_workflow_launch", {"spec": spec})))
+        server._call(_Recorder(), "swarm_workflow", {"spec": spec})
     lines = (folder / launch.RECORD_FILE).read_text(encoding="utf-8").split("\n")
     assert lines[-1] == "" and len(lines) == len(HOSTILE_TITLES) + 1, "one line per launch, none split"
     assert [json.loads(line)["title"] for line in lines[:-1]] == [r["title"] for r in replies]

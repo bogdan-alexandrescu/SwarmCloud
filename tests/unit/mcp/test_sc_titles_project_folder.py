@@ -12,7 +12,8 @@ path outside the session's allowed directories, so the session fell back to
   `SC-<slug>-<12 hex>.js`, and its meta name is the title; with none known
   (or its folder unwritable), the temp fallback, and stderr says which;
 * pruning removes old copies of both name patterns and nothing else;
-* every launch path appends exactly one `launched.jsonl` line, with no prompt
+* every launch path appends exactly one `launched.jsonl` line (a spec's at
+  its submission, by workflow id: SC-TITLES-B), with no prompt
   and no credential in it, and two writers at once never corrupt a line;
 * `/sc attach --all` and `/sc check` keep this session's work in the record
   whatever repository it clones, fall back to the repository filter for this
@@ -182,6 +183,9 @@ def test_every_launch_path_appends_exactly_one_record_line(where, monkeypatch):
 
     spec = {**_FIXTURE["chain"], "title": "nightly", "repository_url": f"https://x-access-token:{token}@github.com/acme/ci-runners.git"}
     server._call(_Recorder(), "swarm_workflow_launch", {"spec": spec})
+    # No workflow exists yet: the submission is recorded by its id (SC-TITLES-B).
+    assert len(_lines(folder)) == 0
+    server._call(_Recorder(), "swarm_workflow", {"spec": spec})
     assert len(_lines(folder)) == 1
 
     server._call(_Recorder(_stored("attached one")), "swarm_workflow_launch", {"attach": "wf_9"})
@@ -201,7 +205,7 @@ def test_every_launch_path_appends_exactly_one_record_line(where, monkeypatch):
     assert len(lines) == 4
 
     submit, attach, attach_all, dispatch = lines
-    assert submit == {"workflow_id": None, "kind": "submit", "title": "SC · nightly · 3 steps",
+    assert submit == {"workflow_id": "wf_1", "kind": "submit", "title": "SC · nightly · 3 steps",
                       "claude_session": SESSION, "repository": "github.com/acme/ci-runners",
                       "launched_at": submit["launched_at"], "name": "nightly"}
     assert (attach["workflow_id"], attach["kind"], attach["title"]) == ("wf_9", "attach", "SC · attached one · 2 steps")
@@ -274,6 +278,7 @@ def _workflows(monkeypatch) -> None:
 def _records(where, monkeypatch) -> None:
     here = _in_project(monkeypatch, where["project"])
     _record_line(here, workflow_id="wf_recorded_far", kind="attach", claude_session=SESSION)
+    # A submission recorded by name, as a bridge before SC-TITLES-B wrote it.
     _record_line(here, workflow_id=None, kind="submit", claude_session=SESSION, name="nightly")
     _record_line(here, workflow_id="wf_theirs", kind="attach", claude_session=OTHER)
     with (here / launch.RECORD_FILE).open("a") as out:
