@@ -1,7 +1,9 @@
-# Workspace roles: what a person may do in a workspace is decided by that workspace, not by "in the group" plus one platform bit
+# Workspace roles: a workspace decides whether each person only reads it, works in it, or administers it
 
-**Status: designed 2026-10-18 (lane ROLES-DESIGN, part of #1518).** Nothing
-here is built. The owner answers §7 before any build lane starts.
+**Status: designed 2026-10-18 (lane ROLES-DESIGN, part of #1518); revised
+the same day for the owner's answers (lane ROLES-DESIGN-B).** Nothing here
+is built. §7 records the eleven answers and the two questions they leave
+open. The owner approves this revision before any build lane starts.
 
 The owner asked for this on 2026-10-18, answering the Settings › Profile
 design (#1505, PR 1506, question Q7):
@@ -11,45 +13,52 @@ design (#1505, PR 1506, question Q7):
 > invite or remove people) is decided per workspace rather than by "member of
 > the group" plus one platform-wide admin bit.
 
-Every file and symbol cited below was read on 2026-10-18 at `2c0d5a7`. Lines
-move, so each citation names the symbol; search for it.
+The owner answered the first draft's §7 on 2026-10-18, in PR 1526's
+comments. Two answers departed from the draft's recommendation: Q1 (three
+roles, not five) and Q5 (a platform admin is admin in every group
+workspace). This revision is rewritten around both, everywhere they reach.
+
+Every file and symbol cited below was read on 2026-10-18 at `2c0d5a7`, and
+the tenant-resolution symbols again at `86c953a`. Lines move, so each
+citation names the symbol; search for it.
 
 What the design settles, in one line each:
 
-* **Five roles on one ladder:** `viewer` < `submitter` < `approver` <
-  `maintainer` < `admin`. Each role can do everything the role below it can
-  (§4.1). Today's "member" is `maintainer`, exactly. `admin` adds what only a
-  personal workspace's person or a platform admin can do today: secrets,
-  workspace settings and people.
-* **Membership still comes from Google, and a role only says what a member
-  may do.** A role never admits anyone. Who is in a group workspace is still
-  asked of Cloud Identity, one registered group at a time, with
-  `x-goog-user-project`. `X-Swarm-Tenant`, `tenant_choices` and invariant 9
-  are unchanged (§2.2).
-* **A group workspace has one default role and per-person overrides.** A
-  member with no override holds the workspace's default. The default starts
-  at `maintainer`, so **on the day this ships everyone keeps exactly what
-  they have.** An admin narrows people afterwards (§4.6).
-* **A personal workspace's person is always its `admin`.** That is not
-  stored, cannot be revoked, and nobody else can be given a role there
-  (§4.4).
+* **Three roles on one ladder: `viewer` < `member` < `admin`** (Q1). A
+  `viewer` reads. A `member` does exactly what every member can do today. An
+  `admin` adds the workspace's secrets, MCP servers and tenant provider keys
+  (Q6) and granting and revoking roles (§4.1).
+* **Membership still comes from Google, and a role only limits what a member
+  may do** (Q3). A role never admits anyone. A grant to someone not yet in
+  the group is stored and applies when they join. A personal workspace's
+  person is its `admin`, fixed.
+* **A group workspace has one default role and per-person overrides** (Q4).
+  The default starts at `member`, so **on the day this ships everyone keeps
+  exactly what they have.** No Google group is bound to a role in this build.
+* **A platform admin is `admin` in every registered group workspace, member
+  or not, with no grant row** (Q5). Tenant resolution changes for exactly
+  this: `X-Swarm-Tenant` may select any registered group workspace for a
+  platform admin, and stays membership-checked for everyone else (§4.2).
+  **Personal workspaces are excluded.** A platform admin can neither select
+  nor act in another person's `u-<user>` workspace, because it holds that
+  person's own secrets and GitHub token.
+* **Everything a platform admin does in a group workspace they are not a
+  member of is audited `via: "platform_admin"`**, before the route body runs,
+  and the request fails closed if the audit row cannot be written (§4.2.4).
+* **A platform admin names a group workspace's first admin**, in Admin ›
+  People, audited (Q2).
 * **Roles are stored as signed, append-only grants with ids nobody can
-  guess**, in `workspace_role_grants`. A tenant worker can create and update
-  Firestore documents today (`tenant-settings-integrity.md` §1.1). It still
-  cannot forge a grant (it has no key), cannot replay an old one (the newest
-  valid grant wins, and a copy keeps its old time), and cannot find a real
-  grant to overwrite (it cannot list, and ids are never served) (§4.3).
-* **Who may grant:** the workspace's admins, and platform admins through
-  Admin › People. A platform admin names the first admin of a group
-  workspace (§4.5).
-* **Every new gate on an existing route is a refusal switch that ships off**
-  (`refusals.py`), with one named 403 code per action (§4.8). A failed role
-  read refuses only once its switch is on; until then the request goes
-  through. Switches off is the second half of "nobody loses access on day
-  one".
-* **Each grant, revocation and default change is an `admin_audit` event**
-  (§4.9).
-* **No frozen-contract change is needed** (§5). Only swarm-api reads a role.
+  guess**, in `workspace_role_grants`, so the design ships before
+  tenant-settings-integrity's design B (Q9). A tenant worker can create and
+  update Firestore documents today. It still cannot forge a grant, replay an
+  old one, or find a real one to overwrite (§4.4).
+* **Two refusal codes, `role_member_required` and `role_admin_required`, one
+  switch each, both off at ship** (Q10). Each goes on in dev first, then in
+  prod after a week of report-only lines (§4.9).
+* **Every member, of any role, sees the roster and the role events** (Q7).
+* **The sc plugin grants and revokes only through `sc roles`, with a typed
+  confirmation, plus one read-only MCP tool** (Q11).
+* **No frozen-contract change is needed** (§5).
 
 ---
 
@@ -72,6 +81,12 @@ route either needs membership (`deps.py::tenant_scope`, `current_auth`) or
 `require_admin`, or it compares the caller with a personal tenant's
 `principal` (`mergesettings.py::is_owner`, `codeintel.py::require_owner_or_admin`,
 `workspace_secrets.py::require_manager`).
+
+A platform admin who is not in a group's Google group cannot work in that
+group's workspace at all today. `_select_tenant` answers `tenant_not_member`
+to them exactly as to anyone else, so managing a group workspace's secrets
+(`require_manager`: "group: platform admin only") needs a platform admin who
+also happens to be in the group.
 
 ### 1.2 What a member can do, route by route
 
@@ -110,39 +125,43 @@ inconsistencies that a role model removes, rather than adds to:
 
 ### 1.3 Where the absence is felt
 
+* **Read-only access.** There is no way to let someone watch a workspace's
+  runs without also letting them submit, approve, delete a repository or
+  remove a subscription account. Everyone in the group is a full member.
 * **Approvals.** `approvals.py::check_gate_approver` lets any member approve
   by default. A gate that names `approvers` must list each email, per gate.
-  Nobody can say "these three people approve in this workspace".
 * **Human steps.** `docs/design/human-steps.md` §4.2 settles who may answer
   (owner's Q2): any member of the step's tenant, re-checked fresh, never a
-  service account, and no admin bypass. §4.2 also records what Q2 gave up: "A
-  step can no longer say 'only Alice may approve this'." A role brings back
-  the workspace-wide half of that without bringing back per-step assignees.
+  service account, and no admin bypass.
 * **Secrets.** The workspace-secrets owner decision (§10, Q4: "platform admins
   only ... until a per-tenant admin role exists") leaves a group workspace
-  unable to manage its own secrets without a platform admin.
+  unable to manage its own secrets without a platform admin, and (§1.1) that
+  platform admin must also be in the group.
 * **Settings › Profile.** PROFILE-DESIGN-B (in flight) shows a role derived
   from the fields in §1.1, behind one seam. With no stored role, the page can
   show only "owner", "member" or "platform admin".
 
 ### 1.4 What "done" lets someone do that they cannot today
 
-These are the issue's acceptance tests, made concrete:
+These are the issue's acceptance tests, made concrete for the three roles:
 
 * A workspace admin gives `carol@` the `viewer` role in `eng`. Carol still
   sees `eng` in her workspace switcher and can read its runs, logs and
-  approvals. When she submits, approves or answers there, she gets a 403
-  whose code names the action (`ROLE_SUBMIT_REQUIRED`,
-  `ROLE_APPROVE_REQUIRED`, `ROLE_ANSWER_REQUIRED`).
-* `dave@` holds `approver` and approves a held run. `erin@`, a `submitter`,
-  cannot.
+  approvals. When she submits, approves, answers or cancels there, she gets
+  403 `role_member_required`, and nothing is written.
+* `dave@`, a `member` of `eng`, approves a held run. Carol cannot.
 * Each grant and revocation appears in Admin › People › Recent admin actions
-  and on the workspace's own Roles card, with who did it, from what, to what,
-  and when.
-* Settings › Profile shows "eng: approver (granted by alice@, 2026-10-20)",
+  and on the workspace's own people page, with who did it, from what, to
+  what, and when.
+* Settings › Profile shows "eng: viewer (granted by alice@, 2026-10-20)",
   not "member".
-* A group workspace manages its own secrets once a platform admin names its
-  first admin, with no platform admin needed after that.
+* A platform admin names `alice@` the first admin of `eng`. From then on
+  `eng` manages its own secrets, MCP servers and provider keys with no
+  platform admin involved.
+* A platform admin who is not in `eng@saga.xyz` selects `eng` in the
+  switcher, rotates its provider key, and that action appears in
+  `admin_audit` as `via: "platform_admin"`. The same admin selecting
+  `u-carol` is refused `tenant_not_member`, as today.
 
 ---
 
@@ -150,32 +169,43 @@ These are the issue's acceptance tests, made concrete:
 
 ### 2.1 Facts no design can change
 
-* **`searchTransitiveGroups` returns 403 in this project.** The platform never
-  lists a caller's groups. It asks "is this caller in THAT group?" with
+* **`searchTransitiveGroups` returns 403 in this project** (CONTRACT.md,
+  "Cloud Identity group resolution"). The platform never lists a caller's
+  groups. It asks "is this caller in THAT group?" with
   `checkTransitiveMembership`, one registered group at a time, and every call
   sends `x-goog-user-project` (`groups.py`, module docstring;
   `groups.py::CloudIdentityGroups.is_member`). Any design that needs "which
   groups is this person in?" is impossible here. A design that adds groups
-  adds one lookup per group per caller per 120 s cache window.
+  adds one lookup per group per caller per 120 s cache window. The
+  platform-admin reach of §4.2 adds **no** lookup: it reads `TENANT_GROUPS`,
+  a deploy-time list, and asks Cloud Identity nothing.
 * **A group workspace is exactly one Google group.** `TENANT_GROUPS`
   (`settings.py`, `ApiSettings.tenant_groups`) is a deploy-time list, and
   the tenant id is the slug of the group's local part (frozen
   `identity.tenant_id_for_group`). Nobody registers a group in the console.
   So "a group workspace's registered groups" is one group, and "a per-group
   default role" is one value per workspace.
+* **A registered group can derive a personal workspace's id.** The group
+  slug adds no prefix while the personal slug adds `u-`, so a group
+  `u-eng@saga.xyz` derives `u-eng`, the same id as `eng@saga.xyz`'s personal
+  workspace (`store.py::assert_tenant_scope`, docstring). Anything that lets
+  a platform admin select group workspaces by id must therefore never offer
+  an id in the `u-` namespace (§4.2.2).
 * **A tenant worker can get, create and update any Firestore document whose
   id it can name.** It cannot list or delete (`swarmTenantWorkerFirestore`,
   `terraform/bootstrap/platform_roles.tf`;
   `docs/design/tenant-settings-integrity.md` §1.1). That design's B removes
-  the binding, but it is not built. A role store that is safe only once B
-  lands would be unsafe for as long as B is unbuilt.
+  the binding, but it is not built. The owner chose to ship roles first (Q9),
+  so the role store must be safe while the binding exists.
 * **A new 4xx refusal ships report-only** (`refusals.py`, module docstring;
   `tests/unit/control_plane/test_new_refusals_ship_off.py`). Every new
   refusal on an existing route is a `Switch` that defaults off.
-* **The platform is_admin bit is about the caller, not the workspace.**
-  `_select_tenant` changes neither it nor `principal.groups`. Approvals and
-  human-step answers deliberately give a platform admin no bypass
-  (`routes/approvals.py`, module docstring; `human-steps.md` §4.2 step 3).
+* **The platform `is_admin` bit is about the caller, not the workspace,
+  today.** `_select_tenant` changes neither it nor `principal.groups`.
+  Approvals and human-step answers deliberately give a platform admin no
+  bypass (`routes/approvals.py`, module docstring; `human-steps.md` §4.2
+  step 3). **Q5 changes this for group workspaces**, and §4.2 and §4.8 say
+  exactly where.
 
 ### 2.2 The CONTRACT.md invariants it touches, and how each is kept
 
@@ -183,13 +213,16 @@ These are the issue's acceptance tests, made concrete:
   checked in swarm-api before a task is written. A refused submission creates
   no task, so it never reaches QUEUED, let alone a lease. Nothing waits on a
   role. A role change does not move any task's state: work already submitted
-  keeps running under the same tenant. **Kept.**
+  keeps running under the same tenant. A platform admin's submission in a
+  group workspace is an ordinary submission in that tenant and is admitted
+  against that tenant's limits like any member's. **Kept.**
 * **2. All-or-nothing reservation.** Admission (`swarm_common/admission.py`)
   is not touched. Roles are read before `SubmissionService` and never inside
   the reservation transaction. **Kept, untouched.**
-* **3. Concurrency counts from LEASED.** Untouched.
+* **3. Concurrency counts from LEASED.** Untouched. Work a platform admin
+  submits in `eng` counts against `eng`'s ceiling, not theirs.
 * **4. Workers never sleep through a provider wait.** Untouched. A human step
-  stays `PARKED(AWAITING_INPUT)` while it waits for an approver. A role decides
+  stays `PARKED(AWAITING_INPUT)` while it waits for an answer. A role decides
   who may answer, not how the step waits.
 * **5. Fencing.** Worker routes (attempt proof plus generation) are not
   role-checked. They authenticate a worker, not a person. A stale worker still
@@ -197,105 +230,157 @@ These are the issue's acceptance tests, made concrete:
 * **6, 7.** Untouched.
 * **8. Checkpoints.** Untouched. A refused cancel leaves a running attempt
   checkpointing as before.
-* **9. Per-tenant isolation.** This is the invariant the design rests on, in
-  three ways:
+* **9. Per-tenant isolation.** This is the invariant the design rests on, and
+  Q5 is the one answer that changes how a tenant is reached. It holds in five
+  ways:
   * **A role never admits.** A grant to someone outside the group gives them
-    nothing until Cloud Identity says they are in it. `tenant_choices` is
-    still built only from verified memberships, so a role can't add a
-    workspace to a person's list.
-  * **A grant is bound to its tenant by its signature** (§4.3), so a worker
+    nothing until Cloud Identity says they are in it. Membership choices are
+    still built only from verified memberships.
+  * **The platform-admin reach selects a tenant whole, and only a registered
+    group tenant** (§4.2). `tenant_id` and `tenant_principal` are replaced
+    together from one `TENANT_GROUPS` entry, so `Store.assert_tenant_scope`
+    and `SubmissionService.scope_for` keep their collision check. An id in
+    the `u-` namespace is never reachable, so no person's own workspace (its
+    user secrets, its GitHub token, its GCS prefix) is reachable by anyone
+    but its person. The default tenant (`resolve_tenant`) is computed from
+    `principal.groups` exactly as today, so the reach can never change where
+    a headerless request lands.
+  * **An admin acting in `eng` acts with `eng`'s identity only.** Work they
+    submit is dispatched under `eng`'s GSA, reads `eng`'s secrets, writes
+    `eng`'s GCS prefix and runs in `eng`'s namespace, because each of those
+    is derived from the task's `tenant_id` and nothing else. A user-scoped
+    slot (`git-u-<hash>`, a user provider key) is named through the
+    *selected* tenant's `Tenant.secret_name` (`gittokens.py`, module
+    docstring), so it is `eng`'s slot for that person, never their personal
+    workspace's. Nothing of another tenant's mixes in.
+  * **A grant is bound to its tenant by its signature** (§4.4), so a worker
     in tenant A cannot copy one of A's grants into B.
   * **Every role read is scoped by the tenant `_select_tenant` chose.**
     Nothing a caller sends picks the tenant whose roles are read.
-  **Kept, and strengthened inside a tenant.**
+  **Kept.** The reach widens *who* may enter a group tenant (a platform
+  admin, audited), never *what* a tenant can reach. That is why it goes
+  through the security review the build plan names (§6).
 * **10. Callers pick a `runner_profile` by name.** No role route accepts an
   image, a command, resources or backend parameters. A role restricts which
-  routes a person may call. It never widens what a body may carry. **Kept.**
+  routes a person may call. It never widens what a body may carry. A platform
+  admin in a group workspace submits through the same bodies as a member.
+  **Kept.**
 
 ### 2.3 What it needs from `apps/common/swarm_common/`
 
-Nothing (§5). The role ladder, the grant shape and the signature are read and
-written by swarm-api only. The scheduler, the reconciler and the worker never
-decide what a person may do. The signature reuses the settings key that
-swarm-api already holds (`ApiSettings.settings_key`), under its own domain
-string, so it needs nothing from `specsign.py`.
+Nothing (§5). The role ladder, the grant shape, the signature and the
+platform-admin reach are read and written by swarm-api only. `AuthContext`
+lives in `swarm_api/auth.py`, not in the contract. `resolve_tenant`,
+`tenant_id_for_group`, `tenant_id_for_user` and `Principal` are used as they
+are. The scheduler, the reconciler and the worker never decide what a person
+may do. The signature reuses the settings key that swarm-api already holds
+(`ApiSettings.settings_key`), under its own domain string, so it needs
+nothing from `specsign.py`.
 
 ---
 
 ## 3. Designs that could work
 
-### 3.1 Design A: a default role per workspace, per-person overrides, signed append-only grants (recommended)
+### 3.1 Design A: a three-role ladder, a default per workspace, per-person overrides, signed append-only grants (chosen)
 
 Each group workspace has one stored default role, and its admins can set any
-member to another role. Grants are Firestore documents, one per change, with
+person to another role. Grants are Firestore documents, one per change, with
 random ids. Each carries an HMAC that binds the tenant, the person, the role
 and the time. The newest valid grant for a (tenant, person) pair is that
 person's role.
 
 * **Code:** one new module (`roles.py`) and one new route file. Each gated
-  route gets one call to `roles.require(auth, capability)`. The UI and plugin
-  get a role field.
+  route gets one call to `roles.require(auth, "member")` or
+  `roles.require(auth, "admin")`. The UI and plugin get a role field.
 * **Migration:** none written. An empty grant set means "the default", and
-  the default with no default grant is `maintainer`, which is today's member.
+  the default with no default grant is `member`, which is today's member.
 * **Latency:**
   * One Firestore query per (tenant, person) per 15 s per instance, about
-    5-10 ms on a miss.
-  * Decisions (approve, answer, grant) read fresh.
+    5-10 ms on a miss. None for a platform admin in a group workspace: their
+    role is `admin` without a read.
+  * Decisions (approve, answer, cancel, grant) read fresh.
   * No extra Cloud Identity call: membership is the lookup that already
     happens.
 * **Money:** reads at Firestore list prices, about $0.06 per 100k. At the
-  platform's request rate this costs well under a dollar a month.
+  platform's request rate this costs well under a dollar a month. The
+  platform-admin audit rows (§4.2.4) are writes at $0.18 per 100k, a few
+  hundred a day at most.
 * **What it breaks:** nothing on the day it ships. Once a switch is on, a
-  narrowed person is refused, which is the point of the design.
+  person narrowed to `viewer` is refused, which is the point of the design.
 
-### 3.2 Design B: role groups, where each role is a Google group
+### 3.2 Design B: role groups, where each role is a Google group (declined, Q4)
 
 The workspace's admins bind more Google groups to roles, for example
-`eng-approvers@saga.xyz → approver`. A person's role is the highest role among
-the bound groups Cloud Identity confirms they are in. Nothing per-person is
-stored.
+`eng-viewers@saga.xyz → viewer`. A person's role is the highest role among
+the bound groups Cloud Identity confirms they are in.
 
-* **Code:** about the same as A, plus binding routes and a lookup per bound
-  group.
-* **Latency:**
-  * One more `checkTransitiveMembership` per bound group per caller per
-    120 s. The 403 on `searchTransitiveGroups` means the groups cannot be
-    fetched in one call.
-  * A workspace with four bound groups makes five directory calls on a
-    cold cache.
-* **Operations:** granting a role means editing a Google group. Admins of a
-  workspace usually cannot do that, so "invite or remove people" leaves the
-  console for Google Admin. A revocation takes up to the 120 s cache to
-  apply, or longer if the directory is slow to propagate.
-* **What it breaks:** the issue's "granting and revoking a role appears in
-  the audit log". The change happens in Google Workspace, so the platform
-  never sees it happen.
-* **Where it fits:** organisations that already run access in groups.
-  Design A does not preclude it. A later lane can add bound groups as a third
-  source, between the default and a person's override (Q4).
+* **Latency:** one more `checkTransitiveMembership` per bound group per
+  caller per 120 s, because the 403 on `searchTransitiveGroups` means the
+  groups cannot be fetched in one call.
+* **Operations:** granting a role means editing a Google group, which a
+  workspace's admins usually cannot do, and the change is never seen by the
+  platform's audit log.
+* **Why declined:** the owner chose one default plus per-person overrides for
+  this build (Q4). Nothing in A precludes adding bound groups later as a
+  third source, between the default and a person's override.
 
-### 3.3 Design C: a capability set per person
+### 3.3 Design C: a capability set per person (declined; its case is now stronger)
 
 Instead of a ladder, each person holds a set of capabilities, such as
 `{submit, approve, repositories}`.
 
-* **Code:** the same storage as A. More UI: a matrix of checkboxes for each
+* **Code:** the same storage as A. More UI: a matrix of checkboxes per
   person.
 * **What it costs:** every refusal message and every screen has to explain a
-  combination, not a name. An audit row like "added `secrets` to bob" is
-  harder to review than "bob: maintainer → admin". Two admins can build sets
-  that nobody can describe in a word, which defeats the issue's "Settings ›
-  Profile shows the stored role".
-* **What it buys:** separation of duty, for example someone who approves but
-  cannot submit. The ladder cannot express that. Q1 asks whether it is needed.
+  combination, not a name. Two admins can build sets that nobody can describe
+  in a word, which defeats "Settings › Profile shows the stored role".
+* **What it buys:** separation of duty.
 
-### 3.4 Recommendation: A
+**Q1 changes C's rationale, and this records how.** The first draft's
+five-role ladder (viewer < submitter < approver < maintainer < admin) could
+already express "approves but does not manage schedules, repositories or
+accounts". C's only advantage over it was the rarer case of "approves but
+cannot submit". With three roles, **separating approving from maintaining is
+no longer expressible at all**: a `member` approves, rejects, answers,
+cancels, edits schedules, registers repositories and manages subscription
+accounts, all together, because that is what a member does today. A
+workspace that wants a reviewer who cannot delete a repository, or a
+submitter who cannot approve, has no role for it. C would give it one; the
+owner chose the smaller ladder anyway, for legibility, and the narrower
+roles can be added to the ladder later without changing storage (a grant's
+`role` is a string, and the ladder lives only in `roles.py`).
+
+### 3.4 Within A: how a platform admin reaches a group workspace (Q5)
+
+The owner decided that a platform admin is `admin` in every group workspace,
+member or not, with no grant row, and not in anyone's personal workspace.
+Three shapes could deliver it:
+
+* **(i) The header reaches further for a platform admin (chosen).**
+  `_select_tenant` lets `X-Swarm-Tenant` select any registered group tenant
+  when `is_admin` is true, after the membership choices and never in the
+  `u-` namespace. Every route then behaves exactly as for a member of that
+  tenant, with the role answer `admin`. *Cost:* one new `AuthContext` field,
+  one audit hook in `current_auth`, about 60 lines in `auth.py`; no Cloud
+  Identity call, no Firestore read on the selection itself.
+* **(ii) Synthesised grants.** Write an `admin` grant for every platform
+  admin in every workspace. Refused by Q5's "no grant row", and wrong when a
+  platform admin is removed: every grant would need revoking, and a missed
+  one is a person keeping `admin` after losing the platform role.
+* **(iii) A proxy under `/v1/admin/workspaces/{t}/…`.** Re-expose every
+  tenant route under an admin prefix. It duplicates 167 routes and their
+  tests, and each duplicate is one more place for a tenant filter to be
+  forgotten.
+
+(i) is the only shape whose isolation argument is the one every member
+request already relies on: one tenant chosen whole, before any route body
+runs, from a list the request's verified identity produced.
+
+### 3.5 Decision: A, with (i)
 
 A is the only design in which a workspace's own admins grant and revoke from
 the console with each change audited, and it adds no Cloud Identity calls.
-B is a good later source for groups-first organisations, and A leaves room for
-it (Q4). C's flexibility is not what the issue asks for, and it costs
-legibility on every screen.
+(i) delivers Q5 without a second route surface or a grant per admin.
 
 ---
 
@@ -303,27 +388,37 @@ legibility on every screen.
 
 ### 4.1 The role set and what each permits
 
-There are five roles on one ladder. `rank(viewer)=0 … rank(admin)=4`, and a
-role permits everything the roles below it permit. `roles.py` holds the
-capability table, and nothing else restates it. The UI and the plugin read it
-from `GET /v1/workspace/roles` (§4.2), so the explanation a screen shows is the
-server's own.
+There are three roles on one ladder: `rank(viewer)=0`, `rank(member)=1`,
+`rank(admin)=2`. A role permits everything the roles below it permit.
+`roles.py` holds the table, and nothing else restates it. The UI and the
+plugin read it from `GET /v1/workspace/roles` (§4.3), so the explanation a
+screen shows is the server's own.
 
-| capability | lowest role | routes (all under `current_auth` + `tenant_scope` today) |
+| lowest role | what it permits | routes (all under `current_auth` + `tenant_scope` today) |
 |---|---|---|
-| `read` | `viewer` | every GET of tasks, checkpoints, attempts, leases, outcomes, workflows, runs, issues preview, repositories (and their code-intelligence reads), schedules (and firings, audit), approvals, questions, live session/recordings/audit, notifications, git-token slots, secrets (names and grants), MCP servers, browser logins, stranded PRs; `POST /v1/live/ticket` (a viewer ticket); `POST /v1/notifications/read*`; `POST /v1/onboarding/dismiss`; `GET /v1/workspace/roles` |
-| `submit` | `submitter` | `POST /v1/tasks`, `/v1/tasks/batch`, `/v1/workflows`, `/v1/runs`; on **own** work: `POST /v1/tasks/{id}/cancel`, `/v1/workflows/{id}/cancel`, `/v1/tasks/{id}/human-ready`, `/v1/tasks/{id}/answers` (still submitter-or-platform-admin, as today), `/v1/tasks/{id}/browser-login`, `/live/control*` and `/live/device` on own task |
-| `approve` | `approver` | `POST /v1/approvals/{id}:approve`, `:reject`; `/v1/runs/{id}/plan:approve`, `plan:edit`, `plan:reject`; a `/swarmcloud approve` comment (`ghapprove.py`); the human-step answer `POST /v1/workflows/{wf}/steps/{step}/input` (`human-steps.md` §4.2, not built yet); cancel **anyone's** task or workflow; `/live/control*` on a task opened to members |
-| `maintain` | `maintainer` | every schedule write in `routes/schedules.py` (create, PATCH, DELETE, pause, pause-all, resume, take-ownership, run) and `POST /v1/schedules/{id}:merge-mode`; repositories register, PATCH (fields other than `platform`, `merge_policy`, `context`), DELETE, index, index:run; every write in `routes/access.py`; every write in `routes/accounts.py`; `POST`/`DELETE /v1/live/open-to-members`; `DELETE /v1/browser-logins/{name}` |
-| `administer` | `admin` | workspace secrets writes (`workspace_secrets.py::require_manager`); MCP server writes (`mcp_servers.py`, `require_manager`); `PUT`/`DELETE /v1/provider-keys/{p}/tenant`, tenant-scoped `POST /v1/provider-keys/{p}/links`, `POST /v1/tenants/me/credentials`; tenant and repository git-token slots (`gittokens.py::_require_admin`); `PUT` merge settings, code intelligence, judgment backend; repository `context`; `PUT`/`DELETE /v1/workspace/roles/*` |
+| `viewer` | read | every GET of tasks, checkpoints, attempts, leases, outcomes, workflows, runs, issues preview, repositories (and their code-intelligence reads), schedules (and firings, audit), approvals, questions, live session/recordings/audit, notifications, git-token slots, secrets (names and grants), MCP servers, browser logins, stranded PRs; `POST /v1/live/ticket` (a viewer ticket); `POST /v1/notifications/read*`; `POST /v1/onboarding/dismiss`; `GET /v1/workspace/roles` |
+| `member` | everything a member does today | **submit:** `POST /v1/tasks`, `/v1/tasks/batch`, `/v1/workflows`, `/v1/runs`. **Cancel, anyone's** (Q8): `POST /v1/tasks/{id}/cancel`, `/v1/workflows/{id}/cancel`. **Decide:** `POST /v1/approvals/{id}:approve`, `:reject`; `/v1/runs/{id}/plan:approve`, `plan:edit`, `plan:reject`; `POST /v1/schedules/{id}:merge-mode`; a `/swarmcloud approve` comment (`ghapprove.py`). **Answer:** the human-step answer `POST /v1/workflows/{wf}/steps/{step}/input` (`human-steps.md` §4.2, not built yet); `POST /v1/tasks/{id}/answers`, `/human-ready`, `/browser-login`; `/live/control*`, `/live/device`; `POST`/`DELETE /v1/live/open-to-members`. **Schedules:** every write in `routes/schedules.py`. **Repositories:** register, PATCH (fields other than `platform`, `merge_policy`, `context`), DELETE, index, index:run; every write in `routes/access.py`. **Accounts:** every write in `routes/accounts.py`. `DELETE /v1/browser-logins/{name}` |
+| `admin` | `member`, plus Q6's powers and roles | **Secrets** (Q6): workspace secrets writes (`workspace_secrets.py::require_manager`); tenant and repository git-token slots (`gittokens.py::_require_admin`), which are forge tokens in Secret Manager and so secrets by CLAUDE.md's rule. **MCP servers** (Q6): writes in `mcp_servers.py` (`require_manager`). **Tenant provider keys** (Q6): `PUT`/`DELETE /v1/provider-keys/{p}/tenant`, tenant-scoped `POST /v1/provider-keys/{p}/links`, `POST /v1/tenants/me/credentials`. **Roles:** `PUT`/`DELETE /v1/workspace/roles/*` |
 
-The rows above `approve` are in that order on purpose. Approving is judging
-someone else's work. A person trusted to judge work is trusted to stop it, but
-not necessarily to change what the workspace automates (schedules) or what it
-can reach (repositories, accounts).
+Each route keeps every narrower rule it has today *on top of* the role:
+answers on an agent's question stay "the submitter or a platform admin"
+(`agent_questions.py::answer_refusal`), human-ready stays the submitter's,
+live control stays the owner's until opened, a gate's `approvers` list, the
+last-editor rule and `second_member` holds stay as they are. The role is the
+floor; those rules are narrower and unchanged.
 
-**What no role reaches.** These stay platform-only, gated exactly as today
-(`require_admin`, `is_owner`):
+**Workspace settings are not in Q6's list, so they stay as they are today**:
+merge settings, code intelligence, the judgment backend and a repository's
+`context` remain "personal: its person; group: a platform admin"
+(`mergesettings.py::is_owner`, `codeintel.py::require_owner_or_admin`,
+`judgment.py`). A workspace admin does not change them in this build. That
+is the literal reading of Q1 ("member + Q6's powers + granting and revoking
+roles"), and §7 Q13 asks whether it is what the owner meant; the build plan
+names the files to add if not (ROLES-GATES-ADMIN, §6).
+
+**What no workspace role reaches.** These stay platform-only, gated exactly
+as today (`require_admin`, `is_owner`), and a workspace `admin` who is not a
+platform admin never reaches them:
 
 * the `/v1/admin/*` routes;
 * a repository's `platform` and `merge_policy`;
@@ -340,24 +435,165 @@ A workspace admin administers one workspace and never the platform.
 workspace's:**
 
 * the caller's GitHub connection (`/v1/onboarding/github/*`);
-* their user git-token slot and user provider key;
-* their personal workspace request (`/v1/workspace`).
+* their personal workspace request (`/v1/workspace`);
+* `GET /v1/tenants/me`, `/v1/tenants/mine` and the Profile page.
 
-**Platform admins** (Q5, recommendation (a)):
+### 4.2 Platform admins: admin in every group workspace, and in no one else's personal workspace
 
-* **`is_admin` never satisfies a role check.** A platform admin who is a
-  `viewer` in `eng` is refused a submit there, exactly as anyone else.
-* **A role check never removes a platform-admin path that exists today.** On
-  the five `administer` gates that accept a platform admin today
-  (`require_manager` in both modules, provider keys, git tokens, the owner or
-  admin settings checks), the gate becomes "workspace `admin` **or** platform
-  admin". A platform admin keeps every power they hold on the day this ships.
-  `agent_questions.py::answer_refusal` keeps its `is_admin` branch too.
-* **A platform admin who wants a role in a workspace grants it to themselves**
-  through Admin › People. The grant is audited `via: "platform_admin"`, so a
-  self-grant is visible rather than silent.
+#### 4.2.1 The rule
 
-### 4.2 Routes
+| a platform admin (`AuthContext.is_admin`) in… | may select it | role there | audited `via: "platform_admin"` |
+|---|---|---|---|
+| a registered group workspace they are a member of | yes, as today | `admin`, `source: "platform_admin"`, whatever any grant says | no: they are a member (Q12 asks about the narrowed-member case) |
+| a registered group workspace they are **not** a member of | **yes, new** | `admin`, `source: "platform_admin"` | **yes, every action** |
+| their own personal workspace | yes, as today | `admin`, `source: "personal"` | no |
+| anyone else's personal workspace | **no**, `tenant_not_member` as today | none | (refused before the route) |
+
+This replaces the first draft's "`is_admin` never satisfies a role check".
+**A platform admin satisfies every role check in a group workspace and none
+in someone else's personal workspace**, which they cannot select in the first
+place. A grant naming a platform admin is stored and shown, but is inert
+while they are one; it applies if they stop being one.
+
+`is_pool_admin`, the rollup sweeper, the schedule tick and a listed service
+account are not `is_admin` and get no reach.
+
+#### 4.2.2 Tenant resolution: the change, exactly
+
+`auth.py` today builds `tenant_choices` from verified memberships
+(`_tenant_choices`), puts the caller's own ready personal workspace first
+(`_with_own_workspace`), and lets `X-Swarm-Tenant` pick only from that list
+(`_select_tenant`). The change keeps all three and adds a second, separate
+list:
+
+1. **`AuthContext.platform_reach: tuple[tuple[str, str], ...] = ()`** (new
+   field, swarm-api only). Built at the end of `_from_claims` by
+   `Authenticator._platform_reach(member_groups, is_admin)`:
+   * empty unless `is_admin` is true **and** `ApiSettings.platform_admin_reach`
+     is on (§4.7) **and** `_special(ctx)` is false;
+   * otherwise one `(tenant_id_for_group(g), g.lower())` for each `g` in
+     `TENANT_GROUPS`, in admin order, first per id, the same walk as
+     `_tenant_choices`;
+   * **skipping every id already in the membership choices** (a member
+     reaches it as a member, not via the reach);
+   * **skipping every id that starts with `u-`** (§2.1: a group slug can
+     land in the personal namespace, and a personal workspace is never
+     reachable).
+   It asks Cloud Identity nothing: `TENANT_GROUPS` is configuration.
+   `principal.groups` is not touched, so `resolve_tenant`, and with it the
+   default tenant, is exactly as today.
+2. **`_with_own_workspace`** treats an id in `platform_reach` like a
+   membership choice in its early-return test, so a request naming a reach
+   tenant costs no personal-workspace read.
+3. **`_select_tenant`** tries, in order:
+   1. `tenant_choices` (memberships and the caller's own `u-`), as today;
+   2. then `platform_reach`, when `is_admin`. A match replaces `tenant_id`
+      and `tenant_principal` together from the one entry, exactly as a
+      membership match does, and sets **`tenant_via="platform_admin"`**
+      (new `AuthContext` field, `""` otherwise);
+   3. otherwise, when `admin_unresolved` is true and the requested id is a
+      registered group id, **503 `upstream_unavailable`**, never a 403: the
+      unanswered admin lookup could have changed the answer, and a 403 here
+      would tell an operator mid-incident they lack a privilege they hold;
+   4. otherwise `TenantNotMember`, with today's message, which is the same
+      whether the id exists or not.
+4. **Everyone else is unchanged.** For a caller with `is_admin` false,
+   `platform_reach` is empty and steps 3.2 and 3.3 never match: the header
+   still selects only a verified membership, per registered group, through
+   `checkTransitiveMembership` with `x-goog-user-project`.
+5. **`GET /v1/tenants/mine`** lists the membership choices, then the reach
+   entries, each `TenantChoice` carrying `via: "member" | "personal" |
+   "platform_admin"`. A platform admin's switcher therefore lists every
+   registered group workspace, and the ones they reach only as an admin are
+   marked as such.
+
+The reach entries go through the same `ensure_tenant` /
+`assert_tenant_scope` collision check as a member's (`tenant_principal` is
+the registered group email), so a registered group whose id collides with
+another tenant document's principal is refused exactly as it is for a member.
+A group in `TENANT_GROUPS` whose tenant document does not exist yet is read
+as empty and created on the first submission, as on a member's first sight.
+
+#### 4.2.3 Re-checks that run with nobody on the call
+
+Three paths ask "is this stored person a member NOW?" through
+`Authenticator.is_tenant_member`: `schedulefire.py::member_auth` (a
+schedule's owner, at each firing), `routes/runs.py::run_owner_auth` (an issue
+run's creator, at its auto approval and CI-fix rounds), and the human-step
+answer's fresh membership check (`human-steps.md` §4.2 step 2). Each would
+refuse a platform admin who is not in the group, which would contradict Q5
+for a schedule a platform admin owns.
+
+So `auth.py` gains **`Authenticator.may_act_in(email, tenant) -> str`**,
+which returns `"member"`, `"platform_admin"` or `""`:
+
+* `"member"` when `is_tenant_member(email, tenant)` is true (no change, no
+  extra cost);
+* else `"platform_admin"` when the tenant's `kind` is `"group"`, its id does
+  not start with `u-`, `platform_admin_reach` is on, and
+  **`holds_platform_admin(email, fresh=True)`** is true: `PLATFORM_OWNER`,
+  `ADMIN_USERS`, `admin_roles.holds_admin` read past its cache, or an
+  `ADMIN_GROUPS` membership asked of Cloud Identity with `fresh=True`. That
+  is one extra lookup per admin group, only when the membership check has
+  already said no;
+* else `""`. A failed lookup is 503 `upstream_unavailable`, never a guess,
+  exactly as `is_tenant_member` does today.
+
+The three callers switch to it. `member_auth` builds the stored owner's
+`AuthContext` with `tenant_via` set from the answer, so the firing's role is
+`admin` and its audit row (§4.2.4) is written. A personal workspace is never
+`"platform_admin"`, so a platform admin who once owned work in someone
+else's `u-` tenant (they cannot) is not a case.
+
+**Human steps and approvals: what Q5 supersedes.** `human-steps.md` §4.2
+step 3 ("no admin bypass; a platform admin answers only as a member") and the
+same rule in `routes/approvals.py`'s docstring are superseded **for group
+workspaces**: a platform admin answers and approves there as that
+workspace's `admin`. Step 1 (`person_required`) and the gate-specific rules
+(a gate's `approvers` list, the last editor, `second_member`) are unchanged
+and still apply to them; a platform admin acting through the reach counts as
+a member for `second_member`, because Q5 makes them one in effect. In a
+personal workspace nothing changes: only its person answers. ROLES-DOCS
+amends both documents (§6).
+
+#### 4.2.4 The audit of a platform admin's actions
+
+**Every request a platform admin makes in a group workspace they are not a
+member of (`tenant_via == "platform_admin"`) is audited, and an action is
+never taken unaudited.**
+
+* **Where:** in `deps.py::current_auth`, after `authenticate` and
+  `require_continuation_route`, before the limiter, so every route reaches it
+  (directly or through `tenant_scope`/`admin_auth`) and a route added
+  tomorrow is covered without anyone remembering. The writer is
+  `roles.py::audit_platform_admin(ctx, auth, route)`.
+* **Writes (any method but GET/HEAD):** one `admin_audit` row
+  `platform_admin_acted`, written **before the route body runs**:
+  `{by, at, target_tenant_id, detail: {method, route, path_params, via:
+  "platform_admin"}}`. `route` is the template (`/v1/secrets/{name}`), never
+  the concrete path with its query, and **the body is never recorded**, so a
+  secret value or a prompt cannot land in the audit log. A write that fails
+  answers 503 `platform_admin_audit_unavailable` and the route never runs:
+  fail closed. The response status is logged on the same request
+  (`platform_admin acted tenant=… route=… status=…`).
+* **Reads:** one `platform_admin_viewed` row per (admin, tenant, UTC hour)
+  per instance, written on the first read of that hour, fail closed the same
+  way. That keeps a console that polls every few seconds from writing
+  thousands of rows while still recording that an admin looked, and when.
+  Whether reads should instead be audited per request is §7 Q12.
+* **Stored-owner actions** (§4.2.3): a schedule firing or an issue run's
+  auto step whose owner is reached as `"platform_admin"` writes
+  `platform_admin_acted` with `route: "schedule_firing"` or
+  `"issue_run_advance"` and the schedule or run id.
+* **Actions with their own audit rows** (role writes, secrets, provider keys)
+  also carry `via: "platform_admin"` in their own row, so the event reads
+  correctly where it is shown, not only in the generic row.
+* **Where it is seen:** Admin › People › Recent admin actions, and the
+  workspace's own people page (§4.8), whose audit list includes these rows
+  for its tenant. Every member of `eng` can therefore see that a platform
+  admin acted in `eng` and on what (Q7).
+
+### 4.3 Routes
 
 There are two new route groups, both in `apps/swarm-api/swarm_api/routes/roles.py`
 (new).
@@ -368,12 +604,14 @@ There are two new route groups, both in `apps/swarm-api/swarm_api/routes/roles.p
 GET    /v1/workspace/roles
 PUT    /v1/workspace/roles/person      {email, role, reason?}
 DELETE /v1/workspace/roles/person      {email, reason?}          -> back to the default
-PUT    /v1/workspace/roles/default     {role, reason?}
+PUT    /v1/workspace/roles/default     {role, reason?}           -> viewer | member
 ```
 
 The email is in the body, not the path, so that addresses do not land in
 request logs and load-balancer access logs. People routes already avoid
-addressing a person by email (`routes/people.py`, module docstring).
+addressing a person by email (`routes/people.py`, module docstring). The
+writes need `admin` there: a workspace admin, or a platform admin (who
+reaches any group workspace, §4.2).
 
 `GET` response, readable by every role (Q7):
 
@@ -381,41 +619,44 @@ addressing a person by email (`routes/people.py`, module docstring).
 {
   "tenant_id": "eng",
   "kind": "group",
-  "default_role": "maintainer",
+  "default_role": "member",
   "default_source": "migration",         // "migration" until an admin sets it, then "grant"
   "me": {"email": "carol@saga.xyz", "role": "viewer", "source": "override",
          "granted_by": "alice@saga.xyz", "granted_at": "2026-10-20T09:14:03.120Z",
-         "capabilities": ["read"]},
+         "via": "member"},
   "people": [
     {"email": "alice@saga.xyz", "role": "admin", "source": "override",
-     "granted_by": "ops@saga.xyz", "granted_at": "…", "via": "platform_admin"},
+     "granted_by": "ops@saga.xyz", "granted_at": "…", "granted_via": "platform_admin"},
     {"email": "carol@saga.xyz", "role": "viewer", "source": "override", "…": "…"}
   ],
   "roles": [
-    {"name": "viewer", "capabilities": ["read"], "summary": "Sees everything; changes nothing."},
-    {"name": "submitter", "capabilities": ["read", "submit"], "summary": "…"},
-    {"name": "approver", "capabilities": ["read", "submit", "approve"], "summary": "…"},
-    {"name": "maintainer", "capabilities": ["read", "submit", "approve", "maintain"], "summary": "…"},
-    {"name": "admin", "capabilities": ["read", "submit", "approve", "maintain", "administer"], "summary": "…"}
+    {"name": "viewer", "summary": "Sees everything in this workspace; changes nothing."},
+    {"name": "member", "summary": "Submits, approves, answers, cancels, and manages schedules, repositories and accounts."},
+    {"name": "admin",  "summary": "A member who also manages secrets, MCP servers, provider keys and people's roles."}
   ],
   "can_manage": false,
   "audit": [ {"action": "workspace_role_granted", "by": "…", "at": "…", "target_email": "…",
-              "detail": {"from": "maintainer", "to": "viewer", "via": "console"}} ]
+              "detail": {"from": "member", "to": "viewer", "via": "console"}} ]
 }
 ```
 
+* `me.source` is one of `override`, `default`, `personal`, `platform_admin`.
+  `me.via` is the `TenantChoice.via` the request was selected through.
 * `people` lists only overrides. Everyone else holds the default. Listing all
   members would mean enumerating a Google group, and the platform cannot do
-  that (`searchTransitiveGroups` returns 403).
-* `audit` holds the last 50 role events for this tenant.
+  that (`searchTransitiveGroups` returns 403). Platform admins are not listed
+  unless someone granted them an override.
+* `audit` holds the last 50 role events and `platform_admin_*` rows for this
+  tenant (§4.10).
 * A personal workspace answers with `kind: "user"`, `default_role: null`,
   `people: []`, and `me.role: "admin"` with `source: "personal"`.
 
 `PUT /person` returns `{email, role, previous_role, source: "override",
-granted_at}`. Every write route answers 409 `role_unchanged` when nothing
-would change, and writes nothing.
+granted_at, member}`, where `member` is the fresh per-group check (§4.6).
+Every write answers 409 `role_unchanged` when nothing would change, and
+writes nothing.
 
-**A platform admin's, for any workspace (`admin_auth`):**
+**A platform admin's, for any group workspace (`admin_auth`):**
 
 ```
 GET    /v1/admin/workspaces/{tenant_id}/roles
@@ -425,19 +666,23 @@ PUT    /v1/admin/workspaces/{tenant_id}/roles/default   {role, reason?}
 GET    /v1/admin/roles/person?email=…   -> every override this email holds, across workspaces
 ```
 
-The `{tenant_id}` must be a registered group tenant. The writes are the same
-functions as the workspace routes, called with `via: "platform_admin"`.
+These are what Admin › People calls (Q2), so a platform admin can name a
+first admin without switching workspace. `{tenant_id}` must be a registered
+group tenant whose id is not in the `u-` namespace; anything else is 404. The
+writes are the same functions as the workspace routes, called with
+`granted_via: "platform_admin"`.
 
 **Role fields on routes that exist** (`routes/tenants.py`):
 
-* `GET /v1/tenants/me` adds `role: {name, source, capabilities}` for the
-  selected tenant.
-* `GET /v1/tenants/mine` adds the same `role` to each `TenantChoice`.
+* `GET /v1/tenants/me` adds `role: {name, source}` for the selected tenant.
+* `GET /v1/tenants/mine` adds the same `role`, and `via` (§4.2.2), to each
+  `TenantChoice`.
 
-That costs one cached query per listed workspace, and a person is in a
-handful. This field is the seam Settings › Profile reads (§4.10).
+That costs one cached query per listed membership workspace, and none for a
+reach entry (its role is `admin` by rule). This field is the seam Settings ›
+Profile reads (§4.11).
 
-### 4.3 Storage: signed, append-only grants with unguessable ids
+### 4.4 Storage: signed, append-only grants with unguessable ids
 
 **Collection `workspace_role_grants`**, document id = Firestore auto-id
 (20 random characters), never returned by any route:
@@ -446,13 +691,16 @@ handful. This field is the seam Settings › Profile reads (§4.10).
 workspace_role_grants/{auto-id}
   tenant_id:   "eng"
   subject:     "carol@saga.xyz"   // lower-cased; "*" for the workspace default
-  role:        "viewer"           // one of the five; null = "back to the default" (subject != "*")
+  role:        "viewer"           // viewer | member | admin; null = "back to the default" (subject != "*")
   granted_by:  "alice@saga.xyz"
   granted_at:  "2026-10-20T09:14:03.120Z"   // swarm-api's clock, written as a string, covered by the MAC
   via:         "console" | "cli" | "platform_admin"
-  reason:      "moved to the review rota"   // <= 200 chars, redacted (redaction.py) before it is written
+  reason:      "moved to read-only for the audit"   // <= 200 chars, redacted (redaction.py) before it is written
   mac:         {v: 1, key: "<key_id>", sig: "<base64 HMAC-SHA256>"}
 ```
+
+There is no grant for a platform admin's `admin` (Q5: no grant row) and none
+for a personal workspace's person; both are rules in `roles.py`.
 
 * **The signature.** It is `HMAC-SHA256(settings_key, "swarm-workspace-role-grant/v1\n" +
   canonical_json({tenant_id, subject, role, granted_by, granted_at}))`.
@@ -472,7 +720,9 @@ workspace_role_grants/{auto-id}
   * After three pages with no valid grant for E, the read gives up. That is
     `role_unavailable`, not a guess (see "What a failed read does" below).
   * A newest valid E grant with `role: null` means "the default".
-  * With no valid "*" grant, the default is `maintainer` (§4.6).
+  * With no valid "*" grant, the default is `member` (§4.7).
+  * A "*" grant whose role is `admin` is invalid by shape and skipped: the
+    default can never be `admin`.
 * **What a worker can and cannot do to it.** The worker's role is get,
   create and update, without list (§2.1).
   * *Forge a grant:* it can create a document, but cannot sign one. The
@@ -491,7 +741,8 @@ workspace_role_grants/{auto-id}
   * *Flood:* thousands of unsigned grants with a future `granted_at` push
     the valid one past three pages. The person's requests then meet
     `role_unavailable`. That is denial of service, never escalation, and it
-    raises an alert on the counter.
+    raises an alert on the counter. It cannot touch a platform admin's role,
+    which is never read from this collection.
 * **Why not one document per (tenant, person), or one roster per tenant?**
   Those ids can be guessed (`eng__carol@…`, `eng`). A worker can then read
   the signed document today and write it back after an admin narrows the
@@ -500,302 +751,357 @@ workspace_role_grants/{auto-id}
   shape where the worker's get/create/update cannot undo a revocation.
 * **Index.** A composite index on (`tenant_id` ASC, `subject` ASC,
   `granted_at` DESC) in `terraform/modules/firestore/indexes.tf`. For the
-  workspace audit card, an index on `admin_audit` (`target_tenant_id` ASC,
+  workspace audit list, an index on `admin_audit` (`target_tenant_id` ASC,
   `at` DESC).
 * **Cache.** Per instance, per (tenant, subject), for 15 s, the same as
   `admins.py`'s role cache. **The decision routes always read fresh:**
-  approve, reject, plan approve, human-step answer, cancel of someone
-  else's work, and every role write. A narrowed approver therefore cannot
-  approve during the cache window. For a submit, up to 15 s of stale role is
-  the trade for one query per request.
+  approve, reject, plan approve, human-step answer, cancel, and every role
+  write. A person narrowed to `viewer` therefore cannot approve during the
+  cache window. For a submit, up to 15 s of stale role is the trade for one
+  query per request.
 * **What a failed read does.** It does not 503 every request. The failure
   is "unknown", and a gate holding an unknown role behaves like its switch:
   * off: log and let the request through, as today;
   * on: 503 `role_unavailable` (5xx, so it is not a refusal code and needs
     no switch).
   Turning a switch on therefore never adds a Firestore dependency to a route
-  that did not have one before the owner chose to turn it on.
+  that did not have one before the owner chose to turn it on. A platform
+  admin's role in a group workspace never needs the read.
 
-### 4.4 Personal workspaces
+### 4.5 Personal workspaces
 
 The person whose verified email the tenant document names
 (`PersonalTenants.ready`, `_with_own_workspace`) is the workspace's `admin`,
-with `source: "personal"`. Nothing is stored. Every role write against a `u-`
-tenant answers 409 `personal_workspace_roles_fixed`, and nobody else can hold
-a role there. Nobody else is a member: `_with_own_workspace` only ever adds
-the caller's own `u-` id, and a role never admits (Q3). So a role there would
-have nobody to apply to.
+with `source: "personal"` (Q3). Nothing is stored. Every role write against a
+`u-` tenant answers 409 `personal_workspace_roles_fixed`, and nobody else can
+hold a role there. Nobody else is a member: `_with_own_workspace` only ever
+adds the caller's own `u-` id, and a role never admits.
 
-### 4.5 Who may grant and revoke
+**A platform admin is not admin in anyone else's personal workspace**
+(owner's follow-up to Q5). It holds that person's own user secrets and
+GitHub token. §4.2.2 keeps every `u-` id out of `platform_reach`, §4.2.3
+keeps it out of `may_act_in`, and `/v1/admin/workspaces/{t}/roles` 404s on
+one. This design adds no route that reaches a personal workspace's contents;
+the existing `/v1/admin/*` platform operations that name a tenant id (limits,
+disabling) are unchanged and out of its scope.
+
+### 4.6 Who may grant and revoke
 
 | action | who | refused with |
 |---|---|---|
-| set or clear a person's role in a group workspace | that workspace's `admin`s; platform admins through `/v1/admin/workspaces/{t}/roles` | `ROLE_ADMINISTER_REQUIRED` (switched) |
-| set a group workspace's default | the same | the same |
-| name the **first** admin of a group workspace | platform admins only. A workspace has no admin until one is granted, and the default can never be `admin` (409 `default_role_not_allowed`) | |
-| raise oneself | nobody. A workspace admin is already at the top. A platform admin may, audited as `via: "platform_admin"` | `ROLE_SELF_GRANT` (not switchable, new route only) |
-| demote or remove oneself | allowed. The last workspace admin may step down, because platform admins can always name another. That is why there is no `LAST_WORKSPACE_ADMIN` refusal (see `admins.py`'s `LAST_ADMIN` for the platform-wide case, where nobody is above) | |
+| set or clear a person's role in a group workspace | that workspace's `admin`s; platform admins (from the workspace, or through `/v1/admin/workspaces/{t}/roles`) | `role_admin_required` |
+| set a group workspace's default (`viewer` or `member`) | the same | the same; `admin` is 409 `default_role_not_allowed` |
+| name the **first** admin of a group workspace | a platform admin, in Admin › People (Q2), audited `granted_via: "platform_admin"`. A workspace has no workspace admin until one is granted, because the default can never be `admin` | |
+| demote or remove oneself | allowed. The last workspace admin may step down, because platform admins are always admin there and can name another. That is why there is no `last_workspace_admin` refusal (see `admins.py`'s `LAST_ADMIN` for the platform-wide case, where nobody is above) | |
+| raise oneself | not a case: only an `admin` can write a role, and `admin` is the top | |
 | any role change in a personal workspace | nobody | `personal_workspace_roles_fixed` |
 
 A grant names an email. The person does not need to be a confirmed member at
-grant time. A grant to someone not in the group is stored and applies when
-they join. The response says `member: false` when the one per-group check
-(`Authenticator.is_tenant_member`, fresh) says they are not in it yet. This
-lets an admin pre-assign `viewer` to someone joining the group tomorrow, so
-they never hold `maintainer` for a day.
+grant time (Q3). A grant to someone not in the group is stored and applies
+when they join. The response says `member: false` when the one per-group
+check (`Authenticator.is_tenant_member`, fresh) says they are not in it yet.
+That lets an admin pre-assign `viewer` to someone joining the group tomorrow,
+so they never hold `member` for a day.
 
 The email must be a person. A service account is refused with
-`ROLE_PERSON_REQUIRED` (not switchable, new route only), using
+`role_person_required` (new route only), using
 `gitidentity.py::is_service_account`. A listed service-account member
 (`AuthContext.member_scope`, contract request 30) already has its own narrower
 scope, and a role must not widen it.
 
-### 4.6 Migration: everyone keeps what they have until an admin narrows it
+### 4.7 Migration: everyone keeps what they have until an admin narrows it
 
 Nothing is written on the day this ships.
 
-1. **The default with no default grant is `maintainer`.** `maintainer` is
-   defined as exactly what a member can do today (§4.1 rows 1-4). Every
-   member of every group workspace therefore holds today's powers, with
-   `default_source: "migration"`.
-2. **Every personal workspace's person is `admin`.** That is today's "owner"
-   (secrets, merge settings, code intelligence, judgment backend).
-3. **Platform admins keep every platform path** (§4.1, "Platform admins").
-4. **Every new gate on an existing route ships as a switch that is off**
-   (§4.8). Even an admin's narrowing is report-only until the owner turns
-   that action's switch on. The log line `refusal report-only
-   code=ROLE_SUBMIT_REQUIRED tenant=… email=…` shows exactly who would be
-   refused, before anyone is.
-5. **The one widening is opt-in.** A workspace admin may manage a group
-   workspace's secrets (Q6), and only a platform admin can create a
-   workspace admin.
+1. **The default with no default grant is `member`.** `member` is defined as
+   exactly what a member can do today (§4.1). Every member of every group
+   workspace therefore holds today's powers, with `default_source:
+   "migration"`.
+2. **Every personal workspace's person is `admin`.** That is today's
+   "owner" of its secrets, MCP servers and keys.
+3. **Platform admins keep every path they have**, and gain the reach of
+   §4.2. The reach ships behind `ApiSettings.platform_admin_reach`
+   (`PLATFORM_ADMIN_REACH`), **off by default**, with the reason beside the
+   value: it widens who may enter a tenant, so it goes on in dev first, is
+   exercised by the acceptance probe, and then goes on in prod, the same
+   order as the switches. Off, `platform_reach` is empty and `may_act_in`
+   never answers `"platform_admin"`, which is today's behaviour exactly.
+4. **Both refusal codes ship as switches that are off** (§4.9). Even an
+   admin's narrowing is report-only until the owner turns that code's switch
+   on. The log line `refusal report-only code=role_member_required tenant=…
+   email=…` shows exactly who would be refused, before anyone is.
+5. **The one widening for workspace people is opt-in.** A workspace admin
+   manages a group workspace's secrets (Q6), and only a platform admin can
+   create the first workspace admin.
 
 So nobody loses access unless two separate decisions are made: the owner turns
-a switch on, and an admin narrows that person. Rollout (Q10): turn switches
-on in dev; read a week of report-only lines; turn them on in prod through
-`terraform/environments/prod/prod.tfvars` `api_refusals`.
+a switch on, and an admin narrows that person. Rollout (Q10), per code: turn
+it on in dev (`terraform/environments/dev/dev.tfvars` `api_refusals`); read
+a week of report-only lines in prod; turn it on in prod
+(`terraform/environments/prod/prod.tfvars` `api_refusals`).
 
-### 4.7 What each surface does with a role
+**What three roles cost the rollout.** With two codes, every member action
+is one switch: the submit gates and the approval gates go on together. The
+first draft's five codes could stage them. The owner's Q1 and Q10 together
+choose this, and the week of report-only lines is what makes it safe: it
+names every person a switch would refuse before it refuses them.
 
+### 4.8 What each surface does with a role
+
+* **Workspace switcher** (`Spine.tsx`; `routes/tenants.py`): a platform
+  admin's list shows their memberships, then "Other workspaces (platform
+  admin)" from the reach entries. Selecting one shows a banner on every
+  screen of that workspace: "You are acting in eng as a platform admin. Every
+  action is recorded in its audit log."
 * **Approvals inbox** (`Approvals.tsx`; `routes/approvals.py`):
-  * The list stays readable by everyone (`read`).
-  * `:approve` and `:reject` first check `approve`, then today's rules
-    unchanged: a gate's `approvers` list, `second_member` holds, the
+  * The list stays readable by everyone.
+  * `:approve` and `:reject` first check `member`, read fresh, then today's
+    rules unchanged: a gate's `approvers` list, `second_member` holds, the
     last-editor rule and the `spec` admin rule.
-  * A gate's `approvers` list now narrows within approvers. A listed email
-    that holds `submitter` is refused `ROLE_APPROVE_REQUIRED`, and the
-    response's `detail.role` says so. The workspace role is the floor, and
-    the gate's list is the narrower rule on top.
-  * The screen disables both buttons when `me.capabilities` lacks `approve`,
-    showing "Your role in eng is viewer; approvers and above decide". The
-    server still decides.
+  * A gate's `approvers` list still narrows within members. A listed email
+    that holds `viewer` is refused `role_member_required`; the role is the
+    floor, and the list is the narrower rule on top.
+  * The screen disables both buttons for a `viewer`, showing "Your role in
+    eng is viewer; members decide here". The server still decides.
   * `ghapprove.py` maps the GitHub login to the member as today, then checks
-    `approve` for that member. A comment approval from a narrowed member
-    gets a reply naming the code.
+    `member` for that person. A comment approval from a `viewer` gets a reply
+    naming the code.
 * **Human-wait answers** (`human-steps.md` §4.2, not built): the route's
-  checks become: a person (`person_required`); a fresh member
-  (`not_a_member`); **then `approve`**, read fresh (`ROLE_ANSWER_REQUIRED`).
-  * The code is distinct from `ROLE_APPROVE_REQUIRED` so that the switches
-    can be turned on separately.
-  * Any member may still answer, as the owner decided in Q2. A workspace
-    can now narrow who that is, by role, without per-step assignees coming
-    back.
-  * If HW-API-ANSWER lands first, the ROLES-GATES-DECIDE lane adds the call.
-    If it lands after, HW-API-ANSWER adds it. Whichever is second carries
-    the test.
+  checks become: a person (`person_required`); `may_act_in` fresh, which a
+  member or (in a group workspace) a platform admin passes (`not_a_member`
+  otherwise); **then `member`**, read fresh (`role_member_required`). If
+  HW-API-ANSWER lands first, the ROLES-GATES-DECIDE lane adds the calls; if
+  it lands after, HW-API-ANSWER adds them. Whichever is second carries the
+  test.
 * **Agent questions** (`POST /v1/tasks/{id}/answers`): today's rule stays
-  (the submitter or a platform admin), with `submit` required on top. A
+  (the submitter or a platform admin), with `member` required on top. A
   submitter narrowed to `viewer` can no longer steer their own running task's
-  agent. `ROLE_ANSWER_REQUIRED`; `may_answer_because` names the role.
+  agent.
+* **Cancel** (Q8): `member` for any task or workflow, the caller's own
+  included. A `viewer` cancels nothing.
 * **Schedules** (`routes/schedules.py`, `schedulefire.py`):
-  * Writes need `maintain` (`ROLE_MAINTAIN_REQUIRED`).
+  * Writes need `member` (`role_member_required`).
   * **A firing submits as the stored owner and needs that owner to hold
-    `submit` now.** `schedulefire.py::member_auth`, the shape
-    `schedule_owner_auth` and `routes/runs.py::run_owner_auth` share, already
-    asks whether the owner is a member at each firing. It now also asks for
-    their role.
-  * If the owner was narrowed below `submitter`: when the switch is on, the
-    firing is skipped and the schedule auto-paused with
-    `OWNER_ROLE_NARROWED: "Paused: its owner's role in this workspace no
-    longer allows submitting; take ownership to resume"`. That mirrors
-    today's `OWNER_NOT_MEMBER` and is written to `schedule_audit`. When the
-    switch is off, the firing happens and the would-be refusal is logged.
+    `member` now.** `schedulefire.py::member_auth` already asks whether the
+    owner is a member at each firing; it now asks `may_act_in` (§4.2.3) and
+    then the owner's role.
+  * If the owner was narrowed to `viewer`: when the switch is on, the firing
+    is skipped and the schedule auto-paused with `OWNER_ROLE_NARROWED:
+    "Paused: its owner's role in this workspace is viewer; a member can take
+    ownership to resume"`, written to `schedule_audit`, mirroring today's
+    `OWNER_NOT_MEMBER`. When the switch is off, the firing happens and the
+    would-be refusal is logged.
   * Issue runs' auto approvals and CI-fix rounds (`run_owner_auth`) get the
     same check, with the run failing as `RunOwnerNotMember` does.
-* **Repositories, access, accounts**: `maintain` (`ROLE_MAINTAIN_REQUIRED`).
+* **Repositories, access, accounts**: `member` (`role_member_required`).
   Platform-only fields stay platform-only.
-* **Secrets, MCP servers, provider and git-token tenant slots, workspace
-  settings**: `administer` or a platform admin (`ROLE_ADMINISTER_REQUIRED`).
-  * `workspace_secrets.py::require_manager` becomes: personal, its person;
-    group, a workspace `admin` or a platform admin. `can_manage` follows.
-  * `POST /v1/tenants/me/credentials` gains the gate it lacks. It shares
-    `ROLE_ADMINISTER_REQUIRED`'s switch with the other `administer` gates,
-    so they are turned on together.
-  * Merge settings' `merge_settings_owner_required` keeps its own switch.
-    The owner check becomes "workspace admin (owner, for a personal
-    workspace) or platform admin".
+* **Secrets, MCP servers, tenant provider keys, git-token tenant and
+  repository slots** (Q6): `admin` (`role_admin_required`).
+  * `workspace_secrets.py::require_manager` and its twin in `mcp_servers.py`
+    become: personal, its person; group, the role `admin`, which a workspace
+    admin and a platform admin both hold. `can_manage` follows.
+  * `POST /v1/tenants/me/credentials` gains the gate it lacks.
+* **Workspace settings** (merge settings, code intelligence, judgment
+  backend, repository `context`): unchanged in this build (§4.1), pending
+  Q13. A platform admin reaching a group workspace passes their existing
+  `is_admin` checks there, as any platform admin selecting a tenant does.
 * **Admin › People** (`People.tsx`; `routes/people.py`):
   * Gets a **Workspace roles** card (`WorkspaceRolesAdmin.tsx`, new). It
     lists each registered group workspace with its default, its admins and
-    the number of overrides, plus "Name an admin", "Set default" and the
+    the number of overrides, plus "Name an admin" (Q2), "Set default" and the
     per-person list.
   * The Manage drawer for a person adds "Roles in workspaces", read from
     `GET /v1/admin/roles/person`.
-  * "Recent admin actions" shows the role events (they are `admin_audit`
-    rows already).
+  * "Recent admin actions" shows the role events and the `platform_admin_*`
+    rows (they are `admin_audit` rows already).
 * **A workspace's own people page**, `#settings/people` (new
   `WorkspacePeople.tsx`):
-  * Every member sees the default, the overrides, what each role permits
-    (from `roles`) and the last 50 role events.
-  * Admins see the controls: set a person's role (email and role), return
-    a person to the default, and set the default (never to `admin`).
+  * Every member, of any role, sees the default, the overrides, what each
+    role permits (from `roles`) and the last 50 role and platform-admin
+    events (Q7).
+  * Admins see the controls: set a person's role (email and role), return a
+    person to the default, and set the default (`viewer` or `member`).
   * A personal workspace shows "You are this workspace's admin; a personal
     workspace has only you".
   * This is a Settings route, not a `SECTIONS` tab. The issue forms' "Where"
     list (`tests/unit/scripts/test_issue_forms.py`) is unchanged.
-* **The sc plugin** (`apps/swarm-mcp/swarm_mcp/`):
-  * `swarm_tenants` and `sc whoami` show each workspace's role.
-  * `sc roles [list|set|clear|default]` calls §4.2 and requires a typed
-    confirmation of the email and role. **No MCP tool grants or revokes
-    a role** (Q11): an agent driving a person's own plugin session must not
-    be able to raise anyone, and the elicitation route
-    (`server.py::_elicit`) is for answers, not administration.
+* **The sc plugin** (`apps/swarm-mcp/swarm_mcp/`), per Q11:
+  * `swarm_tenants` and `sc whoami` show each workspace's role and `via`.
+  * **`swarm_roles`, a read-only MCP tool**, returns `GET
+    /v1/workspace/roles` for the selected workspace: the default, the
+    overrides, the caller's own role and the recent events.
+  * **`sc roles [list|set|clear|default]`** calls §4.3. `set`, `clear` and
+    `default` require the person to type the email and the role back at a
+    prompt read from the terminal (`/dev/tty`), never from arguments or
+    stdin, so a script or an agent cannot pre-supply it. A mismatch sends
+    nothing.
+  * **No MCP tool grants or revokes a role.** An agent driving a person's own
+    plugin session must not be able to raise anyone, and the elicitation
+    route (`server.py::_elicit`) is for answers, not administration.
   * A refusal's code and message are printed as the server sent them.
 
-### 4.8 Refusal codes, and which are switches
+### 4.9 Refusal codes, and which are switches
 
-Each is a `Forbidden` subclass in `errors.py` with its own code. The ones on
-existing routes are raised through `refusals.refuse` and registered in
-`refusals.SWITCHES`, default off. The ones raised only by the new routes are
-listed in `NOT_SWITCHABLE_CODES` with the reason that routes in #868 and
-LB-L10 gave: no existing caller can be refused by them, and continuing past one
-is the breach itself.
+Each is a `Forbidden` (or `Conflict`, `ValidationFailed`) subclass in
+`errors.py` with its own code, lower-case as this file's newer codes are. The
+two on existing routes are raised through `refusals.refuse` and registered in
+`refusals.SWITCHES`, default off: **one switch per code** (Q10). The ones
+raised only by new routes are listed in `NOT_SWITCHABLE_CODES` with the
+reason routes in #868 and LB-L10 gave: no existing caller can be refused by
+them, and continuing past one is the breach itself.
 
 | code | status | raised by | switch? | the Switch's `why` |
 |---|---|---|---|---|
-| `ROLE_SUBMIT_REQUIRED` | 403 | submit routes; cancel, human-ready, answers, browser-login, live control on own work; a schedule firing or run auto approval whose owner lacks `submit` | **yes**, off | on once `GET /v1/tenants/me` carries `role` and the console disables Submit for a viewer, and the report-only log names only people an admin narrowed |
-| `ROLE_APPROVE_REQUIRED` | 403 | approvals approve/reject, plan approve/edit/reject, `ghapprove` comments, cancel of others' work | **yes**, off | on once the inbox disables decisions for a role below approver, and the log names only narrowed people |
-| `ROLE_ANSWER_REQUIRED` | 403 | the human-step answer route; `POST /v1/tasks/{id}/answers` | **yes**, off | on once AwaitInputCard and QuestionsCard show the role reason |
-| `ROLE_MAINTAIN_REQUIRED` | 403 | schedules, repositories, access, accounts, live open-to-members, browser-login delete | **yes**, off | on once Schedules, Repositories and Accounts disable their writes for a role below maintainer |
-| `ROLE_ADMINISTER_REQUIRED` | 403 | secrets, MCP servers, tenant provider key, `POST /v1/tenants/me/credentials`, git-token tenant/repository slots, workspace settings, repository `context`, every role write | **yes**, off **on existing routes**. On the role write routes it is raised directly, because they are new and letting a non-admin write a role is the breach | on once the log shows no member relying on `POST /v1/tenants/me/credentials` |
-| `ROLE_SELF_GRANT` | 403 | role writes | no: new route only | |
-| `ROLE_PERSON_REQUIRED` | 403 | role writes naming a service account | no: new route only | |
+| `role_member_required` | 403 | every `member` route of §4.1 for a `viewer`: submit, cancel, decide, answer, schedules, repositories, access, accounts, live control, browser logins; a schedule firing or run auto step whose owner is a `viewer` | **yes**, off | on once `GET /v1/tenants/me` carries `role`, the console disables Submit, Approve and Cancel for a viewer, and a week of report-only lines in prod names only people an admin narrowed |
+| `role_admin_required` | 403 | on existing routes: secrets, git-token tenant/repository slots, MCP servers, tenant provider keys, `POST /v1/tenants/me/credentials`. On the new role write routes: raised directly | **yes**, off **on existing routes**. On the role write routes it is raised with `raise`, because they are new and letting a non-admin write a role is the breach | on once the report-only log shows no member relying on `POST /v1/tenants/me/credentials` and every group workspace that manages secrets has a named admin |
+| `role_person_required` | 403 | role writes naming a service account | no: new route only | |
 | `personal_workspace_roles_fixed` | 409 | role writes on a `u-` tenant | no: new route only | |
 | `default_role_not_allowed` | 409 | `PUT …/default` with `admin` | no: new route only | |
 | `role_unchanged` | 409 | a write that changes nothing | no: new route only | |
-| `unknown_role` | 422 | a role not in the five | no: new route only (body validation) | |
+| `unknown_role` | 422 | a role not among the three | no: new route only (body validation) | |
 | `role_unavailable` | 503 | a role read that failed, at a gate whose switch is on | not a 4xx | |
+| `role_signing_unavailable` | 503 | a role write with no settings key | not a 4xx | |
+| `platform_admin_audit_unavailable` | 503 | a platform admin's request in a non-member group workspace whose audit row could not be written (§4.2.4) | not a 4xx; and failing open here would be an unaudited action | |
 
-`ROLE_ADMINISTER_REQUIRED` is one code raised two ways. The guard
+`tenant_not_member` (existing) is unchanged and is what a platform admin
+gets for another person's `u-` id. Merge settings'
+`merge_settings_owner_required` keeps its own switch.
+
+`role_admin_required` is one code raised two ways. The guard
 (`test_new_refusals_ship_off.py`) keys on the code, so it is registered as a
 switch. The role routes raise it with `raise`, not `refuse`, and a test pins
-that (§6). The alternative is a second code, `ROLE_GRANT_REQUIRED`, that is
-not switchable. ROLES-API-CORE may choose it if the guard's AST collector
-cannot tell the two call sites apart. The behaviour is the same either way.
+that (§6). If the guard's AST collector cannot tell the two call sites
+apart, ROLES-API-CORE uses a second, non-switchable code,
+`role_grant_required`, on the role routes; the behaviour is the same.
 
 Every 403 body is the shape `errors.py::to_payload` already produces:
-`{"code", "message", "detail": {"tenant_id", "role", "required", "source"}}`.
-For example, the message "Your role in eng is viewer; submitting needs
-submitter or above. Ask an admin of eng (alice@saga.xyz) to change it.
-Nothing was submitted." `detail` names the workspace's admins (up to three),
-so the person knows whom to ask. That is not a leak: every member can already
-read the roster (Q7).
+`{"code", "message", "detail": {"tenant_id", "role", "required", "source",
+"admins"}}`. For example: "Your role in eng is viewer; this needs member or
+above. Ask an admin of eng (alice@saga.xyz) to change it. Nothing was
+submitted." `detail.admins` names up to three workspace admins, so the
+person knows whom to ask. That is not a leak: every member can already read
+the roster (Q7).
 
-### 4.9 Audit events
+### 4.10 Audit events
 
-The events are written to `admin_audit` in the same transaction as the grant,
-in the collection's existing `snake_case` past-tense convention
-(`workspace_secret_created`, `provider_key_set`):
+All are written to `admin_audit`, in the collection's existing `snake_case`
+past-tense convention (`workspace_secret_created`, `provider_key_set`). The
+role events are written in the same transaction as their grant.
 
 | action | when | `detail` |
 |---|---|---|
 | `workspace_role_granted` | a person's override is set | `{from, to, from_source, via, reason, member}` |
 | `workspace_role_cleared` | a person returns to the default | `{from, to: <default>, via, reason}` |
 | `workspace_default_role_set` | the default changes | `{from, to, via, reason}` |
-| `workspace_role_grant_invalid` | the reader skipped an invalid grant (once per document id per instance, so a flood writes one row per document it reads, at most 60 per read) | `{tenant_id, subject, reason: "mac" \| "shape"}`, **no document id** |
+| `workspace_role_grant_invalid` | the reader skipped an invalid grant (once per document per instance, so a flood writes at most 60 rows per read) | `{tenant_id, subject, reason: "mac" \| "shape"}`, **no document id** |
+| `platform_admin_acted` | a platform admin's write in a group workspace they are not a member of, or a stored-owner action reached that way (§4.2.4) | `{method, route, path_params, via: "platform_admin"}`, never a body |
+| `platform_admin_viewed` | the first read of a UTC hour by that admin in that workspace, per instance | `{route, hour, via: "platform_admin"}` |
 
-Each row carries `target_tenant_id` and `target_email` (absent for the
-default), `by` (the verified caller) and `at`. Refusals are not audited.
-They are log lines, as every switch's report-only line already is, and
+Each row carries `target_tenant_id`, `target_email` (role events, absent
+for the default), `by` (the verified caller) and `at`. `via` is `console`,
+`cli` or `platform_admin`. Refusals are not audited. They are log lines, as
+every switch's report-only line already is, and
 `swarm_api_role_refusals_total{code,enforced}` counts them.
 
-### 4.10 Settings › Profile
+### 4.11 Settings › Profile
 
 PROFILE-DESIGN-B shows the derived role behind one seam. This design's build
 replaces what is behind the seam, not the seam itself.
 
 * The seam reads `TenantChoice.role` from `GET /v1/tenants/mine` when the
-  field is present.
-* It falls back to the derived role when the field is absent (an older
-  API).
+  field is present, and falls back to the derived role when it is absent (an
+  older API).
+* It shows `role`, `source` and `granted_by`/`granted_at`; a reach entry
+  shows "admin (platform admin)".
 * The ROLES-UI-GATES lane makes that one change in whichever file the seam
-  has landed in, and shows `role`, `source` and `granted_by`/`granted_at`.
+  has landed in.
 
-Until this builds, Profile shows "member". Afterwards it shows "maintainer
+Until this builds, Profile shows "member". Afterwards it shows "member
 (workspace default)" for everyone, until an admin changes something.
 
-### 4.11 Changes by component, and the files each lands in
+### 4.12 Changes by component, and the files each lands in
 
 * **swarm-api**
-  * `roles.py` (new): the ladder, the capability table, `Resolver` (query,
-    verify, cache, fresh), `sign_grant`/`grant_verifies`, `write_grant`
-    (transaction with its audit row), `require(auth, capability, *,
-    fresh=False, own=False)`, `role_payload`.
-  * `routes/roles.py` (new): §4.2.
-  * `deps.py`: `workspace_role` dependency.
+  * `auth.py`: `AuthContext.platform_reach` and `tenant_via`;
+    `Authenticator._platform_reach`, the `_with_own_workspace` early-return
+    test, `_select_tenant`'s second list and 503 case, `may_act_in`,
+    `holds_platform_admin`.
+  * `admins.py`: a `fresh` argument on `holds_admin` that reads past the
+    cache.
+  * `roles.py` (new): the ladder and its table, `Resolver` (query, verify,
+    cache, fresh, the platform-admin and personal rules),
+    `sign_grant`/`grant_verifies`, `write_grant` (transaction with its audit
+    row), `require(auth, role, *, fresh=False)`, `role_payload`,
+    `audit_platform_admin`.
+  * `routes/roles.py` (new): §4.3.
+  * `deps.py`: the audit hook in `current_auth`; a `workspace_role`
+    dependency.
   * `main.py`: mount.
   * `errors.py`: the codes.
-  * `refusals.py`: five switches.
-  * `settings.py`: `role_cache_seconds` (15, beside the value with why).
+  * `refusals.py`: two switches.
+  * `settings.py`: `role_cache_seconds` (15) and `platform_admin_reach`
+    (off), each beside its value with why.
   * `metrics.py`: two counters.
-  * `routes/tenants.py`: `role` on `/me` and `/mine`, and the gate on
-    `/me/credentials`.
+  * `routes/tenants.py`: `role` and `via` on `/me` and `/mine`, and the gate
+    on `/me/credentials`.
+  * `schedulefire.py`, `routes/runs.py`: `may_act_in` and the owner's role.
   * Then one gate call per route in the files of §6's gate lanes.
 * **scheduler, reconciler, agent-worker:** none.
 * **terraform:** `terraform/modules/firestore/indexes.tf` (two indexes).
-  `terraform/environments/{dev,prod}/*.tfvars` `api_refusals` when switches
-  are turned on, which is an operator change, not a build lane.
+  `terraform/environments/{dev,prod}/*.tfvars` `api_refusals` and
+  `PLATFORM_ADMIN_REACH` when they are turned on, which is an operator change,
+  not a build lane.
 * **swarm-ui:**
-  * `WorkspacePeople.tsx` and `WorkspaceRolesAdmin.tsx` (new);
-  * `roles.ts` (new: capability helpers, `can(me, 'approve')`);
+  * `WorkspacePeople.tsx`, `WorkspaceRolesAdmin.tsx` and `roles.ts` (new:
+    `atLeast(me, 'member')`);
   * `api.ts` and `types.ts`;
   * `App.tsx` (the `#settings/people` route);
   * `People.tsx` (one card mount and the drawer section);
+  * `Spine.tsx` (the switcher's reach section and the banner);
   * then `Approvals.tsx`, `QuestionsCard.tsx`, `Submit.tsx`,
-    `Schedules.tsx`, `ScheduleDetail.tsx`, `Repositories.tsx` and the
-    Profile seam.
-* **swarm-mcp / plugin:** `server.py` (`swarm_tenants`), `sc.py` (`whoami`,
-  `roles`), `client.py`, `plugin/skills/sc/SKILL.md`, `plugin/commands/sc.md`.
+    `Schedules.tsx`, `Repositories.tsx` and the Profile seam.
+* **swarm-mcp / plugin:** `server.py` (`swarm_tenants`, `swarm_roles`),
+  `sc.py` (`whoami`, `roles`), `client.py`, `plugin/skills/sc/SKILL.md`,
+  `plugin/commands/sc.md`.
 * **docs:**
-  * `docs/workspaces.md` (§6.5 gains "Workspace roles");
-  * `docs/security.md` (the grant integrity argument);
+  * `docs/workspaces.md` (§6.5 gains "Workspace roles" and the platform-admin
+    reach);
+  * `docs/security.md` (the grant integrity argument and the reach's
+    isolation argument);
   * `docs/design/workspace-secrets.md` §10 (Q4's "until a per-tenant admin
     role exists" is answered);
-  * `docs/design/human-steps.md` §4.2 (the role check);
+  * `docs/design/human-steps.md` §4.2 (the role check, and step 3 superseded
+    for group workspaces);
   * this file.
 
-### 4.12 Failure cases
+### 4.13 Failure cases
 
 | case | what happens |
 |---|---|
 | Firestore is down at a gate whose switch is off | logged, let through (today's behaviour) |
-| Firestore is down at a gate whose switch is on | 503 `role_unavailable`; nothing written |
-| Cloud Identity is down | unchanged: tenant resolution already 503s (`auth.py::_from_claims`) before any role is read |
-| the settings key is missing in an environment | every grant fails verification. The reader treats every person as holding the default, and the default as `maintainer`. Role writes answer 503 `role_signing_unavailable` and write nothing. The resolver logs once at start. This fails toward today's behaviour, never toward wider |
-| the key rotates | `settings_key_previous` verifies older grants. A re-sign pass is not needed, because grants are append-only and the next write signs with the new key. Retire the previous key only after every tenant's newest grant postdates the rotation. `scripts/` gets no new job; `GET /v1/admin/roles/person` reports `key` for checking |
-| a person leaves the group | not a member. Their override stays, inert, and applies again if they rejoin. Q3(b) would change that |
-| a group is removed from `TENANT_GROUPS` | the workspace disappears from everyone's choices. Its grants stay, inert |
+| Firestore is down at a gate whose switch is on | 503 `role_unavailable`; nothing written. A platform admin in a group workspace is unaffected (no read) |
+| Firestore is down when a non-member platform admin acts | 503 `platform_admin_audit_unavailable`; nothing runs |
+| Cloud Identity is down | unchanged: tenant resolution already 503s (`auth.py::_from_claims`) before any role is read. An admin-group lookup failure leaves `admin_unresolved`, and a reach request answers 503, never 403 |
+| the settings key is missing in an environment | every grant fails verification. The reader treats every person as holding the default, and the default as `member`. Role writes answer 503 `role_signing_unavailable` and write nothing. This fails toward today's behaviour, never toward wider |
+| the key rotates | `settings_key_previous` verifies older grants. Grants are append-only, so the next write signs with the new key. Retire the previous key only after every tenant's newest grant postdates the rotation; `GET /v1/admin/roles/person` reports `key` for checking |
+| a person leaves the group | not a member. Their override stays, inert, and applies again if they rejoin |
+| a platform admin loses the platform role | the reach is gone on their next request (`is_admin` is resolved per request; `admin_roles` caches 15 s). A schedule they own and reach only as an admin fails `may_act_in` at its next firing and auto-pauses `OWNER_NOT_MEMBER`, as today. A grant someone gave them applies again |
+| a group is removed from `TENANT_GROUPS` | the workspace disappears from everyone's choices and from every reach. Its grants stay, inert |
+| a registered group's slug starts with `u-` | never in any reach; its members reach it as members, behind today's collision check |
 | two admins write at once | two grants with different `granted_at`; the later wins, and both are audited |
 
-### 4.13 What this does not do
+### 4.14 What this does not do
 
 * It does not let a role admit someone to a workspace, or make a personal
   workspace shareable (Q3).
+* It does not let a platform admin into anyone else's personal workspace.
 * It does not bind Google groups to roles (Q4, design B).
 * It does not let a workspace admin act on the platform: limits, pools,
   providers, other workspaces, `platform: true` repositories.
-* It does not change who may answer a human step beyond adding the role
-  floor. Per-step assignees stay declined (`human-steps.md` Q2).
+* It does not give a workspace admin the workspace settings (pending Q13).
+* It does not change who may answer a human step beyond the role floor and
+  Q5's platform admins. Per-step assignees stay declined (`human-steps.md`
+  Q2).
 * It does not close `tenant-settings-integrity.md`'s wider problem. It only
   makes the role store safe while that problem remains.
 
@@ -806,170 +1112,149 @@ Until this builds, Profile shows "member". Afterwards it shows "maintainer
 **None.** Nothing in `apps/common/swarm_common/` has to change, for these
 reasons:
 
-* **The ladder and capability table live in `swarm_api/roles.py`.** No other
-  service decides what a person may do. The scheduler dispatches tasks that
-  swarm-api already admitted. The reconciler and the worker never see a
-  person.
+* **The ladder and its table live in `swarm_api/roles.py`.** No other service
+  decides what a person may do. The scheduler dispatches tasks that swarm-api
+  already admitted. The reconciler and the worker never see a person.
+* **The platform-admin reach lives in `swarm_api/auth.py`.** It adds a list
+  beside `tenant_choices` and never touches `Principal.groups`, so the
+  frozen `resolve_tenant(principal, group_priority)` is called with exactly
+  what it is called with today, and `tenant_id_for_group` /
+  `tenant_id_for_user` are read as they are. CONTRACT.md's Cloud Identity
+  rule (iterate registered groups, `checkTransitiveMembership`,
+  `x-goog-user-project`) is untouched: the reach makes no directory call.
 * **The grant MAC is swarm-api's alone, so its canonical form is too.**
   `specsign.py`'s settings-block form (contract request 86) is in the
   contract because the scheduler verifies those blocks. Nothing outside
   swarm-api verifies a grant.
-* **`Principal`, `Tenant`, `tenant_id_for_group` and `tenant_id_for_user` are
-  read as they are.** A role is not a field of `Tenant`. Putting it there
-  would make it a field the tenant's own worker can rewrite (`models.py`'s
-  RECORD ONLY fields, contract request C of `tenant-settings-integrity.md`).
+* **A role is not a field of `Tenant`.** Putting it there would make it a
+  field the tenant's own worker can rewrite (`models.py`'s RECORD ONLY
+  fields, contract request C of `tenant-settings-integrity.md`).
+* **The audit rows need no task field.** `platform_admin_acted` names the
+  route and its path ids; a `submitted_via` on the frozen `Task` was
+  considered and is not needed.
 
 **Considered and not requested:**
 
 * a `WorkspaceRole` enum in `models.py`. The plugin and UI read role names
   as strings from the API, and the API publishes the ladder (`roles` in
-  §4.2), so nothing outside swarm-api imports it;
+  §4.3), so nothing outside swarm-api imports it;
 * a `role` field on `Principal`. `Principal` is about the caller, and a role
   is per (caller, tenant), so the field would be wrong after
   `_select_tenant`.
-
-If the owner chooses Q4(b) later (groups bound to roles), the binding is
-still swarm-api's, and that also needs no request.
 
 ---
 
 ## 6. Build plan
 
-Each lane owns the files named in its row, and no file appears in two lanes'
-rows. Every lane:
+Each lane owns the files named in its row, and **no file appears in two
+lanes' rows**. Every lane:
 
 * pushes its tests alone to the PR branch first, and its fix to
   `<branch>-fix`;
-* runs `scripts/changed-guards.sh` before finishing.
+* runs its area's unit tests and `scripts/changed-guards.sh` before
+  finishing.
 
-The CLAUDE.md review (credentials, tenant isolation, IAM) applies to
-ROLES-API-CORE, every ROLES-GATES lane, and ROLES-MCP, because each decides
-who may act in a tenant. The UI is split across two lanes to stay within
-~6 files each (`live-browser.md` §6).
+**Security review.** The CLAUDE.md review (credentials, tenant isolation,
+IAM) applies to ROLES-REACH (tenant isolation: it changes who may enter a
+tenant), ROLES-API-CORE, every ROLES-GATES lane and ROLES-MCP, because each
+decides who may act in a tenant. ROLES-REACH's review is **blocking**: no
+lane that depends on it starts until the review has reported no blocker or
+major. Lanes stay within ~6 files besides their tests (`live-browser.md` §6),
+so the UI is three lanes.
 
 | phase | lane | files | red-first tests (each fails before the change) |
 |---|---|---|---|
 | 0 | **ROLES-INDEX** (Track C) | `terraform/modules/firestore/indexes.tf`, `tests/terraform/firestore.tftest.hcl` | the plan has a composite index on `workspace_role_grants` (`tenant_id`, `subject`, `granted_at` DESC) and one on `admin_audit` (`target_tenant_id`, `at` DESC) |
-| 1 | **ROLES-API-CORE** | `apps/swarm-api/swarm_api/roles.py` (new), `routes/roles.py` (new), `deps.py`, `main.py`, `errors.py`, `refusals.py`, `settings.py`, `metrics.py`, `routes/tenants.py`, `tests/unit/control_plane/test_roles*.py` (new), `tests/unit/control_plane/test_new_refusals_ship_off.py` (only `NOT_SWITCHABLE_CODES` entries with reasons) | an empty grant set resolves every group member to `maintainer` and a personal workspace's person to `admin`; a grant with a bad MAC, another tenant's `tenant_id`, or a copied older `granted_at` does not win (compare the resolved role before and after writing it with a fake Firestore that has create/update but no list); 61 unsigned newer grants give `role_unavailable`, never a wider role; `PUT /person` by a `maintainer` is 403 `ROLE_ADMINISTER_REQUIRED` and writes nothing (documents before and after); `PUT /default {admin}` is 409; a `u-` tenant write is 409; a service account email is 403 `ROLE_PERSON_REQUIRED`; a write and its `admin_audit` row commit together (an injected failure leaves neither); no route response contains a grant document id (scan every response body in the suite); `GET /v1/tenants/mine` carries `role` per choice; `POST /v1/tenants/me/credentials` by a `maintainer` logs `refusal report-only code=ROLE_ADMINISTER_REQUIRED` with the switch off and is 403 with it on; with the switch on and Firestore failing, 503 `role_unavailable`; with it off and Firestore failing, the request goes through |
-| 2 | **ROLES-GATES-WORK** (after CORE) | `routes/tasks.py`, `routes/workflows.py`, `routes/runs.py`, `routes/live.py`, `routes/browser_logins.py`, `agent_questions.py`, their tests | with each switch on: a `viewer` is 403 `ROLE_SUBMIT_REQUIRED` on `POST /v1/tasks`, `/batch`, `/workflows`, `/runs` and nothing is written (count tasks before and after); a `submitter` cancels their own task and is 403 `ROLE_APPROVE_REQUIRED` cancelling another's; `run_owner_auth` fails a run whose creator was narrowed to `viewer`; with each switch off, all of the above go through and log the code |
-| 2 | **ROLES-GATES-DECIDE** (after CORE) | `routes/approvals.py`, `approvals.py`, `ghapprove.py`, the human-step answer route's file if HW-API-ANSWER has merged, their tests | with the switch on, a `submitter` is 403 `ROLE_APPROVE_REQUIRED` on `:approve`, `:reject`, `plan:approve`, and the item stays pending; an `approver` approves; a gate `approvers` list naming a `submitter` still refuses them; the decision reads the role fresh (a cache primed with `approver`, a grant to `viewer`, then approve: refused); a `/swarmcloud approve` comment from a narrowed member is refused with the code in the reply |
-| 2 | **ROLES-GATES-AUTOMATE** (after CORE) | `routes/schedules.py`, `schedulefire.py`, `routes/repositories.py`, `routes/access.py`, `routes/accounts.py`, their tests | with the switch on, an `approver` is 403 `ROLE_MAINTAIN_REQUIRED` on schedule create/delete/run, repository register/delete, an access grant and an account delete; a firing whose owner was narrowed to `viewer` is skipped and the schedule auto-paused `OWNER_ROLE_NARROWED`, with a `schedule_audit` row; with the switch off, it fires and logs |
-| 2 | **ROLES-GATES-SETTINGS** (after CORE) | `workspace_secrets.py`, `mcp_servers.py`, `routes/provider_keys.py`, `gittokens.py`, `mergesettings.py`, `codeintel.py`, `judgment.py`, their tests | a group workspace `admin` (not a platform admin) can create a secret and `can_manage` is true; a platform admin who is a `viewer` in the workspace still can (no path lost); a `maintainer` is refused `ROLE_ADMINISTER_REQUIRED` with the switch on; merge settings keep their own switch and accept a workspace admin |
-| 3 | **ROLES-MCP** (after CORE) | `apps/swarm-mcp/swarm_mcp/server.py`, `sc.py`, `client.py`, `plugin/skills/sc/SKILL.md`, `plugin/commands/sc.md`, `tests/unit/mcp/` files for each | `swarm_tenants` output carries each workspace's role; `sc roles set` without the typed confirmation sends nothing (a fake transport records no request); no MCP tool's schema names a role-write route (scan the registered tools) |
-| 3 | **ROLES-UI-PEOPLE** (after CORE) | `apps/swarm-ui/src/WorkspacePeople.tsx` (new), `WorkspaceRolesAdmin.tsx` (new), `roles.ts` (new), `api.ts`, `types.ts`, `App.tsx`, `People.tsx`, their `__tests__` | `#settings/people` renders the roster for a `viewer` with no controls and with controls for an `admin`; the default selector offers no `admin`; Admin › People shows the Workspace roles card and the drawer's roles; a personal workspace shows the fixed-admin line |
-| 4 | **ROLES-UI-GATES** (after UI-PEOPLE) | `Approvals.tsx`, `QuestionsCard.tsx`, `Submit.tsx`, `Schedules.tsx`, `Repositories.tsx`, the Profile seam's file, their `__tests__` | a `viewer` sees Approve/Reject disabled with the role sentence; Submit is disabled for a `viewer`; Profile shows the stored role and its source, and the derived one when `role` is absent |
+| 1 | **ROLES-REACH** (security review, blocking) | `apps/swarm-api/swarm_api/auth.py`, `admins.py`, `settings.py` (both new settings, `platform_admin_reach` and CORE's `role_cache_seconds`, so CORE need not touch it), `tests/unit/control_plane/test_platform_admin_reach.py` (new), `tests/unit/control_plane/test_tenant_switcher.py` (new cases only) | with `platform_admin_reach` on, against fake directory and settings: **(1) a platform admin selects a group workspace they are not in** (`X-Swarm-Tenant: eng`, Cloud Identity says no for `eng@`): the request succeeds with `tenant_id == "eng"`, `tenant_principal == "eng@saga.xyz"`, `tenant_via == "platform_admin"`, and the directory fake records **no** extra call; **(2) a platform admin is refused any personal workspace but their own**: `X-Swarm-Tenant: u-carol` is 403 `tenant_not_member` with today's message, a registered group `u-carol@saga.xyz` is not in `platform_reach`, and the admin's own `u-` still selects with `tenant_via == ""`; **(3) a non-admin is still membership-checked**: the same `eng` header from a non-admin is 403 `tenant_not_member`, `platform_reach` is empty, and the directory fake records exactly one `checkTransitiveMembership` per registered group with `x-goog-user-project`. Also: a headerless request from a platform admin lands in the same default tenant as before the change; `admin_unresolved` with a reach header is 503, not 403; with the setting off every case above behaves as today; `may_act_in` answers `"platform_admin"` for a group tenant and `""` for a `u-` tenant; `holds_admin(fresh=True)` reads past the cache |
+| 2 | **ROLES-API-CORE** (after REACH) | `apps/swarm-api/swarm_api/roles.py` (new), `routes/roles.py` (new), `deps.py`, `main.py`, `errors.py`, `refusals.py`, `metrics.py`, `routes/tenants.py`, `tests/unit/control_plane/test_roles*.py` (new), `tests/unit/control_plane/test_new_refusals_ship_off.py` (only `NOT_SWITCHABLE_CODES` entries with reasons) | an empty grant set resolves every group member to `member` and a personal workspace's person to `admin`; a platform admin resolves to `admin` in a group workspace with no grant read (the fake records no query) and a grant naming them `viewer` changes nothing; a grant with a bad MAC, another tenant's `tenant_id`, or a copied older `granted_at` does not win (a fake Firestore with create/update but no list); a `"*"` grant with role `admin` is skipped; 61 unsigned newer grants give `role_unavailable`, never a wider role; `PUT /person` by a `member` is 403 `role_admin_required` and writes nothing (documents before and after); `PUT /default {admin}` is 409; a `u-` tenant write is 409; a service account is 403 `role_person_required`; a write and its `admin_audit` row commit together (an injected failure leaves neither); no response contains a grant document id (scan every body in the suite); **a non-member platform admin's `POST` writes one `platform_admin_acted` row before the route body runs, with the route template and no body field, and an injected audit failure gives 503 `platform_admin_audit_unavailable` with the route body never called; a second `GET` in the same hour writes no second `platform_admin_viewed` row; a member platform admin writes none**; `GET /v1/tenants/mine` carries `role` and `via`; `POST /v1/tenants/me/credentials` by a `member` logs `refusal report-only code=role_admin_required` with the switch off and is 403 with it on; switch on and Firestore failing gives 503 `role_unavailable`, switch off lets it through |
+| 3 | **ROLES-GATES-WORK** (after CORE) | `routes/tasks.py`, `routes/workflows.py`, `routes/runs.py`, `routes/live.py`, `routes/browser_logins.py`, `agent_questions.py`, their tests | with the switch on: a `viewer` is 403 `role_member_required` on `POST /v1/tasks`, `/batch`, `/workflows`, `/runs`, and nothing is written (count tasks before and after); a `viewer` cannot cancel their own task or another's; a `member` cancels another's; `run_owner_auth` fails a run whose creator was narrowed to `viewer`, and advances one whose creator is a non-member platform admin with a `platform_admin_acted` row; with the switch off, all of the above go through and log the code |
+| 3 | **ROLES-GATES-DECIDE** (after CORE) | `routes/approvals.py`, `approvals.py`, `ghapprove.py`, the human-step answer route's file if HW-API-ANSWER has merged, their tests | with the switch on, a `viewer` is 403 `role_member_required` on `:approve`, `:reject`, `plan:approve`, and the item stays pending; a `member` approves; a non-member platform admin approves through the reach, and a gate `approvers` list that does not name them still refuses them; a gate `approvers` list naming a `viewer` still refuses them; the decision reads the role fresh (a cache primed with `member`, a grant to `viewer`, then approve: refused); a `/swarmcloud approve` comment from a `viewer` is refused with the code in the reply |
+| 3 | **ROLES-GATES-AUTOMATE** (after CORE) | `routes/schedules.py`, `schedulefire.py`, `routes/repositories.py`, `routes/access.py`, `routes/accounts.py`, their tests | with the switch on, a `viewer` is 403 `role_member_required` on schedule create/delete/run, repository register/delete, an access grant and an account delete, and a `member` is not; a firing whose owner was narrowed to `viewer` is skipped and the schedule auto-paused `OWNER_ROLE_NARROWED`, with a `schedule_audit` row; a firing whose owner is a non-member platform admin fires, with a `platform_admin_acted` row, and pauses `OWNER_NOT_MEMBER` once they lose the platform role; with the switch off, it fires and logs |
+| 3 | **ROLES-GATES-ADMIN** (after CORE) | `workspace_secrets.py`, `mcp_servers.py`, `routes/provider_keys.py`, `gittokens.py`, their tests. **If Q13 is (a)**, also `mergesettings.py`, `codeintel.py`, `judgment.py` | a group workspace `admin` (not a platform admin) creates a secret, registers an MCP server and sets the tenant provider key, and `can_manage` is true; a non-member platform admin can too, with a `platform_admin_acted` row; a `member` is refused `role_admin_required` with the switch on and logged with it off; a personal workspace's person still manages theirs and nobody else can select it |
+| 4 | **ROLES-MCP** (after CORE) | `apps/swarm-mcp/swarm_mcp/server.py`, `sc.py`, `client.py`, `plugin/skills/sc/SKILL.md`, `plugin/commands/sc.md`, `tests/unit/mcp/` files for each | `swarm_tenants` output carries each workspace's role and `via`; `swarm_roles` returns the roster and calls only `GET /v1/workspace/roles` (a fake transport records one GET); `sc roles set` without the typed confirmation, or with it supplied on stdin, sends nothing (a fake transport records no request); no MCP tool's schema or handler reaches a role-write route (scan the registered tools and the client calls they make) |
+| 4 | **ROLES-UI-PEOPLE** (after CORE) | `apps/swarm-ui/src/WorkspacePeople.tsx` (new), `roles.ts` (new), `api.ts`, `types.ts`, `App.tsx`, their `__tests__` | `#settings/people` renders the roster and events for a `viewer` with no controls, and with controls for an `admin`; the default selector offers `viewer` and `member` only; a personal workspace shows the fixed-admin line |
+| 5 | **ROLES-UI-ADMIN** (after UI-PEOPLE) | `WorkspaceRolesAdmin.tsx` (new), `People.tsx`, `Spine.tsx`, their `__tests__` | Admin › People shows the Workspace roles card with "Name an admin" and the drawer's roles; a platform admin's switcher lists reach workspaces under their own heading, and selecting one shows the platform-admin banner; a non-admin's switcher is unchanged |
+| 5 | **ROLES-UI-GATES** (after UI-PEOPLE) | `Approvals.tsx`, `QuestionsCard.tsx`, `Submit.tsx`, `Schedules.tsx`, `Repositories.tsx`, the Profile seam's file, their `__tests__` | a `viewer` sees Approve/Reject disabled with the role sentence; Submit and Cancel are disabled for a `viewer`; Profile shows the stored role and its source, "admin (platform admin)" for a reach entry, and the derived role when `role` is absent |
 | each | **ROLES-DOCS** | `docs/workspaces.md`, `docs/security.md`, `docs/design/workspace-secrets.md`, `docs/design/human-steps.md`, this file | `test_docs_describe_what_was_built`, where it reads these files |
-| 5 | **ROLES-ACCEPT** (after GATES and the dev switches) | `tests/acceptance/` one probe, its workflow wiring | with a dev acceptance identity granted `viewer` in a test workspace: `POST /v1/tasks` is 403 `ROLE_SUBMIT_REQUIRED`, `GET /v1/tasks` is 200, and the grant and its revocation each appear in `GET /v1/workspace/roles` `audit` |
+| 6 | **ROLES-ACCEPT** (after GATES, and the dev switches and reach on) | `tests/acceptance/` one probe, its workflow wiring | with a dev acceptance identity granted `viewer` in a test workspace: `POST /v1/tasks` is 403 `role_member_required`, `GET /v1/tasks` is 200, and the grant and its revocation each appear in `GET /v1/workspace/roles` `audit`; with a dev platform-admin identity outside the test workspace's group: selecting it succeeds, a write appears as `platform_admin_acted`, and selecting another identity's `u-` workspace is 403 `tenant_not_member` |
 
-Order:
+Order and dependencies:
 
-1. ROLES-INDEX and ROLES-API-CORE, in parallel.
-2. The four GATES lanes, in parallel. No two share a file: `routes/runs.py`
-   is WORK's, and `schedulefire.py` is AUTOMATE's.
-3. ROLES-MCP and ROLES-UI-PEOPLE, in parallel; then ROLES-UI-GATES.
-4. The operator turns the five switches on in dev (`dev.tfvars`
-   `api_refusals`), then ROLES-ACCEPT goes green.
-5. A week of report-only lines in prod. Then the switches go on in prod.
+1. ROLES-INDEX and ROLES-REACH, in parallel. REACH's security review must
+   report no blocker or major before step 2.
+2. ROLES-API-CORE (it reads `tenant_via` and `may_act_in`).
+3. The four GATES lanes, in parallel. No two share a file: `routes/runs.py`
+   is WORK's, `schedulefire.py` is AUTOMATE's, `auth.py` is REACH's.
+4. ROLES-MCP and ROLES-UI-PEOPLE, in parallel; then ROLES-UI-ADMIN and
+   ROLES-UI-GATES, in parallel.
+5. The operator turns on `PLATFORM_ADMIN_REACH` and the two switches in dev
+   (`dev.tfvars`), then ROLES-ACCEPT goes green.
+6. A week of report-only lines in prod, per code. Then each switch, and the
+   reach, go on in prod.
 
-The change touches admission's front door (submissions), so step 4 also
-runs `make smoke concurrency-test race-test` against dev. That is the
-operator's step, run in CI.
+The change touches admission's front door (submissions) and tenant
+resolution, so step 5 also runs `make smoke concurrency-test race-test`
+against dev. That is the operator's step, run in CI.
 
 ---
 
 ## 7. Owner questions
 
-Each is also in this lane's `questions.json`. The recommendation is first.
+### 7.1 Answered on 2026-10-18 (PR 1526's comments)
 
-**Q1. The role set:**
+| # | question | answer | where it lands |
+|---|---|---|---|
+| Q1 | the role set | **three roles, viewer < member < admin** (departs from the five-role recommendation); member = today's member exactly; admin = member + Q6 + roles | §3.3, §4.1, §4.9 |
+| Q2 | who names a group workspace's first admin | a platform admin, in Admin › People, audited | §4.3, §4.6 |
+| Q3 | may a grant admit, or share a personal workspace | no; Google owns membership; a grant to a non-member is stored and applies when they join (`member: false`); a personal workspace's person is its fixed admin | §4.5, §4.6 |
+| Q4 | Google groups bound to roles | not in this build; one default per workspace plus per-person overrides | §3.2 |
+| Q5 | a platform admin in a workspace | **admin in every group workspace, member or not, no grant row** (departs from the recommendation); not in personal workspaces; tenant resolution lets them select any registered group workspace; every action in a non-member workspace audited `via=platform_admin` | §4.2 |
+| Q6 | may a workspace admin manage secrets, MCP servers and tenant keys | yes | §4.1, §4.8 |
+| Q7 | who sees the roster and role events | every member, any role | §4.3, §4.8 |
+| Q8 | who may cancel someone else's work | member or above; viewers cancel nothing | §4.1, §4.8 |
+| Q9 | ship before tenant-settings-integrity design B | yes, with signed, append-only grants under unguessable ids | §4.4 |
+| Q10 | turning refusals on | one switch per code, off at ship; dev first; a week of report-only lines in prod; then prod | §4.7, §4.9 |
+| Q11 | granting from the plugin | `sc roles` with a typed confirmation, and a read-only MCP tool; no MCP write tool | §4.8 |
 
-* (a) **Five roles on one ladder: viewer < submitter < approver < maintainer
-  < admin.** Recommended: each role is one word on every screen; maintainer
-  is exactly today's member; approver is the issue's own example.
-* (b) Three roles: viewer, member, admin. Simpler, but there is no role that
-  can approve without also managing schedules and repositories.
-* (c) Capability sets per person (design C). Allows separation of duty
-  (approve but not submit), at the cost of a role nobody can name.
+### 7.2 Left open by those answers
 
-**Q2. Who names the first admin of a group workspace?**
+These are also in this lane's `questions.json`. The recommendation is first,
+and the design as written follows it where the answers above did not decide.
 
-* (a) **A platform admin, in Admin › People.** Recommended: it is one click,
-  it is audited, and no workspace starts with a self-appointed admin.
-* (b) A deploy-time list beside `TENANT_GROUPS` (`TENANT_GROUP_ADMINS`),
-  seeded as grants `via: "config"`. It needs no click, but a role change then
-  needs a deploy.
-* (c) No workspace admins: only platform admins manage roles. The smallest
-  change, but every narrowing goes through the platform team.
+**Q12. What does the platform-admin audit record for reads, and for a
+platform admin who is also a narrowed member?** Q5 says every action in a
+group workspace a platform admin is not a member of is audited; it does not
+say whether a read is an "action", nor what happens when a platform admin
+who *is* a member, narrowed to `viewer`, acts with `admin` powers.
 
-**Q3. May a role grant admit someone who is not in the workspace's Google
-group, or make a personal workspace shareable?**
+* (a) **Every write audited per request, fail closed; reads one row per
+  (admin, workspace, hour); and the same rows for a member whose own role
+  would have refused the action.** Recommended: it records that an admin
+  looked without a row per console poll, and an admin cannot escape the
+  audit by being added to the group as a viewer. §4.2.4 is written to this,
+  except the narrowed-member rows, which ROLES-API-CORE adds if (a) is
+  chosen.
+* (b) Every request audited, reads included, one row each. Complete, but a
+  console that polls writes thousands of rows an hour per admin, and the
+  workspace's audit list fills with reads.
+* (c) Writes only, and only for non-members: the literal minimum of Q5.
 
-* (a) **No: membership comes from Google, and a role only narrows or
-  widens what a member does.** Recommended: `X-Swarm-Tenant`, tenant
-  resolution and invariant 9 stay as they are.
-* (b) Yes: a grant admits. This changes `tenant_choices`, makes personal
-  workspaces multi-person, and needs its own design for whose secrets and
-  GCS prefix a guest's work uses.
+**Q13. Do workspace settings belong to a workspace admin?** Q1 defined admin
+as "member + Q6's powers + granting and revoking roles", and Q6 named
+secrets, MCP servers and tenant provider keys. Merge settings, code
+intelligence, the judgment backend and a repository's `context` are none of
+those. Today they are "owner or platform admin", so in a group workspace only
+a platform admin can change them (and merge settings, with their switch off,
+anyone).
 
-**Q4. Google groups bound to roles (design B), for example
-`eng-approvers@ → approver`?**
-
-* (a) **Not now. Per-person overrides and one default, with groups as a
-  later lane.** Recommended: no extra Cloud Identity calls, and every change
-  is audited in the platform.
-* (b) Yes, in this build. Each bound group costs one `checkTransitiveMembership`
-  per caller per 120 s, and its changes happen outside the audit log.
-
-**Q5. A platform admin in a workspace:**
-
-* (a) **Holds that workspace's role like anyone, keeps every platform-admin
-  path that exists today, and may grant themselves a role, audited.**
-  Recommended: consistent with approvals' and human steps' "no admin bypass".
-* (b) Is implicitly `admin` in every workspace they are a member of.
-* (c) Is implicitly `admin` in every workspace, member or not.
-
-**Q6. May a group workspace's `admin` manage its secrets, MCP servers and
-tenant keys (today platform admins only, workspace-secrets Q4)?**
-
-* (a) **Yes.** Recommended: Q4 was decided "until a per-tenant admin role
-  exists", and this is that role. Only a platform admin can create the first
-  one.
-* (b) No: secrets stay platform-admin-only, and a workspace admin manages
-  roles and settings only.
-
-**Q7. Who may see a workspace's roster and role events?**
-
-* (a) **Every member, any role.** Recommended: a refused person can see whom
-  to ask, and the roster lists only overrides, never the whole group.
-* (b) Workspace admins and platform admins only.
-
-**Q8. Who may cancel someone else's task or workflow (today any member)?**
-
-* (a) **Approver and above.** Recommended: whoever is trusted to judge work
-  is trusted to stop it.
-* (b) Maintainer and above.
-* (c) Submitter and above, which is nearly today's behaviour.
-
-**Q9. Ship before tenant-settings-integrity's design B removes the worker's
-Firestore access?**
-
-* (a) **Yes, with signed append-only grants (§4.3).** Recommended: a worker
-  can neither forge, replay nor find a grant. The residual is a denial of
-  service, which is alerted.
-* (b) No: wait for ISO-IAM, then store plain grants.
-
-**Q10. Turning the refusals on:**
-
-* (a) **Per-code switches, off at ship; dev on first; a week of
-  report-only lines in prod; then prod on.** Recommended: it is reversible
-  per action without a deploy.
-* (b) One switch, `WORKSPACE_ROLES_ENFORCED`, for all five. It is simpler to
-  operate, but it cannot turn on submit gates before approval gates.
-
-**Q11. Granting and revoking from the plugin:**
-
-* (a) **The `sc roles` CLI with a typed confirmation, and no MCP tool.**
-  Recommended: an agent in a person's session cannot raise anyone.
-* (b) An MCP tool that requires a host elicitation prompt, as
-  `swarm_account_remove` does.
-* (c) Console only.
+* (a) **Yes: a workspace admin also changes its merge settings, code
+  intelligence, judgment backend and repository `context`.** Recommended: it
+  is the workspace's own configuration, a workspace admin already holds its
+  secrets (more sensitive), and otherwise every group workspace still needs a
+  platform admin for its merge policy. ROLES-GATES-ADMIN adds
+  `mergesettings.py`, `codeintel.py` and `judgment.py` (§6).
+* (b) No: they stay platform-admin-only in group workspaces, as written in
+  §4.1. The smaller change.
+* (c) Merge settings only, because they decide how its PRs land; code
+  intelligence and the judgment backend, which spend money, stay with
+  platform admins.
