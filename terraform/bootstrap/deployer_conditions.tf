@@ -354,7 +354,8 @@ locals {
   # deployer's own roles are among the refused: they are granted by this root,
   # which the owner applies, never by CI. Re-read 2026-09-25 08:52 UTC: 67
   # distinct roles in the policy, and with swarmSecretLister off the list, 14
-  # grantable and 53 refused.
+  # grantable until #1430 and 53 refused. #1430 turned swarmGithubHooksDedup
+  # on, so the list makes 15 grantable once the owner applies it.
   #
   # NOT SCOPED BY THIS: two of the listed roles also have a member that is not
   # ours -- roles/logging.logWriter and roles/monitoring.metricWriter are held
