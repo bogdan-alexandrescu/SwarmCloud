@@ -201,6 +201,25 @@ logged); the file is removed when the agent has finished. jev-browser sends
 page text and labels to TypeSafe (api.typesafe.ai) only on the `typesafe`
 backend, which the owner accepted.
 
+THE CALLER'S MCP SERVERS (docs/design/registered-mcp-servers.md §4.7,
+lane MCP-RUNNERS, part of #1433). When the worker attached the servers the
+task's signed input names and serves its relay (`agent_worker.mcp_relay`), it
+sets `SWARM_MCP_RELAY`, the path of a 0600 file in `private/`, and only then:
+each server is written into the same `--mcp-config` as an `http` entry whose
+URL is the relay's loopback path and whose one header is the per-attempt
+LOCAL token (`write_mcp_config`), and the prompt gains one line per server
+(`mcp_servers_note`). The caller's credential is never in that file, this
+process or the CLI's environment: the relay adds it on the way out. The
+config is in `work/`, which checkpoints carry, and that is deliberate: a
+loopback URL and a token nothing outside this pod can reach and nothing after
+this attempt accepts (§4.7 step 5). Measured against the pinned 2.1.283 with
+a loopback fake (tests/unit/worker/test_mcp_runner_config.py): the entry is
+accepted, the server's tools reach the model as `mcp__<name>__<tool>`, and
+the repository's own `.mcp.json` IS loaded under `--print` (no
+`--strict-mcp-config` here), with this config's server winning a name both
+declare. While SWARM_MCP_SERVERS is off no task names a server, nothing is
+attached, and nothing here changes.
+
 WHY BASH STDIN IS /dev/null (#750, owner decision 2026-10-06). A Bash command
 that read stdin with nothing attached sat until the Bash timeout killed it:
 the CLI adds `< /dev/null` itself only to a command with no heredoc and no `<`
@@ -220,8 +239,18 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from swarm_common.models import (
+    MCP_SERVER_NAME as REGISTERED_MCP_SERVER_NAME,
+    RESERVED_MCP_SERVER_NAMES,
+    RESERVED_MCP_SERVER_PREFIX,
+)
+
 from .. import browser_tools, graphstage
 from ..children import git_shim_argv, search_shim_argv
+from ..mcp_attach import MAX_SERVERS as MAX_MCP_SERVERS
+from ..mcp_attach import RELAY_ENV as MCP_RELAY_ENV
+from ..mcp_relay import LOOPBACK as MCP_RELAY_HOST
+from ..mcp_relay import PATH_PREFIX as MCP_RELAY_PATH
 from ..gitmcp.server import SERVER_NAME as GIT_MCP_SERVER_NAME
 from ..gitmcp.server import SPOOL_ENV as GIT_SPOOL_ENV
 from ..searchmcp.server import SERVER_NAME as SEARCH_MCP_SERVER_NAME
@@ -231,7 +260,7 @@ from ..jevkey import BACKEND_ENV as JEV_BACKEND_ENV
 from ..jevkey import INTERNAL_BACKENDS as JEV_INTERNAL_BACKENDS
 from ..jevkey import KEY_FILE_ENV as JEV_KEY_FILE_ENV
 from ..logs import StructuredLogger
-from .base import RunnerContext, run_runner
+from .base import RunnerContext, RunnerFailure, run_runner
 from .cliagent import CliAgentSpec, agent_working_directory, run_cli_agent
 
 #: The CLI's documented switch for every background-task feature: the Bash and
@@ -576,6 +605,86 @@ def write_headless_settings(directory: Path) -> Path:
     return path
 
 
+#: The relay file is the worker's (`mcp_attach.McpAttachment.start`): a token,
+#: at most MAX_MCP_SERVERS servers and their descriptions. Anything larger is
+#: not its.
+MAX_RELAY_FILE_BYTES = 16 * 1024
+#: `secrets.token_urlsafe(32)` (`mcp_relay.Relay`), with room either side.
+_RELAY_TOKEN = re.compile(r"[A-Za-z0-9_-]{32,128}")
+_RELAY_URL = re.compile(
+    re.escape(f"http://{MCP_RELAY_HOST}:") + r"[1-9][0-9]{0,4}" + re.escape(MCP_RELAY_PATH)
+    + r"(?P<name>[a-z][a-z0-9-]{0,30})")
+#: The header the relay checks the local token in, bearer scheme (§4.8).
+MCP_RELAY_HEADER = "Authorization"
+
+
+@dataclasses.dataclass(frozen=True)
+class RelayServer:
+    """One attached server as a runner is handed it: never a credential."""
+
+    name: str
+    url: str
+    description: str = ""
+
+
+def relay_servers(environ: Any = None) -> tuple[str, list[RelayServer]]:
+    """`(local token, servers)` from the worker's relay file, or `("", [])`
+    when the attempt was attached none (`SWARM_MCP_RELAY` unset).
+
+    The file is the worker's, in `private/`, but it is read like anything a
+    runner is pointed at: no link followed, bounded, every field checked. A
+    URL that is not the relay's loopback path for that name, a name a
+    platform server owns, or a file that cannot be read is a RunnerFailure:
+    the worker attached these servers because the caller named them, and an
+    agent run without one would build on knowledge it was told it had (§4.7
+    step 2), so it does not start.
+    """
+    env = os.environ if environ is None else environ
+    raw_path = str(env.get(MCP_RELAY_ENV, "") or "").strip()
+    if not raw_path:
+        return "", []
+    path = Path(raw_path)
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_RELAY_FILE_BYTES:
+            raise RunnerFailure("mcp_relay_unreadable: not the worker's relay file")
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        raise RunnerFailure("mcp_relay_unreadable: the relay file did not parse") from None
+    token = data.get("token") if isinstance(data, dict) else None
+    items = data.get("servers") if isinstance(data, dict) else None
+    if not isinstance(token, str) or not _RELAY_TOKEN.fullmatch(token):
+        raise RunnerFailure("mcp_relay_unreadable: no local token")
+    if not isinstance(items, list) or not 1 <= len(items) <= MAX_MCP_SERVERS:
+        raise RunnerFailure("mcp_relay_unreadable: no servers")
+    servers: list[RelayServer] = []
+    for item in items:
+        name = item.get("name") if isinstance(item, dict) else None
+        url = item.get("url") if isinstance(item, dict) else None
+        match = _RELAY_URL.fullmatch(url) if isinstance(url, str) else None
+        if (not isinstance(name, str) or not REGISTERED_MCP_SERVER_NAME.fullmatch(name)
+                or name in RESERVED_MCP_SERVER_NAMES
+                or name.startswith(RESERVED_MCP_SERVER_PREFIX)
+                or match is None or match.group("name") != name
+                or any(s.name == name for s in servers)):
+            raise RunnerFailure("mcp_relay_unreadable: a server is not the relay's")
+        description = item.get("description")
+        description = " ".join(description.split()) if isinstance(description, str) else ""
+        servers.append(RelayServer(name=name, url=url, description=description))
+    return token, servers
+
+
+def mcp_servers_note(servers: list[RelayServer]) -> str:
+    """The prompt's line per attached server (§4.7 step 4): its name, its
+    registered description, and where its tools are listed."""
+    lines = []
+    for server in servers:
+        about = f" ({server.description.rstrip('.')})" if server.description else ""
+        lines.append(
+            f"The MCP server `{server.name}`{about} is connected for this task: its "
+            f"tools are listed under the MCP server `{server.name}`.")
+    return "\n".join(lines)
+
+
 def write_mcp_config(
     directory: Path,
     endpoint: str | None = None,
@@ -587,6 +696,7 @@ def write_mcp_config(
     graph_snapshot: str | None = None,
     graph_workdir: str | None = None,
     graph_served: tuple[str, str, str] | None = None,
+    relay: tuple[str, list[RelayServer]] | None = None,
 ) -> Path:
     """Write the CLI's `--mcp-config` and return it: Playwright MCP on the live
     browser when `endpoint` is given, and jev-browser beside it when `jev` is
@@ -595,7 +705,10 @@ def write_mcp_config(
     it, an internal backend: the wrapper started directly, no key), the `swarm-git` shim when `git_spool` is, the
     `swarm-search` shim when `search_spool` is, `swarm-graph` when
     `graph_snapshot` (the staged directory) is, or the graph shim when
-    `graph_served` (`graphstage.served_env`: pin, ticket file, URL) is.
+    `graph_served` (`graphstage.served_env`: pin, ticket file, URL) is, and
+    each of the caller's registered servers when `relay` (`relay_servers`) is:
+    an `http` entry at the relay's loopback URL whose one header carries the
+    LOCAL token, never the caller's credential (module docstring).
 
     Playwright MCP connects with its client tag on the endpoint
     (`browser_tools.tag_endpoint`), so the gate can say which tool drove the
@@ -642,6 +755,11 @@ def write_mcp_config(
     elif graph_snapshot:
         command, *args = graphstage.server_argv(graph_snapshot, graph_workdir)
         servers[graphstage.SERVER_NAME] = {"type": "stdio", "command": command, "args": args}
+    if relay:
+        token, attached = relay
+        for server in attached:
+            servers[server.name] = {"type": "http", "url": server.url,
+                                    "headers": {MCP_RELAY_HEADER: f"Bearer {token}"}}
     config = {"mcpServers": servers}
     path = directory / MCP_CONFIG_NAME
     _write_private(path, json.dumps(config, indent=2) + "\n")
@@ -812,6 +930,13 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     if unstaged and isinstance(prompt, str) and prompt.strip():
         prompt = f"{prompt.rstrip()}\n\n{unstaged}"
         ctx.payload = {**ctx.payload, "prompt": prompt}
+    # The caller's registered MCP servers, through the worker's relay
+    # (MCP-RUNNERS): the local token and loopback URLs only, and a line each
+    # in the prompt. None unless the worker attached one.
+    relay = relay_servers()
+    if relay[1] and isinstance(prompt, str) and prompt.strip():
+        prompt = f"{prompt.rstrip()}\n\n{mcp_servers_note(relay[1])}"
+        ctx.payload = {**ctx.payload, "prompt": prompt}
     # A resumed live-browser attempt: what the earlier one did, after the
     # caller's prompt (RESUME-PROGRESS; `resume_summary`). A new dict, as below.
     resumed = resume_summary(env.get(HANDOFF_ENV, ""))
@@ -861,7 +986,7 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         if isinstance(prompt, str) and prompt.strip():
             ctx.payload = {**ctx.payload, "prompt": f"{prompt.rstrip()}\n\n{note}"}
     # ONE `--mcp-config` for every server this attempt has (module docstring).
-    if live_endpoint or git_spool or search_spool or graph_snapshot or graph_served:
+    if live_endpoint or git_spool or search_spool or graph_snapshot or graph_served or relay[1]:
         mcp = write_mcp_config(
             Path(ctx.work_dir) / SETTINGS_DIR_NAME, live_endpoint or None,
             git_spool=git_spool or None, search_spool=search_spool or None,
@@ -869,7 +994,7 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
             graph_snapshot=graph_snapshot or None,
             graph_workdir=(str(ctx.repo_dir) if (graph_snapshot or graph_served) and ctx.repo_dir
                            else None),
-            graph_served=graph_served)
+            graph_served=graph_served, relay=relay if relay[1] else None)
         extra += ["--mcp-config", str(mcp)]
     try:
         return run_cli_agent(ctx, spec, extra_args=extra, extra_env=env)
