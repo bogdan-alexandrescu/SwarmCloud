@@ -185,3 +185,59 @@ class KeyLinkInvalid(Forbidden):
     link ever proves anyway -- it grants nothing that session could not do."""
 
     code = "KEY_LINK_INVALID"
+
+
+# --------------------------------------------------------------------------
+# The user profile (docs/design/user-profile.md §4.2-§4.5; lane PROFILE-STORE)
+# --------------------------------------------------------------------------
+
+#: What a person reads when their preferences could not be read (Q9): what
+#: happened, that nothing was submitted, and every way to name a workspace.
+PREFERENCES_UNAVAILABLE_MESSAGE = (
+    "Your SwarmCloud preferences could not be read, so your default workspace is "
+    "not known and nothing was submitted. Name a workspace and retry: choose one "
+    "in the console's workspace switcher, set SWARM_TENANT or the /sc plugin's "
+    "tenant option, or pass --tenant to swarm."
+)
+
+
+class PreferencesUnavailable(UpstreamUnavailable):
+    """The caller's `user_preferences` document could not be read (§4.5, Q9).
+
+    A 503 and never a guess: a headerless request whose default workspace is
+    unknown is refused rather than run in the computed default, which would
+    misfile work into a workspace the person did not choose."""
+
+    code = "preferences_unavailable"
+
+    def __init__(self, message: str = PREFERENCES_UNAVAILABLE_MESSAGE, **kwargs: Any) -> None:
+        super().__init__(message, **kwargs)
+
+
+class PreferencesChanged(Conflict):
+    """A save whose `revision` is not the stored one (§4.2): another tab saved
+    first. Nothing is stored; the page reloads, so two tabs never silently
+    overwrite each other."""
+
+    code = "preferences_changed"
+
+
+class DisplayNameInvalid(ValidationFailed):
+    """A display name that breaks §4.4 rules 1-4: its length, a character
+    outside letters, marks, spaces and `.'-`, or letters from two scripts.
+    The message names the rule."""
+
+    code = "display_name_invalid"
+
+
+class DisplayNameReserved(ValidationFailed):
+    """A display name with a word that reads as a platform role (§4.4 rule 5)."""
+
+    code = "display_name_reserved"
+
+
+class DisplayNameTaken(ValidationFailed):
+    """A display name equal to, or containing, another person's (§4.4 rule 6).
+    The message never names the person whose name it collided with."""
+
+    code = "display_name_taken"
