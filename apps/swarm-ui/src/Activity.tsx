@@ -610,6 +610,8 @@ export function ActivityScreen({
  * on the unfiltered page is worse than no link. A zoom's way back is kept.
  */
 export function narrowedTo(view: LedgerView, by: GroupBy, key: string): LedgerView | null {
+  // The page has no model or model-class filter, so such a row has no narrower view.
+  if (by === 'model' || by === 'model_class') return null
   const next: LedgerView =
     by === 'runner_profile'
       ? { ...view, profile: [key] }
