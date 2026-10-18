@@ -397,7 +397,9 @@ locals {
     # enable_github_hooks_dedup_role off the list, and so every chunk below, is
     # what it was, and the plan changes nothing. On, it is one more role in the
     # sorted list, which shifts the chunk boundary and replaces both chunks,
-    # new grant first (create_before_destroy, below).
+    # new grant first (create_before_destroy, below). The committed
+    # terraform.tfvars records the flag as true (#1430), so an apply of it is the
+    # on list and the prose counts are of that list.
     var.enable_github_hooks_dedup_role ? [module.custom_role_ids.names["github_hooks_dedup"]] : [],
   )
 
@@ -409,7 +411,8 @@ locals {
   }
 
   # roles/resourcemanager.projectIamAdmin's hasOnly() would need every one of
-  # the 14 deployer_grantable_project_roles in one list (15 until #69's owner
+  # the 15 deployer_grantable_project_roles in one list (14 with
+  # enable_github_hooks_dedup_role off, and 15 until #69's owner
   # decision of 2026-09-25, which #150 delivered, took swarmSecretLister off --
   # still over the limit either way), and GCP's linter
   # (LintValidationUnits/ListLengthCheck) refuses a hasOnly() list over 10

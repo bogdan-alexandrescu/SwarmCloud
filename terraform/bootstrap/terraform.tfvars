@@ -56,8 +56,9 @@ ci_fix_service_account = "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.c
 # (rules 1 and 2 in deployer_conditions.tf, the ones the IAP condition broke),
 # only which roles a policy change modifies -- modifiedGrantsByRole with
 # hasOnly, zero logical operators. A read modifies nothing and passes. What CI
-# may still modify is the 14 roles terraform/infra grants
-# (deployer_grantable_project_roles in deployer_conditions.tf), held by
+# may still modify is the 15 roles terraform/infra grants
+# (deployer_grantable_project_roles in deployer_conditions.tf; 14 until #1430
+# turned enable_github_hooks_dedup_role on, below), held by
 # tests/terraform/deployer_iam.tftest.hcl for every project grant CI applies.
 # The list was measured 2026-09-24 at 15 from the code (8 grant resources) and
 # from the live policy (43 grants to terraform/infra's identities); it was 15
@@ -84,7 +85,7 @@ ci_fix_service_account = "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.c
 #     direct grant, not one made through a custom-role update, which is why
 #     roleAdmin had to go rather than be scoped.
 #   * hasOnly limits which roles, never whose or with what condition, so CI
-#     can still grant ITSELF any of the 14 (#69); nothing above closes that.
+#     can still grant ITSELF any of the 15 (#69); nothing above closes that.
 #
 # APPLY, in this exact order (owner decision 2026-09-28, after #275): create
 # the chunks FIRST, prove they are live, and ONLY THEN remove the live
@@ -115,8 +116,8 @@ ci_fix_service_account = "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.c
 #      the binding with no condition); the two chunk bindings are untouched.
 #   5. Re-run step 3. Expect exactly the two chunk titles, nothing else.
 #   6. Prove the admitted side with a terraform/infra plan or a release apply:
-#      CI must still be able to grant/revoke the 14 roles it needs (15 before
-#      #150 also took swarmSecretLister off deployer_grantable_project_roles),
+#      CI must still be able to grant/revoke the 15 roles it needs (14 until #1430 turned
+#      swarmGithubHooksDedup on, and 15 before #150 also took swarmSecretLister off deployer_grantable_project_roles),
 #      now through the chunked conditions alone.
 #
 # REVERT: delete the entry, leaving `[]`, and run
