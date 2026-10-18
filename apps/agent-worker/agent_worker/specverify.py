@@ -62,6 +62,8 @@ from swarm_common import specsign
 from .errors import ConfigError, SpecSignatureInvalid, WorkerError
 
 if TYPE_CHECKING:  # pragma: no cover
+    from swarm_common.profiles import RunnerProfile
+
     from .config import WorkerConfig
 
 #: THE END OF THE LEGACY WINDOW, IN THE CODE (decision 5). After it the worker
@@ -133,10 +135,16 @@ def _bounded(value: object) -> str:
 class SpecCheck:
     """What the check concluded, for the log and the task's event."""
 
-    reason: str  # "verified" or "legacy_unsigned"
+    reason: str  # "verified" or "legacy_unsigned" ("unverified": the worker's placeholder)
     task_id: str
     key_version: str | None = None
     digest: str | None = None
+    #: The SIGNED `model_class` (contract request 104, format 5), or None:
+    #: the document names none, or it is an unsigned legacy task, whose
+    #: stored class is ignored (docs/design/model-per-step.md §4.3). What the
+    #: model check (`check_model`) holds this execution's MODEL to. Not in
+    #: `as_detail`: the class is not a fact about the signature.
+    model_class: str | None = None
 
     def as_detail(self) -> dict[str, Any]:
         return {
@@ -394,7 +402,10 @@ def verify_step_spec(
             "environment_mismatch", task_id=task_id, key_version=key_version, digest=hexdigest,
             detail=f"{disagreement} disagrees with the signed spec",
         )
-    return SpecCheck(reason="verified", task_id=task_id, key_version=key_version, digest=hexdigest)
+    return SpecCheck(
+        reason="verified", task_id=task_id, key_version=key_version, digest=hexdigest,
+        model_class=doc.get("model_class"),
+    )
 
 
 def _verify_signed(doc: Mapping[str, Any], *, task_id: str, cfg: "WorkerConfig") -> tuple[str, str]:
@@ -450,6 +461,89 @@ def _verify_signed(doc: Mapping[str, Any], *, task_id: str, cfg: "WorkerConfig")
             "signature_mismatch", task_id=task_id, key_version=version, digest=hexdigest
         )
     return version, hexdigest
+
+
+# ---------------------------------------------------------------------------
+# The model this execution was given (docs/design/model-per-step.md §4.5)
+# ---------------------------------------------------------------------------
+
+#: The classed profile's execution carries no MODEL. The scheduler resolves
+#: every classed step to a pin (`step_model`), so this is a dispatch that
+#: skipped it; the CLI's own default is never run in its place (the QA task of
+#: 2026-09-26 ran `claude-sonnet-5` on an Opus profile exactly that way).
+MODEL_NOT_PINNED = "model_not_pinned"
+#: MODEL is set and is not a model of the class the signed spec names (or the
+#: profile's default, for a task that names none), or the class itself is not
+#: one the profile accepts.
+MODEL_CLASS_MISMATCH = "model_class_mismatch"
+
+
+@dataclass(frozen=True)
+class ModelRefusal:
+    """Why this execution's MODEL does not run the step it was given.
+
+    Every value is a class name, a profile name or a model ID: none is a
+    secret, and an operator needs both sides to see which one is wrong."""
+
+    cause: str
+    reason: str
+    model_class: str | None
+    model: str | None
+
+    def as_detail(self) -> dict[str, Any]:
+        return {
+            "cause": self.cause,
+            "reason": self.reason,
+            "model_class": self.model_class,
+            "model": self.model,
+        }
+
+
+def check_model(
+    profile: "RunnerProfile", check: SpecCheck, model: str | None
+) -> tuple[str | None, ModelRefusal | None]:
+    """The class this step runs, and a refusal when MODEL cannot run it.
+
+    The class is resolved by the frozen `profiles.step_model_class`, the one
+    rule swarm-api and the scheduler apply too, from the SIGNED class
+    (`check.model_class`): an unsigned legacy task carries None there, so it
+    expects its profile's default and a class written onto it fails here
+    whenever the scheduler dispatched that class's pin.
+
+    MODEL is held to the CLASS (`ModelClass.admits`), never to `Task.model`:
+    a Terraform re-pin while a task is queued would otherwise fail every
+    queued task of that class, and the class is what was signed (§7 R6).
+    """
+    from swarm_common.profiles import MODEL_CLASSES, step_model_class
+
+    requested = check.model_class
+    try:
+        if requested is not None and not isinstance(requested, str):
+            # A list is unhashable, and `in MODEL_CLASSES` would raise
+            # TypeError on it instead of refusing it.
+            raise ValueError(f"model class {requested!r} is not a name")
+        expected = step_model_class(profile, requested)
+    except ValueError as exc:
+        return None, ModelRefusal(
+            MODEL_CLASS_MISMATCH, _bounded(str(exc)),
+            _bounded(requested) if requested is not None else None, model,
+        )
+    if expected is None:
+        return None, None
+    if model is None:
+        return expected, ModelRefusal(
+            MODEL_NOT_PINNED,
+            f"runner {profile.name} runs model class {expected!r} and this execution "
+            "carries no MODEL",
+            expected, None,
+        )
+    if not MODEL_CLASSES[expected].admits(model):
+        return expected, ModelRefusal(
+            MODEL_CLASS_MISMATCH,
+            f"MODEL {_bounded(model)!r} is not a model of class {expected!r}",
+            expected, _bounded(model),
+        )
+    return expected, None
 
 
 # ---------------------------------------------------------------------------

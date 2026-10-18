@@ -819,6 +819,10 @@ class Worker:
         #: trusted (`_forge_suffix`): the generation check, then the
         #: signature, then the credential read (invariant 5).
         self._forge_signed = False
+        #: The own spec's check, set by `_verify_spec` (MODEL-WORKER). Until
+        #: then the check of a document that names no class: an unverified
+        #: document never reaches the model check, which runs after it.
+        self._spec_check = specverify.SpecCheck(reason="unverified", task_id=config.task_id)
         #: An `input.issue` number's title, when something upstream of the pull
         #: request title (#265's own fetch, once it lands) already read it.
         #: Nothing sets this yet -- #265 is landing separately and had not, as
@@ -2298,7 +2302,9 @@ class Worker:
     def _verify_spec(self, task: dict[str, Any], create_time: Any) -> None:
         """Contract request 34's check, with its log line and its legacy note.
 
-        The spec itself is never logged: a prompt can hold anything.
+        The spec itself is never logged: a prompt can hold anything. The
+        check is kept as `_spec_check`: its `model_class` is the signed class
+        the model check holds MODEL to.
         """
         clock = self.cfg.spec_clock
         now = clock() if clock is not None else datetime.now(timezone.utc)
@@ -2329,6 +2335,38 @@ class Worker:
         else:
             self.log.info("spec signature verified", spec_check=check.as_detail())
             self._forge_signed = True
+        self._spec_check = check
+
+    def _fail_model_check(self, refusal: specverify.ModelRefusal) -> Outcome:
+        """FAILED, not retried, before the agent ran: MODEL cannot run this step.
+
+        docs/design/model-per-step.md §4.5. NOT RETRIED: the next attempt is
+        dispatched from the same signed class by the same scheduler, and
+        meets the same MODEL. CANNOT_START, like every refusal before the
+        agent. The class and the ID are logged and recorded: neither is a
+        secret, and an operator needs both to see which side is wrong.
+        """
+        error = self._scrub(
+            f"{refusal.cause}: {refusal.reason}. The agent was not started."
+        )
+        self.log.error(
+            "the execution's MODEL cannot run this step's model class; failing "
+            "before the agent runs",
+            cause=refusal.cause,
+            model_class=refusal.model_class,
+            job_model=refusal.model,
+        )
+        summary = self._upload_outputs()
+        summary["model_check"] = refusal.as_detail()
+        with self._metrics_after_the_record():
+            self.control.finish(
+                state=TaskState.FAILED,
+                exit_code=None,
+                error=error,
+                result_summary=summary,
+                end_cause=EndCause.CANNOT_START,
+            )
+        return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
 
     def _incomplete_parents(self, task: dict[str, Any]) -> dict[str, str | None]:
         """The signed parents of `task` that have not SUCCEEDED, with their state.
@@ -2394,8 +2432,11 @@ class Worker:
 
         # ---- STEP 2: STARTING -> RUNNING --------------------------------
         self.phases.enter("record_attempt_start")
+        # `model` is the ID this attempt was started with (contract request
+        # 103), written with `started_at`. STEP 1's generation check has
+        # passed, so a stale generation never reaches this write.
         self.control.record_attempt_start(
-            backend=cfg.backend, execution_name=_execution_name()
+            backend=cfg.backend, execution_name=_execution_name(), model=cfg.model
         )
         self.phases.enter("advance_to_running")
         # STEP 2a, inside STEP 2: the child-task attempt key is registered
@@ -2479,6 +2520,15 @@ class Worker:
         # verified copy, never on the live field a tenant agent can rewrite
         # (#346).
         self.control.pin_verified_max_attempts(task.get("max_attempts"))
+
+        # ---- STEP 4 (cont.): the MODEL this execution was given ----------
+        # docs/design/model-per-step.md §4.5. After the signature, on its
+        # signed class, and before a credential is read or the CLI started:
+        # a classed step with no pin, or with the pin of another class, is
+        # refused rather than run on whatever model the CLI would pick.
+        _, model_refusal = specverify.check_model(cfg.profile, self._spec_check, cfg.model)
+        if model_refusal is not None:
+            return functools.partial(self._fail_model_check, model_refusal)
         # The clone host joins the egress probe (#721 (a)) as soon as the
         # document naming it is verified, the same URL `_maybe_clone` reads.
         self._add_egress_target(self.cfg.repository_url or task.get("repository_url"))
@@ -12636,12 +12686,38 @@ class Worker:
                 usage = {**usage, **more}
                 if "total_cost_usd" in more:
                     self._spend["cost_estimated"] = True
+        self._note_model_mismatch(usage.get("models"))
         if usage:
             self._spend = _add_spend(
                 self._spend,
                 usage,
                 session_base=self._session_spend_base if self._spend_resumes_session else None,
             )
+
+    def _note_model_mismatch(self, models: Any) -> None:
+        """Log `model_mismatch` when the stream ran none of the pinned model.
+
+        docs/design/model-per-step.md §4.6. `Attempt.model` is what the
+        worker was started with; `usage.models` is what the CLI's stream says
+        it ran. The two are different facts, and a pinned CLI that
+        substituted another model shows as a disagreement here. Judged as
+        "the pin is not among them", not "anything else is": the CLI also
+        reports the small model it runs for its own housekeeping beside the
+        one it was told to run, and that is not a substitution. A `[...]`
+        context suffix (`claude-opus-5-5[1m]`) is the same model.
+        """
+        pinned = self.cfg.model
+        if not pinned or not isinstance(models, list) or not models:
+            return
+        reported = sorted(str(m) for m in models)
+        if any(m.split("[", 1)[0] == pinned for m in reported):
+            return
+        self.log.warning(
+            "model_mismatch: the agent's stream reports models other than the pinned one",
+            cause="model_mismatch",
+            job_model=pinned,
+            stream_models=reported,
+        )
 
     def _note_runner_spend_start(self, *, resumed: bool) -> None:
         """Say, at a runner's start, whose session its spend will report.

@@ -1392,7 +1392,13 @@ class ControlPlane:
         raise ControlPlaneError(f"cannot start from state {state.value}")
 
     # -- attempt bookkeeping ----------------------------------------------
-    def record_attempt_start(self, *, backend: str, execution_name: str | None) -> None:
+    def record_attempt_start(
+        self, *, backend: str, execution_name: str | None, model: str | None = None
+    ) -> None:
+        """The attempt's first write. `model` (contract request 103) is the
+        ID the worker was started with (MODEL), in the same merge as
+        `started_at`; absent, not null, when the profile runs no model, as
+        on every attempt written before the field existed."""
         attempt = Attempt(
             attempt_id=self.attempt_id,
             task_id=self.task_id,
@@ -1403,26 +1409,30 @@ class ControlPlane:
             created_at=utcnow(),
             execution_name=execution_name,
             started_at=utcnow(),
+            model=model,
         )
+        record: dict[str, Any] = {
+            "attempt_id": attempt.attempt_id,
+            "task_id": attempt.task_id,
+            "tenant_id": attempt.tenant_id,
+            "generation": attempt.generation,
+            "lease_id": attempt.lease_id,
+            "backend": attempt.backend,
+            "created_at": attempt.created_at,
+            "execution_name": attempt.execution_name,
+            "started_at": attempt.started_at,
+            "completed_at": None,
+            "exit_code": None,
+            "error": None,
+            "peak_rss_bytes": None,
+            "peak_disk_bytes": None,
+            "oom_near_miss": False,
+            "checkpoints": [],
+        }
+        if attempt.model is not None:
+            record["model"] = attempt.model
         self._attempt_ref().set(
-            {
-                "attempt_id": attempt.attempt_id,
-                "task_id": attempt.task_id,
-                "tenant_id": attempt.tenant_id,
-                "generation": attempt.generation,
-                "lease_id": attempt.lease_id,
-                "backend": attempt.backend,
-                "created_at": attempt.created_at,
-                "execution_name": attempt.execution_name,
-                "started_at": attempt.started_at,
-                "completed_at": None,
-                "exit_code": None,
-                "error": None,
-                "peak_rss_bytes": None,
-                "peak_disk_bytes": None,
-                "oom_near_miss": False,
-                "checkpoints": [],
-            },
+            record,
             # The attempt's first write, and the first write of all. Made
             # inside `startup_budget()`, like the reads before it.
             **self.call_options(),
@@ -2829,7 +2839,16 @@ class RemoteControlPlane(ControlPlane):
 
     # -- attempt bookkeeping -------------------------------------------------------
 
-    def record_attempt_start(self, *, backend: str, execution_name: str | None) -> None:
+    def record_attempt_start(
+        self, *, backend: str, execution_name: str | None, model: str | None = None
+    ) -> None:
+        """`state/attempt-start`. `model` is NOT sent: swarm-api's
+        `AttemptStartBody` is strict and declares no `model`, so sending it
+        would refuse every attempt start on a tenant switched to the state
+        routes. Until that body and its write carry it (MODEL-WORKER's
+        question, docs/design/model-per-step.md §4.6), an attempt on this
+        path records no model; the stream's `usage.models` still does."""
+        del model
         self._post("attempt-start", {"backend": backend, "execution_name": execution_name},
                    call=None)
 
