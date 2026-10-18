@@ -265,14 +265,13 @@
 .rn-meta {
   display: inline-block; max-width: 100%; margin: 0; padding: 0;
   border: 0; background: none; color: inherit; font: inherit; text-align: left;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom;
+  /* EACH FACT WRAPS WHOLE (visual QA V209, 2026-10-16): the chip is a line of
+     facts that breaks between them, each keeping its ` ·`, and only a fact
+     wider than the column is cut -- whole once the chip is open. */
+  white-space: normal; overflow: visible; text-overflow: ellipsis; vertical-align: bottom;
   cursor: pointer;
 }
 .rn-meta.is-open { white-space: normal; overflow-wrap: anywhere; }
-/* EACH FACT WRAPS WHOLE (visual QA V209, 2026-10-16): the chip is a line of
-   facts that breaks between them, each keeping its ` ·`, and only a fact
-   wider than the column is cut -- whole once the chip is open. */
-.rn-meta { white-space: normal; overflow: visible; }
 .rn-meta-i { display: inline-block; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
 .rn-meta.is-open .rn-meta-i { white-space: normal; overflow-wrap: anywhere; }
 .rn-meta:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
