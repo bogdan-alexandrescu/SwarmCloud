@@ -121,6 +121,12 @@ function expiryWords(iso: string, now: number): string {
   return t > now ? `expires in ${humaniseUntil(t - now)}` : `expired ${timeAgo(t, now)}`
 }
 
+/** Past its expiry: a task that names it now fails before its agent runs (visual QA V234). */
+function hasExpired(iso: string, now: number): boolean {
+  const t = new Date(iso).getTime()
+  return Number.isFinite(t) && t <= now
+}
+
 function lastUseWords(iso: string | null, now: number): string {
   return iso === null ? 'never used' : `used ${timeAgo(iso, now)}`
 }
@@ -331,24 +337,27 @@ function TypedRevoke({ login, onDone, onKeep }: { login: BrowserLogin; onDone: (
       >
         Every saved version is destroyed. A task that names {login.name} fails before its agent runs until you save a new
         one.
+        {/* The typed name is inside the warning it confirms (visual QA V233): below it, it read as a separate form. */}
+        <span className="lb-revoke-type">
+          <label className="ur-subh" htmlFor={id}>
+            Type {login.name} to revoke
+          </label>
+          <input
+            id={id}
+            ref={input}
+            className="ur-search"
+            value={typed}
+            autoComplete="off"
+            onChange={(e) => setTyped(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                void revoke()
+              }
+            }}
+          />
+        </span>
       </Banner>
-      <label className="ur-subh" htmlFor={id}>
-        Type {login.name} to revoke
-      </label>
-      <input
-        id={id}
-        ref={input}
-        className="ur-search"
-        value={typed}
-        autoComplete="off"
-        onChange={(e) => setTyped(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') {
-            e.preventDefault()
-            void revoke()
-          }
-        }}
-      />
       {refused !== null && <Refused error={refused} title={`${login.name} was not revoked`} />}
     </div>
   )
@@ -356,21 +365,41 @@ function TypedRevoke({ login, onDone, onKeep }: { login: BrowserLogin; onDone: (
 
 function LoginRow({ login, now, onChange }: { login: BrowserLogin; now: number; onChange: () => void }) {
   const [asking, setAsking] = useState(false)
+  // KEEP GIVES FOCUS BACK TO THE ROW'S REVOKE (visual QA V233). The button is
+  // off while the question is open, and the question took focus with it, so
+  // closing it with Keep or Esc dropped focus to <body>: a keyboard user was
+  // thrown back to the top of the page.
+  const rowRef = useRef<HTMLLIElement>(null)
+  const [refocus, setRefocus] = useState(false)
+  useEffect(() => {
+    if (!refocus || asking) return
+    rowRef.current?.querySelector<HTMLButtonElement>('button[data-revoke]')?.focus()
+    setRefocus(false)
+  }, [refocus, asking])
+  const expired = hasExpired(login.expires_at, now)
   return (
-    <li className="ac-row" data-login={login.name}>
+    <li ref={rowRef} className="ac-row" data-login={login.name}>
       <span className="ac-row-name">
         <b>{login.name}</b>
         <span className="ur-small">{login.site}</span>
       </span>
       <span className="ur-small">
-        {expiryWords(login.expires_at, now)} · {lastUseWords(login.last_used_at, now)}
+        <span className={`lb-expiry${expired ? ' is-expired' : ''}`}>{expiryWords(login.expires_at, now)}</span> ·{' '}
+        {lastUseWords(login.last_used_at, now)}
       </span>
-      <Button size="sm" kind="danger" aria-label={`Revoke ${login.name}`} disabled={asking} onClick={() => setAsking(true)}>
+      <Button size="sm" kind="danger" data-revoke="" aria-label={`Revoke ${login.name}`} disabled={asking} onClick={() => setAsking(true)}>
         Revoke
       </Button>
       {asking && (
         <span className="ac-row-err">
-          <TypedRevoke login={login} onKeep={() => setAsking(false)} onDone={onChange} />
+          <TypedRevoke
+            login={login}
+            onKeep={() => {
+              setAsking(false)
+              setRefocus(true)
+            }}
+            onDone={onChange}
+          />
         </span>
       )}
     </li>
