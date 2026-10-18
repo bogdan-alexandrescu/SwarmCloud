@@ -103,12 +103,19 @@ DECIDED = frozenset({
     # registration with its own workspace's token. The owner accepted that a
     # public-facing service then holds every route in this set.
     ("POST", "/v1/admin/repositories/push"),
+    # The per-run MCP credential sweep (docs/design/registered-mcp-servers.md
+    # §4.4, owner decision Q2 of #1433; jobs.tf, lane MCP-IAM): it deletes the
+    # `-mcpc-` secret of a credential whose task ended or whose expiry passed,
+    # and marks the row. It takes no argument, reads no value, submits
+    # nothing and grants nothing; what it may destroy is fixed by each row.
+    ("POST", "/v1/admin/mcp-credentials/sweep"),
 })
 
 REFUSED = [r for r in SWEPT if r not in DECIDED]
 
 
-def _context(db, tokens, group_map, objects, *, verified: Any = True) -> AppContext:
+def _context(db, tokens, group_map, objects, *, verified: Any = True,
+             **extra: Any) -> AppContext:
     tokens = dict(tokens)
     tokens["token-sweeper"] = {
         "email": SWEEPER,
@@ -116,7 +123,7 @@ def _context(db, tokens, group_map, objects, *, verified: Any = True) -> AppCont
         "sub": "sub-sweeper",
     }
     return build_context(
-        settings=api_settings(rollup_sweeper_users=(SWEEPER,)),
+        settings=api_settings(rollup_sweeper_users=(SWEEPER,), **extra),
         db=db,
         verifier=StaticTokenVerifier(tokens),
         groups=StaticGroups(group_map),
@@ -217,6 +224,60 @@ def test_the_sweeper_runs_the_rotation_sweep(db, sweeper_context) -> None:
     assert writer.calls == [("disable_version", f"projects/test/secrets/{secret_id}/versions/1")]
     states = [v["state"] for v in db.docs[f"{SECRETS_COLLECTION}/{secret_id}"]["versions"]]
     assert states == ["disabled", "enabled"]
+
+
+def test_the_sweeper_runs_the_mcp_credential_sweep(db, tokens, group_map, objects) -> None:
+    """What the 10-minute MCP credential sweep job does, through the real app:
+    a terminal task's per-run credential is deleted and its row marked, by
+    the sweeper (design registered-mcp-servers.md §4.4)."""
+    from datetime import timedelta
+
+    from swarm_api.mcp_credentials import COLLECTION, RowKeys
+
+    from .test_child_tasks_api import KEY
+
+    seed_tenant(db, "eng")
+    sweeper_context = _context(db, tokens, group_map, objects, child_key=KEY)
+    now = sweeper_context.now()
+    secret_id = "swarm-tenant-eng-mcpc-" + "0" * 16
+    seed_task(db, task_id="t_done", tenant_id="eng", state="SUCCEEDED")
+    row = {
+        "owner_id": "t_done", "owner_kind": "task", "tenant_id": "eng",
+        "server_id": "mcp_0000000000000000", "name": "kb", "secret_id": secret_id,
+        "version": f"projects/test/secrets/{secret_id}/versions/1",
+        "expires_at": (now + timedelta(hours=1)).replace(microsecond=0), "state": "live",
+    }
+    row["attestation"] = RowKeys(KEY).sign(row)
+    db.docs[f"{COLLECTION}/t_done~mcp_0000000000000000"] = row
+    deleted: list[str] = []
+
+    class _Writer:
+        def create_secret(self, *args: Any) -> None:
+            raise AssertionError("the sweep never creates a secret")
+
+        def add_version(self, *args: Any) -> str:
+            raise AssertionError("the sweep never adds a version")
+
+        def delete_secret(self, secret: str) -> None:
+            deleted.append(secret)
+
+    app = create_app(sweeper_context)
+    app.state.mcp_credential_writer = _Writer()
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.post("/v1/admin/mcp-credentials/sweep", headers=SWEEPER_HEADERS)
+    assert response.status_code == 200, response.text
+    assert response.json()["destroyed"] == 1
+    assert deleted == [secret_id]
+    assert db.docs[f"{COLLECTION}/t_done~mcp_0000000000000000"]["state"] == "destroyed"
+
+
+def test_the_mcp_sweep_is_the_only_mcp_route_the_sweeper_reaches() -> None:
+    """MCP-API added ONE route for this identity. Registering, changing or
+    reading a server stays refused to it."""
+    reached = {r for r in ROLLUP_SWEEPER_ROUTES if "mcp" in r[1]}
+    assert reached == {("POST", "/v1/admin/mcp-credentials/sweep")}
+    refused = [r for r in REFUSED if r[1].startswith("/v1/mcp-servers")]
+    assert len(refused) >= 4, f"the MCP server routes were not swept: {refused}"
 
 
 def test_the_sweeper_reaches_the_push_route(db, sweeper_client) -> None:

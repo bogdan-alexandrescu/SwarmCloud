@@ -89,6 +89,7 @@ export const PLATFORM_TICKS: readonly { name: string; job: string; does: string 
   { name: 'schedule_tick', job: 'schedule-tick', does: 'Fires every tenant’s due schedules, one firing per slot (its last hour is on Automate › Schedules, All tenants).' },
   { name: 'workspace_sweep', job: 'workspace-sweep', does: 'Re-dispatches approved personal workspaces nobody built, and logs each one still waiting.' },
   { name: 'secrets_rotation_sweep', job: 'workspace-secrets-rotation-sweep', does: 'Hourly, disables each rotated-out workspace secret version once its day of grace has passed; never destroys one.' },
+  { name: 'mcp_credentials_sweep', job: 'mcp-credentials-sweep', does: 'Deletes per-run MCP credentials once their task has ended or they expire.' },
 ]
 
 function PlatformTicks() {
