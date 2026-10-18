@@ -124,8 +124,9 @@ MULTIPART_FRAMING_BYTES = 64 * 1024
 #: A JSON-only answer's body: the form and room for its envelope.
 MAX_JSON_BODY_BYTES = MAX_FORM_BYTES + 4 * 1024
 #: Multipart answers one instance holds at once (§4.3 step 3). swarm-api runs
-#: 1 GiB at concurrency 80; four 16 MiB bodies with the copy parsing makes
-#: are at most 128 MiB.
+#: 1 GiB at concurrency 80; four 16 MiB bodies with the one copy
+#: `routes.await_input.parse_multipart` makes of their parts are at most
+#: 128 MiB, whatever the bytes are (a test holds the parser to that copy).
 MAX_CONCURRENT_MULTIPART = 4
 #: Steps the expiry sweep ends per tick; the next tick takes the rest.
 EXPIRE_LIMIT = 200

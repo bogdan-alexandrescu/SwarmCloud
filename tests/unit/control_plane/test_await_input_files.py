@@ -344,6 +344,99 @@ def test_a_fifth_concurrent_multipart_answer_is_429(client, db, writer, await_en
 
 
 # --------------------------------------------------------------------------
+# the parser: bounded, off the event loop, and strict
+# --------------------------------------------------------------------------
+
+def raw_multipart(boundary: str, parts: list[tuple[str, bytes]], close: bool = True) -> bytes:
+    """A multipart body built by hand: [(the part's header lines, its bytes)]."""
+    out = b""
+    for headers, data in parts:
+        out += f"--{boundary}\r\n{headers}\r\n\r\n".encode() + data + b"\r\n"
+    return out + (f"--{boundary}--\r\n".encode() if close else b"")
+
+
+ANSWER_PART = ('Content-Disposition: form-data; name="answer"',
+               json.dumps(form()).encode())
+
+
+def test_a_16_mib_file_of_short_lines_parses_holding_one_copy_of_its_bytes():
+    # The stdlib email parser held ~570 MiB for this body (review, 2026-10-18):
+    # four of them OOM a 1 GiB instance. The bound is the design's, §4.3 step 3.
+    import tracemalloc
+
+    lines = b"a\n" * ((awaitinput.MAX_ANSWER_BYTES - 1024) // 2)
+    body = raw_multipart("b0und", [
+        ANSWER_PART,
+        ('Content-Disposition: form-data; name="file"; filename="notes.md"', lines),
+    ])
+    assert len(body) <= route.MAX_MULTIPART_BYTES
+    tracemalloc.start()
+    try:
+        base = tracemalloc.get_traced_memory()[0]
+        answer, files = route.parse_multipart("multipart/form-data; boundary=b0und", body)
+        peak = tracemalloc.get_traced_memory()[1] - base
+    finally:
+        tracemalloc.stop()
+    assert answer == form()
+    assert files == [("notes.md", lines)]
+    assert peak <= len(body) + 1024 * 1024, f"parsing held {peak} bytes for {len(body)}"
+
+
+def test_the_multipart_body_is_parsed_off_the_event_loop(client, waiting, monkeypatch):
+    seen: list[bool] = []
+    parse = route.parse_multipart
+
+    def recording(content_type: str, body: bytes):
+        try:
+            asyncio.get_running_loop()
+            seen.append(True)
+        except RuntimeError:
+            seen.append(False)
+        return parse(content_type, body)
+
+    monkeypatch.setattr(route, "parse_multipart", recording)
+    response = post_files(client, waiting, [("a.txt", b"x")])
+    assert response.status_code == 200, response.text
+    assert seen == [False]
+
+
+@pytest.mark.parametrize("declared", ["message/rfc822", "multipart/mixed; boundary=inner"])
+def test_a_file_part_keeps_its_bytes_whatever_type_it_declares(declared):
+    data = b"--inner\r\nSubject: hi\r\n\r\nhello\r\n--inner--\r\n"
+    body = raw_multipart("b0und", [
+        ANSWER_PART,
+        (f'Content-Disposition: form-data; name="file"; filename="a.md"\r\n'
+         f"Content-Type: {declared}", data),
+    ])
+    _, files = route.parse_multipart("multipart/form-data; boundary=b0und", body)
+    assert files == [("a.md", data)]
+
+
+@pytest.mark.parametrize("content_type,body", [
+    # A transfer encoding is not decoded (RFC 7578 4.7): it is refused.
+    ("multipart/form-data; boundary=b0und", raw_multipart("b0und", [
+        ANSWER_PART,
+        ('Content-Disposition: form-data; name="file"; filename="a.md"\r\n'
+         "Content-Transfer-Encoding: base64", b"aGVsbG8="),
+    ])),
+    # No closing delimiter.
+    ("multipart/form-data; boundary=b0und", raw_multipart("b0und", [ANSWER_PART], close=False)),
+    # No boundary.
+    ("multipart/form-data", raw_multipart("b0und", [ANSWER_PART])),
+    # A part's headers longer than any form field's.
+    ("multipart/form-data; boundary=b0und", raw_multipart("b0und", [
+        ANSWER_PART,
+        ('Content-Disposition: form-data; name="file"; filename="a.md"\r\nX-Pad: '
+         + "p" * (64 * 1024), b"x"),
+    ])),
+], ids=["transfer-encoded", "unclosed", "no-boundary", "long-headers"])
+def test_a_malformed_multipart_body_is_422_and_nothing_is_parsed_further(content_type, body):
+    with pytest.raises(awaitinput.ValidationFailed) as refused:
+        route.parse_multipart(content_type, body)
+    assert refused.value.detail["reason"] == "invalid_payload"
+
+
+# --------------------------------------------------------------------------
 # a failed write
 # --------------------------------------------------------------------------
 

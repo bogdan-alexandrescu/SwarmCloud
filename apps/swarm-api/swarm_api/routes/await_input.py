@@ -20,11 +20,20 @@ body is read and long before anything is written:
 Then the step, the caller and the membership are checked (`awaitinput.
 answer`), so an outsider's 16 MiB is refused without a single GCS call.
 
-THE MULTIPART PARSER IS THE STANDARD LIBRARY'S `email` PACKAGE, fed the bytes
-the counting reader already holds. The design names `python-multipart`, which
-FastAPI's own form parsing needs; it is not used, because a dependency of
-swarm-api is also a line in the repository's root `uv.lock`, outside this
-lane, and `uv lock --check` fails CI on a pyproject that disagrees with it.
+THE MULTIPART PARSER IS THIS MODULE'S OWN, fed the bytes the counting reader
+already holds, and it runs off the event loop. The design names
+`python-multipart`; a dependency of swarm-api is also a line in the
+repository's root `uv.lock`, outside this lane, and `uv lock --check` fails
+CI on a pyproject that disagrees with it, so whether to add it is a question
+for the owner (the PR's questions.json). The standard library's `email`
+parser, used before, is not bounded: one 16 MiB file of short lines held
+~570 MiB and 4 s of CPU on the event loop (review, 2026-10-18). This one
+finds each delimiter with `bytes.find` and copies each part once, so one
+answer holds at most twice its body whatever its bytes are, which is the
+bound `awaitinput.MAX_CONCURRENT_MULTIPART` is sized from. It takes only
+what RFC 7578 lets a sender send: a part's headers are at most
+`MAX_PART_HEADER_BYTES`, a transfer encoding is refused rather than
+decoded, and a part's declared type changes nothing about its bytes.
 Parsing counted bytes also keeps the bound in one place: nothing reads the
 stream but `read_counted`.
 
@@ -36,7 +45,8 @@ from __future__ import annotations
 
 import email.policy
 import json
-from email.parser import BytesParser
+from email.message import Message
+from email.parser import BytesHeaderParser
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -59,6 +69,14 @@ MAX_MULTIPART_BYTES = awaitinput.MAX_ANSWER_BYTES + awaitinput.MULTIPART_FRAMING
 #: largest `max_files` allows. One more `file` is still parsed, so that the
 #: refusal says too many files rather than a malformed body.
 MAX_PARTS = 1 + AWAIT_INPUT_MAX_FILES + 1
+#: One part's header block. A form field says its name, its filename and its
+#: type; 8 KiB is many times that, and it bounds what one part's headers cost.
+MAX_PART_HEADER_BYTES = 8 * 1024
+#: The longest boundary RFC 2046 allows.
+MAX_BOUNDARY_LENGTH = 70
+#: Transfer encodings that leave the bytes as they are. Any other is refused:
+#: RFC 7578 4.7 says a sender does not use one, so none is decoded here.
+_IDENTITY_ENCODINGS = ("7bit", "8bit", "binary")
 
 
 class UnsupportedMediaType(ValidationFailed):
@@ -98,26 +116,78 @@ async def read_counted(request: Any, bound: int) -> bytes:
     return b"".join(chunks)
 
 
+def _malformed(message: str) -> ValidationFailed:
+    return awaitinput.invalid("invalid_payload", message, position="multipart")
+
+
+def _boundary(content_type: str) -> bytes:
+    header = Message()
+    header["content-type"] = content_type
+    boundary = header.get_param("boundary")
+    if not isinstance(boundary, str) or not 1 <= len(boundary) <= MAX_BOUNDARY_LENGTH:
+        raise _malformed("the multipart body has no usable boundary")
+    try:
+        return boundary.encode("ascii")
+    except UnicodeEncodeError:
+        raise _malformed("the multipart boundary is not ASCII") from None
+
+
+def _parts(content_type: str, body: bytes):
+    """Each part as (its headers, its bytes), found with `bytes.find`.
+
+    Every part's bytes are one slice of `body`, so the parts together are at
+    most one more copy of it; nothing here splits the body into lines.
+    """
+    delimiter = b"--" + _boundary(content_type)
+    separator = b"\r\n" + delimiter
+    if body.startswith(delimiter):
+        pos = len(delimiter)
+    else:
+        found = body.find(separator)
+        if found < 0:
+            raise _malformed("the multipart body has no delimiter")
+        pos = found + len(separator)
+    while True:
+        if body.startswith(b"--", pos):
+            return
+        while body[pos:pos + 1] in (b" ", b"\t"):
+            pos += 1
+        if not body.startswith(b"\r\n", pos):
+            raise _malformed("a multipart delimiter is not followed by a line break")
+        pos += 2
+        if body.startswith(b"\r\n", pos):
+            head, data_start = b"", pos + 2
+        else:
+            end = body.find(b"\r\n\r\n", pos, pos + MAX_PART_HEADER_BYTES + 4)
+            if end < 0:
+                raise _malformed(
+                    f"a part's headers are more than {MAX_PART_HEADER_BYTES} bytes or never end"
+                )
+            head, data_start = body[pos:end + 2], end + 4
+        following = body.find(separator, data_start)
+        if following < 0:
+            raise _malformed("the multipart body has no closing delimiter")
+        headers = BytesHeaderParser(policy=email.policy.HTTP).parsebytes(head + b"\r\n")
+        yield headers, body[data_start:following]
+        pos = following + len(separator)
+
+
 def parse_multipart(content_type: str, body: bytes) -> tuple[Any, list[tuple[str, bytes]]]:
     """(the `answer` part as JSON, [(filename, bytes)] of the `file` parts)."""
-    head = f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("latin-1", "replace")
-    message = BytesParser(policy=email.policy.HTTP).parsebytes(head + body)
-    if not message.is_multipart():
-        raise awaitinput.invalid("invalid_payload", "the multipart body could not be read")
     answer: Any = None
     seen_answer = False
     files: list[tuple[str, bytes]] = []
-    for count, part in enumerate(message.iter_parts(), start=1):
+    for count, (part, data) in enumerate(_parts(content_type, body), start=1):
         if count > MAX_PARTS:
             raise awaitinput.invalid(
                 "too_many_files",
                 f"the answer carries more than {AWAIT_INPUT_MAX_FILES} files",
                 max_files=AWAIT_INPUT_MAX_FILES,
             )
+        encoding = str(part.get("content-transfer-encoding", "binary")).strip().lower()
+        if encoding not in _IDENTITY_ENCODINGS:
+            raise _malformed(f"a part is sent with transfer encoding {encoding!r}; send its bytes")
         name = part.get_param("name", header="content-disposition")
-        data = part.get_payload(decode=True)
-        if not isinstance(data, bytes):
-            data = b""
         if name == "answer" and not seen_answer:
             seen_answer = True
             try:
@@ -170,7 +240,9 @@ async def post_input(
             raise awaitinput.busy()
         try:
             body = await read_counted(request, MAX_MULTIPART_BYTES)
-            answer, files = parse_multipart(request.headers.get("content-type", ""), body)
+            answer, files = await run_in_threadpool(
+                parse_multipart, request.headers.get("content-type", ""), body
+            )
             del body
             return await run_in_threadpool(
                 awaitinput.answer, ctx, writer, auth, tenant_id=tenant_id,
