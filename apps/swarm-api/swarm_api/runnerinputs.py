@@ -49,7 +49,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from swarm_common.profiles import RunnerProfile
+from swarm_common.profiles import RunnerInput, RunnerProfile
 
 #: Runner module -> input keys that module refuses to start without. A key in
 #: this list must be present on `input` AND be a non-empty string; that is the
@@ -87,6 +87,34 @@ def required_input_keys(profile: RunnerProfile) -> tuple[str, ...]:
     return REQUIRED_INPUT_KEYS_BY_MODULE.get(module, ())
 
 
+def declared_input(declared: RunnerInput) -> dict[str, Any]:
+    """One `RunnerProfile.inputs` entry as /v1/capacity serves it.
+
+    The catalogue's own values, copied field by field and never restated: the
+    kind, the bounds (a list's are its length, a string's its characters),
+    the `choices` a string must be one of, whether the caller must send it,
+    and what the runner does with it. That is what a form needs to draw a
+    picker and refuse locally -- the MCP server picker reads `maximum`, the
+    browser tool picker reads `choices` (MCP-INPUTS, part of #1433).
+
+    BOUNDS AND MEANINGS ONLY (invariant 10). Nothing served here names an
+    image, a command, a resource or a backend parameter, so nothing gives a
+    caller a way to choose one; it only describes keys the caller may already
+    send. A list's `items`, an object's `variants` and a number's `refused`
+    values are not served: no screen draws from them, and
+    `validation.validate_runner_input` still refuses what they refuse, with
+    its own reason, at submission.
+    """
+    return {
+        "kind": declared.kind,
+        "minimum": declared.minimum,
+        "maximum": declared.maximum,
+        "choices": list(declared.choices),
+        "required": declared.required,
+        "means": declared.means,
+    }
+
+
 def input_contract(profile: RunnerProfile) -> dict[str, Any]:
     """The per-profile block served on /v1/capacity.
 
@@ -94,5 +122,14 @@ def input_contract(profile: RunnerProfile) -> dict[str, Any]:
     key. Serving it only for the profiles that have one would make "this API is
     too old to say" and "this profile needs nothing" the same absence, and a
     form cannot tell a missing rule from a satisfied one.
+
+    `inputs` is the profile's declared inputs, keyed by input name in the
+    catalogue's order -- an object, not a list, because the console indexes it
+    by key (`declaredMcpServers`, `declaredBrowserTools`) and reads an array
+    as "nothing declared". `{}` for a profile that declares nothing, by the
+    same reasoning as above: measured-empty, never absent.
     """
-    return {"required_keys": list(required_input_keys(profile))}
+    return {
+        "required_keys": list(required_input_keys(profile)),
+        "inputs": {key: declared_input(declared) for key, declared in profile.inputs.items()},
+    }
