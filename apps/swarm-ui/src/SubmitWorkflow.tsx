@@ -337,7 +337,7 @@ function planOf(
         message: `the setting ${MCP_SERVERS_KEY} is set twice and an object has one value per key` })
       continue
     }
-    const input = withMcpServers(built.input, mcpNames)
+    const withMcp = { ...built, input: withMcpServers(built.input, mcpNames) }
     // null means THIS API DID NOT SAY which keys the runner demands, which is
     // not the same as demanding none. Nothing is checked in that case and the
     // step says so; inventing a rule here would refuse valid workflows.
@@ -360,7 +360,7 @@ function planOf(
     // OVER THE SERVED LIMIT (live QA SUB-4): `submit_workflow` measures each
     // step's input against `max_input_bytes`, so a step over it is a 422 the
     // form can name first. Null limit (not read) checks nothing.
-    const tooBig = inputSizeProblem(input, inputLimit)
+    const tooBig = inputSizeProblem(withMcp.input, inputLimit)
     if (tooBig !== null) {
       problems.push({ key: s.key, stepId: id, kind: 'size', message: tooBig })
       continue
@@ -378,7 +378,7 @@ function planOf(
       // `Field(default_factory=dict)`, so an omitted `input` is an accepted
       // workflow whose every agent step fails -- the defect this screen had.
       // An empty object here is a caller who chose it, not a form that forgot.
-      input,
+      input: withMcp.input,
       depends_on: depends,
       // Omitted when empty, unlike `input`: an empty `input_from` is exactly
       // the default and stages nothing, whereas an empty `input` is a payload
