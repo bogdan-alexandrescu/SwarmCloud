@@ -155,6 +155,7 @@ from . import handoff as handoff_mod
 from . import inputs as inputs_mod
 from . import issue as issue_mod
 from . import jevkey as jevkey_mod
+from . import mcp_attach as mcp_attach_mod
 from . import secretrelease as secretrelease_mod
 from . import typesafe_shim as typesafe_shim_mod
 from . import questions as questions_mod
@@ -1051,6 +1052,14 @@ class Worker:
         # signed with the child path's attempt key. Inert for a profile whose
         # catalogue entry, and whose launched tools, declare no secret slot.
         self.secret_release = secretrelease_mod.SecretRelease(
+            config, children=self.children, logger=deps.logger
+        )
+        # The caller's registered MCP servers (docs/design/registered-mcp-
+        # servers.md §4.7, lane MCP-WORKER): attached once per attempt, after
+        # the release, and served through a loopback relay that holds the
+        # credentials in this heap. Inert for a task whose signed input names
+        # no server -- which is every task while SWARM_MCP_SERVERS is off.
+        self.mcp = mcp_attach_mod.McpAttachment(
             config, children=self.children, logger=deps.logger
         )
         # The TypeSafe forwarder's ticket and the loopback shim jev and the
@@ -2782,6 +2791,30 @@ class Worker:
             raise FencedWriteRefused(
                 cfg.generation, -1, str(exc), write="typesafe ticket"
             ) from None
+        # STEP 6a'': the caller's registered MCP servers (MCP-WORKER, design
+        # §4.7), ONCE, before the runner's environment: every credential is
+        # registered for redaction as the answer is parsed, and the runner is
+        # handed only the relay file's path (`_build_child_env`). A 409 is the
+        # fence: stand down without the agent, leave the lease (invariant 5).
+        # A withheld server, or an attach that could not be made, fails the
+        # attempt before the agent runs: it was named because it is needed.
+        try:
+            attached = self.mcp.attach(profile=cfg.profile, inputs=task.get("input"))
+        except mcp_attach_mod.McpAttachFenced as exc:
+            raise FencedWriteRefused(
+                cfg.generation, -1, f"mcp attach: {exc.code}", write="mcp attach"
+            ) from None
+        unattached = attached.failure()
+        if unattached is None and attached.servers:
+            try:
+                self.mcp.start(ws.private)
+            except OSError as exc:
+                unattached = (
+                    mcp_attach_mod.UNAVAILABLE, f"relay_not_started:{type(exc).__name__}", True
+                )
+        if unattached is not None:
+            self.mcp.close()
+            return functools.partial(self._fail_mcp_unattached, *unattached)
         try:
             child_env = self._build_child_env()
         except CredentialMissing as exc:
@@ -3397,6 +3430,8 @@ class Worker:
         """
         cfg = self.cfg
         self._fenced_exit = True
+        # Before the runner is stopped: from here the relay forwards nothing.
+        self.mcp.mark_fenced()
         self.log.error(
             "generation fenced mid-run; stopping the runner",
             observed_generation=observed_generation,
@@ -3454,6 +3489,7 @@ class Worker:
             attempt made while it still owned the task.
         """
         self._fenced_exit = True
+        self.mcp.mark_fenced()
         self.log.error(
             "FENCED on the way out: this attempt has been superseded; exiting "
             "without writing the task, the lease or an event",
@@ -3930,6 +3966,7 @@ class Worker:
     def _exit_fenced(self, exc: FencedError) -> int:
         """Emit the event and leave. No workspace, no agent, no lease change."""
         self._fenced_exit = True
+        self.mcp.mark_fenced()
         self.log.error(
             "FENCED: this attempt has been superseded; exiting without running the agent",
             expected_generation=exc.expected,
@@ -7518,6 +7555,9 @@ class Worker:
         released = self.secret_release.result
         if released is not None:
             base.update(released.env)
+        # The MCP relay (MCP-WORKER): the relay file's PATH, whose contents
+        # are loopback URLs and the local token -- never a credential.
+        base.update(self.mcp.env)
         return ws.child_env(base)
 
     def _graph_context_env(self, ws: Any, clone_base: str | None) -> dict[str, str]:
@@ -9197,6 +9237,49 @@ class Worker:
             )
         return Outcome(exit_code=ExitCode.FAILED, state=state)
 
+    def _fail_mcp_unattached(self, cause: str, detail: str, retryable: bool) -> Outcome:
+        """The attempt ends before its agent ran: a registered MCP server the
+        task names was withheld, or the attach could not be made (MCP-WORKER,
+        design §4.7 step 2). The caller named the server because the agent
+        needs it; work built without it would rest on knowledge the agent was
+        told it had. Retryable only when a later attempt may get it
+        (`unreadable`, an unreachable swarm-api); `credential_expired` and
+        the other reasons are final. `detail` holds names and reason words,
+        never a value.
+        """
+        error = self._scrub(
+            f"{cause}: the task names registered MCP servers this attempt could not "
+            f"attach ({detail}). The agent was not started"
+            + ("; the attempt is retried while the task has attempts left." if retryable
+               else ".")
+        )
+        self.log.warning(
+            "mcp servers not attached; failing before the agent runs",
+            cause=cause, detail=detail, retryable=retryable,
+        )
+        summary = self._upload_outputs()
+        summary["mcp_check"] = {"cause": cause, "detail": detail, "retryable": retryable}
+        with self._metrics_after_the_record():
+            if not retryable:
+                self.control.finish(
+                    state=TaskState.FAILED,
+                    exit_code=None,
+                    error=error,
+                    result_summary=summary,
+                    end_cause=EndCause.CANNOT_START,
+                )
+                return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
+            state = self.control.fail_retryably(
+                exit_code=None,
+                error=error,
+                cause=cause,
+                result_summary=summary,
+                retry_delay_seconds=FORGE_UNREACHABLE_RETRY_DELAY_SECONDS,
+                detail={"mcp": detail},
+                end_cause=EndCause.CANNOT_START,
+            )
+        return Outcome(exit_code=ExitCode.FAILED, state=state)
+
     def _forge_retry(self) -> forge_mod.RetryPolicy:
         """The bound on retrying a forge call that failed transiently (F1).
 
@@ -9642,6 +9725,8 @@ class Worker:
                 try:
                     signals = self.control.poll()
                     if signals.is_fenced(self.cfg.generation):
+                        # The relay stops forwarding now, not at the next poll.
+                        self.mcp.mark_fenced()
                         self.log.warning(
                             "stopped heartbeating the lease during a long operation: "
                             "the attempt is fenced",
@@ -12823,6 +12908,10 @@ class Worker:
         for step, action in (
             ("terminate_runner", terminate_runner),
             ("remove_released_secrets", remove_released_secrets),
+            # The MCP relay closes, its file goes and every credential
+            # reference is dropped once the runner is gone (MCP-WORKER,
+            # design §4.7 step 6). The bytes go when this process exits.
+            ("close_mcp_relay", self.mcp.close),
             # The TypeSafe shim stops, its file goes and the ticket is dropped
             # once the runner is gone (SEC-MIGRATE-TYPESAFE). A no-op when off.
             ("stop_typesafe_shim", self.typesafe.close),
