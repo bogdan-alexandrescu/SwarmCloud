@@ -92,8 +92,15 @@ def test_the_terraform_mirror_carries_the_indexer_as_it_carries_claude_code():
     assert re.search(r'^\s*provider\s*=\s*"anthropic"$', body, re.M), body
     assert re.search(r"^\s*timeout_seconds\s*=\s*7200$", body, re.M), body
     # The model table is Terraform-only, and an index run ran claude-code's.
-    models = dict(re.findall(r'^\s*"([a-z-]+)"\s*=\s*"(claude-[a-z0-9-]+)"$', text, re.M))
-    assert models.get("indexer") == models["claude-code"], models
+    # runner_models is keyed by model class (#1435); a profile's model is the
+    # pin of its default_model_class, so it runs claude-code's model when the
+    # two name the same default class.
+    claude_code = re.search(r'^    "claude-code" = \{\n(.*?)^    \}\n', text, re.M | re.S)
+    assert claude_code, 'terraform/infra/locals.tf runner_profiles has no "claude-code" entry'
+    default = r'^\s*default_model_class\s*=\s*"([a-z]+)"$'
+    classes = [re.search(default, b, re.M) for b in (body, claude_code.group(1))]
+    assert all(classes), classes
+    assert classes[0].group(1) == classes[1].group(1), classes
 
 
 def test_the_indexer_writes_claude_codes_agent_streams():
