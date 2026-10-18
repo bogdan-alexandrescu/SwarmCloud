@@ -1508,3 +1508,26 @@ Not built when this note was written, and so described in the docs only as
 lanes still to land: the console card (HW-UI) and the plugin's
 `swarm_workflow_input` and `swarm_inputs` (HW-MCP). Their sections in the
 docs are theirs to write when they merge.
+
+**HW-UI (2026-10-18, part of #1436).** The console's half, in
+`apps/swarm-ui/src/AwaitInputCard.tsx` and `apps/swarm-ui/src/awaitInput.ts`.
+An `await-input` step's node on Work › Workflows reads "waiting for a
+member", its tooltip names the tenant, and its row says when it expires;
+opening the workflow picks the waiting step, so its card is open on arrival.
+The card shows the prompt and each artifact the step stages through the
+existing artifact viewer, then the declared form (Approve sends `MERGE`,
+Request changes `NOT_YET`; the upstream agent's questions; a text box) and,
+when `max_files` is above 0, a file picker that refuses too many files, a
+name or type the server refuses, and a whole answer over the bound before
+anything is sent, with the §4.3 warning above it and again beside Send. An
+answered, expired or cancelled step shows who, when and how and offers no
+form; its files are offered as downloads, never drawn. The approvals inbox
+lists a waiting step as an Answer, drawn from its row (the item has no
+record to read) with no decide verbs, and its Answer opens the workflow. On
+a run's Steps card the step reads what it waits for and leads to its card.
+Submit › Workflow composes the `await_input` block for the step, and offers
+the profile refused while the catalogue serves it unavailable.
+
+Where the build differs from §4.5: the `answers` form is drawn from the
+questions the step's own route serves, not through `QuestionsCard.tsx`,
+whose Answer posts to the task's answers route rather than the step's.

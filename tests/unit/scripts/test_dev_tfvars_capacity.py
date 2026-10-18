@@ -70,6 +70,8 @@ PENDING_POOLS = {
     # once an operator runs
     # `scripts/pool-limit.sh --pool backend:GKE_AUTOPILOT --limit 100`.
     "backend:GKE_AUTOPILOT": 100,
+    # oracle-api's tenant (#1568): min(max_active 4, capacity_units 8).
+    "tenant:u-or-9a0792": 4,
 }
 
 #: (max_active, capacity_units) of every live dev tenant, read 2026-10-02;
@@ -80,6 +82,14 @@ LIVE_TENANTS = {
     "smoke": (20, 20),
     "u-bogdan": (80, 80),
     "u-sw-c90291": (4, 8),
+}
+
+#: Tenants dev.tfvars declares that are NOT live until the release that adds
+#: them applies. u-or-9a0792 is oracle-api's own tenant (owner decision
+#: 2026-10-18, #1568), at swarm-verify's 4/8. Move it into LIVE_TENANTS, and
+#: its pool into LIVE_POOLS, with the date read, once it is live.
+PENDING_TENANTS = {
+    "u-or-9a0792": (4, 8),
 }
 
 #: Live pools no tfvars key can create. `mock-provider` is the provider the mock
@@ -225,7 +235,10 @@ def test_a_workspace_s_pools_and_limits_are_not_terraform_s():
 def test_every_live_tenant_limit_is_stated_at_its_live_value():
     _, tenants = _dev()
     stated = {t: (cfg["max_active"], cfg["capacity_units"]) for t, cfg in tenants.items()}
-    assert stated == {t: v for t, v in LIVE_TENANTS.items() if t not in MOVED_TO_WORKSPACES}
+    assert stated == {
+        **{t: v for t, v in LIVE_TENANTS.items() if t not in MOVED_TO_WORKSPACES},
+        **PENDING_TENANTS,
+    }
 
 
 def test_the_doubled_provider_pools_still_satisfy_the_provider_tenant_floor():

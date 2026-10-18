@@ -3984,6 +3984,52 @@ Until steps 1-3 are done the acceptance job fails at `acc_require_tenant`
 with the sentence that names this section, and nothing is submitted: a red
 acceptance job, not a quiet return to eng.
 
+## The personal-workspace job is not CI, and its log is not public
+
+A person's workspace is made by **the Cloud Run job `swarm-workspace-apply`**
+in the project, not by a workflow in `.github/workflows/` and not by Cloud
+Build ([multi-tenancy §7](multi-tenancy.md#7-a-persons-personal-workspace)).
+It is recorded here because it is the one deployment-shaped thing that no
+workflow runs, and the first place someone looks for its log is this page.
+
+**Why not CI.** Its log names people, and this repository's Actions logs are
+public. Its identity, `swarm-workspace-deployer`, holds account-IAM power IAM
+cannot narrow in the shared project, so it must be reachable from as few
+places as possible: a GitHub workflow holding a way to start it would put
+that power one compromised workflow away (WD2, re-decided 2026-10-10 from a
+Cloud Build trigger to this job).
+
+**How it is started.** An admin's approval (or Retry, or the 10-minute
+`swarm-workspace-sweep`) makes swarm-api publish the opaque workspace id to the
+Pub/Sub topic `swarm-workspace-apply`. An Eventarc trigger hands the message
+to the Workflows definition `swarm-workspace-apply`, running as
+`swarm-workspace-dispatch`, which validates the id and the mode and runs the
+job with those two arguments and nothing else. All of it is
+`terraform/bootstrap/workspace_deployer.tf` and `workspace_dispatch.tf`, the
+owner's apply, never the release's.
+
+**What CI does for it.** The release builds and scans `images/workspace-apply`
+with every other image (`scripts/build-images.sh` `ALL_TARGETS`); the `shell`
+job runs the call guard's self-test (`workspace-guard.sh self-test`), and the
+`python` job the walk of every call the job makes
+(`tests/unit/scripts/test_workspace_deployer_walk.py`). **The job does not run
+what the release just built.** It runs the digest in bootstrap's
+`workspace_apply_image`, and only the owner's bootstrap apply moves it
+(workspaces.md §2.4 R1), so a merge to `main` never changes what runs as the
+deployer. A fix to the job's code therefore reaches it in two steps: the
+release builds the image, then the owner re-pins the digest, as PR 1219 did
+for PR 1217's image on 2026-10-13.
+
+**Where its logs are.** Cloud Logging, `resource.type="cloud_run_job"` and
+`resource.labels.job_name="swarm-workspace-apply"`, routed by the sink
+`swarm-workspace-apply` to the restricted log bucket of the same name and
+excluded from `_Default` (workspaces.md §2.6). Readable by the project's owners
+and logging admins and the members of bootstrap's `workspace_log_readers`; the
+person's row in Admin → People links to the execution. Each step's progress
+is also on the record (`steps.A1` … `steps.A9`), which People shows without
+any log access. The first execution to reach A9 ran 2026-10-13 05:03 to
+05:05Z, for `w-7f9285`.
+
 ## ruff lint is the house Python linter, and formatting is not adopted
 
 ruff is the house linter (owner decision 2026-10-14, "Adopt ruff"), configured
