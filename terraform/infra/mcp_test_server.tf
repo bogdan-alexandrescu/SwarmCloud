@@ -1,8 +1,9 @@
 # The acceptance group's echo MCP server (lane MCP-ACCEPT, part of #1433;
 # docs/design/registered-mcp-servers.md section 6, owner decision Q10 of
 # 2026-10-17): a DEV-ONLY Cloud Run service that scales to zero, reached over
-# public HTTPS through a task's relay exactly as a caller's own server is.
-# scripts/acceptance/groups/mcp.sh dispatches a claude-code task that names it.
+# HTTPS through a task's relay exactly as a caller's own server is, with a
+# per-run credential. scripts/acceptance/groups/mcp.sh dispatches a claude-code
+# task that names it.
 #
 # Four things, and only these:
 #
@@ -12,12 +13,21 @@
 #     digest -- no new image, no new build. The server holds nothing: no
 #     store, no secret, and it answers any bearer with only that bearer's own
 #     hash (and the bearer itself, on purpose, for the relay to scrub);
-#   * allUsers -> run.invoker on THIS service: the relay is a worker in a
-#     tenant pod, and a caller's server is reached without a Google identity,
-#     so this one must be too. The relay's checks (public address, 443, no
-#     redirect) are what the acceptance group exercises;
+#   * run.invoker on THIS service for the ACCEPTANCE IDENTITY ALONE: the
+#     account terraform/bootstrap/acceptance.tf creates and accept.yml
+#     federates as (vars.GCP_ACCEPT_SA). NOTHING HERE IS PUBLIC (owner
+#     decision 2026-10-18, lane MCP-ACCEPT-B; security.yml's "no public Cloud
+#     Run services" allows a public member only on the GitHub push receiver). The
+#     acceptance group mints a Google ID token as that account, audience this
+#     service's URL, and dispatches it as the task's per-run MCP credential
+#     (`mcp_credentials`), so the relay sends it as the Authorization header
+#     -- the same per-run path a caller's credential takes. Cloud Run's IAM
+#     check on that token is what admits the request; a request without it is
+#     a 403 from Cloud Run before the container sees it, and the group
+#     asserts that too. Ingress stays ALL: the relay reaches the service from
+#     the swarm NAT's public address, not from inside a VPC;
 #   * its own service account, swarm-mcp-echo, holding NO role anywhere. A
-#     public service never runs as an account that can read anything: not
+#     reachable service never runs as an account that can read anything: not
 #     swarm-verify's (it reads Firestore), and never the default compute
 #     account;
 #   * the CI deployer's actAs on that account, which deploying a service that
@@ -37,8 +47,9 @@
 #   2. the owner adds swarm-mcp-echo to the accounts bootstrap grants the
 #      deployer admin on (terraform/modules/service_account_ids; this lane's
 #      PR asks for it) and applies bootstrap.
-#   3. mcp_test_server = "on": the actAs binding, the service and its public
-#      invoker. Before step 2 the binding is a 403 at apply.
+#   3. mcp_test_server = "on": the actAs binding, the service and the
+#      acceptance identity's invoker. Before step 2 the binding is a 403 at
+#      apply.
 #
 # Steps 1 and 3 change IAM, so a dev release making either waits at the
 # dev-iam gate for the owner (docs/ci.md).
@@ -55,8 +66,9 @@ variable "mcp_test_server" {
     (terraform/infra/mcp_test_server.tf; owner decision Q10 of #1433's design).
     "off" (the default): nothing. "account": its service account only, so
     terraform/bootstrap can grant the deployer admin on it. "on": the account,
-    the deployer's actAs on it, the service and its public invoker -- only
-    after bootstrap has granted that admin. Dev only.
+    the deployer's actAs on it, the service and the acceptance identity's
+    invoker on it (nothing public) -- only after bootstrap has granted that
+    admin. Dev only.
   EOT
   type        = string
   default     = "off"
@@ -68,7 +80,7 @@ variable "mcp_test_server" {
 
   validation {
     condition     = var.mcp_test_server == "off" || var.environment == "dev"
-    error_message = "mcp_test_server is dev only (owner decision Q10): the echo MCP server is a public test endpoint, and staging and prod never run one."
+    error_message = "mcp_test_server is dev only (owner decision Q10): the echo MCP server is a test endpoint, and staging and prod never run one."
   }
 }
 
@@ -86,6 +98,12 @@ locals {
   mcp_test_server_path  = "/mcp"
   # Spelled, not read from the account, so the plan knows it.
   mcp_test_server_email = "${local.mcp_test_server_name}@${var.project_id}.iam.gserviceaccount.com"
+  # The one invoker: the acceptance account. terraform/bootstrap creates it
+  # (acceptance.tf, account_id "<name_prefix>-accept") and the owner applies
+  # that root, which shares no state with this one, so its address is derived
+  # here from the same two inputs rather than read; the tftest fails if
+  # bootstrap's spelling of the id moves.
+  mcp_test_server_invoker = "${var.name_prefix}-accept@${var.project_id}.iam.gserviceaccount.com"
 }
 
 resource "google_service_account" "mcp_test_server" {
@@ -94,7 +112,7 @@ resource "google_service_account" "mcp_test_server" {
   project      = var.project_id
   account_id   = local.mcp_test_server_name
   display_name = "Swarm MCP echo (acceptance, dev only)"
-  description  = "The acceptance group's public echo MCP server runs as this account. It holds no role anywhere. managed-by=swarm-terraform"
+  description  = "The acceptance group's echo MCP server runs as this account. It holds no role anywhere. managed-by=swarm-terraform"
 }
 
 # Deploying a service that runs as the account needs actAs on it (deployer.tf).
@@ -113,8 +131,9 @@ resource "google_cloud_run_v2_service" "mcp_test_server" {
   location = var.region
   name     = local.mcp_test_server_name
 
-  # Public, as a caller's server is: the relay in a tenant pod reaches it
-  # through the swarm NAT with no Google identity.
+  # Ingress ALL, as a caller's server is: the relay in a tenant pod reaches
+  # it through the swarm NAT's public address. Reachable is not public: IAM
+  # admits only the acceptance identity's ID token (the invoker below).
   ingress             = "INGRESS_TRAFFIC_ALL"
   deletion_protection = var.deletion_protection
   launch_stage        = "GA"
@@ -192,24 +211,25 @@ resource "google_cloud_run_v2_service" "mcp_test_server" {
   }
 }
 
-# allUsers -> run.invoker on THIS service only.
-resource "google_cloud_run_v2_service_iam_member" "mcp_test_server_public" {
-  # checkov:skip=CKV_GCP_102:the dev-only acceptance echo MCP server (owner decision Q10 of #1433's design); a caller's MCP server is reached with no Google identity, and this one holds nothing.
+# run.invoker on THIS service, for the acceptance identity alone. No public
+# member (owner decision 2026-10-18).
+resource "google_cloud_run_v2_service_iam_member" "mcp_test_server_invoker" {
   count = local.mcp_test_server_on ? 1 : 0
 
   project  = var.project_id
   location = var.region
   name     = google_cloud_run_v2_service.mcp_test_server[0].name
   role     = "roles/run.invoker"
-  member   = "allUsers"
+  member   = "serviceAccount:${local.mcp_test_server_invoker}"
 }
 
 output "mcp_test_server" {
-  description = "The acceptance group's echo MCP server (dev only): whether it exists, the URL to register in the smoke tenant as a dispatch server, and the identity it runs as. Names only; never a value."
+  description = "The acceptance group's echo MCP server (dev only): whether it exists, the URL to register in the smoke tenant as a dispatch server, and the identity it runs as, and the one identity that may invoke it. Names only; never a value."
   value = {
     created         = local.mcp_test_server_on
     service         = local.mcp_test_server_on ? local.mcp_test_server_name : ""
     service_account = local.mcp_test_server_account ? local.mcp_test_server_email : ""
+    invoker         = local.mcp_test_server_on ? local.mcp_test_server_invoker : ""
     url             = local.mcp_test_server_on ? "${google_cloud_run_v2_service.mcp_test_server[0].uri}${local.mcp_test_server_path}" : ""
   }
 }

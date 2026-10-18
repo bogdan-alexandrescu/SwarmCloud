@@ -4,15 +4,19 @@
 # the agent's reach (#1433; docs/design/registered-mcp-servers.md section 6,
 # lane MCP-ACCEPT).
 #
-# ONE claude-code TASK AND ONE DOOR PROBE:
+# ONE claude-code TASK, ONE DOOR PROBE AND ONE CALL WITHOUT A CREDENTIAL:
 #
 #   door   the dispatch naming a server nobody registered, with a reserved
 #          metadata key (lib.sh acc_door's rule), so nothing is created
 #          whether the door refuses the name or not.
+#   probe  the registered URL called with no credential: Cloud Run must
+#          refuse it 403 (the echo server's own refusal is 401, so a 401 is
+#          a public service).
 #   task   claude-code naming the registered echo server with a per-run
-#          credential (mcp_credentials, auth mode `dispatch`). Its prompt has
-#          it call `whoami` once, save the answer as an artifact, and plant a
-#          canary in its output, an artifact and a workspace file.
+#          credential (mcp_credentials, auth mode `dispatch`): a Google ID
+#          token minted as the acceptance identity. Its prompt has it call
+#          `whoami` once, save the answer as an artifact, and plant a canary
+#          in its output, an artifact and a workspace file.
 #
 # Its peak in the smoke tenant is one task.
 #
@@ -29,6 +33,17 @@
 # and this group only reads it. No registration, a disabled one, or the
 # feature switched off (SWARM_MCP_SERVERS, every submission refused
 # `mcp_unavailable`) is a SKIP naming the reason, never a pass.
+#
+# NOTHING IS PUBLIC (owner decision 2026-10-18, lane MCP-ACCEPT-B). The echo
+# server's one invoker is the acceptance identity, the account accept.yml
+# federates as (terraform/infra/mcp_test_server.tf), so the per-run credential
+# is that account's Google ID token, audience the service's URL: exactly what
+# a caller sends for its own server. swarm-verify mints it through IAM
+# Credentials, which needs roles/iam.serviceAccountOpenIdTokenCreator for
+# swarm-verify on that account (terraform/bootstrap, the owner's root); a mint
+# IAM refuses leaves no task and every task check SKIPS naming the grant.
+# MCP_INVOKER is the account: SWARM_ACCEPTANCE_MCP_INVOKER, or the address
+# terraform/bootstrap/acceptance.tf gives "<name_prefix>-accept".
 #
 # THE CREDENTIAL IS NEVER A SHELL VALUE. tests/acceptance/test_caller_mcp.py
 # mints it into a 0600 file in this run's work directory and writes the
@@ -53,10 +68,12 @@ set -euo pipefail
 
 #: The verdict keys tests/acceptance/test_caller_mcp.py writes (its CHECKS),
 #: in the order of mcp_checks below.
-MCP_KEYS=(credential_seen unregistered_refused no_leak worker_gone)
+MCP_KEYS=(credential_seen unregistered_refused no_leak worker_gone unauthenticated_refused)
 MCP_JUDGE="tests/acceptance/test_caller_mcp.py"
 #: The name the echo server is registered under in the smoke tenant.
 MCP_SERVER="${SWARM_ACCEPTANCE_MCP_SERVER:-acc-echo}"
+#: The one identity the echo server admits, whose ID token is the credential.
+MCP_INVOKER="${SWARM_ACCEPTANCE_MCP_INVOKER:-swarm-accept@${PROJECT_ID}.iam.gserviceaccount.com}"
 #: The streams GET /v1/tasks/{id}/logs serves (swarm_api.inspect.LOG_STREAMS),
 #: and the most 1 MiB pages read of one before the read is called unread.
 MCP_LOG_STREAMS=(stdout stderr agent_stdout agent_stderr)
@@ -68,6 +85,7 @@ mcp: a claude-code task calls its caller's registered MCP server through the rel
 mcp: the same dispatch naming an unregistered server is refused before admission
 mcp: the credential is in no log route, artifact, checkpoint or event of the task, and a planted canary is in every one
 mcp: after the attempt the worker has exited and the workspace it left holds no copy of the credential
+mcp: the registered server called without the credential is refused 403 by Cloud Run
 EOF
 }
 
@@ -277,9 +295,20 @@ run_mcp() {
   printf '%s\n' "${status}" >"${dir}/registration.status"
 
   _mcp_door "${dir}"
+  if [[ -f "${dir}/registration.json" ]]; then
+    python3 "${REPO_ROOT}/${MCP_JUDGE}" probe --dir "${dir}" || warn "mcp: the judge could not probe ${MCP_SERVER}"
+  fi
   if [[ -f "${dir}/registration.json" ]] \
       && [[ "$(jq -r '.server.enabled == true and .server.auth.mode == "dispatch"' "${dir}/registration.json")" == "true" ]]; then
-    _mcp_submit "${dir}"
+    python3 "${REPO_ROOT}/${MCP_JUDGE}" token --dir "${dir}" --invoker "${MCP_INVOKER}" \
+      || warn "mcp: the judge could not mint the ID token"
+    if [[ "$(jq -r '.minted == true' "${dir}/token.json" 2>/dev/null || echo false)" == "true" ]]; then
+      _mcp_submit "${dir}"
+    else
+      t_info "mcp: no ID token as ${MCP_INVOKER}: $(jq -r '.reason // "token.json was not written"' "${dir}/token.json" 2>/dev/null | redact || true); no task is submitted"
+      jq -nc '{status: "not sent", code: null, task: ""}' >"${dir}/submit.json"
+      : >"${dir}/task"
+    fi
   else
     t_info "mcp: ${MCP_SERVER} is not an enabled dispatch registration in ${ACC_TENANT} (HTTP ${status}); no task is submitted"
     jq -nc '{status: "not sent", code: null, task: ""}' >"${dir}/submit.json"

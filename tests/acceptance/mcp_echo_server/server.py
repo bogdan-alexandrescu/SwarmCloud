@@ -16,6 +16,12 @@ WHAT IT ANSWERS. MCP streamable HTTP (Q5), stateless, JSON answers only:
                       never holds the credential, so it cannot produce this:
                       a match with the value the suite minted is the proof
                       that the server saw it (the issue's first check);
+  jwt_claims_sha256   when the bearer is a compact JWT (the acceptance group
+                      sends a Google ID token, which is what Cloud Run's IAM
+                      check admits), the sha256 of its claims segment. That
+                      segment is the same whether or not Cloud Run hands the
+                      container the token with its signature, so the judge
+                      can match it either way; null for any other bearer;
   credential_echo     the bearer value itself, ON PURPOSE: a server that
                       echoes a credential is the case the relay scrubs
                       (§4.8, "Answers"), so the agent must receive a mask
@@ -25,9 +31,11 @@ WHAT IT ANSWERS. MCP streamable HTTP (Q5), stateless, JSON answers only:
                       judge knows which attempt's relay made the call;
   nonce               the argument the agent passed, bounded.
 
-WHAT IT HOLDS: nothing. No store, no identity with a grant, no secret. Anyone
-on the internet may call it with any bearer and learn only the hash of their
-own value. A request without a bearer is 401. It never logs a header, a body
+WHAT IT HOLDS: nothing. No store, no identity with a grant, no secret. It is
+not public (owner decision 2026-10-18): Cloud Run admits only the acceptance
+identity's ID token and refuses anything else 403 before this code runs. A
+request that does reach it without a bearer is 401 -- never 403, so the
+judge can tell the two refusals apart. It never logs a header, a body
 or an argument: one line per request, the JSON-RPC method, the tool and the
 status (Cloud Logging is a log route too).
 
@@ -86,6 +94,14 @@ def credential_sha256(value: str) -> str:
     return hashlib.sha256(value.encode("ascii")).hexdigest()
 
 
+def jwt_claims_sha256(value: str) -> str | None:
+    """sha256 of a compact JWT's claims segment, or None for any other value."""
+    parts = value.split(".")
+    if len(parts) != 3 or not parts[1]:
+        return None
+    return hashlib.sha256(parts[1].encode("ascii")).hexdigest()
+
+
 def bearer(header: str | None) -> str | None:
     """The bearer value of one Authorization header, or None when it is not one."""
     if not header:
@@ -108,6 +124,7 @@ def whoami(credential: str, arguments: Any, headers: dict[str, str | None]) -> d
     return {
         "server": SERVER_NAME,
         "credential_sha256": credential_sha256(credential),
+        "jwt_claims_sha256": jwt_claims_sha256(credential),
         "credential_echo": credential,
         "task": _header_id(headers.get(TASK_HEADER)),
         "attempt": _header_id(headers.get(ATTEMPT_HEADER)),
