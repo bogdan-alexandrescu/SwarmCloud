@@ -575,6 +575,13 @@ class ApiSettings:
     #: operator lists a tenant; a tenant listed before that reads its unsigned
     #: settings as unset (fail closed).
     settings_mac_tenants: tuple[str, ...] = ()
+    #: The NAT addresses every worker's MCP call leaves through, which a
+    #: registered MCP server's operator allowlists (docs/design/registered-
+    #: mcp-servers.md §4.9). MCP_EGRESS_ADDRESSES, comma-separated, rendered
+    #: by terraform/infra/locals.tf from the NAT's reserved addresses (the
+    #: resource the `mcp_egress_addresses` output reads). Empty serves `[]`
+    #: on GET /v1/mcp-servers, and the console says so in words.
+    mcp_egress_addresses: tuple[str, ...] = ()
     #: GRANT ATTESTATION (docs/design/workspace-secrets.md, "What
     #: SEC-GRANT-ATTEST built"; owner decision 2026-10-15). `swarm-workspace-
     #: grant-key`, from SWARM_WORKSPACE_GRANT_KEY by Secret Manager reference
@@ -851,6 +858,7 @@ class ApiSettings:
             settings_key=os.environ.get("SWARM_SETTINGS_KEY", "").strip(),
             settings_key_previous=os.environ.get("SWARM_SETTINGS_KEY_PREVIOUS", "").strip(),
             settings_mac_tenants=_csv("SETTINGS_MAC_TENANTS"),
+            mcp_egress_addresses=_csv("MCP_EGRESS_ADDRESSES"),
             workspace_grant_key=os.environ.get("SWARM_WORKSPACE_GRANT_KEY", "").strip(),
             workspace_grant_key_previous=os.environ.get(
                 "SWARM_WORKSPACE_GRANT_KEY_PREVIOUS", "").strip(),

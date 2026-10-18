@@ -659,6 +659,14 @@ locals {
       # design (modules/scheduler/execution_cancel.tf says why).
       EXECUTION_CANCEL_TOPIC = local.execution_cancel_topic
 
+      # The addresses a registered MCP server's operator allowlists
+      # (docs/design/registered-mcp-servers.md §4.9): every worker's MCP call
+      # leaves through the NAT's reserved addresses, so they are read from
+      # the same resource as the mcp_egress_addresses output, never typed.
+      # swarm_api.settings reads them and GET /v1/mcp-servers serves them as
+      # `egress_addresses`; "" serves [], which the console says in words.
+      MCP_EGRESS_ADDRESSES = join(",", module.network.nat_addresses)
+
       # Neither name appeared anywhere in terraform, so swarm_api.settings read
       # empty tuples, resolve_tenant() had no groups to check, and EVERY caller
       # fell through to the personal `u-<email>` tenant.
