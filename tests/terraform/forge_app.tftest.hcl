@@ -305,6 +305,12 @@ run "user_slot_grants_are_scoped_per_tenant_and_split_read_from_write" {
 # user-slot condition is swarm-api's. The source: no IAM resource anywhere in
 # terraform/bootstrap grants secretAccessor to a tenant worker account, so a
 # binding added under a new address is caught too, not only the one removed.
+#
+# One worker secretAccessor grant is exempt, by address: typesafe_user_key_
+# reader (JEV-RUNNER, owner decision 2026-10-14, #1030), a group's worker
+# reading one listed person's `-typesafe` key. Its condition pins that one
+# secret by full name and can never match a `-git-u-` slot;
+# typesafe_user_keys.tftest.hcl holds that it names no other secret.
 run "no_tenant_worker_holds_secret_accessor_on_a_user_slot" {
   command = plan
 
@@ -339,10 +345,10 @@ run "no_tenant_worker_holds_secret_accessor_on_a_user_slot" {
       for f in fileset("../../terraform/bootstrap", "*.tf") : [
         for b in regexall("(?s)resource \"google_[a-z_]+_iam_(?:member|binding)\" \"([^\"]+)\" \\{(.*?)\\n\\}", file("../../terraform/bootstrap/${f}")) :
         "${f}: ${b[0]}"
-        if strcontains(b[1], "secretmanager.secretAccessor") && (strcontains(b[1], "worker_ids") || strcontains(b[1], "swarm-agent-worker"))
+        if b[0] != "typesafe_user_key_reader" && strcontains(b[1], "secretmanager.secretAccessor") && (strcontains(b[1], "worker_ids") || strcontains(b[1], "swarm-agent-worker"))
       ]
     ])) == 0 && length(google_project_iam_member.forge_refresh_reader) > 0
-    error_message = "terraform/bootstrap grants a tenant worker account secretAccessor; its one such grant was the worker's read of every member's -git-u- slot, removed by the owner's 2026-10-11 decision (#1041)"
+    error_message = "terraform/bootstrap grants a tenant worker account secretAccessor outside typesafe_user_key_reader; its one other such grant was the worker's read of every member's -git-u- slot, removed by the owner's 2026-10-11 decision (#1041)"
   }
 
   # The control: the source check finds swarm-api's own reader, so a regex
