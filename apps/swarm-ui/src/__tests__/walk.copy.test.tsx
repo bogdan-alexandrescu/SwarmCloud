@@ -67,6 +67,9 @@ function visibleText(root: Element): string {
     // An id drawn as an id -- one token alone in a code, mono or id element,
     // like the step a workflow integrates through -- is the user's data.
     if (n.parentElement?.matches('code, .mono, .id') && /^\s*[\w.-]+\s*$/.test(t)) continue
+    // An issue's `#N` is the user's reference, drawn on its own so the repository
+    // is the part a narrow cell cuts (.rn-refcut-n); it is not a number we print.
+    if (n.parentElement?.matches('.rn-refcut-n') && /^#\d+$/.test(t)) continue
     words.push(t)
   }
   return words.join(' ').replace(/gs:\/\/\S+/g, ' ').replace(/\s+/g, ' ')

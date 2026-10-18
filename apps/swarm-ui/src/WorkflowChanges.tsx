@@ -422,17 +422,19 @@ export function PatchChanges({
   )
 }
 
-/** One of the tab's states: a mark, a heading, at most one sentence. */
+/** One of the tab's states: a mark, a heading, at most one sentence, and a way on (`action`) on its own line. */
 function State({
   mark,
   heading,
   say,
   children,
+  action,
 }: {
   mark: 'zero' | 'absent' | 'unread' | 'partial'
   heading: string
   say: string
   children?: ReactNode
+  action?: ReactNode
 }) {
   return (
     <div className={`ctl-empty chg-state${mark === 'zero' ? '' : ` is-${mark === 'unread' ? 'failed' : mark}`}`} role={mark === 'zero' ? undefined : 'status'}>
@@ -440,6 +442,7 @@ function State({
         <Mark kind={mark} say={say} /> {heading}
       </h3>
       {children !== undefined && children !== null ? <p>{children}</p> : null}
+      {action !== undefined ? <p>{action}</p> : null}
     </div>
   )
 }
@@ -1393,7 +1396,11 @@ export function WorkflowChangesTab({
 /** An issue run's Changes tab (`/runs/<id>/changes`): its workflow's steps, then each CI fix round's. */
 export function RunChangesTab({ run, at, onAt }: { run: IssueRun; at?: ChangesAt; onAt?: (at: ChangesAt) => void }) {
   const [here, go] = useLocalAt(at, onAt)
-  const read = useRunWorkflows(run)
+  // TRY AGAIN IS A NEW READ OF THE SAME RUN: `useRunWorkflows` reads again
+  // whenever the run it is handed is a new object, as each poll's is.
+  const [tries, setTries] = useState(0)
+  const asked = useMemo(() => ({ ...run }), [run, tries])
+  const read = useRunWorkflows(asked)
   if ((run.workflow_id ?? null) === null) {
     return (
       <section className="chg-tab chg-run" aria-label="Changes in this run">
@@ -1425,28 +1432,49 @@ export function RunChangesTab({ run, at, onAt }: { run: IssueRun; at?: ChangesAt
     integrator: r.round === 0 && r.stepId === stepId,
   }))
   const failed = read.loads.filter((l) => l.error !== null)
-  return (
-    <section className="chg-tab chg-run" aria-label="Changes in this run">
-      {failed.map((l) => (
-        <p key={l.wf} className="chg-note" role="status">
-          <Mark kind="unread" say={`${l.round === 0 ? 'The workflow' : `Fix round ${l.round}'s workflow`} could not be read: ${l.error}`} />{' '}
-          {l.round === 0 ? 'The workflow' : `Fix round ${l.round}'s workflow`} <span className="mono">{l.wf}</span> could not be read
-          {l.data === null ? ', so its steps are not drawn' : ', so its columns are the last read'}.
-        </p>
-      ))}
-      {/* NOT A ZERO WHEN NOTHING WAS READ (visual QA V037, 2026-10-11): a
-          workflow that could not be read leaves no column, and the matrix's
-          own "no steps" chip then called that a real zero under the note
-          saying the read failed. No column and a failed read is unread. */}
-      {cols.length === 0 && failed.length > 0 ? (
+  const whose = (l: { round: number }) => (l.round === 0 ? 'The workflow' : `Fix round ${l.round}'s workflow`)
+  // NOT A ZERO WHEN NOTHING WAS READ (visual QA V037, 2026-10-11): a
+  // workflow that could not be read leaves no column, and the matrix's own
+  // "no steps" chip then called that a real zero under the note saying the
+  // read failed. No column and a failed read is unread.
+  //
+  // AND SAID ONCE (visual QA V211, 2026-10-16): the note above the panel said
+  // the read failed and the red panel under it said only "not read · steps
+  // not read", with no reason and no way to read again. With nothing drawn,
+  // the panel is the one statement: which workflow, the API's reason, and
+  // Try again.
+  if (cols.length === 0 && failed.length > 0) {
+    return (
+      <section className="chg-tab chg-run" aria-label="Changes in this run">
         <State
           mark="unread"
           heading="steps not read"
           say="The run's workflow could not be read, so its steps and what they changed are not known. This is not a zero."
-        />
-      ) : (
-        <ChangesMatrix cols={cols} at={here} onAt={go} pullRequest={pr} />
-      )}
+          action={(
+            <Button size="sm" className="retry" onClick={() => setTries((n) => n + 1)}>
+              Try again
+            </Button>
+          )}
+        >
+          {failed.map((l, i) => (
+            <span key={l.wf}>
+              {i > 0 && ' '}{whose(l)} <span className="mono">{l.wf}</span> could not be read: {l.error}
+            </span>
+          ))}
+        </State>
+      </section>
+    )
+  }
+  return (
+    <section className="chg-tab chg-run" aria-label="Changes in this run">
+      {failed.map((l) => (
+        <p key={l.wf} className="chg-note" role="status">
+          <Mark kind="unread" say={`${whose(l)} could not be read: ${l.error}`} />{' '}
+          {whose(l)} <span className="mono">{l.wf}</span> could not be read
+          {l.data === null ? ', so its steps are not drawn' : ', so its columns are the last read'}.
+        </p>
+      ))}
+      <ChangesMatrix cols={cols} at={here} onAt={go} pullRequest={pr} />
     </section>
   )
 }
