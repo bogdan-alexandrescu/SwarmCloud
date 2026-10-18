@@ -458,7 +458,7 @@ def test_await_input_section_states_the_24_hour_bound_the_code_holds():
     assert f"{AWAIT_INPUT_REMIND_MIN_SECONDS:,}" in body
     validation = "apps/swarm-api/swarm_api/validation.py"
     assert f"`{validation}::AWAIT_INPUT_MAX_SECONDS`" in body
-    assert f"`apps/scheduler/scheduler/loop.py::HUMAN_PARK_MAX_SECONDS`" in body
+    assert "`apps/scheduler/scheduler/loop.py::HUMAN_PARK_MAX_SECONDS`" in body
     # A wait is free (invariant 1): the doc says the step holds no lease.
     assert "PARKED(AWAITING_INPUT)" in body
     assert "no lease" in body
@@ -471,10 +471,10 @@ def test_await_input_section_states_the_answer_and_file_bounds():
     body = _await_body()
     assert awaitinput.MAX_ANSWER_BYTES % MIB == 0
     assert f"{awaitinput.MAX_ANSWER_BYTES // MIB} MiB" in body
-    assert f"`apps/swarm-api/swarm_api/awaitinput.py::MAX_ANSWER_BYTES`" in body
+    assert "`apps/swarm-api/swarm_api/awaitinput.py::MAX_ANSWER_BYTES`" in body
     assert f"at most {AWAIT_INPUT_MAX_FILES} files" in body
     assert f"`max_files` | 0 to {AWAIT_INPUT_MAX_FILES}" in _text(WORKFLOWS)
-    assert f"`apps/swarm-api/swarm_api/validation.py::AWAIT_INPUT_MAX_FILES`" in body
+    assert "`apps/swarm-api/swarm_api/validation.py::AWAIT_INPUT_MAX_FILES`" in body
     assert f"{awaitinput.MAX_FORM_BYTES // KIB} KiB" in body
     assert f"{awaitinput.MAX_TEXT_BYTES // KIB} KiB" in body
     assert f"{awaitinput.MAX_CONCURRENT_MULTIPART} multipart answers" in body
@@ -491,8 +491,8 @@ def test_await_input_section_lists_exactly_the_allowed_types():
         for extension in extensions:
             assert f"`{extension}`" in body, extension
     assert f"`{awaitinput.TEXT_CONTENT_TYPE}`" in body
-    assert f"`apps/swarm-api/swarm_api/awaitinput.py::TEXT_EXTENSIONS`" in body
-    assert f"`apps/swarm-api/swarm_api/awaitinput.py::sniff`" in body
+    assert "`apps/swarm-api/swarm_api/awaitinput.py::TEXT_EXTENSIONS`" in body
+    assert "`apps/swarm-api/swarm_api/awaitinput.py::sniff`" in body
     # The list is closed: the extensions the doc names in its type list are
     # the code's, no more, so an extension dropped from the code fails here.
     types = re.search(r"\*\*Allowed types\.\*\*(.*?)Everything else", body)
