@@ -506,9 +506,11 @@ ends with can only have been carried from the parked attempt (contract
 request 56, #166; the recipe is in docs/workflows.md). `exit_code` refuses the codes the worker reads as a success, a rate
 limit, a refused credential and a cancellation. Every key's kind and bounds
 are in the table below, which is generated from the catalogue rather than
-restated here. `claude-code` and `codex` declare one input, `issue`: the
+restated here. `claude-code` and `codex` declare `issue`: the
 number of a GitHub issue in the repository the step clones (contract request
-28). The worker fetches its title, body and comments read-only into
+28). They also declare `mcp_servers` (contract request 88), the registered MCP
+servers the agent may call, by name; see
+[Registered MCP servers](#registered-mcp-servers-by-name-and-a-per-run-credential-the-agent-never-sees). The worker fetches its title, body and comments read-only into
 `issue.md` in the workspace, beside the checkout and never among the
 artifacts, and names that file in the prompt, so a prompt need not restate
 the issue. A step that sends it with no repository is refused by the API.
@@ -1385,6 +1387,50 @@ the onboarding tools, by name. Disabling an org
 `uv run sc access disconnect` revokes SwarmCloud's access at GitHub: both have no tool, take a typed
 confirmation and ignore `SWARM_ASSUME_YES`. `tests/unit/mcp/test_setup_and_access.py`
 holds the flow against a fake API, including that no secret is printed.
+
+## Registered MCP servers: by name, and a per-run credential the agent never sees
+
+A workspace can register its own MCP server (a knowledge base, a decision log)
+so a task's agent queries it during its run and writes back through it
+([docs/design/registered-mcp-servers.md](../docs/design/registered-mcp-servers.md),
+#1433). **Until the deployment sets `SWARM_MCP_SERVERS=on`, SwarmCloud refuses
+every `mcp_servers` with `mcp_unavailable`**; nothing below changes a dispatch
+that names none.
+
+* **Which servers exist:** `swarm_mcp_servers`, or `/sc mcp-servers` (`uv run
+  sc mcp-servers [--json]`). Each server's name, URL, auth mode, allowed
+  profiles and tools (none listed means every tool), whether it is enabled, and
+  the egress addresses its operator allowlists. Read-only.
+* **Naming one:** a claude-code or codex task or workflow step puts the names in
+  its declared input, `"inputs": {"mcp_servers": ["kb"]}`. Never a URL, a header
+  or a command: those come from the registration (invariant 10).
+* **A per-run credential:** a server registered with auth `dispatch` needs one,
+  minted by your application for this run, in the call's top-level
+  `mcp_credentials`, `{"kb": {"value": "<credential>", "expires_in": 3600}}`:
+  `swarm_dispatch` takes it beside `prompt`, each entry of `tasks` takes its
+  own, and `swarm_workflow` takes ONE map, beside `steps` or the spec, for
+  every step naming that server. SwarmCloud stores it in Secret Manager,
+  destroys it when the task ends, and hands it only to the worker's relay,
+  never to the agent.
+* **Never in a spec.** A spec is written to disk, held by `spec_ref` and copied
+  into a run script, so a spec carrying `mcp_credentials` is refused, without
+  repeating it. A workflow that needs a credential is submitted with
+  `swarm_workflow` and the map beside the spec, then given rows with
+  `/sc attach`.
+* **Nothing here registers a server or stores a long-lived credential.** An admin
+  registers a server in the console (Settings › Workspace › MCP servers), and a
+  `workspace_secret` server's key is a workspace secret granted to `mcp:<name>`.
+  No tool's schema has a field either would fit in.
+* **No log of this plugin holds a credential:** not a reply, a refusal, the
+  dispatch signature, a run copy or `launched.jsonl`. Every answer is cut to
+  `{server, expires_at}` per credential before anything reads it, whatever the
+  API sent, and a refusal names the field and the rule, never the value: a
+  credential pasted into `mcp_servers` by mistake is refused without being
+  repeated.
+
+`tests/unit/mcp/test_mcp_servers_tool.py` holds all of this against a fake API
+that echoes every body back, searching every reply and every file a dispatch
+wrote for a credential built at runtime.
 
 ## Your TypeSafe key: set it without Claude seeing it
 

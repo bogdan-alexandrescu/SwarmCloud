@@ -4067,6 +4067,88 @@ def _json_out(value: Any, out) -> int:
     return EXIT_OK
 
 
+# -- registered MCP servers (docs/design/registered-mcp-servers.md §4.11) ---
+#
+# READ-ONLY, BY DESIGN. Registering a server is an admin act in the console,
+# and a long-lived credential goes to the workspace secret store, which no
+# tool or command here writes: a session that could register a URL could
+# point the platform's relay anywhere, and one that took a store value would
+# hold a secret in its transcript. So this is the one place the package names
+# the registry's route, and only in a GET (tests/unit/mcp/test_mcp_servers_tool.py).
+
+#: What one listing entry carries: the registration's NAMES and rules, never
+#: its header or scheme, which only the worker's relay needs.
+_MCP_SERVER_FIELDS = ("name", "url", "description", "allowed_profiles", "enabled", "last_attached_at")
+
+
+def mcp_servers(client: SwarmClient) -> dict[str, Any]:
+    """`GET /v1/mcp-servers`, shaped for a session: each server's name, URL,
+    auth mode, whether a dispatch must bring a credential for it, the profiles
+    and tools allowed, and whether it is enabled; and the egress addresses its
+    operator allowlists. An empty `allowed_tools` means every tool (owner
+    decision Q4), and says so rather than reading as none."""
+    listing = client.request("GET", "/v1/mcp-servers")
+    if not isinstance(listing, dict):
+        raise SwarmError("GET /v1/mcp-servers answered no object: this deployment predates MCP servers")
+    servers = []
+    for entry in listing.get("servers") or []:
+        if not isinstance(entry, dict):
+            continue
+        mode = (entry.get("auth") or {}).get("mode") if isinstance(entry.get("auth"), dict) else None
+        tools = entry.get("allowed_tools")
+        servers.append({
+            **{key: entry.get(key) for key in _MCP_SERVER_FIELDS},
+            "enabled": entry.get("enabled") is True,
+            "auth_mode": mode or "none",
+            "needs_credential": mode == "dispatch",
+            "allowed_tools": list(tools) if tools else "every tool",
+        })
+    return {
+        "tenant_id": listing.get("tenant_id"),
+        "servers": servers,
+        "egress_addresses": list(listing.get("egress_addresses") or []),
+        "can_manage": listing.get("can_manage") is True,
+        "use": (
+            "name servers in a claude-code or codex step's `inputs.mcp_servers`; a "
+            "`dispatch` server also needs that call's `mcp_credentials` entry, "
+            "{\"<name>\": {\"value\": ..., \"expires_in\": seconds}}. Registering a server "
+            "is done in the console (Settings > Workspace > MCP servers)"
+        ),
+    }
+
+
+def mcp_servers_lines(view: dict[str, Any]) -> list[str]:
+    """The listing as text: one line per server, then the addresses."""
+    servers = view.get("servers") or []
+    lines = [f"MCP SERVERS  {view.get('tenant_id') or ''}  {len(servers)} registered".rstrip()]
+    if not servers:
+        lines.append("  none registered for this workspace")
+    for server in servers:
+        tools = server["allowed_tools"]
+        lines.append(
+            f"  {server.get('name')}  {'enabled' if server['enabled'] else 'disabled'}  "
+            f"auth {server['auth_mode']}"
+            + ("  (needs mcp_credentials)" if server["needs_credential"] else "")
+        )
+        lines.append(f"    {server.get('url')}")
+        lines.append(
+            f"    profiles {', '.join(server.get('allowed_profiles') or []) or '-'}; tools "
+            + (tools if isinstance(tools, str) else ", ".join(tools))
+        )
+    addresses = view.get("egress_addresses") or []
+    lines.append(f"egress addresses to allowlist: {', '.join(addresses) if addresses else '- (not set)'}")
+    lines.append(f"use: {view['use']}")
+    return lines
+
+
+def cmd_mcp_servers(client: SwarmClient, args, out) -> int:
+    view = mcp_servers(client)
+    if args.json:
+        return _json_out(view, out)
+    _emit(mcp_servers_lines(view), out)
+    return EXIT_OK
+
+
 def cmd_schedules(client: SwarmClient, args, out) -> int:
     from . import schedules
 
@@ -4666,6 +4748,10 @@ def build_parser() -> argparse.ArgumentParser:
     shp.add_argument("--tz", default=None, help="an IANA zone (default UTC)")
     _common(shp, root=False)
     shp.set_defaults(func=cmd_schedules_preview)
+
+    ms = sub.add_parser("mcp-servers", help="your workspace's registered MCP servers (read-only)")
+    _common(ms, root=False)
+    ms.set_defaults(func=cmd_mcp_servers)
 
     ap_ = sub.add_parser("approvals", help="the approval inbox; then approve|reject <id>")
     ap_.add_argument("--kind", default=None, choices=("run", "plan", "merge", "proposal", "spec", "hold"))
