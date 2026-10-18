@@ -39,6 +39,11 @@ from swarm_api.metrics import ApiMetrics
 from swarm_api.waker import NullWaker
 
 from .conftest import PROJECT, api_settings, seed_pool, seed_task, seed_tenant
+from .spec_signer import KEY_VERSION, LocalSpecSigner
+
+#: Every attempt's task is signed as submission signs it: the child route
+#: builds a child only from a parent whose signature verifies (#1041).
+SIGNER = LocalSpecSigner()
 from .fakes import FakeTransaction
 
 #: Built at runtime, never one literal (CLAUDE.md, "Nothing you add may look
@@ -135,7 +140,11 @@ def worker_tokens(tokens) -> dict[str, dict[str, Any]]:
 @pytest.fixture
 def client(db, worker_tokens, group_map, objects) -> TestClient:
     ctx = build_context(
-        settings=api_settings(child_key=KEY),
+        settings=api_settings(
+            child_key=KEY, spec_signing_key_version=KEY_VERSION,
+            spec_verify_keys=json.dumps({KEY_VERSION: SIGNER.public_pem()}),
+        ),
+        signer=SIGNER,
         db=db,
         verifier=StaticTokenVerifier(worker_tokens),
         groups=StaticGroups(group_map),
@@ -168,6 +177,7 @@ def seed_attempt(db, worker: Worker, *, state: str = "STARTING", pools=("global"
         "dispatch_deadline": now + timedelta(minutes=10),
         "expires_at": now + timedelta(minutes=10), "released_at": None,
     }
+    SIGNER.sign_document(doc, t.task_id)
     return doc
 
 

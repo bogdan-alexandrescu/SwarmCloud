@@ -139,6 +139,16 @@ NOT_SWITCHABLE_CODES = frozenset({
     "grant_removed",
     "grant_read_only",
     "credential_unavailable",
+    # The child route's check of its parent's signature (#1041, the security
+    # review of PR 1070, 2026-10-18). On an EXISTING route, and still not a
+    # switch: a credential route is never switchable, and continuing past it
+    # IS the breach -- swarm-api signing a child over a submitter and a
+    # person's forge slot that an agent wrote into its own task, which the
+    # broker then releases. Every deployed swarm-api signs every task
+    # (`specsigning.signer_from_settings` refuses to start without the key),
+    # so a parent a deployed worker runs has a signature to verify; only a
+    # rewritten one is refused.
+    "child_parent_unsigned",
     # The loan decline (LOAN-DECLINE, docs/workspaces.md §6.4), as the
     # workspace codes above: raised only by the POST
     # /v1/admin/people/{workspace_id}/loan/decline that change introduces, so

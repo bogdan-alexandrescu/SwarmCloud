@@ -551,3 +551,106 @@ def test_the_tuple_must_be_the_tasks_current_attempt():
     assert not credbroker.is_current(task, {**lease, "attempt_id": "att_0"}, t, now)
     assert not credbroker.is_current(task, {**lease, "expires_at": now}, t, now)
     assert not credbroker.is_current(task, None, t, now)
+
+
+# --------------------------------------------------------------------------
+# (8) a child task: its slot is its parent's SIGNED submitter's, or nothing
+# --------------------------------------------------------------------------
+#
+# Workers may update any Firestore document, so an agent can rewrite its own
+# task as another member's. The child route copies `submitted_by`,
+# `repository_url`, `forge_credential` and `forge_access` from the stored
+# parent and signs the child with swarm-api's own key; read without checking
+# the parent's signature, Bob's agent got a freshly signed child naming
+# Alice's slot, and the broker released it (security review of PR 1070,
+# 2026-10-18). Each test drives the child route, then the child's own attempt
+# against the broker, so "no user slot released" is `store.asked`.
+
+
+def _submit_child(client, attempt: Attempt, request_id: str = "split-1") -> Any:
+    from .test_child_tasks_api import submit
+
+    return submit(client, attempt, request_id)
+
+
+def _children_of(db, parent: str) -> list[dict[str, Any]]:
+    return [doc for path, doc in db.docs.items()
+            if path.startswith("tasks/") and path.count("/") == 1
+            and doc.get("parent_task_id") == parent]
+
+
+def _run_child(client, db, child: dict[str, Any]) -> Attempt:
+    """The child dispatched: a live lease, its key registered while STARTING,
+    then RUNNING -- what the scheduler and the child's worker leave. Touches
+    no signed field."""
+    from datetime import datetime, timedelta, timezone
+
+    attempt = Attempt(task=child["id"], attempt="att_child_1", lease="lease_child_1")
+    now = datetime.now(timezone.utc)
+    child.update({"state": "STARTING", "current_lease_id": "lease_child_1",
+                  "current_generation": 1, "attempt_count": 1})
+    db.docs["leases/lease_child_1"] = {
+        "lease_id": "lease_child_1", "task_id": child["id"], "attempt_id": "att_child_1",
+        "tenant_id": child["tenant_id"], "generation": 1, "pools": [], "units": 1,
+        "state": "STARTING", "created_at": now,
+        "dispatch_deadline": now + timedelta(minutes=10),
+        "expires_at": now + timedelta(minutes=10), "released_at": None,
+    }
+    response = register(client, db, attempt)
+    assert response.status_code == 201, response.text
+    child["state"] = "RUNNING"
+    return attempt
+
+
+def test_a_child_of_bobs_signed_task_receives_bobs_slot(client, db, store):
+    """The control: the child path and the broker work together, so the
+    refusal below is the signature check and not a broken child path."""
+    seed_grant(db, "eng", BOB, REPOSITORY)
+    bob_token, alice_token = make_token(), "ghu_" + "a" * 36
+    store.put(_secret(app_slot(BOB)), bob_token)
+    store.put(_secret(app_slot(ALICE)), alice_token)
+    parent = Attempt()
+    person_task(client, db, parent, submitted_by=BOB)
+
+    made = _submit_child(client, parent)
+    assert made.status_code == 201, made.text
+    (child,) = _children_of(db, parent.tuple.task_id)
+    assert child["submitted_by"] == BOB and child["forge_credential"] == app_slot(BOB)
+    assert SIGNER.verifies(child, child["id"]) and child["spec_format"] >= 3
+
+    response = ask(client, _run_child(client, db, child))
+    assert response.status_code == 200, response.text
+    assert response.json() == {"secret": _secret(app_slot(BOB)), "token": bob_token}
+    assert store.asked == [_secret(app_slot(BOB))]
+
+
+@pytest.mark.parametrize("rewrite", ["submitted_by", "forge_credential", "both", "unsigned"])
+def test_a_rewritten_parent_gets_no_child_and_no_user_slot(client, db, store, rewrite):
+    """Bob's agent rewrites its own task as Alice's after it was signed: no
+    child is made, and nothing a child could run releases Alice's slot."""
+    seed_grant(db, "eng", ALICE, REPOSITORY)
+    seed_grant(db, "eng", BOB, REPOSITORY)
+    store.put(_secret(app_slot(ALICE)), "ghu_" + "a" * 36)
+    store.put(_secret(app_slot(BOB)), make_token())
+    parent = Attempt()
+    doc = person_task(client, db, parent, submitted_by=BOB)
+    if rewrite in ("submitted_by", "both"):
+        doc["submitted_by"] = ALICE
+    if rewrite in ("forge_credential", "both"):
+        doc["forge_credential"] = app_slot(ALICE)
+    if rewrite == "unsigned":
+        doc.update({"submitted_by": ALICE, "forge_credential": app_slot(ALICE)})
+        for key in ("spec_signature", "spec_key_version", "spec_format"):
+            doc.pop(key, None)
+
+    made = _submit_child(client, parent)
+
+    # Whatever the route answered, run every child it made: none may be
+    # released Alice's slot.
+    for child in _children_of(db, parent.tuple.task_id):
+        ask(client, _run_child(client, db, child))
+    assert _secret(app_slot(ALICE)) not in store.asked, "Alice's slot was released"
+    assert made.status_code == 403, made.text
+    assert made.json()["code"] == "child_parent_unsigned"
+    assert _children_of(db, parent.tuple.task_id) == []
+    assert store.asked == []
