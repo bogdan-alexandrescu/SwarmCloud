@@ -31,7 +31,7 @@ def _store(ctx: AppContext) -> MergeSettingsStore:
 def _answer(ctx: AppContext, auth: AuthContext, tenant, store: MergeSettingsStore) -> dict:
     tenant_id = tenant.tenant_id
     return view(tenant_id, store.get(tenant_id), store.document(tenant_id),
-                store.registrations(tenant_id), editable=can_edit(auth, tenant))
+                store.registrations(tenant_id), editable=can_edit(auth, tenant, ctx.roles))
 
 
 @router.get("/{tenant_id}/merge-settings")
@@ -51,7 +51,8 @@ def put_merge_settings(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    tenant = authorize(auth, ctx.store.get_tenant(tenant_id), tenant_id, write=True)
+    tenant = authorize(auth, ctx.store.get_tenant(tenant_id), tenant_id, write=True,
+                       roles=ctx.roles)
     store = _store(ctx)
     store.put(tenant_id, body, by=(auth.email or "").strip().lower())
     return _answer(ctx, auth, tenant, store)

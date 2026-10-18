@@ -19,8 +19,9 @@ has none to carry. The bodies forbid every field they do not name, so a
 the validation handler (`main.create_app`) never echoes a body.
 
 WHO WRITES (owner decision Q1): `workspace_secrets.require_manager`, the rule
-the workspace's secrets follow -- in a group workspace a full platform admin,
-in a personal workspace its person. Every member reads.
+the workspace's secrets follow -- in a group workspace its `admin`, a workspace
+admin or a platform admin (docs/design/workspace-roles.md §4.8, Q6), in a
+personal workspace its person. Every member reads.
 
 WHAT THE LIST ADDS (MCP-API-B, §4.9 and §4.11): `egress_addresses`, the NAT
 addresses a server's operator allowlists, from swarm-api's settings
@@ -171,7 +172,7 @@ def list_servers(
     tenant = _tenant(ctx, tenant_id)
     servers = _servers(ctx).list(tenant_id)
     newest, complete = _last_attached(ctx, tenant_id) if servers else ({}, True)
-    return {"tenant_id": tenant_id, "can_manage": can_manage(auth, tenant),
+    return {"tenant_id": tenant_id, "can_manage": can_manage(auth, tenant, ctx.roles),
             "servers": [_with_last_attached(s, newest) for s in servers],
             "last_attached_complete": complete,
             "egress_addresses": list(ctx.settings.mcp_egress_addresses), "note": NOTE}
@@ -198,7 +199,7 @@ def register_server(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     require_enabled()
-    require_manager(auth, _tenant(ctx, tenant_id))
+    require_manager(auth, _tenant(ctx, tenant_id), ctx.roles)
     server = _servers(ctx).register(
         tenant_id=tenant_id, name=body.name, url=body.url, description=body.description,
         auth=body.auth.model_dump(), allowed_profiles=body.allowed_profiles,
@@ -219,7 +220,7 @@ def update_server(
     """Takes effect at the next attempt: a running attempt keeps what it was
     attached (§4.6 step 5)."""
     require_enabled()
-    require_manager(auth, _tenant(ctx, tenant_id))
+    require_manager(auth, _tenant(ctx, tenant_id), ctx.roles)
     changes: dict[str, Any] = {}
     for field in body.model_fields_set:
         value = getattr(body, field)
