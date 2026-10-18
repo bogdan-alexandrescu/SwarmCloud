@@ -400,6 +400,22 @@ def test_the_repositorys_override_beats_the_workspace(ready, ldb):
     assert body["detail"]["reason"] == "context_disabled"
 
 
+@pytest.mark.parametrize("tenants,status", [((), 403), (("eng",), 200)])
+def test_a_cut_over_workspaces_unsigned_setting_reads_as_unset(make, ldb, tenants, status):
+    # ISO-API-SETTINGS (#1457): the graph ticket's code-intelligence reader is
+    # built from ApiSettings' settings key and cutover list. eng cut over, a
+    # worker's unsigned `context: off` is no setting at all and the default
+    # lets the ticket through; with eng not listed it still refuses.
+    client = make(graph_ticket_key=GRAPH_KEY, settings_key="settings-" + secrets.token_hex(24),
+                  settings_mac_tenants=tenants)
+    attempt = Attempt(generation=2)
+    seed_running(client, ldb, attempt, repository_url=URL)
+    register(ldb)
+    version(ldb)
+    set_context(ldb, "off")
+    assert ask(client, attempt).status_code == status
+
+
 def test_another_workspaces_setting_never_decides(ready, ldb):
     client, attempt = ready
     set_context(ldb, "off", tenant_id="research")

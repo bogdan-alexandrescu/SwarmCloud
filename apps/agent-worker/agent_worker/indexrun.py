@@ -189,6 +189,45 @@ def clone_history_days(runner_profile: str) -> int | None:
     return HISTORY_DAYS if is_index_run(runner_profile) else None
 
 
+#: The checkout's directory in `work/` (`workspace.REPO_DIR_NAME`), which an
+#: index run's checkpoints leave out (`checkpoint_excludes`).
+CHECKOUT_DIR = "repo"
+
+
+def checkpoint_excludes(runner_profile: str) -> frozenset[str]:
+    """The `work/`-relative directories the task's checkpoints leave out.
+
+    AN INDEX RUN'S CHECKPOINT CARRIES THE GRAPH, NOT THE CHECKOUT (owner
+    decision 2026-10-17). Measured 2026-10-16 on task_6bf9dc7cc95544f59f0f:
+    its periodic ckpt-00005 was 417,940,037 bytes and ~36 s to upload, of
+    which `repo/` was about 290 MB compressed (`.git/objects` 259.7 MB,
+    `docs/design` 134.6 MB, ... before compression). The indexer only reads
+    the checkout, and it is reproducible from the manifest's `clone_base`: a
+    resumed attempt clones it again there (`resume_clone_ref`). Everything
+    else in `work/` -- the graph files, the phases file, the agent's own
+    progress -- is still archived, at every checkpoint (invariant 8).
+
+    Every other profile leaves nothing out here: for claude-code and the
+    rest the checkout IS the work.
+    """
+    return frozenset({CHECKOUT_DIR}) if is_index_run(runner_profile) else frozenset()
+
+
+def resume_clone_ref(runner_profile: str, clone_base: str | None) -> str | None:
+    """The commit a resumed index run clones again, or None to clone as a first attempt does.
+
+    The restored checkpoint's `clone_base`, from the manifest the worker
+    wrote (never the marker in `work/`, which the agent can write), when it
+    is a full sha and the run is an index run: the commit the first attempt
+    cloned, which is what its graph describes, wherever `repository_ref` has
+    moved since. Anything else -- no checkpoint, a manifest with no base, an
+    empty repository's marker -- clones exactly as a first attempt does.
+    """
+    if not is_index_run(runner_profile) or not isinstance(clone_base, str):
+        return None
+    return clone_base if is_commit_sha(clone_base) else None
+
+
 @dataclass(frozen=True)
 class Budgets:
     """Seconds each phase may take, out of the task's own timeout."""

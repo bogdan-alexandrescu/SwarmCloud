@@ -229,16 +229,16 @@ NOT_SWITCHABLE_CODES = frozenset({
     "secrets_release_fenced",
     "secrets_release_spent",
     "secrets_release_spec_unverified",
-    # The worker's state through swarm-api (ISO-WORKER, docs/design/
+    # The worker's state through swarm-api (ISO-STATE-API, docs/design/
     # tenant-settings-integrity.md §4.2), as the secrets release's codes
-    # above: raised only by the routes that change introduces
-    # (/v1/attempts/{id}/state/...), which nothing calls until a tenant's
-    # SWARM_STATE_VIA_API is on, so no existing caller can be refused by them.
-    # Continuing past any of them is the breach itself: another tenant's
-    # worker or an agent writing a tenant's documents, a stale generation
-    # writing past its fence (invariant 5), a transition that is not the
-    # worker's, a wake of an upstream the task never declared, or a write
-    # over another tenant's merge-train entry or carry index.
+    # above: raised only by the /v1/attempts/{id}/state/... routes that
+    # change introduces, which nothing calls until SWARM_STATE_VIA_API is on
+    # for a tenant, so no existing caller can be refused by them. Continuing
+    # past any of them is the breach itself (#1457): another tenant's worker
+    # account or an agent writing a worker's state, a stale generation
+    # writing past its fence (invariant 5), an agent-chosen transition, a
+    # wake on an upstream the task never declared, or a write over a
+    # document that changed under it.
     "attempt_unauthenticated",
     "attempt_unproven",
     "attempt_fenced",

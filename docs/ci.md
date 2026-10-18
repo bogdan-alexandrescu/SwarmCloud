@@ -160,6 +160,89 @@ the VM has none). It has `gh`, `unzip`, docker with buildx, `jq` and
 `shellcheck`, passwordless sudo, and a writable tool cache. Anything else
 comes from a setup action.
 
+### CI falls back to GitHub-hosted runners on its own
+
+Measured 2026-10-17 (part of #1483): runner-dispatcher registers the pool's
+runners as the owner's GitHub user. When that user's quota ran out
+(`generate-jitconfig` 403 from 02:00 UTC) its sweep read
+`per_target: {swarmcloud: 0}`, and every pull request's checks stayed queued
+for hours until someone set the escape hatch by hand. The hatch is now set by
+`.github/workflows/runner-fallback.yml`, every 10 minutes and on dispatch:
+
+* **Off.** A job of another workflow that asked for `bogdan-ci` has been
+  queued more than 10 minutes, and no `bogdan-ci` job is running or started
+  in that time: the judge sets `SELF_HOSTED_CI=off`, then cancels every run
+  still queued on the pool and re-runs its cancelled jobs, so they land on
+  `ubuntu-24.04`. **A run with any job in progress is never cancelled**
+  (cancelling a run cancels all of it, and a release, accept or hotfix run
+  can have a hosted deploy running while a later job waits for the pool): it
+  is a "held: run N has a job in progress" summary line and is reconsidered
+  next tick. One run that cannot be cancelled or re-run (finished meanwhile,
+  needs fork approval, too old; `rerun-failed-jobs` answering 403, 409 or
+  422 is "nothing to re-run") is a summary line naming the run and the
+  status, and the loop goes on. No new run is started after 10 minutes, so
+  the job ends inside its 15-minute timeout; the summary says how many were
+  left for the next tick. A run is re-run once: one whose latest attempt
+  `github-actions[bot]` started is not touched again. A job queued on a
+  hosted label never counts, because hosted saturation is why the pool
+  exists.
+* **On again.** While the hatch is off nothing asks the pool for a runner,
+  and the dispatcher starts one VM per queued job, so an empty runner list
+  says nothing. So the workflow's `probe` job, the one job that targets
+  `bogdan-ci` directly, runs only while the hatch is off. When every probe
+  since the flip has been picked up for at least 15 minutes, two probes or
+  more, the judge sets the variable back to `on`. It writes `on`, the
+  default, rather than deleting it, because the variable's `updated_at` is
+  the hysteresis clock. A probe still queued after 10 minutes breaks the
+  streak, and the judge cancels its run.
+* **Hysteresis.** The variable never changes more than once per 30 minutes.
+  A flip that is due but held is logged too.
+* **The thresholds** are `QUEUED_MINUTES`, `RECOVER_MINUTES` and
+  `HYSTERESIS_MINUTES` in the workflow's `env`.
+  `tests/unit/scripts/test_runner_fallback_workflow.py` pins them and runs
+  the judge's own decision function against fake GitHub answers.
+
+Every flip, held flip and re-run is a line in the run's job summary.
+
+**Calls per tick.** The reads are ordered by cost. The judge reads the
+variable and the queued runs first (2 calls, plus one per extra 100 runs, up
+to 5 pages). With the hatch on and no queued run older than 10 minutes, which
+is the steady state, the tick ends there: **2 calls**, no job listed. The
+price of that is that a pool job queued inside a run that is already in
+progress is only seen once some queued run is older than 10 minutes. In an
+outage (hatch off, or a queued run older than 10 minutes) it also lists the
+in-progress runs (1 call) and the jobs of every active run (1 call each),
+and while off the probe runs of the last 2 hours and their jobs (1 + up to
+30 calls); each re-run is then about 3 calls plus up to 24 status polls. All
+of it is the workflow's GITHUB_TOKEN, not a person's quota.
+
+**The judge never runs on the pool it judges.** It is pinned to
+`ubuntu-24.04` and does not follow the hatch, because a judge queued behind
+the outage could never report it. Hosted minutes are free on a public
+repository.
+
+**Two tokens.** The GITHUB_TOKEN carries `actions: write` and nothing else:
+it reads runs and jobs, cancels and re-runs. It has no `variables` scope, so
+the variable is read and written with the merge App's installation token,
+minted with `permission-variables: write` only. That token draws on the App's
+quota, not a person's. **Owner step, once:** give the merge App the
+repository permission *Variables: Read and write*
+([runbook](runbooks/merge-app.md)). Until then the token mint fails and the
+run is red. A red run is how a missing permission shows itself, and the hatch
+can still be set by hand.
+
+**A hand-set `off` does not stick.** The judge reverts it once the probes
+show 15 minutes of service. To pin the hatch, set the repository variable
+`RUNNER_FALLBACK` to `manual`: the judge still reads and writes its summary,
+saying what it *would* do, but never flips `SELF_HOSTED_CI`, never cancels a
+run and never re-runs one. Unset, or any other value, is automatic. The
+reason it exists: an operator holding CI on hosted runners on purpose, for
+example while the dispatcher is being replaced, must not be flipped back
+because the old pool happens to answer a probe. Delete the variable (or set
+it to `auto`) to hand the hatch back to the judge. Disabling the workflow
+(`gh workflow disable runner-fallback.yml`) also stops it, but loses the
+summary.
+
 ## Why terraform does not plan on a pull request
 
 This is the single most likely thing to be "fixed" by someone who should not.

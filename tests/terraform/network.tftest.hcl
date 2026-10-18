@@ -80,6 +80,13 @@ run "nat_provides_stable_egress_without_public_ips" {
     condition     = google_compute_router_nat.this.source_subnetwork_ip_ranges_to_nat == "LIST_OF_SUBNETWORKS"
     error_message = "ALL_SUBNETWORKS_ALL_IP_RANGES would put another team's traffic behind the swarm NAT"
   }
+
+  # #1334: 120 s is live on swarm-nat as Google's default. Declared, so a
+  # change to that default shows up in a plan instead of drifting silently.
+  assert {
+    condition     = google_compute_router_nat.this.tcp_time_wait_timeout_sec == 120
+    error_message = "tcp_time_wait_timeout_sec must be declared as 120, the value live on swarm-nat"
+  }
 }
 
 run "firewall_is_default_deny_and_opens_nothing_to_the_internet" {
