@@ -46,7 +46,14 @@ from ..admins import AdminRoles, build_admin_roles
 from ..auth import AuthContext
 from ..brokerclient import AccountPool
 from ..deps import AppContext, admin_auth, get_context
-from ..people import MAX_CEILING, MAX_LOAN_REASON, MAX_REASON, MIN_CEILING, People
+from ..people import (
+    MAX_CEILING,
+    MAX_LOAN_REASON,
+    MAX_REASON,
+    MIN_CEILING,
+    People,
+    name_lookup,
+)
 from ..publish_workspace import WorkspacePublisher, publisher_for
 from ..schemas import StrictModel
 from .accounts import account_pool
@@ -131,7 +138,8 @@ def people_service(
 ) -> People:
     return People(ctx.db, publisher=publisher, now=ctx.now,
                   console_url=ctx.settings.console_url,
-                  project_id=ctx.settings.project_id)
+                  project_id=ctx.settings.project_id,
+                  names=name_lookup(ctx))
 
 
 @router.get("/people")
