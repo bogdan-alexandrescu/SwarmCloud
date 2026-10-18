@@ -32,12 +32,13 @@ from ..codeintel import (
     view,
 )
 from ..deps import AppContext, current_auth, get_context, tenant_scope
+from ..judgment import settings_mac
 
 router = APIRouter(tags=["workspace"])
 
 
 def _store(ctx: AppContext) -> CodeIntelligenceStore:
-    return CodeIntelligenceStore(ctx.db, now=ctx.now)
+    return CodeIntelligenceStore(ctx.db, now=ctx.now, mac=settings_mac(ctx.settings))
 
 
 def _answer(auth: AuthContext, tenant: Tenant, store: CodeIntelligenceStore) -> dict:

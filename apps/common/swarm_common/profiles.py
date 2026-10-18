@@ -1298,6 +1298,35 @@ _CLI_AGENT_INPUTS: dict[str, RunnerInput] = {
     ),
 }
 
+#: CONTRACT REQUEST 88, accepted by the owner 2026-10-17 (design
+#: docs/design/registered-mcp-servers.md §5 M1, part of #1433): the
+#: registered MCP servers a step may call, by name, never a URL or a command
+#: (invariant 10). Inside `input`, so the spec signature covers it (format 3).
+#: Its own dict, NOT a key of _CLI_AGENT_INPUTS, which indexer and
+#: claude-code-review also take: the indexer runs no prompt a caller wrote,
+#: and a review step reads the diff it was given. Membership is checked by
+#: swarm-api against the tenant's registry, which changes at runtime, so the
+#: names cannot be `choices`. 31 is models.MCP_SERVER_NAME's length bound.
+_MCP_SERVER_INPUTS: dict[str, RunnerInput] = {
+    "mcp_servers": RunnerInput(
+        "list",
+        minimum=1,
+        maximum=4,
+        items=RunnerInput("string", maximum=31),
+        means=(
+            "registered MCP servers, by name, the agent may call during its run; "
+            "each must be registered and enabled for the task's workspace and allowed "
+            "for this profile (docs/design/registered-mcp-servers.md)"
+        ),
+    ),
+}
+
+#: claude-code and codex: the CLI agent inputs plus mcp_servers (request 88).
+_CLI_AGENT_MCP_INPUTS: dict[str, RunnerInput] = {
+    **_CLI_AGENT_INPUTS,
+    **_MCP_SERVER_INPUTS,
+}
+
 #: CONTRACT REQUEST 77, accepted by the owner 2026-10-14 ("Picker on Submit,
 #: Auto by default"): which browser tool the live-browser agent is given. A
 #: NAMED option, never a command (invariant 10); the claude-code runner maps
@@ -1306,6 +1335,7 @@ _CLI_AGENT_INPUTS: dict[str, RunnerInput] = {
 #: browser to choose a tool for.
 _CLAUDE_CODE_BROWSER_INPUTS: dict[str, RunnerInput] = {
     **_CLI_AGENT_INPUTS,
+    **_MCP_SERVER_INPUTS,   # contract request 88
     "browser_tool": RunnerInput(
         "string",
         choices=("auto", "playwright", "dev-browser", "jev"),
@@ -1367,7 +1397,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
         secrets_any_of=True,
         timeout_seconds=7200,
-        inputs=_CLI_AGENT_INPUTS,
+        inputs=_CLI_AGENT_MCP_INPUTS,   # contract request 88
         secret_slots={"files": _FILES_SLOT},   # contract request 80
     ),
     "codex": RunnerProfile(
@@ -1383,7 +1413,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         provider="openai",
         secrets=("OPENAI_API_KEY",),
         timeout_seconds=7200,
-        inputs=_CLI_AGENT_INPUTS,
+        inputs=_CLI_AGENT_MCP_INPUTS,   # contract request 88
         # DISABLED 2026-09-23 by the owner's decision: the platform is focusing
         # on Claude, and codex does not currently work here anyway. A twenty-step
         # load test that day dispatched four codex steps and all four failed
@@ -1568,6 +1598,19 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
 }
 
 
+#: CONTRACT REQUEST 89, accepted by the owner 2026-10-17 (design
+#: docs/design/registered-mcp-servers.md §5 M2): the one slot an `mcp:`
+#: consumer (models.SECRET_CONSUMER_KINDS) takes. Optional, as every slot is
+#: unless it says otherwise; a `workspace_secret` server's registration is
+#: what makes swarm-api require its grant.
+MCP_SECRET_SLOTS: Mapping[str, SecretSlot] = MappingProxyType({
+    "auth": SecretSlot(
+        kinds=("api_key", "bearer_token"),
+        means="the relay adds it as the registered server's auth header; never a file",
+    ),
+})
+
+
 #: Contract request 81 (workspace secrets, design §2.3): a program the
 #: platform launches INSIDE an attempt that can be granted a workspace
 #: secret on its own. A tool is a NAME, never an image or a command
@@ -1683,6 +1726,12 @@ def is_secret_consumer(consumer: str) -> bool:
         return name in RUNNER_PROFILES
     if kind == "tool":
         return name in RUNTIME_TOOLS
+    if kind == "mcp":
+        # Contract request 89: an `mcp:` name is a tenant's registration, not
+        # a catalogue entry, so this catalogue cannot vouch for it; swarm-api
+        # checks it against the tenant's registry. Without this branch
+        # `mcp:judge` would fall through to PLATFORM_COMPONENTS below.
+        return False
     return name in PLATFORM_COMPONENTS
 
 

@@ -125,7 +125,8 @@ from .forge import (
     service_slot,
     urllib_probe_send,
 )
-from . import indexfailure
+from . import forge_limits, indexfailure
+from .forge_installation import InstallationSource, read_credential
 from .gittokens import GitTokens
 from .json_masking import redact_json_window
 from .objects import ObjectAbsent, ObjectUnreadable
@@ -884,7 +885,8 @@ _ETAG = re.compile(r'^(W/)?"[\x21\x23-\x7e]{1,128}"$')
 
 def read_head_if_changed(
     record: Mapping[str, Any], tenant: Tenant, *, etag: str | None, known_sha: str | None,
-    tokens: ForgeTokens, forge: GitHubIssues,
+    tokens: ForgeTokens, forge: GitHubIssues, installations: InstallationSource | None = None,
+    defer_percent: float | None = None, now: datetime | None = None,
 ) -> HeadRead:
     """The poll's read: `GET /repos/{o}/{r}/commits/{branch}`, conditional on the ETag.
 
@@ -898,13 +900,35 @@ def read_head_if_changed(
     the ETag is a header. The token resolves as `read_head`'s does (R2, with
     no repository token readable by swarm-api yet: the tenant's), goes to the
     one Authorization header, and the header map is cleared after the send.
+
+    `installations` (#1483): when the repository's owner has an App
+    installation, the poll reads as the App, on its quota, rather than as the
+    person whose token the tenant's slot holds. An owner with none, or a
+    mint that failed, keeps the tenant's token.
+
+    QUOTA-THROTTLE (#1483): the answer updates the credential's quota in
+    `forge_limits.QUOTAS`; a rate-limited 403 or 429 is `read_failed`, never
+    `no_access`. `defer_percent` (the poll's, which is background): when the
+    credential is under it, or held, nothing is sent and
+    `forge_limits.QuotaDeferred` is raised.
     """
     branch = record["default_branch"]
     what = f"the head of {record['owner']}/{record['repo']}@{branch}"
     url = f"{_repo_url(record)}/commits/{quote(branch, safe='/')}"
     if not is_pinned_host(url):
         raise IssueReadFailed(f"{what} is not on {GITHUB_API_HOST}; no token is sent there")
-    headers = github_headers(tokens.token_for(tenant))
+    token, credential = read_credential(installations, tenant.tenant_id, str(record["owner"]),
+                                        str(record["repo"]))
+    if not token:
+        credential = forge_limits.tenant_credential(tenant.tenant_id)
+    if defer_percent is not None:
+        deferral = forge_limits.QUOTAS.defer(
+            credential, defer_percent, now=now or datetime.now(timezone.utc))
+        if deferral is not None:
+            token = ""
+            raise forge_limits.QuotaDeferred(deferral)
+    headers = github_headers(token or tokens.token_for(tenant))
+    token = ""
     headers["Accept"] = SHA_MEDIA_TYPE
     if etag and known_sha:
         headers["If-None-Match"] = etag
@@ -918,6 +942,12 @@ def read_head_if_changed(
     finally:
         headers.clear()
     status = answer.status
+    limited = forge_limits.QUOTAS.observe_answer(answer, credential=credential)
+    if limited is not None:
+        when = forge_limits.until(limited)
+        raise IssueReadFailed(
+            f"GitHub is limiting requests for the credential that reads {what}, so it was "
+            f"not read (HTTP {status})" + (f"; it resets at {when}" if when else ""))
     tag = (answer.headers or {}).get("etag")
     tag = tag if isinstance(tag, str) and _ETAG.match(tag) else None
     if status == 304 and known_sha:
@@ -942,6 +972,10 @@ def read_head_if_changed(
     if not _SHA.match(head):
         raise HeadUnreadable(f"GitHub's answer for {what} names no commit")
     return HeadRead(sha=head, etag=tag, not_modified=False)
+
+
+#: The poll's held reason when its credential's GitHub quota is low or held.
+QUOTA_DEFERRED = "quota_deferred"
 
 
 def _int_or(value: Any, default: int) -> int:
@@ -2005,8 +2039,14 @@ class RepoIndex:
         tokens: ForgeTokens,
         forge: GitHubIssues,
         now: Callable[[], datetime],
+        installations: InstallationSource | None = None,
+        quota_percent: float = forge_limits.DEFAULT_DEFER_PERCENT,
     ) -> None:
         self._db = db
+        self._installations = installations
+        #: The poll is a background read: under this percent of its
+        #: credential's GitHub quota it waits (QUOTA-THROTTLE).
+        self._quota_percent = quota_percent
         self._store = store
         self._submissions = submissions
         self._inspection = inspection
@@ -2020,6 +2060,8 @@ class RepoIndex:
         return cls(
             ctx.db, store=ctx.store, submissions=ctx.submissions, inspection=ctx.inspection,
             tokens=ctx.forge_tokens, forge=ctx.forge, now=ctx.now,
+            installations=getattr(ctx, "forge_installations", None),
+            quota_percent=forge_limits.defer_percent(ctx),
         )
 
     # -- references --------------------------------------------------------
@@ -2960,10 +3002,17 @@ class RepoIndex:
         )
         if reads:
             etag = index.get("etag") if head and index.get("etag_sha") == head else None
-            read = read_head_if_changed(
-                record, tenant, etag=etag, known_sha=head,
-                tokens=self._tokens, forge=self._forge,
-            )
+            try:
+                read = read_head_if_changed(
+                    record, tenant, etag=etag, known_sha=head,
+                    tokens=self._tokens, forge=self._forge, installations=self._installations,
+                    defer_percent=self._quota_percent, now=self._now(),
+                )
+            except forge_limits.QuotaDeferred as deferred:
+                # Not read: the head stands as last read, and the next tick
+                # after the reset reads it.
+                forge_limits.log_deferred("repo index poll", tenant_id, deferred.deferral)
+                return "held", QUOTA_DEFERRED, head
             self._record_head(tenant_id, repo_id, read)
             report.read += 1
             report.not_modified += int(read.not_modified)

@@ -127,11 +127,26 @@ export const leave = {
 }
 
 /**
+ * SIGNING OUT, for the rest of this page's life. Clearing the tenant choice
+ * drops the shell's `tenant` to null while it still holds the old `me`, and
+ * its effect would learn the default tenant straight back into the storage
+ * just cleared (Spine.tsx `learnDefaultTenant`). The page is leaving; nothing
+ * per-user is written again before it goes.
+ */
+let leaving = false
+
+/** Whether this page has signed out and is on its way to IAP's clear URL. */
+export function signingOut(): boolean {
+  return leaving
+}
+
+/**
  * Sign out: forget this person's state, note who left, then let IAP clear its
  * cookie. No confirmation -- signing back in is one Google page -- and no
  * keyboard shortcut, so it only ever happens on a deliberate click.
  */
 export function signOut(email: string | null): void {
+  leaving = true
   clearUserState()
   clearTenantSwitch()
   forgetReads()

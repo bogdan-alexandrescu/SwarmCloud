@@ -21,6 +21,7 @@ import hashlib
 import json
 import math
 from decimal import Decimal
+from types import MappingProxyType
 from typing import Any, Mapping
 
 #: The canonical form's version. A change to the covered fields or the encoding
@@ -167,6 +168,65 @@ def canonical_step_spec(
         for key in _FORMAT_3_FIELDS:
             spec[key] = doc.get(key)
     return jcs(spec)
+
+
+#: Domain separation for a `workspace_settings` block (contract request 86).
+#: Its bytes can never be read as a step spec's, or a spec's as a block's.
+SETTINGS_PURPOSE = "swarm.settings/v1"
+
+#: The fields of each `workspace_settings` block that its writer, swarm-api,
+#: MACs and that the control plane acts on (contract request 86,
+#: docs/design/tenant-settings-integrity.md §5 request B, #1457, accepted by the
+#: owner 2026-10-17 on PR 1464). "top" is the document's own top level; "merge"
+#: and "code_intelligence" are its maps of those names. A reader acts on a
+#: field only when it is listed here AND the block's MAC verifies; a field
+#: added to a block without being added here is outside the MAC, so a tenant
+#: worker can forge it. A change to a list is a change to the bytes: every
+#: stored MAC of that block must be re-signed in the same rollout.
+SETTINGS_MAC_FIELDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {
+        "top": ("judgment_backend",),
+        "merge": ("mode", "train_size", "max_train_age_minutes"),
+        "code_intelligence": (
+            "jev",
+            "context",
+            "context_ab",
+            "graph_delivery",
+            "judgment_backend",
+        ),
+    }
+)
+
+
+def canonical_settings_block(
+    *, tenant_id: str, block: str, fields: Mapping[str, Any]
+) -> bytes:
+    """JCS of {"purpose": "swarm.settings/v1", "tenant_id", "block", "fields"}.
+
+    `block` is "top", "merge" or "code_intelligence". `fields` is the block as
+    stored; only the keys SETTINGS_MAC_FIELDS lists for it are projected, a
+    listed key that is absent is null, and any other key is not covered and
+    must not be acted on. The tenant and the block are inside the bytes, so a
+    block copied onto another tenant's document, or into another block, does
+    not verify.
+
+    The MAC is HMAC-SHA256 over these bytes under the `swarm-settings-key`
+    secret. It is not computed here, because its key is not the contract's.
+    """
+    if not isinstance(tenant_id, str) or not tenant_id:
+        raise SpecNotCanonical("a settings block names no tenant")
+    if block not in SETTINGS_MAC_FIELDS:
+        raise SpecNotCanonical(f"settings block {block!r} is not one of {tuple(SETTINGS_MAC_FIELDS)}")
+    if not isinstance(fields, Mapping):
+        raise SpecNotCanonical(f"settings block {block!r} is not a map")
+    return jcs(
+        {
+            "purpose": SETTINGS_PURPOSE,
+            "tenant_id": tenant_id,
+            "block": block,
+            "fields": {key: fields.get(key) for key in SETTINGS_MAC_FIELDS[block]},
+        }
+    )
 
 
 def spec_digest(canonical: bytes) -> bytes:

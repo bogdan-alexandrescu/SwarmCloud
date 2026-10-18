@@ -117,6 +117,10 @@ on:
       - "terraform/**"
       - "kubernetes/**"
       - "scripts/**"
+      # The image scan's accept-list decides what promotes, so changing it is
+      # a release: on 2026-10-17 PR 1497 accepted the CVE every release had
+      # been refused on, and no release ran until one was dispatched by hand.
+      - ".trivyignore.yaml"
       - ".github/workflows/release.yml"
       - ".github/actions/release-*/**"
   workflow_dispatch:

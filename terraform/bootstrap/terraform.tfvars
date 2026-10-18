@@ -157,9 +157,13 @@ enable_forge_user_slots = true
 
 # W4b (2026-10-11, owner): the workspace job (a Cloud Run job, WD2 re-decided
 # 2026-10-10) is switched on, pinned to the workspace-apply image the release
-# promoted to :dev after W6b (PR 1015) merged.
+# promoted to :dev after W6b (PR 1015) merged. Re-pinned 2026-10-16 to the
+# image release 38949156529 (0a5c7ede) promoted: it carries the tenant
+# allow-typesafe-fwd policy in render.py's TENANT_FILES (PR 1409), the IAP
+# sign-in path in scripts/lib/common.sh (PR 1413) and today's scheduler
+# changes, so a workspace created now renders what every existing tenant got.
 enable_workspace_deployer = true
-workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@sha256:037252446c942f86e02887069a9544cb8e1d88825a3925c0037e24bf640af96c"
+workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@sha256:4bbc7cdd7a4a6fb4bf865dec005d9e9fe3b134e6fd8a07f39320c15f1c0467a2"
 
 # L8c (2026-10-12, owner): saved browser logins on. swarm-api provisions each
 # personal tenant's -browser- secret and grants it to that tenant's worker
@@ -192,3 +196,13 @@ typesafe_user_key_readers = {
 # 0 destroys equal to PR 1356's listed rows; the condition linted {} with
 # iamPolicies:lintPolicy. Recorded here so the next bootstrap plan keeps it.
 enable_workspace_secrets = true
+
+# The TypeSafe forwarder's conditioned read of swarm-tenant-<t>-typesafe
+# versions (typesafe_forwarder.tf; SEC-INJECT-A, #1347). APPLIED 2026-10-16
+# ~10:45Z with the owner's approval, from a saved plan (2 adds: the
+# swarmTypesafeForwarderAccessor role holding secretmanager.versions.access only,
+# and its conditioned member for swarm-system/swarm-typesafe-fwd). That apply
+# passed the flag on the command line and it was not written here, so a later
+# bootstrap plan from main read it as false and planned to destroy both. It is
+# recorded here so the state and this file agree.
+enable_typesafe_forwarder_read = true

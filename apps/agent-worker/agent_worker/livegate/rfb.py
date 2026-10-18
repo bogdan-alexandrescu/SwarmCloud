@@ -136,6 +136,19 @@ and p95 for the inputs a changed frame followed within
 `INPUT_CHANGE_WINDOW_SECONDS` (a key that changed nothing is not timed to a
 later, unrelated change), and the input counts. Numbers only, as above.
 
+THE UNAVAILABLE TIME SAYS WHICH REASON (LB-GREY; part of #1344). MEASURED
+2026-10-16 (QA batch post-1015, release 85114dbf): 2 of 17 dev-browser runs
+showed the unavailable fill for over 10 s (13.2 s, 18.8 s) against at most
+4.8 s for Playwright, and `unavailable_ms` alone could not say whether those
+frames said the page had "not reported its layout yet", that "no page is
+open", or that the followed page "is not the tab on screen" -- three causes
+with three different fixes. So the line also carries
+`unavailable_ms_by_reason` and `unavailable_longest_ms_by_reason`, keyed by
+`UNAVAILABLE_REASON_KEYS` (a short, fixed key per reason the mask and the hub
+name, "other" for any other, so a query has a schema to rely on). A stretch
+is one reason held frame after frame: a change of reason ends one and starts
+the next, and the longest is what tells one 18 s wait from many short ones.
+
 THE POINTER (LB-CURSOR; part of #1030). Xvfb's framebuffer never holds the X
 pointer, and noVNC hides its own over the canvas, so without this the person
 in control clicks blind. A viewer that lists the Cursor pseudo-encoding (-239,
@@ -167,7 +180,19 @@ from typing import Any, Callable
 
 from .capture import Frame
 from .inject import MAX_TYPED_CHARS, Injector
-from .mask import CANNOT_SHOW, PARTLY_COVERED, UNAVAILABLE_RGB, MaskState, Outcome
+from .mask import (
+    CANNOT_SHOW,
+    PARTLY_COVERED,
+    REASON_HIDDEN,
+    REASON_NO_PAGE,
+    REASON_NO_SESSION,
+    REASON_NOT_REPORTED,
+    REASON_SWITCHING,
+    REASON_TOO_WIDE,
+    UNAVAILABLE_RGB,
+    MaskState,
+    Outcome,
+)
 from .pointer import HEIGHT as CURSOR_HEIGHT
 from .pointer import HOTSPOT as CURSOR_HOTSPOT
 from .pointer import WIDTH as CURSOR_WIDTH
@@ -243,6 +268,29 @@ INPUT_CHANGE_WINDOW_SECONDS = 2.0
 INPUT_TO_FRAME_BOUNDS_MS = (50, 100, 150, 200, 300, 500, 1000, 2000, 5000)
 #: `jsonPayload.event` of the metrics line: scripts/live-report.sh filters on it.
 VIEWER_METRICS_EVENT = "live_viewer_metrics"
+
+#: The hub's reason until the gate's first capture (`FrameHub`).
+REASON_NOT_CAPTURED = "the gate has not captured the screen yet"
+
+#: The metrics line's key for each reason an unavailable frame carries
+#: (module docstring, THE UNAVAILABLE TIME SAYS WHICH REASON). Every reason
+#: `MaskState` gives `Outcome.UNAVAILABLE`, plus the hub's own.
+UNAVAILABLE_REASON_KEYS: dict[str, str] = {
+    REASON_NOT_CAPTURED: "not_captured",
+    REASON_NO_SESSION: "no_session",
+    REASON_NO_PAGE: "no_page",
+    REASON_NOT_REPORTED: "not_reported",
+    REASON_HIDDEN: "hidden",
+    REASON_SWITCHING: "switching",
+    REASON_TOO_WIDE: "too_wide",
+}
+#: The key of an unavailable frame whose reason is not in `UNAVAILABLE_REASON_KEYS`.
+UNAVAILABLE_REASON_OTHER = "other"
+
+
+def unavailable_reason_key(reason: str | None) -> str:
+    """The metrics line's key for an unavailable frame's `reason`."""
+    return UNAVAILABLE_REASON_KEYS.get(reason or "", UNAVAILABLE_REASON_OTHER)
 
 #: §5.10: controller input events per second, dropped above.
 MAX_INPUT_EVENTS_PER_SECOND = 200
@@ -335,7 +383,7 @@ class FrameHub:
         # Until the first frame: the "masking unavailable" fill (§5.3.2).
         blank = Frame.blank(width, height, UNAVAILABLE_RGB)
         self._current = MaskedFrame(blank, Outcome.UNAVAILABLE, _token=_MASKED,
-                                    reason="the gate has not captured the screen yet")
+                                    reason=REASON_NOT_CAPTURED)
         self.version = 0
         #: How many published frames differed from the one before: what a
         #: stalled connection is measured against (module docstring).
@@ -364,7 +412,8 @@ class FrameHub:
         if self._metrics:
             now = time.monotonic()
             for metrics in self._metrics:
-                metrics.frame(now, changed=changed, outcome=frame.outcome, at=frame.at)
+                metrics.frame(now, changed=changed, outcome=frame.outcome, at=frame.at,
+                              reason=frame.reason)
         self._wake_all()
 
     def _pointer_moved(self) -> None:
@@ -472,7 +521,8 @@ class ViewerMetrics:
     log line. Constant memory: per-second counters, not a list of frames.
     """
 
-    def __init__(self, conn_id: str, *, now: float, outcome: Outcome) -> None:
+    def __init__(self, conn_id: str, *, now: float, outcome: Outcome,
+                 reason: str | None = None) -> None:
         self.conn_id = conn_id
         self._opened = now
         self.frames_captured = 0
@@ -493,6 +543,11 @@ class ViewerMetrics:
         self._outcome = outcome
         self._outcome_since = now
         self._unavailable = 0.0
+        # The open stretch's reason key while the frame is unavailable, else
+        # None; and per key, the closed stretches' total and the longest one.
+        self._reason = unavailable_reason_key(reason) if outcome is Outcome.UNAVAILABLE else None
+        self._unavailable_by_reason: dict[str, float] = {}
+        self._unavailable_longest: dict[str, float] = {}
         self._page_blanked = 0.0
         # The input being timed, and the capture time of the change it caused.
         self._input_at: float | None = None
@@ -519,13 +574,16 @@ class ViewerMetrics:
             self.inputs_unchanged += 1
             self._input_at = None
 
-    def frame(self, now: float, *, changed: bool, outcome: Outcome, at: float) -> None:
-        """The hub published a frame (`changed`: its pixels differ from the last)."""
+    def frame(self, now: float, *, changed: bool, outcome: Outcome, at: float,
+              reason: str | None = None) -> None:
+        """The hub published a frame (`changed`: its pixels differ from the last;
+        `reason`: the frame's `MaskedFrame.reason`)."""
         self._tick(now)
         self.frames_captured += 1
-        if outcome is not self._outcome:
+        key = unavailable_reason_key(reason) if outcome is Outcome.UNAVAILABLE else None
+        if outcome is not self._outcome or key != self._reason:
             self._close_outcome(now)
-            self._outcome = outcome
+            self._outcome, self._reason = outcome, key
         if not changed:
             return
         self.frames_changed += 1
@@ -565,9 +623,18 @@ class ViewerMetrics:
         held = now - self._outcome_since
         if self._outcome is Outcome.UNAVAILABLE:
             self._unavailable += held
+            if self._reason is not None:
+                self._add_stretch(self._unavailable_by_reason, self._unavailable_longest,
+                                  self._reason, held)
         elif self._outcome is Outcome.PAGE_BLANKED:
             self._page_blanked += held
         self._outcome_since = now
+
+    @staticmethod
+    def _add_stretch(total: dict[str, float], longest: dict[str, float], key: str,
+                     held: float) -> None:
+        total[key] = total.get(key, 0.0) + held
+        longest[key] = max(longest.get(key, 0.0), held)
 
     def snapshot(self, now: float, counts: SessionCounts, *, final: bool) -> dict[str, Any]:
         """The log line's fields as of `now`; reads the open second and gap
@@ -580,8 +647,11 @@ class ViewerMetrics:
         if self._owed is not None:
             gap = max(gap, now - self._owed[1])
         unavailable, blanked = self._unavailable, self._page_blanked
+        by_reason, longest = dict(self._unavailable_by_reason), dict(self._unavailable_longest)
         if self._outcome is Outcome.UNAVAILABLE:
             unavailable += now - self._outcome_since
+            if self._reason is not None:
+                self._add_stretch(by_reason, longest, self._reason, now - self._outcome_since)
         elif self._outcome is Outcome.PAGE_BLANKED:
             blanked += now - self._outcome_since
         samples = sorted(self.input_to_frame_ms)
@@ -609,6 +679,9 @@ class ViewerMetrics:
             "fps_while_changing": round(updates / changing, 2) if changing else None,
             "longest_gap_ms": round(gap * 1000, 1),
             "unavailable_ms": round(unavailable * 1000, 1),
+            "unavailable_ms_by_reason": {k: round(v * 1000, 1) for k, v in sorted(by_reason.items())},
+            "unavailable_longest_ms_by_reason": {k: round(v * 1000, 1)
+                                                 for k, v in sorted(longest.items())},
             "page_blanked_ms": round(blanked * 1000, 1),
             "blank_ms": round((unavailable + blanked) * 1000, 1),
             "input_samples": len(samples),
@@ -891,7 +964,8 @@ class RfbSession:
         self._inputs_ready = asyncio.Event()
         self._injecting = False  # an injection is awaiting its answer: the injector is behind
         self.counts = SessionCounts()
-        self.metrics = ViewerMetrics(conn_id, now=time.monotonic(), outcome=hub.current.outcome)
+        self.metrics = ViewerMetrics(conn_id, now=time.monotonic(), outcome=hub.current.outcome,
+                                     reason=hub.current.reason)
         self._format: _Format | None = None  # the viewer's; None until ServerInit
         self._encodings: tuple[int, ...] = (ENCODING_RAW,)
         self._cursor_due = False  # send the cursor shape with the next update

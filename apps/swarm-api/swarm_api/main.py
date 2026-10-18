@@ -31,6 +31,7 @@ from .routes import (
     approvals,
     attemptcontext,
     attempts,
+    attemptstate,
     attempts_secrets,
     browser_logins,
     browser_slots,
@@ -235,6 +236,11 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # Layer I, in-flight work (docs/design/context-quality.md §4.2, lane CTXQ-I):
     # worker-only, authenticated and fenced as the git tools are.
     app.include_router(attemptcontext.router)
+    # The worker's state (docs/design/tenant-settings-integrity.md §4, lane
+    # ISO-STATE-API, part of #1457): worker-only, token for the tenant, attempt
+    # key for the worker, fenced in one transaction. Mounted and unused until a
+    # tenant's SWARM_STATE_VIA_API is on (lane ISO-WORKER-CORE).
+    app.include_router(attemptstate.router)
     # The workspace secrets release (docs/design/workspace-secrets.md §3.3,
     # lane SEC-RELEASE, part of #1347): worker-only, signed under its own
     # purpose and fenced; the one route that serves credential material, and

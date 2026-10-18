@@ -63,11 +63,12 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Mapping
 
 from swarm_common.states import TaskState
 
 from . import expected_outputs as expected_mod
+from . import indexrun
 from .errors import InputUnavailable
 from .objectstore import ObjectStore, validate_key
 
@@ -379,14 +380,27 @@ def fetch_upstream_task(
 
     `call_options` is the read's `retry` and `timeout`: the lifecycle's
     startup budget, since staging runs before the runner starts.
+
+    A tenant switched to the state routes passes its attempt's state client
+    as `db` (`indexrun.state_routes`): the document is `GET state/upstream`'s,
+    and no Firestore call is made. swarm-api serves only an id this task
+    DECLARES -- its signed `depends_on`, `metadata.input_from` or dispatch
+    block's `input_parents` -- and only one of this tenant; any other id is
+    the same refusal, raised here as this module's InputUnavailable.
     """
-    snapshot = db.collection("tasks").document(upstream_task_id).get(**dict(call_options or {}))
-    if not snapshot.exists:
+    state = indexrun.state_routes(db)
+    if state is not None:
+        found = _route_upstream(state, upstream_task_id)
+    else:
+        snapshot = db.collection("tasks").document(upstream_task_id).get(
+            **dict(call_options or {}))
+        found = (snapshot.to_dict() or {}) if snapshot.exists else None
+    if found is None:
         raise InputUnavailable(
             f"upstream task {upstream_task_id} has no task document, so the "
             "artifact it was to supply cannot be located"
         )
-    document = snapshot.to_dict() or {}
+    document = found
     actual = document.get("tenant_id")
     if actual != tenant_id:
         raise InputUnavailable(
@@ -394,6 +408,29 @@ def fetch_upstream_task(
             f"{tenant_id!r}; refusing to stage another tenant's artifact"
         )
     return document
+
+
+#: `state/upstream`'s refusal of an id this task does not declare
+#: (`swarm_api.attemptstate.UpstreamNotDeclared`).
+UPSTREAM_NOT_DECLARED = "upstream_not_declared"
+
+
+def _route_upstream(state: Any, upstream_task_id: str) -> dict[str, Any] | None:
+    """`GET state/upstream`: the declared upstream's document, None when it has none."""
+    from .statecall import StateRefused  # lazy: statecall -> children -> inputs
+
+    try:
+        answer = state.get("upstream", {"upstream_task_id": upstream_task_id},
+                           deadline_seconds=indexrun.STATE_CALL_SECONDS)
+    except StateRefused as refused:
+        if refused.code != UPSTREAM_NOT_DECLARED:
+            raise
+        raise InputUnavailable(
+            f"upstream task {upstream_task_id} is not one this task declares as "
+            "upstream, so the state routes refuse to read it"
+        ) from None
+    document = answer.get("task")
+    return dict(document) if isinstance(document, Mapping) else None
 
 
 def find_ci_fix_tasks(
@@ -416,7 +453,27 @@ def find_ci_fix_tasks(
 
     What comes back are CLAIMS: `merge._ci_fixer_heads` holds each to its
     signed spec before its pushed head counts for anything.
+
+    A tenant switched to the state routes passes its attempt's state client
+    as `db` (`indexrun.state_routes`): swarm-api runs the same query,
+    restricted to this attempt's tenant (`POST state/ci-fix-tasks`), and no
+    Firestore call is made. The tenant is still asked of every document here.
     """
+    state = indexrun.state_routes(db)
+    if state is not None:
+        answer = state.post(
+            "ci-fix-tasks",
+            {"pull_request": pull_request, "root_task_id": root_task_id, "limit": limit},
+            deadline_seconds=indexrun.STATE_CALL_SECONDS,
+        )
+        rows = answer.get("tasks")
+        out: list[tuple[str, dict[str, Any]]] = []
+        for row in rows if isinstance(rows, list) else []:
+            document = row.get("task") if isinstance(row, Mapping) else None
+            if (isinstance(document, Mapping) and isinstance(row.get("id"), str)
+                    and document.get("tenant_id") == tenant_id):
+                out.append((row["id"], dict(document)))
+        return out
     from google.cloud.firestore_v1.base_query import FieldFilter  # lazy: grpc
 
     query = (
