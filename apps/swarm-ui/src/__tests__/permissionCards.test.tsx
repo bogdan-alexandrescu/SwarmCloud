@@ -411,3 +411,22 @@ describe("the repository page shows its own org's card", () => {
     expect(card.querySelector(`a[href="${REVIEW}"]`)).not.toBeNull()
   })
 })
+
+describe('visual QA VQA2-R5', () => {
+  it('V231: Setup › GitHub says when it was checked once, in its head, not again in its lede', async () => {
+    // MUTATION: call `checkedLine(doc)` (with the time) for the section's lede again.
+    routes(() => ({ ...answer(), checked_at: null }) as unknown as Answer)
+    await mountSection()
+    await waitFor(() => expect(document.querySelector('.fp-checked')).not.toBeNull(), WAIT)
+    const section = document.querySelector<HTMLElement>('.fp-section')!
+    const head = section.querySelector<HTMLElement>('.fp-head')!
+    expect(visible(head.querySelector('.fp-when'))).toBe('Checked at an unknown time')
+    const lede = visible(section.querySelector('.fp-checked'))
+    expect(lede).not.toMatch(/checked/i)
+    expect(lede).toBe('GitHub does not let SwarmCloud grant permissions itself, so a fix is always a link.')
+    // Everything the section prints outside the folded org details says the time once.
+    const said = visible(section).match(/Checked at an unknown time/g) ?? []
+    const folded = [...section.querySelectorAll('.fp-detail')].reduce((n, d) => n + (visible(d).match(/Checked at an unknown time/g) ?? []).length, 0)
+    expect(said.length - folded).toBe(1)
+  })
+})

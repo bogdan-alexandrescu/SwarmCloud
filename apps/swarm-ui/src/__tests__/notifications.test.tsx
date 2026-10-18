@@ -212,16 +212,17 @@ describe('the drop-down', () => {
   })
 })
 
-describe('the header bar', () => {
-  it('holds the bell on a section page', async () => {
+describe('the bell in the shell', () => {
+  it('sits at the spine’s foot on a section page, with no header bar to hold it (V178)', async () => {
     serve(notifications(() => feed([note('a', { needs_you: true })])))
     vi.stubEnv('VITE_LIVE', '1')
     vi.resetModules()
     window.history.replaceState(null, '', '/capacity/pools')
     const { App } = await import('../App')
     render(<App />)
-    // MUTATION: drop the bar from the frame.
-    await waitFor(() => expect(document.querySelector('.ctl-bar button.nt-bell')).not.toBeNull(), WAIT)
+    // MUTATION: drop the bell from the frame.
+    await waitFor(() => expect(document.querySelector('.sk-spine .sk-bell button.nt-bell')).not.toBeNull(), WAIT)
+    expect(document.querySelector('.ctl-bar')).toBeNull()
   })
 })
 

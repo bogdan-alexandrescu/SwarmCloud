@@ -246,6 +246,26 @@ NOT_SWITCHABLE_CODES = frozenset({
     "upstream_not_declared",
     "merge_wake_refused",
     "state_conflict",
+    # The tenant's MCP servers (MCP-API, part of #1433), as the secrets
+    # release's codes above: raised only by the routes that change introduces
+    # (/v1/mcp-servers, POST /v1/attempts/{id}/mcp:attach) and by the sweep's
+    # credential writer, all of which exist only while SWARM_MCP_SERVERS is
+    # on (dark by default), so no existing caller can be refused by them.
+    # Continuing past any of them is the breach itself: an unproven caller or
+    # a stale generation (invariant 5) handed a per-run MCP credential, a
+    # second attach of one attempt, an attach computed from a task document
+    # whose signature does not verify, or a server registered with a URL or
+    # description shaped like a credential or an unregistered, non-public
+    # address. The feature flag is the switch; a REFUSAL_ switch that let
+    # these through would serve credentials unproven.
+    "mcp_credential_shape",
+    "mcp_server_invalid",
+    "mcp_server_not_found",
+    "mcp_server_exists",
+    "mcp_attach_unproven",
+    "mcp_attach_fenced",
+    "mcp_attach_spent",
+    "mcp_attach_spec_unverified",
 })
 
 #: What the guard lets through without a switch.

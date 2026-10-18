@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { loadRepositories, loadRepositoryIndex, runRepositoryIndex } from './api'
 import { Banner, Button, Card, Dash, EmptyState, NamedMark } from './components'
 import { HEAD_UNREAD, freshness, indexCredentialWords, repoName, scheduleWords, shortSha, type RepoRecord } from './RepositoriesData'
@@ -92,10 +92,24 @@ function RepositoryList({
     reload()
   }
 
+  // THE COUNT LINE IS THERE IN EVERY STATE (V224). Absent while the list was
+  // read and when it failed, it arrived with the cards and pushed them ~37px
+  // down. Reading, it says so; failed, the count is a dash with its reason.
+  const meta =
+    count !== null ? (
+      `${count} registered`
+    ) : state.status === 'loading' ? (
+      'Reading the registered repositories…'
+    ) : (
+      <>
+        <Dash why="The list of registered repositories was not read" /> registered
+      </>
+    )
+
   return (
     <div className="ur-page ur-list">
       {children(
-        count === null ? undefined : `${count} registered`,
+        meta,
         <span className="ur-acts">
           {/* The list's age, on the control that renews it (#98). */}
           <UrRefresh reads={[{ state, reload }]} />
@@ -306,6 +320,15 @@ function RepoCard({
   const head = r.index.head_sha
   const sched = scheduleWords(r.index)
   const cut = useTestMapCut(r)
+  // FOCUS GOES BACK TO INDEX NOW WHEN ITS CONFIRMATION CLOSES (V222). Index now
+  // is disabled while the confirmation is open, so it loses focus; Escape or
+  // Cancel then removed the focused Cancel and left focus on <body>.
+  const acts = useRef<HTMLDivElement>(null)
+  const wasConfirming = useRef(confirming)
+  useEffect(() => {
+    if (wasConfirming.current && !confirming) acts.current?.querySelector<HTMLButtonElement>('button[data-index-now]')?.focus()
+    wasConfirming.current = confirming
+  }, [confirming])
   return (
     <Card
       className="ur-card"
@@ -339,14 +362,14 @@ function RepoCard({
       </div>
       <IndexingUses r={r} go={go} />
       <FailureLine r={r} go={go} />
-      <div className="ur-cacts">
+      <div className="ur-cacts" ref={acts}>
         <UrNavButton to={repoAddress(r.repo_id)} go={go} size="sm">
           Open
         </UrNavButton>
         {r.index.in_flight_task_id !== null ? (
           <NamedMark mark="running" hue="live" word="indexing now" title={r.index.in_flight_task_id} />
         ) : (
-          <Button size="sm" busy={busy} disabled={confirming} onClick={onAsk}>
+          <Button size="sm" busy={busy} disabled={confirming} onClick={onAsk} data-index-now="">
             Index now
           </Button>
         )}

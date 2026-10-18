@@ -353,7 +353,7 @@ describe('O1: Waiting, and why groups by reason', () => {
       ['queued', '3'],
       ['parked', '2'],
     ])
-    expect(text(rows[0]!.querySelector('.ov-wt small'))).toMatch(/wf_refactor 2 · wf_docs 1/)
+    expect(text(rows[0]!.querySelector('.ov-wt small'))).toMatch(/wf_refactor ×2 · wf_docs ×1/)
     expect(text(el.querySelector('#ov-waiting'))).not.toMatch(/tsk_/)
   })
 })
