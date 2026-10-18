@@ -231,10 +231,12 @@ def test_an_unresolved_admin_lookup_with_a_reach_header_is_503_not_403():
     assert auth.authenticate("Bearer t-alice").admin_unresolved is True
     with pytest.raises(UpstreamUnavailable):
         auth.authenticate("Bearer t-alice", None, tenant="eng")
-    # An id the reach could never have selected is still today's 403.
+    # A `u-` id, which no admin answer could ever select, is still a 403.
     with pytest.raises(TenantNotMember):
         auth.authenticate("Bearer t-alice", None, tenant="u-carol")
-    with pytest.raises(TenantNotMember):
+    # And an unregistered id answers exactly as a registered one does, so
+    # the outage does not turn the header into a list of the tenant ids.
+    with pytest.raises(UpstreamUnavailable):
         auth.authenticate("Bearer t-alice", None, tenant="no-such-tenant")
 
 

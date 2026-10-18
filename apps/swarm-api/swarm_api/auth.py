@@ -1253,9 +1253,12 @@ class Authenticator:
         "platform_admin". `platform_reach` never holds a `u-` id, so another
         person's personal workspace is the same 403 for a platform admin as
         for anyone. When the admin lookup did not answer (`admin_unresolved`)
-        and the id is one the reach could have selected, the answer is 503,
-        not 403: the unanswered lookup could have changed it, and a 403 would
-        tell an operator mid-incident they lack a privilege they hold.
+        the answer for any other id but a `u-` one is 503, not 403: the
+        unanswered lookup could have changed it, and a 403 would tell an
+        operator mid-incident they lack a privilege they hold. EVERY such id,
+        not only the registered ones, so that during the outage the answer
+        still does not say which tenant ids exist; a `u-` id is a 403 either
+        way, since no admin answer could ever select one.
         """
         if not requested:
             return ctx
@@ -1272,7 +1275,7 @@ class Authenticator:
                         tenant_via="platform_admin",
                     )
         if ctx.admin_unresolved and self._reach_enabled() and not self._special(ctx) and \
-                requested in {tenant_id for tenant_id, _ in self._reachable_groups()}:
+                not requested.startswith("u-"):
             log.info("%s unresolved for %s: admin lookup did not answer", TENANT_HEADER, ctx.email)
             raise UpstreamUnavailable(
                 "admin membership could not be resolved, and it decides whether "
