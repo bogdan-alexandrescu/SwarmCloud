@@ -103,9 +103,11 @@ def requeue_job(workflow: dict) -> dict:
 
 
 def test_the_workflow_has_exactly_the_enable_requeue_disable_and_close_issues_jobs(workflow: dict):
-    """`requeue-edited` is the body-edit re-evaluation (#888 box 97)."""
+    """`requeue-edited` is the body-edit re-evaluation (#888 box 97);
+    `ready-on-green` swaps that label for `ready` once green
+    (test_auto_merge_ready_on_green.py)."""
     jobs = workflow.get("jobs") or {}
-    assert set(jobs) == {"enable", "requeue", "requeue-edited", "disable", "close-issues"}, sorted(jobs)
+    assert set(jobs) == {"enable", "requeue", "requeue-edited", "disable", "close-issues", "ready-on-green"}, sorted(jobs)
 
 
 def _step(job: dict, step_id: str) -> dict:
@@ -126,9 +128,11 @@ def test_it_runs_on_labeling_and_on_events_that_can_invalidate_the_label(workflo
     is what lets `close-issues` see the merge (#621). `workflow_run` and
     `workflow_dispatch` are the re-evaluation of a `ready` label that landed
     while checks were still running (#697), and `check_suite` its backstop for
-    a check no workflow run reports (#815), held below."""
+    a check no workflow run reports (#815), held below. `schedule` is the
+    `ready-on-green` job's backstop, and starts no other job
+    (test_auto_merge_ready_on_green.py)."""
     on = workflow["on"]
-    assert set(on) == {"pull_request_target", "workflow_run", "workflow_dispatch", "check_suite"}, on
+    assert set(on) == {"pull_request_target", "workflow_run", "workflow_dispatch", "check_suite", "schedule"}, on
     assert set(on["pull_request_target"]["types"]) == {
         "labeled",
         "synchronize",
