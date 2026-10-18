@@ -140,8 +140,13 @@ class McpAnswer:
         state machine has no READY -> FAILED edge
         (`swarm_common.states._ALLOWED`), so today such a task parks
         CREDENTIAL_MISSING with this code and is never promoted: no lease and
-        no cost (invariant 1), but no end either. Ending it is the owner's
-        question in the MCP-SCHED pull request."""
+        no cost (invariant 1), but no end either: a workflow step would block
+        its workflow and a parent would wait on its child. Ending it is the
+        owner's question in the MCP-SCHED pull request (questions.json):
+        (a) admission (`loop.py`) dead-letters a terminal answer, QUEUED ->
+        PARKED -> DEAD_LETTERED being legal today, or (b) a contract change
+        request for a QUEUED -> FAILED edge. Until it is answered,
+        tests/unit/scheduler/test_mcp_admission.py pins the park."""
         return any(r.code in _TERMINAL for r in self.refusals)
 
     @property

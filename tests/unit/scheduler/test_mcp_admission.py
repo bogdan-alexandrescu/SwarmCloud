@@ -352,15 +352,25 @@ def test_another_tenants_row_is_no_credential(db, make_scheduler, dispatcher):
     ],
 )
 def test_an_expired_credential_is_never_leased(db, make_scheduler, dispatcher, why, row):
+    """§4.10 and the brief say FAILED with no lease. The frozen state machine
+    has no QUEUED/READY -> FAILED edge and admission's park is `loop.py`'s,
+    outside this lane, so what holds today is pinned exactly: PARKED
+    CREDENTIAL_MISSING with the terminal code, no lease, and the same state
+    after every later drain. Which terminal state it should end in
+    (DEAD_LETTERED via `loop.py`, or FAILED via a contract change) is the
+    owner's question in the MCP-SCHED pull request; this test changes with
+    that answer."""
     world(db)
     register(db)
     if row is not None:
         credential_row(db, "task_expired", **row)
     task(db, "task_expired")
 
-    make_scheduler().drain()
+    report = make_scheduler().drain()
 
-    assert db.docs["tasks/task_expired"]["state"] != "DISPATCHED"
+    doc = db.docs["tasks/task_expired"]
+    assert (doc["state"], doc["park_reason"]) == ("PARKED", "CREDENTIAL_MISSING"), doc
+    assert report.parked == 1
     assert_reserved_nothing(db, dispatcher)
     detail = events(db, "task_expired", "parked")[-1]["detail"]
     code = "mcp_credential_missing" if why == "missing" else "mcp_credential_expired"
@@ -371,6 +381,8 @@ def test_an_expired_credential_is_never_leased(db, make_scheduler, dispatcher, w
     register(db, enabled=True)
     report = make_scheduler().drain()
     assert report.promoted_credentials == 0
+    doc = db.docs["tasks/task_expired"]
+    assert (doc["state"], doc["park_reason"]) == ("PARKED", "CREDENTIAL_MISSING"), doc
     assert_reserved_nothing(db, dispatcher)
 
 
