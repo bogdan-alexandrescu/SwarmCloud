@@ -21,7 +21,9 @@ Offline: the in-memory Firestore, no credentials, no emulator.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -34,6 +36,8 @@ from .conftest import auth_header, seed_tenant
 from .fakes import FakeQuery
 from .test_child_tasks_api import _client, worker_tokens  # noqa: F401  (a fixture)
 from .test_mcp_servers import on  # noqa: F401  (a fixture)
+
+INDEXES_TF = Path(__file__).resolve().parents[3] / "terraform/modules/firestore/indexes.tf"
 
 T0 = datetime(2026, 10, 18, 9, 0, tzinfo=timezone.utc)
 ADDRESSES = ("203.0.113.7", "198.51.100.9")
@@ -158,6 +162,24 @@ def test_the_list_reads_the_releases_once_tenant_filtered_and_bounded(
     [query] = release_reads
     assert ("tenant_id", "==", "eng") in query._filters
     assert query._limit is not None and query._limit > 0
+
+
+def test_the_release_read_has_its_composite_index(make_client, db, release_reads):
+    """An equality on tenant_id ordered by `at` is served only by a composite
+    index; the in-memory fake has no index check, so without this the list
+    is green here and FAILED_PRECONDITION (a 500) against real Firestore."""
+    _register(db, "eng", "kb")
+    assert make_client().get("/v1/mcp-servers", headers=auth_header("root")).status_code == 200
+    [query] = release_reads
+    shape = ([f for f, op, _ in query._filters if op == "=="],
+             [(f, d.upper()) for f, d in query._orders])
+    declared = []
+    for block in re.findall(r'"[^"]+"\s*=\s*\{(.*?)\n    \}', INDEXES_TF.read_text(), re.S):
+        if f'collection  = "{ATTACH_ROWS_COLLECTION}"' not in block:
+            continue
+        fields = re.findall(r'field_path = "([^"]+)", order = "([A-Z]+)"', block)
+        declared.append(([f for f, _ in fields[:-1]], [fields[-1]]))
+    assert shape in declared, f"no index in indexes.tf serves {shape}; found {declared}"
 
 
 def test_a_tenant_with_no_servers_reads_no_releases(make_client, db, release_reads):
