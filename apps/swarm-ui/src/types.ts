@@ -586,6 +586,27 @@ export interface StartProblem {
   seen_at: string | null
 }
 
+/**
+ * `GET/PUT /v1/admin/settings` (`Store.get_platform_settings`): the platform
+ * settings an admin edits at run time, each at its default when unset. The
+ * two limits on a step's additional repositories (#1434) are read by swarm-api
+ * at every submission and by the worker at every clone, so a change applies to
+ * the next one with no deploy. Their accepted ranges are the API's
+ * (`store.PLATFORM_SETTINGS_RANGES`), and a value outside one is refused 422
+ * naming it; this file does not restate them.
+ */
+export interface PlatformSettings {
+  merge_by_default: boolean
+  /** The most additional repositories one step may read. */
+  max_additional_repositories: number
+  /** The GiB one step's additional repositories may total. */
+  additional_repositories_budget_gib: number
+  updated_at: string | null
+  updated_by: string | null
+  /** `missing`: every value above is a default nobody has set. */
+  settings_document: 'present' | 'missing'
+}
+
 /** One entry of `Task.additional_repositories`, as `additional_repositories_to_api` serves it. */
 export interface TaskAdditionalRepository {
   name: string

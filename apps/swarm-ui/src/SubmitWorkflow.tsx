@@ -1,6 +1,18 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { loadCapacity, loadStats } from './api'
-import { DispatchChoice, asSentence, repositorySchemeRefused, type DispatchDraft } from './Dispatch'
+import {
+  AdditionalRepositoriesPicker,
+  DispatchChoice,
+  additionalRepositoriesBody,
+  asSentence,
+  loadTaskReadableRepositories,
+  offeredPicks,
+  repositorySchemeRefused,
+  takesAdditionalRepositories,
+  type AdditionalRepositoryPick,
+  type DispatchDraft,
+  type TaskReadableList,
+} from './Dispatch'
 import { apiHeaders, chosenTenant, classifyFailure, dropRefusedTenant, errorHeading, type ApiError, type ApiErrorKind, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
 import {
@@ -575,6 +587,30 @@ function Form({ sources }: { sources: FormSources }) {
     lifetimes: mcpLifetimes, onLifetime: onMcpLifetime,
   }
 
+  // ADDITIONAL REPOSITORIES (MR-UI, #1434): ONE LIST FOR THE WORKFLOW,
+  // `WorkflowCreate.additional_repositories`, which every agent step reads
+  // unless it names its own (owner's Q6: a step's list replaces it, `[]` is
+  // none). Drawn once some step's runner takes them; read once, then.
+  // A STEP WHOSE RUNNER TAKES NONE (a Cloud Run profile) IS SENT `[]`: it
+  // would otherwise inherit the list and the whole workflow would be refused
+  // `additional_repositories_unsupported_profile`, which tells its author to
+  // do exactly this (`extrarepos.Resolver`). The picker names both sets.
+  const extraTakers = steps.filter((s) => takesAdditionalRepositories(byName.get(s.profile)))
+  const extraOthers = steps.filter((s) => s.profile !== '' && !takesAdditionalRepositories(byName.get(s.profile)))
+  const extraDrawn = extraTakers.length > 0
+  const [extraList, setExtraList] = useState<Result<TaskReadableList> | null>(null)
+  const [extraPicks, setExtraPicks] = useState<AdditionalRepositoryPick[]>([])
+  const extraAsked = useRef(false)
+  useEffect(() => {
+    if (!extraDrawn || extraAsked.current) return
+    extraAsked.current = true
+    void loadTaskReadableRepositories().then(setExtraList)
+  }, [extraDrawn])
+  const extraSent = extraDrawn ? additionalRepositoriesBody(offeredPicks(extraPicks, extraList)) : []
+  const withExtra = (body: Array<Record<string, unknown>>): Array<Record<string, unknown>> =>
+    extraSent.length === 0 ? body : body.map((b) =>
+      takesAdditionalRepositories(byName.get(String(b.runner_profile))) ? b : { ...b, additional_repositories: [] })
+
   const stageCount = steps.reduce((m, s) => Math.max(m, s.stage + 1), 1)
   const stages = Array.from({ length: stageCount }, (_, i) => steps.filter((s) => s.stage === i))
   const atCeiling = maxSteps !== null && steps.length >= maxSteps
@@ -626,7 +662,7 @@ function Form({ sources }: { sources: FormSources }) {
   // WHAT THIS CLICK WOULD SEND, as one comparable value (VQA V048, owner
   // decision Q1 on #1038): after a 201 the button is "Submit another" for as
   // long as the form still says exactly what was sent.
-  const draftKey = JSON.stringify([plan.body, dispatch.strategy, dispatch.carrier, repo, onFailure, priority.trim()])
+  const draftKey = JSON.stringify([plan.body, dispatch.strategy, dispatch.carrier, repo, onFailure, priority.trim(), extraSent])
   const justSent = sub.kind === 'created' && sentKey === draftKey
   const another = () => {
     setSteps(firstSteps())
@@ -635,6 +671,7 @@ function Form({ sources }: { sources: FormSources }) {
     setOnFailure('fail_workflow')
     setPriority('0')
     setMcpLifetimes({})
+    setExtraPicks([])
     forgetCredentials()
     setSub({ kind: 'idle' })
     setSentKey(null)
@@ -655,6 +692,10 @@ function Form({ sources }: { sources: FormSources }) {
   // A 5xx's detail is read the same way for the outcome, but marks no card:
   // nothing says the step was the problem.
   const refusal = sub.kind === 'rejected' || sub.kind === 'uncertain' ? refusalOf(sub.error, sentIds) : null
+  // A refusal of the workflow's list is said under its picker too. Every
+  // `extrarepos` refusal names the field in its detail.
+  const extraRefused = sub.kind === 'rejected' && typeof sub.error.detail === 'object' && sub.error.detail !== null
+    && (sub.error.detail as Record<string, unknown>).field === 'additional_repositories' ? sub.error.message : undefined
   // WHAT THE CLICK COMMITS TO (#115), from the steps `send` builds the body
   // from. Each step's weight is its runner's `units`, taken in every pool that
   // step needs; the sum is the weight the whole plan asks admission for. A step
@@ -708,7 +749,7 @@ function Form({ sources }: { sources: FormSources }) {
     setSentIds(body.map((b) => String(b.step_id)))
     const sending = draftKey
     void postWorkflow({
-      steps: body,
+      steps: withExtra(body),
       // Workflow-level, not per step: `integrate` produces ONE pull request, so
       // "which repository" cannot be a per-step answer (schemas.WorkflowCreate).
       strategy: dispatch.strategy,
@@ -716,6 +757,9 @@ function Form({ sources }: { sources: FormSources }) {
       ...(repo === '' ? {} : { repository_url: repo }),
       ...(onFailure === 'fail_workflow' ? {} : { on_step_failure: onFailure }),
       ...(priorityN === 0 ? {} : { priority: priorityN }),
+      // Omitted when none is picked, so a workflow that reads none sends what
+      // it always did.
+      ...(extraSent.length === 0 ? {} : { additional_repositories: extraSent }),
       // BESIDE `steps`, never in a step's `input`, which is stored and shown
       // (§4.3). One map for the workflow; omitted when no step names a
       // `dispatch` server.
@@ -815,6 +859,18 @@ function Form({ sources }: { sources: FormSources }) {
               step limit · nothing caps this form
               <span className="ctl-panel-note-detail">{sources.limitsDetail}</span>
             </p>
+          )}
+          {extraDrawn && (
+            <AdditionalRepositoriesPicker list={extraList} picks={extraPicks} onChange={setExtraPicks}
+              error={extraRefused}
+              note={
+                <p className="btp-hint" data-extra-readers>
+                  Read by {extraTakers.map((s) => s.id.trim() || '(unnamed step)').join(', ')}
+                  {extraOthers.length > 0 && (
+                    <>; not by {extraOthers.map((s) => s.id.trim() || '(unnamed step)').join(', ')}, whose runner takes none</>
+                  )}.
+                </p>
+              } />
           )}
           {mcpAsked.length > 0 && (
             <fieldset className="btp">
