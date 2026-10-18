@@ -837,6 +837,14 @@ locals {
       # var.repository_grants_enforced; service submissions are never refused.
       REPOSITORY_GRANTS_ENFORCED = var.repository_grants_enforced ? "true" : "false"
 
+      # A step's additional repositories (swarm_api.settings
+      # `additional_repositories_enabled`, #1434 MR-API). Until this line it
+      # reached swarm-api only by hand, which the next apply would have put
+      # back to off. Off unless the environment's tfvars sets
+      # var.additional_repositories_enabled. Their count and size limits are
+      # platform settings in Firestore, not environment.
+      ADDITIONAL_REPOSITORIES_ENABLED = var.additional_repositories_enabled ? "true" : "false"
+
       # The live browser's search tool (swarm_api.settings
       # `search_tool_enabled`, `search_provider`; docs/search-tool.md, lane
       # SEARCH-TF, #1030). Off unless the environment's tfvars sets

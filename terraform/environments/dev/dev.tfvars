@@ -535,6 +535,22 @@ browser_egress = {
 # refused. docs/runbooks/onboarding-acceptance.md is the check that it works.
 repository_grants_enforced = true
 
+# A step's additional repositories (swarm-api ADDITIONAL_REPOSITORIES_ENABLED,
+# docs/design/multi-repository-steps.md, #1434): a claude-code, codex,
+# generic, browser or claude-code-browser step names other registered,
+# readable-by-tasks repositories by `owner/repo`; swarm-api pins each to a
+# commit and signs it, and the worker clones each read-only under
+# work/repos/<name>, never harvested or checkpointed. ON in dev from the
+# release that merges this line, a change held as a draft until the MR lanes
+# (MR-BRIDGE, MR-UI, MR-DOCS) have merged (owner request, 2026-10-18). Each
+# person still needs a grant per repository while repository_grants_enforced
+# is on. Limits: platform settings max_additional_repositories (default 5)
+# and additional_repositories_budget_gib (default 6), PUT /v1/admin/settings.
+# Kill switch: false and release; every submission naming one is then 422
+# additional_repositories_disabled, and a task already stored keeps what it
+# was signed with.
+additional_repositories_enabled = true
+
 # One switched refusal is ON in dev (owner decision 2026-10-11, after PR 1027
 # added it OFF as every new refusal ships). index_refresh_failed: a repo-index
 # refresh firing where every repository failed is refused visibly instead of
