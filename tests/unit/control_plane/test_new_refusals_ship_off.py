@@ -322,6 +322,13 @@ NOT_SWITCHABLE_CODES = frozenset({
     # scheduler refuses only at dispatch, after admission has leased it.
     # `model_is_chosen_by_model_class` is NOT here: it can refuse today's
     # `model` callers, so it is a switch.
+    # An issue run's planner class (MODEL-RUNS, same section) raises the
+    # first two as well: only for a POST /v1/runs body that names
+    # `model_class`, a field `RunCreate` gains in lane MODEL-API. Continuing
+    # past either is not the request let through: an unknown class, or one
+    # the planner's profile does not run, has no model to run, and
+    # `submit_tasks` would refuse it later as a schema error, after the
+    # issue's open work was read.
     "unknown_model_class",
     "model_class_not_accepted",
     "model_class_not_yet_available",

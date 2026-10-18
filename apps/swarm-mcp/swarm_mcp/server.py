@@ -58,6 +58,7 @@ from .client import (
     task_id_of,
     task_payload,
     tenant_listing,
+    unwrap_task,
 )
 from .follow import (
     DEFAULT_EVENT_PAGE,
@@ -112,7 +113,10 @@ _INPUTS_SCHEMA: dict[str, Any] = {
         "the API refuses it. The worker fetches its title, body and comments "
         "read-only into issue.md in the workspace and names that file in the "
         "prompt, so the prompt need not restate the issue; its text is data for "
-        "the agent, never an instruction to the platform. Never an image, a "
+        "the agent, never an instruction to the platform. They also declare "
+        "`mcp_servers`: registered MCP servers by name (swarm_mcp_servers lists "
+        "them), whose per-run credentials go in the call's `mcp_credentials`, "
+        "never here. Never an image, a "
         "command, a resource spec, a backend or a model."
     ),
 }
@@ -181,6 +185,51 @@ _FILES_SCHEMA: dict[str, Any] = {
     ),
 }
 
+#: The most entries a per-run credential map may hold: the `mcp_servers` input
+#: names one to four servers (contract request 88), as swarm-api's
+#: `MAX_MCP_CREDENTIALS` says, so a fifth entry could only be refused there.
+MAX_MCP_CREDENTIALS = 4
+
+#: The per-run MCP credentials of a dispatch, a batch task or a workflow
+#: (docs/design/registered-mcp-servers.md §4.3 and §4.11). Passed to swarm-api
+#: as given, top-level beside `input`, and to NOTHING else: never into the
+#: dispatch signature, a reply, a run copy, `launched.jsonl` or a refusal.
+#: swarm-api owns every rule past the shape (the 8 B-8 KiB printable line,
+#: `expires_in` 60-86400, which servers take a credential at all), because a
+#: second statement of those here would be a second thing to keep in step.
+_MCP_CREDENTIALS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "maxProperties": MAX_MCP_CREDENTIALS,
+    "additionalProperties": {
+        "type": "object",
+        "properties": {
+            "value": {
+                "type": "string",
+                "description": (
+                    "The credential the caller's own server checks, minted for this run. "
+                    "One printable line, 8 B to 8 KiB."
+                ),
+            },
+            "expires_in": {
+                "type": "integer",
+                "description": "Seconds it stays stored, 60 to 86400; it is also destroyed when the task ends.",
+            },
+        },
+        "required": ["value", "expires_in"],
+        "additionalProperties": False,
+    },
+    "description": (
+        "Per-run credentials for the registered MCP servers this work names in "
+        "`inputs.mcp_servers`, by server name: {\"kb\": {\"value\": ..., \"expires_in\": 3600}}. "
+        "Only for a server registered with auth mode `dispatch` (swarm_mcp_servers says "
+        "which); a `none` or `workspace_secret` server takes none. Sent to swarm-api, "
+        "which stores it in Secret Manager and keeps it from the agent, and nowhere "
+        "else: no reply, log or run file of this plugin holds it. Never a long-lived "
+        "secret for the workspace store, which no tool accepts, and never a "
+        "registration: a server is registered in the console."
+    ),
+}
+
 #: A batch entry's fields: what one `swarm_dispatch` takes for one task, with
 #: the profile under the API's own name. Read by `_dispatch_batch`, so the
 #: schema and the check cannot disagree.
@@ -200,12 +249,14 @@ _BATCH_TASK_SCHEMA: dict[str, Any] = {
         "label": {"type": "string", "description": "A short name, for the UI."},
         "inputs": _INPUTS_SCHEMA,
         "files": _FILES_SCHEMA,
+        "mcp_credentials": _MCP_CREDENTIALS_SCHEMA,
     },
     "required": ["prompt"],
 }
 
 #: The `swarm_dispatch` arguments that describe ONE task, refused beside `tasks`.
-_SINGLE_TASK_ARGS = ("prompt", "profile", "repo", "ref", "infer", "strategy", "label", "inputs", "files")
+_SINGLE_TASK_ARGS = ("prompt", "profile", "repo", "ref", "infer", "strategy", "label", "inputs", "files",
+                     "mcp_credentials")
 
 #: `swarm_account_pause`/`resume`/`drain` share one shape.
 _ACCOUNT_STATE_SCHEMA: dict[str, Any] = {
@@ -240,7 +291,8 @@ TOOLS: list[dict[str, Any]] = [
             "call that arms the `/sc check` watch (CronList first, never a second job).\n"
             "\n"
             "SEVERAL INDEPENDENT TASKS ARE ONE CALL: pass `tasks` -- a list of "
-            "{prompt, runner_profile, repo, ref, infer, strategy, label, inputs, files} "
+            "{prompt, runner_profile, repo, ref, infer, strategy, label, inputs, files, "
+            "mcp_credentials} "
             "-- instead of `prompt` and the fields beside it. They are sent as ONE "
             "request, every task id comes back in the order given, and a list "
             "longer than the API's max_batch_size is refused before anything is "
@@ -262,7 +314,16 @@ TOOLS: list[dict[str, Any]] = [
             "checked against the repository's knowledge graph before it is sent; "
             "the reply's `territory_warning` names every open pull request, live "
             "issue-run step, other task of the call or still-running task of this "
-            "session it overlaps. The task is sent either way."
+            "session it overlaps. The task is sent either way.\n"
+            "\n"
+            "REGISTERED MCP SERVERS: claude-code and codex take `inputs.mcp_servers`, "
+            "the names of servers your workspace registered (swarm_mcp_servers lists "
+            "them), and the agent may call those servers during its run. A server "
+            "registered with auth `dispatch` needs this call's `mcp_credentials` entry "
+            "for it, a credential your application minted for this run; it goes to "
+            "SwarmCloud and nowhere else, and the agent never sees it. Until the "
+            "deployment turns the feature on, SwarmCloud refuses any `mcp_servers` "
+            "with `mcp_unavailable`."
         ),
         "inputSchema": {
             "type": "object",
@@ -319,6 +380,7 @@ TOOLS: list[dict[str, Any]] = [
                 "label": {"type": "string", "description": "A short name, for the UI."},
                 "inputs": _INPUTS_SCHEMA,
                 "files": _FILES_SCHEMA,
+                "mcp_credentials": _MCP_CREDENTIALS_SCHEMA,
                 "tasks": {
                     "type": "array",
                     "minItems": 1,
@@ -817,7 +879,7 @@ TOOLS: list[dict[str, Any]] = [
             "`spec`: a whole workflow spec object exactly as the terminal's "
             "workflow command reads it (`steps`, `strategy`, `carrier`, `repository_url`, "
             "`repository_ref`, `on_step_failure`, `priority`, `label`), nothing "
-            "else beside it but `infer` -- or, so no model has to retype a long "
+            "else beside it but `infer` and `mcp_credentials` -- or, so no model has to retype a long "
             "spec, as `spec_path` (a JSON spec file this bridge reads itself) or "
             "`spec_ref` (the id `swarm_workflow_spec` handed back for a file it "
             "read). `spec_digest` checks all three. With no repository named and no `infer`, "
@@ -830,7 +892,15 @@ TOOLS: list[dict[str, Any]] = [
             "graph before submission, and the reply's `territory_warning` names every "
             "open pull request, live issue-run step, still-running task of this session, "
             "or step of this workflow NOT on its dependency line that overlaps one. The "
-            "workflow is submitted either way."
+            "workflow is submitted either way.\n"
+            "\n"
+            "REGISTERED MCP SERVERS: a claude-code or codex step names them in "
+            "`inputs.mcp_servers`, as swarm_dispatch does. The workflow takes ONE "
+            "`mcp_credentials` map, top-level, which serves every step naming that "
+            "server; it is never part of a spec, because a spec is written, held and "
+            "copied into a run script. So a workflow that needs a credential is "
+            "submitted with this tool, `mcp_credentials` beside `steps` or the spec, "
+            "and not through /sc:swarmcloud's launch."
         ),
         "inputSchema": {
             "type": "object",
@@ -877,6 +947,7 @@ TOOLS: list[dict[str, Any]] = [
                         "carries the digest of what was received either way."
                     ),
                 },
+                "mcp_credentials": _MCP_CREDENTIALS_SCHEMA,
                 "merge_pr": {
                     "type": "object",
                     "description": (
@@ -1208,12 +1279,66 @@ TOOLS: list[dict[str, Any]] = [
             "Each step whose task was read carries `questions`: how many "
             "questions the worker validated in that step's questions.json, 0 "
             "when it asked none. Read a step with questions with swarm_result, "
-            "whose `owner_questions` holds them; they are for the owner to answer."
+            "whose `owner_questions` holds them; they are for the owner to answer.\n"
+            "\n"
+            "A step parked AWAITING_INPUT waits for a member of its tenant to "
+            "answer and holds nothing while it does; its row carries `awaiting: "
+            "{tenant, opened_at, expires_at, form, artifact, max_files, remind}`. "
+            "Once answered it carries `answered: {answered_by, answered_at, via, "
+            "files}`. A person answers with swarm_workflow_input, or in the console."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {"workflow_id": {"type": "string"}},
             "required": ["workflow_id"],
+        },
+    },
+    {
+        "name": "swarm_inputs",
+        "description": (
+            "The workflow steps of YOUR tenant waiting for a person's answer (an "
+            "`await-input` step, parked AWAITING_INPUT): each with its workflow_id, "
+            "step_id, task_id, `opened_at` and `expires_at`, newest first, and "
+            "`answer_with`, the swarm_workflow_input call that answers it. Any member "
+            "of the tenant may answer any of them. Read-only. A waiting step holds no "
+            "lease and no capacity (invariant 1): it is waiting for a person, not stuck."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "At most this many, 1-200 (default 200)."},
+            },
+        },
+    },
+    {
+        "name": "swarm_workflow_input",
+        "description": (
+            "Answer a workflow step that waits for a person (an `await-input` step). "
+            "THE PERSON TYPES THE ANSWER, not the caller: the bridge shows the step's "
+            "prompt and what it stages in this host's own prompt (MCP elicitation), "
+            "and sends only what the person typed there -- a verdict and findings, "
+            "answers to the upstream agent's questions, or a text. This tool takes no "
+            "verdict, payload or text argument, and refuses a call that passes one. "
+            "`files` are LOCAL PATHS you may propose to attach; the person is shown "
+            "each one's name, size and sha256 and sends them only by ticking the box, "
+            "so a file they did not see is never sent. At most 10 files and 16 MiB in "
+            "all, refused before anything is sent. A host that cannot ask its human "
+            "sends nothing, and the reply names the step's console link instead. The "
+            "first answer is final; the API records who answered, when, and `via: "
+            "mcp`. List the waiting steps with swarm_inputs."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "workflow_id": {"type": "string"},
+                "step_id": {"type": "string", "description": "The await-input step to answer."},
+                "files": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Local file paths to propose attaching. The person decides.",
+                },
+            },
+            "required": ["workflow_id", "step_id"],
         },
     },
     {
@@ -1875,6 +2000,20 @@ TOOLS: list[dict[str, Any]] = [
     # key fits in, and an argument not in the schema is refused unsent
     # (`_refuse_unknown_arguments`). tests/unit/mcp/test_provider_keys_bridge.py.
     {
+        "name": "swarm_mcp_servers",
+        "description": (
+            "The MCP servers your workspace registered, by name: the names a "
+            "claude-code or codex step may put in `inputs.mcp_servers`, each with its "
+            "URL, auth mode (`dispatch` needs a per-run `mcp_credentials` entry from "
+            "you; `none` and `workspace_secret` take none), the profiles allowed to "
+            "use it, the tools an agent may call and whether it is enabled; and the "
+            "addresses a server's operator allowlists. Read-only: no tool registers a "
+            "server or stores its credential -- an admin does that in the console's "
+            "Settings > Workspace > MCP servers. `text` is what to show."
+        ),
+        "inputSchema": {"type": "object", "additionalProperties": False, "properties": {}},
+    },
+    {
         "name": "swarm_keys",
         "description": (
             "Whether a TypeSafe key is set for YOU and for your selected tenant, "
@@ -2178,6 +2317,112 @@ def _dispatch_strategy(value: Any) -> str | None:
 #: a new object), so this is keyed on the client itself, and an entry
 #: disappears the moment its client does.
 _DISPATCHED: "weakref.WeakKeyDictionary[Any, set[tuple]]" = weakref.WeakKeyDictionary()
+
+
+def check_mcp_credentials(raw: Any, named: Any, *, where: str) -> dict[str, Any] | None:
+    """A per-run credential map, its SHAPE checked before anything travels
+    (docs/design/registered-mcp-servers.md §4.3): an object of at most
+    MAX_MCP_CREDENTIALS entries, each `{value: string, expires_in: integer}`
+    and nothing else, each keyed by a server the work names in
+    `inputs.mcp_servers` (`named`). None or `{}` is no map.
+
+    Shape only. Which servers take a credential, the value's length and
+    alphabet and the `expires_in` range are swarm-api's rules
+    (`mcp_credentials.check_credential`), refused there with their own codes.
+    EVERY REFUSAL NAMES THE FIELD AND THE RULE, NEVER A VALUE: a refusal is a
+    tool reply, and a tool reply is the session's transcript.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise SwarmError(
+            f"{where}: `mcp_credentials` is an object of server name to "
+            "{value, expires_in}. Nothing was sent"
+        )
+    if not raw:
+        return None
+    if len(raw) > MAX_MCP_CREDENTIALS:
+        raise SwarmError(
+            f"{where}: `mcp_credentials` holds {len(raw)} entries, and a step names at most "
+            f"{MAX_MCP_CREDENTIALS} servers, so it takes at most 4. Nothing was sent"
+        )
+    names = {str(n) for n in named} if isinstance(named, (list, set, tuple)) else set()
+    for server_name, entry in raw.items():
+        if not (isinstance(entry, dict) and set(entry) == {"value", "expires_in"}
+                and isinstance(entry["value"], str)
+                and isinstance(entry["expires_in"], int) and not isinstance(entry["expires_in"], bool)):
+            raise SwarmError(
+                f"{where}: `mcp_credentials` entry {str(server_name)[:40]!r} is not "
+                "{value, expires_in}: `value` a string, `expires_in` whole seconds, "
+                "nothing else. Nothing was sent"
+            )
+        if server_name not in names:
+            raise SwarmError(
+                f"{where}: `mcp_credentials` has an entry for {str(server_name)[:40]!r}, and the "
+                f"work's `inputs.mcp_servers` does not name it (it names {sorted(names)}). "
+                "Nothing was sent"
+            )
+    return raw
+
+
+def without_credentials(value: Any) -> Any:
+    """`value` with every `mcp_credentials` it holds cut down to
+    `{server, expires_at}` per entry -- what swarm-api answers for a stored
+    credential (§4.3) -- at any depth.
+
+    Applied to every answer of a dispatch or a workflow submission BEFORE it
+    reaches a reply, a run copy or `launched.jsonl`. swarm-api never echoes a
+    value; this is what keeps "the plugin's log of a dispatch holds no
+    credential" true of an API that one day did, rather than true only
+    because of what another service chose to answer.
+    """
+    if isinstance(value, dict):
+        return {
+            key: (_credential_echo(item) if key == "mcp_credentials" else without_credentials(item))
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [without_credentials(item) for item in value]
+    return value
+
+
+def _credential_echo(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        entries = [{"server": key, **(item if isinstance(item, dict) else {})} for key, item in value.items()]
+    elif isinstance(value, list):
+        entries = [item for item in value if isinstance(item, dict)]
+    else:
+        entries = []
+    return [{"server": entry.get("server"), "expires_at": entry.get("expires_at")} for entry in entries]
+
+
+def _send_task(client: Any, credentials: dict[str, Any] | None, **fields: Any) -> dict[str, Any]:
+    """`POST /v1/tasks` for one task, with its per-run credential map beside
+    `input` when it has one.
+
+    Without a map this is `client.dispatch`, the call every dispatch made
+    before MCP servers existed, so a dispatch naming none is sent exactly as
+    it was. With one, the body is the same `task_payload` plus
+    `mcp_credentials`, sent through the client's own transport: the map is a
+    request field, never a part of `input`, which the spec signature covers
+    and the runner reads.
+    """
+    if not credentials:
+        return client.dispatch(**fields)
+    payload = task_payload(**fields)
+    payload["mcp_credentials"] = credentials
+    return unwrap_task(client.request("POST", "/v1/tasks", payload=payload))
+
+
+def _step_servers(steps: list[dict[str, Any]]) -> set[str]:
+    """Every server any step of a workflow names, which the workflow's one
+    credential map may hold entries for."""
+    named: set[str] = set()
+    for step in steps:
+        servers = (step.get("input") or {}).get("mcp_servers") if isinstance(step, dict) else None
+        if isinstance(servers, list):
+            named.update(str(n) for n in servers)
+    return named
 
 
 def _dispatch_signature(profile: str, prompt: str, strategy: str | None, repository, inputs: Any) -> tuple:
@@ -2918,6 +3163,9 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
             raise SwarmError(f"{where} has no prompt. Nothing was sent")
         profile = catalogue.check(item.get("runner_profile") or "claude-code", where=where)
         inputs = catalogue.check_inputs(profile, item.get("inputs"), where=where)
+        credentials = check_mcp_credentials(
+            item.get("mcp_credentials"), (inputs or {}).get("mcp_servers"), where=where
+        )
         strategy = _dispatch_strategy(item.get("strategy"))
         repository = checkout.resolve(repo=item.get("repo"), ref=item.get("ref"), infer=_flag(item, "infer"))
         if strategy == "direct-pr" and not repository.url:
@@ -2951,12 +3199,14 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
             inputs=inputs or None,
             strategy=strategy,
         )
+        if credentials:
+            payload["mcp_credentials"] = credentials
         prepared.append((payload, signature, repository, strategy))
 
     # THE TERRITORY, read before the one send and reported after it: a
     # warning, never a refusal (see "territory" above).
     territory, checks = _territory_of_units(client, units)
-    created = client.dispatch_batch([payload for payload, *_ in prepared])
+    created = without_credentials(client.dispatch_batch([payload for payload, *_ in prepared]))
     # The request reached the API, so every signature is remembered BEFORE the
     # answer is judged: a reply this bridge cannot read is not proof nothing
     # was created, and a retry must not create the list twice.
@@ -3925,6 +4175,9 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         # The inputs this profile DECLARES, and nothing else, refused by name
         # before anything travels (#142).
         inputs = catalogue.check_inputs(profile, args.get("inputs"), where="swarm_dispatch")
+        credentials = check_mcp_credentials(
+            args.get("mcp_credentials"), (inputs or {}).get("mcp_servers"), where="swarm_dispatch"
+        )
         strategy = _dispatch_strategy(args.get("strategy"))
         # WHAT IS CLONED, decided before anything travels: the caller's repo,
         # or -- only with `infer: true` -- the checkout this bridge runs in,
@@ -3949,7 +4202,9 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         lane = {"lane": args.get("label") or "this task",
                 "files": _declared_files(args.get("files"), "swarm_dispatch")}
         territory, checks = _territory_of_units(client, [(repository.url, lane)])
-        task = client.dispatch(
+        task = without_credentials(_send_task(
+            client,
+            credentials,
             prompt=args["prompt"],
             runner_profile=profile,
             repository_url=repository.url,
@@ -3957,7 +4212,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             metadata={"unit": args["label"]} if args.get("label") else None,
             inputs=inputs or None,
             strategy=strategy,
-        )
+        ))
         task_id = task_id_of(task)
         if not task_id:
             # Raised rather than returned, because a task id is what every tool
@@ -4155,6 +4410,13 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         # `catalogue_source` -- see `catalogue.served_catalogue`.
         return json.dumps(catalogue.served_catalogue(client), indent=2)
 
+    if name == "swarm_mcp_servers":
+        from . import render
+        from .sc import mcp_servers, mcp_servers_lines
+
+        view = mcp_servers(client)
+        return json.dumps({**view, "text": render.join(mcp_servers_lines(view))}, indent=2)
+
     if name == "swarm_keys":
         view = keys.key_status(client, args.get("provider", "typesafe"))
         return json.dumps({**view, "text": keys.status_text(view)}, indent=2)
@@ -4346,6 +4608,9 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
                 "title": workflows.check_title(args.get("title"), where="swarm_workflow"),
             }
             repo, ref = args.get("repo"), args.get("ref")
+        credentials = check_mcp_credentials(
+            args.get("mcp_credentials"), _step_servers(fields["steps"]), where="swarm_workflow"
+        )
         repository = checkout.resolve(
             repo=repo, ref=ref, infer=_flag(args, "infer")
         )
@@ -4371,8 +4636,9 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             merge=fields.get("merge"),
             # Nor `after` (SPEED-D3).
             after=fields.get("after"),
+            mcp_credentials=credentials,
         )
-        reply = _workflow_created(envelope, placed=placed, repository=repository.as_dict(),
+        reply = _workflow_created(without_credentials(envelope), placed=placed, repository=repository.as_dict(),
                                   digest=digest, expected_digest=expected_digest,
                                   given=[str(step.get("step_id")) for step in fields["steps"]],
                                   name=fields["title"] or fields["label"])
@@ -4419,6 +4685,26 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         )
         reported["bridge_version"] = bridge_version()
         return json.dumps(reported, indent=2)
+
+    if name == "swarm_inputs":
+        from . import awaitinput
+
+        return json.dumps(awaitinput.waiting(client, args.get("limit")), indent=2, default=str)
+
+    if name == "swarm_workflow_input":
+        # THE ANSWER IS THE PERSON'S (docs/design/human-steps.md §4.2): typed
+        # into the host's elicitation, never read from `args`, which
+        # `_refuse_unknown_arguments` has already held to the step and files.
+        from . import awaitinput
+
+        return json.dumps(
+            awaitinput.answer(
+                client, _text_arg(args, "workflow_id", name), _text_arg(args, "step_id", name),
+                args.get("files"), can_elicit=_HOST_CAN_ELICIT.is_set(), elicit=_elicit,
+            ),
+            indent=2,
+            default=str,
+        )
 
     if name == "swarm_check":
         from . import check
@@ -4657,7 +4943,9 @@ def _holds(name: str, args: Any) -> bool:
     * `swarm_collect` unless `wait_seconds` is 0 (default 3600);
     * `swarm_setup_status` with `wait_for_github_seconds` > 0;
     * `swarm_account_remove`, which waits up to `ELICIT_TIMEOUT_SECONDS` for
-      the host's human to type a label.
+      the host's human to type a label;
+    * `swarm_workflow_input`, which waits up to
+      `awaitinput.ELICIT_TIMEOUT_SECONDS` for the person to fill the form in.
 
     Everything else answers from a bounded number of reads and is quick.
     """
@@ -4671,7 +4959,7 @@ def _holds(name: str, args: Any) -> bool:
         return _waits(args, "wait_seconds", 3600)
     if name == "swarm_setup_status":
         return _waits(args, "wait_for_github_seconds", 0)
-    return name == "swarm_account_remove"
+    return name in ("swarm_account_remove", "swarm_workflow_input")
 
 
 #: How often a running tool call tells the host it is alive. Claude Code
@@ -4760,8 +5048,9 @@ def _error(message_id: Any, code: int, message: str) -> None:
 
 
 #: WHETHER THE HOST CAN ASK ITS HUMAN A QUESTION (MCP elicitation), as its
-#: `initialize` declared. Read only by `swarm_account_remove`: a host that
-#: cannot ask gets a refusal naming the terminal command, never a confirmation
+#: `initialize` declared. Read by `swarm_account_remove` and
+#: `swarm_workflow_input`: a host that cannot ask gets a refusal naming the
+#: terminal command or the console link, never a confirmation or an answer
 #: the calling agent could supply itself.
 _HOST_CAN_ELICIT = threading.Event()
 
@@ -4777,11 +5066,13 @@ _ELICITING: dict[str, tuple[threading.Event, list[dict[str, Any]]]] = {}
 _ELICIT_LOCK = threading.Lock()
 
 
-def _elicit(message: str, schema: dict[str, Any]) -> dict[str, Any] | None:
+def _elicit(
+    message: str, schema: dict[str, Any], *, timeout: float = ELICIT_TIMEOUT_SECONDS
+) -> dict[str, Any] | None:
     """Ask the host's human through the host (`elicitation/create`).
 
     The host's whole JSON-RPC response, or None when none came within
-    `ELICIT_TIMEOUT_SECONDS`. The answer is typed by the person at the host,
+    `timeout` seconds (`ELICIT_TIMEOUT_SECONDS` unless the caller says). The answer is typed by the person at the host,
     into the host's own prompt: the model that made the tool call neither sees
     the request nor writes its answer.
     """
@@ -4800,7 +5091,7 @@ def _elicit(message: str, schema: dict[str, Any]) -> dict[str, Any] | None:
         with _WRITE_LOCK:
             sys.stdout.write(line)
             sys.stdout.flush()
-        if not answered.wait(ELICIT_TIMEOUT_SECONDS):
+        if not answered.wait(timeout):
             return None
         return box[0]
     finally:
