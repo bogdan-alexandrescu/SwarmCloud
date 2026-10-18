@@ -107,6 +107,11 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 97 | No change to `WorkflowStep`, `Workflow` or `profiles.py` for multi-repository steps (MR-CONTRACT, multi-repository steps request C, part of #1434) | ACCEPTED by the owner 2026-10-17 (PR 1461); requests no change, so nothing to apply |
 | 98 | `states.py`: QUEUED -> FAILED, a task that can never run ends at admission with no lease (MCP-FAILED-EDGE, part of #1433) | ACCEPTED by the owner 2026-10-18 (answering PR 1504's question) and APPLIED by the pull request that adds this line; KEPT by the owner 2026-10-18 when accepting request 99. No writer today: no task is stored QUEUED, so admission writes request 99's edges instead |
 | 99 | `states.py`: READY -> FAILED and PARKED -> FAILED, the two states admission and the credential sweep actually hold (MCP-FAILED-EDGE, part of #1433) | ACCEPTED by the owner 2026-10-18 (on PR 1530) and APPLIED by the pull request that adds this line (MCP-FAILED-EDGE-B); admission writes READY -> FAILED, the credential sweep PARKED -> FAILED |
+| 100 | `profiles.py`: `ModelClass` and `MODEL_CLASSES`, the four model classes a step may name (MODEL-CONTRACT, model per step request A, part of #1435) | ACCEPTED by the owner 2026-10-17 (PR 1509) and APPLIED by the pull request that adds this line |
+| 101 | `profiles.py`: `RunnerProfile.model_classes`, `default_model_class` and `step_model_class`, each profile's classes and the one resolution rule (MODEL-CONTRACT, model per step request B, part of #1435) | ACCEPTED by the owner 2026-10-17 (PR 1509) and APPLIED by the pull request that adds this line |
+| 102 | `models.py`: `Task.model_class` and `WorkflowStep.model_class`, the class a step asked for (MODEL-CONTRACT, model per step request C, part of #1435) | ACCEPTED by the owner 2026-10-17 (PR 1509) and APPLIED by the pull request that adds this line |
+| 103 | `models.py`: `Attempt.model`, the model ID an attempt's agent was started with (MODEL-CONTRACT, model per step request D, part of #1435) | ACCEPTED by the owner 2026-10-17 (PR 1509) and APPLIED by the pull request that adds this line |
+| 104 | `specsign.py`: spec format 5 covers `model_class`, signed at 5 only when a class is set (MODEL-CONTRACT, model per step request E, part of #1435) | ACCEPTED by the owner 2026-10-17 (PR 1509) and APPLIED by the pull request that adds this line |
 
 ---
 
@@ -13255,3 +13260,329 @@ which the owner rejected on 2026-10-18.
 **1, 2, 3**: both edges leave states that hold nothing and are written before
 any lease, so nothing is reserved or released. **5**: no attempt, no
 generation.
+
+
+## 100. `profiles.py`: `ModelClass` and `MODEL_CLASSES`, the four model classes a step may name (MODEL-CONTRACT, model per step request A)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1509, with the decisions
+recorded there and on PR 1460) and APPLIED by the pull request that adds this
+line. Filed by the design (docs/design/model-per-step.md §5 request A),
+applied by lane MODEL-CONTRACT, part of #1435. The design wrote "85 to 89 at
+this reading"; 100 to 104 are the next free numbers on main at a989111, and
+the design's §5 letter is the stable name.
+
+### Why
+
+Since #226 every claude-code step runs the pinned `claude-opus-5-5`, so a step
+that classifies feedback or reformats a document costs what a deep-reasoning
+step costs (#1435). Invariant 10 forbids a caller from naming a model ID, so a
+step names a CLASS by a name that must have one spelling across swarm-api's
+validation, the signed spec, the scheduler's dispatch, the worker's check, the
+API, the console and the plugin. That is why the `resource_class` vocabulary
+is frozen, and it applies equally here. The vocabulary is what a caller is
+promised; the IDs behind it are Terraform's (`runner_models` in
+terraform/infra/locals.tf, keyed by class), so a model release is an edit
+there and a release, never a contract request (owner, Q1 (a)).
+
+### The change
+
+```python
+@dataclass(frozen=True)
+class ModelClass:
+    name: str
+    family: str      # the family word in claude-<family>-<major>[-<minor>]
+    min_major: int   # the oldest generation a pin of this class may name
+
+    def admits(self, model_id: str) -> bool:
+        # claude-<family>-<major>[-<minor>][-<8-digit date>], major >= min_major;
+        # anything that is not a str is refused.
+
+MODEL_CLASSES: dict[str, ModelClass] = {
+    "opus": ModelClass("opus", "opus", 5),       # the default: coding, implementation
+    "fable": ModelClass("fable", "fable", 5),    # planning ("Fable 5+")
+    "sonnet": ModelClass("sonnet", "sonnet", 5),
+    "haiku": ModelClass("haiku", "haiku", 5),
+}
+```
+
+The pins the owner chose for them (Terraform, not here): opus
+`claude-opus-5-5`, fable `claude-fable-5-1`, sonnet `claude-sonnet-5-5`,
+haiku `claude-haiku-5-5`. `admits` has one addition to the design's text: a
+value that is not a string is refused rather than raising `TypeError`, so a
+malformed environment map reaches its reader's own refusal.
+
+**Tests:** `tests/unit/common/test_model_classes.py`: the vocabulary is
+exactly the four; `fable` admits `claude-fable-5-1` and `claude-fable-6` and
+not `claude-opus-5-5`; `sonnet` does not admit `claude-sonnet-4-6` (below the
+floor); `haiku` admits `claude-haiku-5-5-20261001` and not
+`claude-haiku-5-5[1m]`. `scripts/lib/check-contract-parity.sh` section 17
+applies `admits` to Terraform's `runner_models`, and fails on a class with no
+pin, a pin under a name the vocabulary lacks, or a pin its class refuses.
+
+### Rollback
+
+Delete the dict and the class. Requests 101, 102 and 104 depend on it and go
+with it.
+
+### What it would break
+
+Nothing that runs: it is a new name.
+
+### Invariants
+
+**10** is the reason: a closed vocabulary of names, never a model ID. 1 to 9
+are untouched.
+
+
+## 101. `profiles.py`: `RunnerProfile.model_classes`, `default_model_class` and `step_model_class` (MODEL-CONTRACT, model per step request B)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1509, with the decisions
+recorded there and on PR 1460) and APPLIED by the pull request that adds this
+line. Filed by the design (docs/design/model-per-step.md §5 request B),
+applied by lane MODEL-CONTRACT, part of #1435. The design wrote "85 to 89 at
+this reading"; 100 to 104 are the next free numbers on main at a989111, and
+the design's §5 letter is the stable name.
+
+**Changed from the design.** The two fields come LAST in `RunnerProfile`, after
+`control_plane` (request 93), not after `secret_slots`: request 93 had added a
+field there since the design was written, and the end of the class is where
+no positional construction can change meaning (the reason `Attempt`'s
+additions give). `model_classes` naming a class twice is also refused.
+
+### Why
+
+Each profile must say which classes it accepts and which one a step gets when
+it names none, so that swarm-api, the scheduler and the worker resolve a
+step's class by one rule rather than three. Owner's Q3: every
+claude-code-family profile accepts all four classes; R3: a step naming no
+class runs its profile's default, opus.
+
+### The change
+
+```python
+# RunnerProfile, last:
+    model_classes: tuple[str, ...] = ()
+    default_model_class: str | None = None
+
+def step_model_class(profile: RunnerProfile, requested: str | None) -> str | None:
+    """`requested` if the profile accepts it, the profile's default if None,
+    None for a profile with no classes; ValueError naming the accepted classes
+    otherwise."""
+```
+
+`__post_init__` refuses: a name outside `MODEL_CLASSES`; a name listed twice;
+a default outside the profile's own `model_classes`; classes without a
+default, or a default without classes; and classes on a `worker_action`
+profile or on a profile whose `provider` is not `anthropic`. `claude-code`,
+`claude-code-browser` and `indexer` set
+`model_classes=("opus", "fable", "sonnet", "haiku"), default_model_class="opus"`.
+`claude-code-review` (retired under request 50, request 84 (b)) sets
+`("opus",)` and `"opus"`: it keeps the pin it has today and gains nothing.
+`codex`, `mock`, `generic`, `browser`, `merge`, `post-verdict` and
+`await-input` set neither. `step_model_class` refuses a name outside the
+vocabulary, any name on a profile with no classes, and a name the profile
+does not accept, each with its own message, so swarm-api can answer
+`unknown_model_class` and `model_class_not_accepted` from them.
+
+The Terraform mirror (`runner_profiles` in terraform/infra/locals.tf) gains
+both fields in the same change. The Jobs' `MODEL` and the scheduler's
+`WORKER_MODELS` read each profile's default class from it.
+
+**Tests:** `tests/unit/common/test_model_classes.py`: a `merge` profile with
+classes raises; codex and mock with classes raise; a default outside the
+list, classes without a default and a default without classes raise; every
+available profile whose `runner_argv` is the claude_code runner has all four
+classes and `opus`; `step_model_class` returns `opus` for None on
+`claude-code` and `haiku` for `haiku`, and raises for `haiku` on
+`claude-code-review` and for anything on `codex`.
+`tests/terraform/catalogue.tftest.hcl` (`the_mirror_carries_each_profiles_model_classes`)
+holds the mirror's values, and `check-contract-parity.sh` section 17 compares
+the mirror to the imported catalogue, profile by profile.
+
+### Rollback
+
+Delete the two fields and the function, with the mirror's two fields.
+Request 102's fields would have no rule to resolve against, so 102 goes with
+it.
+
+### What it would break
+
+Nothing that runs: two fields with defaults. The mirror and its tests change
+with it, in this change.
+
+### Invariants
+
+**10**: the classes are catalogue data, and a request names one of them.
+**6, 7**: the profiles' backend, Spot strategy and resources are untouched.
+1 to 5, 8 and 9 are untouched.
+
+
+## 102. `models.py`: `Task.model_class` and `WorkflowStep.model_class` (MODEL-CONTRACT, model per step request C)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1509, with the decisions
+recorded there and on PR 1460) and APPLIED by the pull request that adds this
+line. Filed by the design (docs/design/model-per-step.md §5 request C),
+applied by lane MODEL-CONTRACT, part of #1435. The design wrote "85 to 89 at
+this reading"; 100 to 104 are the next free numbers on main at a989111, and
+the design's §5 letter is the stable name.
+
+**Changed from the design.** Both fields come LAST in their classes, not after
+`Task.model` and `WorkflowStep.resource_class`, for the reason request 101
+gives: a field inserted mid-class moves every positional argument after it.
+
+### Why
+
+The class a step asked for is a fact about the task. It must survive retries,
+be signed, and be read by the scheduler at dispatch and by the worker at
+start. `Task.model` cannot carry it: that is an ID, a record of a pin at
+submission.
+
+### The change
+
+```python
+# Task, last:
+    model_class: str | None = None   # None: the profile's default_model_class
+
+# WorkflowStep, last:
+    model_class: str | None = None
+```
+
+swarm-api writes `Task.model_class` at submission only when it differs from
+the profile's default (MODEL-API); it is signed at spec format 5 (request
+104) and resolved by `profiles.step_model_class`.
+
+**Tests:** `tests/unit/common/test_model_classes.py`: a task names no class by
+default and its stored document carries `model_class: None`; a task's class
+reaches `to_firestore()`; a workflow step keeps the class it names. The codec
+round trip the design names (`swarm_api.codec.task_from_dict` reading
+`model_class` back, request 54's precedent) is MODEL-API's: the codec is in
+its territory, not this lane's.
+
+### Rollback
+
+Delete both fields. A stored value is then ignored and every step runs its
+profile's default. Request 104's format 5 must go first, or a format-5 task
+would fail verification on a worker whose `Task` lacked the field.
+
+### What it would break
+
+Nothing that decodes today: two optional fields with defaults.
+`tests/unit/common/test_specsign_covers.py::test_every_task_field_is_signed_or_named_unsigned`
+sees the new field inside the format-5 projection, as it must.
+
+### Invariants
+
+**1 to 3**: a field, not a pool, so admission is unchanged. **5**: signed,
+and fixed across attempts. **8**: a checkpoint never crosses a class.
+**10**: a name from the frozen vocabulary.
+
+
+## 103. `models.py`: `Attempt.model`, the model ID an attempt's agent was started with (MODEL-CONTRACT, model per step request D)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1509, with the decisions
+recorded there and on PR 1460) and APPLIED by the pull request that adds this
+line. Filed by the design (docs/design/model-per-step.md §5 request D),
+applied by lane MODEL-CONTRACT, part of #1435. The design wrote "85 to 89 at
+this reading"; 100 to 104 are the next free numbers on main at a989111, and
+the design's §5 letter is the stable name.
+
+### Why
+
+"What did this attempt run" must be a fact about the attempt. Neither
+`runner_profile` nor `model_class` answers it once a pin changes.
+`control.record_spend` writes only fields the frozen `Attempt` declares, so
+the worker cannot add it alone.
+
+### The change
+
+```python
+# Attempt, last:
+    model: str | None = None
+```
+
+Written by the worker at attempt start after its generation check
+(MODEL-WORKER). None: no model (mock, generic, browser, worker actions), or
+an attempt written before the field existed.
+
+**Tests:** `tests/unit/common/test_model_classes.py`: an attempt records no
+model by default and carries one it is given. The `attempt_from_dict` to
+`attempt_to_api` round trip the design names is MODEL-API's (`swarm_api.codec`).
+
+### Rollback
+
+Delete the field. Readers fall back to the runner summary's `usage.models`.
+
+### What it would break
+
+Nothing: an optional field with a default.
+
+### Invariants
+
+**5**: written after the fencing check, so a stale worker never writes it. 1
+to 4 and 6 to 10 are untouched.
+
+
+## 104. `specsign.py`: spec format 5 covers `model_class` (MODEL-CONTRACT, model per step request E)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1509, with the decisions
+recorded there and on PR 1460) and APPLIED by the pull request that adds this
+line. Filed by the design (docs/design/model-per-step.md §5 request E),
+applied by lane MODEL-CONTRACT, part of #1435. The design wrote "85 to 89 at
+this reading"; 100 to 104 are the next free numbers on main at a989111, and
+the design's §5 letter is the stable name.
+
+**Changed from the design.** The design named this format 4. Request 96
+(MR-CONTRACT) took format 4 for `additional_repositories` before this lane
+ran, so `model_class` is format 5: format 4's projection plus `model_class`.
+The design's rollback named an API gate (`model_classes_enabled`); the owner
+dropped every enablement flag (R4, 2026-10-17), so no such gate exists and
+lane order alone keeps format 5 unwritten until the worker that verifies it
+has shipped (MODEL-WORKER before MODEL-API).
+
+### Why
+
+The worker acts on the class, and the scheduler dispatches by it. A field the
+worker acts on must be inside the signature (request 34's rule,
+`tests/unit/common/test_specsign_covers.py`). Without it, anyone who can write
+the tenant's task document could move a step to another class, and the step
+would run on a model nobody submitted under a signature that still verifies.
+
+### The change
+
+```python
+SPEC_FORMAT = 5
+SPEC_FORMATS = (1, 2, 3, 4, 5)
+_FORMAT_5_FIELDS = ("model_class",)
+```
+
+`signing_format` returns 5 when `model_class` is set (non-None), and otherwise
+falls through to its existing rule. `canonical_step_spec` refuses
+(`SpecNotCanonical`) a document at formats 1 to 4 that sets `model_class`,
+and includes the field in the projection at format 5.
+
+**Tests:** `tests/unit/common/test_specsign.py`: a format-5 document has the
+pinned bytes and verifies; rewriting its `model_class` (or removing it)
+changes the digest; a document at formats 1 to 4 with `model_class` added is
+`SpecNotCanonical`; a task with no class (absent or None) signs at the format
+it signed at before, with the SHA-256 of formats 1 to 4 pinned as computed
+before this change (at a989111).
+
+### Rollback
+
+Stop writing format 5 (swarm-api stores no non-default class), then remove
+the format once no stored task carries it. A worker that loses format 5 while
+such a task is queued refuses it as `unknown_format`, failing closed.
+
+### What it would break
+
+Nothing for a task without a class: its format and bytes are unchanged, and
+nothing sets `model_class` until MODEL-API. A worker built before format 5
+refuses a format-5 task; the design's §4.3 order (worker first, then the API)
+is what retires those workers before anything writes one. Tests that pinned
+`SPEC_FORMAT == 4` or listed one document per format change with it.
+
+### Invariants
+
+**5**: the class is fixed with the attempt's other signed fields. **10**: the
+signature is what makes the caller's named class the only one that can run.
+1 to 4 and 6 to 9 are untouched.

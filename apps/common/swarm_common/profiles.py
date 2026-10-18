@@ -103,6 +103,42 @@ RESOURCE_CLASSES: dict[str, ResourceClass] = {
 }
 
 
+@dataclass(frozen=True)
+class ModelClass:
+    """A model family a step may name (contract request 100, #1435).
+
+    The ID it stands for is Terraform's (`runner_models`, keyed by class),
+    held to the class by `admits` at the scheduler's and swarm-api's start.
+    A caller names the class, never the ID (invariant 10)."""
+
+    name: str
+    #: The family word in a model ID: claude-<family>-<major>[-<minor>].
+    family: str
+    #: The oldest generation a pin of this class may name.
+    min_major: int
+
+    def admits(self, model_id: str) -> bool:
+        if not isinstance(model_id, str):
+            return False
+        m = re.fullmatch(
+            rf"claude-{re.escape(self.family)}-(\d+)(?:-\d+)?(?:-\d{{8}})?", model_id
+        )
+        return m is not None and int(m.group(1)) >= self.min_major
+
+
+#: The classes a step may name. `opus` is the default of every classed
+#: profile: coding and implementation. `fable` is for planning ("Fable 5+"),
+#: `sonnet` and `haiku` for mechanical steps. Owner decision 2026-10-17. The
+#: floor is generation 5 for all four, since all four pins are generation-5
+#: models: a re-pin to an older generation fails at start instead of shipping.
+MODEL_CLASSES: dict[str, ModelClass] = {
+    "opus": ModelClass("opus", "opus", 5),
+    "fable": ModelClass("fable", "fable", 5),
+    "sonnet": ModelClass("sonnet", "sonnet", 5),
+    "haiku": ModelClass("haiku", "haiku", 5),
+}
+
+
 # ---------------------------------------------------------------------------
 # The inputs a caller may send a runner (contract request 25)
 # ---------------------------------------------------------------------------
@@ -904,6 +940,13 @@ class RunnerProfile:
     #: `profiles_without_a_job`). Contract request 93 (HW-CONTRACT, human
     #: steps request B), accepted by the owner 2026-10-17.
     control_plane: bool = False
+    #: Contract request 101 (#1435): the MODEL_CLASSES names a step on this
+    #: profile may ask for, and the one it runs when it asks for none. Both
+    #: empty on a profile that runs no Claude model. The IDs are
+    #: `runner_models` in terraform/infra/locals.tf. Last in the class, so no
+    #: positional construction of a profile changes meaning.
+    model_classes: tuple[str, ...] = ()
+    default_model_class: str | None = None
 
     def __post_init__(self) -> None:
         if self.control_plane:
@@ -1010,6 +1053,44 @@ class RunnerProfile:
             raise ValueError(
                 f"runner {self.name}: Spot is disabled platform-wide; Spot Pods cannot "
                 "use extended run time and would violate the no-preemption requirement"
+            )
+        self._check_model_classes()
+
+    def _check_model_classes(self) -> None:
+        """Contract request 101: a profile's classes mean something only where a
+        Claude model runs, and must agree with their own default."""
+        if not self.model_classes and self.default_model_class is None:
+            return
+        if not self.model_classes or self.default_model_class is None:
+            raise ValueError(
+                f"runner {self.name}: model_classes and default_model_class are set "
+                "together or not at all (contract request 101)"
+            )
+        if self.worker_action is not None:
+            raise ValueError(
+                f"runner {self.name}: a worker_action profile starts no model, so it "
+                "names no model class (contract request 101)"
+            )
+        if self.provider != "anthropic":
+            raise ValueError(
+                f"runner {self.name}: model classes name Claude models, so only an "
+                f"anthropic profile has them, not {self.provider!r} (contract request 101)"
+            )
+        for name in self.model_classes:
+            if name not in MODEL_CLASSES:
+                raise ValueError(
+                    f"runner {self.name}: model class {name!r} is not one of "
+                    f"MODEL_CLASSES {tuple(MODEL_CLASSES)} (contract request 101)"
+                )
+        if len(set(self.model_classes)) != len(self.model_classes):
+            raise ValueError(
+                f"runner {self.name}: model_classes names a class twice (contract request 101)"
+            )
+        if self.default_model_class not in self.model_classes:
+            raise ValueError(
+                f"runner {self.name}: default_model_class {self.default_model_class!r} "
+                f"is not one of its own model_classes {self.model_classes} (contract "
+                "request 101)"
             )
 
 
@@ -1384,6 +1465,12 @@ _DISABLED_UNTIL_342 = (
 )
 
 
+#: Contract request 101 (owner's Q3, 2026-10-17): the classes the three
+#: claude-code-family profiles accept -- claude-code, indexer and
+#: claude-code-browser run one CLI, pinned once in the base image, so an ID
+#: accepted on one is accepted on all three. Every class, in vocabulary order.
+_CLAUDE_CODE_MODEL_CLASSES: tuple[str, ...] = tuple(MODEL_CLASSES)
+
 RUNNER_PROFILES: dict[str, RunnerProfile] = {
     "mock": RunnerProfile(
         name="mock",
@@ -1427,6 +1514,10 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         timeout_seconds=7200,
         inputs=_CLI_AGENT_MCP_INPUTS,   # contract request 88
         secret_slots={"files": _FILES_SLOT},   # contract request 80
+        # Contract request 101 (owner's Q3, 2026-10-17): every class, opus by
+        # default (R3: a step naming no class runs opus).
+        model_classes=_CLAUDE_CODE_MODEL_CLASSES,
+        default_model_class="opus",
     ),
     "codex": RunnerProfile(
         name="codex",
@@ -1570,6 +1661,10 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         available=False,
         disabled_reason=_DISABLED_UNTIL_342,
         secret_slots={"files": _FILES_SLOT},   # contract request 80
+        # Contract request 101: retired under request 50 (request 84 (b)), so
+        # it keeps the pin it has today and gains no class.
+        model_classes=("opus",),
+        default_model_class="opus",
     ),
     # CONTRACT REQUEST 48, accepted by the owner 2026-10-05 (#625): claude-code
     # on agent-runtime-indexer, the image that carries the repository index's
@@ -1595,6 +1690,9 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         timeout_seconds=7200,
         inputs=_CLI_AGENT_INPUTS,
         secret_slots={"files": _FILES_SLOT},   # contract request 80
+        # Contract request 101 (owner's Q3): claude-code's classes and default.
+        model_classes=_CLAUDE_CODE_MODEL_CLASSES,
+        default_model_class="opus",
     ),
     # CONTRACT REQUEST 67, accepted by the owner 2026-10-11: claude-code on
     # agent-runtime-browser (Playwright + Chromium), so an agent can render
@@ -1622,6 +1720,9 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         # Contract request 71 (LB-D): the one live-browser profile.
         live_browser=True,
         secret_slots={"files": _FILES_SLOT},   # contract request 80
+        # Contract request 101 (owner's Q3): claude-code's classes and default.
+        model_classes=_CLAUDE_CODE_MODEL_CLASSES,
+        default_model_class="opus",
     ),
     # CONTRACT REQUEST 94, accepted by the owner 2026-10-17 (HW-CONTRACT,
     # docs/design/human-steps.md §5 request C): a workflow step that waits for
@@ -1782,6 +1883,33 @@ def is_secret_consumer(consumer: str) -> bool:
         # `mcp:judge` would fall through to PLATFORM_COMPONENTS below.
         return False
     return name in PLATFORM_COMPONENTS
+
+
+def step_model_class(profile: RunnerProfile, requested: str | None) -> str | None:
+    """The class a step on `profile` runs: `requested` if the profile accepts
+    it, the profile's default if None, None for a profile with no classes.
+    Raises ValueError naming the accepted classes otherwise.
+
+    Contract request 101 (#1435): the ONE statement of the resolution rule
+    swarm-api (at submission), the scheduler (at dispatch) and the worker (at
+    start) all apply, so the three can never resolve a step differently.
+    """
+    if requested is None:
+        return profile.default_model_class
+    if requested not in MODEL_CLASSES:
+        raise ValueError(
+            f"model class {requested!r} is not one of MODEL_CLASSES {tuple(MODEL_CLASSES)}"
+        )
+    if not profile.model_classes:
+        raise ValueError(
+            f"runner {profile.name} runs no model class, so a step on it names none"
+        )
+    if requested not in profile.model_classes:
+        raise ValueError(
+            f"runner {profile.name} does not accept model class {requested!r}; it "
+            f"accepts {profile.model_classes}"
+        )
+    return requested
 
 
 def resolve_backend(profile: RunnerProfile) -> Backend:

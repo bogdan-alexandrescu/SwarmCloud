@@ -133,7 +133,7 @@ run "each_model_class_is_pinned_to_an_id_of_its_own_family" {
   }
 
   assert {
-    condition     = sort(keys(local.runner_models)) == ["fable", "haiku", "opus", "sonnet"]
+    condition     = sort(keys(local.runner_models)) == tolist(["fable", "haiku", "opus", "sonnet"])
     error_message = "local.runner_models must be keyed by exactly the four model classes of swarm_common.profiles.MODEL_CLASSES (opus, fable, sonnet, haiku)"
   }
 
