@@ -360,13 +360,14 @@ def cancel_task(
     # A task cancelled between attempts has already spent: the response
     # carries every attempt's totals, as `get_task` does (P1 follow-up).
     totals = totals_for(ctx.db, tenant_id, [task.id])
+    served = with_totals(
+        task_to_api(task, account=accounts.get(task.id), console_url=ctx.settings.console_url),
+        totals,
+    )
+    # `submitted_by_name` beside `submitted_by`, as `get_task` serves it.
+    add_names(name_lookup(ctx), [served], ("submitted_by",))
     return {
-        "task": with_totals(
-            task_to_api(
-                task, account=accounts.get(task.id), console_url=ctx.settings.console_url
-            ),
-            totals,
-        ),
+        "task": served,
         # A task holding capacity stays in its state until the worker or the
         # reconciler releases the lease; decrementing the pool from here would
         # free a slot that a live container still occupies.
