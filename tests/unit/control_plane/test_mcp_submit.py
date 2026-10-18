@@ -708,3 +708,18 @@ def test_no_dump_of_a_request_carries_a_credential():
     for model in (task, flow):
         assert value not in json.dumps(model.model_dump(mode="json"))
         assert value not in model.model_dump_json() and value not in repr(model)
+
+
+def test_the_service_reads_the_modes_a_schedule_is_checked_against(client, db):
+    """`SubmissionService.mcp_auth_modes`: the tenant's enabled registrations
+    only, by name, so the schedule routes can pass `mcp_modes` in one call."""
+    registered(db)
+    registered(db, "plain", mode="none")
+    registered(db, "off", enabled=False)
+    registered(db, "theirs", tenant_id="research")
+    modes = client.app.state.ctx.submissions.mcp_auth_modes("eng")
+    assert modes == {"kb": "dispatch", "plain": "none"}
+    with pytest.raises(ValidationFailed) as caught:
+        _build(_schedule_body(["plain", "kb"]), modes)
+    assert caught.value.code == "mcp_credential_missing"
+    assert caught.value.detail["servers"] == ["kb"]

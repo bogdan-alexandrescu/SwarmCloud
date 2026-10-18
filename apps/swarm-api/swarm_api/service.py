@@ -83,6 +83,7 @@ from .mcp_credentials import (
 )
 from .mcp_servers import (
     McpUnavailable,
+    enabled_names,
     profile_allowed,
     read_registration,
     require_enabled as require_mcp_enabled,
@@ -723,6 +724,20 @@ class SubmissionService:
         if inherited is not None:
             available |= self._inherited_mcp_credentials(tenant_id, names, inherited, keys)
         refuse_missing_mcp_credentials(names, modes, available, step_id=step_id)
+        return modes
+
+    def mcp_auth_modes(self, tenant_id: str) -> dict[str, Any]:
+        """The tenant's enabled MCP registrations by name, each its auth mode:
+        what `schedules.build_schedule` and `apply_edit` take as `mcp_modes`,
+        so a schedule naming a `dispatch` server is refused when it is saved."""
+        db = getattr(self._store, "db", None)
+        if db is None:
+            return {}
+        modes: dict[str, Any] = {}
+        for name in enabled_names(db, tenant_id):
+            registration = read_registration(db, tenant_id, name)
+            if registration is not None and registration.get("enabled") is True:
+                modes[name] = (registration.get("auth") or {}).get("mode")
         return modes
 
     @staticmethod
