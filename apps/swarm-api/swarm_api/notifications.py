@@ -28,6 +28,16 @@ tenant's (any member may decide one by default), narrowed to those this person
 may decide. The admin sources read across tenants and run for admins only.
 The person's own workspace is theirs whichever tenant they act in.
 
+AN AWAIT-INPUT STEP RINGS ITS `remind` LIST, IN ITS TENANT
+(docs/design/human-steps.md §4.5, Q7, lane HW-NOTIFY). Any member may answer
+a waiting step (Q2), but only the readers its author named are rung: every
+member rung for every review is noise that teaches people to ignore the bell,
+and the rest see the wait in the inbox (`approvals.project_input`) and on the
+workflow. The step is read under the tenant the caller acts in, so an address
+named from outside it rings nobody. The id carries the reminder period,
+`task:input:<task>:<k>`, `k = floor((now - opened_at) / remind_after_seconds)`,
+so each period derives a new, unread item and nothing is written to make it.
+
 A SOURCE THAT FAILS FAILS ALONE. Each source is a small function of a
 `Reading`; `Notifications.feed` runs them one by one, logs a failure by the
 source's name and the exception's type, and serves the rest with
@@ -378,6 +388,51 @@ def handoffs(reading: Reading) -> list[dict[str, Any]]:
     return items
 
 
+#: The bell's title for a waiting step, by its declared form (§4.1).
+_INPUT_TITLES = {
+    "verdict": "A workflow is waiting for a review",
+    "answers": "A workflow is waiting for answers to its questions",
+    "text": "A workflow is waiting for a written answer",
+}
+
+
+def _reminder(task: Any, block: Mapping[str, Any], now: datetime) -> tuple[int, datetime | None]:
+    """`k`, the whole `remind_after_seconds` periods since the wait opened (0
+    with none declared), and the moment period `k` began: the item's `at`."""
+    opened = approvals.input_opened_at(task)
+    period = block.get("remind_after_seconds")
+    if opened is None or isinstance(period, bool) or not isinstance(period, int) or period <= 0:
+        return 0, opened
+    k = max(0, int((now - opened).total_seconds() // period))
+    return k, opened + timedelta(seconds=k * period)
+
+
+def awaiting_input(reading: Reading) -> list[dict[str, Any]]:
+    """Workflow steps of the caller's tenant PARKED `AWAITING_INPUT` whose
+    `remind` list names the caller (§4.5): one item per step and reminder
+    period, linked to the workflow, where the step's card takes the answer.
+    A personal workspace's member reads only the steps they submitted, as
+    `handoffs` does. Answered, expired or cancelled: nothing is derived."""
+    scope = reading.viewer.email if reading.viewer.member_scope else None
+    items = []
+    for task in approvals.awaiting_input(reading.store, reading.viewer.tenant_id, reading.now,
+                                         limit=SCAN, submitted_by=scope):
+        block = approvals.await_input_declaration(task)
+        remind = block.get("remind", [task.submitted_by])
+        if not isinstance(remind, list) \
+                or reading.email not in {str(a or "").strip().lower() for a in remind}:
+            continue
+        k, at = _reminder(task, block, reading.now)
+        workflow = str(task.workflow_id or "")
+        items.append(_item(
+            f"task:input:{task.id}:{k}", TASK, True,
+            _INPUT_TITLES.get(str(block.get("form")), "A workflow is waiting for an answer"),
+            f"Step {task.step_id or task.id} · Workflow {workflow}",
+            f"/workflows/{quote(workflow, safe='')}" if workflow else "/workflows",
+            at or task.updated_at))
+    return items
+
+
 def _question_count(task: Any) -> int:
     count = (task.result_summary or {}).get("questions")
     return count if isinstance(count, int) and not isinstance(count, bool) else 0
@@ -554,6 +609,7 @@ SOURCES: tuple[tuple[str, Source], ...] = (
     ("admin", admin_requests),
     ("approvals", approval_items),
     ("handoffs", handoffs),
+    ("awaiting_input", awaiting_input),
     ("questions", agent_questions),
     ("github", github_items),
     ("workspace", workspace_items),
