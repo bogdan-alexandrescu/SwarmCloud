@@ -58,7 +58,6 @@ from worker_seeds import TENANT, seed_attempt
 from test_forge_credential import (
     GITHUB_URL,
     PERSON,
-    _agent_starts,
     _clone_from,
     _seed_user_task,
     seed_grant,

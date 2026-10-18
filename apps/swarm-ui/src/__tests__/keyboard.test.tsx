@@ -508,7 +508,13 @@ describe('keyboard traversal', () => {
     expect([...unsupported]).toEqual([])
     expect(swallowers).toEqual([])
     expect(findings.map((f) => `${f.kind} ${f.where} — ${f.detail}`)).toEqual([])
-  }, 240000)
+    // 480 s, not 240: measured 2026-10-18, this sweep took 152 s alone and
+    // 181 s inside a local `--shard=4/4`. On the CI runner of #1070's run
+    // 39170215254 that shard did 951 s of test time against 582 s locally, and
+    // the sweep crossed 240 s. A timeout leaves its render mounted, so the
+    // drawer test below then reads "rendered no rows". That is a second red
+    // from the same cause, and lowering this limit reproduces it exactly.
+  }, 480000)
 
   /**
    * THE DRAWER, WHICH IS THE ONE THAT MATTERS MOST.

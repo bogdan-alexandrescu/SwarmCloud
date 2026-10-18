@@ -51,6 +51,7 @@ from swarm_api import forgeapp, gittokens, repositories
 from swarm_common.states import EventType, TaskState
 
 from fakes import FakeSecretClient
+from test_forge_broker_client import API, NONCE, FakeBrokerRoutes
 from worker_seeds import TENANT, seed_attempt
 from test_strategy_end_to_end import (  # noqa: F401 -- fixtures
     local_urls,
@@ -288,10 +289,14 @@ def test_a_standing_grant_reaches_the_clone_and_the_agent_sees_the_checkout(
     web, web_shas = make_bare(tmp_path, "web")
     seen = redirect_clones(monkeypatch, {"web": web})
     token = "ghu_" + secrets.token_hex(18)
-    client = FakeSecretClient({f"swarm-tenant-{TENANT}-{user_slot()}": token})
+    # A `git-u-` slot is never read from Secret Manager (#1041): the worker
+    # asks swarm-api's broker, signed with its attempt key, and `accessed`
+    # lists the slots the broker released.
+    client = FakeBrokerRoutes({f"swarm-tenant-{TENANT}-{user_slot()}": token})
     _seed_task(db, [entry("web", web_shas[0], forge_credential=user_slot())])
     _seed_grant(db, "web")
-    worker, _, _ = worker_factory(secret_client=client, cache_root=tmp_path / "cache")
+    worker, _, _ = worker_factory(cache_root=tmp_path / "cache", child_api=client,
+                                  child_nonce=NONCE, swarm_api_url=API)
     started = _agent_starts(worker, monkeypatch)
 
     assert worker.run() == 0

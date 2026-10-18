@@ -4725,9 +4725,16 @@ class Worker:
 
     def _additional_git_token(self, entry: dict[str, Any]) -> str | None:
         """This entry's forge token, read now, or None: `_git_token`'s path for
-        the entry's own slot. Never cached, never put in an environment."""
+        the entry's own slot. Never cached, never put in an environment.
+
+        A person's slot comes from swarm-api's broker exactly as the primary
+        clone's does (#1041): without `broker` it was refused as unconfigured
+        and the entry cloned unauthenticated."""
         refusal = self._git_token_refusal()
-        if refusal or self.secret_client is None:
+        if refusal:
+            return None
+        suffix = self._additional_suffix(entry)
+        if self.secret_client is None and user_slot_hash(suffix) is None:
             return None
         try:
             tenant = load_tenant(
@@ -4735,7 +4742,7 @@ class Worker:
             )
             return resolve_git_token(
                 tenant=tenant, client=self.secret_client, logger=self.log,
-                provider=self._additional_suffix(entry),
+                provider=suffix, broker=self.forge_broker,
             )
         except SecretError as exc:
             self.log.warning(
