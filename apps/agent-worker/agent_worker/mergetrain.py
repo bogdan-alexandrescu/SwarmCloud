@@ -156,3 +156,73 @@ class FirestoreTrainEntries:
             return entry
 
         return self._run(body)
+
+
+#: swarm-api's refusal of an entry document that names another tenant
+#: (`swarm_api.attemptstate.StateConflict`).
+STATE_CONFLICT = "state_conflict"
+
+
+class RemoteTrainEntries:
+    """The step's entry over swarm-api's `POST state/merge-train`, for a
+    tenant switched to the state routes (docs/design/tenant-settings-integrity.md
+    §4.2, lane ISO-WORKER-READS). No Firestore call is made.
+
+    swarm-api derives the entry's id from THIS attempt's tenant and task
+    (`entry_id_for`), its repository from the task's SIGNED `repository_url`,
+    and runs `register_entry` in a transaction fenced on this attempt
+    (invariant 5: a 409 is `FencedWriteRefused`, nothing written). So the only
+    entry this store can read or write is the step's own; any other task id
+    is refused here before a call is made. `state` is the attempt's
+    `statecall.StateCall`.
+    """
+
+    def __init__(self, state: Any, *, tenant_id: str, task_id: str,
+                 deadline_seconds: float = 30.0) -> None:
+        self._state = state
+        self.tenant_id = tenant_id
+        self._task_id = task_id
+        #: `indexrun.STATE_CALL_SECONDS`: the 30 s a direct Firestore call retries for.
+        self._deadline = deadline_seconds
+
+    def _own(self, task_id: str) -> None:
+        if task_id != self._task_id:
+            raise EntryTenantMismatch(
+                "the state routes serve only this step's own merge train entry")
+
+    def _call(self, body: Mapping[str, Any]) -> Mapping[str, Any]:
+        from .statecall import StateRefused  # lazy: statecall -> children -> inputs
+
+        try:
+            return self._state.post("merge-train", dict(body), deadline_seconds=self._deadline)
+        except StateRefused as refused:
+            if refused.code == STATE_CONFLICT:
+                # The document under this step's entry id names another tenant.
+                raise EntryTenantMismatch(str(refused)) from None
+            raise
+
+    def _entry(self, answer: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        entry = answer.get("entry")
+        if entry is None:
+            return None
+        if not isinstance(entry, Mapping) or entry.get("tenant_id") != self.tenant_id:
+            raise EntryTenantMismatch("the state route served a merge train entry of "
+                                      "another tenant")
+        return entry
+
+    def peek(self, task_id: str) -> Mapping[str, Any] | None:
+        """This step's entry as stored, or None."""
+        self._own(task_id)
+        return self._entry(self._call({"op": "peek"}))
+
+    def register(self, fields: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Write or keep this step's entry (`register_entry`, run by swarm-api);
+        returns it. `repository` and `repository_url` are not sent: swarm-api
+        takes both from the signed spec."""
+        self._own(str(fields["task_id"]))
+        body = {"op": "register", **{key: fields[key] for key in
+                                     ("base", "number", "head", "title", "message")}}
+        entry = self._entry(self._call(body))
+        if entry is None:
+            raise EntryTenantMismatch("the state route registered no merge train entry")
+        return entry

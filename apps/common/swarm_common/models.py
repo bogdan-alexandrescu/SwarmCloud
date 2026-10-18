@@ -303,7 +303,12 @@ FORGE_ACCESS = ("write", "read")
 #: RUNNER_PROFILES, `tool:` a key of RUNTIME_TOOLS (request 81), `component:`
 #: one of PLATFORM_COMPONENTS. Never an image, a command or a path
 #: (invariant 10).
-SECRET_CONSUMER_KINDS: tuple[str, ...] = ("profile", "tool", "component")
+#:
+#: Contract request 89 (registered MCP servers, design §5 M2): a fourth
+#: kind, `mcp:`, names a server the tenant registered. Its name is checked
+#: against MCP_SERVER_NAME and the reserved names here; membership in the
+#: tenant's registry is checked by its reader, as for `profile:`.
+SECRET_CONSUMER_KINDS: tuple[str, ...] = ("profile", "tool", "component", "mcp")
 
 #: Platform steps that take a workspace secret themselves, outside any
 #: agent. `judge` reads private/jev-key for TypeSafe judging; `merge` and
@@ -313,14 +318,28 @@ PLATFORM_COMPONENTS: tuple[str, ...] = ("judge", "merge", "indexer", "git")
 
 _CONSUMER_NAME = re.compile(r"[a-z][a-z0-9-]{0,62}")
 
+#: Contract request 90 (registered MCP servers, design §5 M3): the one
+#: spelling of a registered MCP server's name. swarm-api writes it at
+#: registration; the worker makes it a server key in the CLI's MCP config and
+#: a path segment of its relay; the plugin reads it. Anchor with `fullmatch`.
+#: 31 characters is the `mcp_servers` input's item bound (profiles.py).
+MCP_SERVER_NAME = re.compile(r"[a-z][a-z0-9-]{0,30}")
+#: Names the worker registers itself; a registration may not take them, nor
+#: any name starting with RESERVED_MCP_SERVER_PREFIX (`swarm-git`,
+#: `swarm-graph`), so a tenant's server never shadows one of the platform's.
+RESERVED_MCP_SERVER_NAMES: tuple[str, ...] = ("playwright", "jev")
+RESERVED_MCP_SERVER_PREFIX = "swarm-"
+
 
 def consumer_name(kind: str, name: str) -> str:
     """The one spelling of a secret consumer: "<kind>:<name>".
 
     Checks the kind, the name's characters and, for `component`, the closed
-    list. Membership of `profile` and `tool` names is checked against the
+    list, and, for `mcp`, MCP_SERVER_NAME and the reserved names (request
+    90). Membership of `profile` and `tool` names is checked against the
     catalogue by its reader (`profiles.py` imports this module, not the
-    reverse, so this function cannot see RUNNER_PROFILES). A consumer
+    reverse, so this function cannot see RUNNER_PROFILES), and of `mcp`
+    names against the tenant's registry by swarm-api. A consumer
     name holds only `[a-z0-9-]` and one `:`, so it is safe in a Firestore
     id and a URL segment without escaping."""
     if kind not in SECRET_CONSUMER_KINDS:
@@ -329,6 +348,12 @@ def consumer_name(kind: str, name: str) -> str:
         raise ValueError(f"secret consumer name {name!r} is not [a-z0-9-]")
     if kind == "component" and name not in PLATFORM_COMPONENTS:
         raise ValueError(f"unknown platform component {name!r}")
+    if kind == "mcp" and (
+        not MCP_SERVER_NAME.fullmatch(name)
+        or name in RESERVED_MCP_SERVER_NAMES
+        or name.startswith(RESERVED_MCP_SERVER_PREFIX)
+    ):
+        raise ValueError(f"{name!r} is not a registrable MCP server name")
     return f"{kind}:{name}"
 
 
