@@ -307,11 +307,15 @@ def test_mine_lists_exactly_the_verified_memberships_in_admin_order(client):
 
     eng = {"tenant_id": "eng", "display_name": ENG_GROUP, "kind": "group"}
     research = {"tenant_id": "research", "display_name": RESEARCH_GROUP, "kind": "group"}
-    assert mine("dave") == [eng, research]
-    assert mine("alice") == [eng]
-    assert mine("bob") == [research]
+    # The first entry is the default and says why (docs/design/user-profile.md
+    # §4.5): with no stored default and no ready workspace, the first group.
+    first = {"is_default": True, "default_source": "first_group"}
+    other = {"is_default": False}
+    assert mine("dave") == [eng | first, research | other]
+    assert mine("alice") == [eng | first]
+    assert mine("bob") == [research | first]
     # The admin group is not a tenant group, so it is never listed.
-    assert mine("root") == [eng]
+    assert mine("root") == [eng | first]
     # No group and no ready personal workspace (test_tenant_self.py has the
     # ready one): the list is empty, not an error.
     assert mine("carol") == []

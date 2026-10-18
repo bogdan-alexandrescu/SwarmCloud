@@ -193,6 +193,60 @@ a group must send the header: the console and the plugin do once a tenant is
 picked; CI, smoke and acceptance call as service accounts, which keep the
 group default.
 
+**A default you chose comes before that rule** (docs/design/user-profile.md
+§4.5). A person picks a default workspace on Settings › Profile; it is stored
+in their own `user_preferences` document, whose id is an HMAC of their email
+under `swarm-child-key`, so no tenant agent can plant one. In authentication,
+after the personal workspace is placed, `Authenticator._with_default` reads
+that document (through a 15-second per-instance cache, `Preferences.cached`)
+and, **when the stored default is one of your choices**, moves it to the
+front. Choices are what it chooses from, exactly as the header does: the
+preference selects and never grants. A group you have left is ignored
+(`default_ignored: "not_a_member"`), and so is your own workspace while it is
+not ready (`"not_ready"`); the stored value is kept, and applies again when it
+is a choice again. `_select_tenant` is unchanged, so **every explicit choice
+still wins**: the console's switch, `SWARM_TENANT` or the plugin's tenant
+option, and `--tenant` all send the header. `GET /v1/tenants/mine` keeps
+listing exactly `tenant_choices`, so its first entry is still the tenant a
+headerless request acts in; that entry carries `is_default: true` and
+`default_source` — `profile`, `personal`, `first_group` or `unavailable` —
+and every other entry `is_default: false`. A service identity, the schedule
+tick, the rollup sweeper and a listed service account never read preferences.
+The document also names you: `AuthContext.display_name`, the name your
+agent's commits carry, is the stored name when you set one, else your token's
+`name` claim, else your email's local part (Q11).
+
+**If your preferences cannot be read, a request that names no workspace is a
+`503 preferences_unavailable`** (Q9), raised before the route body runs, so
+nothing is submitted or read. Its message says how to name a workspace: the
+console's switcher, `SWARM_TENANT` or the `/sc` plugin's tenant option, or
+`--tenant`. It never falls back to the computed default, for the same reason
+a failed personal-workspace read does not: you may have moved your default
+away from it, and the fallback would file your work in a workspace you did
+not choose — another secret, another GCS prefix. A request that names its
+workspace does not need the default and is served as before. Three routes act
+in no workspace and are served anyway, with `default_source: "unavailable"`
+and today's order: `GET /v1/tenants/me`, `GET /v1/tenants/mine` and
+`GET /v1/profile`, the closed list `auth.PREFERENCE_FREE_ROUTES`. They are
+what a person needs to see their choices and pick one; the bell
+(`GET /v1/notifications`) is not among them, because its items belong to a
+workspace. The check is `auth.require_known_default`, made in the per-route
+gate every authenticated request reaches (`require_continuation_route`).
+
+The stored default applies where the API's authenticator is built with the
+preferences store (`Authenticator(..., preferences=...)`); an authenticator
+built without one reads nothing and keeps the rule above, exactly as before
+the profile. **The deployed API does not pass it yet**:
+`deps.build_context` builds its `Authenticator` without `preferences=`, so in
+every deployed process a headerless request still acts in the group or
+personal default, `AuthContext.preferences` is `None`, the stored display name
+does not name commits and the 503 above never fires. Wiring it is the
+one-line `preferences=build_preferences(db, settings)` in `deps.py`, a file
+no lane of docs/design/user-profile.md §6 holds; it waits on the owner's
+go-ahead, and on a decision about an environment with no `swarm-child-key`,
+where `Preferences.read_many` raises `PreferencesUnavailable` and every
+headerless request from a person would become that 503.
+
 Anything else — another group's tenant, **another person's `u-` tenant**, your
 own `u-` tenant before its workspace is ready, a tenant that does not exist, an
 admin group, a near miss in case or spacing — is a `403` with code
