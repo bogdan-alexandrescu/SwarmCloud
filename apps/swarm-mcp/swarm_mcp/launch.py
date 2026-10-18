@@ -128,12 +128,13 @@ DESCRIPTION_OPEN = "  description: '"
 DESCRIPTION_CHARS = 300
 
 #: The DEFAULT cap on `{attach: "all"}`, and run.js's (MAX_ATTACHED_WORKFLOWS):
-#: 30 since SC-ROWS (owner request 2026-10-14: "increase live rows to 30"),
-#: 10 before. Every unfinished step is a live row, an agent of its own in the
-#: session, so it stays a cap: the plugin's `max_live_rows` option moves it
-#: within 1..50 (`config.max_live_rows`, read per launch by `max_live_rows()`
-#: below). The rest are listed in `not_followed` with the call that attaches
-#: each.
+#: 100 since BOARD-ORDER (owner 2026-10-16, #1437: "rows for every launch"),
+#: 30 since SC-ROWS, 10 before. Every unfinished step is a live row, an agent
+#: of its own in the session, so it stays a cap: the plugin's `max_live_rows`
+#: option moves it within 1..200 (`config.max_live_rows`, read per launch by
+#: `max_live_rows()` below). The ones a cap leaves out are the ones furthest
+#: from finishing (`board.order`), listed in `not_followed` with the call
+#: that attaches each.
 MAX_ATTACHED_WORKFLOWS = config.DEFAULT_MAX_LIVE_ROWS
 
 #: The default cap on single-task rows in one copy: each is an agent of its
@@ -145,7 +146,7 @@ MAX_ATTACHED_TASKS = config.DEFAULT_MAX_LIVE_ROWS
 
 def max_live_rows() -> int:
     """The live-row cap this launch uses: the sc plugin's `max_live_rows`,
-    held to 1..50, else 30. Read per launch, so the copies and run.js (which
+    held to 1..200, else 100. Read per launch, so the copies and run.js (which
     each copy's args hand it as `max_rows`) agree on one number."""
     return config.max_live_rows()
 
@@ -699,7 +700,7 @@ def for_tasks(entries: list[dict[str, Any]], client: SwarmClient | None = None, 
               dispatched: bool = True) -> dict[str, Any]:
     """ONE titled copy that starts an `sc:task` row per task in `entries` --
     each `{task_id, label?, console?, workspace?, tenant_id?, task?}` -- up to
-    the live-row cap (`max_live_rows()`, 30 unless the plugin's option says
+    the live-row cap (`max_live_rows()`, 100 unless the plugin's option says
     otherwise). The rest come back in `not_followed`. Submits nothing.
 
     `task`, the task document as the API served it, gives each row its
@@ -740,7 +741,7 @@ def for_tasks(entries: list[dict[str, Any]], client: SwarmClient | None = None, 
         "titled from its label, with its console link. Nothing is submitted"
     )
     # `max_rows`: the cap this bridge used, so run.js -- which caps the rows
-    # it starts too, at 30 when told nothing -- follows every task handed it.
+    # it starts too, at 100 when told nothing -- follows every task handed it.
     facts = details.merge(details.for_task(e.get("task")) for e in follow)
     out = _launch(title, description, {"attach_tasks": rows, "max_rows": cap}, _tasks_workspace(follow),
                   facts, labels)
@@ -854,9 +855,12 @@ def for_all(
     new_only: bool = False,
     exclude: list[str] | None = None,
 ) -> dict[str, Any]:
-    """One titled copy per running workflow, newest first and grouped by
-    workspace (`sc.group_by_workspace`), up to the live-row cap, and
-    one more for the caller's running single tasks (#830).
+    """One titled copy per running workflow, closest to finish first in
+    workspace blocks (`sc.group_by_workspace`, `board.order`), up to the
+    live-row cap -- so a cap leaves out the ones furthest from finishing, and
+    the runs start top to bottom in that order -- and one more for the
+    caller's running single tasks (#830), ordered the same way by their own
+    state age.
 
     SC-WATCH: `repository` keeps only the workflows and tasks that clone it
     (`check.resolve_scope`: a URL, `owner/repo`, "origin" for this checkout's

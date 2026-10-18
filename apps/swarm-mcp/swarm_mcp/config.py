@@ -101,21 +101,25 @@ PLUGIN_CLIENT_SECRET = "oauth_client_secret"
 #: and a plugin session read one setting under one name.
 PLUGIN_TARGET = "default_target"
 #: How many SwarmCloud workflows, and how many single tasks, `/sc attach
-#: --all` follows as live rows (SC-ROWS, owner request 2026-10-14: "increase
-#: live rows to 30"). Read by the bridge, which caps `swarm_workflow_launch
+#: --all` follows as live rows (100 unless set, BOARD-ORDER 2026-10-16; 30
+#: since SC-ROWS 2026-10-14). Read by the bridge, which caps `swarm_workflow_launch
 #: {attach: "all"}` with it and hands it to run.js in each copy's args as
 #: `max_rows`; anything past it is listed in `not_followed`.
 PLUGIN_MAX_LIVE_ROWS = "max_live_rows"
 PLUGIN_KEYS = (PLUGIN_URL, PLUGIN_CLIENT_ID, PLUGIN_CLIENT_SECRET, PLUGIN_TARGET, PLUGIN_MAX_LIVE_ROWS)
 
-#: The live-row cap when nothing sets one: 30, the owner's number. Every
-#: followed workflow's unfinished step is one row, an agent of its own, so the
-#: cap stays a cap: MAX_LIVE_ROWS_LIMIT is the most it can be set to, and 1
-#: the least. plugin/workflows/run.js restates all three
-#: (`DEFAULT_LIVE_ROWS`, `MAX_LIVE_ROWS_LIMIT`, `liveRowCap`) and
-#: test_sc_rows_workspace_and_cap.py holds the two equal.
-DEFAULT_MAX_LIVE_ROWS = 30
-MAX_LIVE_ROWS_LIMIT = 50
+#: The live-row cap when nothing sets one: 100, and the most it can be set to:
+#: 200 (owner, 2026-10-16, #1437: "rows for every launch"; 30 and 50 before,
+#: SC-ROWS). 100 because the owner runs more than 15 workflows at once from
+#: one session (17 attached on 2026-10-16) and wants every launch to keep its
+#: rows. Every followed workflow's unfinished step is
+#: still one row, an agent of its own in the session, so the cap stays a cap:
+#: 200 is the most, and 1 the least, and the ones a cap leaves out are the ones
+#: furthest from finishing (`board.order`). plugin/workflows/run.js restates
+#: all three (`MAX_ATTACHED_WORKFLOWS`, `MAX_LIVE_ROWS_LIMIT`, `liveRowCap`)
+#: and test_sc_rows_workspace_and_cap.py holds them equal.
+DEFAULT_MAX_LIVE_ROWS = 100
+MAX_LIVE_ROWS_LIMIT = 200
 
 #: The three places a unit of work can be sent (S8). `cloud` dispatches it,
 #: `local` sends nothing and says the work stays in this session, and `hybrid`

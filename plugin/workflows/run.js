@@ -288,6 +288,16 @@ const LISTED = {
           // SC-SESSION-SCOPE: swarm_workflows marks what this Claude Code
           // session started; only those are attached.
           this_session: { type: 'boolean' },
+          // BOARD-ORDER: where it stands, as swarm_workflows serves it --
+          // what groupByWorkspace orders the attach calls by.
+          progress: {
+            type: ['object', 'null'],
+            properties: {
+              done: { type: ['integer', 'null'] },
+              total: { type: ['integer', 'null'] },
+              age_seconds: { type: ['integer', 'null'] },
+            },
+          },
         },
         required: ['workflow_id', 'title', 'label', 'state', 'console', 'this_session'],
       },
@@ -315,9 +325,9 @@ const LISTED = {
   required: ['count', 'workflows', 'single_tasks', 'single_tasks_error', 'error'],
 }
 
-// THE CAP on {attach: "all"}: the newest running workflows are followed, each
-// in a run of its own, 30 by default (SC-ROWS, owner request 2026-10-14:
-// "increase live rows to 30"; 10 before). swarm_mcp.launch.MAX_ATTACHED_WORKFLOWS
+// THE CAP on {attach: "all"}: the running workflows closest to finish are
+// followed, each in a run of its own, 100 by default (BOARD-ORDER, owner
+// 2026-10-16: rows for every launch; 30 since SC-ROWS, 10 before). swarm_mcp.launch.MAX_ATTACHED_WORKFLOWS
 // is the same default for the runs the skill launches.
 // Every unfinished step of a followed workflow is one live sc:step row -- an
 // agent of its own, holding a turn in this session for as long as its task
@@ -325,18 +335,19 @@ const LISTED = {
 // within 1..MAX_LIVE_ROWS_LIMIT, and reaches this script as the `max_rows` the
 // bridge puts in each copy's args (a script cannot read the plugin's options).
 // Claude Code's /workflows panel is its own UI and this script cannot make it
-// scroll, so each row is one compact line, newest first, grouped by
-// workspace. The rest are listed with the command that follows each.
-const MAX_ATTACHED_WORKFLOWS = 30
+// scroll, so each row is one compact line, closest to finish first, grouped
+// by workspace. The rest -- the ones furthest from finishing -- are listed
+// with the command that follows each.
+const MAX_ATTACHED_WORKFLOWS = 100
 
 // THE CAP on single-task rows in one run: each is an agent of its own in this
 // session for as long as its task runs, exactly like a step row, so the same
 // readability limit applies (swarm_mcp.launch.MAX_ATTACHED_TASKS is the same
 // cap for the copies the bridge writes). The rest are listed, not followed.
-const MAX_ATTACHED_TASKS = 30
+const MAX_ATTACHED_TASKS = 100
 
 // The most `max_live_rows` can be set to (swarm_mcp.config.MAX_LIVE_ROWS_LIMIT).
-const MAX_LIVE_ROWS_LIMIT = 50
+const MAX_LIVE_ROWS_LIMIT = 200
 
 // `given` (the args' `max_rows`) as a row cap: a whole number held to
 // 1..MAX_LIVE_ROWS_LIMIT, `fallback` when it is absent or not a number.
@@ -849,13 +860,37 @@ function rowDetails(wf, step) {
   return (wf.details && wf.details[step.step_id]) || fallbackDetails(wf.workspace, wf.specSteps && wf.specSteps[step.step_id])
 }
 
-// Entries (newest first) grouped by their `workspace`, STABLY: each
-// workspace's entries keep their order, and the workspaces come in the order
-// of their newest entry. swarm_mcp.sc.group_by_workspace is the same.
+// Closest to finish first (BOARD-ORDER, owner 2026-10-16): steps done / total
+// descending, then the current step's age descending (the step that has run
+// longest first), then the id, so the order is total. swarm_mcp.board.order
+// is the same rule; it reads each entry's `progress` ({done, total,
+// age_seconds}) as swarm_workflows serves it. Entries handed WITHOUT a
+// progress on every one -- an attach_tasks list, or a bridge older than the
+// rule -- keep the order they were handed, which is the bridge's own.
+function boardOrder(entries) {
+  const hasProgress = (entry) => !!(entry && entry.progress && typeof entry.progress === 'object')
+  if (entries.length === 0 || !entries.every(hasProgress)) return entries.slice()
+  const key = (entry) => {
+    const total = Number(entry.progress.total) || 0
+    const fraction = total ? (Number(entry.progress.done) || 0) / total : 0
+    const age = typeof entry.progress.age_seconds === 'number' && isFinite(entry.progress.age_seconds) ? entry.progress.age_seconds : -1
+    return { fraction: fraction, age: age, id: String(entry.workflow_id || entry.task_id || '') }
+  }
+  return entries.map((entry) => ({ entry: entry, key: key(entry) })).sort((a, b) => {
+    if (a.key.fraction !== b.key.fraction) return b.key.fraction - a.key.fraction
+    if (a.key.age !== b.key.age) return b.key.age - a.key.age
+    return a.key.id < b.key.id ? -1 : a.key.id > b.key.id ? 1 : 0
+  }).map((item) => item.entry)
+}
+
+// Entries closest to finish first (boardOrder), grouped by their `workspace`:
+// one block per workspace, the blocks in the order of each block's
+// closest-to-finish entry, and that order inside each block.
+// swarm_mcp.sc.group_by_workspace is the same.
 function groupByWorkspace(entries) {
   const order = []
   const groups = {}
-  for (const entry of entries) {
+  for (const entry of boardOrder(entries)) {
     const key = '#' + (flatText(entry && entry.workspace) || '')
     if (!groups[key]) {
       groups[key] = []
@@ -1620,7 +1655,7 @@ async function attachOne(workflowId, givenTitle, givenWorkspace, givenDetails) {
 // ATTACH ALL: one list, and the {attach} call that attaches each listed
 // workflow up to the cap (`cap`, the args' `max_rows`, else
 // MAX_ATTACHED_WORKFLOWS) -- each a run of its own, never rows in this one --
-// newest first, grouped by workspace.
+// closest to finish first, grouped by workspace (groupByWorkspace).
 async function attachAll(cap) {
   const limit = liveRowCap(cap, MAX_ATTACHED_WORKFLOWS)
   let listed = null

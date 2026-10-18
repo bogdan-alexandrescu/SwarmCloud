@@ -100,7 +100,7 @@ from typing import Any, Callable, Sequence
 
 from swarm_common.states import CONCURRENCY_STATES, PENDING_STATES, TERMINAL_STATES, TaskState
 
-from . import keys, render, session
+from . import board, keys, render, session
 from .client import SwarmClient, SwarmError, chosen_tenant, outputs_of
 from .follow import with_console
 from .invocation import help_command, terminal_command
@@ -721,13 +721,13 @@ _TERMINAL_VALUES = frozenset(s.value for s in TERMINAL_STATES)
 WORKFLOW_LIST_PAGES = 4
 WORKFLOW_PAGE_SIZE = 50
 
-#: Running workflows read in detail (one `GET /v1/workflows/{id}` each, for the
-#: label and the current steps). Beyond this many the list still names them,
-#: says they were not read, and costs nothing more. 30 (20 before SC-ROWS):
-#: `/sc attach --all` follows up to `max_live_rows`, 30 unless set, and a
-#: workflow followed without its detail read is titled by its id instead of
-#: its name. A `max_live_rows` above 30 follows the rest titled that way.
-WORKFLOW_DETAIL_READS = 30
+#: How many workflow detail reads (`GET /v1/workflows/{id}`) run at once.
+#: EVERY running workflow is read (BOARD-ORDER, owner 2026-10-16): its
+#: progress -- steps done of the total, and how long its current step has run
+#: -- is what orders the list, and a workflow left unread could not be placed.
+#: Eight at a time, as `launch._read_workflows` reads, so 60 running workflows
+#: are 8 rounds of reads, not 60 requests in one burst.
+WORKFLOW_DETAIL_CONCURRENCY = 8
 
 #: How many workflows the session-start context names one by one.
 SESSION_START_NAMED = 10
@@ -761,15 +761,16 @@ def pull_request_wait(workflow: dict[str, Any]) -> str | None:
 
 
 def group_by_workspace(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """`entries` (newest first) grouped by their `workspace`, STABLY: each
-    workspace's entries keep their newest-first order, and the workspaces come
-    in the order of their newest entry. So a list of 30 rows reads as one
-    block per workspace without a row moving within its block between two
-    reads (SC-ROWS, owner 2026-10-14: "stable order: newest first, grouped by
-    workspace"). plugin/workflows/run.js's `groupByWorkspace` is the same."""
+    """`entries` closest to finish first (`board.order`), grouped by their
+    `workspace`: one block per workspace, the blocks in the order of each
+    block's closest-to-finish entry, and `board.order` inside each block
+    (BOARD-ORDER, owner 2026-10-16: "keep the workspace groups", replacing
+    the "newest first" half of SC-ROWS). The order is total, so two reads of
+    the same state list the same order. plugin/workflows/run.js's
+    `groupByWorkspace` is the same."""
     order: list[Any] = []
     groups: dict[Any, list[dict[str, Any]]] = {}
-    for entry in entries:
+    for entry in board.order(entries):
         key = entry.get("workspace")
         if key not in groups:
             order.append(key)
@@ -793,6 +794,9 @@ def _running_entry(workflow: dict[str, Any], now: datetime, tenant: Any = None) 
         "age_seconds": max(0, int((now - created).total_seconds())) if created else None,
         "steps_total": len(workflow.get("steps") or []),
         "current_steps": None,
+        # Steps done of the total and the current steps' ages (`board.progress`),
+        # from the detail read; None until it is read.
+        "progress": None,
         "waiting_for": pull_request_wait(workflow),
         # The Claude Code session that started it (SC-SESSION-SCOPE), as
         # swarm-api serves it off the step tasks; the detail read fills it
@@ -802,8 +806,8 @@ def _running_entry(workflow: dict[str, Any], now: datetime, tenant: Any = None) 
     return with_console(entry, workflow)
 
 
-def _read_detail(client: SwarmClient, entry: dict[str, Any]) -> dict[str, Any]:
-    """The label and the unfinished steps, from one workflow read."""
+def _read_detail(client: SwarmClient, entry: dict[str, Any], now: datetime | None = None) -> dict[str, Any]:
+    """The label, the unfinished steps and the progress, from one workflow read."""
     from . import workflows
 
     try:
@@ -842,6 +846,7 @@ def _read_detail(client: SwarmClient, entry: dict[str, Any]) -> dict[str, Any]:
             step["park_reason"] = row["park_reason"]
         current.append(with_console(step, links.get(row.get("step_id"))))
     entry["current_steps"] = current
+    entry["progress"] = board.progress(envelope, now or datetime.now(timezone.utc))
     return entry
 
 
@@ -850,9 +855,19 @@ def running_workflows(
     *,
     now: datetime | None = None,
     pages: int = WORKFLOW_LIST_PAGES,
-    detail_reads: int = WORKFLOW_DETAIL_READS,
+    detail_reads: int | None = None,
 ) -> dict[str, Any]:
-    """The caller's tenant's workflows that are not over, newest first.
+    """The caller's tenant's workflows that are not over, CLOSEST TO FINISH
+    FIRST in workspace blocks (`group_by_workspace`, `board.order`).
+
+    EVERY one is read in detail (`detail_reads` None), at most
+    `WORKFLOW_DETAIL_CONCURRENCY` at a time: its progress is what orders it.
+    `detail_reads` caps that for a caller that needs no order (a test); the
+    rest say they were not read and sort below every read one. Each read
+    entry carries `progress` (`board.progress`) with the historical medians
+    beside it (`board.annotate`), and the listing says what the medians
+    cost under `medians` -- one shared read per 15 minutes, never one per
+    workflow; a median that could not be read leaves them out and says so.
 
     The tenant is the API's: `GET /v1/workflows` answers for the caller's own
     tenant (`tenant_scope`), and nothing here names one. The route is asked for
@@ -902,13 +917,13 @@ def running_workflows(
         if token is None or full_page:
             break
 
-    detailed = found[: max(0, detail_reads)]
+    detailed = found if detail_reads is None else found[: max(0, detail_reads)]
     if detailed:
-        with ThreadPoolExecutor(max_workers=min(8, len(detailed))) as pool:
-            list(pool.map(lambda entry: _read_detail(client, entry), detailed))
+        with ThreadPoolExecutor(max_workers=min(WORKFLOW_DETAIL_CONCURRENCY, len(detailed))) as pool:
+            list(pool.map(lambda entry: _read_detail(client, entry, now), detailed))
     for entry in found[len(detailed):]:
         entry["steps_unread_because"] = (
-            f"only the newest {detail_reads} running workflows are read step by step"
+            f"only {detail_reads} running workflows were asked to be read step by step"
         )
     listed = group_by_workspace([entry for entry in found if entry.get("state") not in _TERMINAL_VALUES])
     out: dict[str, Any] = {
@@ -917,6 +932,17 @@ def running_workflows(
         "complete": token is None,
         "workflows": listed,
     }
+    if any(isinstance(entry.get("progress"), dict) for entry in listed):
+        found_medians = board.medians(client, now=now)
+        for entry in listed:
+            board.annotate(entry, found_medians)
+        out["medians"] = {
+            key: found_medians[key]
+            for key in ("window_days", "requests", "tasks_read", "read_at", "reused",
+                        "unavailable_because")
+            if key in found_medians
+        }
+        out["medians"]["steps_with_history"] = len(found_medians.get("by_step") or {})
     if token is not None:
         out["incomplete_because"] = (
             f"a page of {WORKFLOW_PAGE_SIZE} unfinished workflows was full; read "
@@ -972,6 +998,12 @@ def _single_task_entry(task: dict[str, Any], now: datetime, tenant: Any = None) 
         "runner_profile": task.get("runner_profile"),
         "created_at": task.get("created_at"),
         "age_seconds": max(0, int((now - created).total_seconds())) if created else None,
+        # How long it has been in its run (its last attempt's start, else its
+        # creation): what orders it among single tasks (`board.order`).
+        "state_age_seconds": (
+            max(0, int((now - since).total_seconds()))
+            if (since := render.parse_time(task.get("started_at")) or created) else None
+        ),
         # What it clones (SC-WATCH): `/sc check` attaches only this project's.
         "repository_url": task.get("repository_url"),
         # The Claude Code session that dispatched it (SC-SESSION-SCOPE).
@@ -1006,8 +1038,9 @@ def running_tasks(
     now: datetime | None = None,
     pages: int = SINGLE_TASK_PAGES,
 ) -> dict[str, Any]:
-    """The caller's running SINGLE tasks, newest first: not finished, in no
-    workflow, and submitted by the caller.
+    """The caller's running SINGLE tasks, the longest-running first
+    (`board.order`, by state age): not finished, in no workflow, and
+    submitted by the caller.
 
     One `GET /v1/tasks?state=<s>&submitted_by=me` walk per unfinished state
     (`_live_states`, read from the frozen contract), in parallel. The route
@@ -1080,6 +1113,32 @@ def _steps_text(entry: dict[str, Any]) -> str:
     if not steps:
         return "no unfinished step"
     return ", ".join(f"{s.get('step_id')} {s.get('state') or 'state not read'}" for s in steps)
+
+
+def _minutes(seconds: Any) -> str:
+    return f"{max(0, round(seconds / 60))}m"
+
+
+def _board_text(entry: dict[str, Any]) -> str:
+    """`  3/5  now: review 12m +1  p50 20m  eta ~30m`: where the workflow
+    stands (`board.progress`), its longest-running current step and that
+    step's age, and the historical medians beside them where they are known.
+    '' for a workflow whose progress was not read."""
+    p = entry.get("progress")
+    if not isinstance(p, dict):
+        return ""
+    text = f"  {p.get('done')}/{p.get('total')}"
+    current = sorted(p.get("current") or [], key=lambda s: -(s.get("age_seconds") or -1))
+    if current:
+        first = current[0]
+        age = f" {_minutes(first['age_seconds'])}" if isinstance(first.get("age_seconds"), int) else ""
+        more = f" +{len(current) - 1}" if len(current) > 1 else ""
+        text += f"  now: {first.get('step_id')}{age}{more}"
+        if isinstance(first.get("median_seconds"), int):
+            text += f"  p50 {_minutes(first['median_seconds'])}"
+    if isinstance(p.get("eta_seconds"), int):
+        text += f"  eta ~{_minutes(p['eta_seconds'])}"
+    return text
 
 
 def session_start_context(
@@ -1290,11 +1349,13 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
     lines = [render.section("workflows", f"{len(running)} running", style)]
     if not running:
         lines.append("  none running")
+    # Closest to finish first, in workspace blocks (BOARD-ORDER): the order
+    # `running_workflows` answers in, printed as it came.
     for entry in running:
         label = f"  {entry['label']}" if entry.get("label") else ""
         lines.append(
-            f"  {_workspace_tag(entry)}{entry.get('workflow_id')}{label}  {entry.get('state')}  "
-            f"{_age_text(entry.get('age_seconds'))}{_session_mark(entry)}"
+            f"  {_workspace_tag(entry)}{entry.get('workflow_id')}{label}  {entry.get('state')}"
+            f"{_board_text(entry)}  {_age_text(entry.get('age_seconds'))}{_session_mark(entry)}"
         )
         lines.append(f"    now: {_steps_text(entry)}")
         if entry.get("waiting_for"):
@@ -1312,6 +1373,8 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
             )
     if not listing.get("complete"):
         lines.append(f"  {listing.get('incomplete_because')}")
+    if (listing.get("medians") or {}).get("unavailable_because"):
+        lines.append(f"  {listing['medians']['unavailable_because']}; p50 and eta are left out")
     if singles is None:
         lines.append(render.section("single tasks", "", style))
         lines.append(f"  could not be read: {singles_failure}")

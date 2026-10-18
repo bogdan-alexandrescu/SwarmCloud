@@ -193,7 +193,7 @@ def _this_session(monkeypatch):
 def test_attach_all_with_hostile_titles_writes_a_parsing_copy_per_workflow(_plugin_root, tmp_path, monkeypatch):
     from swarm_mcp import sc
 
-    entries = [{"workflow_id": f"wf_{i}", "title": title, "label": None, "steps_total": 2, "console": None,
+    entries = [{"workflow_id": f"wf_{i:03d}", "title": title, "label": None, "steps_total": 2, "console": None,
                 "claude_session": SESSION}
                for i, title in enumerate(HOSTILE_TITLES[: launch.MAX_ATTACHED_WORKFLOWS])]
     monkeypatch.setattr(sc, "running_workflows", lambda client: {"count": len(entries), "complete": True,
