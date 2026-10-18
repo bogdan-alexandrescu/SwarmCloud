@@ -860,6 +860,13 @@ locals {
       WORKSPACE_APPLY_TOPIC   = "swarm-workspace-apply"
       WORKSPACE_APPLY_PUBLISH = var.workspace_apply_publish ? "true" : "false"
 
+      # The submission gate (swarm_api.workspaces.gate_from_env, WD8). "on" and
+      # "off" are its words; anything else stops swarm-api at start rather than
+      # being guessed at. Off unless the environment's tfvars sets
+      # var.workspace_gate (W10: dev, 2026-10-13). Before W10 it reached
+      # swarm-api only by hand, and the next apply would have put it back off.
+      WORKSPACE_GATE = var.workspace_gate ? "on" : "off"
+
       # The step-spec key version every submission is signed with (contract
       # request 34). A full version name, because an asymmetric key has no
       # primary version: local.spec_signing_key_version, derived in

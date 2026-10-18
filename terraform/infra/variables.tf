@@ -904,6 +904,22 @@ variable "workspace_apply_publish" {
   default     = false
 }
 
+variable "workspace_gate" {
+  description = <<-EOT
+    swarm-api's WORKSPACE_GATE (swarm_api.workspaces.gate_from_env, #847 WD8;
+    docs/workspaces.md §5.5): whether a person's task or workflow submission
+    into their own personal tenant is refused until their workspace is `ready`
+    (403 WORKSPACE_NOT_READY) and has a Claude account (403 NO_CLAUDE_ACCOUNT),
+    and whether swarm-api stops writing tenants/u-* on first sight. A group
+    submission is never gated (WD7). OFF by default, as gate_from_env is: on
+    refuses every person without a `ready` workspace record, so an environment
+    turns it on only after one real approval has gone end to end through the
+    swarm-workspace-apply job.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "manage_project_services" {
   description = "All 18 APIs are already enabled on saga-agents-staging; this holds them enabled rather than turning anything on."
   type        = bool
