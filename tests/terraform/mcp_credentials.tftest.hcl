@@ -256,8 +256,8 @@ run "no_tenant_worker_reads_a_mcpc_secret" {
   assert {
     condition = alltrue([
       for b in concat(
-        [for k, m in google_project_iam_member.typesafe_user_key_reader : { tenant = split("/", k)[0], member = m.member, expr = m.condition[0].expression }],
         [for k, m in google_project_iam_member.forge_slot_reader : { tenant = k, member = m.member, expr = m.condition[0].expression }],
+        [for k, m in google_project_iam_member.typesafe_user_key_reader : { tenant = split("/", k)[0], member = m.member, expr = m.condition[0].expression }],
         ) : alltrue([
           for n in [
             "projects/209012342332/secrets/swarm-tenant-${b.tenant}-mcpc-${substr(sha256("mcp-iam per-run credential"), 0, 16)}",
@@ -277,13 +277,13 @@ run "no_tenant_worker_reads_a_mcpc_secret" {
   # is for -- so the assertion above could have come out the other way.
   assert {
     condition = alltrue([
-      length(google_project_iam_member.typesafe_user_key_reader) == 1,
-      alltrue([for k, m in google_project_iam_member.typesafe_user_key_reader : startswith(m.member, "serviceAccount:swarm-agent-worker-eng@")]),
       length(google_project_iam_member.forge_slot_reader) > 0,
+      length(google_project_iam_member.typesafe_user_key_reader) == 1,
       alltrue([for k, m in google_project_iam_member.forge_slot_reader : startswith(m.member, "serviceAccount:swarm-agent-worker-${k}@")]),
+      alltrue([for k, m in google_project_iam_member.typesafe_user_key_reader : startswith(m.member, "serviceAccount:swarm-agent-worker-eng@")]),
       alltrue([
         for k, m in google_project_iam_member.forge_slot_reader :
-        anytrue([for p in regexall("startsWith\\(\"([^\"]+)\"\\)", m.condition[0].expression) : startswith("projects/209012342332/secrets/swarm-tenant-${k}-git-u-0123456789abcdef", p[0])])
+        anytrue([for p in regexall("startsWith\\(\"([^\"]+)\"\\)", m.condition[0].expression) : startswith("projects/209012342332/secrets/swarm-tenant-${k}-git-u-${substr(sha256("mcp-iam per-run credential"), 0, 16)}", p[0])])
       ]),
       alltrue([
         for k, m in google_project_iam_member.typesafe_user_key_reader :

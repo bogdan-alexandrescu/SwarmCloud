@@ -15,9 +15,9 @@
 #     nothing else, so Disconnect leaves no usable token, OB3), and reads
 #     both the base slots and their `-refresh` twins (owner decision
 #     2026-10-08: it reuses the person's current access token instead of
-#     refreshing on every call); no tenant worker account reads a user slot
-#     at all: it obtains one only through swarm-api's broker (owner decision
-#     2026-10-11, #1041, superseding D7/U1);
+#     refreshing on every call); the tenant's worker reads only the base
+#     slots (D7, U1), byte for byte as before #1041's broker, until the broker
+#     has been on in dev and its removal is a separate owner step;
 #   * a tenant id whose user-slot prefix would start with another tenant's is
 #     refused, because a prefix condition would reach that tenant's slots;
 #   * the refresher job (D2) is `swarm-forge-refresh`, every 15 minutes, OIDC,
@@ -240,6 +240,7 @@ run "user_slot_grants_are_scoped_per_tenant_and_split_read_from_write" {
         google_project_iam_member.forge_slot_version_adder,
         google_project_iam_member.forge_slot_version_manager,
         google_project_iam_member.forge_refresh_reader,
+        google_project_iam_member.forge_slot_reader,
       ] : [for m in values(grants) : length(m.condition) == 1]
     ]))
     error_message = "a per-tenant user-slot grant without its prefix condition would reach every secret in the project, the other team's included"
@@ -278,11 +279,12 @@ run "user_slot_grants_are_scoped_per_tenant_and_split_read_from_write" {
   # The same tenants on every per-tenant grant, and exactly the fixture's.
   assert {
     condition = alltrue([
+      toset(keys(google_project_iam_member.forge_slot_reader)) == toset(local.infra_tenant_ids),
       toset(keys(google_project_iam_member.forge_slot_version_adder)) == toset(local.infra_tenant_ids),
       toset(keys(google_project_iam_member.forge_refresh_reader)) == toset(local.infra_tenant_ids),
       toset(keys(google_project_iam_member.forge_slot_version_manager)) == toset(local.infra_tenant_ids),
     ])
-    error_message = "every tenant the release applies gets the three per-tenant user-slot grants, all swarm-api's, and no other key does"
+    error_message = "every tenant the release applies gets the four per-tenant user-slot grants, and no other key does"
   }
 
   # Nothing here names the other team's secrets: every prefix is ours.
@@ -305,8 +307,11 @@ run "user_slot_grants_are_scoped_per_tenant_and_split_read_from_write" {
 #
 # So what is held here is that the worker's read is exactly that one binding,
 # no wider: its tenant's BASE slots and never a -refresh twin (the token that
-# mints new access tokens), one binding per tenant. Every other secretAccessor
-# on a user-slot condition is swarm-api's. The test of the removal is written
+# mints new access tokens), one binding per tenant, with main's condition title
+# and expression exactly: a condition is part of an IAM member's identity, so
+# any edit to either would replace every tenant's binding at the next bootstrap
+# apply, and while the broker is off that binding is the only read path. Every
+# other secretAccessor on a user-slot condition is swarm-api's. The test of the removal is written
 # with the removal.
 run "the_tenant_worker_reads_only_its_tenants_base_user_slots" {
   command = plan
@@ -342,9 +347,10 @@ run "the_tenant_worker_reads_only_its_tenants_base_user_slots" {
       for t, m in google_project_iam_member.forge_slot_reader :
       m.role == "roles/secretmanager.secretAccessor" &&
       m.member == "serviceAccount:swarm-agent-worker-${t}@saga-agents-staging.iam.gserviceaccount.com" &&
-      m.condition[0].expression == "resource.name.startsWith(\"projects/209012342332/secrets/swarm-tenant-${t}-git-u-\") && !resource.name.endsWith(\"-refresh\") && resource.name.extract(\"/secrets/{secret}-refresh/\") == \"\""
+      m.condition[0].title == "swarm forge user slots ${t}" &&
+      m.condition[0].expression == "resource.name.startsWith(\"projects/209012342332/secrets/swarm-tenant-${t}-git-u-\") && !resource.name.endsWith(\"-refresh\") && !resource.name.extract(\"/secrets/{name}/versions/\").endsWith(\"-refresh\")"
     ]) && toset(keys(google_project_iam_member.forge_slot_reader)) == toset(local.infra_tenant_ids)
-    error_message = "forge_slot_reader is each tenant's own worker reading that tenant's base user slots, never a -refresh twin or a secret version of one, and stays until the broker has been on in dev (#1041)"
+    error_message = "forge_slot_reader is each tenant's own worker reading that tenant's base user slots, never a -refresh twin or a secret version of one, with main's condition unchanged, and stays until the broker has been on in dev (#1041)"
   }
 }
 

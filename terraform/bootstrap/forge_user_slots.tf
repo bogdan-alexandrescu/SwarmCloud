@@ -110,12 +110,22 @@
 # theirs: a new tenant's user-slot grants are an owner bootstrap apply, the
 # one docs/ci.md already requires for its worker account (#334).
 #
+# WHY BOTH NAME FORMS IN THE -refresh TEST. accessSecretVersion is checked on
+# the VERSION, whose resource.name is `projects/<n>/secrets/<id>/versions/<v>`
+# -- which never ends in "-refresh". `resource.name.endsWith("-refresh")`
+# alone (§3.4 item 4 as written) would therefore exclude nothing at access
+# time, and the worker would read the refresh twins. So the test is made on
+# the secret id extracted from either form:
+# `resource.name.extract("/secrets/{name}/versions/")` is the id for a version
+# and "" for the secret itself, and `resource.name.endsWith(...)` covers the
+# secret itself.
+#
 # NOT VERIFIED LIVE: that IAM evaluates resource.name for versions.access,
-# versions.add, versions.disable and versions.enable in the prefix form below.
-# The mock-provider tests hold the expressions' text, not IAM's answer. The
-# proof is the runbook's last step (docs/runbooks/github-app.md, step 8): after
-# the apply, a tenant worker reading a base slot directly is PERMISSION_DENIED,
-# and a user-slot task still clones through the broker.
+# versions.add, versions.disable and versions.enable in exactly these forms, and that extract() answers as above for
+# Secret Manager names. The mock-provider tests hold the expressions' text,
+# not IAM's answer. The proof is the runbook's last step
+# (docs/runbooks/github-app.md, step 8): a worker reading a base slot
+# succeeds, and reading the twin is PERMISSION_DENIED.
 #
 # THE OTHER TEAM'S RESOURCES. Every prefix below starts
 # `projects/<n>/secrets/swarm-tenant-`; their secrets are agents-* and
@@ -168,14 +178,13 @@ locals {
     t => "projects/${local.forge_project_number}/secrets/swarm-tenant-${t}-git-u-"
   }
 
-  # `any`: the tenant's user slots, base and -refresh twin, swarm-api's.
-  # `base`: the base slots only, the worker's (forge_slot_reader): a secret
-  # name ending -refresh, or a version of one (`.../<id>-refresh/versions/<v>`,
-  # the form versions.access is evaluated on), is excluded.
+  # `any`: the tenant's user slots, base and -refresh twin. `base`: the base
+  # slots only, the secret id's "-refresh" test made in both resource-name
+  # forms (above).
   forge_slot_conditions = {
     for t, p in local.forge_user_slot_prefixes : t => {
       any  = "resource.name.startsWith(\"${p}\")"
-      base = "resource.name.startsWith(\"${p}\") && !resource.name.endsWith(\"-refresh\") && resource.name.extract(\"/secrets/{secret}-refresh/\") == \"\""
+      base = "resource.name.startsWith(\"${p}\") && !resource.name.endsWith(\"-refresh\") && !resource.name.extract(\"/secrets/{name}/versions/\").endsWith(\"-refresh\")"
     }
   }
 
@@ -294,8 +303,8 @@ resource "google_project_iam_member" "forge_refresh_reader" {
   }
 }
 
-# THE TENANT WORKER'S READ OF ITS MEMBERS' BASE SLOTS (D7/U1). Kept, unchanged
-# in what it grants, while terraform/infra's `forge_broker` is off: the worker
+# THE TENANT WORKER'S READ OF ITS MEMBERS' BASE SLOTS (D7/U1). Kept, byte for
+# byte as main has it, while terraform/infra's `forge_broker` is off: the worker
 # reads a person's slot with its own account then (agent_worker.secrets
 # resolve_git_token, `broker.deployed` False). Removing it is the later owner
 # step the header's ROLLOUT ORDER gives -- after the broker has been on in dev
@@ -310,20 +319,15 @@ resource "google_project_iam_member" "forge_slot_reader" {
   member  = "serviceAccount:${module.service_account_ids.worker_ids[each.key]}@${var.project_id}.iam.gserviceaccount.com"
 
   condition {
-    title       = "swarm forge user slots worker ${each.key}"
-    description = "managed-by=swarm-terraform; tenant ${each.key}'s worker reads its members' GitHub user slots, never the -refresh twins (#780 D7/U1). Superseded by swarm-api's forge broker (#1041); removed only after the broker has been on in dev."
+    title       = "swarm forge user slots ${each.key}"
+    description = "managed-by=swarm-terraform; tenant ${each.key}'s worker reads its own users' GitHub access tokens, never a refresh token (#780 D7, U1)."
     expression  = local.forge_slot_conditions[each.key].base
   }
 
-  # A condition is part of a binding's identity, so a change to it replaces
-  # the binding; the new one is made first, so no user-slot task loses its
-  # read between the two.
   lifecycle {
-    create_before_destroy = true
-
     precondition {
       condition     = length(local.forge_nested_tenants) == 0
-      error_message = "A tenant's user-slot prefix nests inside another's (${join(", ", local.forge_nested_tenants)}): that tenant's WORKER would read the other tenant's members' slots. Rename the tenant before it holds anything."
+      error_message = "tenant ids ${join(", ", local.forge_nested_tenants)}: one tenant's user-slot names start with another's prefix (swarm-tenant-<t>-git-u-), so that tenant's worker would read them. Rename the tenant."
     }
   }
 }
