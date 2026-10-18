@@ -568,3 +568,38 @@ resource "google_firestore_field" "schedule_records_ttl" {
   # amplification on every firing and every tick.
   index_config {}
 }
+
+# A workflow step waiting for a tenant member's answer expires on the schedule
+# tick (docs/design/human-steps.md §4.6, §4.7; lane HW-IAM, part of #1436).
+# swarm-api's awaitinput.expire_due reads
+#
+#     tasks where state == PARKED and park_reason == AWAITING_INPUT
+#           and metadata.await_input.expires_at <= now
+#           order by metadata.await_input.expires_at
+#
+# Two equalities then a range, which Firestore serves only from a composite
+# index with the range field last; without it the query fails with
+# FAILED_PRECONDITION and no wait ever expires. A resource of its own rather
+# than an entry in local.indexes so the lane that owns the sweep's index is
+# the only one that names it. Indexes take no labels
+# (scripts/lib/unlabelable-types.json).
+resource "google_firestore_index" "await_input_expiry" {
+  project     = var.project_id
+  database    = google_firestore_database.this.name
+  collection  = "tasks"
+  query_scope = "COLLECTION"
+  api_scope   = "ANY_API"
+
+  fields {
+    field_path = "state"
+    order      = "ASCENDING"
+  }
+  fields {
+    field_path = "park_reason"
+    order      = "ASCENDING"
+  }
+  fields {
+    field_path = "metadata.await_input.expires_at"
+    order      = "ASCENDING"
+  }
+}
