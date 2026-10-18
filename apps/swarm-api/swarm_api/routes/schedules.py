@@ -21,6 +21,15 @@ the tick (`POST /v1/admin/schedules/tick`) is `routes/schedule_tick.py`. A
 `PATCH` asking for `gate.merge: auto` is refused 422 `use_merge_switch` by
 `schedules.resolve_gate`, so the switch's audit cannot be bypassed here.
 
+WHO MAY WRITE (docs/design/workspace-roles.md §4.1, §4.8; lane
+ROLES-GATES-AUTOMATE). Every write here -- create, edit, delete, pause,
+pause-all, resume, take-ownership, run -- needs the role `member` in the
+selected workspace (`_member`), checked before anything is read or written. A
+`viewer` is `role_member_required`, a NEW refusal on existing routes, so it
+goes through its switch: off, the write goes through and the log names who
+would have been refused. The preview and every read stay open to a viewer.
+The firing itself checks its OWNER's role (`schedulefire.owner_acts_as`).
+
 TENANT-SCOPED (§5.1, invariant 9). The tenant on every route comes from
 `tenant_scope` (a read) or `tenant_for` (a create), never from the body:
 `ScheduleCreate` refuses `tenant_id` and `owner` by name. Every read compares
@@ -74,7 +83,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
 from swarm_common.admission import _snapshot
 
-from .. import cronexpr, schedulefire, schedules, scheduletypes
+from .. import cronexpr, roles, schedulefire, schedules, scheduletypes
 from ..auth import AuthContext
 from ..deps import AppContext, admin_auth, current_auth, get_context, paged_limit, tenant_scope
 from ..errors import Conflict, NoClaudeAccount, NotFound, WorkspaceNotReady
@@ -227,6 +236,13 @@ def _read(ctx: AppContext, tenant_id: str | None, schedule_id: str) -> dict[str,
     if not _ID.match(schedule_id or ""):
         raise _not_found(schedule_id)
     return _owned(_schedule_ref(ctx, schedule_id).get(), tenant_id, schedule_id)
+
+
+def _member(ctx: AppContext, auth: AuthContext) -> None:
+    """The role gate on every write here (workspace-roles.md §4.8):
+    `role_member_required` for a `viewer`, through its switch."""
+    if ctx.roles is not None:
+        ctx.roles.require(auth, roles.MEMBER)
 
 
 def _audit(txn: Any, ctx: AppContext, doc: Mapping[str, Any], action: str, by: str, at: datetime,
@@ -566,6 +582,7 @@ def create_schedule(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     """§7.1 create. The tenant, owner and actor fields come from the verified token."""
+    _member(ctx, auth)
     request = schedules.parse_create(body)
     # The create path's tenant resolution, as `POST /v1/runs` uses: it refuses
     # a disabled tenant and a secret admin's, and checks the principal.
@@ -665,6 +682,7 @@ def patch_schedule(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     """§7.1 edit, carrying `revision`; a stale one is 409 `schedule_changed`."""
+    _member(ctx, auth)
     stored = _read(ctx, tenant_id, schedule_id)
     patch = schedules.parse_patch(body)
     registered, platform_repository = _registrations(ctx, tenant_id, patch.scope)
@@ -718,6 +736,7 @@ def delete_schedule(
 ) -> dict:
     """§1.3: a hard delete, with the schedule's name typed. Firings and audit stay;
     work the schedule already made is ordinary work and is not cancelled."""
+    _member(ctx, auth)
     stored = _read(ctx, tenant_id, schedule_id)
     if confirm is None or confirm.strip() != stored["name"]:
         raise ScheduleInvalid("confirmation_required", "type the schedule's name in `confirm` to delete it")
@@ -798,6 +817,7 @@ def pause_schedule(
 ) -> dict:
     """§2.11: no new firings. Live work continues -- unless `cancel_live`, typed
     with the schedule's name, which also cancels the work of its live firings."""
+    _member(ctx, auth)
     request = _verb(PauseIn, body)
     if request.cancel_live:
         stored = _read(ctx, tenant_id, schedule_id)
@@ -923,6 +943,7 @@ def pause_all_schedules(
 ) -> dict:
     """§2.11: a member pauses every enabled schedule of their own tenant, typed
     with the tenant id. Live work continues."""
+    _member(ctx, auth)
     request = _verb(PauseAllIn, body)
     if request.confirm != tenant_id:
         raise ScheduleInvalid("confirmation_required",
@@ -938,6 +959,7 @@ def resume_schedule(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     """§1.3: from `paused` or `auto_paused`. A `disabled` one only an admin re-enables."""
+    _member(ctx, auth)
 
     def change(doc: Mapping[str, Any], now: datetime) -> dict[str, Any] | None:
         if doc["state"] == "disabled":
@@ -959,6 +981,7 @@ def take_ownership(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     """§1.1: the caller becomes the member firings submit as. Audited."""
+    _member(ctx, auth)
     stored = _read(ctx, tenant_id, schedule_id)
     _check_grants(ctx, stored, auth.email)
     _check_file_issues(ctx, stored, auth.email)
@@ -983,6 +1006,7 @@ def run_schedule(
     """§7.1: a `run_now` firing, under the gate's `run` point, the overlap and the
     budget -- the tick's own finish (`Ticker.fire_now`), as the schedule's
     stored owner, never as the caller."""
+    _member(ctx, auth)
     request = _verb(RunIn, body)
     doc = _read(ctx, tenant_id, schedule_id)
     if doc["state"] == "disabled":
