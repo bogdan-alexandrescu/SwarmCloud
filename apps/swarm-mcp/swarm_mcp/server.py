@@ -1279,12 +1279,66 @@ TOOLS: list[dict[str, Any]] = [
             "Each step whose task was read carries `questions`: how many "
             "questions the worker validated in that step's questions.json, 0 "
             "when it asked none. Read a step with questions with swarm_result, "
-            "whose `owner_questions` holds them; they are for the owner to answer."
+            "whose `owner_questions` holds them; they are for the owner to answer.\n"
+            "\n"
+            "A step parked AWAITING_INPUT waits for a member of its tenant to "
+            "answer and holds nothing while it does; its row carries `awaiting: "
+            "{tenant, opened_at, expires_at, form, artifact, max_files, remind}`. "
+            "Once answered it carries `answered: {answered_by, answered_at, via, "
+            "files}`. A person answers with swarm_workflow_input, or in the console."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {"workflow_id": {"type": "string"}},
             "required": ["workflow_id"],
+        },
+    },
+    {
+        "name": "swarm_inputs",
+        "description": (
+            "The workflow steps of YOUR tenant waiting for a person's answer (an "
+            "`await-input` step, parked AWAITING_INPUT): each with its workflow_id, "
+            "step_id, task_id, `opened_at` and `expires_at`, newest first, and "
+            "`answer_with`, the swarm_workflow_input call that answers it. Any member "
+            "of the tenant may answer any of them. Read-only. A waiting step holds no "
+            "lease and no capacity (invariant 1): it is waiting for a person, not stuck."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "At most this many, 1-200 (default 200)."},
+            },
+        },
+    },
+    {
+        "name": "swarm_workflow_input",
+        "description": (
+            "Answer a workflow step that waits for a person (an `await-input` step). "
+            "THE PERSON TYPES THE ANSWER, not the caller: the bridge shows the step's "
+            "prompt and what it stages in this host's own prompt (MCP elicitation), "
+            "and sends only what the person typed there -- a verdict and findings, "
+            "answers to the upstream agent's questions, or a text. This tool takes no "
+            "verdict, payload or text argument, and refuses a call that passes one. "
+            "`files` are LOCAL PATHS you may propose to attach; the person is shown "
+            "each one's name, size and sha256 and sends them only by ticking the box, "
+            "so a file they did not see is never sent. At most 10 files and 16 MiB in "
+            "all, refused before anything is sent. A host that cannot ask its human "
+            "sends nothing, and the reply names the step's console link instead. The "
+            "first answer is final; the API records who answered, when, and `via: "
+            "mcp`. List the waiting steps with swarm_inputs."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "workflow_id": {"type": "string"},
+                "step_id": {"type": "string", "description": "The await-input step to answer."},
+                "files": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Local file paths to propose attaching. The person decides.",
+                },
+            },
+            "required": ["workflow_id", "step_id"],
         },
     },
     {
@@ -4632,6 +4686,26 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         reported["bridge_version"] = bridge_version()
         return json.dumps(reported, indent=2)
 
+    if name == "swarm_inputs":
+        from . import awaitinput
+
+        return json.dumps(awaitinput.waiting(client, args.get("limit")), indent=2, default=str)
+
+    if name == "swarm_workflow_input":
+        # THE ANSWER IS THE PERSON'S (docs/design/human-steps.md §4.2): typed
+        # into the host's elicitation, never read from `args`, which
+        # `_refuse_unknown_arguments` has already held to the step and files.
+        from . import awaitinput
+
+        return json.dumps(
+            awaitinput.answer(
+                client, _text_arg(args, "workflow_id", name), _text_arg(args, "step_id", name),
+                args.get("files"), can_elicit=_HOST_CAN_ELICIT.is_set(), elicit=_elicit,
+            ),
+            indent=2,
+            default=str,
+        )
+
     if name == "swarm_check":
         from . import check
 
@@ -4869,7 +4943,9 @@ def _holds(name: str, args: Any) -> bool:
     * `swarm_collect` unless `wait_seconds` is 0 (default 3600);
     * `swarm_setup_status` with `wait_for_github_seconds` > 0;
     * `swarm_account_remove`, which waits up to `ELICIT_TIMEOUT_SECONDS` for
-      the host's human to type a label.
+      the host's human to type a label;
+    * `swarm_workflow_input`, which waits up to
+      `awaitinput.ELICIT_TIMEOUT_SECONDS` for the person to fill the form in.
 
     Everything else answers from a bounded number of reads and is quick.
     """
@@ -4883,7 +4959,7 @@ def _holds(name: str, args: Any) -> bool:
         return _waits(args, "wait_seconds", 3600)
     if name == "swarm_setup_status":
         return _waits(args, "wait_for_github_seconds", 0)
-    return name == "swarm_account_remove"
+    return name in ("swarm_account_remove", "swarm_workflow_input")
 
 
 #: How often a running tool call tells the host it is alive. Claude Code
@@ -4972,8 +5048,9 @@ def _error(message_id: Any, code: int, message: str) -> None:
 
 
 #: WHETHER THE HOST CAN ASK ITS HUMAN A QUESTION (MCP elicitation), as its
-#: `initialize` declared. Read only by `swarm_account_remove`: a host that
-#: cannot ask gets a refusal naming the terminal command, never a confirmation
+#: `initialize` declared. Read by `swarm_account_remove` and
+#: `swarm_workflow_input`: a host that cannot ask gets a refusal naming the
+#: terminal command or the console link, never a confirmation or an answer
 #: the calling agent could supply itself.
 _HOST_CAN_ELICIT = threading.Event()
 
@@ -4989,11 +5066,13 @@ _ELICITING: dict[str, tuple[threading.Event, list[dict[str, Any]]]] = {}
 _ELICIT_LOCK = threading.Lock()
 
 
-def _elicit(message: str, schema: dict[str, Any]) -> dict[str, Any] | None:
+def _elicit(
+    message: str, schema: dict[str, Any], *, timeout: float = ELICIT_TIMEOUT_SECONDS
+) -> dict[str, Any] | None:
     """Ask the host's human through the host (`elicitation/create`).
 
     The host's whole JSON-RPC response, or None when none came within
-    `ELICIT_TIMEOUT_SECONDS`. The answer is typed by the person at the host,
+    `timeout` seconds (`ELICIT_TIMEOUT_SECONDS` unless the caller says). The answer is typed by the person at the host,
     into the host's own prompt: the model that made the tool call neither sees
     the request nor writes its answer.
     """
@@ -5012,7 +5091,7 @@ def _elicit(message: str, schema: dict[str, Any]) -> dict[str, Any] | None:
         with _WRITE_LOCK:
             sys.stdout.write(line)
             sys.stdout.flush()
-        if not answered.wait(ELICIT_TIMEOUT_SECONDS):
+        if not answered.wait(timeout):
             return None
         return box[0]
     finally:
