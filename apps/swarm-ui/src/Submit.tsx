@@ -319,6 +319,10 @@ const SUGGESTED: Record<string, Suggestion[]> = {
   ],
   'post-verdict': [
   ],
+  // A control_plane profile (contract request 93) runs nothing and declares
+  // no input; listed, empty, for the same reason.
+  'await-input': [
+  ],
   // runners/generic.py -- GENERIC_COMMANDS is the frozen argv catalogue, and
   // `command` NAMES an entry in it. That is invariant 10's own pattern, not an
   // exception to it: the caller picks a name, the platform owns the argv.

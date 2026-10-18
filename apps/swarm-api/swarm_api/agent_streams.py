@@ -49,6 +49,9 @@ AGENT_STREAM_FILES: dict[str, tuple[str, str, str | None] | None] = {
     "indexer": ("claude-code.stdout.log", "claude-code.stderr.log", "claude-transcript.json"),
     # Contract request 67: claude-code's runner on agent-runtime-browser.
     "claude-code-browser": ("claude-code.stdout.log", "claude-code.stderr.log", "claude-transcript.json"),
+    # Contract request 94: a control_plane profile; nothing runs it, so it
+    # has no agent child and no streams.
+    "await-input": None,
 }
 
 #: The agent's streams, as the log routes name them. `stdout` and `stderr` keep
