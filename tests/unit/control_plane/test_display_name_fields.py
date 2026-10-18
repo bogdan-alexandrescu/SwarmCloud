@@ -356,7 +356,8 @@ def test_a_people_row_carries_no_default_workspace_mute_or_reminder(db, client, 
     body = _get(client, "/v1/admin/people", user="root")
 
     [row] = [r for r in body["people"] if r["email"] == CAROL]
-    assert "display_name" in row
+    # The route's own People is given the lookup, not only a test's.
+    assert row["display_name"] == "Carol Danvers"
     for field in ("default_workspace", "muted", "reminder", "revision", "preferences"):
         assert field not in row, field
     people_text = repr(body["people"])
