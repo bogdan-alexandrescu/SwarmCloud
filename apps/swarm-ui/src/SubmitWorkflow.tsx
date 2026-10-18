@@ -18,6 +18,7 @@ import {
   type McpServerList,
 } from './McpServers'
 import { workflowHref } from './agentlist'
+import { AWAIT_INPUT_PROFILE, DEFAULT_ARTIFACT, FIRST_AWAIT_DRAFT, MAX_FILES, awaitBlockOf, type AwaitDraft, type AwaitForm } from './awaitInput'
 import { WorkspaceRefusalBanner, workspaceRefusal } from './WorkspaceRefusal'
 import { RunnerSelect, StepRunnerFacts, useProviderKeys, type ProviderKeys } from './RunnerPicker'
 import { Screen, timeAgo, useSubmitAs } from './Shell'
@@ -245,6 +246,10 @@ interface StepDraft {
    *  dependency's position, so reordering or removing a step cannot silently
    *  re-point a filename at a different upstream. */
   from: Record<string, string>
+  /** The `await_input` block of an `await-input` step (human-steps.md §4.1);
+   *  absent until one is edited, and read as `FIRST_AWAIT_DRAFT` then. Sent
+   *  only on a step whose runner is `await-input`. */
+  wait?: AwaitDraft
 }
 
 /** A name nothing else in the plan is using. The profile is the stem because
@@ -371,6 +376,28 @@ function planOf(
       const filename = (s.from[source] ?? '').trim()
       if (filename !== '') staged[source] = filename
     }
+    // A STEP THAT WAITS FOR A PERSON (human-steps.md §4.1) runs nothing, so
+    // its input is the prompt the person reads and nothing else, and its
+    // `await_input` block is checked here before the API refuses it.
+    let awaitBlock: Record<string, unknown> | null = null
+    if (s.profile === AWAIT_INPUT_PROFILE) {
+      const extra = Object.keys(withMcp.input).filter((k) => k !== 'prompt')
+      if (extra.length > 0) {
+        problems.push({ key: s.key, stepId: id, kind: 'input', message: `a step that waits for a person takes only a prompt, not ${extra.join(', ')}` })
+        continue
+      }
+      const wait = s.wait ?? FIRST_AWAIT_DRAFT
+      const built = awaitBlockOf(wait)
+      if (!built.ok) {
+        problems.push({ key: s.key, stepId: id, kind: 'input', message: built.message })
+        continue
+      }
+      if (wait.form === 'answers' && Object.values(staged).filter((f) => f === 'questions.json').length !== 1) {
+        problems.push({ key: s.key, stepId: id, kind: 'input', message: 'an answers form stages exactly one questions.json from a step it waits for' })
+        continue
+      }
+      awaitBlock = built.block
+    }
     body.push({
       step_id: id,
       runner_profile: s.profile,
@@ -384,6 +411,7 @@ function planOf(
       // the default and stages nothing, whereas an empty `input` is a payload
       // the runner still has to read.
       ...(Object.keys(staged).length === 0 ? {} : { input_from: staged }),
+      ...(awaitBlock === null ? {} : { await_input: awaitBlock }),
     })
   }
   return { problems, body }
@@ -1016,6 +1044,10 @@ function StepCard({ step, steps, profiles, keys, required, nameProblem, sizeProb
         <InputFields profile={step.profile} fields={step.input} required={required}
           idPrefix={stepFields(step.key)} onChange={(input) => onChange({ ...step, input })} />
       )}
+      {/* ONLY FOR `await-input`: how the step waits, and for what (§4.1). */}
+      {step.profile === AWAIT_INPUT_PROFILE && (
+        <AwaitFields idPrefix={stepFields(step.key)} draft={step.wait ?? FIRST_AWAIT_DRAFT} onChange={(wait) => onChange({ ...step, wait })} />
+      )}
       {/* ONLY FOR A PROFILE THAT DECLARES `mcp_servers`: any other refuses the key. */}
       {mcpMax !== null && (
         <McpServerPicker list={mcp.list} profile={step.profile} max={mcpMax} picked={mcp.namesOf(step)}
@@ -1088,6 +1120,81 @@ function StepCard({ step, steps, profiles, keys, required, nameProblem, sizeProb
         </details>
       )}
     </div>
+  )
+}
+
+/**
+ * HOW AN `await-input` STEP WAITS (human-steps.md §4.1): the form a person
+ * answers, how many files the answer may carry, how long it waits (24 hours
+ * at most, Q4), what happens at expiry (Q5) and whose bell is rung. Any
+ * member of the tenant may answer (Q2): `remind` chooses who is reminded,
+ * never who may answer. Offered only once the catalogue serves the profile
+ * as available; until then the runner select refuses it.
+ */
+function AwaitFields({ idPrefix, draft, onChange }: { idPrefix: string; draft: AwaitDraft; onChange: (next: AwaitDraft) => void }) {
+  const id = (k: string) => `${idPrefix}-await-${k}`
+  const built = awaitBlockOf(draft)
+  return (
+    <fieldset className="wfb-await" data-testid="wfb-await">
+      <legend className="t-label">how it waits for a person</legend>
+      <label className="c-field" htmlFor={id('form')}>
+        <span className="c-lbl">the answer</span>
+        <select id={id('form')} className="c-inp" value={draft.form} onChange={(e) => onChange({ ...draft, form: e.target.value as AwaitForm, ...(e.target.value === 'answers' ? { onExpire: 'fail' as const } : {}) })}>
+          <option value="verdict">a verdict: approve, or request changes</option>
+          <option value="answers">answers to an upstream agent’s questions.json</option>
+          <option value="text">text</option>
+        </select>
+      </label>
+      <label className="c-field" htmlFor={id('artifact')}>
+        <span className="c-lbl">written as</span>
+        <input id={id('artifact')} className="c-inp mono" value={draft.artifact} placeholder={DEFAULT_ARTIFACT[draft.form]} spellCheck={false}
+          onChange={(e) => onChange({ ...draft, artifact: e.target.value })} />
+      </label>
+      <label className="c-field" htmlFor={id('files')}>
+        <span className="c-lbl">files with the answer (0 offers no upload)</span>
+        <input id={id('files')} className="c-inp" type="number" min={0} max={MAX_FILES} value={draft.maxFiles}
+          onChange={(e) => onChange({ ...draft, maxFiles: Number(e.target.value) })} />
+      </label>
+      <label className="c-field" htmlFor={id('hours')}>
+        <span className="c-lbl">expires after, in hours (24 at most)</span>
+        <input id={id('hours')} className="c-inp" inputMode="decimal" value={draft.expiresHours}
+          onChange={(e) => onChange({ ...draft, expiresHours: e.target.value })} />
+      </label>
+      <label className="c-field" htmlFor={id('expire')}>
+        <span className="c-lbl">if nobody answers</span>
+        <select id={id('expire')} className="c-inp" value={draft.onExpire} onChange={(e) => onChange({ ...draft, onExpire: e.target.value as AwaitDraft['onExpire'] })}>
+          <option value="fail">the step fails</option>
+          {draft.form !== 'answers' && <option value="default">the step takes a default answer</option>}
+        </select>
+      </label>
+      {draft.onExpire === 'default' && draft.form === 'verdict' && (
+        <label className="c-field" htmlFor={id('default')}>
+          <span className="c-lbl">the default verdict</span>
+          <select id={id('default')} className="c-inp" value={draft.defaultVerdict} onChange={(e) => onChange({ ...draft, defaultVerdict: e.target.value as AwaitDraft['defaultVerdict'] })}>
+            <option value="MERGE">MERGE</option>
+            <option value="NOT_YET">NOT_YET</option>
+          </select>
+        </label>
+      )}
+      {draft.onExpire === 'default' && draft.form === 'text' && (
+        <label className="c-field" htmlFor={id('default')}>
+          <span className="c-lbl">the default text</span>
+          <textarea id={id('default')} className="c-inp" rows={2} value={draft.defaultText} onChange={(e) => onChange({ ...draft, defaultText: e.target.value })} />
+        </label>
+      )}
+      <label className="c-field" htmlFor={id('remind-after')}>
+        <span className="c-lbl">remind every, in hours (blank for no reminder)</span>
+        <input id={id('remind-after')} className="c-inp" inputMode="decimal" value={draft.remindHours}
+          onChange={(e) => onChange({ ...draft, remindHours: e.target.value })} />
+      </label>
+      <label className="c-field" htmlFor={id('remind')}>
+        <span className="c-lbl">whose bell is rung (blank for yours); any member may answer</span>
+        <input id={id('remind')} className="c-inp" value={draft.remind} spellCheck={false}
+          onChange={(e) => onChange({ ...draft, remind: e.target.value })} />
+      </label>
+      {/* Said at the fields, as the input editor says its own problem. */}
+      {!built.ok && <p className="warn-text" role="alert">{asSentence(built.message)}</p>}
+    </fieldset>
   )
 }
 
