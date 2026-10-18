@@ -3,6 +3,20 @@ import { loadCapacity, loadStats } from './api'
 import { DispatchChoice, asSentence, repositorySchemeRefused, type DispatchDraft } from './Dispatch'
 import { apiHeaders, chosenTenant, classifyFailure, dropRefusedTenant, errorHeading, type ApiError, type ApiErrorKind, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
+import {
+  MCP_SERVERS_KEY,
+  McpCredentialField,
+  McpServerPicker,
+  clearCredentials,
+  declaredMcpServers,
+  loadMcpServers,
+  offeredMcpServers,
+  readCredentials,
+  withMcpServers,
+  type CredentialFields,
+  type McpServer,
+  type McpServerList,
+} from './McpServers'
 import { workflowHref } from './agentlist'
 import { WorkspaceRefusalBanner, workspaceRefusal } from './WorkspaceRefusal'
 import { RunnerSelect, StepRunnerFacts, useProviderKeys, type ProviderKeys } from './RunnerPicker'
@@ -224,6 +238,9 @@ interface StepDraft {
    *  point sideways or forwards, so nothing here can make a cycle. */
   after: string[] | null
   input: InputField[]
+  /** The MCP servers this step names, as picked; only those its profile is
+   *  offered are sent (`mcpNamesOf`). */
+  mcp: string[]
   /** upstream step_id -> artifact filename. Keyed by step id and NOT by the
    *  dependency's position, so reordering or removing a step cannot silently
    *  re-point a filename at a different upstream. */
@@ -289,6 +306,7 @@ function planOf(
   steps: StepDraft[],
   byName: ReadonlyMap<string, RunnerProfile>,
   inputLimit: number | null,
+  mcpNamesOf: (s: StepDraft) => string[],
 ): { problems: StepProblem[]; body: Array<Record<string, unknown>> } {
   const problems: StepProblem[] = []
   const body: Array<Record<string, unknown>> = []
@@ -311,6 +329,15 @@ function planOf(
       problems.push({ key: s.key, stepId: id, kind: 'input', message: built.message })
       continue
     }
+    // THE STEP'S MCP PICKS go into its `input` (§4.3), as on the task form; a
+    // `mcp_servers` typed as a setting of one's own as well is set twice.
+    const mcpNames = mcpNamesOf(s)
+    if (mcpNames.length > 0 && Object.prototype.hasOwnProperty.call(built.input, MCP_SERVERS_KEY)) {
+      problems.push({ key: s.key, stepId: id, kind: 'input',
+        message: `the setting ${MCP_SERVERS_KEY} is set twice and an object has one value per key` })
+      continue
+    }
+    const withMcp = { ...built, input: withMcpServers(built.input, mcpNames) }
     // null means THIS API DID NOT SAY which keys the runner demands, which is
     // not the same as demanding none. Nothing is checked in that case and the
     // step says so; inventing a rule here would refuse valid workflows.
@@ -333,7 +360,7 @@ function planOf(
     // OVER THE SERVED LIMIT (live QA SUB-4): `submit_workflow` measures each
     // step's input against `max_input_bytes`, so a step over it is a 422 the
     // form can name first. Null limit (not read) checks nothing.
-    const tooBig = inputSizeProblem(built.input, inputLimit)
+    const tooBig = inputSizeProblem(withMcp.input, inputLimit)
     if (tooBig !== null) {
       problems.push({ key: s.key, stepId: id, kind: 'size', message: tooBig })
       continue
@@ -351,7 +378,7 @@ function planOf(
       // `Field(default_factory=dict)`, so an omitted `input` is an accepted
       // workflow whose every agent step fails -- the defect this screen had.
       // An empty object here is a caller who chose it, not a form that forgot.
-      input: built.input,
+      input: withMcp.input,
       depends_on: depends,
       // Omitted when empty, unlike `input`: an empty `input_from` is exactly
       // the default and stages nothing, whereas an empty `input` is a payload
@@ -430,7 +457,7 @@ export function OnFailureChoice({ value, onChange }: {
 /** The plan an untouched form starts from, and the one "Submit another" returns to. */
 const firstSteps = (): StepDraft[] => [{
   key: 1, id: autoId('', new Set()), profile: '', stage: 0,
-  after: null, input: [], from: {},
+  after: null, input: [], mcp: [], from: {},
 }]
 const firstDispatch = (): DispatchDraft => ({ strategy: DEFAULT_STRATEGY, carrier: DEFAULT_CARRIER, repositoryUrl: '' })
 
@@ -466,6 +493,60 @@ function Form({ sources }: { sources: FormSources }) {
   const rawInput = sources.limits === null ? undefined : sources.limits.max_input_bytes
   const inputLimit = typeof rawInput === 'number' && rawInput > 0 ? rawInput : null
 
+  // THE MCP SERVERS (MCP-UI-WF; docs/design/registered-mcp-servers.md §4.3
+  // "Workflows"). Each step names its own, in its `input.mcp_servers`, from a
+  // picker drawn only when its profile declares the input; the workspace's
+  // list is read once, and only once some step's profile does. A pick the
+  // list no longer offers that step -- another runner, a server disabled
+  // since -- is not sent, as on the task form.
+  // ONE CREDENTIAL PER `dispatch` SERVER FOR THE WHOLE WORKFLOW:
+  // `WorkflowCreate.mcp_credentials` is a single top-level map and every step
+  // naming the server uses that one stored value, so its field is drawn once,
+  // under the plan, however many steps name it. The value stays in the
+  // field's DOM node (`mcpFields`), never in state, and leaves only in the
+  // POST's `mcp_credentials`; the field is emptied once the API has answered.
+  const mcpDeclared = steps.some((s) => declaredMcpServers(byName.get(s.profile)) !== null)
+  const [mcpList, setMcpList] = useState<Result<McpServerList> | null>(null)
+  useEffect(() => {
+    if (!mcpDeclared) return
+    let live = true
+    void loadMcpServers().then((r) => {
+      if (live) setMcpList(r)
+    })
+    return () => {
+      live = false
+    }
+  }, [mcpDeclared])
+  const mcpData = mcpList !== null && (mcpList.status === 'ok' || mcpList.status === 'stale') ? mcpList.data : null
+  const mcpNamesOf = (s: StepDraft): string[] => {
+    if (mcpData === null || declaredMcpServers(byName.get(s.profile)) === null) return []
+    const offered = offeredMcpServers(mcpData, s.profile)
+    return s.mcp.filter((n) => offered.some((o) => o.name === n))
+  }
+  const mcpNamed = new Set(steps.flatMap(mcpNamesOf))
+  const mcpAsked: McpServer[] = mcpData === null ? []
+    : mcpData.servers.filter((s) => mcpNamed.has(s.name) && s.auth.mode === 'dispatch')
+  const mcpFields = useRef(new Map<string, HTMLInputElement>())
+  const [mcpFilled, setMcpFilled] = useState<ReadonlySet<string>>(() => new Set())
+  const [mcpLifetimes, setMcpLifetimes] = useState<Record<string, number>>({})
+  const mcpUnfilled = mcpAsked.filter((s) => !mcpFilled.has(s.name)).map((s) => s.name)
+  const onMcpFilled = (name: string, on: boolean) =>
+    setMcpFilled((was) => {
+      const next = new Set(was)
+      if (on) next.add(name)
+      else next.delete(name)
+      return next
+    })
+  const onMcpLifetime = (name: string, seconds: number) => setMcpLifetimes((was) => ({ ...was, [name]: seconds }))
+  const forgetCredentials = () => {
+    clearCredentials(mcpFields)
+    setMcpFilled(new Set())
+  }
+  const mcpPicker: StepMcp = {
+    list: mcpList, namesOf: mcpNamesOf, fields: mcpFields, filled: mcpFilled, onFilled: onMcpFilled,
+    lifetimes: mcpLifetimes, onLifetime: onMcpLifetime,
+  }
+
   const stageCount = steps.reduce((m, s) => Math.max(m, s.stage + 1), 1)
   const stages = Array.from({ length: stageCount }, (_, i) => steps.filter((s) => s.stage === i))
   const atCeiling = maxSteps !== null && steps.length >= maxSteps
@@ -474,7 +555,7 @@ function Form({ sources }: { sources: FormSources }) {
     const taken = new Set(steps.map((s) => s.id))
     setSteps([...steps, {
       key: nextKey, id: autoId('', taken), profile: '', stage,
-      after: null, input: [], from: {},
+      after: null, input: [], mcp: [], from: {},
     }])
     setNextKey(nextKey + 1)
   }
@@ -498,7 +579,7 @@ function Form({ sources }: { sources: FormSources }) {
   // THE LIVE PLAN. What disables the button, titles the send panel and lists
   // the steps that stop it -- the same pass `send` makes, so what the panel
   // says and what the click does cannot disagree.
-  const plan = planOf(steps, byName, inputLimit)
+  const plan = planOf(steps, byName, inputLimit, mcpNamesOf)
   // THE REPOSITORY THE CLICK PUSHES TO (VQA V139), as on the task form: the
   // trimmed URL, named in the panel whenever the strategy pushes. A push with
   // nowhere to push is refused by the API at either scale
@@ -511,7 +592,9 @@ function Form({ sources }: { sources: FormSources }) {
   // the field said "it will refuse this one" under "Ready to send". It is the
   // field's own test, so the field, the heading and the button agree.
   const badRepo = repositorySchemeRefused(repo)
-  const blocked = plan.problems.length > 0 || noRepo || badRepo
+  // A `dispatch` server some step names, with no credential typed for it, is
+  // refused 422 `mcp_credential_missing`; the button holds until it is given.
+  const blocked = plan.problems.length > 0 || noRepo || badRepo || mcpUnfilled.length > 0
   // WHAT THIS CLICK WOULD SEND, as one comparable value (VQA V048, owner
   // decision Q1 on #1038): after a 201 the button is "Submit another" for as
   // long as the form still says exactly what was sent.
@@ -523,6 +606,8 @@ function Form({ sources }: { sources: FormSources }) {
     setDispatch(firstDispatch())
     setOnFailure('fail_workflow')
     setPriority('0')
+    setMcpLifetimes({})
+    forgetCredentials()
     setSub({ kind: 'idle' })
     setSentKey(null)
     setRestarted((n) => n + 1)
@@ -581,13 +666,15 @@ function Form({ sources }: { sources: FormSources }) {
     // button is disabled while a problem stands, so this branch should not be
     // reachable; it stays because "the form refuses before it posts" is the
     // invariant, and a disabled attribute is only one way of keeping it.
-    const { problems, body } = planOf(steps, byName, inputLimit)
+    const { problems, body } = planOf(steps, byName, inputLimit, mcpNamesOf)
     if (problems.length > 0) { setSub({ kind: 'not_sent', problems }); return }
     // ONE POST PER CLICK (live QA SUB-1, the task form's defect): nothing is
     // sent while a request is in flight, or while the form still says exactly
     // what the last 201 created.
     if (inFlight.current || sub.kind === 'sending' || justSent) return
-    if (!priorityOk || noRepo || badRepo) return
+    if (!priorityOk || noRepo || badRepo || mcpUnfilled.length > 0) return
+    // Read once, here, from the fields; never held in state.
+    const credentials = readCredentials(mcpFields, mcpAsked, mcpAsked.map((s) => s.name), mcpLifetimes)
     inFlight.current = true
     setSub({ kind: 'sending' })
     setSentIds(body.map((b) => String(b.step_id)))
@@ -601,8 +688,15 @@ function Form({ sources }: { sources: FormSources }) {
       ...(repo === '' ? {} : { repository_url: repo }),
       ...(onFailure === 'fail_workflow' ? {} : { on_step_failure: onFailure }),
       ...(priorityN === 0 ? {} : { priority: priorityN }),
+      // BESIDE `steps`, never in a step's `input`, which is stored and shown
+      // (§4.3). One map for the workflow; omitted when no step names a
+      // `dispatch` server.
+      ...(Object.keys(credentials).length === 0 ? {} : { mcp_credentials: credentials }),
     }).then((result) => {
       inFlight.current = false
+      // NEVER RENDERED BACK: whatever the answer, the fields are emptied, and
+      // a second send needs the credential typed again.
+      forgetCredentials()
       if (result.kind === 'created') setSentKey(sending)
       setSub(result)
     })
@@ -664,7 +758,7 @@ function Form({ sources }: { sources: FormSources }) {
                     nameProblem={plan.problems.find((p) => p.key === s.key && p.kind === 'name')?.message ?? null}
                     sizeProblem={plan.problems.find((p) => p.key === s.key && p.kind === 'size')?.message ?? null}
                     refused={sub.kind === 'rejected' ? refusal?.byStep[s.id.trim()] ?? null : null}
-                    removable={steps.length > 1}
+                    removable={steps.length > 1} mcp={mcpPicker}
                     onChange={(next) => patch(s.key, next)} onRemove={() => drop(s.key)} />
                 ))}
                 {/* A FULL TILE AT THE END OF THE ROW (#118): its words say where
@@ -693,6 +787,16 @@ function Form({ sources }: { sources: FormSources }) {
               step limit · nothing caps this form
               <span className="ctl-panel-note-detail">{sources.limitsDetail}</span>
             </p>
+          )}
+          {mcpAsked.length > 0 && (
+            <fieldset className="btp">
+              <legend className="btp-h">MCP credentials for this workflow</legend>
+              {mcpAsked.map((srv) => (
+                <McpCredentialField key={srv.name} server={srv} scope="workflow" fields={mcpFields}
+                  filled={mcpFilled.has(srv.name)} onFilled={onMcpFilled}
+                  lifetime={mcpLifetimes[srv.name]} onLifetime={onMcpLifetime} />
+              ))}
+            </fieldset>
           )}
         </Move>
 
@@ -795,6 +899,11 @@ function Form({ sources }: { sources: FormSources }) {
               ))}
             </p>
           )}
+          {mcpUnfilled.length > 0 && (
+            <p className="warn-text" role="status">
+              {mcpUnfilled.join(', ')} {mcpUnfilled.length === 1 ? 'needs its' : 'need their'} credential for this run.
+            </p>
+          )}
           {justSent ? (
             <Button key="another" kind="primary" full onClick={another}>Submit another</Button>
           ) : (
@@ -813,7 +922,19 @@ function Form({ sources }: { sources: FormSources }) {
   )
 }
 
-function StepCard({ step, steps, profiles, keys, required, nameProblem, sizeProblem, refused, removable, onChange, onRemove }: {
+/** What every step's MCP picker shares: the one list read, and the workflow's credential fields. */
+interface StepMcp {
+  list: Result<McpServerList> | null
+  /** The picks a step would send: those its profile is offered. */
+  namesOf: (s: StepDraft) => string[]
+  fields: CredentialFields
+  filled: ReadonlySet<string>
+  onFilled: (name: string, filled: boolean) => void
+  lifetimes: Readonly<Record<string, number>>
+  onLifetime: (name: string, seconds: number) => void
+}
+
+function StepCard({ step, steps, profiles, keys, required, nameProblem, sizeProblem, refused, removable, mcp, onChange, onRemove }: {
   step: StepDraft
   steps: StepDraft[]
   /** The whole catalogue: a disabled runner is drawn, refused, with its reason. */
@@ -834,11 +955,13 @@ function StepCard({ step, steps, profiles, keys, required, nameProblem, sizeProb
    *  (a 422 naming it), or null. */
   refused: string | null
   removable: boolean
+  mcp: StepMcp
   onChange: (next: StepDraft) => void
   onRemove: () => void
 }) {
   const [open, setOpen] = useState(false)
   const chosen = profiles.find(([name]) => name === step.profile)
+  const mcpMax = declaredMcpServers(chosen?.[1])
   const depends = dependsOf(step, steps)
   const built = buildInput(step.input)
   // Every step in an EARLIER stage. Offering a step in the same stage or a
@@ -854,6 +977,8 @@ function StepCard({ step, steps, profiles, keys, required, nameProblem, sizeProb
       ? autoId(profile, new Set(steps.filter((s) => s.key !== step.key).map((s) => s.id)))
       : step.id,
     input: seedFields(step.input, requiredInputKeys(profiles.find(([n]) => n === profile)?.[1])),
+    // Another runner is offered other servers, as on the task form.
+    mcp: [],
   })
 
   return (
@@ -890,6 +1015,14 @@ function StepCard({ step, steps, profiles, keys, required, nameProblem, sizeProb
       ) : (
         <InputFields profile={step.profile} fields={step.input} required={required}
           idPrefix={stepFields(step.key)} onChange={(input) => onChange({ ...step, input })} />
+      )}
+      {/* ONLY FOR A PROFILE THAT DECLARES `mcp_servers`: any other refuses the key. */}
+      {mcpMax !== null && (
+        <McpServerPicker list={mcp.list} profile={step.profile} max={mcpMax} picked={mcp.namesOf(step)}
+          onPick={(names) => onChange({ ...step, mcp: names })}
+          fields={mcp.fields} filled={mcp.filled} onFilled={mcp.onFilled}
+          lifetimes={mcp.lifetimes} onLifetime={mcp.onLifetime}
+          credentialsElsewhere="Its credential is asked for once, for the whole workflow, under the plan." />
       )}
 
       {/* SENTENCES (QA G4-31): the fragments are written to follow a step's

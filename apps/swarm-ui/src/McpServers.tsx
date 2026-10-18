@@ -28,6 +28,12 @@ import './styles/keys.css'
  * server's credential is the caller's, sent with each task; a
  * `workspace_secret` server's is the workspace secret granted to `mcp:<name>`.
  *
+ * LAST USED (MCP-API-B's `last_attached_at`, §4.11) is when a task of this
+ * workspace last attached the server. Null is "never" -- unless the list's
+ * `last_attached_complete` is false, when the API's newest-first read was cut
+ * off and null only means "not recently" -- and an API that does not serve the
+ * field says so rather than "never".
+ *
  * THE NAT ADDRESSES (§4.9) are where every worker's call leaves the platform,
  * so a server's owner can allowlist them. Read from the list's
  * `egress_addresses`; an API that does not serve the field gets a sentence
@@ -44,6 +50,11 @@ import './styles/keys.css'
  * node alone, never in React state, is read once when the form sends it as
  * the top-level `mcp_credentials` map (never in `input`, which is stored and
  * shown), and the field is emptied as soon as the API has answered.
+ *
+ * THE WORKFLOW FORM (MCP-UI-WF, §4.3 "Workflows") draws the picker per step
+ * and asks for each picked `dispatch` server's credential once, for the whole
+ * workflow (`McpCredentialField`), because `WorkflowCreate.mcp_credentials` is
+ * one map every step naming the server uses.
  */
 
 export type McpAuthMode = 'none' | 'dispatch' | 'workspace_secret'
@@ -63,6 +74,9 @@ export interface McpServer {
   consumer: string
   updated_at: string | null
   updated_by: string | null
+  /** When a task of this workspace last attached it; null when none has,
+   *  undefined when this API does not serve the field (MCP-API-B). */
+  last_attached_at: string | null | undefined
 }
 
 export interface McpServerList {
@@ -71,6 +85,9 @@ export interface McpServerList {
   servers: McpServer[]
   /** The NAT addresses to allowlist, or null when this API does not serve them. */
   egress_addresses: string[] | null
+  /** False when the API's newest-first read of attaches was cut off, so a
+   *  null `last_attached_at` means "not recently" rather than "never". */
+  last_attached_complete: boolean
 }
 
 const LIST = '/v1/mcp-servers'
@@ -115,6 +132,7 @@ function normServer(raw: unknown): McpServer | null {
     consumer: text(raw.consumer) ?? `mcp:${name}`,
     updated_at: text(raw.updated_at),
     updated_by: text(raw.updated_by),
+    last_attached_at: !('last_attached_at' in raw) ? undefined : text(raw.last_attached_at),
   }
 }
 
@@ -125,6 +143,9 @@ export function normMcpServerList(raw: unknown): McpServerList {
     can_manage: r.can_manage === true,
     servers: (Array.isArray(r.servers) ? r.servers : []).map(normServer).filter((s): s is McpServer => s !== null),
     egress_addresses: Array.isArray(r.egress_addresses) ? strings(r.egress_addresses) : null,
+    // Only an explicit false is incomplete: an API that predates the flag
+    // read every attach it had.
+    last_attached_complete: r.last_attached_complete !== false,
   }
 }
 
@@ -166,6 +187,19 @@ function refusal(e: ApiError): string {
 function modeWords(m: McpAuthMode): string {
   if (m === 'dispatch') return 'per-run, sent by the caller with each task'
   return m === 'none' ? 'none' : 'from the workspace store'
+}
+
+/**
+ * The "Last used" cell. Null is a fact -- no task of this workspace has
+ * attached the server -- so it reads "never", unless the API says its read was
+ * cut off, when it is only "not recently". An API that does not serve the
+ * field says nothing either way, and the cell says so.
+ */
+function LastUsed({ at, complete }: { at: string | null | undefined; complete: boolean }) {
+  if (at === undefined) return <td title="This API does not say when a server was last used.">not served</td>
+  if (at !== null) return <td title={at}>{timeAgo(at)}</td>
+  return complete ? <td>never</td>
+    : <td title="Not among the newest attaches the API read; it may have been used before them.">not recently</td>
 }
 
 /** Settings › MCP servers, routed in-app like the panel's own links. */
@@ -239,6 +273,7 @@ function Registrations({ data, onChange }: { data: McpServerList; onChange: () =
               <th scope="col">Profiles</th>
               <th scope="col">Tools</th>
               <th scope="col">State</th>
+              <th scope="col">Last used</th>
               {data.can_manage && <th scope="col" aria-label="Actions" />}
             </tr>
           </thead>
@@ -259,6 +294,7 @@ function Registrations({ data, onChange }: { data: McpServerList; onChange: () =
                 <td title={s.updated_at === null ? undefined : `changed ${timeAgo(s.updated_at)}${s.updated_by === null ? '' : ` by ${s.updated_by}`}`}>
                   {s.enabled ? 'enabled' : 'disabled'}
                 </td>
+                <LastUsed at={s.last_attached_at} complete={data.last_attached_complete} />
                 {data.can_manage && (
                   <td>
                     <span className="pk-form-row">
@@ -543,6 +579,66 @@ export function clearCredentials(fields: CredentialFields): void {
   for (const el of fields.current.values()) el.value = ''
 }
 
+/**
+ * One `dispatch` server's per-run credential: an UNCONTROLLED password field
+ * whose node is registered in `fields` under the server's name, and its
+ * lifetime. Drawn by the picker beside a pick on the task form, and once per
+ * server for the whole workflow on the workflow form (§4.3 "Workflows").
+ */
+export function McpCredentialField({
+  server,
+  fields,
+  filled,
+  onFilled,
+  lifetime,
+  onLifetime,
+  scope = 'task',
+}: {
+  server: McpServer
+  fields: CredentialFields
+  filled: boolean
+  onFilled: (name: string, filled: boolean) => void
+  lifetime: number | undefined
+  onLifetime: (name: string, seconds: number) => void
+  /** What the credential is sent with: one task, or every step of a workflow that names it. */
+  scope?: 'task' | 'workflow'
+}) {
+  const id = useId()
+  const name = server.name
+  return (
+    <span className="pk-form-row">
+      <label htmlFor={`${id}-c`}>Credential for {name}</label>
+      <input
+        id={`${id}-c`}
+        ref={(el) => {
+          if (el === null) fields.current.delete(name)
+          else fields.current.set(name, el)
+        }}
+        className="ur-search pk-input"
+        type="password"
+        autoComplete="off"
+        autoCapitalize="off"
+        autoCorrect="off"
+        spellCheck={false}
+        placeholder={filled ? undefined : 'Paste the credential for this run'}
+        aria-describedby={`${id}-why`}
+        onChange={(e) => onFilled(name, e.target.value !== '')}
+      />
+      <label htmlFor={`${id}-ttl`}>expires after</label>
+      <select id={`${id}-ttl`} value={lifetime ?? DEFAULT_LIFETIME}
+        onChange={(e) => onLifetime(name, Number(e.target.value))}>
+        {CREDENTIAL_LIFETIMES.map((l) => <option key={l.seconds} value={l.seconds}>{l.label}</option>)}
+      </select>
+      <span id={`${id}-why`} className="jb-note">
+        {scope === 'task'
+          ? 'Sent once with this task, to the worker only, and destroyed when the task ends.'
+          : 'Sent once with this workflow, to the workers of the steps that name it only, and destroyed when its tasks end.'}
+        {' '}The field is emptied as soon as the platform answers.
+      </span>
+    </span>
+  )
+}
+
 export function McpServerPicker({
   list,
   profile,
@@ -554,6 +650,7 @@ export function McpServerPicker({
   onFilled,
   lifetimes,
   onLifetime,
+  credentialsElsewhere,
 }: {
   /** The workspace's registrations; null while the first read runs. */
   list: Result<McpServerList> | null
@@ -566,6 +663,9 @@ export function McpServerPicker({
   onFilled: (name: string, filled: boolean) => void
   lifetimes: Readonly<Record<string, number>>
   onLifetime: (name: string, seconds: number) => void
+  /** Where a picked `dispatch` server's credential is asked for instead of
+   *  beside the pick: the workflow form asks once for every step. */
+  credentialsElsewhere?: string
 }) {
   const id = useId()
   const data = list !== null && (list.status === 'ok' || list.status === 'stale') ? list.data : null
@@ -595,36 +695,12 @@ export function McpServerPicker({
                     onChange={(e) => onPick(e.target.checked ? [...picked, s.name] : picked.filter((n) => n !== s.name))} />
                   <span><code>{s.name}</code>{s.description !== '' && <> &middot; {s.description}</>}</span>
                 </label>
-                {on && s.auth.mode === 'dispatch' && (
-                  <span className="pk-form-row">
-                    <label htmlFor={`${id}-${s.name}-c`}>Credential for {s.name}</label>
-                    <input
-                      id={`${id}-${s.name}-c`}
-                      ref={(el) => {
-                        if (el === null) fields.current.delete(s.name)
-                        else fields.current.set(s.name, el)
-                      }}
-                      className="ur-search pk-input"
-                      type="password"
-                      autoComplete="off"
-                      autoCapitalize="off"
-                      autoCorrect="off"
-                      spellCheck={false}
-                      placeholder={filled.has(s.name) ? undefined : 'Paste the credential for this run'}
-                      aria-describedby={`${id}-${s.name}-why`}
-                      onChange={(e) => onFilled(s.name, e.target.value !== '')}
-                    />
-                    <label htmlFor={`${id}-${s.name}-ttl`}>expires after</label>
-                    <select id={`${id}-${s.name}-ttl`} value={lifetimes[s.name] ?? DEFAULT_LIFETIME}
-                      onChange={(e) => onLifetime(s.name, Number(e.target.value))}>
-                      {CREDENTIAL_LIFETIMES.map((l) => <option key={l.seconds} value={l.seconds}>{l.label}</option>)}
-                    </select>
-                    <span id={`${id}-${s.name}-why`} className="jb-note">
-                      Sent once with this task, to the worker only, and destroyed when the task ends. The field is
-                      emptied as soon as the platform answers.
-                    </span>
-                  </span>
-                )}
+                {on && s.auth.mode === 'dispatch' && (credentialsElsewhere === undefined ? (
+                  <McpCredentialField server={s} fields={fields} filled={filled.has(s.name)} onFilled={onFilled}
+                    lifetime={lifetimes[s.name]} onLifetime={onLifetime} />
+                ) : (
+                  <span className="jb-note">{credentialsElsewhere}</span>
+                ))}
                 {on && s.auth.mode === 'workspace_secret' && (
                   <span className="jb-note">Uses the workspace secret granted to <code>{s.consumer}</code>.</span>
                 )}
