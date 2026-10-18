@@ -132,10 +132,14 @@ describe('G5-12: an identity is cut in the middle, never through the tenant’s 
     expect(key?.textContent).toBe('u-bogdan@')
     expect(tail?.textContent).toBe(DOMAIN)
     // MUTATION: let the key shrink with the others, or cut the whole value at
-    // its end again. The key gives way LAST (VQA V026): a thousandth of the
-    // others' shrink weight, so it shrinks only once they are at their floor,
-    // and then with an ellipsis rather than a hard clip mid-letter.
-    expect(won(key!, ['flex', 'flex-shrink'], WIDE)).toBe('0 0.001 auto')
+    // its end again. The key gives way LAST (VQA V026), and then with an
+    // ellipsis rather than a hard clip mid-letter. The
+    // key does not shrink at all -- any factor gave it a sub-pixel share and
+    // its ellipsis while the head was still wide (VQA V186) -- and a key
+    // longer than the column is capped at it less the two 2ch floors, then
+    // cut with an ellipsis (vqa2.r3.admin.test.tsx).
+    expect(won(key!, ['flex', 'flex-shrink'], WIDE)).toBe('0 0 auto')
+    expect(won(key!, 'max-width', WIDE)).toBe('calc(100% - 4ch)')
     expect(won(key!, 'text-overflow', WIDE)).toBe('ellipsis')
     expect(won(key!, ['overflow', 'overflow-x'], WIDE)).toBe('hidden')
     for (const part of [head!, tail!]) {

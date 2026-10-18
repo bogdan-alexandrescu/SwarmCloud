@@ -12,7 +12,7 @@ import {
 } from './RepositoriesData'
 import type { Result } from './fetch'
 import {
-  LIST, GT_PAGE, TestsMapped, testsMappedWhy, scrollToShow, stripFade, UrCapRow, UrConfirmIndex, cutDetail, UrCrumb, UrFreshPill, UrLink, UrNavButton, UrNotServed, UrRadio, UrRefresh, UrRegion, repoAddress,
+  LIST, GT_PAGE, TestsMapped, testsMappedWhy, scrollToShow, stripFade, UrCapRow, UrConfirmIndex, cutDetail, UrCrumb, UrFreshPill, UrLink, UrNavButton, UrNotServed, UrRadio, UrRefresh, UrRegion, SlashBreaks, repoAddress,
   type UrRead,
   useUrRead, writeFailure,
 } from './RepositoriesParts'
@@ -98,7 +98,9 @@ export function RepositoryDetail({
       <div className="ur-page ur-detail">
         {crumb}
         <PageHead title={title}>
-          <UrRefresh reads={[detail, index]} />
+          {/* The age is the registration's (V223): while it is pending or failed there is no page to date,
+              and the index read beside it is not this page's read. Refresh still re-runs both. */}
+          <UrRefresh reads={[detail, index]} ageOf={[detail]} />
         </PageHead>
         <UrRegion
           state={detail.state}
@@ -481,7 +483,9 @@ function ModuleRows({ doc }: { doc: IndexDoc }) {
     <div className="ur-rows">
       {doc.modules.map((m) => (
         <div className="ur-mrow" key={m.path}>
-          <code>{m.path}</code>
+          <code title={m.path}>
+            <SlashBreaks path={m.path} />
+          </code>
           <span>{m.purpose ?? <Dash why="The indexer wrote no purpose for this module" />}</span>
           <em>{m.files === null ? <Dash why="File count not reported" /> : m.files}</em>
         </div>
@@ -525,7 +529,10 @@ function HotSpotRows({ doc, limit }: { doc: IndexDoc; limit?: number }) {
         <div className="ur-rows">
           {rows.map((h) => (
             <div className="ur-hs" key={h.path}>
-              <span className="ur-p">{h.path}</span>
+              {/* Ellipsised in a narrow card: the whole path is its title, and on a phone it wraps on its own line (V218). */}
+              <span className="ur-p" title={h.path}>
+                <SlashBreaks path={h.path} />
+              </span>
               <span className="ur-bar is-warn" role="img" aria-label={`${h.changes ?? 'unknown'} changes`}>
                 {h.changes !== null && max > 0 && <i style={{ width: `${Math.round((100 * h.changes) / max)}%` }} />}
               </span>
@@ -899,12 +906,16 @@ function SettingsTab({
                 <span>status</span>
               </div>
               {rows.map((l) => (
+                // Each cell names its column (V221): stacked on a phone the head row is gone, and
+                // "pyright", "410 files" and a dash read as nothing without it.
                 <div className="ur-lang" key={l.language}>
                   <b>{l.language}</b>
-                  <span>{l.grammar === null ? <Dash why="No tree-sitter grammar is bundled for this language" /> : <code>{l.grammar}</code>}</span>
-                  <span>{l.server === null ? <Dash why="No language server is supported for this language" /> : <code>{l.server}</code>}</span>
-                  <small>{langNote(l)}</small>
-                  <ToneMark tone={LANG_TONE[l.status ?? ''] ?? 'unknown'}>{l.status === null ? 'not read' : l.status.replace(/_/g, ' ')}</ToneMark>
+                  <span data-label="grammar">{l.grammar === null ? <Dash why="No tree-sitter grammar is bundled for this language" /> : <code>{l.grammar}</code>}</span>
+                  <span data-label="language server">{l.server === null ? <Dash why="No language server is supported for this language" /> : <code>{l.server}</code>}</span>
+                  <small data-label="last index">{langNote(l)}</small>
+                  <span className="ur-lang-st">
+                    <ToneMark tone={LANG_TONE[l.status ?? ''] ?? 'unknown'}>{l.status === null ? 'not read' : l.status.replace(/_/g, ' ')}</ToneMark>
+                  </span>
                 </div>
               ))}
             </div>

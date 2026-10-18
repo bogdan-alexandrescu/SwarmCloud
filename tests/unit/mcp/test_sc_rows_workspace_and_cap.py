@@ -324,7 +324,8 @@ def test_launch_all_honours_the_30_cap_and_names_each_workspace(_plugin_root, mo
     # SC-WS-DESC: the run's name has no workspace; its description leads with it.
     assert first["title"] == "SC · flow 00 · 3 steps"
     assert first["workspace"] == "eng"
-    assert first["args"] == {"attach": "wf_00", "title": "flow 00", "workspace": "eng"}
+    assert first["args"] == {"attach": "wf_00", "title": "flow 00", "workspace": "eng",
+                             "titled_copy": first["script_path"]}
     assert out["not_followed"][0] == {"workflow_id": "wf_30", "workspace": "eng", "title": "flow 30",
                                       "attach_with": "/sc attach wf_30"}
 

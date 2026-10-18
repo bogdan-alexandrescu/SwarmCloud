@@ -719,7 +719,7 @@ function Heartbeat({
   now: number
 }) {
   const ageMs = heartbeatAgeMs(lease, page.evaluated_at, now)
-  const age = formatDuration(ageMs)
+  const age = unbroken(formatDuration(ageMs))
   const since = lease.heartbeat_ever ? age : `no beat yet, ${age}`
   // A page that arrived without its thresholds cannot be judged, and a local
   // grace would colour at a threshold the reconciler does not act on: the age
@@ -729,7 +729,7 @@ function Heartbeat({
   if (kind === 'starting') {
     const deadline = Date.parse(lease.dispatch_deadline)
     const left = Number.isFinite(deadline) ? deadline - now : NaN
-    const due = !Number.isFinite(left) ? null : left > 0 ? `deadline in ${formatDuration(left)}` : 'deadline due'
+    const due = !Number.isFinite(left) ? null : left > 0 ? `deadline in ${unbroken(formatDuration(left))}` : 'deadline due'
     return (
       <ToneMark tone="info" title={copy}>
         starting · {since}
@@ -742,6 +742,16 @@ function Heartbeat({
   return (
     <ToneMark tone={tone} title={copy}>{word} · {since}</ToneMark>
   )
+}
+
+/**
+ * A duration is one word (visual QA V183, 2026-10-16): a phone record wrapped
+ * the Heartbeat value inside it, `21m` / `26s`. Its units are joined by a
+ * no-break space, so the mark wraps between its words and never inside a
+ * figure.
+ */
+function unbroken(duration: string): string {
+  return duration.replace(/ /g, '\u00a0')
 }
 
 /**

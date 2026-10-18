@@ -261,18 +261,89 @@ const MARK_FROM_PX = { end: 2, mid: -MARK_PX / 2 } as const
  * the last disc ends at the track's edge or before, and each earlier one ends
  * `MARK_GAP_PX` before the next starts. A mark moves only when it has to, and
  * only left -- its title still gives the instant. Unmeasured, the instant.
+ * The marks of a lane with no bars: a lane's row lays out both (`laneLayout`).
  */
 export function markLefts(marks: readonly { pct: number; end: boolean }[], trackPx: number | null): number[] {
-  const out = marks.map((m) => m.pct)
-  if (trackPx === null || !(trackPx > 0)) return out
-  const order = marks.map((_, i) => i).sort((a, b) => marks[a]!.pct - marks[b]!.pct || a - b)
-  let edge = trackPx
-  for (let j = order.length - 1; j >= 0; j--) {
-    const i = order[j]!
-    const from = marks[i]!.end ? MARK_FROM_PX.end : MARK_FROM_PX.mid
-    const start = Math.max(0, Math.min((marks[i]!.pct / 100) * trackPx + from, edge - MARK_PX))
-    out[i] = ((start - from) / trackPx) * 100
-    edge = start - MARK_GAP_PX
+  return laneLayout([], marks, trackPx).marks
+}
+
+/**
+ * A held, fenced or parked bar's painted floor (`.tl-seg.is-hold` and its
+ * siblings' `min-width`). The CSS floor was 8 px, but the bar's 5 px padding
+ * and 1.5 px borders painted it 12-13 px whatever its width said, so a layout
+ * that took 8 px as the floor still drew bars past the track's edge.
+ */
+export const BAR_MIN_PX = 14
+/**
+ * The narrowest bar that prints its words (`gen 2`, `parked`). Below it the
+ * 5 px padding left a 1-4 px window, and the clipped first letter read as a
+ * glyph on every floor-width bar; the bar's title still says them (V039).
+ */
+export const BAR_WORDS_MIN_PX = 36
+
+/**
+ * WHERE A LANE'S BARS AND MARKS ARE DRAWN, together (VQA2 V039, 2026-10-16).
+ *
+ * `markLefts` kept the marks inside the track and apart, but the bars were
+ * placed at their instants with a pixel floor: three short attempts in the
+ * last half hour of a 24 h span painted three 12 px bars over each other
+ * and past the track's right edge, under the end mark. Measured, every item
+ * is laid out from the right, in one pass, by where it starts:
+ *
+ * - a bar starts at its instant and is at least `BAR_MIN_PX` wide, as the
+ *   CSS floor drew it, but ends before the next item's start less a gap; a
+ *   bar that then has no room is moved left, a long one is trimmed at its
+ *   end, so its start stays its instant;
+ * - an end mark ends before the next bar or mark;
+ * - a mid-lane mark (a cancel request, drawn over its bar) keeps clear of
+ *   the other marks only, and moves no bar.
+ *
+ * Nothing moves right, and only as far left as it has to; the titles still
+ * give the instants. Unmeasured, the instants and the bars' old floor.
+ */
+export function laneLayout(
+  bars: readonly { from: number; to: number }[],
+  marks: readonly { pct: number; end: boolean }[],
+  trackPx: number | null,
+): { bars: { left: number; width: number }[]; marks: number[] } {
+  const plain = {
+    bars: bars.map((b) => ({ left: b.from, width: Math.max(b.to - b.from, 0.4) })),
+    marks: marks.map((m) => m.pct),
+  }
+  if (trackPx === null || !(trackPx > 0)) return plain
+  const px = (p: number) => (p / 100) * trackPx
+  const back = (x: number) => (x / trackPx) * 100
+  type Item = { kind: 'bar' | 'end' | 'mid'; i: number; start: number }
+  const items: Item[] = [
+    ...bars.map((b, i) => ({ kind: 'bar' as const, i, start: px(b.from) })),
+    ...marks.map((m, i) => ({
+      kind: m.end ? ('end' as const) : ('mid' as const),
+      i,
+      start: px(m.pct) + (m.end ? MARK_FROM_PX.end : MARK_FROM_PX.mid),
+    })),
+  ]
+  // Right to left; at one start a mark is placed before the bar under it.
+  const rank = { mid: 0, end: 1, bar: 2 } as const
+  items.sort((a, b) => b.start - a.start || rank[a.kind] - rank[b.kind] || b.i - a.i)
+  // The next start to the right, of a bar, an end mark and a mid mark.
+  const edge = { bar: trackPx + MARK_GAP_PX, end: trackPx + MARK_GAP_PX, mid: trackPx + MARK_GAP_PX }
+  const out = { bars: plain.bars.slice(), marks: plain.marks.slice() }
+  for (const it of items) {
+    if (it.kind === 'bar') {
+      const b = bars[it.i]!
+      const natural = Math.max(px(b.to), px(b.from) + BAR_MIN_PX)
+      const right = Math.min(natural, edge.bar - MARK_GAP_PX, edge.end - MARK_GAP_PX)
+      const left = Math.max(0, Math.min(px(b.from), right - BAR_MIN_PX))
+      const width = Math.max(right - left, Math.min(BAR_MIN_PX, trackPx))
+      out.bars[it.i] = { left: back(left), width: back(width) }
+      edge.bar = Math.min(edge.bar, left)
+      continue
+    }
+    const from = it.kind === 'end' ? MARK_FROM_PX.end : MARK_FROM_PX.mid
+    const limit = it.kind === 'end' ? Math.min(edge.bar, edge.end, edge.mid) : Math.min(edge.end, edge.mid)
+    const start = Math.max(0, Math.min(it.start, limit - MARK_GAP_PX - MARK_PX))
+    out.marks[it.i] = back(start - from)
+    edge[it.kind] = Math.min(edge[it.kind], start)
   }
   return out
 }
@@ -1632,10 +1703,21 @@ function LaneRow({
   const wide = until - since > 36 * 3_600_000
   const segs = lane.segs.filter((s) => s.to > since && s.from < until)
   const marks = lane.marks.filter((m) => m.at >= since && m.at <= until)
-  const lefts = markLefts(
+  // The bars a floor widens (not a wait's 2 px line) are laid out with the
+  // marks, so none is drawn past the track's edge or over another (V039).
+  const barAt = segs.map((s, i) => (s.kind === 'wait' ? -1 : i)).filter((i) => i >= 0)
+  const layout = laneLayout(
+    barAt.map((i) => ({ from: pct(segs[i]!.from, since, until), to: pct(segs[i]!.to, since, until) })),
     marks.map((m) => ({ pct: pct(m.at, since, until), end: m.kind !== 'cancel_requested' })),
     trackPx,
   )
+  const lefts = layout.marks
+  const boxOf = new Map(barAt.map((segAt, j) => [segAt, layout.bars[j]!]))
+  // A LONE AGENT'S ID IS WHAT TELLS ITS LANE FROM THE NEXT (VQA2 V212): the
+  // name `claude-code task · a073aff5` was ellipsized from its end, so the
+  // id went first and every standalone lane read `claude-code task · a0…`.
+  // The kind gives way; the short id after it never does.
+  const idAt = t !== null && t.step_id == null ? name.lastIndexOf(' · ') : -1
   return (
     <div ref={ref} className={selected ? 'tl-row is-sel' : 'tl-row'} data-lane={lane.taskId}>
       <div className="tl-lab">
@@ -1643,8 +1725,21 @@ function LaneRow({
             · 1h 18m` (walkthrough G, owner 2026-10-03). The label led with
             the task id; the id is the name's tooltip now. */}
         <b>
-          <button type="button" className="tl-name" aria-pressed={selected} onClick={onSelect} title={`${name} · ${lane.taskId}`}>
-            {name}
+          <button
+            type="button"
+            className={idAt < 0 ? 'tl-name' : 'tl-name is-split'}
+            aria-pressed={selected}
+            onClick={onSelect}
+            title={`${name} · ${lane.taskId}`}
+          >
+            {idAt < 0 ? (
+              name
+            ) : (
+              <>
+                <span className="tl-name-k">{name.slice(0, idAt)}</span>
+                <span className="tl-name-id">{name.slice(idAt)}</span>
+              </>
+            )}
           </button>
           {t !== null && <StateMark state={t.state} bare />}
           {!skipped && held !== null && (
@@ -1671,7 +1766,16 @@ function LaneRow({
       </div>
       <div className="tl-trk">
         {segs.map((s, i) => (
-          <Seg key={i} s={s} since={since} until={until} wide={wide} multi={lane.attempts.length > 1} />
+          <Seg
+            key={i}
+            s={s}
+            since={since}
+            until={until}
+            box={boxOf.get(i)}
+            words={trackPx === null || !boxOf.has(i) || (boxOf.get(i)!.width / 100) * trackPx >= BAR_WORDS_MIN_PX}
+            wide={wide}
+            multi={lane.attempts.length > 1}
+          />
         ))}
         {/* A MARK IS REACHABLE (live QA RT-24, 2026-10-11): `title`-only spans
             took no focus and did nothing on a click. Each is a control now,
@@ -1702,9 +1806,27 @@ function LaneRow({
   )
 }
 
-function Seg({ s, since, until, wide, multi }: { s: LaneSeg; since: number; until: number; wide: boolean; multi: boolean }) {
-  const left = pct(s.from, since, until)
-  const width = Math.max(pct(s.to, since, until) - left, s.kind === 'wait' ? 0 : 0.4)
+function Seg({
+  s,
+  since,
+  until,
+  box,
+  words = true,
+  wide,
+  multi,
+}: {
+  s: LaneSeg
+  since: number
+  until: number
+  /** Where `laneLayout` drew it; a wait is drawn at its instants. */
+  box?: { left: number; width: number }
+  /** Wide enough for its words; a narrower bar says them in its title only. */
+  words?: boolean
+  wide: boolean
+  multi: boolean
+}) {
+  const left = box?.left ?? pct(s.from, since, until)
+  const width = box?.width ?? Math.max(pct(s.to, since, until) - left, s.kind === 'wait' ? 0 : 0.4)
   const cls = [
     'tl-seg',
     `is-${s.kind}`,
@@ -1727,9 +1849,9 @@ function Seg({ s, since, until, wide, multi }: { s: LaneSeg; since: number; unti
           : `waiting ${span}; nothing held`
   return (
     <span className={cls} data-seg={s.kind} style={{ left: `${left}%`, width: `${width}%` }} title={title}>
-      {s.kind === 'cut' && <span className="tl-seg-t">{s.label}</span>}
-      {s.kind === 'hold' && multi && <span className="tl-seg-t">{s.label}</span>}
-      {s.kind === 'park' && !s.future && <span className="tl-seg-t">parked</span>}
+      {words && s.kind === 'cut' && <span className="tl-seg-t">{s.label}</span>}
+      {words && s.kind === 'hold' && multi && <span className="tl-seg-t">{s.label}</span>}
+      {words && s.kind === 'park' && !s.future && <span className="tl-seg-t">parked</span>}
     </span>
   )
 }
