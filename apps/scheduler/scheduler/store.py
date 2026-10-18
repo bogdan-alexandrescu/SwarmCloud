@@ -85,6 +85,7 @@ from swarm_common.states import (
     assert_transition,
 )
 
+from .awaitinput import AWAIT_INPUT_KEY, wait_window
 from .children import cancel_end_cause
 from .codec import (
     as_datetime,
@@ -679,6 +680,70 @@ class SchedulerStore:
         outcome = self._write_if_unchanged("park", task, patch)
         if outcome.applied:
             self.append_event(task, EventType.PARKED, {"reason": reason.value, **(detail or {})})
+        return outcome
+
+    def park_awaiting_input(self, task: Task, *, max_seconds: int) -> GuardedWrite:
+        """READY -> PARKED(AWAITING_INPUT), with the wait's window, in one guarded write.
+
+        The await-input step's park (docs/design/human-steps.md §4.4). Guarded
+        like every transition here on the state the caller read, which is READY:
+        the promotion `Scheduler._resolve_dependency` has just written, or the
+        READY task admission was handed. A READY -> PARKED write is the only
+        way in, because PARKED -> PARKED is refused by `assert_transition`.
+
+        `next_eligible_at` is the park instant, as HUMAN_REQUIRED and
+        CHILDREN_INCOMPLETE record theirs. `metadata.await_input` gets
+        `opened_at` and `expires_at` (`awaitinput.wait_window`), computed from
+        the stored metadata inside the transaction, so the window is read and
+        written in the same commit and no reader re-derives it. Nothing is
+        reserved or released: the task holds no lease in READY or PARKED
+        (invariant 1).
+        """
+        assert_transition(task.state, TaskState.PARKED)
+        task_ref = self._db.collection(TASKS).document(task.id)
+        expected = task.state.value
+        transaction = self._db.transaction()
+        written: dict[str, Any] = {}
+
+        @firestore.transactional
+        def _apply(txn: Any) -> GuardedWrite:
+            snap = _snapshot(txn.get(task_ref))
+            stored = (snap.to_dict() or {}) if snap.exists else None
+            found = stored.get("state") if stored is not None else None
+            if stored is None:
+                return GuardedWrite("park", False, expected, found, TASK_MISSING)
+            if found != expected:
+                return GuardedWrite("park", False, expected, found, STATE_CHANGED)
+            now = self._now()
+            metadata = dict(stored.get("metadata") or {})
+            window = wait_window(metadata, now, max_seconds=max_seconds)
+            metadata[AWAIT_INPUT_KEY] = window
+            patch = {
+                "state": TaskState.PARKED.value,
+                "park_reason": ParkReason.AWAITING_INPUT.value,
+                "next_eligible_at": now,
+                "blocked_by": [],
+                "metadata": metadata,
+                "updated_at": now,
+            }
+            txn.update(task_ref, patch)
+            written.clear()
+            written.update(window)
+            return GuardedWrite("park", True, expected, found, None, TaskState.PARKED.value)
+
+        outcome = _apply(transaction)
+        if not outcome.applied:
+            self._log_skip(outcome, task)
+            return outcome
+        self.append_event(
+            task,
+            EventType.PARKED,
+            {
+                "reason": ParkReason.AWAITING_INPUT.value,
+                "opened_at": written["opened_at"].isoformat(),
+                "expires_at": written["expires_at"].isoformat(),
+            },
+        )
         return outcome
 
     def promote_to_ready(self, task: Task, *, detail: dict[str, Any] | None = None) -> GuardedWrite:

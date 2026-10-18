@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
@@ -47,6 +47,7 @@ from swarm_common.states import (
 )
 
 from . import children as children_mod
+from .awaitinput import is_control_plane
 from .codec import as_datetime
 from .credentials import AccountPool, CredentialSource, ForgeConnections, credential_for
 from .secret_slots import WorkspaceGrants
@@ -469,6 +470,7 @@ class Scheduler:
         report.promoted_manual_pauses = self._promote_manual_pauses(report)
         report.promoted_ci_waits = self._promote_ci_waits(report)
         report.dead_lettered += self._expire_human_waits(report)
+        self._sweep_awaiting_input(report)
         # Guarded: a child sweep that cannot query (its index still building
         # after a release, say) must not stop admission for every tenant.
         try:
@@ -858,6 +860,16 @@ class Scheduler:
                 )
                 return False
 
+        # THE AWAIT-INPUT BACKSTOP (docs/design/human-steps.md §4.4 step 2).
+        # A `control_plane` profile is never run, so it is parked here, before
+        # the tenant, the credential or any capacity is looked at, and never
+        # leased whatever the headroom (invariant 1). A step submitted with no
+        # dependencies reaches READY this way, and so does one an operator
+        # promotes by hand; the dependency rule parks the rest itself.
+        if profile.control_plane:
+            self._park_awaiting_input(task, report)
+            return False
+
         tenant = self._tenant(task.tenant_id)
         if tenant is None or not tenant.enabled:
             self._park(
@@ -1108,6 +1120,38 @@ class Scheduler:
         else:
             self._count_stale(outcome, report)
 
+    def _park_awaiting_input(self, task: Task, report: DrainReport) -> None:
+        """Park a READY await-input step AWAITING_INPUT, with its window (`store.park_awaiting_input`).
+
+        The wait is held to `human_park_max_seconds`, the same 24 hours as the
+        hand-off's (the owner's Q4); swarm-api restates the bound and its
+        submission test holds the two equal.
+        """
+        limit = int(getattr(self._settings, "human_park_max_seconds", HUMAN_PARK_MAX_SECONDS))
+        outcome = self._store.park_awaiting_input(task, max_seconds=limit)
+        if outcome.applied:
+            self._metrics.parked.labels(reason=ParkReason.AWAITING_INPUT.value).inc()
+            report.parked += 1
+        else:
+            self._count_stale(outcome, report)
+
+    def _promote_dependant(self, task: Task, *, reason: str, report: DrainReport) -> bool:
+        """Promote a dependant whose dependencies are satisfied. True only if it is now READY.
+
+        An await-input step is promoted like any other and then parked
+        AWAITING_INPUT in the same call, guarded on the READY just written
+        (docs/design/human-steps.md §4.4 step 1). It passes through READY for
+        that one write and holds nothing during it. It is not returned as
+        released, so the finish event's admission pass is never handed it.
+        """
+        if not self._promote(task, kind="dependency", detail={"reason": reason}, report=report):
+            return False
+        if not is_control_plane(task.runner_profile):
+            return True
+        promoted = replace(task, state=TaskState.READY, park_reason=None, next_eligible_at=None)
+        self._park_awaiting_input(promoted, report)
+        return False
+
     def _cancel(
         self,
         task: Task,
@@ -1155,7 +1199,7 @@ class Scheduler:
         re-read on every drain to rediscover workflows that were finished long
         ago. Every park reason anything writes is read by a sweep that calls
         this (`_promote_scheduled_retries` and `_promote_manual_pauses` were
-        the last two). BUDGET_EXHAUSTED is the one reason no sweep reads, and
+        the last two, `_sweep_awaiting_input` the one that only cancels). BUDGET_EXHAUSTED is the one reason no sweep reads, and
         nothing writes it: there are no budgets (owner, 2026-10-01). A
         workflow whose remaining steps are all parked on a reason that has not
         cleared -- a disabled tenant, a retry not yet due -- is swept when its
@@ -1315,9 +1359,7 @@ class Scheduler:
             # the report here made `swarm_scheduler_promoted{kind=
             # "dependency"}` disagree with DrainReport.promoted_dependencies,
             # so a dashboard built on the metric under-counted promotions.
-            return self._promote(
-                task, kind="dependency", detail={"reason": "no_dependencies"}, report=report
-            )
+            return self._promote_dependant(task, reason="no_dependencies", report=report)
         parents = self._store.parent_ends(task.depends_on, tenant_id=task.tenant_id)
         states = {tid: end.state for tid, end in parents.items()}
         failed = [tid for tid, state in states.items() if state in _FAILED_PARENT_STATES]
@@ -1335,12 +1377,7 @@ class Scheduler:
             if self._held_for_control_publish(task, parents):
                 report.held_dependencies += 1
                 return False
-            return self._promote(
-                task,
-                kind="dependency",
-                detail={"reason": "dependencies_satisfied"},
-                report=report,
-            )
+            return self._promote_dependant(task, reason="dependencies_satisfied", report=report)
         return False
 
     def _pull_requests_merged(self, task: Task, report: DrainReport) -> bool:
@@ -1737,6 +1774,25 @@ class Scheduler:
             else:
                 self._count_stale(outcome, report)
         return ended
+
+    def _sweep_awaiting_input(self, report: DrainReport) -> None:
+        """Apply `fail_workflow` to await-input steps waiting for a person. Never promotes, never expires.
+
+        A PARKED(AWAITING_INPUT) step is ended by swarm-api alone: on the
+        answer, on its declared default or on its expiry, which honours
+        `on_expire` (docs/design/human-steps.md §4.6). So nothing here returns
+        it to READY, and `_expire_human_waits` keeps its HUMAN_REQUIRED filter.
+        What the scheduler does own is the failed-workflow rule (§4.4 step 3):
+        a waiting step is a step that has not started, and when it is the last
+        one in its workflow no other sweep would ever reach it. Through
+        `_stop_for_failed_workflow`, a failed sibling under `fail_workflow`
+        cancels it, exactly as it cancels any step that has not started. Under
+        `continue` it is left waiting. The window moves (`_parked_window`), so
+        every waiting step is looked at within ceil(waits / sweep size)
+        drains. Nothing is leased or released (invariant 1).
+        """
+        for task in self._parked_window(ParkReason.AWAITING_INPUT):
+            self._stop_for_failed_workflow(task, report)
 
     # -- child tasks (docs/design/child-tasks.md) ---------------------------
 
