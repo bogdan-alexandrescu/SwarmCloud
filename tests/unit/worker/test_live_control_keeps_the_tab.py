@@ -89,7 +89,9 @@ def test_a_hand_off_with_expect_opens_no_new_tab_and_control_is_the_agents_page(
 
         rig.relay.push(tunnel.OP_OPEN, "v1")
         rig.relay.push(tunnel.OP_CONTROL, "v1")
-        await _until(lambda: gate.control.controller == "v1")
+        # `_grant` names the controller before it brings the page to the
+        # front, and opens the episode only after that round: wait for both.
+        await _until(lambda: gate.control.controller == "v1" and gate._episode is not None)
         assert gate._episode.target == "PAGE1", "control is the agent's own page"
         # The agent's tab is the one on screen, where input lands.
         await _until(lambda: activated == ["PAGE1"])
