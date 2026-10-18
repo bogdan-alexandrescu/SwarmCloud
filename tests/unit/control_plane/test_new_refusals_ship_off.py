@@ -282,6 +282,18 @@ NOT_SWITCHABLE_CODES = frozenset({
     "mcp_server_not_inherited",
     "mcp_credential_missing",
     "mcp_credential_unexpected",
+    # The preferences store (PROFILE-STORE, docs/design/user-profile.md §4.2,
+    # §4.4, part of #1505), as MCP-API's codes above: raised only by
+    # `preferences.save` and `display_names`, which that change introduces and
+    # no existing route calls (the routes are PROFILE-API's), so no existing
+    # caller can be refused by them. Continuing past any of them is the
+    # breach itself: a save that silently overwrites another tab's, or a
+    # display name that breaks §4.4's format rules, reads as a platform role,
+    # or impersonates another person.
+    "preferences_changed",
+    "display_name_invalid",
+    "display_name_reserved",
+    "display_name_taken",
 })
 
 #: What the guard lets through without a switch.
