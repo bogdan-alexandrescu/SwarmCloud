@@ -305,8 +305,12 @@ def test_mine_lists_exactly_the_verified_memberships_in_admin_order(client):
         assert response.status_code == 200, response.text
         return response.json()
 
-    eng = {"tenant_id": "eng", "display_name": ENG_GROUP, "kind": "group"}
-    research = {"tenant_id": "research", "display_name": RESEARCH_GROUP, "kind": "group"}
+    # Each membership is reached as a member and, with no grant stored, holds
+    # the workspace default `member` (docs/design/workspace-roles.md §4.3, §4.7).
+    as_member = {"via": "member", "role": {"name": "member", "source": "default"}}
+    eng = {"tenant_id": "eng", "display_name": ENG_GROUP, "kind": "group"} | as_member
+    research = {"tenant_id": "research", "display_name": RESEARCH_GROUP,
+                "kind": "group"} | as_member
     # The first entry is the default and says why (docs/design/user-profile.md
     # §4.5): with no stored default and no ready workspace, the first group.
     first = {"is_default": True, "default_source": "first_group"}
@@ -315,7 +319,9 @@ def test_mine_lists_exactly_the_verified_memberships_in_admin_order(client):
     assert mine("alice") == [eng | first]
     assert mine("bob") == [research | first]
     # The admin group is not a tenant group, so it is never listed.
-    assert mine("root") == [eng | first]
+    # A platform admin is admin in a group workspace, with no grant read (Q5).
+    assert mine("root") == [eng | first | {
+        "role": {"name": "admin", "source": "platform_admin"}}]
     # No group and no ready personal workspace (test_tenant_self.py has the
     # ready one): the list is empty, not an error.
     assert mine("carol") == []
@@ -336,12 +342,14 @@ def test_mine_follows_the_admin_order_not_the_directorys(db, tokens):
 
 
 def test_mine_reads_only_the_callers_own_workspace_and_writes_nothing(client, db):
-    """Nothing is read for the groups; the one read is whether the caller's
-    OWN personal workspace is ready (#1200), `tenants/u-dave` first."""
+    """Nothing is read for the groups' membership; the reads are whether the
+    caller's OWN personal workspace is ready (#1200), `tenants/u-dave` first,
+    and each listed workspace's role grants (docs/design/workspace-roles.md
+    §4.3: one cached query per membership workspace)."""
     touched = db.touched
     before = dict(db.docs)
     assert client.get("/v1/tenants/mine", headers=as_("dave")).status_code == 200
-    assert set(db.collections[touched:]) <= {"tenants", "workspaces"}
+    assert set(db.collections[touched:]) <= {"tenants", "workspaces", "workspace_role_grants"}
     assert db.docs == before
 
 

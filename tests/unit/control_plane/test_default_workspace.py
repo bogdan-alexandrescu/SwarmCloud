@@ -223,6 +223,9 @@ def test_no_stored_default_is_todays_rule_and_says_so(client, db, prefs):
     assert mine(client, "dave")[0] == {
         "tenant_id": "u-dave", "display_name": "Your workspace (u-dave)", "kind": "user",
         "is_default": True, "default_source": "personal",
+        # docs/design/workspace-roles.md §4.3: a personal workspace's person is
+        # its admin, reached as its person.
+        "via": "personal", "role": {"name": "admin", "source": "personal"},
     }
     assert mine(client, "alice")[0]["default_source"] == "first_group"
     assert mine(client, "carol") == []

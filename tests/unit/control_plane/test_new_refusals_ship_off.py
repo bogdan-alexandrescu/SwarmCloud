@@ -332,6 +332,23 @@ NOT_SWITCHABLE_CODES = frozenset({
     "unknown_model_class",
     "model_class_not_accepted",
     "model_class_not_yet_available",
+    # Workspace roles (ROLES-API-CORE, docs/design/workspace-roles.md §4.9,
+    # part of #1518): raised only by the role write routes in
+    # `routes/roles.py`, which that change introduces, so no existing caller
+    # can be refused by them. Continuing past any of them is the breach
+    # itself: a grant to a service account would widen the scope its listing
+    # gives it, a role written in a personal workspace would let someone
+    # else hold one there, an `admin` default would make every member an
+    # admin, a write that changes nothing would append a grant and an audit
+    # row for no change, and a role outside the ladder would be stored as a
+    # grant every reader skips. `role_member_required` and
+    # `role_admin_required` are NOT here: they gate existing routes and are
+    # switches (refusals.SWITCHES).
+    "role_person_required",
+    "personal_workspace_roles_fixed",
+    "default_role_not_allowed",
+    "role_unchanged",
+    "unknown_role",
 })
 
 #: What the guard lets through without a switch.
