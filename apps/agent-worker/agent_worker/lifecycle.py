@@ -1982,26 +1982,34 @@ class Worker:
             ),
             # The repository's merge slot (merge race, #295): every slot
             # write is fenced on this attempt's task and lease, as the park is.
+            # A tenant switched to the state routes (#1457) holds no Firestore
+            # client: its `db` is the attempt's state client, and swarm-api
+            # fences each slot write on the same tuple.
             merge_slots=(
-                mergeslot_mod.FirestoreMergeSlots(
+                (mergeslot_mod.RemoteMergeSlots(self.db, tenant_id=self.cfg.tenant_id)
+                 if getattr(self.control, "state_via_api", False) else
+                 mergeslot_mod.FirestoreMergeSlots(
                     self.db,
                     tenant_id=self.cfg.tenant_id,
                     run_transaction=self.control._run_transaction,
                     fence=lambda txn: self.control._fenced_task(txn, write="merge slot"),
                     call_options=self.control.call_options,
-                )
+                ))
                 if action is WorkerAction.MERGE else None
             ),
             # The repository's merge train (TRAIN-WS): this step's entry,
             # written only in train mode, fenced on this attempt as the slot is.
             merge_trains=(
-                mergetrain_mod.FirestoreTrainEntries(
+                (mergetrain_mod.RemoteTrainEntries(self.db, tenant_id=self.cfg.tenant_id,
+                                                   task_id=self.cfg.task_id)
+                 if getattr(self.control, "state_via_api", False) else
+                 mergetrain_mod.FirestoreTrainEntries(
                     self.db,
                     tenant_id=self.cfg.tenant_id,
                     run_transaction=self.control._run_transaction,
                     fence=lambda txn: self.control._fenced_task(txn, write="merge train entry"),
                     call_options=self.control.call_options,
-                )
+                ))
                 if action is WorkerAction.MERGE else None
             ),
             # The PR-side CI fixer's tasks for the merged pull request (#1073):

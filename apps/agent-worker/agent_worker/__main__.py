@@ -219,8 +219,9 @@ def build_worker(
         # every state call goes through swarm-api's attempt-signed routes, and
         # this process builds NO Firestore client, so nothing it runs -- the
         # agent included -- is handed one by it. `state/open` is the first
-        # call the lifecycle makes (`validate_generation`).
-        db: Any = NO_DIRECT_FIRESTORE
+        # call the lifecycle makes (`validate_generation`). The modules that
+        # took the Firestore client take the attempt's state client in its
+        # place (`indexrun.state_routes`, lane ISO-WORKER-READS).
         child_api = ChildApi(config.swarm_api_url or "", audience=config.swarm_api_audience)
         calls = StateCall(
             child_api,
@@ -230,6 +231,7 @@ def build_worker(
             lease_id=config.lease_id,
             generation=config.generation,
         )
+        db: Any = calls
         control = RemoteControlPlane(
             calls,
             nonce=config.child_nonce or "",
