@@ -24,7 +24,7 @@
  * `use_merge_switch`); the SD3 switch on the Gate tab is the one way there,
  * because it is audited and needs a second person (§4.2).
  */
-import { cloneElement, isValidElement, useEffect, useId, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react'
+import { cloneElement, isValidElement, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode } from 'react'
 import {
   createSchedule,
   loadRepositories,
@@ -257,6 +257,35 @@ function budgetOf(d: Draft): Schedule['budget'] {
   return out
 }
 
+/** A scalar or a list of scalars, in words; null for anything with structure. */
+export function plainValue(v: unknown): string | null {
+  if (v === null || v === undefined) return '— not set'
+  if (typeof v === 'string') return v
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
+  if (Array.isArray(v) && v.every((x) => x === null || ['string', 'number', 'boolean'].includes(typeof x))) {
+    return v.length === 0 ? 'none' : v.map(String).join(', ')
+  }
+  return null
+}
+
+/**
+ * A value this form shows but cannot write, in words rather than JSON (visual
+ * QA V247): a list is its items, comma-separated, never `["swarm"]`; a value
+ * with structure is one `key: value` line per key, so a spec's prompt is read
+ * whole in a box that grows to it, not cut at `{"name":…` in a one-line input.
+ */
+export function paramText(v: unknown): string {
+  const plain = plainValue(v)
+  if (plain !== null) return plain
+  if (Array.isArray(v)) return v.map((x) => paramText(x)).join('\n')
+  return Object.entries(v as Record<string, unknown>)
+    .map(([k, x]) => {
+      const said = paramText(x)
+      return said.includes('\n') ? `${k}:\n${said.replace(/^/gm, '  ')}` : `${k}: ${said}`
+    })
+    .join('\n')
+}
+
 /** A refusal in words: the server's message, or the parser's. */
 function refusalWords(r: unknown): string | null {
   if (r === null || r === undefined) return null
@@ -266,8 +295,8 @@ function refusalWords(r: unknown): string | null {
 }
 
 /** `2026-10-12T09:00:00+01:00` in the schedule's own zone, read off the ISO itself. */
-function inZone(iso: string, zone: string): string {
-  return `${iso.slice(0, 10)} ${iso.slice(11, 16)} ${zone}`
+function inZone(iso: string): string {
+  return `${iso.slice(0, 10)} ${iso.slice(11, 16)}`
 }
 
 function inViewer(iso: string): string {
@@ -341,23 +370,42 @@ function CronPreview({
   if (r.status === 'empty') return <p className="c-hint" data-testid="sc-preview">The preview answered nothing.</p>
   const p = r.data.preview
   const refusal = refusalWords(p.refusal)
+  // NO STRAY SEPARATOR (visual QA V244): a refused cadence can come back with
+  // no words, and the line began "· at least 1 min apart". The refusal is the
+  // first thing said, in the bad ink, because it is what stops the save.
+  const words = typeof p.words === 'string' && p.words.trim() !== '' ? p.words : null
   return (
     <div data-testid="sc-preview" data-refused={refusal === null ? 'false' : 'true'}>
-      <p className="c-hint">
-        <b>{p.words}</b> · at least {p.min_gap_minutes} min apart
-      </p>
       {refusal !== null && (
-        <p className="c-hint" role="alert">
+        <p className="c-hint sc-refused" role="alert">
           This type would refuse it: {refusal}
         </p>
       )}
-      <ol className="sc-next" aria-label="The next five firings">
-        {p.next.map((iso) => (
-          <li key={iso}>
-            <span className="mono">{inZone(iso, timezone)}</span> <span className="sc-sub">{inViewer(iso)} your time</span>
-          </li>
-        ))}
-      </ol>
+      <p className="c-hint">
+        {words !== null && (
+          <>
+            <b>{words}</b> ·{' '}
+          </>
+        )}
+        at least {p.min_gap_minutes} min apart
+      </p>
+      {p.next.length > 0 && (
+        <>
+          {/* THE ZONE ONCE, NOT ON EVERY LINE (visual QA V246): five copies of
+              "America/Argentina/Buenos_Aires" took three lines each, and "your
+              time" was orphaned onto a line of its own. */}
+          <p className="c-hint">
+            Next five, in {timezone}:
+          </p>
+          <ol className="sc-next" aria-label="The next five firings">
+            {p.next.map((iso) => (
+              <li key={iso}>
+                <span className="mono">{inZone(iso)}</span> <span className="sc-sub sc-yours">{inViewer(iso)} your time</span>
+              </li>
+            ))}
+          </ol>
+        </>
+      )}
     </div>
   )
 }
@@ -679,6 +727,17 @@ function ScheduleForm({
   // not `editable`, so each draws read-only.
   const params: [string, Prop][] =
     t !== null ? Object.entries(t.params_schema.properties ?? {}) : Object.keys(d.params).map((k) => [k, {}])
+  // THE PREVIEW SITS UNDER THE CRON ON ONE COLUMN (visual QA V245). Folded
+  // under the fields, the side column came after Cancel / Create: on a phone
+  // the cron's words and next five were a screen and more below the field
+  // being typed in. One element, moved, so the preview is read once.
+  const oneColumn = useOneColumn()
+  const side = (
+    <aside className={oneColumn ? 'sc-edit-side is-inline' : 'sc-edit-side'} aria-label="When it fires, and the template">
+      <CronPreview cron={d.cron} timezone={d.timezone} type={d.type} onBlocks={setPreviewWhy} />
+      <TemplateCard type={t} tier={schedule?.tier} />
+    </aside>
+  )
   return (
     // ENTER NEVER SUBMITS (AUT-2). Pressing Enter in Name created a live
     // schedule over every repository in one keystroke. The form has no submit
@@ -746,6 +805,7 @@ function ScheduleForm({
               <input className="c-inp is-mono" value={d.timezone} spellCheck={false} onChange={(e) => set({ timezone: e.target.value })} />
             </Field>
           </div>
+          {oneColumn && side}
 
           <h3 className="sc-h3">Gate</h3>
           <div className="sc-facts">
@@ -825,7 +885,17 @@ function ScheduleForm({
                     <ParamField key={`${d.type}:${k}`} name={k} schema={p} value={d.params[k]} onChange={(v) => set({ params: { ...d.params, [k]: v } })} />
                   ) : (
                     <Field key={`${d.type}:${k}`} label={p.title ?? k} hint={notEditableWhy(p)}>
-                      <input className="c-inp is-mono" value={d.params[k] === undefined ? '' : JSON.stringify(d.params[k])} readOnly data-testid={`sc-param-${k}`} />
+                      {plainValue(d.params[k]) !== null || d.params[k] === undefined ? (
+                        <input className="c-inp" value={d.params[k] === undefined ? '' : paramText(d.params[k])} readOnly data-testid={`sc-param-${k}`} />
+                      ) : (
+                        <textarea
+                          className="c-inp sc-ptext"
+                          value={paramText(d.params[k])}
+                          rows={Math.min(12, paramText(d.params[k]).split('\n').length)}
+                          readOnly
+                          data-testid={`sc-param-${k}`}
+                        />
+                      )}
                     </Field>
                   )
                 })}
@@ -880,13 +950,29 @@ function ScheduleForm({
             </Button>
           </div>
         </div>
-        <aside className="sc-edit-side" aria-label="When it fires, and the template">
-          <CronPreview cron={d.cron} timezone={d.timezone} type={d.type} onBlocks={setPreviewWhy} />
-          <TemplateCard type={t} tier={schedule?.tier} />
-        </aside>
+        {!oneColumn && side}
       </div>
     </form>
   )
+}
+
+/** The width below which the side column folds under the fields: `.sc-edit-cols` in styles/schedules.css. */
+const ONE_COLUMN = '(max-width: 1023px)'
+
+function oneColumnNow(): boolean {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia(ONE_COLUMN).matches
+}
+
+function subscribeOneColumn(onChange: () => void): () => void {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return () => {}
+  const query = window.matchMedia(ONE_COLUMN)
+  query.addEventListener('change', onChange)
+  return () => query.removeEventListener('change', onChange)
+}
+
+/** Whether the form is one column, so the preview is drawn under the cron rather than beside it. */
+function useOneColumn(): boolean {
+  return useSyncExternalStore(subscribeOneColumn, oneColumnNow, () => false)
 }
 
 function useRepositories(): Result<RepoRecord[]> {
@@ -960,7 +1046,10 @@ export function EditSchedule({ schedule, onSaved, onCancel }: { schedule: Schedu
   // parameters shown as stored rather than drawn from a schema.
   const list = types.status === 'ok' || types.status === 'stale' ? types.data.types : []
   return (
-    <section className="ctl-card" aria-label="Edit this schedule">
+    // NOT A CARD (visual QA V170): `.ctl-card` has no padding of its own, so
+    // the heading, the labels and the preview touched its border. The create
+    // form has no card and reads well; the edit form is drawn the same way.
+    <section className="sc-edit" aria-label="Edit this schedule">
       <h2 className="sc-h2">Edit</h2>
       {types.status === 'error' && <p className="c-hint">The type catalogue was not read ({errorHeading(types.error)}), so the type's defaults are not shown.</p>}
       <ScheduleForm
