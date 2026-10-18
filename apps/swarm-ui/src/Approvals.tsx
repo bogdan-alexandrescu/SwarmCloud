@@ -69,6 +69,9 @@ export const APPROVAL_KIND: Readonly<Record<string, string>> = {
   merge: 'Merge',
   proposal: 'Proposal',
   spec: 'Spec',
+  // A workflow step waiting for a member's answer (human-steps.md §4.5),
+  // projected from its task. The inbox lists it and never takes the answer.
+  input: 'Answer',
 }
 
 /** What approving each kind does (§4.5 step 3). */
@@ -440,6 +443,51 @@ function Decide({ d, onDecided }: { d: ApprovalDetail; onDecided: (word: string)
   )
 }
 
+/** The inbox id of a projected await-input step (`approvals.INPUT_PREFIX`). */
+const INPUT_PREFIX = 'input:'
+
+/** The workflow page that opens the step's card, where the answer is given. */
+function stepAddress(workflowId: string): string {
+  return `work/workflows?${new URLSearchParams({ wf: workflowId }).toString()}`
+}
+
+/**
+ * A WORKFLOW STEP WAITING FOR AN ANSWER (human-steps.md §4.5). It is drawn
+ * from the inbox row itself: the item is projected from the step's task, so
+ * `GET /v1/approvals/{id}` has no record of it, and the inbox has no decide
+ * path for it. Answer opens the step's card on its workflow, so the step has
+ * one writer, the step's own route.
+ */
+function InputItemDetail({ item, go }: { item: ApprovalItem; go: (to: string) => void }) {
+  const now = useNow()
+  const s = item.subject
+  const workflowId = typeof s.workflow_id === 'string' && s.workflow_id !== '' ? s.workflow_id : null
+  const form = typeof s.form === 'string' ? s.form : null
+  return (
+    <section className="ap-detail" data-testid="ap-detail" data-kind="input" aria-label={`${APPROVAL_KIND.input}: ${item.summary}`}>
+      <h2 className="sc-h2">
+        <span className="sc-kind">{APPROVAL_KIND.input}</span> {item.summary}
+      </h2>
+      <dl className="sc-facts">
+        <Fact name="Asked">{item.requested_at === null ? <i className="ctl-em">&mdash; not served</i> : <span title={item.requested_at}>{timeAgo(item.requested_at, now)}</span>}</Fact>
+        <Fact name="Expires">{item.expires_at === null ? <i className="ctl-em">&mdash; not served</i> : <span title={item.expires_at}>{untilWords(item.expires_at, now)}</span>}</Fact>
+        <Fact name="Who may answer">any member of this tenant, checked when the answer arrives</Fact>
+        {form !== null && <Fact name="Form">{form}</Fact>}
+      </dl>
+      <p className="sb-note">The answer is given on the step’s card, never here: the inbox only lists the steps waiting for one.</p>
+      {workflowId === null ? (
+        <p className="c-hint">The item names no workflow, so its step cannot be opened from here.</p>
+      ) : (
+        <div className="c-acts">
+          <InApp go={go} to={stepAddress(workflowId)} className="c-btn is-primary">
+            Answer ›
+          </InApp>
+        </div>
+      )}
+    </section>
+  )
+}
+
 /** One item read in full: what it is, what it is decided on, and the two verbs. */
 function ItemDetail({ itemId, go, onDecided }: { itemId: string; go: (to: string) => void; onDecided: (word: string) => void }) {
   const [r, setR] = useState<Result<ApprovalDetail>>({ status: 'loading', since: Date.now() })
@@ -507,7 +555,13 @@ function Inbox({
 }) {
   const now = useNow()
   const phone = usePhoneTables()
-  const detail = selected === null ? null : <ItemDetail key={selected} itemId={selected} go={go} onDecided={onDecided} />
+  const chosen = selected === null ? undefined : items.find((i) => i.approval_id === selected)
+  const detail =
+    selected === null ? null : chosen !== undefined && chosen.kind === 'input' ? (
+      <InputItemDetail key={selected} item={chosen} go={go} />
+    ) : (
+      <ItemDetail key={selected} itemId={selected} go={go} onDecided={onDecided} />
+    )
   return (
     <div className={phone ? 'ap-inbox is-phone' : 'ap-inbox is-split'}>
       <ul className="ap-list" aria-label="Waiting for approval, oldest first">
@@ -575,7 +629,15 @@ function ApprovalsBody({
       <KindFilter kind={kind} go={go} />
       {selected !== null && !listed && (
         <section className="ap-linked" data-testid="ap-linked" aria-label="The item the link names">
-          <ItemDetail key={selected} itemId={selected} go={go} onDecided={onDecided} />
+          {selected.startsWith(INPUT_PREFIX) ? (
+            // A projected step that is not listed is no longer waiting: it
+            // was answered, expired or cancelled. There is no record to read.
+            <p className="sb-note" data-testid="ap-detail">
+              This step is no longer waiting for an answer: it was answered, it expired, or it was cancelled. Its workflow’s page says which, and who answered.
+            </p>
+          ) : (
+            <ItemDetail key={selected} itemId={selected} go={go} onDecided={onDecided} />
+          )}
         </section>
       )}
       {items.length === 0 ? (
