@@ -848,6 +848,15 @@ locals {
       SEARCH_TOOL_ENABLED = var.search_tool_enabled ? "true" : "false"
       SEARCH_PROVIDER     = var.search_provider
 
+      # Registered MCP servers (swarm_api.mcp_servers FLAG,
+      # docs/design/registered-mcp-servers.md §6, #1433). "on" is the only
+      # value mcp_servers_enabled() reads as on; anything else keeps the
+      # feature dark. Off unless the environment's tfvars sets
+      # var.mcp_servers_enabled. swarm-api alone reads it: the scheduler and
+      # the worker act only on a task whose signed input names a server, and
+      # swarm-api refuses every such submission while this is off.
+      SWARM_MCP_SERVERS = var.mcp_servers_enabled ? "on" : "off"
+
       # The personal-workspace job's trigger (docs/workspaces.md §2.1-2.2,
       # #847): approve, retry and the dispatch sweep publish a workspace id to
       # this topic, which terraform/bootstrap creates with its Cloud Build

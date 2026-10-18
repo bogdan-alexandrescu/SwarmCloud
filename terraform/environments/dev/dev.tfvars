@@ -753,6 +753,20 @@ workspace_gate = true
 # its default, "brave".
 search_tool_enabled = false
 
+# Registered MCP servers (swarm-api SWARM_MCP_SERVERS,
+# docs/design/registered-mcp-servers.md, #1433): a workspace registers its own
+# MCP server by name, and a claude-code or codex step names it in
+# `input.mcp_servers`; the worker's relay holds the caller's credential so the
+# agent never sees it. ON in dev from the release that merges this line, a
+# change held as a draft until the MCP acceptance lane passes (owner request,
+# 2026-10-18). It also creates swarm-mcp-credentials-sweep. It needs
+# terraform/bootstrap's enable_mcp_credentials applied first (the owner's
+# apply): without swarm-api's read of swarm-tenant-<t>-mcpc-* every attempt
+# naming a `dispatch` server fails at attach. Kill switch: false and release;
+# every registration write, submission naming a server and attach is then
+# 503 mcp_unavailable, and a stored credential dies at its Secret Manager ttl.
+mcp_servers_enabled = true
+
 # Workspace-secret grant attestation (SEC-GRANT-ATTEST, PR 1377;
 # terraform/infra/workspace_grant_key.tf,
 # docs/runbooks/workspace-grant-attestation.md). Step 2, served in dev as of
