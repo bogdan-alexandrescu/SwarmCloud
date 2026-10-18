@@ -65,8 +65,9 @@ from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.admission import _snapshot
-from swarm_common.models import PLATFORM_COMPONENTS, Tenant, consumer_name
+from swarm_common.models import PLATFORM_COMPONENTS, Tenant, consumer_name, parse_consumer
 from swarm_common.profiles import (
+    MCP_SECRET_SLOTS,
     RUNNER_PROFILES,
     RUNTIME_TOOLS,
     SECRET_KINDS,
@@ -79,6 +80,7 @@ from .auth import AuthContext, require_admin
 from .codec import console_origin
 from .errors import Conflict, Forbidden, NotFound, UpstreamUnavailable, ValidationFailed
 from .grant_attest import ATTESTATION_FIELD, VALID, GrantKeys, GrantPolicy
+from .mcp_servers import enabled_names, read_registration
 
 log = logging.getLogger(__name__)
 
@@ -512,6 +514,61 @@ def check_grant(consumer: str, slot: str | None, kind: str) -> tuple[Consumer, S
 
 
 # ---------------------------------------------------------------------------
+# Contract request 89: `mcp:<name>`, a tenant's registered MCP server
+# ---------------------------------------------------------------------------
+#
+# An `mcp:` consumer is NOT in the catalogue above: its names are a tenant's
+# registrations (mcp_servers.py), which change at runtime, so it is checked
+# against the tenant's registry and never against CONSUMERS_BY_NAME. That is
+# also why the release can never deliver one: `_deliverable` reads the
+# catalogue, and `attempt_consumers` never derives an `mcp:` name (design
+# §4.5). The attach route (routes/attempts_mcp.py) is the one reader of an
+# `mcp:` grant, and it never writes the value to a file.
+
+
+def mcp_consumer(name: str) -> Consumer:
+    """The consumer `mcp:<name>`, with its one slot, `auth`."""
+    return Consumer("mcp", name, _slots(MCP_SECRET_SLOTS))
+
+
+def mcp_consumers(db: Any, tenant_id: str) -> list[Consumer]:
+    """`mcp:<name>` for every ENABLED registration of `tenant_id`: the
+    consumers the console's grant matrix adds to the catalogue for this
+    workspace (§4.5)."""
+    return [mcp_consumer(name) for name in enabled_names(db, tenant_id)]
+
+
+def check_mcp_grant(db: Any, tenant_id: str, consumer: str, slot: str | None,
+                    kind: str) -> tuple[Consumer, Slot]:
+    """`check_grant` for an `mcp:` consumer: the name must be a registration
+    of THIS tenant (any state, so a disabled server's grant can still be
+    unticked), the slot `auth`, the kind one it reads."""
+    try:
+        _, name = parse_consumer(consumer)
+    except ValueError:
+        raise ValidationFailed(
+            "an mcp: consumer names a registered MCP server, e.g. mcp:kb") from None
+    if read_registration(db, tenant_id, name) is None:
+        raise ValidationFailed(
+            "no MCP server by that name is registered in this workspace "
+            "(GET /v1/mcp-servers)")
+    entry = mcp_consumer(name)
+    chosen = entry.slot(slot)
+    if chosen is None:
+        raise ValidationFailed(f"{consumer} has no such slot",
+                               detail={"slots": [s.name for s in entry.slots]})
+    if kind not in chosen.kinds:
+        raise ValidationFailed(
+            f"{consumer} reads {', '.join(chosen.kinds)} in its {chosen.name} slot, "
+            f"not a {kind}")
+    return entry, chosen
+
+
+def is_mcp_consumer(consumer: Any) -> bool:
+    return isinstance(consumer, str) and consumer.startswith("mcp:")
+
+
+# ---------------------------------------------------------------------------
 # Q7: the platform's other credentials, listed read-only
 # ---------------------------------------------------------------------------
 
@@ -819,7 +876,11 @@ class WorkspaceSecrets:
                   enabled: bool, by: str) -> dict[str, Any]:
         found = self.find(tenant_id, name)
         secret_id = found["secret_id"]
-        _, chosen = check_grant(consumer, slot, str(found.get("kind")))
+        if is_mcp_consumer(consumer):
+            _, chosen = check_mcp_grant(self._db, tenant_id, consumer, slot,
+                                        str(found.get("kind")))
+        else:
+            _, chosen = check_grant(consumer, slot, str(found.get("kind")))
         now = self._now()
         ref = self._db.collection(SECRETS_COLLECTION).document(secret_id)
         grant_ref = self._db.collection(GRANTS_COLLECTION).document(_grant_id(secret_id, consumer))
