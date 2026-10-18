@@ -689,14 +689,21 @@ def _attachment_references(
     references: list[AttachmentReference] = []
     seen: set[str] = set()
     for item in raw:
-        where = f"an attachment of {filename!r} recorded by upstream task {upstream_task_id}"
+        # Every refusal OPENS "upstream task <id>": the outcome classifier
+        # reads the opening of `last_error` (`swarm_api.outcomes`), and that
+        # is an opening it files under "inputs unavailable".
         if not isinstance(item, dict):
             raise InputUnavailable(
-                f"{where} is a {type(item).__name__}, not an entry; refusing to stage it"
+                f"upstream task {upstream_task_id} recorded an attachment of "
+                f"{filename!r} that is a {type(item).__name__}, not an entry; refusing "
+                "to stage it"
             )
         name = item.get("name")
         if not isinstance(name, str) or not name:
-            raise InputUnavailable(f"{where} has no name; refusing to stage it")
+            raise InputUnavailable(
+                f"upstream task {upstream_task_id} recorded an attachment of "
+                f"{filename!r} with no name; refusing to stage it"
+            )
         parent, separator, leaf = name.rpartition("/")
         if (
             not separator
@@ -706,24 +713,28 @@ def _attachment_references(
             or "\x00" in leaf
         ):
             raise InputUnavailable(
-                f"{where} is named {name!r}, where one file under "
+                f"upstream task {upstream_task_id} recorded an attachment of "
+                f"{filename!r} named {name!r}, where one file under "
                 f"{directory + '/'!r} was required; refusing to stage it"
             )
         if name in seen:
             raise InputUnavailable(
-                f"{where} is named {name!r} twice; one would overwrite the other"
+                f"upstream task {upstream_task_id} recorded an attachment of "
+                f"{filename!r} named {name!r} twice; one would overwrite the other"
             )
         seen.add(name)
         uri = item.get("uri")
         if not isinstance(uri, str) or not uri:
             raise InputUnavailable(
-                f"{where}, {name!r}, has no location, so it cannot be fetched"
+                f"upstream task {upstream_task_id} recorded an attachment of "
+                f"{filename!r}, {name!r}, with no location, so it cannot be fetched"
             )
         size = item.get("bytes")
         if isinstance(size, bool) or not isinstance(size, int) or size < 0:
             recorded = "no size" if size is None else f"a size of {size!r}"
             raise InputUnavailable(
-                f"{where}, {name!r}, was recorded with {recorded}, where a whole "
+                f"upstream task {upstream_task_id} recorded an attachment of "
+                f"{filename!r}, {name!r}, with {recorded}, where a whole "
                 "number of bytes was required; that number is what bounds how "
                 "much one attempt may stage into a memory-backed workspace, so "
                 "the input is refused rather than fetched uncounted"
@@ -904,7 +915,7 @@ def stage_inputs(
         files = sum(len(reference.attachments) for reference in references.values())
         carrying = f" (carrying {files} attached files)" if files else ""
         raise InputUnavailable(
-            f"the {len(references)} declared inputs{carrying} total {total} bytes, "
+            f"the {len(references)} declared inputs total {total} bytes{carrying}, "
             f"over the {max_total_bytes} byte cap for one attempt; refusing to "
             "stage them"
         )
@@ -1020,8 +1031,9 @@ def _assert_attachments_land_alone(
         mine = f"{name!r} attached to {item.filename!r} from upstream task {item.upstream_task_id}"
         if path in claimed:
             raise InputUnavailable(
-                f"{mine} would be staged over {claimed[path]}; one would "
-                "silently overwrite the other, so the attempt is refused"
+                f"upstream task {item.upstream_task_id} attached {name!r} to "
+                f"{item.filename!r}, which would be staged over {claimed[path]}; "
+                "one would silently overwrite the other, so the attempt is refused"
             )
         claimed[path] = mine
 
