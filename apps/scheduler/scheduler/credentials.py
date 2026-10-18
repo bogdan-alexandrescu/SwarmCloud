@@ -135,6 +135,20 @@ any lease, its event naming each `{consumer, slot}` under `workspace_secrets`
 and never a secret id. The sweep asks it of EVERY CREDENTIAL_MISSING park,
 the worker's backstop park (`workspace-secret:<slots>`) included, so a task
 is promoted only when its key, its connection and its grants all answer yes.
+
+A REGISTERED MCP SERVER A TASK NAMES (docs/design/registered-mcp-servers.md
+§4.10; lane MCP-SCHED, #1433). The last half, after the grants: is every
+server the task's `input.mcp_servers` names registered, enabled and allowed
+for its profile, and is every `dispatch` server's per-run credential still
+live? `mcp_admission.py` states that rule and reads the documents. A
+registration that says no parks CREDENTIAL_MISSING before any lease, code
+`mcp_server_unavailable`, and the sweep promotes it once every registration
+says yes. A credential that is gone is not a park anything can clear:
+`CredentialAnswer.failure` names it `mcp_credential_expired`, so admission can
+fail the task with no lease rather than wait for ever. The reader travels on
+`ForgeConnections` (`.mcp`), the per-drain reader admission and the sweep
+already pass, and is forgotten with it. A task that names no server reads
+nothing, so nothing changes for one.
 """
 
 from __future__ import annotations
@@ -151,6 +165,7 @@ from quota_broker.accountstore import AccountStore
 from swarm_common.models import Task, Tenant
 from swarm_common.profiles import RunnerProfile
 
+from .mcp_admission import McpRegistrations, McpVerdict
 from .secret_slots import MissingSlot, WorkspaceGrants
 
 #: The variable a pool account's token fills.
@@ -234,6 +249,9 @@ class CredentialAnswer:
     #: or nothing is required); else the required slots no enabled grant
     #: fills, empty when every one is.
     workspace_secrets: tuple[MissingSlot, ...] | None = None
+    #: None when the registered MCP servers were not asked (no reader, an
+    #: earlier half said no, or the task names none); else their verdict.
+    mcp: McpVerdict | None = None
 
     @property
     def runnable(self) -> bool:
@@ -242,7 +260,17 @@ class CredentialAnswer:
             self.source is not CredentialSource.MISSING
             and self.forge in _FORGE_RUNNABLE
             and not self.workspace_secrets
+            and (self.mcp is None or self.mcp.runnable)
         )
+
+    @property
+    def failure(self) -> tuple[str, dict[str, Any]] | None:
+        """`(code, detail)` when nothing can make the task runnable, so it
+        fails with no lease instead of parking: a `dispatch` server's per-run
+        credential is gone (design §4.10). None otherwise."""
+        if self.mcp is None or not self.mcp.final:
+            return None
+        return str(self.mcp.code()), self.mcp.detail()
 
     def park_detail(self) -> dict[str, Any]:
         """What a CREDENTIAL_MISSING park records in its `parked` event.
@@ -258,6 +286,8 @@ class CredentialAnswer:
             detail["forge_connection"] = self.forge.value
         if self.workspace_secrets:
             detail["workspace_secrets"] = [m.to_detail() for m in self.workspace_secrets]
+        if self.mcp is not None and not self.mcp.runnable:
+            detail.update(self.mcp.detail())
         return detail
 
     def promote_detail(self) -> dict[str, Any]:
@@ -271,6 +301,8 @@ class CredentialAnswer:
             detail["forge_connection"] = self.forge.value
         if self.workspace_secrets is not None:
             detail["workspace_secrets"] = "granted"
+        if self.mcp is not None:
+            detail["mcp_servers"] = "available"
         return detail
 
 
@@ -451,9 +483,14 @@ class ForgeConnections:
     def __init__(self, db: Any) -> None:
         self._db = db
         self._docs: dict[tuple[str, str], dict[str, Any] | None] = {}
+        #: The task's registered MCP servers (mcp_admission.py), read on the
+        #: same per-drain schedule: admission and the sweep already hand this
+        #: instance to `credential_for` and forget it at the top of each run.
+        self.mcp = McpRegistrations(db)
 
     def forget(self) -> None:
         self._docs = {}
+        self.mcp.forget()
 
     def _read(self, collection: str, doc_id: str, tenant_id: str) -> dict[str, Any] | None:
         key = (collection, doc_id)
@@ -549,6 +586,7 @@ def credential_for(
     forge: ForgeConnections | None = None,
     secrets: WorkspaceGrants | None = None,
     tenant_of: Callable[[str], Tenant | None] | None = None,
+    mcp: McpRegistrations | None = None,
 ) -> CredentialAnswer:
     """THE RULE. See the module docstring for where each condition comes from.
 
@@ -557,7 +595,9 @@ def credential_for(
     only when `task` and `forge` are given, and only once the provider half
     has said yes; the workspace grants only when `secrets` is given too, and
     only once the connection has said yes. `tenant_of` reads a personal
-    tenant for Q3 (`secret_slots.WorkspaceGrants._personal`).
+    tenant for Q3 (`secret_slots.WorkspaceGrants._personal`). The registered
+    MCP servers last, once every earlier half has said yes, read through `mcp`
+    or, when it is not given, `forge.mcp`.
     """
     answer = _provider_answer(profile, tenant, pool)
     if task is None or forge is None or not answer.runnable:
@@ -568,7 +608,23 @@ def credential_for(
     if secrets is None or not answer.runnable:
         return answer
     missing = secrets.missing(task, profile, tenant, tenant_of or (lambda _tenant_id: None))
-    return CredentialAnswer(answer.provider, answer.source, answer.pool, answer.forge, missing)
+    answer = CredentialAnswer(answer.provider, answer.source, answer.pool, answer.forge, missing)
+    return _with_mcp(answer, task, profile, mcp or getattr(forge, "mcp", None))
+
+
+def _with_mcp(
+    answer: CredentialAnswer, task: Task, profile: RunnerProfile, mcp: McpRegistrations | None
+) -> CredentialAnswer:
+    """The MCP half (mcp_admission.py), asked only once the rest said yes."""
+    if mcp is None or not answer.runnable:
+        return answer
+    verdict = mcp.verdict(task, profile)
+    if verdict is None:
+        return answer
+    return CredentialAnswer(
+        answer.provider, answer.source, answer.pool, answer.forge,
+        answer.workspace_secrets, verdict,
+    )
 
 
 def _provider_answer(profile: RunnerProfile, tenant: Tenant, pool: AccountPool) -> CredentialAnswer:

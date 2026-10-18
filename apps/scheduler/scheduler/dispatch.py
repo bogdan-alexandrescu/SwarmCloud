@@ -103,6 +103,7 @@ from swarm_common.profiles import (
 )
 
 from .credentials import AccountPool, CredentialSource, credential_for
+from .mcp_admission import names_mcp_servers
 from .judgment import BACKENDS as JUDGMENT_BACKENDS
 from .judgment import (
     DEFAULT_BACKEND,
@@ -1258,12 +1259,22 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
     # key, so a child whose profile or tools declare a secret slot needs one
     # even with no git tools (a `browser` child): without it the worker cannot
     # ask, a required slot parks it, and an optional one is never delivered.
+    #
+    # AND WHEN ITS SIGNED INPUT NAMES A REGISTERED MCP SERVER (docs/design/
+    # registered-mcp-servers.md §4.6, lane MCP-SCHED). The worker's
+    # `mcp:attach` is signed with the same key; without one it cannot ask,
+    # and a named server is withheld, which fails the attempt. Every profile
+    # that declares `mcp_servers` today also offers git tools, so this adds
+    # no key today; it holds the rule on its own, so a profile that takes
+    # servers without git tools is not left keyless. A task naming none is
+    # unchanged.
     child_key = str(getattr(settings, "child_key", "") or "")
     api_url = str(getattr(settings, "swarm_api_url", "") or "").strip()
     keyed = (
         not task.parent_task_id
         or offers_git_tools(task.runner_profile)
         or consumes_workspace_secrets(task.runner_profile, task.input)
+        or names_mcp_servers(RUNNER_PROFILES.get(task.runner_profile), task.input)
     )
     if child_key and api_url and keyed:
         from .children import registration_nonce
