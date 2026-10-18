@@ -40,6 +40,17 @@ would carry the header elsewhere). It never reaches stderr or an answer; the
 log says statuses and causes from a fixed vocabulary only. The URL is a
 worker setting passed in the server entry's `env`, never an argument a caller
 can set (invariant 10).
+
+ADDITIONAL REPOSITORIES (docs/design/multi-repository-steps.md §4.9, lane
+MR-GRAPH, part of #1434). One shim, not one per repository. At start it finds
+each additional repository the worker pinned beside the step's own --
+`<pin dir>/repos/<name>/pin.json`, its ticket `<ticket dir>/graph-ticket-<name>`,
+its checkout `work/repos/<name>` -- and then lists every tool with an
+optional `repo` naming one of them (`tools.tools_with_repo`). A call with
+`repo` is sent with THAT repository's ticket, its answer marked by THAT
+checkout's observation; `repo` itself is taken off before it is forwarded.
+A `repo` that names nothing pinned is told so, with the names that are. A
+step with no additional graph lists and forwards exactly what it did before.
 """
 
 from __future__ import annotations
@@ -57,8 +68,10 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
+
+from swarm_common.models import ADDITIONAL_REPOSITORY_NAME
 
 from agent_worker.graphmcp import tools
 from agent_worker.graphmcp.freshness import Freshness
@@ -91,6 +104,20 @@ MANIFEST_MISMATCH = "the stored index of {sha12} does not match its promoted dig
 UNEXPECTED_STATUS = "the graph service answered HTTP {status}; no answer was computed."
 #: An unreachable cause: a 200 that is not a JSON-RPC tools/call answer.
 UNREADABLE = "its answer could not be read"
+#: A `repo` that names no pinned additional repository (§4.9).
+NO_REPOSITORY = ("no graph is pinned for that repository in this step; repo is one of: "
+                 "{names}. Read its checkout under work/repos/ directly.")
+NO_REPOSITORIES = "this step has no additional repository with a graph; leave repo out."
+UNREADABLE_PIN = "the pin of repository {name} is not readable ({why}); no answer was computed."
+
+#: `graphstage.REPOS_CONTEXT_DIR_NAME`, `graphstage.PIN_NAME` and
+#: `graphstage.REPOS_DIR_NAME`, restated so the shim does not import the
+#: stager; tests/unit/worker/test_graphstage_additional.py holds them equal.
+REPOS_CONTEXT_DIR_NAME = "repos"
+PIN_NAME = "pin.json"
+REPOS_DIR_NAME = "repos"
+#: `graph_ticket.ticket_file_name(name)`'s prefix, held equal the same way.
+TICKET_FILE_PREFIX = "graph-ticket-"
 
 _SHA = re.compile(r"[0-9a-f]{40}")
 #: base64url and the one `.` between payload and MAC: nothing that could end
@@ -224,6 +251,60 @@ def _expired(ticket: str, now: float) -> bool:
     return isinstance(exp, (int, float)) and not isinstance(exp, bool) and exp <= now
 
 
+# --- additional repositories (§4.9) --------------------------------------------
+
+class Repository:
+    """One additional repository's pinned graph: its ticket file, its pin and
+    its checkout. The pin is read, and the freshness established, at the
+    first call that names it."""
+
+    def __init__(self, name: str, *, pin: Path | str, ticket: TicketFile,
+                 workdir: Path | str | None) -> None:
+        self.name = name
+        self.pin = Path(pin)
+        self.ticket = ticket
+        self.workdir = Path(workdir) if workdir else None
+        self._loaded: tuple[str, Any] | None = None
+
+    def load(self) -> tuple[str, Any]:
+        """`(index_sha, Freshness)`. Raises PinError."""
+        if self._loaded is None:
+            record = load_pin(self.pin)
+            self._loaded = (record["index_sha"],
+                            Freshness.establish(record["index_sha"], workdir=self.workdir,
+                                                record=record))
+        return self._loaded
+
+
+def discover(pin: Path | str, ticket_file: Path | str) -> dict[str, Repository]:
+    """Every additional repository the worker pinned beside `pin`, by name.
+
+    Only a real directory whose name the contract's ADDITIONAL_REPOSITORY_NAME
+    accepts and that holds a `pin.json` counts; a link is never followed, so
+    nothing outside the context directory is read as a pin.
+    """
+    context = Path(pin).parent
+    root = context / REPOS_CONTEXT_DIR_NAME
+    if root.is_symlink() or not root.is_dir():
+        return {}
+    work = context.parent
+    found: dict[str, Repository] = {}
+    for child in sorted(root.iterdir()):
+        name = child.name
+        if not ADDITIONAL_REPOSITORY_NAME.fullmatch(name) or child.is_symlink() \
+                or not child.is_dir():
+            continue
+        pinned = child / PIN_NAME
+        if pinned.is_symlink() or not pinned.is_file():
+            continue
+        checkout = work / REPOS_DIR_NAME / name
+        found[name] = Repository(
+            name, pin=pinned,
+            ticket=TicketFile(Path(ticket_file).parent / f"{TICKET_FILE_PREFIX}{name}"),
+            workdir=checkout if checkout.is_dir() else None)
+    return found
+
+
 # --- the server ------------------------------------------------------------------
 
 def _json(raw: bytes) -> Any:
@@ -266,7 +347,8 @@ class ShimServer(GraphServer):
     def __init__(self, freshness: Freshness, *, ticket: TicketFile, index_sha: str,
                  url: str, transport: Transport = http_transport,
                  sleep: Callable[[float], None] = time.sleep,
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time,
+                 repositories: Mapping[str, Repository] | None = None) -> None:
         # No snapshot: the service holds it. `GraphServer.handle` reads
         # `self.snapshot` only for `tools/call`, which this class answers.
         super().__init__(None, freshness)  # type: ignore[arg-type]
@@ -276,11 +358,19 @@ class ShimServer(GraphServer):
         self._transport = transport
         self._sleep = sleep
         self._clock = clock
+        #: The additional repositories' graphs (§4.9), by name; empty for a
+        #: step that reads none, which then lists and forwards as before.
+        self.repositories: dict[str, Repository] = dict(repositories or {})
 
     def handle(self, message: Any) -> dict | None:
         if not (isinstance(message, dict) and message.get("jsonrpc") == "2.0"
                 and "id" in message and message.get("method") == "tools/call"):
-            return super().handle(message)
+            response = super().handle(message)
+            if self.repositories and isinstance(message, dict) \
+                    and message.get("method") == "tools/list" \
+                    and isinstance(response, dict) and "result" in response:
+                response["result"] = {"tools": tools.tools_with_repo(self.repositories)}
+            return response
         ident = message["id"]
         params = message.get("params") or {}
         if not isinstance(params, dict):
@@ -288,12 +378,29 @@ class ShimServer(GraphServer):
         name = params.get("name")
         if not isinstance(name, str):
             return _error(ident, INVALID_PARAMS, "tools/call needs a tool name")
+        try:
+            repo, arguments = tools.split_repo(params.get("arguments"))
+        except tools.ToolInputError as exc:
+            return _answer(ident, tools.error_answer(self.freshness.observe(), str(exc)), True)
+        ticket, index_sha, freshness = self.ticket, self.index_sha, self.freshness
+        if repo is not None:
+            chosen = self.repositories.get(repo)
+            if chosen is None:
+                told = (NO_REPOSITORY.format(names=", ".join(sorted(self.repositories)))
+                        if self.repositories else NO_REPOSITORIES)
+                return _answer(ident, tools.error_answer(self.freshness.observe(), told), True)
+            try:
+                index_sha, freshness = chosen.load()
+            except PinError as exc:
+                told = UNREADABLE_PIN.format(name=chosen.name, why=exc)
+                return _answer(ident, tools.error_answer(self.freshness.observe(), told), True)
+            ticket = chosen.ticket
         forward = {"jsonrpc": "2.0", "id": ident, "method": "tools/call",
-                   "params": {"name": name, "arguments": params.get("arguments")}}
+                   "params": {"name": name, "arguments": arguments}}
         if forward["params"]["arguments"] is None:
             del forward["params"]["arguments"]
-        reply, failure = self._ask(forward)
-        obs = self.freshness.observe()
+        reply, failure = self._ask(forward, ticket=ticket, index_sha=index_sha)
+        obs = freshness.observe()
         if reply is not None and isinstance(reply.get("error"), dict):
             error = reply["error"]
             return _error(ident, error["code"], error["message"][:1024])
@@ -311,23 +418,29 @@ class ShimServer(GraphServer):
 
     # --- asking the service ---
 
-    def _ask(self, forward: dict) -> tuple[dict | None, str]:
-        """(the service's JSON-RPC response, "") or (None, what the agent is told)."""
-        ticket, why = self.ticket.read()
-        if ticket is None:
+    def _ask(self, forward: dict, *, ticket: TicketFile | None = None,
+             index_sha: str | None = None) -> tuple[dict | None, str]:
+        """(the service's JSON-RPC response, "") or (None, what the agent is told).
+
+        `ticket` and `index_sha` are an additional repository's (§4.9); the
+        step's own when None."""
+        source = ticket if ticket is not None else self.ticket
+        index_sha = index_sha if index_sha is not None else self.index_sha
+        ticket_text, why = source.read()
+        if ticket_text is None:
             return None, TICKET_REFUSED.format(why=why)
         payload = tools.dumps(forward).encode("ascii")
-        status, data = self._send(ticket, payload)
+        status, data = self._send(ticket_text, payload)
         if status == 401:
             # A renewal may have raced this call: read the file again, whatever
             # its stat says, and ask once more.
-            ticket, why = self.ticket.read(force=True)
-            if ticket is None:
+            ticket_text, why = source.read(force=True)
+            if ticket_text is None:
                 return None, TICKET_REFUSED.format(why=why)
-            status, data = self._send(ticket, payload)
+            status, data = self._send(ticket_text, payload)
             if status == 401:
-                return None, TICKET_REFUSED.format(why=self._refused_why(data, ticket))
-        sha12 = self.index_sha[:12]
+                return None, TICKET_REFUSED.format(why=self._refused_why(data, ticket_text))
+        sha12 = index_sha[:12]
         if status is None:
             return None, UNREACHABLE.format(cause=data)
         if status == 200:
@@ -421,7 +534,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     freshness = Freshness.establish(pin["index_sha"], workdir=args.workdir, record=pin)
     server = ShimServer(freshness, ticket=TicketFile(args.ticket_file),
-                        index_sha=pin["index_sha"], url=url, transport=http_transport)
+                        index_sha=pin["index_sha"], url=url, transport=http_transport,
+                        repositories=discover(args.pin, args.ticket_file))
     server.serve(sys.stdin.buffer, sys.stdout.buffer)
     return 0
 
