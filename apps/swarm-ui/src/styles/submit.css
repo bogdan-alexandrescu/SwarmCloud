@@ -174,13 +174,36 @@
 .sbf-outcome > .state p { font-size: var(--t-meta); line-height: var(--lh-meta); }
 .sbf-outcome > .state p.sbf-id { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text); }
 .sbf-outcome > .state p.sbf-woke { margin-top: 8px; }
-/* A FACT'S VALUE WRAPS AS WORDS, NEVER INSIDE ONE (live QA SUB-8): the slot's
-   `overflow-wrap: anywhere` reached each `<code>` of "accepted as collect /
-   checkpoints", whose min-content became one letter, and the 260px card
-   printed "collec / t". A fact's parts wrap onto the next line whole; only
-   the id, which can be longer than the card, still breaks anywhere. */
-.sbf-outcome .ctl-fact { flex-wrap: wrap; }
-.sbf-outcome .ctl-fact > code { white-space: nowrap; overflow-wrap: normal; }
+/* A FACT IS ITS KEY AND ONE VALUE, AND THE VALUE WRAPS INSIDE ITSELF (VQA
+   V174, V250). A wrapping row of loose parts under the panel's `space-between`
+   set "direct-pr" mid-row, a lone "/" at the edge and "checkpoints" on a line
+   of its own, and in the Created card "checkpoints" floated mid-row beside
+   its mark. A value of several parts is now one element (`.dsp-fact-v`), the
+   row does not wrap, and the value is the box that wraps, right-aligned.
+   A `<code>` stays whole (live QA SUB-8: the slot's `overflow-wrap: anywhere`
+   reached it and the card printed "collec / t"); only the id, which can be
+   longer than the card, still breaks anywhere.
+   THE CARD'S SIZE (VQA V174): the facts were the 14px body beside the card's
+   13px sentences, and the 13px mono values read larger than both. Sans at
+   meta, mono a step under it -- the panel's own pairing (V129) one step down.
+   (0,3,0) and up: `.sbf-send .ctl-fact` in styles.css is (0,2,0) and loads
+   after this sheet. */
+.sbf-send > .sbf-outcome .ctl-fact { flex-wrap: nowrap; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.sbf-send > .sbf-outcome .ctl-fact > :not(b) { min-width: 0; }
+.sbf-send > .sbf-outcome .ctl-fact code { font-size: var(--t-micro); white-space: nowrap; overflow-wrap: normal; }
+.sbf-send > .sbf-outcome .ctl-fact .mono { font-size: var(--t-micro); }
+/* EVERY PART OF THE CARD IS 8px FROM THE LAST (VQA V174, V250, V254). The
+   facts lists are `margin: 0` in the panel, so "progress —" touched "accepted
+   as", the task id touched the sentence above it and the facts below, and a
+   422's last fact touched "Nothing was created…". */
+.sbf-send > .sbf-outcome > .state > * + * { margin-top: 8px; }
+/* A TASK ID IS SPLIT EVENLY WHEN IT MUST BE SPLIT (VQA V250): a 36-character
+   id at 1440 left "d4" alone on its second line. Every character is a break
+   opportunity, and the lines are balanced, so a long id is two even halves. */
+.sbf-send > .sbf-outcome > .state p.sbf-id { word-break: break-all; text-wrap: balance; }
+/* THE SLOT TAKES FOCUS AFTER A CLICK (VQA V255); from the keyboard it shows. */
+.sbf-send > .sbf-outcome:focus { outline: none; }
+.sbf-send > .sbf-outcome:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: var(--radius); }
 /* The steps a refusal names (V051), each a way to its card. */
 .sbf-refused { margin: 0; padding-left: 16px; display: grid; gap: 4px; }
 
@@ -197,6 +220,21 @@
 /* "N steps not ready: a, b, c" (VQA V131): a name and its comma are one
    unbroken run, so no line opens on a comma. */
 .sbf-gap-i { white-space: nowrap; }
+
+/* THE POOLS IN "ROOM FOR N MORE" ARE DM MONO (VQA V257): a bare `<code>` took
+   the browser's generic `monospace` at 14px. At the meta step beside the 14px
+   sans, the send panel's pairing (V129): mono is not louder than the words. */
+.sbf-room code { font-family: var(--mono); font-size: var(--t-meta); }
+
+/* ---- the issue form (intake.css owns the rest) --------------------------- */
+/* A FAILED PREVIEW READ IS 12px UNDER THE INPUT ROW (VQA V251), as a 404's
+   `.in-refusal` is; the panel sat flush. */
+.in-read-failed { margin-top: 12px; }
+/* THE REFERENCE AND ITS DOT ARE ONE RUN OF TEXT (VQA V252). The item is a flex
+   row in intake.css, where a wrapped reference is one box and the dot another,
+   left at the card's right edge; as a block of inline text the dot follows the
+   last line, held by the no-break space before it. (0,3,0) over (0,2,0). */
+.in-meta > .in-meta-i.is-ref { display: block; }
 
 /* ---- the workflow form (G1) ---------------------------------------------- */
 /* A stage is a dashed band (the frame's `.stage`); its steps are cards. */
@@ -224,6 +262,12 @@
 .sb-runner-select[aria-invalid='true'] { color: var(--text-dim); }
 /* The runner's size is one run (VQA V127): its own dots never open a line. */
 .wfb-cost > .sb-runner-size { white-space: nowrap; }
+/* AND THE LINE IS TEXT, NOT A FLEX ROW (VQA2 V127). `.wfb-cost` is a wrapping
+   flex row in styles.css, so each " · " between the facts was an anonymous
+   item of its own: the no-break space in it could hold it to nothing, and a
+   line ended on "Cloud Run ·" while the next opened on "· anthropic key
+   present". In inline flow the space binds the dot to the fact before it. */
+.wfb-step > .wfb-cost { display: block; }
 
 /* "If a step fails" and "Priority", in step 2 (G1 frames 7-8). */
 .sb-step .sb-sub {
@@ -238,7 +282,10 @@
    caller. What this group adds is the explanation under each title: the
    muted token at the body size, regular weight -- the strategy's bold line is
    its pull-request count, which is the decision; this is a description. */
-.dsp-option-say { font-size: var(--t-body); line-height: var(--lh-body); color: var(--text-dim); }
+/* AT THE META SIZE (VQA V253): at the body size these were 14px in the card
+   under the merge options' 13px `.dsp-count`, two description sizes in one
+   card. The muted ink is still what tells it from a pull-request count. */
+.dsp-option-say { font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
 .sb-prio { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .sb-prio > input { width: 92px; min-height: 32px; border-radius: var(--ctl-radius-sm); font-family: var(--mono); }
 .sb-prio > small { flex: 1 1 260px; }
