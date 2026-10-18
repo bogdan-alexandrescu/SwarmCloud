@@ -43,6 +43,7 @@ from ..codec import (
 from ..deps import AppContext, admin_auth, get_context, paged_limit
 from ..errors import Forbidden, NotFound, ValidationFailed
 from ..heartbeats import heartbeat_grace_seconds
+from ..people import add_names, name_lookup
 from ..mergewake import wake_tenant
 from ..prgate import wake_tenant as wake_after_prs
 from ..mergetrain import tick_tenant as tick_merge_trains
@@ -711,7 +712,7 @@ def list_failures(
         # row carries the same fields a member's task row does
         # (`swarm_api.attempt_totals`).
         totals.update(totals_for(ctx.db, tenant_id, [t.id for t in tasks]))
-    return {
+    payload = {
         "tasks": [
             with_totals(
                 task_to_api(
@@ -725,6 +726,9 @@ def list_failures(
         ],
         "next_page_token": page.next_page_token,
     }
+    # `submitted_by_name` beside `submitted_by`, as `GET /v1/tasks` serves it.
+    add_names(name_lookup(ctx), payload["tasks"], ("submitted_by",))
+    return payload
 
 
 @router.post("/history:purge")
