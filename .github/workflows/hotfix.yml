@@ -64,6 +64,7 @@ on:
       - "terraform/**"
       - "kubernetes/**"
       - "scripts/**"
+      - ".trivyignore.yaml"
       - ".github/workflows/release.yml"
       - ".github/actions/release-*/**"
       - ".github/workflows/hotfix.yml"
