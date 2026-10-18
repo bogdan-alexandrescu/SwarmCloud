@@ -47,6 +47,7 @@ from swarm_common.states import TaskState
 from . import verdictpublish
 from .childkey import AttemptTuple
 from .children import (
+    _FORGE_SPEC_FORMAT,
     ChildService,
     ChildUnauthenticated,
     ChildUnproven,
@@ -74,7 +75,7 @@ LIVE_STATES = frozenset({TaskState.STARTING.value, TaskState.RUNNING.value})
 #: The lowest spec format whose signature covers `forge_credential` and
 #: `forge_access` beside `submitted_by` and `repository_url`
 #: (`swarm_common.specsign._FORMAT_3_FIELDS`).
-MIN_SPEC_FORMAT = 3
+MIN_SPEC_FORMAT = _FORGE_SPEC_FORMAT
 
 _WRITE = "write"
 _READ = "read"
