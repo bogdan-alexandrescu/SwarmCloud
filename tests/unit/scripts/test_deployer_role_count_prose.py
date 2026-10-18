@@ -115,9 +115,16 @@ def gated_roles() -> dict[str, str]:
     return {key: flag for flag, key in GATED.findall(_concat_body())}
 
 
-def grantable_roles() -> list[str]:
-    """local.deployer_grantable_project_roles, as deployer_conditions.tf builds
-    it with every gated role's flag at its default (off)."""
+def flags_on() -> set[str]:
+    """The gated flags terraform/bootstrap/terraform.tfvars records as true: what
+    an apply of the committed tfvars turns on."""
+    text = (BOOTSTRAP / "terraform.tfvars").read_text()
+    return set(re.findall(r"^\s*(\w+)\s*=\s*true\s*$", text, re.M))
+
+
+def static_roles() -> list[str]:
+    """The list with every gated role left off: the literal roles and the
+    custom_role_ids loop."""
     body = _concat_body()
     literal = re.match(r"\s*\[(.*?)\]", body, re.S)
     assert literal, "the list of literal roles is not concat()'s first argument"
@@ -130,6 +137,17 @@ def grantable_roles() -> list[str]:
     assert loop, "the custom_role_ids loop is not concat()'s second argument"
     keys = re.findall(r'"([a-z_]+)"', loop.group(1))
     return roles + [f"custom_role_ids.{k}" for k in keys]
+
+
+def grantable_roles() -> list[str]:
+    """local.deployer_grantable_project_roles as an apply of the committed
+    terraform/bootstrap/terraform.tfvars builds it: the static list plus each
+    gated role whose flag the tfvars records as true. The counts the prose
+    states are of this list (#1430 turned swarmGithubHooksDedup on)."""
+    on = flags_on()
+    return static_roles() + [
+        f"custom_role_ids.{key}" for key, flag in gated_roles().items() if flag in on
+    ]
 
 
 def prose_blocks(path: Path) -> list[tuple[str, list[int], int]]:
@@ -213,20 +231,27 @@ def test_the_list_is_parsed_not_typed():
     assert len(roles) == len(set(roles))
     assert "roles/run.viewer" in roles
     assert "custom_role_ids.worker_firestore" in roles
+    # swarmGithubHooksDedup is on the list because the committed tfvars turns it on.
+    assert "custom_role_ids.github_hooks_dedup" in roles
     # swarmSecretLister came off in #150; the parser must not find it.
     assert not any("secret_lister" in r for r in roles)
 
 
 def test_a_gated_role_is_off_by_default_and_read_by_nothing_else():
     """swarmGithubHooksDedup (terraform/bootstrap/github_hooks_role.tf) joins
-    the list only when the owner turns enable_github_hooks_dedup_role on, so the
-    committed bootstrap plan's chunks, and every count stated in prose, are
-    unchanged by merging it. MUTATION: add it to the custom_role_ids loop, or
-    default its variable to true."""
+    the list only when enable_github_hooks_dedup_role is on. The variable
+    defaults to false (so any root that does not set it is unchanged), is not in
+    the static list, and terraform/bootstrap/terraform.tfvars records it as true
+    (#1430, the owner's apply): a -var that is not committed there makes the next
+    plan from main read it as false and destroy the role. Every count in prose
+    is therefore of the ON list, which grantable_roles() reads.
+    MUTATION: add it to the custom_role_ids loop, default its variable to true,
+    or drop the tfvars line."""
     gated = gated_roles()
     assert gated == {"github_hooks_dedup": "enable_github_hooks_dedup_role"}, gated
     for key, flag in gated.items():
-        assert f"custom_role_ids.{key}" not in grantable_roles(), key
+        assert f"custom_role_ids.{key}" not in static_roles(), key
+        assert f"custom_role_ids.{key}" in grantable_roles(), key
         declared = [
             p
             for p in sorted(BOOTSTRAP.glob("*.tf"))
@@ -239,9 +264,11 @@ def test_a_gated_role_is_off_by_default_and_read_by_nothing_else():
         assert block and re.search(r"^\s*default\s*=\s*false\s*$", block.group(1), re.M), (
             f"{flag} must default to false: on, it changes every projectIamAdmin chunk"
         )
-        assert not re.search(
-            rf"^\s*{flag}\s*=", (BOOTSTRAP / "terraform.tfvars").read_text(), re.M
-        ), f"terraform/bootstrap/terraform.tfvars sets {flag}; the owner turns it on"
+        assert re.search(
+            rf"^\s*{flag}\s*=\s*true\s*$",
+            (BOOTSTRAP / "terraform.tfvars").read_text(),
+            re.M,
+        ), f"terraform/bootstrap/terraform.tfvars must record {flag} = true, the value the owner applied"
 
 
 def test_every_role_on_the_list_is_one_the_parser_reads():
