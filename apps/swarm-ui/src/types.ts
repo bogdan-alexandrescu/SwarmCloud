@@ -2533,15 +2533,17 @@ export const END_CAUSES: readonly EndCause[] = [
  * step waiting for its pull request's checks (docs/merge-step.md, 2026-10-06).
  * HUMAN_REQUIRED is contract request 68: a live-browser hand-off whose hold
  * expired with nobody in control (docs/design/live-browser.md section 4.3).
+ * AWAITING_INPUT is contract request 92: an `await-input` workflow step
+ * waiting for an answer from a tenant member (docs/design/human-steps.md).
  */
 export type ParkReason =
   | 'PROVIDER_QUOTA_EXHAUSTED' | 'PROVIDER_COOLDOWN' | 'PROVIDER_OUTAGE'
   | 'SCHEDULED_RETRY' | 'DEPENDENCY_INCOMPLETE' | 'MANUAL_PAUSE'
   | 'BUDGET_EXHAUSTED' | 'CREDENTIAL_MISSING' | 'CHILDREN_INCOMPLETE'
-  | 'CI_PENDING' | 'HUMAN_REQUIRED'
+  | 'CI_PENDING' | 'HUMAN_REQUIRED' | 'AWAITING_INPUT'
 
 /**
- * The same eleven as a value, so a test can compare the list against
+ * The same twelve as a value, so a test can compare the list against
  * `swarm_common.states.ParkReason` and the three sets below can be checked for
  * covering it. A union type erases at build time and can be checked against
  * nothing.
@@ -2564,6 +2566,7 @@ export const PARK_REASONS = [
   'CHILDREN_INCOMPLETE',
   'CI_PENDING',
   'HUMAN_REQUIRED',
+  'AWAITING_INPUT',
 ] as const
 
 /**
@@ -2593,6 +2596,12 @@ export const PARK_NEEDS_A_PERSON: ReadonlySet<string> = new Set<ParkReason>([
   // 68). Only a person promotes it, from the console, when they are ready to
   // sign in; no sweep or timer does, and past a day it is dead-lettered.
   'HUMAN_REQUIRED',
+  // An `await-input` workflow step waiting for an answer from a member of
+  // its tenant (contract request 92, docs/design/human-steps.md §4.5). Only
+  // an answer moves it on; its declared expiry (at most a day) ends it, and
+  // never resumes the work a person was asked about. No apostrophes in this
+  // comment: test_overview_workflow_checks.py reads the quoted names.
+  'AWAITING_INPUT',
 ])
 
 /**
@@ -2638,7 +2647,7 @@ export const PARK_WAITS_ON_A_STEP: ReadonlySet<string> = new Set<ParkReason>([
 
 /**
  * Copy for every reason that is ever actually written -- the seven from
- * admission plus the eleven ParkReasons.
+ * admission plus the twelve ParkReasons.
  *
  * `BlockedReason.BUDGET_LIMIT`, `QUOTA_EXHAUSTED`, `COOLDOWN`, `DEPENDENCY`
  * and `SCHEDULED_RETRY` are members of the enum that nothing ever writes as a
@@ -2668,6 +2677,7 @@ export const REASON_COPY: Readonly<Record<string, string>> = {
   BUDGET_EXHAUSTED: 'The budget for this work is spent.',
   CREDENTIAL_MISSING: 'No provider key is registered for this tenant.',
   HUMAN_REQUIRED: 'The agent asked for a person and nobody came in time. Holds no capacity until someone says they are ready.',
+  AWAITING_INPUT: 'A workflow step waits for a member of its tenant to answer. Holds no capacity; it ends on the first answer or at its declared expiry.',
   POOL_LIMIT_UNSET: 'This pool has no limit set, so it admits nothing. Nobody set it to 0: somebody has to set a limit.',
 }
 

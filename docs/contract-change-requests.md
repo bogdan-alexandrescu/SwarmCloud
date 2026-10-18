@@ -99,6 +99,9 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 89 | `models.py` / `profiles.py`: `mcp` is a secret-consumer kind, with one slot, `auth` (`MCP_SECRET_SLOTS`) (MCP-CONTRACT, registered MCP servers request M2, part of #1433) | ACCEPTED by the owner 2026-10-17 (PR 1466) and APPLIED by the pull request that adds this line |
 | 90 | `models.py`: `MCP_SERVER_NAME`, `RESERVED_MCP_SERVER_NAMES` and `RESERVED_MCP_SERVER_PREFIX`, one spelling for an MCP server's name (MCP-CONTRACT, registered MCP servers request M3, part of #1433) | ACCEPTED by the owner 2026-10-17 (PR 1466) and APPLIED by the pull request that adds this line |
 | 91 | No new spec format, park reason or event type for registered MCP servers (MCP-CONTRACT, registered MCP servers request M4, part of #1433) | ACCEPTED by the owner 2026-10-17 (PR 1466); requests no change, so nothing to apply |
+| 92 | `states.py`: `ParkReason.AWAITING_INPUT`, a workflow step waiting for a person's answer (HW-CONTRACT, human steps request A, part of #1436) | ACCEPTED by the owner 2026-10-17 (Q1, on PR 1462/1493) and APPLIED by the pull request that adds this line |
+| 93 | `profiles.py`: `RunnerProfile.control_plane`, a catalogue profile the platform never leases (HW-CONTRACT, human steps request B, part of #1436) | ACCEPTED by the owner 2026-10-17 (Q10, on PR 1493) and APPLIED by the pull request that adds this line |
+| 94 | `profiles.py`: the `await-input` catalogue entry, shipped unavailable (HW-CONTRACT, human steps request C, part of #1436) | ACCEPTED by the owner 2026-10-17 (on PR 1493) and APPLIED by the pull request that adds this line; `available=True` is request D, which the owner applies after HW-ACCEPT, and is not filed or applied here |
 
 ---
 
@@ -12685,3 +12688,191 @@ CALLER-MCP-DESIGN (design §5 request M4), part of #1433.
 
 **Not requested:** `Tenant.secret_name` already spells `mcpc-<hex>`; `Task`
 gains no field; `RunnerProfile.secrets` is unchanged.
+
+
+## 92. `states.py`: `ParkReason.AWAITING_INPUT`, a workflow step waiting for a person's answer (HW-CONTRACT, human steps request A)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (Q1, on PR 1462; the design
+merged as PR 1493) and APPLIED by the pull request that adds this line. Filed
+by the design (docs/design/human-steps.md §5 request A), applied by lane
+HW-CONTRACT, part of #1436. The design numbered it 85 ("the next free
+number"); 85-91 were filed by ISO-CONTRACT and MCP-CONTRACT before this lane
+ran, so it is 92 here and the design's §5 letter is the stable name.
+
+### What is true today
+
+An `await-input` step must be durably parked, at no cost, and ended only by a
+member's answer, its declared expiry, or a cancel. No existing reason fits.
+`HUMAN_REQUIRED` already has a promoter (`human-ready`, to READY), a 24-hour
+dead-letter sweep (`Scheduler._expire_human_waits`), a bell item
+(`notifications.py::handoffs`) and plugin wording, and all four are wrong for
+this step (design §3.4). Request 68 refused to reuse `MANUAL_PAUSE` for the
+same reason.
+
+### The change
+
+```python
+class ParkReason(str, Enum):
+    ...
+    AWAITING_INPUT = "AWAITING_INPUT"
+```
+
+Never promoted to READY, and never read by the HUMAN_REQUIRED sweep,
+`human-ready` or the browser bell: swarm-api ends it PARKED -> SUCCEEDED on
+the answer or on its declared default, PARKED -> DEAD_LETTERED on expiry (at
+most 24 hours), PARKED -> CANCELLED on a cancel. `_ALLOWED` is unchanged:
+every one of those edges is legal today.
+
+**Restatements in the same pull request**, held by
+`scripts/lib/check-contract-parity.sh` and the UI's exhaustive tables:
+`apps/swarm-ui/src/types.ts` (the union, `PARK_REASONS`,
+`PARK_NEEDS_A_PERSON`, `REASON_COPY`),
+`apps/swarm-ui/src/components/StatePill.tsx` (`PARK_WORD`, "waiting for a
+member"), `apps/swarm-mcp/swarm_mcp/progress.py::_PARKED_BECAUSE` and
+`apps/swarm-mcp/swarm_mcp/compact.py::_WAITS_FOR`.
+
+**The readers parity test**, `tests/unit/common/test_awaiting_input_readers.py`:
+every non-test file under `apps/` and `scripts/` that names `HUMAN_REQUIRED`
+must name `AWAITING_INPUT` or be on the test's list with its reason; and the
+human-wait sweep, `human-ready` and the `handoffs` bell source each leave an
+`AWAITING_INPUT` task untouched (a 25-hour-old park is not dead-lettered,
+`human-ready` is 409 `not_waiting_for_a_person`, the bell derives nothing).
+
+**Tests:** `tests/unit/common/test_await_input_contract.py` (the member, and
+that it holds no capacity) and the readers test above.
+
+### Rollback
+
+Delete the member, its restatements and the readers test, but only when no
+task is parked under it, because such a document would decode to an unknown
+reason.
+
+### What it would break
+
+Nothing that exists: it is a new member, and readers with exhaustive tables
+gain their row in the same change. A future file that branches on
+`HUMAN_REQUIRED` without deciding about the new member fails the readers test
+until it does, which is the intent.
+
+### Invariants
+
+**1**: a `PARKED(AWAITING_INPUT)` task holds no lease and creates no demand,
+because `PARKED` is in `PENDING_STATES` and not in `CONCURRENCY_STATES`.
+**4**: no worker waits. 2, 3 and 5-10 are unchanged.
+
+
+## 93. `profiles.py`: `RunnerProfile.control_plane`, a catalogue profile the platform never leases (HW-CONTRACT, human steps request B)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (the Q10 answer on PR 1493
+accepted the design it serves) and APPLIED by the pull request that adds this
+line. Design §5 request B (numbered 86 there; see entry 92 on the number),
+applied by lane HW-CONTRACT, part of #1436.
+
+### What is true today
+
+A step type is chosen by profile name (invariant 10), and every reader (the
+console, the bridge, the outcome ledger) already labels a step by its
+profile. But `RunnerProfile.__post_init__` allowed an empty `runner_argv` only
+on a `worker_action` profile, and a worker action is performed by the worker,
+in a container, under a lease.
+
+### The change
+
+```python
+    control_plane: bool = False
+```
+
+True says the opposite of `worker_action`: **nothing ever runs this profile,
+anywhere**; the control plane ends its tasks itself. In `__post_init__` the
+empty-`runner_argv` refusal admits `control_plane`, and a `control_plane`
+profile is refused if it sets `runner_argv`, `worker_action`, `provider`,
+`secrets`, `secret_slots`, `inputs` or `live_browser`. The scheduler's
+admission backstop (lane HW-SCHED) reads it so a step of such a profile is
+never leased.
+
+**Restatements in the same pull request:** `terraform/infra/locals.tf`
+mirrors the catalogue field by field (`runner_profiles`, held by
+`tests/terraform/catalogue.tftest.hcl`), and every `control_plane` profile is
+in `profiles_without_a_job`, held by
+`tests/unit/common/test_await_input_contract.py`.
+
+**Tests:** `tests/unit/common/test_await_input_contract.py`: each of the seven
+fields raises on a `control_plane` profile; an empty `runner_argv` is admitted
+on one and still refused on a profile that is neither; every existing profile
+is `control_plane=False`.
+
+### Rollback
+
+Delete the field and its checks, once no profile sets it (request 94 rolled
+back first).
+
+### What it would break
+
+Nothing: the default is False, and every existing profile is unchanged.
+
+### Invariants
+
+**1, 2, 3**: the field exists to prevent a lease. **10**: the caller still
+names a profile, and the field is the catalogue's own, never a caller's.
+
+
+## 94. `profiles.py`: the `await-input` catalogue entry, shipped unavailable (HW-CONTRACT, human steps request C)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1493) and APPLIED by the
+pull request that adds this line. Design §5 request C (numbered 87 there; see
+entry 92 on the number), applied by lane HW-CONTRACT, part of #1436.
+**Request D** (`available=True`, `disabled_reason` removed) is NOT filed or
+applied here: the owner applies it after lane HW-ACCEPT is green on dev.
+
+### What is true today
+
+No catalogue entry names a step that waits for a person.
+
+### The change
+
+```python
+    "await-input": RunnerProfile(
+        name="await-input",
+        image="agent-runtime-base",   # never pulled: control_plane
+        resource_class="standard",    # never reserved: control_plane
+        backend=Backend.CLOUD_RUN_JOB,
+        runner_argv=(),
+        control_plane=True,
+        provider=None,
+        secrets=(),
+        timeout_seconds=300,          # unused; the wait is await_input's (at most 24 h)
+        inputs={},
+        available=False,
+        disabled_reason="await-input steps are being built (docs/design/human-steps.md)",
+    ),
+```
+
+`terraform/infra/locals.tf` mirrors it in `runner_profiles` and adds it to
+`profiles_without_a_job`, so no Job is ever created for it.
+
+**Why unavailable.** Lanes HW-API-SUBMIT and HW-SCHED read the field and the
+reason, so the contract lands first. Until every build lane has merged, a
+submission naming `await-input` is refused, and `available=False` is the
+refusal that already exists (`validation.validate_runner_profile`), with its
+reason served to the caller. Nothing merged here changes behaviour while it
+is unavailable.
+
+**Tests:** `tests/unit/common/test_await_input_contract.py`: the entry is
+`control_plane`, unavailable with a reason, runs nothing and declares
+nothing, and is in `profiles_without_a_job`;
+`tests/terraform/catalogue.tftest.hcl`: eleven profiles, its pool exists, and
+no tenant gets a Job for it.
+
+### Rollback
+
+Delete the entry and its Terraform mirror. No task can name it while it is
+unavailable.
+
+### What it would break
+
+Nothing. Profile pickers list it as disabled, with the reason shown, as they
+list `post-verdict`.
+
+### Invariants
+
+As request 93.

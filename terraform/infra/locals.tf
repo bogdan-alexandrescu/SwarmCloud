@@ -186,6 +186,19 @@ locals {
       secret_env      = { for name in ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] : name => "anthropic" }
       timeout_seconds = 7200
     }
+    # Contract requests 93 and 94 (HW-CONTRACT, docs/design/human-steps.md):
+    # a `control_plane` profile that no container ever runs -- swarm-api ends
+    # its tasks. Mirrored so the catalogue comparison holds; listed in
+    # `profiles_without_a_job` below, so no tenant gets a Job for it. Its
+    # image is never pulled and its class never reserved.
+    "await-input" = {
+      image           = "agent-runtime-base"
+      resource_class  = "standard"
+      backend         = "CLOUD_RUN_JOB"
+      provider        = null
+      secret_env      = {}
+      timeout_seconds = 300
+    }
   }
 
   # --- the retired #295 profiles: no Job for any tenant ----------------------
@@ -201,7 +214,12 @@ locals {
   # here, so no tenant gets a Job for either. Without this, every tenant holding
   # anthropic would get a claude-code-review Job running as its worker account.
   # apps/common/swarm_common/profiles.py names this list.
-  profiles_without_a_job = ["post-verdict", "claude-code-review"]
+  #
+  # await-input is a `control_plane` profile (contract request 93): nothing
+  # runs it on any backend, so a Job for it would be a resource nobody
+  # executes. tests/unit/common/test_await_input_contract.py holds every
+  # control_plane profile of the catalogue to this list.
+  profiles_without_a_job = ["post-verdict", "claude-code-review", "await-input"]
 
   # --- GKE profiles that keep their Cloud Run Jobs as a rollback -------------
   #
