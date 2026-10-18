@@ -189,7 +189,12 @@ const BUDGET = {
   // and each Cloud Scheduler job's own description, one per job in jobs.tf, so
   // it grows by about ten when a job is added. The margin is the quarter the
   // others have, less: a new job fits, a paragraph does not.
-  'Platform ticks': 165,
+  // RAISED 165 -> 195, 2026-10-18: jobs.tf now holds 13 jobs, with
+  // secrets_rotation_sweep and mcp_credentials_sweep each adding its row, and
+  // measured 170 at that point. Each added word is a job's own description,
+  // not a sentence of prose; the margin is the same as before, so one more
+  // job fits and a paragraph still does not.
+  'Platform ticks': 195,
   // RAISED 52 -> 76, 2026-09-25, BY THE OWNER'S CP-8 / CP-9 / CP-10 DECISIONS
   // (#85), measured at 61 on CI after them. What the words are: a `Feeds pool`
   // column naming the pool each cap feeds, column names that carry their basis

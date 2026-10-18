@@ -154,6 +154,7 @@ _WAITS_FOR = {
     "BUDGET_EXHAUSTED": "budget",
     "CREDENTIAL_MISSING": "credential",
     "HUMAN_REQUIRED": "a person",
+    "AWAITING_INPUT": "a person's answer",   # contract request 92
 }
 
 

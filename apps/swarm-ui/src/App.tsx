@@ -34,6 +34,7 @@ import { GITHUB_CALLBACK_ADDRESS, KEY_LINK_ADDRESS, SUBMIT_ADDRESS, addressToPat
 import { GitHubCallbackScreen } from './GitHubConnect'
 import { ProviderKeysScreen } from './ProviderKeys'
 import { WorkspaceSettingsScreen } from './CodeIntelligence'
+import { McpServersScreen } from './McpServers'
 import { NotFound, nearestPath } from './NotFound'
 import { fmtLatency } from './panes'
 import { Icon, SkyShell, type SpineSection } from './Spine'
@@ -557,6 +558,15 @@ const KEYS_LABEL = 'API keys'
 const WORKSPACE_TAB = 'workspace'
 /** The page's `<h1>` and the second half of its name in the issue forms. */
 const WORKSPACE_LABEL = 'Workspace'
+/**
+ * SETTINGS › MCP SERVERS (MCP-UI; docs/design/registered-mcp-servers.md
+ * §4.11): the workspace's registered MCP servers, which a task names on
+ * Submit. A sibling of Workspace and not a section, for the same reason. One
+ * exact address: `#settings/<anything else>` still lands on Pool limits.
+ */
+const MCP_TAB = 'mcp-servers'
+/** The page's `<h1>` and the head's crumb. */
+const MCP_LABEL = 'MCP servers'
 
 /**
  * The utility button's label AND the heading of the screen it opens. One
@@ -915,6 +925,7 @@ export function fromAddress(full: string): Route {
   // as the eleven-item nav's Pool limits. Only the link's scope is kept.
   if (hash === `${SETTINGS}/${KEYS_TAB}`) return { sectionId: SETTINGS, tab: KEYS_TAB, ...blank }
   if (hash === `${SETTINGS}/${WORKSPACE_TAB}`) return { sectionId: SETTINGS, tab: WORKSPACE_TAB, ...blank }
+  if (hash === `${SETTINGS}/${MCP_TAB}`) return { sectionId: SETTINGS, tab: MCP_TAB, ...blank }
   if (hash === KEY_LINK_ADDRESS) {
     const scope = keyLinkScope(query)
     return { sectionId: SETTINGS, tab: KEY_LINK_TAB, ...blank, ...(scope === null ? {} : { view: `scope=${scope}` }) }
@@ -1326,12 +1337,19 @@ export function App() {
             : at.sectionId === SETTINGS
               ? at.tab === WORKSPACE_TAB
                 ? WORKSPACE_LABEL
-                : KEYS_LABEL
+                : at.tab === MCP_TAB
+                  ? MCP_LABEL
+                  : KEYS_LABEL
               : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
   const object = at.missing ? null : documentObjectOf(at)
   useEffect(() => {
     document.title = documentTitleOf(title, object)
   }, [title, object])
+  // THE HEADER BAR IS DRAWN ONLY WHERE IT HOLDS A TRAIL (visual QA V178,
+  // 2026-10-16): inside an open object, the one place `Head` draws. The frame
+  // says so (`has-ctl-bar`), which sets `--ctl-bar-h` for the sticky heads
+  // that sit under the bar (styles/notifications.css).
+  const trail = openObjectOf(at) !== null
 
   return (
     // THE FRAME: the spine and the panel, and beside them the content column
@@ -1339,7 +1357,7 @@ export function App() {
     // (§3.4, §11.3). A bar that occupies its height rather than painting over
     // whatever lands under it, and that runs under the content only: under
     // the spine it cut the avatar off at 1440x900 (#503).
-    <div className="ctl-frame">
+    <div className={`ctl-frame${trail ? ' has-ctl-bar' : ''}`}>
         <SkyShell
           section={spineOf(at.missing ? missingSection(at.missing) : at.sectionId, at.tab)}
           tab={at.tab}
@@ -1355,6 +1373,10 @@ export function App() {
           // 2A): the two submit forms re-read under the new tenant in place.
           keepOnSwitch={at.sectionId === WORK && (at.tab === 'new' || at.tab === 'new-workflow')}
           place={pathFor(at)}
+          // THE BELL (#1206) is the shell's to place: the spine's foot, or the
+          // phone header (V178). It was the only thing in a header bar drawn
+          // over every page, so a section page carried an empty 48px band.
+          bell={<NotificationBell go={go} />}
           foot={
             // THE UTILITY CORNER: Help and API reads at the spine's foot,
             // links like every spine item (#503). `ctl-nav-util` is
@@ -1394,13 +1416,15 @@ export function App() {
           <FrameAge.Provider value={true}>
           <SectionHelp.Provider value={helpSection === null ? null : <SectionQuestion section={helpSection} topic={PAGE_TOPIC[`${at.sectionId}/${at.tab}`] ?? null} />}>
           <HeadAgeProvider at={at}>
-          {/* THE HEADER BAR (#1206, proposal A): on every page, over both the
-              page and an open agent beside it. The trail and the frame's age
-              where they are drawn at all (`Head`), the bell at the right. */}
-          <header className="ctl-bar">
-            <Head at={at} section={section} title={title} closeTo={listAddress} go={go} />
-            <NotificationBell go={go} />
-          </header>
+          {/* THE HEADER BAR (#1206, proposal A), over both the page and an
+              open agent beside it: the trail and the frame's age (`Head`).
+              Only inside an open object, where `Head` draws (V178): the bell
+              it also held is in the spine's foot or the phone header now. */}
+          {trail && (
+            <header className="ctl-bar">
+              <Head at={at} section={section} title={title} closeTo={listAddress} go={go} />
+            </header>
+          )}
           <div className={`app${inspector ? ' has-inspector' : ''}`}>
             <main className="work">
 
@@ -1413,6 +1437,8 @@ export function App() {
                   <GitHubCallbackScreen go={go} />
                 ) : at.sectionId === SETTINGS && at.tab === WORKSPACE_TAB ? (
                   <WorkspaceSettingsScreen />
+                ) : at.sectionId === SETTINGS && at.tab === MCP_TAB ? (
+                  <McpServersScreen />
                 ) : at.sectionId === SETTINGS ? (
                   <ProviderKeysScreen link={at.tab === KEY_LINK_TAB ? { scope: keyLinkScope(at.view ?? ''), token: keyLink.current } : null} />
                 ) : (

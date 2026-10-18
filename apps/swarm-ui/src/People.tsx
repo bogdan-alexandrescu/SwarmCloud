@@ -13,6 +13,7 @@ import {
 } from './api'
 import { Banner, Button, buttonClass, Card, Chip, Dash, Dialog, ToneMark } from './components'
 import type { ApiError, Result } from './fetch'
+import { trapTab } from './focus'
 import { ApprovedWaiting, JobSteps, waitingOf } from './OnboardingWorkspace'
 import { Mark } from './primitives'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
@@ -764,7 +765,10 @@ function WorkspaceCell({ row }: { row: PersonRow }) {
       {w.workspace_id != null && w.workspace_id !== '' && (
         <>
           {' '}
-          <code className="pp-id">{w.workspace_id}</code>
+          {/* Whole in `title`: people.css cuts an id longer than its room (V021, V161). */}
+          <code className="pp-id" title={w.workspace_id}>
+            {w.workspace_id}
+          </code>
         </>
       )}
       {w.state === 'failed' && failedAt !== null && <> ({failedAt})</>}
@@ -990,17 +994,36 @@ function Drawer({ row, doc, reload, onClose }: { row: PersonRow; doc: PeopleDoc;
   const closeRef = useRef(onClose)
   closeRef.current = onClose
   const closeBtn = useRef<HTMLButtonElement>(null)
+  const sheet = useRef<HTMLElement>(null)
   useEffect(() => {
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
     closeBtn.current?.focus()
+    // THE PAGE BEHIND IS INERT WHILE THE DRAWER IS OPEN (visual QA V159). It
+    // said `aria-modal="true"` and trapped nothing: after its last control Tab
+    // walked into the skip link, the menu, the bell and the rail -- on a phone,
+    // controls the full-sheet drawer hides. Every other child of <body> is made
+    // inert (the drawer is portalled there), and only the ones this set, so a
+    // confirmation opened later from inside the drawer, portalled after it, is
+    // not. Tab also wraps at the drawer's ends (focus.ts `trapTab`).
+    const scrim = sheet.current?.parentElement ?? null
+    const benched = Array.from(document.body.children).filter(
+      (el): el is HTMLElement => el instanceof HTMLElement && el !== scrim && !el.hasAttribute('inert'),
+    )
+    for (const el of benched) el.setAttribute('inert', '')
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || document.querySelector('.c-dlg') !== null) return
-      e.preventDefault()
-      closeRef.current()
+      // A confirmation on top owns Escape and Tab.
+      if (document.querySelector('.c-dlg') !== null) return
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        closeRef.current()
+        return
+      }
+      trapTab(e, sheet.current)
     }
     document.addEventListener('keydown', onKey)
     return () => {
       document.removeEventListener('keydown', onKey)
+      for (const el of benched) el.removeAttribute('inert')
       opener?.focus()
     }
   }, [])
@@ -1013,7 +1036,7 @@ function Drawer({ row, doc, reload, onClose }: { row: PersonRow; doc: PeopleDoc;
         if (e.target === e.currentTarget) closeRef.current()
       }}
     >
-      <aside className="pp-drawer" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+      <aside className="pp-drawer" role="dialog" aria-modal="true" aria-labelledby={titleId} ref={sheet}>
         <header className="pp-drawer-h">
           <h2 id={titleId}>
             <span className="vh">Manage </span>

@@ -35,7 +35,7 @@ import { StateMark } from './marks'
 import { addressToPath } from './paths'
 import { staleFoot } from './Shell'
 import { usePageClock } from './useNow'
-import { ENDED_BADLY, WHOLE, hhmmUtc, stateView, type Coverage, type OverviewTaskPage } from './overviewReads'
+import { ENDED_BADLY, WHOLE, hhmmUtc, stateView, type Coverage, type OverviewTaskPage, type StateView } from './overviewReads'
 import { CONCURRENCY_STATES, TERMINAL_STATES, clockTime, reasonCopy, timeAgo, whyAgent, type Stats, type Task, type TaskPage, type TaskState } from './types'
 
 /**
@@ -155,12 +155,21 @@ const BAND: readonly { k: string; small: string; states: readonly TaskState[]; s
  */
 export function LifecycleBand({ stats, tasks }: { stats: Result<Stats>; tasks: Result<OverviewTaskPage> }) {
   const st = stats.status === 'ok' || stats.status === 'stale' ? stats.data : null
-  const page = rows(tasks)
+  // A SUCCESSFUL EMPTY READ IS A PAGE OF NO ROWS (visual QA V142,
+  // 2026-10-16): `rows` is null for `empty`, so Finished today drew "—", not
+  // measured, beside Waiting's and Holding's measured 0. The read succeeded
+  // and returned every task there is -- none -- so it counts 0, whole.
+  const page = tasks.status === 'empty' ? [] : rows(tasks)
   // THE FINISHED ROWS FROM EVERY READ THAT CARRIES THEM (live QA OV-6): the
   // failed, dead-lettered and cancelled come from their state reads too when
   // the page has more behind it, so only SUCCEEDED -- which no state read
   // covers, at 3,600 rows all-time -- is limited to the page.
-  const finished = tasks.status === 'ok' || tasks.status === 'stale' ? stateView(tasks.data, TERMINAL_BAND) : null
+  const finished =
+    tasks.status === 'ok' || tasks.status === 'stale'
+      ? stateView(tasks.data, TERMINAL_BAND)
+      : tasks.status === 'empty'
+        ? ({ rows: [], whole: () => true, since: null } satisfies StateView)
+        : null
   const now = new Date()
   // The head's instant (#98), so `counted from 6 min ago` and `⟳ 6 min` agree.
   const at = usePageClock()
@@ -215,7 +224,9 @@ export function LifecycleBand({ stats, tasks }: { stats: Result<Stats>; tasks: R
                     ? 'Counted by /v1/stats, one count per state, for the whole tenant.'
                     : partial
                       ? `At least ${total}: counted off the ${page?.length ?? 0} newest tasks this page read${since === '' ? '' : `, which reach back to tasks created at ${hhmmUtc(finished?.since ?? '')}`}, and older tasks that finished today are not on it.`
-                      : `Counted off the ${page?.length ?? 0} newest tasks this page read, which is every task.`
+                      : page?.length === 0
+                        ? 'The task list was read and holds no task, so nothing has finished today.'
+                        : `Counted off the ${page?.length ?? 0} newest tasks this page read, which is every task.`
               }
             >
               {total !== null ? (
@@ -258,7 +269,7 @@ export function LifecycleBand({ stats, tasks }: { stats: Result<Stats>; tasks: R
                 so the two figures differ, and this is what says why. */}
             {c.source === 'page' && page !== null && (
               <span className="ov-lc-foot is-page">
-                of the {page.length} newest read{since}
+                {page.length === 0 ? 'no task exists' : `of the ${page.length} newest read${since}`}
               </span>
             )}
           </div>
@@ -314,7 +325,9 @@ export function waitGroups(all: readonly Task[]): WaitGroup[] {
   return [...groups.values()]
     .map(({ eligible, workflows, ...g }) => {
       const ranked = [...workflows.entries()].sort((a, b) => b[1] - a[1])
-      const wfs = ranked.slice(0, 3).map(([w, n]) => `${w} ${n}`)
+      // THE COUNT CANNOT READ AS PART OF THE ID (visual QA V258, 2026-10-16):
+      // "wf_audit_01 1" read as `wf_audit_011`. A times sign sets it apart.
+      const wfs = ranked.slice(0, 3).map(([w, n]) => `${w} ×${n}`)
       // EVERY CONTRIBUTOR ACCOUNTED FOR (live QA OV-10, 2026-10-11): a row
       // counting 7 named three workflows of 2 each and dropped the seventh --
       // a fourth workflow, or a task in none. What the names leave is said.
@@ -342,6 +355,19 @@ export function waitGroups(all: readonly Task[]): WaitGroup[] {
  * failed read is the `not read` mark and a real zero the `real zero` mark --
  * not a line of em text beside a card that draws the mark for the same read.
  */
+/**
+ * WHY A CARD IS BLIND, AS THE SENTENCE UNDER ITS HEADING (visual QA V259,
+ * 2026-10-16). An in-card absence drew only "not read · Task list unread":
+ * the reason was the mark's accessible name and nothing else, with no
+ * visible text and no `title`, so a sighted reader could not learn why. The
+ * one sentence §6.9 allows is the read's own reason; `say` stays the mark's
+ * name, whole.
+ */
+export function readWhy(b: { why: string }): string {
+  const s = b.why.trim()
+  return /[.!?]$/.test(s) ? s : `${s}.`
+}
+
 export function TaskListAbsent({ tasks }: { tasks: Result<TaskPage> }) {
   // A read in flight is the skeleton every other card draws (Overview's `Reading`).
   if (tasks.status === 'loading') return <div className="ctl-ghost ov-ghost" style={{ '--rows': '3' } as CSSProperties} aria-hidden />
@@ -353,7 +379,9 @@ export function TaskListAbsent({ tasks }: { tasks: Result<TaskPage> }) {
         kind={b.admin ? 'admin' : 'failed'}
         heading="Task list unread"
         say={`${b.why} This card is blind; it is not reporting that nothing is here.`}
-      />
+      >
+        {readWhy(b)}
+      </Absent>
     )
   }
   return (
@@ -526,6 +554,18 @@ function shortWf(id: string): string {
   return id.length <= 10 ? id : `${id.slice(0, 9)}…`
 }
 
+/**
+ * THE WHOLE WORKFLOW ID AT DESKTOP WIDTH (visual QA V263, owner decision Q5,
+ * 2026-10-16). A row read "synthesis · wf_5e5ad3…" at 1440 with ~300px free,
+ * and its `title` repeated the cut text, so the id could not be reached from
+ * the row. The id is drawn whole; the sheet cuts it to the short form only at
+ * the phone breakpoint (`.ov-wf-id`, overview.css), so the text, the title
+ * and a screen reader all carry the whole id at every width.
+ */
+function WfId({ id }: { id: string }) {
+  return shortWf(id) === id ? <>{id}</> : <span className="ov-wf-id">{id}</span>
+}
+
 /** Rows the Recent failures card draws before its "N more". */
 const FAILURE_ROWS = 6
 
@@ -550,7 +590,8 @@ function failureTable(failed: Task[], titleOf: (t: Task) => string | null, now: 
           // five of eleven rows read "merge" and nothing else. With no title
           // read, the row names its workflow by its short id.
           const title = titleOf(t)
-          const label = title === null && t.workflow_id !== null ? `${rowLabel(t, null)} · ${shortWf(t.workflow_id)}` : rowLabel(t, title)
+          const wf = title === null ? t.workflow_id : null
+          const label = rowLabel(t, title)
           return (
             <tr key={t.id}>
               {/* THE MARK ALONE (browser QA N3, 2026-10-04): the 68px badge
@@ -560,8 +601,14 @@ function failureTable(failed: Task[], titleOf: (t: Task) => string | null, now: 
                 <StateMark state={t.state} bare />
               </td>
               <th scope="row">
-                <a className="ov-name" href={href} title={`${label} · ${t.id}`}>
+                <a className="ov-name" href={href} title={`${wf === null ? label : `${label} · ${wf}`} · ${t.id}`}>
                   {label}
+                  {wf !== null && (
+                    <>
+                      {' · '}
+                      <WfId id={wf} />
+                    </>
+                  )}
                 </a>
                 {why !== '' && (
                   <span className="ov-sub ov-why" title={why}>

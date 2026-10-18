@@ -991,7 +991,11 @@ function Accepted({ echo, steps }: { echo: DispatchEcho | null; steps: number })
     <ul className="ctl-facts">
       <li className="ctl-fact">
         <b>accepted as</b>
-        <code>{echo.strategy}</code> / <code>{echo.carrier}</code>
+        {/* ONE VALUE (VQA V174): as three flex items the panel's
+            `space-between` set "direct-pr" mid-row, a lone "/" at the edge
+            and "checkpoints" on a line of its own. The slash is held to the
+            strategy, so a wrap can only move the carrier down whole. */}
+        <span className="dsp-fact-v"><code>{echo.strategy}</code>{'\u00a0/ '}<code>{echo.carrier}</code></span>
       </li>
       <li className={known === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
         <b>outcome</b>
@@ -999,10 +1003,10 @@ function Accepted({ echo, steps }: { echo: DispatchEcho | null; steps: number })
           // A STRATEGY THIS BUNDLE DOES NOT KNOW IS NOT A STRATEGY WITH NO
           // OUTCOME. Same rule as every other absence on these screens: an em
           // dash and a mark, never a claim.
-          <>
-            <i className="ctl-em">&mdash;</i>
+          <span className="dsp-fact-v">
+            <i className="ctl-em">&mdash;</i>{' '}
             <i className="ctl-mark is-absent">not measured</i>
-          </>
+          </span>
         ) : (
           consequenceOf(known, steps).headline
         )}

@@ -57,6 +57,7 @@ disabled for every tenant; no Job exists for them yet):
 | `claude-code-review` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` (not moved by #939 option A: designed to run as its own account, which a GKE pod cannot be; contract request 66) |
 | `indexer` | GKE Autopilot | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` (contract request 48, accepted by the owner 2026-10-05; claude-code on `agent-runtime-indexer`; on GKE Autopilot since contract request 63, 2026-10-10, the canary for #939; its tenants' Cloud Run Jobs are kept, idle, as the rollback) |
 | `claude-code-browser` | GKE Autopilot | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` (contract request 67, accepted by the owner 2026-10-11; claude-code on `agent-runtime-browser` and the `browser` class, so an agent can render and screenshot pages; GKE because Cloud Run cannot size Chromium's `/dev/shm`) |
+| `await-input` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` (contract requests 93 and 94, accepted by the owner 2026-10-17, docs/design/human-steps.md: a `control_plane` profile that nothing runs on any backend -- swarm-api ends its tasks -- so the backend is the catalogue's statement only, and it has no Job (`profiles_without_a_job`); shipped unavailable) |
 
 `BackendRouter.for_backend` (`apps/scheduler/scheduler/dispatch.py::BackendRouter.for_backend`) sends
 `CLOUD_RUN_JOB` to `CloudRunJobDispatcher`

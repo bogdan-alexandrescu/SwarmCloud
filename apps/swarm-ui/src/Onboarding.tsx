@@ -338,6 +338,9 @@ export function Checklist({ doc, reload }: { doc: OnboardingDoc; reload: () => v
         // alone, not after a separator with nothing before it (RSA-25).
         const line = stepLine(s, doc)
         const said = line !== null && line !== undefined && line !== '' && line !== false
+        // A line with nothing on it is not drawn (visual QA V228): an empty `p.ob-line` doubled the gap under the
+        // title of a step whose body says it all (the Claude-account step).
+        const at = s.checked_at !== null && s.state !== 'todo'
         return (
           <li key={s.step} className={`ob-step is-${s.state}${next ? ' is-next' : ''}`} data-step={s.step} data-state={s.state} aria-current={next ? 'step' : undefined}>
             <ToneMark tone={stepTone(s)} hidden />
@@ -348,14 +351,16 @@ export function Checklist({ doc, reload }: { doc: OnboardingDoc; reload: () => v
                 <span className="ob-state">{STATE_WORD[s.state] ?? s.state}</span>
                 {next && <Chip>next</Chip>}
               </p>
-              <p className="ur-hint ob-line">
-                {line}
-                {s.checked_at !== null && s.state !== 'todo' && (
-                  <span className="ob-at">
-                    {said ? ' · ' : ''}checked {timeAgo(s.checked_at)}
-                  </span>
-                )}
-              </p>
+              {(said || at) && (
+                <p className="ur-hint ob-line">
+                  {line}
+                  {at && (
+                    <span className="ob-at">
+                      {said ? ' · ' : ''}checked {timeAgo(s.checked_at!)}
+                    </span>
+                  )}
+                </p>
+              )}
               {issues.map((i, n) => (
                 <IssueCopy key={`${i.code}:${i.owner ?? ''}:${i.repository ?? ''}:${n}`} code={i.code} copy={i.copy} url={i.url} />
               ))}

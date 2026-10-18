@@ -895,17 +895,45 @@ class RunnerProfile:
     #: provider key (`secrets` above, unchanged). Excluded from the hash, as
     #: `inputs` is: a mapping is not hashable.
     secret_slots: Mapping[str, SecretSlot] = field(default_factory=dict, hash=False)
+    #: True when no container ever runs this profile: the control plane
+    #: ends its tasks itself (docs/design/human-steps.md, `await-input`).
+    #: The scheduler never leases one; admission parks it before any
+    #: capacity check. Such a profile has no runner, no worker action, no
+    #: provider, no secrets, no slots, no live browser and no declared
+    #: inputs besides `prompt`, and has no Job or pod (Terraform's
+    #: `profiles_without_a_job`). Contract request 93 (HW-CONTRACT, human
+    #: steps request B), accepted by the owner 2026-10-17.
+    control_plane: bool = False
 
     def __post_init__(self) -> None:
+        if self.control_plane:
+            # Contract request 93: nothing runs this profile, anywhere, so a
+            # field that only means something to a runner, a worker or a pod
+            # is a declaration nobody would honour.
+            for declared, set_ in (
+                ("runner_argv", bool(self.runner_argv)),
+                ("worker_action", self.worker_action is not None),
+                ("provider", self.provider is not None),
+                ("secrets", bool(self.secrets)),
+                ("secret_slots", bool(self.secret_slots)),
+                ("inputs", bool(self.inputs)),
+                ("live_browser", self.live_browser),
+            ):
+                if set_:
+                    raise ValueError(
+                        f"runner {self.name}: a control_plane profile is never run, so it "
+                        f"sets no {declared} (contract request 93)"
+                    )
         if self.worker_action is not None and self.runner_argv:
             raise ValueError(
                 f"runner {self.name}: a worker_action profile starts no runner, so its "
                 "runner_argv must be empty (contract request 33)"
             )
-        if self.worker_action is None and not self.runner_argv:
+        if self.worker_action is None and not self.runner_argv and not self.control_plane:
             raise ValueError(
                 f"runner {self.name}: an empty runner_argv starts nothing; only a "
-                "worker_action profile may have one (contract request 33)"
+                "worker_action or control_plane profile may have one (contract "
+                "requests 33 and 93)"
             )
         if self.worker_action is not None:
             # Contract request 60 (#453): a worker action reads its credential
@@ -1594,6 +1622,27 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         # Contract request 71 (LB-D): the one live-browser profile.
         live_browser=True,
         secret_slots={"files": _FILES_SLOT},   # contract request 80
+    ),
+    # CONTRACT REQUEST 94, accepted by the owner 2026-10-17 (HW-CONTRACT,
+    # docs/design/human-steps.md §5 request C): a workflow step that waits for
+    # a tenant member's answer. control_plane (request 93): no container runs
+    # it, swarm-api ends it, and Terraform makes no Job for it
+    # (`profiles_without_a_job`). SHIPPED UNAVAILABLE until every build lane of
+    # the design's §6 has merged and HW-ACCEPT is green on dev; the owner then
+    # applies request D, which is `available=True` and nothing else.
+    "await-input": RunnerProfile(
+        name="await-input",
+        image="agent-runtime-base",   # never pulled: control_plane
+        resource_class="standard",    # never reserved: control_plane
+        backend=Backend.CLOUD_RUN_JOB,
+        runner_argv=(),
+        control_plane=True,
+        provider=None,
+        secrets=(),
+        timeout_seconds=300,          # unused; the wait is await_input's (at most 24 h)
+        inputs={},
+        available=False,
+        disabled_reason="await-input steps are being built (docs/design/human-steps.md)",
     ),
 }
 

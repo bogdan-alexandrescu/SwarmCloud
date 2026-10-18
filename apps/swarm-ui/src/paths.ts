@@ -111,6 +111,10 @@ export const FIXED: Readonly<Record<string, string>> = {
   // (Code intelligence). Beside API keys at the panel's foot, for the same
   // reason: set once, not worked in.
   'settings/workspace': '/settings/workspace',
+  // MCP-UI: Settings › MCP servers, the workspace's registered MCP servers
+  // (docs/design/registered-mcp-servers.md §4.11). A sibling of Workspace, for
+  // the same reason: registered once, then named by tasks.
+  'settings/mcp-servers': '/settings/mcp-servers',
   [HELP_ROUTE]: '/help',
   reference: '/api-reads',
 }
