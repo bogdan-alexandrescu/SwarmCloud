@@ -30,6 +30,19 @@ output "nat_egress_addresses" {
   value       = module.network.nat_addresses
 }
 
+# The same addresses, for a caller registering an MCP server
+# (docs/design/registered-mcp-servers.md §4.9, lane MCP-IAM, part of #1433):
+# a task's worker reaches the caller's server through this NAT on GKE and on
+# Cloud Run Jobs alike, so these are what the caller allowlists, and what the
+# console's MCP servers page shows. Sorted, so the list a caller copies does
+# not reorder between applies. Its own output rather than
+# nat_egress_addresses, so rendering it into swarm-api's settings names what
+# it is for, and a reader of either sees which allow-list it feeds.
+output "mcp_egress_addresses" {
+  description = "Give these to a caller registering an MCP server: every worker call to a registered server leaves through this NAT (docs/design/registered-mcp-servers.md §4.9)."
+  value       = sort(module.network.nat_addresses)
+}
+
 # --- data ------------------------------------------------------------------
 
 output "firestore_database" {

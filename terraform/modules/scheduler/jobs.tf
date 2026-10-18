@@ -141,12 +141,12 @@ module "service_account_ids" {
 # NO create_ignore_already_exists, for the reason modules/iam gives for
 # swarm-tick (#334): a release that meets a 409 should fail rather than adopt
 # an account somebody else made under this name, with their keys and policy.
-# The provider caps description at 256 characters; this one is at 245.
+# The provider caps description at 256 characters; this one is at 253.
 resource "google_service_account" "rollup_sweeper" {
   project      = var.project_id
   account_id   = module.service_account_ids.rollup_sweeper_id
   display_name = "Swarm Workflow Rollup Sweeper"
-  description  = "managed-by=swarm-terraform; OIDC identity of workflow-rollup, issue-run-advance, stranded-pr-sweep, repo-index-poll, merge-wake, forge-refresh, workspace-sweep, secrets-rotation-sweep, task_finished push; those 9 /v1/admin routes only. No roles."
+  description  = "managed-by=swarm-terraform; OIDC of workflow-rollup, issue-run-advance, stranded-pr-sweep, repo-index-poll, merge-wake, forge-refresh, workspace-sweep, secrets-rotation-sweep, mcp-credentials-sweep, task_finished push: 10 /v1/admin routes only; no roles"
 }
 
 locals {
@@ -720,4 +720,104 @@ resource "google_cloud_scheduler_job" "secrets_rotation_sweep" {
       error_message = "enable_secrets_rotation_sweep needs api_endpoint: the job POSTs swarm-api's workspace secrets rotation sweep."
     }
   }
+}
+
+# --- The per-run MCP credential sweep (docs/design/registered-mcp-servers.md
+# §4.4, lane MCP-IAM, part of #1433) -----------------------------------------
+#
+# POST /v1/admin/mcp-credentials/sweep (apps/swarm-api/swarm_api/routes/
+# mcp_servers.py, lane MCP-API) deletes the Secret Manager secret of every
+# per-run MCP credential whose task (every task of the workflow, for a
+# workflow's map) is terminal or whose expires_at has passed, and marks its
+# mcp_dispatch_credentials row `destroyed`. Not at the end of each attempt: a
+# retry is a new attempt of the same task and needs it (owner decision Q2).
+#
+# EVERY 10 MINUTES, AT :03, :13, ... (var.mcp_credentials_sweep_schedule): a
+# terminal task's credential is deleted at most 10 minutes after the task
+# ends. The minute is clear of :00 and :30, where schedules bunch, and of
+# workspace_sweep's */10. A sweep that never runs still leaves nothing behind
+# for long: each secret is created with Secret Manager's own ttl at
+# expires_in plus 5 minutes (§4.4), so this job shortens a credential's life
+# to its task's, and the TTL bounds it if the job is paused or failing.
+#
+# ONE JOB, NOT ONE PER TENANT: the route takes no tenant_id and walks every
+# live row, a personal workspace's among them.
+#
+# SAME IDENTITY as secrets_rotation_sweep: the rollup-sweeper account, which
+# swarm-api admits to this one route by name (swarm_api.auth.
+# ROLLUP_SWEEPER_ROUTES, MCP-API) and whose run.invoker on swarm-api
+# (terraform/infra main.tf, rollup_sweeper_invokes_api) is the edge grant, so
+# this job adds no IAM member. The delete itself runs as swarm-api, under
+# swarmMcpCredentialHandler's secretmanager.secrets.delete, conditioned to
+# -mcpc- secrets (terraform/bootstrap/mcp_credentials.tf, which the owner
+# applies). Until that is applied each due delete fails and is retried by the
+# next run; the TTL still removes the secret.
+#
+# OFF IN THE MODULE BY DEFAULT, and the root does not set it yet: the route
+# arrives with MCP-API, and the whole feature ships dark until
+# SWARM_MCP_SERVERS=on, so a job calling a route nobody serves would only add
+# a 404 every 10 minutes. The count is a bool for enable_workspace_sweep's
+# reason: api_endpoint is unknown at plan in the root, so it cannot gate a
+# count.
+resource "google_cloud_scheduler_job" "mcp_credentials_sweep" {
+  count = var.enable_mcp_credentials_sweep ? 1 : 0
+
+  project = var.project_id
+  region  = var.region
+  name    = "${var.name_prefix}-mcp-credentials-sweep"
+
+  description = "managed-by=swarm-terraform; deletes the per-run MCP credential secret of every terminal or expired task (#1433, Q2); the secret's own TTL is the backstop"
+  schedule    = var.mcp_credentials_sweep_schedule
+  time_zone   = var.time_zone
+  paused      = var.paused
+
+  # One Secret Manager delete and one transaction per due row, the same
+  # budget as the other sweeps.
+  attempt_deadline = "300s"
+
+  http_target {
+    http_method = "POST"
+    # The path is a literal, not a variable like the other sweeps': the
+    # rollup sweeper is admitted to this one route by name, and this job may
+    # call nothing else.
+    uri = "${trimsuffix(var.api_endpoint, "/")}/v1/admin/mcp-credentials/sweep"
+
+    oidc_token {
+      service_account_email = local.rollup_sweeper_email
+      audience              = coalesce(var.api_audience, trimsuffix(var.api_endpoint, "/"))
+    }
+  }
+
+  # No retry: the next run, ten minutes on, IS the retry, and the sweep is
+  # idempotent -- a row already `destroyed` is skipped.
+  retry_config {
+    retry_count = 0
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.api_endpoint != ""
+      error_message = "enable_mcp_credentials_sweep needs api_endpoint: the job POSTs swarm-api's MCP credential sweep."
+    }
+  }
+}
+
+# Declared beside the job rather than in variables.tf: the lane that added the
+# job (MCP-IAM) owns this file and not that one.
+variable "enable_mcp_credentials_sweep" {
+  description = "Create swarm-mcp-credentials-sweep, the 10-minute caller of swarm-api's per-run MCP credential sweep (docs/design/registered-mcp-servers.md §4.4, #1433). A bool, not derived from api_endpoint, for enable_task_finished_push's reason. Off by default: the route is MCP-API's and the feature ships dark."
+  type        = bool
+  default     = false
+}
+
+variable "mcp_credentials_sweep_schedule" {
+  description = <<-EOT
+    How often the per-run MCP credential sweep runs. Every 10 minutes, at
+    :03, :13, ...: a terminal task's credential is deleted at most 10 minutes
+    after the task ends, the secret's own TTL (expires_in plus 5 minutes) is
+    the backstop, and :03 is clear of :00, :30 and workspace_sweep's */10.
+    An idle sweep reads the live rows only.
+  EOT
+  type        = string
+  default     = "3,13,23,33,43,53 * * * *"
 }
