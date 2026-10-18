@@ -51,8 +51,10 @@ a project it shares with another team), and Secret Manager (the credential is
 meant to be there until the sweep, §4.4).
 
 STANDARD LIBRARY ONLY: it runs in the swarm-verify image (alpine, python3 with
-no pip). No function here is named `test_*`: this is a program the suite
-runs, not a pytest module (pyproject's testpaths is tests/unit).
+no pip). It is a program the suite runs; its ONE pytest test,
+`test_the_selftest_catches_every_defect_it_names`, runs `selftest` when pytest
+is pointed at this file (pyproject's testpaths is tests/unit, so a plain
+`pytest` never collects it).
 
     test_caller_mcp.py mint --dir DIR
     test_caller_mcp.py body --dir DIR --kind task|door --server NAME --run-id ID
@@ -916,6 +918,12 @@ def selftest() -> int:
     for problem in problems:
         print("  " + problem, file=sys.stderr)
     return 1 if problems else 0
+
+
+def test_the_selftest_catches_every_defect_it_names() -> None:
+    """pytest's entry: the echo server answers on loopback, and every check
+    PASSES on a working platform's evidence and FAILS or SKIPS on each defect."""
+    assert selftest() == 0
 
 
 # ---------------------------------------------------------------------------
