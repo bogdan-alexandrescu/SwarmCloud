@@ -102,6 +102,9 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 92 | `states.py`: `ParkReason.AWAITING_INPUT`, a workflow step waiting for a person's answer (HW-CONTRACT, human steps request A, part of #1436) | ACCEPTED by the owner 2026-10-17 (Q1, on PR 1462/1493) and APPLIED by the pull request that adds this line |
 | 93 | `profiles.py`: `RunnerProfile.control_plane`, a catalogue profile the platform never leases (HW-CONTRACT, human steps request B, part of #1436) | ACCEPTED by the owner 2026-10-17 (Q10, on PR 1493) and APPLIED by the pull request that adds this line |
 | 94 | `profiles.py`: the `await-input` catalogue entry, shipped unavailable (HW-CONTRACT, human steps request C, part of #1436) | ACCEPTED by the owner 2026-10-17 (on PR 1493) and APPLIED by the pull request that adds this line; `available=True` is request D, which the owner applies after HW-ACCEPT, and is not filed or applied here |
+| 95 | `models.py`: `Task.additional_repositories`, the registered repositories a step reads beside its own, with `check_additional_repositories` and a shape ceiling of 10 (MR-CONTRACT, multi-repository steps request A, part of #1434) | ACCEPTED by the owner 2026-10-17 (PR 1461; ceiling 10, the operative limit a platform setting) and APPLIED by the pull request that adds this line |
+| 96 | `specsign.py`: spec format 4 covers `additional_repositories`, signed at 4 only when the list is set (MR-CONTRACT, multi-repository steps request B, part of #1434) | ACCEPTED by the owner 2026-10-17 (PR 1461) and APPLIED by the pull request that adds this line |
+| 97 | No change to `WorkflowStep`, `Workflow` or `profiles.py` for multi-repository steps (MR-CONTRACT, multi-repository steps request C, part of #1434) | ACCEPTED by the owner 2026-10-17 (PR 1461); requests no change, so nothing to apply |
 
 ---
 
@@ -12876,3 +12879,173 @@ list `post-verdict`.
 ### Invariants
 
 As request 93.
+
+
+## 95. `models.py`: `Task.additional_repositories`, the registered repositories a step reads beside its own (MR-CONTRACT, multi-repository steps request A)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1461, with the decisions
+in its comments) and APPLIED by the pull request that adds this line. Filed
+by the design (docs/design/multi-repository-steps.md §5 request A), applied
+by lane MR-CONTRACT, part of #1434. The design wrote `<n>`; 95 is the next
+free number on main at 2c0d5a7, and the design's §5 letter is the stable name.
+
+**Changed from the design.** The design's `MAX_ADDITIONAL_REPOSITORIES = 4`
+is not in the contract. The owner made the count limit (default 5) and the
+total size budget (default 6 GiB) PLATFORM SETTINGS, editable at run time
+and read by swarm-api at submission, never a code constant. The contract
+keeps only `ADDITIONAL_REPOSITORIES_CEILING = 10` (owner, 2026-10-17 ~01:00
+UTC): a guard on the document's shape, the top of the setting's accepted
+range (1-10), never the operative limit. swarm-api refuses a step over the
+setting `too_many_additional_repositories`, naming the current limit. The
+entry's `forge_credential_source` values are named here too
+(`ADDITIONAL_REPOSITORY_SOURCES`), from swarm-api's `ForgeSlot.source`.
+
+### Why
+
+A step that reasons over a product spread across repositories needs to
+check them out at commits fixed at submission. The task is the only document
+the worker reads its spec from, and the signed spec is what makes a
+rewritten list fail (invariant 5). An `input` key would be signed but
+untyped, and every reader would re-validate a caller-shaped dict. A
+`metadata` key outside `SIGNED_METADATA_KEYS` is not signed at all. The
+entries carry `forge_credential` and `commit`, which only swarm-api may
+write, as request 54's `forge_credential` is.
+
+### The change
+
+```python
+ADDITIONAL_REPOSITORY_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,62}")
+ADDITIONAL_REPOSITORIES_CEILING = 10          # shape guard; the limit is a setting
+ADDITIONAL_FORGE_CREDENTIAL = re.compile(r"git(-u-[0-9a-f]{16})?")   # never git-r-
+ADDITIONAL_REPOSITORY_SOURCES = ("tenant", "owner", "person")
+ADDITIONAL_REPOSITORY_KEYS = (
+    "name", "repo_id", "repository", "repository_url", "ref", "commit",
+    "forge_credential", "forge_credential_source", "size_kib",
+)
+
+def check_additional_repositories(value: Any) -> None: ...
+
+@dataclass
+class Task:
+    ...
+    additional_repositories: list[dict[str, Any]] | None = None
+    # __post_init__ calls check_additional_repositories
+```
+
+`check_additional_repositories` accepts None or a list of at most the
+ceiling, each entry exactly the keys above. `name` and `repo_id` must be
+unique. `repository_url` must be `https://github.com/` + `repository`, and
+`ref` must not be an option. `commit` is a 40-hex lower-case sha, and
+`size_kib` a non-negative int, not a bool. Its message names the key and the
+entry's index, never a value. `to_firestore` is unchanged: `asdict` writes
+the list.
+
+**Tests:** `tests/unit/common/test_additional_repositories_contract.py`.
+Each of these raises: a name of `..`, a `git-r-` slot, a short commit, a
+duplicate name or repo_id, and one entry over the ceiling. The message never
+carries the value. An old document decodes with None.
+`tests/unit/common/test_specsign_covers.py::test_every_task_field_is_signed_or_named_unsigned`
+fails when a `Task` field is neither in the signed projection nor named
+unsigned with its reason.
+
+### Rollback
+
+Remove the field and the names. A document that carries the field then fails
+to decode wherever `Task(**doc)` is used, so first stop swarm-api writing it
+(`settings.additional_repositories_enabled`, default off) and let those
+tasks end.
+
+### What it would break
+
+Nothing that exists. `Task(**doc)` on an old document leaves it None, and
+`__post_init__` refuses a malformed list, which no writer produces. A reader
+that walks task fields generically (the codec, the reconciler's raw reads)
+sees one more key.
+
+### Invariants
+
+**5**: the field is inside the signature (request 96). **9**: `repo_id` is a
+tenant-scoped hash, and the slot is the task's own tenant's. **10**: the
+field holds names and commits, never an image, command, resource or backend
+parameter, and swarm-api writes it, never a caller. 1-4 and 6-8 untouched.
+
+
+## 96. `specsign.py`: spec format 4 covers `additional_repositories` (MR-CONTRACT, multi-repository steps request B)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1461) and APPLIED by the
+pull request that adds this line. Filed by the design (§5 request B), applied
+by lane MR-CONTRACT, part of #1434. Format 4 is the next free format: main's
+newest was 3 (request 54). Request 86 (ISO-CONTRACT) added the settings-block
+MAC with its own purpose string, not a spec format, and request 91 recorded
+that MCP servers add none.
+
+### Why
+
+If the list is not in the signed bytes, any identity that can write the task
+document can rewrite it, the tenant's worker account included. A repointed
+commit, or a repository the tenant registered but this step was never given,
+would go unnoticed. Request 54 had the same reason for format 3.
+
+### The change
+
+```python
+SPEC_FORMAT = 4
+SPEC_FORMATS = (1, 2, 3, 4)
+_FORMAT_4_FIELDS = ("additional_repositories",)
+```
+
+* `canonical_step_spec`: at formats 1-3, a set list (non-None, non-empty)
+  raises `SpecNotCanonical`, as a format-3 field does below 3. At 4 the list
+  is projected as stored, in submission order, and the order is in the bytes.
+* `signing_format`: 4 only when the list is set. A task without it keeps
+  signing at 1, 2 or 3, with byte-identical canonical forms (pinned in
+  `test_specsign.py::PRE_FORMAT_4_DIGESTS`), so a worker built before format
+  4 verifies every task that does not use the feature. **Rollout order:
+  workers first, then swarm-api** (and the flag stays off until then), as for
+  formats 2 and 3.
+
+**Tests:** `tests/unit/common/test_specsign.py` holds format 4's golden
+bytes and the pre-format-4 digests of formats 1-3. It also checks that a set
+list at 1-3 has no canonical form.
+`tests/unit/common/test_additional_repositories_contract.py` checks that a
+rewritten commit, entry, order or slot changes the format-4 digest, and that
+a real P-256 signature stops verifying. `test_specsign_covers.py` runs its
+integer-field checks at every format, including 4.
+`tests/unit/common/test_mcp_contract.py` asserted `SPEC_FORMAT == 3` as
+request 91's "MCP adds no format". It now asserts that `mcp_servers` does not
+change `signing_format`, which is what request 91 meant.
+
+### Rollback
+
+Return `SPEC_FORMAT` to 3 and `SPEC_FORMATS` to `(1, 2, 3)`. A document
+already signed at 4 then fails verification (`SPEC_SIGNATURE_INVALID`) on
+every worker, so first stop the writer (request 95's flag) and let those
+tasks end.
+
+### What it would break
+
+Nothing signed today: formats 1-3 project the bytes they did. A worker built
+before format 4 refuses a format-4 task as `unknown_format`, which is why
+workers roll out first.
+
+### Invariants
+
+**5**: a rewritten list fails the worker's check before the agent runs.
+Others untouched.
+
+
+## 97. No change to `WorkflowStep`, `Workflow` or `profiles.py` for multi-repository steps (MR-CONTRACT, multi-repository steps request C)
+
+**Status:** ACCEPTED by the owner 2026-10-17 (on PR 1461). Requests no
+change, so nothing is applied. Recorded so no lane makes one. Part of #1434.
+
+* **`WorkflowStep` / `Workflow` gain no field.** The primary repository is
+  not on them either. swarm-api's submission schemas carry the workflow's
+  default list and a step's replacement list (`[]` = none) to each task, so
+  the step has one source of truth.
+* **No new resource class and no profile flag.** Only GKE agent profiles take
+  additional repositories (the owner's Q4). swarm-api derives that from
+  `profiles.resolve_backend` and `worker_action`, which the catalogue
+  already states. The Cloud Run profiles refuse them.
+* **No limit in the contract.** The count limit and the size budget are
+  platform settings (request 95). Only the shape ceiling is frozen.

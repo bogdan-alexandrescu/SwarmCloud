@@ -181,7 +181,10 @@ def _task_doc(extra: dict) -> dict:
 
 
 def test_mcp_servers_is_inside_the_signed_spec():
-    assert specsign.SPEC_FORMAT == 3
+    # Request 91: mcp_servers adds no format (format 4 is request 96's list).
+    assert specsign.signing_format(_task_doc({"mcp_servers": ["kb"]})) == specsign.signing_format(
+        _task_doc({})
+    )
     without = specsign.canonical_step_spec(_task_doc({}), task_id="task_0123456789abcdef")
     with_mcp = specsign.canonical_step_spec(
         _task_doc({"mcp_servers": ["kb"]}), task_id="task_0123456789abcdef"

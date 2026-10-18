@@ -30,6 +30,7 @@ from swarm_common.models import (
     Tenant,
     Workflow,
     WorkflowStep,
+    check_additional_repositories,
 )
 from swarm_common.states import BlockedReason, EventType, ParkReason, TaskState
 from swarm_common.models import ProviderState
@@ -206,6 +207,9 @@ def task_from_dict(data: dict[str, Any]) -> Task:
         # and writes again never clears a live hand-off; anything but a dict
         # is no wait.
         human_wait=_human_wait(data.get("human_wait")),
+        # Contract request 95 (MR-CONTRACT). Read back so a task this service
+        # decodes and writes again keeps the signed list it was submitted with.
+        additional_repositories=_additional_repositories(data.get("additional_repositories")),
     )
 
 
@@ -243,6 +247,17 @@ def _forge_credential(value: Any) -> str | None:
 def _forge_access(value: Any) -> str | None:
     """A stored forge access mode, or None -- as `_forge_credential`."""
     return value if isinstance(value, str) and value in FORGE_ACCESS else None
+
+
+def _additional_repositories(value: Any) -> list[dict[str, Any]] | None:
+    """A stored additional-repository list, or None -- as `_forge_credential`:
+    a malformed one must not make the task unreadable here, and the worker
+    verifies the signed document itself."""
+    try:
+        check_additional_repositories(value)
+    except ValueError:
+        return None
+    return value
 
 
 #: What `task_to_api` says a task's `forge_credential` is, by its prefix.
