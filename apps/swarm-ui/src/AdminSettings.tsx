@@ -1667,7 +1667,9 @@ function wholeAtLeastOne(typed: string): number | null {
  * them out of the design's code so an admin changes them live, here, where
  * the other run-time ceilings are edited. `PUT /v1/admin/settings` with only
  * the values that changed, so a save never rewrites a setting this card did
- * not touch (`merge_by_default` lives in the same document).
+ * not touch (`merge_by_default` lives in the same document). swarm-api reads
+ * them at every submission, so a change applies to the next one; a task
+ * already submitted keeps what it was pinned with.
  *
  * What the save did is read off its RESPONSE -- the settings as stored -- not
  * off the form: the form says what was asked, the response what holds.
@@ -1729,19 +1731,23 @@ export function AdditionalRepositoryLimitsCard() {
   }
 
   return (
+    // NO INTRO PARAGRAPH, AND A READ FAILURE IS TWO WORDS: Pool limits is held
+    // to 40 words (prose.operator.test.tsx) and measured 36 without this card
+    // on 2026-10-18, so the card has four. The heading and the two labelled
+    // inputs carry the meaning; when a change applies is in the docblock
+    // above, not on screen. A failed read says "Not read", the console's mark
+    // for it, with what failed and why one hover away in `title`, as the pool
+    // editor's save error on this screen already keeps its message.
     <Card className="adm-repo-limits" title="Additional repositories" level={2}>
-      <p className="ur-small">
-        What one step may read beside its own repository. Checked at every submission, so a change applies to the next
-        one; a task already submitted keeps what it was pinned with.
-      </p>
       {settings === null || settings.status === 'loading' ? (
-        <p className="ur-small">Reading the platform settings…</p>
+        <p className="ur-small">Reading…</p>
       ) : data === null ? (
         settings.status === 'error' && settings.error.httpStatus === 403 ? (
-          <p className="ur-small">Only a platform admin reads and changes these.</p>
+          <p className="ur-small">Platform admins only.</p>
         ) : (
-          <p className="warn-text" role="alert">
-            The platform settings could not be read{settings.status === 'error' ? `: ${settings.error.message}` : ''}.
+          <p className="warn-text" role="alert"
+            title={settings.status === 'error' ? `${errorHeading(settings.error)}: ${settings.error.message}` : undefined}>
+            Not read
           </p>
         )
       ) : (

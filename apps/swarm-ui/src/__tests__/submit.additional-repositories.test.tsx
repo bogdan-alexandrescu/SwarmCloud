@@ -363,7 +363,19 @@ describe('Admin › Pool limits edits the two limits', () => {
     globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ code: 'admin_required', message: 'admins only' }),
       { status: 403, headers: JSON_HEADERS })) as unknown as typeof fetch
     render(<AdditionalRepositoryLimitsCard />)
-    expect(await screen.findByText('Only a platform admin reads and changes these.', {}, WAIT)).toBeTruthy()
+    expect(await screen.findByText('Platform admins only.', {}, WAIT)).toBeTruthy()
+    expect(screen.queryByLabelText('Most additional repositories per step')).toBeNull()
+  })
+
+  // Pool limits is held to 40 words (prose.operator.test.tsx), so a failed read
+  // is drawn as two words and the message it carries is kept in `title`.
+  it('says the limits were not read, keeping the message one hover away, and draws no field', async () => {
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ code: 'internal', message: 'settings store timed out' }),
+      { status: 500, headers: JSON_HEADERS })) as unknown as typeof fetch
+    render(<AdditionalRepositoryLimitsCard />)
+    const line = await screen.findByRole('alert', {}, WAIT)
+    expect(line.textContent).toBe('Not read')
+    expect(line.getAttribute('title')).toContain('settings store timed out')
     expect(screen.queryByLabelText('Most additional repositories per step')).toBeNull()
   })
 })
