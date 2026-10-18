@@ -22,6 +22,8 @@ from pydantic import (
     field_validator,
 )
 
+from swarm_common.models import ADDITIONAL_REPOSITORIES_CEILING, ADDITIONAL_REPOSITORY_NAME
+
 from .sessiontag import PATTERN as SESSION_TAG_PATTERN
 from .validation import (
     DEFAULT_CARRIER,
@@ -71,6 +73,59 @@ def _mcp_credentials_field() -> Any:
     return Field(default=None, max_length=MAX_MCP_CREDENTIALS, exclude=True, repr=False)
 
 
+#: The most entries a request's `additional_repositories` list may carry
+#: before it is parsed at all: a bound on the work one body costs, NOT the
+#: limit. The limit is the platform setting `max_additional_repositories`
+#: (default 5, at most ADDITIONAL_REPOSITORIES_CEILING), which swarm-api
+#: refuses `too_many_additional_repositories` against, naming its current
+#: value -- so this sits well above the ceiling, and a list between the two
+#: gets that refusal rather than pydantic's generic shape.
+MAX_ADDITIONAL_REPOSITORIES_IN_REQUEST = 4 * ADDITIONAL_REPOSITORIES_CEILING
+
+
+class AdditionalRepositoryCreate(StrictModel):
+    """One repository a step reads beside its own (docs/design/
+    multi-repository-steps.md §4.1, #1434): a NAME the tenant registered,
+    never a URL, a slot or a commit. swarm-api resolves the rest -- the
+    registration, whose slot clones it, the commit its ref names now, its
+    size -- and stores that, signed (`extrarepos`); nothing here reaches the
+    task as sent (invariant 10)."""
+
+    #: `owner/repo`, as GitHub spells it (`repositories.parse_repository`).
+    #: A URL is refused by shape: it is derived from the registration.
+    repository: str = Field(min_length=3, max_length=140)
+    #: A branch, a tag or a full 40-hex sha; absent, the registration's
+    #: default branch. Pinned to a commit at submission.
+    ref: str | None = Field(default=None, min_length=1, max_length=255)
+    #: The directory under `work/repos/`; absent, the repository part,
+    #: lower-cased. `ADDITIONAL_REPOSITORY_NAME` (contract request 95).
+    name: str | None = Field(default=None, min_length=1, max_length=63)
+
+    @field_validator("repository")
+    @classmethod
+    def _owner_repo(cls, value: str) -> str:
+        # Lazily: `repositories` imports the forge clients, which this module
+        # must not pull in at import. ValueError, so pydantic names the field.
+        from .repositories import parse_repository
+
+        owner, repo = parse_repository(value)
+        return f"{owner}/{repo}"
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, value: str | None) -> str | None:
+        if value is not None and not ADDITIONAL_REPOSITORY_NAME.fullmatch(value):
+            raise ValueError("name is lower-case letters, digits, '.', '_' and '-', "
+                             "starting with a letter or digit, at most 63 characters")
+        return value
+
+
+def _additional_repositories_field() -> Any:
+    """None is "not said": a workflow step then reads the workflow's list. `[]`
+    is "none", which on a step replaces the workflow's list (§7 Q6)."""
+    return Field(default=None, max_length=MAX_ADDITIONAL_REPOSITORIES_IN_REQUEST)
+
+
 class TaskCreate(StrictModel):
     #: The ONLY execution knob a caller has. Image, command, resource spec and
     #: backend all come from the frozen catalogue keyed by this name.
@@ -100,6 +155,11 @@ class TaskCreate(StrictModel):
     #: names, by server name (docs/design/registered-mcp-servers.md §4.3):
     #: beside the task, never in it. Checked and stored by `SubmissionService`.
     mcp_credentials: dict[str, McpCredentialCreate] | None = _mcp_credentials_field()
+    #: The registered repositories this task reads beside its own, checked out
+    #: read-only and never carried back (#1434). Behind
+    #: `ApiSettings.additional_repositories_enabled` (off by default).
+    additional_repositories: list[AdditionalRepositoryCreate] | None = (
+        _additional_repositories_field())
 
     @field_validator("repository_url")
     @classmethod
@@ -186,6 +246,12 @@ class WorkflowStepCreate(StrictModel):
     #: included, which a nested model would answer with pydantic's generic
     #: shape. Stored normalised in `metadata.dispatch.await_input`, signed.
     await_input: Any = None
+    #: This step's own list of additional repositories (#1434). It REPLACES
+    #: the workflow's `additional_repositories`, never merges with it, and
+    #: `[]` means none (owner's Q6, 2026-10-17): what a step reads is answered
+    #: from one place. Absent, the step reads the workflow's list.
+    additional_repositories: list[AdditionalRepositoryCreate] | None = (
+        _additional_repositories_field())
 
 
 class MergePullRequest(StrictModel):
@@ -276,6 +342,13 @@ class WorkflowCreate(StrictModel):
     #: credential is the caller's, so every step that names a `dispatch`
     #: server uses the one stored credential, owned by the workflow.
     mcp_credentials: dict[str, McpCredentialCreate] | None = _mcp_credentials_field()
+    #: The additional repositories every agent step reads, unless the step
+    #: names its own list (which replaces this one) (#1434). A worker-action
+    #: or `await-input` step runs no agent and reads none of them. Each
+    #: (repository, ref) is pinned ONCE per submission, so every step reads
+    #: the same commit even if the branch moves while it is submitted.
+    additional_repositories: list[AdditionalRepositoryCreate] | None = (
+        _additional_repositories_field())
 
     @field_validator("after", mode="before")
     @classmethod
@@ -386,6 +459,15 @@ class PlatformSettingsRequest(StrictModel):
     #: Append a `merge` step to every workflow that opens one pull request and
     #: does not say `metadata.merge` (contract request 47). Off by default.
     merge_by_default: bool | None = None
+    #: The most additional repositories one step may read (#1434), read by
+    #: swarm-api at every submission, so a change applies to the next one.
+    #: 1 to the frozen ceiling; `store.PLATFORM_SETTINGS_DEFAULTS` says why 5.
+    max_additional_repositories: StrictInt | None = Field(
+        default=None, ge=1, le=ADDITIONAL_REPOSITORIES_CEILING)
+    #: The GiB one step's additional repositories may total (#1434), enforced
+    #: by swarm-api on the forge's estimate and by the worker on disk.
+    #: 1 to 20, the cache volume's size; default 6.
+    additional_repositories_budget_gib: StrictInt | None = Field(default=None, ge=1, le=20)
 
 
 class LimitRequest(StrictModel):

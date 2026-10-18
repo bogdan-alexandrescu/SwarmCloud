@@ -21,6 +21,7 @@ network. Every token is built at runtime.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import secrets
@@ -81,7 +82,7 @@ class FakeGitHub:
 
     def add(self, repository: str, *, ref: str = "main", commit: str | None = None,
             size_kib: int = 1024) -> str:
-        commit = commit or _sha(repository.split("/")[1][0])
+        commit = commit or hashlib.sha1(repository.encode()).hexdigest()
         self.branches[(repository, ref)] = commit
         self.sizes[repository] = size_kib
         return commit
@@ -263,6 +264,16 @@ def test_a_persons_task_pins_each_repository_with_their_slot_and_signs_it_at_for
     assert not signer.verifies(doc, task_id)
 
 
+def test_the_registrations_spelling_is_stored_whatever_case_the_caller_typed(
+        client, db, ready):
+    response = _post(client, _task([{"repository": "ACME/Web"}]))
+    assert response.status_code == 201, response.text
+    (_, doc), = _tasks(db).items()
+    (entry,) = doc["additional_repositories"]
+    assert (entry["repository"], entry["repository_url"], entry["name"]) == (
+        WEB, "https://github.com/acme/web", "web")
+
+
 def test_a_task_with_no_primary_repository_may_read_additional_ones(client, db, ready):
     """Owner's Q8: allowed. It has no forge credential of its own."""
     response = _post(client, _task([{"repository": WEB}]))
@@ -281,11 +292,11 @@ def test_the_response_serves_the_pin_and_no_url_and_no_token(client, db, forge_t
         assert "https://github.com/acme/web" not in body
         for value in forge_tokens.values.values():
             assert value not in body
-    served = client.get(f"/v1/tasks/{task_id}", headers=auth_header("alice")).json()
+    served = client.get(f"/v1/tasks/{task_id}", headers=auth_header("alice")).json()["task"]
     (entry,) = served["additional_repositories"]
     assert entry == {"name": "web", "repository": WEB,
                      "repo_id": repo_id_for("eng", "acme", "web"), "ref": "main",
-                     "commit": _sha("w"), "path": "../repos/web",
+                     "commit": hashlib.sha1(WEB.encode()).hexdigest(), "path": "../repos/web",
                      "forge_credential_source": "person"}
 
 
@@ -682,7 +693,7 @@ def test_only_an_admin_sets_the_limits(client):
     assert response.status_code == 403
 
 
-@pytest.mark.parametrize("stored", [0, 11, "7", True, 3.0, None])
+@pytest.mark.parametrize("stored", [0, 21, "7", True, 3.0, None])
 def test_a_malformed_stored_limit_reads_as_its_default(db, client, stored):
     db.docs["control/settings"] = {"max_additional_repositories": stored,
                                    "additional_repositories_budget_gib": stored}

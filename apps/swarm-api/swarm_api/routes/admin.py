@@ -174,6 +174,13 @@ def put_platform_settings(
     one pull request and does not say `metadata.merge` gets a `merge` step
     appended at submission. It applies to workflows submitted AFTER the
     change; a workflow already submitted keeps the steps it was signed with.
+
+    `max_additional_repositories` (1-10, default 5) and
+    `additional_repositories_budget_gib` (1-20, default 6): the limits on a
+    step's additional repositories (#1434). Read at every submission, so a
+    change refuses or admits the next one with no deploy; the worker reads
+    the budget at every clone. A task already submitted keeps what it was
+    pinned with. Ranges: `store.PLATFORM_SETTINGS_RANGES`.
     """
     changes = body.model_dump(exclude_none=True)
     if not changes:

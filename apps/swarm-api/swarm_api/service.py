@@ -59,8 +59,9 @@ from .continuation import (
     with_merge_pr_label,
 )
 from .access import MODES, grant_id_for, org_id_for, via_token
+from .extrarepos import Limits, Resolver, refuse_unless_enabled, requested_any, runs_an_agent
 from . import refusals
-from .errors import BrowserToolUnavailable, Forbidden, NotFound, ValidationFailed
+from .errors import ApiError, BrowserToolUnavailable, Forbidden, NotFound, ValidationFailed
 from .browser_logins import refuse_unless_personal
 from .expected_outputs import expected_outputs_by_step, record_expected_outputs
 from .forge import (
@@ -353,6 +354,64 @@ class SubmissionService:
                 f"{'it' if len(names) == 1 else 'them'}; nothing was queued.",
                 detail={"repositories": names},
             )
+
+    def _resolve_additional(
+        self, tenant: Tenant, asked: Sequence[tuple[Task, Sequence[Any] | None]], *,
+        service: bool, also_named: Sequence[Sequence[Any] | None] = (),
+    ) -> None:
+        """Set `additional_repositories` on every task that names some (#1434).
+
+        AFTER `_resolve_forge` and BEFORE `_sign`, so the signature covers the
+        list (format 4, contract request 96) and a task that names none keeps
+        the bytes and format it had. `asked` pairs each task with the list
+        that applies to it -- a workflow step's own, else the workflow's --
+        and `also_named` is any list that applies to no task (a workflow's,
+        when no step runs an agent), which the flag still refuses. One
+        `Resolver` serves the whole submission, so each (repository, ref)
+        pins to one commit for every step. Every refusal is counted like
+        every other and leaves nothing stored (`extrarepos`).
+        """
+        lists = [items for _, items in asked] + list(also_named)
+        if not requested_any(lists):
+            return
+        try:
+            refuse_unless_enabled(
+                bool(getattr(self._settings, "additional_repositories_enabled", False)), lists)
+            if self._forge_tokens is None or self._forge_writer is None:
+                raise ValidationFailed(
+                    "additional_repositories are pinned from GitHub at submission, and this "
+                    "deployment has no forge reader configured",
+                    detail={"field": "additional_repositories"},
+                )
+            # Read at THIS submission (owner, 2026-10-17): an admin's change to
+            # either limit applies to the next one, with no deploy.
+            limits = Limits.from_settings(self._store.get_platform_settings())
+            index = FirestoreSlotIndex(self._store.db)
+            # One per submitter, which every task of one submission shares:
+            # the slot, and so the pin, is the submitter's.
+            resolvers: dict[str, Resolver] = {}
+            for task, items in asked:
+                if not items:
+                    continue
+                submitter = task.submitted_by or ""
+                if submitter not in resolvers:
+                    resolvers[submitter] = Resolver(
+                        db=self._store.db, now=self._now, tenant=tenant,
+                        submitter=submitter, service=service,
+                        grants_enforced=bool(getattr(self._settings,
+                                                     "repository_grants_enforced", False)),
+                        limits=limits, tokens=self._forge_tokens, writer=self._forge_writer,
+                        grant_mode=self._grant_mode, person_slot=self._person_slot,
+                        service_slot=lambda: service_slot(tenant, index),
+                    )
+                task.additional_repositories = resolvers[submitter].resolve(
+                    task, items, step_id=task.step_id)
+        except ApiError as exc:
+            if exc.status_code < 500:
+                self._metrics.tasks_rejected.labels(reason=exc.code).inc()
+                log.info("submission refused tenant=%s code=%s field=additional_repositories",
+                         tenant.tenant_id, exc.code)
+            raise
 
     def _registered_private(self, tenant_id: str, owner: str, repo: str) -> bool:
         """Whether the tenant registered `owner/repo` and its registration
@@ -881,6 +940,12 @@ class SubmissionService:
             tenant, tasks,
             service=service_submission or is_service_submitter(ctx.email),
         )
+        # #1434: the repositories each task reads beside its own, gated and
+        # pinned, before the signature so it covers them.
+        self._resolve_additional(
+            tenant, [(task, spec.additional_repositories) for task, spec in zip(tasks, specs)],
+            service=service_submission or is_service_submitter(ctx.email),
+        )
         # Contract request 34: signed over the task as it will be stored.
         self._sign(tasks)
         # Each task's per-run MCP credentials, after every check and the
@@ -1318,6 +1383,15 @@ class SubmissionService:
         # and the whole workflow refused when any step's repository is not
         # granted to the person.
         self._resolve_forge(tenant, tasks, service=is_service_submitter(ctx.email))
+        # #1434: each step's additional repositories -- its own list, which
+        # REPLACES the workflow's (`[]` is none), else the workflow's for a
+        # step that runs an agent -- pinned once per submission, signed.
+        self._resolve_additional(
+            tenant,
+            [(task, self._step_additional(by_id[task.step_id or ""], spec)) for task in tasks],
+            service=is_service_submitter(ctx.email),
+            also_named=[spec.additional_repositories],
+        )
         self._sign(tasks)
         # The workflow's per-run MCP credentials, after every check and the
         # signature, before the write (§4.4): owned by the workflow, so every
@@ -1335,6 +1409,20 @@ class SubmissionService:
             integrator_step_id=integrator_step_id,
             mcp_credentials=mcp_stored,
         )
+
+    @staticmethod
+    def _step_additional(step: WorkflowStepCreate, spec: WorkflowCreate) -> list[Any] | None:
+        """The additional repositories a workflow step reads (owner's Q6): its
+        own list when it names one, `[]` included, else the workflow's -- but
+        only for a step that runs an agent. A worker action (merge,
+        post-verdict, including one swarm-api appended) and an `await-input`
+        step read no repository, so the workflow's default is not theirs; a
+        list a step names itself is still checked, and refused there."""
+        if step.additional_repositories is not None:
+            return list(step.additional_repositories)
+        if runs_an_agent(validate_runner_profile(step.runner_profile)):
+            return list(spec.additional_repositories or []) or None
+        return None
 
     @staticmethod
     def _step_specs(spec: WorkflowCreate) -> list[StepSpec]:
