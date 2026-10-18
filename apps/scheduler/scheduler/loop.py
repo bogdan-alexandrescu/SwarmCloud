@@ -49,7 +49,14 @@ from swarm_common.states import (
 from . import children as children_mod
 from .awaitinput import is_control_plane
 from .codec import as_datetime
-from .credentials import AccountPool, CredentialSource, ForgeConnections, credential_for
+from .credentials import (
+    AccountPool,
+    CredentialAnswer,
+    CredentialSource,
+    ForgeConnections,
+    credential_for,
+)
+from .mcp_admission import McpCode
 from .secret_slots import WorkspaceGrants
 from .dispatch import BackendRouter, DispatchError
 from .fairness import AgingConfig, round_robin_order
@@ -302,6 +309,9 @@ class DrainReport:
     #: (`after`, lane SPEED-D3) has not merged yet.
     held_pr_gates: int = 0
     promoted_credentials: int = 0
+    #: READY or PARKED tasks ended FAILED before any lease because a per-run
+    #: MCP credential they name expired or was revoked (contract request 99).
+    failed_unrunnable: int = 0
     promoted_prewarm: int = 0
     #: SCHEDULED_RETRY parks returned to READY once `next_eligible_at` passed.
     promoted_scheduled_retries: int = 0
@@ -901,6 +911,13 @@ class Scheduler:
             profile, tenant, self._pool, task=task, forge=self._forge,
             secrets=self._secrets, tenant_of=self._tenant,
         )
+        # A per-run MCP credential that expired or was revoked is not a park:
+        # nobody can hand this task a new value, so it ends FAILED here, from
+        # READY, in one guarded write that takes no lease and reserves nothing
+        # (registered-mcp-servers.md §4.10, contract request 99).
+        if credential.terminal:
+            self._fail_unrunnable(task, credential, report)
+            return False
         if not credential.runnable:
             self._park(
                 task,
@@ -1119,6 +1136,30 @@ class Scheduler:
             report.parked += 1
         else:
             self._count_stale(outcome, report)
+
+    def _fail_unrunnable(
+        self, task: Task, credential: CredentialAnswer, report: DrainReport
+    ) -> None:
+        """End a READY or PARKED task whose MCP credential answer is terminal.
+
+        FAILED with the answer's terminal code as the error
+        (`mcp_credential_expired` for an expired or destroyed row,
+        `mcp_credential_missing` for none), through `store.fail_before_lease`:
+        no lease, no reservation, no attempt, and never retried. Its
+        dependants are resolved in this run like any other end this drain
+        writes, and a workflow step drops the cached verdict so its siblings
+        next in this pass see the failure.
+        """
+        detail = credential.park_detail()
+        error = str(detail.get("code") or McpCode.CREDENTIAL_EXPIRED.value)
+        outcome = self._store.fail_before_lease(task, error, detail=detail)
+        if not outcome.applied:
+            self._count_stale(outcome, report)
+            return
+        report.failed_unrunnable += 1
+        self._note_ended(task.id)
+        if task.workflow_id:
+            self._workflow_verdicts.pop((task.tenant_id, task.workflow_id), None)
 
     def _park_awaiting_input(self, task: Task, report: DrainReport) -> None:
         """Park a READY await-input step AWAITING_INPUT, with its window (`store.park_awaiting_input`).
@@ -1391,8 +1432,8 @@ class Scheduler:
             count and no execution (invariant 1), counted in
             `report.held_pr_gates`;
           * a pull request closed without merging -- the step is ended
-            DEAD_LETTERED (PARKED -> FAILED is not a transition the contract
-            allows), naming it, or CANCELLED when a cancel was asked for. Its
+            DEAD_LETTERED (PARKED -> FAILED, contract request 99, is kept for
+            a task that can never run, `_fail_unrunnable`), naming it, or CANCELLED when a cancel was asked for. Its
             workflow has failed: under `fail_workflow` the next touch sweeps
             the rest, and under either policy its dependants are cancelled as
             a failed parent's.
@@ -1538,6 +1579,12 @@ class Scheduler:
                 profile, tenant, self._pool, task=task, forge=self._forge,
                 secrets=self._secrets, tenant_of=self._tenant,
             )
+            if credential.terminal:
+                # Parked before contract request 99 existed, or parked for a
+                # server an admin disabled while its credential then expired:
+                # either way it can never run, so it ends here, PARKED -> FAILED.
+                self._fail_unrunnable(task, credential, report)
+                continue
             if (
                 credential.source is CredentialSource.ACCOUNT_POOL
                 and task.next_eligible_at is not None
@@ -1583,8 +1630,8 @@ class Scheduler:
         Admission does not check `max_attempts`, so READY on a task that has
         used its last attempt would lease one more than the cap -- the defect
         `retries_exhausted` exists for. Such a task is ended DEAD_LETTERED
-        (PARKED -> FAILED is not a legal transition), or CANCELLED when a cancel
-        was requested, and counted in `report.dead_lettered` / `cancelled`.
+        (PARKED -> FAILED, contract request 99, is kept for a task that can
+        never run), or CANCELLED when a cancel was requested, and counted in `report.dead_lettered` / `cancelled`.
 
         Promotion is `promote_to_ready`, guarded on the state and park reason
         this sweep read, so two drains racing promote it once. It writes the
@@ -1718,8 +1765,8 @@ class Scheduler:
         return it to READY: re-admitting it with nobody there to sign in would
         cost a cold pod start and park again. So the only thing done here is
         the end: past `human_park_max_seconds` since the park it is ended
-        DEAD_LETTERED (PARKED -> FAILED is not a legal transition), with
-        `human_wait_expired`. A park on a task that has used its last attempt
+        DEAD_LETTERED (PARKED -> FAILED, contract request 99, is kept for a
+        task that can never run), with `human_wait_expired`. A park on a task that has used its last attempt
         -- past the worker's `max_human_resumes` a park is not refunded -- is
         ended at once, as `_end_exhausted_retry` ends a SCHEDULED_RETRY park,
         because `human-ready` refuses it and nothing else can resume it.

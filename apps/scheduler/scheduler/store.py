@@ -80,6 +80,7 @@ from swarm_common.states import (
     PENDING_STATES,
     TERMINAL_STATES,
     EventType,
+    InvalidTransition,
     ParkReason,
     TaskState,
     assert_transition,
@@ -747,6 +748,16 @@ class SchedulerStore:
         return outcome
 
     def promote_to_ready(self, task: Task, *, detail: dict[str, Any] | None = None) -> GuardedWrite:
+        """PARKED -> READY, guarded on the state and the park reason read.
+
+        PARKED ONLY. The table also allows FAILED -> READY, and this guard
+        would happily match a FAILED snapshot (its park reason is None both
+        sides), so a FAILED task handed here would be retried. Nothing the
+        scheduler ends FAILED before a lease may be (`fail_before_lease`), so
+        the edge is refused here rather than trusted to every caller.
+        """
+        if task.state is not TaskState.PARKED:
+            raise InvalidTransition(task.state, TaskState.READY)
         assert_transition(task.state, TaskState.READY)
         outcome = self._write_if_unchanged(
             "promote",
@@ -772,8 +783,9 @@ class SchedulerStore:
         For a park whose task has used its last attempt. Returning it to READY
         would lease attempt N+1 of N, because admission does not check the
         retry cap (`swarm_common.models.retries_exhausted` says why the rule
-        lives where it does). PARKED -> FAILED is not a legal transition;
-        DEAD_LETTERED is.
+        lives where it does). PARKED -> FAILED exists (contract request 99)
+        but only for a task that can never run (`fail_before_lease`); a spent
+        retry has always ended DEAD_LETTERED, and still does.
 
         Guarded exactly as `promote_to_ready` is, on the state AND the park
         reason the caller read. The task holds no capacity in PARKED, so there
@@ -799,6 +811,55 @@ class SchedulerStore:
         )
         if outcome.applied:
             self.append_event(task, EventType.DEAD_LETTERED, {"reason": reason, **(detail or {})})
+        return outcome
+
+    def fail_before_lease(
+        self, task: Task, error: str, *, detail: dict[str, Any] | None = None
+    ) -> GuardedWrite:
+        """End a READY or PARKED task that can never run: -> FAILED, no lease.
+
+        Contract request 99 (accepted by the owner 2026-10-18), for
+        registered-mcp-servers.md §4.10: a per-run MCP credential that expired
+        or was revoked cannot be replaced, because the caller who supplied it
+        is not online to supply another. Admission holds such a task READY and
+        the credential sweep holds it PARKED, so those are the two sources.
+
+        ONE GUARDED WRITE, AND NOTHING ELSE. The task holds no lease in READY
+        or PARKED (invariant 1), so there is none to release and none is
+        taken; no pool is read or moved, so no reservation is half-made
+        (invariant 2); it never passes through LEASED, so concurrency never
+        counts it (invariant 3). Guarded on the state AND the park reason the
+        caller read, as `promote_to_ready` is: if another scheduler leased it
+        meanwhile, FAILED over LEASED would be a terminal task holding a lease.
+
+        NEVER RETRIED. `error` is the terminal code (`mcp_credential_expired`
+        or `mcp_credential_missing`), and `attempt_count` is left alone: no
+        attempt ran. `promote_to_ready` refuses a FAILED task, and no other
+        writer reads one back to READY. `end_cause` is None: no `EndCause`
+        value names this ending, and the contract says such a writer writes
+        None.
+        """
+        if task.state not in (TaskState.READY, TaskState.PARKED):
+            raise InvalidTransition(task.state, TaskState.FAILED)
+        assert_transition(task.state, TaskState.FAILED)
+        now = self._now()
+        outcome = self._write_if_unchanged(
+            "fail_before_lease",
+            task,
+            {
+                "state": TaskState.FAILED.value,
+                "park_reason": None,
+                "next_eligible_at": None,
+                "blocked_by": [],
+                "completed_at": now,
+                "last_error": error[:1000],
+                "end_cause": None,
+                "updated_at": now,
+            },
+            same_park_reason=True,
+        )
+        if outcome.applied:
+            self.append_event(task, EventType.FAILED, {"reason": error, **(detail or {})})
         return outcome
 
     def mark_dispatched(

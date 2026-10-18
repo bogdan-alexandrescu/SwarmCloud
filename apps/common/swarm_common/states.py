@@ -74,10 +74,23 @@ _ALLOWED: dict[TaskState, frozenset[TaskState]] = {
     # PARKED -> SUCCEEDED: a step the control plane finishes without a worker
     # (#748, contract request 52). It held no lease, so there is nothing to
     # release; only swarm-api writes it, guarded on its own claim.
+    # READY -> FAILED and PARKED -> FAILED: the same ending in the two states
+    # admission and the credential sweep actually hold a task in (contract
+    # request 99, accepted by the owner 2026-10-18). Only the scheduler writes
+    # them, for a per-run MCP credential that expired or was revoked; the task
+    # holds no lease in either, so nothing is reserved or released.
     TaskState.PARKED: frozenset(
-        {TaskState.READY, TaskState.CANCELLED, TaskState.DEAD_LETTERED, TaskState.SUCCEEDED}
+        {
+            TaskState.READY,
+            TaskState.CANCELLED,
+            TaskState.DEAD_LETTERED,
+            TaskState.SUCCEEDED,
+            TaskState.FAILED,
+        }
     ),
-    TaskState.READY: frozenset({TaskState.LEASED, TaskState.PARKED, TaskState.CANCELLED}),
+    TaskState.READY: frozenset(
+        {TaskState.LEASED, TaskState.PARKED, TaskState.CANCELLED, TaskState.FAILED}
+    ),
     # A lease can be lost before dispatch (reconciler reclaim, limit reduction,
     # cancellation) which returns the task to READY without an attempt.
     TaskState.LEASED: frozenset(
