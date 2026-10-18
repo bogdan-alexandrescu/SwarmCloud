@@ -132,13 +132,21 @@ def test_leaving_repo_id_out_is_still_the_tasks_own_repository(multi):
 def test_a_repo_id_not_in_the_signed_list_is_refused_even_when_registered_and_indexed(
         multi, ldb):
     """`gadgets` is this tenant's, readable by tasks and indexed; the task was
-    never given it. The primary's own repo_id is not an entry either."""
+    never given it."""
     client, attempt = multi
     gadgets = register_extra(ldb, "gadgets")
     version(ldb, OTHER_SHA, repo_id=gadgets)
     body = refused(ask(client, attempt, index_sha=OTHER_SHA, repo_id=gadgets), 404)
     assert body["code"] == "no_graph"
-    refused(ask(client, attempt, repo_id=REPO_ID), 404)
+
+
+def test_the_tasks_own_repo_id_named_is_the_primary_as_if_left_out(multi, ldb):
+    """§4.9: mint accepts the task's primary or one of its signed entries."""
+    client, attempt = multi
+    response = ask(client, attempt, repo_id=REPO_ID)
+    assert response.status_code == 200, response.text
+    got = verify_graph_ticket([GRAPH_KEY], response.json()["ticket"], now=time.time())
+    assert got["repo_id"] == REPO_ID
 
 
 def test_a_task_without_the_list_cannot_name_a_repo_id(make, ldb):

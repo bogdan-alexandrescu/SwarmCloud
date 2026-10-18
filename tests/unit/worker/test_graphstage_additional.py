@@ -11,7 +11,8 @@ picks that repository's ticket file. Held here:
 
   * a version that is not an ancestor of the entry's commit is never pinned;
   * an additional graph is served only beside a served graph of the step's
-    own repository, never staged (the staged server reads one snapshot);
+    own repository; otherwise, and by default, it is staged at
+    `repos/<name>/snapshot/`, and an upkeep not served is discarded;
   * the shim's `repo` sends THAT repository's ticket and never forwards `repo`;
   * the primary's request, file, tool list and variables are today's.
 
@@ -316,10 +317,11 @@ def test_an_index_version_that_is_not_an_ancestor_of_the_entrys_commit_is_not_pi
     assert "is not an ancestor" in record["reason"]
 
 
-def test_an_additional_graph_is_never_staged_when_the_primary_is_not_served(
+def test_the_default_delivery_stages_an_additional_graph_under_its_name(
         db, store, layout):
-    """The default delivery stages the step's own graph; the staged server
-    reads one snapshot, so the additional one is neither copied nor ticketed."""
+    """The default delivery stages the step's own graph, and each indexed
+    additional repository's at `repos/<name>/snapshot/`, proven against the
+    entry's commit; no ticket is asked for."""
     lay = layout
     _no_ab(db)
     _promote(db, store, lay.first)
@@ -328,13 +330,68 @@ def test_an_additional_graph_is_never_staged_when_the_primary_is_not_served(
 
     env = _prepare(db, store, lay, [_entry("web", "web", lay.web_second)], ticket=upkeep)
 
-    assert graphstage.SNAPSHOT_ENV in env
+    assert env[graphstage.SNAPSHOT_ENV] == str(lay.context / graphstage.SNAPSHOT_DIR_NAME)
     assert upkeep.asked == [] and upkeep.started == []
+    assert not (lay.private / "graph-ticket-web").exists()
     web_dir = _extra_pin(lay, "web").parent
-    assert sorted(p.name for p in web_dir.iterdir()) == [graphstage.STAGE_RECORD_NAME]
+    assert sorted(p.name for p in web_dir.iterdir()) == [
+        graphstage.SNAPSHOT_DIR_NAME, graphstage.STAGE_RECORD_NAME]
+    snapshot = web_dir / graphstage.SNAPSHOT_DIR_NAME
+    freshness = json.loads((snapshot / "freshness.json").read_text())
+    assert freshness["index_sha"] == lay.web_first
+    assert freshness["base_sha"] == lay.web_second
+    manifest = json.loads((snapshot / "manifest.json").read_text())
+    assert manifest["repo_id"] == WEB_ID
     record = _extra_record(lay, "web")
-    assert record["delivery"] == "none"
-    assert "served beside the step's own" in record["reason"]
+    assert record["delivery"] == "staged" and record["graph"] is True
+    assert record["snapshot"] == str(snapshot)
+
+
+def test_an_additional_graph_is_staged_not_served_when_the_primary_was_not_served(
+        db, store, layout):
+    """`service` asked for, but the step's own graph had no index: only its
+    shim reaches an additional ticket, so none is minted and the entry stages."""
+    lay = layout
+    _serve_all(db)
+    _promote_extra(db, store, WEB_ID, lay.web_first)
+    upkeep = _Upkeep()
+
+    env = _prepare(db, store, lay, [_entry("web", "web", lay.web_second)], ticket=upkeep)
+
+    assert graphstage.PIN_ENV not in env
+    assert upkeep.asked == []
+    assert not _extra_pin(lay, "web").exists()
+    record = _extra_record(lay, "web")
+    assert record["delivery"] == "staged" and record["graph"] is True
+    assert "served only beside the step's own" in record["fallback"]
+    assert (_extra_pin(lay, "web").parent / graphstage.SNAPSHOT_DIR_NAME).is_dir()
+
+
+def test_an_additional_graph_whose_probe_fails_is_staged_and_its_upkeep_discarded(
+        db, store, layout):
+    lay = layout
+    _serve_all(db)
+    _promote(db, store, lay.first)
+    _promote_extra(db, store, WEB_ID, lay.web_first)
+    upkeep = _Upkeep()
+
+    env = graphstage.prepare(
+        lay.work, profile_name="claude-code", runner_argv=CLAUDE, db=db, store=store,
+        tenant_id=TENANT, repository_url=URL, task_id="task_b", checkout=lay.repo,
+        base_sha=lay.second, graph_ticket=upkeep, private_dir=lay.private, backend=GKE,
+        service_url=SERVICE_URL,
+        probe=lambda url, path: "refused" if path.name == "graph-ticket-web" else None,
+        additional_repositories=[_entry("web", "web", lay.web_second)])
+
+    assert env[graphstage.PIN_ENV] == str(lay.context / graphstage.PIN_NAME)
+    web = upkeep.additional["web"]
+    assert web.started == [lay.web_first]
+    # Discarded, so the primary's control poll never renews a ticket nothing reads.
+    assert web.discarded >= 1 and not (lay.private / "graph-ticket-web").exists()
+    assert upkeep.discarded == 0
+    assert not _extra_pin(lay, "web").exists()
+    record = _extra_record(lay, "web")
+    assert record["delivery"] == "staged" and record["graph"] is True
 
 
 def test_an_unindexed_or_unregistered_entry_says_why_and_the_others_still_pin(
@@ -349,8 +406,10 @@ def test_an_unindexed_or_unregistered_entry_says_why_and_the_others_still_pin(
                               _entry("web", "web", lay.web_second)], ticket=upkeep)
 
     assert _extra_record(lay, "sdk")["delivery"] == "none"
+    assert _extra_record(lay, "sdk")["graph"] is False
     assert "not registered" in _extra_record(lay, "sdk")["reason"]
     assert _extra_record(lay, "web")["delivery"] == "service"
+    assert _extra_record(lay, "web")["graph"] is True
 
 
 def test_an_entry_whose_repo_id_is_not_its_repositorys_is_never_asked_for(

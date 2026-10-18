@@ -23,8 +23,10 @@ WHAT THE TICKET PINS, and where each part comes from:
     and its registration is this tenant's and still `readable_by_tasks`, the
     gate the submission applied. Anything else is the refusal an
     unregistered repository gets (404 `no_graph`), so the field never moves
-    a ticket to a repository the step was not given. A task with no list
-    that names one is a 422: today's request shape is unchanged for it;
+    a ticket to a repository the step was not given. On a task with the
+    list, its own repo_id, named, is its own repository, as if left out
+    (§4.9). A task with no list that names any repo_id is a 422: today's
+    request shape is unchanged for it;
   * the commit: the body's `index_sha`, the commit the worker's ancestry proof
     chose (§4.1), accepted only when `repositories/{repo_id}/index_versions/
     {index_sha}` exists and carries a `graph_digest`;
@@ -245,18 +247,25 @@ class GraphTicketService:
                 "requested; no graph ticket was minted", detail={"reason": FENCED})
         return task
 
+    @staticmethod
+    def _own_repo_id(tenant_id: str, task: dict[str, Any]) -> str | None:
+        """The repo_id of the TASK's own repository, or None when it has none."""
+        key = repository_key(task.get("repository_url"))
+        if key is None:
+            return None
+        try:
+            owner, repo = parse_repository(key)
+        except ValueError:
+            return None
+        return repo_id_for(tenant_id, owner, repo)
+
     def _registration(self, tenant_id: str, task: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         """The tenant's own registration of the TASK's repository (§3.1)."""
         no_graph = NoGraph("this task's repository is not registered in its workspace, so it "
                            "has no graph; no graph ticket was minted")
-        key = repository_key(task.get("repository_url"))
-        if key is None:
+        repo_id = self._own_repo_id(tenant_id, task)
+        if repo_id is None:
             raise no_graph
-        try:
-            owner, repo = parse_repository(key)
-        except ValueError:
-            raise no_graph from None
-        repo_id = repo_id_for(tenant_id, owner, repo)
         record = Repositories(self._db, now=self._now).find(tenant_id, repo_id)
         if record is None or record.get("tenant_id") != tenant_id:
             raise no_graph
@@ -325,7 +334,10 @@ class GraphTicketService:
 
         # The fence held, so the task's tenant IS the attempt's.
         tenant_id = attempt.tenant_id
-        if body.repo_id is None:
+        # §4.9: the task's primary, by leaving `repo_id` out or, on a task with
+        # a signed list, by naming it; or one of that list's repositories.
+        if body.repo_id is None or (task.get("additional_repositories")
+                                    and body.repo_id == self._own_repo_id(tenant_id, task)):
             repo_id, registration = self._registration(tenant_id, task)
         else:
             repo_id, registration = self._additional_registration(tenant_id, task, body.repo_id)
