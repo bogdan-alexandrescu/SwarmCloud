@@ -58,6 +58,7 @@ from .routes import (
     notifications,
     onboarding,
     outcomes,
+    profile,
     provider_keys,
     people,
     platform,
@@ -219,6 +220,10 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # (docs/provider-keys.md, lane KEYS-API): write-only, a person's own key in
     # their personal tenant, the tenant key for admins, one-time form links.
     app.include_router(provider_keys.router)
+    # Settings › Profile (docs/design/user-profile.md §4.2, lane PROFILE-API,
+    # part of #1505): the caller's own profile in one read, and the save of
+    # the preferences that have no other home. For people; no route names one.
+    app.include_router(profile.router)
     # The workspace secrets store's management API (docs/design/workspace-
     # secrets.md §5, lane SEC-STORE-API, part of #1347): records and grants,
     # write-only values, each write audited in its own transaction. The

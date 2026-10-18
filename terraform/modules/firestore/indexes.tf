@@ -463,6 +463,38 @@ locals {
         { field_path = "at", order = "DESCENDING" },
       ]
     }
+
+    # Per-workspace roles (docs/design/workspace-roles.md §4.4): a person's
+    # role is the newest grant that verifies, read in pages of 20 with
+    #     workspace_role_grants where tenant_id == T and subject in (E, "*")
+    #       order by granted_at DESC
+    # Grants are append-only with auto-ids, so ordering is the only way to
+    # find the current one. Without this index the read answers
+    # FAILED_PRECONDITION and every role check that reads a grant is
+    # role_unavailable. tenant_id leads (invariant 9).
+    "workspace-role-grants-tenant-subject-granted" = {
+      collection  = "workspace_role_grants"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "tenant_id", order = "ASCENDING" },
+        { field_path = "subject", order = "ASCENDING" },
+        { field_path = "granted_at", order = "DESCENDING" },
+      ]
+    }
+
+    # A workspace's audit list, newest first (the same design, §4.4):
+    #     admin_audit where target_tenant_id == T order by at DESC limit N
+    # Role grants and platform-admin actions in a workspace are admin_audit
+    # rows carrying target_tenant_id; an equality on one field and the order
+    # on another is served only from a composite index.
+    "admin-audit-target-tenant-at" = {
+      collection  = "admin_audit"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "target_tenant_id", order = "ASCENDING" },
+        { field_path = "at", order = "DESCENDING" },
+      ]
+    }
   }
 }
 
