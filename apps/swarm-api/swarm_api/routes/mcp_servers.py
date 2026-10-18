@@ -22,6 +22,17 @@ WHO WRITES (owner decision Q1): `workspace_secrets.require_manager`, the rule
 the workspace's secrets follow -- in a group workspace a full platform admin,
 in a personal workspace its person. Every member reads.
 
+WHAT THE LIST ADDS (MCP-API-B, §4.9 and §4.11): `egress_addresses`, the NAT
+addresses a server's operator allowlists, from swarm-api's settings
+(MCP_EGRESS_ADDRESSES, rendered by Terraform from the NAT itself); and on every
+server `last_attached_at`, the newest `mcp_attach_releases` row of THIS tenant
+for it, or null when there is none. One tenant-filtered, limited read per
+request, never one per server, and none when the tenant has no server. The
+read is newest-first, which Firestore serves only from the composite index
+(tenant_id ASC, at DESC) on `mcp_attach_releases`; a server whose last attach
+is older than the newest LAST_ATTACHED_SCAN rows reads null, and
+`last_attached_complete` is false whenever the read was cut off there.
+
 DARK UNTIL SWARM_MCP_SERVERS=on: a write is 503 `mcp_unavailable` before
 anything is checked or stored. Reads answer what is stored, which while the
 switch has always been off is nothing. The sweep runs regardless: destroying
@@ -30,9 +41,12 @@ an expired credential is always safe.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Request, status
+from google.cloud import firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
 from pydantic import Field
 
 from swarm_common.models import Tenant
@@ -57,11 +71,16 @@ from ..mcp_servers import (
 )
 from ..schemas import StrictModel
 from ..workspace_secrets import can_manage, require_manager
+from .attempts_mcp import ATTACH_ROWS_COLLECTION
 
 router = APIRouter(tags=["mcp-servers"])
 
 BASE = "/v1/mcp-servers"
 SWEEP_ROUTE = "/v1/admin/mcp-credentials/sweep"
+#: The most attach rows one request reads, newest first. 90 days of rows are
+#: kept (`expire_at`), one per attempt per attached server, so the bound is
+#: what keeps a busy tenant's settings page one small read.
+LAST_ATTACHED_SCAN = 500
 NOTE = ("swarm-api never calls a registered URL; the first request a server sees is "
         "a worker's, through the relay")
 
@@ -117,6 +136,32 @@ def _tenant(ctx: AppContext, tenant_id: str) -> Tenant:
     return tenant
 
 
+def _last_attached(ctx: AppContext, tenant_id: str) -> tuple[dict[str, str], bool]:
+    """Each server's newest attach in `tenant_id`, by `server_id`, and
+    whether the read saw every retained row. One query, filtered by the
+    tenant and bounded; a row whose own `tenant_id` is another's is dropped
+    again, as `read_registration` re-checks a registration."""
+    query = (ctx.db.collection(ATTACH_ROWS_COLLECTION)
+             .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+             .order_by("at", direction=firestore.Query.DESCENDING)
+             .limit(LAST_ATTACHED_SCAN))
+    newest: dict[str, str] = {}
+    read = 0
+    for snap in query.stream():
+        read += 1
+        row = snap.to_dict() or {}
+        at, sid = row.get("at"), row.get("server_id")
+        if row.get("tenant_id") != tenant_id or not isinstance(sid, str) \
+                or not isinstance(at, datetime) or sid in newest:
+            continue
+        newest[sid] = at.isoformat()
+    return newest, read < LAST_ATTACHED_SCAN
+
+
+def _with_last_attached(server: dict[str, Any], newest: dict[str, str]) -> dict[str, Any]:
+    return {**server, "last_attached_at": newest.get(str(server.get("server_id")))}
+
+
 @router.get(BASE)
 def list_servers(
     auth: AuthContext = Depends(current_auth),
@@ -124,8 +169,12 @@ def list_servers(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     tenant = _tenant(ctx, tenant_id)
+    servers = _servers(ctx).list(tenant_id)
+    newest, complete = _last_attached(ctx, tenant_id) if servers else ({}, True)
     return {"tenant_id": tenant_id, "can_manage": can_manage(auth, tenant),
-            "servers": _servers(ctx).list(tenant_id), "note": NOTE}
+            "servers": [_with_last_attached(s, newest) for s in servers],
+            "last_attached_complete": complete,
+            "egress_addresses": list(ctx.settings.mcp_egress_addresses), "note": NOTE}
 
 
 @router.get(f"{BASE}/{{name}}")
@@ -135,7 +184,10 @@ def get_server(
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    return {"server": _servers(ctx).get(tenant_id, name)}
+    server = _servers(ctx).get(tenant_id, name)
+    newest, complete = _last_attached(ctx, tenant_id)
+    return {"server": _with_last_attached(server, newest),
+            "last_attached_complete": complete}
 
 
 @router.post(BASE, status_code=status.HTTP_201_CREATED)

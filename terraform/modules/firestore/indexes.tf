@@ -447,6 +447,22 @@ locals {
         { field_path = "requested_at", order = "ASCENDING" },
       ]
     }
+
+    # Settings > MCP servers' last attach (docs/design/registered-mcp-servers.md
+    # §4.11): GET /v1/mcp-servers runs one query per request,
+    #     mcp_attach_releases where tenant_id == T order by at DESC limit N
+    # An equality on one field and the order on another, so Firestore serves
+    # it only from this index. Without it the query answers
+    # FAILED_PRECONDITION and the whole list, egress addresses included, is a
+    # 500. tenant_id leads (invariant 9).
+    "mcp-attach-releases-tenant-at" = {
+      collection  = "mcp_attach_releases"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "tenant_id", order = "ASCENDING" },
+        { field_path = "at", order = "DESCENDING" },
+      ]
+    }
   }
 }
 

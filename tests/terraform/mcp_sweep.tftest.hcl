@@ -212,3 +212,39 @@ run "the_infra_root_outputs_the_mcp_egress_addresses" {
     error_message = "the MCP egress addresses are the NAT's, the same ones model providers allowlist: an MCP call has no other way out"
   }
 }
+
+# The same addresses reach swarm-api's environment as MCP_EGRESS_ADDRESSES,
+# which swarm_api.settings reads and GET /v1/mcp-servers serves as
+# `egress_addresses` (lane MCP-API-B). Rendered from the NAT's reserved
+# addresses themselves, the resource the output reads, so the page and the
+# output cannot disagree and nobody types an address by hand.
+run "swarm_api_env_carries_the_mcp_egress_addresses" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  override_resource {
+    target          = module.network.google_compute_address.nat
+    override_during = plan
+    values = {
+      address = "198.51.100.23"
+    }
+  }
+
+  assert {
+    condition     = local.service_env["swarm-api"].MCP_EGRESS_ADDRESSES == "198.51.100.23,198.51.100.23"
+    error_message = "swarm-api's MCP_EGRESS_ADDRESSES must be every reserved NAT address, comma-separated, read from google_compute_address.nat"
+  }
+
+  assert {
+    condition     = local.service_env["swarm-api"].MCP_EGRESS_ADDRESSES == join(",", output.mcp_egress_addresses)
+    error_message = "the addresses swarm-api serves are the mcp_egress_addresses output's, never a second list"
+  }
+
+  assert {
+    condition     = !contains(keys(local.service_env["swarm-scheduler"]), "MCP_EGRESS_ADDRESSES")
+    error_message = "only swarm-api serves the addresses; no other service reads them"
+  }
+}

@@ -430,3 +430,24 @@ run "the_issue_run_tick_has_its_indexes" {
     error_message = "the tick reads PLANNED auto runs by tenant_id, state, plan_approval, created_at ASC"
   }
 }
+
+run "the_mcp_last_attach_read_has_its_index" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  # GET /v1/mcp-servers reads each server's last attach with one query:
+  #   mcp_attach_releases where tenant_id == T order by at DESC limit N
+  # Without this index it fails, and the whole MCP servers list is a 500.
+  assert {
+    condition = (
+      google_firestore_index.this["mcp-attach-releases-tenant-at"].collection == "mcp_attach_releases" &&
+      google_firestore_index.this["mcp-attach-releases-tenant-at"].fields[0].field_path == "tenant_id" &&
+      google_firestore_index.this["mcp-attach-releases-tenant-at"].fields[1].field_path == "at" &&
+      google_firestore_index.this["mcp-attach-releases-tenant-at"].fields[1].order == "DESCENDING"
+    )
+    error_message = "mcp_attach_releases needs (tenant_id, at DESC): tenant_id is the equality filter and the tenant boundary, at the order"
+  }
+}
