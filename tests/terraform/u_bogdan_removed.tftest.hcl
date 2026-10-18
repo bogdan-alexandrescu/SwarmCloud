@@ -124,23 +124,20 @@ run "bootstrap_forgets_every_grant_it_made_for_u_bogdan" {
       [for k in keys(google_project_iam_member.forge_slot_version_adder) : "google_project_iam_member.forge_slot_version_adder[\"${replace(k, "w9-stand-in", "u-bogdan")}\"]" if strcontains(k, "w9-stand-in")],
       [for k in keys(google_project_iam_member.forge_slot_version_manager) : "google_project_iam_member.forge_slot_version_manager[\"${replace(k, "w9-stand-in", "u-bogdan")}\"]" if strcontains(k, "w9-stand-in")],
       [for k in keys(google_project_iam_member.forge_refresh_reader) : "google_project_iam_member.forge_refresh_reader[\"${replace(k, "w9-stand-in", "u-bogdan")}\"]" if strcontains(k, "w9-stand-in")],
-    ])) == 4
-    error_message = "a tenant shaped like u-bogdan no longer gets 4 instances in bootstrap; a per-tenant resource was added or removed, so re-read the set and terraform/bootstrap/removed.tf together"
+      [for k in keys(google_project_iam_member.forge_slot_reader) : "google_project_iam_member.forge_slot_reader[\"${replace(k, "w9-stand-in", "u-bogdan")}\"]" if strcontains(k, "w9-stand-in")],
+    ])) == 5
+    error_message = "a tenant shaped like u-bogdan no longer gets 5 instances in bootstrap; a per-tenant resource was added or removed, so re-read the set and terraform/bootstrap/removed.tf together"
   }
 
   # Exactly: a missing `moved` leaves an instance to be DESTROYED; an extra one
-  # forgets a resource that is not u-bogdan's. Plus one address no longer
-  # planned: forge_slot_reader["u-bogdan"], the worker's read of its slots,
-  # which W9 forgot before #1041 removed the resource (owner decision
-  # 2026-10-11). Its pair stays in removed.tf, `destroy = false` like the rest:
-  # the live grant is the workspace record's, never this root's to destroy.
+  # forgets a resource that is not u-bogdan's.
   assert {
     condition = toset([for m in regexall("(?ms)^moved \\{\\s*from\\s*=\\s*(\\S+)", file("../../terraform/bootstrap/removed.tf")) : m[0]]) == toset(flatten([
       [for k in keys(google_service_account_iam_member.deployer_admin) : "google_service_account_iam_member.deployer_admin[\"${replace(k, "w9-stand-in", "u-bogdan")}\"]" if strcontains(k, "w9-stand-in")],
       [for k in keys(google_project_iam_member.forge_slot_version_adder) : "google_project_iam_member.forge_slot_version_adder[\"${replace(k, "w9-stand-in", "u-bogdan")}\"]" if strcontains(k, "w9-stand-in")],
       [for k in keys(google_project_iam_member.forge_slot_version_manager) : "google_project_iam_member.forge_slot_version_manager[\"${replace(k, "w9-stand-in", "u-bogdan")}\"]" if strcontains(k, "w9-stand-in")],
       [for k in keys(google_project_iam_member.forge_refresh_reader) : "google_project_iam_member.forge_refresh_reader[\"${replace(k, "w9-stand-in", "u-bogdan")}\"]" if strcontains(k, "w9-stand-in")],
-      ["google_project_iam_member.forge_slot_reader[\"u-bogdan\"]"],
+      [for k in keys(google_project_iam_member.forge_slot_reader) : "google_project_iam_member.forge_slot_reader[\"${replace(k, "w9-stand-in", "u-bogdan")}\"]" if strcontains(k, "w9-stand-in")],
     ]))
     error_message = "the `moved` blocks of terraform/bootstrap/removed.tf are not exactly the instances bootstrap makes for a tenant shaped like u-bogdan: a missing one would be DESTROYED, an extra one forgets another resource"
   }
@@ -155,14 +152,14 @@ run "bootstrap_forgets_every_grant_it_made_for_u_bogdan" {
         [for k in keys(google_project_iam_member.forge_slot_version_adder) : "google_project_iam_member.forge_slot_version_adder[\"${replace(k, "w9-stand-in", "u-bogdan")}\"]" if strcontains(k, "w9-stand-in")],
         [for k in keys(google_project_iam_member.forge_slot_version_manager) : "google_project_iam_member.forge_slot_version_manager[\"${replace(k, "w9-stand-in", "u-bogdan")}\"]" if strcontains(k, "w9-stand-in")],
         [for k in keys(google_project_iam_member.forge_refresh_reader) : "google_project_iam_member.forge_refresh_reader[\"${replace(k, "w9-stand-in", "u-bogdan")}\"]" if strcontains(k, "w9-stand-in")],
-        ["google_project_iam_member.forge_slot_reader[\"u-bogdan\"]"],
+        [for k in keys(google_project_iam_member.forge_slot_reader) : "google_project_iam_member.forge_slot_reader[\"${replace(k, "w9-stand-in", "u-bogdan")}\"]" if strcontains(k, "w9-stand-in")],
       ])) &&
       length(regexall("(?m)^\\s*destroy\\s*=\\s*false\\s*$", file("../../terraform/bootstrap/removed.tf"))) == length(flatten([
         [for k in keys(google_service_account_iam_member.deployer_admin) : "google_service_account_iam_member.deployer_admin[\"${replace(k, "w9-stand-in", "u-bogdan")}\"]" if strcontains(k, "w9-stand-in")],
         [for k in keys(google_project_iam_member.forge_slot_version_adder) : "google_project_iam_member.forge_slot_version_adder[\"${replace(k, "w9-stand-in", "u-bogdan")}\"]" if strcontains(k, "w9-stand-in")],
         [for k in keys(google_project_iam_member.forge_slot_version_manager) : "google_project_iam_member.forge_slot_version_manager[\"${replace(k, "w9-stand-in", "u-bogdan")}\"]" if strcontains(k, "w9-stand-in")],
         [for k in keys(google_project_iam_member.forge_refresh_reader) : "google_project_iam_member.forge_refresh_reader[\"${replace(k, "w9-stand-in", "u-bogdan")}\"]" if strcontains(k, "w9-stand-in")],
-        ["google_project_iam_member.forge_slot_reader[\"u-bogdan\"]"],
+        [for k in keys(google_project_iam_member.forge_slot_reader) : "google_project_iam_member.forge_slot_reader[\"${replace(k, "w9-stand-in", "u-bogdan")}\"]" if strcontains(k, "w9-stand-in")],
       ])) &&
       length(regexall("(?m)^\\s*destroy\\s*=\\s*true", file("../../terraform/bootstrap/removed.tf"))) == 0
     )

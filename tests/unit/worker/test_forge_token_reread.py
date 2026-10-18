@@ -84,7 +84,7 @@ def user_worker(db, worker_factory):
     routes = FakeBrokerRoutes({secret_name(): token("a")})
     client = FakeSecretClient()
     worker, _, _ = worker_factory(secret_client=client, child_api=routes, child_nonce=NONCE,
-                                  swarm_api_url=API)
+                                  swarm_api_url=API, forge_broker=True)
     worker.children.register(lambda note: None)
     worker._task = {"repository_url": GITHUB_URL, "forge_credential": slot()}
     worker._forge_signed = True

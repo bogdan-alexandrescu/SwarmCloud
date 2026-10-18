@@ -107,7 +107,8 @@ def brokered(routes) -> dict[str, Any]:
     """The worker_factory arguments that give an attempt a key to sign with."""
     from test_forge_broker_client import API, NONCE
 
-    return {"child_api": routes, "child_nonce": NONCE, "swarm_api_url": API}
+    return {"child_api": routes, "child_nonce": NONCE, "swarm_api_url": API,
+            "forge_broker": True}
 
 
 def grant_reads(monkeypatch, db) -> list[str]:

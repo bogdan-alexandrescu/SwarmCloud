@@ -19,9 +19,13 @@ half, pinned here:
   * the token is registered for redaction before it is returned, and is in
     no environment, no log line and no event;
   * the 401 re-read asks the broker again;
-  * a deployment with no broker at all (child tasks off, no SWARM_API_URL)
-    reads the slot with the worker's own account while IAM allows it, and
-    fails closed, without the tenant token, once IAM does not.
+  * with FORGE_BROKER off -- the default, and dev's setting even though dev
+    has child tasks on and so hands its workers SWARM_API_URL -- the worker
+    reads the slot with its own account, exactly as before #1041, while IAM
+    allows it, and fails closed, without the tenant token, once IAM does not;
+  * with FORGE_BROKER on and no SWARM_API_URL, it is refused, never a
+    direct read;
+  * an additional repository's slot (#1434) goes through the broker too.
 
 Every fake token is built at runtime, never written as one literal.
 
@@ -138,6 +142,9 @@ def broker_worker(worker_factory, routes: FakeBrokerRoutes, *, register: bool = 
                   client: FakeSecretClient | None = None, **kwargs: Any):
     kwargs.setdefault("child_nonce", NONCE)
     kwargs.setdefault("swarm_api_url", API)
+    # FORGE_BROKER on: the path these tests are about. Off is the default
+    # and every environment's setting today; the tests of the switch say so.
+    kwargs.setdefault("forge_broker", True)
     client = client if client is not None else FakeSecretClient(
         {slot_secret(): user_token("s"), f"swarm-tenant-{TENANT}-git": tenant_token()})
     worker, config, _ = worker_factory(child_api=routes, secret_client=client, **kwargs)
@@ -312,20 +319,28 @@ def test_an_attempt_without_a_key_fails_closed_before_asking(db, worker_factory,
     assert client.accessed == []
 
 
+@pytest.mark.parametrize("child_tasks", [False, True], ids=["child-tasks-off", "dev-child-tasks-on"])
 def test_a_deployment_without_the_broker_reads_the_slot_with_its_own_account(
-        db, worker_factory, log_stream):
-    """Child tasks off (no SWARM_API_URL): the release must not stop Alice's push.
+        db, worker_factory, log_stream, child_tasks):
+    """FORGE_BROKER off: the release must not stop Alice's push.
 
-    The scheduler hands no nonce and no API address where the deployment has
-    no `swarm-child-key`, so there is no broker to ask. The worker reads the
-    slot with its own account, as before #1041, while `forge_slot_reader`
-    still grants it (docs/design/user-scoped-secrets.md §5, the rollout order).
+    Off is the default and every environment's setting until the owner turns
+    it on -- dev included, where child tasks ARE on, so its workers hold a
+    nonce and SWARM_API_URL. The address is not the switch: the worker reads
+    the slot with its own account, exactly as before #1041, while
+    `forge_slot_reader` grants it (docs/design/user-scoped-secrets.md §5),
+    and asks the broker nothing.
     """
     seed_attempt(db)
     db.doc(f"tenants/{TENANT}")["credentials"] = ["git"]
     client = FakeSecretClient({slot_secret(): user_token("s"),
                                f"swarm-tenant-{TENANT}-git": tenant_token()})
-    worker, _, _ = worker_factory(secret_client=client, child_nonce=None, swarm_api_url=None)
+    routes = FakeBrokerRoutes({slot_secret(): user_token()})
+    worker, _, _ = worker_factory(
+        secret_client=client, child_api=routes if child_tasks else None,
+        child_nonce=NONCE if child_tasks else None, swarm_api_url=API if child_tasks else None)
+    if child_tasks:
+        worker.children.register(lambda note: None)
     worker._task = {"repository_url": GITHUB_URL, "forge_credential": slot(),
                     "submitted_by": PERSON.lower(), "forge_access": "write"}
     worker._forge_signed = True
@@ -334,7 +349,63 @@ def test_a_deployment_without_the_broker_reads_the_slot_with_its_own_account(
 
     assert worker._git_token() == user_token("s")
     assert client.accessed == [slot_secret()], "the person's slot, and only it, was read"
+    assert routes.requests == [], "the broker was asked with FORGE_BROKER off"
     assert user_token("s") not in log_stream.getvalue()
+
+
+def test_with_the_broker_on_and_no_address_the_slot_is_refused_not_read(db, worker_factory):
+    """FORGE_BROKER on, but this attempt was handed no SWARM_API_URL: the
+    switch means the broker is the only path, so no direct read happens."""
+    seed_attempt(db)
+    db.doc(f"tenants/{TENANT}")["credentials"] = ["git"]
+    client = FakeSecretClient({slot_secret(): user_token("s"),
+                               f"swarm-tenant-{TENANT}-git": tenant_token()})
+    worker, _, _ = worker_factory(secret_client=client, child_nonce=None, swarm_api_url=None,
+                                  forge_broker=True)
+    assert worker.forge_broker.deployed is True
+    tenant = secrets_mod.load_tenant(db, TENANT)
+    with pytest.raises(forgebroker.ForgeCredentialRefused) as raised:
+        secrets_mod.resolve_git_token(tenant=tenant, client=client, logger=worker.log,
+                                      provider=slot(), broker=worker.forge_broker)
+    assert raised.value.code == forgebroker.NO_BROKER
+    assert client.accessed == []
+
+
+def test_the_switch_reads_forge_broker_from_the_environment(monkeypatch):
+    """FORGE_BROKER is what terraform renders and the scheduler passes on;
+    unset is off."""
+    from agent_worker.config import WorkerConfig
+    from worker_seeds import PROJECT
+
+    for name, value in {"TASK_ID": "task_1", "ATTEMPT_ID": "att_1", "LEASE_ID": "lease_1",
+                        "TENANT_ID": TENANT, "RUNNER_PROFILE": "mock", "PROJECT_ID": PROJECT,
+                        "GENERATION": "1"}.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("FORGE_BROKER", raising=False)
+    assert WorkerConfig.from_env().forge_broker is False
+    monkeypatch.setenv("FORGE_BROKER", "true")
+    assert WorkerConfig.from_env().forge_broker is True
+
+
+def test_an_additional_repositorys_user_slot_comes_from_the_broker(db, worker_factory):
+    """#1434's extra clones read their entry's slot through the broker, like
+    the primary: before, `_additional_git_token` passed no broker, so a
+    `git-u-` entry always raised NO_BROKER and cloned unauthenticated."""
+    seed_attempt(db)
+    db.doc(f"tenants/{TENANT}")["credentials"] = ["git"]
+    routes = FakeBrokerRoutes({slot_secret(): user_token()})
+    worker, client = broker_worker(worker_factory, routes)
+    entry = {"name": "web", "repository_url": GITHUB_URL, "forge_credential": slot()}
+
+    assert worker._additional_git_token(entry) == user_token()
+    assert client.accessed == [], "a person's slot was read from Secret Manager"
+    assert routes.accessed == [slot_secret()]
+    assert routes.requests[-1]["access"] == "read"
+
+    # Refused, the entry clones with no token, and never the tenant's.
+    routes.refuse = (403, "credential_not_submitters")
+    assert worker._additional_git_token(entry) is None
+    assert client.accessed == []
 
 
 def test_without_the_broker_a_removed_read_fails_closed_without_the_tenant_token(

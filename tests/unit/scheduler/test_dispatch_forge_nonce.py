@@ -14,6 +14,10 @@ and the broker would refuse it its own credential. So:
        before.
   N-3  A root task is unchanged: a nonce, and no SWARM_CHILD_PATH.
   N-4  A deployment without the child key issues no nonce to anyone.
+  N-5  All of the above holds only while FORGE_BROKER is on. Off -- the
+       default, and dev's setting although dev has child tasks on -- a
+       user-slot child gets no nonce, exactly as before the broker, and no
+       worker is handed FORGE_BROKER; on, every worker is.
 """
 
 from __future__ import annotations
@@ -66,9 +70,10 @@ def _tenant() -> Tenant:
     )
 
 
-def _keyed():
+def _keyed(*, forge_broker: bool = True):
     return scheduler_settings(
-        child_key="k", swarm_api_url="https://api.example", swarm_api_audience="aud"
+        child_key="k", swarm_api_url="https://api.example", swarm_api_audience="aud",
+        forge_broker=forge_broker,
     )
 
 
@@ -131,3 +136,35 @@ def test_a_child_keyed_for_git_tools_keeps_its_child_path_on_a_user_slot():
     env = _env(_task(parent="task_parent", forge=USER_SLOT, profile_name="claude-code"), _keyed())
     assert "SWARM_CHILD_NONCE" in env
     assert "SWARM_CHILD_PATH" not in env
+
+
+def test_with_the_broker_off_dispatch_is_what_it_was_before_it():
+    """Dev has child tasks on, so its scheduler holds the key; the broker must
+    not go live there with them. Off, a user-slot child is keyed as before
+    #1041 -- not at all -- and no worker is told FORGE_BROKER."""
+    off = _keyed(forge_broker=False)
+    child = _env(_task(parent="task_parent", forge=USER_SLOT), off)
+    assert "SWARM_CHILD_NONCE" not in child
+    assert "SWARM_API_URL" not in child
+    assert "SWARM_CHILD_PATH" not in child
+    assert "FORGE_BROKER" not in child
+    root = _env(_task(forge=USER_SLOT), off)
+    assert "SWARM_CHILD_NONCE" in root, "a root's child path does not depend on the broker"
+    assert "FORGE_BROKER" not in root
+    assert scheduler_settings().forge_broker is False, "the switch ships off"
+
+
+def test_with_the_broker_on_every_worker_is_told():
+    for task in (_task(forge=USER_SLOT), _task(parent="task_parent", forge=USER_SLOT),
+                 _task(forge="git")):
+        assert _env(task, _keyed())["FORGE_BROKER"] == "true"
+
+
+def test_the_scheduler_reads_forge_broker_from_its_environment(monkeypatch):
+    from scheduler.settings import SchedulerSettings
+
+    monkeypatch.setenv("PROJECT_ID", PROJECT)
+    monkeypatch.delenv("FORGE_BROKER", raising=False)
+    assert SchedulerSettings.from_env().forge_broker is False
+    monkeypatch.setenv("FORGE_BROKER", "true")
+    assert SchedulerSettings.from_env().forge_broker is True

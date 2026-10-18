@@ -257,6 +257,7 @@ run "no_tenant_worker_reads_a_wsec_secret" {
     condition = alltrue([
       for b in concat(
         [for k, m in google_project_iam_member.typesafe_user_key_reader : { tenant = split("/", k)[0], member = m.member, expr = m.condition[0].expression }],
+        [for k, m in google_project_iam_member.forge_slot_reader : { tenant = k, member = m.member, expr = m.condition[0].expression }],
         ) : alltrue([
           for n in [
             "projects/209012342332/secrets/swarm-tenant-${b.tenant}-wsec-${substr(sha256("sec-iam workspace secret"), 0, 16)}",
@@ -278,6 +279,12 @@ run "no_tenant_worker_reads_a_wsec_secret" {
     condition = alltrue([
       length(google_project_iam_member.typesafe_user_key_reader) == 1,
       alltrue([for k, m in google_project_iam_member.typesafe_user_key_reader : startswith(m.member, "serviceAccount:swarm-agent-worker-eng@")]),
+      length(google_project_iam_member.forge_slot_reader) > 0,
+      alltrue([for k, m in google_project_iam_member.forge_slot_reader : startswith(m.member, "serviceAccount:swarm-agent-worker-${k}@")]),
+      alltrue([
+        for k, m in google_project_iam_member.forge_slot_reader :
+        anytrue([for p in regexall("startsWith\\(\"([^\"]+)\"\\)", m.condition[0].expression) : startswith("projects/209012342332/secrets/swarm-tenant-${k}-git-u-0123456789abcdef", p[0])])
+      ]),
       alltrue([
         for k, m in google_project_iam_member.typesafe_user_key_reader :
         anytrue([for e in regexall("== \"([^\"]+)\"", m.condition[0].expression) : e[0] == "projects/209012342332/secrets/swarm-tenant-u-alice-typesafe"])

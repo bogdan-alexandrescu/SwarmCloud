@@ -92,6 +92,9 @@ def store() -> SecretStore:
 def _client(db, worker_tokens, group_map, objects, store, **settings: Any) -> TestClient:
     values = {
         "child_key": KEY,
+        # FORGE_BROKER on: the route these tests are about. Off is the default
+        # (`test_the_broker_ships_off_and_releases_nothing_while_off`).
+        "forge_broker": True,
         "spec_signing_key_version": KEY_VERSION,
         "spec_verify_keys": json.dumps({KEY_VERSION: SIGNER.public_pem()}),
         **settings,
@@ -653,4 +656,33 @@ def test_a_rewritten_parent_gets_no_child_and_no_user_slot(client, db, store, re
     assert made.status_code == 403, made.text
     assert made.json()["code"] == "child_parent_unsigned"
     assert _children_of(db, parent.tuple.task_id) == []
+    assert store.asked == []
+
+
+# --------------------------------------------------------------------------
+# (9) the switch: FORGE_BROKER, off by default
+# --------------------------------------------------------------------------
+
+
+def test_the_broker_ships_off_and_releases_nothing_while_off(
+        db, worker_tokens, group_map, objects, store, monkeypatch):
+    """Dev has child tasks on; the broker must not go live there with them.
+    Off, Alice's own current attempt is answered 503 before any read."""
+    from swarm_api.settings import ApiSettings
+
+    monkeypatch.setenv("PROJECT_ID", "saga-agents-staging")
+    monkeypatch.delenv("FORGE_BROKER", raising=False)
+    assert ApiSettings.from_env().forge_broker is False
+    monkeypatch.setenv("FORGE_BROKER", "true")
+    assert ApiSettings.from_env().forge_broker is True
+
+    seed_tenant(db, "eng")
+    seed_grant(db, "eng", ALICE, REPOSITORY)
+    store.put(_secret(app_slot(ALICE)), make_token())
+    off = _client(db, worker_tokens, group_map, objects, store, forge_broker=False)
+    attempt = Attempt()
+    person_task(off, db, attempt)
+    response = ask(off, attempt)
+    assert response.status_code == 503, response.text
+    assert response.json()["code"] == "forge_credential_unavailable"
     assert store.asked == []
