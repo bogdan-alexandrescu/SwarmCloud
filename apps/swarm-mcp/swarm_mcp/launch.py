@@ -55,6 +55,36 @@ row gets the same line for its own task: the copy's args carry it
 run.js puts it on the row's prompt, which is what Claude Code shows when the
 row is expanded. No row label carries `[<workspace>]` any more.
 
+THE SESSION'S PROJECT, FOR EVERY BRIDGE (SC-TITLES, #1511, owner decision
+2026-10-18). Measured that day: the installed plugin's bridge wrote its copies
+to the system temp directory, the Workflow tool refused a script path outside
+the session's allowed directories, and the session fell back to
+`sc:swarmcloud` by name -- 46 of 56 runs in one session were labelled
+`swarmcloud`. So every bridge now writes into the session's project, as
+`<project>/.claude/sc-swarmcloud-runs/` with the same `.gitignore` of `*`
+(`run_folder`). The project is CLAUDE_PROJECT_DIR when Claude Code hands it
+over, else the repo-local bridge's checkout, else the bridge's own working
+directory when that is a git work tree -- Claude Code starts the bridge in the
+session's directory, which `checkout.directory()` already relies on. Never
+its git top level: a top level above the session's directory is outside it,
+which is the refusal this exists to avoid. The temp folder is the last
+fallback, when no project is known or its folder cannot be written, and the
+bridge says on stderr which folder it used and why. Each copy is named after
+its run, `SC-<slug of the title>-<12 hex>.js`, so a label taken from the file
+name says something too.
+
+THE PROJECT RECORD (owner, 2026-10-18). The same folder holds
+`launched.jsonl`: one JSON object per line for every workflow submitted or
+attached and every single task dispatched from this project (`record`),
+append-only. It holds ids, the run's title, the Claude Code session, the
+repository as `host/owner/repo` and the time -- never a prompt, a spec body or
+anything from a URL's userinfo. `session.ownership` reads it: `/sc check` and
+`/sc attach --all` take work that is this session's AND in this record, and
+fall back to the repository filter only for this session's work the record
+does not hold (older work). A submission is recorded before SwarmCloud has
+named the workflow, so its line carries the spec's `name` and a null id, and
+`session.recorded` matches it to this session's workflow of that name.
+
 SINGLE TASKS (#830, owner 2026-10-07). A task sent with `swarm_dispatch`
 belongs to no workflow, so it never had a row. `for_tasks` writes ONE copy
 whose args are `{attach_tasks: [...]}`: run.js starts one `sc:task` row per
@@ -69,13 +99,16 @@ import json
 import os
 import re
 import secrets
+import subprocess
+import sys
 import tempfile
+import unicodedata
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
-from . import config, details, workflows
+from . import checkout, config, details, workflows
 from .client import SwarmClient, SwarmError, _repo_root
 
 PLUGIN_ROOT_ENV = "SWARM_SC_PLUGIN_ROOT"
@@ -112,12 +145,25 @@ def max_live_rows() -> int:
     each copy's args hand it as `max_rows`) agree on one number."""
     return config.max_live_rows()
 
-#: Where the copies go: the system's temporary directory, one file per run.
+#: The folder's name, under the project's `.claude/` or, as the last
+#: fallback, under the system's temporary directory.
 RUN_DIR = "sc-swarmcloud-runs"
-#: Where they go on the repo-local bridge (SWARM_MCP_CONFIG_FROM=repo),
-#: relative to the checkout: the Workflow tool refuses a script path in the
-#: system temp directory there (#888 box 101).
+#: Where the copies go, relative to the session's project (SC-TITLES, #1511)
+#: and to the repo-local bridge's checkout (#888 box 101): the Workflow tool
+#: refuses a script path in the system temp directory.
 REPO_RUN_DIR = Path(".claude") / RUN_DIR
+#: What Claude Code names the session's project directory with.
+PROJECT_DIR_ENV = "CLAUDE_PROJECT_DIR"
+#: Each copy: `SC-<slug of its title>-<12 hex>.js`. The copies written before
+#: SC-TITLES were `swarmcloud-<12 hex>.js`; pruning takes both.
+COPY_PREFIX = "SC-"
+OLD_COPY_GLOB = "swarmcloud-*.js"
+#: The slug's length at most: a file name, not the title.
+SLUG_CHARS = 60
+#: The project record, beside the copies: one JSON object per line.
+RECORD_FILE = "launched.jsonl"
+#: A title in the record, at most: the run's, never more.
+RECORD_TITLE_CHARS = 150
 #: A per-run copy older than this is removed when the next one is written, so
 #: the folder does not grow without bound. A week: Claude Code reads a copy at
 #: launch and again only to resume that run, which happens within a session.
@@ -192,39 +238,187 @@ def write_script(title: str, description: str) -> Path:
         )
     lines[1] = "  name: " + _js_string(title) + ","
     lines[2] = "  description: " + _js_string(_clip(description, DESCRIPTION_CHARS)) + ","
-    folder = _run_folder()
+    folder = run_folder()
     _prune(folder)
-    target = folder / f"swarmcloud-{secrets.token_hex(6)}.js"
+    target = folder / f"{COPY_PREFIX}{slug(title)}-{secrets.token_hex(6)}.js"
     target.write_text("\n".join(lines), encoding="utf-8")
     return target
 
 
-def _run_folder() -> Path:
-    """The system temp dir's RUN_DIR, or the checkout's REPO_RUN_DIR on the
-    repo-local bridge, created on first use."""
-    if not config.repo_mode():
-        folder = Path(tempfile.gettempdir()) / RUN_DIR
+def slug(title: str) -> str:
+    """`title` as a file-name slug: ASCII letters, digits and single hyphens,
+    at most SLUG_CHARS, `run` when nothing of it is left. Accents fold to
+    their letter (`ünï` -> `uni`); every other run of characters, the `·`
+    separators included, is one hyphen. The title's own leading `SC · ` is
+    dropped: the file name already starts `SC-`."""
+    title = re.sub(r"^\s*SC\s*·\s*", "", title)
+    folded = unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode("ascii")
+    text = re.sub(r"[^A-Za-z0-9]+", "-", folded).strip("-")
+    text = text[:SLUG_CHARS].rstrip("-")
+    return text or "run"
+
+
+def _project(environ: dict[str, str] | None = None) -> tuple[Path, str] | None:
+    """`(directory, where it came from)` for the session's project, or None.
+
+    CLAUDE_PROJECT_DIR first; then the repo-local bridge's checkout; then the
+    bridge's working directory (`checkout.directory()`) when it is inside a
+    git work tree -- a bare working directory may be the home directory, and
+    that is no project. The directory itself, never its git top level."""
+    environ = dict(os.environ) if environ is None else environ
+    given = environ.get(PROJECT_DIR_ENV, "").strip()
+    if given and Path(given).expanduser().is_dir():
+        return Path(given).expanduser(), PROJECT_DIR_ENV
+    if config.repo_mode(environ):
+        try:
+            return _checkout(), "the repo-local bridge's checkout"
+        except Exception:  # noqa: BLE001 - no checkout is no project, never a failed launch
+            pass
+    here = checkout.directory()
+    try:
+        got = subprocess.run(["git", "-C", str(here), "rev-parse", "--is-inside-work-tree"],
+                             capture_output=True, text=True, timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if got.returncode == 0 and got.stdout.strip() == "true":
+        return here, "the bridge's working directory (a git work tree)"
+    return None
+
+
+def _prepared(folder: Path) -> bool:
+    """Create `folder` with its `.gitignore` of `*`; False when it cannot be
+    written."""
+    try:
         folder.mkdir(parents=True, exist_ok=True)
-        return folder
-    folder = _checkout() / REPO_RUN_DIR
+        ignore = folder / ".gitignore"
+        if not ignore.is_file():
+            ignore.write_text("*\n", encoding="utf-8")
+        return os.access(folder, os.W_OK)
+    except OSError:
+        return False
+
+
+def record_path() -> Path:
+    """Where `run_folder` would put the project record, found without
+    creating or saying anything: a read (`/sc check`) writes nothing."""
+    found = _project()
+    if found is not None:
+        folder = found[0] / REPO_RUN_DIR
+        if folder.is_dir() or os.access(found[0], os.W_OK):
+            return folder / RECORD_FILE
+    return Path(tempfile.gettempdir()) / RUN_DIR / RECORD_FILE
+
+
+#: The folder `run_folder` last reported, so stderr says it once per change.
+_REPORTED: list[str] = []
+
+
+def _report(folder: Path, why: str) -> None:
+    said = f"{folder} ({why})"
+    if _REPORTED and _REPORTED[-1] == said:
+        return
+    _REPORTED[:] = [said]
+    print(f"swarm-mcp: run copies and launched.jsonl go to {said}", file=sys.stderr)
+
+
+def run_folder() -> Path:
+    """Where the titled copies and the project record go: the session's
+    project's `.claude/sc-swarmcloud-runs/` (`_project`), else the system temp
+    directory's `sc-swarmcloud-runs/` -- only when no project is known or its
+    folder cannot be written. Created on first use; the folder used is said
+    on stderr."""
+    found = _project()
+    if found is not None:
+        project, source = found
+        folder = project / REPO_RUN_DIR
+        if _prepared(folder):
+            _report(folder, f"the session's project, from {source}")
+            return folder
+        why = f"the project's folder {folder} could not be written"
+    else:
+        why = (f"no project directory is known ({PROJECT_DIR_ENV} is not set and the bridge's "
+               "working directory is not a git work tree)")
+    folder = Path(tempfile.gettempdir()) / RUN_DIR
     folder.mkdir(parents=True, exist_ok=True)
-    ignore = folder / ".gitignore"
-    if not ignore.is_file():
-        ignore.write_text("*\n", encoding="utf-8")
+    _report(folder, f"the system temp directory: {why}")
     return folder
 
 
 def _prune(folder: Path) -> None:
     """Remove this bridge's own run copies older than RUN_COPY_MAX_AGE_S. Only
-    `swarmcloud-*.js` in its own folder; a file that vanishes or cannot be
+    `SC-*-<12 hex>.js` and the older `swarmcloud-*.js` in its own folder --
+    never the record or the `.gitignore`; a file that vanishes or cannot be
     removed meanwhile is left alone, never an error for the launch."""
     cutoff = time.time() - RUN_COPY_MAX_AGE_S
-    for old in folder.glob("swarmcloud-*.js"):
+    copies = [p for p in folder.glob(f"{COPY_PREFIX}*.js") if _COPY_NAME.match(p.name)]
+    for old in copies + list(folder.glob(OLD_COPY_GLOB)):
         try:
             if old.is_file() and old.stat().st_mtime < cutoff:
                 old.unlink()
         except OSError:
             continue
+
+
+#: A copy's name as `write_script` writes it.
+_COPY_NAME = re.compile(r"^SC-[A-Za-z0-9-]*-[0-9a-f]{12}\.js$")
+
+
+# --------------------------------------------------------------------------
+# The project record (SC-TITLES, owner 2026-10-18)
+# --------------------------------------------------------------------------
+
+
+def _repository(url: Any) -> str | None:
+    """`host/owner/repo` for a repository URL, or None: never the URL itself,
+    which can carry userinfo."""
+    from .check import repo_key
+
+    return repo_key(url) if isinstance(url, str) and url.strip() else None
+
+
+def record(kind: str, *, title: str, workflow_id: str | None = None, task_id: str | None = None,
+           repository: Any = None, name: str | None = None) -> None:
+    """Append one line to the project's `launched.jsonl`: `{workflow_id` or
+    `task_id, kind, title, claude_session, repository, launched_at}`, and
+    `name` on a submission, whose id is not known yet. Only those fields, so
+    no prompt, spec body or credential can reach it.
+
+    One `os.write` of one line to a file opened O_APPEND, under an exclusive
+    `flock` where the platform has one: two sessions appending at once each
+    land a whole line. A record that cannot be written costs the record its
+    line, never the launch -- the work is already in SwarmCloud."""
+    from . import session
+
+    line: dict[str, Any] = (
+        {"task_id": task_id} if task_id is not None else {"workflow_id": workflow_id}
+    )
+    line.update({
+        "kind": kind,
+        "title": _clip(workflows._flat(title) or "", RECORD_TITLE_CHARS),
+        "claude_session": session.current(),
+        "repository": _repository(repository),
+        "launched_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    })
+    if name is not None:
+        line["name"] = name
+    data = (json.dumps(line, ensure_ascii=True) + "\n").encode("ascii")
+    try:
+        path = run_folder() / RECORD_FILE
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    except OSError:
+        return
+    try:
+        try:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        except (ImportError, OSError):
+            pass
+        os.write(fd, data)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 # SC-WATCH (owner request 2026-10-14): `/sc check` attaches every running
@@ -294,7 +488,10 @@ def _launch(
     script = write_script(title, head + " · " + description)
     out: dict[str, Any] = {"title": title, "script_path": str(script), "details": head}
     if args is not None:
-        out["args"] = args
+        # The copy this run is meant to be launched from: a session that
+        # falls back to `sc:swarmcloud` by name hands it on in the same args,
+        # and run.js's first line then says why the label is generic.
+        out["args"] = {**args, "titled_copy": str(script)}
     return out
 
 
@@ -343,6 +540,9 @@ def for_spec(document: dict[str, Any], client: SwarmClient | None = None) -> dic
         "by the console's stage, with its console link"
     )
     workspace, submitter = _submitting(client)
+    # Recorded now, before SwarmCloud names the workflow: by its name, which
+    # `session.recorded` matches to this session's workflow of that name.
+    record("submit", title=title, repository=spec.get("repository_url"), name=name)
     out = _launch(title, description, None, workspace, details.for_spec(spec, submitter))
     out["steps"] = steps
     # Each step row's own line: its profile and browser tool, no account yet.
@@ -361,12 +561,18 @@ def for_spec(document: dict[str, Any], client: SwarmClient | None = None) -> dic
 def _attach_launch(
     workflow_id: str, name: str, steps: int, workspace: str | None = None, tenant: str | None = None,
     envelope: dict[str, Any] | None = None, labels: dict[str, str] | None = None,
+    repository: Any = None,
 ) -> dict[str, Any]:
     """`workspace` is the one the API's document names (a display name or the
     tenant id); `tenant` the tenant id behind it, for the description.
     `envelope`, the workflow as `GET /v1/workflows/{id}` served it, gives the
     DETAILS -- the run's, and each step row's in `args.details.steps` -- and
-    `labels` the accounts' labels (`details.account_labels`)."""
+    `labels` the accounts' labels (`details.account_labels`). `repository`,
+    the URL it clones (else read off `envelope`'s tasks), goes to the record
+    as `host/owner/repo`."""
+    if repository is None and envelope is not None:
+        repository = next((t.get("repository_url") for t in envelope.get("tasks") or []
+                           if isinstance(t, dict) and t.get("repository_url")), None)
     title = workflows.workflow_title(name, steps)
     description = (
         f"{title}: attached to SwarmCloud workflow {workflow_id}; each unfinished step is shown "
@@ -384,6 +590,7 @@ def _attach_launch(
     } if envelope is not None else {}
     if rows:
         args["details"] = {"steps": rows}
+    record("attach", title=title, workflow_id=workflow_id, repository=repository)
     out = _launch(title, description, args, shown,
                   details.for_workflow(envelope) if envelope is not None else None, labels)
     out["workflow_id"] = workflow_id
@@ -469,7 +676,8 @@ def _read_tasks(client: SwarmClient, entries: list[dict[str, Any]]) -> None:
         list(pool.map(read, missing))
 
 
-def for_tasks(entries: list[dict[str, Any]], client: SwarmClient | None = None) -> dict[str, Any]:
+def for_tasks(entries: list[dict[str, Any]], client: SwarmClient | None = None, *,
+              dispatched: bool = True) -> dict[str, Any]:
     """ONE titled copy that starts an `sc:task` row per task in `entries` --
     each `{task_id, label?, console?, workspace?, tenant_id?, task?}` -- up to
     the live-row cap (`max_live_rows()`, 30 unless the plugin's option says
@@ -478,9 +686,20 @@ def for_tasks(entries: list[dict[str, Any]], client: SwarmClient | None = None) 
     `task`, the task document as the API served it, gives each row its
     DETAILS (`details.line`); it is read off the row, never copied into the
     args. With `client`, an entry without one is read (`_read_tasks`) and the
-    accounts' labels are read once (`details.account_labels`)."""
+    accounts' labels are read once (`details.account_labels`).
+
+    `dispatched`: the tasks were just sent (`swarm_dispatch`'s rows, the one
+    caller that does not say), so each gets its line in the project record
+    -- every one, followed or not, and before the copy is written, so a copy
+    that cannot be written still leaves the record. `for_all` attaches tasks
+    already running and says False."""
     cap = max_live_rows()
     wanted = [e for e in entries if isinstance(e, dict) and e.get("task_id")]
+    if dispatched:
+        for entry in wanted:
+            task = entry.get("task") if isinstance(entry.get("task"), dict) else {}
+            record("dispatch", title=tasks_title([entry]), task_id=str(entry["task_id"]),
+                   repository=task.get("repository_url") or entry.get("repository_url"))
     follow = wanted[:cap]
     labels: dict[str, str] = {}
     if client is not None and follow:
@@ -536,11 +755,17 @@ def named_workspaces(
 
 def _scoped(
     entries: list[dict[str, Any]], kind: str, key: str | None, skip: frozenset[str],
+    sid: str | None = None, record: Any = None, left_out: dict[str, int] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str], list[dict[str, Any]]]:
-    """`(kept, already_attached, unread)`: `entries` in `key`'s repository
-    (all of them when `key` is None) and not in `skip`. An entry whose
-    repository was not read cannot be placed in a project: it is not
-    launched, and comes back in `unread` with the command that attaches it."""
+    """`(kept, already_attached, unread)`: `entries` in this project and not in
+    `skip`. In this project is `session.ownership`'s rule: in the project's
+    `record`, else -- the fallback for work the record does not hold -- in
+    `key`'s repository (every repository when `key` is None). An entry the
+    record does not hold whose repository was not read cannot be placed in a
+    project: it is not launched, and comes back in `unread` with the command
+    that attaches it. Each one dropped for being outside the project is
+    counted in `left_out["not_this_project"]`."""
+    from . import session
     from .check import repo_key
 
     id_key = "workflow_id" if kind == "workflow" else "task_id"
@@ -549,14 +774,20 @@ def _scoped(
     unread: list[dict[str, Any]] = []
     for entry in entries:
         ident = str(entry.get(id_key) or "")
-        if key is not None:
+        name = workflows.title_name(stored=entry.get("title") or entry.get("label"), workflow_id=ident) \
+            if kind == "workflow" else None
+        if key is not None and not session.recorded(record, ident, name, sid):
             if not entry.get("repository_url"):
                 if entry.get("steps_unread_because") or kind == "task":
                     unread.append({id_key: ident, "workspace": entry.get("workspace"),
                                    "why": "its repository was not read, so it cannot be placed in this project",
                                    "attach_with": f"/sc attach {ident}" if kind == "workflow" else "swarm_follow"})
                 continue
-            if repo_key(entry["repository_url"]) != key:
+            kind_of = session.ownership(session.owner_of(entry), sid, record=record, ident=ident, name=name,
+                                        in_repository=repo_key(entry["repository_url"]) == key)
+            if kind_of != "own":
+                if left_out is not None and kind_of == "not_this_project":
+                    left_out["not_this_project"] = left_out.get("not_this_project", 0) + 1
                 continue
         if ident in skip:
             already.append(ident)
@@ -649,9 +880,18 @@ def for_all(
     already: list[str] = []
     unread: list[dict[str, Any]] = []
     if filtering:
-        entries, already, unread = _scoped(entries, "workflow", scope and scope["key"], skip)
+        # THIS SESSION'S WORK, WITHIN THE PROJECT (SC-TITLES, owner
+        # 2026-10-18): work in the project's record is kept whatever
+        # repository it clones; the repository filter is the fallback for
+        # work the record does not hold.
+        record = session.project_record()
+        for group in left_out.values():
+            group["not_this_project"] = 0
+        entries, already, unread = _scoped(entries, "workflow", scope and scope["key"], skip,
+                                           sid, record, left_out["workflows"])
         if singles:
-            kept, more, unread_tasks = _scoped(singles["tasks"], "task", scope and scope["key"], skip)
+            kept, more, unread_tasks = _scoped(singles["tasks"], "task", scope and scope["key"], skip,
+                                               sid, record, left_out["single_tasks"])
             singles = {**singles, "tasks": kept}
             already += more
             unread += unread_tasks
@@ -667,7 +907,7 @@ def for_all(
         name = workflows.title_name(stored=entry.get("title") or entry.get("label"), workflow_id=workflow_id)
         launches.append(_attach_launch(
             workflow_id, name, int(entry.get("steps_total") or 0), entry.get("workspace"), entry.get("tenant_id"),
-            envelopes.get(workflow_id), labels,
+            envelopes.get(workflow_id), labels, entry.get("repository_url"),
         ))
     not_followed = [
         {"workflow_id": e["workflow_id"], "workspace": e.get("workspace"), "title": e.get("title") or e.get("label"),
@@ -691,7 +931,7 @@ def for_all(
         out["single_tasks_error"] = singles_error
     elif singles and singles["tasks"]:
         task_launch = for_tasks(sc.group_by_workspace(named_workspaces(singles["tasks"], names, keep_tenant=True)),
-                                client)
+                                client, dispatched=False)
         launches.append(task_launch)
         out["single_tasks"] = len(singles["tasks"])
         not_followed.extend(task_launch.pop("not_followed"))
