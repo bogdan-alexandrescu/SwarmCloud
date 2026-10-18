@@ -5,6 +5,17 @@ KINDS. `run` (a firing waiting to create work), `plan` (an issue run's plan),
 flake proposal to file as an issue), `spec` (a `custom-prompt` digest) and
 `hold` (any §4.4 hold, `NEEDS_OWNER` or `NEEDS_SECOND_MEMBER`).
 
+AWAIT-INPUT STEPS ARE PROJECTED, NEVER RECORDED, AND NEVER DECIDED HERE
+(docs/design/human-steps.md §4.5, lane HW-NOTIFY). A workflow step PARKED
+`AWAITING_INPUT` waits for any member of its tenant to answer (Q2), so every
+member's inbox shows it, as kind `input` with id `input:<task_id>`, derived
+on each read from the task (`awaiting_input`, `project_input`). No record of
+kind `input` is ever made (`request` refuses it), and no decide path takes
+the id: `get` answers anything that is not an `apr_` id with 404, so approve
+and reject on it are 404 and the answer route stays the step's one writer.
+Once the step is answered, expired or cancelled it is no longer an open wait,
+and the next read does not project it.
+
 ISSUE RUNS JOIN THE INBOX WITHOUT MOVING. A PLANNED run's approve, edit and
 reject stay in `routes/runs.py`; the inbox PROJECTS them (`project_run`, id
 `run:<run_id>`) beside the records of this collection, and an approve from
@@ -50,6 +61,7 @@ from typing import Any, Callable, Mapping
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from swarm_common.admission import _snapshot
+from swarm_common.states import ParkReason, TaskState
 
 from . import refusals, schedaudit, schedulefire, schedules, scheduletypes
 from .errors import NotFound
@@ -79,7 +91,12 @@ MERGE = "merge"
 PROPOSAL = "proposal"
 SPEC = "spec"
 HOLD = "hold"
-KINDS = (RUN, PLAN, MERGE, PROPOSAL, SPEC, HOLD)
+#: A workflow step waiting for a member's answer: projected, never a record.
+INPUT = "input"
+#: The kinds a record of this collection is made with.
+RECORD_KINDS = (RUN, PLAN, MERGE, PROPOSAL, SPEC, HOLD)
+#: The kinds the inbox serves and filters on.
+KINDS = RECORD_KINDS + (INPUT,)
 
 PENDING = "pending"
 APPROVED = "approved"
@@ -90,6 +107,8 @@ STATES = (PENDING, APPROVED, REJECTED, EXPIRED, SUPERSEDED)
 
 #: A projected issue run's id in the inbox (§7.1).
 PROJECTED_PREFIX = "run:"
+#: A projected await-input step's id in the inbox (human-steps.md §4.5).
+INPUT_PREFIX = "input:"
 #: What the expiry and an inbox write record as the actor.
 EXPIRY_ACTOR = "approval-expiry"
 
@@ -206,7 +225,9 @@ def request(
     `approvers` is resolved at creation (§4.6) and stored; `expires_at` is
     `requested_at` + `ttl` hours.
     """
-    if kind not in KINDS:
+    if kind == INPUT:
+        raise ValueError("an await-input step is projected from its task, never recorded")
+    if kind not in RECORD_KINDS:
         raise ValueError(f"{kind!r} is not an approval kind")
     item_id = approval_id(kind, key)
     ref = db.collection(COLLECTION).document(item_id)
@@ -532,6 +553,91 @@ def project_run(run: IssueRun, schedule: Mapping[str, Any] | None = None) -> dic
     }
 
 
+def _moment(value: Any) -> datetime | None:
+    """`_aware`, tolerant: a malformed stored time reads as absent."""
+    try:
+        return _aware(value) if isinstance(value, (datetime, str)) else None
+    except ValueError:
+        return None
+
+
+def await_input_declaration(task: Any) -> Mapping[str, Any]:
+    """The step's signed `metadata.dispatch.await_input`, or `{}`."""
+    dispatch = (task.metadata or {}).get("dispatch")
+    block = dispatch.get("await_input") if isinstance(dispatch, Mapping) else None
+    return block if isinstance(block, Mapping) else {}
+
+
+def await_input_window(task: Any) -> Mapping[str, Any]:
+    """The platform-written `metadata.await_input`: `opened_at`, `expires_at`, `answer`."""
+    block = (task.metadata or {}).get("await_input")
+    return block if isinstance(block, Mapping) else {}
+
+
+def input_opened_at(task: Any) -> datetime | None:
+    """When the wait opened: the park's `opened_at`, else the park instant."""
+    return (_moment(await_input_window(task).get("opened_at"))
+            or _moment(task.next_eligible_at) or _moment(task.updated_at))
+
+
+def awaiting_input(store: Any, tenant_id: str, now: datetime, *, limit: int = INBOX_SCAN,
+                   submitted_by: str | None = None) -> list[Any]:
+    """The tenant's workflow steps open for a member's answer, newest first.
+
+    PARKED `AWAITING_INPUT` with a declaration, and none of: a recorded
+    answer, a passed `expires_at` (the expiry sweep has yet to end it, and an
+    answer would be refused), a cancel requested. Read through the
+    tenant-scoped store (index tasks-tenant-state-created) and checked again
+    here, so another tenant's step is never returned (invariant 9). Reads only.
+    """
+    page = store.list_tasks(tenant_id, state=TaskState.PARKED, limit=limit,
+                            submitted_by=submitted_by)
+    open_steps = []
+    for task in page.items:
+        if task.tenant_id != tenant_id or task.state != TaskState.PARKED \
+                or task.park_reason != ParkReason.AWAITING_INPUT \
+                or task.cancel_requested or not await_input_declaration(task):
+            continue
+        window = await_input_window(task)
+        if window.get("answer"):
+            continue
+        expires = _moment(window.get("expires_at"))
+        if expires is not None and expires <= now:
+            continue
+        open_steps.append(task)
+    return open_steps
+
+
+def project_input(task: Any) -> dict[str, Any]:
+    """An open await-input step as an inbox item. Any member may answer it (Q2),
+    and the answer is the step's own route, never a decision of this inbox."""
+    block = await_input_declaration(task)
+    window = await_input_window(task)
+    form = block.get("form")
+    prompt = (task.input or {}).get("prompt") if isinstance(task.input, Mapping) else None
+    return {
+        "approval_id": INPUT_PREFIX + task.id,
+        "tenant_id": task.tenant_id,
+        "kind": INPUT,
+        "subject": {
+            "task_id": task.id,
+            "workflow_id": task.workflow_id,
+            "step_id": task.step_id,
+            "form": form,
+            "artifact": block.get("artifact"),
+            "max_files": block.get("max_files"),
+        },
+        "digest": None,
+        "summary": summary_text(f"{task.step_id or task.id} in {task.workflow_id}: {prompt or ''}"),
+        "approvers": "members",
+        "state": PENDING,
+        "requested_at": input_opened_at(task),
+        "expires_at": _moment(window.get("expires_at")),
+        "submitted_by": task.submitted_by,
+        "projected": True,
+    }
+
+
 def sync_run_approvals(db: Any, now: datetime, tenant_id: str) -> int:
     """A `run` record for each of the tenant's `awaiting_approval` firings that has none.
 
@@ -581,7 +687,8 @@ def _live_merge(db: Any, doc: Mapping[str, Any]) -> bool:
 
 
 def inbox(ctx: Any, tenant_id: str, *, kind: str | None = None) -> list[dict[str, Any]]:
-    """§4.5's inbox: pending records beside projected PLANNED runs, oldest first."""
+    """§4.5's inbox: pending records beside projected PLANNED runs and open
+    await-input steps, oldest first."""
     now = ctx.now()
     sync_run_approvals(ctx.db, now, tenant_id)
     items: list[dict[str, Any]] = []
@@ -598,6 +705,7 @@ def inbox(ctx: Any, tenant_id: str, *, kind: str | None = None) -> list[dict[str
         if sid and sid not in schedules_seen:
             schedules_seen[sid] = read_schedule(ctx.db, tenant_id, sid)
         items.append(project_run(run, schedules_seen.get(sid) if sid else None))
+    items.extend(project_input(task) for task in awaiting_input(ctx.store, tenant_id, now))
     if kind is not None:
         items = [i for i in items if i.get("kind") == kind]
     items.sort(key=lambda i: (_aware(i.get("requested_at")) or _EPOCH, str(i.get("approval_id"))))
