@@ -586,12 +586,14 @@ design, with the owner's decisions of 2026-10-17, is
 [docs/design/human-steps.md](design/human-steps.md); this section says what
 was built from it.
 
-While the catalogue lists `await-input` as unavailable
-(`apps/common/swarm_common/profiles.py::RUNNER_PROFILES`, contract request C),
-a submission that names it is refused like any disabled profile, the expiry
-sweep reads nothing, and nothing below changes how any workflow runs. The
-owner makes it available with request D, after the acceptance lane
-(HW-ACCEPT) has run it on dev.
+The catalogue lists `await-input` as available
+(`apps/common/swarm_common/profiles.py::RUNNER_PROFILES`) since request D
+(contract request 105, HW-ENABLE), which the owner applies once the
+acceptance lane (HW-ACCEPT) has run it on dev. It shipped unavailable
+(contract request C, entry 94). While a catalogue lists it as unavailable, a
+submission that names it is refused like any disabled profile, the expiry
+sweep reads nothing, and nothing below changes how any workflow runs; setting
+`available=False` again is the way back to exactly that.
 
 ```json
 {"step_id": "review",

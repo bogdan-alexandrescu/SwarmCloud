@@ -547,11 +547,18 @@ def test_await_input_section_names_the_forms_and_their_artifacts():
     assert "`apps/agent-worker/agent_worker/inputs.py::attachments_dir`" in body
 
 
-def test_await_input_section_says_the_step_ships_dark_while_unavailable():
+def test_await_input_section_says_whether_the_catalogue_offers_the_step():
+    """The section states the catalogue's answer, read from the catalogue: before
+    request D it said the step ships dark; since request D (entry 105) it says
+    the step is available, and still what unavailable means."""
     body = _await_section()
     assert "request D" in body
     assert "`apps/common/swarm_common/profiles.py::RUNNER_PROFILES`" in body
-    assert "While the catalogue lists `await-input` as unavailable" in body
+    assert "lists it as unavailable, a submission that names it is refused" in body
+    if RUNNER_PROFILES["await-input"].available:
+        assert "The catalogue lists `await-input` as available" in body
+    else:
+        assert "The catalogue lists `await-input` as available" not in body
 
 
 def test_step_fields_table_names_await_input():

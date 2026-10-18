@@ -1363,7 +1363,9 @@ As request B.
 ### Request D. `profiles.py`: `await-input` becomes available (owner applies, after HW-ACCEPT)
 
 **Status:** to be applied by the owner once the acceptance group of §6 has
-passed on dev.
+passed on dev. Filed as
+[contract request 105](../contract-change-requests.md) (proposed 2026-10-18)
+by lane HW-ENABLE's pull request, which is held as a draft until then.
 
 #### The change
 

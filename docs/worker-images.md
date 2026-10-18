@@ -174,7 +174,7 @@ fails when a profile's backend moves and this table does not.
 | `codex` | `GKE_AUTOPILOT` | none used: since contract request 65 (2026-10-10, #939 option A); each tenant's old Job (one per tenant that registers `openai`) is kept idle as the rollback; the profile is disabled (`available=False`) |
 | `post-verdict` | `CLOUD_RUN_JOB` | no Job (`profiles_without_a_job`); disabled |
 | `claude-code-review` | `CLOUD_RUN_JOB` | no Job (`profiles_without_a_job`); retired |
-| `await-input` | `CLOUD_RUN_JOB` | no Job (`profiles_without_a_job`): a `control_plane` profile that nothing runs on any backend, so the backend is the catalogue's statement only (contract requests 93 and 94, docs/design/human-steps.md); disabled until the owner applies request D |
+| `await-input` | `CLOUD_RUN_JOB` | no Job (`profiles_without_a_job`): a `control_plane` profile that nothing runs on any backend, so the backend is the catalogue's statement only (contract requests 93 and 94, docs/design/human-steps.md); available since request D (contract request 105, HW-ENABLE) |
 
 So `mock` is the one enabled profile still started on Cloud Run: it reaches no
 internet, so #939's option A left it there, and `post-verdict` and
