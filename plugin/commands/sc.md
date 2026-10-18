@@ -1,6 +1,6 @@
 ---
 description: SwarmCloud cluster state — accounts, capacity, agents, trouble
-argument-hint: "[accounts|agents|capacity|trouble|check|watch [interval]|task <id>|runs|run show <run>|plan show <run>|schedules|schedules show <name>|approvals]"
+argument-hint: "[accounts|agents|capacity|trouble|check|watch [interval]|task <id>|runs|run show <run>|plan show <run>|schedules|schedules show <name>|approvals|mcp-servers]"
 allowed-tools:
   - Bash(uv run sc)
   - Bash(uv run sc overview:*)
@@ -19,6 +19,7 @@ allowed-tools:
   - Bash(uv run sc schedules preview:*)
   - Bash(uv run sc approvals)
   - Bash(uv run sc approvals --json)
+  - Bash(uv run sc mcp-servers:*)
   - Bash(uv run swarm doctor:*)
 ---
 
@@ -66,6 +67,15 @@ shown, or tell the operator the command: `sc approvals approve <id>` prints
 the item and its digest and asks them to type `approve`. A schedule names a
 type from the catalogue (`swarm_schedule_types`); no image or command is
 accepted.
+
+`uv run sc mcp-servers` lists the MCP servers this workspace registered: the
+names a claude-code or codex step may put in `inputs.mcp_servers`, each one's
+auth mode (`dispatch` means a dispatch must bring that server's
+`mcp_credentials` entry), allowed profiles and tools, and the egress addresses
+its operator allowlists. It only reads. There is no `sc` command and no MCP tool
+that registers a server or stores its credential: an admin registers one in the
+console (Settings › Workspace › MCP servers). If the operator wants a server
+registered, tell them that; never ask them for a credential to store.
 
 If the arguments are `login`, `logout` or `context ...`, do **not** run them.
 They are not views: they change the operator's own sign-in, or which cluster

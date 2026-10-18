@@ -109,6 +109,10 @@ _STEP_KEYS = frozenset(
 #: knowingly.
 DISPLAY_ONLY_STEP_KEYS = frozenset({"stage"})
 
+#: The request field a per-run MCP credential map travels in
+#: (docs/design/registered-mcp-servers.md §4.3): beside a spec, never in one.
+PER_RUN_FIELD = "mcp_credentials"
+
 #: The top-level keys a `swarm workflow` spec may carry -- the file the
 #: terminal command reads and the object `swarm_workflow`'s `spec` takes. One
 #: reader for both (`read_spec`), so the two cannot come to disagree about what
@@ -439,6 +443,18 @@ def read_spec(document: Any, *, where: str = "the workflow spec") -> dict[str, A
     """
     if not isinstance(document, dict):
         raise SwarmError(f"{where} must be an object with a `steps` list")
+    if PER_RUN_FIELD in document:
+        # Named, because the generic refusal below would read as "not yet
+        # supported". A spec is a file: it is digested, held by `spec_ref`,
+        # copied into a run script and reread, and a credential in it would
+        # be in every one of those (docs/design/registered-mcp-servers.md
+        # §4.11). The value is never repeated.
+        raise SwarmError(
+            f"{where} carries `{PER_RUN_FIELD}`, and a per-run credential is never part of a "
+            "spec, which is written to disk, held and copied into a run script. Pass the "
+            f"spec without it and give `{PER_RUN_FIELD}` to swarm_workflow beside the spec. "
+            "Nothing was sent"
+        )
     unknown = sorted(set(document) - SPEC_KEYS)
     if unknown:
         raise SwarmError(
@@ -478,8 +494,16 @@ def submit(
     merge_pr: dict[str, Any] | None = None,
     merge: str | None = None,
     after: list[dict[str, int]] | None = None,
+    mcp_credentials: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """`POST /v1/workflows`. Returns the route's envelope, not just the workflow.
+
+    `mcp_credentials` is the caller's per-run credential map for the
+    registered MCP servers its steps name (`server.check_mcp_credentials` has
+    checked its shape): ONE map for the whole submission, top-level beside
+    `steps` as `WorkflowCreate` takes it, never inside a step's `input`.
+    Sent only when given, so a workflow naming none sends what it always
+    did; the envelope comes back through `server.without_credentials`.
 
     The envelope is kept whole because its second half is the part a caller
     cannot get anywhere else: `dispatch` echoes the strategy and carrier that
@@ -515,6 +539,8 @@ def submit(
         body["merge_pr"] = merge_pr
     if after:
         body["after"] = after
+    if mcp_credentials:
+        body[PER_RUN_FIELD] = mcp_credentials
     envelope = _envelope(client.request("POST", "/v1/workflows", payload=body), "submitting")
     _remember_launch(envelope["workflow"])
     return envelope
