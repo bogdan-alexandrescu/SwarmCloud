@@ -236,7 +236,16 @@ gate every authenticated request reaches (`require_continuation_route`).
 The stored default applies where the API's authenticator is built with the
 preferences store (`Authenticator(..., preferences=...)`); an authenticator
 built without one reads nothing and keeps the rule above, exactly as before
-the profile.
+the profile. **The deployed API does not pass it yet**:
+`deps.build_context` builds its `Authenticator` without `preferences=`, so in
+every deployed process a headerless request still acts in the group or
+personal default, `AuthContext.preferences` is `None`, the stored display name
+does not name commits and the 503 above never fires. Wiring it is the
+one-line `preferences=build_preferences(db, settings)` in `deps.py`, a file
+no lane of docs/design/user-profile.md §6 holds; it waits on the owner's
+go-ahead, and on a decision about an environment with no `swarm-child-key`,
+where `Preferences.read_many` raises `PreferencesUnavailable` and every
+headerless request from a person would become that 503.
 
 Anything else — another group's tenant, **another person's `u-` tenant**, your
 own `u-` tenant before its workspace is ready, a tenant that does not exist, an
