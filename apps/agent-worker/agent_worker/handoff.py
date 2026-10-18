@@ -82,6 +82,8 @@ import json
 import os
 import random
 import re
+import socket
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -98,7 +100,15 @@ from .browser_resume import BrowserResume, Restored
 from .egress_ticket import BrowserEgress
 from .errors import ExitCode
 from .hardening import PROTECTED
-from .livegate.tunnel import CLOSE_RESTARTING, RETRY_MAX_SECONDS, RETRY_SECONDS, reconnect_delay
+from .livegate.tunnel import (
+    CLOSE_RESTARTING,
+    RESOLVER_BUSY,
+    RETRY_MAX_SECONDS,
+    RETRY_SECONDS,
+    reconnect_delay,
+    relay_url,
+    resolver_class,
+)
 
 #: The spool's directory under `work/`. `Workspace.handoff_dir` is the one
 #: path; this is its name.
@@ -218,6 +228,26 @@ VIEW_NOT_SET_UP = "not_set_up"
 #: restart schedule, so the ~60 pods of a burst that all met the same DNS
 #: failure do not all knock on the relay again in the same instant.
 TUNNEL_JITTER = (0.75, 0.5)
+#: LB-DNS (part of #1366): the FIRST tunnel open, refused by the gate while
+#: the relay's name does not resolve, is tried again after a TUNNEL_JITTER'd
+#: delay from RELAY_LOOKUP_RETRY_FIRST_SECONDS, doubling to
+#: RELAY_LOOKUP_RETRY_MAX_SECONDS, for up to RELAY_LOOKUP_RETRY_SECONDS; past
+#: it, setup gives the first open up and the per-poll retry above takes over.
+#: WHY 30 s: swarm-live is a headless Service (clusterIP: None, one replica),
+#: so its name has no address while its pod is not ready, and devb-1015 met
+#: the failure ~4 s after registration in a burst of 60 pod starts over 18 s:
+#: a relay pod turning ready and a burst's resolver queue draining are both
+#: tens of seconds. WHY NO MORE: setup runs before the agent starts, so this
+#: is the most a lookup failure may delay the agent (plus the one try in
+#: flight, which ctl.sock bounds at 10 s), and the agent's browser does not
+#: need the tunnel (NOLIVE-GUARD) -- only the human's view does.
+RELAY_LOOKUP_RETRY_SECONDS = 30.0
+RELAY_LOOKUP_RETRY_FIRST_SECONDS = 1.0
+RELAY_LOOKUP_RETRY_MAX_SECONDS = 8.0
+#: How long the worker's own lookup of the relay's name may take. A resolver
+#: that has not answered by then is a busy one (EAI_AGAIN's meaning: glibc's
+#: own give-up is 5 s x 2 tries, too long to wait on before every retry).
+RELAY_PROBE_SECONDS = 3.0
 
 #: NOLIVE-GUARD: a live-browser attempt whose GATE is not ready (no ctl.sock,
 #: or a registration the gate refused -- a restarted gate refuses every one)
@@ -543,6 +573,21 @@ class Gate:
         return GateLost(type(exc).__name__)
 
 
+def _resolve_relay(host: str, port: int) -> Any:
+    """The pod's resolver, asked for the relay's address (LB-DNS). A module
+    function so the unit suite's conftest can stand in for it."""
+    return socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+
+
+def _relay_address(environ: Mapping[str, str]) -> tuple[str, int] | None:
+    """The host and port the gate dials (livegate.tunnel.relay_url), or None if unset-able."""
+    try:
+        parts = urlsplit(relay_url(environ))
+    except ValueError:
+        return None
+    return (parts.hostname or "", parts.port or 80) if parts.hostname else None
+
+
 def _default_gate_client(path: str) -> Any:
     """L3's client. Imported here, not at module load, so a worker image
     built before L3 merged still starts; it then has no live path."""
@@ -650,10 +695,13 @@ class HandoffPath:
         sleep: Callable[[float], None] = time.sleep,
         rand: Callable[[], float] = random.random,
         vault: Callable[[], Any] | None = None,
+        resolve: Callable[[str, int], Any] | None = None,
     ) -> None:
         self.cfg = cfg
         self._sleep = sleep
         self._rand = rand
+        #: The pod's resolver (LB-DNS); None is `_resolve_relay`, looked up per call.
+        self._resolve = resolve
         #: Writes one `startup_progress` step; True once it is settled (written,
         #: or not this attempt's to write), False to try again on a later tick.
         self._progress = progress
@@ -668,6 +716,12 @@ class HandoffPath:
             live = bool(getattr(profile, "live_browser", False))
         self.live = live
         self._ctl_path = env.get(GATE_CTL_ENV, "")
+        #: The relay the gate dials: the worker shares the gate's pod, so its
+        #: environment and its resolver (the pod's dnsConfig) are the gate's.
+        self._relay = _relay_address(env)
+        #: The class of the relay lookup failure the first open last met
+        #: (livegate.tunnel.resolver_class), or None (LB-DNS).
+        self.relay_lookup: str | None = None
         self._passthrough = {k: env[k] for k in AGENT_PASSTHROUGH_ENV if env.get(k)}
         self._gate_client = gate_client or _default_gate_client
         self._now = now
@@ -783,7 +837,7 @@ class HandoffPath:
         self._tunnel_allowed = True
         failure: str | None = None
         try:
-            self._open_tunnel(gate, key, api)
+            self._open_first_tunnel(gate, key, api)
         except NoTunnelTicket as exc:
             if exc.code in TUNNEL_ENDED_CODES:
                 # swarm-api says no session will come: no view and no
@@ -822,12 +876,80 @@ class HandoffPath:
         """The human's view did not open; the agent's browser runs. Never raises."""
         if note is None:
             return
+        lookup = f" (relay name lookup: {self.relay_lookup})" if self.relay_lookup else ""
         try:
             note({"phase": "live_view", "live_path": "view_unavailable", "reason": code,
-                  "message": f"live view unavailable: {code}; the agent's browser runs, "
+                  "message": f"live view unavailable: {code}{lookup}; the agent's browser runs, "
                              "and the view is retried"})
         except Exception:  # a note must never stop the attempt
             pass
+
+    def _open_first_tunnel(self, gate: Gate, key: Any, api: Any) -> None:
+        """`_open_tunnel`, retrying a refusal the relay's name lookup explains (LB-DNS, part of #1366).
+
+        ctl.sock answers every failed `tunnel_ticket` with the same "failed"
+        (the gate's `tunnel_refused` record names the cause; the worker never
+        sees it), so on a refusal the worker asks the resolver itself, which
+        is the gate's (same pod). While the relay's name does not resolve the
+        open is tried again -- a fresh ticket each time -- on the jittered,
+        doubling delay, for up to RELAY_LOOKUP_RETRY_SECONDS, each try logged
+        with the failure's class. A refusal while the name resolves, and
+        every other failure, raises at once, as before. Raises what
+        `_open_tunnel` raises.
+        """
+        started = self._wall()
+        step = RELAY_LOOKUP_RETRY_FIRST_SECONDS
+        tries = 0
+        while True:
+            try:
+                self._open_tunnel(gate, key, api)
+            except GateRefused:
+                lookup = self._relay_lookup()
+                self.relay_lookup = lookup
+                if lookup is None:
+                    raise
+                tries += 1
+                low, spread = TUNNEL_JITTER
+                delay = step * (low + spread * self._rand())
+                if self._wall() + delay - started > RELAY_LOOKUP_RETRY_SECONDS:
+                    self.log.warning("relay name still does not resolve; the live view is retried on later polls",
+                                     resolver=lookup, tries=tries)
+                    raise
+                self.log.warning("relay name did not resolve; retrying the live tunnel",
+                                 resolver=lookup, tries=tries, retry_seconds=round(delay, 1))
+                self._sleep(delay)
+                step = min(step * 2, RELAY_LOOKUP_RETRY_MAX_SECONDS)
+            else:
+                self.relay_lookup = None
+                return
+
+    def _relay_lookup(self) -> str | None:
+        """The class of the relay name's lookup failure now (livegate.tunnel
+        `resolver_class`), or None when it resolves, fails some other way, or
+        there is no relay address to ask for. Never raises; never longer than
+        RELAY_PROBE_SECONDS: a lookup still unanswered then is `resolver_busy`."""
+        if self._relay is None:
+            return None
+        host, port = self._relay
+        resolve = self._resolve or _resolve_relay
+        found: list[str | None] = []
+
+        def probe() -> None:
+            try:
+                resolve(host, port)
+            except Exception as exc:  # anything but a gaierror is not a lookup failure
+                found.append(resolver_class(exc))
+            else:
+                found.append(None)
+
+        # A thread, because getaddrinfo cannot be cancelled: one left blocked
+        # past the bound ends with the resolver's own give-up, and holds nothing.
+        thread = threading.Thread(target=probe, name="relay-lookup", daemon=True)
+        thread.start()
+        thread.join(RELAY_PROBE_SECONDS)
+        if thread.is_alive():
+            return RESOLVER_BUSY
+        return found[0] if found else None
 
     def _open_tunnel(self, gate: Gate, key: Any, api: Any) -> None:
         """§3.3 steps 1-2: a tunnel ticket from swarm-api, handed to the gate.
@@ -1628,7 +1750,21 @@ def park_human_required(
     lease attempt N+1 of N, and the scheduler dead-letters it instead.
 
     Returns whether the attempt was refunded and who re-queued it, if anyone.
+
+    A TENANT SWITCHED TO THE STATE ROUTES (`control.state_via_api`,
+    docs/design/tenant-settings-integrity.md §4.2) has no transaction to run
+    this in: `RemoteControlPlane.park_human_required` sends ONE `state/park`,
+    and swarm-api writes everything above -- the fence, the bounded refund,
+    the person's re-queue, the carry, the attempt's end, the event and the
+    lease release -- in one transaction there. No Firestore call is made
+    here. The answer says whether a person's return re-queued the task, not
+    who: their name is in the READY event and `human_ready` swarm-api wrote,
+    so `returned_by` is "" then, as it is on this path for a mark that names
+    nobody.
     """
+    if getattr(control, "state_via_api", False):
+        refunded, requeued = control.park_human_required(detail=detail, uploads=uploads)
+        return HumanPark(bool(refunded), "" if requeued else None)
     reason = ParkReason.HUMAN_REQUIRED
     now = utcnow()
     returned: dict[str, Any] = {}

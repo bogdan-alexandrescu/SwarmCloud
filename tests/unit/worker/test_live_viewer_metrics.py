@@ -10,7 +10,8 @@ Logging parses into jsonPayload and scripts/live-report.sh reads:
   * updates sent, and the update rate in the seconds the page changed;
   * the longest a changed frame waited for an update;
   * how long the published frame was the "masking unavailable" fill (#555)
-    or the page-blanked fill (#222);
+    or the page-blanked fill (#222), and the unavailable time and its longest
+    single stretch per reason the frames carried (#1344);
   * input-to-frame p50/p95, ONLY for inputs a changed frame followed: a key
     that changed nothing is not timed to some later, unrelated change;
   * key and pointer counts. Never a keysym, a coordinate or pasted text.
@@ -28,7 +29,7 @@ import logging
 
 import pytest
 from agent_worker.livegate import __main__ as gate_main
-from agent_worker.livegate import rfb
+from agent_worker.livegate import mask, rfb
 from agent_worker.livegate.mask import Outcome
 from test_live_rfb import Gate, _frame
 
@@ -120,6 +121,89 @@ def test_blank_time_is_split_into_unavailable_and_page_blanked() -> None:
     assert line["blank_ms"] == pytest.approx(5500, abs=1)
 
 
+def test_unavailable_time_is_split_by_the_reason_the_frames_carried() -> None:
+    # Issue #1344: 2 of 17 dev-browser runs were unavailable for over 10 s and
+    # the line could not say whether the page had "not reported yet", there was
+    # "no page", or the followed page was "hidden". Each reason is its own key.
+    m = rfb.ViewerMetrics("v-1", now=0.0, outcome=Outcome.UNAVAILABLE, reason=rfb.REASON_NOT_CAPTURED)
+    m.frame(1.0, changed=True, outcome=Outcome.UNAVAILABLE, at=1.0, reason=mask.REASON_NO_PAGE)
+    m.frame(2.0, changed=True, outcome=Outcome.UNAVAILABLE, at=2.0, reason=mask.REASON_NOT_REPORTED)
+    m.frame(6.0, changed=True, outcome=Outcome.MASKED, at=6.0)
+    m.frame(7.0, changed=True, outcome=Outcome.UNAVAILABLE, at=7.0, reason=mask.REASON_HIDDEN)
+    m.frame(7.5, changed=False, outcome=Outcome.UNAVAILABLE, at=7.5, reason=mask.REASON_HIDDEN)
+    m.frame(8.0, changed=True, outcome=Outcome.UNAVAILABLE, at=8.0, reason=mask.REASON_NOT_REPORTED)
+    line = m.snapshot(9.0, rfb.SessionCounts(), final=True)
+    by_reason = line["unavailable_ms_by_reason"]
+    assert by_reason == {
+        "not_captured": pytest.approx(1000, abs=1),
+        "no_page": pytest.approx(1000, abs=1),
+        "not_reported": pytest.approx(5000, abs=1),  # 2-6 and 8-9, still open
+        "hidden": pytest.approx(1000, abs=1),  # one stretch across an unchanged frame
+    }
+    # The split adds up to the total it splits.
+    assert sum(by_reason.values()) == pytest.approx(line["unavailable_ms"], abs=1)
+    # The longest single stretch: the 4 s one, not the 5 s sum of two.
+    longest = line["unavailable_longest_ms_by_reason"]
+    assert longest["not_reported"] == pytest.approx(4000, abs=1)
+    assert longest["hidden"] == pytest.approx(1000, abs=1)
+    assert set(longest) == set(by_reason)
+
+
+def test_an_open_unavailable_stretch_counts_as_the_longest_while_it_lasts() -> None:
+    m = _metrics(now=0.0)
+    m.frame(1.0, changed=True, outcome=Outcome.UNAVAILABLE, at=1.0, reason=mask.REASON_NOT_REPORTED)
+    m.frame(2.0, changed=True, outcome=Outcome.MASKED, at=2.0)
+    m.frame(3.0, changed=True, outcome=Outcome.UNAVAILABLE, at=3.0, reason=mask.REASON_NOT_REPORTED)
+    # A periodic line, 13.2 s into the second stretch: the S1-example run.
+    line = m.snapshot(16.2, rfb.SessionCounts(), final=False)
+    assert line["unavailable_longest_ms_by_reason"] == {"not_reported": pytest.approx(13200, abs=1)}
+    # Reading it closed nothing: the stretch goes on.
+    later = m.snapshot(20.0, rfb.SessionCounts(), final=True)
+    assert later["unavailable_longest_ms_by_reason"]["not_reported"] == pytest.approx(17000, abs=1)
+    assert later["unavailable_ms_by_reason"]["not_reported"] == pytest.approx(18000, abs=1)
+
+
+def test_a_reason_the_mask_does_not_name_is_counted_as_other() -> None:
+    # Every reason is words the gate wrote, never page text, but only the known
+    # ones get a key: a log field per new phrase is not a schema a query can rely on.
+    m = _metrics(now=0.0)
+    m.frame(1.0, changed=True, outcome=Outcome.UNAVAILABLE, at=1.0, reason="something new")
+    m.frame(2.0, changed=True, outcome=Outcome.UNAVAILABLE, at=2.0, reason=mask.REASON_SWITCHING)
+    line = m.snapshot(2.5, rfb.SessionCounts(), final=True)
+    assert line["unavailable_ms_by_reason"] == {
+        "other": pytest.approx(1000, abs=1), "switching": pytest.approx(500, abs=1)}
+
+
+def test_every_unavailable_reason_the_mask_names_has_its_own_key() -> None:
+    keys = [rfb.unavailable_reason_key(reason) for reason in (
+        rfb.REASON_NOT_CAPTURED, mask.REASON_NO_SESSION, mask.REASON_NO_PAGE, mask.REASON_NOT_REPORTED,
+        mask.REASON_HIDDEN, mask.REASON_SWITCHING, mask.REASON_TOO_WIDE)]
+    assert "other" not in keys
+    assert len(set(keys)) == len(keys)
+
+
+def test_the_hub_and_the_mask_carry_their_reasons_into_a_connections_line(
+        caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger=METRICS_LOGGER)
+
+    async def main() -> None:
+        gate = Gate()
+        viewer = await gate.connect("v-0003")  # opens on the hub's "not captured" fill
+        viewer.request(incremental=False)
+        await viewer.read_update()
+        # A real MaskState with no CDP session: unavailable, "not attached".
+        # The same grey fill as the hub's, so no update follows; the hub
+        # still tells the connection's metrics of the frame and its reason.
+        gate.hub.publish(rfb.masked(_frame(rgb=(1, 2, 3)), mask.MaskState()))
+        await viewer.drain_server()
+        await asyncio.wait_for(asyncio.gather(*gate.tasks, return_exceptions=True), 5)
+
+    asyncio.run(main())
+    [line] = [line for line in _lines(caplog) if line["final"]]
+    assert set(line["unavailable_ms_by_reason"]) == {"not_captured", "no_session"}
+    assert set(line["unavailable_longest_ms_by_reason"]) == {"not_captured", "no_session"}
+
+
 def test_input_to_frame_is_timed_only_for_inputs_a_change_followed() -> None:
     m = _metrics(now=0.0)
     # A key that changes the page 40 ms later, shown 60 ms after the key.
@@ -179,6 +263,11 @@ def test_the_line_carries_counts_and_names_the_role() -> None:
     for key, value in line.items():
         if isinstance(value, list):
             assert all(isinstance(v, int) for v in value), key
+            continue
+        if isinstance(value, dict):
+            # Per reason: a fixed key the gate chose, never the reason's words.
+            known = {*rfb.UNAVAILABLE_REASON_KEYS.values(), rfb.UNAVAILABLE_REASON_OTHER}
+            assert set(value) <= known and all(isinstance(v, float) for v in value.values()), key
             continue
         assert value is None or isinstance(value, (int, float, bool)) or key in (
             "event", "conn", "role", "message", "severity"), key

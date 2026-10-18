@@ -88,11 +88,34 @@ def load_tenant(
     its startup budget before the runner starts (`ControlPlane.call_options`),
     and the mid-run `tenant` budget for a credential reload
     (`control.MID_RUN_BUDGETS`, #70).
+
+    A tenant switched to the state routes passes its attempt's state client
+    as `db` (`indexrun.state_routes`): the document is `GET state/context`'s
+    `tenant`, the id derived by swarm-api from the attempt's tuple, and no
+    Firestore call is made. The checks below are the same on both paths.
     """
-    snap = db.collection("tenants").document(tenant_id).get(**dict(call_options or {}))
-    if not snap.exists:
-        raise SecretError(f"tenant {tenant_id} does not exist")
-    data = snap.to_dict() or {}
+    state = indexrun.state_routes(db)
+    if state is not None:
+        from .statecall import StateRefused  # lazy: statecall -> children -> inputs
+
+        try:
+            found = indexrun.route_context(state).get("tenant")
+        except StateRefused as refused:
+            if refused.code != "state_conflict":
+                raise
+            # swarm-api's own refusal of a `tenants/<id>` naming another tenant.
+            raise SecretError(
+                f"tenants/{tenant_id} declares another tenant_id; refusing to resolve "
+                "credentials against a document that belongs to another tenant"
+            ) from None
+        if not isinstance(found, Mapping):
+            raise SecretError(f"tenant {tenant_id} does not exist")
+        data: Mapping[str, Any] = found
+    else:
+        snap = db.collection("tenants").document(tenant_id).get(**dict(call_options or {}))
+        if not snap.exists:
+            raise SecretError(f"tenant {tenant_id} does not exist")
+        data = snap.to_dict() or {}
     stored = data.get("tenant_id")
     if stored is not None and stored != tenant_id:
         raise SecretError(
@@ -487,8 +510,18 @@ def grant_refusal(
     if isinstance(where, str):
         return f"no grant can cover this repository: {where}"
     doc_id = f"{tenant_id}__{hashed}__{where.repo_id}"
-    snap = db.collection(FORGE_GRANTS).document(doc_id).get(**dict(call_options or {}))
-    data = (snap.to_dict() or {}) if snap.exists else None
+    state = indexrun.state_routes(db)
+    if state is not None:
+        # A switched tenant: `GET state/context` serves the ONE grant swarm-api
+        # derives from the signed `submitted_by` and `repository_url`. Any other
+        # slot's id is no grant it serves, so it reads as removed, as an absent
+        # document does here.
+        served = indexrun.route_context(state).get("forge_grant")
+        data = dict(served) if isinstance(served, Mapping) and served.get("id") == doc_id \
+            else None
+    else:
+        snap = db.collection(FORGE_GRANTS).document(doc_id).get(**dict(call_options or {}))
+        data = (snap.to_dict() or {}) if snap.exists else None
     if (
         data is None
         or data.get("tenant_id") != tenant_id

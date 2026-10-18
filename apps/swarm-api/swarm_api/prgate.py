@@ -51,6 +51,14 @@ READY (`scheduler.loop._resolve_dependency`). One closed without merging:
 the workflow (its dependants are cancelled as a failed parent's). The tick
 never moves a task.
 
+QUOTA FIRST, AND BACK OFF WHEN REFUSED (QUOTA-THROTTLE, #1483). The reads
+act as the tenant's `-git` slot (`forge_limits.tenant_credential`). Under
+`forge_quota_defer_percent` of its limit left, or inside a hold, no gate is
+read this tick and none is written: each waits as it was and is read after
+the reset, and one line says so. The first rate-limited answer stops the
+tick and holds the tenant's gates until the reset GitHub named, rather than
+asking for every gate every minute while GitHub refuses.
+
 A FORGED GATE IS THE TENANT'S OWN BUSINESS. Firestore has no document-level
 IAM, so any identity of the tenant can write `after_prs`. A forged `merged`
 starts the tenant's own workflow early -- which that identity could have done
@@ -71,8 +79,9 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from swarm_common.admission import _snapshot
 from swarm_common.states import ParkReason, TaskState
 
+from . import forge_limits
 from .errors import ApiError, NotFound, ValidationFailed
-from .forgewrite import ForgeWriteNotFound, GitHubWriter
+from .forgewrite import ForgeRateLimited, ForgeWriteNotFound, GitHubWriter
 from .schemas import MAX_AFTER_PRS
 from .validation import AFTER_PRS_METADATA_KEY, IssueRef, merge_repository
 from .waker import ring
@@ -221,6 +230,9 @@ class GateReport:
     waiting: int = 0
     skipped: int = 0
     failed: int = 0
+    #: Due gates not read because the tenant's GitHub quota is low or held
+    #: (QUOTA-THROTTLE): left as they were, read after the reset.
+    deferred: int = 0
     truncated: bool = False
     failures: list[dict[str, str]] = field(default_factory=list)
 
@@ -232,12 +244,17 @@ class GateReport:
             "waiting": self.waiting,
             "skipped": self.skipped,
             "failed": self.failed,
+            "deferred": self.deferred,
             "truncated": self.truncated,
         }
 
     def fail(self, task_id: str, code: str) -> None:
         self.failed += 1
         self.failures.append({"task_id": task_id, "code": code})
+
+
+#: The after-PR gates' hold key in `forge_limits.QUOTAS` (`sweep_key`).
+AFTER_PRS_SWEEP = "after_prs"
 
 
 def _due(gate: Mapping[str, Any], now: datetime) -> bool:
@@ -319,6 +336,15 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> GateReport:
     # One read per pull request per tick, however many roots wait on it.
     readings: dict[tuple[str, str, int], tuple[bool, str]] = {}
     settled = False
+    credential = forge_limits.tenant_credential(tenant_id)
+    sweep = forge_limits.sweep_key(AFTER_PRS_SWEEP, tenant_id)
+    halted = forge_limits.QUOTAS.held(sweep, now=now)
+    deferral = forge_limits.QUOTAS.defer(credential, forge_limits.defer_percent(ctx), now=now)
+    if halted is not None:
+        log.info("github quota: after-prs tick tenant=%s held until %s", tenant_id,
+                 halted.isoformat())
+    elif deferral is not None:
+        forge_limits.log_deferred("after-prs tick", tenant_id, deferral)
     try:
         for doc in docs[:limit]:
             # The query filtered on it; asked again, so a task of another
@@ -331,6 +357,10 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> GateReport:
                 continue
             if not _due(gate, now):
                 report.skipped += 1
+                continue
+            if halted is not None or deferral is not None:
+                # Not read and not written: the gate waits as it was.
+                report.deferred += 1
                 continue
             report.visited += 1
             numbers = _numbers(gate.get("pull_requests"))
@@ -361,8 +391,9 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> GateReport:
                 key = (owner, repo, number)
                 if key not in readings:
                     try:
-                        pull = writer.read_pull(IssueRef(owner=owner, repo=repo, number=number),
-                                                number, token)
+                        with forge_limits.acting_as(credential):
+                            pull = writer.read_pull(
+                                IssueRef(owner=owner, repo=repo, number=number), number, token)
                         readings[key] = (bool(pull.merged), str(pull.state or ""))
                     except ForgeWriteNotFound:
                         # Not read as closed: a token that lost the repository
@@ -372,6 +403,13 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> GateReport:
                         break
                     except Exception as exc:
                         error = exc.code if isinstance(exc, ApiError) else type(exc).__name__
+                        if isinstance(exc, ForgeRateLimited):
+                            # Refused for quota: no other gate is asked this
+                            # tick, nor until the reset GitHub named.
+                            halted = exc.reset or now + forge_limits.DEFAULT_HOLD
+                            forge_limits.QUOTAS.hold(sweep, halted)
+                            log.warning("github quota: after-prs tick tenant=%s rate-limited; "
+                                        "held until %s", tenant_id, halted.isoformat())
                         break
                 was_merged, state = readings[key]
                 if was_merged:

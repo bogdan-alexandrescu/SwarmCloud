@@ -18,13 +18,14 @@ from fastapi import APIRouter, Depends
 
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context
+from ..judgment import settings_mac
 from ..mergesettings import MergeSettingsPut, MergeSettingsStore, authorize, can_edit, view
 
 router = APIRouter(prefix="/v1/workspaces", tags=["workspace"])
 
 
 def _store(ctx: AppContext) -> MergeSettingsStore:
-    return MergeSettingsStore(ctx.store.db, now=ctx.now)
+    return MergeSettingsStore(ctx.store.db, now=ctx.now, mac=settings_mac(ctx.settings))
 
 
 def _answer(ctx: AppContext, auth: AuthContext, tenant, store: MergeSettingsStore) -> dict:

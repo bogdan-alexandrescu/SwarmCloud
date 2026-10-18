@@ -82,6 +82,7 @@ from swarm_common.states import TERMINAL_STATES, ParkReason, TaskState
 from .errors import ApiError, NotFound
 from .forgechecks import GREEN, RED, evaluate, required_status_checks
 from .forgewrite import GitHubWriter
+from .judgment import settings_mac
 from .mergesettings import MergeSettings, MergeSettingsStore
 from .mergewake import MERGE_TRAIN_WAITING, MERGE_WAIT_METADATA_KEY, WAKE_MARKER, _record
 from .repositories import parse_repository
@@ -283,7 +284,7 @@ def tick_tenant(ctx: Any, tenant_id: str, *, limit: int) -> TrainReport:
             lanes.setdefault((repository.lower(), base), []).append(entry)
     if not lanes:
         return report
-    settings = MergeSettingsStore(db, now=ctx.now).get(tenant_id)
+    settings = MergeSettingsStore(db, now=ctx.now, mac=settings_mac(ctx.settings)).get(tenant_id)
     held: dict[str, str] = {}
 
     def token() -> str:
