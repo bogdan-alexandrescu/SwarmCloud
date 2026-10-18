@@ -266,6 +266,22 @@ NOT_SWITCHABLE_CODES = frozenset({
     "mcp_attach_fenced",
     "mcp_attach_spent",
     "mcp_attach_spec_unverified",
+    # The submission's MCP checks (MCP-SUBMIT, docs/design/
+    # registered-mcp-servers.md §4.3, part of #1433), as MCP-API's codes
+    # above: raised only for a submission that names a server in
+    # `input.mcp_servers` or carries `mcp_credentials`, both introduced by
+    # that change, and after `require_enabled` while SWARM_MCP_SERVERS is off
+    # (dark by default), so no existing caller can be refused by them.
+    # Continuing past any of them is the breach itself: a run attached to a
+    # server its tenant never registered or its profile is not allowed, a
+    # child widening what its tree reaches past its parent's signed input, a
+    # `dispatch` server run with no credential, or a credential stored for a
+    # server whose key is not the caller's to send.
+    "mcp_server_unregistered",
+    "mcp_server_profile_refused",
+    "mcp_server_not_inherited",
+    "mcp_credential_missing",
+    "mcp_credential_unexpected",
 })
 
 #: What the guard lets through without a switch.
