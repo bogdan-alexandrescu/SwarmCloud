@@ -3,8 +3,8 @@
 #
 # What is held here:
 #
-#   * OFF BY DEFAULT nothing exists: no service, no public invoker, no account,
-#     no actAs. No environment's tfvars sets the switch, so merging the lane
+#   * OFF BY DEFAULT nothing exists: no service, no invoker, no account, no
+#     actAs. No environment's tfvars sets the switch, so merging the lane
 #     changes nothing until the owner turns it on in dev;
 #   * "account" creates the account alone, so bootstrap can grant the deployer
 #     admin on it before anything acts as it;
@@ -12,8 +12,14 @@
 #     test endpoint);
 #   * on, the service swarm-mcp-echo is ingress ALL, scales to zero, runs the
 #     echo server from the swarm-verify image's promoted digest with
-#     requests == limits (invariant 7), as its own account, and allUsers holds
-#     run.invoker on THIS service only;
+#     requests == limits (invariant 7), as its own account;
+#   * NOTHING IS PUBLIC (owner decision 2026-10-18, MCP-ACCEPT-B): run.invoker
+#     on THIS service is held by the acceptance identity alone -- the account
+#     terraform/bootstrap/acceptance.tf creates and accept.yml federates as
+#     (vars.GCP_ACCEPT_SA) -- and mcp_test_server.tf names neither allUsers nor
+#     allAuthenticatedUsers. Cloud Run's IAM check on that account's ID token is
+#     what admits a request; ingress stays ALL because the relay reaches the
+#     service from the swarm NAT;
 #   * that account holds no project role, and only the deployer may act as it;
 #   * every labelable resource carries managed-by=swarm-terraform.
 #
@@ -104,11 +110,11 @@ run "off_by_default_nothing_exists" {
   assert {
     condition = (
       length(google_cloud_run_v2_service.mcp_test_server) == 0
-      && length(google_cloud_run_v2_service_iam_member.mcp_test_server_public) == 0
+      && length(google_cloud_run_v2_service_iam_member.mcp_test_server_invoker) == 0
       && length(google_service_account.mcp_test_server) == 0
       && length(google_service_account_iam_member.mcp_test_server_deployer_acts_as) == 0
     )
-    error_message = "with mcp_test_server off (the default) no echo server, public invoker, account or actAs exists, even in dev with a swarm-verify digest"
+    error_message = "with mcp_test_server off (the default) no echo server, invoker, account or actAs exists, even in dev with a swarm-verify digest"
   }
 
   assert {
@@ -162,7 +168,7 @@ run "account_creates_the_account_alone" {
       && google_service_account.mcp_test_server[0].account_id == "swarm-mcp-echo"
       && length(google_service_account_iam_member.mcp_test_server_deployer_acts_as) == 0
       && length(google_cloud_run_v2_service.mcp_test_server) == 0
-      && length(google_cloud_run_v2_service_iam_member.mcp_test_server_public) == 0
+      && length(google_cloud_run_v2_service_iam_member.mcp_test_server_invoker) == 0
       && output.mcp_test_server.created == false
       && output.mcp_test_server.service_account == "swarm-mcp-echo@saga-agents-staging.iam.gserviceaccount.com"
     )
@@ -170,7 +176,7 @@ run "account_creates_the_account_alone" {
   }
 }
 
-run "on_in_dev_the_echo_server_is_public_scales_to_zero_and_runs_as_an_account_with_nothing" {
+run "on_in_dev_the_echo_server_admits_only_the_acceptance_identity_scales_to_zero_and_runs_as_an_account_with_nothing" {
   command = plan
 
   module {
@@ -212,16 +218,31 @@ run "on_in_dev_the_echo_server_is_public_scales_to_zero_and_runs_as_an_account_w
     error_message = "an idle echo server runs nothing (invariant 1, Q10's scale to zero), and its CPU is its limit and nothing more (invariant 7)"
   }
 
-  # allUsers on THIS service, and this file names it once.
+  # NOTHING PUBLIC: the acceptance identity alone invokes THIS service, and
+  # the file names no public member at all (security.yml's "no public Cloud
+  # Run services" allows one only for the GitHub push receiver).
   assert {
     condition = (
-      length(google_cloud_run_v2_service_iam_member.mcp_test_server_public) == 1
-      && google_cloud_run_v2_service_iam_member.mcp_test_server_public[0].member == "allUsers"
-      && google_cloud_run_v2_service_iam_member.mcp_test_server_public[0].role == "roles/run.invoker"
-      && google_cloud_run_v2_service_iam_member.mcp_test_server_public[0].name == "swarm-mcp-echo"
-      && length(regexall("\"allUsers\"", file("${var.tf_root}/mcp_test_server.tf"))) == 1
+      length(google_cloud_run_v2_service_iam_member.mcp_test_server_invoker) == 1
+      && google_cloud_run_v2_service_iam_member.mcp_test_server_invoker[0].member == "serviceAccount:swarm-accept@saga-agents-staging.iam.gserviceaccount.com"
+      && google_cloud_run_v2_service_iam_member.mcp_test_server_invoker[0].role == "roles/run.invoker"
+      && google_cloud_run_v2_service_iam_member.mcp_test_server_invoker[0].name == "swarm-mcp-echo"
+      && output.mcp_test_server.invoker == "swarm-accept@saga-agents-staging.iam.gserviceaccount.com"
     )
-    error_message = "allUsers holds roles/run.invoker on swarm-mcp-echo only, and mcp_test_server.tf names it once"
+    error_message = "run.invoker on swarm-mcp-echo is held by the acceptance identity swarm-accept alone, and the output names it"
+  }
+
+  assert {
+    condition     = length(regexall("allUsers|allAuthenticatedUsers", file("${var.tf_root}/mcp_test_server.tf"))) == 0
+    error_message = "mcp_test_server.tf names no public member: the owner decided on 2026-10-18 that the echo server is not public"
+  }
+
+  # The invoker's address is derived from the id terraform/bootstrap spells
+  # for the account accept.yml federates as, never typed: a rename there must
+  # fail here, not at the first acceptance run.
+  assert {
+    condition     = strcontains(file("${var.tf_root}/../bootstrap/acceptance.tf"), "account_id   = \"$${var.name_prefix}-accept\"")
+    error_message = "terraform/bootstrap/acceptance.tf no longer names the acceptance account <name_prefix>-accept; mcp_test_server.tf's invoker must follow it"
   }
 
   # Its own account, and never one that can read anything.
@@ -234,8 +255,9 @@ run "on_in_dev_the_echo_server_is_public_scales_to_zero_and_runs_as_an_account_w
     error_message = "the echo server runs as its own account swarm-mcp-echo, not swarm-verify's (which reads Firestore) nor the default compute account"
   }
 
-  # The account holds no role: the only IAM this file declares is the public
-  # invoker on the service and the deployer's actAs on the account.
+  # The account holds no role: the only IAM this file declares is the
+  # acceptance identity's invoker on the service and the deployer's actAs on
+  # the account.
   assert {
     condition = (
       length(regexall("resource \"google_[a-z0-9_]*iam_[a-z_]*\"", file("${var.tf_root}/mcp_test_server.tf"))) == 2
