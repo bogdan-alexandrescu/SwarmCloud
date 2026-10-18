@@ -109,6 +109,26 @@ WHERE THE SETTING IS READ. `graph_delivery` is written by swarm-api's
 `context_ab` are still read from SETTINGS_COLLECTION, as before this lane;
 that the two collections differ is reported, not changed here, because
 moving those reads changes which steps stage at all.
+
+ADDITIONAL REPOSITORIES (docs/design/multi-repository-steps.md §4.9, lane
+MR-GRAPH, part of #1434). `prepare` takes the task's SIGNED
+`additional_repositories` and, for each entry, makes the decision above
+against that entry's own registration and pins the graph of a version proven
+an ancestor of the entry's `commit` -- the proof runs in its checkout under
+`work/repos/<name>`, or on the compare swarm-api recorded -- into
+
+    work/.swarm-context/repos/<name>/pin.json, pin-manifest.json, stage.json
+
+with its ticket at `private/graph-ticket-<name>`, swarm-api accepting the
+entry's `repo_id` only from the signed list. The shim the runner registers
+for the step's own graph finds them there and takes a `repo` argument. So an
+additional repository's graph is SERVED, never staged, and only beside a
+served graph of the step's own repository: the staged server
+(`graphmcp.server`) reads one snapshot, so a staged copy would be bytes no
+tool reads. Every other outcome -- unindexed, refused by the setting, not an
+ancestor, the step's own graph not served -- is that entry's `stage.json`
+reason, and the step still has its checkout and `rg`. A malformed list is
+refused whole. An entry never fails the attempt; only the fence is raised.
 """
 
 from __future__ import annotations
@@ -127,6 +147,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 from urllib.parse import urlsplit
 
+from swarm_common.models import check_additional_repositories
+
 from . import graph_ticket as graph_ticket_mod
 from . import indexrun
 
@@ -141,6 +163,15 @@ SNAPSHOT_DIR_NAME = "snapshot"
 #: What staging decided, machine-readable: CTXQ-P copies `arm` into pack.json.
 STAGE_RECORD_NAME = "stage.json"
 STAGE_SCHEMA = "swarm.graph-stage/v1"
+
+#: `work/.swarm-context/repos/<name>/`: one additional repository's pin and
+#: stage record (§4.9). Cleared at every `prepare`: a restored checkpoint's is
+#: not this attempt's.
+REPOS_CONTEXT_DIR_NAME = "repos"
+#: `work/repos/<name>`, where the worker checks out each additional
+#: repository (multi-repository-steps.md §4.4, lane MR-WORKER's
+#: `workspace.REPOS_DIR_NAME`).
+REPOS_DIR_NAME = "repos"
 
 #: The context directory, set only when a snapshot was staged.
 CONTEXT_ENV = "SWARM_CONTEXT"
@@ -729,15 +760,20 @@ def stage(*, db: Any, store: Any, tenant_id: str, repository_url: str | None, ta
           checkout: Path | None, base_sha: str | None, context_dir: Path,
           call_options: Mapping[str, Any] | None = None,
           clock: Callable[[], float] = time.monotonic,
-          service: ServiceRoute | None = None) -> StageResult:
+          service: ServiceRoute | None = None,
+          served_only: bool = False) -> StageResult:
     """Decide and stage (or pin), timed on `clock`. Every failure is a reason;
-    only the fence, GraphTicketFenced, is raised (invariant 5)."""
+    only the fence, GraphTicketFenced, is raised (invariant 5).
+
+    `served_only` is an additional repository's (§4.9): pinned and served, or
+    nothing, never a staged snapshot."""
     started = clock()
     try:
         result = _stage(db=db, store=store, tenant_id=tenant_id,
                         repository_url=repository_url, task_id=task_id, checkout=checkout,
                         base_sha=base_sha, context_dir=context_dir,
-                        options=dict(call_options or {}), service=service or ServiceRoute())
+                        options=dict(call_options or {}), service=service or ServiceRoute(),
+                        served_only=served_only)
     except graph_ticket_mod.GraphTicketFenced:
         raise
     except StageRefused as refused:
@@ -750,7 +786,8 @@ def stage(*, db: Any, store: Any, tenant_id: str, repository_url: str | None, ta
 
 def _stage(*, db: Any, store: Any, tenant_id: str, repository_url: str | None, task_id: str,
            checkout: Path | None, base_sha: str | None, context_dir: Path,
-           options: dict[str, Any], service: ServiceRoute) -> StageResult:
+           options: dict[str, Any], service: ServiceRoute,
+           served_only: bool = False) -> StageResult:
     where = indexrun.target(tenant_id, repository_url)
     if isinstance(where, str):
         return StageResult(False, where)
@@ -796,6 +833,12 @@ def _stage(*, db: Any, store: Any, tenant_id: str, repository_url: str | None, t
     wants_service = delivery == DELIVERY_SERVICE
     if wants_service:
         result.fallback = service.unavailable()
+    if served_only and (not wants_service or result.fallback):
+        result.reason = (f"the graph is served only, and {result.fallback}" if result.fallback
+                         else "the graph is served only, and this workspace's graph_delivery "
+                              "is not service")
+        result.fallback = None
+        return result
     try:
         if not base_sha or not _SHA.match(base_sha):
             raise StageRefused("the step has no base commit to compare the index with")
@@ -816,6 +859,9 @@ def _stage(*, db: Any, store: Any, tenant_id: str, repository_url: str | None, t
                                   context_dir=context_dir, ancestry=ancestry,
                                   base_sha=base_sha, result=result):
                     return result
+            if served_only:
+                raise StageRefused(f"the graph of {version.sha[:12]} was not served "
+                                   f"({result.fallback})")
             destination = context_dir / SNAPSHOT_DIR_NAME
             result.facts = write_snapshot(store, where=where, version=version,
                                           destination=destination, ancestry=ancestry,
@@ -892,7 +938,9 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
             backend: str | None = None,
             service_url: str | None = None,
             probe: Callable[[str, Path], str | None] | None = None,
-            secret_env_names: Iterable[str] = ()) -> dict[str, str]:
+            secret_env_names: Iterable[str] = (),
+            additional_repositories: Sequence[Mapping[str, Any]] | None = None,
+            repos_dir: Path | None = None) -> dict[str, str]:
     """Stage (or pin) for this attempt and return the runner's variables.
 
     Raises only `graph_ticket.GraphTicketFenced`, the fence (invariant 5);
@@ -915,6 +963,12 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
 
     `secret_env_names` is the task profile's `secrets`, handed on to Jev's
     setup so its client drops every string holding one (§5.4 step 4).
+
+    `additional_repositories` is the task's SIGNED list (§4.9), never a
+    caller's, and `repos_dir` where its checkouts are (`work/repos` when
+    None): each entry's graph is pinned and served beside the step's own
+    (`prepare_additional`). The returned variables are the step's own: the
+    shim finds the additional pins under the context directory.
     """
     try:
         if profile_name == indexrun.INDEXER_PROFILE or not offers_graph(runner_argv) \
@@ -948,6 +1002,13 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
                      delivery=result.delivery, seconds=result.seconds,
                      bytes=result.facts.get("bytes"), blobs=result.facts.get("blobs"),
                      fallback=result.fallback)
+        prepare_additional(
+            context_dir, entries=additional_repositories,
+            primary_unserved=None if result.served else (result.fallback or result.reason),
+            db=db, store=store, tenant_id=tenant_id, task_id=task_id,
+            repos_dir=repos_dir if repos_dir is not None else work / REPOS_DIR_NAME,
+            call_options=call_options, graph_ticket=graph_ticket, private_dir=private_dir,
+            backend=backend, service_url=service_url, probe=probe, log=log)
         if mark is not None and result.wanted:
             try:
                 mark(ready_detail(result))
@@ -977,6 +1038,101 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
         if log is not None:
             log.warning("graph context not staged", error=type(exc).__name__)
         return {}
+
+
+def _clear(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def prepare_additional(context_dir: Path, *, entries: Sequence[Mapping[str, Any]] | None,
+                       primary_unserved: str | None, db: Any, store: Any, tenant_id: str,
+                       task_id: str, repos_dir: Path,
+                       call_options: Mapping[str, Any] | None = None,
+                       graph_ticket: Any = None, private_dir: Path | None = None,
+                       backend: str | None = None, service_url: str | None = None,
+                       probe: Callable[[str, Path], str | None] | None = None,
+                       log: Any = None) -> list[dict[str, Any]]:
+    """Pin and serve each signed additional repository's graph (§4.9); return
+    `[{name, delivery, reason}]`, one per entry.
+
+    `context_dir/repos/` is emptied first, whatever `entries` is: a pin a
+    restored checkpoint carried is not this attempt's. `primary_unserved` is
+    why the step's own graph was not served, None when it was: an additional
+    graph is reached only through that graph's shim. Raises only
+    GraphTicketFenced.
+    """
+    root = context_dir / REPOS_CONTEXT_DIR_NAME
+    _clear(root)
+    if not entries:
+        return []
+    try:
+        listed = list(entries)
+        check_additional_repositories(listed)
+    except (TypeError, ValueError):
+        # The worker verified the signature over this list; a list the
+        # contract refuses is still read as none rather than in part.
+        if log is not None:
+            log.warning("additional repositories' graphs not staged", code="malformed_list")
+        return []
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    out: list[dict[str, Any]] = []
+    for entry in listed:
+        name = entry["name"]
+        directory = root / name
+        directory.mkdir(mode=0o700)
+        try:
+            result = _stage_additional(
+                entry, directory=directory, primary_unserved=primary_unserved, db=db,
+                store=store, tenant_id=tenant_id, task_id=task_id, checkout=repos_dir / name,
+                call_options=call_options, graph_ticket=graph_ticket,
+                private_dir=private_dir, backend=backend, service_url=service_url,
+                probe=probe)
+        except graph_ticket_mod.GraphTicketFenced:
+            raise
+        except Exception as exc:  # noqa: BLE001 -- an entry never fails the attempt
+            result = StageResult(False, f"staging failed ({type(exc).__name__})")
+        if not result.served:
+            remove_pin(directory)
+        record = {**result.record(), "name": name, "repository": entry["repository"],
+                  "commit": entry["commit"]}
+        (directory / STAGE_RECORD_NAME).write_text(
+            json.dumps(record, indent=2, default=str) + "\n", encoding="utf-8")
+        if log is not None:
+            log.info("graph context", repository=name, delivery=result.delivery,
+                     reason=result.reason, seconds=result.seconds,
+                     bytes=result.facts.get("bytes"))
+        out.append({"name": name, "delivery": result.delivery, "reason": result.reason})
+    return out
+
+
+def _stage_additional(entry: Mapping[str, Any], *, directory: Path,
+                      primary_unserved: str | None, db: Any, store: Any, tenant_id: str,
+                      task_id: str, checkout: Path, call_options: Mapping[str, Any] | None,
+                      graph_ticket: Any, private_dir: Path | None, backend: str | None,
+                      service_url: str | None,
+                      probe: Callable[[str, Path], str | None] | None) -> StageResult:
+    where = indexrun.target(tenant_id, entry["repository_url"])
+    if isinstance(where, str) or where.repo_id != entry["repo_id"]:
+        return StageResult(False, "the entry's repo_id is not this tenant's registration of "
+                                  "its repository")
+    if primary_unserved is not None:
+        return StageResult(False, "an additional repository's graph is served beside the "
+                                  "step's own, which was not served "
+                                  f"({primary_unserved.rstrip('.')[:200]})")
+    upkeep = graph_ticket.for_repository(entry["name"], entry["repo_id"]) \
+        if graph_ticket is not None else None
+    service = ServiceRoute(ticket=upkeep, private_dir=private_dir, backend=backend,
+                           url=service_url, probe=probe)
+    # A link at work/repos/<name> to the cache checkout (§4.4); the proof runs
+    # in it, or on swarm-api's recorded compare when it is not there.
+    present = checkout if checkout.is_dir() else None
+    return stage(db=db, store=store, tenant_id=tenant_id,
+                 repository_url=entry["repository_url"], task_id=task_id, checkout=present,
+                 base_sha=entry["commit"], context_dir=directory, call_options=call_options,
+                 service=service, served_only=True)
 
 
 def server_argv(snapshot: str, workdir: str | None) -> list[str]:
@@ -1036,10 +1192,10 @@ __all__ = [
     "DEFAULT_SERVICE_URL", "DELIVERY_FIELD", "DELIVERY_NONE", "DELIVERY_SERVICE",
     "DELIVERY_SETTINGS_COLLECTION", "DELIVERY_STAGED", "Decision", "GRAPH_RUNNERS",
     "MIN_FORMAT", "PIN_ENV", "PIN_MANIFEST_NAME", "PIN_NAME", "READY_MARK",
-    "REPOSITORY_CONTEXT_FIELD", "SERVER_NAME", "SETTINGS_COLLECTION", "SHIM_MODULE",
+    "REPOSITORY_CONTEXT_FIELD", "REPOS_CONTEXT_DIR_NAME", "REPOS_DIR_NAME", "SERVER_NAME", "SETTINGS_COLLECTION", "SHIM_MODULE",
     "SNAPSHOT_DIR_NAME", "SNAPSHOT_ENV", "STAGE_RECORD_NAME", "STAGING_BACKENDS",
     "ServiceRoute", "StageResult", "TICKET_FILE_ENV", "UNSTAGED_ENV", "URL_ENV",
     "assign_arm", "checked_manifest", "decide", "delivery_of", "is_ancestor", "offers_graph",
-    "pin", "prepare", "prove_ancestry", "ready_detail", "remove_pin", "server_argv",
+    "pin", "prepare", "prepare_additional", "prove_ancestry", "ready_detail", "remove_pin", "server_argv",
     "served_env", "shim_argv", "stage", "unstaged_note", "write_snapshot",
 ]

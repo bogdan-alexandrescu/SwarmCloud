@@ -16,6 +16,15 @@ WHAT THE TICKET PINS, and where each part comes from:
     `repositories.repo_id_for` to the tenant's own registration
     (`Repositories.find`, which never returns another tenant's). The body
     cannot name one: the request model forbids extra fields;
+  * or, for a step that reads additional repositories
+    (docs/design/multi-repository-steps.md §4.9, lane MR-GRAPH, part of
+    #1434), the body's `repo_id` when it is one of the TASK's own
+    `additional_repositories` -- the list swarm-api signed at submission --
+    and its registration is this tenant's and still `readable_by_tasks`, the
+    gate the submission applied. Anything else is the refusal an
+    unregistered repository gets (404 `no_graph`), so the field never moves
+    a ticket to a repository the step was not given. A task with no list
+    that names one is a 422: today's request shape is unchanged for it;
   * the commit: the body's `index_sha`, the commit the worker's ancestry proof
     chose (§4.1), accepted only when `repositories/{repo_id}/index_versions/
     {index_sha}` exists and carries a `graph_digest`;
@@ -58,7 +67,7 @@ from typing import Any, Callable, Sequence
 
 from pydantic import Field
 
-from swarm_common.models import utcnow
+from swarm_common.models import check_additional_repositories, utcnow
 from swarm_common.states import TaskState
 
 from .attemptcontext import repository_key
@@ -71,7 +80,7 @@ from .live import LiveSessionOpen
 from .repoindex import VERSIONS_COLLECTION
 from .repograph import NoGraph
 from .repositories import COLLECTION as REPOSITORIES
-from .repositories import Repositories, parse_repository, repo_id_for
+from .repositories import Repositories, parse_repository, readable_by_tasks_of, repo_id_for
 from .store import LEASES, TASKS
 
 #: The worker's signing purpose for this route; never another route's (§3.2).
@@ -92,6 +101,7 @@ CONTEXT_DISABLED = "context_disabled"
 FENCED = "fenced"
 
 _SHA = r"^[0-9a-f]{40}$"
+_REPO_ID = r"^repo_[0-9a-f]{16}$"
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
@@ -109,6 +119,16 @@ class GraphTicketRequest(LiveSessionOpen):
     nothing else: a repository, a tenant or a digest in the body is a 422."""
 
     index_sha: str = Field(pattern=_SHA)
+
+
+class AdditionalGraphTicketRequest(GraphTicketRequest):
+    """`GraphTicketRequest` plus an optional `repo_id`: one of the task's
+    signed `additional_repositories` (multi-repository-steps.md §4.9). Absent
+    is the task's own repository, so the primary's body is byte-for-byte the
+    one a worker built before this field existed. A tenant, a URL or a digest
+    is still a 422."""
+
+    repo_id: str | None = Field(default=None, pattern=_REPO_ID)
 
 
 def _b64(raw: bytes) -> str:
@@ -242,6 +262,39 @@ class GraphTicketService:
             raise no_graph
         return repo_id, record
 
+    def _additional_registration(self, tenant_id: str, task: dict[str, Any],
+                                 repo_id: str) -> tuple[str, dict[str, Any]]:
+        """The tenant's registration of `repo_id`, when it is one of the task's
+        signed additional repositories (§4.9). The entry's `repo_id` is
+        re-derived from its `repository`, so a list naming a registration
+        under another repository's name reaches nothing."""
+        entries = task.get("additional_repositories")
+        if not entries:
+            raise ValidationFailed(
+                "this task reads no additional repository, so its graph-ticket request names "
+                "no repo_id; the task's own repository is asked for by leaving it out")
+        no_graph = NoGraph("that repository is not one of this task's additional repositories "
+                           "registered in its workspace, so it has no graph here; no graph "
+                           "ticket was minted")
+        try:
+            check_additional_repositories(entries)
+        except ValueError:
+            raise no_graph from None
+        entry = next((e for e in entries if e["repo_id"] == repo_id), None)
+        if entry is None:
+            raise no_graph
+        try:
+            owner, repo = parse_repository(entry["repository"])
+        except ValueError:
+            raise no_graph from None
+        if repo_id_for(tenant_id, owner, repo) != repo_id:
+            raise no_graph
+        record = Repositories(self._db, now=self._now).find(tenant_id, repo_id)
+        if record is None or record.get("tenant_id") != tenant_id \
+                or not readable_by_tasks_of(record):
+            raise no_graph
+        return repo_id, record
+
     def _digest(self, repo_id: str, index_sha: str) -> str:
         """The `graph_digest` swarm-api recorded when it promoted `index_sha`."""
         snap = (self._db.collection(REPOSITORIES).document(repo_id)
@@ -261,7 +314,7 @@ class GraphTicketService:
                 "this deployment has no swarm-graph-ticket-key, so it runs no graph service")
         if len(raw) > MAX_REQUEST_BYTES:
             raise ValidationFailed(f"a graph-ticket request is at most {MAX_REQUEST_BYTES} bytes")
-        body: GraphTicketRequest = parse_body(GraphTicketRequest, raw)
+        body: AdditionalGraphTicketRequest = parse_body(AdditionalGraphTicketRequest, raw)
         if body.attempt_id != attempt_id:
             raise ValidationFailed("the body's attempt_id is not the path's")
         attempt = AttemptTuple(body.tenant_id, body.task_id, body.attempt_id, body.lease_id,
@@ -272,7 +325,10 @@ class GraphTicketService:
 
         # The fence held, so the task's tenant IS the attempt's.
         tenant_id = attempt.tenant_id
-        repo_id, registration = self._registration(tenant_id, task)
+        if body.repo_id is None:
+            repo_id, registration = self._registration(tenant_id, task)
+        else:
+            repo_id, registration = self._additional_registration(tenant_id, task, body.repo_id)
         settings = CodeIntelligenceStore(self._db, now=self._now,
                                          mac=settings_mac(self._settings)).get(tenant_id)
         if effective_context(settings, registration) == OFF:
@@ -299,6 +355,7 @@ __all__ = [
     "TICKET_DOMAIN",
     "TICKET_FIELDS",
     "TICKET_PURPOSE",
+    "AdditionalGraphTicketRequest",
     "GraphTicketRequest",
     "GraphTicketService",
     "GraphTicketUnavailable",

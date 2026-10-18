@@ -39,6 +39,15 @@ than handing the agent through a snapshot what the setting refused. Any
 other failure at the first mint is a reason `graphstage` falls back to
 staging with (§8.2).
 
+ADDITIONAL REPOSITORIES (docs/design/multi-repository-steps.md §4.9, lane
+MR-GRAPH, part of #1434). A step that reads additional repositories gets one
+more ticket per indexed one, each its own upkeep (`GraphTicket.for_repository`):
+the body adds that entry's `repo_id`, which swarm-api accepts only from the
+task's signed list, and the file is `private/graph-ticket-<name>`. The
+primary's body and file are unchanged. The lifecycle's poll asks the
+primary's `due` and `keep`, and those cover every additional upkeep too, so
+a 409 at any renewal is the fence for the whole attempt.
+
 NOTHING HERE LOGS a ticket, a signature or a key. Log lines carry codes.
 """
 
@@ -54,6 +63,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+from swarm_common.models import ADDITIONAL_REPOSITORY_NAME
+
 #: `swarm_api.graph_ticket.TICKET_PURPOSE`, restated (this image does not carry
 #: swarm-api); tests/unit/worker/test_graph_ticket_worker.py holds them equal.
 GRAPH_TICKET_PURPOSE = "swarm-graph-ticket-request/v1"
@@ -61,6 +72,11 @@ GRAPH_TICKET_PURPOSE = "swarm-graph-ticket-request/v1"
 #: a tenant registration or a digest in the body is swarm-api's 422.
 REQUEST_FIELDS = frozenset({"tenant_id", "task_id", "attempt_id", "lease_id", "generation",
                             "index_sha"})
+#: `swarm_api.graph_ticket.AdditionalGraphTicketRequest`'s fields: the
+#: primary's plus the `repo_id` of one of the task's signed additional
+#: repositories (§4.9). Sent only for one of those.
+ADDITIONAL_REQUEST_FIELDS = REQUEST_FIELDS | {"repo_id"}
+_REPO_ID = re.compile(r"repo_[0-9a-f]{16}")
 #: `swarm_api.graph_ticket.MAX_TICKET_SECONDS`: no answer claiming more life is
 #: believed, so a misconfigured setting cannot push renewal out of reach.
 MAX_TICKET_SECONDS = 900
@@ -105,22 +121,43 @@ class TicketUnavailable(Exception):
         self.retryable = retryable
 
 
-def mint(cfg: Any, key: Any, api: Any, *, index_sha: str, now: float) -> tuple[str, int]:
+def ticket_file_name(name: str | None) -> str:
+    """`graph-ticket` for the task's own repository, `graph-ticket-<name>` for
+    the additional one checked out at `work/repos/<name>` (§4.9). Raises
+    ValueError on a name the contract's ADDITIONAL_REPOSITORY_NAME refuses, so
+    no name can step out of `private/`."""
+    if name is None:
+        return TICKET_FILE_NAME
+    if not isinstance(name, str) or not ADDITIONAL_REPOSITORY_NAME.fullmatch(name):
+        raise ValueError("not an additional repository's name")
+    return f"{TICKET_FILE_NAME}-{name}"
+
+
+def mint(cfg: Any, key: Any, api: Any, *, index_sha: str, now: float,
+         repo_id: str | None = None) -> tuple[str, int]:
     """Ask swarm-api for this attempt's graph ticket of `index_sha`: `(ticket, expires_in)`.
+
+    `repo_id` names one of the task's signed additional repositories (§4.9);
+    None, the task's own, sends exactly the body a worker sent before it.
 
     Raises GraphTicketFenced on a 409, GraphTicketForbidden on a 403, and
     TicketUnavailable for everything else, the ticket's shape included.
     """
     from .handoff import sign_headers
 
-    body = json.dumps({
+    fields: dict[str, Any] = {
         "tenant_id": cfg.tenant_id,
         "task_id": cfg.task_id,
         "attempt_id": cfg.attempt_id,
         "lease_id": cfg.lease_id,
         "generation": cfg.generation,
         "index_sha": index_sha,
-    }).encode("utf-8")
+    }
+    if repo_id is not None:
+        if not isinstance(repo_id, str) or not _REPO_ID.fullmatch(repo_id):
+            raise TicketUnavailable("not_a_repo_id", retryable=False)
+        fields["repo_id"] = repo_id
+    body = json.dumps(fields).encode("utf-8")
     path = f"/v1/attempts/{quote(cfg.attempt_id, safe='')}/graph-ticket"
     try:
         headers = sign_headers(key, GRAPH_TICKET_PURPOSE, "POST", path, body, now=now)
@@ -221,14 +258,29 @@ class GraphTicket:
     `start` and `discard` are `graphstage`'s; `due` and `keep` are the
     lifecycle's control poll's. Only `start` and `keep` raise, and only
     GraphTicketFenced (and, from `start`, GraphTicketForbidden).
+
+    `name` and `repo_id` are set on an additional repository's upkeep, made by
+    `for_repository`; the primary's `due` and `keep` cover each of those.
     """
 
     def __init__(self, cfg: Any, *, children: Any, logger: Any,
-                 wall: Callable[[], float] = time.time) -> None:
+                 wall: Callable[[], float] = time.time,
+                 name: str | None = None, repo_id: str | None = None) -> None:
         self.cfg = cfg
         self.children = children
         self.log = logger
         self._wall = wall
+        self.file_name = ticket_file_name(name)
+        if (name is None) != (repo_id is None) or \
+                (repo_id is not None and not _REPO_ID.fullmatch(repo_id)):
+            raise ValueError("an additional repository's upkeep has both a name and a repo_id")
+        self.name = name
+        self.repo_id = repo_id
+        #: Which repository a log line is about: a name from the signed list,
+        #: never a URL; nothing for the task's own, whose lines are unchanged.
+        self._where: dict[str, str] = {"repository": name} if name else {}
+        #: An additional repository's upkeep by its name (§4.9); the primary's only.
+        self.additional: dict[str, GraphTicket] = {}
         #: The ticket file once one is written; None before and after `discard`.
         self.path: Path | None = None
         self.index_sha: str | None = None
@@ -246,6 +298,25 @@ class GraphTicket:
             return None
         return key, api
 
+    def for_repository(self, name: str, repo_id: str) -> "GraphTicket":
+        """The upkeep of the additional repository `name` (§4.9), made once.
+
+        Renewed whenever this one's `keep` runs. Raises ValueError for a name
+        or repo_id that is not the contract's shape, or on an upkeep that is
+        itself an additional repository's.
+        """
+        if self.name is not None:
+            raise ValueError("only the task's own upkeep holds additional ones")
+        found = self.additional.get(name)
+        if found is not None:
+            if found.repo_id != repo_id:
+                raise ValueError("that name is another repository's")
+            return found
+        made = GraphTicket(self.cfg, children=self.children, logger=self.log, wall=self._wall,
+                           name=name, repo_id=repo_id)
+        self.additional[name] = made
+        return made
+
     def start(self, private_dir: Path, index_sha: str) -> str | None:
         """Mint the first ticket into `private_dir`. None when written, else why not."""
         if not _SHA.fullmatch(index_sha or ""):
@@ -256,13 +327,14 @@ class GraphTicket:
         key, api = found
         now = self._wall()
         try:
-            ticket, seconds = mint(self.cfg, key, api, index_sha=index_sha, now=now)
+            ticket, seconds = mint(self.cfg, key, api, index_sha=index_sha, now=now,
+                                   repo_id=self.repo_id)
         except TicketUnavailable as failed:
             self.log.warning("graph ticket not minted; the attempt stages instead",
-                             code=failed.cause)
+                             code=failed.cause, **self._where)
             return f"the graph ticket was not minted ({failed.cause})"
         self._redact(ticket)
-        path = Path(private_dir) / TICKET_FILE_NAME
+        path = Path(private_dir) / self.file_name
         try:
             write_ticket(path, ticket)
         except OSError as exc:
@@ -272,28 +344,41 @@ class GraphTicket:
             ticket = ""
         self.path, self.index_sha = path, index_sha
         self._renewed(now, seconds)
-        self.log.info("graph ticket minted", expires_in=seconds)
+        self.log.info("graph ticket minted", expires_in=seconds, **self._where)
         return None
 
     def discard(self) -> None:
-        """The attempt is not on the service after all: remove the file, renew nothing."""
+        """The attempt is not on the service after all: remove the file, renew
+        nothing. The task's own upkeep discards every additional one with it."""
         if self.path is not None:
             try:
                 self.path.unlink(missing_ok=True)
             except OSError as exc:
                 self.log.warning("graph ticket not removed", error=type(exc).__name__)
         self.path, self.index_sha, self._ended = None, None, True
+        for extra in self.additional.values():
+            extra.discard()
 
     def due(self) -> bool:
-        """Whether `keep` would ask swarm-api now: a cheap check for every poll."""
+        """Whether `keep` would ask swarm-api now: a cheap check for every poll.
+        True when this ticket or any additional repository's is due."""
+        return self._due() or any(extra._due() for extra in self.additional.values())
+
+    def _due(self) -> bool:
         if self.path is None or self.index_sha is None or self._ended:
             return False
         now = self._wall()
         return now >= self._renew_at and now >= self.retry_at
 
     def keep(self) -> None:
-        """Renew the ticket when it is due. Raises only GraphTicketFenced."""
-        if not self.due():
+        """Renew the ticket, and each additional repository's, when due.
+        Raises only GraphTicketFenced, from any of them."""
+        self._keep()
+        for extra in self.additional.values():
+            extra._keep()
+
+    def _keep(self) -> None:
+        if not self._due():
             return
         found = self._credentials()
         if found is None:
@@ -302,7 +387,8 @@ class GraphTicket:
         key, api = found
         now = self._wall()
         try:
-            ticket, seconds = mint(self.cfg, key, api, index_sha=self.index_sha or "", now=now)
+            ticket, seconds = mint(self.cfg, key, api, index_sha=self.index_sha or "", now=now,
+                                   repo_id=self.repo_id)
         except GraphTicketForbidden:
             # The setting was turned off mid-attempt, or the proof stopped
             # verifying: the shim says the ticket was refused once it expires.
@@ -328,7 +414,8 @@ class GraphTicket:
             ticket = ""
         self.renewals += 1
         self._renewed(now, seconds)
-        self.log.info("graph ticket renewed", expires_in=seconds, renewals=self.renewals)
+        self.log.info("graph ticket renewed", expires_in=seconds, renewals=self.renewals,
+                      **self._where)
 
     def _redact(self, ticket: str) -> None:
         """Mark the ticket unloggable, as `jevkey` marks its key: whatever logs
@@ -350,7 +437,8 @@ class GraphTicket:
 
 
 __all__ = [
-    "GRAPH_TICKET_PURPOSE", "MAX_TICKET_SECONDS", "NO_ATTEMPT_KEY", "PROBE_TIMEOUT_SECONDS",
+    "ADDITIONAL_REQUEST_FIELDS", "GRAPH_TICKET_PURPOSE", "MAX_TICKET_SECONDS", "NO_ATTEMPT_KEY", "PROBE_TIMEOUT_SECONDS",
     "REQUEST_FIELDS", "TICKET_FILE_NAME", "GraphTicket", "GraphTicketFenced",
-    "GraphTicketForbidden", "TicketUnavailable", "mint", "probe", "write_ticket",
+    "GraphTicketForbidden", "TicketUnavailable", "mint", "probe", "ticket_file_name",
+    "write_ticket",
 ]
