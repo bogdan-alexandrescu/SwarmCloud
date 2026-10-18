@@ -160,6 +160,7 @@ from . import secretrelease as secretrelease_mod
 from . import typesafe_shim as typesafe_shim_mod
 from . import questions as questions_mod
 from . import redact as redact_mod
+from . import extrarepos as extrarepos_mod
 from . import standalone_outputs as standalone_mod
 from . import verdict as verdict_mod
 from . import workspace as workspace_mod
@@ -911,6 +912,10 @@ class Worker:
         # less what an earlier attempt's agent created; None until then, and
         # None means nothing is uploaded from the working folder.
         self._standalone = False
+        #: The task's additional repositories as they landed on disk this
+        #: attempt (`extrarepos.prepare`, MULTI-REPO #1434), in the task's
+        #: order; empty for a task with none, which is every task before it.
+        self._extra_checkouts: list[extrarepos_mod.Checkout] = []
         self._restored_workdir: frozenset[str] = frozenset()
         self._workdir_baseline: frozenset[str] | None = None
         self._heartbeats = 0
@@ -2603,6 +2608,20 @@ class Worker:
         # one most likely to vary with repository size.
         self._heartbeat()
 
+        # ---- STEP 5': the additional repositories (MULTI-REPO, #1434) ------
+        # docs/design/multi-repository-steps.md §4.4: right after the primary
+        # clone, each signed entry cloned at its signed commit onto the cache
+        # volume, read-only, and linked under `work/repos`. All of them or the
+        # agent does not start: a revoked grant or an oversized set ends the
+        # attempt for good, a clone that failed ends it retryably. A task
+        # with no primary repository takes them too (the owner's Q8).
+        try:
+            self._extra_checkouts = self._clone_additional_keeping_lease(task)
+        except extrarepos_mod.Refused as exc:
+            return functools.partial(self._end_additional_refused, exc)
+        if self._extra_checkouts:
+            self._heartbeat()
+
         # ---- before STEP 5a: a READ grant on a step that must push (D9, OB5) -
         # A step whose job is to open a pull request, or to carry its work on a
         # branch, could only ever be refused at its push, so it is refused now,
@@ -2680,6 +2699,17 @@ class Worker:
         payload = dict(task.get("input") or {})
         if repo_info:
             payload.setdefault("repository", repo_info)
+        if self._extra_checkouts:
+            # Assigned, not `setdefault`: what is on disk now, as
+            # `staged_inputs` below is.
+            payload[extrarepos_mod.INPUT_KEY] = [c.as_dict() for c in self._extra_checkouts]
+        elif extrarepos_mod.INPUT_KEY in payload:
+            # Only the worker's own record names checkouts to the agent.
+            payload.pop(extrarepos_mod.INPUT_KEY)
+            self.log.warning(
+                "dropped the caller's own input.additional_repositories: only the "
+                "checkouts the worker made for this task are named to the agent",
+            )
         if staged_inputs:
             # Assigned, not `setdefault`: this key describes what is actually on
             # disk right now, so a caller's own `staged_inputs` in the step input
@@ -4558,6 +4588,134 @@ class Worker:
         with self._heartbeat_meanwhile("clone"):
             return self._maybe_clone(task)
 
+    def _clone_additional_keeping_lease(
+        self, task: dict[str, Any]
+    ) -> list[extrarepos_mod.Checkout]:
+        """The task's additional repositories on disk (`extrarepos.prepare`), the
+        lease heartbeated from a thread meanwhile, as for the primary clone.
+
+        Raises `extrarepos.Refused` when they cannot all be put there. From the
+        VERIFIED document only (`_task`, after `_verify_spec`), whose spec
+        signature covers the list at format 4.
+        """
+        entries = extrarepos_mod.entries_of(task)
+        if not entries:
+            return []
+        ws = self.ws
+        assert ws is not None
+        self.phases.enter("additional_clone", count=len(entries))
+        budget = extrarepos_mod.budget_bytes(
+            self.db, logger=self.log, call_options=self.control.call_options()
+        )
+        with self._heartbeat_meanwhile("additional_clone"):
+            checkouts = extrarepos_mod.prepare(
+                ws=ws,
+                entries=entries,
+                grant_refusal=self._additional_grant_refusal,
+                token_for=self._additional_git_token,
+                budget=budget,
+                logger=self.log,
+                timeout_seconds=self.cfg.git_clone_timeout_seconds,
+                max_wait_seconds=self.cfg.max_in_worker_retry_delay_seconds,
+                remaining_seconds=self._remaining_seconds,
+                sleep=self.forge_sleep,
+                egress=self._egress,
+            )
+        # From now on every checkpoint leaves `work/repos` out (§4.6), and
+        # the standalone upload skips it (`_workdir_reserved`).
+        self.checkpoints.leaves_out_extra_repos = True
+        self._extra_checkouts = checkouts
+        return checkouts
+
+    def _additional_suffix(self, entry: dict[str, Any]) -> str:
+        """The forge slot an additional repository is cloned with.
+
+        The entry's signed `forge_credential`, only once the spec signature
+        was verified; an unsigned task reads the tenant token, as
+        `_forge_suffix` does for the primary, so a field anyone with write on
+        the document could set never chooses whose slot this worker reads.
+        """
+        return entry["forge_credential"] if self._forge_signed else GIT_PROVIDER
+
+    def _additional_grant_refusal(self, entry: dict[str, Any]) -> str | None:
+        """Why the submitter's grant no longer covers this entry, or None.
+
+        `secrets.grant_refusal` for the entry's own slot and repository, read
+        again by id. Nothing for a tenant token. Raises when it cannot be read.
+        """
+        suffix = self._additional_suffix(entry)
+        if user_slot_hash(suffix) is None:
+            return None
+        submitted_by = (self._task or {}).get("submitted_by")
+        return grant_refusal(
+            self.db,
+            tenant_id=self.cfg.tenant_id,
+            suffix=suffix,
+            repository_url=entry["repository_url"],
+            write=False,
+            call_options=self.control.call_options(),
+            submitted_by=submitted_by if isinstance(submitted_by, str) else None,
+        )
+
+    def _additional_git_token(self, entry: dict[str, Any]) -> str | None:
+        """This entry's forge token, read now, or None: `_git_token`'s path for
+        the entry's own slot. Never cached, never put in an environment."""
+        refusal = self._git_token_refusal()
+        if refusal or self.secret_client is None:
+            return None
+        try:
+            tenant = load_tenant(
+                self.db, self.cfg.tenant_id, call_options=self.control.call_options()
+            )
+            return resolve_git_token(
+                tenant=tenant, client=self.secret_client, logger=self.log,
+                provider=self._additional_suffix(entry),
+            )
+        except SecretError as exc:
+            self.log.warning(
+                "no usable git credential for an additional repository; cloning "
+                "unauthenticated", name=entry["name"], error=str(exc),
+            )
+            return None
+
+    def _end_additional_refused(self, exc: extrarepos_mod.Refused) -> Outcome:
+        """End the attempt before the agent ran: its additional repositories
+        could not all be put on disk.
+
+        After the startup window closes, like every ending `_prepare` decides
+        on. `control.finish` or `fail_retryably` writes the task's state and
+        releases the lease; nothing else touches it. The reason names entries
+        by `name` only.
+        """
+        reason = self._scrub(exc.reason)
+        error = self._scrub(f"{exc.cause}: {reason}. The agent was not started.")
+        self.log.error(
+            "the additional repositories could not be prepared; ending before the agent runs",
+            cause=exc.cause, retryable=exc.retryable,
+        )
+        summary = self._upload_outputs()
+        summary["additional_repositories_check"] = {"cause": exc.cause, "reason": reason}
+        with self._metrics_after_the_record():
+            if exc.retryable:
+                state = self.control.fail_retryably(
+                    exit_code=None,
+                    error=error,
+                    cause=exc.cause,
+                    result_summary=summary,
+                    retry_delay_seconds=FORGE_UNREACHABLE_RETRY_DELAY_SECONDS,
+                    detail={"clone": "additional_repositories"},
+                    end_cause=EndCause.CANNOT_START,
+                )
+                return Outcome(exit_code=ExitCode.FAILED, state=state)
+            self.control.finish(
+                state=TaskState.FAILED,
+                exit_code=None,
+                error=error,
+                result_summary=summary,
+                end_cause=EndCause.CANNOT_START,
+            )
+        return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
+
     def _maybe_clone(self, task: dict[str, Any]) -> dict[str, Any] | None:
         ws = self.ws
         assert ws is not None
@@ -6093,6 +6251,10 @@ class Worker:
         link = ws.artifacts_link()
         if ws.is_artifacts_link(link):
             names.add(link.name)
+        if self._extra_checkouts:
+            # `work/repos`: the worker's links to the additional checkouts
+            # (MULTI-REPO §4.5), never the agent's deliverable.
+            names.add(workspace_mod.REPOS_DIR_NAME)
         return frozenset(names)
 
     def _take_workdir_baseline(self) -> None:
@@ -7531,6 +7693,8 @@ class Worker:
         # a path and the gate's loopback CDP address, never a credential.
         base.update(self.handoff.prepare(ws.work))
         base.update(self._graph_context_env(ws, clone_base))
+        # `work/repos`, when the task reads additional repositories: a path.
+        base.update(extrarepos_mod.child_env(ws, self._extra_checkouts))
         # The jev MCP server's TypeSafe key, on a live-browser attempt with a
         # key (JEV-RUNNER, `jevkey`): the PATH of a 0600 file in private/,
         # never the key, which reaches only that server's process. Never
@@ -12897,6 +13061,9 @@ class Worker:
 
         def destroy_workspace() -> None:
             if self.ws is not None:
+                # The additional checkouts were made read-only; their folders
+                # get write back first, or the removal could not unlink in them.
+                extrarepos_mod.release(self.ws)
                 workspace_mod.destroy(self.ws)
 
         def remove_released_secrets() -> None:
