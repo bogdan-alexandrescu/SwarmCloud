@@ -820,6 +820,8 @@ built at runtime.
 6. **Audit.** Each call records `{call_id, kind (J0-J5), bytes, input_tokens,
    ms, outcome}` in `context-pack.json`. The payload is never recorded.
 
+Each rule's enforcing code and the test that fails without it: [docs/jev-data-flow.md](../jev-data-flow.md).
+
 ### 5.5 Failure modes: never block
 
 | Failure | Behaviour |
