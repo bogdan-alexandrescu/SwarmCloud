@@ -112,7 +112,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 102 | `models.py`: `Task.model_class` and `WorkflowStep.model_class`, the class a step asked for (MODEL-CONTRACT, model per step request C, part of #1435) | ACCEPTED by the owner 2026-10-17 (PR 1509) and APPLIED by the pull request that adds this line |
 | 103 | `models.py`: `Attempt.model`, the model ID an attempt's agent was started with (MODEL-CONTRACT, model per step request D, part of #1435) | ACCEPTED by the owner 2026-10-17 (PR 1509) and APPLIED by the pull request that adds this line |
 | 104 | `specsign.py`: spec format 5 covers `model_class`, signed at 5 only when a class is set (MODEL-CONTRACT, model per step request E, part of #1435) | ACCEPTED by the owner 2026-10-17 (PR 1509) and APPLIED by the pull request that adds this line |
-| 105 | `profiles.py`: `await-input` becomes available, `available=True` and its `disabled_reason` removed (HW-ENABLE, human steps request D, part of #1436) | PROPOSED 2026-10-18, NOT YET ACCEPTED; held as a draft pull request until HW-ACCEPT is green on dev |
+| 105 | `profiles.py`: `await-input` becomes available, `available=True` and its `disabled_reason` removed (HW-ENABLE, human steps request D, part of #1436) | ACCEPTED by the owner 2026-10-18 (on PR 1570, turned on in dev before HW-ACCEPT so the acceptance group can run against it) and APPLIED by the pull request that adds this line |
 
 ---
 
@@ -13591,14 +13591,11 @@ signature is what makes the caller's named class the only one that can run.
 
 ## 105. `profiles.py`: `await-input` becomes available (HW-ENABLE, human steps request D)
 
-**Status:** PROPOSED 2026-10-18; NOT YET ACCEPTED. Filed by the pull request
-that applies it, which is held as a draft until lane HW-ACCEPT is green on dev
-(docs/design/human-steps.md §5 request D: "to be applied by the owner once the
-acceptance group of §6 has passed on dev"; entry 94 left it unfiled for that
-reason). The owner accepts it by replacing this status line, and the index
-row's, with the accepted-and-applied form entry 94 uses, in that pull request.
-Until then `scripts/lib/check-frozen-contract.sh` fails the pull request, as it
-should for a contract change nobody has accepted. Part of #1436.
+**Status:** ACCEPTED by the owner 2026-10-18 (on PR 1570) and APPLIED by the
+pull request that adds this line. The owner turned the profile on in dev BEFORE
+lane HW-ACCEPT, because the acceptance group cannot submit an await-input step
+while the profile is unavailable; HW-ACCEPT then proves it on dev. Design §5
+request D, applied by lane HW-ENABLE, part of #1436.
 
 ### What is true today
 
