@@ -3,8 +3,9 @@
 **Status: designed 2026-10-18 (lane PROFILE-DESIGN, part of #1505); revised
 2026-10-18 (lane PROFILE-DESIGN-B) for the owner's answers to §7, given on
 2026-10-17/18 in PR 1506's comments.** Nothing here is built. The owner
-approves this revision before any build lane starts. One question the answers
-leave open, Q11, and one the review raised, Q12, are in §7.2.
+approves this revision before any build lane starts. Two questions the answers
+left open, Q11 and Q12, were answered on 2026-10-18 (§7.1): the edited name also names the agent's commits, and only names of two
+or more words are checked for containment. Nothing is open (§7.2).
 
 Every file and symbol cited below was read on 2026-10-18 at `6174f32`, and the
 ones this revision added were read at `8ab9f26`. Lines move, so each citation
@@ -178,9 +179,9 @@ is exact: four pages hold four things, and four things have no page.
 * **`AuthContext.display_name` already reaches commits.** It is cleaned by
   `gitidentity.py::clean_name` (no `<`, `>` or control characters, at most
   `NAME_MAX_CHARS` = 100) and recorded in the task's dispatch block, which the
-  worker turns into `GIT_AUTHOR_*` and `GIT_COMMITTER_*`. Whether the edited
-  name also names commits is left open (Q11, §7.2). Both
-  answers fit the rules in §4.4, which are stricter than `clean_name`.
+  worker turns into `GIT_AUTHOR_*` and `GIT_COMMITTER_*`. The edited
+  name also names commits (Q11, §7.1), so the rules in §4.4, which are
+  stricter than `clean_name`, apply to what reaches git.
 * **The Settings tabs are not in `SECTIONS`.** They are constants in
   `apps/swarm-ui/src/App.tsx` (`SETTINGS`, `KEYS_TAB`, `WORKSPACE_TAB`).
   `tests/unit/scripts/test_issue_forms.py::_nav_options` adds them to the
@@ -218,8 +219,8 @@ changes.
 written. The default workspace is resolved **before** a submission is
 admitted, exactly where the computed default is resolved today. A task
 records the tenant it was admitted in, and a later change of default never
-moves it. A changed display name never rewrites a task already admitted: if
-Q11 is (a), the name a task's commits carry is the one recorded in its
+moves it. A changed display name never rewrites a task already admitted: the
+name a task's commits carry (Q11, §7.1) is the one recorded in its
 dispatch block when it was admitted, as P37 already records it.
 
 **6. Spot disabled; 7. requests == limits.** Untouched. No infrastructure.
@@ -269,8 +270,8 @@ in six places:
 a display name, a workspace id, topic names and a reminder name, each checked
 against a rule or a closed set. None of them is an image, a command, a
 resource or a backend parameter. The display name is the one that can reach
-a task, and only through the existing cleaned `git_identity` record (P37), if
-Q11 is (a). It is an author name, not a parameter of the backend.
+a task, and only through the existing cleaned `git_identity` record (P37), as Q11
+decided. It is an author name, not a parameter of the backend.
 
 ### 2.3 What it needs from `apps/common/swarm_common/`
 
@@ -756,14 +757,14 @@ reason:
 6. *Not another person's name, and not containing one.* Compared on the
    **folded** form: NFKD, combining marks dropped, case-folded, `.'-` turned
    into spaces, spaces collapsed. The folded name may not equal another
-   person's folded name. It may not contain another person's folded name of
-   any length as a whole-word run, so "Ada Lovelace Admin" is refused when
-   "Ada Lovelace" exists, and "Bob Smith" is refused when a "Bob" exists.
-   That is the owner's Q5 answer as given ("no name that equals or embeds
-   another member's display name"). It has a cost: the first person to save
-   a one-word name blocks every longer name that contains that word. Whether
-   one-word names should be exempt from the containment half is Q12
-   (§7.2); the rule above stands until it is answered. The check is **platform-wide**, not per workspace: listing a
+   person's folded name. It may not contain another person's folded name as a
+   whole-word run **when that other name has two or more words**, so "Ada
+   Lovelace Admin" is refused when "Ada Lovelace" exists, but "Bob Smith" is
+   allowed when "Bob" exists: a one-word name blocks only an exact match.
+   The containment half came from the orchestrator's brief, not from the
+   owner's Q5 answer; the owner narrowed it to names of two or more words on
+   2026-10-18 (Q12, §7.1), because the email shown beside every name covers
+   the rest. The check is **platform-wide**, not per workspace: listing a
    group's members is the Cloud Identity call this project cannot make
    (§2.1), and a name unique across the platform is unique in every
    workspace. Code `display_name_taken`.
@@ -809,10 +810,11 @@ another person:
   serves the claim, after the rules above, as `display_name_suggested`, and
   the editor offers it. Others see the email alone until the person saves.
   A claim that fails a rule is not suggested.
-* *As the commit author's fallback, exactly as today, and only if Q11 is
-  (a).* `AuthContext.display_name` becomes the stored name when there is
-  one, else the cleaned claim (today's value). If Q11 is (b), it stays the
-  claim alone and the stored name never reaches a commit.
+* *As the commit author's name (Q11 (a), decided 2026-10-18).*
+  `AuthContext.display_name` becomes the stored name when there is one, else
+  the token's name claim, else the email's local part (today's value). The
+  email is in every commit beside it, and a task keeps the name recorded at
+  admission, so a later rename never rewrites a commit.
 
 ### 4.5 The default workspace: one rule, applied in authentication
 
@@ -993,7 +995,7 @@ would be stored and sent, and it would be its own design.
 * `apps/swarm-api/swarm_api/auth.py`: §4.5 steps 1-2, `PREFERENCE_FREE_ROUTES`,
   the 503, `preferences`, `default_source` / `default_ignored` on
   `AuthContext`, and
-  `display_name` from the stored name when Q11 is (a).
+  `display_name` from the stored name (Q11, §7.1).
 * `apps/swarm-api/swarm_api/routes/tenants.py`: `is_default` and
   `default_source` in `_choice`.
 * `apps/swarm-api/swarm_api/notifications.py`: topics, the filter, the
@@ -1081,7 +1083,7 @@ one.
   `user_preferences`. The scheduler, reconciler and worker never see it. A
   type in `swarm_common` would invite exactly those readers.
 * **The display name is not a contract type.** It is served beside emails by
-  swarm-api only. Where it reaches a task, if Q11 is (a), it travels in the
+  swarm-api only. Where it reaches a task (Q11, §7.1), it travels in the
   existing `git_identity` record of the dispatch block (P37), whose shape is
   unchanged.
 * **Roles are not a contract type here.** `workspace_role.py::role_in` is
@@ -1122,9 +1124,8 @@ Every fake secret or token in a test is built at runtime.
    PAGE, BELL and DEFAULT), **PROFILE-NAMES-UI** (after PAGE and NAMES-API)
    and **PROFILE-SC** (after DEFAULT).
 
-Q11 changes one line in PROFILE-DEFAULT and one test, so the lanes can be
-dispatched before it is answered, provided DEFAULT's brief carries the
-answer.
+Q11 is answered (a), so PROFILE-DEFAULT carries its line and test as
+written; no lane waits on an answer.
 
 **PROFILE-BELL and HW-NOTIFY both edit `notifications.py`**, so they are
 serial, never parallel. Whichever lands second rebases. If HW-NOTIFY lands
@@ -1158,8 +1159,11 @@ other's state.
     against "Ada Lovelace"), an accented match ("Adá Lovelace"), and a
     containing name ("Ada Lovelace Admin" refused for the containment as
     well as the reserved word, "Ada Lovelace Jr" refused for containment);
-  * "Bob Smith" is refused with `display_name_taken` when "Bob" exists
-    (Q5 as answered; if Q12 is answered (b), this test flips to accepted);
+  * "Bob Smith" is ACCEPTED when "Bob" exists (Q12 (b): containment is
+    checked only for existing names of two or more words);
+  * a one-word existing name blocks only an exact match: with "Bob" stored,
+    "BOB" and "Bób" are refused with `display_name_taken`, "Bob Smith" and
+    "Bobby" are accepted;
   * a claim planted at an id that is not its folded name's HMAC is ignored
     by both checks;
   * a claim whose owner no longer holds the name is taken over;
@@ -1221,8 +1225,8 @@ other's state.
   * `tenants/mine`'s first entry equals the headerless tenant in every case
     above;
   * a service identity never reads preferences;
-  * per Q11's answer: (a) `AuthContext.display_name` is the stored name when
-    set and the claim otherwise; (b) it is the claim whatever is stored.
+  * (Q11 (a)) `AuthContext.display_name` is the stored name when set, else
+    the token's name claim, else the email's local part.
 
 ### PROFILE-BELL: topics, muting and reminders
 
@@ -1355,7 +1359,7 @@ other's state.
 
 ## 7. Owner questions
 
-### 7.1 Answered 2026-10-17/18 (PR 1506's comments)
+### 7.1 Answered 2026-10-17/18 (PR 1506's comments; Q11 and Q12 on 2026-10-18)
 
 | # | question | answer | where the design follows it |
 |---|---|---|---|
@@ -1369,42 +1373,9 @@ other's state.
 | Q8 | May an admin see or change another person's preferences? | No: no admin route, no `?user=`, no preferences section on Admin › People | §4.3, PROFILE-API, PROFILE-NAMES-API |
 | Q9 | If the preferences cannot be read, what does a headerless request do? | 503 `preferences_unavailable`, saying how to name a workspace; nothing submitted; never a silent fallback | §4.5, PROFILE-DEFAULT, PROFILE-SC |
 | Q10 | Which workspaces does the GitHub summary cover? | Every workspace the person can act in, one row each, from one batched read (as recommended) | §4.2, PROFILE-API |
+| Q11 | Does the edited display name also name the agent's commits? | **Yes, answered 2026-10-18:** the stored name, else the token's name claim, else the email's local part. The email is in every commit beside it, and a task keeps the name recorded at admission, so a later rename never rewrites a commit | §2.2, §4.4, PROFILE-DEFAULT |
+| Q12 | Does a one-word name block every longer name that contains it? | **No, answered 2026-10-18:** only names of two or more words are checked for containment. An exact match is still refused for every name, and "Ada Lovelace Admin" is still refused when "Ada Lovelace" exists, but "Bob Smith" is allowed when "Bob" exists; the email shown beside every name covers the rest. Departs from the lane's recommendation | §4.4 rule 6, PROFILE-STORE |
 
 ### 7.2 Open
 
-Also in this lane's `questions.json`. The recommendation is listed first.
-
-**Q11. Does the edited display name also name the agent's commits?**
-
-Today a task's commits are authored as the token's `name` claim, else the
-email's local part, always with the verified email (`gitidentity.py`, P37).
-Q5 made the name editable but did not say whether that name reaches git,
-where it is published on GitHub and cannot be changed afterwards.
-
-* (a) **Yes: the stored name, else the token's claim, else the local part.**
-  Recommended: one name per person on the platform and in their commits; a
-  person whose IAP sign-in carries no name gets a real author name for the
-  first time. The email is in every commit beside the name, and the §4.4
-  rules are stricter than `clean_name`. A task keeps the name recorded at
-  admission, so a later change never rewrites a commit.
-* (b) No: commits keep today's rule (claim, else local part), and the stored
-  name is a console label only. Nothing published outside SwarmCloud
-  changes, but a person's commits and their console name can differ.
-
-**Q12. Does a one-word name block every longer name that contains it?**
-
-Q5's answer says no name may embed another member's display name. Applied
-to every name, the first person to save "Bob" refuses "Bob Smith" to
-everyone after them, though "Bob Smith" beside its own email cannot pass for
-"Bob" beside his. §4.4 rule 6 enforces the answer as given until this is
-answered.
-
-* (a) **Yes, as Q5 says: containment is checked for names of any length.**
-  Recommended because it is the answer as given and the stricter posture;
-  the cost is that common first names become first-come: a person refused
-  must choose a name that does not contain the earlier one as a word.
-* (b) Only names of two or more words are checked for containment; an exact
-  match is still refused for every name. "Bob Smith" is allowed when "Bob"
-  exists, "Ada Lovelace Admin" is still refused when "Ada Lovelace" exists.
-  Fewer refusals of real names; a one-word name gives no protection against
-  being embedded, which the email beside every name covers.
+Nothing is open. Q11 and Q12 were answered on 2026-10-18 and are in §7.1.
