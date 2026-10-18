@@ -1028,6 +1028,13 @@ HUMAN_RETURNED_METADATA_KEY = "human_returned"
 #: it would start a held workflow early or hold one nobody asked to.
 AFTER_PRS_METADATA_KEY = "after_prs"
 
+#: An `await-input` step's wait and its answer (docs/design/human-steps.md
+#: §4.7): `opened_at`, `expires_at` and the answer's record, written only by
+#: the platform (the scheduler's park, swarm-api's answer route). A caller who
+#: set it would hand the step an answer nobody gave, or an expiry nobody chose.
+#: The DECLARATION is not here: it is `metadata.dispatch.await_input`, signed.
+AWAIT_INPUT_METADATA_KEY = "await_input"
+
 #: Every key inside `task.metadata` this service writes and a caller may not,
 #: in the order a refusal names them. One tuple, checked by one function, so a
 #: caller who sent several is told about all of them in one 422 rather than one
@@ -1053,6 +1060,16 @@ RESERVED_METADATA_KEYS = (
     FORGE_SOURCE_METADATA_KEY,
     AFTER_PRS_METADATA_KEY,
 )
+
+#: Reserved like every key above, and refused by the same function in the
+#: same 422, but NOT YET IN `RESERVED_METADATA_KEYS`. That tuple is two more
+#: things besides a refusal list: `task_input.PLATFORM_METADATA_KEYS` (served
+#: as stored, unmasked) and, less the counters, the spec signature's key set
+#: (tests/unit/common/test_specsign_covers.py). `metadata.await_input` is
+#: written by no one yet: the lane that writes it (HW-API-ANSWER) decides how
+#: it is served, and moves it into that tuple with the parity test's entry.
+#: Until then nothing a caller sends can reach the store under it.
+REFUSED_UNWRITTEN_METADATA_KEYS = (AWAIT_INPUT_METADATA_KEY,)
 
 #: Strategies and carriers that cannot work without somewhere to push to.
 _NEEDS_REPOSITORY_STRATEGIES = ("direct-pr", "integrate", "single-pr")
@@ -1469,6 +1486,11 @@ class DispatchOptions:
     #: For a `merge_pr` workflow (#352) it names no task: `number` and
     #: `head_sha`, the pull request and the head the caller named, instead.
     merge_target: tuple[tuple[str, Any], ...] = ()
+    #: An `await-input` step's declaration (docs/design/human-steps.md §4.1),
+    #: as `resolve_await_input` normalised it, on that step only. Inside the
+    #: dispatch block, so the spec signature covers what the person is asked,
+    #: how long the step waits and what happens at expiry. Not hashed: a map.
+    await_input: Mapping[str, Any] | None = field(default=None, hash=False)
 
     @property
     def needs_repository(self) -> bool:
@@ -1507,6 +1529,10 @@ class DispatchOptions:
             pr_label=pr_label if gate_task_id and pr_label else None,
             findings_epic=findings_epic if gate_task_id and findings_epic else None,
         )
+
+    def with_await_input(self, block: Mapping[str, Any] | None) -> "DispatchOptions":
+        """This `await-input` step's normalised declaration; None on every other step."""
+        return replace(self, await_input=block)
 
     def with_input_parents(self, parents: Mapping[str, str]) -> "DispatchOptions":
         """This step's `{upstream task id: upstream step id}`, for a `by_parent` step."""
@@ -1638,6 +1664,10 @@ class DispatchOptions:
         # other step stores exactly the block it stored before.
         if self.conflict_round:
             block[CONFLICT_ROUND_FIELD] = True
+        # Absent on every step but an `await-input` step (HW-API-SUBMIT), so
+        # every other step stores exactly the block it stored before.
+        if self.await_input is not None:
+            block[AWAIT_INPUT_FIELD] = json.loads(json.dumps(self.await_input))
         return block
 
 
@@ -1774,6 +1804,12 @@ _RESERVED_BECAUSE = {
         "credential a service submission runs with, written only by submission. "
         "Drop the key from metadata."
     ),
+    AWAIT_INPUT_METADATA_KEY: (
+        f"metadata.{AWAIT_INPUT_METADATA_KEY} is reserved: it records an "
+        "`await-input` step's wait and the answer it was given, written only by "
+        "the platform. Declare the wait as the step's own `await_input` field "
+        "(POST /v1/workflows) instead."
+    ),
     AFTER_PRS_METADATA_KEY: (
         f"metadata.{AFTER_PRS_METADATA_KEY} is reserved: it records the pull "
         "requests a workflow waits for, written from the spec's `after` and then "
@@ -1847,7 +1883,10 @@ def reject_reserved_metadata(metadata: dict[str, Any]) -> None:
     order, so a caller who sent several learns about all of them from one
     refusal.
     """
-    present = [key for key in RESERVED_METADATA_KEYS if key in metadata]
+    present = [
+        key for key in RESERVED_METADATA_KEYS + REFUSED_UNWRITTEN_METADATA_KEYS
+        if key in metadata
+    ]
     allowed = _SCHEDULE_MARK.get()
     if allowed is not None and metadata.get(SCHEDULE_METADATA_KEY) == allowed:
         present.remove(SCHEDULE_METADATA_KEY)
@@ -3384,3 +3423,394 @@ def topological_order(steps: Sequence[StepSpec]) -> list[str]:
         # request path; it is a guard against a future caller skipping that.
         raise DagError("workflow dependency graph contains a cycle")
     return out
+
+
+# --------------------------------------------------------------------------
+# `await-input` steps (docs/design/human-steps.md §4.1, lane HW-API-SUBMIT)
+# --------------------------------------------------------------------------
+
+#: The catalogue profile of a step that waits for a tenant member's answer
+#: (contract request 94). The only profile `await_input` is valid on, and it
+#: requires one.
+AWAIT_INPUT_PROFILE = "await-input"
+
+#: The key of the step's declaration inside `metadata.dispatch` (§4.7).
+AWAIT_INPUT_FIELD = "await_input"
+
+#: The longest a step may wait: 24 hours, the owner's Q4, which is the bound
+#: the scheduler holds a `HUMAN_REQUIRED` park to
+#: (`apps/scheduler/scheduler/loop.py`, `HUMAN_PARK_MAX_SECONDS`). swarm-api
+#: does not carry the scheduler, so the number is restated here, and
+#: tests/unit/control_plane/test_await_input_submission.py imports both and
+#: fails if they differ.
+AWAIT_INPUT_MAX_SECONDS = 86_400
+#: The shortest: five minutes. A shorter wait is a race with the person
+#: opening the page, not a question.
+AWAIT_INPUT_MIN_SECONDS = 300
+#: A reminder at most hourly (§4.5): the bell is derived on read, and an
+#: item that advanced every few minutes would be noise, not a reminder.
+AWAIT_INPUT_REMIND_MIN_SECONDS = 3_600
+#: Files one answer may carry (Q6, §4.1): ten keeps the manifest entry and
+#: the upload form small.
+AWAIT_INPUT_MAX_FILES = 10
+#: Addresses whose bell a wait rings (§4.5). Not who may answer: any member
+#: may (Q2).
+AWAIT_INPUT_MAX_REMIND = 10
+#: A declared default is part of the signed spec, so it is held to a size
+#: the dispatch block can carry (§4.1).
+AWAIT_INPUT_DEFAULT_MAX_BYTES = 16 * 1024
+
+#: The answer's shapes, and the artifact each is written as when the author
+#: names none (§4.1).
+AWAIT_INPUT_ARTIFACTS: Mapping[str, str] = {
+    "verdict": "verdict.json",
+    "answers": "answers.json",
+    "text": "input.json",
+}
+AWAIT_INPUT_FORMS = tuple(AWAIT_INPUT_ARTIFACTS)
+AWAIT_INPUT_ON_EXPIRE = ("fail", "default")
+
+#: The upstream file a `form: "answers"` step must stage: the agent's
+#: questions are the form only when the step stages them explicitly (Q11).
+QUESTIONS_FILENAME = "questions.json"
+
+#: The worker's bounds on a verdict (`agent_worker/verdict.py`,
+#: `MAX_FINDINGS`, `MAX_FINDING_CHARS`), which a verdict default is held to
+#: so a downstream `when` reads it as it reads an agent's (§4.6).
+AWAIT_VERDICT_MAX_FINDINGS = 50
+AWAIT_VERDICT_MAX_FINDING_CHARS = 1_000
+#: TASK-ANSWERS' bound on one answer's free text (§4.6).
+AWAIT_ANSWER_MAX_TEXT_CHARS = 2_000
+
+#: §4.1: a filename dependants stage by, and whose stem names the
+#: attachments' directory, so no separator, no leading dot.
+_AWAIT_ARTIFACT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+_AWAIT_ADDRESS_RE = re.compile(r"^[^@\s]+@[^@\s]+$")
+
+#: Every key the block may carry, in the order a refusal checks them.
+AWAIT_INPUT_KEYS = (
+    "form", "artifact", "max_files", "expires_after_seconds", "on_expire",
+    "default", "remind_after_seconds", "remind",
+)
+
+#: The first draft's who-may-answer list. Q2 replaced it with tenant
+#: membership, so it is refused BY NAME, pointing at `remind`: a caller who
+#: meant it as a restriction learns it is not one rather than believing it
+#: holds (§4.1).
+AWAIT_INPUT_RETIRED_KEYS = ("assignees",)
+
+#: A step's fields that mean something only to a container, and so nothing
+#: on an `await-input` step, which never runs one (§4.1). Each is refused
+#: naming itself when set to anything but its default.
+AWAIT_STEP_REFUSED_FIELDS = (
+    "resource_class", "timeout_seconds", "builds_on", "when",
+    "allow_empty_diff", "pr_role", "merges",
+)
+
+
+class AwaitInputRefused(ValidationFailed):
+    """422 `validation_failed`: an `await-input` step, or its block, refused.
+
+    `detail.field` names what was refused (`await_input.<key>` inside the
+    block, the step's own field otherwise), and `detail.step_id` the step.
+    The established code, not a new one: a new 4xx code ships behind a
+    switch (`swarm_api.refusals`, test_new_refusals_ship_off.py), and the
+    field is what a caller branches on here.
+    """
+
+
+def _await_refused(step_id: str | None, field_name: str, message: str) -> AwaitInputRefused:
+    detail: dict[str, Any] = {"field": field_name}
+    prefix = ""
+    if step_id is not None:
+        detail["step_id"] = step_id
+        prefix = f"step {step_id!r}: "
+    return AwaitInputRefused(prefix + message, detail=detail)
+
+
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def refuse_control_plane_outside_workflow(
+    profile: RunnerProfile, *, workflow_id: str | None
+) -> None:
+    """A `control_plane` profile is a workflow step or nothing (§4.1).
+
+    Its task is ended by the platform on a person's answer, and what it
+    hands on is staged by the steps after it. As a task, a batch entry or a
+    child it would have no step to answer and nobody to hand anything to.
+    """
+    if profile.control_plane and workflow_id is None:
+        raise _await_refused(
+            None, "runner_profile",
+            f"runner_profile {profile.name!r} is a workflow step that waits for a "
+            "person's answer; it is valid only inside a workflow (POST /v1/workflows)",
+        )
+
+
+def refuse_control_plane_integrator(
+    profile: RunnerProfile, *, step_id: str
+) -> None:
+    """Under `integrate`, the final step applies the others' patches and opens
+    the pull request. A `control_plane` step runs nothing, so it cannot."""
+    if profile.control_plane:
+        raise _await_refused(
+            step_id, "runner_profile",
+            f"runner_profile {profile.name!r} runs no container, so it cannot be "
+            "the step that integrates the others under strategy 'integrate'. Add "
+            "the step that acts on the answer after it.",
+        )
+
+
+def _await_default(
+    form: str, default: Any, *, step_id: str
+) -> dict[str, Any]:
+    """`default`, checked against `form` (§4.1, §4.6), normalised."""
+    field_name = "await_input.default"
+
+    def refused(message: str) -> AwaitInputRefused:
+        return _await_refused(step_id, field_name, message)
+
+    if not isinstance(default, dict):
+        raise refused("await_input.default must be a JSON object shaped like the form")
+    allowed = {"verdict": {"verdict", "findings"}, "answers": {"answers"}, "text": {"text"}}[form]
+    extra = sorted(set(default) - allowed)
+    if extra:
+        raise refused(
+            f"await_input.default for form {form!r} takes only {sorted(allowed)}, "
+            f"not {extra}; a default carries no files"
+        )
+    try:
+        encoded = json.dumps(default, ensure_ascii=False, separators=(",", ":"),
+                             allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError):
+        raise refused("await_input.default is not plain JSON") from None
+    if len(encoded) > AWAIT_INPUT_DEFAULT_MAX_BYTES:
+        raise refused(
+            f"await_input.default is {len(encoded)} bytes; at most "
+            f"{AWAIT_INPUT_DEFAULT_MAX_BYTES} are signed into the step"
+        )
+    if form == "verdict":
+        verdict = default.get("verdict")
+        if verdict not in REVIEW_VERDICTS:
+            raise refused(f"await_input.default.verdict must be one of {list(REVIEW_VERDICTS)}")
+        findings = default.get("findings", [])
+        if not isinstance(findings, list) or not all(isinstance(f, str) for f in findings):
+            raise refused("await_input.default.findings must be a list of strings")
+        if len(findings) > AWAIT_VERDICT_MAX_FINDINGS:
+            raise refused(
+                f"await_input.default.findings has {len(findings)} entries; at most "
+                f"{AWAIT_VERDICT_MAX_FINDINGS}"
+            )
+        if any(len(f) > AWAIT_VERDICT_MAX_FINDING_CHARS for f in findings):
+            raise refused(
+                f"each of await_input.default.findings is at most "
+                f"{AWAIT_VERDICT_MAX_FINDING_CHARS} characters"
+            )
+        return {"verdict": verdict, "findings": list(findings)}
+    if form == "answers":
+        answers = default.get("answers")
+        if not isinstance(answers, list) or not answers:
+            raise refused("await_input.default.answers must be a non-empty list")
+        normalised = []
+        for position, answer in enumerate(answers):
+            where = f"await_input.default.answers[{position}]"
+            if not isinstance(answer, dict):
+                raise refused(f"{where} must be an object")
+            unknown = sorted(set(answer) - {"question_index", "choice", "text"})
+            if unknown:
+                raise refused(f"{where} takes question_index, choice and text, not {unknown}")
+            index = answer.get("question_index")
+            choice = answer.get("choice")
+            text = answer.get("text")
+            if not _is_int(index) or index < 0:
+                raise refused(f"{where}.question_index must be a non-negative integer")
+            if choice is not None and not isinstance(choice, str):
+                raise refused(f"{where}.choice must be a string or null")
+            if text is not None and not isinstance(text, str):
+                raise refused(f"{where}.text must be a string or null")
+            if not (choice or (text or "").strip()):
+                raise refused(f"{where} needs a choice or a text")
+            if text is not None and len(text) > AWAIT_ANSWER_MAX_TEXT_CHARS:
+                raise refused(
+                    f"{where}.text is at most {AWAIT_ANSWER_MAX_TEXT_CHARS} characters"
+                )
+            normalised.append({"question_index": index, "choice": choice, "text": text})
+        return {"answers": normalised}
+    text = default.get("text")
+    if not isinstance(text, str):
+        raise refused("await_input.default.text must be a string")
+    return {"text": text}
+
+
+def resolve_await_input(
+    profile: RunnerProfile,
+    raw: Any,
+    *,
+    step_id: str,
+    container_fields: Mapping[str, Any],
+    input_from: Mapping[str, str],
+    submitted_by: str,
+    allowed_domains: Iterable[str],
+    allowed_users: Iterable[str] = (),
+) -> dict[str, Any] | None:
+    """One workflow step's `await_input`, checked and normalised (§4.1).
+
+    Returns the block as `metadata.dispatch.await_input` stores it --
+    every key present, defaults filled in, `remind` lower-cased -- or None
+    for a step of any other profile, which may not carry one. Every refusal
+    is a 422 `validation_failed` whose `detail.field` names the field.
+
+    `container_fields` is the step's own `AWAIT_STEP_REFUSED_FIELDS`, by
+    name; `allowed_domains` and `allowed_users` are who may sign in at all,
+    which is what "an address in the platform's hosted domain" means for
+    `remind` in a deployment with no domain of its own.
+    """
+    if profile.name != AWAIT_INPUT_PROFILE:
+        if raw is not None:
+            raise _await_refused(
+                step_id, "await_input",
+                f"await_input is valid only on a step whose runner_profile is "
+                f"{AWAIT_INPUT_PROFILE!r}, not {profile.name!r}",
+            )
+        return None
+    for name in AWAIT_STEP_REFUSED_FIELDS:
+        value = container_fields.get(name)
+        if value is not None and value is not False:
+            raise _await_refused(
+                step_id, name,
+                f"{name} means nothing on an {AWAIT_INPUT_PROFILE!r} step, which runs "
+                "no container; drop it",
+            )
+    if raw is None:
+        raise _await_refused(
+            step_id, "await_input",
+            f"a step whose runner_profile is {AWAIT_INPUT_PROFILE!r} needs an await_input "
+            f"block: form, expires_after_seconds and on_expire at least",
+        )
+    if not isinstance(raw, dict):
+        raise _await_refused(step_id, "await_input", "await_input must be a JSON object")
+    for key in AWAIT_INPUT_RETIRED_KEYS:
+        if key in raw:
+            raise _await_refused(
+                step_id, f"await_input.{key}",
+                "await_input.assignees is not a field: any member of the step's tenant "
+                "may answer. To choose whose bell is rung, name them in "
+                "await_input.remind; that rings them and restricts nobody.",
+            )
+    for key in raw:
+        if key not in AWAIT_INPUT_KEYS:
+            raise _await_refused(
+                step_id, f"await_input.{key}",
+                f"await_input does not take {key!r}; it takes {list(AWAIT_INPUT_KEYS)}",
+            )
+
+    form = raw.get("form")
+    if form not in AWAIT_INPUT_FORMS:
+        raise _await_refused(
+            step_id, "await_input.form",
+            f"await_input.form is required and must be one of {list(AWAIT_INPUT_FORMS)}",
+        )
+
+    artifact = raw.get("artifact", AWAIT_INPUT_ARTIFACTS[form])
+    if not isinstance(artifact, str) or not _AWAIT_ARTIFACT_RE.match(artifact):
+        raise _await_refused(
+            step_id, "await_input.artifact",
+            "await_input.artifact must be a filename of letters, digits, '_', '.' "
+            "and '-', at most 128 characters, starting with a letter or a digit",
+        )
+
+    max_files = raw.get("max_files", AWAIT_INPUT_MAX_FILES)
+    if not _is_int(max_files) or not 0 <= max_files <= AWAIT_INPUT_MAX_FILES:
+        raise _await_refused(
+            step_id, "await_input.max_files",
+            f"await_input.max_files must be an integer from 0 to {AWAIT_INPUT_MAX_FILES}",
+        )
+
+    expires = raw.get("expires_after_seconds")
+    if not _is_int(expires) or not (
+        AWAIT_INPUT_MIN_SECONDS <= expires <= AWAIT_INPUT_MAX_SECONDS
+    ):
+        raise _await_refused(
+            step_id, "await_input.expires_after_seconds",
+            "await_input.expires_after_seconds is required: an integer from "
+            f"{AWAIT_INPUT_MIN_SECONDS} to {AWAIT_INPUT_MAX_SECONDS} (24 hours)",
+        )
+
+    on_expire = raw.get("on_expire")
+    if on_expire not in AWAIT_INPUT_ON_EXPIRE:
+        raise _await_refused(
+            step_id, "await_input.on_expire",
+            f"await_input.on_expire is required and must be one of {list(AWAIT_INPUT_ON_EXPIRE)}",
+        )
+
+    default: dict[str, Any] | None = None
+    if on_expire == "default":
+        if raw.get("default") is None:
+            raise _await_refused(
+                step_id, "await_input.default",
+                "on_expire 'default' needs await_input.default, the answer the step "
+                "ends with when nobody answers",
+            )
+        default = _await_default(form, raw["default"], step_id=step_id)
+    elif raw.get("default") is not None:
+        raise _await_refused(
+            step_id, "await_input.default",
+            "await_input.default is used only with on_expire 'default'; with 'fail' "
+            "drop it",
+        )
+
+    remind_after = raw.get("remind_after_seconds")
+    if remind_after is not None and (
+        not _is_int(remind_after)
+        or not AWAIT_INPUT_REMIND_MIN_SECONDS <= remind_after <= expires
+    ):
+        raise _await_refused(
+            step_id, "await_input.remind_after_seconds",
+            "await_input.remind_after_seconds is null or an integer from "
+            f"{AWAIT_INPUT_REMIND_MIN_SECONDS} to expires_after_seconds ({expires})",
+        )
+
+    remind_raw = raw.get("remind", [submitted_by])
+    if not isinstance(remind_raw, list) or len(remind_raw) > AWAIT_INPUT_MAX_REMIND:
+        raise _await_refused(
+            step_id, "await_input.remind",
+            f"await_input.remind must be a list of at most {AWAIT_INPUT_MAX_REMIND} addresses",
+        )
+    domains = {d.strip().lower() for d in allowed_domains if d.strip()}
+    users = {u.strip().lower() for u in allowed_users if u.strip()}
+    remind: list[str] = []
+    for entry in remind_raw:
+        address = entry.strip().lower() if isinstance(entry, str) else ""
+        if not _AWAIT_ADDRESS_RE.match(address) or (
+            address.rsplit("@", 1)[1] not in domains and address not in users
+        ):
+            raise _await_refused(
+                step_id, "await_input.remind",
+                f"await_input.remind entry {_short_echo(entry)} is not an address in "
+                "this platform's allowed domains",
+            )
+        if address not in remind:
+            remind.append(address)
+
+    if form == "answers":
+        sources = [src for src, name in input_from.items() if name == QUESTIONS_FILENAME]
+        if len(sources) != 1:
+            raise _await_refused(
+                step_id, "await_input.form",
+                f"form 'answers' asks an upstream agent's questions, so the step must "
+                f"stage exactly one {QUESTIONS_FILENAME!r} in input_from; it stages "
+                f"{len(sources)}",
+            )
+
+    return {
+        "form": form,
+        "artifact": artifact,
+        "max_files": max_files,
+        "expires_after_seconds": expires,
+        "on_expire": on_expire,
+        "default": default,
+        "remind_after_seconds": remind_after,
+        "remind": remind,
+    }
