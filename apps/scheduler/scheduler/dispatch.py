@@ -99,6 +99,7 @@ from swarm_common.profiles import (
     RUNTIME_TOOLS,
     Backend,
     RunnerProfile,
+    step_model_class,
     tools_launched,
 )
 
@@ -427,17 +428,72 @@ def gke_ephemeral_storage_gib(rc: Any) -> int:
 
 
 def profile_model(settings: Any, profile: RunnerProfile) -> str | None:
-    """The model this profile's agent runs, from WORKER_MODELS, or None.
+    """The model this profile's agent runs when a step names no class, or None.
 
-    ONE answer for every backend (#226; contract request 53). WORKER_MODELS is
-    terraform's `local.runner_models`, the same map it writes onto the Cloud Run
-    Jobs it creates, so a Job the scheduler creates -- Cloud Run or GKE -- runs
-    the model a terraform Job does. None means no profile pins one, and the Job
-    then carries no MODEL at all: the CLI runs its own default, on either backend.
+    The `MODEL` of every Cloud Run Job this scheduler creates (#226), so a Job
+    run any way other than `dispatch` runs the profile's default class, as a
+    terraform Job does. With WORKER_CLASS_MODELS set it is that map's pin for
+    the profile's `default_model_class` (#1435, §4.2): the map terraform's own
+    Jobs take their `MODEL` from, through the same default. Without it, it is
+    WORKER_MODELS, the profile-keyed map that map replaces, read for as long as
+    terraform derives it (one release, so a scheduler rolled back alone still
+    finds it). None means nothing pins one, and the Job carries no MODEL.
     """
+    class_models = getattr(settings, "worker_class_models", None) or {}
+    if class_models:
+        if profile.default_model_class is None:
+            return None
+        return class_models.get(profile.default_model_class)
     models = getattr(settings, "worker_models", None) or {}
     value = models.get(profile.name)
     return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def step_model(settings: Any, profile: RunnerProfile, task: Task) -> str | None:
+    """The model ID this step's worker runs, as `MODEL` in `worker_env`, or None.
+
+    #1435, docs/design/model-per-step.md §4.5: ONE resolution, for both
+    backends. The class is the frozen `step_model_class` over the step's own
+    `model_class` -- the rule swarm-api applies at submission and the worker
+    at start, so the three never resolve a step differently -- and the ID is
+    the scheduler's WORKER_CLASS_MODELS entry for it. Never `task.model`,
+    never anything in `input` or `metadata`: a caller names a class, the
+    platform picks the ID (invariant 10).
+
+    None for a profile with no classes (codex, mock, generic, ...): no MODEL,
+    as before. An unknown class, one the profile does not accept, or one with
+    no pin raises `model_not_pinned`, which returns the lease and the task. It
+    never falls back to the profile's default, and never to the CLI's own,
+    which is how the QA task of 2026-09-26 ran claude-sonnet-5 on an Opus
+    profile. The startup check makes a missing pin unreachable once the map is
+    set; this is the second line, for a document written past the API.
+
+    WITHOUT A CLASS MAP (WORKER_CLASS_MODELS unset: the local emulator loop,
+    or a scheduler configured before #1435), a step naming a class refuses,
+    and a step naming none gets None here: the profile's model then reaches it
+    as it did before, on the Job (`profile_model`) or, on GKE, from the pod
+    manifest. The per-execution environment carries a MODEL only from the
+    class map.
+    """
+    try:
+        model_class = step_model_class(profile, task.model_class)
+    except ValueError as exc:
+        raise DispatchError(
+            f"task {task.id} on {profile.name}: {exc}", code="model_not_pinned"
+        ) from None
+    if model_class is None:
+        return None
+    class_models = getattr(settings, "worker_class_models", None) or {}
+    if not class_models and task.model_class is None:
+        return None
+    model_id = class_models.get(model_class)
+    if not isinstance(model_id, str) or not model_id:
+        raise DispatchError(
+            f"task {task.id} on {profile.name}: model class {model_class!r} has no "
+            "pin in WORKER_CLASS_MODELS",
+            code="model_not_pinned",
+        )
+    return model_id
 
 
 #: Pod hardening. kubernetes/namespaces/tenant-namespace.yaml holds Pod Security
@@ -1210,6 +1266,14 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
         # kept and why it was never the fix it was taken for.
         "SWARM_ARTIFACTS_DIR": WORKER_ARTIFACTS_DIR,
     }
+    # THE STEP'S MODEL (#1435; the owner's answer to Q2, 2026-10-17). The ID
+    # of the step's resolved class, from the scheduler's own class map: on a
+    # Cloud Run execution it overrides the Job's default-class MODEL for this
+    # execution only, and on GKE it is the pod's. Omitted, not set empty, for
+    # a profile with no classes, for the merge reason below.
+    model = step_model(settings, RUNNER_PROFILES[task.runner_profile], task)
+    if model is not None:
+        env["MODEL"] = model
     broker_url = str(getattr(settings, "quota_broker_url", "") or "").strip()
     if broker_url:
         env["QUOTA_BROKER_URL"] = broker_url
@@ -1577,7 +1641,10 @@ class CloudRunJobDispatcher:
         return f"{self.parent}/jobs/{job_id}"
 
     def _model_for(self, profile: RunnerProfile) -> str | None:
-        """The model this profile's agent runs, from WORKER_MODELS, or None."""
+        """The Job's own MODEL: the profile's default-class pin, or None.
+
+        A step's own class reaches each execution through `worker_env`, whose
+        MODEL overrides this one for that execution only (#1435, §4.5)."""
         return profile_model(self._settings, profile)
 
     def _build_job(
@@ -1958,6 +2025,9 @@ class CloudRunJobDispatcher:
         # Before any API call: a tenant with no identity is refused here rather
         # than after a round trip that would only be wasted.
         assert_tenant_identity(tenant, self._settings)
+        # The step's model before the Job is touched, for the same reason: a
+        # class with no pin refuses with no API call made (#1435).
+        step_model(self._settings, profile, task)
         name = self.ensure_job(profile, tenant, resource_class_for(task, profile))
         env = worker_env(task=task, lease=lease, tenant=tenant, settings=self._settings)
         overrides = run_v2.RunJobRequest.Overrides(
@@ -2451,14 +2521,17 @@ class GkeJobDispatcher:
         # FROM THIS SAME RENDER, so the comparison proves only that this
         # dispatcher agrees with itself; GKE injects no Job name of its own.
         env.append({"name": "RUNNER_JOB_NAME", "value": job_name})
-        # THE PROFILE'S MODEL, as a Cloud Run Job carries it (#226; contract
-        # request 53). Same source, `profile_model` over WORKER_MODELS, and the
-        # same absence: no pinned model, no MODEL, the CLI's default on both
-        # backends. On the Job, never in `worker_env`, which a task shapes: a
-        # caller never chooses it (invariant 10).
-        model = profile_model(self._settings, profile)
-        if model:
-            env.append({"name": "MODEL", "value": model})
+        # THE STEP'S MODEL comes from `gke_worker_env` above (`step_model`,
+        # #1435), the one source both backends share. Only a scheduler with no
+        # WORKER_CLASS_MODELS leaves it unset for a classed profile, and then
+        # the pod carries the profile's model as a Cloud Run Job does (#226;
+        # contract request 53): `profile_model` over WORKER_MODELS, and the
+        # same absence -- no pinned model, no MODEL, the CLI's default on both
+        # backends. Never `task.model`: a caller never chooses it (invariant 10).
+        if not any(e["name"] == "MODEL" for e in env):
+            model = profile_model(self._settings, profile)
+            if model:
+                env.append({"name": "MODEL", "value": model})
         # THE STEP-SPEC VERIFICATION SETTINGS, ON THE JOB, as a Cloud Run Job
         # carries them (contract request 34; owner decision 2026-10-08). This
         # reverses the original GKE design, which delivered them ONLY through
