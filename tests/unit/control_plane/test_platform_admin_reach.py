@@ -16,6 +16,7 @@ frozen slug lands in the personal namespace, which no reach may ever offer.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -25,10 +26,11 @@ from swarm_api.admins import ROLES_COLLECTION, AdminRoles
 from swarm_api.auth import Authenticator, StaticTokenVerifier, TenantNotMember
 from swarm_api.errors import UpstreamUnavailable
 from swarm_api.groups import CloudIdentityGroups
+from swarm_api.settings import ApiSettings
 
 from .conftest import ADMIN_GROUP, ENG_GROUP, PROJECT, RESEARCH_GROUP, api_settings
 from .fakes import FakeFirestore
-from .test_group_resolution import FakeSession
+from .test_group_resolution import FakeResponse, FakeSession
 
 CAROL_GROUP = "u-carol@saga.xyz"
 REGISTERED = (ENG_GROUP, RESEARCH_GROUP, CAROL_GROUP)
@@ -54,8 +56,6 @@ class FailingAdminGroup(FakeSession):
     def get(self, url, params=None, headers=None, timeout=None):
         if url.endswith("/groups:lookup") and params["groupKey.id"] == ADMIN_GROUP:
             self.calls.append({"url": url, "params": dict(params), "headers": dict(headers or {})})
-            from .test_group_resolution import FakeResponse
-
             return FakeResponse({"error": "unavailable"}, status_code=503)
         return super().get(url, params=params, headers=headers, timeout=timeout)
 
@@ -222,13 +222,8 @@ def test_a_headerless_request_lands_in_the_same_default_as_before():
     assert with_reach.tenant_principal == without.tenant_principal == RESEARCH_GROUP
     assert with_reach.principal == without.principal
     assert with_reach.tenant_choices == without.tenant_choices
-    assert replace_reach(with_reach) == without
-
-
-def replace_reach(ctx: Any) -> Any:
-    from dataclasses import replace
-
-    return replace(ctx, platform_reach=())
+    # The reach is the one field that differs.
+    assert replace(with_reach, platform_reach=()) == without
 
 
 def test_an_unresolved_admin_lookup_with_a_reach_header_is_503_not_403():
@@ -268,8 +263,6 @@ def test_with_the_reach_off_the_other_cases_are_todays():
 
 
 def test_the_setting_defaults_off():
-    from swarm_api.settings import ApiSettings
-
     assert ApiSettings.__dataclass_fields__["platform_admin_reach"].default is False
     assert ApiSettings.__dataclass_fields__["role_cache_seconds"].default == 15.0
 

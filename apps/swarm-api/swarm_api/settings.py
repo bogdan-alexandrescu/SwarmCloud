@@ -243,6 +243,25 @@ class ApiSettings:
     #: (`swarm_api.admins`) and keeps granting admin as the fallback until the
     #: operator trims it to this one address.
     platform_owner: str = ""
+    #: Whether a platform admin (`AuthContext.is_admin`) may select a
+    #: registered GROUP workspace they are not a member of, as that
+    #: workspace's admin (docs/design/workspace-roles.md §4.2, owner answer
+    #: Q5, 2026-10-18). Never anyone else's personal (`u-`) workspace, on or
+    #: off. OFF by default (PLATFORM_ADMIN_REACH): it widens who may enter a
+    #: tenant (invariant 9), so it goes on in dev first, is exercised by the
+    #: acceptance probe, and only then goes on in prod -- the same order as
+    #: the refusal switches (§4.7). Off, `AuthContext.platform_reach` is
+    #: empty and `Authenticator.may_act_in` never answers "platform_admin",
+    #: which is the behaviour before roles exactly.
+    platform_admin_reach: bool = False
+    #: How long one instance trusts a workspace role it read
+    #: (ROLE_CACHE_SECONDS; `swarm_api.roles`, docs/design/workspace-roles.md
+    #: §4.12). 15: the same bound `admins.ROLE_CACHE_SECONDS` puts on a
+    #: removed platform admin, so a person narrowed by a workspace admin
+    #: keeps their old role on another instance for no longer than a demoted
+    #: platform admin keeps theirs. A decision that must see a change made a
+    #: moment ago (an approval, an answer) reads past it, fresh.
+    role_cache_seconds: float = 15.0
     #: A NARROWER capability than admin, by email: these callers may call the
     #: admin routes in `auth.POOL_ADMIN_ROUTES` -- today only
     #: `PUT /v1/admin/limits/runner/{runner_profile}` -- and no other.
@@ -855,6 +874,8 @@ class ApiSettings:
             admin_groups=_csv("ADMIN_GROUPS"),
             admin_users=admin_users,
             platform_owner=platform_owner,
+            platform_admin_reach=_bool("PLATFORM_ADMIN_REACH", False),
+            role_cache_seconds=float(_int("ROLE_CACHE_SECONDS", 15)),
             admin_pool_users=admin_pool_users,
             rollup_sweeper_users=rollup_sweeper_users,
             schedule_tick_users=_csv("SCHEDULE_TICK_USERS"),
