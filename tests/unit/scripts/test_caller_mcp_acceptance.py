@@ -2,12 +2,12 @@
 
 tests/acceptance/test_caller_mcp.py judges what scripts/acceptance/groups/
 mcp.sh saved from a deployed run. Owner decision 2026-10-18: nothing in
-Terraform is public, so the echo server's one invoker is the acceptance
-identity and the task's per-run MCP credential is that identity's Google ID
-token. These pin, with no deployment and no network:
+Terraform is public, so the echo server's one invoker is swarm-verify, the
+identity the suite runs as, and the task's per-run MCP credential is the
+suite's own Google ID token from the metadata server (nothing impersonated). These pin, with no deployment and no network:
 
 * the judge's selftest: the echo server on loopback, the token mint and the
-  unauthenticated probe against a fake metadata server, IAM and Cloud Run,
+  unauthenticated probe against a fake metadata server and Cloud Run,
   and every check PASSING on a working platform's evidence and FAILING or
   SKIPPING on each defect it names;
 * the task body carries the minted ID token as its server's MCP credential,
@@ -20,9 +20,8 @@ token. These pin, with no deployment and no network:
   as this credential's unless it sits where only this credential goes;
 * mcp.sh lists the judge's checks in its order, mints before it submits and
   submits nothing without a token;
-* Terraform names no public member for the echo server, and its invoker,
-  mcp.sh's invoker and terraform/bootstrap's acceptance account are one
-  account.
+* Terraform names no public member for the echo server, and its invoker and
+  mcp.sh's invoker are one account, swarm-verify.
 
 Every fake token is built at run time (CLAUDE.md, "Nothing you add may look
 like a credential").
@@ -41,7 +40,7 @@ ROOT = Path(__file__).resolve().parents[3]
 JUDGE_PATH = ROOT / "tests" / "acceptance" / "test_caller_mcp.py"
 GROUP = ROOT / "scripts" / "acceptance" / "groups" / "mcp.sh"
 TF = ROOT / "terraform" / "infra" / "mcp_test_server.tf"
-BOOTSTRAP_ACCEPTANCE = ROOT / "terraform" / "bootstrap" / "acceptance.tf"
+SERVICE_ACCOUNT_IDS = ROOT / "terraform" / "modules" / "service_account_ids" / "main.tf"
 INFRA_VARIABLES = ROOT / "terraform" / "infra" / "variables.tf"
 
 
@@ -56,7 +55,7 @@ def _load(name: str, path: Path):
 
 mcp = _load("acceptance_caller_mcp", JUDGE_PATH)
 
-INVOKER = "swarm-accept@saga-agents-staging.iam.gserviceaccount.com"
+INVOKER = "swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
 URL = "https://swarm-mcp-echo-abc123-uc.a.run.app/mcp"
 AUD = "https://swarm-mcp-echo-abc123-uc.a.run.app"
 
@@ -87,21 +86,29 @@ def test_a_task_body_carries_the_id_token_as_the_servers_mcp_credential(tmp_path
     assert values["credential"] not in (base / "token.json").read_text()
 
 
-def test_a_mint_iam_refuses_submits_nothing_and_skips_naming_the_grant(tmp_path: Path) -> None:
+def test_a_mint_the_metadata_server_cannot_serve_submits_nothing_and_fails_naming_why(tmp_path: Path) -> None:
     base = _dir(tmp_path)
-    assert mcp.token(base, INVOKER, mcp.fake_google(AUD, INVOKER, iam=403)) is False
+    assert mcp.token(base, INVOKER, mcp.fake_google(AUD, INVOKER, metadata=500)) is False
     state = json.loads((base / "token.json").read_text())
-    assert state["minted"] is False and state["refused"] is True
-    assert "serviceAccountOpenIdTokenCreator" in state["reason"]
+    assert state["minted"] is False and "refused" not in state
+    assert "metadata server" in state["reason"]
     assert "credential" not in json.loads((base / "secrets.json").read_text())
     assert mcp.main(["body", "--dir", str(base), "--kind", "task", "--server", "acc-echo",
                      "--run-id", "r1", "--metadata", "{}"]) == 1
-    (base / "server").write_text("acc-echo\n")
-    (base / "submit.json").write_text(json.dumps({"status": "not sent", "code": None, "task": ""}))
-    (base / "task").write_text("\n")
-    verdicts = {v.check: v for v in mcp.judge(str(base))}
-    assert verdicts["credential_seen"].verdict == "SKIP"
-    assert "serviceAccountOpenIdTokenCreator" in verdicts["credential_seen"].reason
+
+
+def test_the_suite_mints_its_own_token_and_impersonates_nobody(tmp_path: Path) -> None:
+    base = _dir(tmp_path)
+    calls: list = []
+    assert mcp.token(base, INVOKER, mcp.fake_google(AUD, INVOKER, calls=calls)) is True
+    assert len(calls) == 1 and calls[0][1].startswith(mcp.METADATA_IDENTITY_URL + "?")
+    assert not any("iamcredentials" in c[1] for c in calls)
+    # A runtime identity that is not the invoker gets no credential.
+    other = "swarm-accept@saga-agents-staging.iam.gserviceaccount.com"
+    assert mcp.token(base, other, mcp.fake_google(AUD, INVOKER)) is False
+    src = JUDGE_PATH.read_text()
+    assert "generateIdToken" not in src and "serviceAccountOpenIdTokenCreator" not in src.split(
+        "def mint_id_token", 1)[1]
 
 
 def test_a_call_without_the_token_passes_only_on_cloud_runs_403(tmp_path: Path) -> None:
@@ -142,7 +149,7 @@ def test_mcp_sh_probes_and_mints_before_it_submits_and_never_without_a_token() -
     assert body.count('_mcp_submit "${dir}"') == 1
 
 
-def test_the_echo_server_is_not_public_and_its_invoker_is_the_acceptance_account() -> None:
+def test_the_echo_server_is_not_public_and_its_invoker_is_swarm_verify() -> None:
     tf = TF.read_text()
     assert not re.search(r"allUsers|allAuthenticatedUsers", tf)
     members = re.findall(r'^\s*member\s*=\s*"([^"]*)"', tf, re.M)
@@ -152,14 +159,14 @@ def test_the_echo_server_is_not_public_and_its_invoker_is_the_acceptance_account
     assert 'role     = "roles/run.invoker"' in invokers[0]
     assert 'member   = "serviceAccount:${local.mcp_test_server_invoker}"' in invokers[0]
     assert "serviceAccount:${local.mcp_test_server_invoker}" in members
-    assert re.search(r'mcp_test_server_invoker = "\$\{var\.name_prefix\}-accept@\$\{var\.project_id\}'
-                     r'\.iam\.gserviceaccount\.com"', tf)
-    # bootstrap spells the account accept.yml federates as from the same id.
-    assert 'account_id   = "${var.name_prefix}-accept"' in BOOTSTRAP_ACCEPTANCE.read_text()
+    assert re.search(r'mcp_test_server_invoker = "\$\{module\.service_account_ids\.verify_id\}@'
+                     r'\$\{var\.project_id\}\.iam\.gserviceaccount\.com"', tf)
+    # ... and that id is the one verify.tf creates swarm-verify from.
+    assert 'verify_id = "swarm-verify"' in SERVICE_ACCOUNT_IDS.read_text()
     prefix = re.search(r'variable "name_prefix" \{.*?default\s*=\s*"([^"]+)"', INFRA_VARIABLES.read_text(), re.S)
     assert prefix is not None and prefix.group(1) == "swarm"
-    # mcp.sh mints as that same account by default.
-    assert re.search(r'^MCP_INVOKER="\$\{SWARM_ACCEPTANCE_MCP_INVOKER:-swarm-accept@\$\{PROJECT_ID\}'
+    # mcp.sh expects that same account by default.
+    assert re.search(r'^MCP_INVOKER="\$\{SWARM_ACCEPTANCE_MCP_INVOKER:-swarm-verify@\$\{PROJECT_ID\}'
                      r'\.iam\.gserviceaccount\.com\}"$', GROUP.read_text(), re.M)
 
 

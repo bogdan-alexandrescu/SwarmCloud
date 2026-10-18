@@ -14,10 +14,10 @@
 #     echo server from the swarm-verify image's promoted digest with
 #     requests == limits (invariant 7), as its own account;
 #   * NOTHING IS PUBLIC (owner decision 2026-10-18, MCP-ACCEPT-B): run.invoker
-#     on THIS service is held by the acceptance identity alone -- the account
-#     terraform/bootstrap/acceptance.tf creates and accept.yml federates as
-#     (vars.GCP_ACCEPT_SA) -- and mcp_test_server.tf names neither allUsers nor
-#     allAuthenticatedUsers. Cloud Run's IAM check on that account's ID token is
+#     on THIS service is held by swarm-verify alone -- the identity the
+#     acceptance suite runs as and mints its own ID token from -- and
+#     mcp_test_server.tf names neither allUsers nor
+#     allAuthenticatedUsers. Cloud Run's IAM check on that identity's ID token is
 #     what admits a request; ingress stays ALL because the relay reaches the
 #     service from the swarm NAT;
 #   * that account holds no project role, and only the deployer may act as it;
@@ -218,18 +218,18 @@ run "on_in_dev_the_echo_server_admits_only_the_acceptance_identity_scales_to_zer
     error_message = "an idle echo server runs nothing (invariant 1, Q10's scale to zero), and its CPU is its limit and nothing more (invariant 7)"
   }
 
-  # NOTHING PUBLIC: the acceptance identity alone invokes THIS service, and
+  # NOTHING PUBLIC: swarm-verify alone invokes THIS service, and
   # the file names no public member at all (security.yml's "no public Cloud
   # Run services" allows one only for the GitHub push receiver).
   assert {
     condition = (
       length(google_cloud_run_v2_service_iam_member.mcp_test_server_invoker) == 1
-      && google_cloud_run_v2_service_iam_member.mcp_test_server_invoker[0].member == "serviceAccount:swarm-accept@saga-agents-staging.iam.gserviceaccount.com"
+      && google_cloud_run_v2_service_iam_member.mcp_test_server_invoker[0].member == "serviceAccount:swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
       && google_cloud_run_v2_service_iam_member.mcp_test_server_invoker[0].role == "roles/run.invoker"
       && google_cloud_run_v2_service_iam_member.mcp_test_server_invoker[0].name == "swarm-mcp-echo"
-      && output.mcp_test_server.invoker == "swarm-accept@saga-agents-staging.iam.gserviceaccount.com"
+      && output.mcp_test_server.invoker == "swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
     )
-    error_message = "run.invoker on swarm-mcp-echo is held by the acceptance identity swarm-accept alone, and the output names it"
+    error_message = "run.invoker on swarm-mcp-echo is held by swarm-verify alone, and the output names it"
   }
 
   assert {
@@ -237,12 +237,14 @@ run "on_in_dev_the_echo_server_admits_only_the_acceptance_identity_scales_to_zer
     error_message = "mcp_test_server.tf names no public member: the owner decided on 2026-10-18 that the echo server is not public"
   }
 
-  # The invoker's address is derived from the id terraform/bootstrap spells
-  # for the account accept.yml federates as, never typed: a rename there must
-  # fail here, not at the first acceptance run.
+  # The invoker's address is spelled from the id verify.tf creates swarm-verify
+  # from, never typed: the account and the invoker cannot drift apart.
   assert {
-    condition     = strcontains(file("${var.tf_root}/../bootstrap/acceptance.tf"), "account_id   = \"$${var.name_prefix}-accept\"")
-    error_message = "terraform/bootstrap/acceptance.tf no longer names the acceptance account <name_prefix>-accept; mcp_test_server.tf's invoker must follow it"
+    condition = (
+      google_service_account.verify.account_id == "swarm-verify"
+      && strcontains(file("${var.tf_root}/mcp_test_server.tf"), "module.service_account_ids.verify_id")
+    )
+    error_message = "the invoker must be spelled from the id swarm-verify is created with (verify.tf), not typed"
   }
 
   # Its own account, and never one that can read anything.
@@ -256,7 +258,7 @@ run "on_in_dev_the_echo_server_admits_only_the_acceptance_identity_scales_to_zer
   }
 
   # The account holds no role: the only IAM this file declares is the
-  # acceptance identity's invoker on the service and the deployer's actAs on
+  # swarm-verify's invoker on the service and the deployer's actAs on
   # the account.
   assert {
     condition = (

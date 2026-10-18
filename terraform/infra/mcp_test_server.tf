@@ -15,13 +15,13 @@
 #     hash (and the bearer itself, on purpose, for the relay to scrub --
 #     except a token Cloud Run handed it without its signature, which the
 #     relay could not scrub, so the server withholds that echo);
-#   * run.invoker on THIS service for the ACCEPTANCE IDENTITY ALONE: the
-#     account terraform/bootstrap/acceptance.tf creates and accept.yml
-#     federates as (vars.GCP_ACCEPT_SA). NOTHING HERE IS PUBLIC (owner
-#     decision 2026-10-18, lane MCP-ACCEPT-B; security.yml's "no public Cloud
-#     Run services" allows a public member only on the GitHub push receiver). The
-#     acceptance group mints a Google ID token as that account, audience this
-#     service's URL, and dispatches it as the task's per-run MCP credential
+#   * run.invoker on THIS service for swarm-verify ALONE: the identity the
+#     acceptance suite runs as. NOTHING HERE IS PUBLIC (owner decision
+#     2026-10-18, lane MCP-ACCEPT-B; security.yml's "no public Cloud Run
+#     services" allows a public member only on the GitHub push receiver). The
+#     acceptance group fetches its OWN Google ID token (it impersonates no
+#     account, so no token-creator grant and no bootstrap change), audience
+#     this service's URL, and dispatches it as the task's per-run MCP credential
 #     (`mcp_credentials`), so the relay sends it as the Authorization header
 #     -- the same per-run path a caller's credential takes. Cloud Run's IAM
 #     check on that token is what admits the request; a request without it is
@@ -50,7 +50,7 @@
 #      deployer admin on (terraform/modules/service_account_ids; this lane's
 #      PR asks for it) and applies bootstrap.
 #   3. mcp_test_server = "on": the actAs binding, the service and the
-#      acceptance identity's invoker. Before step 2 the binding is a 403 at
+#      swarm-verify's invoker. Before step 2 the binding is a 403 at
 #      apply.
 #
 # Steps 1 and 3 change IAM, so a dev release making either waits at the
@@ -68,7 +68,7 @@ variable "mcp_test_server" {
     (terraform/infra/mcp_test_server.tf; owner decision Q10 of #1433's design).
     "off" (the default): nothing. "account": its service account only, so
     terraform/bootstrap can grant the deployer admin on it. "on": the account,
-    the deployer's actAs on it, the service and the acceptance identity's
+    the deployer's actAs on it, the service and swarm-verify's
     invoker on it (nothing public) -- only after bootstrap has granted that
     admin. Dev only.
   EOT
@@ -100,12 +100,11 @@ locals {
   mcp_test_server_path  = "/mcp"
   # Spelled, not read from the account, so the plan knows it.
   mcp_test_server_email = "${local.mcp_test_server_name}@${var.project_id}.iam.gserviceaccount.com"
-  # The one invoker: the acceptance account. terraform/bootstrap creates it
-  # (acceptance.tf, account_id "<name_prefix>-accept") and the owner applies
-  # that root, which shares no state with this one, so its address is derived
-  # here from the same two inputs rather than read; the tftest fails if
-  # bootstrap's spelling of the id moves.
-  mcp_test_server_invoker = "${var.name_prefix}-accept@${var.project_id}.iam.gserviceaccount.com"
+  # The one invoker: swarm-verify, the identity the acceptance suite runs as
+  # and mints its own ID token from (owner decision 2026-10-18). Spelled from
+  # the id verify.tf creates the account from, so it is known at plan time
+  # rather than read from the resource.
+  mcp_test_server_invoker = "${module.service_account_ids.verify_id}@${var.project_id}.iam.gserviceaccount.com"
 }
 
 resource "google_service_account" "mcp_test_server" {
@@ -135,7 +134,7 @@ resource "google_cloud_run_v2_service" "mcp_test_server" {
 
   # Ingress ALL, as a caller's server is: the relay in a tenant pod reaches
   # it through the swarm NAT's public address. Reachable is not public: IAM
-  # admits only the acceptance identity's ID token (the invoker below).
+  # admits only swarm-verify's ID token (the invoker below).
   ingress             = "INGRESS_TRAFFIC_ALL"
   deletion_protection = var.deletion_protection
   launch_stage        = "GA"
@@ -213,7 +212,7 @@ resource "google_cloud_run_v2_service" "mcp_test_server" {
   }
 }
 
-# run.invoker on THIS service, for the acceptance identity alone. No public
+# run.invoker on THIS service, for swarm-verify alone. No public
 # member (owner decision 2026-10-18).
 resource "google_cloud_run_v2_service_iam_member" "mcp_test_server_invoker" {
   count = local.mcp_test_server_on ? 1 : 0

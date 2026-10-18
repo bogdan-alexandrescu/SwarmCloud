@@ -9,15 +9,14 @@ ever a shell variable or a process argument), PROBES the server without a
 credential, and JUDGES the directory.
 
 THE CREDENTIAL IS A GOOGLE ID TOKEN (owner decision 2026-10-18: nothing in
-Terraform is public). The echo server's only invoker is the acceptance
-identity, the account accept.yml federates as (vars.GCP_ACCEPT_SA;
-terraform/infra/mcp_test_server.tf). `token` asks IAM Credentials
-`generateIdToken` for that account's ID token, audience the echo service's
-URL, using swarm-verify's own access token from the metadata server -- so
-swarm-verify must hold roles/iam.serviceAccountOpenIdTokenCreator on the
-acceptance account (a terraform/bootstrap grant; until it exists the mint is
-refused 403 and every task check SKIPS naming it). Google issues the token
-for one hour; it goes out as the task's `mcp_credentials` value with
+Terraform is public). The echo server's only invoker is swarm-verify, the
+identity this suite runs as (terraform/infra/mcp_test_server.tf). `token`
+asks the metadata server for the runtime identity's OWN ID token, audience
+the echo service's URL -- what google.oauth2.id_token.fetch_id_token does on
+Cloud Run, without its dependency (this image carries python3's standard
+library only). The suite impersonates no other account, so no
+serviceAccountOpenIdTokenCreator grant exists or is needed. Google issues the
+token for one hour; it goes out as the task's `mcp_credentials` value with
 `expires_in` its remaining life, so the relay sends it as the Authorization
 header exactly as it sends a caller's credential, and Cloud Run's IAM check
 on it is what admits the call.
@@ -149,14 +148,12 @@ EXPIRES_IN = 3600
 #: An ID token's `expires_in` is its `exp` less now, within §4.3's bounds and
 #: never past the hour Google issues it for.
 MIN_TOKEN_LIFE, MAX_TOKEN_LIFE = 60, 3600
-#: swarm-verify's own access token, and IAM's mint of the acceptance
-#: identity's ID token with it.
-METADATA_TOKEN_URL = ("http://metadata.google.internal/computeMetadata/v1/instance/"
-                      "service-accounts/default/token")
-ID_TOKEN_URL = ("https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/"
-                "{account}:generateIdToken")
-#: A user-managed service account's address, nothing else: the invoker is
-#: interpolated into ID_TOKEN_URL's path.
+#: The metadata server's ID token for the runtime identity itself (swarm-verify),
+#: `?audience=<aud>&format=full` appended.
+METADATA_IDENTITY_URL = ("http://metadata.google.internal/computeMetadata/v1/instance/"
+                         "service-accounts/default/identity")
+#: A user-managed service account's address, nothing else: the identity the
+#: minted token must name.
 INVOKER = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]"
                      r"\.iam\.gserviceaccount\.com$")
 #: swarm_redaction's mask, and how much of a JWT its `jwt` rule keeps.
@@ -304,7 +301,7 @@ def jwt_claims(token: str) -> dict[str, Any] | None:
 
 def audience(url: str) -> str | None:
     """The ID token's audience for a Cloud Run URL: its https origin. Only a
-    run.app host: the token is the acceptance identity's, and a registration
+    run.app host: the token is the runtime identity's, and a registration
     edited to point elsewhere must not get one minted for its host."""
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password \
@@ -328,44 +325,28 @@ class Minted:
     expires_in: int
     #: "" on success; otherwise why, naming no value.
     reason: str
-    #: IAM refused the mint: the owner's grant is missing, not a regression.
-    refused: bool = False
 
 
 def mint_id_token(invoker: str, aud: str, fetch: Fetch = http_fetch,
                   now: Callable[[], float] = time.time) -> Minted:
-    """The acceptance identity's ID token for `aud`, minted with swarm-verify's
-    own access token. Neither token is ever returned in a reason."""
+    """The runtime identity's own ID token for `aud`, from the metadata server.
+    `invoker` is the identity the token must name (swarm-verify). The token is
+    never returned in a reason."""
     if not INVOKER.match(invoker):
         return Minted(None, 0, "the invoker is not a service account address")
-    status, raw = fetch("GET", METADATA_TOKEN_URL, {"Metadata-Flavor": "Google"}, None)
-    try:
-        access = json.loads(raw.decode("utf-8")).get("access_token") if status == 200 else None
-    except (ValueError, UnicodeDecodeError, AttributeError):
-        access = None
-    if not isinstance(access, str) or not access:
-        return Minted(None, 0, f"the metadata server gave swarm-verify no access token (HTTP {status})")
     status, raw = fetch(
-        "POST", ID_TOKEN_URL.format(account=invoker),
-        {"Authorization": "Bearer " + access, "Content-Type": "application/json"},
-        json.dumps({"audience": aud, "includeEmail": True}).encode())
-    del access
+        "GET", METADATA_IDENTITY_URL + "?" + urllib.parse.urlencode(
+            {"audience": aud, "format": "full"}),
+        {"Metadata-Flavor": "Google"}, None)
     if status != 200:
-        word = _google_error(raw)
-        return Minted(None, 0, f"IAM refused to mint an ID token as {invoker}: HTTP {status}"
-                      + (f" {word}" if word else "")
-                      + ("; swarm-verify needs roles/iam.serviceAccountOpenIdTokenCreator on "
-                         "that account (terraform/bootstrap)" if status == 403 else ""),
-                      refused=status == 403)
-    try:
-        token = json.loads(raw.decode("utf-8")).get("token")
-    except (ValueError, UnicodeDecodeError, AttributeError):
-        token = None
-    claims = jwt_claims(token) if isinstance(token, str) else None
+        return Minted(None, 0, f"the metadata server gave the runtime identity no ID token (HTTP {status})")
+    token = raw.decode("utf-8", errors="replace").strip()
+    claims = jwt_claims(token)
     if claims is None:
-        return Minted(None, 0, "IAM answered 200 without a JWT")
+        return Minted(None, 0, "the metadata server answered 200 without a JWT")
     if claims.get("aud") != aud or claims.get("email") != invoker:
-        return Minted(None, 0, "the minted token is not for this audience and invoker")
+        return Minted(None, 0, "the minted token is not for this audience and the runtime identity "
+                      f"{invoker} (it runs as another account?)")
     exp = claims.get("exp")
     life = int(exp - now()) if isinstance(exp, (int, float)) else 0
     if life < MIN_TOKEN_LIFE:
@@ -387,7 +368,7 @@ def token(base: Path, invoker: str, fetch: Fetch = http_fetch,
     values = _read_json(base / "secrets.json")
     if not isinstance(values, dict):
         _write_private(base / "token.json", json.dumps(
-            {"minted": False, "refused": False, "reason": "run `mint` first"}))
+            {"minted": False, "reason": "run `mint` first"}))
         return False
     aud = audience(registered_url(base))
     minted = (mint_id_token(invoker, aud, fetch, now) if aud else
@@ -397,7 +378,7 @@ def token(base: Path, invoker: str, fetch: Fetch = http_fetch,
         values = {**values, "credential": minted.token, "credential_expires_in": minted.expires_in}
         _write_private(base / "secrets.json", json.dumps(values))
     _write_private(base / "token.json", json.dumps({
-        "minted": minted.token is not None, "refused": minted.refused, "reason": minted.reason,
+        "minted": minted.token is not None, "reason": minted.reason,
         "invoker": invoker, "audience": aud or "", "expires_in": minted.expires_in}))
     return minted.token is not None
 
@@ -711,8 +692,6 @@ def _not_measured(run: Run) -> str | None:
         return f"the registration {run.server!r} does not allow {PROFILE}"
     if run.submit.get("code") == "mcp_unavailable":
         return "swarm-api refused the dispatch mcp_unavailable: the feature is dark (SWARM_MCP_SERVERS is not on)"
-    if not run.values.get("credential") and run.token.get("refused") is True:
-        return str(run.token.get("reason") or "IAM refused to mint the ID token")
     if not run.task:
         return None
     if run.state.startswith(_HELD):
@@ -1028,31 +1007,26 @@ def fake_id_token(aud: str, email: str, life: int = 3600, now: float | None = No
                      _b64url(secrets.token_bytes(256))])
 
 
-def fake_google(aud: str, invoker: str, *, metadata: int = 200, iam: int = 200,
+def fake_google(aud: str, invoker: str, *, metadata: int = 200,
                 token_value: str | None = None, cloud_run: int = 403,
                 calls: list[tuple[str, str, dict[str, str]]] | None = None) -> Fetch:
-    """The metadata server, IAM Credentials and the Cloud Run front door, as
+    """The metadata server's identity endpoint and the Cloud Run front door, as
     `fetch` sees them: what the deployed group talks to, with no network."""
-    access = secrets.token_hex(16)
     minted = token_value if token_value is not None else fake_id_token(aud, invoker)
 
     def fetch(method: str, url: str, headers: dict[str, str],
               data: bytes | None) -> tuple[int, bytes]:
         if calls is not None:
             calls.append((method, url, dict(headers)))
-        if url == METADATA_TOKEN_URL:
-            body_ = {"access_token": access, "expires_in": 3599, "token_type": "Bearer"}
-            return metadata, json.dumps(body_).encode() if metadata == 200 else b""
-        if url == ID_TOKEN_URL.format(account=invoker):
-            if headers.get("Authorization") != "Bearer " + access:
-                return 401, json.dumps({"error": {"status": "UNAUTHENTICATED"}}).encode()
-            if iam != 200:
-                return iam, json.dumps({"error": {"status": "PERMISSION_DENIED",
-                                                  "message": "denied"}}).encode()
-            asked = json.loads(data or b"{}")
-            if asked.get("audience") != aud or asked.get("includeEmail") is not True:
-                return 400, b"{}"
-            return 200, json.dumps({"token": minted}).encode()
+        if url.startswith(METADATA_IDENTITY_URL + "?"):
+            asked = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+            if headers.get("Metadata-Flavor") != "Google":
+                return 403, b"Missing Metadata-Flavor:Google header."
+            if metadata != 200:
+                return metadata, b""
+            if asked.get("audience") != [aud] or asked.get("format") != ["full"]:
+                return 400, b"bad audience"
+            return 200, minted.encode()
         if url.startswith(aud + "/"):
             return cloud_run, b"<html>Forbidden</html>" if cloud_run == 403 else b"{}"
         return 0, b""
@@ -1062,7 +1036,7 @@ def fake_google(aud: str, invoker: str, *, metadata: int = 200, iam: int = 200,
 def _selftest_token(problems: list[str]) -> None:
     """`token` and `probe` against fake_google: the happy path, every refusal,
     and that no value reaches a file other than secrets.json."""
-    invoker = "swarm-accept@saga-agents-staging.iam.gserviceaccount.com"
+    invoker = "swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
     url = "https://swarm-mcp-echo-" + secrets.token_hex(5) + "-uc.a.run.app/mcp"
     aud = url[:-len("/mcp")]
     with tempfile.TemporaryDirectory(prefix="mcp-token-") as root:
@@ -1077,11 +1051,11 @@ def _selftest_token(problems: list[str]) -> None:
         fresh()
         calls: list[tuple[str, str, dict[str, str]]] = []
         if not token(base, invoker, fake_google(aud, invoker, calls=calls)):
-            problems.append("token: a granted mint was not recorded as minted")
+            problems.append("token: a served mint was not recorded as minted")
         values = json.loads((base / "secrets.json").read_text())
         claims = jwt_claims(values.get("credential", "")) or {}
         if claims.get("aud") != aud or claims.get("email") != invoker:
-            problems.append("token: the credential is not the acceptance identity's token "
+            problems.append("token: the credential is not the runtime identity's token "
                             "for the echo service's origin")
         if not 3500 <= int(values.get("credential_expires_in", 0)) <= MAX_TOKEN_LIFE:
             problems.append("token: expires_in is not the token's own remaining hour")
@@ -1090,8 +1064,8 @@ def _selftest_token(problems: list[str]) -> None:
         for name in ("token.json",):
             if values["credential"] in (base / name).read_text():
                 problems.append(f"token: {name} holds the minted token")
-        if [c[1] for c in calls] != [METADATA_TOKEN_URL, ID_TOKEN_URL.format(account=invoker)]:
-            problems.append("token: the mint did not go metadata server, then IAM Credentials")
+        if len(calls) != 1 or not calls[0][1].startswith(METADATA_IDENTITY_URL + "?"):
+            problems.append("token: the mint did not go to the metadata server's identity endpoint alone")
         if calls and calls[0][2].get("Metadata-Flavor") != "Google":
             problems.append("token: the metadata request lacks Metadata-Flavor: Google")
         task_body = body(values, kind="task", server="acc-echo", run_id="r1", metadata={})
@@ -1102,25 +1076,22 @@ def _selftest_token(problems: list[str]) -> None:
             problems.append("body: the minted token is in the task's input, where the agent reads it")
 
         refusals = [
-            ("IAM refuses the mint", fake_google(aud, invoker, iam=403), True),
-            ("the metadata server is down", fake_google(aud, invoker, metadata=500), False),
-            ("IAM answers a token for another audience",
-             fake_google(aud, invoker, token_value=fake_id_token("https://elsewhere.example", invoker)),
-             False),
-            ("IAM answers a token for another identity",
-             fake_google(aud, invoker, token_value=fake_id_token(aud, "other@x.iam.gserviceaccount.com")),
-             False),
-            ("IAM answers a token that is about to expire",
-             fake_google(aud, invoker, token_value=fake_id_token(aud, invoker, life=30)), False),
-            ("IAM answers something that is not a JWT",
-             fake_google(aud, invoker, token_value=secrets.token_hex(24)), False),
+            ("the metadata server is down", fake_google(aud, invoker, metadata=500)),
+            ("the metadata server answers a token for another audience",
+             fake_google(aud, invoker, token_value=fake_id_token("https://elsewhere.example", invoker))),
+            ("the metadata server answers a token for another identity",
+             fake_google(aud, invoker, token_value=fake_id_token(aud, "other@x.iam.gserviceaccount.com"))),
+            ("the metadata server answers a token that is about to expire",
+             fake_google(aud, invoker, token_value=fake_id_token(aud, invoker, life=30))),
+            ("the metadata server answers something that is not a JWT",
+             fake_google(aud, invoker, token_value=secrets.token_hex(24))),
         ]
-        for what, fetch, refused in refusals:
+        for what, fetch in refusals:
             fresh()
             if token(base, invoker, fetch):
                 problems.append(f"token: {what}, and it was recorded as minted")
             state = json.loads((base / "token.json").read_text())
-            if state.get("minted") is not False or state.get("refused") is not refused:
+            if state.get("minted") is not False:
                 problems.append(f"token: {what}: token.json says {state}")
             if "credential" in json.loads((base / "secrets.json").read_text()):
                 problems.append(f"token: {what}, and secrets.json holds a credential anyway")
@@ -1151,7 +1122,7 @@ def _selftest_server(problems: list[str]) -> dict[str, Any]:
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     url = f"http://127.0.0.1:{httpd.server_address[1]}{server.MCP_PATH}"
-    value = fake_id_token("https://swarm-mcp-echo.a.run.app", "swarm-accept@p.iam.gserviceaccount.com")
+    value = fake_id_token("https://swarm-mcp-echo.a.run.app", "swarm-verify@p.iam.gserviceaccount.com")
     auth = {"Authorization": "Bearer " + value, "X-Swarm-Task": "task_" + "a" * 20,
             "X-Swarm-Attempt": "att_" + "b" * 20}
     report: dict[str, Any] = {}
@@ -1224,7 +1195,7 @@ def _evidence(base: Path, values: dict[str, str], report: dict[str, Any]) -> Non
         "name": server, "enabled": True, "auth": {"mode": "dispatch"},
         "allowed_profiles": [PROFILE]}}))
     (base / "door.json").write_text(json.dumps({"status": "422", "code": "mcp_server_unregistered"}))
-    (base / "token.json").write_text(json.dumps({"minted": True, "refused": False, "reason": "",
+    (base / "token.json").write_text(json.dumps({"minted": True, "reason": "",
                                                  "expires_in": values["credential_expires_in"]}))
     (base / "unauthenticated.json").write_text(json.dumps({"status": 403}))
     (base / "submit.json").write_text(json.dumps({"status": "201", "code": None, "task": task}))
@@ -1422,18 +1393,11 @@ def _mutations(values: dict[str, str]) -> list[tuple[str, str, str, Any]]:
          lambda base: (base / "unauthenticated.json").unlink()),
         ("there is no registration to probe", "unauthenticated_refused", "SKIP",
          lambda base: (base / "registration.json").unlink()),
-        ("IAM refused to mint the ID token", "credential_seen", "SKIP",
+        ("the ID token could not be minted", "no_leak", "FAIL",
          lambda base: [_write_private(base / "secrets.json", json.dumps(
              {k: v for k, v in values.items() if not k.startswith("credential")})),
-             write("token.json", json.dumps({"minted": False, "refused": True,
-                                             "reason": "IAM refused: HTTP 403"}))(base),
-             write("submit.json", json.dumps({"status": "not sent", "code": None, "task": ""}))(base),
-             write("task", "\n")(base)]),
-        ("the ID token could not be minted for another reason", "no_leak", "FAIL",
-         lambda base: [_write_private(base / "secrets.json", json.dumps(
-             {k: v for k, v in values.items() if not k.startswith("credential")})),
-             write("token.json", json.dumps({"minted": False, "refused": False,
-                                             "reason": "IAM answered 200 without a JWT"}))(base),
+             write("token.json", json.dumps({"minted": False,
+                                             "reason": "the metadata server answered 200 without a JWT"}))(base),
              write("submit.json", json.dumps({"status": "not sent", "code": None, "task": ""}))(base),
              write("task", "\n")(base)]),
     ]
@@ -1450,7 +1414,7 @@ def selftest() -> int:
     with tempfile.TemporaryDirectory(prefix="mcp-mint-") as minted:
         values: dict[str, Any] = mint(Path(minted))
     values["credential"] = fake_id_token("https://swarm-mcp-echo.a.run.app",
-                                         "swarm-accept@p.iam.gserviceaccount.com")
+                                         "swarm-verify@p.iam.gserviceaccount.com")
     values["credential_expires_in"] = 3599
     _, claims_segment, signature = values["credential"].split(".")
     # The server hashed its own loopback bearer; the evidence is built for

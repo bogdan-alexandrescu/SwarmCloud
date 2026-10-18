@@ -35,15 +35,14 @@
 # `mcp_unavailable`) is a SKIP naming the reason, never a pass.
 #
 # NOTHING IS PUBLIC (owner decision 2026-10-18, lane MCP-ACCEPT-B). The echo
-# server's one invoker is the acceptance identity, the account accept.yml
-# federates as (terraform/infra/mcp_test_server.tf), so the per-run credential
-# is that account's Google ID token, audience the service's URL: exactly what
-# a caller sends for its own server. swarm-verify mints it through IAM
-# Credentials, which needs roles/iam.serviceAccountOpenIdTokenCreator for
-# swarm-verify on that account (terraform/bootstrap, the owner's root); a mint
-# IAM refuses leaves no task and every task check SKIPS naming the grant.
-# MCP_INVOKER is the account: SWARM_ACCEPTANCE_MCP_INVOKER, or the address
-# terraform/bootstrap/acceptance.tf gives "<name_prefix>-accept".
+# server's one invoker is swarm-verify, the identity this suite runs as
+# (terraform/infra/mcp_test_server.tf), so the per-run credential is the
+# suite's OWN Google ID token, audience the service's URL: exactly what a
+# caller sends for its own server. The judge asks the metadata server for it;
+# nothing is impersonated and no token-creator grant exists. A token it cannot
+# get leaves no task and the checks that needed it FAIL naming why.
+# MCP_INVOKER is the identity the token must name: SWARM_ACCEPTANCE_MCP_INVOKER,
+# or swarm-verify's address in this project.
 #
 # THE CREDENTIAL IS NEVER A SHELL VALUE. tests/acceptance/test_caller_mcp.py
 # mints it into a 0600 file in this run's work directory and writes the
@@ -73,7 +72,7 @@ MCP_JUDGE="tests/acceptance/test_caller_mcp.py"
 #: The name the echo server is registered under in the smoke tenant.
 MCP_SERVER="${SWARM_ACCEPTANCE_MCP_SERVER:-acc-echo}"
 #: The one identity the echo server admits, whose ID token is the credential.
-MCP_INVOKER="${SWARM_ACCEPTANCE_MCP_INVOKER:-swarm-accept@${PROJECT_ID}.iam.gserviceaccount.com}"
+MCP_INVOKER="${SWARM_ACCEPTANCE_MCP_INVOKER:-swarm-verify@${PROJECT_ID}.iam.gserviceaccount.com}"
 #: The streams GET /v1/tasks/{id}/logs serves (swarm_api.inspect.LOG_STREAMS),
 #: and the most 1 MiB pages read of one before the read is called unread.
 MCP_LOG_STREAMS=(stdout stderr agent_stdout agent_stderr)
