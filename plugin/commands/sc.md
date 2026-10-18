@@ -39,6 +39,14 @@ run them here: `sc` has no such view. They are the `sc` skill's verbs -- one
 the CronCreate schedule `swarm_check_schedule` hands back -- so follow that
 skill's `check` and `watch` sections.
 
+If the arguments are `inputs` or `answer <wf_id> <step_id> [file ...]`, do
+**not** run them here: `sc` has no such view. `inputs` is one `swarm_inputs`
+read of the workflow steps waiting for a person's answer; `answer` is
+`swarm_workflow_input`, which asks the operator for the answer in this host's
+own form and sends only what they type there and the files they tick. Follow
+the `sc` skill's `inputs` and `answer` sections, and never pass the answer
+yourself: the tool refuses a call that carries one.
+
 If the arguments are `run --issue ...` or `plan approve|edit|reject ...`, do
 **not** run them here: they create an issue run or act on its plan, so they
 are not views. Use the `sc` skill's `run --issue` and `plan` verbs, which say

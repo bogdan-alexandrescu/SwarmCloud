@@ -963,6 +963,37 @@ never lists it: five lanes dispatched that day ran with no row at all. So:
   **`/sc attach --all`**: it covers workflows and single tasks alike. A task
   this session dispatches needs nothing — its reply starts the row.
 
+### A workflow step that waits for a person (HW-MCP)
+
+docs/design/human-steps.md §4.2, §4.5 and §4.8. An `await-input` step parks
+`AWAITING_INPUT`, holds no lease and no capacity, and waits up to 24 hours
+for any member of its tenant to answer. Ships dark: until the owner makes the
+`await-input` profile available (contract request D), no such step can be
+submitted and these tools find nothing.
+
+* **`swarm_inputs`** (`/sc inputs`) lists the tenant's waiting steps
+  (`GET /v1/inputs?status=waiting`), each with the call that answers it.
+* **`swarm_workflow_input`** (`/sc answer <wf_id> <step_id> [file ...]`)
+  answers one. **The person types the answer, never the agent**: the tool
+  takes only `workflow_id`, `step_id` and `files`, and refuses any other
+  argument before it reads or sends anything. It reads the step (`GET
+  .../steps/{step}/input`), shows its prompt and what it stages in the
+  host's MCP elicitation, and sends only what the person typed there --
+  Approve or Request changes plus findings, an answer per upstream question,
+  or a text -- as `via: "mcp"`. A host that cannot elicit is refused with
+  the step's console link. `files` are local paths the agent may propose;
+  the elicitation lists each one's name, bytes and sha256 under the
+  console's warning ("Files go to the next agent byte for byte..."), and
+  they are sent, as one multipart answer, only when the person ticks "Send
+  the files". More than 10 files or 16 MiB is refused before anything is
+  read from the API; more than the step's own `max_files` before the person
+  is asked. The form waits up to 30 minutes for the person.
+* **`swarm_workflow_status`** rows carry `awaiting` (tenant, window, form,
+  artifact, max_files, remind) on a waiting step and `answered` (who, when,
+  via, files) once it is answered.
+* A `swarm_workflow` spec step may carry `await_input`; the bridge checks
+  only that it is an object and swarm-api checks the rest.
+
 ### Stuck or stale work, checked on an interval (SC-WATCH)
 
 Owner request 2026-10-14: a check every set interval (default 30 minutes)
@@ -977,7 +1008,10 @@ of the project running at the time.
   CI_PENDING past 90 minutes or on a dependency that failed, a merge step
   refused with `head_moved`, `merge_conflict` or `checks_failed`, and a
   workflow whose stored state disagrees with its derived state about whether
-  it is finished. Each comes with the evidence the API served, its console
+  it is finished. A step waiting for a person (`AWAITING_INPUT`) is listed
+  apart, under `awaiting_input`, as information and not as stuck; it is
+  flagged STUCK only when it is still parked more than two ticks of the
+  one-minute expiry sweep past its `expires_at`. Each comes with the evidence the API served, its console
   link and the next command; it acts on none of them. The API serves no pull
   request state, so a refused merge's PR is linked, not read. Then it calls
   `swarm_workflow_launch {attach: "all", repository, new_only: true}`: rows

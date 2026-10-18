@@ -50,6 +50,7 @@ import re
 import threading
 from typing import Any, Callable
 
+from . import awaitinput
 from . import profiles as catalogue
 from .client import SwarmClient, SwarmError, session_tag
 from .follow import follow_command
@@ -94,6 +95,10 @@ _STEP_KEYS = frozenset(
         # A step that may end SUCCEEDED with no change (#644): the API has taken
         # it since then; until 2026-10-07 this list refused it at the keyboard.
         "allow_empty_diff",
+        # A step that waits for a person (docs/design/human-steps.md §4.1):
+        # sent as given; swarm-api checks the block and its profile, and
+        # refuses it while `await-input` is unavailable.
+        "await_input",
     }
 )
 
@@ -358,6 +363,16 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
                 )
             if raw["allow_empty_diff"]:
                 step["allow_empty_diff"] = True
+        if raw.get("await_input") is not None:
+            # THE SHAPE ONLY: an object. Its fields, their bounds and which
+            # profile may carry it are `swarm_api.validation`'s rules
+            # (`resolve_await_input`) and are not restated here.
+            if not isinstance(raw["await_input"], dict):
+                raise SwarmError(
+                    f"{where}: await_input must be an object -- the form a person answers, "
+                    'e.g. {"form": "verdict", "expires_after_seconds": 86400, "on_expire": "fail"}'
+                )
+            step["await_input"] = dict(raw["await_input"])
         if raw.get("stage") is not None and not isinstance(raw.get("stage"), str):
             raise SwarmError(f"{where}: stage must be a string -- a note for the spec's reader, never sent")
         steps.append(step)
@@ -977,6 +992,9 @@ def step_rows(
             row["cancel_requested"] = True
         if task.get("park_reason"):
             row["park_reason"] = task["park_reason"]
+        # A step waiting for a person: its window, or once answered who
+        # answered (docs/design/human-steps.md §4.5). Nothing for any other.
+        row.update(awaitinput.row_fields(task, envelope.get("tenant_id")))
         if task.get("blocked_by"):
             row["blocked_by"] = task["blocked_by"]
         if task.get("last_error"):
