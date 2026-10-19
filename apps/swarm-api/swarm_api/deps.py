@@ -49,6 +49,7 @@ from .outcomes import Outcomes
 from .purge import ArtifactPurger, build_artifact_purger
 from .roles import RoleStore
 from .ratelimit import TokenBucketLimiter
+from .registry import WorkspaceRegistry
 from .rollup import WorkflowRollups
 from .service import SubmissionService
 from .specsigning import SpecSigner, signer_from_settings
@@ -221,6 +222,11 @@ def build_context(
         # A person's own ready personal workspace is their default tenant
         # (#1200); read from the same named database.
         personal=PersonalTenants(db),
+        # The `ready` job-made group and service records (docs/design/
+        # workspace-kinds.md §4.4), from the same named database. Without it
+        # every request reads the empty registry and no job-made workspace
+        # ever resolves or admits anyone.
+        registry=WorkspaceRegistry.from_settings(db, settings),
     )
     spec_signer = signer_from_settings(settings) if signer is _MISSING else signer
     # Built before the submissions service, which reads a `merge_pr` workflow's

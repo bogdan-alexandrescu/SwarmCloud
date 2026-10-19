@@ -411,6 +411,10 @@ def test_a_chosen_tenants_artifact_is_served_with_the_query_parameter(client, db
 
 def test_the_query_parameter_cannot_grant_a_tenant(client, db, objects):
     an_artifact_in(db, objects, "research", "task_r")
+    # One authenticated request first reads the workspace registry into its
+    # cache (§4.4), as any request before this one would have; what is
+    # measured below is that the refusal itself reads nothing.
+    assert client.get("/v1/tenants/me", headers=as_("alice")).status_code == 200
     before = dict(db.docs)
     touched = db.touched
     refused = client.get(raw_url("task_r", tenant="research"), headers=as_("alice"))
@@ -463,6 +467,10 @@ def test_a_chosen_tenants_checkpoint_downloads_with_the_query_parameter(client, 
 
 def test_the_query_parameter_cannot_grant_a_checkpoint(client, db, objects):
     a_checkpoint_in(db, objects, "research", "task_r")
+    # One authenticated request first reads the workspace registry into its
+    # cache (§4.4), as any request before this one would have; what is
+    # measured below is that the refusal itself reads nothing.
+    assert client.get("/v1/tenants/me", headers=as_("alice")).status_code == 200
     before = dict(db.docs)
     touched = db.touched
     refused = client.get(checkpoint_url("task_r", tenant="research"), headers=as_("alice"))
@@ -527,3 +535,50 @@ def test_the_reach_leaves_every_headerless_default_as_it_was(db, tokens, group_m
         response = submit(client, user)
         assert response.status_code == 201, response.text
         assert response.json()["task"]["tenant_id"] == expected, user
+
+
+# -- a job-made group workspace (docs/design/workspace-kinds.md §4.4) ----------
+#
+# Only research's `ready` record registers it here: TENANT_GROUPS is eng alone.
+# The header selects it exactly as it selects a Terraform group -- for a
+# confirmed member, and for nobody while the record is still being built.
+
+def _registry_authenticator(db, group_map: dict[str, tuple[str, ...]]) -> Authenticator:
+    from swarm_api.registry import WorkspaceRegistry
+
+    settings = api_settings(tenant_groups=(ENG_GROUP,))
+    claims = {
+        f"t-{email.split('@')[0]}": {"email": email, "email_verified": True, "sub": f"s-{email}"}
+        for email in group_map
+    }
+    return Authenticator(settings, StaticTokenVerifier(claims), StaticGroups(group_map),
+                         registry=WorkspaceRegistry.from_settings(db, settings))
+
+
+def _job_made_research(db, state: str) -> None:
+    db.document("workspaces/research").set({
+        "kind": "group", "principal": RESEARCH_GROUP, "state": state,
+        "workspace_id": "w-00c0de",
+    })
+
+
+def test_the_header_selects_a_ready_job_made_group_for_its_member(group_map):
+    db = FakeFirestore()
+    _job_made_research(db, "ready")
+    auth = _registry_authenticator(db, group_map)
+    chosen = auth.authenticate("Bearer t-dave", None, tenant="research")
+    assert (chosen.tenant_id, chosen.tenant_principal) == ("research", RESEARCH_GROUP)
+    assert auth.authenticate("Bearer t-dave").tenant_id == "eng"
+    assert auth.authenticate("Bearer t-bob").tenant_id == "research"
+    with pytest.raises(Forbidden):
+        auth.authenticate("Bearer t-alice", None, tenant="research")
+
+
+def test_the_header_cannot_select_a_job_made_group_that_is_not_ready(group_map):
+    db = FakeFirestore()
+    _job_made_research(db, "applying")
+    auth = _registry_authenticator(db, group_map)
+    for user in ("bob", "dave"):
+        with pytest.raises(Forbidden):
+            auth.authenticate(f"Bearer t-{user}", None, tenant="research")
+    assert auth.authenticate("Bearer t-bob").tenant_id == "u-bob"
