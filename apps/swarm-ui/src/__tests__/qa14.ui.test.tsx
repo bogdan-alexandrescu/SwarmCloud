@@ -119,11 +119,25 @@ describe('QA14-UI (1): /details opens Details on a running agent', () => {
     expect(go.mock.calls.map((c) => c[0])).not.toContain(`${BASE}/browser`)
   })
 
-  it('keeps the running default for the bare address: a running agent opens on Logs', async () => {
+  it('keeps the running default for the bare address: a running agent stays on Details (#1646)', async () => {
     api.loadTask.mockResolvedValue(ok(agent()))
     const go = vi.fn()
     render(<AgentSplit taskId={ID} pane="detail" artifact={null} closeTo="work/running/live" go={go} base={BASE} />)
-    await waitFor(() => expect(go).toHaveBeenCalledWith(`${BASE}/logs`))
+    await waitFor(() => expect(api.loadLiveSession).toHaveBeenCalled())
+    await waitFor(() => expect(document.querySelector('.ag-head-title')?.textContent).toBe('fix-heartbeat'))
+    await settle()
+    expect(go).not.toHaveBeenCalled()
+    const tab = screen.getAllByRole('tab').find((t) => t.textContent?.startsWith('Details'))!
+    expect(tab.getAttribute('aria-selected')).toBe('true')
+  })
+
+  it('keeps the running default for the bare address: a running live-browser agent goes to /browser', async () => {
+    api.loadTask.mockResolvedValue(ok(agent({ runner_profile: 'claude-code-browser', resource_class: 'browser' })))
+    api.loadLiveSession.mockResolvedValue(ok<LiveRead>({ live_browser: true, session: null }))
+    const go = vi.fn()
+    render(<AgentSplit taskId={ID} pane="detail" artifact={null} closeTo="work/running/live" go={go} base={BASE} />)
+    await waitFor(() => expect(go).toHaveBeenCalledWith(`${BASE}/browser`))
+    expect(go.mock.calls.map((c) => c[0])).not.toContain(`${BASE}/logs`)
   })
 })
 

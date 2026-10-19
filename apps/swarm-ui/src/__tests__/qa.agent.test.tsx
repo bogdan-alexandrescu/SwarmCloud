@@ -28,12 +28,12 @@ afterEach(() => {
 })
 
 async function split(): Promise<HTMLElement> {
-  window.location.hash = '#work/task/task_a073aff5'
+  // At its Logs address: a running agent opens on Details since #1646.
+  window.location.hash = '#work/task/task_a073aff5/logs'
   render(<App />)
   return waitFor(() => {
     const s = document.querySelector<HTMLElement>('.ag-split')
     expect(s).not.toBeNull()
-    // A running agent opens on its log (U11a).
     expect(s!.querySelector('.ag-split-pane > .ag-logs')).not.toBeNull()
     return s!
   })

@@ -5,13 +5,13 @@
  * The bottom dock -- its strip, its resize handle, `Open full` and the page
  * scroll it caused (D7) -- is gone; the log is a full-height Logs tab at
  * `/agents/<tab>/<id>/logs`, with all four streams visible (D13 hid them in a
- * scrolling pill row). A running agent opens on Logs and a finished one on
- * Details. Escape in the log's More closes the menu and stops there (N11).
+ * scrolling pill row). An agent opens on Details, running or finished (#1646,
+ * 2026-10-19; a running one opened on Logs from 2026-10-04). Escape in the log's More closes the menu and stops there (N11).
  *
  * MUTATIONS: render a log element outside the pane or position one over it
  * (`position: fixed|absolute|sticky` on `.ag-logs`/`.ag-loglast`); drop a
  * stream from the segmented control or let it spill into More; drop the
- * default-tab effect or send a finished or waiting agent to Logs; drop `onMoreKey`'s
+ * default-tab effect or send a running, finished or waiting agent to Logs; drop `onMoreKey`'s
  * `stopPropagation`; restore `flex-wrap: wrap` on the bar or drop the spill
  * effect; drop `top: 16px` or the `- 16px`. Each turns a case red.
  */
@@ -303,23 +303,30 @@ describe('no element of the detail is covered by a log element, at any split wid
   }
 })
 
-describe('a running agent opens on Logs, a finished one on Details', () => {
-  it('opens a running agent on its log', async () => {
+// OPEN-DETAILS (#1646, owner decision 2026-10-19): a running agent opens on
+// Details, as a finished one does; it went to Logs from 2026-10-04 until then.
+describe('a running agent opens on Details, as a finished one does', () => {
+  it('keeps a running agent at its bare address on Details and never navigates', async () => {
     serve(running())
     const go = vi.fn()
     render(<Routed start="detail" onGo={go} />)
+    await detailsLanded()
+    screen.getByRole('button', { name: /^Last log line/ })
+    expect(go).not.toHaveBeenCalled()
+    expect(tab('Details').getAttribute('aria-selected')).toBe('true')
+    expect(screen.queryByRole('region', { name: 'Logs' })).toBeNull()
+  })
+
+  it('keeps a running agent opened at /logs on Logs', async () => {
+    serve(running())
+    const go = vi.fn()
+    render(<Routed start="logs" onGo={go} />)
     await landed(api.loadTask)
     screen.getByRole('region', { name: 'Logs' })
-    expect(go).toHaveBeenCalledWith(`work/task/${ID}/logs`)
+    expect(go).not.toHaveBeenCalled()
     expect(tab('Logs').getAttribute('aria-selected')).toBe('true')
-    // A reader who then picks Details stays there. Its read starts only now:
-    // a running agent's Details are not read on the way to its log.
+    // Its Details are not read while the reader is on the log.
     expect(api.loadAgentRun).not.toHaveBeenCalled()
-    fireEvent.click(tab('Details'))
-    await landed(api.loadAgentRun)
-    screen.getByRole('button', { name: /^Last log line/ })
-    expect(tab('Details').getAttribute('aria-selected')).toBe('true')
-    expect(go).toHaveBeenCalledTimes(2)
   })
 
   it('opens a finished agent on Details, whose last log line opens the tab', async () => {
@@ -354,13 +361,13 @@ describe('a running agent opens on Logs, a finished one on Details', () => {
   }
 
   for (const state of ['LEASED', 'DISPATCHED', 'STARTING'] as const) {
-    it(`opens a ${state} agent on its log, as a RUNNING one`, async () => {
+    it(`opens a ${state} agent on Details, as a RUNNING one`, async () => {
       serve(running({ state }))
       const go = vi.fn()
       render(<Routed start="detail" onGo={go} />)
-      await landed(api.loadTask)
-      screen.getByRole('region', { name: 'Logs' })
-      expect(go).toHaveBeenCalledWith(`work/task/${ID}/logs`)
+      await detailsLanded()
+      expect(go).not.toHaveBeenCalled()
+      expect(tab('Details').getAttribute('aria-selected')).toBe('true')
     })
   }
 
