@@ -66,6 +66,14 @@
 # spec key. A project-level iam.serviceAccountKeys.create holder could still
 # make a key for swarm-qa: no key exists, and none is declared here.
 #
+# signJwt signs whatever claims the caller writes, and Google APIs accept a
+# service account's self-signed JWT as a credential. So a JWT signed as
+# swarm-qa reaches exactly what swarm-qa holds, and swarm-qa must hold NOTHING
+# at the project: its one grant is roles/iap.httpsResourceAccessor from
+# frontend_iap_members, on the platform's own backends (wif.tf), the UI's and
+# the API's. Past the front door, swarm-api is still the tenant boundary and
+# swarm-qa has its member rights in its own workspace and no more.
+#
 # NOT VERIFIED LIVE (each fails closed -- a 403 at the front door, no session):
 #
 #   * that IAP accepts a JWT self-signed through signJwt by a service account
