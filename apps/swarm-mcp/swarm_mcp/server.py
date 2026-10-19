@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from swarm_common.profiles import RESOURCE_CLASSES
+from swarm_common.profiles import MODEL_CLASSES, RESOURCE_CLASSES
 
 from . import checkout, compact, config, keys, progress
 from . import profiles as catalogue
@@ -172,6 +172,22 @@ _NEEDS_LOCAL_SCHEMA: dict[str, Any] = {
     ),
 }
 
+#: The model class a task, a step or a run's planner runs (#1435,
+#: docs/design/model-per-step.md §4.8). A NAME from the frozen `MODEL_CLASSES`,
+#: checked against the profile by `profiles.check_model_class` before anything
+#: is sent; the platform runs the class's pinned model. Never a model ID.
+_MODEL_CLASS_SCHEMA: dict[str, Any] = {
+    "type": "string",
+    "enum": list(MODEL_CLASSES),
+    "description": (
+        "The model class to run, BY NAME; omit it for the profile's default (`opus`: "
+        "coding and implementation). `fable` for planning, `sonnet` for summarising "
+        "and reformatting, `haiku` for classifying and extracting. The platform runs "
+        "the class's pinned model (swarm_profiles lists them); a model ID is not "
+        "accepted here. Only profiles that run a Claude model take one."
+    ),
+}
+
 #: The registered repositories a task or step reads beside its own (#1434,
 #: docs/design/multi-repository-steps.md). NAMES, checked for shape by
 #: `client.check_additional_repositories` before anything is sent; swarm-api
@@ -281,13 +297,14 @@ _BATCH_TASK_SCHEMA: dict[str, Any] = {
         "files": _FILES_SCHEMA,
         "mcp_credentials": _MCP_CREDENTIALS_SCHEMA,
         "additional_repositories": _ADDITIONAL_REPOSITORIES_SCHEMA,
+        "model_class": _MODEL_CLASS_SCHEMA,
     },
     "required": ["prompt"],
 }
 
 #: The `swarm_dispatch` arguments that describe ONE task, refused beside `tasks`.
 _SINGLE_TASK_ARGS = ("prompt", "profile", "repo", "ref", "infer", "strategy", "label", "inputs", "files",
-                     "mcp_credentials", "additional_repositories")
+                     "mcp_credentials", "additional_repositories", "model_class")
 
 #: `swarm_account_pause`/`resume`/`drain` share one shape.
 _ACCOUNT_STATE_SCHEMA: dict[str, Any] = {
@@ -417,6 +434,7 @@ TOOLS: list[dict[str, Any]] = [
                 "files": _FILES_SCHEMA,
                 "mcp_credentials": _MCP_CREDENTIALS_SCHEMA,
                 "additional_repositories": _ADDITIONAL_REPOSITORIES_SCHEMA,
+                "model_class": _MODEL_CLASS_SCHEMA,
                 "tasks": {
                     "type": "array",
                     "minItems": 1,
@@ -444,8 +462,11 @@ TOOLS: list[dict[str, Any]] = [
             "The runner profiles this platform will accept BY NAME, with what "
             "each one is: whether it can be dispatched at all and, when it "
             "cannot, why; which backend it lands on; its cpu, memory and "
-            "workspace size; its timeout; and whether it needs a provider "
-            "credential. Read this before dispatching rather than guessing a "
+            "workspace size; its timeout; whether it needs a provider "
+            "credential; and the model classes a step on it may name "
+            "(`model_classes`, its `default_model_class`, and `models`, each "
+            "class's pinned model ID as the platform serves it). Read this "
+            "before dispatching rather than guessing a "
             "name -- a name the catalogue does not hold is refused, and a "
             "profile that is `available: false` is refused WITH a reason that "
             "names the remedy, so it is never a typo to go hunting for.\n"
@@ -1076,6 +1097,7 @@ TOOLS: list[dict[str, Any]] = [
                                     "than the profile's own. Not a resource spec."
                                 ),
                             },
+                            "model_class": _MODEL_CLASS_SCHEMA,
                             "timeout_seconds": {"type": "integer"},
                             "when": {
                                 "type": "object",
@@ -1577,6 +1599,13 @@ TOOLS: list[dict[str, Any]] = [
                 "plan_approval": {"type": "string", "enum": ["required", "auto"], "default": "required"},
                 "auto_merge": {"type": "boolean", "default": False},
                 "fix_rounds": {"type": "integer", "minimum": 1, "maximum": 5},
+                "model_class": {
+                    **_MODEL_CLASS_SCHEMA,
+                    "description": (
+                        "The PLANNER's model class, by name; omit it for the default. "
+                        "Each plan step's class is the planner's to write."
+                    ),
+                },
             },
             "required": ["issue"],
         },
@@ -2484,13 +2513,17 @@ def _step_servers(steps: list[dict[str, Any]]) -> set[str]:
 
 
 def _dispatch_signature(profile: str, prompt: str, strategy: str | None, repository, inputs: Any,
-                        additional: list[dict[str, str]] | None = None) -> tuple:
+                        additional: list[dict[str, str]] | None = None,
+                        model_class: str | None = None) -> tuple:
     # The repositories it reads are part of what the task IS: the same prompt
     # over another set of repositories is a different question, not a repeat.
+    # So is the model class it runs (#1435): one prompt on `haiku` and on
+    # `opus` is a comparison, not a double dispatch.
     return (
         profile, prompt, strategy or "collect", repository.url, repository.ref,
         json.dumps(inputs or {}, sort_keys=True, default=str),
         json.dumps(additional, sort_keys=True),
+        model_class,
     )
 
 
@@ -2750,12 +2783,19 @@ def _declared_files(value: Any, where: str) -> list[str] | None:
     return files or None
 
 
+#: Step keys `workflows.build_steps` never sees: `files` (above), read here
+#: and never sent, and `model_class` (#1435), checked and put back on the
+#: built step by `profiles.with_model_classes`.
+_STEP_KEYS_HELD_HERE = frozenset({"files", "model_class"})
+
+
 def _without_files(steps: Any) -> Any:
-    """Workflow steps with the bridge-only `files` key removed (see above)."""
+    """Workflow steps with the keys this module holds removed (see above)."""
     if not isinstance(steps, list):
         return steps
     return [
-        {k: v for k, v in step.items() if k != "files"} if isinstance(step, dict) else step
+        {k: v for k, v in step.items() if k not in _STEP_KEYS_HELD_HERE}
+        if isinstance(step, dict) else step
         for step in steps
     ]
 
@@ -3230,13 +3270,15 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
         )
         strategy = _dispatch_strategy(item.get("strategy"))
         additional = check_additional_repositories(item.get("additional_repositories"), where=where)
+        model_class = catalogue.check_model_class(profile, item.get("model_class"), where=where)
         repository = checkout.resolve(repo=item.get("repo"), ref=item.get("ref"), infer=_flag(item, "infer"))
         if strategy == "direct-pr" and not repository.url:
             raise SwarmError(
                 f"{where}: strategy 'direct-pr' needs a repository, and this task has "
                 "none: " + "; ".join(repository.notes) + ". Nothing was sent"
             )
-        signature = _dispatch_signature(profile, prompt, strategy, repository, inputs, additional)
+        signature = _dispatch_signature(profile, prompt, strategy, repository, inputs, additional,
+                                        model_class)
         try:
             _refuse_a_repeat_dispatch(client, signature)
         except SwarmError as exc:
@@ -3262,6 +3304,7 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
             inputs=inputs or None,
             strategy=strategy,
             additional_repositories=additional,
+            model_class=model_class,
         )
         if credentials:
             payload["mcp_credentials"] = credentials
@@ -3629,7 +3672,10 @@ def _read_spec_file(path: str, *, base: Path) -> dict[str, Any]:
                 f"accepted: {sorted(workflows.SPEC_KEYS)}"
             )
     try:
-        workflows.read_spec(_spec_without_files(document), where=str(target))
+        catalogue.with_model_classes(
+            workflows.read_spec(_spec_without_files(document), where=str(target))["steps"],
+            document.get("steps") if isinstance(document, dict) else None,
+        )
     except SwarmError as exc:
         raise SwarmError(f"{target} is not a workflow spec: {exc}") from None
     except (TypeError, ValueError):
@@ -3766,11 +3812,15 @@ def _run_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
         fix_rounds = args.get("fix_rounds")
         if fix_rounds is not None and (isinstance(fix_rounds, bool) or not isinstance(fix_rounds, int)):
             raise SwarmError("fix_rounds is an integer. Nothing was sent")
+        # The planner runs `claude-code` (`issueruns.PLANNER_PROFILE`), so its
+        # class is checked against that profile before the run is created.
+        model_class = catalogue.check_model_class("claude-code", args.get("model_class"), where=name)
         run = client.create_run(
             issue=_text_arg(args, "issue", name),
             plan_approval=approval,
             auto_merge=_flag(args, "auto_merge"),
             fix_rounds=fix_rounds,
+            **({"model_class": model_class} if model_class is not None else {}),
         )
         return json.dumps(_run_summary(client, run), indent=2, default=str)
     if name == "swarm_runs":
@@ -4247,6 +4297,11 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         # URL is refused here, before any request (#1434).
         additional = check_additional_repositories(
             args.get("additional_repositories"), where="swarm_dispatch")
+        # THE MODEL CLASS, by name, refused here when the profile cannot run
+        # it (#1435). The API stays the authority, and its 422 -- a gate not
+        # open yet, say -- comes back as it was answered.
+        model_class = catalogue.check_model_class(
+            profile, args.get("model_class"), where="swarm_dispatch")
         # WHAT IS CLONED, decided before anything travels: the caller's repo,
         # or -- only with `infer: true` -- the checkout this bridge runs in,
         # refused when its branch is not pushed, because a remote agent on an
@@ -4257,7 +4312,8 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             ref=args.get("ref"),
             infer=_flag(args, "infer"),
         )
-        signature = _dispatch_signature(profile, args["prompt"], strategy, repository, inputs, additional)
+        signature = _dispatch_signature(profile, args["prompt"], strategy, repository, inputs, additional,
+                                        model_class)
         _refuse_a_repeat_dispatch(client, signature)
         if strategy == "direct-pr" and not repository.url:
             raise SwarmError(
@@ -4282,6 +4338,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             strategy=strategy,
             # Only when named, so a dispatch naming none calls exactly as before.
             **({"additional_repositories": additional} if additional is not None else {}),
+            **({"model_class": model_class} if model_class is not None else {}),
         ))
         task_id = task_id_of(task)
         if not task_id:
@@ -4573,7 +4630,14 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             if args.get("spec_path") is not None
             else args["spec"]
         )
-        return json.dumps({**launch.for_spec(document, client), **watch.arm_fields(True)}, indent=2)
+        # The steps' model classes are checked here and the launch reads the
+        # rest (#1435): `workflows.read_spec`, which it calls, holds no
+        # `model_class` key, and the titled copy needs none.
+        catalogue.check_spec_model_classes(document)
+        return json.dumps({
+            **launch.for_spec(catalogue.spec_without_model_classes(document), client),
+            **watch.arm_fields(True),
+        }, indent=2)
 
     if name == "swarm_apply":
         repo = Path(args.get("repo") or ".").resolve()
@@ -4659,6 +4723,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
                     "submitted. Pass the spec exactly as given, character for character"
                 )
             fields = workflows.read_spec(_spec_without_files(args["spec"]), where="swarm_workflow's `spec`")
+            catalogue.with_model_classes(fields["steps"], args["spec"].get("steps"))
             repo, ref = fields["repository_url"], fields["repository_ref"]
         else:
             if expected_digest not in (None, ""):
@@ -4669,7 +4734,8 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             if args.get("steps") is None:
                 raise SwarmError("swarm_workflow needs `steps`, or a whole `spec` (inline, `spec_path` or `spec_ref`)")
             fields = {
-                "steps": workflows.build_steps(_without_files(args.get("steps"))),
+                "steps": catalogue.with_model_classes(
+                    workflows.build_steps(_without_files(args.get("steps"))), args.get("steps")),
                 "strategy": args.get("strategy"),
                 "carrier": args.get("carrier"),
                 "on_step_failure": args.get("on_step_failure"),

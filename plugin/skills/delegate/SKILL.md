@@ -262,16 +262,32 @@ time, and one call is one window — when `truncated` is true, call again with
 `offset` set to `next_offset`.
 
 `swarm_dispatch` takes `prompt`, `profile`, `repo`, `ref`, `infer`,
-`strategy`, `label`, `inputs` and `additional_repositories` (above) — or, for
-several independent units at once, `tasks`: a list of `{prompt,
-runner_profile, repo, ref, infer, strategy, label, inputs,
-additional_repositories}`, sent as ONE request and answered with every `task_ids` in the
+`strategy`, `label`, `inputs`, `additional_repositories` (above) and
+`model_class` (below) — or, for several independent units at once, `tasks`: a
+list of `{prompt, runner_profile, repo, ref, infer, strategy, label, inputs,
+additional_repositories, model_class}`, sent as ONE request and answered with every `task_ids` in the
 order given. A list longer than the API's `max_batch_size` (its `/v1/stats`
 limits) is refused before anything is sent, and so is a list holding the same
 task twice. Both forms take `target` and `needs_local` (above). The profile is
 a **name** from the frozen catalogue, and the image, command and resource
 class come from the name. There is no parameter for an image, a command or a
-model, and asking for one is not a thing a caller may do.
+model ID.
+
+**A step picks its model class by name** (#1435). `model_class` — on
+`swarm_dispatch`, on each of its `tasks` and on each `swarm_workflow` step (an
+issue run's planner takes one through `/sc run --issue`) — is one of `opus`, `fable`, `sonnet` or
+`haiku`, and the platform runs that class's pinned model; `swarm_profiles`
+lists each profile's `model_classes`, its `default_model_class` and the
+`models` they run. Leave it out for implementation and coding: those stay on
+the default, `opus`. Put mechanical work — classifying, extracting,
+summarising a source, reformatting a document — on `haiku` or `sonnet`, which
+cost a fraction as much, and planning on `fable` where the operator's spec
+asks for it. A model ID (`claude-haiku-5-5`) is not a class and is refused
+before anything is sent, and so is a class on a profile that runs no Claude
+model (`mock`, `codex`); a child task that names none runs its own profile's
+default, never its parent's. The API may still refuse a class with a 422
+(`model_class_not_yet_available` before the deployment offers them): report
+that refusal in its own words, and offer the same work without `model_class`.
 
 `swarm_collect` waits for a list of tasks as `swarm_wait` does and then
 returns each one's state and, for each that FINISHED, what `swarm_result`
@@ -612,7 +628,8 @@ each is a way the same prompt does different work:
   the console is what the remote agent actually got;
 * **its tools are the runner's**, inside its container, not this session's
   tools, MCP servers or permission rules;
-* **its model is pinned on the job**, by the profile; a `model` option on the
+* **its model is the class's pin**, chosen by the step's `model_class` (the
+  profile's default, `opus`, when it names none); a `model` option on the
   `agent()` call changes only the local row's model (invariant 10);
 * **it sees a depth-1 clone of the pushed branch**: no history, no
   uncommitted work — the clean-checkout rule above, unchanged;

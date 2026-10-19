@@ -30,6 +30,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from swarm_common.profiles import MODEL_CLASSES
+
 from . import profiles as catalogue
 from . import progress
 from . import workflows
@@ -293,6 +295,9 @@ def cmd_dispatch(client: SwarmClient, args) -> int:
     # `--input KEY=VALUE`: only what this profile declares, typed by the
     # declaration, and refused before anything travels (#142).
     inputs = catalogue.parse_input_flags(profile, getattr(args, "inputs", None), where=where)
+    # `--model-class NAME`: the class the agent runs, by name, refused here
+    # when the profile cannot run it -- the same check `swarm_dispatch` makes.
+    model_class = catalogue.check_model_class(profile, getattr(args, "model_class", None), where=where)
     task = client.dispatch(
         prompt=prompt,
         runner_profile=profile,
@@ -302,6 +307,7 @@ def cmd_dispatch(client: SwarmClient, args) -> int:
         timeout_seconds=args.timeout,
         model=args.model,
         inputs=inputs or None,
+        **({"model_class": model_class} if model_class is not None else {}),
     )
     if args.json:
         print(json.dumps(task, indent=2))
@@ -1024,7 +1030,10 @@ def cmd_workflow(client: SwarmClient, args) -> int:
         raise SwarmError(f"{args.spec} is not valid JSON: {exc}") from exc
     # The same reader `swarm_workflow`'s `spec` goes through, so the terminal
     # and the tool agree about what a spec file may hold.
-    spec = workflows.read_spec(document, where=args.spec)
+    spec = workflows.read_spec(catalogue.spec_without_model_classes(document), where=args.spec)
+    # Each step's model class (#1435), checked against its profile and put
+    # back, as `swarm_workflow` does.
+    catalogue.with_model_classes(spec["steps"], document.get("steps") if isinstance(document, dict) else None)
 
     envelope = workflows.submit(
         client,
@@ -1340,6 +1349,17 @@ def cmd_profiles(_client, args) -> int:
         )
         if entry.get("provider"):
             print(f"       provider {entry['provider']} -- needs a registered credential")
+        if entry.get("model_classes"):
+            # What `--model-class` and a step's `model_class` may name (#1435).
+            # Classes only: the IDs are the platform's pins, which this
+            # command, reading no API, cannot know.
+            print(
+                "       model classes "
+                + ", ".join(
+                    f"{name} (default)" if name == entry["default_model_class"] else name
+                    for name in entry["model_classes"]
+                )
+            )
         if entry.get("inputs"):
             # What `--input` and a step's `inputs` may carry (#142).
             print(
@@ -1794,14 +1814,33 @@ def build_parser() -> argparse.ArgumentParser:
     #
     # Wiring it through to the agent is NOT a fix to make here: a caller-chosen
     # model in the execution environment is an execution parameter supplied by
-    # the caller, which is what CONTRACT.md invariant 10 exists to forbid. That
-    # is an owner decision and belongs in docs/contract-change-requests.md.
+    # the caller, which is what CONTRACT.md invariant 10 exists to forbid. The
+    # owner's answer (#1435, design B) is `--model-class` below: a class BY
+    # NAME, whose pinned model the platform runs. Since then swarm-api fills
+    # `model` from that pin and refuses any other value (Q4).
     d.add_argument(
         "--model",
         default=None,
         help=(
             "recorded on the task for attribution and cost reporting; "
-            "it does NOT select the model the agent runs"
+            "it does NOT select the model the agent runs -- send --model-class "
+            "to choose one"
+        ),
+    )
+    # SELECTION, BY NAME (#1435). Not `choices=`: argparse would refuse a model
+    # ID with a usage error, and `profiles.check_model_class` says instead that
+    # a class is named and never a model, and which classes this profile runs.
+    d.add_argument(
+        "--model-class",
+        default=None,
+        dest="model_class",
+        metavar="CLASS",
+        help=(
+            "the model class the agent runs, by name: "
+            + ", ".join(MODEL_CLASSES)
+            + ". Omitted, the profile's default (opus) runs. fable plans, sonnet "
+            "summarises and reformats, haiku classifies and extracts. The platform "
+            "runs the class's pinned model, which the swarm_profiles tool lists"
         ),
     )
     d.add_argument("--timeout", type=int, default=None)
