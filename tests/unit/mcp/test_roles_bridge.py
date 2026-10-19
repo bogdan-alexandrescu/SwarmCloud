@@ -260,8 +260,10 @@ def test_typed_at_the_terminal_the_change_is_sent_once(terminal, argv, phrase, r
 def test_without_the_typed_confirmation_nothing_is_sent(terminal, monkeypatch, argv, phrase,
                                                          route, body):
     monkeypatch.setenv("SWARM_ASSUME_YES", "1")
-    for typed in ("", "yes", phrase.upper(), phrase.replace("dave", "eve"),
-                  phrase.rsplit(" ", 1)[0] + " admin"):
+    wrong = {"", "yes", phrase.upper(), phrase.replace("dave", "eve"),
+             phrase.rsplit(" ", 1)[0] + " admin", phrase.split(" ", 1)[0]} - {phrase}
+    assert len(wrong) >= 5, wrong
+    for typed in sorted(wrong):
         terminal(typed)
         api = RecordingApi()
         code, _, error = _change(argv, api)

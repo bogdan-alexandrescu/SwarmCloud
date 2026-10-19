@@ -1,6 +1,6 @@
 ---
 description: SwarmCloud cluster state — accounts, capacity, agents, trouble
-argument-hint: "[accounts|agents|capacity|trouble|check|watch [interval]|task <id>|runs|run show <run>|plan show <run>|schedules|schedules show <name>|approvals|mcp-servers]"
+argument-hint: "[accounts|agents|capacity|trouble|check|watch [interval]|task <id>|runs|run show <run>|plan show <run>|schedules|schedules show <name>|approvals|mcp-servers|roles]"
 allowed-tools:
   - Bash(uv run sc)
   - Bash(uv run sc overview:*)
@@ -20,6 +20,9 @@ allowed-tools:
   - Bash(uv run sc approvals)
   - Bash(uv run sc approvals --json)
   - Bash(uv run sc mcp-servers:*)
+  - Bash(uv run sc roles)
+  - Bash(uv run sc roles --json)
+  - Bash(uv run sc roles list:*)
   - Bash(uv run swarm doctor:*)
 ---
 
@@ -84,6 +87,24 @@ its operator allowlists. It only reads. There is no `sc` command and no MCP tool
 that registers a server or stores its credential: an admin registers one in the
 console (Settings › Workspace › MCP servers). If the operator wants a server
 registered, tell them that; never ask them for a credential to store.
+
+`uv run sc roles` (or `uv run sc roles list`) shows the roles of the workspace
+this session acts in: its default role, the people with an override, your own
+role with where it came from and how you reach the workspace (`via`
+`platform_admin` means you are acting as a platform admin in a group you are
+not in, and every action there is audited), what each role permits, and the
+recent role events. It only reads. `uv run sc whoami` shows the same role on
+its `role` line.
+
+If the arguments are `roles set|clear|default ...`, do **not** run them: they
+change who may act in the workspace, so this command is not granted them and
+no MCP tool does it either. Tell the operator the command to run in their own
+terminal -- `sc roles set <email> <role>`, `sc roles clear <email>` or
+`sc roles default <viewer|member>` -- which asks them to type the email and the
+role back at the terminal and sends nothing otherwise; or point them at the
+console (Settings › People). A refusal (`role_admin_required`,
+`role_unchanged`, ...) is printed with the server's code and sentence; report
+it as it came.
 
 If the arguments are `login`, `logout` or `context ...`, do **not** run them.
 They are not views: they change the operator's own sign-in, or which cluster

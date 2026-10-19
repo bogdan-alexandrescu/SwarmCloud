@@ -2201,6 +2201,12 @@ def tenant_listing(client: Any) -> dict[str, Any]:
     (docs/design/user-profile.md §4.5). An API older than that marks no
     entry; its first entry is the headerless one by the route's documented
     order, so that one is marked and `default_source` is None, not a guess.
+
+    `role` (`{name, source}`) and `via` (`member`, `personal`, or
+    `platform_admin` for a group workspace a platform admin reaches without
+    being in it) are each entry's, as the API sent them
+    (docs/design/workspace-roles.md §4.3). None from an API older than roles,
+    or when the API could not read the role: the listing never guesses one.
     """
     from .render import tenant_of
 
@@ -2223,6 +2229,8 @@ def tenant_listing(client: Any) -> dict[str, Any]:
                 "display_name": entry.get("display_name"),
                 "current": entry.get("tenant_id") == current,
                 "is_default": entry is default,
+                "role": entry.get("role") if isinstance(entry.get("role"), dict) else None,
+                "via": entry.get("via") if isinstance(entry.get("via"), str) else None,
             }
             for entry in mine
         ],

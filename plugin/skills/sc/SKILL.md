@@ -1,7 +1,7 @@
 ---
 name: sc
-description: The SwarmCloud front door, `/sc [verb]`. With no verb, show and interpret SwarmCloud cluster state — the subscription account pool and its 5-hour/7-day quota windows, pool ceilings and which pool binds each runner profile, agents running and queued, and what is wrong right now. `status <id>` reads one workflow or task once; `workflows` lists your tenant's workflows still running in SwarmCloud; `attach <workflow_id>` re-attaches live rows to a workflow still running in SwarmCloud and submits nothing, and `attach --all` does that for every running workflow of your tenant (at most 100 followed, closest to finish first, the plugin's `max_live_rows`) and gives each of your running single tasks — dispatched with swarm_dispatch, in no workflow — one row (at most 100), every run's and row's expanded details naming the workspace it runs in, who started it and its LLM account; `run <spec>` submits a workflow spec through /sc:swarmcloud and says so before it does; `run --issue owner/repo#N` plans a GitHub issue (one planner task) and `plan show|approve|edit|reject <run>` reads or acts on that plan, approving only the digest the developer was shown — `run` and `plan approve|edit|reject` are the verbs that write. `check` reads which of this project's SwarmCloud workflows and tasks are stuck or stale (swarm_check, read-only) and then gives every running workflow of the project that has no row in this session its live rows; `watch [interval]` runs that `check` every interval (default 30m, at least 5m) with Claude Code's CronCreate and remembers it for the project; the watch also arms itself (CronList first, never a second job) whenever this session attaches to or starts SwarmCloud work, and `watch off` stops it and keeps it off for the project until `watch` again. `keys` says whether a TypeSafe key is set for you and your tenant and which one a task would use; `keys set <provider> [--tenant]` gives the developer a one-time console link to paste the key into themselves — the key never passes through this session. Use when asked "is my TypeSafe key set", "set my TypeSafe key", "what is the swarm doing", "how much quota is left", "why is my task queued", "is anything broken", "which account is nearly full", "where is my workflow", "what workflows are running", "show my workflow's rows again", before dispatching a long batch, to run a spec, or to plan and run a GitHub issue ("work on issue #N", "approve the plan").
-argument-hint: "[status <wf_id|task_id> | workflows | attach <wf_id> | attach --all | check | inputs | answer <wf_id> <step_id> [file ...] | watch [interval] | watch off | run <spec path|JSON> | run --issue owner/repo#N | runs | plan show|approve|edit|reject <run> | keys | keys set <provider> [--tenant]]"
+description: The SwarmCloud front door, `/sc [verb]`. With no verb, show and interpret SwarmCloud cluster state — the subscription account pool and its 5-hour/7-day quota windows, pool ceilings and which pool binds each runner profile, agents running and queued, and what is wrong right now. `status <id>` reads one workflow or task once; `workflows` lists your tenant's workflows still running in SwarmCloud; `attach <workflow_id>` re-attaches live rows to a workflow still running in SwarmCloud and submits nothing, and `attach --all` does that for every running workflow of your tenant (at most 100 followed, closest to finish first, the plugin's `max_live_rows`) and gives each of your running single tasks — dispatched with swarm_dispatch, in no workflow — one row (at most 100), every run's and row's expanded details naming the workspace it runs in, who started it and its LLM account; `run <spec>` submits a workflow spec through /sc:swarmcloud and says so before it does; `run --issue owner/repo#N` plans a GitHub issue (one planner task) and `plan show|approve|edit|reject <run>` reads or acts on that plan, approving only the digest the developer was shown — `run` and `plan approve|edit|reject` are the verbs that write. `check` reads which of this project's SwarmCloud workflows and tasks are stuck or stale (swarm_check, read-only) and then gives every running workflow of the project that has no row in this session its live rows; `watch [interval]` runs that `check` every interval (default 30m, at least 5m) with Claude Code's CronCreate and remembers it for the project; the watch also arms itself (CronList first, never a second job) whenever this session attaches to or starts SwarmCloud work, and `watch off` stops it and keeps it off for the project until `watch` again. `keys` says whether a TypeSafe key is set for you and your tenant and which one a task would use; `keys set <provider> [--tenant]` gives the developer a one-time console link to paste the key into themselves — the key never passes through this session. `roles` shows the roles of the workspace this session acts in (read-only); a role is changed only by the developer, typed at their own terminal. Use when asked "is my TypeSafe key set", "set my TypeSafe key", "what is the swarm doing", "how much quota is left", "why is my task queued", "is anything broken", "which account is nearly full", "where is my workflow", "what workflows are running", "show my workflow's rows again", before dispatching a long batch, to run a spec, or to plan and run a GitHub issue ("work on issue #N", "approve the plan").
+argument-hint: "[status <wf_id|task_id> | workflows | attach <wf_id> | attach --all | check | inputs | answer <wf_id> <step_id> [file ...] | watch [interval] | watch off | run <spec path|JSON> | run --issue owner/repo#N | runs | plan show|approve|edit|reject <run> | keys | keys set <provider> [--tenant] | roles]"
 arguments:
   - verb
   - target
@@ -20,6 +20,9 @@ allowed-tools:
   - Bash(uv run sc runs:*)
   - Bash(uv run sc run show:*)
   - Bash(uv run sc plan show:*)
+  - Bash(uv run sc roles)
+  - Bash(uv run sc roles --json)
+  - Bash(uv run sc roles list:*)
   - Bash(sc)
   - Bash(sc overview:*)
   - Bash(sc accounts:*)
@@ -34,6 +37,9 @@ allowed-tools:
   - Bash(sc runs:*)
   - Bash(sc run show:*)
   - Bash(sc plan show:*)
+  - Bash(sc roles)
+  - Bash(sc roles --json)
+  - Bash(sc roles list:*)
   - Bash(uv run swarm doctor:*)
   - Bash(uv run swarm profiles:*)
   - CronCreate
@@ -73,6 +79,8 @@ one action — never a second one the developer did not ask for:
 | `plan approve\|edit\|reject <run>` | acts on that plan, with the digest the developer was shown | **yes** |
 | `keys` | whether a TypeSafe key is set for you and for your tenant, and which one your tasks would use: `swarm_keys`. Never a value | no |
 | `keys set <provider> [--tenant]` | a one-time console link where the developer pastes the key themselves: `swarm_key_set_link`. The key never passes through this session | mints a link; stores nothing |
+| `roles` | the roles of the workspace this session acts in: its default, the overrides, your own role and how you reach it, the recent role events: `swarm_roles` | no |
+| `roles set\|clear\|default ...` | not run here: tell the developer the `sc roles` command for their own terminal (see `roles`) | no (the developer's, typed) |
 | a view name (`accounts`, `agents`, `capacity`, `trouble`, `task <id>`, `whoami`, `config`, `debug <id>`) | that view, as in "Which view" below | no |
 
 Anything else: say which verbs exist and run nothing. `/sc:swarmcloud` keeps
@@ -411,6 +419,31 @@ prompt and prints only `stored: version N`. Tell them the command; never run
 it — it is not granted to this skill, and it would put the key in front of
 you.
 
+### `roles`
+
+ONE call to `swarm_roles`, and show its `text`: the workspace this session
+acts in, your own role there with its `source` (`override`, `default`,
+`personal`, `platform_admin`) and `via`, the workspace's default role, every
+person with an override, what each role permits, and the recent role and
+platform-admin events. `swarm_tenants` carries the same `role` and `via` for
+every workspace you may choose. `via: platform_admin` means you are acting as a
+platform admin in a group workspace you are not in: say that every action
+there is recorded in its audit log.
+
+A `viewer` sees everything and changes nothing; a `member` submits, approves,
+answers and cancels; an `admin` also manages secrets, MCP servers, provider
+keys, the workspace's settings and its roles. A refusal such as
+`role_member_required` is that rule, not a fault: report it verbatim.
+
+**NO TOOL CHANGES A ROLE, AND YOU NEVER DO** (owner answer Q11). If the
+developer wants one changed, tell them the command to run in their own
+terminal — `sc roles set <email> <role>`, `sc roles clear <email>` (back to
+the default) or `sc roles default <viewer|member>` — which asks them to type
+the email and the role back at the terminal and sends nothing otherwise; or
+the console's Settings › People. It needs `admin` in that workspace
+(`can_manage`). Never run it: it is not granted to this skill, and a
+confirmation it could read from you would not be the developer's.
+
 ### `run <spec path|JSON>`
 
 The one verb that writes: it spends the shared pool, a step at a time.
@@ -563,6 +596,7 @@ dispatch to another cluster without asking.
 | what did this agent produce? | `uv run sc task <id>` |
 | is anything broken? | `uv run sc trouble` |
 | which deployment, and who am I on it? | `uv run sc whoami` |
+| what is my role here, and who holds which? | `uv run sc roles` |
 | which endpoint, tenant, dispatch target and plugin version? | `uv run sc config` |
 | why did this one task fail? | `uv run sc debug <id>` |
 | which of my workflows are still running? | `uv run sc workflows` |

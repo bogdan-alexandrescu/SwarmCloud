@@ -490,9 +490,37 @@ TOOLS: list[dict[str, Any]] = [
             "SWARM_TENANT in the bridge's environment, read once at start, and "
             "applies to every call this session makes; there is no per-call "
             "tenant. An empty list means your tenant is personal and there is "
-            "nothing to choose. Read-only."
+            "nothing to choose. Each entry carries your `role` there "
+            "(`{name, source}`: viewer, member or admin, and whether it came from "
+            "an override, the workspace's default, your personal workspace or "
+            "being a platform admin) and `via` (`member`, `personal`, or "
+            "`platform_admin` for a group workspace you reach as a platform admin "
+            "without being in it, where every action is audited); both are null "
+            "when the API did not send them. Read-only."
         ),
         "inputSchema": {"type": "object", "properties": {}},
+    },
+    # ROLES-MCP (docs/design/workspace-roles.md §4.8, owner answer Q11): the
+    # roster is READ here and nowhere written. No tool grants or revokes a
+    # role -- an agent driving a person's own session must not be able to
+    # raise anyone -- so the schema takes nothing, and a change is the
+    # person's own, typed at their terminal (sc roles set).
+    # tests/unit/mcp/test_roles_bridge.py.
+    {
+        "name": "swarm_roles",
+        "description": (
+            "The roles of the workspace this bridge acts in (GET /v1/workspace/roles): "
+            "its default role, the people with an override and their role, your own "
+            "role with its source and `via`, what each role permits (viewer sees and "
+            "changes nothing; member submits, approves, answers and cancels; admin "
+            "also manages secrets, MCP servers, provider keys, settings and roles), "
+            "whether you may change roles here (`can_manage`), and the recent role "
+            "and platform-admin events. Read-only: no tool changes a role. A "
+            "workspace admin does that in the console (Settings > People) or in "
+            "their own terminal with the sc roles set, clear or default command, "
+            "which asks them to type the change back; never run it for them. `text` is what to show."
+        ),
+        "inputSchema": {"type": "object", "additionalProperties": False, "properties": {}},
     },
     {
         "name": "swarm_wait",
@@ -4554,6 +4582,15 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         return json.dumps(
             keys.key_set_link(client, args.get("provider"), args.get("scope", "user")), indent=2
         )
+
+    if name == "swarm_roles":
+        # One GET. A refusal (a deployment predating roles, a 403 for a tenant
+        # the caller is not in) is the API's, through `_tool_error_text`.
+        from . import render
+        from .sc import workspace_roles, workspace_roles_lines
+
+        view = workspace_roles(client)
+        return json.dumps({**view, "text": render.join(workspace_roles_lines(view))}, indent=2)
 
     if name == "swarm_tenants":
         # Two GETs. A `tenant` setting the caller is not a member of comes back
