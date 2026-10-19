@@ -7,9 +7,12 @@ WHAT IS HELD HERE
   exactly its figures: input, output, cache hits (`cache_read`) and the
   5-minute cache write (`cache_write`), USD per million tokens.
 * A FIGURE IT CANNOT PARSE IS LEFT AS IT WAS. A row whose cell is not
-  `$N / MTok`, a model the page prices in tiers (Haiku 5.5), or a table whose
-  header changed writes nothing for that model -- or nothing at all -- and the
-  firing says so with a FAILED item. It never writes a guess.
+  `$N / MTok`, rows of one model that are not one chain of prompt-length
+  tiers, or a table whose header changed writes nothing for that model -- or
+  nothing at all -- and the firing says so with a FAILED item. It never
+  writes a guess.
+* A MODEL PRICED IN TIERS (Haiku 5.5, by prompt length) is read as one entry
+  with its `tiers` (PRICES-FOLLOWUP, part of #1481).
 * WHAT CHANGED IS WRITTEN with `source: pricing-page` and the day it was read;
   an entry the page agrees with is not touched.
 * A DRY RUN reads the page and writes nothing.
@@ -40,6 +43,15 @@ from .test_schedtypes_issue_sweep import (  # noqa: F401 -- fixtures
 PAGE = (Path(__file__).parent / "pricing_page_2026-10-19.md").read_text()
 DAY = NOW.date().isoformat()
 OPUS_ROW = "| Claude Opus 5.5 "
+HAIKU_55_OVER_ROW = "| Claude Haiku 5.5 (for prompts over"
+#: Opus 5.5 with an output cell that is no figure: a page with one unread row.
+UNREAD_OPUS = ("| Claude Opus 5.5 | $4 / MTok | $5 / MTok | $8 / MTok | $0.20 / MTok | "
+               "$20 / MTok until November, then $24 / MTok |")
+#: Haiku 5.5 as the saved page prices it, USD per million tokens.
+HAIKU_55_TIERS = [
+    {"up_to_prompt_tokens": 100_000, "input": 0.10, "output": 0.50, "cache_read": 0.01, "cache_write": 0.125},
+    {"up_to_prompt_tokens": None, "input": 0.50, "output": 2.50, "cache_read": 0.05, "cache_write": 0.625},
+]
 
 
 def schedule(db) -> dict[str, Any]:
@@ -116,7 +128,8 @@ def test_the_parser_reads_the_saved_page_to_its_figures() -> None:
     assert rates(parsed.prices["claude-mythos-5-1"]) == (10.0, 50.0, 0.25, 12.5)
     assert rates(parsed.prices["claude-opus-4-1"]) == (15.0, 75.0, 1.5, 18.75)
     # Only the model table: the batch table's Opus 5.5 ($2/$10) never leaks in.
-    assert len(parsed.prices) == 19
+    # 20: the 19 single-rate rows, and Haiku 5.5's two rows as one tiered entry.
+    assert len(parsed.prices) == 20
     for name in parsed.prices:
         assert modelprices.MODEL_NAME.fullmatch(name), name
 
@@ -127,11 +140,36 @@ def test_every_seeded_model_is_on_the_page_at_its_seeded_figures() -> None:
         assert rates(parsed.prices[name]) == rates(seed), name
 
 
-def test_a_model_priced_in_tiers_is_not_parsed_and_says_why() -> None:
+def test_the_parser_reads_haiku_5_5s_two_tiers_from_the_saved_page() -> None:
     parsed = refresh.parse_page(PAGE)
 
-    # Haiku 5.5 has two rows, by prompt length. One entry holds one figure per
-    # rate, so which tier applies is not the page's to say: no guess.
+    # Two rows by prompt length are one entry with two tiers: up to 100,000
+    # tokens, and over it. Its own rates are the first tier's.
+    haiku = parsed.prices["claude-haiku-5-5"]
+    assert haiku["tiers"] == HAIKU_55_TIERS
+    assert rates(haiku) == (0.10, 0.50, 0.01, 0.125)
+    assert parsed.unparsed == [], "every row of the saved page is read"
+    # Every other model is untiered, exactly as before.
+    assert [name for name, p in parsed.prices.items() if "tiers" in p] == ["claude-haiku-5-5"]
+    # And the setting accepts what the parser read.
+    assert modelprices.entry({**haiku, "currency": "USD", "source": refresh.SOURCE,
+                              "as_of": DAY})["tiers"] == HAIKU_55_TIERS
+
+
+@pytest.mark.parametrize("over", [
+    # Two `up to` rows and no `over`: a prompt past 100,000 tokens is priced by nothing.
+    "| Claude Haiku 5.5 (for prompts up to 200,000 tokens) | $0.50 / MTok | $0.625 / MTok | $1 / MTok "
+    "| $0.05 / MTok | $2.50 / MTok |",
+    # `over` a ceiling no row has: a gap between 100,000 and 150,000.
+    "| Claude Haiku 5.5 (for prompts over 150,000 tokens) | $0.50 / MTok | $0.625 / MTok | $1 / MTok "
+    "| $0.05 / MTok | $2.50 / MTok |",
+    # A qualifier that is no tier.
+    "| Claude Haiku 5.5 (batch only) | $0.50 / MTok | $0.625 / MTok | $1 / MTok "
+    "| $0.05 / MTok | $2.50 / MTok |",
+])
+def test_rows_that_are_not_one_chain_of_tiers_are_not_parsed_and_say_why(over: str) -> None:
+    parsed = refresh.parse_page(with_row(PAGE, HAIKU_55_OVER_ROW, over))
+
     assert "claude-haiku-5-5" not in parsed.prices
     tiers = [row for row in parsed.unparsed if row["model"] == "claude-haiku-5-5"]
     assert len(tiers) == 2 and all(row["reason"] == refresh.TIERED for row in tiers)
@@ -182,14 +220,16 @@ def test_a_firing_writes_what_changed_with_source_pricing_page_and_the_day_read(
     # The page agrees with the seed's figures, so those entries are not touched.
     for name in modelprices.SEED:
         assert after[name] == before[name], name
-    # Haiku 5.5 could not be read: still unpriced, and the firing says so.
-    assert "claude-haiku-5-5" not in after
-    outcomes = {w["id"]: w["outcome"] for w in work}
-    assert outcomes == {refresh.REFRESH: "succeeded", refresh.UNPARSED: "failed"}
-    detail = {w["id"]: w["detail"] for w in work}
-    assert "claude-sonnet-5-5" in detail[refresh.REFRESH]["changed"]
-    assert {row["model"] for row in detail[refresh.UNPARSED]["rows"]} == {"claude-haiku-5-5"}
-    assert schedulefire.combine([w["outcome"] for w in work], independent=True) == "partial"
+    # Haiku 5.5 is written with its two tiers, sourced and dated like the rest.
+    haiku = after["claude-haiku-5-5"]
+    assert haiku["tiers"] == HAIKU_55_TIERS
+    assert (haiku["source"], haiku["as_of"]) == ("pricing-page", DAY)
+    assert "tiers" not in after["claude-sonnet-5-5"]
+    # Every row was read, so the firing is one succeeded item.
+    assert [(w["id"], w["outcome"]) for w in work] == [(refresh.REFRESH, "succeeded")]
+    changed = work[0]["detail"]["changed"]
+    assert "claude-sonnet-5-5" in changed
+    assert changed["claude-haiku-5-5"]["rates"]["tiers"] == HAIKU_55_TIERS
 
 
 def test_a_changed_figure_replaces_the_stored_one(db, ctx, monkeypatch) -> None:
@@ -204,6 +244,24 @@ def test_a_changed_figure_replaces_the_stored_one(db, ctx, monkeypatch) -> None:
     assert (opus["source"], opus["as_of"]) == ("pricing-page", DAY)
     changed = {w["id"]: w["detail"] for w in work}[refresh.REFRESH]["changed"]["claude-opus-5-5"]
     assert changed["was"] == {"input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 5.0}
+
+
+def test_a_changed_tier_replaces_the_stored_tiers(db, ctx, monkeypatch) -> None:
+    serve(monkeypatch)
+    refresh.create(firing_for(ctx, schedule(db), room=2))
+    serve(monkeypatch, with_row(PAGE, HAIKU_55_OVER_ROW,
+                                "| Claude Haiku 5.5 (for prompts over 100,000 tokens) | $0.60 / MTok | $0.75 / MTok "
+                                "| $1.20 / MTok | $0.06 / MTok | $3 / MTok |"))
+
+    work = refresh.create(firing_for(ctx, schedule(db), room=2, fid="again"))
+
+    haiku = prices(ctx)["claude-haiku-5-5"]
+    assert haiku["tiers"][1] == {"up_to_prompt_tokens": None, "input": 0.60, "output": 3.0,
+                                 "cache_read": 0.06, "cache_write": 0.75}
+    assert haiku["tiers"][0] == HAIKU_55_TIERS[0]
+    changed = work[0]["detail"]["changed"]
+    assert list(changed) == ["claude-haiku-5-5"], "only the model whose tier changed is written"
+    assert changed["claude-haiku-5-5"]["was"]["tiers"] == HAIKU_55_TIERS
 
 
 def test_a_figure_it_cannot_parse_is_left_as_it_was(db, ctx, monkeypatch) -> None:
@@ -254,19 +312,19 @@ def test_a_second_firing_on_the_same_page_changes_nothing(db, ctx, monkeypatch) 
 
 
 def test_room_for_one_item_puts_the_unparsed_rows_on_the_failed_refresh(db, ctx, monkeypatch) -> None:
-    serve(monkeypatch)
+    serve(monkeypatch, with_row(PAGE, OPUS_ROW, UNREAD_OPUS))
 
     work = refresh.create(firing_for(ctx, schedule(db), room=1))
 
     (item,) = work
     assert item["outcome"] == "failed"
-    assert {row["model"] for row in item["detail"]["unparsed"]} == {"claude-haiku-5-5"}
+    assert {row["model"] for row in item["detail"]["unparsed"]} == {"claude-opus-5-5"}
     # What could be read was still written.
     assert "claude-sonnet-5-5" in prices(ctx)
 
 
 def test_a_dry_run_reads_the_page_and_writes_nothing(db, ctx, monkeypatch) -> None:
-    reads = serve(monkeypatch)
+    reads = serve(monkeypatch, with_row(PAGE, OPUS_ROW, UNREAD_OPUS))
     before = ctx.store.get_platform_settings()
 
     out = refresh.dry_run(firing_for(ctx, schedule(db), room=2))
@@ -274,4 +332,5 @@ def test_a_dry_run_reads_the_page_and_writes_nothing(db, ctx, monkeypatch) -> No
     assert reads == [1]
     assert ctx.store.get_platform_settings() == before
     assert "claude-sonnet-5-5" in out["would_change"]
-    assert {row["model"] for row in out["unparsed"]} == {"claude-haiku-5-5"}
+    assert out["would_change"]["claude-haiku-5-5"]["rates"]["tiers"] == HAIKU_55_TIERS
+    assert {row["model"] for row in out["unparsed"]} == {"claude-opus-5-5"}

@@ -210,3 +210,128 @@ def test_a_put_naming_a_malformed_model_is_refused(client):
     response = _put(client, "root", {"Claude Haiku!": _entry()})
 
     assert response.status_code == 422, response.text
+
+
+# --------------------------------------------------------------------------
+# PRICES-FOLLOWUP (part of #1481): everyone signed in reads the table, and a
+# model priced in tiers by prompt length is held, served and priced by them.
+# --------------------------------------------------------------------------
+
+#: Haiku 5.5 as the pricing page listed it on 2026-10-19: one set of rates for
+#: a prompt up to 100,000 tokens, another over it.
+HAIKU_55_LOW = {"input": 0.10, "output": 0.50, "cache_read": 0.01, "cache_write": 0.125}
+HAIKU_55_HIGH = {"input": 0.50, "output": 2.50, "cache_read": 0.05, "cache_write": 0.625}
+
+
+def _tiered(**overrides: Any) -> dict[str, Any]:
+    tiers = [{"up_to_prompt_tokens": 100_000, **HAIKU_55_LOW},
+             {"up_to_prompt_tokens": None, **HAIKU_55_HIGH}]
+    return _entry(**HAIKU_55_LOW, tiers=tiers, **overrides)
+
+
+def _cost(usage: dict[str, int], rates: dict[str, float]) -> float:
+    return (usage["input_tokens"] * rates["input"] + usage["output_tokens"] * rates["output"]
+            + usage["cache_creation_input_tokens"] * rates["cache_write"]
+            + usage["cache_read_input_tokens"] * rates["cache_read"]) / 1_000_000
+
+
+def _prompt_of(size: int) -> dict[str, int]:
+    """A usage whose prompt -- input, cache written and cache read -- is `size` tokens."""
+    return {"input_tokens": size - 30_000, "output_tokens": 800,
+            "cache_creation_input_tokens": 10_000, "cache_read_input_tokens": 20_000}
+
+
+def test_a_non_admin_reads_the_price_table_and_still_cannot_write_it(client):
+    read = client.get("/v1/settings/model-prices", headers=auth_header("alice"))
+
+    assert read.status_code == 200, read.text
+    opus = read.json()["model_prices"]["claude-opus-5-5"]
+    assert (opus["input"], opus["output"], opus["cache_read"], opus["cache_write"]) == (
+        4.0, 20.0, 0.20, 5.0)
+    # The price table, not the settings document: no other setting is served.
+    assert set(read.json()) == {"model_prices"}
+
+    write = _put(client, "alice", {"claude-opus-5-5": _entry(input=0.0)})
+
+    assert write.status_code == 403, write.text
+    after = client.get("/v1/settings/model-prices", headers=auth_header("alice")).json()
+    assert after["model_prices"]["claude-opus-5-5"]["input"] == 4.0
+
+
+def test_the_price_table_is_not_served_to_a_caller_who_is_not_signed_in(client):
+    assert client.get("/v1/settings/model-prices").status_code == 401
+
+
+def test_a_tiered_model_is_stored_and_served_with_its_tiers(client):
+    response = _put(client, "root", {"claude-haiku-5-5": _tiered()})
+
+    assert response.status_code == 200, response.text
+    served = client.get("/v1/settings/model-prices", headers=auth_header("alice")).json()
+    haiku = served["model_prices"]["claude-haiku-5-5"]
+    assert haiku["tiers"] == [{"up_to_prompt_tokens": 100_000, **HAIKU_55_LOW},
+                              {"up_to_prompt_tokens": None, **HAIKU_55_HIGH}]
+    assert haiku["input"] == HAIKU_55_LOW["input"], "the entry's own rates are its first tier's"
+    # A model without tiers is served as it was, with no `tiers` key at all.
+    assert "tiers" not in served["model_prices"]["claude-opus-5-5"]
+
+
+def test_a_tiered_models_estimate_uses_the_tier_its_prompt_size_falls_in(worker_client, db, client):
+    assert _put(client, "root", {"claude-haiku-5-5": _tiered()}).status_code == 200
+    attempt = Attempt()
+    ready_parent(worker_client, db, attempt)
+    at, past = _prompt_of(100_000), _prompt_of(100_001)
+
+    at_bound = _estimate(worker_client, attempt, {"claude-haiku-5-5": at})
+    over = _estimate(worker_client, attempt, {"claude-haiku-5-5": past})
+
+    assert at_bound.status_code == 200, at_bound.text
+    # "Up to 100,000 tokens": a prompt of exactly 100,000 is the lower tier.
+    assert at_bound.json()["cost_usd"] == pytest.approx(_cost(at, HAIKU_55_LOW))
+    # One token over is the higher tier, for every token of it.
+    assert over.json()["cost_usd"] == pytest.approx(_cost(past, HAIKU_55_HIGH))
+    # The same through the pure function, for a dated spelling of the model.
+    prices = {"claude-haiku-5-5": modelprices.entry(_tiered())}
+    assert modelprices.estimate_cost({"claude-haiku-5-5-20261001": past}, prices) == pytest.approx(
+        _cost(past, HAIKU_55_HIGH))
+
+
+def test_an_untiered_models_estimate_is_unchanged_at_any_prompt_size():
+    prices = modelprices.table(None, present=False)
+    big = _prompt_of(900_000)
+
+    assert "tiers" not in modelprices.entry(_entry())
+    assert modelprices.estimate_cost({"claude-opus-5-5": big}, prices) == pytest.approx(
+        _cost(big, {"input": 4.0, "output": 20.0, "cache_read": 0.20, "cache_write": 5.0}))
+    assert modelprices.estimate_cost({"claude-opus-5-5": USAGE}, prices) == pytest.approx(OPUS_TODAY)
+
+
+@pytest.mark.parametrize("tiers", [
+    # One tier is not tiers.
+    [{"up_to_prompt_tokens": None, **HAIKU_55_LOW}],
+    # The last tier has a ceiling: a prompt past it would be priced by nothing.
+    [{"up_to_prompt_tokens": 100_000, **HAIKU_55_LOW},
+     {"up_to_prompt_tokens": 200_000, **HAIKU_55_HIGH}],
+    # A tier before the last has none.
+    [{"up_to_prompt_tokens": None, **HAIKU_55_LOW},
+     {"up_to_prompt_tokens": None, **HAIKU_55_HIGH}],
+    # Ceilings that do not rise.
+    [{"up_to_prompt_tokens": 100_000, **HAIKU_55_LOW},
+     {"up_to_prompt_tokens": 100_000, **HAIKU_55_LOW},
+     {"up_to_prompt_tokens": None, **HAIKU_55_HIGH}],
+    # A figure that is not one.
+    [{"up_to_prompt_tokens": 100_000, **HAIKU_55_LOW},
+     {"up_to_prompt_tokens": None, **HAIKU_55_HIGH, "output": "2.50"}],
+    # The first tier is not the entry's own rates.
+    [{"up_to_prompt_tokens": 100_000, **HAIKU_55_HIGH},
+     {"up_to_prompt_tokens": None, **HAIKU_55_HIGH}],
+])
+def test_a_malformed_tier_list_is_refused_and_a_stored_one_prices_nothing(client, tiers):
+    response = _put(client, "root", {"claude-haiku-5-5": _entry(**HAIKU_55_LOW, tiers=tiers)})
+
+    assert response.status_code == 422, response.text
+    body = client.get("/v1/settings/model-prices", headers=auth_header("root")).json()
+    assert "claude-haiku-5-5" not in body["model_prices"]
+    # Written straight to Firestore, it is dropped whole, never priced at its first tier.
+    stored = modelprices.table({"claude-haiku-5-5": _entry(**HAIKU_55_LOW, tiers=tiers)},
+                               present=True)
+    assert stored == {}
