@@ -6729,6 +6729,13 @@ export interface ApprovalItem {
   requested_at: string | null
   expires_at: string | null
   projected?: boolean
+  /**
+   * The approvers' display names, index for index with `approvers`
+   * (`people.add_names`, user-profile.md §4.4): served on the inbox rows and
+   * the detail alike. null when `approvers` is a rule such as `members`; a
+   * member who set no name is a null entry; absent from an older API.
+   */
+  approver_names?: (string | null)[] | null
 }
 
 /** `GET /v1/schedules`: the tenant's schedules, by name. */
@@ -6787,6 +6794,8 @@ export interface ApprovalDetail {
     approvers?: unknown
     hold?: { code?: string; approvers?: string; matched?: string[]; reasons?: string[] } | null
     decided_by?: string | null
+    /** The decider's display name: null when they set none or `decided_by` is not a person (`approval-expiry`). */
+    decided_by_name?: string | null
     decided_at?: string | null
     reason?: string | null
   }

@@ -5474,6 +5474,12 @@ export interface PersonLentAccount {
 /** One row of `GET /v1/admin/people` (`people._row`). */
 export interface PersonRow {
   email: string
+  /**
+   * The person's display name (user-profile.md §4.4), served beside `email`
+   * since PROFILE-NAMES-API; null when they set none, absent from an older
+   * API. A label only: the email is who the person is.
+   */
+  display_name?: string | null
   teams: string[]
   github: 'connected' | 'expired' | 'none'
   workspace: AdminWorkspaceView

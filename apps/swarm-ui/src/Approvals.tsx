@@ -309,18 +309,10 @@ function Evidence({ d }: { d: ApprovalDetail }) {
 }
 
 /**
- * An item as `routes/approvals.py` serves it since PROFILE-NAMES-API: the
- * decider's display name beside `decided_by` (`people.add_names`), null when
- * they set none or the value is not a person. Declared here until `api.ts`'s
- * `ApprovalDetail` carries it; an older API omits it and the email prints alone.
- */
-type Decided = ApprovalDetail['approval'] & { decided_by_name?: string | null }
-
-/**
  * What became of an item that is no longer waiting (AUT-6): a link from a
  * notification to an item someone else decided, or one that expired, says so.
  */
-function decidedWords(a: Decided): ReactNode {
+function decidedWords(a: ApprovalDetail['approval']): ReactNode {
   // Who decided, through `PersonName` (user-profile.md §4.4): their name, when
   // they set one, always beside the email that decided.
   const by = a.decided_by ? (
