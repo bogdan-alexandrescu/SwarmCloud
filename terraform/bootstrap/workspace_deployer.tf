@@ -734,3 +734,159 @@ output "workspace_deployer" {
     roles           = var.workspace_deployer_roles
   } : null
 }
+
+# ---------------------------------------------------------------------------
+# WORKSPACE KINDS: K1 and K2 (docs/design/workspace-kinds.md §4.5, lane WK-IAM
+# of #847). K3 is swarm-api's, in forge_user_slots.tf; K4 is the role list in
+# variables.tf. All behind enable_workspace_kinds, off by default.
+# ---------------------------------------------------------------------------
+#
+# The same job, swarm-workspace-apply, builds group and service workspaces as
+# well as personal ones (owner decision 2026-10-19, design A, Q3 (a)). Two of
+# its steps need a grant the personal path never did:
+#
+#   K1, step S2: a service workspace's account is admitted at the front door,
+#       as one member of roles/iap.httpsResourceAccessor on the API backend.
+#       swarmFrontDoorAdmitter is iap.webServices.getIamPolicy and
+#       setIamPolicy and nothing else -- no iap.web.* or iap.webTypes.*, which
+#       reach every backend, and not roles/iap.admin (refused in variables.tf).
+#       Its condition is EQUALITY on one backend's full name, by project
+#       NUMBER and the backend's generated id, never a prefix: the console's
+#       -ui-backend, and the other team's eight IAP backends in this shared
+#       project, cannot match. A service calls the API; the console is for
+#       people, so the console's backend is never named.
+#
+#   K2, step A6 for a group: the group's team slot, swarm-tenant-<g>-git and
+#       its -git-refresh twin, is bound to the group's worker. The existing
+#       secret-binder grant stops at swarm-tenant-u-, and a job-made group's
+#       id has no u-, so a second grant of the same role reaches the team-slot
+#       suffixes. It does not reach a tenant's provider key, workspace
+#       secrets or members' -git-u- slots (Q6 (a): those are read through the
+#       broker, never bound to a group worker).
+#
+# WHAT IAM CANNOT BOUND, and what does (§4.5): IAM cannot say WHICH member a
+# setIamPolicy adds. The job's guard rule C10 admits exactly the approved
+# service account and C9 refuses every removal; A1 refuses a service record
+# not approved by the platform owner (Q2 (a)); swarm-api admits the account
+# only once its record is `ready`; and the alert on every SetIamPolicy by this
+# identity on an IAP resource (terraform/modules/monitoring/workspace_alerts.tf)
+# pages a person on each one. K2 reaches the Terraform tenants' team slots
+# (eng, smoke) as well; the same guard and the secret-IAM alert bound that.
+#
+# RESIDUAL RISK R7 (§4.5), stated so it is not mistaken for zero: a stolen
+# deployer token can rewrite the API backend's accessor list for the token's
+# life, widening it (which admits nobody to swarm-api, whose domain,
+# ALLOWED_USERS and registry checks are unchanged) or narrowing it (an outage
+# until the owner's bootstrap apply re-adds frontend_accessors).
+#
+# NOT VERIFIED LIVE (owner step O1, before the switch is turned on): that IAP
+# accepts these two permission names in a custom role; that a project binding
+# conditioned on `projects/<number>/iap_web/compute/services/<id>` matches
+# the API backend and not -ui-backend; and whether IAP evaluates
+# modifiedGrantsByRole (front_door_admit_role_bound). If the name form does not
+# match, K1 narrows nothing usable and S2 stays an owner step
+# (FRONT_DOOR_OWNER). So K1 has two keys: this switch, and
+# swarmFrontDoorAdmitter on workspace_deployer_roles, which is not in that
+# list's default and is added by the owner once O1 has passed.
+
+locals {
+  workspace_kinds_on = var.enable_workspace_deployer && var.enable_workspace_kinds
+
+  # modules/frontend/main.tf's names for name_prefix: `${name_prefix}-ui` is
+  # its local.name, the API backend is `<local.name>-backend`, the console's
+  # `<local.name>-ui-backend`. Read through wif.tf's data source, so a rename
+  # there fails this plan at the lookup instead of admitting at a stale name.
+  front_door_api_backend = "${var.name_prefix}-ui-backend"
+
+  # K1's resource, in the form IAP's IAM evaluates (§4.5): the project NUMBER
+  # and the backend's numeric id, both read rather than spelled. "" when the
+  # API backend is not in frontend_iap_backends; the grant's precondition
+  # refuses that rather than make a binding that names nothing.
+  front_door_api_resource = local.workspace_kinds_on && contains(var.frontend_iap_backends, local.front_door_api_backend) ? "projects/${local.workspace_project_number}/iap_web/compute/services/${data.google_compute_backend_service.frontend_iap[local.front_door_api_backend].generated_id}" : ""
+
+  workspace_kinds_conditions = {
+    front_door_admit = join(" && ", concat(
+      ["resource.name == \"${local.front_door_api_resource}\""],
+      var.front_door_admit_role_bound ? ["api.getAttribute(\"iam.googleapis.com/modifiedGrantsByRole\", []).hasOnly([\"roles/iap.httpsResourceAccessor\"])"] : [],
+    ))
+
+    # Every tenant's team slot and its twin, by full name. A secret's IAM is
+    # evaluated on the secret, `projects/<n>/secrets/<id>`, so the suffix is
+    # the secret id's own end: `-git-u-<hash>`, `-anthropic`, `-wsec-<hex>`
+    # all end otherwise.
+    team_slot_bind = "resource.name.startsWith(\"projects/${local.workspace_project_number}/secrets/swarm-tenant-\") && (resource.name.endsWith(\"-git\") || resource.name.endsWith(\"-git-refresh\"))"
+  }
+
+  # Not in workspace_custom_roles: those are module.custom_role_ids' ids,
+  # which terraform/infra shares. This role is defined and granted here alone,
+  # and terraform/infra never names it, so its id is spelled here as
+  # mcp_credentials.tf spells its own.
+  front_door_admitter_role_id = "swarmFrontDoorAdmitter"
+}
+
+resource "google_project_iam_custom_role" "front_door_admitter" {
+  count = local.workspace_kinds_on && lookup(local.workspace_role_on, "swarmFrontDoorAdmitter", false) ? 1 : 0
+
+  project     = var.project_id
+  role_id     = local.front_door_admitter_role_id
+  title       = "Swarm Front Door Admitter"
+  description = "managed-by=swarm-terraform; read and set the IAP policy of the swarm API backend to admit a service workspace's account (docs/design/workspace-kinds.md §4.5 K1). Granted on that one backend by exact name. No iap.web.*, no tunnel, no admin."
+  stage       = "GA"
+  permissions = [
+    "iap.webServices.getIamPolicy",
+    "iap.webServices.setIamPolicy",
+  ]
+}
+
+resource "google_project_iam_member" "front_door_admitter" {
+  count = length(google_project_iam_custom_role.front_door_admitter)
+
+  project = var.project_id
+  # Through the resource, so the role exists before it is granted.
+  role   = "projects/${var.project_id}/roles/${google_project_iam_custom_role.front_door_admitter[0].role_id}"
+  member = local.workspace_deployer_member
+
+  condition {
+    title       = "swarm API backend only"
+    description = "managed-by=swarm-terraform; K1: the API backend's IAP policy, by exact name; never the console's -ui-backend or another team's backend (docs/design/workspace-kinds.md §4.5)."
+    expression  = local.workspace_kinds_conditions.front_door_admit
+  }
+
+  lifecycle {
+    precondition {
+      condition     = contains(var.frontend_iap_backends, local.front_door_api_backend)
+      error_message = "K1 is made on the API backend (${local.front_door_api_backend}), which frontend_iap_backends does not list. On a fresh project leave enable_workspace_kinds off until the release has created the backends and frontend_iap_backends names them."
+    }
+  }
+
+  depends_on = [google_service_account.workspace_deployer]
+}
+
+resource "google_project_iam_member" "workspace_team_slot_binder" {
+  count = local.workspace_kinds_on && lookup(local.workspace_role_on, "swarmWorkspaceSecretBinder", false) ? 1 : 0
+
+  project = var.project_id
+  role    = module.custom_role_ids.names.workspace_secret_binder
+  member  = local.workspace_deployer_member
+
+  condition {
+    title       = "team forge slots only"
+    description = "managed-by=swarm-terraform; K2: a group's team slot swarm-tenant-<g>-git and its -git-refresh twin (docs/design/workspace-kinds.md §4.5, §4.6)."
+    expression  = local.workspace_kinds_conditions.team_slot_bind
+  }
+
+  depends_on = [
+    google_project_iam_custom_role.workspace,
+    google_service_account.workspace_deployer,
+  ]
+}
+
+output "workspace_kinds_grants" {
+  description = "What the owner reads a plan against for the workspace-kinds rows (docs/design/workspace-kinds.md §4.5): K1's backend and condition, K2's and K3's conditions. Null while enable_workspace_kinds is off."
+  value = local.workspace_kinds_on ? {
+    front_door_backend = local.front_door_api_backend
+    front_door_admit   = local.workspace_kinds_conditions.front_door_admit
+    team_slot_bind     = local.workspace_kinds_conditions.team_slot_bind
+    member_slots       = local.forge_member_slots_any
+  } : null
+}
