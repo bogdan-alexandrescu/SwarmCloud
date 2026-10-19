@@ -34,6 +34,29 @@
 #      unscopably (§2.1); the job's entrypoint discards what an override can
 #      set, and this sees that one was tried.
 #
+# And two for the widened deployer of docs/design/workspace-kinds.md §4.5
+# (lane WK-ALERTS), which must exist before the owner turns
+# enable_workspace_kinds on:
+#
+#   5. front_door_iam: ANY SetIamPolicy by the deployer on an IAP resource,
+#      whoever it names (K1). IAM cannot bound which member a setIamPolicy
+#      adds, so the guard (C10) and this page are what does. Admits are rare
+#      and each one is read by a person; an unexpected one is R7, a stolen
+#      token rewriting the API backend's accessor list.
+#   6. tenant_secret_iam: a secret IAM write by the deployer on the -git or
+#      -git-refresh slot of a tenant terraform declares (var.tenant_ids, the
+#      keys of var.tenants). K2 lets the deployer bind ANY
+#      swarm-tenant-*-git(-refresh) secret, because a group or service
+#      workspace's tenant is made at runtime and its name is not known here;
+#      the declared tenants' slots are the owner's (scripts/create-secrets.sh)
+#      and the job never binds them. Each name is listed in full, anchored at
+#      its end, so swarm-tenant-eng-git-u-<user> (a person's slot) is not one.
+#      No tenant ids, no policy: there is nothing to name.
+#
+# 5 and 6 overlap outside_personal_workers whenever the member is not a
+# personal worker. They are separate so the page names the bound it guards
+# and carries the runbook for it.
+#
 # 1-3 ARE LOG-MATCH POLICIES over the Admin Activity audit log, which Cloud
 # Logging writes to _Required for every project and which no sink or
 # exclusion can drop -- so a stolen token cannot route its own trail away
@@ -99,6 +122,13 @@ locals {
   # entries are a trigger working, not someone using it.
   cloudbuild_agent_re = "@gcp-sa-cloudbuild[.]iam[.]gserviceaccount[.]com$"
 
+  # Every slot name of every declared tenant, as `/secrets/<name>$` matches on
+  # resourceName (projects/<number>/secrets/<name>; the number, not the id,
+  # which is why the tail is matched).
+  tenant_secret_names = flatten([
+    for t in sort(var.tenant_ids) : ["swarm-tenant-${t}-git", "swarm-tenant-${t}-git-refresh"]
+  ])
+
   workspace_alert_filters = {
     outside_personal_workers = join(" AND ", [
       local.workspace_audit_log,
@@ -157,6 +187,21 @@ locals {
       "protoPayload.methodName=~\"[.]RunJob$\"",
       "protoPayload.resourceName=~\"${local.workspace_job_re}\"",
       "NOT protoPayload.authenticationInfo.principalEmail=\"${local.workspace_dispatch_email}\"",
+    ])
+
+    front_door_iam = join(" AND ", [
+      local.workspace_audit_log,
+      "protoPayload.authenticationInfo.principalEmail=\"${local.workspace_deployer_email}\"",
+      "protoPayload.serviceName=\"iap.googleapis.com\"",
+      "protoPayload.methodName=~\"(?i)setiampolicy$\"",
+    ])
+
+    tenant_secret_iam = join(" AND ", [
+      local.workspace_audit_log,
+      "protoPayload.authenticationInfo.principalEmail=\"${local.workspace_deployer_email}\"",
+      "protoPayload.serviceName=\"secretmanager.googleapis.com\"",
+      "protoPayload.methodName=~\"(?i)setiampolicy$\"",
+      "(${join(" OR ", [for n in local.tenant_secret_names : "protoPayload.resourceName=~\"/secrets/${n}$\""])})",
     ])
   }
 
@@ -248,11 +293,67 @@ locals {
         that caller's credentials as compromised.
       DOC
     }
+
+    front_door_iam = {
+      display_name = "swarm-${var.environment}-workspace-deployer-front-door-iam"
+      severity     = "CRITICAL"
+      condition    = "swarm-workspace-deployer set an IAP resource's IAM policy"
+      doc          = <<-DOC
+        **swarm-workspace-deployer** called `SetIamPolicy` on an IAP resource.
+        Every one pages, whoever it names (docs/design/workspace-kinds.md §4.5,
+        K1): IAM cannot restrict which member the call adds, so guard rule C10
+        (exactly `serviceAccount:<the approved principal>`), C9 (no removal)
+        and this page are the bound. An expected one is step S2 admitting an
+        approved service workspace.
+
+        1. Open the entry: `resourceName` must be the API backend, never
+           `-ui-backend`; the `policyDelta` must ADD one
+           `serviceAccount:` member as `roles/iap.httpsResourceAccessor`, and
+           remove nothing.
+        2. Match it to a service workspace the platform owner approved: its
+           record's `front_door` entry and the `admin_audit` row at approval,
+           and the execution of `swarm-workspace-apply` at that minute in the
+           restricted log bucket `swarm-workspace-apply`.
+        3. Anything else is R7, a deployer token used outside the guard:
+           restore the backend's members by the owner's bootstrap apply
+           (`frontend_accessors` re-adds its own), take the dispatcher off the
+           job's IAM policy, and treat the token as stolen.
+      DOC
+    }
+
+    tenant_secret_iam = {
+      display_name = "swarm-${var.environment}-workspace-deployer-tenant-secret-iam"
+      severity     = "CRITICAL"
+      condition    = "swarm-workspace-deployer changed IAM on a declared tenant's forge slot"
+      doc          = <<-DOC
+        **swarm-workspace-deployer** wrote the IAM policy of the `-git` or
+        `-git-refresh` secret of a tenant terraform declares (`var.tenants`).
+        Its K2 binding admits any `swarm-tenant-*-git` secret, because a group
+        or service workspace's tenant is made at runtime, but the declared
+        tenants' slots are the owner's and the job never binds them
+        (docs/design/workspace-kinds.md §4.5, §4.6). Whoever was added can
+        now read that tenant's forge credential.
+
+        1. Open the entry: the secret (`resourceName`) and the member in
+           `policyDelta`. Remove that binding now.
+        2. Find the execution of `swarm-workspace-apply` at that minute in the
+           restricted log bucket `swarm-workspace-apply` and read what the
+           guard printed; no execution means the token was used outside one.
+        3. Rotate the tenant's forge credential with
+           `scripts/create-secrets.sh --stdin`: it was readable by the member
+           for as long as the binding stood.
+      DOC
+    }
   }
 }
 
 resource "google_monitoring_alert_policy" "workspace" {
-  for_each = var.create_alerts ? local.workspace_alerts : {}
+  # tenant_secret_iam only when there is a declared tenant to name: an empty
+  # OR would be a malformed filter.
+  for_each = var.create_alerts ? {
+    for k, v in local.workspace_alerts : k => v
+    if k != "tenant_secret_iam" || length(var.tenant_ids) > 0
+  } : {}
 
   project      = var.project_id
   display_name = each.value.display_name
