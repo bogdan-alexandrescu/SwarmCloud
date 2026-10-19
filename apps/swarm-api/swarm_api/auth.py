@@ -28,6 +28,7 @@ from swarm_common.identity import (
     tenant_id_for_group,
     tenant_id_for_user,
     tenant_member_for,
+    worker_service_account_id,
 )
 
 from .errors import Forbidden, PreferencesUnavailable, Unauthenticated, UpstreamUnavailable
@@ -67,8 +68,10 @@ PREFERENCE_FREE_ROUTES: frozenset[tuple[str, str]] = frozenset({
 #: never grants: `Authenticator._select_tenant` honours it only when the named
 #: tenant is among the registered tenant groups Cloud Identity confirmed for
 #: this caller on this request, or is the caller's OWN ready personal workspace
-#: (#1200). Absent (or empty), the tenant is that personal workspace when it is
-#: ready, else today's first match in the admin-ordered `tenant_groups`.
+#: (#1200), or -- for a service account, and only when named -- its OWN service
+#: tenant (`Authenticator._with_own_service_tenant`, HW-ACCEPT-ID). Absent (or
+#: empty), the tenant is that personal workspace when it is ready, else today's
+#: first match in the admin-ordered `tenant_groups`.
 TENANT_HEADER = "X-Swarm-Tenant"
 
 #: The same selection as a QUERY parameter, accepted on `TENANT_QUERY_ROUTES`
@@ -469,35 +472,103 @@ class PersonalTenants:
         self._cache_seconds = cache_seconds
         self._clock = clock
         self._cache: dict[str, tuple[float, bool]] = {}
+        self._service_cache: dict[str, tuple[float, bool]] = {}
         self._lock = threading.Lock()
 
     def ready(self, email: str) -> bool:
+        return self._cached(self._cache, email, self._read)
+
+    def owns_service_tenant(self, email: str) -> bool:
+        """Whether `tenants/<tenant_id_for_user(email)>` is `kind: user` with
+        exactly `email` as its principal: a SERVICE identity's own service
+        tenant (HW-ACCEPT-ID, owner decision 2026-10-19). The first half of
+        `ready` and nothing more: a Terraform-written service tenant has no
+        `workspaces/` record, and the workspace gate never judges a service
+        account (WD7). Asked only for a caller `own_service_tenant` admits,
+        and cached separately from `ready`, so a person's answer is never
+        this one. Raises whatever Firestore raises.
+        """
+        return self._cached(self._service_cache, email, self._names)
+
+    def _cached(self, cache: dict[str, tuple[float, bool]], email: str,
+                read: Callable[[str], bool]) -> bool:
         email = (email or "").strip().lower()
         if not email:
             return False
         stamp = self._clock()
         with self._lock:
-            cached = self._cache.get(email)
+            cached = cache.get(email)
         if cached is not None and cached[0] > stamp:
             return cached[1]
-        answer = self._read(email)
+        answer = read(email)
         with self._lock:
-            self._cache[email] = (stamp + self._cache_seconds, answer)
+            cache[email] = (stamp + self._cache_seconds, answer)
         return answer
 
-    def _read(self, email: str) -> bool:
-        tenant_id = tenant_id_for_user(email)
-        tenant_snap = self._db.collection(TENANTS).document(tenant_id).get()
+    def _names(self, email: str) -> bool:
+        tenant_snap = self._db.collection(TENANTS).document(tenant_id_for_user(email)).get()
         tenant = (tenant_snap.to_dict() or {}) if tenant_snap.exists else {}
-        if tenant.get("kind") != "user" or _principal(tenant) != email:
+        return tenant.get("kind") == "user" and _principal(tenant) == email
+
+    def _read(self, email: str) -> bool:
+        if not self._names(email):
             return False
-        record_snap = self._db.collection(WORKSPACES).document(tenant_id).get()
+        record_snap = self._db.collection(WORKSPACES).document(tenant_id_for_user(email)).get()
         record = (record_snap.to_dict() or {}) if record_snap.exists else None
         return state_of(record) == READY and _principal(record or {}) == email
 
 
 def _principal(doc: Mapping[str, Any]) -> str:
     return str(doc.get("principal") or "").strip().lower()
+
+
+def is_worker_identity(email: str, tenant_id: str, configured_prefix: str = "") -> bool:
+    """Whether `email` is a worker identity: what a tenant's agents run as, and
+    what a workflow's agent speaks as through the MCP bridge.
+
+    Any address under the frozen worker prefix (`worker_service_account_id("")`)
+    or the configured one (`ApiSettings.tenant_service_account_prefix`), and
+    `tenant_id`'s own derived worker. Both prefixes, so a deployment that names
+    its workers otherwise does not make the frozen names a principal, nor the
+    reverse. Decided from the verified address alone: a worker can rewrite its
+    own `tenants/<id>` document (contract request 87), so no stored field may
+    make one look like anything else.
+    """
+    local = (email or "").strip().lower().split("@", 1)[0]
+    configured = configured_prefix or "swarm-agent-worker"
+    return local.startswith((worker_service_account_id(""), f"{configured}-")) or \
+        local == worker_service_account_id(tenant_id)
+
+
+def own_service_tenant(auth: AuthContext, configured_prefix: str = "") -> str:
+    """The id of the service tenant this caller may act in AS ITS PRINCIPAL, or "".
+
+    The conditions that need no read, shared by tenant selection
+    (`Authenticator._with_own_service_tenant`) and the await-input answer
+    (`awaitinput.service_principal`), so the two can never admit different
+    callers:
+
+      * not the schedule tick, not the rollup sweeper, not a listed
+        (continuation-scoped) account -- those act for nobody, even were the
+        listed address a tenant's principal;
+      * a service account (`is_service_account` / `is_service_identity`): a
+        person's own tenant is `PersonalTenants.ready`'s, and needs its
+        workspace record;
+      * not a worker identity (`is_worker_identity`), by either prefix or the
+        derived tenant's own worker.
+
+    The id is `tenant_id_for_user` of the VERIFIED email, never anything the
+    caller sent. It is not yet the caller's: the frozen slug drops the domain,
+    so whoever asks must still read `tenants/<id>` and find `kind: user` with
+    exactly this email as principal (`PersonalTenants.owns_service_tenant`).
+    """
+    if auth.is_schedule_tick or auth.is_rollup_sweeper or auth.member_scope or auth.tenant_member:
+        return ""
+    email = (auth.email or "").strip().lower()
+    if not email or not (is_service_account(email) or is_service_identity(email)):
+        return ""
+    own = tenant_id_for_user(email)
+    return "" if is_worker_identity(email, own, configured_prefix) else own
 
 
 def _computed_source(ctx: AuthContext) -> str:
@@ -569,7 +640,8 @@ class Authenticator:
         one that names none acts in the first choice, as before.
         """
         ctx = self._authenticate(authorization, iap_assertion)
-        ctx = self._with_default(self._with_own_workspace(ctx, tenant), tenant)
+        ctx = self._with_own_service_tenant(self._with_own_workspace(ctx, tenant), tenant)
+        ctx = self._with_default(ctx, tenant)
         return self._select_tenant(ctx, tenant)
 
     def _with_default(self, ctx: AuthContext, requested: str | None) -> AuthContext:
@@ -646,7 +718,9 @@ class Authenticator:
 
         Only an ordinary human caller: the schedule tick, the rollup sweeper, a
         listed service account and any service identity keep today's tenant,
-        so a CI or acceptance account's headerless default is unchanged.
+        so a CI or acceptance account's headerless default is unchanged. (A
+        service account may still NAME its own service tenant:
+        `_with_own_service_tenant`.)
 
         A header naming neither a group this caller is in nor their own id is
         refused below without reading anything, so a refusal still costs no
@@ -685,6 +759,48 @@ class Authenticator:
                 c for c in ctx.tenant_choices if c[0] != own
             )),
         )
+
+    def _with_own_service_tenant(self, ctx: AuthContext, requested: str | None) -> AuthContext:
+        """Offer a service identity its OWN service tenant, when it names it
+        (HW-ACCEPT-ID, owner decision 2026-10-19).
+
+        A service tenant is a `kind: user` tenant whose principal is a service
+        account -- `u-sw-c90291` for swarm-verify, `u-or-9a0792` for
+        oracle-api. `_with_own_workspace` skips every service identity, and
+        `PersonalTenants.ready` wants a `workspaces/` record such a tenant never
+        has, so an account in a group could never act in its own tenant: the
+        release's await-input checks, which answer as swarm-verify, were 403
+        `person_required` in the group tenant `smoke` on every run.
+
+        Only when the header names EXACTLY `own_service_tenant(ctx)` -- derived
+        from the verified email, for a service account that is not a worker,
+        a job or a listed account -- and `tenants/<that id>`, read through
+        `PersonalTenants`' cache, is `kind: user` with exactly the caller's
+        email as principal. The entry is APPENDED: the headerless default is
+        unchanged (acceptance relies on an account in a group keeping it), and
+        a request that names no tenant, or another one, reads nothing here.
+        A failed read is a 503, never a fall-through to another tenant, as
+        `_with_own_workspace` answers it.
+        """
+        if self._personal is None or not requested:
+            return ctx
+        own = own_service_tenant(
+            ctx, getattr(self._settings, "tenant_service_account_prefix", "")
+        )
+        if not own or requested != own:
+            return ctx
+        try:
+            owned = self._personal.owns_service_tenant(ctx.email)
+        except Exception as exc:  # noqa: BLE001 - any Firestore failure
+            log.warning("service tenant unresolved (%s)", type(exc).__name__)
+            raise UpstreamUnavailable(
+                "your service tenant could not be read; retry shortly"
+            ) from None
+        if not owned:
+            return ctx
+        return replace(ctx, tenant_choices=(
+            *(c for c in ctx.tenant_choices if c[0] != own), (own, ctx.email),
+        ))
 
     @staticmethod
     def _names_a_choice(ctx: AuthContext, requested: str) -> bool:
@@ -1229,7 +1345,9 @@ class Authenticator:
         THE HEADER SELECTS; IT NEVER GRANTS (invariant 9). The only tenants it
         can name are the ones in `tenant_choices`, which this request's own
         verified identity produced: the caller's confirmed groups and, when it
-        is ready, the caller's OWN personal workspace (`_with_own_workspace`).
+        is ready, the caller's OWN personal workspace (`_with_own_workspace`),
+        or a service account's own service tenant when the header named it
+        (`_with_own_service_tenant`).
         Everything else -- another group's tenant, another person's `u-`
         tenant, the caller's own `u-` tenant before its workspace is ready, an
         admin group, a tenant that does not exist -- is one 403, raised here,

@@ -156,7 +156,8 @@ def test_a_tenant_whose_principal_is_not_the_caller_is_refused(store):
 
 
 @pytest.mark.parametrize("change", [
-    {"kind": "group"}, {"principal": ""}, {"principal": BOT}, {"principal": VERIFY.upper() + " "},
+    {"kind": "group"}, {"principal": ""}, {"principal": BOT},
+    {"principal": "swarm-verify@other-project.iam.gserviceaccount.com"},
 ])
 def test_a_tenant_document_that_does_not_name_the_caller_is_refused(store, change):
     store.docs[f"tenants/{VERIFY_TENANT}"].update(change)

@@ -80,7 +80,6 @@ from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.admission import _snapshot
-from swarm_common.identity import tenant_id_for_user, worker_service_account_id
 from swarm_common.models import TaskEvent, new_id
 from swarm_common.profiles import RUNNER_PROFILES
 from swarm_common.states import EventType, ParkReason, TaskState
@@ -89,7 +88,7 @@ from swarm_redaction import KEY_VALUE, RULES, mask_code_literals, redact
 from . import refusals, roles
 from .agent_output import AgentOutputService
 from .agent_questions import read_questions
-from .auth import AuthContext, person_refusal
+from .auth import AuthContext, own_service_tenant, person_refusal
 from .codec import event_to_firestore
 from .errors import (
     ApiError,
@@ -101,7 +100,6 @@ from .errors import (
     UpstreamUnavailable,
     ValidationFailed,
 )
-from .gitidentity import is_service_account
 from .inputwriter import (
     InputWriteFailed,
     InputWriter,
@@ -123,7 +121,6 @@ from .validation import (
 )
 from .verdictpublish import Decline, parse_verdict, spec_refusal
 from .waker import TASK_FINISHED, ring
-from .workspaces import is_service_identity
 
 log = logging.getLogger(__name__)
 
@@ -413,20 +410,14 @@ def service_principal(ctx: Any, auth: AuthContext, tenant_id: str) -> bool:
       * the tenant document, read now, is `kind: "user"` and its principal
         is exactly the caller's address. A blank principal is not a match.
     """
-    if auth.is_schedule_tick or auth.is_rollup_sweeper or auth.member_scope or auth.tenant_member:
+    # Every condition that needs no read -- not a job or a listed account, a
+    # service account, not a worker by either prefix or the tenant's own --
+    # is `own_service_tenant`'s, the one tenant selection applies too.
+    configured = getattr(ctx.settings, "tenant_service_account_prefix", "")
+    if not tenant_id or own_service_tenant(auth, configured) != tenant_id:
         return False
-    email = (auth.email or "").strip().lower()
-    if not email or not (is_service_account(email) or is_service_identity(email)):
-        return False
-    local = email.split("@", 1)[0]
-    # The frozen rule's prefix (`worker_service_account_id("")`) AND the
-    # configured one: a deployment that names its workers otherwise must not
-    # make the frozen worker names answerable, nor the reverse.
-    configured = getattr(ctx.settings, "tenant_service_account_prefix", "") or "swarm-agent-worker"
-    if local.startswith((worker_service_account_id(""), f"{configured}-")) or \
-            local == worker_service_account_id(tenant_id):
-        return False
-    if auth.tenant_via or auth.tenant_id != tenant_id or tenant_id != tenant_id_for_user(email):
+    email = auth.email.strip().lower()
+    if auth.tenant_via or auth.tenant_id != tenant_id:
         return False
     if (auth.tenant_principal or email).strip().lower() != email:
         return False
