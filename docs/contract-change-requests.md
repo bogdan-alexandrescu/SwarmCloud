@@ -113,6 +113,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 103 | `models.py`: `Attempt.model`, the model ID an attempt's agent was started with (MODEL-CONTRACT, model per step request D, part of #1435) | ACCEPTED by the owner 2026-10-17 (PR 1509) and APPLIED by the pull request that adds this line |
 | 104 | `specsign.py`: spec format 5 covers `model_class`, signed at 5 only when a class is set (MODEL-CONTRACT, model per step request E, part of #1435) | ACCEPTED by the owner 2026-10-17 (PR 1509) and APPLIED by the pull request that adds this line |
 | 105 | `profiles.py`: `await-input` becomes available, `available=True` and its `disabled_reason` removed (HW-ENABLE, human steps request D, part of #1436) | ACCEPTED by the owner 2026-10-18 (on PR 1570, turned on in dev before HW-ACCEPT so the acceptance group can run against it) and APPLIED by the pull request that adds this line |
+| 106 | `profiles.py`: `claude-code-browser` declares `qa_identity`, one choice `console`, the live browser signed in to the console as the QA identity (QI-CONTRACT, QA identity request QI-1, part of #1649) | ACCEPTED by the owner 2026-10-19 (option B, design `docs/design/qa-identity.md` §7) and APPLIED by the pull request that adds this line |
 
 ---
 
@@ -13667,3 +13668,87 @@ ordinary runner until HW-UI lands. Choosing it for a single task is refused
 As request 93. **1**: a parked await step holds no lease and no capacity
 (HW-SCHED). **10**: the step is named by profile, and its wait is the signed
 `await_input` block, never a caller-supplied command.
+
+
+## 106. `profiles.py`: `claude-code-browser` declares `qa_identity` (QI-CONTRACT, QA identity request QI-1)
+
+**Status:** ACCEPTED by the owner 2026-10-19 with option B (a QA service
+account whose IAP JWT the live gate adds; `docs/design/qa-identity.md` §7)
+and APPLIED by the pull request that adds this line. Design §5 request QI-1,
+filed here at the next free number by lane QI-CONTRACT, part of #1649.
+
+### What is true today
+
+`_CLAUDE_CODE_BROWSER_INPUTS` is `_CLI_AGENT_INPUTS`, `_MCP_SERVER_INPUTS`
+and `browser_tool` (requests 77 and 88). A task that names any other key is
+refused `invalid_input` by `check_inputs`. No profile lets a caller say the
+browser should be signed in to anything: an agent that has to reach the
+console behind IAP waits for a person to type a sign-in (#1649, gap 3).
+
+### The change
+
+```python
+_CLAUDE_CODE_BROWSER_INPUTS: dict[str, RunnerInput] = {
+    **_CLI_AGENT_INPUTS,
+    **_MCP_SERVER_INPUTS,   # contract request 88
+    "browser_tool": RunnerInput(...),   # unchanged
+    "qa_identity": RunnerInput(
+        "string",
+        choices=("console",),
+        means=(
+            "sign the live browser in to this deployment's console as its QA "
+            "identity, a service account with its own workspace; the platform "
+            "adds the credential, the agent never holds it, and a tenant may "
+            "name it only when a platform admin has granted it"
+        ),
+    ),
+}
+```
+
+Nothing else in `apps/common/swarm_common/` changes. No profile but
+`claude-code-browser` declares it: only that profile has a live gate
+(`live_browser=True`), and option B needs the gate. The signed spec already
+covers `input`, so the worker acts only on a value the submitter signed; no
+new spec format.
+
+**What follows outside the contract, in the same pull request.** The two
+generated `runner-inputs:claude-code-browser` tables, in `docs/workflows.md`
+and `plugin/README.md`, which `tests/unit/mcp/test_runner_input_prose.py`
+holds to the catalogue. The two tests that held the profile's input set to
+`{issue, browser_tool, mcp_servers}`:
+`tests/unit/control_plane/test_claude_code_browser_profile.py` and
+`tests/unit/mcp/test_runner_inputs.py`. `scripts/lib/check-contract-parity.sh`
+restates no `qa_identity` and compares the Submit form's offers as a subset
+of what a profile declares, so it does not change. `terraform/infra/locals.tf`
+mirrors no profile's inputs.
+
+**Until lane QI-API lands, the name is accepted and does nothing.** A task
+that sends `qa_identity: "console"` passes `check_inputs`, and no worker
+reads the key, so its browser is signed in to nothing, exactly as without it.
+The per-tenant grant (403 `qa_identity_not_granted`) and the unconfigured
+refusal (422 `qa_identity_unconfigured`) are QI-API's, in swarm-api.
+
+**Tests:** `tests/unit/common/test_qa_identity_contract.py`: the key is
+declared on `claude-code-browser`, a string with exactly the choice
+`console`; no other profile declares it, and each refuses it as undeclared;
+`check_inputs` accepts `"console"` and refuses `"admin"`, `""` and a
+non-string as a bound broken on the declared key; and
+`test_request_qi_1_is_filed_as_entry_106`.
+
+### Rollback
+
+Delete the entry. A queued task that names it is then refused by the worker
+as an undeclared input, failing closed. Revoke every grant first so nothing
+new is submitted.
+
+### What it would break
+
+Nothing that exists: the key was refused before. Pickers that render the
+catalogue's inputs (the console's Submit form, `swarm_profiles`) show one
+more option.
+
+### Invariants
+
+**10**: a name from a closed list, never a credential, host or account.
+**9**: the name grants nothing by itself. swarm-api's per-tenant grant
+decides, at submission and again at signing. 1 to 8 are untouched.
