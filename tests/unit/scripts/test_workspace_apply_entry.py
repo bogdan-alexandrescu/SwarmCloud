@@ -53,6 +53,9 @@ REGION = "us-central1"
 FIXED = {
     "PATH", "HOME", "PROJECT_ID", "REGION", "SWARM_ENV_FILE", "SWARM_CALL_GUARD",
     "SWARM_CALL_GUARD_ENFORCE", "SWARM_KUBECTL", "CLOUDSDK_PYTHON", "BUILD_ID", "NO_COLOR",
+    # What the approval check read (lane WK-SIGNED-APPROVAL): always set, so
+    # the guard always compares (tests/unit/scripts/test_workspace_apply_approval.py).
+    "SWARM_APPROVAL_PIN",
 }
 
 needs_exec = pytest.mark.skipif(
@@ -90,6 +93,20 @@ def _cloud_run_env(**overrides: str | None) -> dict[str, str]:
     return env
 
 
+class PersonalCloud:
+    """The approval check's Firestore, holding one approved personal record:
+    a personal approval is not verified, so the run goes on to the exec. The
+    approval check itself is tests/unit/scripts/test_workspace_apply_approval.py's."""
+
+    def __init__(self, project: str) -> None:
+        self.project = project
+
+    def record(self, workspace_id: str):
+        return ("projects/p/databases/swarm/documents/workspaces/u-alice", "2026-10-19T00:00:00Z", {
+            "workspace_id": workspace_id, "tenant_id": "u-alice", "principal": "alice@saga.xyz",
+            "state": "approved", "decision": {"verdict": "approved", "by": "admin@saga.xyz"}})
+
+
 class Recorder:
     """The two things entry.py may do once it has decided: ask, and exec."""
 
@@ -111,7 +128,8 @@ def _call(entry, tmp_path: Path, argv: list[str], environ: dict[str, str]) -> tu
     scratch = tmp_path / "scratch"
     scratch.mkdir(exist_ok=True)
     rc = entry.main(argv, environ, metadata=rec.metadata, scratch_root=str(scratch),
-                    target=Path("/opt/swarm/scripts/workspace-apply.sh"), execve=rec.execve)
+                    target=Path("/opt/swarm/scripts/workspace-apply.sh"), execve=rec.execve,
+                    cloud=PersonalCloud)
     return rc, rec
 
 
@@ -229,7 +247,7 @@ def test_a_metadata_answer_that_is_not_a_name_is_refused(entry, tmp_path, answer
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     rc = entry.main([WORKSPACE, "create"], _cloud_run_env(), metadata=answers.__getitem__,
-                    scratch_root=str(scratch), execve=lambda *a: execs.append(a))
+                    scratch_root=str(scratch), execve=lambda *a: execs.append(a), cloud=PersonalCloud)
     assert rc == 1 and execs == [] and list(scratch.iterdir()) == []
 
 
@@ -247,7 +265,7 @@ def test_the_caller_environment_is_emptied_before_anything_reads_it(entry, tmp_p
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     rc = entry.main([WORKSPACE, "create"], environ, metadata=metadata, scratch_root=str(scratch),
-                    execve=lambda *a: None)
+                    execve=lambda *a: None, cloud=PersonalCloud)
     assert rc == 0 and seen == [{}, {}] and environ == {}
 
 
@@ -264,7 +282,15 @@ _DRIVER = textwrap.dedent("""
     entry.DEADLINE_SECONDS = int(deadline)
     entry.KILL_AFTER_SECONDS = 1
     answers = {"project/project-id": "%s", "instance/region": "projects/123456789012/regions/%s"}
-    sys.exit(entry.main(argv, None, metadata=answers.__getitem__, scratch_root=scratch, target=Path(target)))
+    class PersonalCloud:
+        def __init__(self, project):
+            pass
+        def record(self, workspace_id):
+            return ("n", "t", {"workspace_id": workspace_id, "tenant_id": "u-alice",
+                               "principal": "alice@saga.xyz",
+                               "decision": {"verdict": "approved", "by": "admin@saga.xyz"}})
+    sys.exit(entry.main(argv, None, metadata=answers.__getitem__, scratch_root=scratch, target=Path(target),
+                        cloud=PersonalCloud))
 """ % (PROJECT, REGION))
 
 

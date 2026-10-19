@@ -1188,6 +1188,31 @@ cmd_expect() {
     *) die "the record's kind '${rec_kind}' is not personal, group or service" ;;
   esac
   [[ -n "${rec_principal}" ]] || die "the record names no principal"
+  # THE APPROVAL images/workspace-apply/entry.py VERIFIED (lane
+  # WK-SIGNED-APPROVAL, R8 of docs/design/workspace-kinds.md §4.5). entry.py
+  # checks swarm-api's signature on a group or service record before step 1
+  # and pins what it read in SWARM_APPROVAL_PIN, in the fixed environment no
+  # override reaches; it always sets it. A record that differs from the pin --
+  # swapped by whoever can write Firestore between that check and A1's read --
+  # or a group or service the pin does not call verified, gets no
+  # expectation, so the guard allows no call that grants anything for it. A
+  # run outside the job (an operator's own) sets no pin and is judged as before.
+  if [[ -n "${SWARM_APPROVAL_PIN:-}" ]]; then
+    local pinned
+    pinned="$(jq -nr --arg pin "${SWARM_APPROVAL_PIN}" --arg w "${rec_workspace}" --arg t "${rec_tenant}" \
+        --arg k "${rec_kind}" --arg p "${rec_principal}" '
+      (try ($pin | fromjson) catch null) as $v
+      | if ($v | type) != "object" then "unreadable"
+        elif $v.workspace_id != $w or $v.tenant_id != $t or $v.kind != $k or $v.principal != $p then "differs"
+        elif ($k == "group" or $k == "service") and $v.verified != true then "unverified"
+        else "ok" end')" || pinned="unreadable"
+    case "${pinned}" in
+      ok) ;;
+      differs) die "APPROVAL_UNSIGNED: the record is not the one whose approval the job verified; refusing" ;;
+      unverified) die "APPROVAL_UNSIGNED: a ${rec_kind} record whose approval the job did not verify; refusing" ;;
+      *) die "APPROVAL_UNSIGNED: SWARM_APPROVAL_PIN is not readable; refusing" ;;
+    esac
+  fi
   # A group's or a service's principal becomes an IAM member (C10) or a
   # tenant document's principal: lower-cased as swarm-api stores it, and
   # narrow enough to be safe in a member, a document path and a jq string.
@@ -1437,7 +1462,7 @@ cmd_self_test() {
   export SWARM_ENV_FILE="${tmp}/no.env"
   export PROJECT_ID="saga-agents-staging" REGION="us-central1" ENVIRONMENT="dev"
   export FIRESTORE_DATABASE="swarm" GKE_CLUSTER="swarm-autopilot" GKE_LOCATION="us-central1"
-  unset ARTIFACT_BUCKET SWARM_CALL_GUARD_MODE SWARM_KUBECTL
+  unset ARTIFACT_BUCKET SWARM_CALL_GUARD_MODE SWARM_KUBECTL SWARM_APPROVAL_PIN
   export SWARM_CALL_GUARD="${tmp}/expect.json"
 
   local workspace

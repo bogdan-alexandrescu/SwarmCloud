@@ -53,7 +53,7 @@ on `app.state` so a test injects a fake, exactly as `account_pool` is.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
@@ -75,6 +75,7 @@ from ..people import (
 )
 from ..publish_workspace import WorkspacePublisher, publisher_for
 from ..schemas import StrictModel
+from ..specsigning import signer_from_settings
 from .accounts import account_pool
 
 router = APIRouter(prefix="/v1/admin", tags=["people"])
@@ -182,17 +183,31 @@ def workspace_publisher(request: Request,
     return publisher
 
 
+def approval_signer(request: Request, ctx: AppContext = Depends(get_context)) -> Any:
+    """The signer of every workspace approval and retry: the step-spec KMS
+    signer, built once per process from the settings (lane
+    WK-SIGNED-APPROVAL); a test sets `app.state.workspace_approval_signer`
+    to a fake before the first call. None where no key is configured, which
+    `signer_from_settings` allows only outside a deployment."""
+    if not hasattr(request.app.state, "workspace_approval_signer"):
+        request.app.state.workspace_approval_signer = signer_from_settings(ctx.settings)
+    return request.app.state.workspace_approval_signer
+
+
 def people_service(
     ctx: AppContext = Depends(get_context),
     publisher: WorkspacePublisher = Depends(workspace_publisher),
     directory: MembershipResolver | None = Depends(workspace_directory),
+    signer: Any = Depends(approval_signer),
 ) -> People:
     return People(ctx.db, publisher=publisher, now=ctx.now,
                   console_url=ctx.settings.console_url,
                   project_id=ctx.settings.project_id,
                   names=name_lookup(ctx),
                   groups=directory,
-                  rules=ws.KindRules.from_settings(ctx.settings))
+                  rules=ws.KindRules.from_settings(ctx.settings),
+                  signer=signer,
+                  verify_settings=ctx.settings)
 
 
 @router.get("/people")
