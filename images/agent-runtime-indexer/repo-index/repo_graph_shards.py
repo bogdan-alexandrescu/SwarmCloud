@@ -197,6 +197,8 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Protocol
@@ -296,6 +298,17 @@ _GENERATION = re.compile(r"#\d+$")
 #: Files per `gcloud storage cp`: far below any argv limit (a blob path is
 #: about 120 bytes), and a full graph's ~370 blobs go up in one call.
 BATCH_FILES = 500
+#: `gcloud storage cp` processes a download runs side by side (#1469). A
+#: read's cost is per OBJECT, not per byte: measured on this repository's
+#: own graph (d2b2d14, 98 MB of JSON), a base read fetches 744 blobs of 8.8
+#: MB stored, and decoding them takes ~4 s of CPU; the 63 MB base that ran
+#: past its 90 s budget (#1334) was ~480 blobs in two batches of one call
+#: each, one after the other -- at least 0.16 s an object. Split into this
+#: many calls at once, the per-object cost is divided by it. Four: the
+#: indexer's `standard` class has 4 vCPU, the read runs before the extractor
+#: and the agent, so nothing else wants them, and each gcloud is a few
+#: hundred MB at most of the class's 8 GiB.
+GET_PROCESSES = 4
 #: Upload rounds: a round whose batch stopped on a blob that appeared
 #: meanwhile (a 412) is followed by one for what is still absent.
 UPLOAD_ROUNDS = 3
@@ -494,7 +507,8 @@ class Store(Protocol):
 #: Optional on a store, with a fallback for one that lacks it (`_md5s`,
 #: `_get_many`, `_put_many`):
 #:   md5s(prefix) -> {key: base64 MD5 or None}   what a listing says of each object
-#:   get_many(keys) -> {key: bytes}              several reads in one call
+#:   get_many(keys, progress=None) -> {key: bytes}  several reads in one call;
+#:                                               `progress(done, total)` after each part
 #:   put_many({key: bytes}, no_clobber=...)      several writes in one call
 
 
@@ -555,8 +569,12 @@ class LocalStore:
     def md5s(self, prefix: str) -> dict[str, str | None]:
         return {key: md5_of(self._path(key).read_bytes()) for key, _ in self.list(prefix)}
 
-    def get_many(self, keys: Iterable[str]) -> dict[str, bytes]:
-        return {key: self.get(key) for key in keys}
+    def get_many(self, keys: Iterable[str],
+                 progress: Callable[[int, int], None] | None = None) -> dict[str, bytes]:
+        out = {key: self.get(key) for key in keys}
+        if progress is not None:
+            progress(len(out), len(out))
+        return out
 
     def put_many(self, items: dict[str, bytes], *, no_clobber: bool) -> None:
         for key in sorted(items):
@@ -692,23 +710,50 @@ class GcsStore:
         if failed is not None:
             raise failed
 
-    def get_many(self, keys: Iterable[str]) -> dict[str, bytes]:
-        """One `gcloud storage cp` of up to BATCH_FILES objects per directory, into scratch."""
-        wanted = {key: b"" for key in keys}
+    def get_many(self, keys: Iterable[str],
+                 progress: Callable[[int, int], None] | None = None) -> dict[str, bytes]:
+        """`gcloud storage cp` of the objects into scratch, in up to GET_PROCESSES
+        calls at once, each of at most BATCH_FILES objects of one directory.
+
+        `progress(done, total)` is called as each call finishes, so a read cut
+        short by its budget has said how far it got. A call that fails is
+        raised once every call has finished: none is left writing to scratch.
+        """
+        wanted = sorted(set(keys))
         out: dict[str, bytes] = {}
         with tempfile.TemporaryDirectory(prefix="repo-graph-get-") as scratch:
+            parts: list[tuple[str, list[str], Path]] = []
             for n, (directory, names) in enumerate(sorted(_by_directory(wanted).items())):
                 staged = Path(scratch) / str(n)
                 staged.mkdir()
-                for start in range(0, len(names), BATCH_FILES):
-                    batch = names[start:start + BATCH_FILES]
+                size = min(BATCH_FILES, max(1, -(-len(wanted) // GET_PROCESSES)))
+                parts += [(directory, names[start:start + size], staged)
+                          for start in range(0, len(names), size)]
+
+            def fetch(directory: str, batch: list[str], staged: Path) -> int:
+                try:
+                    self._run(["gcloud", "storage", "cp"]
+                              + [self._url(f"{directory}/{name}") for name in batch]
+                              + [str(staged) + "/"])
+                except FileNotFoundError:
+                    raise StoreError(f"{directory}: not found") from None
+                return len(batch)
+
+            failed: StoreError | None = None
+            done = 0
+            with ThreadPoolExecutor(max_workers=GET_PROCESSES) as pool:
+                for future in as_completed([pool.submit(fetch, *part) for part in parts]):
                     try:
-                        self._run(["gcloud", "storage", "cp"]
-                                  + [self._url(f"{directory}/{name}") for name in batch]
-                                  + [str(staged) + "/"])
-                    except FileNotFoundError:
-                        raise StoreError(f"{directory}: not found") from None
-                for name in names:
+                        done += future.result()
+                    except StoreError as exc:
+                        failed = failed or exc
+                        continue
+                    if progress is not None:
+                        progress(done, len(wanted))
+            if failed is not None:
+                raise failed
+            for directory, batch, staged in parts:
+                for name in batch:
                     try:
                         out[f"{directory}/{name}"] = (staged / name).read_bytes()
                     except OSError:
@@ -1068,11 +1113,15 @@ def _md5s(store: Store, prefix: str) -> dict[str, str | None]:
     return {key: None for key, _ in store.list(prefix)}
 
 
-def _get_many(store: Store, keys: list[str]) -> dict[str, bytes]:
+def _get_many(store: Store, keys: list[str],
+              progress: Callable[[int, int], None] | None = None) -> dict[str, bytes]:
     get_many = getattr(store, "get_many", None)
     if callable(get_many):
-        return get_many(keys)
-    return {key: store.get(key) for key in keys}
+        return get_many(keys) if progress is None else get_many(keys, progress=progress)
+    out = {key: store.get(key) for key in keys}
+    if progress is not None:
+        progress(len(out), len(out))
+    return out
 
 
 def _put_many(store: Store, items: dict[str, bytes]) -> None:
@@ -1262,12 +1311,21 @@ def read_manifest(store: Store, *, tenant_id: str, repo_id: str, commit_sha: str
 
 
 def read_graph(store: Store, *, tenant_id: str, repo_id: str, commit_sha: str,
-               manifest_digest: str | None = None) -> dict:
+               manifest_digest: str | None = None,
+               progress: Callable[[str], None] | None = None) -> dict:
     """The `swarm.repo-graph/v1` document a commit's shards hold.
 
     Every blob is checked against the digest its name is BEFORE it is
-    decompressed, so a rewritten blob is refused, not read.
+    decompressed, so a rewritten blob is refused, not read. `progress` is
+    told each step as it ends, with the seconds since the read began: the
+    worker records the last of them when the read runs out of its budget.
     """
+    started = time.monotonic()
+
+    def say(message: str) -> None:
+        if progress is not None:
+            progress(f"{message} in {time.monotonic() - started:.1f} s")
+
     manifest = read_manifest(store, tenant_id=tenant_id, repo_id=repo_id,
                              commit_sha=commit_sha, manifest_digest=manifest_digest)
     wanted: dict[str, list[str]] = {}
@@ -1281,7 +1339,11 @@ def read_graph(store: Store, *, tenant_id: str, repo_id: str, commit_sha: str,
         for entry in entries.values():
             wanted.setdefault("index:" + layer, []).append(entry["blob"].split(":", 1)[1])
     keys = sorted({blob_key(tenant_id, repo_id, h) for hs in wanted.values() for h in hs})
-    fetched = _get_many(store, keys)
+    stored = (manifest.get("bytes") or {}).get("stored")
+    say(f"manifest of {commit_sha[:12]} read: {len(keys)} blobs to fetch of a graph "
+        f"{stored} bytes stored")
+    fetched = _get_many(store, keys,
+                        lambda done, total: say(f"downloaded {done}/{total} blobs"))
     document: dict[str, Any] = {
         "schema": GRAPH_SCHEMA, "kind": manifest.get("kind"), "commit_sha": commit_sha,
         "branch": manifest.get("branch"), "base_sha": manifest.get("base_sha"),
@@ -1302,6 +1364,7 @@ def read_graph(store: Store, *, tenant_id: str, repo_id: str, commit_sha: str,
                                  "digest of; the graph is not read")
             rows.extend(decode_shard(data))
         document[target] = rows
+    say(f"decoded {len(fetched)} blobs")
     document["symbols"].sort(key=lambda s: (str(s.get("path")), s.get("start_line") or 0,
                                             str(s.get("id"))))
     document["call_edges"].sort(key=lambda e: (str(e.get("from")), str(e.get("to")),
@@ -1311,6 +1374,24 @@ def read_graph(store: Store, *, tenant_id: str, repo_id: str, commit_sha: str,
     for layer, target in INDEX_LAYERS.items():
         document[target].sort(key=_ORDER[layer])
     return document
+
+
+def read_to_file(store: Store, *, tenant_id: str, repo_id: str, commit_sha: str,
+                 manifest_digest: str | None, out: Path,
+                 progress: Callable[[str], None] | None = None) -> dict:
+    """`read`: the commit's graph document, written to `out`; the report it prints."""
+    started = time.monotonic()
+    graph = read_graph(store, tenant_id=tenant_id, repo_id=repo_id, commit_sha=commit_sha,
+                       manifest_digest=manifest_digest, progress=progress)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    data = canonical(graph) + b"\n"
+    out.write_bytes(data)
+    seconds = round(time.monotonic() - started, 1)
+    if progress is not None:
+        progress(f"wrote {len(data)} bytes in {seconds} s")
+    return {"read": commit_sha, "symbols": len(graph["symbols"]),
+            "call_edges": len(graph["call_edges"]), "files": len(graph["files"]),
+            "communities": len(graph["communities"]), "bytes": len(data), "seconds": seconds}
 
 
 def read_context(store: Store, *, tenant_id: str, repo_id: str, commit_sha: str,
@@ -1789,14 +1870,13 @@ def main(argv: list[str] | None = None) -> int:
             report: dict = {"sweep": sweep(store, tenant_id=tenant, repo_id=args.repo_id,
                                            keep=keep)}
         elif args.command == "read":
-            graph = read_graph(store, tenant_id=tenant, repo_id=args.repo_id,
-                               commit_sha=args.commit, manifest_digest=args.manifest_digest)
-            out = Path(args.out)
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_bytes(canonical(graph) + b"\n")
-            report = {"read": args.commit, "symbols": len(graph["symbols"]),
-                      "call_edges": len(graph["call_edges"]), "files": len(graph["files"]),
-                      "communities": len(graph["communities"])}
+            # Each step on stderr as it ends: the worker names the last one
+            # when the read runs out of its budget (#1469).
+            report = read_to_file(
+                store, tenant_id=tenant, repo_id=args.repo_id, commit_sha=args.commit,
+                manifest_digest=args.manifest_digest, out=Path(args.out),
+                progress=lambda message: print(f"{TOOL_NAME} read: {message}",
+                                               file=sys.stderr, flush=True))
         else:
             raw = Path(args.graph).read_bytes()
             document = json.loads(raw)
