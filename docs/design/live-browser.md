@@ -2257,6 +2257,7 @@ for sign-ins that only work on mobile.
 * **The presets** are a fixed, named list in the gate:
   - `desktop` 1440×900
   - `iphone-15` 393×852 @3
+  - `phone-390` 390×844 @3 (QA-KIT, 2026-10-19; amendment below)
   - `pixel-8` 412×915 @2.625
   - `iphone-se` 375×667 @2
   - `ipad-7` 810×1080 @2
@@ -2279,6 +2280,71 @@ for sign-ins that only work on mobile.
 * **Who switches the device** is question Q13. The recommendation is the agent,
   plus the person in control. A viewer's switcher shows the current device and
   is disabled.
+
+**Amendment, 2026-10-19: the QA kit (QA-KIT, part of #1649).** The owner
+decided on 2026-10-19 that a live-browser agent should be able to run a visual
+QA sweep at 1440 and 390, light and dark, and that the model must see its
+screenshots. Four things changed. docs/design/visual-qa.md §4.1 and §6 say what
+QA-CAPTURE builds on them.
+
+* **`phone-390`, 390×844 @3**, joins the list after `iphone-15`, with iPhone
+  15's mobile flags, user agent and client hints. 390 is the width a QA sweep
+  names (the iPhone 12-14 viewport), and none of the five presets was 390. The
+  list is written out in three places: the gate (`livegate/presets.py`),
+  swarm-api's restatement (`swarm_api.live.LIVE_PRESETS`) and the console's
+  labels (`LiveBrowser.tsx`, `Theater.tsx`, `TheaterTimeline.tsx`, "Phone
+  390"). A test holds the gate's and swarm-api's lists equal by name and size
+  (`test_live_wire_shapes.py`), because a copy that drifts shows a preset the
+  gate refuses, or hides one it has. Its display fits in the Xvfb already
+  started for the desktop preset, so nothing about the sidecar changed.
+* **The theme: `swarm-handoff theme dark|light|system`.** The gate sends
+  `Emulation.setEmulatedMedia` with the one feature `prefers-color-scheme`, on
+  the same per-page sessions that hold the device. That is why it holds:
+  - across the page's navigations, because the override belongs to the target;
+  - on a page opened later, and on a page whose session went (a renderer
+    swap), which is attached again with the device and the theme together;
+  - across a device switch.
+
+  `system` lifts the override. The name is checked three times, in the
+  command, by the worker and by the gate, and those three lists are held equal
+  by a test. Anything beside the name is refused, so the agent never sends a
+  media feature, which keeps invariant 10 in spirit, as a preset does. On an
+  attempt without the live path it is refused as a device is: exit 5 with the
+  reason. It is recorded the way an agent's device change is recorded: the
+  gate's record writes `theme_set`, `theme_refused` or `theme_failed` with the
+  name, and the worker logs `browser theme set`. Only the agent can set it.
+  The console has no theme control, and the gate does not report the theme.
+  Not measured: which session's override Chromium shows when the agent also
+  calls `Emulation.setEmulatedMedia`, which the method policy allows on its
+  own sessions. So the instructions name the command, not the method.
+* **The agent's instructions name both commands**, one line each. They list
+  every preset with its size, built from the gate's list. They say that
+  `browser_resize` is refused and why: it sends
+  `Emulation.setDeviceMetricsOverride`, which the method policy denies,
+  because the gate owns the size so that the person watching sees the device
+  the page is laid out for.
+* **Screenshots land in the artifacts, and the model sees them.** Playwright
+  MCP is registered with `--output-dir $SWARM_ARTIFACTS_DIR/screenshots`, so a
+  `browser_take_screenshot` taken without a filename is saved there and
+  uploaded. The console draws images up to 20 MiB inline. The following was
+  read from @playwright/mcp 0.0.83's own code (playwright-core
+  1.64.0-alpha-1790635538000), not measured on a live run:
+  - a screenshot comes back to the model as an image only when it was taken
+    without a filename, so the instructions ask for none;
+  - a screenshot given a filename is resolved against the workspace root,
+    which is the checkout;
+  - `--image-responses` defaults to `allow`, and nothing here sets it;
+  - with no `--output-max-size`, nothing is evicted before the upload.
+
+  The runner counts, from the CLI's stream, the screenshot calls and those
+  whose tool_result carried an image block, and writes the counts to its
+  result as `browser_screenshots` (`taken`, `seen_as_image`, `complete`).
+  `complete` is false when the stdout capture was cut. That a live run's
+  stream shows the image block has not yet been seen on a deployed run. Each
+  base64 image makes the stream larger, so a long sweep can pass the
+  transcript's 4,000,000-character cap. The transcript is then skipped (the
+  stdout capture stays whole up to its own cap), and QA-CAPTURE should expect
+  that.
 
 ---
 

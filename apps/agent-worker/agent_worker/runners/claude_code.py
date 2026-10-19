@@ -261,7 +261,8 @@ from ..jevkey import INTERNAL_BACKENDS as JEV_INTERNAL_BACKENDS
 from ..jevkey import KEY_FILE_ENV as JEV_KEY_FILE_ENV
 from ..logs import StructuredLogger
 from .base import RunnerContext, RunnerFailure, run_runner
-from .cliagent import CliAgentSpec, agent_working_directory, run_cli_agent
+from ..livegate.presets import PRESETS as DEVICE_PRESETS
+from .cliagent import CliAgentSpec, agent_working_directory, cli_stream_files, run_cli_agent
 
 #: The CLI's documented switch for every background-task feature: the Bash and
 #: subagent `run_in_background` parameter, auto-backgrounding and Ctrl+B.
@@ -312,6 +313,21 @@ AGENT_BROWSERS_PATH = "/opt/swarm/live-browser-only"
 PLAYWRIGHT_MCP_BIN = "/usr/local/share/npm-global/bin/playwright-mcp"
 MCP_SERVER_NAME = "playwright"
 MCP_CONFIG_NAME = "mcp.json"
+#: QA-KIT (owner decision 2026-10-19, part of #1649): where Playwright MCP
+#: writes what it names itself, under the task's artifacts, so every
+#: `browser_take_screenshot` taken WITHOUT a filename is uploaded and the
+#: console draws it. `--output-dir` is @playwright/mcp 0.0.83's flag ("the
+#: directory for automatically named output files"); a screenshot given a
+#: filename is resolved against the workspace root instead -- the checkout --
+#: and, read off 0.0.83's own code, is then NOT returned to the model as an
+#: image, which is why the note asks for no filename. Nothing here sets
+#: `--image-responses`, whose default ("allow") returns the image; and no
+#: `--output-max-size`, so nothing is evicted before the upload. Other
+#: auto-named files (a page's download, a console log the server writes) land
+#: here too, in the tenant's own artifacts.
+SCREENSHOTS_DIR_NAME = "screenshots"
+#: The tool whose results `screenshot_images` reads, as the CLI names it.
+SCREENSHOT_TOOL = f"mcp__{MCP_SERVER_NAME}__browser_take_screenshot"
 
 #: BROWSER-START (part of #1366): the runner's own refusal to start a
 #: live-browser attempt's agent without its browser. The lifecycle sets
@@ -354,7 +370,19 @@ LIVE_BROWSER_NOTE = (
     "parks until the person is ready. Only if the hand-off is refused (exit "
     "5), say so in your answer and then use an alternative, naming it. Save "
     "screenshots and other captures under $SWARM_ARTIFACTS_DIR so "
-    "they are uploaded."
+    "they are uploaded. "
+    # QA-KIT (owner decision 2026-10-19): one line each, built from the
+    # gate's own list so a preset added there is named here.
+    "Device: `swarm-handoff device <preset>` makes the browser one of "
+    + ", ".join(f"{p.name} ({p.width}x{p.height})" for p in DEVICE_PRESETS.values())
+    + ". Theme: `swarm-handoff theme dark|light|system` sets the colour scheme "
+    "every page is told to prefer (prefers-color-scheme); it holds across "
+    "navigation and new tabs, and system lifts it. browser_resize is refused: "
+    "the gate owns the browser's size, so the person watching sees the device "
+    "the page is laid out for; pick a preset instead. Take screenshots with "
+    "browser_take_screenshot without a filename: each is saved under "
+    "$SWARM_ARTIFACTS_DIR/screenshots and comes back to you as an image; with a "
+    "filename it lands in the checkout and you do not see it."
 )
 
 #: dev-browser (DEVB-INSTALL, owner decision 2026-10-14, part of #1030): the
@@ -709,9 +737,11 @@ def write_mcp_config(
     graph_workdir: str | None = None,
     graph_served: tuple[str, str, str] | None = None,
     relay: tuple[str, list[RelayServer]] | None = None,
+    screenshots_dir: str | None = None,
 ) -> Path:
     """Write the CLI's `--mcp-config` and return it: Playwright MCP on the live
-    browser when `endpoint` is given, and jev-browser beside it when `jev` is
+    browser when `endpoint` is given (writing what it names itself into
+    `screenshots_dir` when that is given, `SCREENSHOTS_DIR_NAME`), and jev-browser beside it when `jev` is
     (BSTATUS-API; with `jev_key_file`, the TypeSafe backend's key file PATH, never
     the key: `jev_launch.py` reads it into the server's own environment; without
     it, an internal backend: the wrapper started directly, no key), the `swarm-git` shim when `git_spool` is, the
@@ -736,10 +766,13 @@ def write_mcp_config(
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     servers: dict[str, Any] = {}
     if endpoint:
+        playwright_args = ["--cdp-endpoint", browser_tools.tag_endpoint(endpoint, "playwright")]
+        if screenshots_dir:
+            playwright_args += ["--output-dir", screenshots_dir]
         servers[MCP_SERVER_NAME] = {
             "type": "stdio",
             "command": PLAYWRIGHT_MCP_BIN,
-            "args": ["--cdp-endpoint", browser_tools.tag_endpoint(endpoint, "playwright")],
+            "args": playwright_args,
         }
         if jev:
             # No `env`: the wrapper reads SWARM_CDP_ENDPOINT and the key from
@@ -890,6 +923,55 @@ def live_browser_note(choice: browser_tools.Choice, *, search: bool,
     return " ".join(parts)
 
 
+def _blocks(event: Any) -> list[dict[str, Any]]:
+    message = event.get("message") if isinstance(event, dict) else None
+    content = message.get("content") if isinstance(message, dict) else None
+    return [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
+
+
+def screenshot_images(events: Any) -> dict[str, int]:
+    """How many `browser_take_screenshot` calls the stream carries, and how many
+    came back to the model with an image block in their tool_result (QA-KIT).
+
+    `events` is the CLI's stream-json, one decoded event each: a call is a
+    `tool_use` block of `SCREENSHOT_TOOL` in an assistant message, its result a
+    `tool_result` block with the same id in a later user message, whose
+    `content` is a list of blocks. An `image` block there is what the model
+    was given. Counts only, never the image.
+    """
+    calls: set[str] = set()
+    seen: set[str] = set()
+    for event in events if isinstance(events, list) else []:
+        for block in _blocks(event):
+            if block.get("type") == "tool_use" and block.get("name") == SCREENSHOT_TOOL:
+                calls.add(str(block.get("id")))
+            elif block.get("type") == "tool_result" and str(block.get("tool_use_id")) in calls:
+                content = block.get("content")
+                if isinstance(content, list) and any(
+                        isinstance(c, dict) and c.get("type") == "image" for c in content):
+                    seen.add(str(block.get("tool_use_id")))
+    return {"taken": len(calls), "seen_as_image": len(seen)}
+
+
+def _stream_screenshots(path: Path) -> dict[str, int]:
+    """`screenshot_images` over the CLI's captured stdout, read a line at a time:
+    with screenshots in it the capture is mostly base64, and only the lines
+    that can hold a screenshot call or its result are decoded."""
+    events: list[Any] = []
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if "browser_take_screenshot" not in line and '"tool_result"' not in line:
+                    continue
+                try:
+                    events.append(json.loads(line))
+                except ValueError:
+                    continue
+    except OSError:
+        pass
+    return screenshot_images(events)
+
+
 def live_browser_refusal(env: dict[str, str], browsers: str, endpoint: str) -> str | None:
     """Why a live-browser attempt's agent must not start, or None (BROWSER-START).
 
@@ -1025,7 +1107,9 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
             graph_snapshot=graph_snapshot or None,
             graph_workdir=(str(ctx.repo_dir) if (graph_snapshot or graph_served) and ctx.repo_dir
                            else None),
-            graph_served=graph_served, relay=relay if relay[1] else None)
+            graph_served=graph_served, relay=relay if relay[1] else None,
+            screenshots_dir=(str(Path(ctx.artifacts_dir) / SCREENSHOTS_DIR_NAME)
+                             if live_endpoint else None))
         # BROWSER-START: the live browser's tool is in the config the CLI
         # reads, or the agent does not start.
         if env.get(HANDOFF_ENV) and MCP_SERVER_NAME not in json.loads(mcp.read_text())["mcpServers"]:
@@ -1033,7 +1117,14 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
                                 "the agent was not started")
         extra += ["--mcp-config", str(mcp)]
     try:
-        return run_cli_agent(ctx, spec, extra_args=extra, extra_env=env)
+        result = run_cli_agent(ctx, spec, extra_args=extra, extra_env=env)
+        if live_endpoint and isinstance(result, dict):
+            # QA-KIT: what the model was given of its screenshots, read off the
+            # stream, so a report can say what it saw. `complete` is false when
+            # the capture was cut, and the counts are then a lower bound.
+            seen = _stream_screenshots(Path(ctx.artifacts_dir) / cli_stream_files(spec).stdout)
+            result["browser_screenshots"] = {**seen, "complete": not result.get("stdout_truncated")}
+        return result
     finally:
         # The worker's key file, whether or not jev was registered: the agent
         # is done, so nothing reads it again (`jev_launch.py`).

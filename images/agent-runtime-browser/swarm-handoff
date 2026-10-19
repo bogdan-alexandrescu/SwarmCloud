@@ -5,6 +5,7 @@
     swarm-handoff wait [REQUEST_ID]
     swarm-handoff status
     swarm-handoff device PRESET
+    swarm-handoff theme dark|light|system
 
 It WRITES FILES and opens no socket: a request goes into the spool at
 $SWARM_HANDOFF (`requests/<id>.json`, written to a temporary name and renamed),
@@ -51,6 +52,10 @@ EXIT_STILL_WAITING = 75
 WAIT_SECONDS = 9 * 60
 #: A device switch is answered on the worker's next poll (10 s).
 DEVICE_WAIT_SECONDS = 30
+#: The colour schemes `theme` takes (QA-KIT): `agent_worker.livegate.presets.THEMES`,
+#: restated because this runs under any Python the image carries; a unit test
+#: holds them equal. `system` lifts the override.
+THEMES = ("dark", "light", "system")
 POLL_SECONDS = 0.5
 #: The floor under `--poll`: a file read every 100 ms is not a busy loop.
 MIN_POLL_SECONDS = 0.1
@@ -208,6 +213,19 @@ def cmd_device(args, root):
     return EXIT_RETURNED if answer.get("outcome") == "applied" else EXIT_REFUSED
 
 
+def cmd_theme(args, root):
+    why = _unavailable(root)
+    if why:
+        return _refuse(why, "this attempt has no live browser path")
+    request_id = "t-" + secrets.token_hex(6)
+    _write_atomic(root / "themes" / (request_id + ".json"), {"theme": args.theme})
+    answer = _await(root, request_id, args.max_seconds, args.poll)
+    if answer is None:
+        return _refuse("no_answer", "the worker did not answer the theme change")
+    _out(answer)
+    return EXIT_RETURNED if answer.get("outcome") == "applied" else EXIT_REFUSED
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="swarm-handoff", description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -224,13 +242,18 @@ def main(argv=None):
     device.add_argument("preset")
     device.add_argument("--max-seconds", type=float, default=DEVICE_WAIT_SECONDS, help=argparse.SUPPRESS)
     device.add_argument("--poll", type=float, default=POLL_SECONDS, help=argparse.SUPPRESS)
+    theme = sub.add_parser("theme", help="set the colour scheme pages are told to prefer")
+    theme.add_argument("theme", choices=THEMES)
+    theme.add_argument("--max-seconds", type=float, default=DEVICE_WAIT_SECONDS, help=argparse.SUPPRESS)
+    theme.add_argument("--poll", type=float, default=POLL_SECONDS, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.command == "wait":
         args.max_seconds = max(0.0, min(args.max_seconds, WAIT_SECONDS))
     root = _spool()
     if root is None:
         return _refuse("no_live_path", "this task has no live browser ($SWARM_HANDOFF is not set)")
-    handler = {"request": cmd_request, "wait": cmd_wait, "status": cmd_status, "device": cmd_device}
+    handler = {"request": cmd_request, "wait": cmd_wait, "status": cmd_status, "device": cmd_device,
+               "theme": cmd_theme}
     return handler[args.command](args, root)
 
 
