@@ -10457,7 +10457,6 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-dot { position: absolute; top: 4px; right: 12px; width: 7px; height: 7px; border-radius: 50%; background: #f5c451; box-shadow: 0 0 0 2px var(--sk-spine-top); }
 .sk-ic { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex: none; }
 .sk-ri > .sk-ic { width: 20px; height: 20px; }
-.sk-ri > .sk-lkd { position: absolute; top: 5px; right: 13px; width: 10px; height: 10px; opacity: .8; }
 .sk-rsep { width: 32px; height: 1px; background: rgba(255, 255, 255, .16); margin: 6px 0; }
 .sk-grow { flex: 1; }
 .sk-foot { display: contents; }
@@ -10500,8 +10499,8 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-pk.is-on { background: var(--sk-acs); color: var(--sk-ac); }
 .sk-pk.is-on .sk-pl { color: var(--sk-ac); opacity: 1; font-weight: 600; }
 .sk-pk.is-on::before { content: ""; position: absolute; left: -10px; top: 7px; bottom: 7px; width: 3px; border-radius: 2px; background: var(--sk-ac); }
-.sk-pk.is-dis, .sk-pk:disabled { opacity: .45; cursor: not-allowed; }
-.sk-lk { width: 12px; height: 12px; }
+/* No locked Admin rows since NAV-ADMIN-ROLE (part of #1633): Admin is drawn only for someone who administers something. */
+.sk-pk:disabled { opacity: .45; cursor: not-allowed; }
 .sk-cnt { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); font-variant-numeric: tabular-nums; }
 .sk-cnt.is-alert { color: var(--s-warn); font-weight: 600; }
 .sk-cnt.is-dash { color: var(--ctl-absent); cursor: help; }
@@ -10511,7 +10510,6 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-kid.is-on { color: var(--sk-ac); background: var(--sk-acs); font-weight: 600; }
 .sk-recent { margin: 2px 10px 6px 38px; font-size: var(--t-micro); color: var(--text-dim); }
 .sk-recent summary { cursor: pointer; padding: 4px 0; }
-.sk-pnote { margin: 6px 18px 0; font-size: var(--t-micro); color: var(--text-dim); display: flex; gap: 6px; }
 .sk-meter { margin: 8px 10px 4px; padding: 9px 10px; border-radius: 10px; background: var(--sk-hv); display: flex; flex-direction: column; gap: 6px; }
 .sk-mh { display: flex; justify-content: space-between; font-size: var(--t-micro); color: var(--text-dim); }
 .sk-mh b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -11025,3 +11023,14 @@ span.sk-ttile { cursor: default; }
   -webkit-mask-image: linear-gradient(to left, transparent 0, #000 var(--ctl-s5));
   mask-image: linear-gradient(to left, transparent 0, #000 var(--ctl-s5));
 }
+
+/* ADMIN › WORKSPACES YOU ADMIN (NAV-ADMIN-ROLE; part of #1633): one row per
+   group workspace the person administers, its name over its id, and its four
+   pages as links on the right; they wrap under the name on a phone. */
+.wya-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border: 1px solid var(--line-soft); border-radius: var(--r-ctl); background: var(--surface); }
+.wya-row { display: flex; align-items: center; justify-content: space-between; gap: var(--ctl-s3); flex-wrap: wrap; padding: 10px 14px; }
+.wya-row + .wya-row { border-top: 1px solid var(--line-soft); }
+.wya-name { display: flex; flex-direction: column; min-width: 0; }
+.wya-name b { font-weight: 600; overflow-wrap: anywhere; }
+.wya-name small { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.wya-links { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: var(--t-meta); }

@@ -217,19 +217,21 @@ describe('V083: collapsed, the section you are in opens its pages', () => {
     vi.useRealTimers()
   })
 
-  it('opens the Admin flyout on a click, without expanding, and the flyout can expand', () => {
+  // Capacity, not Admin, since NAV-ADMIN-ROLE (#1633): the fixture caller
+  // administers nothing, so it is shown no Admin item to click.
+  it('opens the Capacity flyout on a click, without expanding, and the flyout can expand', () => {
     const go = vi.fn()
     const { container: c } = render(
-      <SkyShell section="admin" tab="limits" title="Pool limits" go={go} foot={null}>
+      <SkyShell section="capacity" tab="pools" title="Pools" go={go} foot={null}>
         <button type="button">page</button>
       </SkyShell>,
     )
     expect(c.querySelector('.sk-app.is-collapsed')).not.toBeNull()
-    fireEvent.click(c.querySelector<HTMLElement>('.sk-spine [data-sec="admin"]')!)
+    fireEvent.click(c.querySelector<HTMLElement>('.sk-spine [data-sec="capacity"]')!)
     expect(c.querySelector('.sk-app.is-collapsed'), 'the click expanded the panel').not.toBeNull()
     const fly = c.querySelector('.sk-flyout')
-    expect(fly, 'no way to the other Admin pages').not.toBeNull()
-    expect([...fly!.querySelectorAll('a')].map((a) => a.textContent)).toEqual(['Pool limits', 'Tenants', 'Platform counts', 'People'])
+    expect(fly, 'no way to the other Capacity pages').not.toBeNull()
+    expect([...fly!.querySelectorAll('a')].map((a) => a.textContent)).toEqual(['Pools', 'Runtimes', 'Holders', 'Accounts'])
     expect(go).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Open the panel' }))
     expect(c.querySelector('.sk-app.is-collapsed')).toBeNull()

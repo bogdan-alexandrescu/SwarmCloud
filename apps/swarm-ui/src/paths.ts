@@ -103,6 +103,9 @@ export const FIXED: Readonly<Record<string, string>> = {
   'admin/counts': '/admin/counts',
   // #847 W8: Admin › People, everyone who has signed in and their workspace requests.
   'admin/people': '/admin/people',
+  // NAV-ADMIN-ROLE (part of #1633): Admin › Workspaces you admin, the group
+  // workspaces whose stored role for the caller is admin.
+  'admin/workspaces': '/admin/workspaces',
   // KEYS-UI: Settings › API keys, the person's own provider keys and, for an
   // admin, the tenant's. Not a section: reached from the panel's foot by the
   // person's name. Its one-time link is KEY_LINK_PATH, above.

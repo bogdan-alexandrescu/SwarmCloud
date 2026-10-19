@@ -966,6 +966,30 @@ names every person a switch would refuse before it refuses them.
     workspace has only you".
   * This is a Settings route, not a `SECTIONS` tab. The issue forms' "Where"
     list (`tests/unit/scripts/test_issue_forms.py`) is unchanged.
+* **Where a workspace admin finds their workspaces** (amended 2026-10-19,
+  lane NAV-ADMIN-ROLE; part of #1633, owner decision "All under Profile;
+  Admin by role"): **Admin › Workspaces you admin**, `/admin/workspaces`
+  (`WorkspacesYouAdmin.tsx`).
+  * It lists each GROUP workspace whose stored role for the caller is
+    `admin`, read from `GET /v1/tenants/mine` (`role.name`, `kind`). A
+    personal workspace is never listed: its person is its admin by rule
+    (`source: personal`), and its settings are under Profile. Nor is a
+    platform admin's reach entry (`via: "platform_admin"`), which is a
+    workspace they can reach, not one they were made admin of.
+  * Each entry links to that workspace's Workspace settings, MCP servers,
+    People and roles and workspace key (`#settings/keys`, the tenant key
+    row). Each link selects the workspace first (`chooseTenant`, the
+    switcher's own switch), then opens the page, so the page reads and
+    changes the workspace it was opened for.
+  * Admin's spine item is drawn only for a platform admin or for the stored
+    admin of at least one group workspace. A workspace admin who is not a
+    platform admin sees only this page under Admin; a platform admin sees it
+    last, after Pool limits, Tenants, Platform counts and People. Anyone else
+    sees no Admin item. The routes stay, and the server is still the gate: a
+    non-admin's direct link lands on the page's own refusal.
+  * A platform admin is `admin` by rule in every group workspace they are a
+    member of (`source: platform_admin`, §4.2.2), so for them the page lists
+    every group workspace they are in, and not those they only reach.
 * **The sc plugin** (`apps/swarm-mcp/swarm_mcp/`), per Q11:
   * `swarm_tenants` and `sc whoami` show each workspace's role and `via`.
   * **`swarm_roles`, a read-only MCP tool**, returns `GET
