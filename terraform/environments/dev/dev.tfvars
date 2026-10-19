@@ -600,9 +600,32 @@ additional_repositories_enabled = true
 # swarm-api's start (release 38126514258). A code that names no switch fails
 # that start, and tests/unit/control_plane/test_tfvars_refusal_switches.py
 # now fails CI on one first.
+#
+# role_member_required is ON in dev too (owner decision 2026-10-19, "Viewer
+# gate + reach now", lane ROLES-ON-DEV, part of #1518): a workspace `viewer`
+# is refused 403 role_member_required on every member route (submit, cancel,
+# decide, answer, schedules, repositories, access, accounts, live control,
+# browser logins). Everyone keeps `member` until an admin narrows them
+# (docs/design/workspace-roles.md §4.7), so this refuses only people an admin
+# has made viewers. role_admin_required stays OFF, deliberately: its own
+# condition (workspace-roles.md §4.9) is that every group workspace that
+# manages secrets has a named workspace admin, and eng and smoke do not yet.
+# Turned on before that, the gate would leave a group workspace's secrets
+# with nobody but a platform admin able to change them.
 api_refusals = {
   index_refresh_failed = true
+  role_member_required = true
 }
+
+# A platform admin's reach (swarm-api PLATFORM_ADMIN_REACH,
+# docs/design/workspace-roles.md §4.2, owner answer Q5; WK-REACH, #847): a
+# platform admin may select every READY registered group workspace they are
+# not a member of, as its admin, and every such request is audited
+# (platform_admin_acted). Never anyone else's personal (`u-`) workspace, nor a
+# service workspace. ON in dev only (owner decision 2026-10-19, "Viewer gate
+# + reach now", lane ROLES-ON-DEV); prod stays off until the acceptance probe
+# (ROLES-ACCEPT) has exercised it here. Kill switch: false and release.
+platform_admin_reach = true
 
 # WHO MAY PASS IAP is no longer set here. It moved to terraform/bootstrap
 # (frontend_iap_members) on 2026-09-24, because managing it from this root made

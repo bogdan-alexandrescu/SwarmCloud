@@ -845,6 +845,15 @@ locals {
       # platform settings in Firestore, not environment.
       ADDITIONAL_REPOSITORIES_ENABLED = var.additional_repositories_enabled ? "true" : "false"
 
+      # A platform admin's reach into group workspaces they are not a member
+      # of (swarm_api.settings `platform_admin_reach`,
+      # docs/design/workspace-roles.md §4.2). Until ROLES-ON-DEV nothing in
+      # Terraform set it, so it was off in every environment and turning it
+      # on was a hand edit the next apply put back. Off unless the
+      # environment's tfvars sets var.platform_admin_reach. "true" is one of
+      # the spellings swarm_api.settings._bool reads as on.
+      PLATFORM_ADMIN_REACH = var.platform_admin_reach ? "true" : "false"
+
       # The forge broker's switch (child_tasks.tf `forge_broker`, #1041;
       # swarm_api.settings `forge_broker`). Off, POST
       # /v1/attempts/forge-credential answers 503 before reading anything.

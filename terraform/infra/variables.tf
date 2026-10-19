@@ -881,6 +881,21 @@ variable "repository_grants_enforced" {
   default     = false
 }
 
+variable "platform_admin_reach" {
+  description = <<-EOT
+    swarm-api's PLATFORM_ADMIN_REACH (docs/design/workspace-roles.md §4.2,
+    "Platform admins: admin in every group workspace, and in no one else's
+    personal workspace"; owner answer Q5): whether a platform admin may select
+    a registered group workspace they are not a member of, as its admin, each
+    such request audited. Never another person's personal (u-) workspace, on
+    or off. OFF by default, as swarm_api.settings is: it widens who may enter
+    a tenant (invariant 9), so it goes on in dev first, is exercised by the
+    acceptance probe, and only then in prod (§6, step 5).
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "additional_repositories_enabled" {
   description = <<-EOT
     swarm-api's ADDITIONAL_REPOSITORIES_ENABLED (#1434,

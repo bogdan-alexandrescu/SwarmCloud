@@ -5,14 +5,16 @@ the same day for the owner's answers (lane ROLES-DESIGN-B).** §7 records the
 thirteen answers (Q12 and Q13 on 2026-10-18, after the first eleven);
 nothing is open.
 
-**Status: built, and switched off (read 2026-10-19 at `24b0533`).** Every
-build lane but ROLES-ACCEPT has merged (ROLES-DOCS is the lane that wrote
-this note), and §8 records what each landed and
-where the code departs from this design. All of it is dark: both refusal
-switches are off, and `PLATFORM_ADMIN_REACH` is off in every environment,
-because no Terraform variable sets it yet. Until the operator turns them on
-in dev (§6, step 5), a role narrows nobody and a platform admin reaches no
-workspace they are not a member of.
+**Status: built (read 2026-10-19 at `24b0533`); the viewer gate and the
+reach switched on in dev only (ROLES-ON-DEV, 2026-10-19).** Every build lane
+but ROLES-ACCEPT has merged (ROLES-DOCS is the lane that wrote this note),
+and §8 records what each landed and where the code departs from this
+design. Both refusal switches and
+`PLATFORM_ADMIN_REACH` ship off. **Amended 2026-10-19 (ROLES-ON-DEV):** dev
+now runs with `role_member_required` and the reach on, both set in
+`dev.tfvars` (§4.9's amendment); `role_admin_required` stays off in dev, and
+prod has all three off, so in prod a role still narrows nobody and a
+platform admin reaches no workspace they are not a member of.
 
 The owner asked for this on 2026-10-18, answering the Settings › Profile
 design (#1505, PR 1506, question Q7):
@@ -1025,6 +1027,23 @@ submitted." `detail.admins` names up to three workspace admins, so the
 person knows whom to ask. That is not a leak: every member can already read
 the roster (Q7).
 
+**Amended 2026-10-19: the dev rollout (owner decision "Viewer gate + reach
+now", lane ROLES-ON-DEV, part of #1518).** In dev, `role_member_required` is
+on: `terraform/environments/dev/dev.tfvars`'s `api_refusals` holds
+`role_member_required = true` beside `index_refresh_failed`, which renders
+`REFUSAL_ROLE_MEMBER_REQUIRED=on` into swarm-api. A `viewer` is refused 403
+there on every member route; everyone else keeps `member` until an admin
+narrows them (§4.7), so it refuses only people an admin has made viewers.
+The reach is on in dev too: `var.platform_admin_reach`
+(`terraform/infra/variables.tf`) renders `PLATFORM_ADMIN_REACH="true"`, a
+spelling `_bool` reads as on, and dev.tfvars sets it; prod leaves it at its
+default, `false`. **Still off:** `role_admin_required`, in dev and prod. Its
+own condition above is that every group workspace that manages secrets has
+a named admin, and eng and smoke do not have one yet; on before that, a
+group workspace's secrets could be changed by nobody but a platform admin.
+Prod has all three off until ROLES-ACCEPT has exercised them in dev and a
+week of report-only lines names only people an admin narrowed (§6, step 6).
+
 ### 4.10 Audit events
 
 All are written to `admin_audit`, in the collection's existing `snake_case`
@@ -1296,9 +1315,10 @@ off by default with its reason beside it, read from `PLATFORM_ADMIN_REACH`.
 Departures: `may_act_in` takes `fresh` and passes it to the membership
 check; it also answers `""` for the schedule tick, the sweepers and a
 listed service account (`_reach_excluded`), which §4.2.1 says get no reach
-but §4.2.3 did not list. **The reach is off everywhere:** no Terraform
-variable sets `PLATFORM_ADMIN_REACH` yet, so the reach is off in every environment, dev included. Turning it on
-in dev (§6, step 5) needs a Track C change to pass it to swarm-api first.
+but §4.2.3 did not list. **The reach is on in dev only:**
+`var.platform_admin_reach` renders `PLATFORM_ADMIN_REACH` into swarm-api,
+`true` in `dev.tfvars` and the default `false` in prod (ROLES-ON-DEV,
+2026-10-19; §4.9's amendment).
 
 **WK-REACH (owner, 2026-10-19).** The reach also covers group workspaces
 the workspace job made (#847), not only `TENANT_GROUPS`:
@@ -1469,12 +1489,12 @@ workspaces) and this section, held by
 `tests/unit/scripts/test_docs_describe_what_was_built.py`.
 
 **ROLES-ACCEPT (not built on 2026-10-19).** No acceptance probe asserts
-`role_member_required` or `platform_admin_acted`. It waits on §6 step 5:
-neither switch is on in dev (`dev.tfvars`'s `api_refusals` names neither
-code) and the reach has no Terraform variable, so a probe would meet
-today's behaviour.
+`role_member_required` or `platform_admin_acted`. Since ROLES-ON-DEV
+(2026-10-19) dev has `role_member_required` and the reach on, so a probe
+there would now meet the gated behaviour; `role_admin_required` is still off
+in dev (§4.9's amendment).
 
-**What is left, in order.** A Track C change that passes
-`PLATFORM_ADMIN_REACH` to swarm-api; the operator turning the reach and both
-switches on in dev; ROLES-ACCEPT; the registry gap above; a week of
+**What is left, in order.** ROLES-ACCEPT; a named workspace admin in every
+group workspace that manages secrets (eng, smoke), then
+`role_admin_required` on in dev; the registry gap above; a week of
 report-only lines in prod; then prod.
