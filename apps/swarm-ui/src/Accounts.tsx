@@ -7,8 +7,10 @@ import {
   refreshAccount,
   removeAccount,
   setAccountLending,
+  setAccountModelClasses,
   setAccountState,
   type AccountsBoard,
+  type ServedAccount,
 } from './api'
 import { agentName } from './agentlist'
 import { errorHeading, read, route, type ApiError, type Result } from './fetch'
@@ -1508,6 +1510,15 @@ function Detail({
             </span>
           )}
         </li>
+        {/* WHICH STEPS IT TAKES, for every reader and not only the owner: a
+            borrower whose steps of one class sit parked needs to see that
+            this account was never going to serve them (R5). */}
+        <li className="ctl-fact">
+          <b>classes</b>
+          <span className="mono" data-classes={servedClasses(account).join(' ')}>
+            {classesWord(servedClasses(account))}
+          </span>
+        </li>
         {/* Only when there is something to say. An empty entry here every time
             would train the eye to skip the one row that matters. */}
         {(account.unreadable_by ?? []).length > 0 && (
@@ -1539,6 +1550,7 @@ function Detail({
         <>
           <RefreshControl account={account} ui={ui} patch={patch} reload={reload} />
           <Lending account={account} board={board} reload={reload} />
+          <ModelClasses account={account} reload={reload} />
           <StateControls account={account} reload={reload} />
           <Reauth account={account} ui={ui} patch={patch} reload={reload} />
           <Remove account={account} reload={reload} />
@@ -2717,6 +2729,118 @@ function splitTenants(raw: string): string[] {
     if (t !== '' && !seen.includes(t)) seen.push(t)
   }
   return seen
+}
+
+// ---------------------------------------------------------------------------
+// Model classes
+// ---------------------------------------------------------------------------
+
+/**
+ * The model-class vocabulary, in the order the broker stores and this screen
+ * sends it. Frozen with the contract; it belongs beside `Account` in types.ts
+ * and lives here only until the field does.
+ */
+export const MODEL_CLASSES = ['opus', 'fable', 'sonnet', 'haiku'] as const
+
+/**
+ * The classes an account serves, as the broker listed them. `[]` -- and an
+ * absent field, from a broker older than R5 -- is EVERY class, never none.
+ */
+export function servedClasses(account: Account): string[] {
+  return (account as ServedAccount).model_classes ?? []
+}
+
+/** What the fact row prints: the list, or the words for the empty one. */
+function classesWord(classes: readonly string[]): string {
+  return classes.length === 0 ? 'every class' : classes.join(', ')
+}
+
+/**
+ * What a set of ticked boxes is SAVED as. All four and none are both `[]`:
+ * an account that serves nothing is a pause, which is the state control's job
+ * and has a reason attached, so this control cannot make one. Anything else
+ * goes in vocabulary order, so the same choice always sends the same body.
+ */
+export function classesToSave(checked: readonly string[]): string[] {
+  const kept = MODEL_CLASSES.filter((c) => checked.includes(c))
+  return kept.length === 0 || kept.length === MODEL_CLASSES.length ? [] : [...kept]
+}
+
+/**
+ * Which model classes this account takes steps of (owner decision R5,
+ * 2026-10-17).
+ *
+ * NARROWING IS NOT FREE, AND IT IS NOT SILENT EITHER. The scheduler never
+ * hands a step of a class to an account that does not serve it, and a step
+ * whose class NO account serves waits parked (`no_account_serves_class`),
+ * holding nothing -- so the cost of a too-narrow list is waiting work, which
+ * the task screens show, rather than work run on the wrong subscription.
+ * Owner only, for the same reason as lending: `isOwned` decides, in Detail.
+ */
+function ModelClasses({ account, reload }: { account: Account; reload: () => void }) {
+  const served = servedClasses(account)
+  // EVERY CLASS STARTS WITH EVERY BOX TICKED: an empty list is drawn as what
+  // it means, not as what it looks like.
+  const [draft, setDraft] = useState<string[]>(
+    served.length === 0 ? [...MODEL_CLASSES] : served,
+  )
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<ApiError | null>(null)
+  const [saved, setSaved] = useState(false)
+
+  const willSave = classesToSave(draft)
+  const dirty = willSave.join(' ') !== served.join(' ')
+
+  const save = async () => {
+    setBusy(true)
+    setError(null)
+    setSaved(false)
+    const res = await setAccountModelClasses(account.account_id, willSave)
+    setBusy(false)
+    if (res.status === 'ok') {
+      setSaved(true)
+      reload()
+    } else if (res.status === 'error' || res.status === 'stale') {
+      setError(res.error)
+    }
+  }
+
+  return (
+    <div className="acct-action">
+      <h4>Model classes</h4>
+      <span className="limit-edit">
+        <fieldset
+          className="acct-classes"
+          disabled={busy}
+          aria-label={`Model classes ${account.account_id} serves`}
+        >
+          {MODEL_CLASSES.map((c) => (
+            <label key={c} className="acct-class">
+              <input
+                type="checkbox"
+                checked={draft.includes(c)}
+                onChange={(e) => {
+                  setDraft(e.target.checked ? [...draft, c] : draft.filter((d) => d !== c))
+                  setSaved(false)
+                }}
+              />{' '}
+              <span className="mono">{c}</span>
+            </label>
+          ))}
+        </fieldset>
+        <button type="button" onClick={() => void save()} disabled={!dirty || busy}>
+          {busy ? 'saving…' : 'save classes'}
+        </button>
+        {saved && <ToneMark tone="is-ok">saved</ToneMark>}
+      </span>
+      <p className="muted small">All four or none saves as every class.</p>
+      {error && (
+        <p className="c-hint" role="alert">
+          {errorHeading(error)} &mdash; {error.message} The class list was not changed.
+        </p>
+      )}
+    </div>
+  )
 }
 
 // ---------------------------------------------------------------------------

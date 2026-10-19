@@ -531,6 +531,18 @@
    prose. */
 .section > .acct-action { margin-top: 16px; }
 .acct-action > .acct-action { margin-top: 8px; }
+/* THE FOUR CLASS BOXES ARE ONE ROW BESIDE THEIR SAVE BUTTON, like the
+   lending field they sit under: a fieldset's default border and padding
+   would draw a second card inside the panel. Wraps at 400 rather than
+   pushing the button off it. */
+.acct-classes {
+  display: inline-flex; flex-wrap: wrap; gap: 4px 12px;
+  margin: 0; padding: 0; border: 0; min-width: 0;
+}
+.acct-class { display: inline-flex; align-items: center; gap: 4px; }
+/* The browser's own 0.5ex either side of a checkbox is off the spacing
+   scale; the label's gap is the space. */
+.acct-class > input { margin: 0; }
 
 /* AN ID'S CONTAINERS GIVE IT A WIDTH TO BE CUT AT (visual QA V153, V154,
    V155, V184; 2026-10-16). `.acct-id` never breaks (V070) and is cut at

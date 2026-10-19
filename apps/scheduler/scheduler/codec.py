@@ -94,6 +94,16 @@ def task_from_dict(data: dict[str, Any]) -> Task:
         # Contract request 70 (LB-C): read back so a decode-and-rewrite never
         # clears a live hand-off. Anything but a dict is no wait.
         human_wait=_human_wait(data.get("human_wait")),
+        # Contract request 102 (#1435): the class the step asked for, as
+        # stored. Not decoded until MODEL-ACCOUNTS, so every task this drain
+        # read resolved to its profile's default class -- at dispatch
+        # (`dispatch.step_model`) and at the account pool's class check
+        # (`credentials._class_answer`) alike. Kept as written, not filtered
+        # here: a name the profile does not accept is refused by
+        # `step_model_class` at dispatch (`model_not_pinned`, the lease
+        # returned) and is a class not known to the pool. Anything but a
+        # string is no class.
+        model_class=data.get("model_class") if isinstance(data.get("model_class"), str) else None,
     )
 
 

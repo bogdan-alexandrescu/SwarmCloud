@@ -41,6 +41,13 @@ read from the two components that act on it:
     tenant is lent.
   * ONLY ON A DEPLOYMENT WITH A BROKER. With no QUOTA_BROKER_URL no worker is
     told where the pool is (`dispatch.worker_env`).
+  * ONLY A STEP OF A MODEL CLASS IT SERVES (owner decision R5, 2026-10-17).
+    An account lists the classes its plan can run; empty, the default, is
+    every class. Asked only when admission and the sweep pass the task, and
+    only when the pool is the tenant's credential (`_class_answer`): the
+    broker's assign route filters on the same `Account.serves_class`, so a
+    keyed tenant's step of a class no account serves runs on its key, and a
+    keyless tenant's parks as `no_account_serves_class`, naming the class.
 
 The checks run in the worker's order, and each failure is named in the park's
 event (`account_pool`), using the worker's own words for its declines, so an
@@ -163,7 +170,7 @@ from urllib.parse import urlsplit
 from quota_broker.accounts import Account, Unavailable, accounts_serving
 from quota_broker.accountstore import AccountStore
 from swarm_common.models import Task, Tenant
-from swarm_common.profiles import RunnerProfile
+from swarm_common.profiles import RunnerProfile, step_model_class
 
 from .mcp_admission import McpAnswer, McpRegistrations
 from .secret_slots import MissingSlot, WorkspaceGrants
@@ -208,6 +215,12 @@ class PoolAnswer(str, Enum):
     #: No account of this provider is owned by or lent to the tenant. The
     #: broker's own spelling, taken from its enum rather than restated.
     NO_ACCOUNTS_REGISTERED = Unavailable.NO_ACCOUNTS_REGISTERED.value
+    #: Accounts serve the tenant, and none of them serves the step's model
+    #: class (owner decision R5): every one was narrowed to classes its plan
+    #: can run, and this is not one. The park names the class, so the fix --
+    #: an account that serves it, a key, or a step of another class -- is
+    #: readable from the event.
+    NO_ACCOUNT_SERVES_CLASS = "no_account_serves_class"
 
 
 class ForgeAnswer(str, Enum):
@@ -252,6 +265,9 @@ class CredentialAnswer:
     #: None when the MCP servers were not asked (no task, an earlier half
     #: said no, or the task names none); else what every named server said.
     mcp: McpAnswer | None = None
+    #: The step's model class, set only when the pool was asked about it and
+    #: no account serves it (`PoolAnswer.NO_ACCOUNT_SERVES_CLASS`).
+    model_class: str | None = None
 
     @property
     def runnable(self) -> bool:
@@ -279,6 +295,8 @@ class CredentialAnswer:
         who must reconnect.
         """
         detail: dict[str, Any] = {"provider": self.provider, "account_pool": self.pool.value}
+        if self.pool is PoolAnswer.NO_ACCOUNT_SERVES_CLASS:
+            detail["model_class"] = self.model_class
         if self.forge is not ForgeAnswer.NOT_ASKED:
             detail["forge_connection"] = self.forge.value
         if self.workspace_secrets:
@@ -373,10 +391,16 @@ class AccountPool:
         """Drop what was read. Called at the top of every drain."""
         self._accounts = None
 
-    def serves(self, tenant_id: str, provider: str) -> bool:
+    def serves(self, tenant_id: str, provider: str, *, model_class: str | None = "") -> bool:
+        """Whether an account the tenant may use serves `provider` -- and, when
+        `model_class` is given, a step of that class (`Account.serves_class`;
+        None is a class not known). The broker's assign route asks the same
+        function with the same class, so admission and the pool agree."""
         if self._accounts is None:
             self._accounts = list(self._read())
-        return bool(accounts_serving(self._accounts, tenant_id, provider))
+        return bool(
+            accounts_serving(self._accounts, tenant_id, provider, model_class=model_class)
+        )
 
 
 # --------------------------------------------------------------------------
@@ -595,6 +619,8 @@ def credential_for(
     against.
     """
     answer = _provider_answer(profile, tenant, pool)
+    if task is not None:
+        answer = _class_answer(answer, profile, tenant, pool, task)
     if task is None or forge is None or not answer.runnable:
         return answer
     answer = CredentialAnswer(
@@ -621,6 +647,50 @@ def _mcp_reader(secrets: WorkspaceGrants) -> McpRegistrations:
     nothing, so there is nothing to forget between passes.
     """
     return McpRegistrations(secrets._db)
+
+
+def task_model_class(profile: RunnerProfile, task: Task) -> str | None:
+    """The class the task's step runs, by the frozen rule, as the broker reads it.
+
+    `quota_broker.main.step_class_for` resolves the same stored fields with the
+    same `step_model_class`. A class the profile does not accept is refused by
+    swarm-api at submission and by the worker's spec check; here it is None,
+    a class not known, which only an account serving every class takes.
+    """
+    try:
+        return step_model_class(profile, task.model_class)
+    except ValueError:
+        return None
+
+
+def _class_answer(
+    answer: CredentialAnswer,
+    profile: RunnerProfile,
+    tenant: Tenant,
+    pool: AccountPool,
+    task: Task,
+) -> CredentialAnswer:
+    """The pool half again, for THIS step's model class (owner decision R5).
+
+    Asked only when the pool is the tenant's credential: a tenant with its own
+    key runs any class on it, because the broker answers a class no account
+    serves `no_accounts_registered` and the worker falls back to the key. A
+    keyless tenant whose accounts all refuse the class parks here,
+    CREDENTIAL_MISSING, before any lease -- so it holds nothing (invariant 1)
+    and nothing was reserved (invariant 2) -- and the credential sweep
+    promotes it the drain after an owner lets an account serve the class.
+    """
+    if answer.source is not CredentialSource.ACCOUNT_POOL or answer.provider is None:
+        return answer
+    model_class = task_model_class(profile, task)
+    if pool.serves(tenant.tenant_id, answer.provider, model_class=model_class):
+        return answer
+    return CredentialAnswer(
+        answer.provider,
+        CredentialSource.MISSING,
+        PoolAnswer.NO_ACCOUNT_SERVES_CLASS,
+        model_class=model_class,
+    )
 
 
 def _provider_answer(profile: RunnerProfile, tenant: Tenant, pool: AccountPool) -> CredentialAnswer:
@@ -657,4 +727,5 @@ __all__ = [
     "credential_for",
     "forge_answer",
     "needs_user_slot",
+    "task_model_class",
 ]

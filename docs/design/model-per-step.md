@@ -674,21 +674,40 @@ workflow's steps gain `model_class`:
 | `tasks/{id}` | `model_class` | string or absent | swarm-api, at submission | the class asked for. Absent means the profile's default. Signed at format 4 |
 | `workflows/{id}`, `steps[]` | `model_class` | string or absent | swarm-api | the same, per step |
 
-### 4.7 Accounts and quota windows: unchanged
+### 4.7 Accounts and quota windows: windows unchanged, classes served per account
 
 By the owner's answer to Q5, **every quota window keeps binding every
 attempt**, as today. The first version's `AccountAssign.model_class` field, the
 broker's window filter and the MODEL-BROKER lane are dropped.
 `Account.headroom` and `_binding_remaining` keep taking the minimum over every
 window, so an account whose `seven_day_opus` window is spent is refused to a
-Haiku step too. That is the stated cost of the decision. No quota-broker file
-changes, so the CLAUDE.md review for credentials and tenant isolation has no
-broker change to cover.
+Haiku step too. That is the stated cost of the decision.
 
-What is not known, and is asked in §7 R5: whether every pool account's plan
-can serve every class. Fable in particular may not be available on every
-subscription. The broker cannot see that, and the canary (§4.9) runs on
-whatever account it is assigned.
+**Which classes an account serves** is the owner's answer to R5 (b),
+2026-10-17 on PR 1509, built by MODEL-ACCOUNTS: a plan that cannot run a class
+(Fable is the expected one) must never be handed a step of it.
+
+* `accounts/{id}.model_classes` lists the `MODEL_CLASSES` names the account
+  serves, in the vocabulary's order. **Empty, the default, is every class**,
+  so no existing account changes until its owner narrows it
+  (`PUT /v1/accounts/{id}/model-classes` on the broker and on swarm-api, the
+  Accounts screen's "classes" editor). A malformed value makes the document
+  unreadable, out of the pool, never "every class".
+* `Account.serves_class` is the one rule. `accounts_serving`, `choose` and
+  `eligibility` take the step's class, and the assign and swap routes pass
+  it. The broker **reads** the class (`quota_broker.main.step_class_for`):
+  `tasks/{task_id}` in the caller's own tenant, resolved by the frozen
+  `step_model_class`. No class travels in the request body. A class the
+  broker cannot read (no task id from an older worker, or a task that is not
+  the caller's) is served only by an account that serves every class.
+* A class no account serves is `no_accounts_registered` to the worker, which
+  falls back to the tenant's own key; a metered key serves every class.
+  Admission asks the same question first (`scheduler.credentials._class_answer`)
+  and parks a keyless tenant's step `CREDENTIAL_MISSING` with
+  `account_pool: no_account_serves_class` and the class, **before any lease**.
+  It holds nothing (invariant 1), nothing was reserved, so the all-or-nothing
+  reservation is untouched (invariant 2), and the credential sweep promotes it
+  once an account serves the class.
 
 ### 4.8 The console and the plugin
 
@@ -1138,7 +1157,8 @@ release;
 and opens itself.
 
 **R5. What if a pool account's plan cannot serve a class (for example,
-Fable)?** Not measured.
+Fable)?** Not measured. **Decided (b), owner, 2026-10-17 on PR 1509; built by
+MODEL-ACCOUNTS (§4.7).**
 (a) **The attempt ends as the CLI reports it (`runner_error`), the canary
 catches it, and no account filter is added until it is seen** (recommended:
 nothing is known to need one);

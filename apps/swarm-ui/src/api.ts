@@ -4126,10 +4126,10 @@ async function fixtureWorkflows(): Promise<Result<WorkflowPage>> {
 // WHICH OF THEM SWARM-API PASSES THROUGH, because this file has been wrong
 // about that in both directions. `routes/accounts.py` registers GET "",
 // POST "", POST /authorize, POST /exchange, POST /{id}/refresh,
-// PUT /{id}/lending, PUT /{id}/state and DELETE /{id}; the `AccountPool`
-// protocol in `brokerclient.py` -- which is "deliberately not a generic HTTP
-// client", so there is no fallthrough -- has a method for each of those and
-// for nothing else.
+// PUT /{id}/lending, PUT /{id}/model-classes, PUT /{id}/state and
+// DELETE /{id}; the `AccountPool` protocol in `brokerclient.py` -- which is
+// "deliberately not a generic HTTP client", so there is no fallthrough -- has
+// a method for each of those and for nothing else.
 //
 // THE TWO SIGN-IN ROUTES ARE AMONG THEM NOW. For one deploy they were not,
 // and this comment carried a long apology for it in place of a proxy; the
@@ -4417,6 +4417,32 @@ export async function setAccountLending(
   return write(route('/v1/accounts/{account_id}/lending', { account_id: accountId }), 'PUT', { lend_to: lendTo })
 }
 
+/**
+ * An account as the broker serves it once it carries `model_classes` (owner
+ * decision R5, 2026-10-17). EMPTY MEANS EVERY CLASS, and so does ABSENT: an
+ * older broker serves no such field, and an account it lists has always
+ * served every class, so reading absent as "none" would claim every step on
+ * it was parked. Local to this file and Accounts.tsx until the field moves
+ * into `Account` in types.ts.
+ */
+export type ServedAccount = Account & { model_classes?: string[] }
+
+/**
+ * `PUT /v1/accounts/{id}/model-classes`. The whole list, not a delta, exactly
+ * like lending -- and `[]` is EVERY class, not none. A step whose class no
+ * account serves waits parked and holds nothing, so narrowing this is never
+ * an outage the platform hides; it is one the Accounts screen has to say.
+ */
+export async function setAccountModelClasses(
+  accountId: string,
+  modelClasses: string[],
+): Promise<Result<unknown>> {
+  if (USE_FIXTURES) return fixtureModelClasses(accountId, modelClasses)
+  return write(route('/v1/accounts/{account_id}/model-classes', { account_id: accountId }), 'PUT', {
+    model_classes: modelClasses,
+  })
+}
+
 /** `PUT /v1/accounts/{id}/state`. `reason` is for the next person, so it is required here. */
 export async function setAccountState(
   accountId: string,
@@ -4498,8 +4524,8 @@ const ISO = (msFromNow: number): string => new Date(Date.now() + msFromNow).toIS
 function fixtureAccount(
   owner: string,
   label: string,
-  extra: Partial<Account> = {},
-): Account {
+  extra: Partial<ServedAccount> = {},
+): ServedAccount {
   return {
     account_id: `${owner}:${label}`,
     owner_tenant: owner,
@@ -4519,11 +4545,13 @@ function fixtureAccount(
     // broker" -- the fixture must not teach that shape as normal. The rows
     // that carry it do so deliberately, below.
     last_assigned_at: ISO(-26 * 60_000),
+    // Every class, which is what a broker that predates the field means too.
+    model_classes: [],
     ...extra,
   }
 }
 
-let fixtureAccounts: Account[] = [
+let fixtureAccounts: ServedAccount[] = [
   fixtureAccount('u-bogdan', 'primary', {
     assigned: 2,
     windows: {
@@ -4789,6 +4817,16 @@ async function fixtureLending(accountId: string, lendTo: string[]): Promise<Resu
     a.account_id === accountId ? { ...a, lend_to: lendTo } : a,
   )
   return { status: 'ok', fetchedAt: Date.now(), data: { ok: true } }
+}
+
+async function fixtureModelClasses(accountId: string, modelClasses: string[]): Promise<Result<unknown>> {
+  await new Promise((r) => setTimeout(r, 180))
+  const found = fixtureAccounts.find((a) => a.account_id === accountId)
+  if (!found) return fixtureRefused(`no account '${accountId}'`)
+  const account: ServedAccount = { ...found, model_classes: modelClasses }
+  fixtureAccounts = fixtureAccounts.map((a) => (a.account_id === accountId ? account : a))
+  // The route answers `{"account": ...}`, the same shape lending's does.
+  return { status: 'ok', fetchedAt: Date.now(), data: { account } }
 }
 
 async function fixtureState(
