@@ -10,7 +10,7 @@ a field for any of those things in the first place.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     AliasChoices,
@@ -24,6 +24,7 @@ from pydantic import (
 
 from swarm_common.models import ADDITIONAL_REPOSITORIES_CEILING, ADDITIONAL_REPOSITORY_NAME
 
+from . import modelprices
 from .sessiontag import PATTERN as SESSION_TAG_PATTERN
 from .validation import (
     DEFAULT_CARRIER,
@@ -467,6 +468,29 @@ class PauseRequest(StrictModel):
     reason: str | None = Field(default=None, max_length=512)
 
 
+#: A list price, USD per million tokens. STRICT: a string ("0.20"), a bool or a
+#: null is refused, never coerced -- an admin's figure is stored as they typed
+#: it or not at all. Negative, infinite and NaN are refused too.
+PriceRate = Annotated[float, Field(strict=True, ge=0, le=modelprices.MAX_RATE,
+                                   allow_inf_nan=False)]
+
+
+class ModelPriceRequest(StrictModel):
+    """One model's entry in `model_prices` (#1481). `updated_by` is not the
+    caller's to say: swarm-api stamps the admin who made the change."""
+
+    input: PriceRate
+    output: PriceRate
+    cache_read: PriceRate
+    cache_write: PriceRate
+    currency: Literal["USD"] = modelprices.CURRENCY
+    #: Where the figure was read: `console` for an admin's edit, the weekly
+    #: refresh writes `pricing-page`.
+    source: str = Field(default="console", min_length=1, max_length=64)
+    #: The day the figure was read from its source, YYYY-MM-DD.
+    as_of: str = Field(pattern=modelprices.AS_OF.pattern)
+
+
 class PlatformSettingsRequest(StrictModel):
     """`PUT /v1/admin/settings`: the settings to change; one omitted is left as it is."""
 
@@ -482,6 +506,13 @@ class PlatformSettingsRequest(StrictModel):
     #: by swarm-api on the forge's estimate and by the worker on disk.
     #: 1 to 20, the cache volume's size; default 6.
     additional_repositories_budget_gib: StrictInt | None = Field(default=None, ge=1, le=20)
+    #: List prices by model (#1481), the ones named replacing theirs; a model
+    #: not named keeps its figure. Read at every estimate, so a change prices
+    #: the next stopped attempt. `modelprices` says why a model with no entry
+    #: prices nothing.
+    model_prices: dict[
+        Annotated[str, Field(pattern=modelprices.MODEL_NAME.pattern)], ModelPriceRequest
+    ] | None = Field(default=None, min_length=1, max_length=modelprices.MAX_MODELS)
 
 
 class LimitRequest(StrictModel):

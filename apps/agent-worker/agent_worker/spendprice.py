@@ -1,0 +1,80 @@
+"""What a stopped run cost, asked of swarm-api (#1481, owner decision 2026-10-17).
+
+A CLI stopped before it reported a cost -- a cancel, a SIGTERM, a fence, a
+timeout (#627) -- leaves only the per-message usage its stream carried. The
+worker sums that usage per model (`lifecycle._stream_usage`) and asks
+`POST /v1/attempts/{attempt_id}/spend-estimate` (`swarm_api.spendestimate`)
+what it cost. THE WORKER HOLDS NO PRICE TABLE: list prices are a platform
+setting in Firestore (`model_prices`), and workers are moving off direct
+Firestore access (#1457, design B), so swarm-api reads them and prices.
+
+None is "cost not reported", and it is the answer whenever swarm-api did not
+give a figure: a model it has no price for, no SWARM_API_URL, no attempt key,
+a refusal, an unreachable API. Nothing is priced here instead -- a guessed
+figure is a wrong one. Signed with the attempt key the child path registered
+(`children.ChildPath.sign_request`), as the forge broker's request is.
+
+Never raises: this runs on the teardown path, where the lease is about to be
+released either way.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any, Mapping
+from urllib.parse import quote
+
+from .children import ChildApiError, ChildPath
+
+
+class SpendPricer:
+    """One attempt's stopped-run pricing, through swarm-api."""
+
+    def __init__(self, cfg: Any, *, children: ChildPath, logger: Any) -> None:
+        self.cfg = cfg
+        self._children = children
+        self.log = logger
+
+    def _path(self) -> str:
+        return f"/v1/attempts/{quote(self.cfg.attempt_id, safe='')}/spend-estimate"
+
+    def price(self, usage_by_model: Mapping[str, Mapping[str, int]]) -> float | None:
+        """USD for `usage_by_model` at swarm-api's list prices, or None."""
+        if not usage_by_model:
+            return None
+        api = self._children.api
+        if api is None or not self._children.can_sign:
+            self.log.warning("stopped run's cost not reported: no way to ask swarm-api for it",
+                             reason="no_api" if api is None else "no_attempt_key")
+            return None
+        path = self._path()
+        body = json.dumps({
+            "tenant_id": self.cfg.tenant_id,
+            "task_id": self.cfg.task_id,
+            "attempt_id": self.cfg.attempt_id,
+            "lease_id": self.cfg.lease_id,
+            "generation": self.cfg.generation,
+            "usage_by_model": {model: dict(counts) for model, counts in usage_by_model.items()},
+        }).encode("utf-8")
+
+        def ask() -> tuple[int, dict[str, Any]]:
+            # Signed per try: the proof carries a timestamp swarm-api bounds.
+            headers = self._children.sign_request("POST", path, body)
+            return api.call("POST", path, body=body, headers=headers)
+
+        try:
+            _, answer = self._children.retrying(ask)
+        except (ChildApiError, LookupError) as exc:
+            self.log.warning("stopped run's cost not reported: swarm-api did not price it",
+                             decision=getattr(exc, "code", type(exc).__name__))
+            return None
+        except Exception as exc:  # pragma: no cover - defensive; teardown path
+            self.log.warning("stopped run's cost not reported", error=type(exc).__name__)
+            return None
+        cost = answer.get("cost_usd")
+        if isinstance(cost, bool) or not isinstance(cost, (int, float)) or cost < 0:
+            unpriced = answer.get("unpriced_models")
+            self.log.info("stopped run's cost not reported: no list price",
+                          unpriced_models=unpriced if isinstance(unpriced, list) else None)
+            return None
+        return float(cost)

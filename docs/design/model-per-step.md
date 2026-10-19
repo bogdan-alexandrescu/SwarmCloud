@@ -101,7 +101,7 @@ Firestore access to read one, so this document does not invent one. What can
 be stated:
 
 * **List prices.** `_LIST_PRICES` in `apps/agent-worker/agent_worker/lifecycle.py`
-  (rates cached 2026-06-24, checked 2026-10-05) has `claude-opus-5-5` at $4
+  (since #1481 the `model_prices` platform setting, §4.10) (rates cached 2026-06-24, checked 2026-10-05) has `claude-opus-5-5` at $4
   input / $20 output / $0.20 cache read per million tokens. It has
   **`claude-fable-5-1` at $10 / $50 / $0.25**, so Fable costs 2.5 times Opus
   per token. Planning on Fable is therefore a quality choice, not a saving.
@@ -775,6 +775,21 @@ It is red until the CLI in `agent-runtime-base` accepts every pinned ID
 (§2.3).
 
 ### 4.10 Prices
+
+**Moved, 2026-10-17 (#1481, lane PRICES-STORE).** The table below is no longer
+code. List prices are the `model_prices` platform setting
+(`control/settings`, served and set by `/v1/admin/settings`, PUT admin-only and
+stamped with who changed it), seeded with exactly the figures `_LIST_PRICES`
+held, `source: code`, `as_of: 2026-10-05`. `_LIST_PRICES` is gone from the
+worker. A worker whose run stopped before it reported a cost sends the usage
+per model to swarm-api (`POST /v1/attempts/{id}/spend-estimate`,
+`swarm_api.spendestimate`), and swarm-api prices it from the setting as it reads
+at that moment, so a price change applies to the next stopped attempt with no
+deploy. The rule is unchanged: a model with no entry prices nothing, and the
+attempt reads "cost not reported". The paragraphs below describe the table as
+it was when it lived in code; read "the table" as the setting. The weekly
+pricing-page refresh and the nightly observed-rate check (#1481) are not built
+yet.
 
 By the owner's answer to Q9, `_LIST_PRICES` gains only dated figures that the
 owner or an operator supplies. **`claude-fable-5-1` is already in it** ($10 /

@@ -93,7 +93,7 @@ from .codec import (
     workflow_from_dict,
     workflow_to_firestore,
 )
-from . import refusals
+from . import modelprices, refusals
 from .errors import Conflict, NotFound, Unpageable, ValidationFailed
 from .executioncancel import ExecutionTarget
 
@@ -142,10 +142,17 @@ SETTINGS_DOC = "settings"
 #:                     (§4.6), leaving 14 GiB for tool caches and TMPDIR.
 #:                     Accepted 1 to 20: a budget past the volume's size is
 #:                     one the worker can never meet.
+#:   model_prices      the list price of each model, per million tokens, that
+#:                     swarm-api prices a stopped attempt's usage at (#1481,
+#:                     `modelprices`). Seeded with exactly the figures the
+#:                     worker's `_LIST_PRICES` held, `source: code`: prices
+#:                     became data on 2026-10-17 and nothing was re-guessed in
+#:                     the move. A model with no entry prices nothing.
 PLATFORM_SETTINGS_DEFAULTS: dict[str, Any] = {
     "merge_by_default": False,
     "max_additional_repositories": 5,
     "additional_repositories_budget_gib": 6,
+    "model_prices": modelprices.SEED,
 }
 
 #: The accepted range of each integer setting, inclusive. A stored value
@@ -160,6 +167,10 @@ PLATFORM_SETTINGS_RANGES: dict[str, tuple[int, int]] = {
 
 def _platform_setting(key: str, data: dict[str, Any]) -> Any:
     """One setting as stored, or its default when unset or malformed."""
+    if key == "model_prices":
+        # A malformed ENTRY is dropped, never defaulted: a price is a figure,
+        # and the seed's figure in place of an admin's typo is an invented one.
+        return modelprices.table(data.get(key), present=key in data)
     default = PLATFORM_SETTINGS_DEFAULTS[key]
     if key not in data:
         return default
@@ -2386,9 +2397,36 @@ class Store:
             if key in changes and (isinstance(value, bool) or not isinstance(value, int)
                                    or not low <= value <= high):
                 raise ValueError(f"{key} is an integer from {low} to {high}")
+        if "model_prices" in changes:
+            changes = {**changes, "model_prices": self._model_prices_after(
+                changes["model_prices"], by=by)}
         payload = {**changes, "updated_at": self._now(), "updated_by": by}
         self._db.collection(CONTROL).document(SETTINGS_DOC).set(payload, merge=True)
         return self.get_platform_settings()
+
+    def _model_prices_after(self, changed: Any, *, by: str) -> dict[str, Any]:
+        """The WHOLE price table after `changed`'s entries replace theirs.
+
+        The entries a change does not name are kept as they read now -- the
+        seed's, while the setting was never written -- so the first change is
+        never a table of one model. Each changed entry is stamped with who
+        changed it; the route has already refused a malformed one, and this
+        refuses it again for a caller that is not the route.
+        """
+        if not isinstance(changed, dict) or not changed:
+            raise ValueError("model_prices names at least one model")
+        current = self.get_platform_settings()["model_prices"]
+        out = {name: dict(price) for name, price in current.items()}
+        for name, raw in changed.items():
+            stamped = {**raw, "updated_by": by} if isinstance(raw, dict) else raw
+            parsed = modelprices.entry(stamped)
+            if not isinstance(name, str) or not modelprices.MODEL_NAME.fullmatch(name) \
+                    or parsed is None:
+                raise ValueError(f"model_prices[{name!r}] is not a valid price entry")
+            out[name] = parsed
+        if len(out) > modelprices.MAX_MODELS:
+            raise ValueError(f"model_prices holds at most {modelprices.MAX_MODELS} models")
+        return out
 
     def set_dispatch_paused(self, paused: bool, *, by: str, reason: str | None = None) -> dict:
         payload = {
