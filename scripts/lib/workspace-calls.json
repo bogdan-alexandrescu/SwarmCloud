@@ -2,6 +2,14 @@
   "about": "The call guard's rules (docs/workspaces.md §2.5). scripts/lib/workspace-guard.sh judges every gcloud, kubectl and curl call the workspace job makes against these shapes; a call is allowed only if ONE shape matches it whole, every flag included. Values in braces are filled from the expectation file A1 writes from the approved workspace record; a shape naming a value the file does not hold yet matches nothing, so before A1 only A1's own reads can run. scripts/lib/workspace-guard-cases.json holds a call each rule must refuse and one it must allow, and tests/unit/scripts/test_workspace_guard.py runs them.",
   "wd9_fallback": true,
   "wd9_fallback_why": "Off while the WD9 principal-set grant gives every personal worker its database, bucket-metadata and telemetry roles once (docs/workspaces.md §2.3). Turn it on only if W0 finds that grant impossible; then C5 and the bucket-metadata shape of C4 start to allow, and nothing else changes.",
+  "kinds": ["personal", "group", "service"],
+  "kinds_why": "A workspace record's kind (docs/design/workspace-kinds.md §4.1); a record with none is personal. The expectation carries it, and every kind-only value (a group's namespace label, a service's principal and front-door backend) is in the expectation only for its kind, so a shape that names one matches nothing for another kind.",
+  "front_door_backend": "swarm-ui-backend",
+  "front_door_backend_why": "The API's IAP backend, the one S2 may admit a service account on (§4.5, K1). terraform/modules/frontend/main.tf names it `${name_prefix}-ui-backend` for name_prefix swarm, and the console's `-ui-ui-backend`, which no service is ever admitted to. Fixed here, in the job's image, and not in its environment: an execution override can set the environment, never this file. tests/unit/scripts/test_workspace_deployer_walk.py holds it to terraform/bootstrap/workspace_deployer.tf's front_door_api_backend.",
+  "platform_owner": {"saga-agents-staging": "bogdan@saga.xyz"},
+  "platform_owner_why": "Who alone may approve a service workspace, per project (Q2 (a), §4.3 A1). A1 requires a service record's decision.by to be this address AND an owner in admin_roles/ now, so neither swarm-api's documents nor an execution override decides it alone. Read from the image, never the record or the environment. tests/unit/scripts/test_register_tenant_workspace.py holds it to terraform/environments/<env>/<env>.tfvars platform_owner for every environment of the project that sets one.",
+  "terraform_tenants": {"dev": ["eng", "smoke", "u-or-9a0792", "u-sw-c90291"], "prod": ["eng", "research", "smoke"]},
+  "terraform_tenants_why": "The tenants each environment's Terraform declares (var.tenants in terraform/environments/<env>/<env>.tfvars), which stay Terraform's (docs/design/workspace-kinds.md §4.7, Q8 (a)). The guard never writes a group or service expectation for one, so the job cannot reach their worker, grants, slot or namespace even where their Firestore documents are missing. In the image because the image carries no tfvars; tests/unit/scripts/test_register_tenant_workspace.py holds it to kubernetes/render.py's terraform_tenants of each file.",
   "tools": {
     "gcloud": {
       "flags": {
@@ -10,7 +18,7 @@
         "--quiet": true,
         "-q": true
       },
-      "require_project": ["iam", "secrets", "container"],
+      "require_project": ["iam", "secrets", "container", "iap"],
       "require_project_why": "Without --project the configured project decides where an account, a secret or a cluster call lands; the job's calls always name it."
     },
     "kubectl": {
@@ -69,12 +77,14 @@
         {"tool": "gcloud", "command": ["config", "config-helper"], "args": [], "after_stop": true},
         {"tool": "gcloud", "command": ["auth", "list"], "args": [], "flags": {"--filter": "status:ACTIVE"}, "require": ["--filter"], "why": "scripts/lib/check-cluster-network-parity.sh, which kubernetes/apply.sh --confirm runs after a tenant apply, asks which account is active before it reads the cluster"},
         {"tool": "gcloud", "command": ["iam", "service-accounts", "describe"], "args": [["{worker_email}", "{scheduler_email}", "{reconciler_email}"]]},
+        {"tool": "gcloud", "command": ["iam", "service-accounts", "describe"], "args": ["{service_principal}"], "why": "S1 and A9 read the account a service workspace admits (docs/design/workspace-kinds.md §4.3); never its IAM. Only a service expectation holds service_principal, and only for an account S1 may consider (workspace-guard.sh expect)"},
         {"tool": "gcloud", "command": ["iam", "service-accounts", "get-iam-policy"], "args": ["{worker_email}"]},
         {"tool": "gcloud", "command": ["iam", "service-accounts", "keys", "list"], "args": [], "flags": {"--iam-account": "{worker_email}", "--managed-by": "*"}, "require": ["--iam-account"]},
         {"tool": "gcloud", "command": ["projects", "get-iam-policy"], "args": ["{project_id}"], "flags": {"--flatten": "*", "--filter": "*"}},
         {"tool": "gcloud", "command": ["storage", "buckets", "get-iam-policy"], "args": ["{bucket_url}"]},
         {"tool": "gcloud", "command": ["secrets", "describe"], "args": [["{forge_slot}", "{forge_slot_twin}"]]},
         {"tool": "gcloud", "command": ["secrets", "get-iam-policy"], "args": [["{forge_slot}", "{forge_slot_twin}"]]},
+        {"tool": "gcloud", "command": ["iap", "web", "get-iam-policy"], "args": [], "flags": {"--resource-type": "backend-services", "--service": "{front_door_backend}"}, "require": ["--resource-type", "--service"], "why": "C10's read twin: S2 reads the API backend's IAP policy before it adds, and A9 reads the member back. Only in a service expectation, which alone holds front_door_backend"},
         {"tool": "gcloud", "command": ["container", "clusters", "describe"], "args": ["{gke_cluster}"], "flags": {"--location": "{gke_location}", "--region": "{gke_location}", "--zone": "{gke_location}"}},
         {"tool": "gcloud", "command": ["container", "clusters", "get-credentials"], "args": ["{gke_cluster}"], "flags": {"--location": "{gke_location}", "--region": "{gke_location}", "--zone": "{gke_location}", "--internal-ip": true, "--dns-endpoint": true}},
 
@@ -129,7 +139,7 @@
     },
     {
       "id": "C6",
-      "summary": "Create the person's forge slot and its -refresh twin, empty, and let the expected worker read the slot. Never the twin: terraform/bootstrap/forge_user_slots.tf keeps the refresh token from the worker.",
+      "summary": "Create the person's forge slot and its -refresh twin, empty, and let the expected worker read the slot. Never the twin: terraform/bootstrap/forge_user_slots.tf keeps the refresh token from the worker. For a group the slot is its team slot swarm-tenant-<g>-git and twin; for a service the team slot alone, which has no twin (docs/design/workspace-kinds.md §4.6): the expectation names them.",
       "shapes": [
         {"tool": "gcloud", "command": ["secrets", "create"], "args": [["{forge_slot}", "{forge_slot_twin}"]], "flags": {"--replication-policy": "*", "--labels": "*"}},
         {"tool": "gcloud", "command": ["secrets", "add-iam-policy-binding"], "args": ["{forge_slot}"], "flags": {"--member": "serviceAccount:{worker_email}", "--role": "roles/secretmanager.secretAccessor"}, "require": ["--member", "--role"]}
@@ -137,7 +147,7 @@
     },
     {
       "id": "C7",
-      "summary": "kubectl apply (a dry run included) whose every object is the Namespace swarm-tenant-<tenant> or one of a tenant namespace's kinds inside it (the guard reads -f or stdin), on the swarm cluster's context only.",
+      "summary": "kubectl apply (a dry run included) whose every object is the Namespace swarm-tenant-<tenant> or one of a tenant namespace's kinds inside it (the guard reads -f or stdin), on the swarm cluster's context only. For a group or a service the Namespace must carry swarm.saga.xyz/workspace: <w-id> (the expectation's namespace_label), the label the deployer's scope policy admits it by (docs/design/workspace-kinds.md §4.3 A7).",
       "shapes": [
         {"tool": "kubectl", "command": ["apply"], "args": [], "flags": {"-f": "*", "--filename": "*", "--dry-run": ["client", "server", "none"], "--validate": "*", "-o": "*", "--output": "*", "-n": "{namespace}", "--namespace": "{namespace}"}, "require_one": ["-f", "--filename"], "objects": true}
       ]
@@ -150,6 +160,13 @@
         {"tool": "curl", "method": "PATCH", "doc": ["{workspace_doc}"], "query_keys": ["updateMask.fieldPaths", "currentDocument.updateTime", "currentDocument.exists", "mask.fieldPaths"], "body": "document", "after_stop": true},
         {"tool": "curl", "method": "POST", "op": "commit", "body": "commit", "docs": ["{tenant_doc}", "{pool_doc}", "{workspace_doc}"]},
         {"tool": "curl", "method": "POST", "op": "commit", "body": "commit", "docs": ["{workspace_doc}"], "after_stop": true}
+      ]
+    },
+    {
+      "id": "C10",
+      "summary": "A service workspace's front-door admit (docs/design/workspace-kinds.md §4.5, S2): roles/iap.httpsResourceAccessor for exactly the approved service account, unconditioned, on the API backend only. Any other role, member, backend or resource type stops the run, and a removal is C9's. Only a service expectation holds service_principal and front_door_backend, so for every other kind this shape matches nothing.",
+      "shapes": [
+        {"tool": "gcloud", "command": ["iap", "web", "add-iam-policy-binding"], "args": [], "flags": {"--resource-type": "backend-services", "--service": "{front_door_backend}", "--role": "roles/iap.httpsResourceAccessor", "--member": "serviceAccount:{service_principal}", "--condition": "None"}, "require": ["--resource-type", "--service", "--role", "--member", "--condition"]}
       ]
     },
     {

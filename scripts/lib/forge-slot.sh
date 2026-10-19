@@ -30,6 +30,13 @@
 #   FORGE_SLOT_SHOW_ERR          prints the last failure, redacted
 #   FORGE_SLOT_WORK              a private directory for the answers
 #   FORGE_SLOT_DRY_RUN=1         read, and print what would be made; make nothing
+#
+# A TEAM SLOT (docs/design/workspace-kinds.md §4.6). A group workspace's slot
+# is `swarm-tenant-<g>-git` with its `-refresh` twin, made by the same
+# forge_slot_ensure_pair. A service workspace's is `swarm-tenant-<t>-git`
+# ALONE, forge_slot_ensure_single: an App refresh token belongs to a person,
+# and a service account is not one, so there is no twin to make or to keep
+# the worker off.
 set -euo pipefail
 
 FORGE_SLOT_CALL="${FORGE_SLOT_CALL:-}"
@@ -75,6 +82,43 @@ forge_slot_present() {
       return 0 ;;
   esac
   return 1
+}
+
+# forge_slot_bind SLOT WORKER_EMAIL -> 0 the worker reads SLOT; 1 failed.
+forge_slot_bind() {
+  local slot="$1" email="$2" rc=0
+  local member="serviceAccount:${email}" policy="${FORGE_SLOT_WORK}/slot-policy.json"
+  "${FORGE_SLOT_PROBE}" "${policy}" gcloud secrets get-iam-policy "${slot}" \
+    --project "${PROJECT_ID}" --format=json || rc=$?
+  if [[ "${rc}" -eq 0 ]] && iam_policy_binds_member "${policy}" roles/secretmanager.secretAccessor "${member}"; then
+    dim "forge slot: ${email} already reads ${slot}; kept"
+    return 0
+  fi
+  if [[ "${FORGE_SLOT_DRY_RUN}" == "1" ]]; then
+    info "forge slot: would grant roles/secretmanager.secretAccessor on ${slot} to ${email}"
+    return 0
+  fi
+  [[ "${rc}" -eq 0 ]] || { [[ "${rc}" -eq 2 ]] || "${FORGE_SLOT_SHOW_ERR}"; return 1; }
+  "${FORGE_SLOT_CALL}" /dev/null gcloud secrets add-iam-policy-binding "${slot}" --project "${PROJECT_ID}" \
+    --member "${member}" --role roles/secretmanager.secretAccessor \
+    || { "${FORGE_SLOT_SHOW_ERR}"; return 1; }
+  ok "forge slot: granted roles/secretmanager.secretAccessor on ${slot} to ${email}"
+}
+
+# forge_slot_ensure_single TENANT SLOT WORKER_EMAIL -> 0 the team slot present
+# and the worker bound on it; 1 failed (the reason printed); 3 a secret
+# labelled for another tenant (FORGE_SLOT_LABELLED). A service workspace's
+# `swarm-tenant-<t>-git`, which has no twin (§4.6).
+forge_slot_ensure_single() {
+  local tenant="$1" slot="$2" email="$3" rc
+  [[ -n "${FORGE_SLOT_CALL}" && -n "${FORGE_SLOT_PROBE}" && -n "${FORGE_SLOT_SHOW_ERR}" \
+     && -d "${FORGE_SLOT_WORK}" ]] \
+    || { err "forge slot: the caller named no runner (FORGE_SLOT_CALL, _PROBE, _SHOW_ERR, _WORK)"; return 1; }
+  [[ "${slot}" == "swarm-tenant-${tenant}-git" ]] \
+    || { err "forge slot: ${slot} is not the tenant ${tenant}'s team slot"; return 1; }
+  rc=0; forge_slot_present "${slot}" "${tenant}" git || rc=$?
+  [[ "${rc}" -eq 0 ]] || return "${rc}"
+  forge_slot_bind "${slot}" "${email}"
 }
 
 # forge_slot_ensure_pair TENANT SLOT TWIN WORKER_EMAIL -> 0 the pair present,
