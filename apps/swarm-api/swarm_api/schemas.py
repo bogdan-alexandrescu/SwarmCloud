@@ -20,6 +20,7 @@ from pydantic import (
     StrictBool,
     StrictInt,
     field_validator,
+    model_validator,
 )
 
 from swarm_common.models import ADDITIONAL_REPOSITORIES_CEILING, ADDITIONAL_REPOSITORY_NAME
@@ -475,6 +476,18 @@ PriceRate = Annotated[float, Field(strict=True, ge=0, le=modelprices.MAX_RATE,
                                    allow_inf_nan=False)]
 
 
+class ModelPriceTierRequest(StrictModel):
+    """One tier of a model priced by prompt length (`modelprices.tiers_problem`)."""
+
+    #: The largest prompt, in tokens, this tier prices; null on the last tier.
+    #: Required, so a tier that forgot its ceiling is refused, not unbounded.
+    up_to_prompt_tokens: StrictInt | None = Field(ge=1, le=modelprices.MAX_TIER_CEILING)
+    input: PriceRate
+    output: PriceRate
+    cache_read: PriceRate
+    cache_write: PriceRate
+
+
 class ModelPriceRequest(StrictModel):
     """One model's entry in `model_prices` (#1481). `updated_by` is not the
     caller's to say: swarm-api stamps the admin who made the change."""
@@ -489,6 +502,20 @@ class ModelPriceRequest(StrictModel):
     source: str = Field(default="console", min_length=1, max_length=64)
     #: The day the figure was read from its source, YYYY-MM-DD.
     as_of: str = Field(pattern=modelprices.AS_OF.pattern)
+    #: A model priced by prompt length (Haiku 5.5): its tiers in rising order,
+    #: the first at the four rates above, the last with no ceiling. Omitted
+    #: for a model priced at one set of rates, which is every other model.
+    tiers: list[ModelPriceTierRequest] | None = Field(
+        default=None, min_length=2, max_length=modelprices.MAX_TIERS)
+
+    @model_validator(mode="after")
+    def _tiers_cover_every_prompt(self) -> "ModelPriceRequest":
+        if self.tiers is not None:
+            rates = {name: getattr(self, name) for name in modelprices.RATES}
+            _tiers, why = modelprices.tiers_problem([t.model_dump() for t in self.tiers], rates)
+            if why is not None:
+                raise ValueError(why)
+        return self
 
 
 class PlatformSettingsRequest(StrictModel):
