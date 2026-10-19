@@ -2382,6 +2382,44 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "swarm_task_answer",
+        "description": (
+            "Record on a SwarmCloud task the answer a person gave, in this Claude Code "
+            "session, to one of the questions the task's agent asked (its questions.json: "
+            "`owner_questions` in swarm_result, `questions` on a row's result). It carries "
+            "only the person's own pick, verbatim, from a question this session asked them; "
+            "never an answer the agent chose itself, a recommended option the person did "
+            "not pick, or a summary of what they might want. `choice` is the question's own "
+            "option label, exactly as served, when the person picked one; `text` is the "
+            "person's words, or what they chose when it was not one of the options. "
+            "`question_index` is the question's 0-based place in the task's questions. "
+            "The bridge sends `via: claude-code` and this session's id, so the console "
+            "shows it as answered in Claude Code; neither changes who may answer: the "
+            "task's submitter or an admin, a viewer never. Re-answering replaces the "
+            "answer and keeps the earlier one in its history. Answers with the questions "
+            "as the API now serves them, or the API's refusal word for word."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "The task whose agent asked."},
+                "question_index": {
+                    "type": "integer",
+                    "description": "The question's 0-based place in the task's questions.",
+                },
+                "choice": {
+                    "type": "string",
+                    "description": "The option label the person picked, exactly as the task serves it.",
+                },
+                "text": {
+                    "type": "string",
+                    "description": "The person's own words, or what they chose (at most 2,000 characters).",
+                },
+            },
+            "required": ["task_id", "question_index"],
+        },
+    },
+    {
         "name": "swarm_cancel",
         "description": "Cancel running tasks. Their work is still checkpointed and harvestable.",
         "inputSchema": {
@@ -5018,6 +5056,14 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             indent=2,
             default=str,
         )
+
+    if name == "swarm_task_answer":
+        # One POST. A refusal -- a 403 for someone who may not answer, a 422
+        # for a choice that is not one of the options -- is the API's,
+        # through `_tool_error_text`, word for word.
+        from . import answers
+
+        return json.dumps(answers.record(client, args), indent=2)
 
     if name == "swarm_cancel":
         for task_id in args["task_ids"]:

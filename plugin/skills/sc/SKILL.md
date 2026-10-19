@@ -51,8 +51,10 @@ allowed-tools:
 
 This skill reads only, except `run`, which submits and says so first,
 `plan approve|edit|reject`, which act on an issue run's plan only when the
-developer asks for exactly that, and `answer`, which sends a workflow step
-only what the developer types into this host's own form.
+developer asks for exactly that, `answer`, which sends a workflow step
+only what the developer types into this host's own form, and
+`swarm_task_answer`, which records on a task an answer the developer gave
+here to its agent's question.
 
 ## The verb
 
@@ -316,6 +318,27 @@ unticked. A refusal that names the console link means this host cannot ask
 its human: give the link and stop; never offer to answer for them. A reply
 that says the step was already answered is final (the first answer wins);
 a correction is a new round in the workflow, not a second answer.
+
+### Answers given here are recorded on the task
+
+A task's agent, or a workflow step's, may ask the person questions (its
+`questions.json`: a row's result's `questions`, `swarm_result`'s
+`owner_questions`). When the person answers one of them in this session --
+with AskUserQuestion or in chat -- record each answer on that question's task
+with ONE `swarm_task_answer` call per question:
+`{task_id, question_index, choice?, text?}`. `question_index` is the
+question's 0-based place in the task's questions. `choice` is the task's own
+option label, exactly as served, when the person picked one of them; `text`
+is the person's words, or what they chose when it was none of the options.
+The bridge adds `via: claude-code` and this session's id, so the console
+shows the answer as given in Claude Code instead of leaving it unanswered.
+
+Only the person's own pick, verbatim, from a question this session asked
+them; never an answer the agent chose itself, a recommended option they did
+not pick, or a paraphrase of what they might want. A question nobody
+answered is left unanswered. Report a refusal as it came: a 403 means the
+caller is neither the task's submitter nor an admin (or is a viewer), and the
+answer stays where it was given -- say so and give the task's console link.
 
 ### `watch [interval]`
 
