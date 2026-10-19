@@ -322,12 +322,15 @@ describe('the Browser tab follows Details for a running browser agent', () => {
     expect(document.querySelector('.live-strip')).not.toBeNull()
   })
 
-  it('draws no Browser tab for a running agent whose profile is not a live browser, and opens it on Logs', async () => {
+  it('draws no Browser tab for a running agent whose profile is not a live browser, and keeps it on Details (#1646)', async () => {
     api.loadTask.mockResolvedValue(ok(agent({ runner_profile: 'claude-code', resource_class: 'standard' })))
     api.loadLiveSession.mockResolvedValue(ok<LiveRead>({ live_browser: false, session: null }))
     const went: string[] = []
     render(<Routed onGo={(to) => went.push(to)} />)
-    await waitFor(() => expect(went).toContain(`work/task/${ID}/logs`))
+    // Details is drawn only once the opening pane is decided (opening.ts).
+    await waitFor(() => expect(api.loadAgentRun).toHaveBeenCalled())
+    expect(went).toEqual([])
+    expect(tabs()[0]!.getAttribute('aria-selected')).toBe('true')
     expect(tabs().map(label)).not.toContain('Browser')
   })
 

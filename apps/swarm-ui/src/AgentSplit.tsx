@@ -80,9 +80,9 @@ import './styles/agents.css'
  * THE LOG IS A TAB (owner decision 2026-10-04). It was a dock along the foot
  * of this column, open across every tab, and it lay over the agent's details;
  * it is the Logs tab now (AgentLogs.tsx), full height under the header with
- * nothing beneath it. A running agent opens on Logs -- a running browser
- * agent on Browser -- a finished one on Details, whose one-line last log
- * line switches to it.
+ * nothing beneath it. An agent opens on Details -- a running browser agent
+ * on Browser (#1646, 2026-10-19; a running agent opened on Logs from
+ * 2026-10-04) -- and Details' one-line last log line switches to Logs.
  *
  * MOVED OUT OF App.tsx (lane U1, 2026-10-02). It was `AgentDrawer` there; the
  * shell is another lane's, and this is the Agents section's own screen. App
@@ -362,7 +362,7 @@ export function AgentSplit({
         <div className={`ag-split-pane${selected === 'logs' ? ' is-logs' : ''}${selected === 'changes' ? ' is-changes' : ''}${selected === 'browser' ? ' is-browser' : ''}`}>
           {deciding ? (
             <p className="art-loading">
-              <Mark kind="pending" say="Reading the agent to open it on its log if it is running, or on its details. The read is in flight." />
+              <Mark kind="pending" say="Reading the agent to open it on its browser if it is a running live browser, or on its details. The read is in flight." />
               <span className="ctl-pending art-loading-bar" />
             </p>
           ) : selected === 'browser' && task !== null ? (
