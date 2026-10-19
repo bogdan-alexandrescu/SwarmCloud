@@ -7,8 +7,9 @@
  *   2. every task state has exactly one mark and one hue, and the amber
  *      triangle is never a state;
  *   3. the Sky spine shell: the spine's order, the panel's pages per section,
- *      collapse with a remembered choice, Admin locked for a non-admin, and the
- *      production bar.
+ *      collapse with a remembered choice, Admin only for someone who
+ *      administers something (NAV-ADMIN-ROLE, #1633; it was drawn locked for
+ *      a non-admin until 2026-10-19), and the production bar.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
@@ -277,14 +278,22 @@ describe('the Sky spine shell', () => {
     window.history.replaceState(null, '', '/')
   })
 
-  it('draws the spine in one fixed order: Profile, Submit, the five sections, Help, API reads', () => {
+  // Links since #503 (a section opens in a new tab and copies as a link).
+  // Profile first since NAV-PROFILE (#1633); its icon is the person's
+  // initials, so each item is read by its label.
+  const spineLabels = () => [...document.querySelectorAll('.sk-spine a.sk-ri')].map((b) => (b.querySelector('small') ?? b).textContent?.trim())
+
+  it('draws the spine in one fixed order: Profile, Submit, the sections, Help, API reads', () => {
+    // The fixture caller administers nothing, so no Admin (NAV-ADMIN-ROLE).
     render(<App />)
-    const spine = document.querySelector('.sk-spine')!
-    // Links since #503 (a section opens in a new tab and copies as a link).
-    // Profile first since NAV-PROFILE (#1633); its icon is the person's
-    // initials, so each item is read by its label.
-    const labels = [...spine.querySelectorAll('a.sk-ri')].map((b) => (b.querySelector('small') ?? b).textContent?.trim())
-    expect(labels).toEqual(['Profile', 'Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Admin', 'Help', 'API reads'])
+    expect(spineLabels()).toEqual(['Profile', 'Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Help', 'API reads'])
+  })
+
+  it('draws Admin after Capacity for a platform admin', async () => {
+    stubMe({ ...ME, principal: { ...ME.principal, is_admin: true } })
+    const { LiveApp } = await liveApp()
+    render(<LiveApp />)
+    await waitFor(() => expect(spineLabels()).toEqual(['Profile', 'Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Admin', 'Help', 'API reads']))
   })
 
   it('lists the open section\'s pages in the panel, with the open page\'s children', async () => {
@@ -324,20 +333,16 @@ describe('the Sky spine shell', () => {
     get.mockRestore()
   })
 
-  it('shows Admin to a non-admin, locked: rows disabled and one line saying admins only', async () => {
+  it('shows a non-admin no Admin, and no locked rows, on a direct Admin link (NAV-ADMIN-ROLE)', async () => {
     stubMe(ME)
+    const { LiveApp } = await liveApp()
     window.history.replaceState(null, '', '/admin/tenants')
-    render(<App />)
-    await waitFor(() => expect(document.querySelector('.sk-pnote')).not.toBeNull())
-    const rows = [...document.querySelectorAll<HTMLElement>('.sk-panel .sk-pk')]
-    expect(rows.map((r) => r.textContent?.trim())).toEqual(['Pool limits', 'Tenants', 'Platform counts', 'People'])
-    // Disabled, and not a link anywhere: no href to follow into a new tab.
-    for (const r of rows) {
-      expect(r.getAttribute('aria-disabled')).toBe('true')
-      expect(r.hasAttribute('href')).toBe(false)
-    }
-    expect(document.querySelector('.sk-pnote')?.textContent).toMatch(/^Admins only\./)
-    expect(document.querySelector('.sk-spine .sk-lkd')).not.toBeNull()
+    render(<LiveApp />)
+    await waitFor(() => expect(document.querySelector('.sk-tenant b')?.textContent).toBe('Engineering'))
+    expect(document.querySelector('.sk-spine a[data-sec="admin"]'), 'Admin was drawn for a non-admin').toBeNull()
+    // The panel draws no Admin pages at all: no disabled row, no lock, no note.
+    expect(document.querySelectorAll('.sk-panel .sk-pk')).toHaveLength(0)
+    expect(document.querySelector('.sk-panel [aria-disabled="true"]')).toBeNull()
   })
 
   it('draws the red bar and pill only where the environment measured production', async () => {

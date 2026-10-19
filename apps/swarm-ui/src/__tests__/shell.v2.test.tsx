@@ -159,7 +159,7 @@ describe('#503: the panel lights the current page, not its parent', () => {
 // ---------------------------------------------------------------------------
 
 describe('#503: every spine item is a link, so it opens in a new tab and copies', () => {
-  it('draws Profile, Submit, the five sections, Help and API reads as anchors with a path', async () => {
+  it('draws Profile, Submit, the sections, Help and API reads as anchors with a path', async () => {
     // MUTATION: put `<button data-sec>` back.
     const c = await at('/overview')
     const spine = c.querySelector('.sk-spine')!
@@ -173,7 +173,8 @@ describe('#503: every spine item is a link, so it opens in a new tab and copies'
       Work: '/agents',
       Automate: '/automate/schedules',
       Capacity: '/capacity/pools',
-      Admin: '/admin/limits',
+      // No Admin (NAV-ADMIN-ROLE; part of #1633): the fixture person is not a
+      // platform admin and administers no group workspace.
       Help: '/help',
       'API reads': '/api-reads',
     })
@@ -197,9 +198,10 @@ describe('#503: every spine item is a link, so it opens in a new tab and copies'
   ])('leaves a %s-click on every section to the browser', async (_, init) => {
     // MUTATION: drop a clause from `routedClick`, or bind onClick without it.
     const c = await at('/overview')
-    // Profile and the five sections (NAV-PROFILE, #1633).
+    // Profile and the four sections the fixture person is shown (NAV-PROFILE,
+    // #1633): no Admin, as they administer nothing (NAV-ADMIN-ROLE).
     const sections = [...c.querySelectorAll<HTMLAnchorElement>('.sk-spine a[data-sec]')]
-    expect(sections).toHaveLength(6)
+    expect(sections).toHaveLength(5)
     for (const a of sections) {
       const e = new MouseEvent('click', { bubbles: true, cancelable: true, ...init })
       a.dispatchEvent(e)
@@ -409,8 +411,10 @@ describe('states.html C: the takeover replaces the content area and keeps the na
     expect(panel).toBeTruthy()
     // The page is gone; the nav is not.
     expect(c.querySelector('main.work')).toBeNull()
-    // Profile and the five sections (NAV-PROFILE, #1633).
-    expect(c.querySelectorAll('.sk-spine a[data-sec]')).toHaveLength(6)
+    // Profile and four sections (NAV-PROFILE, #1633): with no read landed,
+    // nobody is known to administer anything, so there is no Admin
+    // (NAV-ADMIN-ROLE), never a locked one.
+    expect(c.querySelectorAll('.sk-spine a[data-sec]')).toHaveLength(5)
     expect(c.querySelector('.sk-panel')).not.toBeNull()
     // The meter claims nothing during a whole-app state.
     expect(c.querySelector('.sk-meter b')?.textContent).toBe('not read')

@@ -376,7 +376,15 @@ describe('keyboard traversal', () => {
       // button, each panel page and the footer controls (the spine's Help and
       // API reads, the panel's collapse and the theme switch).
       const stopSet = new Set<Element>(r.stopElements)
+      // NO LOCKED ADMIN PANEL (NAV-ADMIN-ROLE; part of #1633): the fixture
+      // person administers nothing, so an Admin route draws no Admin item and
+      // no panel pages -- the page's own refusal, not a list they cannot use.
+      const noAdmin = route.startsWith('admin/') && container.querySelector('.sk-spine a[data-sec="admin"]') === null
       for (const [what, group] of Object.entries(shellControls(container))) {
+        if (noAdmin && what === 'panel page') {
+          expect(group.all, `${route}: a locked Admin panel was drawn for someone who administers nothing`).toEqual([])
+          continue
+        }
         shellRendered.push({ route, what, count: group.all.length })
         for (const el of group.reachable) {
           if (!stopSet.has(el)) shellMissing.push(`${route} ${what}: ${signature(el)} "${(el.textContent ?? '').trim()}"`)

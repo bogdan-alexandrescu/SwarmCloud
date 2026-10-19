@@ -51,6 +51,7 @@ import { PlatformCountsScreen } from './PlatformCounts'
 import { ProfilesScreen } from './Profiles'
 import { ProfileScreen } from './Profile'
 import { WorkspacePeopleScreen } from './WorkspacePeople'
+import { WorkspacesYouAdminScreen } from './WorkspacesYouAdmin'
 import { WORKSPACE_PEOPLE_ADDRESS } from './roles'
 import { QuotaDetailScreen } from './QuotaDetail'
 import { RuntimesScreen } from './Runtimes'
@@ -481,8 +482,14 @@ export const SECTIONS: SectionDef[] = [
     // 2026-10-13, docs/schedules.md §6.1): it is Automate › Schedules' "All
     // tenants" now, and its clause went with it. The platform's own ticks
     // moved to Platform counts, and the clause after its count asks for them.
+    //
+    // WIDENED BY ONE CLAUSE ON 2026-10-19 (NAV-ADMIN-ROLE; part of #1633,
+    // owner decision "All under Profile; Admin by role"): Workspaces you
+    // admin is the last tab, and the last clause is its. Admin is no longer
+    // only the platform's: a workspace admin reaches this section for that
+    // one page, which is why the tab carries no `admin: true` mark.
     question:
-      'What is each ceiling set to, who is registered to use this platform, how many tasks are in each state, what does the platform run on its own, and who is waiting for a workspace?',
+      'What is each ceiling set to, who is registered to use this platform, how many tasks are in each state, what does the platform run on its own, who is waiting for a workspace, and which group workspaces do you administer?',
     tabs: [
       { id: 'limits', label: 'Pool limits', admin: true },
       { id: 'tenants', label: 'Tenants', admin: true },
@@ -493,6 +500,11 @@ export const SECTIONS: SectionDef[] = [
       // requests to approve or deny, each person's ceiling and Claude account,
       // and who is an admin. Admin only, like the three before it.
       { id: 'people', label: 'People', admin: true },
+      // NAV-ADMIN-ROLE: each group workspace whose stored role for the
+      // caller is admin, with its four settings pages. Not marked `admin`:
+      // it reads `/v1/tenants/mine`, which everyone may, and a workspace
+      // admin who is not a platform admin is shown only this page.
+      { id: 'workspaces', label: 'Workspaces you admin' },
     ],
   },
 ]
@@ -2107,6 +2119,8 @@ function SectionBody({
       return <PlatformCountsScreen />
     case 'admin/people':
       return <PeopleScreen />
+    case 'admin/workspaces':
+      return <WorkspacesYouAdminScreen go={go} />
 
     default:
       // Unreachable through the nav, and reachable only by hand-editing a hash

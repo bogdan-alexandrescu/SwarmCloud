@@ -14,9 +14,17 @@
  * the spine's colour, with the compact seven-dot Hive) opens a drawer that
  * holds both columns.
  *
- * Admin is SHOWN to a non-admin, with a lock: the rows are disabled and one
- * line says admins only. A hidden page is indistinguishable from one that does
- * not exist.
+ * ADMIN IS DRAWN ONLY FOR SOMEONE WHO ADMINISTERS SOMETHING (amended
+ * 2026-10-19, NAV-ADMIN-ROLE; part of #1633, owner decision "All under
+ * Profile; Admin by role"): a platform admin (`/v1/tenants/me`), or a person
+ * whose stored role is `admin` in at least one GROUP workspace
+ * (`/v1/tenants/mine`, `adminWorkspaces`). Everyone else sees no Admin item,
+ * flyout, drawer entry or panel -- no lock, no disabled rows -- and nothing is
+ * drawn while either read is in flight. It reverses the rule written here
+ * until then, "Admin is SHOWN to a non-admin, with a lock": a person who
+ * administers nothing was shown four pages they could never use. The routes
+ * stay, and a direct link still lands on the page's own "admins only"
+ * refusal, so a saved link is answered rather than missing.
  *
  * Production draws a red pill and a 3px red bar across the top; the pill shows
  * only what was measured (`classifyEnvironment`), never a hardcoded word.
@@ -38,6 +46,7 @@ import { iapFronted, signingOut } from './signoutState'
 import { AppTakeover, OfflineBanner, wholeAppFault, useOnline } from './AppStates'
 import { feedData, notificationsSnapshot, subscribeNotifications } from './notificationFeed'
 import { firstName } from './PersonName'
+import { roleOf } from './roles'
 
 export type SpineSection = 'profile' | 'overview' | 'work' | 'automate' | 'capacity' | 'admin' | 'help' | 'api' | null
 
@@ -61,6 +70,9 @@ interface PanelPage {
 }
 
 const AGENT_LABEL: Readonly<Record<AgentTab, string>> = { live: 'Live', waiting: 'Waiting', recent: 'Recent' }
+
+/** Admin › Workspaces you admin's tab (NAV-ADMIN-ROLE; part of #1633). */
+export const WORKSPACES_YOU_ADMIN_TAB = 'workspaces'
 
 /**
  * The panel's pages, per spine section (common.py NAV). The `to` values are
@@ -138,6 +150,10 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     // missing here, so an admin reached it only by typing /admin/people --
     // the Runs defect visual QA Q7 caught, again.
     { key: 'people', label: 'People', icon: 'people', to: 'admin/people' },
+    // NAV-ADMIN-ROLE (part of #1633): the group workspaces the person
+    // administers, last. The only Admin page a workspace admin who is not a
+    // platform admin is shown (`adminPagesFor`).
+    { key: WORKSPACES_YOU_ADMIN_TAB, label: 'Workspaces you admin', icon: 'tenants', to: `admin/${WORKSPACES_YOU_ADMIN_TAB}` },
     // No Schedules here since SCHED-ONE-PAGE (owner decision 2026-10-13):
     // every tenant's schedules are Automate › Schedules, All tenants.
   ],
@@ -154,6 +170,28 @@ const SUBMIT_PAGES: readonly { tab: string; label: string; icon: string; to: str
   { tab: 'new-workflow', label: 'A workflow', icon: 'workflows', to: 'work/new-workflow' },
   { tab: 'new-issue', label: 'From a GitHub issue', icon: 'runs', to: 'work/new-issue' },
 ]
+
+/**
+ * THE GROUP WORKSPACES A PERSON ADMINISTERS (NAV-ADMIN-ROLE; part of #1633):
+ * the `/v1/tenants/mine` entries whose stored role is `admin` and whose kind
+ * is `group`. A personal workspace never counts -- everyone administers their
+ * own, and its settings are under Profile -- and neither does a platform
+ * admin's reach entry (`isReach`): that is a workspace they can reach, not
+ * one they were made admin of.
+ */
+export function adminWorkspaces(choices: readonly TenantChoice[]): TenantChoice[] {
+  return choices.filter((c) => c.kind === 'group' && roleOf(c) === 'admin' && !isReach(c))
+}
+
+/**
+ * The Admin pages a person is shown: all five for a platform admin, only
+ * Workspaces you admin for a workspace admin who is not one, and none for
+ * anyone else -- which is how the spine knows to draw no Admin item.
+ */
+export function adminPagesFor(platformAdmin: boolean, workspaceAdmin: boolean): readonly PanelPage[] {
+  if (platformAdmin) return PANEL_PAGES.admin
+  return workspaceAdmin ? PANEL_PAGES.admin.filter((p) => p.key === WORKSPACES_YOU_ADMIN_TAB) : []
+}
 
 /** Each panel's heading: its spine section's label. */
 export const PANEL_TITLE: Readonly<Record<PanelSection, string>> = { profile: 'Profile', work: 'Work', automate: 'Automate', capacity: 'Capacity', admin: 'Admin' }
@@ -1183,6 +1221,11 @@ export function SkyShell({
   const adminPending = feedData(notes)?.admin_pending ?? 0
   const who = dataOf(me)
   const admin = who?.principal.is_admin === true
+  // WHO SEES ADMIN (NAV-ADMIN-ROLE; part of #1633): a platform admin, or the
+  // stored admin of a group workspace. Both reads unread is no Admin at all,
+  // never a locked one that then disappears.
+  const adminPages = adminPagesFor(admin, adminWorkspaces(dataOf(mine) ?? []).length > 0)
+  const spineItems = SPINE.flatMap((s) => (s.key !== 'admin' ? [s] : adminPages.length === 0 ? [] : [{ ...s, to: adminPages[0]!.to }]))
   const savedName = useSyncExternalStore(subscribeOwnName, ownNameSnapshot, ownNameSnapshot)
   const whoEmail = who?.principal.email ?? null
   useEffect(() => {
@@ -1580,10 +1623,6 @@ export function SkyShell({
   // ONE SPINE SECTION: Profile, then the five after Submit.
   const sectionLink = (s: { key: Exclude<SpineSection, null>; label: string; to: string }) => {
     const on = section === s.key
-    // LOCKED UNTIL THE READ SAYS ADMIN. Drawn unlocked while `who` was
-    // unread, a non-admin saw Admin open and then saw the lock appear.
-    const locked = s.key === 'admin' && !admin
-    const checking = locked && who === null
     // A LINK, NOT A BUTTON (#503): a section opens in a new tab and copies
     // as a link, like every other place in the console.
     return (
@@ -1595,7 +1634,7 @@ export function SkyShell({
         // CH-14): the section is drawn lit as the way back, never
         // announced as where the reader is.
         aria-current={on && !missing ? 'page' : undefined}
-        title={checking ? `${s.label} (checking access)` : locked ? `${s.label} (admins only)` : s.label}
+        title={s.label}
         {...routed(s.to, () => {
           // COLLAPSED, A CLICK ON THE SECTION YOU ARE IN OPENS ITS PAGES
           // (visual QA V083, 2026-10-11). It expanded the panel, so with
@@ -1643,13 +1682,12 @@ export function SkyShell({
         )}
         {/* #1206: requests waiting on ANY admin, as a pill at the item's
             top-right. Gated on the session read as well as the count: a
-            pill is never drawn over a locked Admin. */}
+            workspace admin's Admin carries no platform count. */}
         {s.key === 'admin' && admin && adminPending > 0 && (
           <i className="sk-badge sk-apill" title={`${adminPending} waiting for an admin`} aria-label={`${adminPending} waiting for an admin`}>
             {adminPending}
           </i>
         )}
-        {locked && <Icon name="lock" className="sk-ic sk-lkd" />}
       </a>
     )
   }
@@ -1668,7 +1706,7 @@ export function SkyShell({
         <small>Submit</small>
       </a>
       <span className="sk-rsep" aria-hidden />
-      {SPINE.map(sectionLink)}
+      {spineItems.map(sectionLink)}
       <span className="sk-grow" />
       {/* THE WAY BACK TO THE PANEL (U10a D26): collapsed, the only way to
           bring it back was to click a section. The panel's own collapse
@@ -1694,8 +1732,7 @@ export function SkyShell({
       section={section}
       tab={tab}
       agentTab={agentTab}
-      admin={admin}
-      known={who !== null}
+      adminPages={adminPages}
       nav={nav}
       counts={counts}
       helpGroup={helpGroup}
@@ -1902,6 +1939,7 @@ export function SkyShell({
           section={fly}
           tab={section === fly ? tab : ''}
           agentTab={agentTab}
+          adminPages={adminPages}
           nav={nav}
           onExpand={() => {
             setFly(null)
@@ -2359,8 +2397,7 @@ function PanelPages({
   section,
   tab,
   agentTab,
-  admin,
-  known,
+  adminPages,
   nav,
   counts,
   helpGroup,
@@ -2372,8 +2409,8 @@ function PanelPages({
   section: SpineSection
   tab: string
   agentTab: AgentTab
-  admin: boolean
-  known: boolean
+  /** The Admin pages this person is shown (`adminPagesFor`); none draws no Admin panel. */
+  adminPages: readonly PanelPage[]
   nav: (to: string) => void
   counts: Readonly<Record<string, PanelCount>>
   helpGroup: string | null
@@ -2463,20 +2500,18 @@ function PanelPages({
     )
   }
   const sec = section
-  // The lock is drawn until the session read says admin (as on the spine);
-  // the rows are disabled, and "admins only" said, only once it says not.
-  const shut = sec === 'admin' && !admin
-  const locked = shut && known
+  // NO LOCKED ADMIN PANEL (NAV-ADMIN-ROLE): someone who administers nothing,
+  // on a direct link to an Admin page, gets the page's own refusal and no
+  // list of pages they cannot use.
+  const rows = sec === 'admin' ? adminPages : PANEL_PAGES[sec]
+  if (rows.length === 0) return null
   const title = PANEL_TITLE[sec]
   // A 404 is on no page, though its section is drawn (CH-14).
   const lit = missing ? { row: '', kid: null } : litPage(sec, tab, agentTab)
   return (
     <>
-      <div className="sk-pt">
-        {title}
-        {shut && <Icon name="lock" className="sk-ic sk-lk" />}
-      </div>
-      {PANEL_PAGES[sec].map((p) => {
+      <div className="sk-pt">{title}</div>
+      {rows.map((p) => {
         const group = p.key === lit.row
         // THE PAGE ITSELF IS LIT (#503). A row with children is a group: it
         // opens its children, and one of them is the page.
@@ -2488,21 +2523,13 @@ function PanelPages({
             {p.admin === true && <span className="sk-adm">admin</span>}
             {p.kids === undefined && <CountMark c={counts[p.key]} />}
             {p.kids !== undefined && p.key === 'pools' && <CountMark c={counts.pools} />}
-            {shut && <Icon name="lock" className="sk-ic sk-lk" />}
           </>
         )
         return (
           <div key={p.key}>
-            {locked ? (
-              // A disabled page is not a link anywhere: it says why below.
-              <span className="sk-pk is-dis" aria-disabled="true">
-                {row}
-              </span>
-            ) : (
-              <a className={`sk-pk${on ? ' is-on' : ''}${group ? ' is-group' : ''}`} aria-current={on ? 'page' : undefined} {...routed(p.to, () => nav(p.to))}>
-                {row}
-              </a>
-            )}
+            <a className={`sk-pk${on ? ' is-on' : ''}${group ? ' is-group' : ''}`} aria-current={on ? 'page' : undefined} {...routed(p.to, () => nav(p.to))}>
+              {row}
+            </a>
             {group && p.kids !== undefined && (
               <div className="sk-kids">
                 {p.kids.map((k) => {
@@ -2538,12 +2565,6 @@ function PanelPages({
           </div>
         )
       })}
-      {locked && (
-        <p className="sk-pnote">
-          <Icon name="lock" className="sk-ic sk-lk" />
-          <span>Admins only. You can see these pages exist; changing a ceiling or a tenant needs the platform admin group.</span>
-        </p>
-      )}
     </>
   )
 }
@@ -2640,6 +2661,7 @@ function Flyout({
   section,
   tab,
   agentTab,
+  adminPages,
   nav,
   onExpand,
   onEnter,
@@ -2651,6 +2673,7 @@ function Flyout({
   section: Exclude<SpineSection, null>
   tab: string
   agentTab: AgentTab
+  adminPages: readonly PanelPage[]
   nav: (to: string) => void
   /** Undo the collapse: the panel comes back and the flyout goes. */
   onExpand: () => void
@@ -2663,12 +2686,14 @@ function Flyout({
   if (section !== 'profile' && section !== 'work' && section !== 'automate' && section !== 'capacity' && section !== 'admin') return null
   const lit = tab === '' ? { row: '', kid: null } : litPage(section, tab, agentTab)
   const name = PANEL_TITLE[section]
+  const rows = section === 'admin' ? adminPages : PANEL_PAGES[section]
+  if (rows.length === 0) return null
   // A plain labelled group of links, not role="menu": a menu promises arrow
   // keys and roving focus, which this does not have. Tab walks it.
   return (
     <div className={`sk-flyout is-${section}`} ref={flyRef} onMouseEnter={onEnter} onMouseLeave={onLeave} onBlur={onBlur} onKeyDown={onKeyDown} role="group" aria-label={`${name} pages`}>
       <b>{name}</b>
-      {PANEL_PAGES[section].map((p) => {
+      {rows.map((p) => {
         const on = p.key === lit.row && p.kids === undefined
         return (
           <a key={p.key} className={on ? 'is-on' : p.key === lit.row ? 'is-group' : ''} aria-current={on ? 'page' : undefined} {...routed(p.to, () => nav(p.to))}>

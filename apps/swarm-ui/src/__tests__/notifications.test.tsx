@@ -291,6 +291,8 @@ describe('the Admin rail pill', () => {
   }
 
   const admin = () => document.querySelector<HTMLAnchorElement>('.sk-spine a[data-sec="admin"]')!
+  // The session has been read once the tenant block names its workspace.
+  const read = () => expect(document.querySelector('.sk-tenant b')?.textContent).toBe('Engineering')
 
   it('shows the requests waiting on any admin', async () => {
     await shell(true)
@@ -299,22 +301,33 @@ describe('the Admin rail pill', () => {
     expect(admin().querySelector('.sk-apill')?.getAttribute('aria-label')).toContain('2')
   })
 
-  it('is never drawn for a non-admin', async () => {
+  it('is never drawn for a non-admin, who has no Admin item at all (NAV-ADMIN-ROLE)', async () => {
     await shell(false)
-    await waitFor(() => expect(admin().querySelector('.sk-lkd')).not.toBeNull(), WAIT)
+    await waitFor(read, WAIT)
     await act(async () => {
       await new Promise((r) => setTimeout(r, 20))
     })
-    expect(admin().querySelector('.sk-apill')).toBeNull()
+    expect(document.querySelector('.sk-spine a[data-sec="admin"]')).toBeNull()
+    expect(document.querySelector('.sk-apill')).toBeNull()
   })
 
-  it('is not drawn for a non-admin even when the feed carries a count', async () => {
-    // A non-admin whose feed (wrongly) carried a count still gets no pill:
-    // the pill is gated on the session read, not on the number alone.
+  it('is not drawn for a workspace admin even when the feed carries a count', async () => {
+    // A workspace admin who is not a platform admin is shown Admin
+    // (NAV-ADMIN-ROLE), and a feed that (wrongly) carried a count still
+    // draws no pill: the pill is gated on the session read, not on the
+    // number alone.
+    const mine = [{ tenant_id: 'eng', display_name: 'eng@example.com', kind: 'group', via: 'member', role: { name: 'admin', source: 'override' } }]
     serve(
       notifications(
         () => feed([], { admin_pending: 4 }),
-        (m, url) => (m === 'GET' && url.startsWith('/v1/tenants/me') ? { status: 200, body: ME(false) } : null),
+        (m, url) =>
+          m !== 'GET'
+            ? null
+            : url.startsWith('/v1/tenants/mine')
+              ? { status: 200, body: mine }
+              : url.startsWith('/v1/tenants/me')
+                ? { status: 200, body: ME(false) }
+                : null,
       ),
     )
     vi.stubEnv('VITE_LIVE', '1')
@@ -325,7 +338,8 @@ describe('the Admin rail pill', () => {
         {null}
       </SkyShell>,
     )
-    await waitFor(() => expect(admin().querySelector('.sk-lkd')).not.toBeNull(), WAIT)
+    await waitFor(() => expect(admin()).not.toBeNull(), WAIT)
+    await waitFor(read, WAIT)
     await act(async () => {
       await new Promise((r) => setTimeout(r, 20))
     })

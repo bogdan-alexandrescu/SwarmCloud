@@ -81,7 +81,7 @@ label did not name.
 | **Work** | `work` | What is running, what has already run, what did it produce — and why has mine not moved? | Agents · Workflows · Timeline · Submit a task · Submit a workflow |
 | **Automate** | `automate` | What runs here by itself, on a schedule, and what is waiting on me to approve? | Schedules · Approvals |
 | **Capacity** | `capacity` | What kinds of agent can run here, is there room for another, which ceiling is the binding one, and what is holding what there is? | Pools · Runtimes · Profile headroom · Holders · Accounts · Provider quota |
-| **Admin** | `admin` | What is each ceiling set to, who is registered to use this platform, how many tasks are in each state, what does the platform run on its own, and who is waiting for a workspace? | Pool limits · Tenants · Platform counts · People |
+| **Admin** | `admin` | What is each ceiling set to, who is registered to use this platform, how many tasks are in each state, what does the platform run on its own, who is waiting for a workspace, and which group workspaces do you administer? | Pool limits · Tenants · Platform counts · People · Workspaces you admin |
 
 **Automate** was added on 2026-10-08 by the owner's decision SD1
 ([schedules.md §6.1](../schedules.md#61-placement-sd1)): a different question
@@ -790,3 +790,51 @@ that grows by one line per lane is not navigation.
   can see.
 
 `apps/swarm-ui/src/__tests__/spine.profile.test.tsx` holds all of it.
+
+## Changed, 2026-10-19 — Admin is shown only to platform and workspace admins (#1633)
+
+Owner decision, 2026-10-19 ("All under Profile; Admin by role"), part 2
+(lane NAV-ADMIN-ROLE; part 1, NAV-PROFILE, is the section above).
+
+**Why.** Admin was drawn for everyone, locked with a padlock for a
+non-admin: four disabled rows and a line saying admins only. The rule behind
+it — "a hidden page is indistinguishable from one that does not exist" — was
+written when Admin was only the platform's, and it showed every member four
+pages they could never use. Meanwhile a workspace admin, who does administer
+something, had no place that listed their workspaces: they selected one in
+the tenant block and then found its pages under Profile.
+
+**What holds now.**
+
+- **Admin's spine item, its flyout, its phone-drawer entry and its panel are
+  drawn only for a platform admin** (`/v1/tenants/me` `is_admin`) **or for
+  someone whose stored role is `admin` in at least one group workspace**
+  (`/v1/tenants/mine`, each entry's `role.name` and `kind`;
+  `adminWorkspaces` in `Spine.tsx`). Anyone else sees no Admin item: no
+  lock, no disabled rows. While either read is in flight no Admin item is
+  drawn, so nobody sees a locked one flicker away.
+- **Personal workspaces never count.** Everyone administers their own, and
+  its settings are under Profile. Nor does a platform admin's reach entry
+  (`via: "platform_admin"`): it is a workspace they can reach, not one they
+  were made admin of.
+- **A new page, Admin › Workspaces you admin** (`/admin/workspaces`,
+  `WorkspacesYouAdmin.tsx`), lists each such group workspace by name with
+  four links: Workspace, MCP servers, People and roles, and Workspace key.
+  Each link first selects that workspace (`chooseTenant`, the tenant block's
+  own switch), then opens the page. An empty list says that you administer
+  no group workspace.
+- **Who sees which Admin pages** (`adminPagesFor`): a platform admin sees
+  Pool limits, Tenants, Platform counts, People and, last, Workspaces you
+  admin; a workspace admin who is not a platform admin sees only Workspaces
+  you admin, and the Admin item opens it.
+- **The routes stay.** A direct link to an Admin page by a non-admin renders
+  that page's own "admins only" refusal, with no Admin item and no panel
+  rows beside it.
+- **Admin's question gains one clause**, the new tab's ("and which group
+  workspaces do you administer?"). It is the third widening this file asks to
+  be argued: Admin is no longer only the platform's, because one of its pages
+  is a workspace admin's. The tab carries no `admin: true` mark in `SECTIONS`
+  for the same reason.
+
+`apps/swarm-ui/src/__tests__/spine.adminrole.test.tsx` holds it; it replaces
+`spine.adminlock.test.tsx`, which held the reversed rule.
