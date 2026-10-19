@@ -270,7 +270,16 @@ the task on `HUMAN_REQUIRED`, which only a person's "I'm ready" promotes. The
 other-tenant probes (six API calls and a socket that may wait 20 s for its
 refusal) used to run first, and the scheduled runs of 2026-10-15..19 failed
 `returned` with the task PARKED at the 900 s settle (#1333). They now run
-while the viewer's socket is open and the page is on screen. When the settle
+while the viewer's socket is open and the page is on screen, on a thread of
+their own, so the viewer goes on reading its socket for the whole hold as a
+person's open tab does. The viewer reads the hold's deadline after its join
+and before it takes control: swarm-api relays no frame until the join's
+`LiveService.watched` has returned, so the first reading says exactly whether
+the join was counted. A task that still ends `PARKED:HUMAN_REQUIRED` gets a
+verdict that names which way: the join not counted, no viewer or control in
+the resolved hold's funnel, the worker's park cause (`hold_expired` or
+`gate_lost`), or a return that re-queued the task so a later attempt asked
+again with nobody watching. When the settle
 runs out anyway, the group reads the task once more and the verdict names
 its state and `park_reason` (`PARKED:HUMAN_REQUIRED`, or a provider park
 with the instant it is eligible again), never just "did not finish".
