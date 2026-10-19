@@ -71,9 +71,11 @@ def rates(entry: dict[str, Any]) -> tuple[float, ...]:
 
 
 def with_row(page: str, start: str, row: str) -> str:
-    """`page` with the model-table row beginning `start` replaced by `row`."""
+    """`page` with the model-table row beginning `start` replaced by `row`: the
+    FIRST such row, because the batch and tool-use tables below it name the
+    same models."""
     lines = page.splitlines()
-    (index,) = [i for i, line in enumerate(lines) if line.startswith(start)]
+    index = next(i for i, line in enumerate(lines) if line.startswith(start))
     lines[index] = row
     return "\n".join(lines) + "\n"
 

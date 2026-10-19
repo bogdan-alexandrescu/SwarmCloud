@@ -1,4 +1,4 @@
-"""The schedule job-type catalogue: twelve types, picked BY NAME (docs/schedules.md §3).
+"""The schedule job-type catalogue: fourteen types, picked BY NAME (docs/schedules.md §3).
 
 A schedule names a type from this catalogue and nothing else: no image, no
 command, no profile, no resource class, no backend parameter (invariant 10).
@@ -260,6 +260,21 @@ class DocsDriftParams(Params):
 class CostReportParams(Params):
     window: Literal["day", "week"] = "day"
     post_to_issue: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]{0,9}$")
+
+
+class ModelPricesRefreshParams(Params):
+    """No parameters: the page it reads is code (`PRICING_PAGE_URL`), never a
+    caller's URL (invariant 10), and what it writes is the platform's one
+    price setting."""
+
+
+class ModelPricesCheckParams(Params):
+    #: Where a disagreement is opened as an issue: `owner/repo`, registered in
+    #: the schedule's owning tenant, written with that tenant's credential.
+    #: None opens nothing, and a firing with a finding then FAILS rather than
+    #: keep it on the firing alone.
+    issue_repository: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+    issue_label: str = Field(default="bug", min_length=1, max_length=50)
 
 
 class CustomPromptParams(Params):
@@ -571,6 +586,45 @@ TYPES: tuple[ScheduleType, ...] = (
         phase=3,
         forge_permissions=_PR_PUSH,
         gate_notes="each new spec digest needs a one-time platform-admin approval",
+    ),
+    # §3.14, #1481: prices are a platform setting, so both price types are an
+    # admin's platform schedule and take no other scope.
+    ScheduleType(
+        name="model-prices-refresh",
+        description="Read the provider's pricing page and write the model prices it changed; a figure it cannot parse is left as it was.",
+        executor="api",
+        params_model=ModelPricesRefreshParams,
+        # Weekly by the owner's decision; a page read more than daily finds nothing new.
+        min_interval=timedelta(hours=24),
+        default_gate=GateSpec(run="auto", plan="auto", merge="off"),
+        floor_gate=GateSpec(run="auto", plan="auto", merge="off"),
+        budget=None,
+        catch_up="run_once",
+        risk=_fixed("R0"),
+        pushes=_never,
+        creators={"platform": "admin"},
+        profile=None,
+        lane="PRICES-REFRESH",
+        phase=2,
+    ),
+    ScheduleType(
+        name="model-prices-check",
+        description="Compare the per-token rates finished attempts reported with the price setting; open an issue per model more than 10% off.",
+        executor="api",
+        params_model=ModelPricesCheckParams,
+        # Nightly by the owner's decision; its window is the last day.
+        min_interval=timedelta(hours=24),
+        default_gate=GateSpec(run="auto", plan="auto", merge="off"),
+        floor_gate=GateSpec(run="auto", plan="auto", merge="off"),
+        budget=None,
+        catch_up="run_once",
+        risk=_fixed("R1"),
+        pushes=_never,
+        creators={"platform": "admin"},
+        profile=None,
+        lane="PRICES-REFRESH",
+        phase=2,
+        forge_permissions=("issues:write",),
     ),
 )
 
