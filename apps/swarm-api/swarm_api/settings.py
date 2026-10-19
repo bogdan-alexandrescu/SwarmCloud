@@ -373,6 +373,19 @@ class ApiSettings:
     #: path, so answers are cached briefly per (caller, group).
     group_cache_ttl_seconds: int = 120
 
+    #: The registry of job-made group and service workspaces
+    #: (`swarm_api.registry`, docs/design/workspace-kinds.md §4.4). 60: a
+    #: workspace that becomes `ready`, or a service record set
+    #: `deprovisioned`, takes effect on every instance within a minute, for
+    #: two Firestore queries per instance per minute. Shorter costs reads on
+    #: the request path for no decision that needs it sooner.
+    workspace_registry_cache_seconds: float = 60.0
+    #: How long a failing registry read keeps serving the last good one. 600:
+    #: a Firestore blip does not 503 every caller, and past ten minutes a
+    #: group made or a service disabled since is too likely to be missed, so
+    #: the answer is a 503 rather than a guess (the reasoning of Q5 (a)).
+    workspace_registry_stale_seconds: float = 600.0
+
     #: Pub/Sub topic that wakes the scheduler after a submission. Empty disables
     #: the nudge; the Cloud Scheduler safety tick still drains the queue.
     dispatch_topic: str = ""
@@ -896,6 +909,10 @@ class ApiSettings:
             secret_admin_principals=secret_admin_principals,
             groups_impersonate_user=os.environ.get("GROUPS_IMPERSONATE_USER", "").strip(),
             group_cache_ttl_seconds=_int("GROUP_CACHE_TTL_SECONDS", 120),
+            workspace_registry_cache_seconds=float(
+                _int("WORKSPACE_REGISTRY_CACHE_SECONDS", 60)),
+            workspace_registry_stale_seconds=float(
+                _int("WORKSPACE_REGISTRY_STALE_SECONDS", 600)),
             dispatch_topic=os.environ.get("DISPATCH_TOPIC", "").strip(),
             execution_cancel_enabled=_bool("EXECUTION_CANCEL_ENABLED", True),
             repository_grants_enforced=_bool("REPOSITORY_GRANTS_ENFORCED", False),

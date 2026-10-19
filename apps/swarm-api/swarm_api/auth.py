@@ -31,9 +31,17 @@ from swarm_common.identity import (
     worker_service_account_id,
 )
 
-from .errors import Forbidden, PreferencesUnavailable, Unauthenticated, UpstreamUnavailable
+from .errors import (
+    Forbidden,
+    PreferencesUnavailable,
+    Unauthenticated,
+    UpstreamUnavailable,
+    WorkspaceNotReady,
+)
 from .gitidentity import clean_name, is_service_account
 from .groups import GroupLookupError, MembershipResolver
+from .registry import EMPTY as EMPTY_REGISTRY
+from .registry import RegistrySnapshot, WorkspaceRegistry
 from .settings import ApiSettings
 from .store import TENANTS
 from .workspaces import READY, WORKSPACES, is_service_identity, state_of
@@ -593,6 +601,7 @@ class Authenticator:
         admin_roles: Any = None,
         personal: "PersonalTenants | None" = None,
         preferences: "Preferences | None" = None,
+        registry: WorkspaceRegistry | None = None,
     ) -> None:
         self._settings = settings
         self._verifier = verifier
@@ -611,6 +620,11 @@ class Authenticator:
         # authenticator in a test) reads nothing and applies no stored
         # default, which is exactly the behaviour before the profile.
         self._preferences = preferences
+        # The `ready` job-made group and service workspaces
+        # (docs/design/workspace-kinds.md §4.4). None (a hand-built
+        # authenticator in a test) registers no group and admits no account,
+        # which is exactly the behaviour before the registry.
+        self._registry = registry
         # Read once, here, at process start: an address on two lists is
         # refused before the service takes a request (`schedule_tick_users`).
         self._schedule_tick_users = frozenset(schedule_tick_users(settings))
@@ -1005,15 +1019,53 @@ class Authenticator:
         # The address comes from the verified token either way, so this decides
         # WHICH verified identities are admitted, never whether the identity was
         # verified.
+        # THE REGISTRY of job-made workspaces (docs/design/workspace-kinds.md
+        # §4.4), read here -- after the tick, the sweeper and a listed account,
+        # which act for no tenant group, and before anything a group or an
+        # admitted account decides. Raises RegistryUnavailable (503) when it
+        # has not been read within its stale window: without it, which tenant
+        # this caller belongs to is not known.
+        registry = self._registry.snapshot() if self._registry is not None else EMPTY_REGISTRY
+
         allowed_users = {u.lower() for u in getattr(self._settings, "allowed_users", ())}
         if email and email in allowed_users:
             domain = email.rsplit("@", 1)[1] if "@" in email else ""
+        elif email and self._admits_service(email, subject, registry):
+            # A `ready` service record admits its account beside
+            # ALLOWED_USERS, its domain taken from the address the same way,
+            # and only the account whose unique id the record pins: a
+            # recreated account under the same address is not it.
+            # An EXPLICIT True, as on the listed path: the domain check is
+            # skipped, so this claim is the only outside confirmation left.
+            if claims.get("email_verified") is not True:
+                raise AuthError("an admitted service account requires a verified email claim")
+            domain = email.rsplit("@", 1)[1]
         else:
             try:
                 domain = assert_allowed_domain(email, self._settings.core.allowed_domains)
             except AuthError as exc:
+                pending = registry.pending.get(email) if email else None
+                if pending is not None:
+                    # Its service workspace exists and is not ready: say so,
+                    # instead of the domain message. The caller's own record
+                    # only, by its verified address; no email in the body.
+                    log.info("service workspace not ready: workspace=%s state=%s",
+                             pending.get("workspace_id") or "-", pending.get("state"))
+                    raise WorkspaceNotReady(
+                        f"This service account's SwarmCloud workspace is "
+                        f"{pending.get('state')}, not ready, so it is not admitted yet. "
+                        "An admin follows its setup in Admin › Tenants.",
+                        detail={"workspace_id": pending.get("workspace_id"),
+                                "state": pending.get("state")},
+                    ) from None
                 # Correct identity, wrong organisation: that is a 403, not a 401.
                 raise Forbidden(str(exc)) from None
+
+        # TENANT_GROUPS first, in their admin order, then the registry's
+        # groups in `ready_at` order (§4.4; owner answer Q4 (a)). Every walk
+        # below -- the lookup, `resolve_tenant`, the principal and the choices
+        # -- uses this one tuple, so they can never disagree.
+        tenant_groups = self._tenant_groups(registry)
 
         # TWO QUESTIONS, ASKED SEPARATELY, because they have different shapes.
         #
@@ -1030,7 +1082,7 @@ class Authenticator:
         # `any(g in admin_set ...)` read that silence as "not an admin". The
         # 403 that followed said "admin group membership is required for this
         # operation" to someone who has it.
-        tenant_candidates = tuple(dict.fromkeys(self._settings.tenant_groups))
+        tenant_candidates = tuple(dict.fromkeys(tenant_groups))
         try:
             member_groups = (
                 self._groups.groups_for(email, tenant_candidates) if tenant_candidates else ()
@@ -1096,8 +1148,8 @@ class Authenticator:
             domain=domain,
             groups=tuple(member_groups),
         )
-        tenant_id = resolve_tenant(principal, self._settings.tenant_groups)
-        tenant_principal = self._tenant_principal(member_groups, email)
+        tenant_id = resolve_tenant(principal, tenant_groups)
+        tenant_principal = self._tenant_principal(member_groups, email, tenant_groups)
         admin_set = {g.lower() for g in self._settings.admin_groups}
         # Group membership OR an explicitly named email. The second is the
         # escape hatch described on ApiSettings.admin_users: with no readable
@@ -1128,7 +1180,7 @@ class Authenticator:
             # survives while the answer is still False.
             admin_unresolved=(admin_unresolved or roles_unresolved) and not is_admin,
             is_pool_admin=email.lower() in admin_pool_users,
-            tenant_choices=self._tenant_choices(member_groups),
+            tenant_choices=self._tenant_choices(member_groups, tenant_groups),
             # Q11 (a): the token's name claim, else the email's local part.
             # `_with_default` puts a stored name in front of both.
             display_name=clean_name(claims.get("name")) or clean_name(email.split("@", 1)[0]),
@@ -1138,6 +1190,25 @@ class Authenticator:
         # the tenant, the choices and `principal.groups` above are exactly as
         # they were before the reach existed.
         return replace(ctx, platform_reach=self._platform_reach(ctx))
+
+    def _tenant_groups(self, registry: RegistrySnapshot) -> tuple[str, ...]:
+        """`TENANT_GROUPS`, then every registered group not already in it."""
+        configured = tuple(self._settings.tenant_groups)
+        known = {g.lower() for g in configured}
+        return configured + tuple(g for g in registry.groups if g.lower() not in known)
+
+    def _admits_service(self, email: str, subject: str, registry: RegistrySnapshot) -> bool:
+        """Whether a `ready` service record admits `email` with the verified
+        `subject`, which must be the `unique_id` the record pins. Never a
+        worker identity, by either prefix: the registry already refuses every
+        `swarm-` account, and a deployment's own worker prefix is refused
+        here too."""
+        pinned = registry.services.get(email)
+        if not pinned or subject != pinned:
+            return False
+        own = tenant_id_for_user(email)
+        prefix = getattr(self._settings, "tenant_service_account_prefix", "")
+        return not is_worker_identity(email, own, prefix)
 
     def _reach_enabled(self) -> bool:
         # getattr because hand-built settings in tests predate the field,
@@ -1316,8 +1387,14 @@ class Authenticator:
             ) from None
         return principal in {g.lower() for g in held}
 
-    def _tenant_choices(self, member_groups: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
+    def _tenant_choices(
+        self, member_groups: tuple[str, ...], tenant_groups: tuple[str, ...]
+    ) -> tuple[tuple[str, str], ...]:
         """(tenant_id, group) for every registered tenant group in `member_groups`.
+
+        `tenant_groups` is `TENANT_GROUPS` followed by the registry's `ready`
+        job-made groups (`_tenant_groups`), so a job-made group is offered
+        after every Terraform group and never before it is ready.
 
         The SAME walk as `_tenant_principal` and `resolve_tenant` -- admin
         order over `tenant_groups`, membership from what Cloud Identity
@@ -1334,7 +1411,7 @@ class Authenticator:
         """
         member_of = {g.lower() for g in member_groups}
         choices: dict[str, str] = {}
-        for group in self._settings.tenant_groups:
+        for group in tenant_groups:
             if group.lower() in member_of:
                 choices.setdefault(tenant_id_for_group(group), group.lower())
         return tuple(choices.items())
@@ -1407,7 +1484,9 @@ class Authenticator:
             f"send no {TENANT_HEADER} to use your default tenant."
         )
 
-    def _tenant_principal(self, member_groups: tuple[str, ...], email: str) -> str:
+    def _tenant_principal(
+        self, member_groups: tuple[str, ...], email: str, tenant_groups: tuple[str, ...]
+    ) -> str:
         """The group `resolve_tenant` picked, or the caller for a personal tenant.
 
         Mirrors `resolve_tenant`'s rule exactly -- first match in the
@@ -1415,7 +1494,7 @@ class Authenticator:
         describe different tenants.
         """
         member_of = {g.lower() for g in member_groups}
-        for group in self._settings.tenant_groups:
+        for group in tenant_groups:
             if group.lower() in member_of:
                 return group.lower()
         return email
