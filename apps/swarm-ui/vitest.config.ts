@@ -32,6 +32,19 @@
 
 import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
+import { readFileSync } from 'node:fs'
+import { agentMaxWorkers } from './src/vitestWorkers'
+
+// The container's memory limit (cgroup v2, as GKE Autopilot pods have), or null
+// outside a container or when it is unlimited ("max"). See src/vitestWorkers.ts.
+function containerMemoryLimit(): number | null {
+  try {
+    const raw = readFileSync('/sys/fs/cgroup/memory.max', 'utf8').trim()
+    return raw === 'max' ? null : Number(raw)
+  } catch {
+    return null
+  }
+}
 
 export default defineConfig({
   plugins: [react()],
@@ -94,6 +107,8 @@ export default defineConfig({
     // something that never resolves is 30s, not 30 minutes -- so this buys
     // headroom without giving up the property the timeout exists for.
     testTimeout: 30_000,
+    // #1641: sized to the agent container's memory; undefined (vitest's default) elsewhere.
+    maxWorkers: agentMaxWorkers(process.env, containerMemoryLimit()),
     // `globals` stays OFF. Every test imports `describe`/`it`/`expect` from
     // 'vitest' explicitly, so `tsc -b` typechecks the tests with no ambient
     // types injected into the app's own compilation.
