@@ -855,6 +855,25 @@ variable "repository_grants_enforced" {
   default     = false
 }
 
+variable "additional_repositories_enabled" {
+  description = <<-EOT
+    swarm-api's ADDITIONAL_REPOSITORIES_ENABLED (#1434,
+    docs/design/multi-repository-steps.md §6 "Feature flag"): whether a
+    submission may name `additional_repositories`, the registered repositories
+    a step reads, at pinned commits, beside the one it writes. OFF by default,
+    as swarm_api.settings is: off, a submission naming any is refused 422
+    `additional_repositories_disabled` and nothing is stored, so a swarm-api
+    deployed ahead of the workers that clone them writes no task those
+    workers would fail. Turn it on only where workers carrying lane MR-WORKER
+    are deployed. How many a step may name and how large they may be are not
+    here: they are the platform settings max_additional_repositories (1-10,
+    default 5) and additional_repositories_budget_gib (1-20, default 6), set
+    at run time with PUT /v1/admin/settings.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "search_tool_enabled" {
   description = <<-EOT
     swarm-api's SEARCH_TOOL_ENABLED (docs/search-tool.md, #1030): whether
