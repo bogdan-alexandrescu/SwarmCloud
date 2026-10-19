@@ -313,6 +313,18 @@ PLAYWRIGHT_MCP_BIN = "/usr/local/share/npm-global/bin/playwright-mcp"
 MCP_SERVER_NAME = "playwright"
 MCP_CONFIG_NAME = "mcp.json"
 
+#: BROWSER-START (part of #1366): the runner's own refusal to start a
+#: live-browser attempt's agent without its browser. The lifecycle sets
+#: SWARM_HANDOFF for every live-browser attempt and nothing else, and fails the
+#: attempt retryably (`handoff.LIVE_GATE_UNAVAILABLE`) before the runner when
+#: the gate or its CDP endpoint is not ready; so a runner that sees the spool
+#: with no endpoint, no browser image or no Playwright MCP entry in its
+#: `--mcp-config` has met a defect, and says so in `last_error` rather than run
+#: the agent headless (devb-1015: 8 of 60 did, silently). The binary itself is
+#: the image's to prove: images/agent-runtime-browser/selftest.py fails the
+#: build without it.
+LIVE_BROWSER_UNAVAILABLE = "live_browser_unavailable"
+
 #: The image's venv, first on the agent's PATH on the browser image.
 VENV_BIN = "/opt/venv/bin"
 
@@ -878,6 +890,22 @@ def live_browser_note(choice: browser_tools.Choice, *, search: bool,
     return " ".join(parts)
 
 
+def live_browser_refusal(env: dict[str, str], browsers: str, endpoint: str) -> str | None:
+    """Why a live-browser attempt's agent must not start, or None (BROWSER-START).
+
+    Not a live-browser attempt (no SWARM_HANDOFF): None, whatever else is
+    missing. Checked before the CLI starts, so the agent never runs with the
+    image's own headless Chromium where the live browser was promised.
+    """
+    if not env.get(HANDOFF_ENV):
+        return None
+    if not endpoint:
+        return f"{LIVE_BROWSER_UNAVAILABLE}: {CDP_ENDPOINT_ENV} is empty on a live-browser attempt"
+    if not browsers:
+        return f"{LIVE_BROWSER_UNAVAILABLE}: {BROWSERS_PATH_ENV} is unset, so no browser tool is registered"
+    return None
+
+
 def body(ctx: RunnerContext) -> dict[str, Any]:
     extra: list[str] = []
     max_turns = ctx.payload.get("max_turns")
@@ -949,6 +977,9 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     if stopped and isinstance(prompt, str) and prompt.strip():
         prompt = f"{prompt.rstrip()}\n\n{stopped}"
         ctx.payload = {**ctx.payload, "prompt": prompt}
+    refusal = live_browser_refusal(env, browsers, endpoint)
+    if refusal:
+        raise RunnerFailure(f"{refusal}; the agent was not started")
     if browsers:
         spec = dataclasses.replace(SPEC, path_prefix=(VENV_BIN,))
         note = BROWSER_NOTE
@@ -995,6 +1026,11 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
             graph_workdir=(str(ctx.repo_dir) if (graph_snapshot or graph_served) and ctx.repo_dir
                            else None),
             graph_served=graph_served, relay=relay if relay[1] else None)
+        # BROWSER-START: the live browser's tool is in the config the CLI
+        # reads, or the agent does not start.
+        if env.get(HANDOFF_ENV) and MCP_SERVER_NAME not in json.loads(mcp.read_text())["mcpServers"]:
+            raise RunnerFailure(f"{LIVE_BROWSER_UNAVAILABLE}: Playwright MCP is not registered; "
+                                "the agent was not started")
         extra += ["--mcp-config", str(mcp)]
     try:
         return run_cli_agent(ctx, spec, extra_args=extra, extra_env=env)
