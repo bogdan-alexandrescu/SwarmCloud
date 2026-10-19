@@ -732,12 +732,16 @@ const GROUP_LABEL: Record<GroupBy, string> = {
   runner_profile: 'runner profile',
   tenant_id: 'tenant',
   submitted_by: 'person',
+  model: 'model',
+  model_class: 'model class',
 }
 
 const GROUP_HEAD: Record<GroupBy, string> = {
   runner_profile: 'Profile',
   tenant_id: 'Tenant',
   submitted_by: 'Person',
+  model: 'Model',
+  model_class: 'Model class',
 }
 
 /**
@@ -784,7 +788,8 @@ export function CostFigure({ c, what }: { c: CostCell; what: string }) {
 /** `5 profiles`, `3 tenants`, `1 person`, `4 people`. */
 function rowsWord(by: GroupBy, n: number): string {
   if (by === 'submitted_by') return `${n} ${n === 1 ? 'person' : 'people'}`
-  return pluralise(n, by === 'tenant_id' ? 'tenant' : 'profile')
+  if (by === 'model_class') return `${n} ${n === 1 ? 'model class' : 'model classes'}`
+  return pluralise(n, by === 'tenant_id' ? 'tenant' : by === 'model' ? 'model' : 'profile')
 }
 
 function RateCell({ row }: { row: GroupRow }) {

@@ -159,6 +159,8 @@ def test_intended_is_the_last_failure_class_with_its_own_label():
 def test_both_versions_moved_so_every_stored_day_is_derived_again():
     # A day stored under 6 counted these under runner_error and has no
     # `intended` key; the text rules changed, so the classifier did too.
-    assert outcomes.DERIVE_VERSION == 7
+    # At least 7: a later derivation change (8, the model columns) moves it
+    # again, and every bump re-derives a day stored under 6 all the same.
+    assert outcomes.DERIVE_VERSION >= 7
     assert outcomes.CLASSIFIER_VERSION == 3
     assert outcomes.VOCAB["classifier_version"] == 3
