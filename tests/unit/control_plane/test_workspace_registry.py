@@ -392,3 +392,36 @@ def test_an_empty_registry_leaves_every_context_exactly_as_without_one():
                 continue
             assert with_registry.authenticate(f"Bearer t-{user}", None, tenant=tenant) \
                 == expected, (user, tenant)
+
+
+# -- the deployed app reads the registry --------------------------------------------
+
+def test_the_app_built_by_deps_lists_a_ready_job_made_group_in_tenants_mine():
+    from fastapi.testclient import TestClient
+
+    from swarm_api.credentials import InMemoryCredentials
+    from swarm_api.deps import build_context
+    from swarm_api.main import create_app
+    from swarm_api.metrics import ApiMetrics
+    from swarm_api.objects import InMemoryObjectReader
+    from swarm_api.waker import NullWaker
+
+    from .conftest import NoForgeTokens
+
+    db = FakeFirestore()
+    seed_group(db, RESEARCH_GROUP, ready_at=at(9))
+    context = build_context(
+        settings=api_settings(tenant_groups=TERRAFORM_GROUPS),
+        db=db,
+        verifier=StaticTokenVerifier(claims()),
+        groups=StaticGroups({"bob@saga.xyz": (RESEARCH_GROUP,)}),
+        credentials=InMemoryCredentials(),
+        waker=NullWaker(),
+        metrics=ApiMetrics(),
+        objects=InMemoryObjectReader(bucket=f"swarm-artifacts-{PROJECT}"),
+        forge_tokens=NoForgeTokens(),
+    )
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+    response = client.get("/v1/tenants/mine", headers={"Authorization": "Bearer t-bob"})
+    assert response.status_code == 200, response.text
+    assert "research" in [entry["tenant_id"] for entry in response.json()]

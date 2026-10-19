@@ -411,6 +411,10 @@ def test_a_chosen_tenants_artifact_is_served_with_the_query_parameter(client, db
 
 def test_the_query_parameter_cannot_grant_a_tenant(client, db, objects):
     an_artifact_in(db, objects, "research", "task_r")
+    # One authenticated request first reads the workspace registry into its
+    # cache (§4.4), as any request before this one would have; what is
+    # measured below is that the refusal itself reads nothing.
+    assert client.get("/v1/tenants/me", headers=as_("alice")).status_code == 200
     before = dict(db.docs)
     touched = db.touched
     refused = client.get(raw_url("task_r", tenant="research"), headers=as_("alice"))
@@ -463,6 +467,10 @@ def test_a_chosen_tenants_checkpoint_downloads_with_the_query_parameter(client, 
 
 def test_the_query_parameter_cannot_grant_a_checkpoint(client, db, objects):
     a_checkpoint_in(db, objects, "research", "task_r")
+    # One authenticated request first reads the workspace registry into its
+    # cache (§4.4), as any request before this one would have; what is
+    # measured below is that the refusal itself reads nothing.
+    assert client.get("/v1/tenants/me", headers=as_("alice")).status_code == 200
     before = dict(db.docs)
     touched = db.touched
     refused = client.get(checkpoint_url("task_r", tenant="research"), headers=as_("alice"))
