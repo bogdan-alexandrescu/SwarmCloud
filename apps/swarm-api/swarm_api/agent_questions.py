@@ -48,10 +48,17 @@ cannot drop either one's history. `history` is capped at
 answer forgotten.
 
 WHO MAY ANSWER: the task's submitter, or an admin. "Admin" is the platform's
-`is_admin`: there is no per-tenant admin role to ask instead (see
-`routes.gittokens`). Another member of the tenant reads the questions and is
-told why they may not answer (`may_answer_because`); another tenant's task
-is the 404 a missing one is, from the task read, before anything else.
+`is_admin`. Another member of the tenant reads the questions and is told why
+they may not answer (`may_answer_because`); another tenant's task is the 404
+a missing one is, from the task read, before anything else.
+
+AND ONLY A `member` OR ABOVE (docs/design/workspace-roles.md §4.8): the route
+asks the role first (`routes.tasks.require_member`, `role_member_required`
+through its switch), so a submitter a grant narrowed to `viewer` can no
+longer steer their own running task's agent. The submitter rule above is
+narrower and stays on top of the role. With the switch on, the read says so
+too (`role_refusal`), so the console does not offer a form the answer route
+would refuse.
 
 VALIDATED AGAINST WHAT IS SERVED: the index must name one of the questions the
 worker counted, and a choice must be one of THAT question's option labels as
@@ -76,9 +83,10 @@ from pydantic import BaseModel, ConfigDict
 
 from swarm_common.admission import _snapshot
 
+from . import refusals, roles
 from .agent_output import AgentOutputService
 from .codec import owner_answer_to_api, owner_answers_by_index
-from .errors import Conflict, Forbidden, NotFound, ValidationFailed
+from .errors import Conflict, Forbidden, NotFound, RoleMemberRequired, ValidationFailed
 from .redaction import redact
 from .store import TASKS, Store
 from .task_input import masking_for
@@ -149,6 +157,20 @@ def answer_refusal(submitted_by: str | None, email: str, *, is_admin: bool) -> s
     return f"only {who}, who launched this task, or an admin may answer its questions"
 
 
+def role_refusal(role_store: Any, auth: Any) -> str | None:
+    """Why the caller's ROLE forbids answering, for the read's
+    `may_answer_because`, or None. Only while `role_member_required` is on:
+    off, the answer route lets a `viewer` through, and the read must not say
+    otherwise. A role that cannot be read says nothing here; the answer route
+    decides then (503 with the switch on)."""
+    if role_store is None or not refusals.enforced(RoleMemberRequired.code):
+        return None
+    me = role_store.try_resolve(auth)
+    if me is None or roles.at_least(me.role, roles.MEMBER):
+        return None
+    return f"your role in {auth.tenant_id} is {me.role}; members answer here"
+
+
 def read_questions(
     store: Store,
     service: AgentOutputService,
@@ -158,18 +180,21 @@ def read_questions(
     submitted_by: str | None,
     viewer: str | None = None,
     viewer_is_admin: bool = False,
+    viewer_role_refusal: str | None = None,
 ) -> dict[str, Any]:
     """The task's questions for its owner, as the worker validated them, redacted.
 
     Each served question carries `answer`: the owner's stored answer, or None.
     `may_answer` says whether `viewer` may answer, and `may_answer_because`
-    why not.
+    why not: `viewer_role_refusal` (`role_refusal`) when their role forbids
+    it, else the submitter rule's sentence.
     """
     # The task read is the tenant boundary: another tenant's task 404s here,
     # with the message a missing one gets, before anything else is looked at.
     task = store.get_task(tenant_id, task_id, submitted_by=submitted_by)
     count = question_count(task.result_summary)
-    refusal = answer_refusal(task.submitted_by, viewer or "", is_admin=viewer_is_admin)
+    refusal = viewer_role_refusal or answer_refusal(
+        task.submitted_by, viewer or "", is_admin=viewer_is_admin)
     out: dict[str, Any] = {
         "task_id": task.id,
         "count": count,

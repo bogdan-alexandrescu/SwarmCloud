@@ -30,7 +30,7 @@ from starlette.concurrency import run_in_threadpool
 
 from swarm_common.states import TaskState
 
-from .. import agent_questions
+from .. import agent_questions, roles
 from ..agent_output import AgentOutputService
 from ..attempt_totals import totals_for, with_totals
 from ..children import (
@@ -63,6 +63,22 @@ from ..waiting import waiting_for_page
 from ..waker import TASK_FINISHED, ring
 
 router = APIRouter(prefix="/v1/tasks", tags=["tasks"])
+
+
+def require_member(ctx: AppContext, auth: AuthContext, *, fresh: bool = False) -> None:
+    """The role floor on every write here that is a member's
+    (docs/design/workspace-roles.md §4.1, §4.8): submitting, cancelling
+    (anyone's, Q8 -- a `viewer` cancels nothing, their own task included),
+    answering the agent and saying "ready". 403 `role_member_required` for a
+    `viewer`, through its switch: off, the request goes through and the log
+    names the refusal it would have made. Asked BEFORE anything is read or
+    written, so a refused request changes nothing. Each route's narrower rule
+    (the submitter's, the owner's) is still checked after it, on top: the
+    role is the floor, never the permission. `fresh` for the answers, which
+    must see a narrowing made a moment ago, as a decision does."""
+    store = getattr(ctx, "roles", None)
+    if store is not None:
+        store.require(auth, roles.MEMBER, fresh=fresh)
 
 
 def agent_output_service(ctx: AppContext = Depends(get_context)) -> AgentOutputService:
@@ -106,6 +122,7 @@ def create_task(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
+    require_member(ctx, auth)
     result = ctx.submissions.submit_tasks(auth, [body])
     task = result.tasks[0]
     response.headers["Location"] = f"/v1/tasks/{task.id}"
@@ -121,6 +138,7 @@ def create_task_batch(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
+    require_member(ctx, auth)
     result = ctx.submissions.submit_tasks(auth, body.tasks)
     return {
         "tasks": [
@@ -313,6 +331,7 @@ def cancel_task(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
+    require_member(ctx, auth)
     task, target = ctx.store.request_cancel_with_target(
         tenant_id, task_id, by=auth.email, tenant_member=auth.tenant_member
     )
@@ -465,6 +484,7 @@ def human_ready(
     """§4.3: "I'm ready to sign in". The ONLY promotion of a
     PARKED(HUMAN_REQUIRED) task; it writes READY and nothing else, so the
     re-admission is an ordinary all-or-nothing one (invariants 1 and 2)."""
+    require_member(ctx, auth, fresh=True)
     task = service.human_ready(tenant_id, task_id, email=auth.email, submitted_by=submitted_by)
     # Admission sooner than the safety tick: a person is waiting.
     background.add_task(
@@ -912,6 +932,7 @@ def read_questions(
     return agent_questions.read_questions(
         ctx.store, service, tenant_id, task_id, submitted_by=submitted_by,
         viewer=auth.email, viewer_is_admin=auth.is_admin,
+        viewer_role_refusal=agent_questions.role_refusal(getattr(ctx, "roles", None), auth),
     )
 
 
@@ -934,7 +955,12 @@ def answer_question(
     question: re-answering replaces it and keeps the replaced one in its
     `history`. Stored as `metadata.owner_answers`; answers with the questions
     as `GET /questions` now serves them. See `swarm_api.agent_questions`.
+
+    A `viewer` answers nothing (`role_member_required`, through its switch),
+    their own task's agent included: the submitter's rule is on top of the
+    role, never instead of it (workspace-roles.md §4.8).
     """
+    require_member(ctx, auth, fresh=True)
     return agent_questions.answer_question(
         ctx.store, service, ctx.db, tenant_id, task_id, body,
         submitted_by=submitted_by, email=auth.email, is_admin=auth.is_admin, now=ctx.now(),
