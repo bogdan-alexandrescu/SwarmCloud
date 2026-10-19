@@ -16,14 +16,12 @@ read a real screenshot as noise.
 
 from __future__ import annotations
 
-import base64
 import json
 import os
 import struct
 import subprocess
 import zlib
 from pathlib import Path
-from urllib.parse import urlsplit
 
 import pytest
 
@@ -208,28 +206,35 @@ CURL_STUB = (
 )
 
 
+#: The page itself, as terraform/infra/acceptance_fixture.tf uploads it.
+FIXTURE_PAGE = ROOT / "scripts" / "acceptance" / "fixture.html"
+
+#: Where the page is served from since #1628: the object in our own bucket,
+#: named by scripts/lib/common.sh's ACCEPTANCE_FIXTURE_BUCKET.
+DEFAULT_BASE = "https://storage.googleapis.com/swarm-acceptance-fixture-{project}/fixture.html"
+FIXTURE_HOST = "storage.googleapis.com"
+
+
 def fixture_page_html() -> str:
-    result = run_lib('browser_fixture_html "$1"', "test-run-1")
-    assert result.returncode == 0, result.stderr
-    return result.stdout
+    return FIXTURE_PAGE.read_text()
 
 
 @pytest.mark.parametrize(
     "stub, says",
     [
-        ({"STUB_RC": "28"}, "httpbin.org unavailable (curl exit 28)"),
-        ({"STUB_CODE": "503", "STUB_BODY": "<html>Service Unavailable</html>"},
-         "httpbin.org unavailable (HTTP 503)"),
-        ({"STUB_TYPE": "application/json", "STUB_BODY": "{}"},
-         "httpbin.org answered application/json, not text/html"),
+        ({"STUB_RC": "28"}, f"{FIXTURE_HOST} unavailable (curl exit 28)"),
+        ({"STUB_CODE": "403", "STUB_BODY": "<Error>AccessDenied</Error>"},
+         f"{FIXTURE_HOST} unavailable (HTTP 403)"),
+        ({"STUB_TYPE": "application/xml", "STUB_BODY": "{}"},
+         f"{FIXTURE_HOST} answered application/xml, not text/html"),
         ({"STUB_BODY": "<html><title>Just a moment...</title></html>"},
-         "httpbin.org answered 200 without the fixture's title"),
+         f"{FIXTURE_HOST} answered 200 without the fixture's title"),
     ],
 )
 def test_an_unavailable_fixture_host_is_a_skip_that_names_it(stub, says):
-    """httpbin down, slow or answering something else is httpbin's
-    availability: the check SKIPs naming the host, submits nothing, and records
-    no failure -- a release is not turned red by a third party."""
+    """The fixture's bucket unreachable, its public read not applied yet (a
+    403), or answering something else: the check SKIPs naming the host,
+    submits nothing, and records no failure -- never a pass."""
     result = run_lib(
         CURL_STUB
         + 'test_run_id() { printf "test-run-1"; }; '
@@ -259,7 +264,7 @@ def test_an_unavailable_fixture_host_fails_when_skips_are_failures():
 
 def test_a_host_serving_the_fixture_passes_the_preflight():
     result = run_lib(
-        CURL_STUB + 'browser_fixture_preflight "https://httpbin.org/base64/x"',
+        CURL_STUB + 'browser_fixture_preflight "$(browser_fixture_url test-run-1)"',
         env_extra={"STUB_BODY": fixture_page_html()},
     )
     assert result.returncode == 0, result.stderr
@@ -318,11 +323,6 @@ def fixture_input(run_id: str = "test-run-1", base: str | None = None) -> dict:
     return json.loads(body)
 
 
-def decoded_page(url: str) -> str:
-    encoded = urlsplit(url).path.rsplit("/", 1)[-1]
-    return base64.urlsafe_b64decode(encoded).decode("utf-8")
-
-
 def test_the_fixture_input_is_one_the_browser_profile_accepts():
     body = fixture_input()
     # `prompt` is the one key every profile takes; the rest is the profile's
@@ -333,14 +333,25 @@ def test_the_fixture_input_is_one_the_browser_profile_accepts():
     assert body["extract_text"] is True, "page.txt is the text the check reads"
 
 
-def test_the_fixture_page_carries_the_known_colour_and_string():
+def test_the_fixture_is_served_by_our_own_bucket():
+    """#1628: httpbin.org's 502 failed a GKE proof. The default is the object
+    terraform/infra/acceptance_fixture.tf uploads, and the run id rides in the
+    query string -- the URL carries no markup at all."""
+    project = run_lib('printf "%s" "${PROJECT_ID}"').stdout
     body = fixture_input("test-run-7")
-    html = decoded_page(body["url"])
+    assert body["url"] == DEFAULT_BASE.format(project=project) + "?run=test-run-7"
+    assert "httpbin" not in body["url"]
+
+
+def test_the_fixture_page_carries_the_known_colour_and_string():
+    html = fixture_page_html()
     rgb = "%02x%02x%02x" % fixture_rgb()
     assert f"#{rgb}" in html
+    assert "<title>Swarm acceptance fixture</title>" in html
     text = run_lib('browser_fixture_text "$1"', "test-run-7").stdout.strip()
-    assert text and text in html
-    assert "test-run-7" in text, "the string is per run, so a stale page cannot pass"
+    assert text == "swarm-fixture-test-run-7", "the string is per run, so a stale page cannot pass"
+    # The page builds the same string from ?run=: the prefix is the page's.
+    assert '"swarm-fixture-" + id' in html
 
 
 def test_the_fixture_screenshot_is_named_for_the_check():
@@ -349,11 +360,54 @@ def test_the_fixture_screenshot_is_named_for_the_check():
 
 
 def test_the_fixture_host_can_be_pointed_elsewhere():
-    """A self-hosted httpbin, for a deployment whose egress does not reach the
-    public one. Same encoding, so the same assertions hold."""
-    body = fixture_input(base="https://httpbin.internal.example.com/base64/")
-    assert body["url"].startswith("https://httpbin.internal.example.com/base64/")
-    assert "Swarm acceptance fixture" in decoded_page(body["url"])
+    """Another copy of the same page, for a deployment that cannot reach ours.
+    SWARM_BROWSER_FIXTURE_BASE still wins over the default."""
+    body = fixture_input(base="https://fixture.internal.example.com/fixture.html")
+    assert body["url"] == "https://fixture.internal.example.com/fixture.html?run=test-run-1"
+
+
+@pytest.mark.parametrize(
+    "run_id",
+    ["test-gke-proof-20261019122639", "a", "0-9", "x" * 80],
+)
+def test_a_run_id_the_page_shows_is_accepted(run_id):
+    result = run_lib('browser_fixture_url "$1"', run_id)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.endswith("?run=" + run_id)
+
+
+@pytest.mark.parametrize(
+    "run_id",
+    ["", "x" * 81, "<script>alert(1)</script>", 'run"1', "Test-1", "run_1",
+     "run 1", "run\n1", "run%3C", "run&x=1", "run/../x", "ünï"],
+)
+def test_a_run_id_the_page_would_refuse_builds_no_url(run_id):
+    """The page shows only ^[a-z0-9-]{1,80}$; anything else would load
+    "invalid run id", so the builder refuses it rather than submit a task that
+    can only fail."""
+    result = run_lib('browser_fixture_url "$1"', run_id)
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "does not match" in result.stderr
+
+
+def test_the_check_fails_without_submitting_for_an_id_the_page_refuses():
+    result = run_lib(
+        CURL_STUB
+        + 'test_run_id() { printf "Bad_Id"; }; '
+        'submit_task() { echo SUBMITTED >&2; return 1; }; '
+        'if t_check_browser_fixture "unit" 1 "{}"; then exit 9; fi; '
+        '[[ "${TESTS_FAILED}" -eq 1 ]] || exit 8',
+        env_extra={"STUB_BODY": fixture_page_html()},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "SUBMITTED" not in result.stderr
+
+
+@pytest.mark.parametrize("suite", ["smoke", "gke-proof", "bench-dispatch"])
+def test_every_suites_run_id_is_one_the_page_shows(suite):
+    result = run_lib(f'SUITE_NAME={suite}; browser_fixture_url "$(test_run_id)"')
+    assert result.returncode == 0, result.stderr
 
 
 def test_the_about_blank_input_is_still_there_and_still_only_proves_a_start():

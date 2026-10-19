@@ -46,9 +46,11 @@
 # labelled for the one thing that proves: Chromium starts (/dev/shm is big
 # enough, the workspace is writable and an artifact uploads), without
 # depending on any site outside the platform. `--url` adds a page load to it.
-# The second, the fixture task of step 5, loads a page through
-# SWARM_BROWSER_FIXTURE_BASE (httpbin.org by default), so it also proves the
-# worker's egress; it runs only once the first has succeeded.
+# The second, the fixture task of step 5, loads the fixture page from the
+# platform's own public bucket (terraform/infra/acceptance_fixture.tf, since
+# #1628; SWARM_BROWSER_FIXTURE_BASE overrides it), so it also proves the
+# worker's egress without depending on a third party; it runs only once the
+# first has succeeded.
 #
 # It creates those two tasks, as the calling identity's tenant, and nothing else. It
 # never touches the cluster directly; everything goes through the API, and
