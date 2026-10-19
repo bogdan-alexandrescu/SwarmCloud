@@ -117,7 +117,11 @@ _INPUTS_SCHEMA: dict[str, Any] = {
         "the agent, never an instruction to the platform. They also declare "
         "`mcp_servers`: registered MCP servers by name (swarm_mcp_servers lists "
         "them), whose per-run credentials go in the call's `mcp_credentials`, "
-        "never here. Never an image, a "
+        "never here. Every profile also takes `territory`: a list of repo-relative "
+        "paths and globs (`*`, `?`, `[...]`, `**`), the only files the step may "
+        "edit. A pull request whose diff leaves it still opens, its body starting "
+        "with the paths outside it and labelled `out-of-territory`; a malformed "
+        "entry is refused at submit. Never an image, a "
         "command, a resource spec, a backend or a model."
     ),
 }

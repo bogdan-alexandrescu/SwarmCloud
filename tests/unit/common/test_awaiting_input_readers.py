@@ -103,6 +103,10 @@ MUST_IGNORE: dict[str, str] = {
         "the live-browser hand-off view; the await-input card is lane HW-UI's",
     "apps/swarm-ui/src/LiveBrowser.tsx":
         "the live browser; an await-input step has none",
+    "scripts/acceptance/groups/live-browser.sh":
+        "the live-browser acceptance group's stuck-state comment: a hand-off whose "
+        "hold ran out parks on HUMAN_REQUIRED; the group submits a "
+        "claude-code-browser task, never an await-input step",
 }
 
 

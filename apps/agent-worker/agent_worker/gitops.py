@@ -2708,6 +2708,47 @@ def _foreign(
     return problems
 
 
+def published_paths(
+    *,
+    repo: Path,
+    base: str | None,
+    head: str,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str = "git",
+) -> list[str] | None:
+    """Every path the published branch changes against the clone base, sorted.
+
+    Read for a step that declares a territory (TERRITORY-WARN, part of #1468):
+    the pushed head against `base`, with renames as a deletion and an addition
+    so both halves are compared. A repository cloned with no commit
+    (`EMPTY_CLONE_BASE`) changes every path its head holds. None when git
+    could not say, which the caller never reads as "nothing changed".
+    """
+    if not head:
+        return None
+    if base == EMPTY_CLONE_BASE:
+        argv = ["ls-tree", "-r", "--name-only", "-z", head]
+    elif base and _SHA_RE.match(base.strip()):
+        argv = ["diff", "--name-only", "--no-renames", "-z", base.strip(), head, "--"]
+    else:
+        return None
+    code, text = _git_text(
+        [git_binary, *_NO_HOOKS, *argv],
+        repo=Path(repo),
+        private_dir=private_dir,
+        logs_dir=logs_dir,
+        slug="publish-territory",
+        timeout_seconds=timeout_seconds,
+        logger=logger,
+    )
+    if code != 0:
+        return None
+    return sorted({path for path in text.split("\0") if path.strip()})
+
+
 def verify_worker_authorship(
     *,
     repo: Path,

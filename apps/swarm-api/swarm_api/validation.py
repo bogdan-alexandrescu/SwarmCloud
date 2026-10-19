@@ -40,7 +40,7 @@ from swarm_common.profiles import (
     step_model_class,
 )
 
-from . import refusals
+from . import laneterritory, refusals
 from .errors import Forbidden, ValidationFailed
 
 #: Fields a caller may never set, no matter how they spell it. The request
@@ -602,6 +602,16 @@ class InvalidInput(ValidationFailed):
 PROMPT_INPUT_KEY = "prompt"
 
 
+#: The lane's territory (TERRITORY-WARN, part of #1468): every profile takes
+#: it, as it takes `prompt`, and no runner reads it -- the worker compares the
+#: published diff with it (`laneterritory`). Its shape is checked here.
+TERRITORY_INPUT_KEY = laneterritory.TERRITORY_INPUT_KEY
+
+#: The keys of `input` that are the platform's rather than a runner's, and so
+#: are never asked of the catalogue's declaration.
+PLATFORM_INPUT_KEYS = frozenset({PROMPT_INPUT_KEY, TERRITORY_INPUT_KEY})
+
+
 #: The input that names an issue in the task's own repository (contract
 #: request 28, #265). Its one rule beyond its declared bounds is here.
 ISSUE_INPUT_KEY = "issue"
@@ -646,8 +656,20 @@ def validate_runner_input(
     from there, so without one it names nothing and would fail the attempt
     after admission. Required as a keyword, so no caller can forget to pass it.
     """
-    rest = {key: value for key, value in payload.items() if key != PROMPT_INPUT_KEY}
+    rest = {key: value for key, value in payload.items() if key not in PLATFORM_INPUT_KEYS}
     try:
+        if TERRITORY_INPUT_KEY in payload:
+            try:
+                laneterritory.parse(payload[TERRITORY_INPUT_KEY])
+            except laneterritory.TerritoryError as malformed:
+                raise InputRefused(
+                    str(malformed),
+                    key=TERRITORY_INPUT_KEY,
+                    expected=(
+                        f"a list of 1..{laneterritory.MAX_ENTRIES} repo-relative paths or "
+                        "globs (`*`, `?`, `[...]`, `**`)"
+                    ),
+                ) from None
         check_inputs(profile, rest)
         if (
             ISSUE_INPUT_KEY in rest

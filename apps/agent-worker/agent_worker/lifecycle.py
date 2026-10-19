@@ -158,6 +158,7 @@ from . import issue as issue_mod
 from . import jevkey as jevkey_mod
 from . import mcp_attach as mcp_attach_mod
 from . import secretrelease as secretrelease_mod
+from . import territory as territory_mod
 from . import typesafe_shim as typesafe_shim_mod
 from . import questions as questions_mod
 from . import redact as redact_mod
@@ -247,6 +248,7 @@ from .gitops import (
     summarize_work,
     validate_ref,
     verify_merged_default_branch,
+    published_paths,
     verify_worker_authorship,
 )
 # The helpers every function in `gitops` builds its git commands from. Borrowed
@@ -11692,6 +11694,15 @@ class Worker:
         if advisory:
             generated = f"{generated}\n\n{advisory}"
         body = f"{agent_body}\n\n---\n\n{generated}" if agent_body else generated
+        # OUTSIDE THE LANE'S TERRITORY (TERRITORY-WARN, part of #1468): the
+        # pull request still opens, its body STARTING with the paths and
+        # carrying the label (owner decision, 2026-10-19). The territory is
+        # the task's stored input, never anything the agent wrote.
+        outside_header, labels = self._territory_warning(
+            publish_repo, head=str(pushed or work_head or ""), out=out
+        )
+        if outside_header:
+            body = f"{outside_header}\n\n---\n\n{body}"
         # The generated block quotes the step's prompt, which is anyone's
         # text too; the whole body is neutralised, so no part of what the
         # platform posts can page anyone (owner decision, 2026-09-29). The
@@ -11719,6 +11730,7 @@ class Worker:
                     agent_body=agent_body, branch=branch, head=str(pushed or work_head or "")
                 )
                 + (f"\n\n{prepublish}" if prepublish else "")
+                + (f"\n\n{outside_header}" if outside_header else "")
             ),
             origin=cfg.console_url,
             task_id=cfg.task_id,
@@ -11771,6 +11783,9 @@ class Worker:
                     retitle_if=lambda current: self._title_carries_task_id(current) or (
                         agent_title is not None and self._is_default_title(current)
                     ),
+                    # Only when there is one: a step inside its territory, or
+                    # with none declared, asks exactly what it always asked.
+                    **({"labels": labels} if labels else {}),
                 ),
                 policy=self._forge_retry(),
                 what="the pull request",
@@ -11796,6 +11811,12 @@ class Worker:
                 out[PUBLISH_UNREACHABLE_FIELD] = self._unreachable_marker(exc)
             return out
 
+        if labels:
+            out["out_of_territory"]["labelled"] = list(getattr(pr, "labelled", ()) or ())
+            label_error = str(getattr(pr, "label_error", "") or "")
+            if label_error:
+                out["out_of_territory"]["label_error"] = str(self._scrub(label_error[:300]))
+                self.log.warning("the out-of-territory label was not set", error=label_error[:300])
         updated = bool(getattr(pr, "updated", False))
         retitled = bool(getattr(pr, "retitled", False))
         appended = bool(getattr(pr, "appended", False))
@@ -11835,6 +11856,62 @@ class Worker:
         )
         self.log.info("pull request ready", number=pr.number, url=pr.url, created=pr.created)
         return out
+
+    def _territory_warning(
+        self, publish_repo: Path | None, *, head: str, out: dict[str, Any]
+    ) -> tuple[str, list[str]]:
+        """`(header, labels)` for a pull request whose diff leaves the step's
+        declared territory, or `("", [])` (TERRITORY-WARN, part of #1468).
+
+        The territory is `inputs.territory` in the task document as stored:
+        submitted by the caller, refused at submit when malformed, and covered
+        by the spec signature -- never a file in the workspace. A step that
+        declares none returns `("", [])` before git is asked anything, so its
+        publish is exactly what it was.
+
+        Records `out["out_of_territory"]` (the paths) when there are any, and
+        `out["territory_unchecked"]` (why) when a declared territory could not
+        be compared: a warning that is owed and cannot be made is said where
+        the run result is read, never silently dropped.
+        """
+        stored = (self._task or {}).get("input")
+        try:
+            territory = territory_mod.declared(stored)
+        except territory_mod.TerritoryError as exc:
+            out["territory_unchecked"] = f"the declared territory is malformed: {exc}"[:400]
+            self.log.warning("the declared territory could not be read", error=str(exc)[:300])
+            return "", []
+        if territory is None:
+            return "", []
+        ws = self.ws
+        paths = None
+        if publish_repo is not None and ws is not None:
+            try:
+                paths = published_paths(
+                    repo=publish_repo,
+                    base=self._publish_base,
+                    head=head,
+                    private_dir=ws.private,
+                    logs_dir=ws.logs,
+                    timeout_seconds=self.cfg.git_harvest_timeout_seconds,
+                    logger=self.log,
+                )
+            except GitError as exc:
+                self.log.warning("the published paths could not be read", error=str(exc)[:300])
+        if paths is None:
+            out["territory_unchecked"] = (
+                "git could not list the paths this branch changes, so they were not "
+                "compared with the declared territory"
+            )
+            self.log.warning("the declared territory was not compared")
+            return "", []
+        outside = territory_mod.outside(paths, territory)
+        if not outside:
+            return "", []
+        out["out_of_territory"] = {"paths": outside[: territory_mod.MAX_LISTED],
+                                   "count": len(outside)}
+        self.log.warning("the diff leaves the declared territory", paths=len(outside))
+        return territory_mod.warning_header(outside), [territory_mod.OUT_OF_TERRITORY_LABEL]
 
     def _pull_request_body(
         self,
@@ -15184,8 +15261,14 @@ def _recheck_runner_input(runner_profile: str, stored: Any) -> dict[str, Any] | 
             "request 32)"
         )
     try:
+        # `prompt` and `territory` are the platform's, taken by every profile
+        # and named by no declaration (`territory_mod`, TERRITORY-WARN).
         checked = check_inputs(
-            profile, {key: value for key, value in raw.items() if key != "prompt"}
+            profile,
+            {
+                key: value for key, value in raw.items()
+                if key not in ("prompt", territory_mod.TERRITORY_INPUT_KEY)
+            },
         )
     except InputRefused as refused:
         bound = f"; expected {refused.expected}" if refused.expected else ""
