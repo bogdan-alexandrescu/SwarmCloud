@@ -23,8 +23,9 @@
 # (CKV_GCP_29), so a read grant is on the bucket, not the object -- and an IAM
 # condition cannot narrow a grant to allUsers. The bucket holds nothing but
 # this object, so "public read on the bucket" and "public read on fixture.html"
-# are the same set. objectViewer also admits listing it, which shows the one
-# object name and nothing else.
+# are the same set. legacyObjectReader reads an object by name and cannot list
+# the bucket (owner decision on #1628, 2026-10-19): objectViewer would also
+# admit storage.objects.list.
 #
 # THE OWNER APPLIES THE GRANT at the dev-iam hold. Until it is applied the
 # object answers 403, browser_fixture_preflight reads that as "unavailable",
@@ -91,10 +92,14 @@ resource "google_storage_bucket_object" "acceptance_fixture" {
   }
 }
 
+# Trivy GCP-0001 ("bucket allows public access") is this grant, and it is the
+# point: the owner approved allUsers read-by-name on this one-object bucket on
+# #1628 (2026-10-19).
+#trivy:ignore:AVD-GCP-0001
 resource "google_storage_bucket_iam_member" "acceptance_fixture_public_read" {
   # checkov:skip=CKV_GCP_28:the acceptance fixture is public by design (#1628); the bucket holds only fixture.html, whose markup is fixed.
   bucket = google_storage_bucket.acceptance_fixture.name
-  role   = "roles/storage.objectViewer"
+  role   = "roles/storage.legacyObjectReader"
   member = local.acceptance_fixture_public_reader
 }
 
