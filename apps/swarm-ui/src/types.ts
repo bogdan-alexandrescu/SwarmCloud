@@ -5397,6 +5397,8 @@ export interface AppInstalledEvidence {
   installed?: string[]
   not_installed?: string[]
   install_url?: string | null
+  /** The App's display name as the deployment configures it (GITHUB_APP_NAME); null when unset. */
+  app_name?: string | null
 }
 
 /** `github_connected`'s evidence: the record the caller acts through, or none. */
@@ -5828,6 +5830,8 @@ export interface AccessOwners {
   /** False when GitHub did not list the person's orgs; installations are still listed. */
   orgs_listed: boolean
   install_url: string | null
+  /** The App's display name as the deployment configures it (GITHUB_APP_NAME); null or absent when unset. */
+  app_name?: string | null
   tenant_id: string
 }
 

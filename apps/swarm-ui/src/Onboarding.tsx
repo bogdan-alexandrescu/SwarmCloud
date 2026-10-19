@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { dismissOnboarding, loadOnboarding } from './api'
+import { dismissOnboarding, githubAppName, loadOnboarding } from './api'
 import { Button, ButtonLink, Card, Chip, Dash, ToneMark } from './components'
 import type { ApiError } from './fetch'
 import { ConnectButton, connectionOf, Refusal } from './GitHubConnect'
@@ -177,7 +177,7 @@ function stepLine(step: OnboardingStep, doc: OnboardingDoc): ReactNode {
       const on = Array.isArray(inst.installed) ? inst.installed : []
       if (on.length > 0) return `installed on ${on.join(', ')}`
       const login = str(inst.login)
-      return `${login !== null ? `connected as @${login}, but ` : ''}SwarmCloud Saga isn't installed anywhere yet`
+      return `${login !== null ? `connected as @${login}, but ` : ''}${githubAppName(inst.app_name)} isn't installed anywhere yet`
     }
     case 'orgs_enabled': {
       const owners = rows(ev.owners)

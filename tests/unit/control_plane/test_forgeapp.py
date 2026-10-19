@@ -828,6 +828,10 @@ def test_the_config_reads_the_apps_public_settings_from_the_environment():
                                         "GITHUB_APP_ID": "12345",
                                         "GITHUB_APP_SLUG": "swarmcloud"})
     assert full.missing() == [] and full.client_id == CLIENT_ID
+    assert empty.name == "" and full.name == ""
+    named = forgeapp.AppConfig.from_env({"GITHUB_APP_CLIENT_ID": CLIENT_ID,
+                                         "GITHUB_APP_NAME": "SwarmCloud"})
+    assert named.name == "SwarmCloud"
 
 
 # -- the private key's self-check ---------------------------------------------------

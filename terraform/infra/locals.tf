@@ -989,8 +989,10 @@ locals {
       SWARM_API_AUDIENCE = local.push_audiences["swarm-api"]
 
       # The SwarmCloud GitHub App's PUBLIC settings (github_app.tf; #780).
-      # swarm_api.forgeapp reads exactly these three names; without them every
-      # /v1/onboarding/github call answers 503 "the App is not configured".
+      # swarm_api.forgeapp reads exactly these four names; without the first
+      # three every /v1/onboarding/github call answers 503 "the App is not
+      # configured". GITHUB_APP_NAME is the App's display name, served as
+      # `app_name` so the console names the App by it (#1647).
       # Until 2026-10-07 they reached only the `github_app` output, so the
       # App registered that day was invisible to swarm-api (found by the
       # owner's test 1). Empty strings when no App is registered, which
@@ -998,6 +1000,7 @@ locals {
       GITHUB_APP_ID        = var.github_app_id
       GITHUB_APP_CLIENT_ID = var.github_app_client_id
       GITHUB_APP_SLUG      = var.github_app_slug
+      GITHUB_APP_NAME      = var.github_app_name
 
       # Where swarm-api proxies a console's live-browser socket, and POSTs the
       # relay's /internal/close (docs/design/live-browser.md §3.3; owner

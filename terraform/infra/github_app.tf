@@ -80,6 +80,24 @@ variable "github_app_slug" {
   }
 }
 
+variable "github_app_name" {
+  description = <<-EOT
+    The App's display name, from its settings page (the "GitHub App name"
+    field of github.com/settings/apps/<slug>). Not a secret. swarm-api
+    serves it as `app_name` and the console names the App by it, so the
+    console never hard-codes a deployment's App name (#1647). Empty until the
+    App is registered; the console then says "the SwarmCloud GitHub App".
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    # GitHub caps an App's name at 34 characters, as it caps the slug above.
+    condition     = length(var.github_app_name) <= 34 && !strcontains(var.github_app_name, "\n")
+    error_message = "github_app_name is the App's display name from its settings page (at most 34 characters, one line), or empty."
+  }
+}
+
 variable "enable_forge_refresh" {
   description = <<-EOT
     Create swarm-forge-refresh, the 15-minute Cloud Scheduler sweep that
@@ -101,8 +119,8 @@ locals {
 
 check "github_app_settings_are_complete" {
   assert {
-    condition     = (var.github_app_id == "") == (var.github_app_client_id == "") && (var.github_app_id == "") == (var.github_app_slug == "")
-    error_message = "github_app_id, github_app_client_id and github_app_slug are set together, from the one App's settings page (docs/runbooks/github-app.md step 3); one without the others names half an App."
+    condition     = (var.github_app_id == "") == (var.github_app_client_id == "") && (var.github_app_id == "") == (var.github_app_slug == "") && (var.github_app_id == "") == (var.github_app_name == "")
+    error_message = "github_app_id, github_app_client_id, github_app_slug and github_app_name are set together, from the one App's settings page (docs/runbooks/github-app.md step 3); one without the others names half an App."
   }
 }
 
@@ -120,6 +138,7 @@ output "github_app" {
     app_id         = var.github_app_id
     client_id      = var.github_app_client_id
     slug           = var.github_app_slug
+    name           = var.github_app_name
     callback_url   = local.github_app_callback_url
     secret_ids     = module.secret_manager.github_app_secret_ids
     refresh_job_on = var.enable_forge_refresh
