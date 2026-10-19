@@ -204,8 +204,16 @@ def _opener(fake: _Forge):
     return open_with
 
 
+def _granted(worker, monkeypatch) -> None:
+    """The submitter's write grant still covers the repository. `user_worker`
+    seeds no grant document, so without this the grant gate refuses the
+    re-read -- which `test_a_refused_write_grant_is_not_reread` pins."""
+    monkeypatch.setattr(worker, "_forge_write_refusal", lambda: None)
+
+
 def test_a_persons_slot_is_reread_through_the_broker(user_worker, monkeypatch):
     worker, routes = user_worker
+    _granted(worker, monkeypatch)
     fake = _Forge([401, 201])
     monkeypatch.setattr(forge_mod, "_request", fake)
     held = worker._git_token()
@@ -242,6 +250,7 @@ def test_a_refused_write_grant_is_not_reread(user_worker, monkeypatch):
 
 def test_a_refused_token_is_not_reread(user_worker, monkeypatch):
     worker, routes = user_worker
+    _granted(worker, monkeypatch)
     fake = _Forge([401, 201])
     monkeypatch.setattr(forge_mod, "_request", fake)
     held = worker._git_token()
@@ -258,6 +267,7 @@ def test_a_refused_token_is_not_reread(user_worker, monkeypatch):
 
 def test_a_reread_the_broker_refuses_names_the_refusal(user_worker, monkeypatch):
     worker, routes = user_worker
+    _granted(worker, monkeypatch)
     fake = _Forge([401, 201])
     monkeypatch.setattr(forge_mod, "_request", fake)
     held = worker._git_token()
