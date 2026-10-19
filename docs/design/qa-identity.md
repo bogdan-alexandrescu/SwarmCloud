@@ -218,10 +218,13 @@ it in once through take-control, then saves the session as a named LB-7 login
   That is a domain setting outside this repository.
 * *A compromised agent* acts as a full Workspace user, in every Google
   service that account can open and in **every IAP app that admits
-  `domain:saga.xyz`**. In this shared project that may include the other
-  team's apps: nine of the ten IAP backends are theirs
-  (`iap_programmatic_clients.tf`). Whether any of them admits the domain was
-  not read. The CDP policy refuses cookie reads, but a cookie without
+  `domain:saga.xyz`**. In this shared project that is, as read on
+  2026-10-19 at 20:30Z (`gcloud compute backend-services list --global`),
+  four IAP-enabled backends: the console's two (`swarm-ui-backend`,
+  `swarm-ui-ui-backend`) and Product Oracle's two (`oracle-api-be`,
+  `oracle-web-be`). The other team's gateway backends had IAP off that day,
+  but nothing stops one being switched on, and the account would then pass it
+  too. The CDP policy refuses cookie reads, but a cookie without
   `HttpOnly` is readable by page script ([live-browser.md](live-browser.md)
   §5.5.1, "Not covered"). Which of Google's sign-in cookies lack it was not
   measured. Any that do can be carried out and replayed from anywhere until
