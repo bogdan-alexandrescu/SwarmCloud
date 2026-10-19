@@ -33,7 +33,7 @@ import type {
   IssuePreviewRead, IssueRefDoc, IssueRun, IssueRunPage, IssueRunRead, IssueRunSummaryPage, RunCreateBody, RunPlan,
   GitHubAuthorization, GitHubAuthorizeSurface, GitHubDisconnectResponse, GitHubExchangeBody, GitHubExchangeResponse, OnboardingDoc,
   OnboardingDismissal, OwnerTokenResponse, AccessInstallRequestResponse,
-  AdminGrantAnswer, AdminRemoveAnswer, LoanDeclineAnswer, LoanRequestAnswer, PeopleDoc, WorkspaceActionAnswer, WorkspaceLimitsAnswer, WorkspaceLoanAnswer, WorkspaceView,
+  AdminGrantAnswer, AdminRemoveAnswer, AdminWorkspaceView, LoanDeclineAnswer, LoanRequestAnswer, NewWorkspaceBody, PeopleDoc, WorkspaceActionAnswer, WorkspaceKind, WorkspaceLimitsAnswer, WorkspaceLoanAnswer, WorkspaceState, WorkspaceView,
   AccessCheckName, AccessDisableResponse, AccessEnableResponse, AccessGrantResponse, AccessMembers, AccessMode, AccessOverview,
   AccessOwners, AccessRepositoryPage, AccessRevokeResponse, AccessVerifyResponse,
   NotificationTopic, Preferences, PreferencesSaved, PreferencesWrite, Profile, ProfileClaudeAccount, ProfileClaudeAccounts, ProfileDefault,
@@ -6641,6 +6641,44 @@ export async function setWorkspaceCeiling(workspaceId: string, maxActive: number
   return writeTo(route('/v1/admin/workspaces/{workspace_id}/limits', { workspace_id: workspaceId }), 'PUT', { max_active: maxActive }) as Promise<
     Result<WorkspaceLimitsAnswer>
   >
+}
+
+// Workspace kinds (#847, lanes WK-RECORD and WK-UI-DIALOG; docs/design/workspace-kinds.md §4.2.2). An admin files a
+// personal, group or service workspace and follows its job. The routes are routes/people.py's; a record is addressed
+// by its `w-` id, and the list's filters are a kind and a state, so no URL names an email.
+
+/** A record as `people._admin_view` serves it, with an absent `kind` read as `personal` (`workspaces.kind_of`). */
+export function normAdminWorkspace(raw: unknown): AdminWorkspaceView {
+  const rec = (typeof raw === 'object' && raw !== null ? raw : {}) as AdminWorkspaceView
+  return { ...rec, kind: rec.kind ?? 'personal' }
+}
+
+/**
+ * `POST /v1/admin/workspaces` (admin): file a workspace of any kind. 202 when this call made the record (already
+ * `approved` when the requester may approve it), 200 when one already stood; the record either way. A refusal is the
+ * API's code and sentence (design §4.2.3), drawn as it came.
+ */
+export async function createAdminWorkspace(body: NewWorkspaceBody): Promise<Result<AdminWorkspaceView>> {
+  const r = await writeTo(route('/v1/admin/workspaces'), 'POST', body)
+  return r.status === 'ok' ? { ...r, data: normAdminWorkspace(r.data) } : (r as Result<AdminWorkspaceView>)
+}
+
+/** `GET /v1/admin/workspaces/{workspace_id}` (admin): one record, for the dialog's progress view. */
+export async function loadAdminWorkspace(workspaceId: string): Promise<Result<AdminWorkspaceView>> {
+  return readAs(route('/v1/admin/workspaces/{workspace_id}', { workspace_id: workspaceId }), (raw) =>
+    normAdminWorkspace((raw as { workspace?: unknown } | null)?.workspace),
+  )
+}
+
+/** `GET /v1/admin/workspaces?kind=&state=` (admin): records, newest first, at most 200 -- Admin › Tenants' "Being created". */
+export async function loadAdminWorkspaces(filter: { kind?: WorkspaceKind; state?: Exclude<WorkspaceState, 'none'> } = {}): Promise<Result<AdminWorkspaceView[]>> {
+  const q = new URLSearchParams()
+  if (filter.kind !== undefined) q.set('kind', filter.kind)
+  if (filter.state !== undefined) q.set('state', filter.state)
+  return readAs(route('/v1/admin/workspaces', {}, q.toString() === '' ? undefined : q), (raw) => {
+    const rows = (raw as { workspaces?: unknown } | null)?.workspaces
+    return Array.isArray(rows) ? rows.map(normAdminWorkspace) : []
+  })
 }
 
 /** `PUT /v1/admin/people/{workspace_id}/loan` (admin): lend an account to the person (`lend: true`) or reclaim it. */
