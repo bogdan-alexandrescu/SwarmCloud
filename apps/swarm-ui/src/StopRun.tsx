@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 
 import { cancelTask } from './api'
 import { Button } from './components'
+import { useRoleGate } from './Profile'
 import { errorHeading, type ApiError } from './fetch'
 import { trapTab } from './focus'
 import {
@@ -291,6 +292,11 @@ export function StopRun({
   // Only consulted when no worker is running this attempt: a started worker's
   // own attempt is the work, and its copy already says what happens to it.
   const earlier = !started && earlierAttemptRan(task)
+  // A VIEWER CANCELS NOTHING (docs/design/workspace-roles.md §4.8, Q8): the
+  // button is disabled with the role sentence beside it. The API still decides
+  // (`role_member_required`); this only stops offering a click it refuses.
+  // Called before any early return below, as every hook must be.
+  const roleGate = useRoleGate('member', 'cancel')
 
   // A button that 409s is a button that should not have been drawn:
   // `request_cancel` refuses every terminal state. `cancel_requested` already
@@ -395,12 +401,14 @@ export function StopRun({
       className="run-stop-btn"
       aria-haspopup={overlay ? 'dialog' : undefined}
       aria-expanded={overlay ? open : undefined}
-      onClick={() => setOpen(true)}
+      disabledReason={roleGate ?? undefined}
+      data-role-gate={roleGate === null ? undefined : 'member'}
+      onClick={() => { if (roleGate === null) setOpen(true) }}
     >
       {label}
     </Button>
   )
-  if (!open) return stopButton
+  if (!open || roleGate !== null) return stopButton
 
   // FOUR PARAGRAPHS BECAME FOUR FACTS, AND EVERY CLAIM SURVIVES.
   //
