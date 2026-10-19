@@ -1055,6 +1055,14 @@ def test_each_terraform_namespace_is_refused_even_with_the_label(dev_policy_docs
         ), name
 
 
+def test_a_tree_without_terraform_renders_an_empty_list_and_says_so(monkeypatch, capsys):
+    """A copy of kubernetes/ alone (test_posture_is_per_container.py makes one)
+    still renders for lint; what apply.sh sends always names a tfvars file."""
+    monkeypatch.setattr(render, "TFVARS_GLOB", "no-such-directory/*/*.tfvars")
+    assert render.terraform_namespaces([]) == "[]"
+    assert "refuses no Terraform tenant" in capsys.readouterr().err
+
+
 def test_a_terraform_tfvars_that_names_no_tenant_is_refused(tmp_path):
     empty = tmp_path / "x.tfvars"
     empty.write_text('project_id = "p"\n')

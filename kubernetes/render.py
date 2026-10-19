@@ -922,10 +922,22 @@ def terraform_namespaces(tfvars: Iterable[str]) -> str:
     more names than any one environment's, never fewer. kubernetes/apply.sh
     passes its own environment's file, because a name another environment's
     Terraform owns (prod's `research`) is one this environment's job may need.
+
+    An offline render from a tree that holds no terraform/ at all (a copy of
+    kubernetes/ alone, as the posture tests make) refuses no name, and says so
+    on stderr in one `# ` line, as the offline network render does. It is
+    never what is applied: apply.sh always passes a file, and a file naming no
+    tenant is refused above.
     """
     paths = [Path(p) for p in tfvars] or sorted(REPO.glob(TFVARS_GLOB))
     if not paths:
-        raise RenderError(f"render: no tfvars under {TFVARS_GLOB}")
+        print(
+            f"# render: WARNING: no tfvars under {TFVARS_GLOB}, so the workspace deployer's "
+            "scope policy refuses no Terraform tenant's namespace by name. Fine for lint; "
+            "kubernetes/apply.sh --policies passes its environment's tfvars.",
+            file=sys.stderr,
+            flush=True,
+        )
     names = sorted({f"{NAMESPACE_PREFIX}{key}" for path in paths for key in terraform_tenants(path)})
     return "[" + ", ".join(f'"{name}"' for name in names) + "]"
 
