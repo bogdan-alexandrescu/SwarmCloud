@@ -60,6 +60,16 @@ class ForgeError(RuntimeError):
     """The forge could not be reached, or refused in a way worth surfacing."""
 
 
+class ForgeCredentialRejected(ForgeError):
+    """The forge answered 401 to the pull request: it refused the token itself.
+
+    Its own type so the publish can tell a token that ended since it was read
+    (a refresh makes GitHub end the access token it replaces, #1623) from a
+    403 or 404, which are permissions a re-read cannot change. The message is
+    `_open_pull_request`'s, unchanged; it never carries the token.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Transient or permanent: one classification for every forge call a worker makes
 # ---------------------------------------------------------------------------
@@ -912,7 +922,12 @@ def _open_pull_request(
         raise ForgeError(f"the forge refused the pull request: {message or '422'}")
 
     message = str(data.get("message")) if isinstance(data, dict) else ""
-    failure = ForgeUnavailable if transient_status(status, None, data) else ForgeError
+    if transient_status(status, None, data):
+        failure: type[ForgeError] = ForgeUnavailable
+    elif status == 401:
+        failure = ForgeCredentialRejected
+    else:
+        failure = ForgeError
     raise failure(f"could not open a pull request ({status}){': ' + message if message else ''}")
 
 

@@ -221,7 +221,7 @@ from . import mergeslot as mergeslot_mod
 from . import mergetrain as mergetrain_mod
 from . import post_verdict as post_verdict_mod
 from . import specverify
-from .forge import ForgeError, RepoAccess, probe_repository, open_pull_request
+from .forge import ForgeError, PullRequest, RepoAccess, probe_repository, open_pull_request
 from .gitops import (
     ATTRIBUTION_MARKERS,
     EMPTY_CLONE_BASE,
@@ -483,6 +483,12 @@ _FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
 #: pull-request step (`_published_nothing`), from an outage, which does not.
 #: Held to the forge's wording by tests/unit/worker/test_published_nothing.py.
 PULL_REQUEST_REFUSED = "the forge refused the pull request"
+
+#: The `result_summary.git` key `_publish_git` sets when a pull request
+#: refused 401 after its push was still not opened by the one re-read
+#: (`Worker._open_pull_request_reading_again`, #1623): "branch <name> pushed;
+#: pull request not opened (401 twice)", or the re-read's refusal.
+PULL_REQUEST_NOT_OPENED_FIELD = "pull_request_not_opened"
 
 #: The `result_summary.git` key `_publish_git` sets when the forge stayed
 #: unreachable past the in-process retry (`forge.retry_transient`) while
@@ -7036,6 +7042,11 @@ class Worker:
         refused = git.get("pull_request_refused")
         if refused:
             return f"published_nothing: {refused}"
+        unopened = git.get(PULL_REQUEST_NOT_OPENED_FIELD)
+        if unopened:
+            # Its own words, not "published_nothing": the branch IS pushed,
+            # and the error says so with its name (#1623).
+            return str(unopened)
         if (
             git.get("published") is False
             and git.get("commit_count") == 0
@@ -7387,6 +7398,7 @@ class Worker:
         raises `FencedError` and stands down. The merge, a write with no such
         gate of its own, asks the broker for `write` (`_read_action_git_token`).
         """
+        self._git_token_error = None
         refusal = self._git_token_refusal()
         if refusal:
             self.log.error("not reading the tenant git credential", reason=refusal)
@@ -7403,6 +7415,10 @@ class Worker:
                 provider=suffix, broker=self.forge_broker,
             )
         except SecretError as exc:
+            # Why, for a caller that must say it (`_open_pull_request_reading_
+            # again`): a `SecretError` names the secret and the broker's code,
+            # never a value.
+            self._git_token_error = str(exc)
             self.log.warning(
                 "no usable tenant git credential; cloning unauthenticated",
                 error=str(exc),
@@ -7486,6 +7502,82 @@ class Worker:
                 access, reason=f"{access.reason}; {FORGE_REFUSED_TWICE}"
             )
         return token, access
+
+    def _open_pull_request_reading_again(
+        self, open_with: Callable[[str], PullRequest], token: str, *, branch: str
+    ) -> PullRequest:
+        """`open_with(token)`; on a 401, read the slot again ONCE and open once more.
+
+        MEASURED 2026-10-19 (#1623): task_194ad2144eb6441c8a7c pushed its
+        branch and was then refused "could not open a pull request (401): Bad
+        credentials". `_publish_git` reads the token once and the probe, the
+        push and the pull request all use that read; only the probe re-read
+        on a 401. A refresh in between -- each one makes GitHub end the access
+        token it replaces (docs/onboarding.md §3.3 item 5) -- leaves the pull
+        request holding a dead token after the push used it.
+
+        THE RE-READ IS THE FIRST READ AGAIN, gates and all: `_forge_write_
+        refusal` (the submitter's grant, read again now) and `_git_token_
+        refusal` are asked first, and a refusal is not read past; then
+        `_git_token`, the same suffix through the same path -- a person's slot
+        from the broker, a team token from Secret Manager, never the tenant's
+        token in place of a person's. The new value lives in this frame only,
+        as the first did in the publish's.
+
+        Exactly one re-read and one more call, with no sleep: a second 401 or
+        a refused re-read raises `ForgeError` saying the branch is pushed and
+        the pull request is not open, which the publish records as
+        `pull_request_not_opened` and the finish fails the step for
+        (`_published_nothing`). Anything but a 401 (a 403 or 404 is a
+        permission, not a stale token) is raised as it came.
+        """
+        try:
+            return open_with(token)
+        except forge_mod.ForgeCredentialRejected:
+            self.log.warning(
+                "the forge refused the credential at the pull request; reading "
+                "its secret again and retrying once",
+                event="forge_token_reread", reason="pr_open_401", branch=branch,
+            )
+        unopened = f"branch {branch} pushed; pull request not opened"
+        refused = self._forge_write_refusal()
+        if refused is not None:
+            cause, reason = refused
+            self._emit_token_reread(branch, outcome=cause)
+            raise ForgeError(f"{unopened}: the re-read was refused: {cause}: {reason}")
+        refusal = self._git_token_refusal()
+        if refusal:
+            raise ForgeError(f"{unopened} (401): the token was not read again: {refusal}")
+        fresh = self._git_token()
+        if not fresh:
+            why = getattr(self, "_git_token_error", None) or "no forge credential was read"
+            self._emit_token_reread(branch, outcome="unread")
+            raise ForgeError(f"{unopened} (401): the token could not be read again: {why}")
+        self._emit_token_reread(branch, outcome="read")
+        try:
+            return open_with(fresh)
+        except forge_mod.ForgeCredentialRejected as exc:
+            self.log.error("the forge refused the re-read credential at the pull request "
+                           "as well", branch=branch)
+            raise ForgeError(f"{unopened} (401 twice): {exc}; {FORGE_REFUSED_TWICE}") from None
+
+    def _emit_token_reread(self, branch: str, *, outcome: str) -> None:
+        """A `forge_token_reread` mark on the task's events (reason `pr_open_401`).
+
+        RUNNING with `cause`, as `_emit_startup_mark` writes: the frozen
+        `EventType` has no note-only type. The branch and the outcome, never
+        the token. Never raises: the publish's answer is the real signal.
+        """
+        if self._fenced_exit or self._writes_forbidden or self._control_plane_down:
+            return
+        try:
+            self.control.emit(EventType.RUNNING, {
+                "cause": "forge_token_reread", "reason": "pr_open_401",
+                "branch": branch, "outcome": outcome,
+            })
+        except Exception as exc:  # noqa: BLE001 -- a mark is never worth a publish
+            self.log.warning("could not record the forge token re-read",
+                             error=type(exc).__name__)
 
     def _forge_suffix(self) -> str:
         """The provider suffix of this task's forge secret (contract request 54).
@@ -11766,14 +11858,14 @@ class Worker:
             )
             self.log.warning("no pull request opened: no usable agent title", refused=refused)
             return out
-        try:
+        def open_with(with_token: str) -> PullRequest:
             # Retried on an outage: a POST that timed out after GitHub made
             # the pull request is answered 422 on the next try, which
             # `open_pull_request` resolves by adopting the open one.
-            pr = forge_mod.retry_transient(
+            return forge_mod.retry_transient(
                 lambda: open_pull_request(
                     access=access,
-                    token=token,
+                    token=with_token,
                     head=branch,
                     base=access.default_branch,
                     title=title,
@@ -11798,13 +11890,24 @@ class Worker:
                 policy=self._forge_retry(),
                 what="the pull request",
             )
+
+        try:
+            # A 401 reads the slot again once and tries once more (#1623).
+            pr = self._open_pull_request_reading_again(open_with, token, branch=branch)
         except ForgeError as exc:
-            message = str(self._scrub(str(exc)[:300]))
+            message = str(self._scrub(str(exc)[:600]))
             out["published"] = True
             out["publish_reason"] = (
                 f"the branch was pushed but no pull request was opened: {message}"
             )
-            if message.startswith(PULL_REQUEST_REFUSED):
+            if message.startswith(f"branch {branch} pushed; pull request not opened"):
+                # The 401 re-read did not open it (twice refused, or the
+                # re-read refused): the step's pull request does not exist,
+                # and the finish fails it saying where the work is
+                # (`_published_nothing`). Not retried: the next attempt
+                # would read the same slot.
+                out[PULL_REQUEST_NOT_OPENED_FIELD] = message
+            elif message.startswith(PULL_REQUEST_REFUSED):
                 # The forge answered and said no (`forge.open_pull_request`'s
                 # 422, e.g. "No commits between main and swarm/..."): a fact
                 # about this branch that a retry would meet again, so the
