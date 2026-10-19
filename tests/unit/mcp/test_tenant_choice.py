@@ -333,11 +333,13 @@ def test_swarm_tenants_output_marks_the_current_tenant():
     client = _ToolClient()
     reply = json.loads(server._call(client, "swarm_tenants", {}))
     assert reply["current"] == "team-a" and reply["chosen"] is None
+    # `role` and `via` (ROLES-MCP) are null: this fake answers as an API older
+    # than workspace roles, and the listing never guesses them.
     assert reply["tenants"] == [
         {"tenant_id": "team-a", "display_name": "team-a@example.com", "current": True,
-         "is_default": True},
+         "is_default": True, "role": None, "via": None},
         {"tenant_id": "team-b", "display_name": "team-b@example.com", "current": False,
-         "is_default": False},
+         "is_default": False, "role": None, "via": None},
     ]
     assert all(method == "GET" for method, _ in client.sent), "read-only"
 
