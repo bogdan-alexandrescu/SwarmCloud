@@ -8,7 +8,7 @@ path outside the session's allowed directories, so the session fell back to
 `swarmcloud`. Held here, offline:
 
 * with a project directory known the copy is written under
-  `<project>/.claude/sc-swarmcloud-runs/` with its `.gitignore`, named
+  `<project>/.sc-swarmcloud-runs/` (PLUGIN-RUNDIR) with its `.gitignore`, named
   `SC-<slug>-<12 hex>.js`, and its meta name is the title; with none known
   (or its folder unwritable), the temp fallback, and stderr says which;
 * pruning removes old copies of both name patterns and nothing else;
@@ -70,7 +70,7 @@ def where(monkeypatch, tmp_path):
 
 def _in_project(monkeypatch, project: Path) -> Path:
     monkeypatch.setenv(launch.PROJECT_DIR_ENV, str(project))
-    return project / ".claude" / "sc-swarmcloud-runs"
+    return project / launch.REPO_RUN_DIR
 
 
 def _lines(folder: Path) -> list[dict]:
@@ -85,7 +85,7 @@ def _lines(folder: Path) -> list[dict]:
 # --------------------------------------------------------------------------
 
 
-def test_with_a_project_known_the_copy_is_written_under_its_claude_folder(where, monkeypatch, capsys):
+def test_with_a_project_known_the_copy_is_written_under_its_run_folder(where, monkeypatch, capsys):
     folder = _in_project(monkeypatch, where["project"])
     spec = {**_FIXTURE["chain"], "title": "nightly"}
     reply = json.loads(server._call(_Recorder(), "swarm_workflow_launch", {"spec": spec}))
@@ -119,7 +119,7 @@ def test_the_bridges_working_directory_is_the_project_when_it_is_a_git_work_tree
     script = launch.write_script("SC · t · 1 step", "d")
     # The session's directory itself, never the top level above it: that is
     # outside the session's allowed directories.
-    assert script.parent == session_dir / ".claude" / "sc-swarmcloud-runs"
+    assert script.parent == session_dir / launch.REPO_RUN_DIR
 
 
 def test_with_no_project_known_the_copy_goes_to_the_temp_fallback_and_says_why(where, capsys):
@@ -132,7 +132,7 @@ def test_with_no_project_known_the_copy_goes_to_the_temp_fallback_and_says_why(w
 
 def test_a_project_folder_that_cannot_be_written_falls_back_to_temp(where, monkeypatch, capsys):
     _in_project(monkeypatch, where["project"])
-    (where["project"] / ".claude").write_text("a file where the folder would go")
+    (where["project"] / launch.REPO_RUN_DIR).write_text("a file where the folder would go")
     script = launch.write_script("SC · t · 1 step", "d")
     assert script.parent == where["tmp"] / launch.RUN_DIR
     assert "could not be written" in capsys.readouterr().err
@@ -283,7 +283,7 @@ def _records(where, monkeypatch) -> None:
     _record_line(here, workflow_id="wf_theirs", kind="attach", claude_session=OTHER)
     with (here / launch.RECORD_FILE).open("a") as out:
         out.write("not json\n[1, 2]\n")
-    elsewhere = where["project"].parent / "another-project" / ".claude" / "sc-swarmcloud-runs"
+    elsewhere = where["project"].parent / "another-project" / launch.REPO_RUN_DIR
     _record_line(elsewhere, workflow_id="wf_other_project", kind="submit", claude_session=SESSION)
 
 
@@ -344,7 +344,7 @@ def _check(monkeypatch) -> dict:
 
 def test_check_keeps_this_sessions_recorded_work_and_falls_back_to_the_repository(where, monkeypatch):
     _records(where, monkeypatch)
-    _record_line(where["project"] / ".claude" / "sc-swarmcloud-runs", task_id="task_recorded_far",
+    _record_line(where["project"] / launch.REPO_RUN_DIR, task_id="task_recorded_far",
                  kind="dispatch", claude_session=SESSION)
     result = _check(monkeypatch)
     assert sorted(w["workflow_id"] for w in result["running"]["workflows"]) == [
