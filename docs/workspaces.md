@@ -1481,16 +1481,25 @@ Nothing from a command's output is shown.
 | `IDENTITY_NOT_OURS` | no | “An identity with your workspace's name already exists and carries access SwarmCloud never grants, so it was not adopted. Nothing was changed. The platform owner must look at request {request_id} before this can continue.” |
 | `WORKSPACE_ID_TAKEN` | no | “The workspace name that belongs to your account is already registered to a different identity. Nothing was changed. Ask an admin to look at request {request_id}; this needs a person, not a retry.” |
 | `WORKSPACE_NOT_APPROVED` | no | (not shown to the person: an execution for a record no admin approved. It is an `admin_audit` entry and an alert.) |
-| `DIRECTORY_CHECK_STALE` | yes | “Setting up your workspace stopped at {step}. An admin can see why in People; the reference is {request_id}.” (a group whose directory check is older than 24 hours at A1; an admin's retry re-checks it) |
-| `FRONT_DOOR_FAILED` | yes | “Setting up your workspace stopped at {step}. An admin can see why in People; the reference is {request_id}.” (a service's S2: IAP did not answer) |
-| `NAMESPACE_LABEL_MISSING` | no | “Setting up your workspace stopped at {step}. An admin can see why in People; the reference is {request_id}.” (A9: a group's or a service's namespace without its `swarm.saga.xyz/workspace` label) |
-| `SERVICE_ACCOUNT_REFUSED`, `FRONT_DOOR_OWNER` | — | (`needs_owner`, not `failed`: S1 refused the account, or IAP refused the deployer at S2. The record shows the state's own line of §1.2, and the code is on the step) |
+| `WORKSPACE_ID_TERRAFORM` | no | “The workspace name this request was given already belongs to a workspace the platform's own configuration manages. Nothing was changed, and nothing half-made can run. Ask an admin to look at request {request_id}; this needs a person, not a retry.” |
+| `DIRECTORY_CHECK_STALE` | yes | “Setting up your workspace stopped before anything was made, because the check that its group can be read is more than a day old. Nothing half-made can run: your work stays refused until every step is done. An admin can retry it, which checks the group again; the reference is {request_id}.” (a group whose directory check is older than 24 hours at A1; an admin's retry re-checks it) |
+| `SERVICE_ACCOUNT_REFUSED` | — | “Setting up your workspace stopped before anything was granted, because its service account is not one SwarmCloud can admit. Nothing half-made can run: the account stays refused until every step is done. The platform owner must look at request {request_id} before this can continue.” (`needs_owner` when S1 refuses the account, with the code on the step; `failed`, not retryable, when S1 itself fails) |
+| `FRONT_DOOR_OWNER` | — | “Setting up your workspace stopped at the front door, because admitting its service account to SwarmCloud's API is a grant only the platform owner can make. Nothing half-made can run: the account stays refused until every step is done. The platform owner must act on request {request_id} before this can continue.” (`needs_owner`: IAP refused the deployer at S2; the code is on the step) |
+| `FRONT_DOOR_FAILED` | yes | “Setting up your workspace stopped at the front door, because the step that admits its service account to SwarmCloud's API got no answer. Nothing half-made can run: the account stays refused until every step is done. The platform owner can retry it; the reference is {request_id}.” (a service's S2: IAP did not answer; only the platform owner retries a service) |
+| `NAMESPACE_LABEL_MISSING` | no | “Every step reported success, but the final check found your workspace's Kubernetes namespace without the label that ties it to your workspace. Nothing half-made can run: nothing runs in it until the label is there. Ask an admin to look at request {request_id}; this needs a person, not a retry.” (A9: a group's or a service's namespace without its `swarm.saga.xyz/workspace` label) |
+| `APPROVAL_UNSIGNED` | no | “Setting up your workspace stopped before anything was granted, because its approval does not carry SwarmCloud's signature. Nothing half-made can run, and nothing was changed. An admin, or the platform owner for a service account, must deny it and approve it again as shown; a retry does not help. The reference is {request_id}.” (`needs_owner`, written by `images/workspace-apply/entry.py` before step 1: the remedy is a fresh decision, not a Retry) |
+| `STALE_BUCKET_BINDING` | — | “Setting up your workspace stopped at Access, because its identity already holds storage access SwarmCloud does not grant. Nothing half-made can run: your work stays refused until every step is done. The platform owner must look at request {request_id} before this can continue.” (`needs_owner` at A5; the code is on the step) |
+| `SLOT_NOT_OURS` | — | “Setting up your workspace stopped at Access, because the place its GitHub connection is kept already belongs to another workspace. Nothing half-made can run: your work stays refused until every step is done. The platform owner must look at request {request_id} before this can continue.” (`needs_owner` at A6; the code is on the step) |
+| `TWIN_BOUND` | — | “Setting up your workspace stopped at Access, because its identity can already read a part of its GitHub connection no workspace may read. Nothing half-made can run: your work stays refused until every step is done. The platform owner must look at request {request_id} before this can continue.” (`needs_owner` at A6; the code is on the step) |
 
-**The five codes the workspace kinds added** (design/workspace-kinds.md §4.8) have no copy of
-their own yet. They are not keys of `apps/swarm-api/swarm_api/workspaces.py::FAILURE_COPY`, so a
-`failed` record carrying one is served the table's fallback, the sentence the API gives any code it
-does not know. That is what the rows above quote. It is a gap, filed from lane WK-DOCS, not the
-design's intent.
+**Every code the job can leave on a record has a sentence of its own**: the five the workspace
+kinds added (design/workspace-kinds.md §4.8), the signed approval's `APPROVAL_UNSIGNED`, and the
+holds. Each says what stopped, that nothing half-made can run, and who acts: the platform owner for a
+service's account and front door, an admin otherwise. A held step's code is on the step, so its
+sentence is served only where a record carries it as its `failure` (`APPROVAL_UNSIGNED` does).
+`tests/unit/control_plane/test_workspaces.py` reads the codes from `scripts/register-tenant.sh` and
+`images/workspace-apply/entry.py` and fails on one without copy. The fallback, “Setting up your workspace stopped at {step}. An admin can see why in People; the reference is {request_id}.”, is therefore
+for a malformed record, not for a code the job writes (lane WK-FAILCOPY, 2026-10-19).
 
 The copy for `needs_owner` is the state's own line in §1.2. A retry is an
 admin's **Retry** in People, which publishes the message again; the person has

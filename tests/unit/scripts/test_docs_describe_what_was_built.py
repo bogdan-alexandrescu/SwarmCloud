@@ -994,12 +994,13 @@ def test_kinds_design_records_what_every_lane_built():
     # request's own rules.
     snap = "apps/swarm-api/swarm_api/registry.py::WorkspaceRegistry"
     assert f"`{snap}`" in raw and "validate_kind_request" in _cited_symbol(*snap.split("::"))
-    # Departure 4: the five new codes have no copy of their own yet.
+    # Departure 4: the five new codes got copy of their own (WK-FAILCOPY).
     from swarm_api.workspaces import FAILURE_COPY
 
     for code in KINDS_CODES:
-        assert code not in FAILURE_COPY, f"{code} now has copy: say so in §8 and workspaces.md §4.3"
+        assert code in FAILURE_COPY, f"{code} has no copy: say so in §8 and workspaces.md §4.3"
         assert f"`{code}`" in body, code
+    assert "Lane WK-FAILCOPY" in body
     # The switch every new IAM row sits behind, and the frozen tenants map.
     assert "`enable_workspace_kinds`" in body and "`front_door_admit_role_bound`" in body
     assert "`terraform/infra/variables.tf` (`VAR.TENANTS IS FROZEN`)" in raw

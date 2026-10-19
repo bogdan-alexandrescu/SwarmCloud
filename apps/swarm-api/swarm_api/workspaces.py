@@ -259,6 +259,61 @@ FAILURE_COPY: Mapping[str, str] = {
         "The workspace name that belongs to your account is already registered to a "
         "different identity. Nothing was changed. Ask an admin to look at request "
         "{request_id}; this needs a person, not a retry."),
+    "WORKSPACE_ID_TERRAFORM": (
+        "The workspace name this request was given already belongs to a workspace the "
+        "platform's own configuration manages. Nothing was changed, and nothing half-made "
+        "can run. Ask an admin to look at request {request_id}; this needs a person, not a "
+        "retry."),
+    # The personal steps' holds (`needs_owner`, the code on the step): what the
+    # job found was made by someone else, and undoing it is the owner's call.
+    "STALE_BUCKET_BINDING": (
+        "Setting up your workspace stopped at Access, because its identity already holds "
+        "storage access SwarmCloud does not grant. Nothing half-made can run: your work "
+        "stays refused until every step is done. The platform owner must look at request "
+        "{request_id} before this can continue."),
+    "SLOT_NOT_OURS": (
+        "Setting up your workspace stopped at Access, because the place its GitHub "
+        "connection is kept already belongs to another workspace. Nothing half-made can "
+        "run: your work stays refused until every step is done. The platform owner must "
+        "look at request {request_id} before this can continue."),
+    "TWIN_BOUND": (
+        "Setting up your workspace stopped at Access, because its identity can already "
+        "read a part of its GitHub connection no workspace may read. Nothing half-made can "
+        "run: your work stays refused until every step is done. The platform owner must "
+        "look at request {request_id} before this can continue."),
+    # The codes workspace kinds added (design/workspace-kinds.md §4.8) and the
+    # signed approval's. A service's account and front door are the platform
+    # owner's to act on (Q2 (a): only the owner approves or retries a service).
+    "DIRECTORY_CHECK_STALE": (
+        "Setting up your workspace stopped before anything was made, because the check that "
+        "its group can be read is more than a day old. Nothing half-made can run: your work "
+        "stays refused until every step is done. An admin can retry it, which checks the "
+        "group again; the reference is {request_id}."),
+    "SERVICE_ACCOUNT_REFUSED": (
+        "Setting up your workspace stopped before anything was granted, because its service "
+        "account is not one SwarmCloud can admit. Nothing half-made can run: the account "
+        "stays refused until every step is done. The platform owner must look at request "
+        "{request_id} before this can continue."),
+    "FRONT_DOOR_OWNER": (
+        "Setting up your workspace stopped at the front door, because admitting its service "
+        "account to SwarmCloud's API is a grant only the platform owner can make. Nothing "
+        "half-made can run: the account stays refused until every step is done. The "
+        "platform owner must act on request {request_id} before this can continue."),
+    "FRONT_DOOR_FAILED": (
+        "Setting up your workspace stopped at the front door, because the step that admits "
+        "its service account to SwarmCloud's API got no answer. Nothing half-made can run: "
+        "the account stays refused until every step is done. The platform owner can retry "
+        "it; the reference is {request_id}."),
+    "NAMESPACE_LABEL_MISSING": (
+        "Every step reported success, but the final check found your workspace's Kubernetes "
+        "namespace without the label that ties it to your workspace. Nothing half-made can "
+        "run: nothing runs in it until the label is there. Ask an admin to look at request "
+        "{request_id}; this needs a person, not a retry."),
+    "APPROVAL_UNSIGNED": (
+        "Setting up your workspace stopped before anything was granted, because its approval "
+        "does not carry SwarmCloud's signature. Nothing half-made can run, and nothing was "
+        "changed. An admin, or the platform owner for a service account, must deny it and "
+        "approve it again as shown; a retry does not help. The reference is {request_id}."),
 }
 #: A code the table does not know (a later lane's, or a malformed record):
 #: still a sentence, never the raw code alone.
