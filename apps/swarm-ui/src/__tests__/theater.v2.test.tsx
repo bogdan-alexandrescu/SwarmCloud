@@ -278,6 +278,7 @@ describe('B4: the DEVICE column is a vertical list, nothing clipped', () => {
     expect(chips.map((c) => [c.textContent, c.getAttribute('data-outline')])).toEqual([
       ['Desktop', 'desktop'],
       ['iPhone 15', 'phone'],
+      ['Phone 390', 'phone'],
       ['Pixel 8', 'phone'],
       ['iPhone SE', 'phone'],
       ['iPad', 'tablet'],

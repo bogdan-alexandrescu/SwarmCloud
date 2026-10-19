@@ -760,6 +760,114 @@ def test_a_device_is_switched_by_name_only(tmp_path, db, trace, gate):
     assert all(args.get("preset") in ("iphone-15", "393x852") for op, args in gate.ops if op == "device")
 
 
+def test_the_new_phone_preset_is_passed_to_the_gate_by_name(tmp_path, db, trace, gate):
+    path, routes, work = _bare(tmp_path, db, trace, gate)
+    devices = work / handoff_mod.SPOOL_DIR_NAME / "devices"
+    (devices / "d1.json").write_text(json.dumps({"preset": "phone-390"}))
+    path.tick(work, lambda: db.doc("tasks/task_1"))
+    assert _answer(work, "d1") == {"request_id": "d1", "outcome": "applied", "exit": 0,
+                                   "preset": "phone-390"}
+    assert ("device", {"preset": "phone-390"}) in gate.ops
+    assert "phone-390" in handoff_mod.AGENT_GUIDE
+
+
+# --------------------------------------------------------------------------
+# QA-KIT: the theme, through the gate, on a live attempt only
+# --------------------------------------------------------------------------
+
+
+def test_a_theme_is_set_through_the_gate_by_name_only(tmp_path, db, trace, gate):
+    path, routes, work = _bare(tmp_path, db, trace, gate)
+    themes = work / handoff_mod.SPOOL_DIR_NAME / "themes"
+    assert themes.is_dir(), "prepare makes the theme spool beside the device one"
+    (themes / "t1.json").write_text(json.dumps({"theme": "dark"}))
+    (themes / "t2.json").write_text(json.dumps({"theme": "sepia"}))
+    (themes / "t3.json").write_text(json.dumps({"media": "print"}))
+    path.tick(work, lambda: db.doc("tasks/task_1"))
+    assert _answer(work, "t1") == {"request_id": "t1", "outcome": "applied", "exit": 0, "theme": "dark"}
+    assert _answer(work, "t2")["code"] == "theme_invalid"
+    assert _answer(work, "t3")["code"] == "theme_invalid"
+    assert [args for op, args in gate.ops if op == "theme"] == [{"theme": "dark"}]
+    assert not list(themes.iterdir()), "every request is consumed"
+    # Recorded as a device change is: the worker's log names the theme.
+    assert ("browser theme set", {"theme": "dark"}) in path.log.lines
+
+
+def test_a_theme_the_gate_refuses_is_refused_to_the_agent(tmp_path, db, trace, gate):
+    path, routes, work = _bare(tmp_path, db, trace, gate)
+    gate.lose_on = "theme"
+    (work / handoff_mod.SPOOL_DIR_NAME / "themes" / "t1.json").write_text(json.dumps({"theme": "light"}))
+    path.tick(work, lambda: db.doc("tasks/task_1"))
+    answer = _answer(work, "t1")
+    assert answer["outcome"] == "refused" and answer["exit"] == 5
+    assert answer["code"] == handoff_mod.GATE_UNAVAILABLE
+
+
+def test_a_theme_is_refused_on_an_attempt_without_the_live_browser(tmp_path, db, trace, gate):
+    gate.refuse_registration = True
+    children = SimpleNamespace(_key=children_mod.AttemptKey(), _api=FakeLiveRoutes(db, trace), unavailable=None)
+    cfg = SimpleNamespace(tenant_id="eng", task_id="task_1", attempt_id="att_1", lease_id="lease_1",
+                          generation=1, runner_profile="mock")
+    path = handoff_mod.HandoffPath(cfg, logger=_Log(), memory=MemoryProtection(PROTECTED, "t"),
+                                   children=children, live=True, gate_client=lambda p: gate,
+                                   environ={"SWARM_GATE_CTL": CTL})
+    path.setup()
+    assert not path.offered
+    work = tmp_path / "work"
+    work.mkdir()
+    path.prepare(work)
+    (work / handoff_mod.SPOOL_DIR_NAME / "themes" / "t1.json").write_text(json.dumps({"theme": "dark"}))
+    path.tick(work, lambda: db.doc("tasks/task_1"))
+    answer = _answer(work, "t1")
+    assert answer["outcome"] == "refused" and answer["exit"] == 5
+    assert answer["code"] == handoff_mod.GATE_UNAVAILABLE
+    assert "theme" not in gate.names()
+
+
+def test_the_theme_command_writes_a_request_and_prints_the_workers_answer(tmp_path, monkeypatch):
+    cmd = _command_module()
+    root = tmp_path / "spool"
+    (root / "responses").mkdir(parents=True)
+    monkeypatch.setenv("SWARM_HANDOFF", str(root))
+    real_await = cmd._await
+    written: list[dict[str, Any]] = []
+
+    def answer(spool, request_id, seconds, poll):
+        written.append(json.loads((spool / "themes" / f"{request_id}.json").read_text()))
+        (spool / "responses" / f"{request_id}.json").write_text(json.dumps(
+            {"request_id": request_id, "outcome": "applied", "exit": 0, "theme": "dark"}))
+        return real_await(spool, request_id, 0.0, poll)
+
+    monkeypatch.setattr(cmd, "_await", answer)
+    assert cmd.main(["theme", "dark"]) == 0
+    assert written == [{"theme": "dark"}]
+    with pytest.raises(SystemExit):
+        cmd.main(["theme", "sepia"])  # argparse refuses a value off the list
+
+
+def test_the_theme_command_is_refused_without_a_live_browser(tmp_path, monkeypatch, capsys):
+    cmd = _command_module()
+    monkeypatch.delenv("SWARM_HANDOFF", raising=False)
+    assert cmd.main(["theme", "dark"]) == 5
+    assert json.loads(capsys.readouterr().out.splitlines()[-1])["code"] == "no_live_path"
+    root = tmp_path / "spool"
+    root.mkdir()
+    (root / "unavailable").write_text(json.dumps({"code": handoff_mod.GATE_UNAVAILABLE}))
+    monkeypatch.setenv("SWARM_HANDOFF", str(root))
+    assert cmd.main(["theme", "dark"]) == 5
+    assert json.loads(capsys.readouterr().out.splitlines()[-1])["code"] == handoff_mod.GATE_UNAVAILABLE
+    assert not (root / "themes").exists(), "nothing is written for the worker to apply"
+
+
+def test_the_theme_list_is_the_same_in_the_command_the_worker_and_the_gate():
+    from agent_worker.livegate.presets import THEMES
+
+    cmd = _command_module()
+    assert tuple(cmd.THEMES) == tuple(handoff_mod.THEMES) == tuple(THEMES) == ("dark", "light", "system")
+    assert "theme" in handoff_mod.GATE_OPS
+    assert "swarm-handoff theme" in handoff_mod.AGENT_GUIDE
+
+
 def test_a_refused_registration_leaves_no_live_path(tmp_path, db, trace, gate):
     gate.refuse_registration = True
     children = SimpleNamespace(_key=children_mod.AttemptKey(), _api=FakeLiveRoutes(db, trace), unavailable=None)
