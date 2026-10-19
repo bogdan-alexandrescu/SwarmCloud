@@ -99,6 +99,17 @@ variable "create_alerts" {
   default     = true
 }
 
+variable "tenant_ids" {
+  description = "The keys of terraform/infra's var.tenants. workspace_alerts.tf pages when swarm-workspace-deployer writes IAM on any of their -git or -git-refresh secrets (docs/design/workspace-kinds.md §4.5). Empty by default so the module's other callers need not pass it; empty creates no such alert, as there is no slot to name."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for t in var.tenant_ids : can(regex("^[a-z0-9-]+$", t))])
+    error_message = "tenant_ids are tenant keys, [a-z0-9-] only: each is written into a Logging regex unescaped."
+  }
+}
+
 variable "labels" {
   type = map(string)
 }

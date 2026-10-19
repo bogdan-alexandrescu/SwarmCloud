@@ -656,6 +656,9 @@ module "monitoring" {
   extra_notification_channels = var.extra_notification_channels
   create_alerts               = var.create_alerts
 
+  # The declared tenants, whose forge slots the workspace job must never bind.
+  tenant_ids = local.tenant_ids
+
   labels = local.labels
 
   depends_on = [module.project_services]
