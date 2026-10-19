@@ -24,7 +24,7 @@ import type {
   CheckpointsPage, TaskLogs,
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
   AdminPool, AttemptRow, AttemptsPage, TaskEventsPage, TaskAccount, LeaseHeartbeat, LeaseHeartbeatPage, LeasePage, LeaseRow, Pool, ProfileAdmission, QuotaState, ResourceClassSpec,
-  ModelPrice, ModelPriceChange, ModelPriceRate, PlatformSettings,
+  ModelPrice, ModelPriceChange, ModelPriceRate, ModelPriceTable, ModelPriceTier, PlatformSettings,
   RunnerInputContract, Runtime, TaskState,
   TaskWindow, Tenant,
   Workflow, WorkflowPage,
@@ -3141,10 +3141,10 @@ export async function setPoolLimit(poolName: string, limit: number): Promise<Res
 // --------------------------------------------------------------------------
 // Platform settings: the model price table (#1481)
 // --------------------------------------------------------------------------
-// `GET/PUT /v1/admin/settings` (`Store.get_platform_settings`). Both are
-// admin-gated, so a non-admin's 403 is information, not a failure. No fixture
-// branch, as Admin › Pool limits' other settings card has none: the fixture
-// build serves no platform settings.
+// `GET /v1/settings/model-prices` serves the table to every signed-in member
+// (PRICES-FOLLOWUP); `PUT /v1/admin/settings` (`Store.set_platform_settings`)
+// is admin-only and writes it. No fixture branch, as Admin › Pool limits'
+// other settings card has none: the fixture build serves no platform settings.
 //
 // NORMALISE OR DROP, NEVER GUESS. An entry with a rate that is not a finite
 // number of 0 or more, or with no `as_of`, is dropped here exactly as
@@ -3152,22 +3152,55 @@ export async function setPoolLimit(poolName: string, limit: number): Promise<Res
 // reported", which is what swarm-api prices it at. A zero in its place would
 // be a figure nobody set.
 
-function normModelPrice(raw: unknown): ModelPrice | null {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
-  const r = raw as Record<string, unknown>
+function normRates(r: Record<string, unknown>): Record<ModelPriceRate, number> | null {
   const rates: Partial<Record<ModelPriceRate, number>> = {}
   for (const k of MODEL_PRICE_RATES) {
     const v = r[k]
     if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return null
     rates[k] = v
   }
+  return rates as Record<ModelPriceRate, number>
+}
+
+/**
+ * A tiered entry's tiers, or null when they are not tiers: two or more, each
+ * with its four rates, ceilings that rise, and no ceiling on the last alone.
+ * A malformed list drops the WHOLE entry, as `modelprices.entry` does: its
+ * first tier alone would under-price every prompt past its ceiling.
+ */
+function normTiers(raw: unknown): ModelPriceTier[] | null {
+  if (!Array.isArray(raw) || raw.length < 2) return null
+  const out: ModelPriceTier[] = []
+  for (const [i, t] of raw.entries()) {
+    if (typeof t !== 'object' || t === null || Array.isArray(t)) return null
+    const r = t as Record<string, unknown>
+    const rates = normRates(r)
+    const up = r.up_to_prompt_tokens ?? null
+    const last = i === raw.length - 1
+    if (rates === null) return null
+    if (last ? up !== null : typeof up !== 'number' || !Number.isInteger(up) || up < 1) return null
+    const before = out[out.length - 1]?.up_to_prompt_tokens
+    if (!last && before !== undefined && before !== null && (up as number) <= before) return null
+    out.push({ ...rates, up_to_prompt_tokens: up as number | null })
+  }
+  return out
+}
+
+function normModelPrice(raw: unknown): ModelPrice | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
+  const r = raw as Record<string, unknown>
+  const rates = normRates(r)
+  if (rates === null) return null
   if (r.currency !== 'USD' || typeof r.source !== 'string' || typeof r.as_of !== 'string') return null
+  const tiers = r.tiers === undefined || r.tiers === null ? undefined : normTiers(r.tiers)
+  if (tiers === null) return null
   return {
-    ...(rates as Record<ModelPriceRate, number>),
+    ...rates,
     currency: 'USD',
     source: r.source,
     as_of: r.as_of,
     updated_by: typeof r.updated_by === 'string' ? r.updated_by : null,
+    ...(tiers === undefined ? {} : { tiers }),
   }
 }
 
@@ -3185,6 +3218,19 @@ export function normModelPrices(raw: unknown): Record<string, ModelPrice> {
 function normPlatformSettings(raw: unknown): PlatformSettings {
   const s = raw as PlatformSettings
   return { ...s, model_prices: normModelPrices((raw as { model_prices?: unknown } | null)?.model_prices) }
+}
+
+/**
+ * `GET /v1/settings/model-prices`: the price table for every signed-in
+ * member, admin or not, normalised as above. The console's price table reads
+ * this, so a non-admin sees the figures read-only.
+ */
+export async function loadModelPrices(): Promise<Result<ModelPriceTable>> {
+  const r = await read<unknown>(route('/v1/settings/model-prices'), () => false)
+  if (r.status === 'ok' || r.status === 'stale') {
+    return { ...r, data: { model_prices: normModelPrices((r.data as { model_prices?: unknown } | null)?.model_prices) } }
+  }
+  return r as Result<ModelPriceTable>
 }
 
 /** `GET /v1/admin/settings`, with its price table normalised. */

@@ -630,11 +630,25 @@ export interface ModelPrice {
   /** YYYY-MM-DD. */
   as_of: string
   updated_by: string | null
+  /**
+   * A model priced by prompt length (Haiku 5.5), its tiers in rising order:
+   * the first at the four rates above, the last with no ceiling. Absent for
+   * a model priced at one set of rates (`modelprices.tiers_problem`).
+   */
+  tiers?: ModelPriceTier[]
 }
 
 /** The four per-million-token rates of a `ModelPrice`, in the order the table draws them. */
 export const MODEL_PRICE_RATES = ['input', 'output', 'cache_read', 'cache_write'] as const
 export type ModelPriceRate = (typeof MODEL_PRICE_RATES)[number]
+
+/** One tier of `ModelPrice.tiers`: the rates of a prompt up to `up_to_prompt_tokens` tokens (null: no ceiling). */
+export type ModelPriceTier = Record<ModelPriceRate, number> & { up_to_prompt_tokens: number | null }
+
+/** `GET /v1/settings/model-prices`: the price table, read-only, for every signed-in member. */
+export interface ModelPriceTable {
+  model_prices: Record<string, ModelPrice>
+}
 
 /**
  * What `PUT /v1/admin/settings` takes for one model (`schemas.ModelPriceRequest`).
