@@ -101,6 +101,6 @@ describe('Approvals carry decided_by_name and approver_names', () => {
     const api = await live(() => ({ approvals: [{ ...item, state: 'pending', approvers: ['ada@example.test'], approver_names: ['Ada'] }] }))
     const r = await api.loadApprovals()
     if (r.status !== 'ok') throw new Error(r.status)
-    expect(r.data.approvals[0].approver_names).toEqual(['Ada'])
+    expect(r.data.approvals.map((a) => a.approver_names)).toEqual([['Ada']])
   })
 })
