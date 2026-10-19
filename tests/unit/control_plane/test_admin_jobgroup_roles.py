@@ -250,3 +250,23 @@ def test_the_routes_read_the_authenticators_cached_registry(client, db):
     put = call(client, "PUT", "/v1/admin/workspaces/research/roles/default", {"role": "viewer"})
     assert put.status_code == 200, put.text
     assert "workspaces" not in db.asked
+
+
+def test_an_unreadable_registry_is_503_and_writes_nothing(
+        client, db):
+    # Never read, so there is no last good read to serve: the registry is
+    # `RegistryUnavailable`, which is 503, never a guessed 404 or a write.
+    db.broken.add("workspaces")
+    research = call(client, "PUT", "/v1/admin/workspaces/research/roles/default",
+                    {"role": "viewer"})
+    assert research.status_code == 503, research.text
+    assert grants(db) == []
+
+
+def test_a_job_made_id_another_principal_already_holds_is_409_and_writes_nothing(client, db):
+    db.document("tenants/research").set({"tenant_id": "research",
+                                         "principal": "research@partner.com", "kind": "group"})
+    response = call(client, "PUT", "/v1/admin/workspaces/research/roles/person",
+                    {"email": "bob@saga.xyz", "role": "admin"})
+    assert response.status_code == 409, response.text
+    assert grants(db) == []
