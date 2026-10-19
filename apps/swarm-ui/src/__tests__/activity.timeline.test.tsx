@@ -1111,7 +1111,7 @@ describe('the eight cards', () => {
     const onView = vi.fn()
     const root = await timeline(ledgerFixture(), { view: '', onView })
     const seg = card(root, /^Reliability/).querySelector<HTMLElement>('.ol-group')!
-    expect([...seg.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['runner profile', 'person'])
+    expect([...seg.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['runner profile', 'person', 'model', 'model class'])
     fireEvent.click(within(seg).getByRole('button', { name: 'person' }))
     expect(onView).toHaveBeenLastCalledWith('group=submitted_by')
   })

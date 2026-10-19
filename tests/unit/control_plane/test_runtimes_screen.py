@@ -402,15 +402,10 @@ def test_the_fixture_exercises_the_branches_live_data_never_would(client):
 
 #: Fields the route serves ahead of the screen, each with the lane that renders
 #: it. An entry is a decision with an end, as `UNDECLARED_BY_DESIGN` in
-#: test_ui_api_field_contract.py: lane MODEL-API (#1435) serves each profile's
-#: model classes so the plugin and callers can read them, and the "Model
-#: classes" column is lane MODEL-UI's (docs/design/model-per-step.md §4.8, §6),
-#: which removes these three when Runtimes.tsx reads them.
-SERVED_AHEAD_OF_THE_SCREEN = {
-    "model_classes": "the profile's model classes (#1435); rendered by lane MODEL-UI",
-    "default_model_class": "the class a step naming none runs (#1435); rendered by lane MODEL-UI",
-    "models": "each class's pinned model ID (#1435); rendered by lane MODEL-UI",
-}
+#: test_ui_api_field_contract.py. Empty: lane MODEL-UI (#1435) renders the
+#: three model-class fields lane MODEL-API served ahead of it
+#: (docs/design/model-per-step.md §4.8), and removed them from here.
+SERVED_AHEAD_OF_THE_SCREEN: dict[str, str] = {}
 
 
 def test_the_screen_reads_every_field_the_route_publishes():

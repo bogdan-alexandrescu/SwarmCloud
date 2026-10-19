@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
-import { loadCapacity, loadStats } from './api'
+import { loadCapacity, loadModelClasses, loadStats, type ModelClassOffer } from './api'
 import {
   AdditionalRepositoriesPicker,
   DispatchChoice,
@@ -32,7 +32,7 @@ import {
 import { workflowHref } from './agentlist'
 import { AWAIT_INPUT_PROFILE, DEFAULT_ARTIFACT, FIRST_AWAIT_DRAFT, MAX_FILES, awaitBlockOf, type AwaitDraft, type AwaitForm } from './awaitInput'
 import { WorkspaceRefusalBanner, workspaceRefusal } from './WorkspaceRefusal'
-import { RunnerSelect, StepRunnerFacts, useProviderKeys, type ProviderKeys } from './RunnerPicker'
+import { ModelClassSelect, RunnerSelect, StepRunnerFacts, sentModelClass, useProviderKeys, type ProviderKeys } from './RunnerPicker'
 import { Screen, timeAgo, useSubmitAs } from './Shell'
 import {
   InputFields,
@@ -104,10 +104,18 @@ interface FormSources {
   /** `limits` from /v1/stats, or null when that read did not produce them. */
   limits: Record<string, number> | null
   limitsDetail: string
+  /**
+   * What each runner's step may name as `model_class`, from `/v1/runtimes`
+   * (#1435), or null when that read did not produce them. Null hides every
+   * step's class select, and each step then runs its runner's default -- the
+   * request a form without the select sends. A failed read never blocks the
+   * form: the runners themselves come from the capacity read above.
+   */
+  classes: Record<string, ModelClassOffer> | null
 }
 
 async function loadSubmitForm(): Promise<Result<FormSources>> {
-  const [cap, stats] = await Promise.all([loadCapacity(), loadStats()])
+  const [cap, stats, offers] = await Promise.all([loadCapacity(), loadStats(), loadModelClasses()])
   // The catalogue IS the form: a caller picks a runner_profile by name, so a failed
   // read here must not degrade into a text box to type one into.
   if (cap.status === 'loading' || cap.status === 'empty' || cap.status === 'error') return cap
@@ -119,7 +127,8 @@ async function loadSubmitForm(): Promise<Result<FormSources>> {
   // -- not that it is 50 -- so in that case nothing caps the form.
   const limits = stats.status === 'ok' || stats.status === 'stale' ? stats.data.limits : null
   const detail = stats.status === 'error' ? stats.error.message : 'The stats read returned no limits.'
-  const data: FormSources = { profiles, limits, limitsDetail: detail }
+  const classes = offers.status === 'ok' || offers.status === 'stale' ? offers.data : null
+  const data: FormSources = { profiles, limits, limitsDetail: detail, classes }
   return cap.status === 'stale'
     ? { status: 'stale', data, fetchedAt: cap.fetchedAt, error: cap.error }
     : { status: 'ok', data, fetchedAt: cap.fetchedAt, serverAt: cap.serverAt }
@@ -258,6 +267,9 @@ interface StepDraft {
    *  dependency's position, so reordering or removing a step cannot silently
    *  re-point a filename at a different upstream. */
   from: Record<string, string>
+  /** The model class somebody picked for this step, by name (#1435); absent
+   *  or null is the runner's default, and is sent as nothing (`sentModelClass`). */
+  modelClass?: string | null
   /** The `await_input` block of an `await-input` step (human-steps.md §4.1);
    *  absent until one is edited, and read as `FIRST_AWAIT_DRAFT` then. Sent
    *  only on a step whose runner is `await-input`. */
@@ -324,6 +336,7 @@ function planOf(
   byName: ReadonlyMap<string, RunnerProfile>,
   inputLimit: number | null,
   mcpNamesOf: (s: StepDraft) => string[],
+  classes: Readonly<Record<string, ModelClassOffer>> | null = null,
 ): { problems: StepProblem[]; body: Array<Record<string, unknown>> } {
   const problems: StepProblem[] = []
   const body: Array<Record<string, unknown>> = []
@@ -410,6 +423,7 @@ function planOf(
       }
       awaitBlock = built.block
     }
+    const modelClass = sentModelClass(classes?.[s.profile], s.modelClass)
     body.push({
       step_id: id,
       runner_profile: s.profile,
@@ -424,6 +438,9 @@ function planOf(
       // the runner still has to read.
       ...(Object.keys(staged).length === 0 ? {} : { input_from: staged }),
       ...(awaitBlock === null ? {} : { await_input: awaitBlock }),
+      // A CLASS NAME, never a model ID (invariant 10), and only one somebody
+      // chose over the runner's default (#1435).
+      ...(modelClass === undefined ? {} : { model_class: modelClass }),
     })
   }
   return { problems, body }
@@ -643,7 +660,7 @@ function Form({ sources }: { sources: FormSources }) {
   // THE LIVE PLAN. What disables the button, titles the send panel and lists
   // the steps that stop it -- the same pass `send` makes, so what the panel
   // says and what the click does cannot disagree.
-  const plan = planOf(steps, byName, inputLimit, mcpNamesOf)
+  const plan = planOf(steps, byName, inputLimit, mcpNamesOf, sources.classes)
   // THE REPOSITORY THE CLICK PUSHES TO (VQA V139), as on the task form: the
   // trimmed URL, named in the panel whenever the strategy pushes. A push with
   // nowhere to push is refused by the API at either scale
@@ -735,7 +752,7 @@ function Form({ sources }: { sources: FormSources }) {
     // button is disabled while a problem stands, so this branch should not be
     // reachable; it stays because "the form refuses before it posts" is the
     // invariant, and a disabled attribute is only one way of keeping it.
-    const { problems, body } = planOf(steps, byName, inputLimit, mcpNamesOf)
+    const { problems, body } = planOf(steps, byName, inputLimit, mcpNamesOf, sources.classes)
     if (problems.length > 0) { setSub({ kind: 'not_sent', problems }); return }
     // ONE POST PER CLICK (live QA SUB-1, the task form's defect): nothing is
     // sent while a request is in flight, or while the form still says exactly
@@ -825,7 +842,7 @@ function Form({ sources }: { sources: FormSources }) {
               </div>
               <div className="wfb-steps">
                 {inStage.map((s) => (
-                  <StepCard key={s.key} step={s} steps={steps} profiles={sources.profiles} keys={keys}
+                  <StepCard key={s.key} step={s} steps={steps} profiles={sources.profiles} keys={keys} classes={sources.classes}
                     required={requiredInputKeys(byName.get(s.profile))}
                     nameProblem={plan.problems.find((p) => p.key === s.key && p.kind === 'name')?.message ?? null}
                     sizeProblem={plan.problems.find((p) => p.key === s.key && p.kind === 'size')?.message ?? null}
@@ -1018,12 +1035,14 @@ interface StepMcp {
   onLifetime: (name: string, seconds: number) => void
 }
 
-function StepCard({ step, steps, profiles, keys, required, nameProblem, sizeProblem, refused, removable, mcp, onChange, onRemove }: {
+function StepCard({ step, steps, profiles, keys, classes, required, nameProblem, sizeProblem, refused, removable, mcp, onChange, onRemove }: {
   step: StepDraft
   steps: StepDraft[]
   /** The whole catalogue: a disabled runner is drawn, refused, with its reason. */
   profiles: Array<[string, RunnerProfile]>
   keys: ProviderKeys
+  /** Each runner's model classes (`FormSources.classes`); null when not read. */
+  classes: Record<string, ModelClassOffer> | null
   /** What this step's runner refuses to start without, or null when this API
    *  did not say. Computed by the form so the live warning here and the
    *  refusal in `send` read the same answer. */
@@ -1063,6 +1082,8 @@ function StepCard({ step, steps, profiles, keys, required, nameProblem, sizeProb
     input: seedFields(step.input, requiredInputKeys(profiles.find(([n]) => n === profile)?.[1])),
     // Another runner is offered other servers, as on the task form.
     mcp: [],
+    // A class the new runner does not accept is not carried over to it.
+    modelClass: step.modelClass != null && classes?.[profile]?.model_classes.includes(step.modelClass) ? step.modelClass : null,
   })
 
   return (
@@ -1087,6 +1108,14 @@ function StepCard({ step, steps, profiles, keys, required, nameProblem, sizeProb
       <RunnerSelect id={stepRunnerId(step.key)} label={`${step.id} runner`}
         profiles={profiles} chosen={step.profile} onPick={retitle} />
       {chosen && <StepRunnerFacts profile={chosen[1]} keys={keys} />}
+      {/* THE STEP'S MODEL CLASS, BY NAME (#1435): only the classes this
+          runner accepts, starting on its default; not drawn for a runner
+          that runs no Claude model. */}
+      {chosen && (
+        <ModelClassSelect id={`wfb-${step.key}-model-class`} label={`${step.id} model class`}
+          offer={classes?.[step.profile]} value={step.modelClass ?? null}
+          onPick={(modelClass) => onChange({ ...step, modelClass })} />
+      )}
 
       {/* A MISSING REQUIRED KEY IS SAID AT ITS FIELD, by `InputFields`, once
           the field has been left (TS-15). This card's own copy of it -- "Not

@@ -671,6 +671,14 @@ export interface Task {
   // output, latest_checkpoint for the attempt timeline, next_eligible_at for
   // parked work.
   model: string | null
+  /**
+   * The model class the task runs (contract request 104, #1435), RESOLVED:
+   * the stored class, or its profile's default when none was stored, which
+   * `model_class_defaulted` then says. Null on a profile that runs no Claude
+   * model. OPTIONAL: an older API does not send it.
+   */
+  model_class?: string | null
+  model_class_defaulted?: boolean
   timeout_seconds: number | null
   /** When a PARKED task becomes eligible again. Null unless it is parked. */
   next_eligible_at: string | null
@@ -1484,6 +1492,28 @@ export function usageOf(task: Task): Record<string, number | string[]> | null {
   return usage && typeof usage === 'object' ? usage : null
 }
 
+/**
+ * The models the CLI's stream reports, when the pinned one is NOT among them;
+ * null otherwise (docs/design/model-per-step.md §4.6, #1435).
+ *
+ * The worker's own rule (`lifecycle.py::_note_model_mismatch`), so the console
+ * and the worker's `model_mismatch` log never disagree: the pin missing from
+ * `usage.models` is a mismatch, and another model BESIDE the pin is not -- the
+ * CLI also reports the small model it runs for its own housekeeping. A `[...]`
+ * context suffix (`<model>[1m]`) is the same model. Null when either side was
+ * not recorded: an absent record is not a disagreement.
+ *
+ * `usage` is the task's `result_summary`, written once at the end, so it is
+ * the LAST attempt's stream and is compared with that attempt only.
+ */
+export function modelMismatch(pinned: string | null | undefined, task: Task): string[] | null {
+  if (typeof pinned !== 'string' || pinned === '') return null
+  const models = usageOf(task)?.['models']
+  if (!Array.isArray(models) || models.length === 0) return null
+  const reported = models.map(String).sort()
+  return reported.some((m) => m.split('[', 1)[0] === pinned) ? null : reported
+}
+
 /** `GET /v1/tenants/me`, routes/tenants.py:24-38. */
 export interface Me {
   tenant: Tenant
@@ -1958,14 +1988,17 @@ export interface Runtime {
   /**
    * The model classes a step on this profile may send as `model_class`, BY
    * NAME (docs/design/model-per-step.md §4.4, #1435). `[]` on a profile that
-   * runs no Claude model. Optional only until lane MODEL-UI renders them.
+   * runs no Claude model. Runtimes draws them as chips, and the workflow form
+   * offers exactly these in a step's class select. OPTIONAL, all three: an
+   * API older than the fields sends none, and is read as offering no class.
    */
   model_classes?: string[]
   /** What a step naming no class runs; null when `model_classes` is empty. */
   default_model_class?: string | null
   /**
    * Class -> the model ID it runs, from the deployment's terraform pin. `{}`
-   * on a classless profile, and on a deployment that pins none yet.
+   * on a classless profile, and on a deployment that pins none yet -- where
+   * only the default may be named (`model_class_not_yet_available`).
    */
   models?: Record<string, string>
   /**
@@ -3514,6 +3547,9 @@ export interface WorkflowStep {
   input_from: Record<string, string>
   timeout_seconds?: number | null
   task_id?: string | null
+  /** The step's model class, resolved as its task's is (`Task.model_class`, #1435). Absent: an older API. */
+  model_class?: string | null
+  model_class_defaulted?: boolean
   /**
    * The step's input, MASKED by its TASK's masker (the PR #229 review), so a
    * literal the workflow's metadata names is masked here as on the task. Null
