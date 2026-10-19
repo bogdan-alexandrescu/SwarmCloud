@@ -2180,6 +2180,10 @@ function TenantPicker({
       </span>
       {choices.map((c) => {
         const on = c.tenant_id === current
+        // ONE LABEL, IN THE GRID'S THIRD COLUMN (PICKER-LABELS): two `.sk-ck`
+        // spans wrapped the second into the next grid row's 24px column, over
+        // the tenant id -- "defaultu-bogdan" (live, 2026-10-19).
+        const marks = [on ? 'current' : null, c.is_default ? 'default' : null].filter((m) => m !== null)
         return (
           <button
             key={c.tenant_id}
@@ -2193,8 +2197,7 @@ function TenantPicker({
               {initialOf(c.display_name)}
             </span>
             <b>{c.display_name}</b>
-            {on && <span className="sk-ck">current</span>}
-            {c.is_default && <span className="sk-ck">default</span>}
+            {marks.length > 0 && <span className="sk-ck">{marks.join(' · ')}</span>}
             <small>{c.tenant_id}</small>
           </button>
         )
