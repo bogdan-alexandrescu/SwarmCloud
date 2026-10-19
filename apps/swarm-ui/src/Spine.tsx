@@ -3,9 +3,9 @@
  * Variant 2, spine.py).
  *
  *   SPINE   84px, deep blue (#0b3a7a -> #06101e), THE SAME IN BOTH THEMES. The
- *           Hive in its 44px full cut (white -> #7dd3fc), Submit (the sky
- *           button), Overview, Work, Capacity, Admin; at its foot Help, API
- *           reads and the avatar.
+ *           Hive in its 44px full cut (white -> #7dd3fc), Profile (the
+ *           person's avatar), Submit (the sky button), Overview, Work,
+ *           Automate, Capacity, Admin; at its foot Help and API reads.
  *   PANEL   236px. The wordmark and the environment pill, the tenant block,
  *           the open section's pages, the capacity meter and the user footer.
  *
@@ -39,10 +39,10 @@ import { AppTakeover, OfflineBanner, wholeAppFault, useOnline } from './AppState
 import { feedData, notificationsSnapshot, subscribeNotifications } from './notificationFeed'
 import { firstName } from './PersonName'
 
-export type SpineSection = 'overview' | 'work' | 'automate' | 'capacity' | 'admin' | 'help' | 'api' | null
+export type SpineSection = 'profile' | 'overview' | 'work' | 'automate' | 'capacity' | 'admin' | 'help' | 'api' | null
 
 /** The spine sections that draw a panel of pages. */
-type PanelSection = 'work' | 'automate' | 'capacity' | 'admin'
+type PanelSection = 'profile' | 'work' | 'automate' | 'capacity' | 'admin'
 
 /** One page in the panel: its label, its icon, the address `go()` takes, and its children. */
 interface PanelPage {
@@ -67,6 +67,19 @@ const AGENT_LABEL: Readonly<Record<AgentTab, string>> = { live: 'Live', waiting:
  * router addresses, so they resolve exactly as a click on the old rail did.
  */
 export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
+  // EVERY SETTINGS PAGE UNDER PROFILE (NAV-PROFILE; part of #1633, owner
+  // decision 2026-10-19 "All under Profile; Admin by role"). They were four
+  // "Settings ›" links stacked in the panel foot, and People and roles had no
+  // link at all. The person's own pages first, then the selected workspace's.
+  // Not SECTIONS entries (App.tsx): the addresses stay `settings/*`, and the
+  // issue forms already name each page as Settings › <page>.
+  profile: [
+    { key: 'profile', label: 'Profile', icon: 'people', to: 'settings/profile' },
+    { key: 'keys', label: 'API keys', icon: 'key', to: 'settings/keys' },
+    { key: 'workspace', label: 'Workspace', icon: 'tenants', to: 'settings/workspace' },
+    { key: 'mcp-servers', label: 'MCP servers', icon: 'plug', to: 'settings/mcp-servers' },
+    { key: 'people', label: 'People and roles', icon: 'accounts', to: 'settings/people' },
+  ],
   work: [
     {
       key: 'agents',
@@ -143,13 +156,15 @@ const SUBMIT_PAGES: readonly { tab: string; label: string; icon: string; to: str
 ]
 
 /** Each panel's heading: its spine section's label. */
-export const PANEL_TITLE: Readonly<Record<PanelSection, string>> = { work: 'Work', automate: 'Automate', capacity: 'Capacity', admin: 'Admin' }
+export const PANEL_TITLE: Readonly<Record<PanelSection, string>> = { profile: 'Profile', work: 'Work', automate: 'Automate', capacity: 'Capacity', admin: 'Admin' }
 
 /** Which panel row a route's tab belongs to: a child's tab belongs to its parent. */
 function rowFor(section: PanelSection, tab: string): string {
   if (section === 'work' && (tab === 'running' || tab === '')) return 'agents'
   if (section === 'capacity' && tab === 'profiles') return 'pools'
   if (section === 'capacity' && tab === 'quota') return 'accounts'
+  // The one-time key link (paths.ts KEY_LINK_ADDRESS) opens API keys.
+  if (section === 'profile' && tab.startsWith('keys/')) return 'keys'
   return tab
 }
 
@@ -1007,6 +1022,19 @@ const ICONS: Readonly<Record<string, ReactNode>> = {
     </>
   ),
   swap: <path d="m7 9 5-5 5 5M7 15l5 5 5-5" />,
+  // NAV-PROFILE: API keys and MCP servers, in the Profile panel.
+  key: (
+    <>
+      <circle cx="8" cy="15" r="4" />
+      <path d="m11 12 8.5-8.5M16.5 6.5l2.5 2.5M14 9l2 2" />
+    </>
+  ),
+  plug: (
+    <>
+      <path d="M9 3.5V8M15 3.5V8M6.5 8h11v3a5.5 5.5 0 0 1-11 0z" />
+      <path d="M12 16.5v4" />
+    </>
+  ),
   // #1206: the header bar's bell, and the tick its empty state and a finished update draw.
   bell: (
     <>
@@ -1034,6 +1062,13 @@ export function Icon({ name, className = 'sk-ic' }: { name: string; className?: 
 // ---------------------------------------------------------------------------
 // The shell
 // ---------------------------------------------------------------------------
+
+/**
+ * PROFILE, THE FIRST SPINE ITEM (NAV-PROFILE; part of #1633): under the Hive,
+ * above Submit, drawn as the person's avatar. It is the one place the person
+ * is drawn on the spine -- the foot's avatar went with it.
+ */
+const PROFILE_ITEM: { key: 'profile'; label: string; to: string } = { key: 'profile', label: 'Profile', to: PROFILE_ADDRESS }
 
 const SPINE: readonly { key: Exclude<SpineSection, null>; label: string; to: string }[] = [
   { key: 'overview', label: 'Overview', to: 'overview/now' },
@@ -1542,6 +1577,83 @@ export function SkyShell({
     [who, keepOnSwitch, choices],
   )
 
+  // ONE SPINE SECTION: Profile, then the five after Submit.
+  const sectionLink = (s: { key: Exclude<SpineSection, null>; label: string; to: string }) => {
+    const on = section === s.key
+    // LOCKED UNTIL THE READ SAYS ADMIN. Drawn unlocked while `who` was
+    // unread, a non-admin saw Admin open and then saw the lock appear.
+    const locked = s.key === 'admin' && !admin
+    const checking = locked && who === null
+    // A LINK, NOT A BUTTON (#503): a section opens in a new tab and copies
+    // as a link, like every other place in the console.
+    return (
+      <a
+        key={s.key}
+        data-sec={s.key}
+        className={`sk-ri${on ? ' is-on' : ''}`}
+        // A 404 LIGHTS THE NEAREST SECTION BUT IS ON NO PAGE (live QA
+        // CH-14): the section is drawn lit as the way back, never
+        // announced as where the reader is.
+        aria-current={on && !missing ? 'page' : undefined}
+        title={checking ? `${s.label} (checking access)` : locked ? `${s.label} (admins only)` : s.label}
+        {...routed(s.to, () => {
+          // COLLAPSED, A CLICK ON THE SECTION YOU ARE IN OPENS ITS PAGES
+          // (visual QA V083, 2026-10-11). It expanded the panel, so with
+          // no hover -- a touch screen -- the only way between the four
+          // Admin pages was to undo the collapse. The flyout opens at
+          // once and stays until a choice, Escape or a click elsewhere;
+          // `Open the panel` in it, and the spine's own expand, still
+          // undo the collapse. Overview has no pages, so it expands.
+          if (collapsed && on && s.key !== 'overview' && !drawer) {
+            if (flyTimer.current !== undefined) clearTimeout(flyTimer.current)
+            setFly(s.key)
+            return
+          }
+          // Collapsed, a click on another section opens the panel again --
+          // but not in the tablet band, which is collapsed for room (CH-1).
+          if (collapsed && !tablet) toggle()
+          if (!(collapsed && on)) nav(s.to)
+        })}
+        onMouseEnter={() => hover(s.key)}
+        onMouseLeave={() => hover(null)}
+        onFocus={() => {
+          // Focus opens the flyout at once, so the Tab that follows can enter it (CH-8).
+          if (!collapsed || drawer || quietFocus.current) return
+          if (flyTimer.current !== undefined) clearTimeout(flyTimer.current)
+          setFly(s.key)
+        }}
+        onKeyDown={(e) => onSectionKey(e, s.key)}
+      >
+        {/* PROFILE IS DRAWN AS THE PERSON (NAV-PROFILE): their initials, the
+            email in the title, and a whole-app state's dot (states.html C). */}
+        {s.key === 'profile' ? (
+          <span className="sk-av" title={who?.principal.email ?? 'not read'} aria-hidden>
+            {initials(who?.principal.email ?? '')}
+            {fault !== null && <i className="sk-av-dot" />}
+          </span>
+        ) : (
+          <Icon name={s.key} />
+        )}
+        <small>{s.label}</small>
+        {s.key === 'capacity' && meter?.warn != null && <i className="sk-dot" title={meter.warn} />}
+        {s.key === 'automate' && waiting !== null && (
+          <i className={waiting.n === null ? 'sk-badge is-unread' : 'sk-badge'} title={waiting.why} aria-label={waiting.why}>
+            {waiting.n === null ? '—' : waiting.n}
+          </i>
+        )}
+        {/* #1206: requests waiting on ANY admin, as a pill at the item's
+            top-right. Gated on the session read as well as the count: a
+            pill is never drawn over a locked Admin. */}
+        {s.key === 'admin' && admin && adminPending > 0 && (
+          <i className="sk-badge sk-apill" title={`${adminPending} waiting for an admin`} aria-label={`${adminPending} waiting for an admin`}>
+            {adminPending}
+          </i>
+        )}
+        {locked && <Icon name="lock" className="sk-ic sk-lkd" />}
+      </a>
+    )
+  }
+
   const spine = (
     <nav className="sk-spine" aria-label="Sections" onBlur={onFlyBlur} onKeyDown={onFlyKey}>
       <a className="sk-hive" {...routed('overview/now', () => nav('overview/now'))}>
@@ -1550,77 +1662,13 @@ export function SkyShell({
       {/* THE COLLAPSED SPINE KEEPS THE TENANT IN SIGHT (2A): a tile under the
           Hive, which opens the same list beside the spine. */}
       {collapsed && !drawer && <TenantTile me={me} switchable={switchable} open={picker === 'tile'} onOpen={() => setPicker(picker === 'tile' ? null : 'tile')} />}
+      {sectionLink(PROFILE_ITEM)}
       <a className="sk-ri sk-cta" title="Submit (N)" aria-current={section === null ? 'page' : undefined} {...routed('submit', () => nav('submit'))}>
         <Icon name="submit" />
         <small>Submit</small>
       </a>
       <span className="sk-rsep" aria-hidden />
-      {SPINE.map((s) => {
-        const on = section === s.key
-        // LOCKED UNTIL THE READ SAYS ADMIN. Drawn unlocked while `who` was
-        // unread, a non-admin saw Admin open and then saw the lock appear.
-        const locked = s.key === 'admin' && !admin
-        const checking = locked && who === null
-        // A LINK, NOT A BUTTON (#503): a section opens in a new tab and copies
-        // as a link, like every other place in the console.
-        return (
-          <a
-            key={s.key}
-            data-sec={s.key}
-            className={`sk-ri${on ? ' is-on' : ''}`}
-            // A 404 LIGHTS THE NEAREST SECTION BUT IS ON NO PAGE (live QA
-            // CH-14): the section is drawn lit as the way back, never
-            // announced as where the reader is.
-            aria-current={on && !missing ? 'page' : undefined}
-            title={checking ? `${s.label} (checking access)` : locked ? `${s.label} (admins only)` : s.label}
-            {...routed(s.to, () => {
-              // COLLAPSED, A CLICK ON THE SECTION YOU ARE IN OPENS ITS PAGES
-              // (visual QA V083, 2026-10-11). It expanded the panel, so with
-              // no hover -- a touch screen -- the only way between the four
-              // Admin pages was to undo the collapse. The flyout opens at
-              // once and stays until a choice, Escape or a click elsewhere;
-              // `Open the panel` in it, and the spine's own expand, still
-              // undo the collapse. Overview has no pages, so it expands.
-              if (collapsed && on && s.key !== 'overview' && !drawer) {
-                if (flyTimer.current !== undefined) clearTimeout(flyTimer.current)
-                setFly(s.key)
-                return
-              }
-              // Collapsed, a click on another section opens the panel again --
-              // but not in the tablet band, which is collapsed for room (CH-1).
-              if (collapsed && !tablet) toggle()
-              if (!(collapsed && on)) nav(s.to)
-            })}
-            onMouseEnter={() => hover(s.key)}
-            onMouseLeave={() => hover(null)}
-            onFocus={() => {
-              // Focus opens the flyout at once, so the Tab that follows can enter it (CH-8).
-              if (!collapsed || drawer || quietFocus.current) return
-              if (flyTimer.current !== undefined) clearTimeout(flyTimer.current)
-              setFly(s.key)
-            }}
-            onKeyDown={(e) => onSectionKey(e, s.key)}
-          >
-            <Icon name={s.key} />
-            <small>{s.label}</small>
-            {s.key === 'capacity' && meter?.warn != null && <i className="sk-dot" title={meter.warn} />}
-            {s.key === 'automate' && waiting !== null && (
-              <i className={waiting.n === null ? 'sk-badge is-unread' : 'sk-badge'} title={waiting.why} aria-label={waiting.why}>
-                {waiting.n === null ? '—' : waiting.n}
-              </i>
-            )}
-            {/* #1206: requests waiting on ANY admin, as a pill at the item's
-                top-right. Gated on the session read as well as the count: a
-                pill is never drawn over a locked Admin. */}
-            {s.key === 'admin' && admin && adminPending > 0 && (
-              <i className="sk-badge sk-apill" title={`${adminPending} waiting for an admin`} aria-label={`${adminPending} waiting for an admin`}>
-                {adminPending}
-              </i>
-            )}
-            {locked && <Icon name="lock" className="sk-ic sk-lkd" />}
-          </a>
-        )
-      })}
+      {SPINE.map(sectionLink)}
       <span className="sk-grow" />
       {/* THE WAY BACK TO THE PANEL (U10a D26): collapsed, the only way to
           bring it back was to click a section. The panel's own collapse
@@ -1635,12 +1683,9 @@ export function SkyShell({
           drop-down opens beside the spine (styles/notifications.css). */}
       {!phone && bell !== null && <div className="sk-bell">{bell}</div>}
       {foot}
-      {/* Collapsed, the avatar is the person: Sign out sits beside it, as an icon. */}
+      {/* Collapsed, the panel's Sign out is an icon at the spine's foot. The
+          avatar that sat under it is the Profile item now (NAV-PROFILE). */}
       {collapsed && !drawer && canSignOut && <SignOutButton email={who.principal.email} compact />}
-      <span className="sk-av" title={who?.principal.email ?? 'not read'} aria-hidden>
-        {initials(who?.principal.email ?? '')}
-        {fault !== null && <i className="sk-av-dot" />}
-      </span>
     </nav>
   )
 
@@ -1702,63 +1747,8 @@ export function SkyShell({
         </span>
         {/* One line each, cut, whole in the title (styles.css `.sk-pfoot`, V054). */}
         {who !== null && <small title={who.principal.email}>{who.principal.email}</small>}
-        {/* SETTINGS › API KEYS (KEYS-UI): the person's own keys, so it sits
-            under their name rather than among the sections (App.tsx SETTINGS). */}
-        <a
-          className={`sk-pset${place.startsWith('/settings/keys') ? ' is-on' : ''}`}
-          aria-current={place.startsWith('/settings/keys') ? 'page' : undefined}
-          href={addressToPath('settings/keys')}
-          onClick={(e) => {
-            if (!routedClick(e)) return
-            e.preventDefault()
-            nav('settings/keys')
-          }}
-        >
-          Settings › API keys
-        </a>
-        {/* SETTINGS › WORKSPACE (CTXQ-UI): the selected workspace's own
-            settings, Code intelligence first (App.tsx WORKSPACE_TAB). */}
-        <a
-          className={`sk-pset${place === '/settings/workspace' ? ' is-on' : ''}`}
-          aria-current={place === '/settings/workspace' ? 'page' : undefined}
-          href={addressToPath('settings/workspace')}
-          onClick={(e) => {
-            if (!routedClick(e)) return
-            e.preventDefault()
-            nav('settings/workspace')
-          }}
-        >
-          Settings › Workspace
-        </a>
-        {/* SETTINGS › MCP SERVERS (MCP-UI-NAV): the workspace's registered MCP
-            servers, beside Workspace (registered-mcp-servers.md §4.11; App.tsx MCP_TAB). */}
-        <a
-          className={`sk-pset${place === '/settings/mcp-servers' ? ' is-on' : ''}`}
-          aria-current={place === '/settings/mcp-servers' ? 'page' : undefined}
-          href={addressToPath('settings/mcp-servers')}
-          onClick={(e) => {
-            if (!routedClick(e)) return
-            e.preventDefault()
-            nav('settings/mcp-servers')
-          }}
-        >
-          Settings › MCP servers
-        </a>
-        {/* SETTINGS › PROFILE (PROFILE-SHELL; user-profile.md §4.7): who you
-            are, your workspaces and default, and what reaches your bell. The
-            person's own, so it sits by their name with API keys. */}
-        <a
-          className={`sk-pset${place === PROFILE_PATH ? ' is-on' : ''}`}
-          aria-current={place === PROFILE_PATH ? 'page' : undefined}
-          href={PROFILE_PATH}
-          onClick={(e) => {
-            if (!routedClick(e)) return
-            e.preventDefault()
-            nav(PROFILE_ADDRESS)
-          }}
-        >
-          Settings › Profile
-        </a>
+        {/* No Settings links here since NAV-PROFILE (part of #1633): the
+            four that stacked under the name are the Profile panel's pages. */}
         <ThemeToggle />
       </div>
     </nav>
@@ -2670,7 +2660,7 @@ function Flyout({
   onBlur: (e: ReactFocusEvent) => void
   onKeyDown: (e: ReactKeyboardEvent) => void
 }) {
-  if (section !== 'work' && section !== 'automate' && section !== 'capacity' && section !== 'admin') return null
+  if (section !== 'profile' && section !== 'work' && section !== 'automate' && section !== 'capacity' && section !== 'admin') return null
   const lit = tab === '' ? { row: '', kid: null } : litPage(section, tab, agentTab)
   const name = PANEL_TITLE[section]
   // A plain labelled group of links, not role="menu": a menu promises arrow

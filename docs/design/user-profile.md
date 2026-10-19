@@ -1048,6 +1048,21 @@ description names Settings › Profile).
 `gitidentity.py` (a stored name already passes `clean_name`), Terraform (Q1
 reuses an existing key), and `apps/common/swarm_common/`.
 
+**Amended 2026-10-19 (#1633, lane NAV-PROFILE).** The "Settings › Profile"
+link in the panel foot, above, is gone, with the other three `sk-pset`
+links. Owner decision that day ("All under Profile; Admin by role"):
+**Profile is the spine's first item**, under the Hive and above Submit,
+drawn as the person's avatar (the foot's avatar went, so the person is
+drawn once), and its panel holds every settings page — Profile, API keys,
+Workspace, MCP servers, People and roles, in that order (`Spine.tsx`
+`PANEL_PAGES.profile`). The reason is the one this page exists for: the
+person's things in one place. Four links stacked under a name was not one
+place, and People and roles had no link at all. The addresses are
+unchanged (`/settings/profile` is still this page), `spineOf` lights
+Profile for all five, and the panel foot keeps the name, the admin tag,
+Sign out, the email and the theme toggle. Profile is not a `SECTIONS`
+entry, so the issue forms' "Where" list above is unchanged.
+
 ### 4.8 Failure cases
 
 | case | what happens |
