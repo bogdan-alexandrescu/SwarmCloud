@@ -48,8 +48,8 @@ import pytest
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, utils
 
-from swarm_api import workspaces as ws
-from swarm_api.specsigning import SpecSignature
+# swarm_api is imported inside the functions that use it, never at module top:
+# test_collection_stays_cheap.py holds every module in this directory to that.
 
 REPO = Path(__file__).resolve().parents[3]
 ENTRY = REPO / "images" / "workspace-apply" / "entry.py"
@@ -90,7 +90,9 @@ class KmsKey:
         self.private = ec.generate_private_key(ec.SECP256R1())
         self.version = version
 
-    def sign(self, digest: bytes) -> SpecSignature:
+    def sign(self, digest: bytes) -> Any:
+        from swarm_api.specsigning import SpecSignature
+
         der = self.private.sign(digest, ec.ECDSA(utils.Prehashed(hashes.SHA256())))
         return SpecSignature(signature=der, key_version=self.version)
 
@@ -117,6 +119,8 @@ def _record(kind: str = "service", principal: str = SERVICE, tenant: str = "u-re
 
 def _signed(key: KmsKey, record: dict[str, Any]) -> dict[str, Any]:
     """The record as swarm-api's approval writes it: the decision, then the signature."""
+    from swarm_api import workspaces as ws
+
     out = copy.deepcopy(record)
     out["approval"] = ws.sign_approval(key, out, decided_by=out["decision"]["by"],
                                        decided_at=out["decision"]["at"],
@@ -248,6 +252,8 @@ def test_an_approval_signed_by_swarm_api_verifies_in_the_job(entry, tmp_path, ki
 
 def test_a_retry_signed_by_swarm_api_verifies_in_the_job(entry, tmp_path):
     """A retry runs a new request id, signed by whoever retried it."""
+    from swarm_api import workspaces as ws
+
     key = KmsKey()
     record = _record()
     record.update(state="approved", request_id="0b9e1f7a-3c2d-4e5f-8a9b-7c6d5e4f3a2b",
@@ -409,6 +415,8 @@ def test_an_unapproved_record_is_left_to_a1_and_pinned_unverified(entry, tmp_pat
     "  @x", "\x00\x1f\x7f@x",
 ])
 def test_the_job_signs_over_the_same_bytes_as_swarm_api(entry, principal):
+    from swarm_api import workspaces as ws
+
     fields = {"workspace_id": WORKSPACE, "tenant_id": "u-x", "kind": "service", "principal": principal,
               "decided_by": OWNER, "decided_at": "2026-10-19T09:30:00+00:00", "request_id": "r-1"}
     assert entry.canonical_approval(fields) == ws.canonical_approval(fields)
@@ -416,7 +424,9 @@ def test_the_job_signs_over_the_same_bytes_as_swarm_api(entry, principal):
 
 
 def test_the_approval_bytes_can_never_be_a_step_spec():
+    from swarm_api import workspaces as ws
     from swarm_common import specsign
+
     fields = {k: "x" for k in ws.APPROVAL_FIELDS}
     canonical = json.loads(ws.canonical_approval(fields))
     assert canonical["purpose"] == ws.APPROVAL_PURPOSE != specsign.SPEC_PURPOSE
