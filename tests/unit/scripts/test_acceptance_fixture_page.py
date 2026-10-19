@@ -229,7 +229,10 @@ def test_the_object_is_this_page_served_as_html_and_carries_the_label():
 def test_the_public_grant_is_read_only_and_on_this_bucket_alone():
     grant = tf_block("google_storage_bucket_iam_member", "acceptance_fixture_public_read")
     assert "bucket = google_storage_bucket.acceptance_fixture.name" in grant
-    assert 'role   = "roles/storage.objectViewer"' in grant
+    # Owner decision on #1628, 2026-10-19: read an object by name, never list
+    # the bucket. objectViewer would also admit storage.objects.list.
+    assert 'role   = "roles/storage.legacyObjectReader"' in grant
+    assert "objectViewer" not in grant
     assert "member = local.acceptance_fixture_public_reader" in grant
     text = TF.read_text()
     assert text.count('"allUsers"') == 1, "the public member is named once"
