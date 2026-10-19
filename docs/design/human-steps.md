@@ -1363,7 +1363,11 @@ As request B.
 ### Request D. `profiles.py`: `await-input` becomes available (owner applies, after HW-ACCEPT)
 
 **Status:** to be applied by the owner once the acceptance group of §6 has
-passed on dev.
+passed on dev. Filed as
+[contract request 105](../contract-change-requests.md), ACCEPTED by the owner
+2026-10-18 on PR 1570 and applied there. The owner turned it on in dev before
+HW-ACCEPT, which cannot submit an await-input step while the profile is
+unavailable; HW-ACCEPT then proves it on dev.
 
 #### The change
 

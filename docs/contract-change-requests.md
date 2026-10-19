@@ -112,6 +112,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 102 | `models.py`: `Task.model_class` and `WorkflowStep.model_class`, the class a step asked for (MODEL-CONTRACT, model per step request C, part of #1435) | ACCEPTED by the owner 2026-10-17 (PR 1509) and APPLIED by the pull request that adds this line |
 | 103 | `models.py`: `Attempt.model`, the model ID an attempt's agent was started with (MODEL-CONTRACT, model per step request D, part of #1435) | ACCEPTED by the owner 2026-10-17 (PR 1509) and APPLIED by the pull request that adds this line |
 | 104 | `specsign.py`: spec format 5 covers `model_class`, signed at 5 only when a class is set (MODEL-CONTRACT, model per step request E, part of #1435) | ACCEPTED by the owner 2026-10-17 (PR 1509) and APPLIED by the pull request that adds this line |
+| 105 | `profiles.py`: `await-input` becomes available, `available=True` and its `disabled_reason` removed (HW-ENABLE, human steps request D, part of #1436) | ACCEPTED by the owner 2026-10-18 (on PR 1570, turned on in dev before HW-ACCEPT so the acceptance group can run against it) and APPLIED by the pull request that adds this line |
 
 ---
 
@@ -13586,3 +13587,83 @@ is what retires those workers before anything writes one. Tests that pinned
 **5**: the class is fixed with the attempt's other signed fields. **10**: the
 signature is what makes the caller's named class the only one that can run.
 1 to 4 and 6 to 9 are untouched.
+
+
+## 105. `profiles.py`: `await-input` becomes available (HW-ENABLE, human steps request D)
+
+**Status:** ACCEPTED by the owner 2026-10-18 (on PR 1570) and APPLIED by the
+pull request that adds this line. The owner turned the profile on in dev BEFORE
+lane HW-ACCEPT, because the acceptance group cannot submit an await-input step
+while the profile is unavailable; HW-ACCEPT then proves it on dev. Design §5
+request D, applied by lane HW-ENABLE, part of #1436.
+
+### What is true today
+
+`RUNNER_PROFILES["await-input"]` is `available=False` with
+`disabled_reason="await-input steps are being built (docs/design/human-steps.md)"`
+(entry 94). While it is, a workflow that names it is refused like any disabled
+profile (`validation.validate_runner_profile`), and the expiry sweep reads
+nothing (`swarm_api.awaitinput.dark`). Of the design's §6 lanes, HW-CONTRACT
+(PR 1510), HW-WORKER (PR 1520), HW-SCHED (PR 1521), HW-IAM (PR 1523),
+HW-API-SUBMIT (PR 1527), HW-NOTIFY (PR 1529), HW-API-ANSWER (PR 1537), HW-DOCS
+(PR 1556) and HW-MCP (PR 1557) are on main at bc64f38; HW-UI, the console
+card, and HW-ACCEPT are not (read 2026-10-18).
+
+### The change
+
+```python
+    "await-input": RunnerProfile(
+        ...
+        inputs={},
+        available=True,
+    ),
+```
+
+`available=False` becomes `available=True`, and the `disabled_reason` line is
+removed (its default is `""`). Nothing else in `apps/common/swarm_common/`
+changes; the entry's comment, which says the profile shipped unavailable until
+this request, stays as it is.
+
+**What follows outside the contract, in the same pull request.**
+`apps/swarm-ui/src/api.ts` `FIXTURE_AVAILABILITY`, which
+`tests/unit/control_plane/test_capacity_serves_availability.py` holds to the
+catalogue. `tests/unit/common/test_await_input_contract.py`, which held the
+shipped value. The dark-path tests in `test_await_input_api.py` and
+`test_await_input_submission.py`, which now switch the profile off with
+`monkeypatch` rather than assert the shipped value, so the dark path stays
+tested. `TASK_PROFILES` in `test_runner_inputs_by_declaration.py`, which now
+leaves out `control_plane` profiles as it leaves out worker actions, because a
+`control_plane` profile is a workflow step or nothing
+(`validation.refuse_control_plane_outside_workflow`). `docs/workflows.md` and
+its guard in `test_docs_describe_what_was_built.py`; `docs/worker-images.md`,
+`docs/BUILD_PROMPT_V2.md` and `plugin/README.md`. `scripts/lib/check-contract-parity.sh`
+restates no profile's availability, and `terraform/infra/locals.tf`'s mirror of
+the entry carries no `available` field, so neither changes.
+
+**Tests:** `tests/unit/common/test_await_input_contract.py`:
+`test_await_input_is_available_since_request_d` (the entry is available, with
+no reason, and still `control_plane`) and `test_request_d_is_filed_as_entry_105`.
+
+### Rollback
+
+The word back: `available=False` with a `disabled_reason`, and the fixture line
+with it. A new submission naming the step is then refused again and the expiry
+sweep stops reading. A step already parked `AWAITING_INPUT` stays parked,
+holding no capacity (invariant 1): the answer route still takes a member's
+answer, but nothing expires it while the profile is dark, so cancel the open
+waits (`GET /v1/inputs?status=waiting` lists them) if none should be answered.
+
+### What it would break
+
+Nothing that exists. From then on a member of a tenant can submit a workflow
+with an `await-input` step. Pickers that list available profiles list it as
+usable: `swarm_profiles` (`swarm_mcp.profiles.dispatchable`), as it lists
+`merge`, a workflow step too; and the console's task form, which draws it as an
+ordinary runner until HW-UI lands. Choosing it for a single task is refused
+422 at the door, naming the workflow route.
+
+### Invariants
+
+As request 93. **1**: a parked await step holds no lease and no capacity
+(HW-SCHED). **10**: the step is named by profile, and its wait is the signed
+`await_input` block, never a caller-supplied command.

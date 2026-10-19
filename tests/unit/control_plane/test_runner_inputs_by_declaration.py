@@ -391,8 +391,12 @@ REQUIRED_BESIDES_THE_PROMPT = {"generic": {"command": "pytest"}}
 #: `merge`, available since contract request 47, is a workflow's final step
 #: and is refused on its own as misplaced
 #: (test_merge_step_submission.py::test_a_merge_task_on_its_own_is_refused_as_misplaced_not_disabled).
+#: Nor is a `control_plane` profile: `await-input`, available since request D
+#: (entry 105), is a workflow step or nothing
+#: (`swarm_api.validation.refuse_control_plane_outside_workflow`).
 TASK_PROFILES = sorted(
-    n for n, p in RUNNER_PROFILES.items() if p.available and p.worker_action is None
+    n for n, p in RUNNER_PROFILES.items()
+    if p.available and p.worker_action is None and not p.control_plane
 )
 
 
