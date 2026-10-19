@@ -24,12 +24,35 @@ CC_FIX_LINE="    return a + b"
 # it without reading the issue. Both are config.sh's; sandbox-sync.sh opens the
 # issue and refuses a sandbox whose issue says something else.
 
+# THE MODEL-CLASS CANARY (docs/design/model-per-step.md §4.9, #1435). One step
+# per class a claude-code step may name, each on a fixed prompt that ends at
+# once. For each, the attempt's `model` must be the class's pin as
+# /v1/runtimes serves it, and the runner summary's `usage.models` must hold
+# that pin and no other class's. It is red until the CLI in
+# agent-runtime-base accepts every pinned ID (§2.3): that is what it is for.
+#
+# The four names restate swarm_common.profiles.MODEL_CLASSES, in its order;
+# tests/unit/scripts/test_model_class_canary.py holds them equal, so a class
+# added to the frozen vocabulary fails that test until the canary runs it.
+CC_MODEL_CLASSES=(opus fable sonnet haiku)
+# The class whose pin the CLI may report BESIDE the one it was told to run:
+# the small model it runs for its own housekeeping, which the worker's
+# _note_model_mismatch (lifecycle.py) does not count as a substitution
+# either. On a step of another class this pin in `usage.models` is noted,
+# not failed; any other class's pin there is a substitution and fails.
+CC_HOUSEKEEPING_CLASS="haiku"
+CC_CANARY_PROMPT="Reply with the single word ok. Do not read, edit or run anything."
+
 claude_code_checks() {
   cat <<'EOF'
 claude-code: collect fixes the one-line bug, and the patch applies and replaces exactly that line
 claude-code: direct-pr opens a pull request titled from pr-title.txt, with the task id in its body
 claude-code: the issue input puts the issue in issue.md and the answer uses it
 EOF
+  local class
+  for class in "${CC_MODEL_CLASSES[@]}"; do
+    printf 'claude-code: a %s step runs its pin: the attempt records it and usage.models agrees\n' "${class}"
+  done
 }
 
 _cc_fix_prompt() {
@@ -39,7 +62,9 @@ _cc_fix_prompt() {
 
 run_claude_code() {
   step "Acceptance: claude-code (repository ${ACC_REPOSITORY_URL} @ ${ACC_REF})"
-  local collect="" direct="" issue="" issue_declared=0 answer
+  local collect="" direct="" issue="" issue_declared=0 answer class step runtimes i
+  # One task id per class, in CC_MODEL_CLASSES' order; "" when not submitted.
+  local canary=()
 
   ACC_CHECK="claude-code: collect"
   acc_submit collect claude-code \
@@ -68,9 +93,99 @@ run_claude_code() {
       "$(acc_repo_extra '{"max_attempts": 1}')" || issue=""
   fi
 
+  # The class is named and nothing else that chooses a model: the API fills
+  # TaskCreate.model from the class's pin (Q4) and refuses input.model.
+  for class in "${CC_MODEL_CLASSES[@]}"; do
+    ACC_CHECK="claude-code: model class ${class}"
+    step=""
+    acc_submit step claude-code \
+      "$(jq -nc --arg p "${CC_CANARY_PROMPT}" '{prompt: $p}')" \
+      "$(acc_repo_extra "$(jq -nc --arg c "${class}" '{max_attempts: 1, model_class: $c}')")" || step=""
+    canary+=("${step}")
+  done
+
   _cc_check_collect "${collect}"
   _cc_check_direct_pr "${direct}"
   _cc_check_issue "${issue}" "${issue_declared}"
+
+  # Read once the other checks have settled, so the pins judged are the ones
+  # the steps were dispatched with (R6: a class's pin at dispatch runs). An
+  # unreadable catalogue leaves an empty file, which each check fails on.
+  runtimes="${ACC_WORK}/cc-runtimes.json"
+  api_fetch "/runtimes" "${runtimes}" || : >"${runtimes}"
+  i=0
+  for class in "${CC_MODEL_CLASSES[@]}"; do
+    _cc_check_model_class "${class}" "${canary[${i}]}" "${runtimes}"
+    i=$(( i + 1 ))
+  done
+}
+
+# _cc_check_model_class CLASS TASK RUNTIMES_FILE -> one canary step's verdict.
+_cc_check_model_class() {
+  local class="$1" task="$2" runtimes="$3" state attempt_model usage_models
+  acc_check "claude-code: a ${class} step runs its pin: the attempt records it and usage.models agrees"
+  [[ -n "${task}" ]] || { acc_fail "not submitted"; return 0; }
+  acc_run_to_end state "${task}" || return 0
+  if [[ "${state}" != "SUCCEEDED" ]]; then
+    acc_fail "ended ${state}: $(task_field "${task}" '.last_error // "no error"' | redact | tr '\n' ' ' | head -c 300)" "${task}"
+    return 0
+  fi
+  # The newest attempt: max_attempts is 1, so it is the only one.
+  if ! attempt_model="$(task_attempts "${task}" | jq -rs 'sort_by(.created_at) | last | .model // ""')"; then
+    acc_fail "its attempts could not be read" "${task}"
+    return 0
+  fi
+  usage_models="$(task_field "${task}" '.result_summary.runner.usage.models // [] | tojson')" || usage_models="[]"
+  _cc_judge_model_class "${class}" "${runtimes}" "${attempt_model}" "${usage_models}" "${task}"
+}
+
+# _cc_judge_model_class CLASS RUNTIMES_FILE ATTEMPT_MODEL USAGE_MODELS_JSON TASK
+#
+# The verdict alone, on what the deployment served and recorded, so it can be
+# judged offline against the evidence a working platform leaves and the
+# evidence each defect leaves (tests/unit/scripts/test_model_class_canary.py).
+#
+# The pins are claude-code's `models` in /v1/runtimes, which swarm-api serves
+# from WORKER_CLASS_MODELS, the map the scheduler dispatches with. A `[...]`
+# suffix on a model the CLI reports (`claude-opus-5-5[1m]`) names the same
+# model, as in the worker's _note_model_mismatch.
+_cc_judge_model_class() {
+  local class="$1" runtimes="$2" attempt_model="$3" usage_models="$4" task="$5" pin others noted
+  pin="$(jq -r --arg c "${class}" '.runtimes["claude-code"].models[$c] // empty' "${runtimes}" 2>/dev/null)" || pin=""
+  if [[ -z "${pin}" ]]; then
+    acc_fail "/v1/runtimes serves no pin for class ${class} on claude-code, so there is nothing to hold the attempt to" "${task}"
+    return 0
+  fi
+  acc_assert_eq "${pin}" "${attempt_model}" "the attempt's model is the ${class} pin" "${task}"
+  if ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"${usage_models}"; then
+    acc_fail "usage.models is not a list: $(printf '%s' "${usage_models}" | head -c 200)" "${task}"
+    return 0
+  fi
+  if jq -e --arg p "${pin}" 'map(tostring | split("[")[0]) | index($p) != null' >/dev/null <<<"${usage_models}"; then
+    acc_pass "usage.models holds the ${class} pin ${pin}" "${task}"
+  else
+    acc_fail "usage.models does not hold the ${class} pin ${pin}: $(jq -c . <<<"${usage_models}")" "${task}"
+  fi
+  # Another class's pin in the stream is a substitution, except the
+  # housekeeping class's beside the pin on a step of another class.
+  others="$(jq -r --arg c "${class}" --arg h "${CC_HOUSEKEEPING_CLASS}" --argjson u "${usage_models}" '
+    (.runtimes["claude-code"].models // {}) as $m
+    | ($u | map(tostring | split("[")[0])) as $ran
+    | [$m | to_entries[] | select(.key != $c and .key != $h and (.value as $v | $ran | index($v) != null))
+       | "\(.key)=\(.value)"]
+    | join(" ")' "${runtimes}")"
+  noted="$(jq -r --arg c "${class}" --arg h "${CC_HOUSEKEEPING_CLASS}" --argjson u "${usage_models}" '
+    (.runtimes["claude-code"].models // {}) as $m
+    | ($u | map(tostring | split("[")[0])) as $ran
+    | if $c != $h and ($m[$h] // "") != "" and ($ran | index($m[$h]) != null) then $m[$h] else "" end' "${runtimes}")"
+  if [[ -n "${others}" ]]; then
+    acc_fail "usage.models holds another class's pin: ${others}" "${task}"
+  else
+    acc_pass "usage.models holds no other class's pin" "${task}"
+  fi
+  if [[ -n "${noted}" ]]; then
+    t_info "usage.models also holds ${noted}, the ${CC_HOUSEKEEPING_CLASS} pin, which the CLI runs for its own housekeeping"
+  fi
 }
 
 _cc_check_collect() {
