@@ -360,6 +360,46 @@ change (`apps/common/swarm_common/models.py::Tenant`), and this does not need
 one. The owner may prefer per-task declaration as well:
 [Q3](#q3-the-private-read-allowlist).
 
+### 2.4 Additional repositories: a checkout at a pinned commit, not a tool
+
+`read_private` answers one file or one listing at a time. A step that has
+to reason over the code of several repositories names them at submission
+instead, as `additional_repositories`
+([workflows.md](workflows.md#reading-other-repositories-additional_repositories),
+#1434). The worker checks each one out read-only at `work/repos/<name>`
+before the agent starts. No tool is involved, and nothing above changes:
+
+* **The same gate.** An additional repository must be registered **and**
+  `readable_by_tasks`, the allowlist of §2.3. It is refused
+  `repository_not_registered` (422) or `repository_not_readable_by_tasks`
+  (403) at submission otherwise. There is one rule for "a task may read a
+  repository that is not its own", and the admin sets it in one place.
+* **A different credential rule, on purpose.** `read_private` may use the
+  repository's own `git-r-` slot, because swarm-api makes that read. An
+  additional repository is cloned **by the worker**, and the worker never
+  reads a `git-r-` slot: only swarm-api does (#1225). So swarm-api picks the submitter's
+  user slot for that repository's owner, or the service slot, and pins the
+  ref with that same slot. A repository only a `git-r-` slot can read is
+  refused `additional_repository_unreadable` (422) at submission. That
+  answer, like `repo_not_allowlisted`, does not say whether the credential
+  or the ref was the problem. The frozen contract cannot hold a `git-r-`
+  slot on an entry at all (`ADDITIONAL_FORGE_CREDENTIAL`).
+* **Pinned and signed.** Each ref is resolved at submission to a 40-hex
+  commit and signed into the task (spec format 4), so a fetch or a
+  `read_private` call mid-task cannot move what the agent is reading.
+* **GKE agent profiles only.** The checkouts live on the pod's cache volume,
+  which a Cloud Run attempt does not have. Other profiles are refused
+  `additional_repositories_unsupported_profile`.
+* **How many.** At most the platform setting `max_additional_repositories`
+  per step: default 5, edited live by an admin, 1 to 10. A step over it is
+  refused `too_many_additional_repositories` (422), naming the limit. The
+  frozen contract's ceiling of 10 is a guard on the stored shape, not the
+  limit.
+* **Never written to.** The tools above still act on the task's own
+  repository only (`other_repository`). No push credential for an
+  additional repository is ever issued. The worker points each checkout's
+  push URL nowhere. Only `work/repo` is harvested, pushed or checkpointed.
+
 ---
 
 ## 3. The fallback: a per-task GitHub App installation token
