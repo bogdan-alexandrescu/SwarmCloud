@@ -1154,16 +1154,22 @@ parse is left as it was, and the run says so … it never writes a guess."
   had no `Last-Modified` header and no date in its text. So `as_of` is the day the
   firing read it, which is what `as_of` means: the day a figure was read from its
   source.
+* **A model priced in tiers is written with its tiers.** On 2026-10-19 that was
+  Haiku 5.5, priced by prompt length: one row `(for prompts up to 100,000
+  tokens)`, one `(for prompts over 100,000 tokens)`. The two rows become one
+  entry with `tiers` (`{up_to_prompt_tokens, input, output, cache_read,
+  cache_write}`, the last with `up_to_prompt_tokens: null`), whose own four
+  rates are the first tier's. swarm-api's estimate picks the tier by the
+  attempt's prompt size (`modelprices.rates_for`). Owner decision,
+  PRICES-FOLLOWUP, 2026-10-19; before it, such a model was left unparsed.
 * **What it does not parse, it does not write.** A cell that is not `$N / MTok`,
-  a model name that is not `Claude <Family> <version>`, or a model the page
-  prices **in tiers** leaves that model's entry as it was. These rows go into a
-  **failed** `unparsed` item, so the firing is `partial`, its history says
-  which rows were skipped and why, and repeated failures pause the schedule
-  (§4.4). On 2026-10-19 the tiered case was Haiku 5.5, priced by prompt length
-  (≤100k and >100k tokens): an entry holds one figure per rate, and choosing
-  a tier is a decision for the owner, not something the page can be read for.
-  A page that cannot be fetched, or whose model table is missing or has a
-  changed header, writes **nothing**, and the firing is `failed`.
+  a model name that is not `Claude <Family> <version>`, or several rows of one
+  model that are not one chain of prompt-length tiers leaves that model's
+  entry as it was. These rows go into a **failed** `unparsed` item, so the
+  firing is `partial`, its history says which rows were skipped and why, and
+  repeated failures pause the schedule (§4.4). A page that cannot be fetched,
+  or whose model table is missing or has a changed header, writes
+  **nothing**, and the firing is `failed`.
 * **Where it runs.** In swarm-api, at the tick. swarm-api already leaves the VPC
   through Cloud NAT on 443 to reach GitHub (`vpc_egress = "ALL_TRAFFIC"`), and
   that path also reaches the pricing page. No credential is sent.

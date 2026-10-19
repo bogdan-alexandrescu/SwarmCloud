@@ -41,13 +41,22 @@ WHAT A FIRING DOES.
 WHAT IS NOT PARSED IS LEFT AS IT WAS, AND THE FIRING SAYS SO.
   * A row whose cell is anything but a figure (`UNREADABLE_CELL`), a model
     name that is not `Claude <Family> <version>` (`UNREADABLE_MODEL`), and a
-    model the page prices in TIERS (`TIERED`: a row qualified by anything but
-    a link, or one model on two rows -- Haiku 5.5 on 2026-10-19, priced by
-    prompt length) write nothing for that model. One entry holds one figure
-    per rate, so which tier applies is a decision, not a reading; the firing
-    never makes it. Those rows are the `unparsed` item, FAILED, so the
-    firing is `partial` and counts towards the schedule's failure pause
-    (§4.4): the schedule's own failure is the alert.
+    model on several rows that are not one reading of tiers (`TIERED`: a row
+    qualified by anything but a link or a prompt-length tier, or tiers that
+    leave a prompt size unpriced) write nothing for that model. Those rows
+    are the `unparsed` item, FAILED, so the firing is `partial` and counts
+    towards the schedule's failure pause (§4.4): the schedule's own failure
+    is the alert.
+
+TIERS (PRICES-FOLLOWUP, owner 2026-10-19). A model the page prices by prompt
+length -- Haiku 5.5 on 2026-10-19, `(for prompts up to 100,000 tokens)` and
+`(for prompts over 100,000 tokens)` -- is read as ONE entry with `tiers`
+(`modelprices.tiers_problem`): each `up to N` row a tier with ceiling N, in
+rising order, and exactly one `over N` row, N the largest ceiling, as the
+last tier with none. The entry's own rates are its first tier's. Rows that
+do not make that chain -- two `over` rows, an `over` that is not the last
+ceiling, a gap -- are `TIERED`, written as nothing: which rate a prompt pays
+between them would be a guess.
   * A page that cannot be fetched, or whose model table is missing or whose
     header changed (`PageUnreadable`), writes NOTHING: the `refresh` item is
     FAILED with `PAGE_UNREADABLE`, and the firing is `failed`.
@@ -117,6 +126,8 @@ TIERED = "tiered"
 _FIGURE = re.compile(r"^\$(\d+(?:\.\d+)?) / MTok(?:<sup>\d+</sup>)?$")
 #: ` ([limited availability](https://...))`: a note that is only a link.
 _LINK_NOTE = re.compile(r"\s*\(\[[^\]]*\]\([^)\s]*\)\)")
+#: `(for prompts up to 100,000 tokens)`, `(for prompts over 100,000 tokens)`.
+_TIER = re.compile(r"^\(for prompts (up to|over) (\d{1,3}(?:,\d{3})+|\d+) tokens\)$")
 #: `Claude Opus 5.5` -> family `Opus`, version `5.5`.
 _MODEL = re.compile(r"^Claude ([A-Za-z]+) (\d+(?:\.\d+)*)$")
 
@@ -131,7 +142,8 @@ class PageUnreadable(Exception):
 
 @dataclass
 class Parsed:
-    #: Model name -> its four rates, USD per million tokens.
+    #: Model name -> its four rates, USD per million tokens, and `tiers` for
+    #: a model the page prices by prompt length.
     prices: dict[str, dict[str, float]] = field(default_factory=dict)
     #: One entry per row left unread: `{row, model, reason, column?}`.
     unparsed: list[dict[str, Any]] = field(default_factory=list)
@@ -248,17 +260,49 @@ def parse_page(text: str) -> Parsed:
         rows_of.setdefault(name, []).append(row)
 
     for name, found in rows_of.items():
-        if len(found) > 1 or found[0]["qualifier"]:
+        bad = [row for row in found if row["bad_column"]]
+        if bad:
+            for row in bad:
+                parsed.unparsed.append({"row": row["row"], "model": name, "reason": UNREADABLE_CELL,
+                                        "column": row["bad_column"]})
+            continue
+        if len(found) == 1 and not found[0]["qualifier"]:
+            parsed.prices[name] = {key: found[0]["rates"][key] for key in modelprices.RATES}
+            continue
+        tiers = _tiers(found)
+        if tiers is None:
             for row in found:
                 parsed.unparsed.append({"row": row["row"], "model": name, "reason": TIERED})
             continue
-        (row,) = found
-        if row["bad_column"]:
-            parsed.unparsed.append({"row": row["row"], "model": name, "reason": UNREADABLE_CELL,
-                                    "column": row["bad_column"]})
-            continue
-        parsed.prices[name] = {key: row["rates"][key] for key in modelprices.RATES}
+        parsed.prices[name] = {**{key: tiers[0][key] for key in modelprices.RATES}, "tiers": tiers}
     return parsed
+
+
+def _tiers(found: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+    """One model's rows as its tiers, or None when they are not one reading.
+
+    Every row names a prompt-length tier; the `up to` ceilings are distinct;
+    exactly one row is `over` the largest of them. Anything else -- a lone
+    tier, two `over` rows, a qualifier this does not know -- is None.
+    """
+    up_to: list[tuple[int, dict[str, float]]] = []
+    over: list[tuple[int, dict[str, float]]] = []
+    for row in found:
+        match = _TIER.fullmatch(row["qualifier"] or "")
+        if match is None:
+            return None
+        bound = int(match.group(2).replace(",", ""))
+        (up_to if match.group(1) == "up to" else over).append((bound, row["rates"]))
+    if not up_to or len(over) != 1 or len({bound for bound, _ in up_to}) != len(up_to):
+        return None
+    up_to.sort(key=lambda tier: tier[0])
+    if over[0][0] != up_to[-1][0]:
+        return None
+    tiers = [{modelprices.UP_TO: bound, **rates} for bound, rates in up_to]
+    tiers.append({modelprices.UP_TO: None, **over[0][1]})
+    checked, _why = modelprices.tiers_problem(tiers, tiers[0])
+    return checked
+
 
 
 # --------------------------------------------------------------------------
@@ -266,20 +310,35 @@ def parse_page(text: str) -> Parsed:
 # --------------------------------------------------------------------------
 
 
-def _rates(entry: Mapping[str, Any]) -> dict[str, float]:
-    return {key: float(entry[key]) for key in modelprices.RATES}
+def _rates(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """An entry's figures: its four rates, and its tiers when it has them."""
+    out: dict[str, Any] = {key: float(entry[key]) for key in modelprices.RATES}
+    if entry.get("tiers"):
+        out["tiers"] = [{modelprices.UP_TO: tier[modelprices.UP_TO],
+                         **{key: float(tier[key]) for key in modelprices.RATES}}
+                        for tier in entry["tiers"]]
+    return out
+
+
+def _same(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
+    if any(abs(a[k] - b[k]) >= 1e-9 for k in modelprices.RATES):
+        return False
+    tiers_a, tiers_b = a.get("tiers") or [], b.get("tiers") or []
+    return len(tiers_a) == len(tiers_b) and all(
+        x[modelprices.UP_TO] == y[modelprices.UP_TO] and _same(x, y) for x, y in zip(tiers_a, tiers_b))
 
 
 def changes(parsed: Parsed, current: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Each parsed model whose rates differ from its stored entry (or that has
-    none): `{rates, was}`, `was` None for a model not priced before."""
+    """Each parsed model whose figures -- rates and tiers -- differ from its
+    stored entry (or that has none): `{rates, was}`, `was` None for a model
+    not priced before. `rates` carries `tiers` for a tiered model."""
     out: dict[str, dict[str, Any]] = {}
     for name, rates in sorted(parsed.prices.items()):
         stored = current.get(name)
         was = _rates(stored) if stored is not None else None
-        if was is not None and all(abs(was[k] - rates[k]) < 1e-9 for k in modelprices.RATES):
+        if was is not None and _same(was, rates):
             continue
-        out[name] = {"rates": dict(rates), "was": was}
+        out[name] = {"rates": _rates(rates), "was": was}
     return out
 
 

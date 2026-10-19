@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useId, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react'
 import {
-  loadAdminPools, loadCapacity, loadMe, loadModelClasses, loadPlatformSettings, priceRefusals, saveModelPrices, setPoolLimit, storeOwnerToken,
+  loadAdminPools, loadCapacity, loadMe, loadModelClasses, loadModelPrices, priceRefusals, saveModelPrices, setPoolLimit, storeOwnerToken,
 } from './api'
 import { Button, Card } from './components'
 import { errorHeading, isPaused, read, route, write, type ApiError, type Result } from './fetch'
@@ -22,6 +22,8 @@ import {
   type ModelPrice,
   type ModelPriceChange,
   type ModelPriceRate,
+  type ModelPriceTable,
+  type ModelPriceTier,
   type OwnerTokenResponse,
   type PlatformSettings,
   type Pool,
@@ -1828,6 +1830,17 @@ function typedOf(prices: Record<string, ModelPrice>): TypedPrices {
   return out
 }
 
+/** `100,000`: a tier ceiling as the pricing page writes it. */
+const tokensOf = (n: number) => n.toLocaleString('en-US')
+
+/** One tier, read-only: its prompt range, then its four rates in the table's column order. */
+function tierLine(tier: ModelPriceTier, before: ModelPriceTier | undefined): string {
+  const range = tier.up_to_prompt_tokens !== null
+    ? `≤${tokensOf(tier.up_to_prompt_tokens)}`
+    : `>${tokensOf(before?.up_to_prompt_tokens ?? 0)}`
+  return `${range}: ${PRICE_COLUMNS.map((c) => String(tier[c.key])).join(' / ')}`
+}
+
 /** A loader that a test's partial mock of `./api` may lack, as a failed read rather than a thrown render. */
 function settle<T>(load: () => Promise<Result<T>>): Promise<Result<T>> {
   return Promise.resolve()
@@ -1852,11 +1865,18 @@ function settle<T>(load: () => Promise<Result<T>>): Promise<Result<T>> {
  * figure is never filled in for it.
  *
  * Admins edit; anyone else reads the figures with no field to type in. The
- * GET is admin-gated, so a non-admin is told "Platform admins only.", as the
- * card above tells them. A save PUTs `model_prices` with only the rows that
- * changed, each a whole entry (`schemas.ModelPriceRequest`); swarm-api stamps
- * each with the admin who made it and keeps every model not named. A
+ * table is read from `GET /v1/settings/model-prices`, which every signed-in
+ * member may read (PRICES-FOLLOWUP); only the save is admin-only. A save
+ * PUTs `model_prices` with only the rows that changed, each a whole entry
+ * (`schemas.ModelPriceRequest`); swarm-api stamps each with the admin who
+ * made it and keeps every model not named. A
  * changed figure's `as_of` becomes today unless the admin typed another day.
+ *
+ * A MODEL PRICED IN TIERS by prompt length (Haiku 5.5) shows each tier under
+ * its name, prompt range then the four rates in the columns' order, and its
+ * row is read-only for an admin too: an entry's own rates are its first
+ * tier's, so a typed figure would have to rewrite a tier. Its tiers are the
+ * weekly refresh's to write, or an admin's through the API.
  *
  * What the save did is read off its RESPONSE -- the table as stored, with who
  * saved it and when -- not off the form. A refusal that names a figure
@@ -1866,7 +1886,7 @@ export function ModelPricesCard({ admin }: { admin: boolean | null }) {
   const id = useId()
   const inFlight = useRef(false)
   const phone = usePhoneTables()
-  const [settings, setSettings] = useState<Result<PlatformSettings> | null>(null)
+  const [settings, setSettings] = useState<Result<ModelPriceTable> | null>(null)
   /** Every model a runner pins, or null when `/v1/runtimes` was not read. */
   const [pinned, setPinned] = useState<string[] | null>(null)
   const [typed, setTyped] = useState<TypedPrices>({})
@@ -1877,7 +1897,7 @@ export function ModelPricesCard({ admin }: { admin: boolean | null }) {
 
   useEffect(() => {
     let live = true
-    void settle(() => loadPlatformSettings()).then((r) => {
+    void settle(() => loadModelPrices()).then((r) => {
       if (!live) return
       setSettings(r)
       if (r.status === 'ok' || r.status === 'stale') setTyped(typedOf(r.data.model_prices))
@@ -1945,7 +1965,7 @@ export function ModelPricesCard({ admin }: { admin: boolean | null }) {
       return
     }
     if (r.status === 'ok' || r.status === 'stale') {
-      setSettings(r)
+      setSettings({ ...r, data: { model_prices: r.data.model_prices } })
       setTyped(typedOf(r.data.model_prices))
       setSaved({ settings: r.data, models: sent })
     }
@@ -1972,17 +1992,13 @@ export function ModelPricesCard({ admin }: { admin: boolean | null }) {
       {settings === null || settings.status === 'loading' ? (
         <p className="ur-small">Reading…</p>
       ) : data === null ? (
-        settings.status === 'error' && settings.error.httpStatus === 403 ? (
-          <p className="ur-small">Platform admins only.</p>
-        ) : (
-          // Two words, the console's mark for a failed read, with what failed
-          // one hover away: Pool limits is held to a word budget
-          // (prose.operator.test.tsx), as the card above says.
-          <p className="warn-text" role="alert"
-            title={settings.status === 'error' ? `${errorHeading(settings.error)}: ${settings.error.message}` : undefined}>
-            Not read
-          </p>
-        )
+        // Two words, the console's mark for a failed read, with what failed
+        // one hover away: Pool limits is held to a word budget
+        // (prose.operator.test.tsx), as the card above says.
+        <p className="warn-text" role="alert"
+          title={settings.status === 'error' ? `${errorHeading(settings.error)}: ${settings.error.message}` : undefined}>
+          Not read
+        </p>
       ) : (
         <form onSubmit={(e) => void save(e)}>
           <div className={`ctl-table ${tableMode(phone)}`}>
@@ -2003,20 +2019,30 @@ export function ModelPricesCard({ admin }: { admin: boolean | null }) {
                 {models.map((m) => {
                   const p = prices[m]
                   const rowMsg = said(m)
+                  const tiers = p?.tiers
+                  // A tiered row is read-only for an admin too (the card's comment says why).
+                  const edits = editable && tiers === undefined
                   return (
                     <tr key={m} role="row" data-model={m}>
                       <th role="rowheader" scope="row" className="mono" data-label="Model">
                         {m}
+                        {tiers !== undefined && (
+                          <ul className="adm-price-tiers ur-small" aria-label={`Tiers by prompt tokens, ${m}`}>
+                            {tiers.map((t, i) => (
+                              <li key={i} data-tier={i}>{tierLine(t, tiers[i - 1])}</li>
+                            ))}
+                          </ul>
+                        )}
                         {rowMsg !== undefined && <span className="warn-text" role="alert"> {rowMsg}</span>}
                       </th>
                       {PRICE_COLUMNS.map((c) => (
                         <td key={c.key} className="is-num mono" data-label={`${c.head} /M`}>
-                          {editable ? cell(m, c.key, c.head) : p === undefined ? '—' : String(p[c.key])}
+                          {edits ? cell(m, c.key, c.head) : p === undefined ? '—' : String(p[c.key])}
                         </td>
                       ))}
                       <td data-label="Currency">{p === undefined ? '—' : p.currency}</td>
                       <td data-label="Source">{p === undefined ? <span className="is-absent">cost not reported</span> : p.source}</td>
-                      <td className="mono" data-label="As of">{editable ? cell(m, 'as_of', 'As of') : p === undefined ? '—' : p.as_of}</td>
+                      <td className="mono" data-label="As of">{edits ? cell(m, 'as_of', 'As of') : p === undefined ? '—' : p.as_of}</td>
                       <td data-label="Set by">{p?.updated_by ?? '—'}</td>
                     </tr>
                   )

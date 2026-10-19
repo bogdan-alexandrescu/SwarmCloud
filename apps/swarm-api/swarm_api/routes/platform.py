@@ -1,7 +1,7 @@
 """Platform read models.
 
 /v1/stats, /v1/capacity, /v1/providers, /v1/resource-classes, /v1/runtimes,
-/v1/version.
+/v1/version, /v1/settings/model-prices.
 """
 
 from __future__ import annotations
@@ -68,6 +68,30 @@ def version(
 def _env(name: str) -> str | None:
     value = os.environ.get(name, "").strip()
     return value or None
+
+
+@router.get("/settings/model-prices")
+def model_prices(
+    # Declared, not used: every signed-in member may read the table, and the
+    # dependency is what keeps /v1 free of an unauthenticated hole.
+    auth: AuthContext = Depends(current_auth),  # noqa: ARG001
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The model list price table, read-only, for every signed-in member
+    (PRICES-FOLLOWUP, part of #1481).
+
+    The figures a stopped attempt is priced at are no secret of the admins':
+    a member reading "cost not reported", or an estimate, on their own
+    attempt needs the table to know why. So this serves exactly
+    `model_prices` as `Store.get_platform_settings` reads it -- the seed
+    while the setting was never written, every well-formed entry after, a
+    tiered model with its `tiers` -- and nothing else of the settings
+    document: its `updated_at` and `updated_by` name the last change to ANY
+    setting, which is not when a price changed; each entry carries its own
+    `as_of` and `updated_by`. Writing stays `PUT /v1/admin/settings`,
+    admin-only.
+    """
+    return {"model_prices": ctx.store.get_platform_settings()["model_prices"]}
 
 
 @router.get("/capacity")
