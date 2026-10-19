@@ -21,6 +21,12 @@
  * `data-person-name` is the marker the tests find on each caller (Approvals'
  * `decided_by`, People's row, the workflow page's owner, the task page's
  * submitter), so a caller that goes back to printing the email by hand fails.
+ *
+ * FIRST NAME BY DEFAULT, FULL NAME WHERE THE PERSON IS THE SUBJECT (owner,
+ * 2026-10-19, user-profile.md §7.1 amendment): `variant="first"` prints the
+ * saved name's first word, and only Admin › People and Settings › Profile pass
+ * `full`. The email still stands beside the name either way, and the whole
+ * name is in the title, so the short form hides nothing a hover cannot show.
  */
 import type { CSSProperties } from 'react'
 
@@ -50,14 +56,36 @@ const DOT: CSSProperties = { flexShrink: 0, whiteSpace: 'pre' }
 /** Never shrinks: the address is the part that identifies. */
 const EMAIL: CSSProperties = { flexShrink: 0, whiteSpace: 'nowrap' }
 
-export function PersonName({ email, name, className }: { email: string; name?: string | null; className?: string }) {
-  const shown = typeof name === 'string' && name.trim() !== '' ? name : null
+export type PersonNameVariant = 'first' | 'full'
+
+/**
+ * The first word of a saved name, split on whitespace only: a hyphen or an
+ * apostrophe is part of the word ("Mary-Jane O'Neil" is "Mary-Jane"), and a
+ * one-word name is the whole name.
+ */
+export function firstName(name: string): string {
+  return name.trim().split(/\s+/)[0] ?? ''
+}
+
+export function PersonName({
+  email,
+  name,
+  className,
+  variant = 'first',
+}: {
+  email: string
+  name?: string | null
+  className?: string
+  variant?: PersonNameVariant
+}) {
+  const whole = typeof name === 'string' && name.trim() !== '' ? name : null
+  const shown = whole === null ? null : variant === 'full' ? whole : firstName(whole)
   return (
     <span
       className={className === undefined ? 'person-name' : `person-name ${className}`}
       data-person-name=""
       data-email={email}
-      title={shown === null ? email : `${shown} · ${email}`}
+      title={whole === null ? email : `${whole} · ${email}`}
       style={BOX}
     >
       {shown !== null && (
