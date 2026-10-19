@@ -213,6 +213,8 @@ WRITES: list[tuple[str, str, str, Any]] = [
     ("account sign-in finish", "POST", "/v1/accounts/exchange", "EXCHANGE"),
     ("account refresh", "POST", f"/v1/accounts/{ACCOUNT}/refresh", None),
     ("account lending", "PUT", f"/v1/accounts/{ACCOUNT}/lending", {"lend_to": []}),
+    ("account model classes", "PUT", f"/v1/accounts/{ACCOUNT}/model-classes",
+     {"model_classes": []}),
     ("account state", "PUT", f"/v1/accounts/{ACCOUNT}/state", {"state": "PAUSED"}),
     ("account delete", "DELETE", f"/v1/accounts/{ACCOUNT}", None),
 ]

@@ -307,6 +307,9 @@ def test_a_bad_document_is_not_rewritten_by_the_path_that_failed_to_read_it(
 
 SINGLE_ACCOUNT_ROUTES = {
     "lending": lambda c, i: c.put(f"/v1/accounts/{i}/lending", json={"lend_to": []}),
+    "model-classes": lambda c, i: c.put(
+        f"/v1/accounts/{i}/model-classes", json={"model_classes": []}
+    ),
     "state": lambda c, i: c.put(f"/v1/accounts/{i}/state", json={"state": "PAUSED"}),
     "refresh": lambda c, i: c.post(f"/v1/accounts/{i}/refresh"),
     "remove": lambda c, i: c.delete(f"/v1/accounts/{i}"),

@@ -155,6 +155,12 @@ class FakePool:
         self.accounts[account_id]["lend_to"] = list(lend_to)
         return {"account": dict(self.accounts[account_id])}
 
+    def set_model_classes(self, account_id: str, *, model_classes: list[str]) -> dict:
+        self.calls.append(("set_model_classes", account_id, tuple(model_classes)))
+        self._maybe_fail()
+        self.accounts[account_id]["model_classes"] = list(model_classes)
+        return {"account": dict(self.accounts[account_id])}
+
     def set_state(self, account_id: str, *, state: str, reason: str) -> dict:
         self.calls.append(("set_state", account_id, state, reason))
         self._maybe_fail()
@@ -245,6 +251,7 @@ def test_list_marks_a_stale_reading_rather_than_rendering_it_as_a_number(api_con
         ("post", "/v1/accounts/eng:primary/refresh", None),
         ("delete", "/v1/accounts/eng:primary", None),
         ("put", "/v1/accounts/eng:primary/lending", {"lend_to": ["research"]}),
+        ("put", "/v1/accounts/eng:primary/model-classes", {"model_classes": ["opus"]}),
         ("put", "/v1/accounts/eng:primary/state", {"state": "PAUSED", "reason": "x"}),
     ],
 )
@@ -435,6 +442,7 @@ def test_the_pool_takes_subscriptions_only_so_provider_is_not_a_choice(
     [
         ("put", "/v1/accounts/research:shared/state", {"state": "PAUSED", "reason": "x"}),
         ("put", "/v1/accounts/research:shared/lending", {"lend_to": []}),
+        ("put", "/v1/accounts/research:shared/model-classes", {"model_classes": ["opus"]}),
         ("post", "/v1/accounts/research:shared/refresh", None),
         ("delete", "/v1/accounts/research:shared", None),
     ],
@@ -502,6 +510,21 @@ def test_owner_can_pause_relend_refresh_and_remove(client, pool):
     assert removed.status_code == 200
     assert removed.json() == {"removed": "eng:primary", "secret": "retained"}
     assert "eng:primary" not in pool.accounts
+
+
+def test_the_owner_sets_the_model_classes_an_account_serves(client, pool):
+    """Owner decision R5: an account whose plan cannot run a class is narrowed
+    to the classes it can, and the broker assigns it nothing else. The list is
+    forwarded as sent; the broker owns the vocabulary check."""
+    narrowed = client.put(
+        "/v1/accounts/eng:primary/model-classes",
+        headers=auth_header("alice"),
+        json={"model_classes": ["opus"]},
+    )
+
+    assert narrowed.status_code == 200, narrowed.text
+    assert narrowed.json()["account"]["model_classes"] == ["opus"]
+    assert ("set_model_classes", "eng:primary", ("opus",)) in pool.calls
 
 
 def test_a_state_the_broker_rejects_comes_back_as_its_own_422(api_context):
