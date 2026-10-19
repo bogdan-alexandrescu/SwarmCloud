@@ -277,12 +277,14 @@ describe('the Sky spine shell', () => {
     window.history.replaceState(null, '', '/')
   })
 
-  it('draws the spine in one fixed order: Submit, the five sections, Help, API reads', () => {
+  it('draws the spine in one fixed order: Profile, Submit, the five sections, Help, API reads', () => {
     render(<App />)
     const spine = document.querySelector('.sk-spine')!
     // Links since #503 (a section opens in a new tab and copies as a link).
-    const labels = [...spine.querySelectorAll('a.sk-ri')].map((b) => b.textContent?.trim())
-    expect(labels).toEqual(['Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Admin', 'Help', 'API reads'])
+    // Profile first since NAV-PROFILE (#1633); its icon is the person's
+    // initials, so each item is read by its label.
+    const labels = [...spine.querySelectorAll('a.sk-ri')].map((b) => (b.querySelector('small') ?? b).textContent?.trim())
+    expect(labels).toEqual(['Profile', 'Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Admin', 'Help', 'API reads'])
   })
 
   it('lists the open section\'s pages in the panel, with the open page\'s children', async () => {

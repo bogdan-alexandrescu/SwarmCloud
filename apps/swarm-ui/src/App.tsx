@@ -1555,10 +1555,18 @@ export function spineOf(sectionId: string, tab = ''): SpineSection {
       return 'api'
     case GITHUB_CALLBACK:
       return 'work'
+    // EVERY SETTINGS PAGE LIGHTS PROFILE (NAV-PROFILE; part of #1633): its
+    // panel holds them. Only the six exact addresses are these pages;
+    // `#settings/<anything else>` is Pool limits (LEGACY), and lights Admin.
+    case SETTINGS:
+      return PROFILE_PANEL_TABS.includes(tab) ? 'profile' : null
     default:
       return null
   }
 }
+
+/** The settings tabs Profile's panel lists, and the one-time key link that opens API keys. */
+const PROFILE_PANEL_TABS: readonly string[] = [PROFILE_TAB, KEYS_TAB, KEY_LINK_TAB, WORKSPACE_TAB, MCP_TAB, PEOPLE_TAB]
 
 /**
  * THE HEAD (§B3): 44px, spanning the work area, above everything routed.

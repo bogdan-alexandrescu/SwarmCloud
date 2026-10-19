@@ -750,3 +750,43 @@ because every other test in that file stays green through it.
   given in the previous note: a measurement rewritten to match today is a
   measurement that has been falsified. The translation table in
   [`README.md`](README.md) gained the four new rows.
+
+## Changed, 2026-10-19 — every settings page sits under Profile, the spine's first item (#1633)
+
+Owner decision, 2026-10-19 ("All under Profile; Admin by role"), part 1
+(lane NAV-PROFILE; part 2, NAV-ADMIN-ROLE, owns Admin's visibility).
+
+**Why.** The settings pages had no section. Each lane that added one put a
+"Settings ›" link in the panel foot under the signed-in name — API keys, then
+Workspace, MCP servers and Profile — until four links stood between the name
+and the theme toggle, and the fifth page, People and roles
+(`/settings/people`), had no link anywhere: reached only by typing it. A foot
+that grows by one line per lane is not navigation.
+
+**What holds now.**
+
+- **Profile is the first spine item**, under the Hive and above Submit. Its
+  icon is the person's avatar (their initials, the email in its title); the
+  avatar that ended the spine's foot went with it, so the person is drawn
+  once. Help and API reads stay at the foot; collapsed, the compact Sign out
+  stays there too, since the panel's is not drawn.
+- **Its panel lists five pages, in this order:** Profile, API keys, Workspace,
+  MCP servers, People and roles (`PANEL_PAGES.profile` in `Spine.tsx`). The
+  person's own pages first, then the selected workspace's. The collapsed
+  spine's flyout and the phone drawer show the same five, because they draw
+  the same list.
+- **The addresses did not change.** Every `settings/*` route, LEGACY and
+  MOVED_PANES entry behaves as before; `spineOf` (App.tsx) lights Profile for
+  the five pages and for the one-time key link (`settings/keys/typesafe?…`),
+  which lights API keys. `#settings/<anything else>` still lands on Pool
+  limits, and so lights Admin.
+- **The panel foot holds the name** (first name, PROFILE-NAMES), the admin
+  tag, Sign out, the email and the theme toggle — no links. The `sk-pset`
+  rules went with the links.
+- **Profile is not a `SECTIONS` entry.** It is a spine panel outside
+  `SECTIONS`, like Submit's pages: the issue forms already name each page as
+  "Settings › <page>", and a sixth section would have moved their "Where"
+  list (`tests/unit/scripts/test_issue_forms.py`) for no change a reporter
+  can see.
+
+`apps/swarm-ui/src/__tests__/spine.profile.test.tsx` holds all of it.
