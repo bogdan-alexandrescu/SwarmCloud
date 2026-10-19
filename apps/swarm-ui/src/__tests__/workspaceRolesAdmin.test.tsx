@@ -1,18 +1,20 @@
-// ADMIN › PEOPLE'S WORKSPACE ROLES (lane ROLES-UI-ADMIN; part of #1518;
-// docs/design/workspace-roles.md §4.3, §4.8, owner answer Q2).
+// ADMIN › PEOPLE'S WORKSPACE ROLES (lanes ROLES-UI-ADMIN, ROLES-ADMIN-LIST;
+// part of #1518; docs/design/workspace-roles.md §4.3, §4.8, owner answer Q2).
 //
 // WHAT EACH CASE HOLDS:
-//   * Admin › People has a "Workspace roles" card listing each registered
-//     group workspace the platform admin reaches (`GET /v1/tenants/mine`,
-//     memberships and reach entries alike) with its default, its admins and
-//     its number of overrides, and never a personal (`u-`) workspace;
+//   * Admin › People has a "Workspace roles" card listing every registered
+//     group workspace from `GET /v1/admin/workspaces/roles` -- Terraform
+//     groups and job-made ones -- with its default, its admins, its number of
+//     overrides and each override's role, granter and when, from ONE read per
+//     page and never a read per workspace;
+//   * "Show more workspaces" reads the next page with its `page_token`;
+//   * an entry the list could not serve shows the API's reason and offers
+//     that workspace's own roster read;
 //   * "Name an admin" sends `PUT /v1/admin/workspaces/{id}/roles/person` with
 //     `{email, role: "admin", via: "console"}` -- the email in the body, never
-//     the path -- and nothing without an email;
+//     the path -- and nothing without an email, and re-reads the page;
 //   * the default selector offers `viewer` and `member` only, and "Set
 //     default" sends the admin route's `/default`;
-//   * a workspace the list does not carry can be opened by its id, and an id
-//     the API does not know reads as the API's refusal, never as an empty one;
 //   * the Manage drawer has "Roles in workspaces", read from
 //     `GET /v1/admin/roles/person?email=`.
 //
@@ -54,12 +56,6 @@ const PEOPLE = {
   admins_error: null,
 }
 
-const MINE = [
-  { tenant_id: 'u-owner', display_name: 'Your workspace (u-owner)', kind: 'user', via: 'personal', is_default: true },
-  { tenant_id: 'eng', display_name: 'eng@example.com', kind: 'group', via: 'member' },
-  { tenant_id: 'ops', display_name: 'ops@example.com', kind: 'group', via: 'platform_admin', role: { name: 'admin', source: 'platform_admin' } },
-]
-
 const ROLES = [
   { name: 'viewer', summary: 'Sees everything in this workspace; changes nothing.' },
   { name: 'member', summary: 'Submits, approves, answers, cancels.' },
@@ -72,11 +68,26 @@ function override(email: string, role: string): Json {
 
 const ROSTERS: Record<string, Json> = {
   eng: {
-    tenant_id: 'eng', kind: 'group', default_role: 'member', default_source: 'grant',
-    people: [override('bob@example.com', 'admin'), override('carol@example.com', 'viewer')], roles: ROLES, audit: [],
+    tenant_id: 'eng', kind: 'group', group: 'eng@example.com', registered_by: 'terraform', default_role: 'member', default_source: 'grant',
+    people: [override('bob@example.com', 'admin'), override('carol@example.com', 'viewer')],
   },
-  ops: { tenant_id: 'ops', kind: 'group', default_role: 'member', default_source: 'migration', people: [], roles: ROLES, audit: [] },
-  sec: { tenant_id: 'sec', kind: 'group', default_role: 'viewer', default_source: 'grant', people: [], roles: ROLES, audit: [] },
+  ops: { tenant_id: 'ops', kind: 'group', group: 'ops@example.com', registered_by: 'workspace_job', default_role: 'member', default_source: 'migration', people: [] },
+  sec: {
+    tenant_id: 'sec', kind: 'group', group: 'sec@example.com', registered_by: 'terraform',
+    unavailable: true, code: 'too_many_grants', message: 'this page holds more grants than one read looks at; read this workspace alone',
+  },
+  design: { tenant_id: 'design', kind: 'group', group: 'design@example.com', registered_by: 'workspace_job', default_role: 'viewer', default_source: 'grant', people: [] },
+}
+
+/** The list's two pages: eng, ops and sec, then design. */
+const PAGES: Record<string, Json> = {
+  '': { workspaces: [ROSTERS.eng, ROSTERS.ops, ROSTERS.sec], roles: ROLES, next_page_token: 'sec' },
+  sec: { workspaces: [ROSTERS.design], roles: ROLES, next_page_token: null },
+}
+
+/** `GET /v1/admin/workspaces/{id}/roles`: what the per-workspace route serves for a workspace read alone. */
+const ALONE: Record<string, Json> = {
+  sec: { tenant_id: 'sec', kind: 'group', default_role: 'viewer', default_source: 'grant', people: [override('dan@example.com', 'admin')], roles: ROLES, audit: [] },
 }
 
 type Write = (body: unknown) => { status: number; body: unknown }
@@ -84,10 +95,14 @@ type Write = (body: unknown) => { status: number; body: unknown }
 async function mount(writes: Record<string, Write> = {}) {
   const calls = serve((m, url, b) => {
     if (m === 'GET' && url === '/v1/admin/people') return { status: 200, body: PEOPLE }
-    if (m === 'GET' && url === '/v1/tenants/mine') return { status: 200, body: MINE }
+    if (m === 'GET' && (url === '/v1/admin/workspaces/roles' || url.startsWith('/v1/admin/workspaces/roles?'))) {
+      const token = new URLSearchParams(url.split('?')[1] ?? '').get('page_token') ?? ''
+      const page = PAGES[token]
+      return page === undefined ? { status: 422, body: { code: 'validation_failed', message: 'page_token names no registered group workspace' } } : { status: 200, body: page }
+    }
     const ws = /^\/v1\/admin\/workspaces\/([^/]+)\/roles$/.exec(url)
     if (m === 'GET' && ws !== null) {
-      const r = ROSTERS[ws[1]!]
+      const r = ALONE[ws[1]!]
       return r === undefined ? { status: 404, body: { code: 'not_found', message: 'no registered group workspace by that id' } } : { status: 200, body: r }
     }
     if (m === 'GET' && url.startsWith('/v1/admin/roles/person?')) {
@@ -139,18 +154,50 @@ afterEach(() => {
 })
 
 describe('Admin › People: the Workspace roles card', () => {
-  it('lists each group workspace with its default, its admins and its overrides, and no personal workspace', async () => {
-    // MUTATION: list every `/v1/tenants/mine` entry, or drop the card from People.
-    const { card } = await mount()
+  it('lists every group workspace from one read of the admin list, with its default, its admins and its overrides', async () => {
+    // MUTATION: read each roster alone, or list `/v1/tenants/mine`, or drop the card from People.
+    const { calls, card } = await mount()
     expect(within(card).getByRole('heading', { name: 'Workspace roles' })).toBeTruthy()
     const eng = await loaded('eng')
     expect(eng.querySelector('[data-default]')!.getAttribute('data-default')).toBe('member')
     expect(visible(eng.querySelector('.wra-admins'))).toContain('bob@example.com')
     expect(visible(eng.querySelector('.wra-count'))).toBe('2 overrides')
+    const carol = visible(eng.querySelector('li[data-email="carol@example.com"]'))
+    expect(carol).toContain('viewer')
+    expect(carol).toContain('given by owner@example.com (platform admin), 30m ago')
+    // A group the workspace job made is listed beside the Terraform ones.
     const ops = await loaded('ops')
     expect(visible(ops.querySelector('.wra-admins'))).toBe('no admin yet')
-    expect(visible(ops)).toContain('platform admin')
-    expect(rowOf('u-owner')).toBeNull()
+    expect(visible(ops)).toContain('made by the workspace job')
+    expect(visible(ops)).toContain('as before roles')
+    const reads = calls.filter((c) => c.method === 'GET' && c.url.startsWith('/v1/admin/workspaces/'))
+    expect(reads.map((c) => c.url)).toEqual(['/v1/admin/workspaces/roles'])
+    expect(calls.some((c) => c.url === '/v1/tenants/mine')).toBe(false)
+  })
+
+  it('reads the next page with its token on "Show more workspaces"', async () => {
+    const { calls, card } = await mount()
+    await loaded('eng')
+    expect(rowOf('design')).toBeNull()
+    fireEvent.click(within(card).getByRole('button', { name: 'Show more workspaces' }))
+    const design = await loaded('design')
+    expect(design.querySelector('[data-default]')!.getAttribute('data-default')).toBe('viewer')
+    expect(calls.some((c) => c.method === 'GET' && c.url === '/v1/admin/workspaces/roles?page_token=sec')).toBe(true)
+    // The last page offers no more.
+    expect(within(card).queryByRole('button', { name: 'Show more workspaces' })).toBeNull()
+  })
+
+  it('shows why an entry was not listed, and reads that workspace alone on request', async () => {
+    // MUTATION: render an unavailable entry as an empty roster.
+    const { calls } = await mount()
+    await loaded('eng')
+    const sec = rowOf('sec')!
+    expect(visible(sec)).toContain('read this workspace alone (too_many_grants)')
+    expect(sec.querySelector('[data-default]')).toBeNull()
+    fireEvent.click(within(sec).getByRole('button', { name: 'Read this workspace alone' }))
+    const alone = await loaded('sec')
+    expect(visible(alone.querySelector('.wra-admins'))).toBe('dan@example.com')
+    expect(calls.some((c) => c.method === 'GET' && c.url === '/v1/admin/workspaces/sec/roles')).toBe(true)
   })
 
   it('"Name an admin" puts {email, role: admin} in the body of the admin route, and sends nothing without an email', async () => {
@@ -173,6 +220,8 @@ describe('Admin › People: the Workspace roles card', () => {
     expect(w.url).toBe('/v1/admin/workspaces/ops/roles/person')
     expect(w.body).toEqual({ email: 'carol@example.com', role: 'admin', via: 'console' })
     await waitFor(() => expect(visible(rowOf('ops'))).toContain('carol@example.com is now admin in ops'), WAIT)
+    // The write re-reads the page it was made from.
+    await waitFor(() => expect(calls.filter((c) => c.method === 'GET' && c.url === '/v1/admin/workspaces/roles')).toHaveLength(2), WAIT)
   })
 
   it('offers viewer and member as the default, and "Set default" writes the admin route', async () => {
@@ -201,23 +250,6 @@ describe('Admin › People: the Workspace roles card', () => {
     fireEvent.click(within(carol).getByRole('button', { name: 'Return to default' }))
     await waitFor(() => expect(writesOf(calls)).toHaveLength(1), WAIT)
     expect(writesOf(calls)[0]).toMatchObject({ method: 'DELETE', url: '/v1/admin/workspaces/eng/roles/person', body: { email: 'carol@example.com', via: 'console' } })
-  })
-
-  it('opens a workspace the list does not carry by its id, and shows the API refusal for one it does not know', async () => {
-    const { card } = await mount()
-    await loaded('eng')
-    const field = within(card).getByLabelText('Workspace id')
-    fireEvent.change(field, { target: { value: 'sec' } })
-    fireEvent.click(within(card).getByRole('button', { name: 'Open' }))
-    const sec = await loaded('sec')
-    expect(sec.querySelector('[data-default]')!.getAttribute('data-default')).toBe('viewer')
-    fireEvent.change(field, { target: { value: 'nope' } })
-    fireEvent.click(within(card).getByRole('button', { name: 'Open' }))
-    await waitFor(() => expect(visible(rowOf('nope'))).toContain('no registered group workspace by that id'), WAIT)
-    // A personal workspace is never offered: the API reaches none (§4.2).
-    fireEvent.change(field, { target: { value: 'u-carol' } })
-    fireEvent.click(within(card).getByRole('button', { name: 'Open' }))
-    expect(rowOf('u-carol')).toBeNull()
   })
 })
 

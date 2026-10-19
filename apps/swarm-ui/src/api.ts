@@ -41,6 +41,7 @@ import type {
   ReminderCadence, WorkspaceRole,
   DefaultRoleChange, PersonRoleChange, PersonRoles, PersonWorkspaceRole, RoleSummary, WorkspaceRoleEvent, WorkspaceRoleMe,
   WorkspaceRoleOverride, WorkspaceRoles, WorkspaceRoster,
+  AdminWorkspaceRoles, AdminWorkspaceRolesPage,
 } from './types'
 
 // The fetch contract lives in fetch.ts. This file is only the list of reads
@@ -6863,6 +6864,30 @@ export async function setWorkspaceDefaultRole(role: string, reason = ''): Promis
 /** `GET /v1/admin/workspaces/{tenant_id}/roles` (platform admin): any registered group workspace's roster, without selecting it. */
 export async function loadAdminWorkspaceRoles(tenantId: string): Promise<Result<WorkspaceRoster>> {
   return readAs(route('/v1/admin/workspaces/{tenant_id}/roles', { tenant_id: tenantId }), normWorkspaceRoster)
+}
+
+/** One page's entries as `AdminWorkspaceRoles`: an entry without an id is dropped, and only an explicit `unavailable` withholds the roster. */
+export function normAdminWorkspaceRolesPage(raw: unknown): AdminWorkspaceRolesPage {
+  const r = isObj(raw) ? raw : {}
+  const roles = r.roles
+  const workspaces = (Array.isArray(r.workspaces) ? r.workspaces : []).flatMap((w): AdminWorkspaceRoles[] => {
+    if (!isObj(w) || str(w.tenant_id) === '') return []
+    const head = { tenant_id: str(w.tenant_id), group: str(w.group), registered_by: str(w.registered_by) }
+    if (w.unavailable === true) return [{ ...head, roster: null, unavailable: { code: str(w.code), message: str(w.message) } }]
+    // The page carries the role table once; each roster is read with it.
+    return [{ ...head, roster: normWorkspaceRoster({ ...w, roles, audit: [] }), unavailable: null }]
+  })
+  return { workspaces, next_page_token: strOrNull(r.next_page_token) }
+}
+
+/**
+ * `GET /v1/admin/workspaces/roles` (platform admin): every registered group
+ * workspace's default and overrides, a page at a time -- one read per page,
+ * never one per workspace. `pageToken` is the previous page's `next_page_token`.
+ */
+export async function loadAdminWorkspacesRoles(pageToken: string | null = null): Promise<Result<AdminWorkspaceRolesPage>> {
+  const q = pageToken === null ? undefined : new URLSearchParams({ page_token: pageToken })
+  return readAs(route('/v1/admin/workspaces/roles', {}, q), normAdminWorkspaceRolesPage, (d) => d.workspaces.length === 0)
 }
 
 /** `PUT /v1/admin/workspaces/{tenant_id}/roles/person` (platform admin): how a group workspace's first admin is named (Q2). */
