@@ -161,6 +161,20 @@ def _code(response) -> str:
     return response.json().get("code")
 
 
+def _set_state(db, tenant_id: str, state: str, **fields: Any) -> None:
+    """Moves a stored record on as the setup job or an earlier decision
+    would have: the routes below act on what the record says."""
+    db.docs[f"workspaces/{tenant_id}"].update({"state": state, **fields})
+
+
+def _membership_checks(directory: RecordingDirectory) -> int:
+    return len([c for c in directory.calls
+                if c["url"].endswith(":checkTransitiveMembership")])
+
+
+STALE_DIRECTORY = {"checked_at": datetime(2026, 1, 1, tzinfo=timezone.utc), "readable": True}
+
+
 # --------------------------------------------------------------------------
 # the record: kind, absent reads personal
 # --------------------------------------------------------------------------
@@ -349,6 +363,50 @@ def test_a_second_identical_request_is_200_and_writes_nothing(client, db, publis
     assert len(publisher.messages) == messages
 
 
+@pytest.mark.parametrize("action,state", [
+    ("approve", ws.DENIED),
+    ("retry", ws.FAILED),
+])
+def test_approval_and_retry_of_a_group_ask_the_directory_again(client, db, publisher,
+                                                                directory, action,
+                                                                state) -> None:
+    """§4.2.3: the directory check is repeated at approval and at every
+    retry. An outage then is WORKSPACE_GROUP_UNREADABLE with nothing written;
+    an answer replaces the record's `directory` with a fresh one."""
+    created = _post(client, {"kind": "group", "principal": "reports@saga.xyz"})
+    assert created.status_code == 202, created.text
+    workspace_id = created.json()["workspace_id"]
+    decision = {"by": ROOT, "at": _now(),
+                "verdict": ws.DENIED if state == ws.DENIED else ws.APPROVED,
+                "reason": "earlier decision"}
+    _set_state(db, "reports", state, decision=decision,
+               directory=dict(STALE_DIRECTORY),
+               failure={"code": "STEP_FAILED"} if state == ws.FAILED else None)
+    asked = _membership_checks(directory)
+    audit = len(_audit(db))
+    messages = len(publisher.messages)
+
+    directory.fail = True
+    before = copy.deepcopy(db.docs)
+    refused = client.post(f"{ROUTE}/{workspace_id}/{action}", headers=auth_header("root"))
+    assert refused.status_code == 503, refused.text
+    assert _code(refused) == "WORKSPACE_GROUP_UNREADABLE"
+    assert _membership_checks(directory) == asked + 1
+    assert db.docs == before
+    assert len(publisher.messages) == messages
+
+    directory.fail = False
+    done = client.post(f"{ROUTE}/{workspace_id}/{action}", headers=auth_header("root"))
+    assert done.status_code == 200, done.text
+    assert _membership_checks(directory) == asked + 2
+    record = db.docs["workspaces/reports"]
+    assert record["state"] == ws.APPROVED
+    assert record["directory"]["readable"] is True
+    assert record["directory"]["checked_at"] != STALE_DIRECTORY["checked_at"]
+    assert len(_audit(db)) == audit + 1
+    assert [m["workspace_id"] for m in publisher.messages[messages:]] == [workspace_id]
+
+
 # --------------------------------------------------------------------------
 # service
 # --------------------------------------------------------------------------
@@ -379,6 +437,52 @@ def test_a_service_request_by_a_non_owner_admin_waits_for_the_owner(client, db,
     assert approved.status_code == 200, approved.text
     assert db.docs[f"workspaces/{tenant_id}"]["state"] == ws.APPROVED
     assert [m["workspace_id"] for m in publisher.messages] == [workspace_id]
+
+
+def _failed_service(client, db) -> tuple[str, str]:
+    """A service record dana filed, root approved and the job then failed."""
+    filed = _post(client, {"kind": "service", "principal": REPORTS_BOT}, user="dana")
+    assert filed.status_code == 202, filed.text
+    workspace_id = filed.json()["workspace_id"]
+    approved = client.post(f"{ROUTE}/{workspace_id}/approve", headers=auth_header("root"))
+    assert approved.status_code == 200, approved.text
+    tenant_id = ws.personal_tenant_id(REPORTS_BOT)
+    _set_state(db, tenant_id, ws.FAILED, failure={"code": "STEP_FAILED"})
+    return workspace_id, tenant_id
+
+
+def test_only_the_owner_may_retry_a_service_workspace(client, db, publisher) -> None:
+    workspace_id, tenant_id = _failed_service(client, db)
+    before = copy.deepcopy(db.docs)
+    messages = len(publisher.messages)
+
+    refused = client.post(f"{ROUTE}/{workspace_id}/retry", headers=auth_header("dana"))
+    assert refused.status_code == 403, refused.text
+    assert _code(refused) == "WORKSPACE_APPROVAL_OWNER_ONLY"
+    assert db.docs == before
+    assert len(publisher.messages) == messages
+
+    retried = client.post(f"{ROUTE}/{workspace_id}/retry", headers=auth_header("root"))
+    assert retried.status_code == 200, retried.text
+    assert db.docs[f"workspaces/{tenant_id}"]["state"] == ws.APPROVED
+    assert [m["workspace_id"] for m in publisher.messages[messages:]] == [workspace_id]
+
+
+def test_the_retry_transaction_refuses_a_non_owner_on_its_own(client, db, publisher,
+                                                              monkeypatch) -> None:
+    """The check inside the retry's transaction holds even when the read
+    before it is passed (a record that became a service between the two)."""
+    from swarm_api.people import People
+
+    workspace_id, _ = _failed_service(client, db)
+    monkeypatch.setattr(People, "_directory_before", lambda self, *a, **kw: None)
+    before = copy.deepcopy(db.docs)
+    messages = len(publisher.messages)
+    refused = client.post(f"{ROUTE}/{workspace_id}/retry", headers=auth_header("dana"))
+    assert refused.status_code == 403, refused.text
+    assert _code(refused) == "WORKSPACE_APPROVAL_OWNER_ONLY"
+    assert db.docs == before
+    assert len(publisher.messages) == messages
 
 
 def test_the_owners_service_request_is_approved_at_once(client, db, publisher) -> None:
