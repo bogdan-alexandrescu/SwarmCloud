@@ -425,6 +425,107 @@ def test_preparing_again_keeps_the_relay(tmp_path):
 
 
 # --------------------------------------------------------------------------
+# The agent's own commits are its own (GITTOOLS-AUTHOR, part of #1225)
+# --------------------------------------------------------------------------
+#
+# Measured on every release from 2026-10-18 14:51Z: acceptance submits as a
+# service account, so its agent commits as `BOT_GIT_IDENTITY` -- what
+# `git_identity_env` hands the runner -- while the relay was configured with
+# the worker's own `git_author_*`, and refused every mid-task push
+# foreign_author. These commit the way the runner does (no `user.*`, the
+# runner's GIT_AUTHOR_*/GIT_COMMITTER_* from the same task document) and push
+# through the relay `ChildPath` builds.
+
+_SUBMITTER = "ada@example.invalid"
+_ROBOT = "swarm-accept@project.iam.gserviceaccount.com"
+
+_IDENTITY_TASKS = {
+    "display name": {"submitted_by": _SUBMITTER, "metadata": {"dispatch": {
+        "strategy": "direct-pr",
+        "git_identity": {"name": "Ada Lovelace", "email": _SUBMITTER}}}},
+    "bare submitter": {"submitted_by": _SUBMITTER,
+                       "metadata": {"dispatch": {"strategy": "direct-pr"}}},
+    "service account": {"submitted_by": _ROBOT,
+                        "metadata": {"dispatch": {"strategy": "direct-pr"}}},
+    "service account with the bot's record": {"submitted_by": _ROBOT, "metadata": {"dispatch": {
+        "strategy": "direct-pr",
+        "git_identity": {"name": "SwarmCloud", "email": "swarmcloud@users.noreply.github.com"}}}},
+    "no submitter": dict(_TASK),
+}
+
+
+def _commit_as(repo: Path, env: dict[str, str], name: str) -> None:
+    """`git commit` in the agent's clone with `env` and no identity config."""
+    clean = {k: v for k, v in os.environ.items()
+             if not k.startswith(("GIT_AUTHOR_", "GIT_COMMITTER_", "GIT_CONFIG"))}
+    clean.update({"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", **env})
+    (repo / name).write_text(f"{name}\n")
+    for argv in (["add", "-A"], ["commit", "--quiet", "-m", f"add {name}"]):
+        subprocess.run(["git", *argv], cwd=str(repo), env=clean, check=True,
+                       capture_output=True, text=True)
+
+
+def _push_answer(path, work: Path) -> dict[str, Any]:
+    """What the relay answers a push of HEAD: prepared (and discarded), or refused."""
+    from agent_worker import gittools
+
+    try:
+        path._git.prepare_push(path._git.cfg.pushable[0], request_id="r1").discard()
+    except gittools.GitToolRefused as exc:
+        return {"refused": exc.code, "message": exc.message}
+    return {"prepared": True}
+
+
+@pytest.mark.parametrize("case", list(_IDENTITY_TASKS))
+def test_a_commit_made_the_way_the_runner_makes_it_is_the_tasks_own(tmp_path, case):
+    from agent_worker.gitidentity import git_identity_env
+
+    task = _IDENTITY_TASKS[case]
+    path = _path(tmp_path, FakeRoutes())
+    _, work = _prepare(path, tmp_path, task)
+    _commit_as(work / "repo", git_identity_env(task), "work.txt")
+    assert _push_answer(path, work) == {"prepared": True}
+
+
+@pytest.mark.parametrize("case", list(_IDENTITY_TASKS))
+def test_a_foreign_commit_is_still_refused_foreign_author(tmp_path, case):
+    task = _IDENTITY_TASKS[case]
+    path = _path(tmp_path, FakeRoutes())
+    _, work = _prepare(path, tmp_path, task)
+    mallory = {"GIT_AUTHOR_NAME": "Mallory", "GIT_AUTHOR_EMAIL": "mallory@example.invalid",
+               "GIT_COMMITTER_NAME": "Mallory", "GIT_COMMITTER_EMAIL": "mallory@example.invalid"}
+    _commit_as(work / "repo", mallory, "foreign.txt")
+    assert _push_answer(path, work)["refused"] == "foreign_author"
+
+
+def test_a_persons_task_does_not_accept_a_commit_as_the_bot(tmp_path):
+    """Accepting the bot's identity for a task that names nobody must not let
+    it through on a task that names a person: there it is someone else."""
+    from agent_worker.gitidentity import BOT_GIT_IDENTITY
+
+    path = _path(tmp_path, FakeRoutes())
+    _, work = _prepare(path, tmp_path, _IDENTITY_TASKS["display name"])
+    name, email = BOT_GIT_IDENTITY
+    _commit_as(work / "repo", {"GIT_AUTHOR_NAME": name, "GIT_AUTHOR_EMAIL": email,
+                               "GIT_COMMITTER_NAME": name, "GIT_COMMITTER_EMAIL": email},
+               "bot.txt")
+    assert _push_answer(path, work)["refused"] == "foreign_author"
+
+
+def test_a_commit_naming_the_person_under_the_bots_committer_is_refused(tmp_path):
+    """One identity's author with another's committer is a pair nothing writes."""
+    from agent_worker.gitidentity import BOT_GIT_IDENTITY
+
+    path = _path(tmp_path, FakeRoutes())
+    _, work = _prepare(path, tmp_path, _IDENTITY_TASKS["display name"])
+    name, email = BOT_GIT_IDENTITY
+    _commit_as(work / "repo", {"GIT_AUTHOR_NAME": "Ada Lovelace", "GIT_AUTHOR_EMAIL": _SUBMITTER,
+                               "GIT_COMMITTER_NAME": name, "GIT_COMMITTER_EMAIL": email},
+               "mixed.txt")
+    assert _push_answer(path, work)["refused"] == "foreign_author"
+
+
+# --------------------------------------------------------------------------
 # A whole attempt
 # --------------------------------------------------------------------------
 
