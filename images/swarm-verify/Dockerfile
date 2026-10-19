@@ -117,6 +117,14 @@ COPY tests/acceptance/test_runner_git_tools.py /swarm/tests/acceptance/test_runn
 COPY tests/acceptance/test_caller_mcp.py /swarm/tests/acceptance/test_caller_mcp.py
 COPY tests/acceptance/mcp_echo_server/ /swarm/tests/acceptance/mcp_echo_server/
 
+# The frozen identity module, and nothing else of the application: common.sh's
+# personal_tenant_id imports its tenant_id_for_user to derive the caller's own
+# tenant (u-sw-c90291 for swarm-verify), where the workflow group's await-input
+# checks run (HW-ACCEPT-ID, owner decision 2026-10-19). Imported rather than
+# restated in shell, because the slug appends a digest of the full principal
+# and a copy would derive an id nobody resolves to. Standard library only.
+COPY apps/common/swarm_common/identity.py /swarm/apps/common/swarm_common/identity.py
+
 # Fail loudly at build time rather than at 3am if a script lost its bit.
 RUN chmod +x /swarm/scripts/*.sh /swarm/scripts/lib/*.sh 2>/dev/null || true
 

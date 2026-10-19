@@ -53,6 +53,11 @@ ACC_ADMIT_WAIT="${SWARM_ACCEPTANCE_ADMIT_WAIT:-300}"
 
 ACC_CHECK=""
 ACC_TASKS=()
+#: Tasks submitted in another tenant of this caller's -- the await-input checks
+#: run in its own service tenant (groups/workflow.sh WF_OWN_TENANT) -- as
+#: "TENANT TASK" lines: a cancel sent with ACC_TENANT's header would be
+#: another tenant's 404, so each is cancelled with its own.
+ACC_OTHER_TASKS=()
 ACC_WORK=""
 
 acc_init() {
@@ -60,8 +65,19 @@ acc_init() {
   ACC_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-acceptance.XXXXXX")"
 }
 
+# _acc_cancel_in TENANT TASK... -> cancel_all with X-Swarm-Tenant: TENANT.
+_acc_cancel_in() {
+  local SWARM_API_TENANT="$1"
+  shift
+  cancel_all "$@"
+}
+
 acc_cleanup() {
+  local entry
   cancel_all ${ACC_TASKS[@]+"${ACC_TASKS[@]}"}
+  for entry in ${ACC_OTHER_TASKS[@]+"${ACC_OTHER_TASKS[@]}"}; do
+    _acc_cancel_in "${entry%% *}" "${entry#* }"
+  done
   [[ -z "${ACC_WORK}" ]] || rm -rf "${ACC_WORK}"
 }
 
@@ -223,9 +239,20 @@ acc_submit() {
   fi
   __acc_id="$(cat "${__acc_out}")"
   rm -f "${__acc_out}"
-  ACC_TASKS+=("${__acc_id}")
+  acc_record_task "${__acc_id}"
   t_info "task ${__acc_id}"
   printf -v "${__acc_var}" '%s' "${__acc_id}"
+}
+
+# acc_record_task TASK -> TASK is cancelled at exit, in the tenant this
+# shell's API calls select now: ACC_TASKS for ACC_TENANT, ACC_OTHER_TASKS for
+# any other.
+acc_record_task() {
+  if [[ "${SWARM_API_TENANT}" == "${ACC_TENANT}" ]]; then
+    ACC_TASKS+=("$1")
+  else
+    ACC_OTHER_TASKS+=("${SWARM_API_TENANT} $1")
+  fi
 }
 
 # acc_workflow VAR BODY_JSON -> VAR holds the creation response; every step's
@@ -241,7 +268,7 @@ acc_workflow() {
   __acc_response="$(cat "${__acc_out}")"
   rm -f "${__acc_out}"
   while IFS= read -r __acc_id; do
-    if [[ -n "${__acc_id}" ]]; then ACC_TASKS+=("${__acc_id}"); fi
+    if [[ -n "${__acc_id}" ]]; then acc_record_task "${__acc_id}"; fi
   done < <(jq -r '.workflow.steps[].task_id // empty' <<<"${__acc_response}")
   t_info "workflow $(jq -r '.workflow.workflow_id' <<<"${__acc_response}")"
   printf -v "${__acc_var}" '%s' "${__acc_response}"
@@ -507,12 +534,14 @@ acc_leases_released() {
 # could never be true of a PNG, and could be false of a text file for a reason
 # that is the suite's own. curl writes straight to the file, the header on
 # stdin as common.sh's auth_config does everywhere -- and X-Swarm-Tenant, as
-# api_request sends it, or the task is another tenant's and answers 404.
+# api_request sends it (SWARM_API_TENANT: ACC_TENANT, unless a check runs in
+# another tenant of this caller's), or the task is another tenant's and
+# answers 404.
 acc_raw_artifact() {
   local task="$1" name="$2" out="$3" q code
   q="$(jq -rn --arg n "${name}" '$n | @uri')"
   if ! code="$(auth_config "$(api_credential)" | curl -sS -m 120 -K - -o "${out}" -w '%{http_code}' \
-      -H "X-Swarm-Tenant: ${ACC_TENANT}" \
+      -H "X-Swarm-Tenant: ${SWARM_API_TENANT}" \
       "$(api_url)${API_PREFIX}/tasks/${task}/artifacts/raw?name=${q}&disposition=attachment")"; then
     return 1
   fi

@@ -164,8 +164,9 @@ def test_run_workflow_runs_exactly_the_two_await_checks_in_the_own_tenant():
     assert len(judged) == 7
     # The id is derived before the first own-tenant submission.
     assert run.index("_wf_own_tenant") < run.index("_wf_in_own_tenant")
-    # Never typed in.
-    assert OWN not in WORKFLOW.read_text().replace(f"swarm-verify's {OWN}", "")
+    # Never typed in: no line of code names it (the comments may).
+    code = [line for line in WORKFLOW.read_text().splitlines() if not line.lstrip().startswith("#")]
+    assert not [line for line in code if OWN in line]
 
 
 def test_the_answer_asserts_it_was_taken_as_the_service_tenants_principal():

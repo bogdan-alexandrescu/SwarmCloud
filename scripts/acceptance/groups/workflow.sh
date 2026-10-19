@@ -37,6 +37,22 @@ WF_AWAIT_EXPIRES_SECONDS=3600
 # so the default lands about six minutes after the park -- the 300 s plus at
 # most one schedule tick (every minute) -- while the other checks run.
 WF_EXPIRE_SECONDS=300
+# THE AWAIT-INPUT CHECKS RUN IN THE CALLER'S OWN SERVICE TENANT (owner
+# decision 2026-10-19, HW-ACCEPT-ID; docs/design/human-steps.md). swarm-api
+# takes an answer from a person who is a member, or from a service tenant's
+# own principal acting in that tenant (awaitinput.py `service_principal`); a
+# service account in the GROUP tenant ACC_TENANT is 403 `person_required`, and
+# that is not relaxed. So both workflows are submitted, read and answered with
+# X-Swarm-Tenant set to WF_OWN_TENANT -- swarm-verify's u-sw-c90291, the path
+# oracle-api's u-or-9a0792 takes too -- which a service account may name
+# (auth.py `_with_own_service_tenant`) without its default leaving the group.
+# Derived at run time from the caller's verified email (GET /tenants/me) with
+# common.sh's personal_tenant_id, never typed in. Every other check stays in
+# ACC_TENANT. Their mock steps run on that tenant's own mock job (dev.tfvars
+# declares u-sw-c90291; await-input is control_plane and needs no job).
+WF_OWN_TENANT=""
+WF_OWN_PROBLEM=""
+
 # ONE DRAIN, as seconds: the scheduler's safety tick is one minute (a lost
 # task_finished wake costs at most that, apps/scheduler/scheduler/main.py),
 # and the answer's own wake promotes and admits the dependant in the same
@@ -88,12 +104,15 @@ run_workflow() {
           {step_id: "b", runner_profile: "mock", depends_on: ["a"], input_from: {a: $n}, input: {prompt: $p, steps: 1, sleep_seconds: 0}}
         ]}')" || carry=""
 
+  # The caller's own tenant, for the two await-input workflows below.
+  _wf_own_tenant || true
+
   # #1436's loop, live: draft -> review (a person) -> revise. `review` is
   # answered by _wf_check_await, which runs after the long checks, so it has
   # sat parked for minutes by then -- long enough for a lease to show if the
   # scheduler ever took one for it. max_files 1: the answer carries one file.
   ACC_CHECK="workflow: await-input"
-  acc_workflow await "$(jq -nc --argjson m "$(acc_metadata)" --arg p "acceptance ${ACC_RUN_ID} await" \
+  [[ -n "${WF_OWN_TENANT}" ]] && _wf_in_own_tenant acc_workflow await "$(jq -nc --argjson m "$(acc_metadata)" --arg p "acceptance ${ACC_RUN_ID} await" \
       --arg d "${WF_DRAFT_NAME}" --arg t "$(printf 'draft to review\nrun %s\n' "${ACC_RUN_ID}")" \
       --arg r "${WF_REVIEW_NAME}" --argjson e "${WF_AWAIT_EXPIRES_SECONDS}" '{
         priority: 10, metadata: $m, on_step_failure: "fail_workflow",
@@ -112,7 +131,7 @@ run_workflow() {
   # never applied, or applied as MERGE, the two would come out the other way.
   ACC_CHECK="workflow: await-input expiry"
   expire_default="$(jq -nc --arg run "${ACC_RUN_ID}" '{verdict: "NOT_YET", findings: [("acceptance " + $run + " default")]}')"
-  acc_workflow expire "$(jq -nc --argjson m "$(acc_metadata)" --arg p "acceptance ${ACC_RUN_ID} expire" \
+  [[ -n "${WF_OWN_TENANT}" ]] && _wf_in_own_tenant acc_workflow expire "$(jq -nc --argjson m "$(acc_metadata)" --arg p "acceptance ${ACC_RUN_ID} expire" \
       --argjson dflt "${expire_default}" --argjson e "${WF_EXPIRE_SECONDS}" '{
         priority: 10, metadata: $m, on_step_failure: "fail_workflow",
         steps: [
@@ -181,8 +200,44 @@ run_workflow() {
   _wf_check_cascade "${cascade}"
   _wf_check_integrate "${chain}"
   _wf_check_carry "${carry}" "${notes}"
-  _wf_check_await "${await}"
-  _wf_check_expire "${expire}" "${expire_default}"
+  _wf_in_own_tenant _wf_check_await "${await}"
+  _wf_in_own_tenant _wf_check_expire "${expire}" "${expire_default}"
+}
+
+# _wf_own_tenant -> sets WF_OWN_TENANT to the id of this caller's own tenant,
+# derived from the email GET /tenants/me verified, or leaves it empty and says
+# why in WF_OWN_PROBLEM. Called directly, never in $(), so both assignments
+# land in this shell.
+_wf_own_tenant() {
+  local out="${ACC_WORK}/wf-me.json" email own
+  WF_OWN_TENANT=""
+  WF_OWN_PROBLEM=""
+  if ! api_fetch "/tenants/me" "${out}"; then
+    WF_OWN_PROBLEM="GET /tenants/me answered HTTP ${API_STATUS}, so this caller's own tenant is not known"
+    return 1
+  fi
+  email="$(jq -r '.principal.email // empty' "${out}")"
+  if [[ -z "${email}" ]] || ! own="$(personal_tenant_id "${email}")"; then
+    WF_OWN_PROBLEM="this caller's own tenant could not be derived from GET /tenants/me's principal.email '${email:-none}' (common.sh personal_tenant_id)"
+    return 1
+  fi
+  if [[ ! "${own}" =~ ^u-[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
+    WF_OWN_PROBLEM="derived '${own}' for this caller's own tenant, which is not a personal tenant id"
+    return 1
+  fi
+  WF_OWN_TENANT="${own}"
+  t_info "await-input checks run in this caller's own tenant ${WF_OWN_TENANT} (X-Swarm-Tenant)"
+}
+
+# _wf_in_own_tenant COMMAND... -> COMMAND with every API call it makes
+# carrying X-Swarm-Tenant: WF_OWN_TENANT instead of ACC_TENANT: api_request,
+# acc_raw_artifact and _wf_post_answer all send SWARM_API_TENANT, and the
+# local shadows it for COMMAND and everything it calls, and no longer. A
+# function, not a subshell, so what COMMAND assigns (acc_workflow's VAR,
+# ACC_TASKS, ACC_OTHER_TASKS, the recorded results) stays in this shell.
+_wf_in_own_tenant() {
+  local SWARM_API_TENANT="${WF_OWN_TENANT:-${SWARM_API_TENANT}}"
+  "$@"
 }
 
 # _wf_final_state WORKFLOW_ID -> the derived workflow state.
@@ -522,14 +577,15 @@ _wf_lease_docs() {
 # the attachment, named WF_ATTACHMENT_NAME. curl sends the Content-Length the
 # route requires (411 without it) because both parts are read from files. Not
 # api_request, which sends JSON only; the header goes in on stdin, as
-# acc_raw_artifact sends it, and X-Swarm-Tenant with it, or the step is
-# another tenant's and answers 404.
+# acc_raw_artifact sends it, and X-Swarm-Tenant with it -- SWARM_API_TENANT,
+# as api_request sends it, which _wf_in_own_tenant points at WF_OWN_TENANT --
+# or the step is another tenant's and answers 404.
 WF_ANSWER_STATUS=""
 _wf_post_answer() {
   local wid="$1" step_id="$2" answer="$3" attachment="$4" out="$5" code
   WF_ANSWER_STATUS="000"
   if ! code="$(auth_config "$(api_credential)" | curl -sS -m 120 -K - -o "${out}" -w '%{http_code}' \
-      -H "X-Swarm-Tenant: ${ACC_TENANT}" \
+      -H "X-Swarm-Tenant: ${SWARM_API_TENANT}" \
       -F "answer=<${answer};type=application/json" \
       -F "file=@${attachment};filename=${WF_ATTACHMENT_NAME};type=text/markdown" \
       "$(api_url)${API_PREFIX}/workflows/${wid}/steps/${step_id}/input")"; then
@@ -552,25 +608,17 @@ _wf_post_answer() {
 #     each with the sha256 the answer recorded, and the file's equal to the
 #     bytes sent.
 #
-# THE ANSWERING IDENTITY IS AN OPEN QUESTION TO THE OWNER (HW-ACCEPT review,
-# 2026-10-19). The answer is posted as this suite's own caller, swarm-verify,
-# in ACC_TENANT (`smoke`, a group tenant). swarm-api takes an answer from a
-# person who is a member, or from a service tenant's own principal acting in
-# that tenant (awaitinput.py `service_principal`, §4.2.1); any other service
-# account is 403 `person_required`. swarm-verify cannot act in its own
-# service tenant `u-sw-c90291` either: it is in eng's and smoke's groups, so
-# it resolves to `eng`, `_tenant_choices` offers only those groups, and
-# `_with_own_workspace` never offers a service identity its `u-` id. So until
-# the owner picks the answering identity, every run on dev is that 403, and
-# the check FAILS on it, as a defect and not as a gap: the resume within one
-# drain and the staged form and file are three of the four behaviours this
-# group exists to prove, and HW-ENABLE waits on them.
+# THE ANSWERING IDENTITY is this suite's own caller, swarm-verify, in its OWN
+# service tenant (owner decision 2026-10-19, HW-ACCEPT-ID; see WF_OWN_TENANT
+# above): answered as that tenant's principal, `answered_as: service`, which
+# is the path oracle-api takes. In the group tenant ACC_TENANT the same answer
+# is 403 `person_required`, deliberately: no exception to it was made there.
 _wf_check_await() {
   local wf="$1" wid draft review revise state doc window leases docs attempts
   local answer_id answer attachment out reason answered_at sent recorded form_sha
   local events lease_at running_at delay content
   acc_check "workflow: await-input: a step waits for a member's answer holding no lease, and revise runs within one drain holding the posted form and file"
-  [[ -n "${wf}" ]] || { acc_fail "not submitted"; return 0; }
+  [[ -n "${wf}" ]] || { acc_fail "not submitted${WF_OWN_PROBLEM:+: ${WF_OWN_PROBLEM}}"; return 0; }
   wid="$(jq -r '.workflow.workflow_id' <<<"${wf}")"
   draft="$(workflow_step_task "${wf}" draft)"
   review="$(workflow_step_task "${wf}" review)"
@@ -613,7 +661,7 @@ _wf_check_await() {
   if ! _wf_post_answer "${wid}" review "${answer}" "${attachment}" "${out}"; then
     reason="$(jq -r 'if type == "object" then (.detail.reason // .code // "") else "" end' "${out}" 2>/dev/null || true)"
     if [[ "${WF_ANSWER_STATUS}" == "403" && "${reason}" == "person_required" ]]; then
-      acc_fail "swarm-api refused the answer, 403 person_required: this suite's caller is a service account in group tenant ${ACC_TENANT}, which §4.2.1 refuses, and it cannot select its own service tenant. The resume and the staged form and file are not proven until the owner picks the answering identity (HW-ACCEPT's questions.json)" "${review}"
+      acc_fail "swarm-api refused the answer, 403 person_required, in tenant ${SWARM_API_TENANT}: it did not take this caller as that service tenant's own principal (awaitinput.py service_principal; the tenant document must be kind user with exactly this caller's email as principal)" "${review}"
     else
       acc_fail "swarm-api did not take the answer: HTTP ${WF_ANSWER_STATUS} ${reason:-}" "${review}"
       [[ ! -s "${out}" ]] || _api_error_body "${out}"
@@ -625,7 +673,8 @@ _wf_check_await() {
   acc_assert_eq "SUCCEEDED ${sent}" "${recorded}" "the answer's response: the step's state and the digest recorded for the one file" "${review}"
   form_sha="$(jq -r '.artifact.sha256 // empty' "${out}")"
   answered_at="$(jq -r '.answered_at // empty' "${out}")"
-  acc_assert_eq "person" "$(task_field "${review}" '.result_summary.input.source // "none"')" "result_summary.input.source of the answered step" "${review}"
+  acc_assert_eq "person service" "$(task_field "${review}" '"\(.result_summary.input.source // "none") \(.result_summary.input.answered_as // "none")"')" \
+    "result_summary.input source and answered_as of the answered step: answered by the service tenant's own principal" "${review}"
 
   # revise: leased within one drain of the answer, and running.
   acc_run_to_end state "${revise}" || return 0
@@ -701,7 +750,7 @@ _wf_check_await() {
 _wf_check_expire() {
   local wf="$1" default="$2" wid ask revise ship state doc times ended leases stored
   acc_check "workflow: await-input expiry: a step nobody answers ends at expires_after with its declared default, and the when-gated steps take that branch"
-  [[ -n "${wf}" ]] || { acc_fail "not submitted"; return 0; }
+  [[ -n "${wf}" ]] || { acc_fail "not submitted${WF_OWN_PROBLEM:+: ${WF_OWN_PROBLEM}}"; return 0; }
   wid="$(jq -r '.workflow.workflow_id' <<<"${wf}")"
   ask="$(workflow_step_task "${wf}" ask)"
   revise="$(workflow_step_task "${wf}" revise)"

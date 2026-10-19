@@ -3880,6 +3880,16 @@ would have stopped every suite: a listed account is continuation-scoped
 (`swarm_api.auth.CONTINUATION_ROUTES`) and may submit nothing but a
 continuation.
 
+**One exception: the two await-input checks run in swarm-verify's own service
+tenant** (owner decision 2026-10-19, HW-ACCEPT-ID). A service account answers
+for no person in a group tenant, so their answer would be 403
+`person_required` in `smoke`; as its own service tenant's principal it is
+taken (docs/design/human-steps.md §4.2.2). `groups/workflow.sh` derives that
+id at run time (`u-sw-c90291` for swarm-verify) from the email
+`GET /tenants/me` verified, with `common.sh`'s `personal_tenant_id`, and sends
+it as `X-Swarm-Tenant` for those two workflows only; cleanup cancels their
+tasks in that tenant.
+
 **What the suite refuses.** Before any group runs, `run.sh` asks GitHub
 anonymously for the repository and refuses a 200 (public) or an unanswered
 read, and asks `GET /tenants/me` with the header and refuses any tenant but

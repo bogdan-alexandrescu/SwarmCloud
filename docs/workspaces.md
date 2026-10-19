@@ -432,7 +432,9 @@ Otherwise the response is 403 with a code:
    This is the same `assert_allowed_domain` every route uses.
 2. The caller is a **human**: the address does not match the frozen
    service-account pattern in `apps/common/swarm_common/identity.py`. A service
-   account's tenant is in `dev.tfvars` (`u-sw-c90291` for `swarm-verify`).
+   account's tenant is in `dev.tfvars` (`u-sw-c90291` for `swarm-verify`); a
+   service account may name its own service tenant in `X-Swarm-Tenant`, and its
+   default is unchanged (docs/multi-tenancy.md, "The tenant switcher").
    Otherwise the code is `WORKSPACE_NOT_FOR_SERVICE_ACCOUNTS`.
 3. The caller is not a secret-admin principal. This is the refusal `tenant_for`
    already makes, for the reason given there. Otherwise the code is
