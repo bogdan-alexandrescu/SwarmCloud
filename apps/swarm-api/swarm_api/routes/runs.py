@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from fastapi import APIRouter, Depends, Query, Response, status
 
@@ -52,6 +52,7 @@ from swarm_common.models import Tenant, new_id
 from swarm_common.states import TaskState
 
 from ..auth import AuthContext
+from .. import refusals, roles
 from ..deps import AppContext, current_auth, get_context, paged_limit, tenant_scope
 from ..errors import (
     ApiError,
@@ -59,6 +60,8 @@ from ..errors import (
     Forbidden,
     Gone,
     NotFound,
+    RoleMemberRequired,
+    RoleUnavailable,
     UpstreamUnavailable,
     ValidationFailed,
 )
@@ -86,6 +89,7 @@ from ..issueruns import (
     planner_task,
     auto_merge_default,
     refuse_auto_merge,
+    refuse_planner_model_class,
     run_summary,
     territory_overlap,
     widen_hold,
@@ -103,6 +107,7 @@ from ..plancontext import read_plan_context
 from ..reviewcontext import read_review_context
 from ..schemas import PlanApprove, PlanEdit, PlanReject, RunCreate
 from ..validation import parse_issue_ref
+from .tasks import require_member
 
 log = logging.getLogger(__name__)
 
@@ -392,6 +397,23 @@ class RunOwnerNotMember(Forbidden):
     code = "run_owner_not_member"
 
 
+class RunOwnerRoleNarrowed(RunOwnerNotMember):
+    """The run's creator is still in the tenant, but a grant holds them at
+    `viewer` there (docs/design/workspace-roles.md §4.8): they could not
+    submit this themselves, so nothing more is submitted as them either. A
+    `RunOwnerNotMember`, so the run fails exactly as it does for a creator
+    who left; its code is `role_member_required`, raised only through that
+    switch (`refusals.refuse`)."""
+
+    code = RoleMemberRequired.code
+
+
+#: `platform_admin_acted`'s `route` for an auto step submitted as a creator who
+#: acts in the run's workspace only as a platform admin (workspace-roles.md
+#: §4.2.4): a template no HTTP route has, as a schedule's firing has its own.
+RUN_OWNER_ROUTE = "issue_run_auto_step"
+
+
 def run_owner_auth(ctx: AppContext, run: IssueRun) -> AuthContext:
     """The submitter of an AUTO approval: the run's creator, in the run's tenant.
 
@@ -409,13 +431,24 @@ def run_owner_auth(ctx: AppContext, run: IssueRun) -> AuthContext:
     `SubmissionService.tenant_for` runs its collision, secret-admin and
     disabled checks against the tenant as registered.
 
-    AND ONLY WHILE THEY ARE STILL A MEMBER. The tick submits as the creator
+    AND ONLY WHILE THEY MAY STILL ACT THERE. The tick submits as the creator
     long after the run was created -- an auto approval, up to `fix_rounds`
-    CI fix rounds that push to the tenant's repository -- so membership is
-    asked of the directory again here, every time (`Authenticator.
-    is_tenant_member`, invariant 9). Removed from the tenant:
+    CI fix rounds that push to the tenant's repository -- so it is asked of
+    the directory again here, every time (`Authenticator.may_act_in`,
+    invariant 9; docs/design/workspace-roles.md §4.2.3): a member, or, in a
+    GROUP tenant, a platform admin who is not in its group (Q5). Neither:
     `RunOwnerNotMember`, and the run fails. A lookup that fails:
     `UpstreamUnavailable`, and the run waits for the next tick.
+
+    AND BY THEIR ROLE THERE NOW (§4.8, `_owner_acts_as`): a creator a grant
+    narrowed to `viewer` could not submit this themselves, so with
+    `role_member_required` on the run fails as `RunOwnerRoleNarrowed`; off,
+    it goes ahead and the log names the refusal. A creator who acts only as
+    a platform admin -- not in the group, or narrowed below `member` in it --
+    has a `platform_admin_acted` row written BEFORE this returns (§4.2.4),
+    and a row that cannot be written is a 503 the run waits out: nothing is
+    submitted unaudited. The context returned is never wider than an
+    ordinary member's: `is_admin` stays False.
     """
     tenant = ctx.store.get_tenant(run.tenant_id)
     if tenant is None:
@@ -424,7 +457,8 @@ def run_owner_auth(ctx: AppContext, run: IssueRun) -> AuthContext:
     # submits as in `on_behalf_of`: its repository registration's creator,
     # held to exactly the same membership check below.
     email = run.on_behalf_of or run.created_by
-    if not ctx.authenticator.is_tenant_member(email, tenant):
+    via = ctx.authenticator.may_act_in(email, tenant)
+    if not via:
         log.warning(
             "issue run %s tenant=%s: its creator is no longer a member; nothing submitted",
             run.id, run.tenant_id,
@@ -433,7 +467,7 @@ def run_owner_auth(ctx: AppContext, run: IssueRun) -> AuthContext:
             f"the run's owner {email or '(not recorded)'} is no longer a member of tenant "
             f"{run.tenant_id!r}, so nothing more is submitted on their behalf"
         )
-    return AuthContext(
+    owner = AuthContext(
         principal=Principal(
             email=email,
             # Not a token subject: this context was never authenticated, and
@@ -445,7 +479,63 @@ def run_owner_auth(ctx: AppContext, run: IssueRun) -> AuthContext:
         tenant_id=run.tenant_id,
         is_admin=False,
         tenant_principal=tenant.principal,
+        tenant_via=roles.VIA_PLATFORM_ADMIN if via == "platform_admin" else "",
     )
+    if _owner_acts_as(ctx, owner, run) == roles.VIA_PLATFORM_ADMIN:
+        store = getattr(ctx, "roles", None)
+        if store is not None:
+            # `is_admin` only tells the audit a platform admin is acting,
+            # which `may_act_in` or `_owner_acts_as` has just established
+            # with a fresh lookup; the context returned stays a member's.
+            store.audit_platform_admin(
+                replace(owner, is_admin=True), method="POST", route=RUN_OWNER_ROUTE,
+                path_params={"run_id": run.id})
+    return owner
+
+
+def _owner_acts_as(ctx: AppContext, owner: AuthContext, run: IssueRun) -> str:
+    """Whether the run's creator may submit NOW, by their role in the run's
+    workspace (workspace-roles.md §4.8): "" as an ordinary member,
+    "platform_admin" when only their platform role lets the step through (so
+    it must be audited), and `RunOwnerRoleNarrowed` raised -- through the
+    `role_member_required` switch -- when a grant holds them at `viewer`.
+
+    The role is read FRESH: a narrowing made a minute ago must stop the next
+    auto step, and the tick has no caller to retry for. A role that cannot be
+    read: with the switch on, `RoleUnavailable` (a 503, so the run waits for
+    the next tick); off, the step goes ahead as it did before roles existed.
+    """
+    if owner.tenant_via == roles.VIA_PLATFORM_ADMIN:
+        return roles.VIA_PLATFORM_ADMIN
+    store = getattr(ctx, "roles", None)
+    if store is None:
+        return ""
+    code = RoleMemberRequired.code
+    try:
+        me = store.resolve(owner, fresh=True)
+    except RoleUnavailable:
+        if refusals.enforced(code):
+            raise
+        log.warning("role unavailable report-only code=%s tenant=%s email=%s run=%s",
+                    code, owner.tenant_id, owner.email, run.id)
+        return ""
+    if roles.at_least(me.role, roles.MEMBER):
+        return ""
+    # Below `member`, a platform admin still passes (Q5: a grant naming them
+    # is inert while they are one), asked past every cache.
+    if not roles.is_personal(owner) and ctx.authenticator.holds_platform_admin(
+            owner.email, fresh=True):
+        return roles.VIA_PLATFORM_ADMIN
+    ctx.metrics.role_refusals.labels(
+        code=code, enforced=str(refusals.enforced(code)).lower()).inc()
+    refusals.refuse(RunOwnerRoleNarrowed(
+        f"the run's owner {owner.email} holds {me.role} in tenant {run.tenant_id!r}; an "
+        "issue run's auto steps need member or above, so nothing more is submitted on "
+        "their behalf",
+        detail={"tenant_id": run.tenant_id, "role": me.role, "required": roles.MEMBER,
+                "source": me.source, "admins": []},
+    ))
+    return ""
 
 
 def advance_run(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
@@ -703,6 +793,9 @@ def create_run(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
+    # `member` or above (workspace-roles.md §4.1), before the issue is read
+    # or anything is created.
+    require_member(ctx, auth)
     # Before anything is created: a refused option writes nothing. A run that
     # does not say takes the `merge_policy` its tenant registered the issue's
     # repository with, else the platform's `merge_by_default` (contract
@@ -711,6 +804,11 @@ def create_run(
     # already made.
     if body.auto_merge is not None:
         refuse_auto_merge(body.auto_merge)
+    # The planner's class (#1435). Read with getattr: `RunCreate` is lane
+    # MODEL-API's schema, and until it declares the field a body naming one
+    # is refused there, so this is None and the planner is today's.
+    model_class = getattr(body, "model_class", None)
+    refuse_planner_model_class(model_class)
     ref = parse_issue_ref(body.issue)
     # The repository's open work, read with THIS caller's tenant's forge
     # token (invariant 9) before anything is created: a 403 or 404 refuses
@@ -746,6 +844,7 @@ def create_run(
     run = start_run(
         ctx, auth, ref, open_work=open_work, plan_approval=body.plan_approval,
         auto_merge=auto_merge, fix_rounds=body.fix_rounds, claude_session=body.claude_session,
+        model_class=model_class,
     )
     response.headers["Location"] = f"/v1/runs/{run.id}"
     return {"run": run.to_api()}
@@ -764,6 +863,7 @@ def start_run(
     schedule: dict | None = None,
     merge_approval: str | None = None,
     claude_session: str | None = None,
+    model_class: str | None = None,
 ) -> IssueRun:
     """The planner task, then the run document, then the first write-back.
 
@@ -785,6 +885,11 @@ def start_run(
     `claude_session` (SC-SESSION-SCOPE) is the Claude Code session the caller
     tagged the run with: on the planner and on the run, which copies it onto
     every workflow it starts.
+
+    `model_class` is the PLANNER's class (`RunCreate.model_class`, #1435),
+    checked by the caller (`refuse_planner_model_class`), and by
+    `submit_tasks` once lane MODEL-API's `TaskCreate` carries it. None runs the profile's default (`opus`). The plan's
+    steps take theirs from the plan (`issueruns.PlanStep.model_class`).
     """
     if merge_approval not in (None, "required"):
         raise ValueError(f"merge_approval is 'required' or None, not {merge_approval!r}")
@@ -805,7 +910,7 @@ def start_run(
     # sit PLANNING for ever.
     submission = ctx.submissions.submit_tasks(
         auth, [planner_task(ref, run_id, open_work, context=context.section,
-                            claude_session=claude_session)]
+                            claude_session=claude_session, model_class=model_class)]
     )
     planner = submission.tasks[0]
     now = ctx.now()
@@ -904,6 +1009,9 @@ def approve_plan(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
+    # Deciding a plan is a member's, read fresh (`approvals.require_decider`,
+    # workspace-roles.md §4.8), before the run is read or moved.
+    approvals.require_decider(ctx, auth)
     run = _runs(ctx).get(tenant_id, run_id)
     if run.state != RunState.PLANNED:
         raise Conflict(
@@ -933,6 +1041,7 @@ def edit_plan(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
+    approvals.require_decider(ctx, auth)
     runs = _runs(ctx)
     current = runs.get(tenant_id, run_id)  # 404 before 422: another tenant's run is not there
     # An overlap carried over unchanged from a plan stored before
@@ -973,6 +1082,7 @@ def reject_plan(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
+    approvals.require_decider(ctx, auth)
     run = _runs(ctx).transition(
         tenant_id, run_id, RunState.REJECTED, by=auth.email, digest=body.plan_digest,
         from_states=_PLANNED_ONLY,

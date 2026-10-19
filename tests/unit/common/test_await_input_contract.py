@@ -8,15 +8,17 @@ taken first). What is held here:
     capacity (invariant 1): PARKED is pending, never a concurrency state;
   * `RunnerProfile.control_plane` refuses every field that only a runner, a
     worker or a pod would read, and admits an empty `runner_argv`;
-  * the `await-input` entry is `control_plane`, ships unavailable (request D
-    is the owner's, after HW-ACCEPT), and Terraform makes no Job for it;
-  * the three requests are filed in docs/contract-change-requests.md.
+  * the `await-input` entry is `control_plane`, and Terraform makes no Job for
+    it; it shipped unavailable, and is available since request D (entry 105,
+    HW-ENABLE, applied after HW-ACCEPT);
+  * the requests are filed in docs/contract-change-requests.md.
 
 MUTATION: drop `"provider"` from the control_plane checks in `__post_init__`
 and `test_a_control_plane_profile_refuses_what_only_a_runner_reads[provider]`
 fails; drop "await-input" from `profiles_without_a_job` in locals.tf and
 `test_terraform_makes_no_job_for_a_control_plane_profile` fails; set
-`available=True` and `test_await_input_ships_unavailable` fails.
+`available=False` again and `test_await_input_is_available_since_request_d`
+fails.
 """
 
 from __future__ import annotations
@@ -155,11 +157,13 @@ def test_await_input_is_a_control_plane_profile_that_runs_nothing():
     assert profile.live_browser is False
 
 
-def test_await_input_ships_unavailable():
-    """Request D (`available=True`) is the owner's, after HW-ACCEPT."""
+def test_await_input_is_available_since_request_d():
+    """Request D (entry 105, HW-ENABLE): `available=True`, `disabled_reason`
+    removed, and nothing else about the entry changed."""
     profile = RUNNER_PROFILES["await-input"]
-    assert profile.available is False
-    assert "human-steps.md" in profile.disabled_reason
+    assert profile.available is True
+    assert profile.disabled_reason == ""
+    assert profile.control_plane is True
 
 
 def _profiles_without_a_job() -> set[str]:
@@ -205,4 +209,14 @@ def test_the_requests_are_filed_as_accepted_and_applied(number, request_letter):
     assert "HW-CONTRACT" in rows[0] and request_letter in rows[0]
     assert "ACCEPTED by the owner 2026-10-17" in rows[0] and "APPLIED" in rows[0]
     assert re.search(rf"^## {number}\. .*\(HW-CONTRACT, {request_letter}\)$", text, re.M)
+
+
+def test_request_d_is_filed_as_entry_105():
+    """The change `test_await_input_is_available_since_request_d` holds has its
+    entry, under the design's §5 letter (CLAUDE.md rule 1)."""
+    text = REQUESTS.read_text(encoding="utf-8")
+    rows = [line for line in text.splitlines() if line.startswith("| 105 |")]
+    assert len(rows) == 1, rows
+    assert "HW-ENABLE" in rows[0] and "human steps request D" in rows[0]
+    assert re.search(r"^## 105\. .*\(HW-ENABLE, human steps request D\)$", text, re.M)
 

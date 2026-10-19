@@ -22,8 +22,10 @@ Absent means the default. Every change writes an `admin_audit` entry in the
 same transaction.
 
 WHO MAY CHANGE IT. The owner of a personal workspace (`kind: user`, its
-principal the caller's verified email) or a platform admin. A group has no
-per-tenant admin role to ask instead, exactly as for a tenant TypeSafe key.
+principal the caller's verified email); in a group workspace its `admin`
+(docs/design/workspace-roles.md §4.1, Q13), a workspace admin or a platform
+admin, exactly as for a tenant TypeSafe key. The gate is
+`routes/judgment.py::put_judgment_backend`.
 
 AVAILABILITY never changes the choice and never falls back. An internal
 backend is available when the platform renders INTERNAL_DECISION_API_URL

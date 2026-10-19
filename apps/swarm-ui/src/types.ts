@@ -586,6 +586,27 @@ export interface StartProblem {
   seen_at: string | null
 }
 
+/**
+ * `GET/PUT /v1/admin/settings` (`Store.get_platform_settings`): the platform
+ * settings an admin edits at run time, each at its default when unset. The
+ * two limits on a step's additional repositories (#1434) are read by swarm-api
+ * at every submission and by the worker at every clone, so a change applies to
+ * the next one with no deploy. Their accepted ranges are the API's
+ * (`store.PLATFORM_SETTINGS_RANGES`), and a value outside one is refused 422
+ * naming it; this file does not restate them.
+ */
+export interface PlatformSettings {
+  merge_by_default: boolean
+  /** The most additional repositories one step may read. */
+  max_additional_repositories: number
+  /** The GiB one step's additional repositories may total. */
+  additional_repositories_budget_gib: number
+  updated_at: string | null
+  updated_by: string | null
+  /** `missing`: every value above is a default nobody has set. */
+  settings_document: 'present' | 'missing'
+}
+
 /** One entry of `Task.additional_repositories`, as `additional_repositories_to_api` serves it. */
 export interface TaskAdditionalRepository {
   name: string
@@ -1934,6 +1955,19 @@ export interface Runtime {
   secrets_any_of: boolean
   timeout_seconds: number
   resource_class: string
+  /**
+   * The model classes a step on this profile may send as `model_class`, BY
+   * NAME (docs/design/model-per-step.md §4.4, #1435). `[]` on a profile that
+   * runs no Claude model. Optional only until lane MODEL-UI renders them.
+   */
+  model_classes?: string[]
+  /** What a step naming no class runs; null when `model_classes` is empty. */
+  default_model_class?: string | null
+  /**
+   * Class -> the model ID it runs, from the deployment's terraform pin. `{}`
+   * on a classless profile, and on a deployment that pins none yet.
+   */
+  models?: Record<string, string>
   /**
    * The class resolved inline. Field-identical to a `/v1/resource-classes`
    * entry, and `test_sizing_agrees_with_the_resource_classes_route` asserts the
@@ -5440,6 +5474,12 @@ export interface PersonLentAccount {
 /** One row of `GET /v1/admin/people` (`people._row`). */
 export interface PersonRow {
   email: string
+  /**
+   * The person's display name (user-profile.md §4.4), served beside `email`
+   * since PROFILE-NAMES-API; null when they set none, absent from an older
+   * API. A label only: the email is who the person is.
+   */
+  display_name?: string | null
   teams: string[]
   github: 'connected' | 'expired' | 'none'
   workspace: AdminWorkspaceView

@@ -49,11 +49,17 @@ the two equal.
 
 WHO. Exactly as JUDGE-SELECT gates `judgment_backend`: the owner of a
 personal workspace -- `kind: user`, its principal the caller's verified
-email -- or a platform admin (`require_admin`, which answers 503 rather than
-403 when the directory could not be asked). A member who is neither is
-refused `code_intelligence_owner_required` (403) through `refusals.refuse`, a
-SWITCHED refusal that SHIPS ON (owner decision 2026-10-14; refusals.py): switched off, the change goes
-through and is audited under the caller's name. A caller who is not a member at all is
+email -- or, in a group workspace, its `admin` (docs/design/workspace-roles.md
+§4.1, Q13): a workspace admin (`workspace_secrets.workspace_admin`, read
+fresh) or a platform admin (`require_admin`, which answers 503 rather than
+403 when the directory could not be asked). A member who is neither meets two
+refusals, in order. First `role_admin_required` (403) through its own switch,
+which ships off (Q10) and then only logs. Then, as before roles,
+`code_intelligence_owner_required` (403) through `refusals.refuse`, a
+SWITCHED refusal that SHIPS ON (owner decision 2026-10-14; refusals.py), so
+the role switch being off never lets a member change what goes to Jev:
+switched off too, the change goes through and is audited under the caller's
+name. A caller who is not a member at all is
 the established 404: another workspace's setting is neither served nor
 confirmed to exist, and nothing a non-member sends is written (invariant 9).
 
@@ -106,8 +112,10 @@ from .judgment import (
     trusted_block,
     unowned_covered_keys,
 )
-from .mergesettings import is_member, is_owner
+from .mergesettings import group_admin, is_member, is_owner
 from .refusals import refuse
+from .roles import RoleStore
+from .workspace_secrets import workspace_admin
 from .repositories import COLLECTION as REPOSITORIES
 from .repositories import CONTEXT_INHERIT, context_of
 from .schemas import StrictModel
@@ -224,11 +232,13 @@ class CodeIntelligencePut(StrictModel):
 # who may read and change it
 # --------------------------------------------------------------------------
 
-def can_edit(auth: AuthContext, tenant: Tenant | None) -> bool:
-    return bool(auth.is_admin) or (tenant is not None and is_owner(auth, tenant))
+def can_edit(auth: AuthContext, tenant: Tenant | None, roles: RoleStore | None = None) -> bool:
+    return bool(auth.is_admin) or (tenant is not None and (
+        is_owner(auth, tenant) or group_admin(roles, auth, tenant, fresh=False)))
 
 
-def authorize(auth: AuthContext, tenant: Tenant | None, tenant_id: str, *, write: bool) -> Tenant:
+def authorize(auth: AuthContext, tenant: Tenant | None, tenant_id: str, *, write: bool,
+              roles: RoleStore | None = None) -> Tenant:
     """The workspace, when the caller may read it (and, `write`, change it).
 
     Not a member, not the owner, not an admin: the established 404, the same
@@ -242,17 +252,22 @@ def authorize(auth: AuthContext, tenant: Tenant | None, tenant_id: str, *, write
     if not (admin or owner or is_member(auth, tenant_id)):
         raise NotFound(f"workspace {tenant_id!r} not found")
     if write:
-        require_owner_or_admin(auth, tenant)
+        require_owner_or_admin(auth, tenant, roles)
     return tenant
 
 
-def require_owner_or_admin(auth: AuthContext, tenant: Tenant | None) -> str:
-    """The caller's email when they own `tenant` or are a platform admin.
+def require_owner_or_admin(auth: AuthContext, tenant: Tenant | None,
+                           roles: RoleStore | None = None) -> str:
+    """The caller's email when they own `tenant`, are its `admin` (given
+    `roles`) or are a platform admin.
 
     Also the gate on a repository's `context` override
     (routes/repositories.py): the workspace default and the override over it
     are the same person's decision. Who is neither meets the switched
-    refusal; with it off, their email is returned and the change is theirs."""
+    refusals; with both off, their email is returned and the change is theirs."""
+    if tenant is not None and not is_owner(auth, tenant) and not auth.is_admin \
+            and workspace_admin(roles, auth, tenant):
+        return (auth.email or "").strip().lower()
     if tenant is None or not is_owner(auth, tenant):
         try:
             require_admin(auth)

@@ -71,13 +71,26 @@ class _Log:
 
 @pytest.fixture
 def user_worker(db, worker_factory):
+    """A worker on a person's slot, which it asks swarm-api's broker for (#1041).
+
+    The second value is the broker (test_forge_broker_client.FakeBrokerRoutes):
+    its `values` are the slot's versions and its `accessed` every release, as a
+    `FakeSecretClient`'s are its reads. Secret Manager is never asked for the
+    slot, so a re-read is the broker asked again.
+    """
+    from test_forge_broker_client import API, NONCE, FakeBrokerRoutes
+
     seed_attempt(db)
-    client = FakeSecretClient({secret_name(): token("a")})
-    worker, _, _ = worker_factory(secret_client=client)
+    routes = FakeBrokerRoutes({secret_name(): token("a")})
+    client = FakeSecretClient()
+    worker, _, _ = worker_factory(secret_client=client, child_api=routes, child_nonce=NONCE,
+                                  swarm_api_url=API, forge_broker=True)
+    worker.children.register(lambda note: None)
     worker._task = {"repository_url": GITHUB_URL, "forge_credential": slot()}
     worker._forge_signed = True
     worker._repo_url = GITHUB_URL
-    return worker, client
+    yield worker, routes
+    assert client.accessed == [], "a person's slot was read from Secret Manager"
 
 
 # --------------------------------------------------------------------------

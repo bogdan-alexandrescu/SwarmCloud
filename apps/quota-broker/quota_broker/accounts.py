@@ -71,6 +71,8 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Iterable
 
+from swarm_common.profiles import MODEL_CLASSES
+
 #: Secret Manager holds the credential; Firestore holds everything else. The
 #: secret name is derived, never supplied, for the same reason tenant secret
 #: names are: a caller who could name the secret could name someone else's.
@@ -440,6 +442,29 @@ class Account:
     token_expires_at: datetime | None = None
     last_refresh_reason: str = ""
 
+    #: The model classes (the frozen `MODEL_CLASSES` names) this account's plan
+    #: can run, in the vocabulary's order. EMPTY MEANS EVERY CLASS: that is
+    #: every document written before this field, and every account nobody has
+    #: narrowed, so nothing changes for an existing pool until an owner says
+    #: otherwise. Owner decision R5 (2026-10-17, PR 1509): a plan that cannot
+    #: serve a class -- Fable is the expected one -- must never be handed a
+    #: step of it. `serves_class` is the one statement of the rule, and
+    #: `choose`, `eligibility` and `accounts_serving` all go through it.
+    model_classes: tuple[str, ...] = ()
+
+    def serves_class(self, model_class: str | None) -> bool:
+        """Whether a step of `model_class` may run on this account.
+
+        None is a step whose class is NOT KNOWN -- an older worker that sent
+        no task id, or a task id that does not name one of the caller's own
+        tasks. Only an account that serves every class takes it: a narrowed
+        account was narrowed because some class fails on it, and "unknown"
+        may be that class.
+        """
+        if not self.model_classes:
+            return True
+        return model_class is not None and model_class in self.model_classes
+
     def live_holds(self, now: datetime) -> tuple[Hold, ...]:
         return tuple(h for h in self.holds if not h.is_expired(now))
 
@@ -652,6 +677,7 @@ class Account:
             "last_refresh_at": self.last_refresh_at,
             "token_expires_at": self.token_expires_at,
             "last_refresh_reason": self.last_refresh_reason,
+            "model_classes": list(self.model_classes),
         }
 
     @classmethod
@@ -697,7 +723,45 @@ class Account:
             last_refresh_at=_optional_instant(data.get("last_refresh_at")),
             token_expires_at=_optional_instant(data.get("token_expires_at")),
             last_refresh_reason=_optional_text(data.get("last_refresh_reason")) or "",
+            # NOT descriptive like the three above: it narrows who may be
+            # assigned this account, so a malformed value raises and the
+            # document is unreadable -- out of the pool -- rather than read as
+            # absent, which would mean "every class".
+            model_classes=_model_classes_from_firestore(data.get("model_classes")),
         )
+
+
+def validate_model_classes(classes: Iterable[Any]) -> tuple[str, ...]:
+    """`classes` as an account stores them: known names, once each, in the
+    vocabulary's order. Empty stays empty, which means every class.
+
+    Raises AccountError naming the vocabulary on an unknown or repeated name,
+    so a typo is refused at the admin route rather than quietly narrowing an
+    account to nothing that exists.
+    """
+    names = list(classes)
+    unknown = [n for n in names if not isinstance(n, str) or n not in MODEL_CLASSES]
+    if unknown:
+        raise AccountError(
+            f"model_classes names {unknown!r}, which is not in MODEL_CLASSES "
+            f"{tuple(MODEL_CLASSES)}; an empty list means every class"
+        )
+    if len(set(names)) != len(names):
+        raise AccountError("model_classes names a class twice")
+    return tuple(n for n in MODEL_CLASSES if n in names)
+
+
+def _model_classes_from_firestore(raw: Any) -> tuple[str, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, (list, tuple)):
+        # A string iterated would be letters. TypeError is one of the
+        # malformed-document errors `accountstore._decode` turns into one.
+        raise TypeError("model_classes is not a list")
+    try:
+        return validate_model_classes(raw)
+    except AccountError as exc:
+        raise ValueError(str(exc)) from None
 
 
 def windows_to_firestore(windows: dict[str, WindowReading]) -> dict[str, Any]:
@@ -872,7 +936,11 @@ def account_id_for(owner_tenant: str, label: str) -> str:
 
 
 def accounts_serving(
-    accounts: Iterable[Account], tenant_id: str, provider: str
+    accounts: Iterable[Account],
+    tenant_id: str,
+    provider: str,
+    *,
+    model_class: str | None = "",
 ) -> list[Account]:
     """Every account the pool could hand `tenant_id` for `provider`, in any state.
 
@@ -892,8 +960,22 @@ def accounts_serving(
     Before 2026-09-25 the route wrote this out inline and nothing else asked,
     so admission could not tell a tenant the pool serves from one it does not
     (#169).
+
+    AND THE STEP'S MODEL CLASS (owner decision R5), when one is asked about:
+    an account that does not serve it is not in the pool FOR THAT STEP, so a
+    class no account serves is `no_accounts_registered` to the worker -- it
+    falls back to the tenant's own key, which serves every class -- and
+    admission parks a keyless tenant's step before any lease. The default,
+    "", asks about no class: the scope as it was, for the callers (the
+    listing, the provider count) that are not placing a step.
     """
-    return [a for a in accounts if a.provider == provider and a.may_serve(tenant_id)]
+    return [
+        a
+        for a in accounts
+        if a.provider == provider
+        and a.may_serve(tenant_id)
+        and (model_class == "" or a.serves_class(model_class))
+    ]
 
 
 def choose(
@@ -904,6 +986,7 @@ def choose(
     assign_floor: float = DEFAULT_ASSIGN_FLOOR,
     stale_after: timedelta = DEFAULT_STALE_AFTER,
     exclude: Iterable[str] = (),
+    model_class: str | None = "",
 ) -> Account | None:
     """The account a new agent for `tenant_id` should get, or None.
 
@@ -927,6 +1010,10 @@ def choose(
     this tenant only -- a borrower that cannot read a lent secret says nothing
     about the owner, so its report must not take the account away from anyone
     else.
+
+    `model_class` is the step's class (`Account.serves_class`); "" asks about
+    none. An account that cannot run the step's model is never handed it,
+    however much headroom it has (owner decision R5).
     """
     skip = {str(a) for a in exclude}
     candidates = [
@@ -934,6 +1021,7 @@ def choose(
         for a in accounts
         if a.state in ASSIGNABLE_STATES
         and a.may_serve(tenant_id)
+        and (model_class == "" or a.serves_class(model_class))
         and a.account_id not in skip
         and not a.is_unreadable_for(tenant_id, now, unreadable_after=stale_after)
         and a.headroom(now, stale_after=stale_after) >= assign_floor
@@ -959,6 +1047,7 @@ def eligibility(
     assign_floor: float = DEFAULT_ASSIGN_FLOOR,
     stale_after: timedelta = DEFAULT_STALE_AFTER,
     exclude: Iterable[str] = (),
+    model_class: str | None = "",
 ) -> tuple[Unavailable, datetime | None]:
     """WHY nothing can be assigned, and when that changes.
 
@@ -975,7 +1064,11 @@ def eligibility(
     picks its wait from.
     """
     skip = {str(a) for a in exclude}
-    serves = [a for a in accounts if a.may_serve(tenant_id)]
+    serves = [
+        a
+        for a in accounts
+        if a.may_serve(tenant_id) and (model_class == "" or a.serves_class(model_class))
+    ]
     if not serves:
         # The pool is not how this tenant runs at all. The ONE answer that
         # means "fall back to your tenant secret" rather than "wait", and the

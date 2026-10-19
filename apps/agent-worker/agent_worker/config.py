@@ -327,6 +327,23 @@ class WorkerConfig:
     #: SWARM_API_AUDIENCE), from the scheduler's own settings.
     swarm_api_url: str | None = None
     swarm_api_audience: str | None = None
+    #: Whether this attempt offers its agent a child path (SWARM_CHILD_PATH).
+    #: The scheduler writes `false` for a CHILD on a person's slot (#1041): it
+    #: gets the nonce so its worker can register the attempt key the forge
+    #: broker checks, and offers its agent nothing to submit grandchildren
+    #: with. Default True, because a root task is written nothing. A courtesy,
+    #: not the guard: swarm-api refuses depth itself (MAX_CHILD_DEPTH).
+    child_path: bool = True
+    #: Whether a person's `git-u-` slot is obtained from swarm-api's forge
+    #: broker (FORGE_BROKER, terraform `forge_broker`, passed through by the
+    #: scheduler's `worker_env`; #1041, docs/design/user-scoped-secrets.md §5).
+    #: Default False, and off in every environment until the owner turns it
+    #: on: off, the worker reads the slot with its own account, exactly as
+    #: before the broker, which works while the bootstrap root's
+    #: `forge_slot_reader` binding stands. On, the broker is the only path and
+    #: it fails closed -- no SWARM_API_URL or no attempt key is a named
+    #: refusal, never a direct read and never the tenant token.
+    forge_broker: bool = False
     #: The shared graph service (SWARM_GRAPH_URL; docs/design/graph-service.md
     #: §4.2, lane GS-WORKER): the worker's own setting, handed to the shim in
     #: its MCP server entry's `env` and never an argument a caller can set
@@ -594,6 +611,8 @@ class WorkerConfig:
             child_nonce=os.environ.get("SWARM_CHILD_NONCE", "").strip() or None,
             swarm_api_url=os.environ.get("SWARM_API_URL", "").strip() or None,
             swarm_api_audience=os.environ.get("SWARM_API_AUDIENCE", "").strip() or None,
+            child_path=_bool_env("SWARM_CHILD_PATH", True),
+            forge_broker=_bool_env("FORGE_BROKER", False),
             state_via_api=_bool_env("SWARM_STATE_VIA_API", False),
             graph_service_url=(os.environ.get("SWARM_GRAPH_URL", "").strip()
                                or DEFAULT_GRAPH_SERVICE_URL),

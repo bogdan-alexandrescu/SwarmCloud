@@ -7,9 +7,11 @@ block at submission, normalises it, and stores it in `metadata.dispatch`, which
 the spec signature covers, so nothing after submission can change what the
 person is asked, how long the step waits or what happens at expiry.
 
-The profile SHIPS UNAVAILABLE (contract request 94): every test that needs it
-enables it with `monkeypatch`, and the first test pins that, without that, the
-workflow is refused as disabled before anything here is read.
+The profile SHIPPED UNAVAILABLE (contract request 94) and is available since
+request D (entry 105, HW-ENABLE). The tests that need it still enable it with
+`monkeypatch`, so they hold whatever the catalogue says, and the first test
+switches it off with `monkeypatch` to pin that, unavailable, the workflow is
+refused as disabled before anything here is read.
 """
 
 from __future__ import annotations
@@ -44,6 +46,14 @@ REPO = "https://github.com/saga-xyz/example.git"
 def await_enabled(monkeypatch):
     """`await-input`, available for this test only (request D is the owner's)."""
     monkeypatch.setitem(RUNNER_PROFILES, PROFILE, replace(RUNNER_PROFILES[PROFILE], available=True))
+
+
+@pytest.fixture
+def await_dark(monkeypatch):
+    """`await-input` unavailable, as it shipped before request D (entry 105)."""
+    monkeypatch.setitem(RUNNER_PROFILES, PROFILE, replace(
+        RUNNER_PROFILES[PROFILE], available=False,
+        disabled_reason="await-input is switched off for this test"))
 
 
 @pytest.fixture(autouse=True)
@@ -132,7 +142,7 @@ def _refused(client, db, spec, field: str, *, code: str = "validation_failed") -
 # Dark until request D
 # --------------------------------------------------------------------------
 
-def test_the_profile_ships_unavailable_and_a_workflow_naming_it_is_refused(client, db):
+def test_the_profile_ships_unavailable_and_a_workflow_naming_it_is_refused(await_dark, client, db):
     assert not RUNNER_PROFILES[PROFILE].available
     response = _post(client, _spec())
     assert response.status_code == 422, response.text

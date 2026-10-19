@@ -12,9 +12,22 @@ reject is the run's own transition to REJECTED. So the inbox, Work › Runs and
 `sc plan approve` are one approval with one source of truth.
 
 TENANT-SCOPED (§5.1, invariant 9). The tenant is `tenant_scope`'s, never the
-body's. Another tenant's item answers the 404 a missing one does. A platform
-admin decides nothing of another tenant's by being an admin (§4.6, §5.3):
-an `owner_only` item exists only in a tenant the owner is a member of.
+body's. Another tenant's item answers the 404 a missing one does. An
+`owner_only` item exists only in a tenant the owner is a member of.
+
+THE ROLE IS THE FLOOR (docs/design/workspace-roles.md §4.1, §4.8; lane
+ROLES-GATES-DECIDE). Every decision here -- approve, reject, the merge
+switch, a projected plan's approve and reject -- first asks
+`approvals.require_decider`: `member` or above in the selected workspace,
+read fresh, else 403 `role_member_required` through its switch, asked before
+the item is read so a refused one stays pending. A `viewer` reads the inbox
+and decides nothing. A platform admin is `admin` in every GROUP workspace,
+member or not (Q5, which supersedes this file's earlier "a platform admin
+decides nothing of another tenant's"): they reach a group workspace they are
+not in only through `platform_admin_reach`, each decision audited before it
+runs (`deps.current_auth`), and never anyone's personal workspace. The rules
+below are unchanged and still apply on top of the role, to them as to anyone:
+a gate's `approvers` list, a hold, the last-editor rule and the `spec` rule.
 
 THE MERGE SWITCH (SD3) is an audited edit of `gate.merge`, the one way to
 `merge: auto`, which `PATCH /v1/schedules/{id}` refuses with 422
@@ -215,6 +228,7 @@ def approve(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     verb: ApproveIn = _verb(ApproveIn, body)
+    approvals.require_decider(ctx, auth)
     if item_id.startswith(approvals.PROJECTED_PREFIX):
         return _approve_projected(ctx, auth, tenant_id, item_id, verb)
     doc = approvals.get(ctx.db, tenant_id, item_id)
@@ -269,8 +283,10 @@ def reject(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    """Anyone in the tenant may reject (§4.5): a rejection ends a hold, it never opens one."""
+    """Any member of the tenant may reject (§4.5): a rejection ends a hold, it never opens one.
+    A `viewer` may not (workspace-roles §4.1)."""
     verb: RejectIn = _verb(RejectIn, body)
+    approvals.require_decider(ctx, auth)
     if item_id.startswith(approvals.PROJECTED_PREFIX):
         run = _projected_run(ctx, tenant_id, item_id)
         try:
@@ -307,6 +323,8 @@ def merge_mode(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     verb: MergeModeIn = _verb(MergeModeIn, body)
+    # Either direction is a decision (workspace-roles §4.1): `member` first.
+    approvals.require_decider(ctx, auth)
     stored = schedule_routes._read(ctx, tenant_id, schedule_id)
     entry = scheduletypes.get(str(stored.get("type")))
     if entry is None:

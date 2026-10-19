@@ -85,8 +85,10 @@
 #
 # THE TENANT GSA. Nothing here names a worker account, and
 # tests/terraform/mcp_credentials.tftest.hcl holds that no bootstrap grant to
-# a tenant worker (forge_user_slots.tf's forge_slot_reader,
-# typesafe_user_keys.tf's rows) admits a `-mcpc-` name.
+# a tenant worker admits a `-mcpc-` name: typesafe_user_keys.tf's rows, and
+# forge_user_slots.tf's forge_slot_reader, which stays while terraform/infra's
+# `forge_broker` is off and is removed only after the broker has been on in
+# dev (#1041). The test reads both, so a removal changes it too.
 #
 # WHY HERE AND NOT IN terraform/infra. A custom role cannot be defined there
 # (#79; tests/terraform/custom_roles_out_of_ci.tftest.hcl), and a role

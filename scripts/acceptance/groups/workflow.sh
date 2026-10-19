@@ -19,6 +19,31 @@ set -euo pipefail
 WF_PAYLOAD_NAME="payload.txt"
 WF_CARRY_NAME="notes.md"
 
+# The await-input checks (#1436, docs/design/human-steps.md §6 row HW-ACCEPT).
+# `draft` writes WF_DRAFT_NAME, `review` waits for a person and is answered
+# with a verdict form saved as WF_REVIEW_NAME plus one text file, which the
+# worker stages into `revise` under WF_REVIEW_FILES_DIR (the artifact's stem
+# plus `.files/`, apps/agent-worker/agent_worker/inputs.py attachments_dir).
+WF_DRAFT_NAME="draft.md"
+WF_REVIEW_NAME="review.json"
+WF_REVIEW_FILES_DIR="review.files"
+WF_ATTACHMENT_NAME="reviewer-notes.md"
+# An hour: the answered wait must outlive everything this group runs before
+# _wf_check_await posts the answer (the integrate chain is the long one, and
+# the group takes about 13 minutes), so it is open when answered. Far inside
+# the 24-hour bound (validation.py AWAIT_INPUT_MAX_SECONDS).
+WF_AWAIT_EXPIRES_SECONDS=3600
+# The expiring wait: 300 s, the smallest `expires_after_seconds` the API takes,
+# so the default lands about six minutes after the park -- the 300 s plus at
+# most one schedule tick (every minute) -- while the other checks run.
+WF_EXPIRE_SECONDS=300
+# ONE DRAIN, as seconds: the scheduler's safety tick is one minute (a lost
+# task_finished wake costs at most that, apps/scheduler/scheduler/main.py),
+# and the answer's own wake promotes and admits the dependant in the same
+# drain. A revise leased later than this after the answer waited for
+# something other than the drain.
+WF_DRAIN_SECONDS=60
+
 workflow_checks() {
   cat <<'EOF'
 workflow: input_from stages the parent's artifact into the child byte for byte
@@ -26,12 +51,14 @@ workflow: expected_outputs tells the parent what to write, and a missing one fai
 workflow: on_step_failure fail_workflow cancels every dependant, none of which ever held a lease
 workflow: implement -> review -> fix with integrate opens one pull request, with the review's verdict.json staged into fix
 workflow: carry: a file written before a quota park reaches the attempt that succeeds by reference, and the child stages it
+workflow: await-input: a step waits for a member's answer holding no lease, and revise runs within one drain holding the posted form and file
+workflow: await-input expiry: a step nobody answers ends at expires_after with its declared default, and the when-gated steps take that branch
 EOF
 }
 
 run_workflow() {
   step "Acceptance: workflow"
-  local stage="" missing="" cascade="" chain="" carry="" payload notes
+  local stage="" missing="" cascade="" chain="" carry="" await="" expire="" payload notes expire_default
 
   # Staging: `a` writes a known file; `b` stages it. The bytes are checked in
   # b's own checkpoint, which is b's workspace as b saw it.
@@ -60,6 +87,44 @@ run_workflow() {
           {step_id: "a", runner_profile: "mock", input: {prompt: $p, quota_exhausted: true, retry_after_seconds: 60, artifact_before_park: true, artifact_name: $n, artifact_text: $t}},
           {step_id: "b", runner_profile: "mock", depends_on: ["a"], input_from: {a: $n}, input: {prompt: $p, steps: 1, sleep_seconds: 0}}
         ]}')" || carry=""
+
+  # #1436's loop, live: draft -> review (a person) -> revise. `review` is
+  # answered by _wf_check_await, which runs after the long checks, so it has
+  # sat parked for minutes by then -- long enough for a lease to show if the
+  # scheduler ever took one for it. max_files 1: the answer carries one file.
+  ACC_CHECK="workflow: await-input"
+  acc_workflow await "$(jq -nc --argjson m "$(acc_metadata)" --arg p "acceptance ${ACC_RUN_ID} await" \
+      --arg d "${WF_DRAFT_NAME}" --arg t "$(printf 'draft to review\nrun %s\n' "${ACC_RUN_ID}")" \
+      --arg r "${WF_REVIEW_NAME}" --argjson e "${WF_AWAIT_EXPIRES_SECONDS}" '{
+        priority: 10, metadata: $m, on_step_failure: "fail_workflow",
+        steps: [
+          {step_id: "draft", runner_profile: "mock", input: {prompt: $p, artifact_name: $d, artifact_text: $t, steps: 1, sleep_seconds: 0}},
+          {step_id: "review", runner_profile: "await-input", depends_on: ["draft"], input_from: {draft: $d},
+           input: {prompt: ("Read " + $d + ". Approve it, or list what must change.")},
+           await_input: {form: "verdict", artifact: $r, max_files: 1, expires_after_seconds: $e, on_expire: "fail"}},
+          {step_id: "revise", runner_profile: "mock", depends_on: ["review"], input_from: {review: $r}, input: {prompt: $p, steps: 1, sleep_seconds: 0}}
+        ]}')" || await=""
+
+  # The wait nobody answers: `ask` expires after 300 s with on_expire
+  # "default", and the declared default says NOT_YET. Two steps are gated on
+  # it, one on each verdict, so the branch taken is read against its
+  # opposite: `revise` runs its agent and `ship` does not. Were the default
+  # never applied, or applied as MERGE, the two would come out the other way.
+  ACC_CHECK="workflow: await-input expiry"
+  expire_default="$(jq -nc --arg run "${ACC_RUN_ID}" '{verdict: "NOT_YET", findings: [("acceptance " + $run + " default")]}')"
+  acc_workflow expire "$(jq -nc --argjson m "$(acc_metadata)" --arg p "acceptance ${ACC_RUN_ID} expire" \
+      --argjson dflt "${expire_default}" --argjson e "${WF_EXPIRE_SECONDS}" '{
+        priority: 10, metadata: $m, on_step_failure: "fail_workflow",
+        steps: [
+          {step_id: "ask", runner_profile: "await-input",
+           input: {prompt: "Nobody answers this step: it ends with its declared default."},
+           await_input: {form: "verdict", artifact: "verdict.json", max_files: 0, expires_after_seconds: $e,
+                         on_expire: "default", default: $dflt}},
+          {step_id: "revise", runner_profile: "mock", depends_on: ["ask"], input_from: {ask: "verdict.json"},
+           when: {step: "ask", verdict_in: ["NOT_YET"]}, input: {prompt: $p, steps: 1, sleep_seconds: 0}},
+          {step_id: "ship", runner_profile: "mock", depends_on: ["ask"], input_from: {ask: "verdict.json"},
+           when: {step: "ask", verdict_in: ["MERGE"]}, input: {prompt: $p, steps: 1, sleep_seconds: 0}}
+        ]}')" || expire=""
 
   # A parent that writes the wrong file: `x` writes other.txt, `y` stages
   # wanted.txt. x's clean exit must FAIL for the missing name, retryably, and
@@ -116,6 +181,8 @@ run_workflow() {
   _wf_check_cascade "${cascade}"
   _wf_check_integrate "${chain}"
   _wf_check_carry "${carry}" "${notes}"
+  _wf_check_await "${await}"
+  _wf_check_expire "${expire}" "${expire_default}"
 }
 
 # _wf_final_state WORKFLOW_ID -> the derived workflow state.
@@ -137,43 +204,53 @@ _wf_check_staging() {
 }
 
 # _wf_check_child_copy CHILD NAME EXPECTED -> PASS when the staged file NAME
-# in CHILD's last checkpoint is EXPECTED byte for byte. The child's last
-# checkpoint is its workspace (work/) at the end, so the staged file is in it
-# exactly as it landed.
+# in CHILD's last checkpoint is EXPECTED byte for byte.
 _wf_check_child_copy() {
-  local b="$1" name="$2" payload="$3" ckpt listing member file content
+  local b="$1" name="$2" payload="$3" content
+  content="${ACC_WORK}/wf-member.txt"
+  _wf_workspace_file "${b}" "${name}" "${content}" || return 0
+  if cmp -s <(printf '%s' "${payload}") "${content}"; then
+    acc_pass "${WF_MEMBER} in the child's workspace is the parent's ${name}, $(wc -c <"${content}" | tr -d ' ') bytes, identical" "${b}"
+  else
+    acc_fail "${WF_MEMBER} differs from what the parent wrote: $(cmp <(printf '%s' "${payload}") "${content}" 2>&1 | head -n 1)" "${b}"
+  fi
+}
+
+# _wf_workspace_file CHILD NAME OUT -> 0 with the bytes of the staged file
+# NAME, as CHILD's last checkpoint holds it, in OUT, and its path in the
+# checkpoint in WF_MEMBER; otherwise records a FAIL and returns 1. The child's
+# last checkpoint is its workspace (work/) at the end, so a staged file is in
+# it exactly as it landed. NAME may carry a directory (review.files/x.md).
+WF_MEMBER=""
+_wf_workspace_file() {
+  local b="$1" name="$2" out="$3" ckpt listing file
+  WF_MEMBER=""
   ckpt="$(acc_events "${b}" | acc_checkpoint_ids | tail -n 1)"
   if [[ -z "${ckpt}" ]]; then
     acc_fail "the child wrote no checkpoint to read its workspace from" "${b}"
-    return 0
+    return 1
   fi
   listing="${ACC_WORK}/wf-listing.json"
   if ! api_fetch "/tasks/${b}/checkpoints/${ckpt}/files" "${listing}"; then
     acc_fail "could not list ${ckpt}'s files" "${b}"
-    return 0
+    return 1
   fi
-  member="$(jq -r --arg n "${name}" '[.files[]? | (.path // .name) | select(. == $n or endswith("/" + $n))] | first // empty' "${listing}")"
-  if [[ -z "${member}" ]]; then
+  WF_MEMBER="$(jq -r --arg n "${name}" '[.files[]? | (.path // .name) | select(. == $n or endswith("/" + $n))] | first // empty' "${listing}")"
+  if [[ -z "${WF_MEMBER}" ]]; then
     acc_fail "${name} is not in the child's workspace (${ckpt})" "${b}"
-    return 0
+    return 1
   fi
   file="${ACC_WORK}/wf-member.json"
-  if ! api_fetch "/tasks/${b}/checkpoints/${ckpt}/files/${member}" "${file}"; then
-    acc_fail "could not read ${member} from ${ckpt}" "${b}"
-    return 0
+  if ! api_fetch "/tasks/${b}/checkpoints/${ckpt}/files/${WF_MEMBER}" "${file}"; then
+    acc_fail "could not read ${WF_MEMBER} from ${ckpt}" "${b}"
+    return 1
   fi
   if [[ "$(jq -r '.truncated // false' "${file}")" == "true" ]]; then
-    acc_fail "the read of ${member} was truncated, so its bytes cannot be compared whole" "${b}"
-    return 0
+    acc_fail "the read of ${WF_MEMBER} was truncated, so its bytes cannot be compared whole" "${b}"
+    return 1
   fi
   # jq -j writes the string exactly, adding no newline.
-  content="${ACC_WORK}/wf-member.txt"
-  jq -j '.content // ""' "${file}" >"${content}"
-  if cmp -s <(printf '%s' "${payload}") "${content}"; then
-    acc_pass "${member} in the child's workspace is the parent's ${name}, $(wc -c <"${content}" | tr -d ' ') bytes, identical" "${b}"
-  else
-    acc_fail "${member} differs from what the parent wrote: $(cmp <(printf '%s' "${payload}") "${content}" 2>&1 | head -n 1)" "${b}"
-  fi
+  jq -j '.content // ""' "${file}" >"${out}"
 }
 
 _wf_check_expected_outputs() {
@@ -410,4 +487,267 @@ _wf_check_carry() {
     acc_fail "the child's staged_inputs does not name ${WF_CARRY_NAME} at ${object}: ${staged}" "${b}"
   fi
   _wf_check_child_copy "${b}" "${WF_CARRY_NAME}" "${notes}"
+}
+
+# A jq prelude: `epoch` turns an ISO-8601 timestamp, as Firestore's REST
+# encoding and swarm-api's `_iso` both write one (fractional seconds, `Z` or
+# `+00:00`), into epoch seconds; anything else into null.
+WF_JQ_EPOCH='def epoch: if type == "string" then (try (sub("\\.[0-9]+"; "") | sub("(Z|[+]00:00)$"; "") + "Z" | fromdateiso8601) catch null) else null end;'
+
+# _wf_awaiting TASK -> true while TASK is PARKED(AWAITING_INPUT), the wait.
+# A predicate for wait_until: a failed read is "not yet", never a pass.
+_wf_awaiting() {
+  local doc
+  doc="$(task_doc "$1")" || return 1
+  [[ "$(jq -r '"\(.state // "MISSING") \(.park_reason // "none")"' <<<"${doc}")" == "PARKED AWAITING_INPUT" ]]
+}
+
+# _wf_lease_docs TASK -> how many lease documents name TASK, read from the
+# leases collection itself rather than the task's events, so a lease the
+# scheduler wrote without its event is still counted. Fails on a read that did
+# not answer.
+_wf_lease_docs() {
+  local docs
+  docs="$(fs_query leases "$(fs_field_filter task_id EQUAL "$(jq -nc --arg v "$1" '{stringValue:$v}')")" 50 \
+    | jq -c "${FS_JQ} doc")" || return 1
+  printf '%s' "${docs}" | awk 'NF' | wc -l | tr -d ' '
+}
+
+# _wf_post_answer WORKFLOW_ID STEP_ID ANSWER_FILE ATTACHMENT OUT -> 0 when
+# swarm-api took the answer (200), with its response in OUT; the HTTP status
+# is in WF_ANSWER_STATUS either way ("000" when curl itself failed).
+#
+# multipart/form-data, as the console sends an answer with files: the
+# `answer` part is the JSON body ({answer_id, payload}) and the `file` part
+# the attachment, named WF_ATTACHMENT_NAME. curl sends the Content-Length the
+# route requires (411 without it) because both parts are read from files. Not
+# api_request, which sends JSON only; the header goes in on stdin, as
+# acc_raw_artifact sends it, and X-Swarm-Tenant with it, or the step is
+# another tenant's and answers 404.
+WF_ANSWER_STATUS=""
+_wf_post_answer() {
+  local wid="$1" step_id="$2" answer="$3" attachment="$4" out="$5" code
+  WF_ANSWER_STATUS="000"
+  if ! code="$(auth_config "$(api_credential)" | curl -sS -m 120 -K - -o "${out}" -w '%{http_code}' \
+      -H "X-Swarm-Tenant: ${ACC_TENANT}" \
+      -F "answer=<${answer};type=application/json" \
+      -F "file=@${attachment};filename=${WF_ATTACHMENT_NAME};type=text/markdown" \
+      "$(api_url)${API_PREFIX}/workflows/${wid}/steps/${step_id}/input")"; then
+    return 1
+  fi
+  WF_ANSWER_STATUS="${code}"
+  [[ "${code}" == "200" ]]
+}
+
+# _wf_check_await WORKFLOW_JSON: #1436, live (docs/design/human-steps.md §6,
+# row HW-ACCEPT). draft -> review -> revise, with `mock` for draft and revise:
+#
+#   * while `review` waits it is PARKED(AWAITING_INPUT) with zero leases --
+#     none in its events, none in the leases collection -- and no attempt
+#     (invariant 1: a wait costs nothing);
+#   * the answer, a verdict form and one text file posted to the step's
+#     route, ends `review` SUCCEEDED, and `revise` is leased within one drain
+#     of it (WF_DRAIN_SECONDS) and runs;
+#   * `revise`'s workspace holds review.json and review.files/<the file>,
+#     each with the sha256 the answer recorded, and the file's equal to the
+#     bytes sent.
+#
+# THE ANSWERING IDENTITY IS AN OPEN QUESTION TO THE OWNER (HW-ACCEPT review,
+# 2026-10-19). The answer is posted as this suite's own caller, swarm-verify,
+# in ACC_TENANT (`smoke`, a group tenant). swarm-api takes an answer from a
+# person who is a member, or from a service tenant's own principal acting in
+# that tenant (awaitinput.py `service_principal`, §4.2.1); any other service
+# account is 403 `person_required`. swarm-verify cannot act in its own
+# service tenant `u-sw-c90291` either: it is in eng's and smoke's groups, so
+# it resolves to `eng`, `_tenant_choices` offers only those groups, and
+# `_with_own_workspace` never offers a service identity its `u-` id. So until
+# the owner picks the answering identity, every run on dev is that 403, and
+# the check FAILS on it, as a defect and not as a gap: the resume within one
+# drain and the staged form and file are three of the four behaviours this
+# group exists to prove, and HW-ENABLE waits on them.
+_wf_check_await() {
+  local wf="$1" wid draft review revise state doc window leases docs attempts
+  local answer_id answer attachment out reason answered_at sent recorded form_sha
+  local events lease_at running_at delay content
+  acc_check "workflow: await-input: a step waits for a member's answer holding no lease, and revise runs within one drain holding the posted form and file"
+  [[ -n "${wf}" ]] || { acc_fail "not submitted"; return 0; }
+  wid="$(jq -r '.workflow.workflow_id' <<<"${wf}")"
+  draft="$(workflow_step_task "${wf}" draft)"
+  review="$(workflow_step_task "${wf}" review)"
+  revise="$(workflow_step_task "${wf}" revise)"
+  acc_run_to_end state "${draft}" || return 0
+  acc_assert_eq "SUCCEEDED" "${state}" "draft, the step the wait depends on" "${draft}"
+
+  # The park. draft's task_finished promotes review, and the scheduler parks
+  # an await-input step in the same call that makes it READY; three drains
+  # is room for a lost wake, not a tolerance on the drain.
+  if ! wait_until "review PARKED(AWAITING_INPUT)" $(( 3 * WF_DRAIN_SECONDS )) _wf_awaiting "${review}"; then
+    acc_fail "review is $(task_field "${review}" '"\(.state // "MISSING") \(.park_reason // "none")"'), not PARKED AWAITING_INPUT, $(( 3 * WF_DRAIN_SECONDS )) s after draft succeeded" "${review}"
+    return 0
+  fi
+  if ! doc="$(task_doc "${review}")"; then
+    acc_fail "could not read the waiting step" "${review}"
+    return 0
+  fi
+  window="$(jq -r "${WF_JQ_EPOCH}"' .metadata.await_input // {} | ((.expires_at | epoch) // 0) - ((.opened_at | epoch) // 0)' <<<"${doc}")"
+  acc_assert_eq "${WF_AWAIT_EXPIRES_SECONDS}" "${window}" "the wait's window, metadata.await_input expires_at - opened_at, in seconds" "${review}"
+
+  # Zero leases while parked, read three ways: the task's events, the leases
+  # collection, and the attempt count admission increments with each lease.
+  if ! leases="$(task_lease_ids "${review}")" || ! docs="$(_wf_lease_docs "${review}")"; then
+    acc_fail "could not read the waiting step's leases" "${review}"
+    return 0
+  fi
+  attempts="$(jq -r '.attempt_count // 0' <<<"${doc}")"
+  acc_assert_eq "0 0 0" "$(printf '%s' "${leases}" | awk 'NF' | wc -l | tr -d ' ') ${docs} ${attempts}" \
+    "while it waits: lease ids in its events, lease documents naming it, attempts" "${review}"
+
+  # The answer: a verdict form and one text file, multipart.
+  answer_id="$(printf 'acc-%s' "${ACC_RUN_ID}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-' | cut -c1-64)"
+  answer="${ACC_WORK}/wf-answer.json"
+  attachment="${ACC_WORK}/wf-attachment.md"
+  out="${ACC_WORK}/wf-answer-response.json"
+  jq -nc --arg id "${answer_id}" --arg f "acceptance ${ACC_RUN_ID}: tighten the second paragraph" \
+    '{answer_id: $id, payload: {verdict: "NOT_YET", findings: [$f]}}' >"${answer}"
+  printf 'notes attached to the review\nrun %s\n' "${ACC_RUN_ID}" >"${attachment}"
+  if ! _wf_post_answer "${wid}" review "${answer}" "${attachment}" "${out}"; then
+    reason="$(jq -r 'if type == "object" then (.detail.reason // .code // "") else "" end' "${out}" 2>/dev/null || true)"
+    if [[ "${WF_ANSWER_STATUS}" == "403" && "${reason}" == "person_required" ]]; then
+      acc_fail "swarm-api refused the answer, 403 person_required: this suite's caller is a service account in group tenant ${ACC_TENANT}, which §4.2.1 refuses, and it cannot select its own service tenant. The resume and the staged form and file are not proven until the owner picks the answering identity (HW-ACCEPT's questions.json)" "${review}"
+    else
+      acc_fail "swarm-api did not take the answer: HTTP ${WF_ANSWER_STATUS} ${reason:-}" "${review}"
+      [[ ! -s "${out}" ]] || _api_error_body "${out}"
+    fi
+    return 0
+  fi
+  sent="$(sha256sum "${attachment}" | awk '{print $1}')"
+  recorded="$(jq -r '"\(.state // "none") \([.files[]? | .sha256] | join(","))"' "${out}")"
+  acc_assert_eq "SUCCEEDED ${sent}" "${recorded}" "the answer's response: the step's state and the digest recorded for the one file" "${review}"
+  form_sha="$(jq -r '.artifact.sha256 // empty' "${out}")"
+  answered_at="$(jq -r '.answered_at // empty' "${out}")"
+  acc_assert_eq "person" "$(task_field "${review}" '.result_summary.input.source // "none"')" "result_summary.input.source of the answered step" "${review}"
+
+  # revise: leased within one drain of the answer, and running.
+  acc_run_to_end state "${revise}" || return 0
+  acc_assert_eq "SUCCEEDED" "${state}" "revise" "${revise}"
+  events="${ACC_WORK}/wf-await-events.jsonl"
+  if ! acc_events "${revise}" >"${events}"; then
+    acc_fail "could not read revise's events" "${revise}"
+    return 0
+  fi
+  lease_at="$(jq -sr "${WF_JQ_EPOCH}"' [.[] | select(.type == "lease_acquired") | (.at | epoch) | select(. != null)] | min // empty' "${events}")"
+  running_at="$(jq -sr "${WF_JQ_EPOCH}"' [.[] | select(.type == "running") | (.at | epoch) | select(. != null)] | min // empty' "${events}")"
+  answered_at="$(jq -rn --arg a "${answered_at}" "${WF_JQ_EPOCH}"' $a | epoch // empty')"
+  if [[ -z "${answered_at}" || -z "${lease_at}" ]]; then
+    acc_fail "cannot time the resume: answered_at '${answered_at:-none}', revise's first lease_acquired '${lease_at:-none}'" "${revise}"
+  else
+    delay=$(( ${lease_at%.*} - ${answered_at%.*} ))
+    if [[ "${delay}" -le "${WF_DRAIN_SECONDS}" ]]; then
+      acc_pass "revise was leased ${delay} s after the answer, within one drain (${WF_DRAIN_SECONDS} s)" "${revise}"
+    else
+      acc_fail "revise was leased ${delay} s after the answer, more than one drain (${WF_DRAIN_SECONDS} s)" "${revise}"
+    fi
+  fi
+  # RUNNING is held to the same drain, as the brief states it: the lease
+  # bound says the scheduler admitted revise on the answer's own wake, and
+  # this one that the job it dispatched started inside that drain too.
+  if [[ -z "${running_at}" ]]; then
+    acc_fail "revise has no running event: it never reached RUNNING" "${revise}"
+  elif [[ -z "${answered_at}" ]]; then
+    acc_fail "cannot time revise's RUNNING: the answer recorded no answered_at" "${revise}"
+  else
+    delay=$(( ${running_at%.*} - ${answered_at%.*} ))
+    if [[ "${delay}" -le "${WF_DRAIN_SECONDS}" ]]; then
+      acc_pass "revise was RUNNING ${delay} s after the answer, within one drain (${WF_DRAIN_SECONDS} s)" "${revise}"
+    else
+      acc_fail "revise was RUNNING ${delay} s after the answer, more than one drain (${WF_DRAIN_SECONDS} s)" "${revise}"
+    fi
+  fi
+
+  # The wait never took a lease, answered as well as parked.
+  if leases="$(task_lease_ids "${review}")"; then
+    acc_assert_eq "none" "${leases:-none}" "lease ids in the answered step's events" "${review}"
+  else
+    acc_fail "could not read the answered step's events" "${review}"
+  fi
+
+  # revise's workspace: the form and the file, as the answer recorded them.
+  content="${ACC_WORK}/wf-await-form.json"
+  if _wf_workspace_file "${revise}" "${WF_REVIEW_NAME}" "${content}"; then
+    acc_assert_eq "${form_sha:-none recorded}" "$(sha256sum "${content}" | awk '{print $1}')" \
+      "sha256 of ${WF_MEMBER} in revise's workspace, against the answer's recorded artifact digest" "${revise}"
+    acc_assert_eq "$(jq -cS '.payload' "${answer}")" "$(jq -cS '.' "${content}" 2>/dev/null || printf 'not JSON')" \
+      "${WF_REVIEW_NAME} in revise's workspace, against the form posted" "${revise}"
+  fi
+  content="${ACC_WORK}/wf-await-file.md"
+  if _wf_workspace_file "${revise}" "${WF_REVIEW_FILES_DIR}/${WF_ATTACHMENT_NAME}" "${content}"; then
+    acc_assert_eq "${sent}" "$(sha256sum "${content}" | awk '{print $1}')" \
+      "sha256 of ${WF_MEMBER} in revise's workspace, against the file posted" "${revise}"
+  fi
+  acc_assert_eq "SUCCEEDED" "$(_wf_final_state "${wid}")" "the workflow's derived state" "${wid}"
+}
+
+# _wf_check_expire WORKFLOW_JSON DEFAULT_JSON: the wait nobody answers. `ask`
+# declares expires_after_seconds 300 and on_expire "default"; the schedule
+# tick (every minute) ends it after expires_at with the signed default as its
+# artifact (swarm_api/awaitinput.py `_default`), and the two steps gated on it
+# take the branch that default names: `revise` (NOT_YET) runs its agent,
+# `ship` (MERGE) does not, and both SUCCEED, because `when` gates the agent and
+# not the step (docs/workflows.md).
+#
+# acc_run_to_end's ACC_TIMEOUT (900 s) covers the 300 s, a tick, and two mock
+# steps; the clock started when run_workflow submitted it, before the
+# integrate chain.
+_wf_check_expire() {
+  local wf="$1" default="$2" wid ask revise ship state doc times ended leases stored
+  acc_check "workflow: await-input expiry: a step nobody answers ends at expires_after with its declared default, and the when-gated steps take that branch"
+  [[ -n "${wf}" ]] || { acc_fail "not submitted"; return 0; }
+  wid="$(jq -r '.workflow.workflow_id' <<<"${wf}")"
+  ask="$(workflow_step_task "${wf}" ask)"
+  revise="$(workflow_step_task "${wf}" revise)"
+  ship="$(workflow_step_task "${wf}" ship)"
+  acc_run_to_end state "${ask}" || return 0
+  acc_assert_eq "SUCCEEDED" "${state}" "the expired step, declared on_expire default" "${ask}"
+  if ! doc="$(task_doc "${ask}")"; then
+    acc_fail "could not read the expired step" "${ask}"
+    return 0
+  fi
+  acc_assert_eq "default none" "$(jq -r '"\(.result_summary.input.source // "missing") \(.result_summary.input.answered_by // "none")"' <<<"${doc}")" \
+    "result_summary.input source and answered_by" "${ask}"
+
+  # It waited its window: expires_at is opened_at + 300, and it ended no
+  # earlier than expires_at, by the step's own succeeded event.
+  times="$(jq -r "${WF_JQ_EPOCH}"' .metadata.await_input // {} | "\((.opened_at | epoch) // 0) \((.expires_at | epoch) // 0)"' <<<"${doc}")"
+  # A missing or unreadable block reads as "0 0": say that, rather than let
+  # the window report it as a wrong window of 0 s. The checks after the
+  # timing still run; they do not read it.
+  if [[ "${times% *}" == "0" || "${times#* }" == "0" ]]; then
+    acc_fail "metadata.await_input has no readable opened_at and expires_at, so the window cannot be timed: $(jq -c '.metadata.await_input // "missing"' <<<"${doc}")" "${ask}"
+  else
+    acc_assert_eq "${WF_EXPIRE_SECONDS}" "$(( ${times#* } - ${times% *} ))" "the wait's window, expires_at - opened_at, in seconds" "${ask}"
+    ended="$(acc_events "${ask}" | jq -sr "${WF_JQ_EPOCH}"' [.[] | select(.type == "succeeded") | (.at | epoch) | select(. != null)] | min // empty')"
+    if [[ -n "${ended}" && "${ended%.*}" -ge "${times#* }" ]]; then
+      acc_pass "ended $(( ${ended%.*} - ${times% *} )) s after the park, not before expires_at" "${ask}"
+    else
+      acc_fail "its succeeded event (${ended:-none}) is before expires_at (${times#* }): the default landed before the wait ran out" "${ask}"
+    fi
+  fi
+  if leases="$(task_lease_ids "${ask}")"; then
+    acc_assert_eq "none" "${leases:-none}" "lease ids in the expired step's events" "${ask}"
+  else
+    acc_fail "could not read the expired step's events" "${ask}"
+  fi
+
+  # The artifact is the declared default.
+  stored="$(acc_artifact_text "${ask}" "verdict.json" 2>/dev/null | jq -cS '.' 2>/dev/null || true)"
+  acc_assert_eq "$(jq -cS '.' <<<"${default}")" "${stored:-none}" "verdict.json, against the declared default" "${ask}"
+
+  # The branch: revise ran its agent on NOT_YET; ship, gated on MERGE, did not.
+  acc_run_to_end state "${revise}" || return 0
+  acc_assert_eq "SUCCEEDED NOT_YET true" "${state} $(task_field "${revise}" '"\(.result_summary.verdict_gate.verdict // "none") \(.result_summary.verdict_gate.agent_ran | tostring)"')" \
+    "revise, gated on NOT_YET: state, the verdict it read, whether its agent ran" "${revise}"
+  acc_run_to_end state "${ship}" || return 0
+  acc_assert_eq "SUCCEEDED NOT_YET false" "${state} $(task_field "${ship}" '"\(.result_summary.verdict_gate.verdict // "none") \(.result_summary.verdict_gate.agent_ran | tostring)"')" \
+    "ship, gated on MERGE: state, the verdict it read, whether its agent ran" "${ship}"
+  acc_assert_eq "SUCCEEDED" "$(_wf_final_state "${wid}")" "the workflow's derived state" "${wid}"
 }

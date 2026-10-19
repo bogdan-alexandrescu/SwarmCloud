@@ -16,9 +16,10 @@
 #     both the base slots and their `-refresh` twins (owner decision
 #     2026-10-08: it reuses the person's current access token instead of
 #     refreshing on every call); the tenant's worker reads only the base
-#     slots (D7, U1);
+#     slots (D7, U1), byte for byte as before #1041's broker, until the broker
+#     has been on in dev and its removal is a separate owner step;
 #   * a tenant id whose user-slot prefix would start with another tenant's is
-#     refused, because a prefix condition would hand that tenant's slots over;
+#     refused, because a prefix condition would reach that tenant's slots;
 #   * the refresher job (D2) is `swarm-forge-refresh`, every 15 minutes, OIDC,
 #     its ownership in its description, and absent until switched on;
 #   * forge_grants and forge_orgs have their (tenant_id, user_hash) indexes.
@@ -245,20 +246,6 @@ run "user_slot_grants_are_scoped_per_tenant_and_split_read_from_write" {
     error_message = "a per-tenant user-slot grant without its prefix condition would reach every secret in the project, the other team's included"
   }
 
-  # The worker reads base slots and never a -refresh twin, in either the
-  # secret's or the version's resource-name form.
-  assert {
-    condition = alltrue([
-      for t, m in google_project_iam_member.forge_slot_reader :
-      m.role == "roles/secretmanager.secretAccessor" &&
-      m.member == "serviceAccount:swarm-agent-worker-${t}@saga-agents-staging.iam.gserviceaccount.com" &&
-      startswith(m.condition[0].expression, "resource.name.startsWith(\"projects/209012342332/secrets/swarm-tenant-${t}-git-u-\") && ") &&
-      strcontains(m.condition[0].expression, "!resource.name.endsWith(\"-refresh\")") &&
-      strcontains(m.condition[0].expression, "!resource.name.extract(\"/secrets/{name}/versions/\").endsWith(\"-refresh\")")
-    ]) && length(google_project_iam_member.forge_slot_reader) > 0
-    error_message = "a tenant's worker reads only its own tenant's base user slots, never a -refresh twin (decision D7, U1)"
-  }
-
   # swarm-api reads the base slots AND their -refresh twins, on the tenant's
   # prefix and nothing narrower (owner decision 2026-10-08). It reuses the
   # person's current access token rather than refreshing on every call --
@@ -309,6 +296,64 @@ run "user_slot_grants_are_scoped_per_tenant_and_split_read_from_write" {
   }
 }
 
+# Owner decision 2026-10-11 (#1041): secrets are user-scoped. Every member of a
+# group tenant runs agents as the same worker account, and an agent can mint
+# that account's token, so the worker's grant on `-git-u-` hands Bob's agent
+# Alice's slot by name. swarm-api's broker (docs/design/user-scoped-secrets.md)
+# is the fix, behind terraform/infra's `forge_broker` switch, off by default
+# and off in dev. Until it has been on in dev and a live run passed, the
+# worker's binding, forge_slot_reader, STAYS: removing it is a later,
+# separate owner step, and this root changes no IAM before then.
+#
+# So what is held here is that the worker's read is exactly that one binding,
+# no wider: its tenant's BASE slots and never a -refresh twin (the token that
+# mints new access tokens), one binding per tenant, with main's condition title
+# and expression exactly: a condition is part of an IAM member's identity, so
+# any edit to either would replace every tenant's binding at the next bootstrap
+# apply, and while the broker is off that binding is the only read path. Every
+# other secretAccessor on a user-slot condition is swarm-api's. The test of the removal is written
+# with the removal.
+run "the_tenant_worker_reads_only_its_tenants_base_user_slots" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  override_data {
+    target          = data.google_project.forge_user_slots
+    override_during = plan
+    values = {
+      number = "209012342332"
+    }
+  }
+
+  variables {
+    enable_forge_user_slots = true
+    infra_tenants_tfvars    = "../../tests/terraform/tenants_tfvars_fixture/fixture.tfvars"
+  }
+
+  assert {
+    condition = alltrue([
+      for m in concat(values(google_project_iam_member.forge_refresh_reader), values(google_project_iam_member.forge_personal_slots)) :
+      m.member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+      if m.role == "roles/secretmanager.secretAccessor" && strcontains(m.condition[0].expression, "-git-u-")
+    ]) && length(google_project_iam_member.forge_refresh_reader) > 0
+    error_message = "a secretAccessor binding on a -git-u- user slot other than forge_slot_reader names someone other than swarm-api (#1041)"
+  }
+
+  assert {
+    condition = alltrue([
+      for t, m in google_project_iam_member.forge_slot_reader :
+      m.role == "roles/secretmanager.secretAccessor" &&
+      m.member == "serviceAccount:swarm-agent-worker-${t}@saga-agents-staging.iam.gserviceaccount.com" &&
+      m.condition[0].title == "swarm forge user slots ${t}" &&
+      m.condition[0].expression == "resource.name.startsWith(\"projects/209012342332/secrets/swarm-tenant-${t}-git-u-\") && !resource.name.endsWith(\"-refresh\") && !resource.name.extract(\"/secrets/{name}/versions/\").endsWith(\"-refresh\")"
+    ]) && toset(keys(google_project_iam_member.forge_slot_reader)) == toset(local.infra_tenant_ids)
+    error_message = "forge_slot_reader is each tenant's own worker reading that tenant's base user slots, never a -refresh twin or a secret version of one, with main's condition unchanged, and stays until the broker has been on in dev (#1041)"
+  }
+}
+
 run "user_slot_grants_are_absent_until_switched_on" {
   command = plan
 
@@ -325,7 +370,6 @@ run "user_slot_grants_are_absent_until_switched_on" {
       length(google_project_iam_custom_role.forge_slot_creator) == 0,
       length(google_project_iam_member.forge_slot_creator) == 0,
       length(google_project_iam_member.forge_slot_version_adder) == 0,
-      length(google_project_iam_member.forge_slot_reader) == 0,
       length(google_project_iam_member.forge_refresh_reader) == 0,
       length(google_project_iam_custom_role.forge_slot_version_manager) == 0,
       length(google_project_iam_member.forge_slot_version_manager) == 0,
@@ -335,7 +379,8 @@ run "user_slot_grants_are_absent_until_switched_on" {
 }
 
 # `eng-git-u-x`'s slots are named swarm-tenant-eng-git-u-x-git-u-<hex>, which
-# starts with `eng`'s prefix: eng's worker would read them. Refused at plan.
+# starts with `eng`'s prefix: eng's per-tenant grants would reach them.
+# Refused at plan.
 run "a_tenant_whose_prefix_nests_inside_anothers_is_refused" {
   command = plan
 
@@ -348,7 +393,7 @@ run "a_tenant_whose_prefix_nests_inside_anothers_is_refused" {
     infra_tenants_tfvars    = "../../tests/terraform/forge_app_fixture/nested_tenants.tfvars"
   }
 
-  expect_failures = [google_project_iam_member.forge_slot_reader]
+  expect_failures = [google_project_iam_member.forge_slot_version_adder, google_project_iam_member.forge_slot_reader]
 }
 
 run "bootstrap_tfvars_as_committed_switch_the_user_slots_on" {

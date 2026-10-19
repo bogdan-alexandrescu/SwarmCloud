@@ -12,6 +12,10 @@ Two kinds of caller, as the hand-off routes have:
     tenant and closes it again (QA12-11), and reads the audit. The socket
     (`/v1/live/{session_id}/stream`) authenticates the same identity from the
     upgrade request's headers and selects the tenant the ticket names.
+    Taking, renewing and steering control and opening it to members are a
+    `member`'s (docs/design/workspace-roles.md §4.1, `role_member_required`
+    through its switch); reading, a viewer ticket and handing control back
+    are every role's.
 
 THE PROXY (owner decision 2026-10-11 (b)). Browsers never reach the relay.
 They open wss to swarm-api through IAP, and swarm-api proxies the socket to
@@ -80,6 +84,7 @@ from ..live import (
     relay_closer_for,
 )
 from .children import child_service
+from .tasks import require_member
 
 log = logging.getLogger(__name__)
 
@@ -320,6 +325,7 @@ async def take_control(
     whoever holds it, nobody else; `confirmed_mismatch` names the expected and
     actual domains a person confirmed past (§5.7 item 2), recorded in the
     `control_taken` audit entry. An empty body is `{}`."""
+    require_member(ctx, auth)
     raw = await request.body()
     if len(raw) > 4096:
         raise ValidationFailed("a take-control request is at most 4096 bytes")
@@ -343,6 +349,7 @@ def renew_control(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     """The controller's console says it is still there (§4.2: 60 seconds)."""
+    require_member(ctx, auth)
     return _person_service(ctx, request.app).renew(tenant_id, task_id, email=auth.email,
                                       submitted_by=submitted_by)
 
@@ -360,7 +367,13 @@ def return_control(
     """Return control (§4.2 step 3); a waiting hand-off is resolved with it.
     `DELETE .../live/control` is the console's (`returnLiveControl`); the
     `POST .../control/return` it was first served as stays, for the
-    acceptance driver and any script written against it."""
+    acceptance driver and any script written against it.
+
+    NO ROLE IS ASKED HERE, unlike taking, renewing and steering control
+    (workspace-roles.md §4.1's member row): handing control back only ever
+    narrows what a person holds, so a controller a grant narrowed to `viewer`
+    a moment ago can still let go, rather than holding the browser until the
+    lease lapses."""
     return _person_service(ctx, request.app).return_control(tenant_id, task_id, email=auth.email,
                                                submitted_by=submitted_by)
 
@@ -382,6 +395,7 @@ async def set_device(
     renew and return answer. The choice is audited and sent through the relay
     to the gate, which applies it and reports it; the answer is the session
     read, whose `device` follows the gate's report."""
+    require_member(ctx, auth)
     raw = await request.body()
     if len(raw) > 1024:
         raise ValidationFailed("a device request is at most 1024 bytes")
@@ -403,6 +417,7 @@ def open_to_members(
 ) -> dict:
     """The owner lets any member of the tenant take control of this task's
     browser while its agent asks for help (§5.1, Q1). Audited."""
+    require_member(ctx, auth)
     return _person_service(ctx, request.app).open_to_members(tenant_id, task_id, email=auth.email,
                                                 submitted_by=submitted_by)
 
@@ -418,6 +433,7 @@ def close_to_members(
 ) -> dict:
     """The owner turns member control off again, for this attempt and the
     task's later ones (owner decision 2026-10-13, QA12-11). Audited."""
+    require_member(ctx, auth)
     return _person_service(ctx, request.app).close_to_members(tenant_id, task_id, email=auth.email,
                                                  submitted_by=submitted_by)
 

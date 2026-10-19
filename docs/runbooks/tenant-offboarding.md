@@ -152,6 +152,7 @@ Three things about this half that are easy to get wrong:
 | B5 | Runtime records: `tasks` (and each task's `events` subcollection), `attempts`, `leases`, `workflows`, `quota/<p>:<id>`, the outcome ledger's `outcome_days/<id>_<day>` rollup; ledger entries `credential_publications/<secret name>`; pools terraform does not hold | the API, scheduler, workers and broker | runtime data, never in terraform state | [6](#6-delete-everything-the-tenant-left) |
 | B6 | Artifacts and checkpoints under `gs://swarm-artifacts-<project>/tenants/<id>/`, every version, including the `.tenant` marker `register-tenant.sh` writes | workers | the bucket is shared; only the prefix is the tenant's | [6](#6-delete-everything-the-tenant-left) |
 | B7 | A provider secret added out of band for a provider that is *not* in the tenant's tfvars `providers` list (labels `component=tenant-credential`, `managed-by=swarm-secrets`) | `scripts/create-secrets.sh` | outside terraform's `for_each` | [10](#10-remove-what-the-platform-created-at-runtime) |
+| B8 | What the personal-workspace job made for a `u-<id>` tenant beyond B1 and B6: the forge slot `swarm-tenant-<id>-git` and its `-refresh` twin (labels `managed-by=swarm-api`, `tenant=<id>`, no `component` label, so B7's filter does not find them); the worker's `roles/storage.objectViewer` and `objectUser` bucket grants, each conditioned on `tenants/<id>/`; on the WD9 fallback its project and bucket-metadata roles; and the Firestore records `workspaces/<id>`, `workspace_ids/<w-id>`, `people/<id>`, `loan_requests/<id>` and `pending_loans/<id>` | the Cloud Run job `swarm-workspace-apply` (A3 to A9) and swarm-api | personal workspaces are outside terraform by design (WD3, WD4), and the job may not delete anything (guard rule C9) | [the workspace section](#a-personal-workspace-made-by-the-workspace-job) |
 
 What stays whatever you do, and is worth saying so nobody reports it deleted:
 
@@ -1371,7 +1372,10 @@ the GSA is deleted, a binding that names it can only be removed by its
 
   # Bucket bindings (A4). register-tenant.sh binds the object role with the
   # condition titled tenant_prefix_only; --all matches it without restating it.
-  for role in roles/storage.objectUser "projects/${PROJECT_ID}/roles/swarmBucketMetadataReader"; do
+  # objectViewer is the workspace job's read grant (A5); an operator-registered
+  # tenant never had it, and its remove then says so and the loop goes on.
+  for role in roles/storage.objectViewer roles/storage.objectUser \
+              "projects/${PROJECT_ID}/roles/swarmBucketMetadataReader"; do
     if gcloud storage buckets remove-iam-policy-binding "gs://${ARTIFACT_BUCKET}" \
          --member "serviceAccount:${GSA}" --role "$role" --all >/dev/null; then
       echo "removed $role"
@@ -1420,6 +1424,81 @@ deleted them.
 
 **Verify.** Step 8, in full: this section stands in for step 7, and step 8
 checks it the same way, down to `tenants/<id> absent` and no pool ids.
+
+---
+
+## A personal workspace, made by the workspace job
+
+**When this applies.** The tenant is `u-<id>` and has a `workspaces/<id>`
+record: it was approved in Admin → People and made by the Cloud Run job
+`swarm-workspace-apply` ([multi-tenancy §7](../multi-tenancy.md#7-a-persons-personal-workspace)).
+The first such tenant reached `ready` on 2026-10-13 (`w-7f9285`). Read on
+2026-10-13 against `main`: **no tool removes a workspace yet.**
+
+**Why it is by hand.** The job that makes a workspace cannot unmake one: its
+call guard refuses every removal, deletion and policy rewrite (rule C9 in
+`scripts/lib/workspace-calls.json`), because the identity it runs as holds
+account-IAM power Google cannot narrow, and a guard that admitted deletions
+would be bounded only by the record it was handed. The deprovisioning run
+that would hold a guard mode of its own, deletions of one workspace's
+resources only, is designed in [workspaces.md §7](../workspaces.md#7-deprovisioning-a-follow-up-not-built-now)
+and **not built**. Nor is the record state `deprovisioned` written by
+anything.
+
+**What to do today.** Do step 0 first: revoke the person's access, or their
+next request re-writes `people/<id>` and, while the gate is off, the tenant
+document too. Then do this runbook as for
+[a tenant never in terraform](#if-the-tenant-was-never-in-terraform): steps 0
+to 6, that section in place of step 7, then steps 8 to 11. That removes B1,
+B3 to B6, the worker account and its project and bucket bindings, the
+`.tenant` marker with the rest of `tenants/<id>/`, and the person from every
+account's `lend_to`. Its bucket loop removes `objectViewer` as well as
+`objectUser` for this reason: A5 grants both.
+
+Then, before step 11, the two things that section does not reach (B8):
+
+**The forge slot pair.** swarm-api's labels, not `create-secrets.sh`'s, so
+step 10's `component=tenant-credential` filter does not list them. Selected by
+the exact labels, then by the exact names, as every deletion here is:
+
+```bash
+( : "${TENANT:?run step 1 in this shell}" "${PROJECT_ID:?}"
+  gcloud secrets list --project "$PROJECT_ID" \
+    --filter="labels.tenant=${TENANT} AND labels.managed-by=swarm-api" \
+    --format='value(name.basename())' |
+  while read -r name; do
+    case "$name" in
+      "swarm-tenant-${TENANT}-git"|"swarm-tenant-${TENANT}-git-refresh")
+        gcloud secrets delete "$name" --project "$PROJECT_ID" ;;
+      *) echo "skipping ${name}: not this tenant's forge slot pair" ;;
+    esac
+  done
+)
+```
+
+`gcloud secrets delete` asks for each one. Expect two names. A person who
+connected GitHub through the App may have more `managed-by=swarm-api` secrets;
+the `case` skips them and prints each, and they are #780's, outside this
+runbook.
+
+**The workspace's Firestore records** in the `swarm` database:
+`workspaces/<id>`, `workspace_ids/<w-id>` (the `workspace_id` field of the
+first), `people/<id>`, `loan_requests/<id>` and `pending_loans/<id>`.
+`scripts/offboard-tenant.sh` deletes none of them, and no script here does
+yet. Delete them in the console (Firestore, database `swarm`, never
+`(default)`), `workspaces/<id>` last. **Why last, and why at all:** while
+`workspaces/<id>` says `ready`, the submission gate treats the person as
+having a workspace whose resources are gone, and a returning person's
+`POST /v1/workspace` finds that record instead of making a new request
+(`swarm_api.workspaces`, the request transaction). The index entry goes
+before it so that no index entry outlives the record it points at. Each
+document id is one of the five above with this tenant's id, or the record's
+own `w-` id: anything else is not this runbook's.
+
+**Not verified.** None of this section has been run against a real
+workspace: the only job-made workspace, `w-7f9285`, is in use. The secret
+block was written against `scripts/lib/forge-slot.sh`'s labels and names,
+read 2026-10-13.
 
 ---
 

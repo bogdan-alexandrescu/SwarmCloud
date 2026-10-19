@@ -11,8 +11,10 @@ Owner decisions this module implements (the lane brief, 2026-10-15):
     list, "use in my submissions to <workspace>": the group workspaces whose
     tasks THAT person submits may be released it. Nobody else's tasks, and
     only workspaces the person is a confirmed member of when they tick it.
-  * Q4. In a GROUP workspace only platform admins write; members read names
-    and grants. A personal workspace is managed by its person.
+  * Q4. In a GROUP workspace its `admin` writes -- a workspace admin, or a
+    platform admin, who holds `admin` in every group workspace
+    (docs/design/workspace-roles.md §4.8, owner's Q5 and Q6) -- and members
+    read names and grants. A personal workspace is managed by its person.
   * Q5. Rotate keeps the previous version ENABLED for `ROTATION_GRACE`
     (24 h), so a running attempt that read it keeps working; then
     `sweep_rotations` DISABLES it. It never destroys one: a disabled version
@@ -81,6 +83,7 @@ from .codec import console_origin
 from .errors import Conflict, Forbidden, NotFound, UpstreamUnavailable, ValidationFailed
 from .grant_attest import ATTESTATION_FIELD, VALID, GrantKeys, GrantPolicy
 from .mcp_servers import enabled_names, read_registration
+from .roles import ADMIN, RoleStore, at_least, with_tenant
 
 log = logging.getLogger(__name__)
 
@@ -367,31 +370,75 @@ def is_personal(tenant: Tenant) -> bool:
     return tenant.kind == "user"
 
 
-def require_manager(auth: AuthContext, tenant: Tenant) -> None:
-    """Q4. A personal workspace: its person, by the tenant document's
+def workspace_admin(roles: RoleStore | None, auth: AuthContext, tenant: Tenant) -> bool:
+    """Whether the caller holds `admin` in GROUP workspace `tenant`
+    (docs/design/workspace-roles.md §4.8; Q6, Q13), read fresh: a narrowing
+    made a moment ago refuses the next write, not the one 15 s later.
+
+    The gate on every route of ROLES-GATES-ADMIN: secrets, MCP servers, the
+    tenant provider key, git-token tenant and repository slots, and the
+    workspace's settings. True lets the caller through on the role alone.
+    False is not a refusal by itself -- the caller then meets the rule the
+    route had before roles, so a switch that is off never lets a member past
+    a gate they were stopped at:
+
+    * `role_admin_required` (403) through its switch (`refusals.py`, Q10).
+      On, a member is refused it here; off, `RoleStore.require` logs
+      `refusal report-only code=role_admin_required` and this answers False;
+    * a role that could not be read is False with the switch off and 503
+      `role_unavailable` with it on, never a guess;
+    * a personal workspace is never decided here: its person is its admin,
+      and every caller checks that first by the tenant document's principal;
+    * a caller who is neither in `tenant` (their selected tenant or a
+      verified membership) nor a platform admin is False before any grant is
+      read: a grant to a non-member is stored and inert until they join
+      (Q3), and a route whose path names a workspace must not let it act.
+    """
+    if roles is None or is_personal(tenant):
+        return False
+    if auth.tenant_id != tenant.tenant_id:
+        if not auth.is_admin and not any(c[0] == tenant.tenant_id for c in auth.tenant_choices):
+            return False
+        auth = with_tenant(auth, tenant.tenant_id, tenant.principal or "")
+    me = roles.require(auth, ADMIN, fresh=True)
+    return me is not None and at_least(me.role, ADMIN)
+
+
+def require_manager(auth: AuthContext, tenant: Tenant, roles: RoleStore | None = None) -> None:
+    """Q4, Q6. A personal workspace: its person, by the tenant document's
     principal (the frozen slug drops the domain, so the id alone does not say
-    whose it is). A group workspace: a full platform admin (`require_admin`
-    with no route, so a pool admin's narrow capability never reaches here).
-    Members of a group read; they never write."""
+    whose it is). A group workspace: its `admin` (`workspace_admin`), else a
+    full platform admin (`require_admin` with no route, so a pool admin's
+    narrow capability never reaches here, and 503 when the directory could not
+    say). Members of a group read; they never write, whatever the role
+    switch says."""
     if is_personal(tenant):
         email = (auth.email or "").strip().lower()
         if not email or (tenant.principal or "").strip().lower() != email:
             raise Forbidden("a personal workspace's secrets are managed by its person only")
         return
+    if workspace_admin(roles, auth, tenant):
+        return
     try:
         require_admin(auth)
     except Forbidden:
         raise Forbidden(
-            "in a group workspace only platform admins add, rotate, grant or delete "
-            "secrets; members see names and grants") from None
+            "in a group workspace only its admins add, rotate, grant or delete "
+            "secrets and MCP servers; members see names and grants") from None
 
 
-def can_manage(auth: AuthContext, tenant: Tenant) -> bool:
-    try:
-        require_manager(auth, tenant)
-    except Forbidden:
-        return False
-    return True
+def can_manage(auth: AuthContext, tenant: Tenant, roles: RoleStore | None = None) -> bool:
+    """What the console offers: whether `require_manager` would let this
+    caller write. Asked without the gate, so a member's listing logs no
+    would-be refusal and costs no fresh read."""
+    if is_personal(tenant) or auth.is_admin or roles is None:
+        try:
+            require_manager(auth, tenant)
+        except Forbidden:
+            return False
+        return True
+    me = roles.try_resolve(auth) if auth.tenant_id == tenant.tenant_id else None
+    return me is not None and at_least(me.role, ADMIN)
 
 
 # ---------------------------------------------------------------------------

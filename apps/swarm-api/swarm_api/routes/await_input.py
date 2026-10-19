@@ -1,5 +1,11 @@
 """The await-input routes: a person answers a workflow step (docs/design/human-steps.md §4.6).
 
+In a service tenant, the tenant's own principal answers too, and may name
+the person it answers for in the body's optional `on_behalf_of`, a label
+that is never verified (§4.2.1, HW-SERVICE-ANSWER). The body is
+`{answer_id, payload, via?, on_behalf_of?}`; `awaitinput.answer` validates
+it, after it has decided who may answer.
+
     POST /v1/workflows/{workflow_id}/steps/{step_id}/input   the answer
     GET  /v1/workflows/{workflow_id}/steps/{step_id}/input   what the card shows
     GET  /v1/inputs?status=waiting                           the tenant's waits
@@ -221,7 +227,13 @@ async def post_input(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    """Answer an await-input step. 200 with what was recorded, or the refusal."""
+    """Answer an await-input step. 200 with what was recorded, or the refusal.
+
+    The JSON body, or the multipart `answer` part, is `{answer_id, payload,
+    via?, on_behalf_of?}`. `on_behalf_of` is taken only from a service
+    tenant's own principal (422 from a person) and served back with
+    `on_behalf_of_verified: false`.
+    """
     media = _media_type(request)
     length = _content_length(request)
     writer = getattr(request.app.state, "input_writer", None)

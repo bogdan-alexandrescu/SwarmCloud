@@ -39,6 +39,7 @@ from .accounts import (
     account_id_for,
     secret_name,
     validate_label,
+    validate_model_classes,
     windows_to_firestore,
 )
 
@@ -276,6 +277,10 @@ class AccountStore:
                 last_refresh_at=current.last_refresh_at,
                 token_expires_at=current.token_expires_at,
                 last_refresh_reason=current.last_refresh_reason,
+                # CARRIED OVER, for the reason the state is: changing who an
+                # account is lent to must not widen an opus-only account back
+                # to every class and hand it the next Fable step (R5).
+                model_classes=current.model_classes,
                 # PRESERVED, never re-derived. An account registered before the
                 # naming rule changed keeps pointing at the secret that holds
                 # its credential; re-deriving here would orphan it on the next
@@ -382,6 +387,25 @@ class AccountStore:
             "an account's credential works again; restoring the state it had",
             extra={"account_id": account_id, "state": restored.value},
         )
+        return self.get(account_id)
+
+    def set_model_classes(self, account_id: str, classes: Iterable[str]) -> Account | None:
+        """The owner's list of the model classes this account serves (R5).
+
+        Validated against the frozen vocabulary and stored in its order; an
+        empty list means every class. An UPDATE of the one field, not a `set`
+        of the document, so the holds and readings moving under it in other
+        transactions are untouched. None when no such account exists.
+
+        Takes effect at the next assignment: a step already on the account
+        keeps it, because its class did not change -- only who may be handed
+        the next one.
+        """
+        stored = validate_model_classes(classes)
+        ref = self._db.collection(COLLECTION).document(account_id)
+        if not getattr(ref.get(), "exists", False):
+            return None
+        ref.update({"model_classes": list(stored)})
         return self.get(account_id)
 
     def remove(self, account_id: str) -> None:

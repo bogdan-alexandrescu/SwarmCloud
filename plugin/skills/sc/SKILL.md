@@ -1,7 +1,7 @@
 ---
 name: sc
-description: The SwarmCloud front door, `/sc [verb]`. With no verb, show and interpret SwarmCloud cluster state — the subscription account pool and its 5-hour/7-day quota windows, pool ceilings and which pool binds each runner profile, agents running and queued, and what is wrong right now. `status <id>` reads one workflow or task once; `workflows` lists your tenant's workflows still running in SwarmCloud; `attach <workflow_id>` re-attaches live rows to a workflow still running in SwarmCloud and submits nothing, and `attach --all` does that for every running workflow of your tenant (at most 100 followed, closest to finish first, the plugin's `max_live_rows`) and gives each of your running single tasks — dispatched with swarm_dispatch, in no workflow — one row (at most 100), every run's and row's expanded details naming the workspace it runs in, who started it and its LLM account; `run <spec>` submits a workflow spec through /sc:swarmcloud and says so before it does; `run --issue owner/repo#N` plans a GitHub issue (one planner task) and `plan show|approve|edit|reject <run>` reads or acts on that plan, approving only the digest the developer was shown — `run` and `plan approve|edit|reject` are the verbs that write. `check` reads which of this project's SwarmCloud workflows and tasks are stuck or stale (swarm_check, read-only) and then gives every running workflow of the project that has no row in this session its live rows; `watch [interval]` runs that `check` every interval (default 30m, at least 5m) with Claude Code's CronCreate and remembers it for the project; the watch also arms itself (CronList first, never a second job) whenever this session attaches to or starts SwarmCloud work, and `watch off` stops it and keeps it off for the project until `watch` again. `keys` says whether a TypeSafe key is set for you and your tenant and which one a task would use; `keys set <provider> [--tenant]` gives the developer a one-time console link to paste the key into themselves — the key never passes through this session. Use when asked "is my TypeSafe key set", "set my TypeSafe key", "what is the swarm doing", "how much quota is left", "why is my task queued", "is anything broken", "which account is nearly full", "where is my workflow", "what workflows are running", "show my workflow's rows again", before dispatching a long batch, to run a spec, or to plan and run a GitHub issue ("work on issue #N", "approve the plan").
-argument-hint: "[status <wf_id|task_id> | workflows | attach <wf_id> | attach --all | check | watch [interval] | watch off | run <spec path|JSON> | run --issue owner/repo#N | runs | plan show|approve|edit|reject <run> | keys | keys set <provider> [--tenant]]"
+description: The SwarmCloud front door, `/sc [verb]`. With no verb, show and interpret SwarmCloud cluster state — the subscription account pool and its 5-hour/7-day quota windows, pool ceilings and which pool binds each runner profile, agents running and queued, and what is wrong right now. `status <id>` reads one workflow or task once; `workflows` lists your tenant's workflows still running in SwarmCloud; `attach <workflow_id>` re-attaches live rows to a workflow still running in SwarmCloud and submits nothing, and `attach --all` does that for every running workflow of your tenant (at most 100 followed, closest to finish first, the plugin's `max_live_rows`) and gives each of your running single tasks — dispatched with swarm_dispatch, in no workflow — one row (at most 100), every run's and row's expanded details naming the workspace it runs in, who started it and its LLM account; `run <spec>` submits a workflow spec through /sc:swarmcloud and says so before it does; `run --issue owner/repo#N` plans a GitHub issue (one planner task) and `plan show|approve|edit|reject <run>` reads or acts on that plan, approving only the digest the developer was shown — `run` and `plan approve|edit|reject` are the verbs that write. `check` reads which of this project's SwarmCloud workflows and tasks are stuck or stale (swarm_check, read-only) and then gives every running workflow of the project that has no row in this session its live rows; `watch [interval]` runs that `check` every interval (default 30m, at least 5m) with Claude Code's CronCreate and remembers it for the project; the watch also arms itself (CronList first, never a second job) whenever this session attaches to or starts SwarmCloud work, and `watch off` stops it and keeps it off for the project until `watch` again. `keys` says whether a TypeSafe key is set for you and your tenant and which one a task would use; `keys set <provider> [--tenant]` gives the developer a one-time console link to paste the key into themselves — the key never passes through this session. `roles` shows the roles of the workspace this session acts in (read-only); a role is changed only by the developer, typed at their own terminal. Use when asked "is my TypeSafe key set", "set my TypeSafe key", "what is the swarm doing", "how much quota is left", "why is my task queued", "is anything broken", "which account is nearly full", "where is my workflow", "what workflows are running", "show my workflow's rows again", before dispatching a long batch, to run a spec, or to plan and run a GitHub issue ("work on issue #N", "approve the plan").
+argument-hint: "[status <wf_id|task_id> | workflows | attach <wf_id> | attach --all | check | inputs | answer <wf_id> <step_id> [file ...] | watch [interval] | watch off | run <spec path|JSON> | run --issue owner/repo#N | runs | plan show|approve|edit|reject <run> | keys | keys set <provider> [--tenant] | roles]"
 arguments:
   - verb
   - target
@@ -20,6 +20,9 @@ allowed-tools:
   - Bash(uv run sc runs:*)
   - Bash(uv run sc run show:*)
   - Bash(uv run sc plan show:*)
+  - Bash(uv run sc roles)
+  - Bash(uv run sc roles --json)
+  - Bash(uv run sc roles list:*)
   - Bash(sc)
   - Bash(sc overview:*)
   - Bash(sc accounts:*)
@@ -34,6 +37,9 @@ allowed-tools:
   - Bash(sc runs:*)
   - Bash(sc run show:*)
   - Bash(sc plan show:*)
+  - Bash(sc roles)
+  - Bash(sc roles --json)
+  - Bash(sc roles list:*)
   - Bash(uv run swarm doctor:*)
   - Bash(uv run swarm profiles:*)
   - CronCreate
@@ -43,9 +49,10 @@ allowed-tools:
 
 # sc — SwarmCloud cluster state, and the front door
 
-This skill reads only, except `run`, which submits and says so first, and
+This skill reads only, except `run`, which submits and says so first,
 `plan approve|edit|reject`, which act on an issue run's plan only when the
-developer asks for exactly that.
+developer asks for exactly that, and `answer`, which sends a workflow step
+only what the developer types into this host's own form.
 
 ## The verb
 
@@ -62,6 +69,8 @@ one action — never a second one the developer did not ask for:
 | `attach --all` | live rows for every running workflow THIS Claude Code session started (at most 100), and one per running single task it dispatched (at most 100); `max_live_rows` moves both, 1-200 | no |
 | `check` | which of THIS SESSION's workflows and tasks in THIS PROJECT are stuck or stale, stuck first, each with its reason, evidence, console link and next command: `swarm_check`. Then live rows for every running workflow and single task of the project that has none in this session | no (attaching submits nothing) |
 | `watch [interval]` | a `check` every interval (default `30m`, at least `5m`) in this session, through Claude Code's CronCreate, remembered for this project so the next session re-arms it: `swarm_check_schedule`. It also arms itself when this session attaches or starts work (see "Arming the watch") | schedules a prompt in this session; nothing in SwarmCloud |
+| `inputs` | the workflow steps of your tenant waiting for a person's answer: `swarm_inputs` | no |
+| `answer <wf_id> <step_id> [file ...]` | the developer answers that step in this host's own form: `swarm_workflow_input`. You never write the answer | **yes**, what the developer typed |
 | `watch off` | cancels this session's watch and saves "off" for the project, so nothing arms it again until `watch` | no |
 | `run <spec path\|JSON>` | submits a workflow spec, and says so first | **yes** |
 | `run --issue owner/repo#N [--plan auto] [--auto-merge] [--fix-rounds N]` | plans a GitHub issue (one planner task), and says so first | **yes** |
@@ -70,6 +79,8 @@ one action — never a second one the developer did not ask for:
 | `plan approve\|edit\|reject <run>` | acts on that plan, with the digest the developer was shown | **yes** |
 | `keys` | whether a TypeSafe key is set for you and for your tenant, and which one your tasks would use: `swarm_keys`. Never a value | no |
 | `keys set <provider> [--tenant]` | a one-time console link where the developer pastes the key themselves: `swarm_key_set_link`. The key never passes through this session | mints a link; stores nothing |
+| `roles` | the roles of the workspace this session acts in: its default, the overrides, your own role and how you reach it, the recent role events: `swarm_roles` | no |
+| `roles set\|clear\|default ...` | not run here: tell the developer the `sc roles` command for their own terminal (see `roles`) | no (the developer's, typed) |
 | a view name (`accounts`, `agents`, `capacity`, `trouble`, `task <id>`, `whoami`, `config`, `debug <id>`) | that view, as in "Which view" below | no |
 
 Anything else: say which verbs exist and run nothing. `/sc:swarmcloud` keeps
@@ -250,6 +261,15 @@ re-dispatches anything (owner, 2026-10-14: "report only"). Two calls:
    | `parked` | HUMAN_REQUIRED (only a person promotes it); CI_PENDING over 90 min; DEPENDENCY_INCOMPLETE whose dependency failed | any other park reason: a quota window or a retry backoff is the platform waiting by design |
    | `merge_refused` | a merge step FAILED with `head_moved`, `merge_conflict` or `checks_failed`, and its PR is still open | any other failure, and a PR that has since MERGED or CLOSED (the check reads the PR's state from GitHub's public API). When `pull_request_state` is null, say the PR's state was NOT read (its `pull_request_state_unread_because` says why), and give its link |
    | `state_disagrees` | a workflow whose stored state and derived state disagree on whether it is finished (the stale RUNNING cache) | a stored QUEUED under a derived RUNNING: the cache lags between reads |
+   | `awaiting_input` | STUCK only when an AWAITING_INPUT step is still parked more than two ticks (2 min) past its `expires_at`: the expiry sweep is not running | a wait inside its window, or just past it: listed under `awaiting_input`, below |
+
+   `awaiting_input` (beside `flagged`, never inside it) lists the steps
+   waiting for a member of their tenant to answer, as information and NOT as
+   stuck: one line each, `[<workspace>] <workflow_id> · <step_id> · <reason>`
+   ("waits for a member of eng since 14:02 UTC, expires in 3 h 0 m"), and its
+   `next` -- `/sc answer <wf_id> <step_id>` or its console link. A waiting
+   step holds no lease and no capacity (invariant 1). HUMAN_REQUIRED stays a
+   STUCK `parked` flag.
 
    `unchecked` lists what was not checked and why -- say so, never call it
    fine. `repository: null` means the check was not scoped (`repository_note`
@@ -273,6 +293,29 @@ re-dispatches anything (owner, 2026-10-14: "report only"). Two calls:
    say so in one line, and LEAVE the watch armed -- a check every interval
    is one read, and the next workflow is watched without anyone re-arming
    it. A check never cancels its own job; only `watch off` does.
+
+### `inputs`
+
+ONE `swarm_inputs` call. Report each item as `<workflow_id> · <step_id> ·
+opened <opened_at> · expires <expires_at>`, newest first, and say that any
+member of the tenant may answer any of them with `/sc answer <wf_id>
+<step_id>`. An empty list is an answer: nothing waits for a person.
+`truncated: true` means more wait than were listed.
+
+### `answer <wf_id> <step_id> [file ...]`
+
+ONE `swarm_workflow_input` call with `{workflow_id, step_id}`, and `files`
+only when the developer named files to attach. The bridge shows the
+developer the step's prompt, what it stages and every proposed file (name,
+bytes, sha256) in this host's own form, and sends only what they type and
+the files they tick. NEVER pass a verdict, findings, answers or text: the
+tool takes none and refuses a call that carries one, because an answer an
+agent wrote is not a person's. Report the reply as it came: who answered,
+`via`, `files_sent`, and `files_not_sent` when the developer left the box
+unticked. A refusal that names the console link means this host cannot ask
+its human: give the link and stop; never offer to answer for them. A reply
+that says the step was already answered is final (the first answer wins);
+a correction is a new round in the workflow, not a second answer.
 
 ### `watch [interval]`
 
@@ -376,6 +419,31 @@ prompt and prints only `stored: version N`. Tell them the command; never run
 it — it is not granted to this skill, and it would put the key in front of
 you.
 
+### `roles`
+
+ONE call to `swarm_roles`, and show its `text`: the workspace this session
+acts in, your own role there with its `source` (`override`, `default`,
+`personal`, `platform_admin`) and `via`, the workspace's default role, every
+person with an override, what each role permits, and the recent role and
+platform-admin events. `swarm_tenants` carries the same `role` and `via` for
+every workspace you may choose. `via: platform_admin` means you are acting as a
+platform admin in a group workspace you are not in: say that every action
+there is recorded in its audit log.
+
+A `viewer` sees everything and changes nothing; a `member` submits, approves,
+answers and cancels; an `admin` also manages secrets, MCP servers, provider
+keys, the workspace's settings and its roles. A refusal such as
+`role_member_required` is that rule, not a fault: report it verbatim.
+
+**NO TOOL CHANGES A ROLE, AND YOU NEVER DO** (owner answer Q11). If the
+developer wants one changed, tell them the command to run in their own
+terminal — `sc roles set <email> <role>`, `sc roles clear <email>` (back to
+the default) or `sc roles default <viewer|member>` — which asks them to type
+the email and the role back at the terminal and sends nothing otherwise; or
+the console's Settings › People. It needs `admin` in that workspace
+(`can_manage`). Never run it: it is not granted to this skill, and a
+confirmation it could read from you would not be the developer's.
+
 ### `run <spec path|JSON>`
 
 The one verb that writes: it spends the shared pool, a step at a time.
@@ -426,8 +494,10 @@ this session supplies.
 1. Say, before anything is submitted: "about to plan SwarmCloud issue run for
    `<owner/repo#N>`: one planner task, no capacity held by the plan until it is
    approved". Then call `swarm_run_issue` with `issue`, and `plan_approval:
-   "auto"`, `auto_merge: true` or `fix_rounds` only when the developer gave
-   `--plan auto`, `--auto-merge` or `--fix-rounds`. The terminal equivalent,
+   "auto"`, `auto_merge: true`, `fix_rounds` or `model_class` only when the
+   developer gave `--plan auto`, `--auto-merge`, `--fix-rounds` or
+   `--model-class <class>` (the planner's model class; see "Model classes"
+   below). The terminal equivalent,
    `uv run sc run --issue <owner/repo#N> --follow`, is the developer's to run
    (this skill is not granted it); it prints one row per step as it moves.
 2. `--auto-merge` merges the run's pull request with the `merge` step (#295,
@@ -441,6 +511,22 @@ this session supplies.
    Once a workflow exists, the reply's `arm_watch` is set too: end with
    [Arming the watch](#arming-the-watch) (the attach would arm it anyway, and
    step 1 there makes sure only once).
+
+### Model classes
+
+A step picks the model it runs by **class**, by name (#1435): `opus` (the
+default of every Claude profile: coding and implementation), `fable`
+(planning), `sonnet` (summarising, reformatting) or `haiku` (classifying,
+extracting). A spec's step names it as `model_class`, beside
+`runner_profile`; a step that names none runs `opus`, so implementation stays
+on the default and only the mechanical steps need the field. The platform runs
+the class's pinned model, which `swarm_profiles` lists under `models`. A
+model ID in `model_class`, or a class on a profile that runs no Claude model,
+is refused before anything is submitted; a 422 from the API
+(`model_class_not_yet_available` until the deployment offers the classes) is
+reported in its own words, with the offer of the same spec without the
+field. Never choose a class the spec did not: it is the operator's decision,
+made in the spec or on the command line.
 
 ### `runs`
 
@@ -510,6 +596,7 @@ dispatch to another cluster without asking.
 | what did this agent produce? | `uv run sc task <id>` |
 | is anything broken? | `uv run sc trouble` |
 | which deployment, and who am I on it? | `uv run sc whoami` |
+| what is my role here, and who holds which? | `uv run sc roles` |
 | which endpoint, tenant, dispatch target and plugin version? | `uv run sc config` |
 | why did this one task fail? | `uv run sc debug <id>` |
 | which of my workflows are still running? | `uv run sc workflows` |

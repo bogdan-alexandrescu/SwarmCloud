@@ -115,6 +115,10 @@ export const FIXED: Readonly<Record<string, string>> = {
   // (docs/design/registered-mcp-servers.md §4.11). A sibling of Workspace, for
   // the same reason: registered once, then named by tasks.
   'settings/mcp-servers': '/settings/mcp-servers',
+  // PROFILE-NAV: Settings › Profile, the person's own identity, workspaces,
+  // connections, bell and Claude accounts (docs/design/user-profile.md). About
+  // the person rather than a workspace, so beside API keys, for the same reason.
+  'settings/profile': '/settings/profile',
   [HELP_ROUTE]: '/help',
   reference: '/api-reads',
 }

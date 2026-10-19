@@ -38,6 +38,15 @@ named from outside it rings nobody. The id carries the reminder period,
 `task:input:<task>:<k>`, `k = floor((now - opened_at) / remind_after_seconds)`,
 so each period derives a new, unread item and nothing is written to make it.
 
+THE PERSON'S PREFERENCES ARE A FILTER AFTER DERIVATION (docs/design/
+user-profile.md §4.6, Q3/Q4, lane PROFILE-BELL). Every item carries a `topic`
+from `preferences.TOPICS`, a finer cut than its group. A muted topic is dropped
+after the sources ran and counted in `muted`, so a muted approval is quiet,
+never invisible; `admin_pending` is counted before the drop. A reminder is a
+read mark that ages out (`REMINDER_PERIODS`): nothing is queued or stored, and
+an update never re-rings. A waiting step's period is the person's when they
+chose one and its author's `remind_after_seconds` at `as_set`.
+
 A SOURCE THAT FAILS FAILS ALONE. Each source is a small function of a
 `Reading`; `Notifications.feed` runs them one by one, logs a failure by the
 source's name and the exception's type, and serves the rest with
@@ -73,6 +82,8 @@ from .forgeapp import CONNECTIONS, REFRESH_FAILED, connection_id_for, user_hash
 from .gittokens import COLLECTION as GIT_TOKENS
 from .issueruns import IssueRuns
 from .people import LOAN_DECLINED
+from .preferences import DEFAULT_REMINDER
+from .preferences import TOPICS as TOPICS  # re-exported: the bell's topics are these
 from .redaction import redact_detail
 
 log = logging.getLogger(__name__)
@@ -86,6 +97,22 @@ TASK = "task"
 ACCOUNT = "account"
 FINISHED = "finished"
 GROUPS = (ADMIN, APPROVAL, TASK, ACCOUNT, FINISHED)
+
+#: The topics an item may carry (§4.6), the ones a person may mute (Q3).
+#: `TOPICS` is `preferences.TOPICS`, so a saved mute always names one of these.
+T_APPROVAL = "approval"
+T_WAITING_STEP = "waiting_step"
+T_QUESTION = "question"
+T_FAILED = "failed"
+T_FINISHED = "finished"
+T_ACCOUNT = "account"
+T_ADMIN = "admin"
+
+#: How long a read mark keeps a "needs you" item read, by reminder (§4.6). A
+#: reminder absent here never ages a mark: `as_set` is today's behaviour, and
+#: `never` re-rings nothing. Both are at most `KEEP_READS`, so no mark a
+#: reminder needs is pruned before it ages out.
+REMINDER_PERIODS = {"every_4h": timedelta(hours=4), "daily": timedelta(days=1)}
 
 #: How far back an update reaches, and how long a dated "needs you" item that
 #: no later state resolves (a question asked, a workspace decided) stays.
@@ -111,6 +138,8 @@ _ENDED = {
     TaskState.CANCELLED: "was cancelled",
     TaskState.DEAD_LETTERED: "failed (dead-lettered)",
 }
+#: The end states the bell calls `failed`; every other end is `finished`.
+_FAILED = frozenset({TaskState.FAILED, TaskState.CANCELLED, TaskState.DEAD_LETTERED})
 _APPROVAL_TITLES = {
     approvals.RUN: "A scheduled run waits for approval",
     approvals.PLAN: "A plan waits for approval",
@@ -132,6 +161,13 @@ class Viewer:
     #: A personal workspace's member, who reads only their own tasks
     #: (`AuthContext.member_scope`): no tenant-wide source reaches past that.
     member_scope: bool = False
+    #: The person's muted topics and reminder (`AuthContext.preferences`).
+    muted: frozenset[str] = frozenset()
+    reminder: str = DEFAULT_REMINDER
+    #: Their preferences could not be read: the feed is served unfiltered, at
+    #: `as_set`, with `partial: true` (§4.6). Only a request that named its
+    #: workspace gets this far; one that did not is a 503 in authentication.
+    preferences_unread: bool = False
 
 
 @dataclass
@@ -179,8 +215,8 @@ def _text(value: Any) -> str | None:
 
 
 def _item(id_: str, group: str, needs_you: bool, title: str, detail: Any, href: str,
-          at: Any) -> dict[str, Any]:
-    return {"id": id_[:MAX_ID_CHARS], "group": group, "needs_you": needs_you,
+          at: Any, *, topic: str) -> dict[str, Any]:
+    return {"id": id_[:MAX_ID_CHARS], "group": group, "topic": topic, "needs_you": needs_you,
             "title": title, "detail": _text(detail), "href": href,
             "at": _aware(at) or _EPOCH}
 
@@ -209,7 +245,8 @@ def admin_requests(reading: Reading) -> list[dict[str, Any]]:
         items.append(_item(
             f"admin:workspace:{record['workspace_id']}:{record.get('request_id') or ''}",
             ADMIN, True, f"{record.get('principal') or 'Someone'} asks for a workspace",
-            f"Workspace {record['workspace_id']}", "/admin/people", record.get("requested_at")))
+            f"Workspace {record['workspace_id']}", "/admin/people", record.get("requested_at"),
+            topic=T_ADMIN))
     query = reading.db.collection(ws.LOAN_REQUESTS).where(
         filter=FieldFilter("state", "==", ws.REQUESTED)).limit(SCAN)
     for snap in query.stream():
@@ -220,7 +257,7 @@ def admin_requests(reading: Reading) -> list[dict[str, Any]]:
             f"admin:loan:{loan.get('workspace_id') or snap.id}:{loan.get('request_id') or ''}",
             ADMIN, True, f"{loan.get('principal') or 'Someone'} asks for a Claude account",
             f"Workspace {loan.get('workspace_id')}" if loan.get("workspace_id") else None,
-            "/admin/people", loan.get("requested_at")))
+            "/admin/people", loan.get("requested_at"), topic=T_ADMIN))
     return items
 
 
@@ -264,7 +301,8 @@ def approval_items(reading: Reading) -> list[dict[str, Any]]:
         items[approval_id] = _item(
             f"approval:{approval_id}", APPROVAL, True,
             _APPROVAL_TITLES.get(str(doc.get("kind")), "An item waits for approval"),
-            doc.get("summary"), _approval_href(approval_id), doc.get("requested_at"))
+            doc.get("summary"), _approval_href(approval_id), doc.get("requested_at"),
+            topic=T_APPROVAL)
 
     # A firing the tick held for approval before anything made its record: the
     # id is the record's own (`approval_id` is deterministic), so the item keeps
@@ -291,7 +329,7 @@ def approval_items(reading: Reading) -> list[dict[str, Any]]:
         items.setdefault(approval_id, _item(
             f"approval:{approval_id}", APPROVAL, True, _APPROVAL_TITLES[approvals.RUN],
             f"{schedule.get('name')}: {schedule.get('type')} waits to run",
-            "/approvals", firing.get("fired_at")))
+            "/approvals", firing.get("fired_at"), topic=T_APPROVAL))
 
     runs, _ = IssueRuns(db, now=lambda: reading.now).planned(tenant_id, limit=SCAN)
     for run in runs:
@@ -310,7 +348,7 @@ def approval_items(reading: Reading) -> list[dict[str, Any]]:
             f"approval:run:{run.id}:{run.plan_revision}", APPROVAL, True,
             f"{'A held plan' if held else 'The plan'} for {run.issue.short} waits for approval",
             (run.plan or {}).get("summary"), _approval_href(projected["approval_id"]),
-            projected.get("requested_at"))
+            projected.get("requested_at"), topic=T_APPROVAL)
     return list(items.values())
 
 
@@ -377,14 +415,14 @@ def handoffs(reading: Reading) -> list[dict[str, Any]]:
         items.append(_item(
             f"task:handoff:{task.id}:{generation}{suffix}", TASK, True, HANDOFF_TITLE,
             wait.get("reason"), f"/agents/live/{task.id}/browser",
-            wait.get("requested_at") or task.updated_at))
+            wait.get("requested_at") or task.updated_at, topic=T_QUESTION))
     for task in _own_in_state(reading, TaskState.PARKED):
         if task.park_reason != ParkReason.HUMAN_REQUIRED:
             continue
         items.append(_item(
             f"task:handoff:{task.id}:{task.current_generation}", TASK, True,
             "Your agent parked until you take over its browser", f"Task {task.id}",
-            f"/agents/waiting/{task.id}/browser", task.updated_at))
+            f"/agents/waiting/{task.id}/browser", task.updated_at, topic=T_QUESTION))
     return items
 
 
@@ -396,11 +434,20 @@ _INPUT_TITLES = {
 }
 
 
-def _reminder(task: Any, block: Mapping[str, Any], now: datetime) -> tuple[int, datetime | None]:
-    """`k`, the whole `remind_after_seconds` periods since the wait opened (0
-    with none declared), and the moment period `k` began: the item's `at`."""
+def _reminder(task: Any, block: Mapping[str, Any], now: datetime,
+              reminder: str = DEFAULT_REMINDER) -> tuple[int, datetime | None]:
+    """`k`, the whole reminder periods since the wait opened (0 with none),
+    and the moment period `k` began: the item's `at`.
+
+    WHOSE PERIOD (Q4): the reader's, when they chose `every_4h` or `daily`;
+    none at `never`, which holds `k` at 0; and the author's
+    `remind_after_seconds` at `as_set`. The id still rotates per period, so
+    each reminder is a new, unread item and nothing is written to make it."""
     opened = approvals.input_opened_at(task)
-    period = block.get("remind_after_seconds")
+    if reminder == "never":
+        return 0, opened
+    chosen = REMINDER_PERIODS.get(reminder)
+    period = int(chosen.total_seconds()) if chosen else block.get("remind_after_seconds")
     if opened is None or isinstance(period, bool) or not isinstance(period, int) or period <= 0:
         return 0, opened
     k = max(0, int((now - opened).total_seconds() // period))
@@ -422,14 +469,14 @@ def awaiting_input(reading: Reading) -> list[dict[str, Any]]:
         if not isinstance(remind, list) \
                 or reading.email not in {str(a or "").strip().lower() for a in remind}:
             continue
-        k, at = _reminder(task, block, reading.now)
+        k, at = _reminder(task, block, reading.now, reading.viewer.reminder)
         workflow = str(task.workflow_id or "")
         items.append(_item(
             f"task:input:{task.id}:{k}", TASK, True,
             _INPUT_TITLES.get(str(block.get("form")), "A workflow is waiting for an answer"),
             f"Step {task.step_id or task.id} · Workflow {workflow}",
             f"/workflows/{quote(workflow, safe='')}" if workflow else "/workflows",
-            at or task.updated_at))
+            at or task.updated_at, topic=T_WAITING_STEP))
     return items
 
 
@@ -470,7 +517,7 @@ def agent_questions(reading: Reading) -> list[dict[str, Any]]:
             f"task:questions:{task.id}", TASK, True,
             f"Your agent asked {count} question{'s' if count != 1 else ''}",
             f"{task.step_id or task.runner_profile} · Task {task.id}",
-            f"/agents/recent/{task.id}#questions", ended))
+            f"/agents/recent/{task.id}#questions", ended, topic=T_QUESTION))
     return items
 
 
@@ -493,7 +540,7 @@ def github_items(reading: Reading) -> list[dict[str, Any]]:
         items.append(_item(
             f"account:github:{conn_id}:{(_aware(failed) or _EPOCH).isoformat()}", ACCOUNT, True,
             "GitHub needs you to reconnect", (conn.get("failure") or {}).get("recovery"),
-            "/access", failed))
+            "/access", failed, topic=T_ACCOUNT))
     query = (reading.db.collection(GIT_TOKENS)
              .where(filter=FieldFilter("tenant_id", "==", tenant_id))
              .where(filter=FieldFilter("user", "==", email))
@@ -510,7 +557,7 @@ def github_items(reading: Reading) -> list[dict[str, Any]]:
         items.append(_item(
             f"account:token:{doc.get('token_id')}:{(expired or _EPOCH).isoformat()}", ACCOUNT, True,
             "A GitHub token you registered has expired",
-            f"GitHub account {login}" if login else None, "/access", expired))
+            f"GitHub account {login}" if login else None, "/access", expired, topic=T_ACCOUNT))
     return items
 
 
@@ -529,11 +576,11 @@ def workspace_items(reading: Reading) -> list[dict[str, Any]]:
     if state == ws.READY and _recent(reading, record.get("ready_at")):
         return [_item(f"account:workspace:{workspace_id}:ready", ACCOUNT, False,
                       "Your workspace is ready", f"Workspace {workspace_id}",
-                      "/setup#workspace", record.get("ready_at"))]
+                      "/setup#workspace", record.get("ready_at"), topic=T_ACCOUNT)]
     if state == ws.DENIED and _recent(reading, decision.get("at")):
         return [_item(f"account:workspace:{workspace_id}:denied:{record.get('request_id') or ''}",
                       ACCOUNT, False, "Your workspace request was denied", decision.get("reason"),
-                      "/setup#workspace", decision.get("at"))]
+                      "/setup#workspace", decision.get("at"), topic=T_ACCOUNT)]
     return []
 
 
@@ -554,12 +601,18 @@ def loan_items(reading: Reading) -> list[dict[str, Any]]:
     return [_item(f"account:loan:{loan.get('workspace_id') or snap.id}:declined:"
                   f"{loan.get('request_id') or ''}", ACCOUNT, False,
                   "Your request to borrow a Claude account was declined", decision.get("reason"),
-                  "/setup#claude-account", decision.get("at"))]
+                  "/setup#claude-account", decision.get("at"), topic=T_ACCOUNT)]
 
 
 # --------------------------------------------------------------------------
 # finished: updates, never "needs you"
 # --------------------------------------------------------------------------
+
+def _end_topic(state: TaskState) -> str:
+    """`failed` for a failed, cancelled or dead-lettered end, else `finished`:
+    the cut a person mutes the successes by and keeps the failures (§4.6)."""
+    return T_FAILED if state in _FAILED else T_FINISHED
+
 
 def finished_items(reading: Reading) -> list[dict[str, Any]]:
     """The caller's own work that ended within `WINDOW`: tasks submitted alone
@@ -576,7 +629,7 @@ def finished_items(reading: Reading) -> list[dict[str, Any]]:
         items.append(_item(
             f"finished:task:{task.id}:{task.state.value}", FINISHED, False,
             f"Task {task.id} {_ENDED[task.state]}", task.runner_profile,
-            f"/agents/recent/{task.id}", ended))
+            f"/agents/recent/{task.id}", ended, topic=_end_topic(task.state)))
     tenant_id = reading.viewer.tenant_id
     page = reading.store.list_workflows(tenant_id, limit=SCAN, submitted_by=reading.viewer.email)
     for workflow in page.items:
@@ -587,7 +640,8 @@ def finished_items(reading: Reading) -> list[dict[str, Any]]:
             f"finished:workflow:{workflow.workflow_id}:{workflow.state.value}", FINISHED, False,
             f"Workflow {workflow.workflow_id} {_ENDED[workflow.state]}",
             f"{len(workflow.steps)} step{'s' if len(workflow.steps) != 1 else ''}",
-            f"/workflows/{workflow.workflow_id}", workflow.updated_at))
+            f"/workflows/{workflow.workflow_id}", workflow.updated_at,
+            topic=_end_topic(workflow.state)))
     runs, _ = IssueRuns(reading.db, now=lambda: reading.now).list(tenant_id, limit=SCAN)
     for run in runs:
         pull = run.pull_request or {}
@@ -600,7 +654,7 @@ def finished_items(reading: Reading) -> list[dict[str, Any]]:
         items.append(_item(
             f"finished:pr:{run.id}:{pull.get('number')}", FINISHED, False,
             f"Pull request #{pull.get('number')} for {run.issue.short} merged",
-            (run.plan or {}).get("summary"), f"/runs/{run.id}", merged))
+            (run.plan or {}).get("summary"), f"/runs/{run.id}", merged, topic=T_FINISHED))
     return items
 
 
@@ -626,6 +680,17 @@ def _iso(moment: datetime | None) -> str | None:
     return moment.astimezone(timezone.utc).isoformat() if moment else None
 
 
+@dataclass(frozen=True)
+class _Derived:
+    """One derivation: the items shown, what the mutes dropped, the Admin
+    pill's count (before the mutes) and whether anything went unread."""
+
+    items: list[dict[str, Any]]
+    muted: dict[str, int]
+    admin_pending: int
+    partial: bool
+
+
 class Notifications:
     def __init__(self, db: Any, store: Any, *, now: Callable[[], datetime],
                  sources: Sequence[tuple[str, Source]] = SOURCES) -> None:
@@ -637,10 +702,14 @@ class Notifications:
     def _ref(self, viewer: Viewer) -> Any:
         return self._db.collection(COLLECTION).document("rd_" + user_hash(viewer.email))
 
-    def _derive(self, viewer: Viewer) -> tuple[list[dict[str, Any]], bool]:
+    def _derive(self, viewer: Viewer) -> "_Derived":
+        """Every source, then the person's mutes. Updates are cut to
+        `MAX_UPDATES` after the mutes, so muting the successes leaves room
+        for the failures; `admin_pending` is counted before them, because it
+        drives the Admin pill, not the bell."""
         reading = Reading(db=self._db, store=self._store, viewer=viewer, now=_aware(self._now()))
         items: dict[str, dict[str, Any]] = {}
-        partial = False
+        partial = viewer.preferences_unread
         for name, source in self._sources:
             try:
                 found = source(reading)
@@ -650,38 +719,59 @@ class Notifications:
                 continue
             for item in found:
                 items.setdefault(item["id"], item)
-        needs = sorted((i for i in items.values() if i["needs_you"]),
-                       key=lambda i: (i["at"], i["id"]))
-        updates = sorted((i for i in items.values()
-                          if not i["needs_you"] and i["at"] >= reading.now - WINDOW),
-                         key=lambda i: (i["at"], i["id"]), reverse=True)[:MAX_UPDATES]
-        return needs + updates, partial
+        admin_pending = sum(1 for i in items.values() if i["group"] == ADMIN) \
+            if viewer.is_admin else 0
+        muted = {"needs_you": 0, "updates": 0}
+        needs, updates = [], []
+        for item in items.values():
+            if not item["needs_you"] and item["at"] < reading.now - WINDOW:
+                continue
+            if item["topic"] in viewer.muted:
+                muted["needs_you" if item["needs_you"] else "updates"] += 1
+                continue
+            (needs if item["needs_you"] else updates).append(item)
+        needs.sort(key=lambda i: (i["at"], i["id"]))
+        updates.sort(key=lambda i: (i["at"], i["id"]), reverse=True)
+        return _Derived(needs + updates[:MAX_UPDATES], muted, admin_pending, partial)
 
-    def _marks(self, viewer: Viewer) -> tuple[set[str], datetime | None]:
+    def _marks(self, viewer: Viewer) -> tuple[dict[str, datetime], datetime | None]:
         snap = self._ref(viewer).get()
         doc = snap.to_dict() if snap.exists else None
         if not doc:
-            return set(), None
-        ids = {str(m.get("id")) for m in doc.get("marks") or [] if isinstance(m, Mapping)}
-        return ids, _aware(doc.get("all_read_at"))
+            return {}, None
+        marks: dict[str, datetime] = {}
+        for mark in doc.get("marks") or []:
+            if isinstance(mark, Mapping) and mark.get("id"):
+                marks[str(mark["id"])] = _aware(mark.get("at")) or _EPOCH
+        return marks, _aware(doc.get("all_read_at"))
 
     def feed(self, viewer: Viewer) -> dict[str, Any]:
-        items, partial = self._derive(viewer)
+        derived = self._derive(viewer)
+        partial = derived.partial
         try:
-            read_ids, all_read_at = self._marks(viewer)
+            marks, all_read_at = self._marks(viewer)
         except Exception as exc:  # noqa: BLE001 - unread marks show everything unread
             partial = True
             log.warning("notifications: read marks unread (%s)", type(exc).__name__)
-            read_ids, all_read_at = set(), None
+            marks, all_read_at = {}, None
+        # A reminder ages a needs-you item's read mark out (§4.6); an update's never.
+        period = REMINDER_PERIODS.get(viewer.reminder)
+        fresh_after = _aware(self._now()) - period if period else None
         out = []
-        for item in items:
-            read = item["id"] in read_ids or (all_read_at is not None and item["at"] <= all_read_at)
+        for item in derived.items:
+            marked = marks.get(item["id"])
+            all_read = all_read_at is not None and item["at"] <= all_read_at
+            if item["needs_you"] and fresh_after is not None:
+                marked = marked if marked is not None and marked >= fresh_after else None
+                all_read = all_read and all_read_at >= fresh_after
+            read = marked is not None or all_read
             out.append({**item, "at": _iso(item["at"]), "read": read})
         return {
             "items": out,
             "unread_needs_you": sum(1 for i in out if i["needs_you"] and not i["read"]),
             "unread_updates": sum(1 for i in out if not i["needs_you"] and not i["read"]),
-            "admin_pending": sum(1 for i in out if i["group"] == ADMIN) if viewer.is_admin else 0,
+            "admin_pending": derived.admin_pending,
+            "muted": derived.muted,
             "read_at": _iso(all_read_at),
             "partial": partial,
         }
@@ -719,6 +809,10 @@ class Notifications:
         self._write(viewer, ids, all_read=False)
 
     def mark_all_read(self, viewer: Viewer) -> None:
-        """Every item the feed derives now, and anything dated before now."""
-        items, _ = self._derive(viewer)
-        self._write(viewer, [i["id"] for i in items], all_read=True)
+        """Every item the feed shows now, and -- when nothing was muted out of
+        it -- anything dated before now. With a mute in force only the shown
+        ids are marked, so a muted item unmuted later is unread, which is
+        true: it was never seen (§4.6)."""
+        derived = self._derive(viewer)
+        hidden = derived.muted["needs_you"] + derived.muted["updates"]
+        self._write(viewer, [i["id"] for i in derived.items], all_read=hidden == 0)

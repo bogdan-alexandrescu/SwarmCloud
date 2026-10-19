@@ -3592,13 +3592,31 @@ def default_source(client: SwarmClient) -> str | None:
     than PROFILE-DEFAULT -- and the caller then says the general rule
     (`_DEFAULT_TENANT_SOURCE`) rather than guessing which part of it applied.
     """
+    return _default_source_of(_tenants_mine_or_none(client))
+
+
+def _tenants_mine_or_none(client: SwarmClient) -> list[dict[str, Any]] | None:
+    """`GET /v1/tenants/mine`, or None when it could not be read."""
     try:
-        mine = client.tenants_mine()
+        return client.tenants_mine()
     except SwarmError:
         return None
-    for entry in mine:
+
+
+def _default_source_of(mine: list[dict[str, Any]] | None) -> str | None:
+    for entry in mine or []:
         if entry.get("is_default") and isinstance(entry.get("default_source"), str):
             return entry["default_source"]
+    return None
+
+
+def _via_of(mine: list[dict[str, Any]] | None, tenant: str | None) -> str | None:
+    """How the caller reaches `tenant`, from its `tenants/mine` entry
+    (workspace-roles.md §4.3): `member`, `personal` or `platform_admin`.
+    None when the listing was not read or names none, never a guess."""
+    for entry in mine or []:
+        if tenant and entry.get("tenant_id") == tenant and isinstance(entry.get("via"), str):
+            return entry["via"]
     return None
 
 
@@ -3640,7 +3658,8 @@ def read_whoami(args) -> tuple[dict[str, Any], int]:
         "context": None, "url": None, "source": None, "current": None,
         "tier": None, "credential_store": None, "principal": None,
         "tenant": None, "tenant_chosen": chosen, "tenant_source": chosen_by,
-        "default_source": None, "error": None,
+        "default_source": None, "role": None, "role_source": None, "via": None,
+        "error": None,
     }
     code = EXIT_OK
     try:
@@ -3656,16 +3675,25 @@ def read_whoami(args) -> tuple[dict[str, Any], int]:
             shown["principal"] = signin.SignedIn(deployment).claims().get("email")
         with SwarmClient(deployment=deployment, tenant=chosen) as api:
             me = api.request("GET", "/v1/tenants/me") or {}
+            # One listing read, for which default applied and for how this
+            # caller reaches the workspace (`via`, workspace-roles.md §4.8).
+            mine = _tenants_mine_or_none(api)
             if chosen is None:
-                # WHICH DEFAULT APPLIED (PROFILE-SC): read only when nothing was
+                # WHICH DEFAULT APPLIED (PROFILE-SC): said only when nothing was
                 # chosen, because a SWARM_TENANT wins whatever the default is.
-                source = default_source(api)
+                source = _default_source_of(mine)
                 shown["default_source"] = source
                 shown["tenant_source"] = _DEFAULT_SOURCES.get(source or "", chosen_by)
         # Nested under `tenant` and `principal`, which the flat reads missed
         # (#88, SC-F3) -- through the one reader `render` keeps for it.
         shown["tenant"] = render.tenant_of(me)
         shown["principal"] = shown["principal"] or render.principal_of(me).get("email")
+        # THE STORED ROLE, as `/v1/tenants/me` sent it; absent from an API older
+        # than roles, or when the API could not read it, and then not guessed.
+        role = me.get("role") if isinstance(me, dict) else None
+        if isinstance(role, dict):
+            shown["role"], shown["role_source"] = role.get("name"), role.get("source")
+        shown["via"] = _via_of(mine, shown["tenant"])
     except SwarmError as exc:
         shown["error"] = str(exc)
         code = EXIT_FAIL
@@ -3697,6 +3725,10 @@ def cmd_whoami(_client, args, out) -> int:
         if field == "tenant":
             value = f"{value}  ({shown['tenant_source']})"
         out.write(f"{label:<11} {value}\n")
+        if field == "tenant" and shown.get("role"):
+            role = f"{shown['role']}  (source {shown.get('role_source') or '-'}"
+            role += f", via {shown['via']})" if shown.get("via") else ")"
+            out.write(f"{'role':<11} {role}\n")
     if shown["error"]:
         out.write(f"{'problem':<11} {shown['error']}\n")
     return code
@@ -4065,6 +4097,304 @@ def cmd_plan_reject(client: SwarmClient, args, out) -> int:
 def _json_out(value: Any, out) -> int:
     out.write(json.dumps(value, indent=2, default=str) + "\n")
     return EXIT_OK
+
+
+# -- registered MCP servers (docs/design/registered-mcp-servers.md §4.11) ---
+#
+# READ-ONLY, BY DESIGN. Registering a server is an admin act in the console,
+# and a long-lived credential goes to the workspace secret store, which no
+# tool or command here writes: a session that could register a URL could
+# point the platform's relay anywhere, and one that took a store value would
+# hold a secret in its transcript. So this is the one place the package names
+# the registry's route, and only in a GET (tests/unit/mcp/test_mcp_servers_tool.py).
+
+#: What one listing entry carries: the registration's NAMES and rules, never
+#: its header or scheme, which only the worker's relay needs.
+_MCP_SERVER_FIELDS = ("name", "url", "description", "allowed_profiles", "enabled", "last_attached_at")
+
+
+def mcp_servers(client: SwarmClient) -> dict[str, Any]:
+    """`GET /v1/mcp-servers`, shaped for a session: each server's name, URL,
+    auth mode, whether a dispatch must bring a credential for it, the profiles
+    and tools allowed, and whether it is enabled; and the egress addresses its
+    operator allowlists. An empty `allowed_tools` means every tool (owner
+    decision Q4), and says so rather than reading as none."""
+    listing = client.request("GET", "/v1/mcp-servers")
+    if not isinstance(listing, dict):
+        raise SwarmError("GET /v1/mcp-servers answered no object: this deployment predates MCP servers")
+    servers = []
+    for entry in listing.get("servers") or []:
+        if not isinstance(entry, dict):
+            continue
+        mode = (entry.get("auth") or {}).get("mode") if isinstance(entry.get("auth"), dict) else None
+        tools = entry.get("allowed_tools")
+        servers.append({
+            **{key: entry.get(key) for key in _MCP_SERVER_FIELDS},
+            "enabled": entry.get("enabled") is True,
+            "auth_mode": mode or "none",
+            "needs_credential": mode == "dispatch",
+            "allowed_tools": list(tools) if tools else "every tool",
+        })
+    return {
+        "tenant_id": listing.get("tenant_id"),
+        "servers": servers,
+        "egress_addresses": list(listing.get("egress_addresses") or []),
+        "can_manage": listing.get("can_manage") is True,
+        "use": (
+            "name servers in a claude-code or codex step's `inputs.mcp_servers`; a "
+            "`dispatch` server also needs that call's `mcp_credentials` entry, "
+            "{\"<name>\": {\"value\": ..., \"expires_in\": seconds}}. Registering a server "
+            "is done in the console (Settings > Workspace > MCP servers)"
+        ),
+    }
+
+
+def mcp_servers_lines(view: dict[str, Any]) -> list[str]:
+    """The listing as text: one line per server, then the addresses."""
+    servers = view.get("servers") or []
+    lines = [f"MCP SERVERS  {view.get('tenant_id') or ''}  {len(servers)} registered".rstrip()]
+    if not servers:
+        lines.append("  none registered for this workspace")
+    for server in servers:
+        tools = server["allowed_tools"]
+        lines.append(
+            f"  {server.get('name')}  {'enabled' if server['enabled'] else 'disabled'}  "
+            f"auth {server['auth_mode']}"
+            + ("  (needs mcp_credentials)" if server["needs_credential"] else "")
+        )
+        lines.append(f"    {server.get('url')}")
+        lines.append(
+            f"    profiles {', '.join(server.get('allowed_profiles') or []) or '-'}; tools "
+            + (tools if isinstance(tools, str) else ", ".join(tools))
+        )
+    addresses = view.get("egress_addresses") or []
+    lines.append(f"egress addresses to allowlist: {', '.join(addresses) if addresses else '- (not set)'}")
+    lines.append(f"use: {view['use']}")
+    return lines
+
+
+def cmd_mcp_servers(client: SwarmClient, args, out) -> int:
+    view = mcp_servers(client)
+    if args.json:
+        return _json_out(view, out)
+    _emit(mcp_servers_lines(view), out)
+    return EXIT_OK
+
+
+# --------------------------------------------------------------------------
+# Workspace roles (docs/design/workspace-roles.md §4.8, owner answer Q11)
+# --------------------------------------------------------------------------
+
+#: The roles a person may be given, lowest first, and the two a workspace's
+#: default may be (an admin is named person by person). The API is the
+#: authority on both; checked here only so a typo sends nothing.
+ROLE_NAMES = ("viewer", "member", "admin")
+DEFAULT_ROLE_NAMES = ("viewer", "member")
+
+#: Where a role change's confirmation is read from: the person's terminal,
+#: NEVER stdin and never an argument, so a script or an agent driving this
+#: command cannot pre-supply it (§4.8). A process with no controlling terminal
+#: cannot open it, and then nothing is sent. A module value so a test can
+#: point it at a file.
+TERMINAL = "/dev/tty"
+
+#: The three role writes, by verb. NAMED ONCE, read by `_send_role_change`
+#: only, and that by the three typed handlers only:
+#: tests/unit/mcp/test_roles_bridge.py holds that no other module -- the MCP
+#: server above all -- reaches them.
+ROLE_WRITES = {
+    "set": ("PUT", "/v1/workspace/roles/person"),
+    "clear": ("DELETE", "/v1/workspace/roles/person"),
+    "default": ("PUT", "/v1/workspace/roles/default"),
+}
+
+def roles_change() -> str:
+    """How a person changes a role, said wherever the roster is shown, each
+    command spelled for this install (`invocation.terminal_command`)."""
+    from .invocation import terminal_command
+
+    commands = ", ".join(
+        f"`{terminal_command(words)}`"
+        for words in ("sc roles set <email> <role>", "sc roles clear <email>",
+                      "sc roles default <viewer|member>")
+    )
+    return (
+        "a workspace admin changes roles in the console (Settings › People) or in "
+        f"their own terminal: {commands}, each typed back to confirm. No MCP tool "
+        "changes a role"
+    )
+
+
+def workspace_roles(client: SwarmClient) -> dict[str, Any]:
+    """`GET /v1/workspace/roles`, shaped for a session: the default, the
+    overrides, the caller's own role, what each role permits and the recent
+    role events. One read; nothing else is sent, and it is the only role route
+    this package reads (every role may, Q7)."""
+    roster = client.request("GET", "/v1/workspace/roles")
+    if not isinstance(roster, dict):
+        raise SwarmError("GET /v1/workspace/roles answered no object: this deployment "
+                         "predates workspace roles (#1518)")
+    return {
+        "tenant_id": roster.get("tenant_id"),
+        "kind": roster.get("kind"),
+        "default_role": roster.get("default_role"),
+        "default_source": roster.get("default_source"),
+        "me": roster.get("me") if isinstance(roster.get("me"), dict) else {},
+        "people": [p for p in roster.get("people") or [] if isinstance(p, dict)],
+        "roles": [r for r in roster.get("roles") or [] if isinstance(r, dict)],
+        "can_manage": roster.get("can_manage") is True,
+        "audit": [a for a in roster.get("audit") or [] if isinstance(a, dict)],
+        "change": roles_change(),
+    }
+
+
+def workspace_roles_lines(view: dict[str, Any]) -> list[str]:
+    """The roster as text: you, the default, the overrides, the roles, the events."""
+    me = view.get("me") or {}
+    lines = [f"ROLES  {view.get('tenant_id') or ''}  ({view.get('kind') or 'workspace'})".rstrip()]
+    lines.append(
+        f"  you      {me.get('email') or '-'}  {me.get('role') or '-'}  "
+        f"(source {me.get('source') or '-'}, via {me.get('via') or '-'})"
+    )
+    if view.get("kind") == "user":
+        lines.append("  a personal workspace has only you, and you are its admin")
+    else:
+        lines.append(
+            f"  default  {view.get('default_role') or '-'}  "
+            f"({view.get('default_source') or '-'}): everyone without an override holds it"
+        )
+        people = view.get("people") or []
+        lines.append(f"  overrides  {len(people)}")
+        for person in people:
+            by = person.get("granted_by") or "-"
+            via = person.get("granted_via")
+            lines.append(
+                f"    {person.get('email')}  {person.get('role')}  by {by}"
+                + (f" via {via}" if via else "")
+                + f"  {person.get('granted_at') or ''}".rstrip()
+            )
+    for role in view.get("roles") or []:
+        lines.append(f"  {role.get('name'):<7} {role.get('summary') or ''}".rstrip())
+    events = view.get("audit") or []
+    if events:
+        lines.append(f"  recent events  {len(events)}")
+        for event in events:
+            detail = event.get("detail") if isinstance(event.get("detail"), dict) else {}
+            change = (f"  {detail.get('from')} -> {detail.get('to')}"
+                      if "from" in detail or "to" in detail else "")
+            lines.append(
+                f"    {event.get('at') or ''}  {event.get('action')}  by {event.get('by') or '-'}"
+                + (f"  {event.get('target_email')}" if event.get("target_email") else "")
+                + change
+            )
+    lines.append(f"you {'may' if view.get('can_manage') else 'may not'} change roles here")
+    lines.append(f"change: {view['change']}")
+    return lines
+
+
+def cmd_roles(client: SwarmClient, args, out) -> int:
+    view = workspace_roles(client)
+    if args.json:
+        return _json_out(view, out)
+    _emit(workspace_roles_lines(view), out)
+    return EXIT_OK
+
+
+def _ask_terminal(prompt: str) -> str:
+    """One line typed at the person's TERMINAL, the prompt on stderr.
+
+    Never stdin: a confirmation a pipe could carry is one a script or an
+    agent could supply. No terminal to open means no confirmation, and the
+    caller then sends nothing.
+    """
+    sys.stderr.write(prompt)
+    sys.stderr.flush()
+    try:
+        with open(TERMINAL, encoding="utf-8") as terminal:
+            return terminal.readline().rstrip("\r\n")
+    except OSError as exc:
+        raise SwarmError(
+            f"a role change is confirmed by typing at a terminal, and {TERMINAL} could not be "
+            f"opened ({exc.strerror or exc}); nothing was sent. Run it in your own terminal"
+        ) from exc
+
+
+def _send_role_change(client: SwarmClient, verb: str, body: dict[str, Any], phrase: str,
+                      what: str) -> Any:
+    """Ask for `phrase` at the terminal; send the `verb` write only if it was typed.
+
+    SWARM_ASSUME_YES IS IGNORED: a role decides who may act in a workspace
+    (tenant isolation), so it is typed every time. NOTHING IS SENT BEFORE THE
+    CONFIRMATION, not even a read. A refusal carries the server's code and
+    sentence, unchanged.
+    """
+    if os.environ.get("SWARM_ASSUME_YES", "").strip():
+        sys.stderr.write("sc: SWARM_ASSUME_YES is ignored here; a role change is typed\n")
+    typed = _ask_terminal(f"{what}? Type {phrase!r} to confirm: ")
+    if typed.strip() != phrase:
+        raise SwarmError(f"{phrase!r} was not typed; nothing was sent")
+    method, path = ROLE_WRITES[verb]
+    try:
+        return client.request(method, path, payload={**body, "via": "cli"})
+    except SwarmError as exc:
+        if exc.code and exc.code not in str(exc):
+            raise SwarmError(f"refused {exc.code}: {exc}", status=exc.status, edge=exc.edge,
+                             code=exc.code, detail=exc.detail) from exc
+        raise
+
+
+def _role_body(args, **fields: Any) -> dict[str, Any]:
+    body = dict(fields)
+    if args.reason:
+        body["reason"] = args.reason
+    return body
+
+
+def _checked_role(role: str, allowed: tuple[str, ...], what: str) -> str:
+    if role not in allowed:
+        raise SwarmError(f"{role!r} is not {what} ({', '.join(allowed)}); nothing was sent")
+    return role
+
+
+def _role_result(answer: Any, args, out) -> int:
+    if args.json:
+        return _json_out(answer, out)
+    out.write(json.dumps(answer, indent=2, default=str) + "\n")
+    return EXIT_OK
+
+
+def cmd_roles_set(client: SwarmClient, args, out) -> int:
+    """Give one person a role in the selected workspace, after the email and
+    the role are TYPED back at the terminal."""
+    role = _checked_role(args.role, ROLE_NAMES, "a role")
+    email = args.email.strip()
+    answer = _send_role_change(
+        client, "set", _role_body(args, email=email, role=role), f"{email} {role}",
+        f"give {email} the role {role} in this workspace",
+    )
+    return _role_result(answer, args, out)
+
+
+def cmd_roles_clear(client: SwarmClient, args, out) -> int:
+    """Return one person to the workspace's default, after the email and
+    `default` are TYPED back at the terminal."""
+    email = args.email.strip()
+    answer = _send_role_change(
+        client, "clear", _role_body(args, email=email), f"{email} default",
+        f"return {email} to this workspace's default role",
+    )
+    return _role_result(answer, args, out)
+
+
+def cmd_roles_default(client: SwarmClient, args, out) -> int:
+    """Set the workspace's default role, after `default` and the role are
+    TYPED back at the terminal."""
+    role = _checked_role(args.role, DEFAULT_ROLE_NAMES, "a default role")
+    answer = _send_role_change(
+        client, "default", _role_body(args, role=role), f"default {role}",
+        f"make {role} this workspace's default role, for everyone without an override",
+    )
+    return _role_result(answer, args, out)
 
 
 def cmd_schedules(client: SwarmClient, args, out) -> int:
@@ -4666,6 +4996,38 @@ def build_parser() -> argparse.ArgumentParser:
     shp.add_argument("--tz", default=None, help="an IANA zone (default UTC)")
     _common(shp, root=False)
     shp.set_defaults(func=cmd_schedules_preview)
+
+    ms = sub.add_parser("mcp-servers", help="your workspace's registered MCP servers (read-only)")
+    _common(ms, root=False)
+    ms.set_defaults(func=cmd_mcp_servers)
+
+    # ROLES-MCP (workspace-roles.md §4.8): the roster is a view; `set`, `clear`
+    # and `default` change who may act in the workspace, so each is typed back
+    # at the terminal and no skill is granted them. There is no flag that
+    # supplies the confirmation, by design.
+    ro = sub.add_parser("roles", help="your workspace's roles: list, or set|clear|default (typed)")
+    _common(ro, root=False)
+    ro.set_defaults(func=cmd_roles)
+    ro_sub = ro.add_subparsers(dest="roles_command")
+    rol = ro_sub.add_parser("list", help="the default, the overrides, your role, recent events")
+    _common(rol, root=False)
+    rol.set_defaults(func=cmd_roles)
+    ros = ro_sub.add_parser("set", help="give a person a role (type the email and role back)")
+    ros.add_argument("email")
+    ros.add_argument("role", help="viewer, member or admin")
+    ros.add_argument("--reason", default=None, help="recorded with the change")
+    _common(ros, root=False)
+    ros.set_defaults(func=cmd_roles_set)
+    roc = ro_sub.add_parser("clear", help="return a person to the default (type it back)")
+    roc.add_argument("email")
+    roc.add_argument("--reason", default=None, help="recorded with the change")
+    _common(roc, root=False)
+    roc.set_defaults(func=cmd_roles_clear)
+    rod = ro_sub.add_parser("default", help="set the workspace's default role (type it back)")
+    rod.add_argument("role", help="viewer or member")
+    rod.add_argument("--reason", default=None, help="recorded with the change")
+    _common(rod, root=False)
+    rod.set_defaults(func=cmd_roles_default)
 
     ap_ = sub.add_parser("approvals", help="the approval inbox; then approve|reject <id>")
     ap_.add_argument("--kind", default=None, choices=("run", "plan", "merge", "proposal", "spec", "hold"))

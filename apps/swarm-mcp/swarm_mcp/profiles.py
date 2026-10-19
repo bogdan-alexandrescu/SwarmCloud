@@ -37,11 +37,13 @@ import json
 from typing import Any
 
 from swarm_common.profiles import (
+    MODEL_CLASSES,
     RESOURCE_CLASSES,
     RUNNER_PROFILES,
     InputRefused,
     RunnerInput,
     resolve_backend,
+    step_model_class,
 )
 from swarm_common.profiles import check_inputs as check_inputs_by_declaration
 
@@ -105,6 +107,15 @@ def _declaring() -> str:
     return ", ".join(declaring()) or "none"
 
 
+#: Declared inputs whose refused value is NEVER repeated in a refusal: the
+#: registered MCP servers a step names (contract request 88). A name is
+#: harmless, but the per-run credential that travels beside it
+#: (`mcp_credentials`, docs/design/registered-mcp-servers.md §4.3) is the
+#: value most likely to be pasted here by mistake, and a refusal is a tool
+#: reply in the session's transcript.
+_UNREPEATED_INPUTS = frozenset({"mcp_servers"})
+
+
 def check_inputs(name: str, raw: Any, *, where: str = "") -> dict[str, Any]:
     """The declared inputs `raw` asks for, checked; refuses anything else. Returns them.
 
@@ -137,6 +148,14 @@ def check_inputs(name: str, raw: Any, *, where: str = "") -> dict[str, Any]:
     except InputRefused as refused:
         # A declared key out of its bounds, or a required key not sent: the
         # rule's own message names the key and says which.
+        if refused.key.split("[", 1)[0] in _UNREPEATED_INPUTS:
+            # The rule's message repeats the start of the refused value; for
+            # this input that may be a credential pasted where a name goes.
+            raise SwarmError(
+                f"{prefix}input {refused.key!r} must be {refused.expected or 'as declared'}; "
+                "the value given is not repeated, because a per-run credential belongs in "
+                "`mcp_credentials` and a value here could be one"
+            ) from None
         if refused.expected is not None or set(refused.keys) <= set(declared):
             raise SwarmError(f"{prefix}{refused}") from None
         offered = ", ".join(f"{key} ({spec.describe()})" for key, spec in sorted(declared.items()))
@@ -227,6 +246,7 @@ def public_profile(name: str) -> dict[str, Any]:
     }
     if not profile.available:
         out["disabled_reason"] = profile.disabled_reason
+    out.update(_bundled_model_classes(profile.model_classes, profile.default_model_class))
     declared = declared_inputs(name)
     if declared:
         # What a caller may send this profile besides its prompt (#142), so the
@@ -236,6 +256,134 @@ def public_profile(name: str) -> dict[str, Any]:
             for key, spec in sorted(declared.items())
         }
     return out
+
+
+# --------------------------------------------------------------------------
+# Model classes (#1435, docs/design/model-per-step.md §4.8)
+# --------------------------------------------------------------------------
+#
+# THE CLASS IS THE CALLER'S WORD, THE ID IS TERRAFORM'S. A step names
+# `opus`, `fable`, `sonnet` or `haiku` (the frozen `MODEL_CLASSES`) and the
+# platform runs that class's pin, `runner_models` in terraform/infra/locals.tf,
+# which swarm-api serves on `GET /v1/runtimes` as each profile's `models`.
+# This bridge holds no copy of the pins: one written here would be a second
+# answer to "which model does `haiku` run", wrong the day the pin moves. So
+# the bundled copy serves the classes and the default, which ARE frozen, and
+# says which family each class is and where the ID is read.
+
+
+def _models_note(classes: tuple[str, ...] | list[str], why: str) -> str:
+    families = "; ".join(
+        f"{name}: claude-{MODEL_CLASSES[name].family}-<{MODEL_CLASSES[name].min_major} or later>"
+        for name in classes
+        if name in MODEL_CLASSES
+    )
+    return (
+        f"{why}. The model each class runs is pinned by the platform and served by "
+        f"GET /v1/runtimes; each class is a family: {families}"
+    )
+
+
+def _bundled_model_classes(classes: tuple[str, ...], default: str | None) -> dict[str, Any]:
+    """The copy's `model_classes`, `default_model_class` and `models` (always `{}`)."""
+    out: dict[str, Any] = {
+        "model_classes": list(classes),
+        "default_model_class": default,
+        "models": {},
+    }
+    if classes:
+        out["models_note"] = _models_note(classes, "This bridge's copy holds no model IDs")
+    return out
+
+
+def check_model_class(profile_name: str, name: Any, *, where: str = "") -> str | None:
+    """Refuse a model class `profile_name` cannot run, before anything travels. Returns it.
+
+    None (nothing named) is returned as None and NOT resolved to the default:
+    a task naming no class is sent without the key, exactly as before the
+    classes existed, and runs its profile's default (R3). The rule is
+    `swarm_common.profiles.step_model_class`, the one swarm-api, the scheduler
+    and the worker apply, so this can only refuse sooner, never admit what the
+    API refuses -- and the API still answers `model_class_not_yet_available`
+    while its gate is closed, which this cannot see and passes through.
+
+    A MODEL ID IS NOT A CLASS. `claude-haiku-5-5` here is refused naming the
+    four classes: the caller picks a class by name and never a model
+    (invariant 10).
+    """
+    if name is None:
+        return None
+    prefix = f"{where}: " if where else ""
+    if not isinstance(name, str) or name not in MODEL_CLASSES:
+        raise SwarmError(
+            f"{prefix}there is no model class called {name!r}. A step names one of "
+            f"{', '.join(MODEL_CLASSES)} -- a class, never a model ID; the platform runs "
+            "the class's pinned model (`swarm_profiles` lists them). Nothing was sent"
+        )
+    profile = RUNNER_PROFILES[profile_name]
+    if not profile.model_classes:
+        raise SwarmError(
+            f"{prefix}{profile_name} runs no Claude model, so a step on it names no "
+            "model class. Nothing was sent"
+        )
+    try:
+        return step_model_class(profile, name)
+    except ValueError as exc:
+        raise SwarmError(f"{prefix}{exc}. Nothing was sent") from None
+
+
+# A WORKFLOW STEP'S CLASS. `workflows.build_steps` refuses a step key it does
+# not list, and `model_class` is not one of them (its `_STEP_KEYS`), so the
+# key is taken off each step before the step is built and put back on the
+# built step afterwards, checked against its RESOLVED profile -- `claude-code`
+# when the step names none. One pair of functions for `swarm_workflow`, the
+# launch and `swarm workflow`, so the three read a spec's classes alike.
+
+
+def spec_without_model_classes(document: Any) -> Any:
+    """`document` (a spec) with each step's `model_class` taken off; else as given."""
+    if not isinstance(document, dict) or not isinstance(document.get("steps"), list):
+        return document
+    return {**document, "steps": steps_without_model_classes(document["steps"])}
+
+
+def steps_without_model_classes(steps: Any) -> Any:
+    """Workflow steps with `model_class` taken off each; anything else as given."""
+    if not isinstance(steps, list):
+        return steps
+    return [
+        {k: v for k, v in step.items() if k != "model_class"} if isinstance(step, dict) else step
+        for step in steps
+    ]
+
+
+def with_model_classes(built: list[dict[str, Any]], given: Any) -> list[dict[str, Any]]:
+    """`built` with each step's `model_class` as the step `given` named it.
+
+    BY STEP ID, and only where one was named: a step naming none is sent
+    without the key and runs its profile's default (R3). A refusal names the
+    step, and the caller submits nothing.
+    """
+    named: dict[str, Any] = {}
+    for raw in given if isinstance(given, list) else []:
+        if isinstance(raw, dict) and raw.get("model_class") is not None:
+            named[str(raw.get("step_id") or "").strip()] = raw["model_class"]
+    for step in built:
+        if step["step_id"] in named:
+            step["model_class"] = check_model_class(
+                step["runner_profile"], named[step["step_id"]], where=f"step {step['step_id']!r}"
+            )
+    return built
+
+
+def check_spec_model_classes(document: Any) -> None:
+    """Refuse a spec any of whose steps names a class its profile cannot run."""
+    from . import workflows
+
+    if not isinstance(document, dict):
+        return
+    steps = workflows.read_spec(spec_without_model_classes(document))["steps"]
+    with_model_classes(steps, document.get("steps"))
 
 
 def catalogue() -> list[dict[str, Any]]:
@@ -297,6 +445,7 @@ def _served_entry(name: str, served: dict[str, Any]) -> dict[str, Any] | None:
     }
     if not out["available"]:
         out["disabled_reason"] = served.get("disabled_reason")
+    out.update(_served_model_classes(name, served))
     if name in RUNNER_PROFILES:
         # The inputs are the bridge's to check before a dispatch travels
         # (`check_inputs`), so they are the copy's -- the API refuses an
@@ -308,6 +457,41 @@ def _served_entry(name: str, served: dict[str, Any]) -> dict[str, Any] | None:
             # Said, not hidden: the copy this bridge checks names against
             # disagrees with the platform, which means the plugin is behind.
             out["bridge_copy_backend"] = local["backend"]
+    return out
+
+
+def _served_model_classes(name: str, served: dict[str, Any]) -> dict[str, Any]:
+    """The platform's `model_classes`, `default_model_class` and `models`, as served.
+
+    The platform's, not the copy's: the route reads the catalogue swarm-api
+    was deployed with and the pins it dispatches with. A deployment older than
+    the classes serves none of the three, and then the copy's classes are
+    given with a note saying the IDs could not be read -- never an ID guessed.
+    """
+    classes = served.get("model_classes")
+    models = served.get("models")
+    if isinstance(classes, list) and all(isinstance(c, str) for c in classes):
+        default = served.get("default_model_class")
+        return {
+            "model_classes": list(classes),
+            "default_model_class": default if isinstance(default, str) else None,
+            "models": {
+                str(k): v for k, v in models.items() if isinstance(v, str)
+            } if isinstance(models, dict) else {},
+        }
+    profile = RUNNER_PROFILES.get(name)
+    copy = tuple(profile.model_classes) if profile is not None else ()
+    out: dict[str, Any] = {
+        "model_classes": list(copy),
+        "default_model_class": profile.default_model_class if profile is not None else None,
+        "models": {},
+    }
+    if copy:
+        out["models_note"] = _models_note(
+            copy,
+            "This platform's GET /v1/runtimes does not serve model classes yet, so these "
+            "are this bridge's copy and no model IDs could be read",
+        )
     return out
 
 

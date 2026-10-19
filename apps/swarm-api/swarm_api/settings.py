@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 
 from swarm_common.config import Settings
 from swarm_common.identity import SERVICE_ACCOUNT_EMAIL, TenantMember
+from swarm_common.profiles import MODEL_CLASSES
 
 from .refusals import validate_environment as validate_refusal_switches
 
@@ -149,6 +150,56 @@ def _tenant_members(
     return tuple(result)
 
 
+def parse_worker_class_models(raw: str) -> dict[str, str]:
+    """WORKER_CLASS_MODELS -> {model class: model ID}. Empty means none pinned.
+
+    #1435, docs/design/model-per-step.md §4.2: terraform's
+    `jsonencode(local.runner_models)` (`model_class_env`), the ONE place a
+    class's ID is stated, and the same map the scheduler dispatches with. This
+    service fills `Task.model` from it and serves it on /v1/runtimes. Refused
+    at start, as the scheduler refuses its copy
+    (`scheduler.settings.check_worker_class_models`), against the frozen
+    `ModelClass.admits` rather than a restatement of it: a map whose keys are
+    not exactly the MODEL_CLASSES names, or whose ID is not of its class, would
+    record and serve the wrong model for every step of that class.
+
+    EMPTY IS ALLOWED: the local emulator loop, and a settings object a test
+    builds. Then no class but a profile's default can be named
+    (`validation.check_model_class_available`), and `TaskCreate.model` is
+    recorded as sent, as before this map existed.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return {}
+    try:
+        models = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"WORKER_CLASS_MODELS is not valid JSON: {exc}") from exc
+    if not isinstance(models, dict):
+        raise ValueError(
+            "WORKER_CLASS_MODELS must be a JSON object of model class -> model ID, "
+            f"got {type(models).__name__}"
+        )
+    if not models:
+        return {}
+    missing = sorted(set(MODEL_CLASSES) - set(models))
+    extra = sorted(str(k) for k in set(models) - set(MODEL_CLASSES))
+    if missing or extra:
+        raise ValueError(
+            f"WORKER_CLASS_MODELS must name exactly the model classes "
+            f"{tuple(MODEL_CLASSES)}; missing {missing}, not a class {extra}"
+        )
+    for name, model_id in models.items():
+        if not MODEL_CLASSES[name].admits(model_id):
+            raise ValueError(
+                f"WORKER_CLASS_MODELS[{name!r}] = {model_id!r} is not a {name} model: "
+                f"a pin of this class is claude-{MODEL_CLASSES[name].family}-<major>"
+                f"[-<minor>][-<yyyymmdd>] with major at least "
+                f"{MODEL_CLASSES[name].min_major}"
+            )
+    return dict(models)
+
+
 @dataclass(frozen=True)
 class ApiSettings:
     """Everything the API needs at process start."""
@@ -192,6 +243,25 @@ class ApiSettings:
     #: (`swarm_api.admins`) and keeps granting admin as the fallback until the
     #: operator trims it to this one address.
     platform_owner: str = ""
+    #: Whether a platform admin (`AuthContext.is_admin`) may select a
+    #: registered GROUP workspace they are not a member of, as that
+    #: workspace's admin (docs/design/workspace-roles.md §4.2, owner answer
+    #: Q5, 2026-10-18). Never anyone else's personal (`u-`) workspace, on or
+    #: off. OFF by default (PLATFORM_ADMIN_REACH): it widens who may enter a
+    #: tenant (invariant 9), so it goes on in dev first, is exercised by the
+    #: acceptance probe, and only then goes on in prod -- the same order as
+    #: the refusal switches (§4.7). Off, `AuthContext.platform_reach` is
+    #: empty and `Authenticator.may_act_in` never answers "platform_admin",
+    #: which is the behaviour before roles exactly.
+    platform_admin_reach: bool = False
+    #: How long one instance trusts a workspace role it read
+    #: (ROLE_CACHE_SECONDS; `swarm_api.roles`, docs/design/workspace-roles.md
+    #: §4.12). 15: the same bound `admins.ROLE_CACHE_SECONDS` puts on a
+    #: removed platform admin, so a person narrowed by a workspace admin
+    #: keeps their old role on another instance for no longer than a demoted
+    #: platform admin keeps theirs. A decision that must see a change made a
+    #: moment ago (an approval, an answer) reads past it, fresh.
+    role_cache_seconds: float = 15.0
     #: A NARROWER capability than admin, by email: these callers may call the
     #: admin routes in `auth.POOL_ADMIN_ROUTES` -- today only
     #: `PUT /v1/admin/limits/runner/{runner_profile}` -- and no other.
@@ -630,6 +700,19 @@ class ApiSettings:
     #: way. This default stays off so a test or a local run refuses nothing.
     repository_grants_enforced: bool = False
 
+    # --- the forge-credential broker (#1041) -------------------------------
+    #: Whether `POST /v1/attempts/forge-credential` releases a person's
+    #: `git-u-` slot at all (FORGE_BROKER, terraform `forge_broker`;
+    #: docs/design/user-scoped-secrets.md §5). OFF by default and in every
+    #: environment until the owner turns it on: off, the route answers 503
+    #: forge_credential_unavailable before reading anything, and workers read
+    #: the slot with their own account as before the broker (the scheduler
+    #: hands them the same switch). The bootstrap root's `forge_slot_reader`
+    #: binding is removed only after this has been on in dev and a live run
+    #: passed. Not a refusal switch: it turns a new route on, and the route's
+    #: refusals are never switchable.
+    forge_broker: bool = False
+
     # --- a step's additional repositories (#1434, MR-API) ------------------
     #: Whether a submission may name `additional_repositories`. OFF by
     #: default (docs/design/multi-repository-steps.md §6, "Feature flag"):
@@ -706,6 +789,17 @@ class ApiSettings:
     #: most $1 a day, and the 26 analysed browser tasks made at most a handful
     #: of searches each, so 200 is room for dozens of tasks.
     search_daily_queries_per_tenant: int = 200
+
+    # --- model classes (docs/design/model-per-step.md §4.4, #1435) ---------
+    #: Model class -> the ID a step of that class runs (WORKER_CLASS_MODELS,
+    #: `parse_worker_class_models`). Empty: no class but a profile's default
+    #: may be named, and `TaskCreate.model` is recorded as sent. There is no
+    #: separate enablement flag (owner decision R4, 2026-10-17): this map is
+    #: set by the terraform that already pins the scheduler's, and lane order
+    #: kept the classes unreachable until the scheduler and worker had merged.
+    #: `hash=False`: a dict is unhashable, and the settings are compared, never
+    #: hashed, by this field.
+    worker_class_models: dict[str, str] = field(default_factory=dict, hash=False)
 
     @property
     def project_id(self) -> str:
@@ -793,6 +887,8 @@ class ApiSettings:
             admin_groups=_csv("ADMIN_GROUPS"),
             admin_users=admin_users,
             platform_owner=platform_owner,
+            platform_admin_reach=_bool("PLATFORM_ADMIN_REACH", False),
+            role_cache_seconds=float(_int("ROLE_CACHE_SECONDS", 15)),
             admin_pool_users=admin_pool_users,
             rollup_sweeper_users=rollup_sweeper_users,
             schedule_tick_users=_csv("SCHEDULE_TICK_USERS"),
@@ -803,6 +899,7 @@ class ApiSettings:
             dispatch_topic=os.environ.get("DISPATCH_TOPIC", "").strip(),
             execution_cancel_enabled=_bool("EXECUTION_CANCEL_ENABLED", True),
             repository_grants_enforced=_bool("REPOSITORY_GRANTS_ENFORCED", False),
+            forge_broker=_bool("FORGE_BROKER", False),
             additional_repositories_enabled=_bool("ADDITIONAL_REPOSITORIES_ENABLED", False),
             execution_cancel_topic=os.environ.get("EXECUTION_CANCEL_TOPIC", "").strip(),
             workspace_apply_topic=os.environ.get(
@@ -885,4 +982,7 @@ class ApiSettings:
                 "SEARCH_API_KEY_SECRET", "swarm-search-api-key").strip()
             or "swarm-search-api-key",
             search_daily_queries_per_tenant=_int("SEARCH_DAILY_QUERIES_PER_TENANT", 200),
+            worker_class_models=parse_worker_class_models(
+                os.environ.get("WORKER_CLASS_MODELS", "")
+            ),
         )

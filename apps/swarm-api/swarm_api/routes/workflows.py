@@ -34,6 +34,7 @@ from swarm_common.models import Task
 from swarm_common.states import TERMINAL_STATES
 
 from ..auth import AuthContext
+from .tasks import require_member
 from ..attempt_totals import totals_for, with_totals
 from ..children import PARENT_CANCELLED, ChildService
 from ..codec import task_to_api, workflow_dispatch, workflow_to_api
@@ -75,6 +76,8 @@ def create_workflow(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
+    # `member` or above (workspace-roles.md §4.1), before anything is written.
+    require_member(ctx, auth)
     submission = ctx.submissions.submit_workflow(auth, body)
     workflow = submission.workflow
     response.headers["Location"] = f"/v1/workflows/{workflow.workflow_id}"
@@ -368,6 +371,9 @@ def cancel_workflow(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
+    # Anyone's workflow, but only by a `member` or above (Q8): a `viewer`
+    # cancels nothing, their own included.
+    require_member(ctx, auth)
     targets: list = []
     result = ctx.store.cancel_workflow(
         tenant_id, workflow_id, by=auth.email, tenant_member=auth.tenant_member,

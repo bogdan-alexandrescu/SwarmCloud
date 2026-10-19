@@ -418,7 +418,8 @@ def test_the_feed_has_the_shared_shape(client, db):
     assert set(body) >= {"items", "unread_needs_you", "unread_updates", "admin_pending",
                          "read_at", "partial"}
     item = body["items"][0]
-    assert set(item) == {"id", "group", "needs_you", "title", "detail", "href", "at", "read"}
+    assert set(item) == {"id", "group", "topic", "needs_you", "title", "detail", "href", "at",
+                         "read"}
     assert item["group"] in notif.GROUPS
     datetime.fromisoformat(item["at"])
     assert body["unread_updates"] == 1 and body["unread_needs_you"] == 0

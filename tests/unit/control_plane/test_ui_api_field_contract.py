@@ -281,6 +281,14 @@ def _payloads(client) -> dict[str, dict[str, Any]]:
 #: the reason. An entry here is a decision; an undeclared key without one is
 #: the drift this file exists to catch.
 UNDECLARED_BY_DESIGN: dict[str, dict[str, str]] = {
+    # Served ahead of the client (docs/design/workspace-roles.md §4.3, lane
+    # ROLES-API-CORE, part of #1518); types.ts is lane ROLES-UI-PEOPLE's
+    # (§6), and the Profile seam that reads it ROLES-UI-GATES'. Remove when
+    # types.ts declares it.
+    "Me": {
+        "role": "the caller's role in the selected workspace, {name, source}; declared by "
+        "lane ROLES-UI-PEOPLE",
+    },
     "Task": {
         "dispatch": "declared as the optional TaskDispatch, whose own fields are checked separately",
         "links": "the console link, for surfaces OUTSIDE the console (MCP, sc, plugin, PR bodies); "
@@ -296,7 +304,9 @@ UNDECLARED_BY_DESIGN: dict[str, dict[str, str]] = {
         # Served ahead of the client (contract request 104, #1435); types.ts
         # is lane MODEL-UI's (docs/design/model-per-step.md §6). Remove when
         # types.ts declares it.
-        "model_class": "the task's stored model class (#1435); declared by lane MODEL-UI",
+        "model_class": "the task's resolved model class (#1435); declared by lane MODEL-UI",
+        "model_class_defaulted": "whether model_class is the profile's default because none "
+        "was stored (#1435); declared by lane MODEL-UI",
     },
     # U26, served ahead of the client the same way; remove when types.ts
     # declares them.

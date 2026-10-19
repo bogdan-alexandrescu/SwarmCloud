@@ -32,6 +32,7 @@ from swarm_common.models import (
     WorkflowStep,
     check_additional_repositories,
 )
+from swarm_common.profiles import RUNNER_PROFILES, step_model_class
 from swarm_common.states import BlockedReason, EventType, ParkReason, TaskState
 from swarm_common.models import ProviderState
 
@@ -149,6 +150,25 @@ def _end_cause(value: Any) -> EndCause | None:
         return EndCause(value)
     except ValueError:
         return None
+
+
+def served_model_class(runner_profile: str, stored: str | None) -> dict[str, Any]:
+    """`model_class` as served: the stored class, or the profile's default
+    when none is stored (`model_class_defaulted: true`), by the frozen
+    `profiles.step_model_class` the scheduler and the worker resolve with.
+
+    Never raises: a document written past the API with a class its profile
+    does not accept, or naming a profile this image does not know, is served
+    as stored, not defaulted, so a reader sees what the scheduler will refuse.
+    """
+    profile = RUNNER_PROFILES.get(runner_profile)
+    if profile is None:
+        return {"model_class": stored, "model_class_defaulted": False}
+    try:
+        resolved = step_model_class(profile, stored)
+    except ValueError:
+        return {"model_class": stored, "model_class_defaulted": False}
+    return {"model_class": resolved, "model_class_defaulted": stored is None and resolved is not None}
 
 
 def task_to_firestore(task: Task) -> dict[str, Any]:
@@ -565,9 +585,11 @@ def task_to_api(
         "resource_class": task.resource_class,
         "provider": task.provider,
         "model": task.model,
-        # Contract request 104: the stored class, null meaning the profile's
-        # default. Lane MODEL-API serves the resolved class (model-per-step §4).
-        "model_class": task.model_class,
+        # Contract request 104 (#1435, model-per-step §4.4): the class this
+        # task runs, RESOLVED -- the stored one, or its profile's default when
+        # none is stored -- and whether it was defaulted. Null on a profile
+        # that runs no Claude model.
+        **served_model_class(task.runner_profile, task.model_class),
         "priority": task.priority,
         "created_at": task.created_at,
         "updated_at": task.updated_at,
@@ -1420,9 +1442,9 @@ def _step_to_api(
         "input_from": {key: masker.name(value)[0] for key, value in step.input_from.items()},
         "timeout_seconds": step.timeout_seconds,
         "task_id": step.task_id,
-        # Contract request 102: the class the step asked for, null meaning
-        # its profile's default.
-        "model_class": step.model_class,
+        # Contract request 102: the class the step runs, resolved as its
+        # task's is (`served_model_class`).
+        **served_model_class(step.runner_profile, step.model_class),
         "links": {"console": agent_console_url(console_url, step.task_id)},
     }
     if summary:

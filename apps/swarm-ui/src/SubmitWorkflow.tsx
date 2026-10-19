@@ -1,6 +1,18 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { loadCapacity, loadStats } from './api'
-import { DispatchChoice, asSentence, repositorySchemeRefused, type DispatchDraft } from './Dispatch'
+import {
+  AdditionalRepositoriesPicker,
+  DispatchChoice,
+  additionalRepositoriesBody,
+  asSentence,
+  loadTaskReadableRepositories,
+  offeredPicks,
+  repositorySchemeRefused,
+  takesAdditionalRepositories,
+  type AdditionalRepositoryPick,
+  type DispatchDraft,
+  type TaskReadableList,
+} from './Dispatch'
 import { apiHeaders, chosenTenant, classifyFailure, dropRefusedTenant, errorHeading, type ApiError, type ApiErrorKind, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
 import {
@@ -18,6 +30,7 @@ import {
   type McpServerList,
 } from './McpServers'
 import { workflowHref } from './agentlist'
+import { AWAIT_INPUT_PROFILE, DEFAULT_ARTIFACT, FIRST_AWAIT_DRAFT, MAX_FILES, awaitBlockOf, type AwaitDraft, type AwaitForm } from './awaitInput'
 import { WorkspaceRefusalBanner, workspaceRefusal } from './WorkspaceRefusal'
 import { RunnerSelect, StepRunnerFacts, useProviderKeys, type ProviderKeys } from './RunnerPicker'
 import { Screen, timeAgo, useSubmitAs } from './Shell'
@@ -245,6 +258,10 @@ interface StepDraft {
    *  dependency's position, so reordering or removing a step cannot silently
    *  re-point a filename at a different upstream. */
   from: Record<string, string>
+  /** The `await_input` block of an `await-input` step (human-steps.md §4.1);
+   *  absent until one is edited, and read as `FIRST_AWAIT_DRAFT` then. Sent
+   *  only on a step whose runner is `await-input`. */
+  wait?: AwaitDraft
 }
 
 /** A name nothing else in the plan is using. The profile is the stem because
@@ -371,6 +388,28 @@ function planOf(
       const filename = (s.from[source] ?? '').trim()
       if (filename !== '') staged[source] = filename
     }
+    // A STEP THAT WAITS FOR A PERSON (human-steps.md §4.1) runs nothing, so
+    // its input is the prompt the person reads and nothing else, and its
+    // `await_input` block is checked here before the API refuses it.
+    let awaitBlock: Record<string, unknown> | null = null
+    if (s.profile === AWAIT_INPUT_PROFILE) {
+      const extra = Object.keys(withMcp.input).filter((k) => k !== 'prompt')
+      if (extra.length > 0) {
+        problems.push({ key: s.key, stepId: id, kind: 'input', message: `a step that waits for a person takes only a prompt, not ${extra.join(', ')}` })
+        continue
+      }
+      const wait = s.wait ?? FIRST_AWAIT_DRAFT
+      const built = awaitBlockOf(wait)
+      if (!built.ok) {
+        problems.push({ key: s.key, stepId: id, kind: 'input', message: built.message })
+        continue
+      }
+      if (wait.form === 'answers' && Object.values(staged).filter((f) => f === 'questions.json').length !== 1) {
+        problems.push({ key: s.key, stepId: id, kind: 'input', message: 'an answers form stages exactly one questions.json from a step it waits for' })
+        continue
+      }
+      awaitBlock = built.block
+    }
     body.push({
       step_id: id,
       runner_profile: s.profile,
@@ -384,6 +423,7 @@ function planOf(
       // the default and stages nothing, whereas an empty `input` is a payload
       // the runner still has to read.
       ...(Object.keys(staged).length === 0 ? {} : { input_from: staged }),
+      ...(awaitBlock === null ? {} : { await_input: awaitBlock }),
     })
   }
   return { problems, body }
@@ -547,6 +587,30 @@ function Form({ sources }: { sources: FormSources }) {
     lifetimes: mcpLifetimes, onLifetime: onMcpLifetime,
   }
 
+  // ADDITIONAL REPOSITORIES (MR-UI, #1434): ONE LIST FOR THE WORKFLOW,
+  // `WorkflowCreate.additional_repositories`, which every agent step reads
+  // unless it names its own (owner's Q6: a step's list replaces it, `[]` is
+  // none). Drawn once some step's runner takes them; read once, then.
+  // A STEP WHOSE RUNNER TAKES NONE (a Cloud Run profile) IS SENT `[]`: it
+  // would otherwise inherit the list and the whole workflow would be refused
+  // `additional_repositories_unsupported_profile`, which tells its author to
+  // do exactly this (`extrarepos.Resolver`). The picker names both sets.
+  const extraTakers = steps.filter((s) => takesAdditionalRepositories(byName.get(s.profile)))
+  const extraOthers = steps.filter((s) => s.profile !== '' && !takesAdditionalRepositories(byName.get(s.profile)))
+  const extraDrawn = extraTakers.length > 0
+  const [extraList, setExtraList] = useState<Result<TaskReadableList> | null>(null)
+  const [extraPicks, setExtraPicks] = useState<AdditionalRepositoryPick[]>([])
+  const extraAsked = useRef(false)
+  useEffect(() => {
+    if (!extraDrawn || extraAsked.current) return
+    extraAsked.current = true
+    void loadTaskReadableRepositories().then(setExtraList)
+  }, [extraDrawn])
+  const extraSent = extraDrawn ? additionalRepositoriesBody(offeredPicks(extraPicks, extraList)) : []
+  const withExtra = (body: Array<Record<string, unknown>>): Array<Record<string, unknown>> =>
+    extraSent.length === 0 ? body : body.map((b) =>
+      takesAdditionalRepositories(byName.get(String(b.runner_profile))) ? b : { ...b, additional_repositories: [] })
+
   const stageCount = steps.reduce((m, s) => Math.max(m, s.stage + 1), 1)
   const stages = Array.from({ length: stageCount }, (_, i) => steps.filter((s) => s.stage === i))
   const atCeiling = maxSteps !== null && steps.length >= maxSteps
@@ -598,7 +662,7 @@ function Form({ sources }: { sources: FormSources }) {
   // WHAT THIS CLICK WOULD SEND, as one comparable value (VQA V048, owner
   // decision Q1 on #1038): after a 201 the button is "Submit another" for as
   // long as the form still says exactly what was sent.
-  const draftKey = JSON.stringify([plan.body, dispatch.strategy, dispatch.carrier, repo, onFailure, priority.trim()])
+  const draftKey = JSON.stringify([plan.body, dispatch.strategy, dispatch.carrier, repo, onFailure, priority.trim(), extraSent])
   const justSent = sub.kind === 'created' && sentKey === draftKey
   const another = () => {
     setSteps(firstSteps())
@@ -607,6 +671,7 @@ function Form({ sources }: { sources: FormSources }) {
     setOnFailure('fail_workflow')
     setPriority('0')
     setMcpLifetimes({})
+    setExtraPicks([])
     forgetCredentials()
     setSub({ kind: 'idle' })
     setSentKey(null)
@@ -627,6 +692,10 @@ function Form({ sources }: { sources: FormSources }) {
   // A 5xx's detail is read the same way for the outcome, but marks no card:
   // nothing says the step was the problem.
   const refusal = sub.kind === 'rejected' || sub.kind === 'uncertain' ? refusalOf(sub.error, sentIds) : null
+  // A refusal of the workflow's list is said under its picker too. Every
+  // `extrarepos` refusal names the field in its detail.
+  const extraRefused = sub.kind === 'rejected' && typeof sub.error.detail === 'object' && sub.error.detail !== null
+    && (sub.error.detail as Record<string, unknown>).field === 'additional_repositories' ? sub.error.message : undefined
   // WHAT THE CLICK COMMITS TO (#115), from the steps `send` builds the body
   // from. Each step's weight is its runner's `units`, taken in every pool that
   // step needs; the sum is the weight the whole plan asks admission for. A step
@@ -680,7 +749,7 @@ function Form({ sources }: { sources: FormSources }) {
     setSentIds(body.map((b) => String(b.step_id)))
     const sending = draftKey
     void postWorkflow({
-      steps: body,
+      steps: withExtra(body),
       // Workflow-level, not per step: `integrate` produces ONE pull request, so
       // "which repository" cannot be a per-step answer (schemas.WorkflowCreate).
       strategy: dispatch.strategy,
@@ -688,6 +757,9 @@ function Form({ sources }: { sources: FormSources }) {
       ...(repo === '' ? {} : { repository_url: repo }),
       ...(onFailure === 'fail_workflow' ? {} : { on_step_failure: onFailure }),
       ...(priorityN === 0 ? {} : { priority: priorityN }),
+      // Omitted when none is picked, so a workflow that reads none sends what
+      // it always did.
+      ...(extraSent.length === 0 ? {} : { additional_repositories: extraSent }),
       // BESIDE `steps`, never in a step's `input`, which is stored and shown
       // (§4.3). One map for the workflow; omitted when no step names a
       // `dispatch` server.
@@ -787,6 +859,18 @@ function Form({ sources }: { sources: FormSources }) {
               step limit · nothing caps this form
               <span className="ctl-panel-note-detail">{sources.limitsDetail}</span>
             </p>
+          )}
+          {extraDrawn && (
+            <AdditionalRepositoriesPicker list={extraList} picks={extraPicks} onChange={setExtraPicks}
+              error={extraRefused}
+              note={
+                <p className="btp-hint" data-extra-readers>
+                  Read by {extraTakers.map((s) => s.id.trim() || '(unnamed step)').join(', ')}
+                  {extraOthers.length > 0 && (
+                    <>; not by {extraOthers.map((s) => s.id.trim() || '(unnamed step)').join(', ')}, whose runner takes none</>
+                  )}.
+                </p>
+              } />
           )}
           {mcpAsked.length > 0 && (
             <fieldset className="btp">
@@ -1016,6 +1100,10 @@ function StepCard({ step, steps, profiles, keys, required, nameProblem, sizeProb
         <InputFields profile={step.profile} fields={step.input} required={required}
           idPrefix={stepFields(step.key)} onChange={(input) => onChange({ ...step, input })} />
       )}
+      {/* ONLY FOR `await-input`: how the step waits, and for what (§4.1). */}
+      {step.profile === AWAIT_INPUT_PROFILE && (
+        <AwaitFields idPrefix={stepFields(step.key)} draft={step.wait ?? FIRST_AWAIT_DRAFT} onChange={(wait) => onChange({ ...step, wait })} />
+      )}
       {/* ONLY FOR A PROFILE THAT DECLARES `mcp_servers`: any other refuses the key. */}
       {mcpMax !== null && (
         <McpServerPicker list={mcp.list} profile={step.profile} max={mcpMax} picked={mcp.namesOf(step)}
@@ -1088,6 +1176,81 @@ function StepCard({ step, steps, profiles, keys, required, nameProblem, sizeProb
         </details>
       )}
     </div>
+  )
+}
+
+/**
+ * HOW AN `await-input` STEP WAITS (human-steps.md §4.1): the form a person
+ * answers, how many files the answer may carry, how long it waits (24 hours
+ * at most, Q4), what happens at expiry (Q5) and whose bell is rung. Any
+ * member of the tenant may answer (Q2): `remind` chooses who is reminded,
+ * never who may answer. Offered only once the catalogue serves the profile
+ * as available; until then the runner select refuses it.
+ */
+function AwaitFields({ idPrefix, draft, onChange }: { idPrefix: string; draft: AwaitDraft; onChange: (next: AwaitDraft) => void }) {
+  const id = (k: string) => `${idPrefix}-await-${k}`
+  const built = awaitBlockOf(draft)
+  return (
+    <fieldset className="wfb-await" data-testid="wfb-await">
+      <legend className="t-label">how it waits for a person</legend>
+      <label className="c-field" htmlFor={id('form')}>
+        <span className="c-lbl">the answer</span>
+        <select id={id('form')} className="c-inp" value={draft.form} onChange={(e) => onChange({ ...draft, form: e.target.value as AwaitForm, ...(e.target.value === 'answers' ? { onExpire: 'fail' as const } : {}) })}>
+          <option value="verdict">a verdict: approve, or request changes</option>
+          <option value="answers">answers to an upstream agent’s questions.json</option>
+          <option value="text">text</option>
+        </select>
+      </label>
+      <label className="c-field" htmlFor={id('artifact')}>
+        <span className="c-lbl">written as</span>
+        <input id={id('artifact')} className="c-inp mono" value={draft.artifact} placeholder={DEFAULT_ARTIFACT[draft.form]} spellCheck={false}
+          onChange={(e) => onChange({ ...draft, artifact: e.target.value })} />
+      </label>
+      <label className="c-field" htmlFor={id('files')}>
+        <span className="c-lbl">files with the answer (0 offers no upload)</span>
+        <input id={id('files')} className="c-inp" type="number" min={0} max={MAX_FILES} value={draft.maxFiles}
+          onChange={(e) => onChange({ ...draft, maxFiles: Number(e.target.value) })} />
+      </label>
+      <label className="c-field" htmlFor={id('hours')}>
+        <span className="c-lbl">expires after, in hours (24 at most)</span>
+        <input id={id('hours')} className="c-inp" inputMode="decimal" value={draft.expiresHours}
+          onChange={(e) => onChange({ ...draft, expiresHours: e.target.value })} />
+      </label>
+      <label className="c-field" htmlFor={id('expire')}>
+        <span className="c-lbl">if nobody answers</span>
+        <select id={id('expire')} className="c-inp" value={draft.onExpire} onChange={(e) => onChange({ ...draft, onExpire: e.target.value as AwaitDraft['onExpire'] })}>
+          <option value="fail">the step fails</option>
+          {draft.form !== 'answers' && <option value="default">the step takes a default answer</option>}
+        </select>
+      </label>
+      {draft.onExpire === 'default' && draft.form === 'verdict' && (
+        <label className="c-field" htmlFor={id('default')}>
+          <span className="c-lbl">the default verdict</span>
+          <select id={id('default')} className="c-inp" value={draft.defaultVerdict} onChange={(e) => onChange({ ...draft, defaultVerdict: e.target.value as AwaitDraft['defaultVerdict'] })}>
+            <option value="MERGE">MERGE</option>
+            <option value="NOT_YET">NOT_YET</option>
+          </select>
+        </label>
+      )}
+      {draft.onExpire === 'default' && draft.form === 'text' && (
+        <label className="c-field" htmlFor={id('default')}>
+          <span className="c-lbl">the default text</span>
+          <textarea id={id('default')} className="c-inp" rows={2} value={draft.defaultText} onChange={(e) => onChange({ ...draft, defaultText: e.target.value })} />
+        </label>
+      )}
+      <label className="c-field" htmlFor={id('remind-after')}>
+        <span className="c-lbl">remind every, in hours (blank for no reminder)</span>
+        <input id={id('remind-after')} className="c-inp" inputMode="decimal" value={draft.remindHours}
+          onChange={(e) => onChange({ ...draft, remindHours: e.target.value })} />
+      </label>
+      <label className="c-field" htmlFor={id('remind')}>
+        <span className="c-lbl">whose bell is rung (blank for yours); any member may answer</span>
+        <input id={id('remind')} className="c-inp" value={draft.remind} spellCheck={false}
+          onChange={(e) => onChange({ ...draft, remind: e.target.value })} />
+      </label>
+      {/* Said at the fields, as the input editor says its own problem. */}
+      {!built.ok && <p className="warn-text" role="alert">{asSentence(built.message)}</p>}
+    </fieldset>
   )
 }
 

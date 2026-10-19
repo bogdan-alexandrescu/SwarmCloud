@@ -20,6 +20,8 @@ import { TokenSpendChart } from './charts/TokenSpend'
 import { agentName, workflowHref } from './agentlist'
 import { resultIsNewest, stepCostOf, totalCostOf } from './dag'
 import { DecisionCard } from './DecisionCard'
+import { AdditionalRepositoryRows } from './Dispatch'
+import { PersonName } from './PersonName'
 import { QuestionsCard } from './QuestionsCard'
 import { handoffOf } from './Handoff'
 import { pullRequestOf } from './decision'
@@ -1507,7 +1509,17 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
         </>
       )}
       <p className="dt-note" title={start.submittedTitle}>
-        submitted {start.submitted} · {task.submitted_by === null ? 'by — not recorded' : `by ${task.submitted_by}`} · {timeAgo(task.created_at, now)}
+        {/* The submitter through `PersonName` (user-profile.md §4.4): their
+            name when they set one, always beside the email. */}
+        submitted {start.submitted} ·{' '}
+        {task.submitted_by === null ? (
+          'by — not recorded'
+        ) : (
+          <>
+            by <PersonName email={task.submitted_by} name={task.submitted_by_name} />
+          </>
+        )}{' '}
+        · {timeAgo(task.created_at, now)}
       </p>
     </section>
   )
@@ -4706,6 +4718,10 @@ function Input({ run, readAt }: { run: AgentRun; readAt: number | null }) {
             {task.repository_ref && ` @ ${task.repository_ref}`}
           </span>
         </li>
+        {/* THE REPOSITORIES IT READS BESIDE ITS OWN (#1434), each with the
+            commit it was pinned to at submission: the code the agent read,
+            whatever its ref names today. None drawn when it reads none. */}
+        <AdditionalRepositoryRows task={task} />
         {/* Recorded for attribution. It selects NOTHING about the container --
             image, command and resource spec all come from the profile. */}
         <li className={`ctl-fact${task.model === null ? ' is-absent' : ''}`}>

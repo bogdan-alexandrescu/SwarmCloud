@@ -3595,7 +3595,7 @@ const FIXTURE_AVAILABILITY: Record<string, FixtureAvailability> = {
   "claude-code-review": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."},
   "indexer": {"available": true, "disabled_reason": ""},
   "claude-code-browser": {"available": true, "disabled_reason": ""},
-  "await-input": {"available": false, "disabled_reason": "await-input steps are being built (docs/design/human-steps.md)"}
+  "await-input": {"available": true, "disabled_reason": ""}
 }
 
 async function fixtureCapacity(): Promise<Result<Capacity>> {
@@ -4126,10 +4126,10 @@ async function fixtureWorkflows(): Promise<Result<WorkflowPage>> {
 // WHICH OF THEM SWARM-API PASSES THROUGH, because this file has been wrong
 // about that in both directions. `routes/accounts.py` registers GET "",
 // POST "", POST /authorize, POST /exchange, POST /{id}/refresh,
-// PUT /{id}/lending, PUT /{id}/state and DELETE /{id}; the `AccountPool`
-// protocol in `brokerclient.py` -- which is "deliberately not a generic HTTP
-// client", so there is no fallthrough -- has a method for each of those and
-// for nothing else.
+// PUT /{id}/lending, PUT /{id}/model-classes, PUT /{id}/state and
+// DELETE /{id}; the `AccountPool` protocol in `brokerclient.py` -- which is
+// "deliberately not a generic HTTP client", so there is no fallthrough -- has
+// a method for each of those and for nothing else.
 //
 // THE TWO SIGN-IN ROUTES ARE AMONG THEM NOW. For one deploy they were not,
 // and this comment carried a long apology for it in place of a proxy; the
@@ -4417,6 +4417,32 @@ export async function setAccountLending(
   return write(route('/v1/accounts/{account_id}/lending', { account_id: accountId }), 'PUT', { lend_to: lendTo })
 }
 
+/**
+ * An account as the broker serves it once it carries `model_classes` (owner
+ * decision R5, 2026-10-17). EMPTY MEANS EVERY CLASS, and so does ABSENT: an
+ * older broker serves no such field, and an account it lists has always
+ * served every class, so reading absent as "none" would claim every step on
+ * it was parked. Local to this file and Accounts.tsx until the field moves
+ * into `Account` in types.ts.
+ */
+export type ServedAccount = Account & { model_classes?: string[] }
+
+/**
+ * `PUT /v1/accounts/{id}/model-classes`. The whole list, not a delta, exactly
+ * like lending -- and `[]` is EVERY class, not none. A step whose class no
+ * account serves waits parked and holds nothing, so narrowing this is never
+ * an outage the platform hides; it is one the Accounts screen has to say.
+ */
+export async function setAccountModelClasses(
+  accountId: string,
+  modelClasses: string[],
+): Promise<Result<unknown>> {
+  if (USE_FIXTURES) return fixtureModelClasses(accountId, modelClasses)
+  return write(route('/v1/accounts/{account_id}/model-classes', { account_id: accountId }), 'PUT', {
+    model_classes: modelClasses,
+  })
+}
+
 /** `PUT /v1/accounts/{id}/state`. `reason` is for the next person, so it is required here. */
 export async function setAccountState(
   accountId: string,
@@ -4498,8 +4524,8 @@ const ISO = (msFromNow: number): string => new Date(Date.now() + msFromNow).toIS
 function fixtureAccount(
   owner: string,
   label: string,
-  extra: Partial<Account> = {},
-): Account {
+  extra: Partial<ServedAccount> = {},
+): ServedAccount {
   return {
     account_id: `${owner}:${label}`,
     owner_tenant: owner,
@@ -4519,11 +4545,13 @@ function fixtureAccount(
     // broker" -- the fixture must not teach that shape as normal. The rows
     // that carry it do so deliberately, below.
     last_assigned_at: ISO(-26 * 60_000),
+    // Every class, which is what a broker that predates the field means too.
+    model_classes: [],
     ...extra,
   }
 }
 
-let fixtureAccounts: Account[] = [
+let fixtureAccounts: ServedAccount[] = [
   fixtureAccount('u-bogdan', 'primary', {
     assigned: 2,
     windows: {
@@ -4789,6 +4817,16 @@ async function fixtureLending(accountId: string, lendTo: string[]): Promise<Resu
     a.account_id === accountId ? { ...a, lend_to: lendTo } : a,
   )
   return { status: 'ok', fetchedAt: Date.now(), data: { ok: true } }
+}
+
+async function fixtureModelClasses(accountId: string, modelClasses: string[]): Promise<Result<unknown>> {
+  await new Promise((r) => setTimeout(r, 180))
+  const found = fixtureAccounts.find((a) => a.account_id === accountId)
+  if (!found) return fixtureRefused(`no account '${accountId}'`)
+  const account: ServedAccount = { ...found, model_classes: modelClasses }
+  fixtureAccounts = fixtureAccounts.map((a) => (a.account_id === accountId ? account : a))
+  // The route answers `{"account": ...}`, the same shape lending's does.
+  return { status: 'ok', fetchedAt: Date.now(), data: { account } }
 }
 
 async function fixtureState(
@@ -6729,6 +6767,13 @@ export interface ApprovalItem {
   requested_at: string | null
   expires_at: string | null
   projected?: boolean
+  /**
+   * The approvers' display names, index for index with `approvers`
+   * (`people.add_names`, user-profile.md §4.4): served on the inbox rows and
+   * the detail alike. null when `approvers` is a rule such as `members`; a
+   * member who set no name is a null entry; absent from an older API.
+   */
+  approver_names?: (string | null)[] | null
 }
 
 /** `GET /v1/schedules`: the tenant's schedules, by name. */
@@ -6787,6 +6832,8 @@ export interface ApprovalDetail {
     approvers?: unknown
     hold?: { code?: string; approvers?: string; matched?: string[]; reasons?: string[] } | null
     decided_by?: string | null
+    /** The decider's display name: null when they set none or `decided_by` is not a person (`approval-expiry`). */
+    decided_by_name?: string | null
     decided_at?: string | null
     reason?: string | null
   }

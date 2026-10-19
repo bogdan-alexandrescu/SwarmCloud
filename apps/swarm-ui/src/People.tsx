@@ -15,6 +15,7 @@ import { Banner, Button, buttonClass, Card, Chip, Dash, Dialog, ToneMark } from 
 import type { ApiError, Result } from './fetch'
 import { trapTab } from './focus'
 import { ApprovedWaiting, JobSteps, waitingOf } from './OnboardingWorkspace'
+import { PersonName } from './PersonName'
 import { Mark } from './primitives'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead, usePoll } from './Shell'
@@ -677,7 +678,7 @@ function WaitingCard({ doc, rows, reload }: { doc: PeopleDoc; rows: PersonRow[];
               <div className="pp-req-who">
                 <Avatar email={row.email} />
                 <span className="pp-who" title={row.email}>
-                  {row.email}
+                  <PersonName email={row.email} name={row.display_name ?? null} />
                 </span>
               </div>
               {kind === 'workspace' ? (
@@ -747,7 +748,7 @@ function PersonCell({ row, doc }: { row: PersonRow; doc: PeopleDoc }) {
     <span className="pp-person">
       <Avatar email={row.email} />
       <span className="pp-who" title={row.email}>
-        {row.email}
+        <PersonName email={row.email} name={row.display_name ?? null} />
       </span>
       <GitHubMark github={row.github} />
       {holderOf(doc, row.email)?.role === 'owner' && <Chip className="pp-owner">platform owner</Chip>}
@@ -1040,7 +1041,7 @@ function Drawer({ row, doc, reload, onClose }: { row: PersonRow; doc: PeopleDoc;
         <header className="pp-drawer-h">
           <h2 id={titleId}>
             <span className="vh">Manage </span>
-            {row.email}
+            <PersonName email={row.email} name={row.display_name ?? null} />
           </h2>
           <button type="button" ref={closeBtn} className={buttonClass({ size: 'sm' })} onClick={() => closeRef.current()}>
             Close

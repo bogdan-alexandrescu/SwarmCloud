@@ -12,6 +12,8 @@
 #       read. So no slot is in any Terraform state, and no grant can name one.
 #   D7  U1: the tenant's worker account reads every member's slot in its own
 #       tenant; swarm-api's resolver hands each task only its submitter's.
+#       SUPERSEDED by the 2026-10-11 decision below, and its binding,
+#       forge_slot_reader, stays until the broker has been on in dev.
 #   D2  swarm-api refreshes: it reads the -refresh twins and writes both.
 #       It originally never read a base slot -- the split the quota broker
 #       has today. Revised by the owner on 2026-10-08, below.
@@ -22,8 +24,33 @@
 # versions within minutes, and since each refresh makes GitHub end the access
 # token it replaces, a task holding the previous version failed 401. Reading
 # the access token adds no power: swarm-api already reads the refresh token,
-# which mints access tokens. The worker's grant is unchanged -- base slots
-# only, never a twin.
+# which mints access tokens.
+#
+# Owner decision 2026-10-11 (#1041): secrets are USER-scoped, which
+# supersedes D7/U1. Every member of a group tenant runs agents as the same
+# worker account, and an agent can mint that account's token from the
+# metadata server, so the worker's read of every member's base slot let Bob's
+# agent read Alice's slot by name; only the worker's code chose the right one.
+# The fix is swarm-api's broker, `POST /v1/attempts/forge-credential`
+# (apps/swarm-api/swarm_api/credbroker.py), which releases a person's slot
+# only to the current attempt of a task they submitted, proven with the
+# attempt key (docs/design/user-scoped-secrets.md). It ships behind its own
+# switch, terraform/infra's `forge_broker` (FORGE_BROKER), OFF by default and
+# off in dev. While it is off, workers read the slot with their own account
+# through `forge_slot_reader` below, exactly as before the broker, so THE
+# BINDING STAYS, unchanged, and IAM alone does not yet keep Alice's slot from
+# Bob's attempt.
+#
+# ROLLOUT ORDER. Removing forge_slot_reader is a later, separate owner step,
+# never the change that ships the broker: first `forge_broker = true` in dev
+# (which needs enable_child_tasks, on in dev since 2026-10-11), then a live
+# user-slot run that clones and pushes through the broker, and only then the
+# bootstrap change that deletes the resource below and the owner's apply of
+# it. Applied before the switch is on, every user-slot task would be
+# PERMISSION_DENIED (docs/design/user-scoped-secrets.md §5;
+# docs/runbooks/github-app.md step 2). Destroying the binding then needs no
+# `removed` block: it is this root's own grant to this platform's account,
+# and touches nothing of the other team's.
 #
 # Owner decision 2026-10-07 (OB3, PR #821): "Disconnect GitHub" disables the
 # user's secret versions, so a disconnected user leaves no usable token behind,
@@ -66,10 +93,10 @@
 #       refresh token, which the sweep spends, and the current access token,
 #       which a request reuses. The address keeps its old name so the change
 #       reads as an in-place condition change in the plan.
-#   google_project_iam_member.forge_slot_reader         the tenant's worker,
-#       secretAccessor, on `<prefix>` AND NOT a -refresh twin: the access
-#       token, read at runtime. A worker that could read a refresh token could
-#       mint itself access for as long as the refresh token lasts.
+#   google_project_iam_member.forge_slot_reader         the tenant's WORKER
+#       account, secretAccessor, on its tenant's BASE slots only, never a
+#       -refresh twin (D7/U1). Superseded by the broker and removed only after
+#       the broker has been on in dev (#1041, above).
 #
 # WHY HERE AND NOT IN terraform/infra (where §3.4 item 4 put the worker's
 # grant, "from the tenancy module"). Every project-level role terraform/infra
@@ -110,11 +137,15 @@ variable "enable_forge_user_slots" {
     Define swarmForgeSlotCreator and swarmForgeSlotVersionManager and make
     the user-slot grants (forge_user_slots.tf): swarm-api creates GitHub user
     slots at onboarding, refreshes them, and disables and re-enables their
-    versions on disconnect and reconnect; each tenant's worker reads its own
-    tenant's base slots; swarm-api reads repository (-git-r-) slots for the
-    runner git tools it executes (#1225). Owner decisions D2, D3 and D7 on
-    #780, OB3's disable of 2026-10-07, and Q4 on #1225. The accounts must
-    exist (terraform/infra creates swarm-api, register-tenant.sh each worker).
+    versions on disconnect and reconnect; and the tenant's worker reads its
+    members' base slots (forge_slot_reader), until swarm-api's broker
+    (#1041, terraform/infra forge_broker) has been on in dev and that
+    binding is removed as a separate owner step.
+    swarm-api also reads repository (-git-r-) slots for the runner git tools
+    it executes (#1225). Owner decisions D2, D3 and D7 on #780, OB3's disable of
+    2026-10-07, the 2026-10-11 decision that secrets are user-scoped, and Q4
+    on #1225. The accounts must exist (terraform/infra creates swarm-api,
+    register-tenant.sh each worker).
   EOT
   type        = bool
   default     = false
@@ -158,9 +189,13 @@ locals {
   }
 
   # A tenant whose slot names start with another tenant's prefix -- `eng` and
-  # `eng-git-u-x` -- would have its slots readable by the other's worker. Read
-  # from the tenant ids rather than the rendered prefixes, which share an
-  # unknown project number at plan.
+  # `eng-git-u-x` -- would have its slots inside the other's per-tenant
+  # conditions. For swarm-api's bindings that leaks nothing, since it reaches
+  # both tenants anyway; for forge_slot_reader it would hand one tenant's
+  # WORKER the other's members' slots. Refused either way, because a tenant id
+  # is cheap to rename before it holds anything. Read from the tenant
+  # ids rather than the rendered prefixes, which share an unknown project
+  # number at plan.
   forge_nested_tenants = [
     for pair in setproduct(local.forge_user_slot_tenants, local.forge_user_slot_tenants) :
     "${pair[1]} inside ${pair[0]}"
@@ -204,6 +239,13 @@ resource "google_project_iam_member" "forge_slot_version_adder" {
     title       = "swarm forge user slots ${each.key}"
     description = "managed-by=swarm-terraform; swarm-api publishes tenant ${each.key}'s GitHub user tokens and refresh tokens (#780 D2, D3)."
     expression  = local.forge_slot_conditions[each.key].any
+  }
+
+  lifecycle {
+    precondition {
+      condition     = length(local.forge_nested_tenants) == 0
+      error_message = "tenant ids ${join(", ", local.forge_nested_tenants)}: one tenant's user-slot names start with another's prefix (swarm-tenant-<t>-git-u-), so that tenant's per-tenant grants would reach them. Rename the tenant."
+    }
   }
 }
 
@@ -261,6 +303,14 @@ resource "google_project_iam_member" "forge_refresh_reader" {
   }
 }
 
+# THE TENANT WORKER'S READ OF ITS MEMBERS' BASE SLOTS (D7/U1). Kept, byte for
+# byte as main has it, while terraform/infra's `forge_broker` is off: the worker
+# reads a person's slot with its own account then (agent_worker.secrets
+# resolve_git_token, `broker.deployed` False). Removing it is the later owner
+# step the header's ROLLOUT ORDER gives -- after the broker has been on in dev
+# and a live run passed -- and not this file's to take early. A personal
+# tenant's worker reads its own slots through the workspace job's binding
+# instead (below); that account is one person's.
 resource "google_project_iam_member" "forge_slot_reader" {
   for_each = local.forge_user_slot_tenants
 
@@ -304,7 +354,9 @@ output "forge_user_slot_grants" {
 #
 # The worker's read of its own slots is not here: the job binds each person's
 # worker on its own slots (A6), which a project grant per person would
-# otherwise have to be.
+# otherwise have to be. That worker account is the person's alone, so its read
+# reaches nobody else's credential; #1041's broker is for group tenants, whose
+# worker account every member shares.
 #
 # Only while the workspace job exists: before it, no personal tenant has slots
 # that are not already some tenant's above.
