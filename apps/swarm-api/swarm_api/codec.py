@@ -451,7 +451,9 @@ def owner_answer_to_api(entry: dict[str, Any], masking: TaskMasking) -> dict[str
     """One stored answer as it is served, every string masked by the task's masker.
 
     The free text was redacted before it was stored; it is masked again here
-    as every collected text is (`task_input.COLLECTED_METADATA_KEYS`).
+    as every collected text is (`task_input.COLLECTED_METADATA_KEYS`). `via`
+    and `session` say where it was answered (ANSWER-SYNC), null on an answer
+    stored before they were.
     """
 
     def text(value: Any) -> str | None:
@@ -464,6 +466,8 @@ def owner_answer_to_api(entry: dict[str, Any], masking: TaskMasking) -> dict[str
             "text": text(e.get("text")),
             "by": text(e.get("by")),
             "at": at.isoformat() if isinstance(at, datetime) else text(at),
+            "via": text(e.get("via")),
+            "session": text(e.get("session")),
         }
 
     history = entry.get("history") if isinstance(entry.get("history"), list) else []

@@ -39,9 +39,9 @@ One of the question's option labels, free text ("Other…"), or both. Stored on
 the task document as `metadata.owner_answers` -- a reserved platform key, as
 `start_problem` is, because the frozen `Task` has no field for it and an
 additive metadata key needs no contract change -- one entry per question:
-`{question_index, question, choice, text, by, at, history}`. Re-answering
-REPLACES the entry and moves the replaced answer, with its own `by` and `at`,
-into `history`, so who changed what is on the task for as long as the task
+`{question_index, question, choice, text, by, at, via, session, history}`.
+Re-answering REPLACES the entry and moves the replaced answer, with its own
+`by`, `at`, `via` and `session`, into `history`, so who changed what is on the task for as long as the task
 is; the write is one Firestore transaction, so two people answering at once
 cannot drop either one's history. `history` is capped at
 `MAX_ANSWER_CHANGES`, past which a change is refused rather than an earlier
@@ -67,6 +67,18 @@ was shown. Free text is at most `MAX_ANSWER_CHARS` and is REDACTED BEFORE IT IS
 STORED, as a hand-off's reason is; `task_input.COLLECTED_METADATA_KEYS` masks it
 again wherever the task is served.
 
+WHERE IT WAS ANSWERED (owner decision 2026-10-19, "Plugin records it, marked
+as from Claude Code"; lane ANSWER-SYNC, part of #1644): an answer may say
+`via` -- `console`, or `claude-code` when the person answered in a Claude Code
+session and the sc plugin's `swarm_task_answer` recorded it -- and that
+session's id (`session`), so the console can say "answered in Claude Code".
+Both are optional, stored with the answer and inside `history`, and served
+beside `choice` and `text`. They are LABELS, NEVER PERMISSIONS: who may answer
+is decided above, from the caller's identity and role, before either is
+read, so no `via` widens or narrows it. A `session` is a UUID or 8-64 of
+`[A-Za-z0-9_-]`, anything else a 422: it is shown to people, so it is held to
+the shape of an id and can carry nothing else.
+
 The notification (`notifications.agent_questions`) stops listing a task once
 every question it asked has an answer (`unanswered`).
 """
@@ -75,11 +87,13 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from google.cloud import firestore
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from swarm_common.admission import _snapshot
 
@@ -102,6 +116,21 @@ MAX_ANSWER_CHARS = 2000
 #: audit. 20 is far more than a person changes their mind, and bounds the
 #: task document at 20 x 2,000 characters per question.
 MAX_ANSWER_CHANGES = 20
+
+#: A session id that is not a UUID: 8-64 characters of `[A-Za-z0-9_-]`. A
+#: Claude Code session id is a UUID today; the second shape keeps a future
+#: id format from being refused while still holding it to an id.
+_SESSION_SHAPE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+
+
+def valid_session(value: str) -> bool:
+    """Whether `value` is a Claude Code session id this API stores."""
+    try:
+        uuid.UUID(value)
+        return True
+    except ValueError:
+        return bool(_SESSION_SHAPE.match(value))
+
 
 #: The artifact's name and the `result_summary` key the worker counts it under
 #: (`agent_worker.questions.NAME` / `SUMMARY_KEY`). Spelled again: the worker
@@ -264,13 +293,29 @@ def read_questions(
 
 
 class AnswerBody(BaseModel):
-    """`POST /v1/tasks/{id}/answers`: an option label, free text, or both."""
+    """`POST /v1/tasks/{id}/answers`: an option label, free text, or both.
+
+    `via` and `session` say where it was answered (ANSWER-SYNC); neither
+    changes who may answer.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     question_index: int
     choice: str | None = None
     text: str | None = None
+    via: Literal["console", "claude-code"] | None = None
+    session: str | None = None
+
+    @field_validator("session")
+    @classmethod
+    def _session_is_an_id(cls, value: str | None) -> str | None:
+        if value is not None and not valid_session(value):
+            raise ValueError(
+                "session must be a Claude Code session id: a UUID, or 8-64 characters "
+                "of A-Z, a-z, 0-9, _ and -"
+            )
+        return value
 
 
 def answer_question(
@@ -339,6 +384,8 @@ def answer_question(
         "text": text,
         "by": email,
         "at": now.isoformat(),
+        "via": body.via,
+        "session": body.session,
     }
 
     @firestore.transactional
@@ -358,7 +405,9 @@ def answer_question(
                     f"question {index + 1}'s answer has been changed {MAX_ANSWER_CHANGES} times; "
                     "it is not changed again, so its history stays whole"
                 )
-            history.append({k: previous.get(k) for k in ("choice", "text", "by", "at")})
+            history.append({
+                k: previous.get(k) for k in ("choice", "text", "by", "at", "via", "session")
+            })
         current[index] = {**entry, "history": history}
         metadata[OWNER_ANSWERS_METADATA_KEY] = [current[i] for i in sorted(current)]
         # `metadata` alone: `updated_at` is the task's own lifecycle clock,
@@ -378,6 +427,7 @@ def answer_question(
             "replaced": replaced,
             "with_choice": choice is not None,
             "with_text": text is not None,
+            "via": body.via,
         },
     )
     return read_questions(

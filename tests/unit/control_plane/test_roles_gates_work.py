@@ -167,6 +167,10 @@ MEMBER_WRITES: list[tuple[str, str, str, Any]] = [
     ("cancel own task", "POST", f"/v1/tasks/{VERAS_TASK}/cancel", None),
     ("cancel another's task", "POST", f"/v1/tasks/{ALICES_TASK}/cancel", None),
     ("answer", "POST", f"/v1/tasks/{VERAS_TASK}/answers", {"question_index": 0, "choice": "yes"}),
+    # ANSWER-SYNC (#1644): an answer that says it came from Claude Code is
+    # refused a viewer exactly as one from the console is.
+    ("answer from claude code", "POST", f"/v1/tasks/{VERAS_TASK}/answers",
+     {"question_index": 0, "choice": "yes", "via": "claude-code", "session": "ce05454f-claude"}),
     ("human-ready", "POST", f"/v1/tasks/{VERAS_TASK}/human-ready", None),
     ("save login", "POST", f"/v1/tasks/{VERAS_TASK}/browser-login", {"name": "site"}),
     ("revoke login", "DELETE", "/v1/browser-logins/site", None),

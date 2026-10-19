@@ -50,6 +50,15 @@ own form and sends only what they type there and the files they tick. Follow
 the `sc` skill's `inputs` and `answer` sections, and never pass the answer
 yourself: the tool refuses a call that carries one.
 
+When the person answers, in this session, a question a task's or a step's
+agent asked -- from a row's result, `swarm_result`'s `owner_questions` or a
+`questions.json` -- record each answer on the task with `swarm_task_answer`
+`{task_id, question_index, choice?, text?}`, so the console shows it as
+answered in Claude Code: `choice` is the task's own option label when they
+picked one, `text` their words or what they chose. Only the person's own pick,
+verbatim -- never an answer you chose yourself, and never one they did not
+give. Follow the `sc` skill's "Answers given here" section.
+
 If the arguments are `run --issue ...` or `plan approve|edit|reject ...`, do
 **not** run them here: they create an issue run or act on its plan, so they
 are not views. Use the `sc` skill's `run --issue` and `plan` verbs, which say

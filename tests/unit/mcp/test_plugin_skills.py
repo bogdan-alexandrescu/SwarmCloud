@@ -113,6 +113,8 @@ _WRITE_TOOLS = {
     "swarm_account_pause", "swarm_account_resume", "swarm_account_drain", "swarm_account_remove",
     # #454: they submit a planner or a workflow, or end a run.
     "swarm_run_issue", "swarm_plan_approve", "swarm_plan_edit", "swarm_plan_reject",
+    # ANSWER-SYNC (#1644): it records an answer on a task.
+    "swarm_task_answer",
 }
 
 

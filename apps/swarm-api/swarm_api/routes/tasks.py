@@ -925,7 +925,8 @@ def read_questions(
     is served, read through the artifact read's tenant check and redaction.
     `status` is `ok`, `none` (it asked none; `questions: []`, never a 404) or
     `unavailable` (counted, not readable, with `unavailable_because`). Each
-    question carries the owner's `answer` (or null), and `may_answer` /
+    question carries the owner's `answer` (or null) -- its `choice`, `text`,
+    `by`, `at`, `via` and `session`, and its `history` -- and `may_answer` /
     `may_answer_because` say whether the caller may answer. See
     `swarm_api.agent_questions`.
     """
@@ -955,6 +956,12 @@ def answer_question(
     question: re-answering replaces it and keeps the replaced one in its
     `history`. Stored as `metadata.owner_answers`; answers with the questions
     as `GET /questions` now serves them. See `swarm_api.agent_questions`.
+
+    `via` (`console` | `claude-code`) and `session` (a Claude Code session id:
+    a UUID or 8-64 of `[A-Za-z0-9_-]`, else 422) say where it was answered;
+    the sc plugin's `swarm_task_answer` sends `claude-code` and its session.
+    Both are stored, kept in `history` and served. They are labels: neither
+    widens nor narrows who may answer, which is decided before they are read.
 
     A `viewer` answers nothing (`role_member_required`, through its switch),
     their own task's agent included: the submitter's rule is on top of the
