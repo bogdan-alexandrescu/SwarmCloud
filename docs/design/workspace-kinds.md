@@ -876,6 +876,30 @@ review by existing rule.
 
 ---
 
+### 4.11 Where the provisioner runs (owner decision, 2026-10-19)
+
+**The job stays a Cloud Run job, `swarm-workspace-apply`, running as
+`swarm-workspace-deployer`, triggered by an approval through Pub/Sub, Eventarc
+and Workflows, exactly as it runs personal workspaces today.** The owner asked
+whether it should instead run in a Kubernetes namespace of its own under a
+service account, or as tasks in a SwarmCloud workspace of its own. The three
+were weighed on one property above all: the provisioner is the most
+privileged identity in SwarmCloud. It creates service accounts and grants
+them IAM, creates namespaces with RBAC (`escalate`, `bind`), and with this
+design admits principals at the front door (§4.5, K1).
+
+| | Cloud Run job (chosen) | its own namespace in `swarm-autopilot` | its own SwarmCloud workspace |
+|---|---|---|---|
+| runs agent code nearby | no: outside the cluster that runs agent pods | yes: same cluster as every agent pod | yes: it would *be* an agent runtime |
+| what a single escape reaches | the job's own sandbox | a cluster escape, a Workload Identity or RBAC slip reaches the IAM-granting identity | the worker identity holds provisioning powers, and a worker can rewrite its own tenant document (contract request 87) |
+| new capability gained | none needed: it reaches GKE through the API and the `swarm-workspace-deployer` ClusterRole | none: the same API calls, from inside | console rows and retries, already available another way (below) |
+| consolidation | the control plane already runs on Cloud Run, so nothing is consolidated by moving it | | needs a Terraform bootstrap of the system workspace itself |
+
+What the alternatives offered, visibility and one familiar runtime, is kept
+without moving the job: every step (A1 to A9 and the new S and G steps of
+§4.3) is already written to the workspace record, and Admin › Tenants draws a
+run as a timeline of those steps, the way a workflow's steps are drawn (§4.2).
+
 ## 5. Frozen contract: change requests
 
 **None, for the recommended design.** These are considered and not
