@@ -10,7 +10,12 @@ resolves a tenant:
     group is a member's default only when no Terraform group is above it
     (owner answer Q4 (a), 2026-10-19). Membership is still asked one group at
     a time with `checkTransitiveMembership` (`groups.py`); nothing here or
-    there lists a caller's groups.
+    there lists a caller's groups. The same groups, in the same order, are
+    a platform admin's reach after the Terraform ones
+    (`Authenticator._platform_reach`, `may_act_in`; docs/design/
+    workspace-roles.md §4.2.2, owner decision 2026-10-19, lane WK-REACH):
+    only GROUP records are read into it, so a personal or service workspace
+    is never reached through the registry.
   * `admitted_services()`: the account emails of the `ready` records of kind
     `service`, admitted at the front door beside `ALLOWED_USERS`.
 

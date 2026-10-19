@@ -1189,7 +1189,7 @@ class Authenticator:
         # Last, from the finished context, so it can only ADD a separate list:
         # the tenant, the choices and `principal.groups` above are exactly as
         # they were before the reach existed.
-        return replace(ctx, platform_reach=self._platform_reach(ctx))
+        return replace(ctx, platform_reach=self._platform_reach(ctx, tenant_groups))
 
     def _tenant_groups(self, registry: RegistrySnapshot) -> tuple[str, ...]:
         """`TENANT_GROUPS`, then every registered group not already in it."""
@@ -1215,36 +1215,46 @@ class Authenticator:
         # exactly as `allowed_users` above.
         return bool(getattr(self._settings, "platform_admin_reach", False))
 
-    def _reachable_groups(self) -> tuple[tuple[str, str], ...]:
+    def _reachable_groups(self, tenant_groups: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
         """(tenant_id, group) for every registered tenant group a platform
         admin could reach: the walk `_tenant_choices` makes -- admin order,
-        the first group per id -- over ALL of `tenant_groups`, with every
-        `u-` id dropped. A group slug can land in the personal namespace
+        the first group per id -- over ALL of `tenant_groups`
+        (`_tenant_groups`: `TENANT_GROUPS`, then the registry's `ready`
+        job-made GROUP records, owner decision 2026-10-19), with every
+        `u-` id dropped. The registry holds no personal or service record
+        among its groups, and nothing but `ready` (registry.py), so neither
+        kind is ever reached through it. A group slug can land in the personal namespace
         (the frozen `tenant_id_for_group` adds no prefix), and a personal
         workspace is reachable by its own person only (§4.2.1). Dropping the
         id, rather than the group, keeps the first-per-id rule: a later group
         never stands in for a dropped one under the same id."""
         reach: dict[str, str] = {}
-        for group in self._settings.tenant_groups:
+        for group in tenant_groups:
             reach.setdefault(tenant_id_for_group(group), group.lower())
         return tuple((t, g) for t, g in reach.items() if not t.startswith("u-"))
 
-    def _platform_reach(self, ctx: AuthContext) -> tuple[tuple[str, str], ...]:
+    def _platform_reach(
+        self, ctx: AuthContext, tenant_groups: tuple[str, ...]
+    ) -> tuple[tuple[str, str], ...]:
         """`AuthContext.platform_reach` for this context (§4.2.2 step 1).
 
         Empty unless the caller is a platform admin (`is_admin`; never
         `is_pool_admin`, the sweeper, the tick or a listed account), the
         reach is switched on, and the caller is a person. Every id already
         among the caller's memberships is left out: a member reaches it as a
-        member. Asks Cloud Identity nothing -- `tenant_groups` is
-        configuration -- so a request naming a reach workspace costs no
-        directory call beyond the ones every request already makes.
+        member. `tenant_groups` is the one tuple this request's memberships
+        were walked over (`_tenant_groups`), so a ready job-made group is
+        reached exactly as a Terraform group is, and after every one of them.
+        Asks Cloud Identity nothing -- `tenant_groups` is configuration and
+        the registry read this request already made -- so a request naming a
+        reach workspace costs no directory call beyond the ones every request
+        already makes.
         """
         if not ctx.is_admin or not self._reach_enabled() or self._special(ctx):
             return ()
         member_ids = {tenant_id for tenant_id, _ in ctx.tenant_choices}
         return tuple(
-            (tenant_id, group) for tenant_id, group in self._reachable_groups()
+            (tenant_id, group) for tenant_id, group in self._reachable_groups(tenant_groups)
             if tenant_id not in member_ids
         )
 
@@ -1327,13 +1337,16 @@ class Authenticator:
           at no extra cost;
         * else "platform_admin" when the tenant is a GROUP tenant, its id is
           not a `u-` id, it is the registered group that id selects
-          (`_reachable_groups`: a group removed from `tenant_groups` is in
-          nobody's reach), the reach is on, `email` is a person, and
+          (`_registered_reach`: a Terraform group, or a `ready` job-made
+          group from the registry; a group removed from `tenant_groups`, or
+          whose record is no longer `ready`, is in nobody's reach), the reach
+          is on, `email` is a person, and
           `holds_platform_admin(email, fresh=True)` -- one lookup per admin
           source, asked only once membership has said no;
         * else "".
 
-        A failed lookup is a 503 (`UpstreamUnavailable`), never a guess.
+        A failed lookup is a 503 (`UpstreamUnavailable`), never a guess --
+        the registry's `RegistryUnavailable` included.
         """
         if self.is_tenant_member(email, tenant, fresh=fresh):
             return "member"
@@ -1342,11 +1355,27 @@ class Authenticator:
             return ""
         tenant_id = (getattr(tenant, "tenant_id", "") or "").strip()
         principal = (getattr(tenant, "principal", "") or "").strip().lower()
-        if tenant_id.startswith("u-") or (tenant_id, principal) not in self._reachable_groups():
+        if tenant_id.startswith("u-") or self._reach_excluded(email):
             return ""
-        if self._reach_excluded(email):
+        if not self._registered_reach(tenant_id, principal):
             return ""
         return "platform_admin" if self.holds_platform_admin(email, fresh=True) else ""
+
+    def _registered_reach(self, tenant_id: str, principal: str) -> bool:
+        """Whether (tenant_id, principal) is an entry of the reach a request
+        would build now: `_reachable_groups` over `_tenant_groups`, the same
+        tuple `_from_claims` walks. An id a Terraform group selects is
+        answered from `TENANT_GROUPS` alone -- the registry never registers
+        a group under a Terraform tenant's id, and the first group per id
+        wins -- so a Terraform group's answer never waits on a registry
+        read. Any other id reads the registry (cached; `RegistryUnavailable`,
+        a 503, when it has not been read within its stale window)."""
+        entry = (tenant_id, principal)
+        configured = self._reachable_groups(tuple(self._settings.tenant_groups))
+        if any(t == tenant_id for t, _ in configured):
+            return entry in configured
+        registry = self._registry.snapshot() if self._registry is not None else EMPTY_REGISTRY
+        return entry in self._reachable_groups(self._tenant_groups(registry))
 
     def is_tenant_member(self, email: str, tenant: Any, *, fresh: bool = False) -> bool:
         """Whether `email` belongs to `tenant` NOW, asked of the directory again.
