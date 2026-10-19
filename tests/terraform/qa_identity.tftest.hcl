@@ -50,6 +50,17 @@ override_data {
   }
 }
 
+# A distinct string, so pointing the QA account's policy resource at another
+# data source fails the equality in on_swarm_api_alone_may_sign_as_the_qa_account.
+# File-wide because the mock's generated policy_data is not JSON, and the
+# provider refuses it at plan in every run that turns the identity on.
+override_data {
+  target = data.google_iam_policy.qa_identity
+  values = {
+    policy_data = "{\"qa\":\"swarm-api-signs\"}"
+  }
+}
+
 run "off_by_default_nothing_exists" {
   command = plan
 
@@ -164,15 +175,6 @@ run "on_swarm_api_alone_may_sign_as_the_qa_account" {
     values = {
       name  = "projects/saga-agents-staging/serviceAccounts/swarm-qa@saga-agents-staging.iam.gserviceaccount.com"
       email = "swarm-qa@saga-agents-staging.iam.gserviceaccount.com"
-    }
-  }
-
-  # A distinct string, so pointing the policy resource at another data source
-  # fails the equality below.
-  override_data {
-    target = data.google_iam_policy.qa_identity
-    values = {
-      policy_data = "{\"qa\":\"swarm-api-signs\"}"
     }
   }
 
