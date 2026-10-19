@@ -74,6 +74,18 @@ bridge says on stderr which folder it used and why. Each copy is named after
 its run, `SC-<slug of the title>-<12 hex>.js`, so a label taken from the file
 name says something too.
 
+OUTSIDE `.claude/` (PLUGIN-RUNDIR, part of #1511). Measured 2026-10-19 at
+03:12Z on plugin 0.5.44: the Workflow tool refused
+`<project>/.claude/sc-swarmcloud-runs/SC-...js` twice, the second time after
+the session had Read it, and launched the same bytes from the system temp
+folder at once -- Claude Code treats `.claude/` as protected configuration.
+So the folder is `<project>/.sc-swarmcloud-runs/` (REPO_RUN_DIR), with the
+same `.gitignore` of `*`. A `launched.jsonl` the bridges of 0.5.39-0.5.44
+left at `<project>/.claude/sc-swarmcloud-runs/` (LEGACY_RUN_DIR) is moved
+beside the copies on the next write when there is none there yet, and
+`record_paths` keeps reading it wherever it still is, so no session loses
+the record of what it launched.
+
 THE PROJECT RECORD (owner, 2026-10-18). The same folder holds
 `launched.jsonl`: one JSON object per line for every workflow submitted or
 attached and every single task dispatched from this project (`record`),
@@ -150,13 +162,18 @@ def max_live_rows() -> int:
     each copy's args hand it as `max_rows`) agree on one number."""
     return config.max_live_rows()
 
-#: The folder's name, under the project's `.claude/` or, as the last
-#: fallback, under the system's temporary directory.
+#: The folder's name under the system's temporary directory, the last
+#: fallback.
 RUN_DIR = "sc-swarmcloud-runs"
 #: Where the copies go, relative to the session's project (SC-TITLES, #1511)
 #: and to the repo-local bridge's checkout (#888 box 101): the Workflow tool
-#: refuses a script path in the system temp directory.
-REPO_RUN_DIR = Path(".claude") / RUN_DIR
+#: refuses a script path in the system temp directory, and one under
+#: `.claude/` too (PLUGIN-RUNDIR, measured 2026-10-19), so the folder is a
+#: dot-folder of the project's own, never inside `.claude/`.
+REPO_RUN_DIR = Path("." + RUN_DIR)
+#: Where the bridges of plugin 0.5.39-0.5.44 put the copies and the record;
+#: a record there is moved beside the copies, and read until it is.
+LEGACY_RUN_DIR = Path(".claude") / RUN_DIR
 #: What Claude Code names the session's project directory with.
 PROJECT_DIR_ENV = "CLAUDE_PROJECT_DIR"
 #: Each copy: `SC-<slug of its title>-<12 hex>.js`. The copies written before
@@ -320,12 +337,45 @@ def _prepared(folder: Path) -> bool:
 def record_path() -> Path:
     """Where `run_folder` would put the project record, found without
     creating or saying anything: a read (`/sc check`) writes nothing."""
+    return record_paths()[0]
+
+
+def record_paths() -> list[Path]:
+    """Every file the project record may be in, `record_path()` first: then
+    the one an older bridge left under the project's `.claude/`
+    (LEGACY_RUN_DIR), which a session reads until a write moves it -- and
+    after, should a bridge of 0.5.44 or older append there again. Found
+    without creating anything."""
     found = _project()
     if found is not None:
         folder = found[0] / REPO_RUN_DIR
+        legacy = found[0] / LEGACY_RUN_DIR / RECORD_FILE
         if folder.is_dir() or os.access(found[0], os.W_OK):
-            return folder / RECORD_FILE
-    return Path(tempfile.gettempdir()) / RUN_DIR / RECORD_FILE
+            return [folder / RECORD_FILE, legacy]
+        return [Path(tempfile.gettempdir()) / RUN_DIR / RECORD_FILE, legacy]
+    return [Path(tempfile.gettempdir()) / RUN_DIR / RECORD_FILE]
+
+
+def _carry_record(project: Path, folder: Path) -> None:
+    """Move an older bridge's `launched.jsonl` from the project's `.claude/`
+    into `folder` when `folder` holds none yet. A hard link then an unlink,
+    never a rename: a rename would replace a record another bridge created
+    in `folder` meanwhile, and a link refuses to. A record already in
+    `folder`, or a move that fails (another bridge moved it first, a file
+    system without links), leaves both where they are -- `record_paths`
+    reads both."""
+    old = project / LEGACY_RUN_DIR / RECORD_FILE
+    new = folder / RECORD_FILE
+    if not old.is_file() or new.exists():
+        return
+    try:
+        os.link(old, new)
+    except OSError:
+        return
+    try:
+        old.unlink()
+    except OSError:
+        return
 
 
 #: The folder `run_folder` last reported, so stderr says it once per change.
@@ -342,7 +392,7 @@ def _report(folder: Path, why: str) -> None:
 
 def run_folder() -> Path:
     """Where the titled copies and the project record go: the session's
-    project's `.claude/sc-swarmcloud-runs/` (`_project`), else the system temp
+    project's `.sc-swarmcloud-runs/` (`_project`), else the system temp
     directory's `sc-swarmcloud-runs/` -- only when no project is known or its
     folder cannot be written. Created on first use; the folder used is said
     on stderr."""
@@ -351,6 +401,7 @@ def run_folder() -> Path:
         project, source = found
         folder = project / REPO_RUN_DIR
         if _prepared(folder):
+            _carry_record(project, folder)
             _report(folder, f"the session's project, from {source}")
             return folder
         why = f"the project's folder {folder} could not be written"

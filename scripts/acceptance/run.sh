@@ -36,8 +36,9 @@
 # caller's default tenant or to another repository.
 #
 # WHAT IT SPENDS. The claude-code group and the workflow group's integrate
-# chain run six claude-code tasks on one- or two-sentence prompts, against the
-# smoke tenant's credential. The direct-pr and integrate checks open real
+# chain run ten claude-code tasks on one- or two-sentence prompts, against the
+# smoke tenant's credential: four of them are the model-class canary, one
+# step per class on a one-word reply (groups/claude-code.sh). The direct-pr and integrate checks open real
 # pull requests on the sandbox; each check closes its own when this run holds
 # a GitHub token that can write there (SWARM_ACCEPTANCE_GITHUB_TOKEN, GH_TOKEN
 # or GITHUB_TOKEN), and the release sweeps them afterwards otherwise

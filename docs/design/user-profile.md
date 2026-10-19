@@ -1376,6 +1376,38 @@ other's state.
 | Q11 | Does the edited display name also name the agent's commits? | **Yes, answered 2026-10-18:** the stored name, else the token's name claim, else the email's local part. The email is in every commit beside it, and a task keeps the name recorded at admission, so a later rename never rewrites a commit | §2.2, §4.4, PROFILE-DEFAULT |
 | Q12 | Does a one-word name block every longer name that contains it? | **No, answered 2026-10-18:** only names of two or more words are checked for containment. An exact match is still refused for every name, and "Ada Lovelace Admin" is still refused when "Ada Lovelace" exists, but "Bob Smith" is allowed when "Bob" exists; the email shown beside every name covers the rest. Departs from the lane's recommendation | §4.4 rule 6, PROFILE-STORE |
 
+#### Amendment, 2026-10-19: first name in the console, full name where the person is the subject
+
+The owner checked the built Profile page in Chrome and decided: *"Show the
+first name for each user, only show full name in the profile page or in the
+user administration sections in admin for each user."*
+
+This narrows Q11's "one name everywhere" to **what is stored and what names a
+commit**. It does not change either: the stored name is still the whole name
+the person saved, and Q11 (a) still makes that whole name the agent's commit
+author. Only how the console **displays** a person changes (lane
+PROFILE-FIRSTNAME, part of #1505):
+
+* `PersonName` (`apps/swarm-ui/src/PersonName.tsx`) prints the saved name's
+  **first word** by default (`variant="first"`): split on whitespace only, so
+  a hyphen or an apostrophe stays in the word ("Mary-Jane O'Neil" is
+  "Mary-Jane"), and a one-word name is the whole name.
+* The **full** name is printed only where the person is the subject:
+  Admin › People (its table and its per-person views, `variant="full"`) and
+  Settings › Profile, whose name editor holds the whole saved name.
+* §4.4's rule is unchanged: a name is never shown without its email, the
+  email is never the part that is cut, and no saved name still prints the
+  email alone. The whole name is in the element's title, so the short form
+  hides nothing a hover cannot show.
+* The panel's signed-in line shows the caller's saved first name, else the
+  email's local part as before. `GET /v1/tenants/me` does not carry the name,
+  so the shell reads `GET /v1/profile` for it once per session (Spine.tsx
+  `askOwnName`), and the Profile page's own read and save update it.
+
+Why a first name is safe here: the name was never the identity (§4.4). Two
+people who share a first name are still told apart by the email beside each,
+which is exactly the case §4.4 put the email there for.
+
 ### 7.2 Open
 
 Nothing is open. Q11 and Q12 were answered on 2026-10-18 and are in §7.1.

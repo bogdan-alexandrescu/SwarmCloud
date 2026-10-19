@@ -263,6 +263,18 @@ swarm-verify image has `python3` and no pip): a websocket client, an RFB 3.8
 viewer and a GCS reader, written out. It runs beside the settle wait and is
 told the settled state through a file. It reports one verdict per check.
 
+**The scripted person opens the live view before anything else.** swarm-api
+counts someone as watching from the viewer socket's join, and a hold nobody
+watches ends after `human_unwatched_seconds` (60 s); the worker then parks
+the task on `HUMAN_REQUIRED`, which only a person's "I'm ready" promotes. The
+other-tenant probes (six API calls and a socket that may wait 20 s for its
+refusal) used to run first, and the scheduled runs of 2026-10-15..19 failed
+`returned` with the task PARKED at the 900 s settle (#1333). They now run
+while the viewer's socket is open and the page is on screen. When the settle
+runs out anyway, the group reads the task once more and the verdict names
+its state and `park_reason` (`PARKED:HUMAN_REQUIRED`, or a provider park
+with the instant it is eligible again), never just "did not finish".
+
 **The page is served inside the agent's own pod.** Nothing this repository
 owns serves HTML as HTML on the internet (see browser, above), so
 the agent runs `python3 -m http.server` on `127.0.0.1:8765` over

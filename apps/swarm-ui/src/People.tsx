@@ -678,7 +678,7 @@ function WaitingCard({ doc, rows, reload }: { doc: PeopleDoc; rows: PersonRow[];
               <div className="pp-req-who">
                 <Avatar email={row.email} />
                 <span className="pp-who" title={row.email}>
-                  <PersonName email={row.email} name={row.display_name ?? null} />
+                  <PersonName email={row.email} name={row.display_name ?? null} variant="full" />
                 </span>
               </div>
               {kind === 'workspace' ? (
@@ -748,7 +748,7 @@ function PersonCell({ row, doc }: { row: PersonRow; doc: PeopleDoc }) {
     <span className="pp-person">
       <Avatar email={row.email} />
       <span className="pp-who" title={row.email}>
-        <PersonName email={row.email} name={row.display_name ?? null} />
+        <PersonName email={row.email} name={row.display_name ?? null} variant="full" />
       </span>
       <GitHubMark github={row.github} />
       {holderOf(doc, row.email)?.role === 'owner' && <Chip className="pp-owner">platform owner</Chip>}
@@ -1041,7 +1041,7 @@ function Drawer({ row, doc, reload, onClose }: { row: PersonRow; doc: PeopleDoc;
         <header className="pp-drawer-h">
           <h2 id={titleId}>
             <span className="vh">Manage </span>
-            <PersonName email={row.email} name={row.display_name ?? null} />
+            <PersonName email={row.email} name={row.display_name ?? null} variant="full" />
           </h2>
           <button type="button" ref={closeBtn} className={buttonClass({ size: 'sm' })} onClick={() => closeRef.current()}>
             Close

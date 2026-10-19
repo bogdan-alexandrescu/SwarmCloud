@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
-import { loadCapacity, loadStats } from './api'
+import { loadCapacity, loadModelClasses, loadStats, type ModelClassOffer } from './api'
 import {
   CeilingTag,
   blockerVerdict,
@@ -31,7 +31,7 @@ import { HELP } from './help'
 import { HelpCard } from './HelpCard'
 import { clearTaskPrefill, peekTaskPrefill } from './submitPrefill'
 import { Mark } from './primitives'
-import { RoomFact, RunnerPicker, useProviderKeys } from './RunnerPicker'
+import { ModelClassSelect, RoomFact, RunnerPicker, sentModelClass, useProviderKeys } from './RunnerPicker'
 import { AUTO, BROWSER_TOOL_KEY, BrowserToolPicker, declaredBrowserTools, jevAllowed, profileEgress, useJevJudgment, useTypesafeKey, withBrowserTool } from './BrowserToolPicker'
 import { MCP_SERVERS_KEY, McpServerPicker, clearCredentials, declaredMcpServers, loadMcpServers, offeredMcpServers, readCredentials, withMcpServers, type McpServerList } from './McpServers'
 import { FailedPanel, Screen, useSubmitAs } from './Shell'
@@ -1091,9 +1091,27 @@ function Form({ capacity }: { capacity: Capacity }) {
   }, [takesExtra])
   const extraSent = takesExtra ? additionalRepositoriesBody(offeredPicks(extraPicks, extraList)) : []
 
+  // MODEL CLASS (MODEL-SUBMIT, #1435, design §4.8): the runner's classes
+  // from `/v1/runtimes`, read once. A failed read is null and hides the
+  // select, so the task runs its runner's default as it did before the select
+  // existed. `modelClass` null is the default; a runner change resets it.
+  const [offers, setOffers] = useState<Record<string, ModelClassOffer> | null>(null)
+  useEffect(() => {
+    let live = true
+    void loadModelClasses().then((r) => {
+      if (live) setOffers(r.status === 'ok' || r.status === 'stale' ? r.data : null)
+    })
+    return () => {
+      live = false
+    }
+  }, [])
+  const [modelClass, setModelClass] = useState<string | null>(null)
+  const classSent = sentModelClass(offers?.[chosen], modelClass)
+
   const pick = (name: string) => {
     setChosen(name)
     setBrowserTool(AUTO)
+    setModelClass(null)
     setMcpPicked([])
     forgetCredentials()
     setFields((prev) => seedFields(prev, requiredInputKeys(capacity.runner_profiles[name] ?? undefined)))
@@ -1136,7 +1154,7 @@ function Form({ capacity }: { capacity: Capacity }) {
   // button is "Submit another" for as long as the form still says exactly
   // what was sent (VQA V048, owner decision Q1 on #1038): one more click on an
   // unchanged form was a duplicate task. Any edit makes it a new request.
-  const draftKey = JSON.stringify([chosen, built.ok ? built.input : null, dispatch.strategy, dispatch.carrier, repo, extraSent])
+  const draftKey = JSON.stringify([chosen, built.ok ? built.input : null, dispatch.strategy, dispatch.carrier, repo, extraSent, classSent ?? null])
   const [sentKey, setSentKey] = useState<string | null>(null)
   const justSent = outcome.kind === 'created' && sentKey === draftKey
   // AND A 422 IS NOT "READY TO SEND" (VQA V002): the panel said so over a live
@@ -1150,6 +1168,7 @@ function Form({ capacity }: { capacity: Capacity }) {
   const another = () => {
     setChosen('')
     setBrowserTool(AUTO)
+    setModelClass(null)
     setMcpPicked([])
     setMcpLifetimes({})
     setExtraPicks([])
@@ -1258,6 +1277,9 @@ function Form({ capacity }: { capacity: Capacity }) {
         // Omitted when none is picked: an absent list and `[]` both read none,
         // and with the API's flag off only a non-empty one is refused.
         ...(extraSent.length === 0 ? {} : { additional_repositories: extraSent }),
+        // A CLASS NAME, never a model ID (invariant 10), and only one chosen
+        // over the runner's default (#1435).
+        ...(classSent === undefined ? {} : { model_class: classSent }),
         // BESIDE `input`, never in it: `input` is stored and shown, and the
         // credential is neither (§4.3). Omitted when no `dispatch` server is picked.
         ...(Object.keys(credentials).length === 0 ? {} : { mcp_credentials: credentials }),
@@ -1289,6 +1311,10 @@ function Form({ capacity }: { capacity: Capacity }) {
               control both Submit forms draw. */}
           <RunnerPicker group="runner-profile" label="runner" profiles={catalogue} chosen={chosen}
             keys={keys} onPick={pick} />
+          {profile && (
+            <ModelClassSelect id="task-model-class" label="task model class" offer={offers?.[chosen]} value={modelClass}
+              onPick={setModelClass} />
+          )}
           {bad.runner_profile && <p id={refusedSayId('runner_profile')} tabIndex={-1} className="warn-text" role="alert">{bad.runner_profile}</p>}
           {profile && <ProfileFacts name={chosen} profile={profile} pools={capacity.pools} />}
         </Move>

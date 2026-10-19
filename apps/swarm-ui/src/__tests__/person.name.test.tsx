@@ -13,7 +13,10 @@
 //     Approvals' `decided_by`, People's row, the workflow page's owner and
 //     the task page's submitter. Each is found by the component's marker,
 //     `data-person-name`, so a caller that goes back to printing the email by
-//     hand fails here.
+//     hand fails here;
+//   * People prints the FULL name and the other three the FIRST name (owner,
+//     2026-10-19, PROFILE-FIRSTNAME; user-profile.md §7.1 amendment), each
+//     with the whole name in the marker's title.
 //
 // The bodies are the API's shapes with the `*_name` siblings
 // PROFILE-NAMES-API added (`people.add_names`). Placeholders only.
@@ -45,6 +48,8 @@ const { PersonName } = await import('../PersonName')
 
 const WAIT = { timeout: 4000 }
 const NAME = 'Ada Lovelace'
+/** `NAME`'s first word: what every page but Admin › People and Profile prints. */
+const FIRST = 'Ada'
 const EMAIL = 'ada@example.com'
 /** 64 characters: `display_names.check`'s ceiling, all letters and spaces. */
 const LONG_NAME = `${'Augusta '.repeat(8)}`.slice(0, 63) + 'x'
@@ -56,20 +61,29 @@ afterEach(() => {
 
 const marker = (root: ParentNode) => root.querySelector<HTMLElement>('[data-person-name]')
 
-/** Assert `root` prints `email` (and `name`, when given) through `PersonName`. */
-function printsThrough(root: ParentNode, email: string, name: string | null, where: string): void {
+/**
+ * Assert `root` prints `email` (and `name`, when given) through `PersonName`,
+ * with the whole saved name `full` in the marker's title.
+ */
+function printsThrough(root: ParentNode, email: string, name: string | null, where: string, full: string | null = name): void {
   const el = marker(root)
   expect(el, `${where} prints the person by hand, not through PersonName`).not.toBeNull()
   expect(el!.getAttribute('data-email')).toBe(email)
-  expect(el!.textContent).toBe(name === null ? email : `${name} · ${email}`)
+  expect(el!.textContent, `${where} prints the wrong form of the name`).toBe(name === null ? email : `${name} · ${email}`)
+  expect(el!.getAttribute('title')).toBe(full === null ? email : `${full} · ${email}`)
 }
 
 describe('PersonName', () => {
-  it('prints `Name · email`', () => {
-    const { container } = render(<PersonName email={EMAIL} name={NAME} />)
-    expect(marker(container)!.textContent).toBe(`${NAME} · ${EMAIL}`)
-    expect(container.querySelector('.person-name-name')!.textContent).toBe(NAME)
+  it('prints `First · email` by default, and `Full Name · email` as `full`', () => {
+    const { container, unmount } = render(<PersonName email={EMAIL} name={NAME} />)
+    expect(marker(container)!.textContent).toBe(`${FIRST} · ${EMAIL}`)
+    expect(container.querySelector('.person-name-name')!.textContent).toBe(FIRST)
     expect(container.querySelector('.person-name-email')!.textContent).toBe(EMAIL)
+    unmount()
+    const full = render(<PersonName email={EMAIL} name={NAME} variant="full" />).container
+    expect(marker(full)!.textContent).toBe(`${NAME} · ${EMAIL}`)
+    expect(full.querySelector('.person-name-name')!.textContent).toBe(NAME)
+    expect(full.querySelector('.person-name-email')!.textContent).toBe(EMAIL)
   })
 
   it('prints the email alone when the name is null, absent or blank', () => {
@@ -88,7 +102,7 @@ describe('PersonName', () => {
     expect(LONG_NAME).toHaveLength(64)
     const { container } = render(
       <div style={{ width: '120px', overflow: 'hidden' }}>
-        <PersonName email={EMAIL} name={LONG_NAME} />
+        <PersonName email={EMAIL} name={LONG_NAME} variant="full" />
       </div>,
     )
     const box = marker(container)!
@@ -140,7 +154,7 @@ describe('every place the design names prints a person through PersonName', () =
     const { ApprovalsScreen } = await import('../Approvals')
     render(<ApprovalsScreen view="approval=apr_old" go={vi.fn()} />)
     const said = await screen.findByTestId('ap-decided', undefined, WAIT)
-    printsThrough(said, EMAIL, NAME, 'Approvals')
+    printsThrough(said, EMAIL, FIRST, 'Approvals', NAME)
   })
 
   it("People's row", async () => {
@@ -167,7 +181,7 @@ describe('every place the design names prints a person through PersonName', () =
       expect(r).not.toBeNull()
       return r!
     }, WAIT)
-    printsThrough(tr, EMAIL, NAME, "People's row")
+    printsThrough(tr, EMAIL, NAME, "People's row (full: Admin › People)")
   })
 
   it("the workflow page's owner", async () => {
@@ -200,9 +214,9 @@ describe('every place the design names prints a person through PersonName', () =
       expect(n?.textContent ?? '').toContain(EMAIL)
       return n!
     }, WAIT)
-    printsThrough(note, EMAIL, NAME, "the workflow page's owner")
+    printsThrough(note, EMAIL, FIRST, "the workflow page's owner", NAME)
     // The note's title is its whole text, the owner included.
-    expect(note.getAttribute('title')).toContain(`by ${NAME} · ${EMAIL}`)
+    expect(note.getAttribute('title')).toContain(`by ${FIRST} · ${EMAIL}`)
   })
 
   it("the task page's submitter", async () => {
@@ -226,6 +240,6 @@ describe('every place the design names prints a person through PersonName', () =
       expect(n).toBeTruthy()
       return n!
     }, WAIT)
-    printsThrough(note, EMAIL, NAME, "the task page's submitter")
+    printsThrough(note, EMAIL, FIRST, "the task page's submitter", NAME)
   })
 })

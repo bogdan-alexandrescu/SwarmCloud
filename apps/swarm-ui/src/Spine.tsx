@@ -23,10 +23,10 @@
  */
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
 import { AGENT_TABS, type AgentTab } from './agentlist'
-import { loadApprovals, loadCapacity, loadMe, loadMyTenants, loadStats, type TenantChoice } from './api'
+import { USE_FIXTURES, loadApprovals, loadCapacity, loadMe, loadMyTenants, loadStats, type TenantChoice } from './api'
 import { classifyEnvironment, envTreatment, servedEnvironment, SwarmMark } from './Brand'
 import { Banner, Button, NamedMark, Toaster, acknowledge, routedClick } from './components'
-import { chooseTenant, chosenTenant, clearTenantSwitch, errorHeading, noteTenantSwitch, preferencesUnavailableSnapshot, probeSnapshot, subscribePreferencesUnavailable, subscribeProbes, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, type Result } from './fetch'
+import { chooseTenant, chosenTenant, clearTenantSwitch, errorHeading, noteTenantSwitch, preferencesUnavailableSnapshot, probeSnapshot, read, route, subscribePreferencesUnavailable, subscribeProbes, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, type Result } from './fetch'
 import { HELP_GROUPS, HELP, TOPIC_IDS, helpAnchor } from './help'
 import { STATE_MARK } from './marks'
 import { addressToPath } from './paths'
@@ -37,6 +37,7 @@ import { SignOutButton, SignedBackIn } from './SignOut'
 import { iapFronted, signingOut } from './signoutState'
 import { AppTakeover, OfflineBanner, wholeAppFault, useOnline } from './AppStates'
 import { feedData, notificationsSnapshot, subscribeNotifications } from './notificationFeed'
+import { firstName } from './PersonName'
 
 export type SpineSection = 'overview' | 'work' | 'automate' | 'capacity' | 'admin' | 'help' | 'api' | null
 
@@ -597,6 +598,59 @@ function useFrameRead<T>(load: () => Promise<Result<T>>, everyMs: number | null,
   return [r, again]
 }
 
+/*
+ * THE SIGNED-IN LINE'S NAME (PROFILE-FIRSTNAME, owner 2026-10-19,
+ * user-profile.md §7.1 amendment): the caller's saved FIRST name, else the
+ * local part of their email as before. `/v1/tenants/me` does not carry the
+ * name, so `GET /v1/profile` is read for it ONCE per session per signed-in
+ * email -- not once per page, and not again when the workspace changes,
+ * because the name is the person's, not the workspace's. A read that fails
+ * leaves the local part, which is what the line said before names existed.
+ *
+ * Profile's own save calls `noteOwnName`, so a name saved there reaches the
+ * panel without a second read. Memory only, like the frame's other reads.
+ */
+let ownName: { email: string; name: string | null } | null = null
+let ownNameAskedFor: string | null = null
+const ownNameListeners = new Set<() => void>()
+
+/** Record the signed-in person's saved name (null: none saved). */
+export function noteOwnName(email: string, name: string | null): void {
+  const kept = typeof name === 'string' && name.trim() !== '' ? name : null
+  if (ownName !== null && ownName.email === email && ownName.name === kept) return
+  ownName = { email, name: kept }
+  for (const fn of ownNameListeners) fn()
+}
+
+function ownNameSnapshot(): { email: string; name: string | null } | null {
+  return ownName
+}
+
+function subscribeOwnName(fn: () => void): () => void {
+  ownNameListeners.add(fn)
+  return () => ownNameListeners.delete(fn)
+}
+
+/** Ask `/v1/profile` for `email`'s saved name, the first time only. */
+function askOwnName(email: string): void {
+  if (USE_FIXTURES || ownNameAskedFor === email) return
+  ownNameAskedFor = email
+  void read<{ identity?: { email?: unknown; display_name?: unknown } }>(route('/v1/profile'), () => false, { frame: true }).then((r) => {
+    if (r.status !== 'ok' && r.status !== 'stale') return
+    const id = r.data?.identity
+    // The answer is about whoever the API saw; a different address is not this line's.
+    if (typeof id?.email === 'string' && id.email !== email) return
+    noteOwnName(email, typeof id?.display_name === 'string' ? id.display_name : null)
+  })
+}
+
+/** The panel's signed-in line: the saved first name, else the email's local part. */
+export function signedInLabel(email: string, saved: { email: string; name: string | null } | null): { text: string; title: string } {
+  const local = email.split('@')[0] ?? email
+  if (saved === null || saved.email !== email || saved.name === null) return { text: local, title: local }
+  return { text: firstName(saved.name), title: saved.name }
+}
+
 const loadFrameMe = () => loadMe({ frame: true })
 const loadFrameTenants = () => loadMyTenants()
 
@@ -1075,6 +1129,12 @@ export function SkyShell({
   const adminPending = feedData(notes)?.admin_pending ?? 0
   const who = dataOf(me)
   const admin = who?.principal.is_admin === true
+  const savedName = useSyncExternalStore(subscribeOwnName, ownNameSnapshot, ownNameSnapshot)
+  const whoEmail = who?.principal.email ?? null
+  useEffect(() => {
+    if (whoEmail !== null) askOwnName(whoEmail)
+  }, [whoEmail])
+  const signedIn = who === null ? null : signedInLabel(who.principal.email, savedName)
   const env = classifyEnvironment(
     import.meta.env.VITE_SWARM_ENV,
     typeof window === 'undefined' ? '' : window.location.hostname,
@@ -1617,7 +1677,7 @@ export function SkyShell({
       <Meter meter={meter} read={cap.status === 'error' || fault !== null ? 'unread' : cap.status === 'loading' ? 'loading' : 'landed'} />
       <div className="sk-pfoot">
         <span className="sk-pfrow">
-          <b title={who?.principal.email.split('@')[0]}>{who === null ? (me.status === 'loading' ? 'reading…' : 'not read') : who.principal.email.split('@')[0]}</b>
+          <b title={signedIn?.title}>{signedIn === null ? (me.status === 'loading' ? 'reading…' : 'not read') : signedIn.text}</b>
           {admin && <span className="sk-adm">admin</span>}
           {canSignOut && <SignOutButton email={who.principal.email} />}
         </span>

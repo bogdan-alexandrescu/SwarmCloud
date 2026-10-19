@@ -335,6 +335,13 @@ def _labels_workflows_gate_on() -> set[str]:
     return found
 
 
+def _labels_the_worker_applies() -> set[str]:
+    """Every label the worker adds to a pull request it opens (TERRITORY-WARN)."""
+    from agent_worker.territory import OUT_OF_TERRITORY_LABEL
+
+    return {OUT_OF_TERRITORY_LABEL}
+
+
 def test_the_hotfix_label_is_declared_and_gated_on() -> None:
     """hotfix.yml proceeds only on a merged pull request carrying `hotfix`; a
     label the repository does not declare is one nobody can apply."""
@@ -374,6 +381,7 @@ def test_the_label_declaration_is_one_gh_label_create_accepts() -> None:
     # check.
     applied = {label for p in FORMS for label in (_load(p).get("labels") or [])}
     applied |= _labels_workflows_gate_on()
+    applied |= _labels_the_worker_applies()
     unused = sorted(set(names) - applied, key=str)
     if unused:
         problems.append(f"declared but applied by no form: {unused}")

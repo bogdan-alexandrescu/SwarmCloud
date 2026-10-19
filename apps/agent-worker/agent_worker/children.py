@@ -63,7 +63,7 @@ from swarm_common.states import TERMINAL_STATES, TaskState
 from .accountlease import BrokerUnavailable, fetch_identity_token
 from .continuation import TASK_ID_RE, publish_branch
 from .errors import InputUnavailable, WorkerError
-from .gitidentity import BOT_GIT_IDENTITY, commit_identity
+from .gitidentity import commit_identity
 from .hardening import PROTECTED
 from . import inputs as inputs_mod
 
@@ -846,9 +846,17 @@ class ChildPath:
             repository=_repository_name(str(repository_url)),
             clone_base=str(clone_base),
             pushable=pushable,
-            # The identity the end-of-task publish writes as
-            # (`Worker._publish_identity`), and the worker's own beside it.
-            author=bot if person == BOT_GIT_IDENTITY else person,
+            # EXACTLY the identity the agent commits as: `git_identity_env`
+            # reads the same `commit_identity(task)` into the runner's
+            # GIT_AUTHOR_*/GIT_COMMITTER_*, and a mid-task push sends the
+            # agent's commits as they are. Not `Worker._publish_identity`,
+            # which swaps BOT_GIT_IDENTITY for the worker's `git_author_*`:
+            # that swap made every mid-task push of a task naming nobody (a
+            # service account's, as acceptance's are) foreign_author from
+            # #1265 on (GITTOOLS-AUTHOR). The worker's own identity stays
+            # beside it, for commits the worker wrote into the clone. A
+            # person's task still refuses BOT_GIT_IDENTITY: it is not theirs.
+            author=person,
             also_own=(bot,),
             pushes=pushes,
             branch_prefix=self.cfg.git_branch_prefix,

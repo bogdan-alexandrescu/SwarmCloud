@@ -55,6 +55,7 @@ costs nothing while it waits.
 | `allow_empty_diff` | `true`: an empty diff is this step's result, not its failure; see [an empty diff can succeed](#an-empty-diff-can-succeed-allow_empty_diff) |
 | `await_input` | only on the `await-input` profile, which requires it: the step waits for a tenant member's answer; see [waiting for a person](#waiting-for-a-person-await-input) |
 | `additional_repositories` | registered repositories this step **reads** beside its own, by `owner/repo`, each pinned to a commit at submission and checked out read-only at `../repos/<name>`. Replaces the workflow's list; `[]` means none. See [reading other repositories](#reading-other-repositories-additional_repositories) |
+| `model_class` | the model class this step's agent runs, by name: `opus` (the default), `fable`, `sonnet` or `haiku`. Never a model ID. See [choosing a step's model](#choosing-a-steps-model-model_class) |
 
 `max_workflow_steps` (default 50) bounds the whole thing.
 
@@ -63,7 +64,8 @@ costs nothing while it waits.
 A runner reads its task's `input`, and an input means something only to the
 runner that reads it: `input.model` was passed as `--model` by the CLI runners
 (until #226, when the model became the Job's `MODEL`, set in Terraform; see
-[agent-output.md](agent-output.md)), and `input.quota_exhausted` makes the mock
+[agent-output.md](agent-output.md); since #1435 a step picks it by
+[`model_class`](#choosing-a-steps-model-model_class)), and `input.quota_exhausted` makes the mock
 simulate a rate limit. So what a
 caller may send is declared per profile in the frozen catalogue,
 `RunnerProfile.inputs` (contract request 25, accepted by the owner on #142 on
@@ -418,6 +420,92 @@ the agent, not the boundary; this is the boundary.
 step's own, under `work/.swarm-context/repos/<name>/`, from a version proven
 an ancestor of the pinned commit. A served graph's tools take a `repo`
 argument. A repository with no graph still has its checkout and `rg`.
+
+## Choosing a step's model: `model_class`
+
+A step names its model **class**, never a model: one of the four names in the
+frozen `MODEL_CLASSES` (#1435, design B, owner decisions of 2026-10-17;
+[design/model-per-step.md](design/model-per-step.md)). Terraform pins one model
+ID per class (`local.runner_models`), and the platform runs that pin:
+
+| `model_class` | runs | for |
+|---|---|---|
+| `opus` | `claude-opus-5-5` | coding and implementation. `opus` is the default |
+| `fable` | `claude-fable-5-1` | planning. Per token it costs 2.5 times `opus`, so it is a quality choice, not a saving |
+| `sonnet` | `claude-sonnet-5-5` | summarising a source, reformatting a document |
+| `haiku` | `claude-haiku-5-5` | classifying feedback, extracting fields |
+
+```json
+{"step_id": "classify", "runner_profile": "claude-code", "model_class": "haiku",
+ "input": {"prompt": "Label each item in feedback.md as bug, request or praise."}}
+```
+
+**Which profiles take one.** `claude-code`, `claude-code-browser` and `indexer`
+accept all four. The retired `claude-code-review` accepts only `opus`. Every
+other profile (`codex`, `mock`, `generic`, `browser` and the worker actions)
+runs no Claude model and accepts none. `GET /v1/runtimes`, `swarm_profiles` and
+the console's Runtimes screen list each profile's `model_classes`, its
+`default_model_class` and the model behind each class.
+
+**Where it is accepted.** On `POST /v1/tasks` (`TaskCreate.model_class`), on
+each workflow step (`WorkflowStepCreate.model_class`, stored on the step and
+copied to its task), on an issue run (`RunCreate.model_class`), on the
+child-task route, in a `custom_prompt` schedule's steps, in the console's
+Submit form (a class select offering only the profile's classes) and through
+the plugin (`swarm dispatch --model-class`).
+
+**What is refused**, each a 422 with a stable code and nothing created:
+
+* `unknown_model_class`: the name is not one of the four. A model ID sent as a
+  class lands here: a class is a name, never a model ID (invariant 10).
+* `model_class_not_accepted`: the profile does not run that class. The message
+  names the classes it does run, or says it runs no Claude model.
+* `model_class_not_yet_available`: this deployment pins no model for the class
+  (`WORKER_CLASS_MODELS` is unset, as on the local emulator loop). Naming the
+  profile's default is always accepted. There is no enablement flag (owner
+  decision R4): lane order kept the classes unreachable until the scheduler,
+  the worker and the catalogue had merged.
+* `model_is_chosen_by_model_class`: a top-level `model` that is not the pin of
+  the step's class. swarm-api fills `Task.model` from that pin; a caller who
+  sends the same value is accepted, and another class's pin is answered with
+  the `model_class` to send instead. This refusal ships report-only behind the
+  `REFUSAL_MODEL_IS_CHOSEN_BY_MODEL_CLASS` switch, because `swarm dispatch
+  --model` sent free-text attribution before classes existed: while it is off,
+  the caller's `model` is recorded as sent, logged, and selects nothing.
+
+`input.model` is still refused as `invalid_input` on all three classed
+profiles: `model_class` is the only selector a caller has.
+
+**What is stored and signed.** A step that names its profile's default, or
+names nothing, stores no `model_class`, so its task has the bytes and the
+signing format it had before classes existed. A step that names another class
+stores it, and swarm-api signs that task at spec format 5, which covers
+`model_class`: a class rewritten onto a stored task fails its worker's check.
+
+**What runs is the class's pin at dispatch** (owner decision R6). The
+scheduler looks the class up in its own map when it dispatches, and the worker
+holds `MODEL` to the class, so a Terraform re-pin while the step is queued runs
+the new pin. `Task.model` keeps the pin at submission as a record, and the
+attempt's `model` records what ran ([agent-output.md](agent-output.md)).
+
+**Children, issue runs and scheduled steps.**
+
+* A child task that names no class runs its own profile's default, never the
+  parent's class (owner decision R3): a `haiku` parent does not silently start
+  `haiku` children for deep work.
+* On an issue run, `RunCreate.model_class` is the planner's class. The planner
+  may write a `model_class` on each plan step (owner decision R1 (a)). It is
+  part of the plan, inside `plan_digest`, so the person approving the plan
+  approves the classes too, and it is copied onto that step. A step naming
+  none, and the compiled review and fix steps, run `opus`.
+* The platform's own scheduled types (`epic_triage`, `docs_drift`, `observer`
+  and the rest) name no class and run `opus`. A `custom_prompt` schedule may
+  name one per step, validated like a workflow step.
+
+**Pools and quota.** A class shares its profile's `runner:` pool, so naming one
+changes no admission arithmetic, and every quota window of a pool account binds
+every attempt whatever its class. A pool account may be narrowed to the classes
+its plan serves; see [quota-management.md](quota-management.md#4-park-reasons).
 
 ## Artifacts pass by reference
 

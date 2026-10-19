@@ -119,7 +119,7 @@ def test_every_hostile_title_round_trips_through_the_copy_exactly(_plugin_root, 
 
 def test_every_hostile_title_names_a_valid_file_in_the_project_and_a_record_line(_plugin_root, tmp_path, monkeypatch):
     """SC-TITLES (#1511): each copy is `SC-<slug>-<12 hex>.js` inside the
-    project's `.claude/sc-swarmcloud-runs/`, whatever the title holds -- no
+    project's `.sc-swarmcloud-runs/`, whatever the title holds -- no
     separator, dot-dot or non-ASCII character reaches the file name -- and
     each spec submission's `launched.jsonl` line (written by workflow id when
     `swarm_workflow` is answered, SC-TITLES-B) is one JSON object that reads
@@ -127,7 +127,7 @@ def test_every_hostile_title_names_a_valid_file_in_the_project_and_a_record_line
     project = tmp_path / "project"
     project.mkdir()
     monkeypatch.setenv(launch.PROJECT_DIR_ENV, str(project))
-    folder = project / ".claude" / "sc-swarmcloud-runs"
+    folder = project / launch.REPO_RUN_DIR
     scripts = [launch.write_script(title, "about " + title) for title in HOSTILE_TITLES + ["SC · ../../up · 1 step"]]
     assert len({s.name for s in scripts}) == len(scripts)
     for script in scripts:

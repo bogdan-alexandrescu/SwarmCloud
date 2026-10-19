@@ -954,6 +954,21 @@ never lists it: five lanes dispatched that day ran with no row at all. So:
   asking. A bridge started outside the plugin has no run.js to copy: `rows`
   then carries `error` and `/sc attach --all`. The dispatch itself never fails
   over it — the task is already in SwarmCloud.
+* **The titled copies live in `<project>/.sc-swarmcloud-runs/`, never under
+  `.claude/`** (PLUGIN-RUNDIR, part of #1511). The Workflow tool refuses a
+  script path outside the session's allowed directories, so the copies left
+  the system temp folder for the project (0.5.39). But it refused
+  `<project>/.claude/sc-swarmcloud-runs/` too — measured 2026-10-19 on 0.5.44,
+  twice, the second time after the session had Read the file — because Claude
+  Code treats `.claude/` as protected configuration. Since 0.5.45 the bridge
+  writes each copy and the project record `launched.jsonl` into the
+  project's own `.sc-swarmcloud-runs/`, which carries a `.gitignore` of `*`
+  so nothing in it is ever a change to commit. A `launched.jsonl` an older
+  bridge left under `.claude/sc-swarmcloud-runs/` is moved there on the next
+  launch and read where it is until then, so `/sc check` and
+  `/sc attach --all` still know what the project launched. The system temp
+  folder's `sc-swarmcloud-runs/` stays the fallback when no project is known
+  or its folder cannot be written; the bridge says on stderr which it used.
 * **A plugin reload does not re-check, because nothing fires on it.** Claude
   Code exposes no hook event for `/reload-plugins` (its hooks reference,
   read 2026-10-07: `SessionStart` matches `startup`, `resume`, `clear`,

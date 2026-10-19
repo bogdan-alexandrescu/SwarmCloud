@@ -1,8 +1,10 @@
 # Model per step: a workflow step picks its model class by name
 
 **Status: designed 2026-10-17, revised the same day for the owner's answers
-(lanes MODEL-STEP-DESIGN and MODEL-DESIGN-B, part of #1435). Nothing is
-built.** The first version recommended one profile per model tier (design A).
+(lanes MODEL-STEP-DESIGN and MODEL-DESIGN-B, part of #1435), and built by
+the lanes of §6. §8 records what each lane built and where the code departs
+from this design: the class is signed at spec format 5, not 4, and there is
+no `model_classes_enabled` flag (R4).** The first version recommended one profile per model tier (design A).
 The owner answered its §7 on PR 1460 and chose **design B**: a per-step
 `model_class` picked by name from a frozen vocabulary of four classes, on
 every claude-code-family runtime. This revision describes that decision. §7
@@ -441,6 +443,18 @@ the catalogue rather than restating it:
    `MODEL_CLASSES`.
 
 ### 4.3 The signed step spec: format 4, and how old workers are retired first
+
+> **Amended 2026-10-19 (MODEL-DOCS), from the code as built.** The format that
+> covers `model_class` is **format 5**, not 4: contract request 96
+> (MULTI-REPO) took format 4 for `additional_repositories` first, so request
+> 104 added format 5 (`SPEC_FORMAT = 5`, `SPEC_FORMATS = (1, 2, 3, 4, 5)` in
+> `apps/common/swarm_common/specsign.py::SPEC_FORMAT`). Read "format 4" below
+> as format 5 wherever it means the format that covers a class. Step 3 below
+> was not built: there is no flag (owner decision R4). Lane order alone kept
+> the classes unreachable until the worker, the scheduler and the catalogue
+> had merged, and swarm-api's `model_class_not_yet_available` now means only
+> that the deployment pins no model for the class (`WORKER_CLASS_MODELS`
+> unset), not that a gate is closed.
 
 **The format** (request E). Format 4 is format 3's projection plus
 `model_class`. `SPEC_FORMAT` becomes 4 and `SPEC_FORMATS` becomes
@@ -1097,6 +1111,11 @@ its tests alone to the PR branch first and its fix to `<branch>-fix`, and runs
 | 5 | **MODEL-CANARY** | the acceptance group that dispatches claude-code (`accept.yml`'s smoke) and its script under `scripts/` | four steps, one per class: each attempt records its class's pin, and `usage.models` agrees. Red until the CLI accepts every ID |
 | 5 | **MODEL-DOCS** | `docs/agent-output.md`, `docs/workflows.md`, `docs/quota-management.md` (one paragraph: windows bind every class, Q5), this file | `test_docs_describe_what_was_built` |
 
+**MODEL-ENABLE was dropped** by the owner's answer to R4 (2026-10-17: no
+flag; lane order alone). No `model_classes_enabled` variable exists, so its
+row had nothing to flip. MODEL-ACCOUNTS, added by the answer to R5, is not a
+row here; §8 records it with the others.
+
 **Order.** 0 first. Then the two lanes at 1 in parallel. They must deploy
 before anything writes format 4, and since nothing writes it until the gate
 opens, they may share a release. Then the three lanes at 2 in parallel, and
@@ -1176,3 +1195,89 @@ task);
 (b) the submission's `Task.model`, provided it is still of the class. This
 makes a stored task field select the model, and the brake of §4.5 would then
 have to admit it.
+
+---
+
+## 8. What was built
+
+Read on 2026-10-19 from `main` at `6c38e9d`, by MODEL-DOCS. Each entry names
+the code that holds the lane's rule, and the test that holds it there.
+
+* **MODEL-CONTRACT (order 0, contract requests 100 to 104).** `ModelClass` and
+  `MODEL_CLASSES` (`apps/common/swarm_common/profiles.py::MODEL_CLASSES`),
+  `RunnerProfile.model_classes` and `default_model_class`, and the one
+  resolution rule `apps/common/swarm_common/profiles.py::step_model_class`;
+  `Task.model_class`, `WorkflowStep.model_class` and `Attempt.model`; and spec
+  format 5 for `model_class` (request 104, numbered 5 because request 96 had
+  taken 4). `runner_models` in `terraform/infra/locals.tf` is keyed by class,
+  becomes `WORKER_CLASS_MODELS` on the scheduler and swarm-api, and is held
+  by `tests/terraform/runner_model.tftest.hcl` and
+  `scripts/lib/check-contract-parity.sh`. Tests:
+  `tests/unit/common/test_model_classes.py`.
+* **MODEL-SCHED (order 1).** `apps/scheduler/scheduler/settings.py::check_worker_class_models`
+  refuses at start a map of the wrong keys or of an ID of another class;
+  `apps/scheduler/scheduler/dispatch.py::step_model` resolves each step's
+  pin into `worker_env`, the GKE pod's environment and the Cloud Run
+  per-execution override, and refuses a class with no pin as
+  `model_not_pinned`. Tests: `tests/unit/scheduler/test_step_model.py`, and
+  the inverted worker-env half of
+  `tests/unit/mcp/test_model_flag_is_attribution_only.py`.
+* **MODEL-WORKER (order 1).** `apps/agent-worker/agent_worker/specverify.py::check_model`
+  holds `MODEL` to the signed class before the CLI starts (`model_not_pinned`,
+  `model_class_mismatch`); the attempt's first write carries `model`
+  (`apps/agent-worker/agent_worker/control.py::ControlPlane.record_attempt_start`);
+  a stream reporting another model logs `model_mismatch`. Tests:
+  `tests/unit/worker/test_model_check.py`.
+* **MODEL-API (order 2).** `model_class` on `TaskCreate`, `WorkflowStepCreate`
+  and the child-task route, checked by
+  `apps/swarm-api/swarm_api/validation.py::validate_model_class`
+  (`unknown_model_class`, `model_class_not_accepted`) and
+  `apps/swarm-api/swarm_api/validation.py::check_model_class_available`
+  (`model_class_not_yet_available`, a class with no pin in
+  `WORKER_CLASS_MODELS`: there is no flag, R4). `Task.model` is filled from
+  the pin by `apps/swarm-api/swarm_api/validation.py::resolve_task_model`;
+  its `model_is_chosen_by_model_class` refusal ships report-only behind
+  `REFUSAL_MODEL_IS_CHOSEN_BY_MODEL_CLASS` (`refusals.SWITCHES`), because
+  `swarm dispatch --model` sent free-text attribution before classes existed.
+  `/v1/runtimes` serves `model_classes`, `default_model_class` and `models`.
+  Tests: `tests/unit/control_plane/test_model_class_submission.py`.
+* **MODEL-RUNS (order 2).** `RunCreate.model_class` is the planner's class
+  (`apps/swarm-api/swarm_api/issueruns.py::refuse_planner_model_class`); a
+  plan step's class is inside `plan_digest` (R1 (a)), and review and fix run
+  `opus`. Tests: `tests/unit/control_plane/test_run_model_class.py`.
+* **MODEL-LEDGER (order 2).** The outcome ledger's `model` and `model_class`
+  groups (`apps/swarm-api/swarm_api/outcomes.py::GROUPS`). Tests:
+  `tests/unit/control_plane/test_outcomes_model.py`.
+* **MODEL-UI (order 3).** The Runtimes screen's classes column, the Submit
+  forms' class select, the attempt's model beside the stream's, and the
+  Ledger's groups, with vitest files `runtimes.modelclasses.test.tsx`,
+  `submit.modelclass.test.tsx`, `submit.task.modelclass.test.tsx`,
+  `attempt.model.test.tsx` and `ledger.modelgroups.test.tsx`.
+* **MODEL-PLUGIN (order 3).** `swarm_profiles` lists the classes and models,
+  the bridge sends `model_class` on a task, a step and a run, and `swarm
+  dispatch --model-class` exists. Tests:
+  `tests/unit/mcp/test_model_class_bridge.py`.
+* **MODEL-ENABLE (order 4).** Dropped, not built: the owner's answer to R4
+  removed the flag it would have flipped (§6).
+* **MODEL-CANARY (order 5).** One step per class in the claude-code
+  acceptance group (`scripts/acceptance/groups/claude-code.sh`), each judged
+  on `Attempt.model` against `/v1/runtimes` and on `usage.models`. Tests:
+  `tests/unit/scripts/test_model_class_canary.py`.
+* **MODEL-ACCOUNTS (R5 (b)).** `accounts/{id}.model_classes`, the one rule
+  `apps/quota-broker/quota_broker/accounts.py::Account.serves_class`, the
+  broker's and swarm-api's `PUT /v1/accounts/{id}/model-classes`, and
+  admission's `no_account_serves_class` park before any lease. Tests:
+  `tests/unit/control_plane/test_account_model_classes.py`.
+* **MODEL-DOCS (order 5).** This section, the amendments to §4.3 and §6,
+  [agent-output.md](../agent-output.md), the `model_class` section of
+  [workflows.md](../workflows.md#choosing-a-steps-model-model_class), and the
+  quota paragraph of
+  [quota-management.md](../quota-management.md#4-park-reasons). Each is held
+  to the code by `tests/unit/scripts/test_docs_describe_what_was_built.py`.
+
+**Still open.** The scheduler still receives the derived profile-keyed
+`WORKER_MODELS`, kept for one release so a scheduler rolled back alone finds
+its map (§4.2). Removing it is the follow-up lane §6 names, to be dispatched
+once a release carrying MODEL-SCHED has applied. Prices for
+`claude-sonnet-5-5` and `claude-haiku-5-5` are not in `_LIST_PRICES` until
+an operator supplies dated figures (§4.10; R2 is #1481).

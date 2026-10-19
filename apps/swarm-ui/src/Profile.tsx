@@ -4,6 +4,7 @@ import { Banner, Button, Card, CardLink, acknowledge } from './components'
 import { chooseTenant, type ApiError } from './fetch'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
+import { noteOwnName } from './Spine'
 import { humaniseUntil, timeAgo } from './types'
 import './styles/keys.css'
 import type {
@@ -132,6 +133,11 @@ export function ProfileCards({ profile, onReload }: { profile: Profile; onReload
   // row carries the revision the first one produced.
   const [p, setP] = useState(profile)
   useEffect(() => setP(profile), [profile])
+  // The panel's signed-in line shows this name's first word (Spine.tsx
+  // `noteOwnName`): this page's read and save tell it, so it needs no read.
+  useEffect(() => {
+    if (p.identity.email !== '') noteOwnName(p.identity.email, p.identity.display_name)
+  }, [p.identity.email, p.identity.display_name])
   const [changed, setChanged] = useState<string | null>(null)
 
   const prefsUnreadable = p.unavailable.includes('preferences') || p.revision === null || p.notifications === undefined
