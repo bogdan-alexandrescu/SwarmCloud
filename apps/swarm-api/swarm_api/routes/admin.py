@@ -20,14 +20,17 @@ import base64
 import binascii
 import json
 import logging
+from types import SimpleNamespace
 from typing import Any, Mapping
 
 from fastapi import APIRouter, Body, Depends, Query
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.identity import Principal
 from swarm_common.models import ProviderState, SlotPool, Task, Tenant
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend
 
+from .. import roles
 from ..attempt_totals import totals_for, with_totals
 from ..browser_logins import CarryReaper
 from ..auth import AuthContext
@@ -42,8 +45,9 @@ from ..codec import (
     tenant_to_api,
 )
 from ..deps import AppContext, admin_auth, get_context, paged_limit
-from ..errors import Forbidden, NotFound, ValidationFailed
+from ..errors import Forbidden, NotFound, RoleUnavailable, ValidationFailed
 from ..heartbeats import heartbeat_grace_seconds
+from ..judgment import settings_keys
 from ..people import add_names, name_lookup
 from ..mergewake import wake_tenant
 from ..prgate import wake_tenant as wake_after_prs
@@ -51,6 +55,7 @@ from ..mergetrain import tick_tenant as tick_merge_trains
 from ..purge import HistoryPurge, parse_query
 from ..verdictpublish import on_task_finished
 from ..waker import TASK_FINISHED
+from ..registry import WorkspaceRegistry
 from ..repoindex import RepoIndex
 from ..repositories import RepositoryPush
 from ..brokerclient import AccountPool
@@ -65,6 +70,7 @@ from ..schemas import (
     TenantFindingsEpicRequest,
     TenantLimitsRequest,
 )
+from ..store import TENANTS
 from ..task_accounts import accounts_for
 from ..task_input import masking_for
 from ..validation import known_providers
@@ -1326,3 +1332,192 @@ def rollup_outcomes(
     )
     ctx.metrics.admin_actions.labels(action="outcomes_rollup").inc()
     return result
+
+
+# ---------------------------------------------------------------------------
+# Every group workspace's roles, for Admin › People (lane ROLES-ADMIN-LIST)
+# ---------------------------------------------------------------------------
+
+#: Firestore refuses an `in` over more than 30 values, and one page's grants
+#: are read with one `in` over its workspace ids, so a page is at most 30.
+ROLES_PAGE_MAX = 30
+ROLES_PAGE_DEFAULT = 20
+#: How many grant documents one page's read looks at. A page that fills it is
+#: not evidence the grants past it are absent -- the newest grant of someone on
+#: the page may be among them -- so every workspace on such a page is served
+#: `unavailable` (`too_many_grants`), never a roster that could be missing the
+#: grant that narrowed someone. `GET /v1/admin/workspaces/{id}/roles` still
+#: reads such a workspace alone.
+ROLES_PAGE_SCAN = 5000
+
+
+def _role_workspaces(ctx: AppContext) -> list[tuple[str, str, str]]:
+    """(tenant_id, group, registered_by) for every registered group workspace:
+    `TENANT_GROUPS`, then the `ready` job-made group records, in the order and
+    under the rule a platform admin's reach walks them (`Authenticator.
+    _tenant_groups` then `_reachable_groups`: the first group per id, every
+    `u-` id dropped). The registry is the same public reader the authenticator
+    holds; a registry that cannot be read is its 503, never a list without the
+    job-made groups."""
+    configured = tuple(ctx.settings.tenant_groups or ())
+    terraform = roles.registered_group_tenants(ctx.settings)
+    known = {g.lower() for g in configured}
+    made = WorkspaceRegistry.from_settings(ctx.db, ctx.settings).registered_groups()
+    walk = configured + tuple(g for g in made if g.lower() not in known)
+    every = roles.registered_group_tenants(SimpleNamespace(tenant_groups=walk))
+    return [(tenant_id, group, "terraform" if tenant_id in terraform else "workspace_job")
+            for tenant_id, group in every.items()]
+
+
+def _collided(ctx: AppContext, page: list[tuple[str, str, str]]) -> set[str]:
+    """The ids on the page whose `tenants/` document belongs to another
+    principal: the check `_registered` makes per workspace
+    (`Store.assert_tenant_scope`), as ONE `get_all` over the page."""
+    collection = ctx.db.collection(TENANTS)
+    groups = {tenant_id: group for tenant_id, group, _ in page}
+    out: set[str] = set()
+    for snap in ctx.db.get_all([collection.document(t) for t in groups]):
+        if not snap.exists:
+            continue
+        stored = str((snap.to_dict() or {}).get("principal") or "").strip().lower()
+        if stored and stored != groups.get(snap.id, ""):
+            out.add(snap.id)
+    return out
+
+
+def _page_grants(ctx: AppContext, tenant_ids: list[str]) -> tuple[dict[tuple[str, str], list[dict]], bool]:
+    """Every grant of the page's workspaces, by (tenant_id, subject), newest
+    first, from ONE query -- never one per workspace -- and whether the read
+    stopped at `ROLES_PAGE_SCAN`."""
+    try:
+        snaps = list(ctx.db.collection(roles.GRANTS_COLLECTION)
+                     .where(filter=FieldFilter("tenant_id", "in", tenant_ids))
+                     .limit(ROLES_PAGE_SCAN).stream())
+    except Exception as exc:  # noqa: BLE001 - any Firestore failure is "unknown"
+        log.warning("admin workspace roles: grants unreadable (%s)", type(exc).__name__)
+        raise RoleUnavailable("the workspaces' roles could not be read; retry shortly") from None
+    by_subject: dict[tuple[str, str], list[dict]] = {}
+    for snap in snaps:
+        doc = snap.to_dict() or {}
+        tenant_id, subject = doc.get("tenant_id"), doc.get("subject")
+        if isinstance(tenant_id, str) and isinstance(subject, str):
+            by_subject.setdefault((tenant_id, subject), []).append(doc)
+    for docs in by_subject.values():
+        docs.sort(key=lambda d: str(d.get("granted_at") or ""), reverse=True)
+    return by_subject, len(snaps) >= ROLES_PAGE_SCAN
+
+
+class _Unverified(Exception):
+    """A subject's newest `roles.SCAN_LIMIT` grants all failed verification:
+    what `RoleStore.newest_valid` answers `role_unavailable`."""
+
+
+def _newest_valid(ctx: AppContext, keys: tuple[str, ...], tenant_id: str, subject: str,
+                  docs: list[dict]) -> roles.Grant | None:
+    """`RoleStore.newest_valid` over grants already read: the newest one that
+    has the right shape and verifies, within the same bound."""
+    for doc in docs[:roles.SCAN_LIMIT]:
+        problem = roles.shape_problem(doc, tenant_id, subject)
+        if problem is None and not roles.grant_verifies(keys, doc):
+            problem = "mac"
+        if problem is None:
+            return roles.Grant.from_doc(doc)
+        ctx.metrics.role_grant_invalid.labels(reason=problem).inc()
+    if len(docs) >= roles.SCAN_LIMIT:
+        raise _Unverified()
+    return None
+
+
+def _roster_entry(ctx: AppContext, keys: tuple[str, ...], tenant_id: str,
+                  grants: dict[tuple[str, str], list[dict]]) -> dict[str, Any]:
+    """One workspace's default and overrides, as `roles.admin_payload` decides
+    them: the default `*` grant else the migration default, and each person
+    whose newest valid grant names a role, newest first."""
+    default = _newest_valid(ctx, keys, tenant_id, roles.DEFAULT_SUBJECT,
+                            grants.get((tenant_id, roles.DEFAULT_SUBJECT), []))
+    people: list[tuple[str, roles.Grant]] = []
+    for (tid, subject), docs in grants.items():
+        if tid != tenant_id or subject == roles.DEFAULT_SUBJECT:
+            continue
+        grant = _newest_valid(ctx, keys, tenant_id, subject, docs)
+        if grant is not None and grant.role is not None:
+            people.append((subject, grant))
+    people.sort(key=lambda item: item[1].granted_at, reverse=True)
+    granted = default is not None and default.role in roles.DEFAULT_ROLES
+    return {
+        "default_role": default.role if granted else roles.MIGRATION_DEFAULT,  # type: ignore[union-attr]
+        "default_source": "grant" if granted else "migration",
+        "people": [roles.grant_api(email, g) for email, g in people[:roles.ROSTER_MAX]],
+    }
+
+
+@router.get("/workspaces/roles")
+def list_workspace_roles(
+    page_size: int = Query(default=ROLES_PAGE_DEFAULT, ge=1, le=ROLES_PAGE_MAX),
+    page_token: str | None = Query(default=None),
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Every registered group workspace's roles, a page at a time: Admin ›
+    People's Workspace roles card (docs/design/workspace-roles.md §4.3, §4.8;
+    lane ROLES-ADMIN-LIST, part of #1518).
+
+    Each entry is a group workspace -- a Terraform group or a `ready` group
+    the workspace job made (`registered_by`) -- with its default role and its
+    source, and each person's own role with who granted it, when and through
+    what (`roles.grant_api`: never a grant's document id, never its MAC).
+    Never a personal or service workspace: neither is among the registered
+    groups, and a `u-` id is dropped (§4.2.1, §4.5).
+
+    BATCHED: a page costs ONE `get_all` of its `tenants/` documents (the
+    collision check) and ONE query of its grants (`tenant_id in` the page),
+    however many workspaces it holds. A workspace whose grants did not verify
+    within the bound, whose id collides with another principal's, or whose
+    page filled `ROLES_PAGE_SCAN`, is served `unavailable` with a code and
+    the rest of the page is still served.
+
+    `page_token` is the last tenant id of the previous page, which
+    `next_page_token` carries; null on the last page.
+    """
+    workspaces = _role_workspaces(ctx)
+    start = 0
+    if page_token is not None:
+        ids = [tenant_id for tenant_id, _, _ in workspaces]
+        if page_token not in ids:
+            raise ValidationFailed(
+                "page_token names no registered group workspace; read from the first page",
+                detail={"field": "page_token"})
+        start = ids.index(page_token) + 1
+    page = workspaces[start:start + page_size]
+    entries: list[dict[str, Any]] = []
+    if page:
+        collided = _collided(ctx, page)
+        grants, truncated = _page_grants(ctx, [tenant_id for tenant_id, _, _ in page])
+        keys = settings_keys(getattr(ctx.settings, "settings_key", ""),
+                             getattr(ctx.settings, "settings_key_previous", ""))
+        for tenant_id, group, registered_by in page:
+            entry: dict[str, Any] = {"tenant_id": tenant_id, "kind": "group", "group": group,
+                                     "registered_by": registered_by}
+            if tenant_id in collided:
+                entry.update(unavailable=True, code="tenant_collision", message=(
+                    "this id's tenant belongs to a different principal; its roles are "
+                    "not served"))
+            elif truncated:
+                entry.update(unavailable=True, code="too_many_grants", message=(
+                    "this page holds more grants than one read looks at; read this "
+                    "workspace alone"))
+            else:
+                try:
+                    entry.update(_roster_entry(ctx, keys, tenant_id, grants))
+                except _Unverified:
+                    log.warning("admin workspace roles: grants unverified tenant=%s", tenant_id)
+                    entry.update(unavailable=True, code=RoleUnavailable.code, message=(
+                        "this workspace's roles could not be read: too many grants failed "
+                        "verification"))
+            entries.append(entry)
+    more = start + page_size < len(workspaces)
+    return {
+        "workspaces": entries,
+        "roles": roles.roles_table(),
+        "next_page_token": page[-1][0] if more and page else None,
+    }

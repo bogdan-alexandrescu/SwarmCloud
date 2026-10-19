@@ -6024,6 +6024,27 @@ export interface WorkspaceRoster {
   audit: WorkspaceRoleEvent[]
 }
 
+/**
+ * One entry of `GET /v1/admin/workspaces/roles`: a registered group workspace
+ * -- a Terraform group, or a `ready` group the workspace job made -- with its
+ * roster, or, when its roles were not served, the API's reason (`roster` null).
+ */
+export interface AdminWorkspaceRoles {
+  tenant_id: string
+  /** The workspace's registered Google group. */
+  group: string
+  /** `terraform` or `workspace_job`. */
+  registered_by: string
+  roster: WorkspaceRoster | null
+  unavailable: { code: string; message: string } | null
+}
+
+/** A page of `GET /v1/admin/workspaces/roles`; `next_page_token` is null on the last page. */
+export interface AdminWorkspaceRolesPage {
+  workspaces: AdminWorkspaceRoles[]
+  next_page_token: string | null
+}
+
 /** `GET /v1/workspace/roles`: the roster, with the caller's own role and whether they manage it. */
 export interface WorkspaceRoles extends WorkspaceRoster {
   me: WorkspaceRoleMe
