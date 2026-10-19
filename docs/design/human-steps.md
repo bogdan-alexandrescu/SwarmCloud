@@ -667,7 +667,10 @@ swarm-verify (docs/multi-tenancy.md, "Service tenants"). Its only member is
 that service account. Under step 1, nobody could answer its steps, so a
 client application that runs its own review loop through a workflow (the
 case #1568 admitted oracle-api for) could never finish one. The application
-collects the person's answer in its own UI and relays it.
+collects the person's answer in its own UI and relays it. The rule is
+generic, so it holds for **every** service tenant: swarm-verify's
+`u-sw-c90291`, the acceptance identity's, gains it too, for its own
+tenant's steps only.
 
 **Who, exactly** (`apps/swarm-api/swarm_api/awaitinput.py::service_principal`).
 All of these must hold, and each is read from the verified token or freshly
@@ -678,9 +681,9 @@ from Firestore, never from something the caller chose:
   continuation-scoped account (`member_scope`, `tenant_member`, contract
   request 30). A listed account is refused even when its address is a
   tenant's principal;
-* the caller is **not a worker identity**: no address under the worker
-  prefix (`swarm-agent-worker-<tenant>`), and not the step tenant's derived
-  worker. A workflow's agent speaks as its worker through the MCP bridge,
+* the caller is **not a worker identity**: no address under the frozen
+  worker prefix (`swarm-agent-worker-<tenant>`) or the configured
+  `TENANT_SERVICE_ACCOUNT_PREFIX`, and not the step tenant's derived worker. A workflow's agent speaks as its worker through the MCP bridge,
   and the worker GSA is a different account from the tenant's principal.
   A tenant identity can rewrite its own `tenants/<id>` document (contract
   request 87), so the worker check reads no stored field;
@@ -705,13 +708,16 @@ in another service tenant; every worker and agent identity; every listed
 scoped identity; the platform's own jobs.
 
 **`on_behalf_of`, a label.** The answer body takes one more optional field,
-`on_behalf_of`: an email address of at most 254 characters, checked for an
-address **shape only**. **It is a label, not a verified identity.** Nothing
+`on_behalf_of`: an email address of at most 254 characters of printable
+ASCII, the whole value matched (no trailing newline, no look-alike letter,
+no direction override), checked for an address **shape only**. **It is a label, not a verified identity.** Nothing
 asks whether the address exists, or whether that person asked for the answer:
 the platform knows only that the principal sent it. It is recorded as given
 (lower-cased) beside `answered_by`, which is always the verified principal,
-on the answer record, `result_summary.input`, the `succeeded` event (with
-`answered_as: "service"`) and every response that reads the answer back,
+on the answer record, `result_summary.input` and the `succeeded` event (both
+with `answered_as: "service"`, where a person's answer says `"person"`; the
+`source` stays `"person"`, meaning "not the expiry default"), and every
+response that reads the answer back,
 each with `on_behalf_of_verified: false`. A person may not send it: 422
 `invalid_payload`, `position: "on_behalf_of"`. A replay must carry the same
 label to be a replay. Idempotency, 409 `already_answered`, the forms and

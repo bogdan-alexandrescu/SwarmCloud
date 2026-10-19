@@ -161,6 +161,9 @@ ANSWER_ID_RE = re.compile(r"^[a-z0-9-]{1,64}$")
 #: path limit). Only the shape is checked -- nothing asks whether the address
 #: exists or whether that person asked for the answer: it is the service's
 #: LABEL for whom it answers, recorded beside the principal that answered.
+#: Printable ASCII only, matched whole: a trailing newline, a look-alike
+#: letter or a direction override would make the label read as another
+#: address to whoever reads it next.
 ON_BEHALF_OF_MAX = 254
 ON_BEHALF_OF_RE = re.compile(r"^[^@\s\"'<>(),;:\\]+@[^@\s\"'<>(),;:\\]+\.[^@\s\"'<>(),;:\\]+$")
 _FILE_NAME_RE = re.compile(rf"^{NAME_PATTERN}$")
@@ -396,9 +399,10 @@ def service_principal(ctx: Any, auth: AuthContext, tenant_id: str) -> bool:
         (`member_scope` / `tenant_member`): those answer for nobody, even
         were the listed address a tenant's principal;
       * a service account (`is_service_account` / `is_service_identity`);
-      * NOT a worker identity: no address under the worker prefix
-        (`tenant_service_account_prefix`, `swarm-agent-worker-<tenant>`),
-        and not the step tenant's derived worker. A workflow's agent speaks
+      * NOT a worker identity: no address under the frozen worker prefix
+        (`swarm-agent-worker-<tenant>`) or the configured one
+        (`tenant_service_account_prefix`), and not the step tenant's
+        derived worker. A workflow's agent speaks
         as its worker through the MCP bridge, and a worker identity can
         rewrite its own `tenants/<id>` document (contract request 87), so
         no stored field may make one look like a principal;
@@ -415,8 +419,12 @@ def service_principal(ctx: Any, auth: AuthContext, tenant_id: str) -> bool:
     if not email or not (is_service_account(email) or is_service_identity(email)):
         return False
     local = email.split("@", 1)[0]
-    prefix = getattr(ctx.settings, "tenant_service_account_prefix", "") or "swarm-agent-worker"
-    if local.startswith(f"{prefix}-") or local == worker_service_account_id(tenant_id):
+    # The frozen rule's prefix (`worker_service_account_id("")`) AND the
+    # configured one: a deployment that names its workers otherwise must not
+    # make the frozen worker names answerable, nor the reverse.
+    configured = getattr(ctx.settings, "tenant_service_account_prefix", "") or "swarm-agent-worker"
+    if local.startswith((worker_service_account_id(""), f"{configured}-")) or \
+            local == worker_service_account_id(tenant_id):
         return False
     if auth.tenant_via or auth.tenant_id != tenant_id or tenant_id != tenant_id_for_user(email):
         return False
@@ -910,8 +918,8 @@ def _on_behalf_of(ctx_kind: str, body: Mapping[str, Any]) -> str | None:
     value = body["on_behalf_of"]
     if value is None:
         return None
-    if not isinstance(value, str) or len(value) > ON_BEHALF_OF_MAX or \
-            not ON_BEHALF_OF_RE.match(value):
+    if not isinstance(value, str) or len(value) > ON_BEHALF_OF_MAX or not value.isascii() \
+            or not value.isprintable() or not ON_BEHALF_OF_RE.fullmatch(value):
         raise invalid("invalid_payload",
                       f"on_behalf_of must be one email address of at most {ON_BEHALF_OF_MAX} "
                       "characters",
@@ -1065,7 +1073,8 @@ def answer(
         "artifacts": [entry],
         "artifact_bytes": total,
         "published_by": PUBLISHED_BY,
-        "input": {"source": "person", "answered_by": auth.email, "on_behalf_of": on_behalf_of,
+        "input": {"source": "person", "answered_as": kind, "answered_by": auth.email,
+                  "on_behalf_of": on_behalf_of,
                   "answered_at": now, "via": via, "wait_seconds": wait_seconds,
                   "files": len(checked)},
     }

@@ -713,7 +713,7 @@ its principal. The full rule and its threat model are
 [human-steps.md §4.2.1](design/human-steps.md#421-amendment-2026-10-18-a-service-tenants-own-principal-hw-service-answer).
 
 The principal may say whom it answers for with `on_behalf_of`, one email
-address of at most 254 characters. **It is a label, not a verified
+address of at most 254 printable ASCII characters. **It is a label, not a verified
 identity:** only its shape is checked, and the platform does not know that
 person asked for the answer. `answered_by` is always the principal that
 answered; `on_behalf_of` is recorded beside it, and every response that
