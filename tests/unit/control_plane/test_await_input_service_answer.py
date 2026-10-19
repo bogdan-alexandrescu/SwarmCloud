@@ -149,6 +149,7 @@ def test_the_service_tenants_principal_answers_its_own_step_with_a_label(
     # The audit trail: the step's own summary and its SUCCEEDED event name both.
     assert doc["result_summary"]["input"]["answered_by"] == ORACLE
     assert doc["result_summary"]["input"]["on_behalf_of"] == REVIEWER
+    assert doc["result_summary"]["input"]["answered_as"] == "service"
     events = [d for k, d in db.docs.items()
               if k.startswith(f"tasks/{waiting['review']}/events/") and d["type"] == "succeeded"]
     assert len(events) == 1
@@ -196,7 +197,8 @@ def test_a_replay_with_the_same_answer_id_is_the_original_200(client, db, object
 
 @pytest.mark.parametrize("value", [
     "not-an-address", "a@b", "two@@example.org", "sp ace@example.org", 7, "",
-    "x" * 250 + "@example.org",
+    "x" * 250 + "@example.org", "dana@example.org\n", "d\u0430na@example.org",
+    "dana\u202e@example.org", "dana\u200b@example.org",
 ])
 def test_on_behalf_of_must_be_an_address_of_at_most_254(client, db, objects, waiting, value):
     before = snapshot(db, objects, waiting["review"])
@@ -294,9 +296,10 @@ def test_the_tenants_worker_and_agent_identity_is_refused(api_context, client, d
     with pytest.raises(awaitinput.Forbidden):
         awaitinput.member_refusal(ctx, _auth(WORKER, ORACLE_TENANT), ORACLE_TENANT)
     db.docs[f"tenants/{ORACLE_TENANT}"]["principal"] = ORACLE
-    # Through the route the worker's token reaches nothing of oracle's.
+    # Through the route the worker's token reaches nothing of oracle's: its
+    # own derived tenant holds no such workflow.
     assert client.post(url(waiting), headers=auth_header("worker"), json=body()).status_code \
-        in (403, 404)
+        == 404
     assert snapshot(db, objects, waiting["review"]) == before
 
 
@@ -364,3 +367,23 @@ def test_a_person_sending_on_behalf_of_is_422(client, db, objects, await_enabled
     ok = client.post(url(eng), headers=auth_header("alice"), json=verdict())
     assert ok.status_code == 200, ok.text
     assert ok.json()["answered_by"] == "alice@saga.xyz" and ok.json()["on_behalf_of"] is None
+
+
+@pytest.mark.parametrize("configured", ["other-prefix", "swarm-agent-worker"])
+def test_a_worker_is_refused_whatever_the_configured_prefix(
+    db, tokens, group_map, objects, client, waiting, configured
+):
+    # The frozen worker names, and the configured ones, are never a
+    # service tenant's principal -- even under a user tenant document that
+    # names the worker, at the worker's own derived id.
+    ctx = make_context(db, tokens, objects, StaticGroups(group_map),
+                       allowed_users=(ORACLE, VERIFY, WORKER, STRANGER),
+                       tenant_service_account_prefix=configured)
+    for worker in (WORKER, f"{configured}-u-zz-123456@{PROJECT_DOMAIN}"):
+        own = tenant_id_for_user(worker)
+        _seed_user_tenant(db, own, worker)
+        with pytest.raises(awaitinput.Forbidden) as refused:
+            awaitinput.member_refusal(ctx, _auth(worker, own), own)
+        assert refused.value.detail["reason"] == "person_required", worker
+    assert awaitinput.member_refusal(ctx, _auth(ORACLE, ORACLE_TENANT), ORACLE_TENANT) \
+        == awaitinput.SERVICE
