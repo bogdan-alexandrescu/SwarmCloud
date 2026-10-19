@@ -36,7 +36,9 @@ What the design settles, in one line each:
   refused, including an agent driving a person's own plugin session, with
   **one exception** (amendment of 2026-10-18, §4.2.1): in a service tenant,
   the tenant's own principal answers its own steps, and may label the
-  person it answers for with `on_behalf_of`.
+  person it answers for with `on_behalf_of`. Release acceptance answers that
+  way, as swarm-verify in its own service tenant (amendment of 2026-10-19,
+  §4.2.2).
 * **A wait lasts at most 24 hours** (Q4), the same bound as
   `HUMAN_REQUIRED`. `expires_after_seconds` is required.
 * **An answer is a JSON form and, optionally, files** (Q6). The form
@@ -729,6 +731,60 @@ the service application: it holds the principal's credential, and whatever
 it relays is the answer. That is the same trust the tenant already places in
 it to submit the workflow at all. Its agents still cannot answer, because
 they run as the worker, not the principal.
+
+#### 4.2.2 Amendment, 2026-10-19: release acceptance answers in swarm-verify's own service tenant (HW-ACCEPT-ID)
+
+**Owner decision, 2026-10-19 (part of #1436).** Release acceptance answers
+its await-input step **as swarm-verify, in swarm-verify's own service tenant
+`u-sw-c90291`**: the path oracle-api takes in `u-or-9a0792` (§4.2.1), so the
+release check proves that path too. No new account, no new secret, and **no
+exception to `person_required` in group tenants**.
+
+**Why it was needed.** HW-ACCEPT (PR 1579, merged 2026-10-19 01:45Z) ran the
+two await-input checks in the suite's tenant, the GROUP tenant `smoke`.
+There swarm-verify is a service account answering for no person: 403
+`person_required` on every dev run, as §4.2.1 says it must be. §4.2.1's
+exception needed the request to act in the caller's own service tenant, and
+swarm-verify could not select it: `Authenticator._with_own_workspace` offers
+no service identity its own tenant, and `PersonalTenants.ready` wants a
+`workspaces/` record that a Terraform-written service tenant never has (the
+workspace gate never judges a service account, WD7).
+
+**What changed** (`apps/swarm-api/swarm_api/auth.py`,
+`Authenticator._with_own_service_tenant`). A service account may **name** its
+own service tenant in `X-Swarm-Tenant`, and act in it, when all of these
+hold, each from the verified token or a read, never from what the caller
+sent:
+
+* the named id is exactly `tenant_id_for_user(<the caller's verified
+  email>)`;
+* `tenants/<that id>`, read through `PersonalTenants`' cache, is `kind:
+  "user"` and its principal is **exactly the caller's email**. The frozen
+  slug drops the domain, so `ci-bot@one-project` and `ci-bot@another` derive
+  one id, and the principal is what tells them apart;
+* the caller is not a worker identity (the frozen prefix, the configured
+  `TENANT_SERVICE_ACCOUNT_PREFIX`, or the tenant's own derived worker), not
+  the schedule tick, not the rollup sweeper, and not a listed,
+  continuation-scoped account. These are the conditions §4.2.1 applies,
+  through one shared helper (`auth.own_service_tenant`), so the tenant a
+  service account may select and the tenant it may answer in cannot drift
+  apart.
+
+No `workspaces/` record is asked for on this path. **A person's path is
+unchanged**: their own tenant is still offered only when
+`PersonalTenants.ready` finds the ready record. **The headerless default is
+unchanged**: a service account in a group keeps that group as its default,
+which the acceptance suite relies on for every other check. A failed read is
+a 503 when the request names that tenant, never a fall-through to another.
+
+**What acceptance does** (`scripts/acceptance/groups/workflow.sh`). It
+derives its own tenant from the email `GET /v1/tenants/me` verified, with
+`common.sh`'s `personal_tenant_id` (the frozen `tenant_id_for_user`,
+imported; the swarm-verify image carries `identity.py` for it), and submits,
+reads and answers the two await-input workflows with `X-Swarm-Tenant` set to
+it. Their `mock` steps run on that tenant's own mock job. It asserts the
+answer was taken with `answered_as: "service"`. Every other check stays in
+`smoke`.
 
 ### 4.3 The answer reaches GCS: a narrow, create-only writer
 

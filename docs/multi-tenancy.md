@@ -183,6 +183,15 @@ caller's **choices**:
    rollup sweeper and a listed service account are never offered one.
 2. **Then every registered tenant group** Cloud Identity confirmed for this
    caller on this request, in admin order.
+3. **A service account's own service tenant, only when the header names it**
+   (HW-ACCEPT-ID, owner decision 2026-10-19): a service account may name its
+   own service tenant in `X-Swarm-Tenant` -- `tenant_id_for_user(<verified
+   email>)`, when `tenants/<that id>` is `kind: user` with exactly that email
+   as principal, and the caller is not a worker, a job or a listed account --
+   and its default is unchanged. No `workspaces/` record is asked for: a
+   service tenant has none. This is how release acceptance answers its
+   await-input steps as swarm-verify in `u-sw-c90291`
+   (docs/design/human-steps.md §4.2.2).
 
 **The default — no header — is the first choice** (owner decision 2026-10-12
 15:55 PDT: personal by default, groups are what you switch to). So a person
