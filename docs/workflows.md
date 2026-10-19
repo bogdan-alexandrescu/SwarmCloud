@@ -698,19 +698,45 @@ member is 403 `not_a_member`; a lookup failure is 503
 are answered only by its owner. There is no admin bypass. Another tenant's
 step is a 404.
 
+**One exception, for a service tenant (owner decision, 2026-10-18).** A
+service tenant is a `kind: "user"` tenant whose principal is a service
+account (`u-or-9a0792` for oracle-api, `u-sw-c90291` for swarm-verify), so
+its only member is that account. **That principal may answer the steps of
+its own tenant's workflows.** Nothing else widens: any other service
+account, the principal in any other tenant (group or service), a tenant's
+worker identity (which is what its agents run as, and is a different account
+from the principal), a listed continuation-scoped account and the
+platform's own jobs are all still 403 `person_required`. The tenant must be
+the one the frozen `tenant_id_for_user` derives from the caller's own
+address, and its document, read for the request, must name that address as
+its principal. The full rule and its threat model are
+[human-steps.md §4.2.1](design/human-steps.md#421-amendment-2026-10-18-a-service-tenants-own-principal-hw-service-answer).
+
+The principal may say whom it answers for with `on_behalf_of`, one email
+address of at most 254 characters. **It is a label, not a verified
+identity:** only its shape is checked, and the platform does not know that
+person asked for the answer. `answered_by` is always the principal that
+answered; `on_behalf_of` is recorded beside it, and every response that
+reads the answer back carries `on_behalf_of_verified: false`. A person
+sending `on_behalf_of` is 422 `invalid_payload` (`position:
+"on_behalf_of"`): a person answers as themselves.
+
 ```
 POST /v1/workflows/{workflow_id}/steps/{step_id}/input   the answer
 GET  /v1/workflows/{workflow_id}/steps/{step_id}/input   what a card shows
 GET  /v1/inputs?status=waiting                           the tenant's open waits
 ```
 
-The answer is `{"answer_id": "r1-owner", "payload": {...}}` as
+The answer is `{"answer_id": "r1-owner", "payload": {...}}` (and, from a
+service tenant's principal only, `"on_behalf_of": "<email>"`) as
 `application/json`, or the same object as the `answer` part of a
 `multipart/form-data` body whose `file` parts carry the files. `answer_id`
 (`[a-z0-9-]{1,64}`) is the idempotency key: a retry with the same digests gets
-the original 200 with `replayed: true`. The answer is recorded with
-`answered_by`, `answered_at` and `via` (`"console"` or `"mcp"`), on the task,
-its `succeeded` event and the response.
+the original 200 with `replayed: true`; a replay must carry the same
+`on_behalf_of`. The answer is recorded with `answered_by`, `on_behalf_of`
+(null unless a service principal sent one), `answered_at` and `via`
+(`"console"` or `"mcp"`), on the task, its `succeeded` event and the
+response, and `GET .../input` serves them back.
 
 **The first answer is final.** A second is 409 `already_answered`, naming who
 answered and when; a correction is a new round. An answer before the step has

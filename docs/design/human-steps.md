@@ -33,7 +33,10 @@ What the design settles, in one line each:
   never touch it, and a parity test fails any reader that forgets it.
 * **Any member of the step's tenant may answer** (Q2), checked as a member
   at the moment they answer. Agents and service accounts are always
-  refused, including an agent driving a person's own plugin session.
+  refused, including an agent driving a person's own plugin session, with
+  **one exception** (amendment of 2026-10-18, §4.2.1): in a service tenant,
+  the tenant's own principal answers its own steps, and may label the
+  person it answers for with `on_behalf_of`.
 * **A wait lasts at most 24 hours** (Q4), the same bound as
   `HUMAN_REQUIRED`. `expires_after_seconds` is required.
 * **An answer is a JSON form and, optionally, files** (Q6). The form
@@ -651,6 +654,76 @@ and the design keeps what is left:
   approve this". If an author needs that, it is a product change the owner
   declined in Q2, not a gap in this design.
 
+#### 4.2.1 Amendment, 2026-10-18: a service tenant's own principal (HW-SERVICE-ANSWER)
+
+**Owner decision, 2026-10-18 (part of #1436).** Q2 said agents and service
+accounts are always refused. It now has **one exception**: in a **service
+tenant**, the tenant's own principal may answer the steps of workflows in
+that tenant.
+
+**Why.** A service tenant is a `kind: "user"` tenant whose principal is a
+service account: `u-or-9a0792` for oracle-api, `u-sw-c90291` for
+swarm-verify (docs/multi-tenancy.md, "Service tenants"). Its only member is
+that service account. Under step 1, nobody could answer its steps, so a
+client application that runs its own review loop through a workflow (the
+case #1568 admitted oracle-api for) could never finish one. The application
+collects the person's answer in its own UI and relays it.
+
+**Who, exactly** (`apps/swarm-api/swarm_api/awaitinput.py::service_principal`).
+All of these must hold, and each is read from the verified token or freshly
+from Firestore, never from something the caller chose:
+
+* the caller is a service account and **not** one of the platform's jobs
+  (the schedule tick, the rollup sweeper) and **not** a listed,
+  continuation-scoped account (`member_scope`, `tenant_member`, contract
+  request 30). A listed account is refused even when its address is a
+  tenant's principal;
+* the caller is **not a worker identity**: no address under the worker
+  prefix (`swarm-agent-worker-<tenant>`), and not the step tenant's derived
+  worker. A workflow's agent speaks as its worker through the MCP bridge,
+  and the worker GSA is a different account from the tenant's principal.
+  A tenant identity can rewrite its own `tenants/<id>` document (contract
+  request 87), so the worker check reads no stored field;
+* the request acts in the step's tenant, reached by no platform-admin
+  reach, and that tenant's id is the one the frozen `tenant_id_for_user`
+  derives from the **caller's own email**. A rewritten tenant document
+  naming another principal therefore cannot make a foreign tenant look like
+  the caller's own;
+* the tenant document, read for this request, is `kind: "user"` and its
+  principal is exactly the caller's address (a blank principal is not a
+  match).
+
+Then the ordinary rest of §4.2 applies unchanged: the step is read through
+the tenant-scoped store (another tenant's step is a 404), `may_act_in` is
+asked freshly (a user tenant's principal is its only member), and the role
+floor is the personal tenant's.
+
+**Still refused, 403 `person_required`:** any other service account, in any
+tenant; a service account in a group tenant (oracle-api is in none, and a
+bot confirmed in eng is still refused there); a service tenant's principal
+in another service tenant; every worker and agent identity; every listed
+scoped identity; the platform's own jobs.
+
+**`on_behalf_of`, a label.** The answer body takes one more optional field,
+`on_behalf_of`: an email address of at most 254 characters, checked for an
+address **shape only**. **It is a label, not a verified identity.** Nothing
+asks whether the address exists, or whether that person asked for the answer:
+the platform knows only that the principal sent it. It is recorded as given
+(lower-cased) beside `answered_by`, which is always the verified principal,
+on the answer record, `result_summary.input`, the `succeeded` event (with
+`answered_as: "service"`) and every response that reads the answer back,
+each with `on_behalf_of_verified: false`. A person may not send it: 422
+`invalid_payload`, `position: "on_behalf_of"`. A replay must carry the same
+label to be a replay. Idempotency, 409 `already_answered`, the forms and
+the file rules are unchanged.
+
+**What this gives up.** The property step 1 protected -- "a workflow's own
+agent cannot approve its own draft" -- now rests, in a service tenant, on
+the service application: it holds the principal's credential, and whatever
+it relays is the answer. That is the same trust the tenant already places in
+it to submit the workflow at all. Its agents still cannot answer, because
+they run as the worker, not the principal.
+
 ### 4.3 The answer reaches GCS: a narrow, create-only writer
 
 **Object keys**, built only from the stored task:
@@ -981,7 +1054,8 @@ What the route does, in order:
 1. Apply the size gate of §4.3 steps 1-3 (411, 413, 429).
 2. Read the step through the tenant-scoped store. If the workflow or step is
    unknown, or belongs to another tenant: **404**.
-3. Check that the caller is a person (403 `person_required`) and, freshly, a
+3. Check that the caller is a person, or a service tenant's own principal
+   in that tenant (§4.2.1) (403 `person_required`), and, freshly, a
    member of the step's tenant (403 `not_a_member`, 503
    `membership_unavailable`) (§4.2).
 4. If the step is not `PARKED(AWAITING_INPUT)`, return **409** with the step's
@@ -1015,9 +1089,9 @@ What the route does, in order:
      artifacts: [{name, bytes, uri, sha256, attachments: [{name, bytes, uri, sha256, content_type}]}],
      artifact_bytes,
      published_by: "control_plane",
-     input: {source: "person", answered_by, answered_at, via, wait_seconds, files}
+     input: {source: "person", answered_by, on_behalf_of, answered_at, via, wait_seconds, files}
    },
-   metadata.await_input.answer: {answer_id, answered_by, answered_at, via, sha256, bytes, files}
+   metadata.await_input.answer: {answer_id, answered_by, on_behalf_of, answered_at, via, sha256, bytes, files}
    ```
 
    `artifact_bytes` counts the form and every file. `files` is the count.
@@ -1120,7 +1194,7 @@ metadata:
   input_from: {upstream task id: filename}   # what the person is shown
   await_input:                       # RESERVED, platform-written, unsigned
     opened_at, expires_at
-    answer: null | {answer_id, answered_by, answered_at, via, sha256, bytes, files}
+    answer: null | {answer_id, answered_by, on_behalf_of, answered_at, via, sha256, bytes, files}
 result_summary (once ended): see §4.6 step 8
 ```
 
@@ -1453,7 +1527,7 @@ this lane's `questions.json`, with the recommendation first.
 | # | question | decision (2026-10-17) | applied in |
 |---|---|---|---|
 | Q1 | Which park reason does a waiting step use? | A new `ParkReason.AWAITING_INPUT` (request A). The 24-hour sweep, `human-ready` and the browser bell never touch it, and a parity test fails any reader that forgets it. As recommended. | §2.2, §3.4, §4.4, §5 A, HW-CONTRACT |
-| Q2 | Who may answer? | **Any member of the step's tenant**, checked as a member at the moment they answer; agents and service accounts always refused. **Departs** from the recommendation (assignees). `assignees` is removed; `remind` only chooses whose bell rings. | §4.1, §4.2, §4.5, §4.6 |
+| Q2 | Who may answer? | **Any member of the step's tenant**, checked as a member at the moment they answer; agents and service accounts always refused. **Departs** from the recommendation (assignees). `assignees` is removed; `remind` only chooses whose bell rings. **Amended 2026-10-18:** in a service tenant, its own principal answers its own steps, labelled `on_behalf_of` (§4.2.1). | §4.1, §4.2, §4.2.1, §4.5, §4.6 |
 | Q3 | Which answer channels are in the first build? | Console and plugin/MCP now; GitHub comments later, in lane HW-GITHUB. As recommended. | §4.9, §6 |
 | Q4 | How long may a step wait? | `expires_after_seconds` required, **at most 24 hours**, the same bound as `HUMAN_REQUIRED`. **Departs** from the recommendation (7 days). | §2.1 (invariant 8), §4.1, §4.4, §4.5, §1.3 |
 | Q5 | What may happen at expiry? | `fail` (dead-letter) or `default` (an answer declared and signed at submission, so a downstream `when` gate takes the author's branch). As recommended. | §4.1, §4.6 |

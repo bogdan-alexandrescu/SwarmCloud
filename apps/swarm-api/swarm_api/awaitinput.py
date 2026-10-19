@@ -19,7 +19,13 @@ answer arrive and the only one that may write it to the bucket
 WHO MAY ANSWER (§4.2, the owner's Q2). Any member of the step's tenant, and
 only a person: `auth.person_refusal` refuses every service account and the
 platform's own jobs, so a workflow's own agent -- whose MCP bridge speaks as
-its worker -- can answer nothing. Membership is asked of the directory AGAIN
+its worker -- can answer nothing. ONE EXCEPTION (owner decision 2026-10-18,
+HW-SERVICE-ANSWER): in a SERVICE TENANT -- `kind: "user"`, its principal a
+service account, e.g. oracle-api's `u-or-9a0792` -- that principal is the
+tenant's only member, so it answers its own tenant's steps
+(`service_principal`). It may name the person it answers for in
+`on_behalf_of`, which is recorded as a LABEL and never verified; a person
+may not send it. Membership is asked of the directory AGAIN
 for this request, past the cache (`Authenticator.is_tenant_member(fresh=True)`),
 because a wait of up to a day must not outlive a removal from the group by
 more than one Cloud Identity round trip. A failed lookup is a 503 and
@@ -74,6 +80,7 @@ from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.admission import _snapshot
+from swarm_common.identity import tenant_id_for_user, worker_service_account_id
 from swarm_common.models import TaskEvent, new_id
 from swarm_common.profiles import RUNNER_PROFILES
 from swarm_common.states import EventType, ParkReason, TaskState
@@ -94,6 +101,7 @@ from .errors import (
     UpstreamUnavailable,
     ValidationFailed,
 )
+from .gitidentity import is_service_account
 from .inputwriter import (
     InputWriteFailed,
     InputWriter,
@@ -115,6 +123,7 @@ from .validation import (
 )
 from .verdictpublish import Decline, parse_verdict, spec_refusal
 from .waker import TASK_FINISHED, ring
+from .workspaces import is_service_identity
 
 log = logging.getLogger(__name__)
 
@@ -148,6 +157,12 @@ LIST_MAX = 200
 VIA = ("console", "mcp")
 
 ANSWER_ID_RE = re.compile(r"^[a-z0-9-]{1,64}$")
+#: `on_behalf_of`: an address SHAPE, at most 254 characters (RFC 5321's
+#: path limit). Only the shape is checked -- nothing asks whether the address
+#: exists or whether that person asked for the answer: it is the service's
+#: LABEL for whom it answers, recorded beside the principal that answered.
+ON_BEHALF_OF_MAX = 254
+ON_BEHALF_OF_RE = re.compile(r"^[^@\s\"'<>(),;:\\]+@[^@\s\"'<>(),;:\\]+\.[^@\s\"'<>(),;:\\]+$")
 _FILE_NAME_RE = re.compile(rf"^{NAME_PATTERN}$")
 
 #: Text files: a closed list of extensions, the bytes UTF-8 with no NUL
@@ -365,21 +380,75 @@ def _closed(step: Step, status: str) -> Conflict:
 # who may answer
 # --------------------------------------------------------------------------
 
-def member_refusal(ctx: Any, auth: AuthContext, tenant_id: str) -> None:
-    """Raise unless the caller is a person, may act in `tenant_id` asked
-    freshly, and holds `member` or above there, read freshly.
+#: Whether the caller answered as a person or as its service tenant's principal.
+PERSON = "person"
+SERVICE = "service"
+
+
+def service_principal(ctx: Any, auth: AuthContext, tenant_id: str) -> bool:
+    """Whether a caller `person_refusal` refuses is `tenant_id`'s OWN principal,
+    `tenant_id` a service tenant (owner decision 2026-10-18, HW-SERVICE-ANSWER).
+
+    Every condition is about the VERIFIED email or a fresh read, never about
+    something the caller chose, and all of them must hold:
+
+      * not one of the platform's jobs and not a listed account
+        (`member_scope` / `tenant_member`): those answer for nobody, even
+        were the listed address a tenant's principal;
+      * a service account (`is_service_account` / `is_service_identity`);
+      * NOT a worker identity: no address under the worker prefix
+        (`tenant_service_account_prefix`, `swarm-agent-worker-<tenant>`),
+        and not the step tenant's derived worker. A workflow's agent speaks
+        as its worker through the MCP bridge, and a worker identity can
+        rewrite its own `tenants/<id>` document (contract request 87), so
+        no stored field may make one look like a principal;
+      * the request acts in `tenant_id`, selected by no platform reach, and
+        `tenant_id` is the id the frozen `tenant_id_for_user` derives from
+        the caller's own email -- so a foreign tenant cannot be steered to
+        look like the caller's, whatever its document says;
+      * the tenant document, read now, is `kind: "user"` and its principal
+        is exactly the caller's address. A blank principal is not a match.
+    """
+    if auth.is_schedule_tick or auth.is_rollup_sweeper or auth.member_scope or auth.tenant_member:
+        return False
+    email = (auth.email or "").strip().lower()
+    if not email or not (is_service_account(email) or is_service_identity(email)):
+        return False
+    local = email.split("@", 1)[0]
+    prefix = getattr(ctx.settings, "tenant_service_account_prefix", "") or "swarm-agent-worker"
+    if local.startswith(f"{prefix}-") or local == worker_service_account_id(tenant_id):
+        return False
+    if auth.tenant_via or auth.tenant_id != tenant_id or tenant_id != tenant_id_for_user(email):
+        return False
+    if (auth.tenant_principal or email).strip().lower() != email:
+        return False
+    tenant = ctx.store.get_tenant(tenant_id)
+    if tenant is None or getattr(tenant, "kind", "") != "user":
+        return False
+    return (getattr(tenant, "principal", "") or "").strip().lower() == email
+
+
+def member_refusal(ctx: Any, auth: AuthContext, tenant_id: str) -> str:
+    """Raise unless the caller is a person -- or its service tenant's own
+    principal (`service_principal`) -- may act in `tenant_id` asked freshly,
+    and holds `member` or above there, read freshly. Returns `PERSON` or
+    `SERVICE`: which of the two answered.
 
     A group tenant asks Cloud Identity about its ONE registered group, past
     the cache, and admits a platform admin who is not in it
     (`Authenticator.may_act_in`); a personal tenant (`u-<slug>`) is its
-    owner's address and nobody else's. 403 `person_required` /
-    `not_a_member` / `role_member_required` (the last through its switch),
-    503 `membership_unavailable` / `role_unavailable`. Nothing is written
-    by any of them.
+    owner's address and nobody else's, which for a service tenant is its
+    principal. 403 `person_required` / `not_a_member` /
+    `role_member_required` (the last through its switch), 503
+    `membership_unavailable` / `role_unavailable`. Nothing is written by any
+    of them.
     """
+    kind = PERSON
     why = person_refusal(auth)
     if why is not None:
-        raise forbidden("person_required", why)
+        if not service_principal(ctx, auth, tenant_id):
+            raise forbidden("person_required", why)
+        kind = SERVICE
     tenant = ctx.store.get_tenant(tenant_id)
     if tenant is None:
         raise forbidden("not_a_member", f"you are not a member of tenant {tenant_id!r}")
@@ -400,6 +469,7 @@ def member_refusal(ctx: Any, auth: AuthContext, tenant_id: str) -> None:
     store = getattr(ctx, "roles", None)
     if store is not None:
         store.require(auth, roles.MEMBER, fresh=True)
+    return kind
 
 
 def may_answer(ctx: Any, auth: AuthContext, tenant_id: str) -> bool:
@@ -412,7 +482,11 @@ def may_answer(ctx: Any, auth: AuthContext, tenant_id: str) -> bool:
     is offered.
     """
     if person_refusal(auth) is not None:
-        return False
+        try:
+            if not service_principal(ctx, auth, tenant_id):
+                return False
+        except Exception:  # noqa: BLE001 - a failed read only hides the form
+            return False
     tenant = ctx.store.get_tenant(tenant_id)
     if tenant is None:
         return False
@@ -824,6 +898,33 @@ def _record_files(record: Mapping[str, Any]) -> list[tuple[str, str]]:
             if isinstance(f, Mapping)]
 
 
+def _on_behalf_of(ctx_kind: str, body: Mapping[str, Any]) -> str | None:
+    """The validated label, or None. Only the service principal may send one."""
+    if "on_behalf_of" not in body:
+        return None
+    if ctx_kind != SERVICE:
+        raise invalid("invalid_payload",
+                      "on_behalf_of is for a service tenant's principal answering for a "
+                      "person; a person answers as themselves",
+                      position="on_behalf_of")
+    value = body["on_behalf_of"]
+    if value is None:
+        return None
+    if not isinstance(value, str) or len(value) > ON_BEHALF_OF_MAX or \
+            not ON_BEHALF_OF_RE.match(value):
+        raise invalid("invalid_payload",
+                      f"on_behalf_of must be one email address of at most {ON_BEHALF_OF_MAX} "
+                      "characters",
+                      position="on_behalf_of")
+    return value.lower()
+
+
+def _label(record: Mapping[str, Any]) -> dict[str, Any]:
+    """`on_behalf_of` as served: the label, and that it is not verified."""
+    return {"on_behalf_of": record.get("on_behalf_of"),
+            "on_behalf_of_verified": False if record.get("on_behalf_of") else None}
+
+
 def _response(step: Step, doc: Mapping[str, Any], *, replayed: bool) -> dict[str, Any]:
     record = _mapping(window(doc).get("answer"))
     artifacts = (_mapping(doc.get("result_summary")).get("artifacts") or [{}])
@@ -838,6 +939,7 @@ def _response(step: Step, doc: Mapping[str, Any], *, replayed: bool) -> dict[str
         "files": [{"name": a.get("name"), "bytes": a.get("bytes"), "sha256": a.get("sha256")}
                   for a in entry.get("attachments") or [] if isinstance(a, Mapping)],
         "answered_by": record.get("answered_by"),
+        **_label(record),
         "answered_at": _iso(record.get("answered_at")),
         "via": record.get("via"),
         "redaction_count": record.get("redaction_count", 0),
@@ -853,13 +955,19 @@ def _reread(db: Any, step: Step) -> Step:
 
 
 def _replay_or_conflict(step: Step, answer_id: str, sha256: str,
-                        files: Sequence[AnswerFile]) -> dict[str, Any]:
-    """The original 200 for the same answer sent again; the 409 for any other."""
+                        files: Sequence[AnswerFile], *,
+                        on_behalf_of: str | None) -> dict[str, Any]:
+    """The original 200 for the same answer sent again; the 409 for any other.
+
+    The same answer is the same answer_id, form, files and `on_behalf_of`
+    label: the same answer sent for someone else is not a replay.
+    """
     status = status_of(step.doc)
     record = _mapping(window(step.doc).get("answer"))
     if (
         status == ANSWERED
         and record.get("answer_id") == answer_id
+        and record.get("on_behalf_of") == on_behalf_of
         and record.get("sha256") == sha256
         and _record_files(record) == [(f.name, f.sha256) for f in files]
     ):
@@ -880,19 +988,20 @@ def answer(
 ) -> dict[str, Any]:
     """§4.6 steps 2-9: read, check, validate, write, commit, wake.
 
-    `body` is the parsed `{answer_id, payload, via?}`; `files` are the
+    `body` is the parsed `{answer_id, payload, via?, on_behalf_of?}`; `files` are the
     multipart `file` parts as (filename, bytes). The size gate (steps 1 and
     3) is the route's, before the body is read.
     """
     db = ctx.store.db
     step = load_step(db, tenant_id, workflow_id, step_id)            # 2: 404
-    member_refusal(ctx, auth, tenant_id)                             # 3: 403 / 503
+    kind = member_refusal(ctx, auth, tenant_id)                      # 3: 403 / 503
 
     if not isinstance(body, dict):
         raise invalid("invalid_payload", "the answer must be a JSON object", position="answer")
-    unknown = sorted(set(body) - {"answer_id", "payload", "via"})
+    unknown = sorted(set(body) - {"answer_id", "payload", "via", "on_behalf_of"})
     if unknown:
-        raise invalid("invalid_payload", f"the answer takes answer_id, payload and via, not {unknown}",
+        raise invalid("invalid_payload",
+                      f"the answer takes answer_id, payload, via and on_behalf_of, not {unknown}",
                       position="answer", keys=unknown)
     answer_id = body.get("answer_id")
     if not isinstance(answer_id, str) or not ANSWER_ID_RE.match(answer_id):
@@ -901,6 +1010,7 @@ def answer(
     via = body.get("via", "console")
     if via not in VIA:
         raise invalid("invalid_payload", f"via must be one of {list(VIA)}", position="via")
+    on_behalf_of = _on_behalf_of(kind, body)
 
     status = status_of(step.doc)                                     # 4: 409
     replaying = status == ANSWERED and _mapping(
@@ -933,7 +1043,8 @@ def answer(
     sha256 = hashlib.sha256(form_data).hexdigest()
 
     if replaying:
-        return _replay_or_conflict(step, answer_id, sha256, checked)
+        return _replay_or_conflict(step, answer_id, sha256, checked,
+                                   on_behalf_of=on_behalf_of)
 
     uri, written = _write_objects(writer_or_refuse(writer), tenant_id, step.task_id,
                                   artifact, form_data, checked)          # 7
@@ -945,8 +1056,8 @@ def answer(
     )
     entry = _artifact_entry(artifact, form_data, uri, JSON_CONTENT_TYPE, written)
     record = {
-        "answer_id": answer_id, "answered_by": auth.email, "answered_at": now, "via": via,
-        "sha256": sha256, "bytes": total, "redaction_count": redaction_count,
+        "answer_id": answer_id, "answered_by": auth.email, "on_behalf_of": on_behalf_of,
+        "answered_at": now, "via": via, "sha256": sha256, "bytes": total, "redaction_count": redaction_count,
         "files": [{"name": f.name, "bytes": f.size, "sha256": f.sha256,
                    "content_type": f.content_type} for f in checked],
     }
@@ -954,8 +1065,9 @@ def answer(
         "artifacts": [entry],
         "artifact_bytes": total,
         "published_by": PUBLISHED_BY,
-        "input": {"source": "person", "answered_by": auth.email, "answered_at": now,
-                  "via": via, "wait_seconds": wait_seconds, "files": len(checked)},
+        "input": {"source": "person", "answered_by": auth.email, "on_behalf_of": on_behalf_of,
+                  "answered_at": now, "via": via, "wait_seconds": wait_seconds,
+                  "files": len(checked)},
     }
     committed = _end(                                                # 8: one winner
         db, step.task_id, tenant_id, now=now, state=TaskState.SUCCEEDED,
@@ -963,13 +1075,15 @@ def answer(
         fields={"result_summary": summary, "last_error": None, "end_cause": None},
         event_type=EventType.SUCCEEDED,
         event_detail={"published_by": PUBLISHED_BY, "source": "person",
-                      "answered_by": auth.email, "via": via, "files": len(checked)},
+                      "answered_by": auth.email, "answered_as": kind,
+                      "on_behalf_of": on_behalf_of, "via": via, "files": len(checked)},
     )
     after = _reread(db, step)
     if not committed:
-        return _replay_or_conflict(after, answer_id, sha256, checked)
-    log.info("await-input %s tenant=%s answered by %s via %s (%d files)",
-             step.task_id, tenant_id, auth.email, via, len(checked))
+        return _replay_or_conflict(after, answer_id, sha256, checked,
+                                   on_behalf_of=on_behalf_of)
+    log.info("await-input %s tenant=%s answered by %s as %s via %s (%d files)",
+             step.task_id, tenant_id, auth.email, kind, via, len(checked))
     ring(ctx.waker, ctx.metrics, TASK_FINISHED, task_id=step.task_id,   # 9
          tenant_id=tenant_id, state=TaskState.SUCCEEDED.value)
     return _response(after, after.doc, replayed=False)
@@ -994,6 +1108,7 @@ def _public_record(record: Mapping[str, Any]) -> dict[str, Any] | None:
     return {
         "answer_id": record.get("answer_id"),
         "answered_by": record.get("answered_by"),
+        **_label(record),
         "answered_at": _iso(record.get("answered_at")),
         "via": record.get("via"),
         "sha256": record.get("sha256"),
