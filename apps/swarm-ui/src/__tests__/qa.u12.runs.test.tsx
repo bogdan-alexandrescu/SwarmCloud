@@ -176,7 +176,11 @@ describe('R1/A: the side cards stack each label above its value', () => {
         }
       }
       expect(seen, 'the sweep visited the facts').toBeGreaterThanOrEqual(15)
-    })
+      // ~16s on an idle machine (a computed-style read per property per fact,
+      // over 15+ facts): over half the 30s suite default, so a busy CI shard
+      // timed it out at 30s on run 39329360300 with nothing wrong. Own budget,
+      // as frame.overscroll and keyboard already carry; a hang still fails.
+    }, 120_000)
   }
 
   it('draws the issue\'s state, labels and comments as values a reader can see', async () => {
