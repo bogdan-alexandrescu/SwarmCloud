@@ -288,7 +288,10 @@ def test_the_launch_env_built_by_the_cli_runner_carries_swarm_handoff(monkeypatc
     spool = tmp_path / ".swarm-handoff"
     spool.mkdir()
     monkeypatch.setenv(handoff.HANDOFF_ENV, str(spool))
-    monkeypatch.delenv("SWARM_CDP_ENDPOINT", raising=False)
+    # A live-browser attempt reaches the runner only with its browser
+    # (BROWSER-START, part of #1366): without one the runner refuses.
+    monkeypatch.setenv("SWARM_CDP_ENDPOINT", "http://127.0.0.1:9223")
+    monkeypatch.setenv(claude_code.BROWSERS_PATH_ENV, "/opt/playwright")
     monkeypatch.delenv("SWARM_BROWSER_UPLOADS", raising=False)
     monkeypatch.setenv(claude_code.SPEC.key_env, "sk-ant-" + "x" * 40)
     launched: dict[str, Any] = {}
@@ -326,22 +329,26 @@ def test_a_resumed_attempt_is_told_in_its_prompt_what_the_earlier_one_did(monkey
     hand-offs (`handoff.HandoffPath.prepare`, written into the spool) is the
     resumed agent's prompt: after the caller's, before the platform's notes."""
     from agent_worker import handoff
-    from agent_worker.runners.claude_code import BROWSER_NOTE
+    from agent_worker.runners.claude_code import LIVE_BROWSER_NOTE
 
     spool = tmp_path / handoff.SPOOL_DIR_NAME
     spool.mkdir()
     summary = f"{handoff.RESUME_HEADLINE}\n\n1. \"QA1\": {handoff.MARK_DONE}"
     (spool / handoff.RESUME_NAME).write_text(summary)
     monkeypatch.setenv(handoff.HANDOFF_ENV, str(spool))
+    # A live-browser attempt reaches the runner only with its browser
+    # (BROWSER-START, part of #1366): without one the runner refuses.
+    monkeypatch.setenv("SWARM_CDP_ENDPOINT", "http://127.0.0.1:9223")
     seen = _run_body(monkeypatch, tmp_path, "/opt/playwright")
     assert seen["prompt"].startswith("Screenshot the settings page.")
     assert summary in seen["prompt"]
-    assert seen["prompt"].index(summary) < seen["prompt"].index(BROWSER_NOTE)
+    assert seen["prompt"].index(summary) < seen["prompt"].index(LIVE_BROWSER_NOTE)
 
-    # No summary in the spool: a first attempt's prompt is the caller's.
+    # No summary in the spool: a first attempt is told nothing of earlier ones.
     (spool / handoff.RESUME_NAME).unlink()
-    seen = _run_body(monkeypatch, tmp_path, None)
-    assert seen["prompt"] == "Screenshot the settings page."
+    seen = _run_body(monkeypatch, tmp_path, "/opt/playwright")
+    assert seen["prompt"].startswith("Screenshot the settings page.")
+    assert handoff.RESUME_HEADLINE not in seen["prompt"]
 
 
 def test_the_browser_image_sets_the_path_the_runner_reads():

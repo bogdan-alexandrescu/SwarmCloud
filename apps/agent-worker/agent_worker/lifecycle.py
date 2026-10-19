@@ -2535,8 +2535,10 @@ class Worker:
         # never the viewer's tunnel. A live-browser attempt whose gate is not
         # ready has no CDP proxy, and it never starts its agent headless: the
         # ATTEMPT fails retryably, before the agent, after the startup window.
+        # BROWSER-START: likewise a gate whose CDP endpoint was not passed or
+        # never answered within `setup`'s bounded wait (`browser_missing`).
         if self.handoff.gate_missing:
-            return functools.partial(self._fail_live_gate_missing, self.handoff.unavailable)
+            return functools.partial(self._fail_live_gate_missing, self.handoff.browser_missing)
 
         # THE FIRST HEARTBEAT GOES HERE, BEFORE ANY SLOW WORK.
         #
@@ -8646,7 +8648,7 @@ class Worker:
         self.control.pin_verified_max_attempts(task.get("max_attempts"))
         cause = handoff_mod.LIVE_GATE_UNAVAILABLE
         error = (
-            f"{cause}: the live browser's gate was not ready ({code or 'unknown'}), so the "
+            f"{cause}: the live browser was not ready ({code or 'unknown'}), so the "
             "agent was not started without its browser; the attempt is retried while the "
             "task has attempts left."
         )

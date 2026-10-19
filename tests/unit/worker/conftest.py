@@ -145,3 +145,16 @@ def _the_relay_name_resolves(monkeypatch):
     from agent_worker import handoff
 
     monkeypatch.setattr(handoff, "_resolve_relay", lambda host, port: [("stand-in", host, port)])
+
+
+@pytest.fixture(autouse=True)
+def _the_cdp_endpoint_answers(monkeypatch):
+    """No unit test asks a real CDP proxy whether it answers (BROWSER-START, part of #1366).
+
+    `HandoffPath.setup` probes SWARM_CDP_ENDPOINT's `/json/version` and waits,
+    with real sleeps, for up to 20 s while it does not answer. Outside a pod
+    nothing listens there. A test of the wait sets its own stand-in.
+    """
+    from agent_worker import handoff
+
+    monkeypatch.setattr(handoff, "_probe_cdp", lambda endpoint, timeout: True, raising=False)
