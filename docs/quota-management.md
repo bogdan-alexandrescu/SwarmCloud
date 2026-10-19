@@ -215,6 +215,23 @@ with `next_eligible_at` set to the broker's reset time, or to a fallback when
 the broker has none: 300 seconds for an account nobody has read lately, 900 for
 a paused one (`lifecycle._park_no_account`).
 
+**Every quota window binds every attempt, whatever its model class** (#1435,
+owner's answer to Q5 of [model-per-step.md](design/model-per-step.md#47-accounts-and-quota-windows-windows-unchanged-classes-served-per-account),
+2026-10-17). An account's headroom is the minimum over all its windows
+(`apps/quota-broker/quota_broker/accounts.py::Account._binding_remaining`), and
+no window is filtered by the step's class. An account whose `seven_day_opus`
+window is spent is therefore refused to a `haiku` or `sonnet` step too: that is
+the stated cost of the decision. A class shares its profile's `runner:` pool,
+so classes change no admission arithmetic either. The one thing a class does
+change is which accounts may take the step (owner decision R5):
+`accounts/{id}.model_classes` lists the classes an account's plan serves, empty
+meaning every class, and `apps/quota-broker/quota_broker/accounts.py::Account.serves_class`
+is the rule the broker's choice applies. When no account serves a keyless
+tenant's class, admission parks the step `CREDENTIAL_MISSING` with
+`detail.account_pool` `no_account_serves_class` and the class, before any lease,
+and the credential sweep promotes it once an account serves the class or the
+tenant registers a key, which serves every class.
+
 **What ends those waits, for a tenant served by a pool account.** Such a tenant
 usually has no `provider:{p}:tenant:{t}` pool. Terraform creates that pool only
 from a tenant's declared `providers`, and declaring one also creates a Job that

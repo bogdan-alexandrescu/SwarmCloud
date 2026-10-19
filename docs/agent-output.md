@@ -587,7 +587,7 @@ Two differences were choices.
 | `$SWARM_ARTIFACTS_DIR` | `/workspace/<attempt>/artifacts`, named in the prompt line | the same |
 | staged `input_from` files | in `work/`, so a relative name finds them | in `work/`, named in the prompt by absolute path |
 | `./artifacts` | `work/artifacts`, a link to `$SWARM_ARTIFACTS_DIR` | `work/repo/artifacts`, the same link, hidden from git; `work/artifacts` stays too |
-| `--model` (claude-code) | the Job's `MODEL`: `claude-opus-5-5` | the same |
+| `--model` (claude-code) | the execution's `MODEL`: the pin of the step's model class, `claude-opus-5-5` unless the step names another | the same |
 
 **The agent starts in the checkout.** Locally, Claude Code starts in the
 repository and loads its `CLAUDE.md` by itself. Here it started in `work/` with
@@ -628,25 +628,57 @@ still runs in `work/`; only the agent moves. The rules, and why:
   repository that already has an `artifacts` entry keeps it, also with a
   WARNING. The link is never checkpointed, like `work/artifacts`.
 
-**The code profile runs a pinned model.** No Job set `MODEL`, so the CLI's
-default ran: the QA task of 2026-09-26 ran `claude-sonnet-5`, not the
-`claude-opus-5-5` the operator's local lanes run. Now:
+**The code profile runs a pinned model, and a step picks which by class.** No
+Job set `MODEL`, so the CLI's default ran: the QA task of 2026-09-26 ran
+`claude-sonnet-5`, not the `claude-opus-5-5` the operator's local lanes run.
+#226 pinned one model per profile. Since #1435 (design B, owner decisions of
+2026-10-17, [design/model-per-step.md](design/model-per-step.md)) a step may
+also name a **model class**, one of four classes from the frozen
+`MODEL_CLASSES`, and the class, never the caller, decides the model ID:
 
-* `MODEL` is stated once, in `local.runner_models` in `terraform/infra/locals.tf`
-  (`claude-code = "claude-opus-5-5"`, with the reason beside it). It becomes
-  `MODEL` on every claude-code Cloud Run Job Terraform creates, and the
-  scheduler's `WORKER_MODELS`, which `CloudRunJobDispatcher._build_job` sets as
-  `MODEL` on the Jobs it creates for tenants Terraform does not list, and
-  `GkeJobDispatcher._manifest` sets on every GKE pod of a pinned profile --
-  which, since contract request 53 moved claude-code to GKE Autopilot
-  (2026-10-08), is where claude-code runs; its Cloud Run Jobs are kept, idle,
-  until 2026-10-15 as the rollback. A Job the
-  scheduler created before that is rebuilt once, before its next execution,
-  by the same check that moves it to a new image digest.
-* The worker reads `MODEL` into `WorkerConfig.model` and hands it to the runner,
-  which passes `--model`. Not codex: it is an OpenAI CLI, and an Anthropic model
-  name there would fail every run.
-* **A caller never chooses the model (invariant 10).** Until 2026-09-26 the
+| class | pinned ID | meant for |
+|---|---|---|
+| `opus` | `claude-opus-5-5` | the default: coding and implementation |
+| `fable` | `claude-fable-5-1` | planning |
+| `sonnet` | `claude-sonnet-5-5` | summarising, reformatting |
+| `haiku` | `claude-haiku-5-5` | classifying, extracting |
+
+How a step gets its model, and what refuses it:
+
+* **The IDs are stated once**, in `local.runner_models` in
+  `terraform/infra/locals.tf`, keyed by class. That map reaches the scheduler
+  and swarm-api as `WORKER_CLASS_MODELS`
+  (`terraform/infra/locals.tf` (`WORKER_CLASS_MODELS = jsonencode(local.runner_models)`)),
+  and each refuses at start a map whose keys are not exactly the four classes
+  or whose ID is not of its class (`ModelClass.admits`, so
+  `haiku = "claude-opus-5-5"` stops the service instead of billing Opus). The
+  classed profiles' Cloud Run Jobs carry their default class's pin as their
+  own `MODEL`, and the scheduler still receives the profile-keyed
+  `WORKER_MODELS`, derived from the same map for one release so a scheduler
+  rolled back alone still finds it.
+* **The dispatcher sets `MODEL` per execution.** One resolution serves both
+  backends: `apps/scheduler/scheduler/dispatch.py::step_model` resolves the
+  step's class by the frozen `step_model_class` (the rule swarm-api applies at
+  submission and the worker at start) and looks its pin up in the scheduler's
+  own class map. It goes into `worker_env`, which is the GKE pod's environment
+  and, on the Cloud Run fallback, the per-execution override that replaces the
+  Job's default-class `MODEL` for that execution only. It never reads
+  `Task.model`, `input` or `metadata`. A class with no pin returns the lease
+  and the task as `model_not_pinned`; it never falls back to the default
+  class or to the CLI's own.
+* **The worker checks the model before the CLI starts.**
+  `apps/agent-worker/agent_worker/specverify.py::check_model` resolves the
+  class from the **signed** spec (a class is covered by spec format 5, so a
+  class rewritten onto a task fails verification) and holds `MODEL` to that
+  class with `ModelClass.admits`. A classed profile whose execution carries no
+  `MODEL` ends `model_not_pinned`; a `MODEL` of another class ends
+  `model_class_mismatch`. Neither runs the agent. `MODEL` is held to the
+  class, not to `Task.model`, so a re-pin in Terraform while a step is queued
+  runs the class's pin at dispatch (owner decision R6). The worker hands
+  `MODEL` to the runner, which passes `--model`. Not codex: it is an OpenAI CLI
+  that accepts no class, and an Anthropic model name there would fail every
+  run.
+* **A caller never chooses the model ID (invariant 10).** Until 2026-09-26 the
   runner read `input.model` first, ahead of the Job's value, and the API and
   the console's Submit form both let a caller send it, so a caller did choose
   the model. Two changes closed that. #213 (contract request 25) made the API
@@ -657,17 +689,26 @@ default ran: the QA task of 2026-09-26 ran `claude-sonnet-5`, not the
   key). #226 made the runner never read `input.model` at all, and the worker
   drops a stored one with a WARNING: a task queued before the refusal
   shipped, or a profile whose inputs are not declared yet (`browser`,
-  `generic`, #218), which the API bounds by size alone. The top-level `model`
-  field is still accepted. It is attribution only, and selects nothing.
-* **What records the model that ran.** The runner's result carries the model it
-  asked for (`result_summary.runner.output.model`), and the CLI's own
-  `modelUsage` keys land in `result_summary.runner.usage.models`, the model or
-  models it says it actually used. Neither is on the attempt document:
-  `Attempt` in the frozen contract has no model field, and adding one is a
-  contract request, not an edit. The task's top-level `model` is the caller's
-  attribution, and can disagree with both.
-* Changing the model is an edit to `local.runner_models` and a release; nothing
-  a caller sends changes it.
+  `generic`, #218), which the API bounds by size alone. What a caller may
+  send is `model_class`, a name from a four-word vocabulary; an ID sent as a
+  class is `unknown_model_class`. The top-level `model` is filled by swarm-api
+  from the step's class pin; the refusals are in
+  [workflows.md](workflows.md#choosing-a-steps-model-model_class).
+* **What records the model that ran.** `Attempt.model` (contract request 103)
+  is the `MODEL` the worker was started with, written in the attempt's first
+  write, with `started_at`, after the fencing check
+  (`apps/agent-worker/agent_worker/control.py::ControlPlane.record_attempt_start`);
+  a stale generation writes none, and a profile with no model writes none.
+  The runner's result also carries the model it asked for
+  (`result_summary.runner.output.model`), and the CLI's own `modelUsage` keys
+  land in `result_summary.runner.usage.models`, the model or models it says it
+  actually used. When those name none of the pinned model, the worker logs
+  `model_mismatch` with both values
+  (`apps/agent-worker/agent_worker/lifecycle.py::Worker._note_model_mismatch`),
+  and the console's attempt view shows both. The outcome ledger groups cost
+  by `model` and by `model_class` from these fields.
+* Changing a class's model is an edit to `local.runner_models` and a release;
+  nothing a caller sends changes it.
 
 ## Two kinds of stdout, and the label that was wrong
 
