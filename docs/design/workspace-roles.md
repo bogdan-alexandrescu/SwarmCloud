@@ -1,10 +1,18 @@
 # Workspace roles: a workspace decides whether each person only reads it, works in it, or administers it
 
 **Status: designed 2026-10-18 (lane ROLES-DESIGN, part of #1518); revised
-the same day for the owner's answers (lane ROLES-DESIGN-B).** Nothing here
-is built. §7 records the thirteen answers (Q12 and Q13 on 2026-10-18,
-after the first eleven); nothing is open. The owner approves this revision
-before any build lane starts.
+the same day for the owner's answers (lane ROLES-DESIGN-B).** §7 records the
+thirteen answers (Q12 and Q13 on 2026-10-18, after the first eleven);
+nothing is open.
+
+**Status: built, and switched off (read 2026-10-19 at `24b0533`).** Every
+build lane but ROLES-ACCEPT has merged (ROLES-DOCS is the lane that wrote
+this note), and §8 records what each landed and
+where the code departs from this design. All of it is dark: both refusal
+switches are off, and `PLATFORM_ADMIN_REACH` is off in every environment,
+because no Terraform variable sets it yet. Until the operator turns them on
+in dev (§6, step 5), a role narrows nobody and a platform admin reaches no
+workspace they are not a member of.
 
 The owner asked for this on 2026-10-18, answering the Settings › Profile
 design (#1505, PR 1506, question Q7):
@@ -403,7 +411,7 @@ screen shows is the server's own.
 | lowest role | what it permits | routes (all under `current_auth` + `tenant_scope` today) |
 |---|---|---|
 | `viewer` | read | every GET of tasks, checkpoints, attempts, leases, outcomes, workflows, runs, issues preview, repositories (and their code-intelligence reads), schedules (and firings, audit), approvals, questions, live session/recordings/audit, notifications, git-token slots, secrets (names and grants), MCP servers, browser logins, stranded PRs; `POST /v1/live/ticket` (a viewer ticket); `POST /v1/notifications/read*`; `POST /v1/onboarding/dismiss`; `GET /v1/workspace/roles` |
-| `member` | everything a member does today | **submit:** `POST /v1/tasks`, `/v1/tasks/batch`, `/v1/workflows`, `/v1/runs`. **Cancel, anyone's** (Q8): `POST /v1/tasks/{id}/cancel`, `/v1/workflows/{id}/cancel`. **Decide:** `POST /v1/approvals/{id}:approve`, `:reject`; `/v1/runs/{id}/plan:approve`, `plan:edit`, `plan:reject`; `POST /v1/schedules/{id}:merge-mode`; a `/swarmcloud approve` comment (`ghapprove.py`). **Answer:** the human-step answer `POST /v1/workflows/{wf}/steps/{step}/input` (`human-steps.md` §4.2, not built yet); `POST /v1/tasks/{id}/answers`, `/human-ready`, `/browser-login`; `/live/control*`, `/live/device`; `POST`/`DELETE /v1/live/open-to-members`. **Schedules:** every write in `routes/schedules.py`. **Repositories:** register, PATCH (fields other than `platform`, `merge_policy` and `context`; `context` is `admin`, Q13), DELETE, index, index:run; every write in `routes/access.py`. **Accounts:** every write in `routes/accounts.py`. `DELETE /v1/browser-logins/{name}` |
+| `member` | everything a member does today | **submit:** `POST /v1/tasks`, `/v1/tasks/batch`, `/v1/workflows`, `/v1/runs`. **Cancel, anyone's** (Q8): `POST /v1/tasks/{id}/cancel`, `/v1/workflows/{id}/cancel`. **Decide:** `POST /v1/approvals/{id}:approve`, `:reject`; `/v1/runs/{id}/plan:approve`, `plan:edit`, `plan:reject`; `POST /v1/schedules/{id}:merge-mode`; a `/swarmcloud approve` comment (`ghapprove.py`). **Answer:** the human-step answer `POST /v1/workflows/{wf}/steps/{step}/input` (`human-steps.md` §4.2, built since: §8, ROLES-GATES-DECIDE); `POST /v1/tasks/{id}/answers`, `/human-ready`, `/browser-login`; `/live/control*`, `/live/device`; `POST`/`DELETE /v1/live/open-to-members`. **Schedules:** every write in `routes/schedules.py`. **Repositories:** register, PATCH (fields other than `platform`, `merge_policy` and `context`; `context` is `admin`, Q13), DELETE, index, index:run; every write in `routes/access.py`. **Accounts:** every write in `routes/accounts.py`. `DELETE /v1/browser-logins/{name}` |
 | `admin` | `member`, plus Q6's powers, the workspace's settings (Q13) and roles | **Secrets** (Q6): workspace secrets writes (`workspace_secrets.py::require_manager`); tenant and repository git-token slots (`gittokens.py::_require_admin`), which are forge tokens in Secret Manager and so secrets by CLAUDE.md's rule. **MCP servers** (Q6): writes in `mcp_servers.py` (`require_manager`). **Tenant provider keys** (Q6): `PUT`/`DELETE /v1/provider-keys/{p}/tenant`, tenant-scoped `POST /v1/provider-keys/{p}/links`, `POST /v1/tenants/me/credentials`. **Workspace settings** (Q13): writes of merge settings (`mergesettings.py`), code intelligence (`codeintel.py`), the judgment backend (`judgment.py`) and a repository's `context` field (`PATCH /v1/repositories/{id}`). **Roles:** `PUT`/`DELETE /v1/workspace/roles/*` |
 
 Each route keeps every narrower rule it has today *on top of* the role:
@@ -570,7 +578,8 @@ workspace's `admin`. Step 1 (`person_required`) and the gate-specific rules
 and still apply to them; a platform admin acting through the reach counts as
 a member for `second_member`, because Q5 makes them one in effect. In a
 personal workspace nothing changes: only its person answers. ROLES-DOCS
-amends both documents (§6).
+amended `human-steps.md` §4.2 on 2026-10-19; `routes/approvals.py`'s
+docstring was amended by ROLES-GATES-DECIDE (§8).
 
 #### 4.2.4 The audit of a platform admin's actions
 
@@ -894,7 +903,8 @@ names every person a switch would refuse before it refuses them.
   * `ghapprove.py` maps the GitHub login to the member as today, then checks
     `member` for that person. A comment approval from a `viewer` gets a reply
     naming the code.
-* **Human-wait answers** (`human-steps.md` §4.2, not built): the route's
+* **Human-wait answers** (`human-steps.md` §4.2; built since this was
+  written, and gated as below by ROLES-GATES-DECIDE, §8): the route's
   checks become: a person (`person_required`); `may_act_in` fresh, which a
   member or (in a group workspace) a platform admin passes (`not_a_member`
   otherwise); **then `member`**, read fresh (`role_member_required`). If
@@ -1257,3 +1267,214 @@ against dev. That is the operator's step, run in CI.
 
 Nothing. Q12 and Q13, the two questions the first eleven answers left open,
 were answered on 2026-10-18 and are in §7.1.
+
+---
+
+## 8. What was built
+
+Read 2026-10-19 at `24b0533` by ROLES-DOCS. Each entry says what the lane
+landed and, after it, where the code departs from §4 and §6. Where they
+differ, the code is what runs and this section is what to read.
+
+**ROLES-INDEX (phase 0, Track C).** The two composite indexes of §4.4,
+`terraform/modules/firestore/indexes.tf` (`"workspace-role-grants-tenant-subject-granted" = {`)
+and `terraform/modules/firestore/indexes.tf` (`"admin-audit-target-tenant-at" = {`),
+held by `tests/terraform/firestore.tftest.hcl`. No departure.
+
+**ROLES-REACH (phase 1, security review, blocking).** `AuthContext.platform_reach`
+and `AuthContext.tenant_via`, built by
+`apps/swarm-api/swarm_api/auth.py::Authenticator._platform_reach` and chosen
+by `apps/swarm-api/swarm_api/auth.py::Authenticator._select_tenant`, which
+tries memberships first, then the reach, then 503 for an unresolved admin
+lookup, then `tenant_not_member`. Every `u-` id is dropped in
+`apps/swarm-api/swarm_api/auth.py::Authenticator._reachable_groups`, so
+another person's personal workspace is a 403 on or off.
+`apps/swarm-api/swarm_api/auth.py::Authenticator.may_act_in` answers the
+three stored-owner paths of §4.2.3. The switch is
+`apps/swarm-api/swarm_api/settings.py::ApiSettings.platform_admin_reach`,
+off by default with its reason beside it, read from `PLATFORM_ADMIN_REACH`.
+Departures: `may_act_in` takes `fresh` and passes it to the membership
+check; it also answers `""` for the schedule tick, the sweepers and a
+listed service account (`_reach_excluded`), which §4.2.1 says get no reach
+but §4.2.3 did not list. **The reach is off everywhere:** no Terraform
+variable sets `PLATFORM_ADMIN_REACH` yet, so the reach is off in every environment, dev included. Turning it on
+in dev (§6, step 5) needs a Track C change to pass it to swarm-api first.
+
+**WK-REACH (owner, 2026-10-19).** The reach also covers group workspaces
+the workspace job made (#847), not only `TENANT_GROUPS`:
+`apps/swarm-api/swarm_api/auth.py::Authenticator._tenant_groups` appends the
+registry's `ready` job-made groups after the configured ones, and `may_act_in`
+checks the same list through `_registered_reach`. Personal and service
+workspaces are still never reached.
+
+**ROLES-API-CORE (phase 2).** `apps/swarm-api/swarm_api/roles.py` holds the table
+(`ROLES`, `RANK`, `SUMMARIES`) and the store,
+`apps/swarm-api/swarm_api/roles.py::RoleStore`. A grant is signed under
+`apps/swarm-api/swarm_api/roles.py::_MAC_DOMAIN`,
+`swarm-workspace-role-grant/v1`, with the settings key. A read takes the
+newest grant that verifies among the newest 60 grants for that subject and
+gives `role_unavailable` past them. A person is cached for
+`role_cache_seconds`, 15 s. Decisions read fresh. The routes are
+`apps/swarm-api/swarm_api/routes/roles.py`: the four workspace routes and
+the five admin routes of §4.3. `GET /v1/tenants/me` and `/mine` carry `role`
+and `via` (`apps/swarm-api/swarm_api/routes/tenants.py::get_mine`), and
+`apps/swarm-api/swarm_api/routes/tenants.py::put_credential` gained its
+`admin` gate. The platform-admin audit runs in
+`apps/swarm-api/swarm_api/deps.py::current_auth` through
+`apps/swarm-api/swarm_api/roles.py::RoleStore.audit_platform_admin`, before
+the limiter, and fails closed with `platform_admin_audit_unavailable`. The
+ten codes of §4.9 are `errors.py` classes. `role_member_required` and
+`role_admin_required` are the two entries in `refusals.SWITCHES`, both off,
+read from `REFUSAL_ROLE_MEMBER_REQUIRED` and `REFUSAL_ROLE_ADMIN_REQUIRED`.
+The five new-route codes are in `NOT_SWITCHABLE_CODES`. The counters are
+`swarm_api_role_grant_invalid_total` and `swarm_api_role_refusals_total`.
+Departures:
+
+* **Names.** §6's `Resolver`, `write_grant` and `role_payload` are
+  `RoleStore`, `RoleStore.write` and `workspace_payload`/`admin_payload`.
+  There is no `workspace_role` dependency in `deps.py`: each gate calls
+  `RoleStore.require` itself.
+* **A batch, not a transaction.** A grant and its `admin_audit` row commit
+  in one Firestore batch
+  (`apps/swarm-api/swarm_api/roles.py::RoleStore.write`). A batch is atomic,
+  which is the property §6 asked for. A transaction would add a read the
+  write does not need.
+* **One query per subject, not pages over `subject in (E, "*")`.** The read
+  queries the person and the default separately, `subject ==`, each limited
+  to 60 grants (`SCAN_LIMIT`, `PAGE_SIZE × PAGES`), newest first. The bound
+  and the `role_unavailable` answer past it are §4.4's.
+* **`role_grant_required` was not needed.** The role write routes raise
+  `role_admin_required` with `raise`
+  (`apps/swarm-api/swarm_api/routes/roles.py::_workspace_writer`), and the
+  guard's collector told the two call sites apart.
+* **A gap, found by this lane, not fixed by it (out of its files).**
+  `apps/swarm-api/swarm_api/roles.py::registered_group_tenants` walks
+  `TENANT_GROUPS` only, not the registry. So for a group workspace the
+  workspace job made, which WK-REACH lets a platform admin select, the admin
+  routes `/v1/admin/workspaces/{tenant_id}/roles*` answer 404,
+  `GET /v1/admin/roles/person` leaves it out, and
+  `RoleStore._target` does not see it as a group workspace when a
+  `/v1/workspaces/{tenant_id}/…` path names it, so a non-member platform
+  admin's write there through that path writes no `platform_admin_acted`
+  row. A platform admin can still name its first admin by selecting it and
+  using the workspace's own routes, which are audited. Its docstring's "the
+  walk `Authenticator._reachable_groups` makes" is true only of Terraform's
+  groups.
+
+**ROLES-ADMIN-LIST (owner, 2026-10-19).** Admin › People's Workspace roles
+card reads `GET /v1/admin/workspaces/roles`,
+`apps/swarm-api/swarm_api/routes/admin.py::list_workspace_roles`, a page of
+up to 30 workspaces with each one's default, admins and override count.
+`apps/swarm-api/swarm_api/routes/admin.py::_role_workspaces` lists Terraform
+groups and job-made ones, each with `registered_by`. It is the one role route
+that reads the registry; see the gap above.
+
+**ROLES-GATES-WORK (phase 3).** Submit, batch, workflows, runs and cancel (anyone's,
+the caller's own included, Q8), answers to an agent's question, human-ready,
+live control and browser logins call
+`apps/swarm-api/swarm_api/routes/tasks.py::require_member`.
+`apps/swarm-api/swarm_api/routes/runs.py::run_owner_auth` asks `may_act_in`,
+then the creator's role fresh; a platform admin passing it writes a
+`platform_admin_acted` row. Departures: returning live control is ungated,
+because handing control back only narrows what a person holds
+(`apps/swarm-api/swarm_api/routes/live.py::return_control`); the row's route
+is `issue_run_auto_step`
+(`apps/swarm-api/swarm_api/routes/runs.py::RUN_OWNER_ROUTE`), not §4.2.4's
+`issue_run_advance`.
+
+**ROLES-GATES-DECIDE (phase 3).** Approve, reject, plan approve, edit and reject, and
+a schedule's merge-mode switch call
+`apps/swarm-api/swarm_api/approvals.py::require_decider`, which reads the
+role fresh. A `/swarmcloud approve` comment from a `viewer` gets a reply
+naming the code (`apps/swarm-api/swarm_api/ghapprove.py::_require_member`).
+The human-step answer route had merged by then, so this lane gated it too:
+`apps/swarm-api/swarm_api/awaitinput.py::member_refusal` asks `may_act_in`
+fresh, then `member` fresh, held by
+`tests/unit/control_plane/test_roles_gates_answer.py`. `routes/approvals.py`'s
+docstring now says a platform admin decides in a group workspace as its
+admin, which §4.2.3 asked for.
+
+**ROLES-GATES-AUTOMATE (phase 3).** Schedule, repository, access and account writes
+need `member`. A firing whose owner holds `viewer` is skipped and paused
+`OWNER_ROLE_NARROWED`
+(`apps/swarm-api/swarm_api/schedulefire.py::PAUSE_COPY`, §4.8's copy word for
+word), and a non-member platform admin's firing writes a row with route
+`schedule_firing`. A repository's `context` needs `admin`
+(`apps/swarm-api/swarm_api/routes/repositories.py::_context_by`). Departure:
+`readable_by_tasks` stays platform-only beside `platform` and
+`merge_policy`, which §4.1's list did not name; it is a platform field of
+the same kind.
+
+**ROLES-GATES-ADMIN (phase 3).** A group workspace's secrets and MCP servers are its
+`admin`'s:
+`apps/swarm-api/swarm_api/workspace_secrets.py::require_manager` lets
+`workspace_admin` through (read fresh), then a platform admin. Tenant
+provider keys
+(`apps/swarm-api/swarm_api/routes/provider_keys.py::_require_tenant_admin`),
+git-token slots (`apps/swarm-api/swarm_api/routes/gittokens.py::_require_admin`),
+merge settings (`apps/swarm-api/swarm_api/mergesettings.py::authorize`), code
+intelligence (`apps/swarm-api/swarm_api/codeintel.py::require_owner_or_admin`)
+and the judgment backend
+(`apps/swarm-api/swarm_api/routes/judgment.py::put_judgment_backend`) do the
+same. Departures: the MCP server gate is in `routes/mcp_servers.py`, which
+calls the secrets module's `require_manager`; the git-token and judgment
+gates are in their `routes/` modules, not the modules §4.1 names; and with
+`role_admin_required` off, a `member` still meets the code each route raised
+before roles, such as `code_intelligence_owner_required`. That is right
+while the switch is off: a refusal that existed before roles is not a new
+refusal.
+
+**ROLES-MCP (phase 4).** `swarm_roles` is read-only and makes one
+`GET /v1/workspace/roles`
+(`apps/swarm-mcp/swarm_mcp/server.py` (`"name": "swarm_roles",`),
+`apps/swarm-mcp/swarm_mcp/sc.py::workspace_roles`). `sc roles set|clear|default`
+reads its confirmation from `/dev/tty`
+(`apps/swarm-mcp/swarm_mcp/sc.py::_ask_terminal`), ignores
+`SWARM_ASSUME_YES` and sends `via: "cli"`
+(`apps/swarm-mcp/swarm_mcp/sc.py::_send_role_change`). `sc whoami` and
+`swarm_tenants` show each workspace's role and `via`. No tool writes a role.
+Departure: the typed phrase is `<email> <role>` for `set`, `<email> default`
+for `clear` and `default <role>` for `default`, not always an email and a
+role.
+
+**ROLES-UI-PEOPLE (phase 4).** `#settings/people`
+(`apps/swarm-ui/src/roles.ts` (`export const WORKSPACE_PEOPLE_ADDRESS = 'settings/people'`)),
+in `apps/swarm-ui/src/WorkspacePeople.tsx`: the roster, what each role
+permits and the recent events for every role, controls for an `admin`, a
+default selector offering `viewer` and `member` only, and the
+personal-workspace line.
+
+**ROLES-UI-ADMIN (phase 5).** Admin › People's Workspace roles card with "Name an
+admin" (`apps/swarm-ui/src/WorkspaceRolesAdmin.tsx`) and the drawer's roles;
+the switcher's reach heading
+(`apps/swarm-ui/src/Spine.tsx` (`export const REACH_HEADING = 'Other workspaces (platform admin)'`))
+and the platform-admin banner, whose sentence is split into a title and a
+body.
+
+**ROLES-UI-GATES (phase 5).** One hook draws the role sentence for every gated
+control, `useRoleGate` in `apps/swarm-ui/src/Profile.tsx`, used by
+Approvals, Questions, Submit, Schedules, Repositories and Cancel. Profile
+shows the stored role and its source, "admin (platform admin)" for a reach
+entry, and the derived role when `role` is absent. Departures: Cancel's gate
+is in `apps/swarm-ui/src/StopRun.tsx`, outside the lane's row; the sentence
+names the tenant id, not a display name; Profile shows no `granted_by` or
+`granted_at` (§4.11).
+
+**ROLES-DOCS (each phase).** `docs/workspaces.md` (§6.4's Workspace roles
+card, §6.5's platform-admin reach), `docs/security.md` ("Workspace roles and
+a platform admin's reach", and the reach in "Authentication"),
+`docs/design/workspace-secrets.md` (Q4, superseded by Q6),
+`docs/design/human-steps.md` (§4.2 step 3, superseded by Q5 for group
+workspaces) and this section, held by
+`tests/unit/scripts/test_docs_describe_what_was_built.py`.
+
+**ROLES-ACCEPT (not built on 2026-10-19).** No acceptance probe asserts
+`role_member_required` or `platform_admin_acted`. It waits on §6 step 5:
+neither switch is on in dev (`dev.tfvars`'s `api_refusals` names neither
+code) and the reach has no Terraform variable, so a probe would meet
+today's behaviour.
+
+**What is left, in order.** A Track C change that passes
+`PLATFORM_ADMIN_REACH` to swarm-api; the operator turning the reach and both
+switches on in dev; ROLES-ACCEPT; the registry gap above; a week of
+report-only lines in prod; then prod.

@@ -32,6 +32,11 @@ separate from `TENANT_GROUPS` so an admin still has a normal tenant for their
 own work. Either makes the caller a **full** admin: every `/v1/admin/*` route,
 including disabling any tenant (`PUT /v1/admin/tenants/{id}/limits`) and
 rewriting any tenant's workflow state (`POST /v1/admin/workflows/rollup`).
+With `PLATFORM_ADMIN_REACH` on, a full admin may also select every registered
+group workspace as its `admin`, member or not, and never anyone else's
+personal workspace; every write there is audited before it runs
+([Workspace roles and a platform admin's reach](#workspace-roles-and-a-platform-admins-reach)).
+It is off in every environment today.
 
 There is one narrower way onto the admin surface, and it is not admin.
 A caller on **`ADMIN_POOL_USERS`** may call the routes in
@@ -320,6 +325,67 @@ server, by its manager's choice. A private endpoint is out of reach by design:
 the relay refuses private addresses and the pod policy drops them anyway.
 
 ---
+
+## Workspace roles and a platform admin's reach
+
+Each workspace's people are `viewer`, `member` or `admin`
+([design](design/workspace-roles.md), part of #1518). Two properties carry
+the security weight, and both are dark today: the refusals
+`role_member_required` and `role_admin_required` are switches that ship off
+(Q10), and `PLATFORM_ADMIN_REACH` is off in every environment. What holds
+once they are on:
+
+* **A role never admits anyone.** Membership is still Google's, checked per
+  registered group with `checkTransitiveMembership` and
+  `x-goog-user-project`, because `searchTransitiveGroups` 403s in this
+  project. A grant to someone outside the group is stored and inert until
+  they join. A role only narrows what a member may do.
+* **The one widening is a workspace `admin`**, who manages that group
+  workspace's secrets, MCP servers, tenant provider keys and settings. It is
+  live whatever the switches say, because it only lets someone through. It
+  exists only where an admin named one: the default role can never be
+  `admin`, so a group workspace has no workspace admin until a platform
+  admin names its first.
+* **A grant cannot be forged, replayed or found by a tenant's worker**,
+  which can create and update Firestore documents today
+  ([below](#a-tenant-workers-firestore-access-today-phase-0-and-design-b)).
+  Each grant is HMAC-signed with the settings key under its own domain,
+  `swarm-workspace-role-grant/v1`, over the tenant, the person, the role, who
+  granted it and when. So a forged grant does not verify, a copied older one
+  loses to the newer, and one moved to another tenant fails. Grants are
+  append-only under Firestore's random ids, which no route returns, so there
+  is no document to overwrite by name. A flood of unsigned grants pushes a
+  person past the 60 the reader scans and gives `role_unavailable`: a denial
+  of service, never a wider role, and it is counted in
+  `swarm_api_role_grant_invalid_total`. That residual closes when ISO-IAM
+  removes the worker's Firestore write.
+* **A platform admin's reach stops at group workspaces.** With
+  `PLATFORM_ADMIN_REACH` on, `X-Swarm-Tenant` may select a registered group
+  workspace for a full admin who is not in it. Every `u-` id is dropped from
+  the reach
+  (`apps/swarm-api/swarm_api/auth.py::Authenticator._reachable_groups`), so
+  another person's personal workspace, which holds their own secrets and
+  GitHub token, is 403 `tenant_not_member` exactly as before. A pool admin,
+  the schedule tick, the sweepers and a listed service account get no reach.
+  This widens who may enter a tenant (invariant 9), which is why it is a
+  switch.
+* **Nothing a platform admin does in a workspace they are not a member of
+  goes unrecorded.** `apps/swarm-api/swarm_api/deps.py::current_auth` writes
+  an `admin_audit` row before the route runs: `platform_admin_acted` for
+  every write, `platform_admin_viewed` once per admin, workspace and UTC hour
+  for reads. Both fail closed: if the row cannot be written the request is
+  503 `platform_admin_audit_unavailable` and the route never runs. A row
+  records the route template and its path parameters, never a body, so a
+  secret value or a prompt cannot land in the audit. A platform admin who is
+  a member narrowed below what an action needs gets the same rows. Every
+  member of the workspace sees them on its people page. One gap is known and
+  is recorded in the design's §8: a write through a
+  `/v1/workspaces/{tenant_id}/…` path naming a group workspace the workspace
+  job made writes no row.
+* **No agent can change a role.** The plugin's `swarm_roles` tool is
+  read-only. `sc roles set|clear|default` reads its typed confirmation from
+  `/dev/tty`, never from arguments or stdin, and ignores `SWARM_ASSUME_YES`,
+  so an agent driving a person's own session cannot raise anyone.
 
 ## Cloud metadata abuse
 

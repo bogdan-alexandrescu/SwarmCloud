@@ -13,6 +13,12 @@ with no Terraform. That reverses WD3 for new workspaces (§3.2). The design
 is [design/workspace-kinds.md](design/workspace-kinds.md), and its §8 records
 what was built. It stays switched off until the owner's check O1 (§0) and the
 bootstrap apply with `enable_workspace_kinds = true`.
+**Amended 2026-10-19 (#1518): a workspace's people now hold roles**, `viewer`,
+`member` or `admin`, and a platform admin is `admin` in every group workspace,
+member or not, never in anyone else's personal one. The design is
+[design/workspace-roles.md](design/workspace-roles.md), and its §8 records what
+was built; Admin › People's part is §6.4 (5) and §6.5 below. Both of its
+refusal switches and `PLATFORM_ADMIN_REACH` are off.
 
 The owner asked on 2026-10-08 for each person's personal space to be
 "onboarded at the time of onboarding a new user in swarmcloud", with "a way to create this via the UI and potentially via the
@@ -1831,6 +1837,21 @@ the platform owner" with the step the guard stopped at; a `failed` row has **Ret
 
 **4. Admins.** §6.5.
 
+**5. Workspace roles.** Added by workspace roles (#1518,
+[design/workspace-roles.md](design/workspace-roles.md) §4.8, owner answer Q2).
+A card lists every registered group workspace, Terraform's and the workspace
+job's, a page at a time from `GET /v1/admin/workspaces/roles`, with each one's
+default role, its admins and how many people hold an override. Its "Name an
+admin" action, `apps/swarm-ui/src/WorkspaceRolesAdmin.tsx` (`Name an admin`),
+is how a group workspace gets its first workspace admin: the default role can
+never be `admin`, so only a platform admin can start the chain. "Set default"
+offers `viewer` and `member`. A person's Manage drawer adds "Roles in
+workspaces", every override that email holds. Each write is a
+`workspace_role_granted`, `workspace_role_cleared` or
+`workspace_default_role_set` row with `via: "platform_admin"`. A
+personal workspace is not on the card: its person is its admin, fixed, and
+no role is stored there.
+
 Every action in People writes an `admin_audit` entry in the same transaction:
 `{action, target_workspace_id or target_email, by, at, detail}`, and the pane
 shows the last 50 under the table. The audit is private (Firestore); nothing
@@ -1864,6 +1885,18 @@ After this design:
 
 `admin_pool_users` and the rollup identities are unchanged: they are narrower
 capabilities, not admin.
+
+**Amended 2026-10-19 (#1518): what a platform admin holds inside a
+workspace.** A platform admin (any of the sources above) is `admin` in every
+registered group workspace, member or not, with no grant row
+([design/workspace-roles.md](design/workspace-roles.md) §4.2, owner answer
+Q5). With `PLATFORM_ADMIN_REACH` on, their workspace switcher lists the group
+workspaces they are not in under "Other workspaces (platform admin)", and
+everything they do there is audited before it runs. They are never admin in
+anyone else's personal workspace and cannot select one, because it holds that
+person's own secrets and GitHub token. `PLATFORM_ADMIN_REACH` is off in every
+environment until the operator turns it on in dev, so today a platform admin
+enters only the group workspaces they are a member of.
 
 ---
 
