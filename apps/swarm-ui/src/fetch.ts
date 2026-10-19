@@ -643,8 +643,10 @@ export function forgetProbes(): void {
   pageDepth = 0
   screenSnapshot = EMPTY_SCOPE
   for (const fn of screenListeners) fn()
-  // And the last tenant switch, which is about one page of one test's app.
+  // And the last tenant switch, which is about one page of one test's app,
+  // and the last preferences refusal, which is about the same app.
   lastSwitch = null
+  preferencesDown = null
   // And the reads in flight: one test's request that never settled must not
   // be joined by the next test's read of the same URL.
   inFlight.clear()
@@ -668,15 +670,44 @@ export function forgetProbes(): void {
 
 /** The request header the API reads (`swarm_api.auth.TENANT_HEADER`). */
 export const TENANT_HEADER = 'X-Swarm-Tenant'
-/** The per-browser key the choice is kept under. */
+/** The key the choice is kept under, in this TAB's `sessionStorage` (Q2). */
 export const TENANT_PREF = 'swarm.tenant'
 /** The API's code for a header naming a tenant the caller is not verified in. */
 export const TENANT_REFUSED = 'tenant_not_member'
+/**
+ * The API's code for a request that named no workspace while the caller's
+ * preferences could not be read (`errors.py::PreferencesUnavailable`, Q9): the
+ * default workspace is unknown, so nothing was done. Picking a workspace sends
+ * the header, which needs no preferences.
+ */
+export const PREFERENCES_UNAVAILABLE = 'preferences_unavailable'
 /** The query parameter standing in for the header on the routes a browser
  *  fetches by itself -- `<img src>`, download and open links (`tenantQuery`). */
 export const TENANT_QUERY = 'tenant'
 
 const tenantListeners = new Set<() => void>()
+
+/*
+ * THE SWITCH LASTS FOR THE TAB'S SESSION (docs/design/user-profile.md §4.5,
+ * Q2, owner's answer 2026-10-17). A reload keeps it; a new window or tab opens
+ * in the person's default workspace, which the API applies to a request that
+ * names none. Before the default existed the pick lived in `localStorage` and
+ * lasted forever in that browser, so it would pin a person past the default
+ * they later set. That old entry is removed ONCE per page load, the first time
+ * the choice is read or written, and never honoured: a choice the person made
+ * in this tab is the only one that outranks their default.
+ */
+let legacyCleared = false
+
+function clearLegacyChoice(): void {
+  if (legacyCleared) return
+  legacyCleared = true
+  try {
+    globalThis.localStorage?.removeItem(TENANT_PREF)
+  } catch {
+    /* refused: it is never read, so it pins nobody */
+  }
+}
 
 /**
  * The choice, or null for "the default tenant". Every storage access is inside
@@ -684,8 +715,9 @@ const tenantListeners = new Set<() => void>()
  * preference is no trade.
  */
 export function chosenTenant(): string | null {
+  clearLegacyChoice()
   try {
-    const v = globalThis.localStorage?.getItem(TENANT_PREF) ?? null
+    const v = globalThis.sessionStorage?.getItem(TENANT_PREF) ?? null
     return v === null || v === '' ? null : v
   } catch {
     return null
@@ -694,24 +726,60 @@ export function chosenTenant(): string | null {
 
 /**
  * Store (or, with null, forget) the choice, and tell the shell to re-read.
+ * Null is "Back to default": the API's default applies from the next request.
  *
  * Nothing is kept in memory when storage refuses: the default tenant is always
  * safe, so a window that cannot remember the pick works in the default,
  * visibly, rather than in a pick that vanishes on the next reload.
  */
 export function chooseTenant(id: string | null): void {
+  clearLegacyChoice()
   try {
-    if (id === null || id === '') globalThis.localStorage?.removeItem(TENANT_PREF)
-    else globalThis.localStorage?.setItem(TENANT_PREF, id)
+    if (id === null || id === '') globalThis.sessionStorage?.removeItem(TENANT_PREF)
+    else globalThis.sessionStorage?.setItem(TENANT_PREF, id)
   } catch {
     /* refused: the default tenant stays in force */
   }
+  // A pick names a workspace, so a request no longer needs the unreadable
+  // preferences; and "Back to default" asks again whether they are readable.
+  notePreferencesUnavailable(null)
   for (const fn of tenantListeners) fn()
 }
 
 export function subscribeTenant(fn: () => void): () => void {
   tenantListeners.add(fn)
   return () => tenantListeners.delete(fn)
+}
+
+/*
+ * THE LAST `preferences_unavailable` (§4.5, Q9). A request that named no
+ * workspace was refused because the default is unknown. It is raised like any
+ * error to the screen that made it, and ALSO kept here, so the panel can say it
+ * beside the switcher, where the next action -- name a workspace -- is taken.
+ * Memory only; cleared by a pick or "Back to default" (`chooseTenant`).
+ */
+let preferencesDown: string | null = null
+const preferencesListeners = new Set<() => void>()
+
+function notePreferencesUnavailable(message: string | null): void {
+  if (preferencesDown === message) return
+  preferencesDown = message
+  for (const fn of preferencesListeners) fn()
+}
+
+/** Record a refusal: only a headerless 503 coded `preferences_unavailable`. */
+function notePreferencesRefusal(status: number, code: string | null, sent: string | null, message: string): void {
+  if (status === 503 && code === PREFERENCES_UNAVAILABLE && sent === null) notePreferencesUnavailable(message)
+}
+
+/** The API's message for the last headerless `preferences_unavailable`, or null. */
+export function preferencesUnavailableSnapshot(): string | null {
+  return preferencesDown
+}
+
+export function subscribePreferencesUnavailable(fn: () => void): () => void {
+  preferencesListeners.add(fn)
+  return () => preferencesListeners.delete(fn)
 }
 
 /** One side of a switch: the tenant id and the name the API gave it. */
@@ -1091,6 +1159,7 @@ export async function read<T>(
     const ra = Number(arrived.retryAfter)
     const err = classifyFailure(arrived.status, env, Number.isFinite(ra) && ra > 0 ? ra : undefined)
     note(arrived.status, err.kind, false)
+    notePreferencesRefusal(arrived.status, err.code, tenant, err.message)
     // A stored tenant the caller is no longer in: dropped, and this READ asked
     // once more under the default. Only when the drop took: storage that
     // refused the removal still holds the refused value, and asking again with
@@ -1220,6 +1289,7 @@ export async function write(
     const ra = Number(res.headers.get('retry-after'))
     const error: ApiError = { ...classifyFailure(res.status, env, Number.isFinite(ra) && ra > 0 ? ra : undefined), method }
     note(res.status, error.kind, false)
+    notePreferencesRefusal(res.status, error.code, tenant, error.message)
     // Dropped, but a WRITE is not retried: the person chose that tenant for
     // this change, and quietly filing it under the default instead is the one
     // outcome worse than the refusal. The spine redraws on the default.
