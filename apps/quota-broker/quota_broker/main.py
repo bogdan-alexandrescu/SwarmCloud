@@ -30,7 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from swarm_common.logging_setup import configure_logging
 from swarm_common.models import ProviderState, QuotaState
-from swarm_common.profiles import RUNNER_PROFILES
+from swarm_common.profiles import RUNNER_PROFILES, step_model_class
 
 from .aimd import quota_derived_limit_for
 from .settings import _int
@@ -61,6 +61,7 @@ from .accounts import (
     SWAP_DRAIN,
     SWAP_REASONS,
     SWAP_UNUSABLE,
+    AccountError,
     AccountState,
     Hold,
     Unavailable,
@@ -74,6 +75,7 @@ from .accounts import (
     hold_log_entry,
     secret_name,
     validate_label,
+    validate_model_classes,
 )
 from .accountstore import COLLECTION as ACCOUNTS_COLLECTION
 from .accountstore import MALFORMED_ERRORS, AccountStore, MalformedAccountError
@@ -212,6 +214,16 @@ class AccountExchange(StrictModel):
 
 class AccountLending(StrictModel):
     lend_to: list[str] = Field(default_factory=list, max_length=50)
+
+
+class AccountModelClasses(StrictModel):
+    """The model classes an account serves (owner decision R5). Empty: every class.
+
+    Bounded by the vocabulary's size; which names are accepted is
+    `accounts.validate_model_classes`, the one check of them.
+    """
+
+    model_classes: list[str] = Field(default_factory=list, max_length=8)
 
 
 class AccountStateChange(StrictModel):
@@ -621,6 +633,9 @@ def account_to_api(account: Any, *, now: datetime | None = None) -> dict[str, An
         "state": account.state.value,
         "reason": account.reason,
         "lend_to": list(account.lend_to),
+        #: The classes this account's plan serves; empty means every class
+        #: (R5). `getattr` for the same reason as `observed_at` above.
+        "model_classes": list(getattr(account, "model_classes", ()) or ()),
         "assigned": account.assigned,
         "windows": windows,
         "observed_at": observed_at.isoformat() if observed_at else None,
@@ -685,6 +700,54 @@ def _split_holds(data: dict[str, Any], now: datetime) -> tuple[list[Hold], list[
         [h for h in holds if not h.is_expired(now)],
         [h for h in holds if h.is_expired(now)],
     )
+
+
+#: Where swarm-api writes a task: `swarm_common.admission` names the same
+#: collection. Read here only to learn one task's model class.
+TASKS_COLLECTION = "tasks"
+
+
+def step_class_for(db: Any, tenant_id: str, task_id: str | None) -> str | None:
+    """The model class the caller's step runs, or None when it cannot be known.
+
+    Owner decision R5: an account whose plan cannot serve a class must never
+    be handed a step of it, so the assign and swap routes need the step's
+    class. It is READ, never taken from the body: `tasks/{task_id}` written by
+    swarm-api at submission (signed, and checked again by the worker), and
+    resolved by the frozen `step_model_class` -- the rule swarm-api, the
+    scheduler and the worker apply -- so a step with no class is its
+    profile's default.
+
+    The task id is a claim (`AccountAssign.task_id`). A task that does not
+    exist, or belongs to another tenant, says nothing about this caller's
+    step, so it is None -- and None is served only by an account that serves
+    every class (`Account.serves_class`). So is a worker that sends no task
+    id. Neither can land a step on a narrowed account, and an un-narrowed pool
+    serves both exactly as before. Never raises: an unreadable task is an
+    unknown class, not a failed assignment.
+    """
+    if not task_id:
+        return None
+    try:
+        snap = db.collection(TASKS_COLLECTION).document(task_id).get()
+        data = snap.to_dict() if getattr(snap, "exists", False) else None
+    except Exception as exc:
+        log.warning(
+            "could not read a task's model class; only an account that serves "
+            "every class may take it",
+            extra={"task_id": task_id, "error": type(exc).__name__},
+        )
+        return None
+    if not isinstance(data, dict) or data.get("tenant_id") != tenant_id:
+        return None
+    profile = RUNNER_PROFILES.get(str(data.get("runner_profile") or ""))
+    requested = data.get("model_class")
+    if profile is None or not (requested is None or isinstance(requested, str)):
+        return None
+    try:
+        return step_model_class(profile, requested)
+    except ValueError:
+        return None
 
 
 def _log_ref(db: Any, assignment_id: str) -> Any:
@@ -3045,6 +3108,38 @@ def create_app(
             _revoke_unlent(request, secrets, secret=secret, account=updated)
         return {"account": account_to_api(updated)}
 
+    @app.put("/v1/accounts/{account_id}/model-classes")
+    def set_model_classes(
+        request: Request,
+        account_id: str,
+        body: AccountModelClasses,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Which model classes this account's plan serves. Owner only (R5).
+
+        Empty means every class, the default. Narrowing takes effect at the
+        next assignment and swap: a step already on the account keeps it. It
+        changes no hold, no reading and no lending, and grants nothing -- it
+        can only take an account away from steps it cannot run.
+        """
+        store = _accounts(request)
+        account = store.get(account_id)
+        if account is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        _authorize(request, authorization, account.owner_tenant)
+        try:
+            validate_model_classes(body.model_classes)
+        except AccountError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        updated = store.set_model_classes(account_id, body.model_classes)
+        if updated is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        log.info(
+            "an account's served model classes changed",
+            extra={"account_id": account_id, "model_classes": list(updated.model_classes)},
+        )
+        return {"account": account_to_api(updated)}
+
     @app.put("/v1/accounts/{account_id}/state")
     def set_account_state(
         request: Request,
@@ -3272,16 +3367,23 @@ def create_app(
         store = _accounts(request)
         now = datetime.now(timezone.utc)
 
-        # Owned AND lent-to, of this request's provider: exactly the set
-        # invariant 9 permits. `accounts_serving` is the one statement of it,
-        # and the scheduler's admission asks the same function whether it is
-        # empty, so the two cannot disagree about who the pool serves (#169).
-        candidates = accounts_serving(store.list(), tenant_id, provider)
+        # Owned AND lent-to, of this request's provider, serving this step's
+        # model class: exactly the set invariant 9 and owner decision R5
+        # permit. `accounts_serving` is the one statement of it, and the
+        # scheduler's admission asks the same function whether it is empty,
+        # so the two cannot disagree about who the pool serves (#169). A
+        # class no account serves is therefore `no_accounts_registered`: the
+        # worker falls back to the tenant's own key, which serves every class,
+        # and a tenant with none was parked by admission before any lease.
+        model_class = step_class_for(request.app.state.broker.db, tenant_id, asked.task_id)
+        candidates = accounts_serving(
+            store.list(), tenant_id, provider, model_class=model_class
+        )
 
-        chosen = choose(candidates, tenant_id, now, exclude=exclude)
+        chosen = choose(candidates, tenant_id, now, exclude=exclude, model_class=model_class)
         if chosen is None:
             reason, next_reset = eligibility(
-                candidates, tenant_id, now, exclude=exclude
+                candidates, tenant_id, now, exclude=exclude, model_class=model_class
             )
             return {
                 "account_id": None,
@@ -3290,6 +3392,8 @@ def create_app(
                 "account": None,
                 "reason": reason.value,
                 "next_reset_at": next_reset.isoformat() if next_reset else None,
+                # The class the pool was asked about, so a decline names it.
+                "model_class": model_class,
             }
 
         # The account store is built from the broker's own Firestore client,
@@ -3331,6 +3435,7 @@ def create_app(
                 "assignment_id": assignment_id,
                 "tenant_id": tenant_id,
                 "provider": provider,
+                "model_class": model_class,
                 "borrowed": chosen.owner_tenant != tenant_id,
                 "assigned": assigned,
             },
@@ -3578,11 +3683,19 @@ def create_app(
         db = request.app.state.broker.db
         now = datetime.now(timezone.utc)
         exclude = {body.account_id, *(a for a in body.exclude if a)}
-        candidates = accounts_serving(store.list(), tenant_id, provider)
+        # A swap moves the step to another account of ITS class, never to one
+        # whose plan cannot run it (R5). `_holder` has proved the hold names
+        # this task, so the task id here is the hold's own.
+        model_class = step_class_for(db, tenant_id, body.task_id)
+        candidates = accounts_serving(
+            store.list(), tenant_id, provider, model_class=model_class
+        )
         # Twice at most: an account chosen from the listing may stop being
         # assignable before the transaction reads it, and is then skipped.
         for _ in range(2):
-            chosen = choose(candidates, tenant_id, now, exclude=exclude)
+            chosen = choose(
+                candidates, tenant_id, now, exclude=exclude, model_class=model_class
+            )
             if chosen is None:
                 break
             try:
@@ -3629,7 +3742,9 @@ def create_app(
                 "reason": "",
                 "next_reset_at": None,
             }
-        why, next_reset = eligibility(candidates, tenant_id, now, exclude=exclude)
+        why, next_reset = eligibility(
+            candidates, tenant_id, now, exclude=exclude, model_class=model_class
+        )
         return {
             "swapped": False,
             "from_account_id": body.account_id,

@@ -205,6 +205,10 @@ class AccountPool(Protocol):
 
     def set_lending(self, account_id: str, *, lend_to: list[str]) -> dict[str, Any]: ...
 
+    def set_model_classes(
+        self, account_id: str, *, model_classes: list[str]
+    ) -> dict[str, Any]: ...
+
     def set_state(self, account_id: str, *, state: str, reason: str) -> dict[str, Any]: ...
 
     # DECLARATIONS ONLY, like every other member of this Protocol.
@@ -490,6 +494,15 @@ class BrokerClient:
             "PUT",
             f"/v1/accounts/{quote(account_id, safe='')}/lending",
             payload={"lend_to": list(lend_to)},
+        )
+
+    def set_model_classes(
+        self, account_id: str, *, model_classes: list[str]
+    ) -> dict[str, Any]:
+        return self._call(
+            "PUT",
+            f"/v1/accounts/{quote(account_id, safe='')}/model-classes",
+            payload={"model_classes": list(model_classes)},
         )
 
     def set_state(self, account_id: str, *, state: str, reason: str) -> dict[str, Any]:

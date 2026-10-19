@@ -80,6 +80,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request, status
+from pydantic import Field
 
 from .. import roles
 from ..accountholds import (
@@ -104,6 +105,7 @@ from ..schemas import (
     AccountSignInFinish,
     AccountSignInStart,
     AccountStateChange,
+    StrictModel,
 )
 
 router = APIRouter(prefix="/v1/accounts", tags=["accounts"])
@@ -396,6 +398,36 @@ def set_lending(
     """Replace the list of tenants this account lends to. Owner only."""
     _owned(pool, _writer_tenant_id(ctx, auth), account_id)
     return pool.set_lending(account_id, lend_to=list(body.lend_to))
+
+
+class AccountModelClasses(StrictModel):
+    """The model classes an account serves (owner decision R5). Empty: every class.
+
+    Declared here rather than in `schemas.py`, beside the one route that takes
+    it. The names are not checked here: the broker owns the account record and
+    answers an unknown class with a 422 naming the vocabulary, as it does an
+    unknown state.
+    """
+
+    model_classes: list[str] = Field(default_factory=list, max_length=8)
+
+
+@router.put("/{account_id}/model-classes")
+def set_model_classes(
+    account_id: str,
+    body: AccountModelClasses,
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+    pool: AccountPool = Depends(account_pool),
+) -> dict:
+    """Which model classes this account's plan serves. Owner only.
+
+    The broker then assigns a step only to an account that serves its class,
+    and a step whose class no account serves waits rather than running on a
+    plan that cannot run it.
+    """
+    _owned(pool, _writer_tenant_id(ctx, auth), account_id)
+    return pool.set_model_classes(account_id, model_classes=list(body.model_classes))
 
 
 @router.put("/{account_id}/state")

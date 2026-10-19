@@ -410,3 +410,18 @@ def test_the_parked_step_runs_once_an_admin_lets_an_account_serve_its_class(
     assert second.promoted_credentials == 1
     scheduler.drain()
     assert [d["task_id"] for d in dispatcher.dispatched] == ["task_fable"]
+
+
+def test_the_schedulers_decoder_reads_the_class_a_step_asked_for(db):
+    """Without it every task the scheduler read resolved to its profile's
+    default class, and the class check above saw `opus` for a Fable step."""
+    from scheduler.codec import task_from_dict
+
+    _task(db, "task_fable", model_class="fable")
+    _task(db, "task_default")
+    _task(db, "task_odd")
+    db.docs["tasks/task_odd"]["model_class"] = ["fable"]
+
+    assert task_from_dict(db.docs["tasks/task_fable"]).model_class == "fable"
+    assert task_from_dict(db.docs["tasks/task_default"]).model_class is None
+    assert task_from_dict(db.docs["tasks/task_odd"]).model_class is None
