@@ -507,7 +507,7 @@ profile requires it.
     "on_expire": "default",
     "default": {"verdict": "MERGE", "findings": []},
     "remind_after_seconds": 14400,
-    "remind": ["owner@saga.xyz"]
+    "remind": ["owner@example.com"]
   }
 }
 ```
@@ -1187,7 +1187,7 @@ Response, **200**:
  "state": "SUCCEEDED",
  "artifact": {"name": "review.json", "bytes": 87, "sha256": "…"},
  "files": [{"name": "review.files/draft.md", "bytes": 40211, "sha256": "…"}],
- "answered_by": "owner@saga.xyz", "answered_at": "2026-10-17T14:05:09Z",
+ "answered_by": "owner@example.com", "answered_at": "2026-10-17T14:05:09Z",
  "replayed": false}
 ```
 
@@ -1198,7 +1198,7 @@ the bridge and the inbox read:
 {"status": "waiting" | "not_open" | "answered" | "expired" | "cancelled",
  "prompt": "...", "form": "verdict", "artifact": "review.json",
  "max_files": 10, "max_answer_bytes": 16777216,
- "tenant": "eng", "may_answer": true, "remind": ["owner@saga.xyz"],
+ "tenant": "eng", "may_answer": true, "remind": ["owner@example.com"],
  "opened_at": "…", "expires_at": "…", "on_expire": "fail",
  "shows": [{"step_id": "draft", "task_id": "task_…", "name": "draft.md"}],
  "questions": null,

@@ -11,7 +11,7 @@ created or deleted — and one binding is removed: `roles/iam.roleAdmin` from
 #275/#277, its condition is not one `hasOnly()` call but two, one per chunk of
 at most ten roles (GCP's IAM linter refuses a longer list).
 
-The worked values are Saga's `dev` deployment (`saga-agents-staging`, state
+The worked values are this repository's `dev` deployment (`saga-agents-staging`, state
 prefix `infra/dev`). **Most of this page was written as "derived" — read from
 the code and the provider's documentation, before any plan or apply ran.**
 Where a plan or apply has since actually run, that is called out by date, and

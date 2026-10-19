@@ -85,13 +85,13 @@ opens)` rather than failing some other way. Change a value later with
 `uv run sc context remove` — and CI overrides all of it with `SWARM_URL` and
 `SWARM_IMPERSONATE_SA`. [docs/plugin-setup.md](../docs/plugin-setup.md) has
 the whole of it: what each command stores where, the override order, and
-Saga's `dev` values as a worked example. The operator's one-time step — one
+this repository's `dev` values as a worked example. The operator's one-time step — one
 Desktop OAuth client per deployment, allowlisted on IAP — is
 [docs/runbooks/iap-desktop-client.md](../docs/runbooks/iap-desktop-client.md).
 
 **Nothing in the plugin names a deployment.** Until 2026-09-25 the bridge read
 `terraform/environments/<env>/<env>.tfvars` out of whatever checkout it ran
-from, so every install pointed at Saga's cluster. It now reads Terraform only
+from, so every install pointed at this deployment's cluster. It now reads Terraform only
 in developer mode (`SWARM_MCP_CONFIG_FROM=repo`), for working inside this
 repository, and `tests/unit/mcp/test_contexts.py` fails if it opens a tfvars
 file otherwise.
@@ -871,7 +871,7 @@ pieces do it, and none of them submits anything.
   its `workspace` and the `/sc attach` that follows it.
 * **No name carries a workspace; every expanded run and row says whose,
   where and on which LLM** (SC-DESC-DETAILS, owner 2026-10-14: "workflows in
-  here should not have the [Engineering] or [eng@saga.xyz] prefix in front of
+  here should not have the [Engineering] or [eng@example.com] prefix in front of
   the names"). Run titles are `SC · <name> · N steps` and `SC · <label> ·
   task` (the name is cut to 150, never the count); rows inside the run are
   `[SwarmCloud] <name> · stage <n> · <step>` and `[SwarmCloud] <label> ·
