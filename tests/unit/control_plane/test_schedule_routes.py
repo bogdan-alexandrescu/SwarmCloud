@@ -301,13 +301,19 @@ def test_a_member_cannot_create_an_owner_only_platform_scope(client) -> None:
 
 def test_the_catalogue_lists_what_the_caller_may_create(client) -> None:
     types = {t["name"]: t for t in client.get("/v1/schedule-types", headers=auth_header("alice")).json()["types"]}
-    assert set(types) == {entry.name for entry in scheduletypes.TYPES}
+    # A member is offered every type a member may create; the price types
+    # (#1481) are an admin's platform schedules, so only an admin sees them.
+    assert set(types) == {entry.name for entry in scheduletypes.TYPES} - {
+        "model-prices-refresh", "model-prices-check"}
     assert types["issue-sweep"]["available"] is True and types["epic-triage"]["available"] is False
     assert types["observer"]["creatable_scopes"] == ["all", "repos"]
     assert types["cost-report"]["creatable_scopes"] == ["all", "repos"]
     admin = {t["name"]: t for t in client.get("/v1/schedule-types", headers=auth_header("root")).json()["types"]}
     assert admin["cost-report"]["creatable_scopes"] == ["all", "platform", "repos"]
     assert "platform" not in admin["observer"]["creatable_scopes"]
+    assert set(admin) == {entry.name for entry in scheduletypes.TYPES}
+    assert admin["model-prices-refresh"]["creatable_scopes"] == ["platform"]
+    assert admin["model-prices-check"]["creatable_scopes"] == ["platform"]
 
 
 def test_the_preview_is_the_ticks_parser(client) -> None:

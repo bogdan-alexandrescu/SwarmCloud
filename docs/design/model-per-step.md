@@ -788,8 +788,12 @@ at that moment, so a price change applies to the next stopped attempt with no
 deploy. The rule is unchanged: a model with no entry prices nothing, and the
 attempt reads "cost not reported". The paragraphs below describe the table as
 it was when it lived in code; read "the table" as the setting. The weekly
-pricing-page refresh and the nightly observed-rate check (#1481) are not built
-yet.
+pricing-page refresh and the nightly observed-rate check (#1481, lane
+PRICES-REFRESH) are schedule types, `model-prices-refresh` and
+`model-prices-check` ([schedules.md §3.14 and §3.15](../schedules.md#314-model-prices-refresh)).
+They run once an admin creates the two platform schedules. The refresh
+leaves `claude-haiku-5-5` unpriced: the page prices it in two tiers by
+prompt length, and one entry holds one figure per rate.
 
 By the owner's answer to Q9, `_LIST_PRICES` gains only dated figures that the
 owner or an operator supplies. **`claude-fable-5-1` is already in it** ($10 /
