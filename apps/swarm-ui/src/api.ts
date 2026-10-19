@@ -38,6 +38,8 @@ import type {
   NotificationTopic, Preferences, PreferencesSaved, PreferencesWrite, Profile, ProfileClaudeAccount, ProfileClaudeAccounts, ProfileDefault,
   ProfileGitHub, ProfileIdentity, ProfileKeyStatus, ProfileNotifications, ProfileQuotaWindow, ProfileSection, ProfileTypeSafe, ProfileWorkspace,
   ReminderCadence, WorkspaceRole,
+  DefaultRoleChange, PersonRoleChange, PersonRoles, PersonWorkspaceRole, RoleSummary, WorkspaceRoleEvent, WorkspaceRoleMe,
+  WorkspaceRoleOverride, WorkspaceRoles, WorkspaceRoster,
 } from './types'
 
 // The fetch contract lives in fetch.ts. This file is only the list of reads
@@ -2427,6 +2429,19 @@ export interface TenantChoice {
   display_name: string
   /** `user` for the caller's own personal workspace, `group` for a tenant group (#1200). Absent from an older API. */
   kind?: 'user' | 'group'
+  /**
+   * The caller's STORED role there (docs/design/workspace-roles.md §4.3):
+   * `{name, source}`. Absent from an older API, and absent when the role could
+   * not be read -- the cue to show the derived role, never a guessed one.
+   * `roles.ts` `roleOf` reads it.
+   */
+  role?: { name: string; source: string }
+  /**
+   * How the caller reaches it (§4.2.2): `personal`, `member`, or
+   * `platform_admin` for a group workspace a platform admin is not in.
+   * Absent from an older API.
+   */
+  via?: 'personal' | 'member' | 'platform_admin'
 }
 
 /**
@@ -6558,6 +6573,158 @@ export async function grantAdmin(email: string): Promise<Result<AdminGrantAnswer
 /** `DELETE /v1/admin/admins/{email}` (admin): refused for the owner and for the last admin, with the API's message. */
 export async function removeAdmin(email: string): Promise<Result<AdminRemoveAnswer>> {
   return writeTo(route('/v1/admin/admins/{email}', { email }), 'DELETE') as Promise<Result<AdminRemoveAnswer>>
+}
+
+// ---------------------------------------------------------------------------
+// Workspace roles (docs/design/workspace-roles.md §4.3, lane ROLES-UI-PEOPLE;
+// part of #1518).
+//
+// The routes are swarm_api/routes/roles.py. THE EMAIL IS IN THE BODY, never
+// the path, so an address lands in no request log -- `DELETE` included. The
+// workspace's own routes act in the tenant `X-Swarm-Tenant` selects; the
+// admin's (`/v1/admin/...`, Admin › People) name a group workspace in the
+// path and act without switching to it. Every write carries `via: "console"`,
+// which the server shows beside it and never acts on (a platform admin's is
+// recorded `platform_admin` whatever it says). The fixture build answers each
+// as not served.
+// ---------------------------------------------------------------------------
+
+function isObj(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+function str(v: unknown): string {
+  return typeof v === 'string' ? v : ''
+}
+
+function strOrNull(v: unknown): string | null {
+  return typeof v === 'string' && v !== '' ? v : null
+}
+
+function normOverride(raw: unknown): WorkspaceRoleOverride | null {
+  if (!isObj(raw) || str(raw.email) === '') return null
+  return {
+    email: str(raw.email),
+    role: str(raw.role),
+    source: str(raw.source) || 'override',
+    granted_by: str(raw.granted_by),
+    granted_at: str(raw.granted_at),
+    granted_via: str(raw.granted_via),
+    reason: str(raw.reason),
+  }
+}
+
+function normEvent(raw: unknown): WorkspaceRoleEvent | null {
+  if (!isObj(raw) || str(raw.action) === '') return null
+  const target = strOrNull(raw.target_email)
+  return {
+    action: str(raw.action),
+    by: str(raw.by),
+    at: str(raw.at),
+    ...(target === null ? {} : { target_email: target }),
+    detail: isObj(raw.detail) ? raw.detail : {},
+  }
+}
+
+function normSummary(raw: unknown): RoleSummary | null {
+  return isObj(raw) && str(raw.name) !== '' ? { name: str(raw.name), summary: str(raw.summary) } : null
+}
+
+function list<T>(raw: unknown, norm: (v: unknown) => T | null): T[] {
+  return (Array.isArray(raw) ? raw : []).map(norm).filter((v): v is T => v !== null)
+}
+
+/** A workspace's roster, as either the workspace's or the admin's route serves it. */
+export function normWorkspaceRoster(raw: unknown): WorkspaceRoster {
+  const r = isObj(raw) ? raw : {}
+  return {
+    tenant_id: str(r.tenant_id),
+    // Only an explicit `user` is a personal workspace: the fixed-admin line is
+    // drawn on the server's word, never on a guess from the id.
+    kind: r.kind === 'user' ? 'user' : 'group',
+    default_role: strOrNull(r.default_role),
+    default_source: strOrNull(r.default_source),
+    people: list(r.people, normOverride),
+    roles: list(r.roles, normSummary),
+    audit: list(r.audit, normEvent),
+  }
+}
+
+export function normWorkspaceRoles(raw: unknown): WorkspaceRoles {
+  const r = isObj(raw) ? raw : {}
+  const me = isObj(r.me) ? r.me : {}
+  const mine: WorkspaceRoleMe = { email: str(me.email), role: str(me.role), source: str(me.source), via: str(me.via) }
+  if (strOrNull(me.granted_by) !== null) mine.granted_by = str(me.granted_by)
+  if (strOrNull(me.granted_at) !== null) mine.granted_at = str(me.granted_at)
+  // Only an explicit true manages: an unread flag is never offered controls.
+  return { ...normWorkspaceRoster(raw), me: mine, can_manage: r.can_manage === true }
+}
+
+/** `GET /v1/workspace/roles`: the selected workspace's default, overrides, roles and events, and the caller's own role (every role, Q7). */
+export async function loadWorkspaceRoles(): Promise<Result<WorkspaceRoles>> {
+  return readAs(route('/v1/workspace/roles'), normWorkspaceRoles)
+}
+
+/** `PUT /v1/workspace/roles/person` (admin): give one person their own role. */
+export async function setWorkspacePersonRole(email: string, role: string, reason = ''): Promise<Result<PersonRoleChange>> {
+  return writeTo(route('/v1/workspace/roles/person'), 'PUT', roleBody({ email: email.trim(), role }, reason)) as Promise<Result<PersonRoleChange>>
+}
+
+/** `DELETE /v1/workspace/roles/person` (admin): return one person to the default. */
+export async function clearWorkspacePersonRole(email: string, reason = ''): Promise<Result<PersonRoleChange>> {
+  return writeTo(route('/v1/workspace/roles/person'), 'DELETE', roleBody({ email: email.trim() }, reason)) as Promise<Result<PersonRoleChange>>
+}
+
+/** `PUT /v1/workspace/roles/default` (admin): `viewer` or `member`; `admin` is 409. */
+export async function setWorkspaceDefaultRole(role: string, reason = ''): Promise<Result<DefaultRoleChange>> {
+  return writeTo(route('/v1/workspace/roles/default'), 'PUT', roleBody({ role }, reason)) as Promise<Result<DefaultRoleChange>>
+}
+
+/** `GET /v1/admin/workspaces/{tenant_id}/roles` (platform admin): any registered group workspace's roster, without selecting it. */
+export async function loadAdminWorkspaceRoles(tenantId: string): Promise<Result<WorkspaceRoster>> {
+  return readAs(route('/v1/admin/workspaces/{tenant_id}/roles', { tenant_id: tenantId }), normWorkspaceRoster)
+}
+
+/** `PUT /v1/admin/workspaces/{tenant_id}/roles/person` (platform admin): how a group workspace's first admin is named (Q2). */
+export async function setAdminWorkspacePersonRole(tenantId: string, email: string, role: string, reason = ''): Promise<Result<PersonRoleChange>> {
+  return writeTo(route('/v1/admin/workspaces/{tenant_id}/roles/person', { tenant_id: tenantId }), 'PUT', roleBody({ email: email.trim(), role }, reason)) as Promise<
+    Result<PersonRoleChange>
+  >
+}
+
+/** `DELETE /v1/admin/workspaces/{tenant_id}/roles/person` (platform admin). */
+export async function clearAdminWorkspacePersonRole(tenantId: string, email: string, reason = ''): Promise<Result<PersonRoleChange>> {
+  return writeTo(route('/v1/admin/workspaces/{tenant_id}/roles/person', { tenant_id: tenantId }), 'DELETE', roleBody({ email: email.trim() }, reason)) as Promise<
+    Result<PersonRoleChange>
+  >
+}
+
+/** `PUT /v1/admin/workspaces/{tenant_id}/roles/default` (platform admin). */
+export async function setAdminWorkspaceDefaultRole(tenantId: string, role: string, reason = ''): Promise<Result<DefaultRoleChange>> {
+  return writeTo(route('/v1/admin/workspaces/{tenant_id}/roles/default', { tenant_id: tenantId }), 'PUT', roleBody({ role }, reason)) as Promise<
+    Result<DefaultRoleChange>
+  >
+}
+
+/** `GET /v1/admin/roles/person?email=` (platform admin): every override one person holds, across the group workspaces. */
+export async function loadAdminPersonRoles(email: string): Promise<Result<PersonRoles>> {
+  const q = new URLSearchParams({ email: email.trim() })
+  return readAs(route('/v1/admin/roles/person', {}, q), (raw): PersonRoles => {
+    const r = isObj(raw) ? raw : {}
+    const workspaces = (Array.isArray(r.workspaces) ? r.workspaces : []).flatMap((w): PersonWorkspaceRole[] => {
+      if (!isObj(w) || str(w.tenant_id) === '') return []
+      if (w.unavailable === true) return [{ tenant_id: str(w.tenant_id), group: str(w.group), unavailable: true }]
+      const o = normOverride(w)
+      return o === null ? [] : [{ ...o, tenant_id: str(w.tenant_id), group: str(w.group), ...(strOrNull(w.key) === null ? {} : { key: str(w.key) }) }]
+    })
+    return { email: str(r.email), workspaces }
+  })
+}
+
+/** A role write's body: the reason only when one was given, and where it was made. */
+function roleBody(fields: Record<string, string>, reason: string): Record<string, string> {
+  const why = reason.trim()
+  return { ...fields, ...(why === '' ? {} : { reason: why }), via: 'console' }
 }
 
 // ---------------------------------------------------------------------------

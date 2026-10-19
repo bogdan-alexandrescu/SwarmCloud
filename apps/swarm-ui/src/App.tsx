@@ -50,6 +50,8 @@ import { PeopleScreen } from './People'
 import { PlatformCountsScreen } from './PlatformCounts'
 import { ProfilesScreen } from './Profiles'
 import { ProfileScreen } from './Profile'
+import { WorkspacePeopleScreen } from './WorkspacePeople'
+import { WORKSPACE_PEOPLE_ADDRESS } from './roles'
 import { QuotaDetailScreen } from './QuotaDetail'
 import { RuntimesScreen } from './Runtimes'
 import { CountNote, FrameAge, HeadAge, PageHead, RoutedPage, SectionHelp, timeAgo, useHeadRowClaimed, usePageAgeClaimed } from './Shell'
@@ -579,6 +581,17 @@ const MCP_LABEL = 'MCP servers'
 const PROFILE_TAB = 'profile'
 /** The page's `<h1>` and the second half of its name in the issue forms. */
 const PROFILE_LABEL = 'Profile'
+/**
+ * SETTINGS › PEOPLE AND ROLES (ROLES-UI-PEOPLE; docs/design/workspace-roles.md
+ * §4.8): the selected workspace's default role, its people's own roles and
+ * its role events, which every member reads (Q7) and its admins change. A
+ * sibling of Workspace and not a section, for the same reason -- and not a
+ * SECTIONS tab, so the issue forms' "Where" list is unchanged (§4.8). One
+ * exact address: `#settings/<anything else>` still lands on Pool limits.
+ */
+const PEOPLE_TAB = WORKSPACE_PEOPLE_ADDRESS.slice(SETTINGS.length + 1)
+/** The page's `<h1>` and the head's crumb. */
+const PEOPLE_LABEL = 'People and roles'
 
 /**
  * The utility button's label AND the heading of the screen it opens. One
@@ -939,6 +952,7 @@ export function fromAddress(full: string): Route {
   if (hash === `${SETTINGS}/${WORKSPACE_TAB}`) return { sectionId: SETTINGS, tab: WORKSPACE_TAB, ...blank }
   if (hash === `${SETTINGS}/${MCP_TAB}`) return { sectionId: SETTINGS, tab: MCP_TAB, ...blank }
   if (hash === `${SETTINGS}/${PROFILE_TAB}`) return { sectionId: SETTINGS, tab: PROFILE_TAB, ...blank }
+  if (hash === `${SETTINGS}/${PEOPLE_TAB}`) return { sectionId: SETTINGS, tab: PEOPLE_TAB, ...blank }
   if (hash === KEY_LINK_ADDRESS) {
     const scope = keyLinkScope(query)
     return { sectionId: SETTINGS, tab: KEY_LINK_TAB, ...blank, ...(scope === null ? {} : { view: `scope=${scope}` }) }
@@ -1354,7 +1368,9 @@ export function App() {
                   ? MCP_LABEL
                   : at.tab === PROFILE_TAB
                     ? PROFILE_LABEL
-                    : KEYS_LABEL
+                    : at.tab === PEOPLE_TAB
+                      ? PEOPLE_LABEL
+                      : KEYS_LABEL
               : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
   const object = at.missing ? null : documentObjectOf(at)
   useEffect(() => {
@@ -1456,6 +1472,8 @@ export function App() {
                   <McpServersScreen />
                 ) : at.sectionId === SETTINGS && at.tab === PROFILE_TAB ? (
                   <ProfileScreen />
+                ) : at.sectionId === SETTINGS && at.tab === PEOPLE_TAB ? (
+                  <WorkspacePeopleScreen />
                 ) : at.sectionId === SETTINGS ? (
                   <ProviderKeysScreen link={at.tab === KEY_LINK_TAB ? { scope: keyLinkScope(at.view ?? ''), token: keyLink.current } : null} />
                 ) : (

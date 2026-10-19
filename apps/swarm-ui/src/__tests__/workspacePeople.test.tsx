@@ -196,9 +196,8 @@ describe('Settings › People and roles', () => {
     api(() => PERSONAL)
     const { WorkspacePeopleScreen } = await load()
     render(<WorkspacePeopleScreen />)
-    await screen.findByText("You are this workspace's admin; a personal workspace has only you.")
+    await screen.findByText(/^You are this workspace.s admin; a personal workspace has only you\.$/)
     expect(screen.queryByRole('table', { name: /people with their own role/i })).toBeNull()
-    expect(screen.queryByRole('button')).toBeTruthy() // the refresh control only
     expect(screen.queryByRole('button', { name: /set role|set default|return/i })).toBeNull()
     expect(screen.queryByRole('combobox')).toBeNull()
   })

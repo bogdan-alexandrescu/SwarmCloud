@@ -5892,6 +5892,105 @@ export interface WorkspaceRole {
   via: string | null
 }
 
+/**
+ * A workspace's STORED roles (docs/design/workspace-roles.md §4.3, lane
+ * ROLES-UI-PEOPLE; part of #1518): `GET /v1/workspace/roles`, readable by
+ * every role (Q7). The ladder and what the console does with it are roles.ts;
+ * the sentences saying what each role permits are the server's (`roles`), so
+ * the screen never restates them.
+ */
+export interface RoleSummary {
+  name: string
+  summary: string
+}
+
+/** The caller's own role in the selected workspace. */
+export interface WorkspaceRoleMe {
+  email: string
+  role: string
+  /** `override`, `default`, `personal` or `platform_admin`. */
+  source: string
+  /** How the workspace was selected: `member`, `personal` or `platform_admin` (§4.2.2). */
+  via: string
+  granted_by?: string
+  granted_at?: string
+}
+
+/** One person's override: everyone else holds the default. Never a grant's document id. */
+export interface WorkspaceRoleOverride {
+  email: string
+  role: string
+  source: string
+  granted_by: string
+  granted_at: string
+  /** `console`, `cli` or `platform_admin`: shown, never acted on. */
+  granted_via: string
+  reason: string
+}
+
+/** One role or platform-admin row of the workspace's audit (§4.10), newest first. */
+export interface WorkspaceRoleEvent {
+  action: string
+  by: string
+  at: string
+  target_email?: string
+  detail: Record<string, unknown>
+}
+
+/** What `GET /v1/admin/workspaces/{tenant_id}/roles` serves: a group workspace's roles. */
+export interface WorkspaceRoster {
+  tenant_id: string
+  kind: 'group' | 'user'
+  /** `viewer` or `member`; null for a personal workspace, which has only its person. */
+  default_role: string | null
+  /** `migration` until an admin sets the default, then `grant`; null for a personal workspace. */
+  default_source: string | null
+  people: WorkspaceRoleOverride[]
+  roles: RoleSummary[]
+  audit: WorkspaceRoleEvent[]
+}
+
+/** `GET /v1/workspace/roles`: the roster, with the caller's own role and whether they manage it. */
+export interface WorkspaceRoles extends WorkspaceRoster {
+  me: WorkspaceRoleMe
+  /** The caller holds `admin` here. The API is the gate; this only stops offering what would be refused. */
+  can_manage: boolean
+}
+
+/** One entry of `GET /v1/admin/roles/person`: an override the person holds, or a workspace whose grants could not be read. */
+export interface PersonWorkspaceRole extends Partial<WorkspaceRoleOverride> {
+  tenant_id: string
+  group: string
+  /** The signing key's id, for a key rotation (§4.13). */
+  key?: string
+  unavailable?: boolean
+}
+
+/** `GET /v1/admin/roles/person?email=`: every override one person holds, across the group workspaces. */
+export interface PersonRoles {
+  email: string
+  workspaces: PersonWorkspaceRole[]
+}
+
+/** `PUT`/`DELETE /v1/workspace/roles/person`'s answer. `member` is the fresh group check; null when the directory did not answer. */
+export interface PersonRoleChange {
+  email: string
+  role: string
+  previous_role: string
+  source: string
+  granted_at: string
+  member?: boolean | null
+}
+
+/** `PUT /v1/workspace/roles/default`'s answer. */
+export interface DefaultRoleChange {
+  tenant_id: string
+  default_role: string
+  previous_default: string
+  default_source: string
+  granted_at: string
+}
+
 export interface ProfileIdentity {
   email: string
   /** The stored name, or null: others then see the email alone. */
