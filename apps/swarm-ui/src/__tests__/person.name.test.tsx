@@ -83,7 +83,7 @@ describe('PersonName', () => {
     const full = render(<PersonName email={EMAIL} name={NAME} variant="full" />).container
     expect(marker(full)!.textContent).toBe(`${NAME} · ${EMAIL}`)
     expect(full.querySelector('.person-name-name')!.textContent).toBe(NAME)
-    expect(container.querySelector('.person-name-email')!.textContent).toBe(EMAIL)
+    expect(full.querySelector('.person-name-email')!.textContent).toBe(EMAIL)
   })
 
   it('prints the email alone when the name is null, absent or blank', () => {
