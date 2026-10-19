@@ -736,6 +736,81 @@ in the flow still holds. This is Q3's fallback for the front door alone.
   additive and re-adds its own. This is the same shape as §2.4 R2 of
   `docs/workspaces.md`, on one more resource.
 
+**Amendment, 2026-10-19: R8, and the owner's decision to sign approvals
+(lane WK-SIGNED-APPROVAL, part of #847).**
+
+* **R8, as WK-JOB measured it.** Tenant workers hold Firestore create, get
+  and update across the whole database (`terraform/modules/tenancy/main.tf`,
+  "the residual is real"). So a worker can write `workspaces/{id}` with
+  `decision.by` set to the platform owner. A1's checks are of *who the record
+  names*: the image's `platform_owner`, and that address being `owner` in
+  `admin_roles/` now. They are not proof that the owner acted. Once K1 is
+  granted, the job would admit that record's service account at the front
+  door. "The approval" in the list above therefore bounded nothing a worker
+  could not write.
+* **The decision.** swarm-api signs every approval and every retry, and the
+  job verifies the signature before any step that grants.
+  `enable_workspace_kinds` stays off until this is merged.
+  * **The signed bytes.** RFC 8785 of `{purpose: "swarm.workspace-approval/v1",
+    workspace_id, tenant_id, kind, principal, decided_by, decided_at,
+    request_id}` (`apps/swarm-api/swarm_api/workspaces.py::canonical_approval`).
+  * **The key.** The existing step-spec KMS key (`SPEC_SIGNING_KEY_VERSION`).
+    Only swarm-api holds `signer` on it. The purpose sits inside the bytes, so
+    no step-spec signature can be read as an approval, and no approval as a
+    step spec.
+  * **Where it is stored.** The record's `approval` map holds the signature,
+    the key version, and the signed `decided_by`, `decided_at` and
+    `request_id`. It is written in the same write as the decision
+    (`People._approve_in`, `People.retry`). A KMS failure is a 503, and the
+    record is not approved.
+  * **A retry.** It runs a new request id, so it is signed afresh by whoever
+    retried it.
+* **What the job checks.** `images/workspace-apply/entry.py` runs before step
+  1, so before A1, S2 and every group or service step. It reads the record
+  and rebuilds the payload from the record's own fields. It requires three
+  things:
+  * the signed request id is the record's;
+  * the signed decider is the record's `decision.by` or `retry.by`;
+  * the key version is a version of the key the image pins for the project
+    (`SIGNING_KEYS`: dev's step-spec key).
+
+  It then fetches that version's public key from Cloud KMS, never from the
+  environment or the record, and verifies P-256 ECDSA with the standard
+  library. A missing or bad signature, or a payload that is not the record,
+  stops the run as `needs_owner` with `APPROVAL_UNSIGNED`. It also appends a
+  `front_door_audit` entry with `admitted: false`. Both are one write,
+  conditional on the record being the one read. Nothing is granted, because
+  step 1 never runs. The owner's Retry re-signs. A cloud that does not answer
+  writes nothing and runs nothing.
+* **What closes the race.** entry.py pins what it verified (workspace id,
+  tenant id, kind, principal) in `SWARM_APPROVAL_PIN`, which is in its fixed
+  environment. The guard's `expect` (`scripts/lib/workspace-guard.sh`)
+  writes no expectation for a record that differs, or for a group or service
+  the pin does not call verified. A1's claim re-reads the tenant, kind and
+  principal inside its transaction. So a record swapped after the check grants nothing.
+* **Personal records are not verified.** A person's steps never touch the
+  front door, and approved personal records from before this change keep
+  working. New personal approvals are signed all the same, so verifying them
+  later is one entry in `VERIFIED_KINDS`. This is the lane's recommended
+  answer in its questions to the owner.
+* **The one grant this needs (owner, not agent work).** The job's identity,
+  `swarm-workspace-deployer`, must hold `roles/cloudkms.publicKeyViewer` on
+  dev's step-spec key (`terraform/bootstrap/spec_signing.tf`). Without it,
+  every group or service run stops at the KMS read and writes nothing. That
+  fails closed, and the lane's questions to the owner carry the Terraform.
+* **Residual, stated so it is not mistaken for zero.** The signature proves
+  that swarm-api approved the record as it stood at the click. A worker that
+  rewrites a `requested` or `failed` record's principal *before* an admin
+  approves or retries it changes what gets signed. The console shows the
+  principal on the row being approved, and the guard's S1 account rules and
+  the page on every IAP `SetIamPolicy` still hold. A signature also carries no
+  revocation. A denial drops the record's `approval`, but a worker that read
+  the signed map before the denial can write it back together with the
+  approved verdict. The job then runs what was once signed for that exact
+  workspace, tenant, kind and principal, and nothing else. The same holds for
+  re-running a workspace after it is taken down. Closing this needs a
+  revocation the workers cannot write. It is not built here.
+
 ### 4.6 Secrets and forge slots for group and service workspaces
 
 The 2026-10-11 decision stands: **a person's credential is used only on that

@@ -57,6 +57,7 @@ from __future__ import annotations
 import logging
 import os
 import secrets
+import base64
 import threading
 import time
 import uuid
@@ -67,6 +68,7 @@ from typing import Any, Callable, Mapping
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
+from swarm_common import specsign
 from swarm_common.admission import _snapshot
 from swarm_common.identity import SERVICE_ACCOUNT_EMAIL, tenant_id_for_group, tenant_id_for_user
 from swarm_common.models import Tenant
@@ -91,6 +93,7 @@ from .errors import (
     WorkspaceServiceNotInProject,
     WorkspaceServicePlatform,
 )
+from .specsigning import SpecSigningUnavailable
 from .store import TENANTS
 from .validation import is_service_submitter
 
@@ -723,6 +726,92 @@ def nested(new_id: str, existing_id: str) -> bool:
     if not new_id or not existing_id or new_id == existing_id:
         return False
     return new_id.startswith(existing_id + "-git-") or existing_id.startswith(new_id + "-git-")
+
+
+# --------------------------------------------------------------------------
+# the signed approval (lane WK-SIGNED-APPROVAL of #847, owner 2026-10-19)
+# --------------------------------------------------------------------------
+#
+# R8 of docs/design/workspace-kinds.md §4.5: tenant workers hold Firestore
+# write across the database (terraform/modules/tenancy/main.tf), so a worker
+# can write a record whose `decision.by` names the platform owner, and the
+# job would admit that service account at the front door. So swarm-api signs
+# every approval and every retry, with the step-spec KMS key only it may sign
+# with (`specsigning.KmsSpecSigner`, SPEC_SIGNING_KEY_VERSION), and the job
+# (images/workspace-apply/entry.py) verifies the signature before any step
+# that grants. A worker can write the record, never the signature: it holds
+# no `signer` on the key and cannot make swarm-api sign (approve and retry
+# are admin routes), and the purpose inside the bytes keeps any step-spec
+# signature swarm-api makes for it from reading as an approval.
+
+#: Domain separation: inside the signed bytes, never a step spec's
+#: (`specsign.SPEC_PURPOSE`). A change to the fields or their encoding is a
+#: new purpose, never an edit to this one.
+APPROVAL_PURPOSE = "swarm.workspace-approval/v1"
+#: What an approval signature covers. entry.py restates these (it runs on the
+#: image's bare python3) and a unit test holds the two byte for byte equal.
+APPROVAL_FIELDS = ("workspace_id", "tenant_id", "kind", "principal",
+                   "decided_by", "decided_at", "request_id")
+#: The record's field the signature and what it covers are stored in.
+APPROVAL = "approval"
+
+
+def canonical_approval(fields: Mapping[str, Any]) -> bytes:
+    """JCS of {"purpose": APPROVAL_PURPOSE, <APPROVAL_FIELDS>}: the bytes signed.
+
+    Every field is a non-empty string. Anything else is a ValueError, never
+    signed as something the job would read differently."""
+    payload: dict[str, str] = {"purpose": APPROVAL_PURPOSE}
+    for key in APPROVAL_FIELDS:
+        value = fields.get(key)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"an approval's {key} must be a non-empty string")
+        payload[key] = value
+    return specsign.jcs(payload)
+
+
+def sign_approval(signer: Any, record: Mapping[str, Any], *, decided_by: str,
+                  decided_at: datetime, request_id: str) -> dict[str, Any] | None:
+    """The record's `approval` map for an approval or retry by DECIDED_BY.
+
+    Covers the record's workspace id, tenant id, kind and principal as they
+    stand, who decided, when, and the request id the job will run. None when
+    no signer is configured, which only local development and tests allow
+    (`specsigning.signer_from_settings` refuses to start a deployed swarm-api
+    without one); the job then stops a group or service record for the owner
+    (APPROVAL_UNSIGNED) and runs a personal one as before.
+
+    A KMS failure is `SpecSigningUnavailable` (503), raised inside the
+    caller's transaction, so the approval is not written at all."""
+    fields = {
+        "workspace_id": str(record.get("workspace_id") or ""),
+        "tenant_id": str(record.get("tenant_id") or ""),
+        "kind": kind_of(record),
+        "principal": str(record.get("principal") or ""),
+        "decided_by": decided_by,
+        "decided_at": decided_at.isoformat(),
+        "request_id": request_id,
+    }
+    canonical = canonical_approval(fields)
+    if signer is None:
+        log.warning("no SPEC_SIGNING_KEY_VERSION: workspace %s approved UNSIGNED; the job "
+                    "refuses a group or service record without a signature",
+                    fields["workspace_id"])
+        return None
+    try:
+        signed = signer.sign(specsign.spec_digest(canonical))
+    except SpecSigningUnavailable:
+        raise
+    except Exception as exc:
+        raise SpecSigningUnavailable(
+            "the approval could not be signed (Cloud KMS); nothing was changed") from exc
+    return {
+        "decided_by": fields["decided_by"],
+        "decided_at": fields["decided_at"],
+        "request_id": request_id,
+        "key_version": signed.key_version,
+        "signature": base64.b64encode(signed.signature).decode("ascii"),
+    }
 
 
 # --------------------------------------------------------------------------

@@ -415,8 +415,14 @@ class People:
         names: NameLookup | None = None,
         groups: MembershipResolver | None = None,
         rules: ws.KindRules | None = None,
+        signer: Any = None,
     ) -> None:
         self._db = db
+        # Signs every approval and retry (`ws.sign_approval`, lane
+        # WK-SIGNED-APPROVAL): the step-spec KMS signer. None only where
+        # `specsigning.signer_from_settings` allows it (local development and
+        # tests); the job then refuses a group or service approval.
+        self._signer = signer
         self._publisher = publisher
         self._now = now
         self._console_url = console_url
@@ -525,10 +531,15 @@ class People:
                 "was made by Terraform, so the setup job would refuse it. Nothing was "
                 "changed and nothing was started.",
                 detail={"workspace_id": workspace_id, "state": state}))
+        at = self._now()
         patch: dict[str, Any] = {
             "state": ws.APPROVED,
-            "decision": {"by": by, "at": self._now(), "verdict": ws.APPROVED,
+            "decision": {"by": by, "at": at, "verdict": ws.APPROVED,
                          "reason": AUTO_APPROVE_REASON if auto else None, "auto": auto},
+            # The job runs nothing that grants for a group or service record
+            # unless this verifies over the record (R8, `ws.sign_approval`).
+            ws.APPROVAL: ws.sign_approval(self._signer, record, decided_by=by, decided_at=at,
+                                          request_id=str(record.get("request_id") or "")),
         }
         if directory is not None:
             patch["directory"] = dict(directory)
@@ -746,7 +757,12 @@ class People:
                     "workspace, or an approved one no build was ever sent for, can be denied",
                     detail={"workspace_id": workspace_id, "state": state})
             patch: dict[str, Any] = {"state": ws.DENIED, "decision": {
-                "by": by, "at": self._now(), "verdict": ws.DENIED, "reason": reason}}
+                "by": by, "at": self._now(), "verdict": ws.DENIED, "reason": reason},
+                # A denied record carries no approval signature, so turning its
+                # verdict back is not enough to make the job run it (R8). One
+                # read before the denial can still be put back: docs/design/
+                # workspace-kinds.md §4.5's amendment states that residual.
+                ws.APPROVAL: None}
             if record.get("decision"):
                 # Denying a failed record replaces its approval; the approval
                 # stays in the history beside the run that failed.
@@ -801,10 +817,16 @@ class People:
                     f"workspace {workspace_id} has no approval to retry",
                     detail={"workspace_id": workspace_id, "state": state})
             now = self._now()
+            request_id = str(uuid.uuid4())
             patch = {
                 "state": ws.APPROVED,
-                "request_id": str(uuid.uuid4()),
+                "request_id": request_id,
                 "retry": {"by": by, "at": now, "from_state": state},
+                # A retry runs a new request id, so it is signed afresh, by
+                # whoever retried it: the job checks the signature's request
+                # id is the record's own (R8, `ws.sign_approval`).
+                ws.APPROVAL: ws.sign_approval(self._signer, record, decided_by=by,
+                                              decided_at=now, request_id=request_id),
                 "failure": None,
                 "history": [*(record.get("history") or []), {
                     "request_id": record.get("request_id"),
