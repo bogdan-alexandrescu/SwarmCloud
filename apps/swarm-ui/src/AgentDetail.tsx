@@ -63,6 +63,7 @@ import {
   restoredFrom,
   startedOf,
   usageOf,
+  modelMismatch,
   waitingLine,
   whyAgent,
   whyNeedsAction,
@@ -2593,6 +2594,58 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
 }
 
 /**
+ * THE MODEL AN ATTEMPT RAN, AND THE TASK'S CLASS (docs/design/model-per-step.md
+ * §4.6, §4.8, #1435). Drawn by this pane's attempt cards and the Attempts
+ * tab's, so the two cannot word it two ways.
+ *
+ * `a.model` is what the worker was STARTED with (`Attempt.model`), the pin of
+ * the task's class at dispatch; the class beside it is the task's, resolved,
+ * `default` when nobody named one. Null is an attempt from before the record,
+ * or a runner that starts no model -- an absent record, never a blank.
+ *
+ * When the CLI's own stream does not include that model (`modelMismatch`, the
+ * worker's `model_mismatch` rule) BOTH are shown, with the sentence. Only on
+ * the latest attempt: the stream is read from the task's `result_summary`,
+ * which is written once, by the last attempt.
+ */
+export function AttemptModel({ a, task, isLatest }: { a: AttemptRow; task: Task | null; isLatest: boolean }) {
+  const model = a.model ?? null
+  const modelClass = task?.model_class ?? null
+  const ranOther = isLatest && task !== null ? modelMismatch(model, task) : null
+  return (
+    <>
+      <li className={`ctl-fact${model === null ? ' is-absent' : ''}`}>
+        <b>model</b>
+        {model === null ? (
+          <Mark
+            kind="absent"
+            say="No model is recorded for this attempt: it ran before attempts recorded their model, or its runner starts no model."
+          />
+        ) : (
+          <span className="mono">{model}</span>
+        )}
+        {modelClass !== null && (
+          <span className="att-model-class" title={task?.model_class_defaulted ? 'The task named no class, so it runs its runner’s default.' : 'The class the task named.'}>
+            {' · '}
+            <span className="mono">{modelClass}</span>
+            {task?.model_class_defaulted && ' (default)'}
+          </span>
+        )}
+      </li>
+      {ranOther !== null && model !== null && (
+        <li className="ctl-fact rt-fact-wide att-model-mismatch">
+          <b>CLI ran</b>
+          <span className="warn-text">
+            <span className="mono">{ranOther.join(', ')}</span>, pinned <span className="mono">{model}</span>: the CLI ran
+            a different model from the one pinned
+          </span>
+        </li>
+      )}
+    </>
+  )
+}
+
+/**
  * An attempt's account fact (#379). The row's own `account`, joined on from
  * `accounts_by_attempt` by `loadAgentRun`; absent means not read. Whether an
  * attempt with none is `not assigned yet` or `not assigned` is the API's
@@ -2703,6 +2756,7 @@ function AttemptCard({
           {/* THIS ATTEMPT'S ACCOUNT (#379), swaps included:
               `acct-eng-01 → 02 (swapped: unreadable)`. */}
           <AttemptAccount a={a} />
+          <AttemptModel a={a} task={run.task} isLatest={isLatest} />
           {/* `ran` ONLY BESIDE ANOTHER ATTEMPT (#102). With one attempt it
               is the Elapsed tile's figure a second time -- measured between
               the attempt's instants rather than the task's, so the two read

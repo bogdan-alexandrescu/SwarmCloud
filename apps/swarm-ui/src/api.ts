@@ -1973,6 +1973,10 @@ const FIXTURE_RUNTIMES: Record<string, Runtime> = {
     timeout_seconds: 7200, resource_class: 'demo-small',
     resources: { name: 'demo-small', cpu: 3, memory_gib: 7, disk_gib: 3, units: 1 },
     available: true, disabled_reason: '',
+    // Invented classes, for the same reason as the names: a class this
+    // deployment pins nothing for (`demo-later`) is the chip that says so.
+    model_classes: ['demo-deep', 'demo-quick', 'demo-later'], default_model_class: 'demo-deep',
+    models: { 'demo-deep': 'demo-model-deep-2', 'demo-quick': 'demo-model-quick-2' },
   },
   'demo-probe': {
     name: 'demo-probe', image: 'demo-runtime-base',
@@ -1981,6 +1985,8 @@ const FIXTURE_RUNTIMES: Record<string, Runtime> = {
     timeout_seconds: 300, resource_class: 'demo-small',
     resources: { name: 'demo-small', cpu: 3, memory_gib: 7, disk_gib: 3, units: 1 },
     available: true, disabled_reason: '',
+    // Runs no model: the `—` branch of the classes row.
+    model_classes: [], default_model_class: null, models: {},
   },
   'demo-viewport': {
     name: 'demo-viewport', image: 'demo-runtime-viewport',
@@ -1994,6 +2000,7 @@ const FIXTURE_RUNTIMES: Record<string, Runtime> = {
     // the shipped catalogue is AUTO either.
     available: false,
     disabled_reason: 'demo-vendor refused the registered credential. Use demo-small.',
+    model_classes: ['demo-deep'], default_model_class: 'demo-deep', models: { 'demo-deep': 'demo-model-deep-2' },
   },
   'demo-wide': {
     name: 'demo-wide', image: 'demo-runtime-wide',
@@ -2004,6 +2011,7 @@ const FIXTURE_RUNTIMES: Record<string, Runtime> = {
     timeout_seconds: 10800, resource_class: 'demo-wide',
     resources: { name: 'demo-wide', cpu: 7, memory_gib: 30, disk_gib: 15, units: 4 },
     available: true, disabled_reason: '',
+    model_classes: [], default_model_class: null, models: {},
   },
 }
 
@@ -2063,6 +2071,48 @@ async function fixtureRuntimeNames(): Promise<Result<string[]>> {
   await new Promise((r) => setTimeout(r, 90))
   noteFixtureProbe(route('/v1/runtimes'), 90, true)
   return { status: 'ok', fetchedAt: Date.now(), data: Object.keys(FIXTURE_RUNTIMES).sort() }
+}
+
+/** The fixture catalogue's model classes, recorded as a read of the same route. */
+async function fixtureRuntimeModelClasses(): Promise<Result<Record<string, ModelClassOffer>>> {
+  await new Promise((r) => setTimeout(r, 60))
+  noteFixtureProbe(route('/v1/runtimes'), 60, true)
+  return { status: 'ok', fetchedAt: Date.now(), data: offersOf(FIXTURE_RUNTIMES) }
+}
+
+function offersOf(runtimes: Record<string, Runtime>): Record<string, ModelClassOffer> {
+  return Object.fromEntries(
+    Object.entries(runtimes).map(([name, r]) => [
+      name,
+      // `?? []`, `?? null`, `?? {}`: an API older than the three fields
+      // serves none of them, and its runners then offer no class at all --
+      // the step runs its runner's default, which is what that API runs.
+      { model_classes: r.model_classes ?? [], default_model_class: r.default_model_class ?? null, models: r.models ?? {} },
+    ]),
+  )
+}
+
+/**
+ * What a step on each runner may name as `model_class` (docs/design/
+ * model-per-step.md §4.8, #1435): the accepted classes, the default, and the
+ * model each is pinned to, by runner-profile name. Both Submit forms read the
+ * runners themselves from `/v1/capacity`, which carries no classes, so the
+ * class select reads them from `/v1/runtimes` -- through `readRuntimes`, the
+ * route's one reader.
+ */
+export interface ModelClassOffer {
+  model_classes: string[]
+  default_model_class: string | null
+  models: Record<string, string>
+}
+
+export async function loadModelClasses(): Promise<Result<Record<string, ModelClassOffer>>> {
+  if (USE_FIXTURES) return fixtureRuntimeModelClasses()
+  const r = await readRuntimes()
+  if (r.status === 'ok' || r.status === 'stale') {
+    return { status: 'ok', fetchedAt: r.fetchedAt, data: offersOf(r.data.runtimes) }
+  }
+  return r as Result<Record<string, ModelClassOffer>>
 }
 
 export interface AgentRun {

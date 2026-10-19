@@ -1,5 +1,5 @@
 import { useCallback } from 'react'
-import { Em, Mark, attemptLabel, isParked, parkedOutcome, type ChipTone } from './AgentDetail'
+import { AttemptModel, Em, Mark, attemptLabel, isParked, parkedOutcome, type ChipTone } from './AgentDetail'
 import { Count, ToneMark } from './components'
 import { loadAgentDetail, loadAttempts } from './api'
 import { instant, spanText } from './duration'
@@ -244,6 +244,9 @@ function Body({ t }: { t: AttemptTimeline }) {
   const endMissing =
     t.task !== null && t.events !== null && TERMINAL_STATES.has(t.task.state) && !t.events.some(isTerminalEvent)
   const lastEvent = t.events?.[t.events.length - 1]
+  // The highest generation is the latest attempt: the one the task's
+  // `result_summary` -- and so the CLI's reported models -- belongs to.
+  const latest = t.attempts.reduce<AttemptRow | null>((best, a) => (best === null || a.generation > best.generation ? a : best), null)
   return (
     <>
       <div className="ctl-toolbar">
@@ -336,7 +339,8 @@ function Body({ t }: { t: AttemptTimeline }) {
             built from this toolbar's own `say` strings. */}
       </div>
       {groups.map((g) => (
-        <AttemptCard key={g.key} g={g} eventsRead={t.events !== null} prev={prev} />
+        <AttemptCard key={g.key} g={g} eventsRead={t.events !== null} prev={prev} task={t.task}
+          isLatest={g.attempt !== null && g.attempt.attempt_id === latest?.attempt_id} />
       ))}
       <p className="ctl-card-foot">
         <span>reading these cards:</span>
@@ -351,11 +355,17 @@ function AttemptCard({
   g,
   eventsRead,
   prev,
+  task,
+  isLatest,
 }: {
   g: Group
   eventsRead: boolean
   /** Each event's predecessor on the page, by event id (`previousOf`). */
   prev: ReadonlyMap<string, TaskEvent>
+  /** The task, for its model class and its stream's models; null when that read failed. */
+  task: Task | null
+  /** The latest attempt: the only one the task's result summary describes. */
+  isLatest: boolean
 }) {
   const a = g.attempt
   const out = a === null ? null : outcome(a)
@@ -455,6 +465,9 @@ function AttemptCard({
               <b>ckpt</b>
               {a.checkpoints.length}
             </li>
+            {/* The model this attempt ran and the task's class (#1435), and
+                both models when the CLI ran another -- Details' own fact. */}
+            <AttemptModel a={a} task={task} isLatest={isLatest} />
           </ul>
         )}
 

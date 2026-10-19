@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { loadProviders } from './api'
+import { loadProviders, type ModelClassOffer } from './api'
 import type { Result } from './fetch'
 import { HELP } from './help'
 import { Mark } from './primitives'
@@ -407,4 +407,66 @@ export function StepRunnerFacts({ profile, keys }: { profile: RunnerProfile; key
       <span className="sbf-runner-key"><KeyFact provider={profile.provider} keys={keys} /></span>
     </p>
   )
+}
+
+/**
+ * A STEP'S MODEL CLASS, BY NAME (docs/design/model-per-step.md §4.8, #1435).
+ *
+ * Offers exactly the classes the runner accepts, as `/v1/runtimes` serves
+ * them, each labelled with the model this deployment pins it to, and starts
+ * on the runner's default. Not drawn at all for a runner that runs no Claude
+ * model (`[]`), nor when the runner's classes were not read: the step then
+ * runs its runner's default, which is what sending nothing asks for.
+ *
+ * INVARIANT 10 STILL HOLDS: what is picked and sent is a CLASS NAME the
+ * catalogue declares, never a model ID; the ID is in the label because it is
+ * what the choice runs. A class the deployment pins no ID for stays offered
+ * and refused, saying so, as a disabled runner does -- the API would refuse it
+ * `model_class_not_yet_available`.
+ *
+ * `value` null is "the default"; `onPick` reports null for the default too, so
+ * a form holds only a choice somebody made (`sentModelClass`).
+ */
+export function ModelClassSelect({ id, label, offer, value, onPick }: {
+  id: string
+  label: string
+  /** The runner's classes from `/v1/runtimes`; null or undefined when not read. */
+  offer: ModelClassOffer | null | undefined
+  value: string | null
+  onPick: (modelClass: string | null) => void
+}) {
+  if (offer === null || offer === undefined || offer.model_classes.length === 0) return null
+  const fallback = offer.default_model_class
+  const shown = value !== null && offer.model_classes.includes(value) ? value : (fallback ?? '')
+  return (
+    <p className="wfb-cost sb-model-class-line">
+      <select id={id} className="mono sb-model-class" aria-label={label} value={shown}
+        onChange={(e) => onPick(e.target.value === fallback ? null : e.target.value)}>
+        {offer.model_classes.map((c) => {
+          const model = offer.models[c]
+          const unpinned = model === undefined && c !== fallback
+          return (
+            <option key={c} value={c} disabled={unpinned}
+              title={unpinned ? `No model is pinned for ${c} on this deployment yet.` : undefined}>
+              {`${c} · ${model ?? 'no model pinned'}${c === fallback ? ' · default' : ''}`}
+            </option>
+          )
+        })}
+      </select>
+    </p>
+  )
+}
+
+/**
+ * The `model_class` a submission carries for a step, or undefined to send
+ * none. Only a class somebody chose, that the runner accepts, and that is not
+ * its default: naming the default stores nothing at the API (§4.3), so leaving
+ * it out sends the request a console without the select would have sent. A
+ * class kept from a runner the step no longer has is dropped, not sent to be
+ * refused.
+ */
+export function sentModelClass(offer: ModelClassOffer | null | undefined, value: string | null | undefined): string | undefined {
+  if (value === null || value === undefined || offer === null || offer === undefined) return undefined
+  if (!offer.model_classes.includes(value) || value === offer.default_model_class) return undefined
+  return value
 }

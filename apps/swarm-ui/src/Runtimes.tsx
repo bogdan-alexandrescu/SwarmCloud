@@ -709,6 +709,17 @@ function RuntimeCard({
             <b>cred</b>
             <Credential runtime={runtime} />
           </li>
+          {/* THE MODEL CLASSES A STEP ON THIS RUNTIME MAY NAME (docs/design/
+              model-per-step.md §4.8, #1435), each with the model ID this
+              deployment pins it to, from the route -- never a table here. A
+              caller names a CLASS, never an ID (invariant 10); the ID is shown
+              because it is what the class costs. A wide line after the image
+              and the credential (V088 holds the image right after the short
+              facts): four chips with IDs do not fit the short facts' track. */}
+          <li className="ctl-fact rt-fact-wide">
+            <b>model classes</b>
+            <ModelClasses runtime={runtime} />
+          </li>
         </ul>
 
         {/* POOLS IT MUST CLEAR (capacity.html §C, decided 2026-10-01). A task
@@ -804,6 +815,54 @@ function breakAtUnderscores(name: string): ReactNode {
       )}
     </Fragment>
   ))
+}
+
+/**
+ * A runtime's model classes as chips: the class, the model it is pinned to,
+ * and `default` on the one a step naming none runs. `—` for a runtime that
+ * runs no Claude model -- the route's `[]`, a measured answer, drawn as the
+ * console's absence glyph with its reason in the title. A class the
+ * deployment pins no ID for says so rather than printing a blank: the API
+ * refuses it (`model_class_not_yet_available`) until one is pinned.
+ */
+function ModelClasses({ runtime }: { runtime: Runtime }) {
+  // `?? []`: an API older than the field serves none, and that API runs no
+  // class but the runtime's own model either.
+  const classes = runtime.model_classes ?? []
+  if (classes.length === 0) {
+    return (
+      <span className="ctl-em" title="This runtime runs no Claude model, so a step on it names no model class.">
+        —
+      </span>
+    )
+  }
+  const models = runtime.models ?? {}
+  return (
+    // `rt-pool-chips` is the wrapping chip row the pools line already draws.
+    <span className="rt-pool-chips rt-model-classes">
+      {classes.map((c) => {
+        const id = models[c]
+        const isDefault = c === runtime.default_model_class
+        return (
+          <span
+            key={c}
+            className={`c-chip rt-model-class${isDefault ? ' is-default' : ''}`}
+            data-model-class={c}
+            title={
+              id === undefined
+                ? `No model is pinned for ${c} on this deployment, so a step cannot name it yet.`
+                : `A step that sends model_class "${c}" runs ${id}${isDefault ? '; so does a step that names none' : ''}.`
+            }
+          >
+            <span className="mono">{c}</span>
+            {' · '}
+            {id === undefined ? <i>no model pinned</i> : <span className="mono">{id}</span>}
+            {isDefault && <strong className="rt-model-default"> · default</strong>}
+          </span>
+        )
+      })}
+    </span>
+  )
 }
 
 export function Credential({ runtime }: { runtime: Runtime }) {

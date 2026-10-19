@@ -7,7 +7,7 @@
 // BREAK IT: drop `model` or `model_class` from the card's choices; print the
 // route's "not recorded" model row as a link or a blank -- each case fails.
 
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { fireEvent, render, within } from '@testing-library/react'
 
 import { ledgerFixture } from '../outcomes.fixture'
