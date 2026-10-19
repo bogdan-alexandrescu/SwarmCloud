@@ -17,8 +17,9 @@ bootstrap apply with `enable_workspace_kinds = true`.
 `member` or `admin`, and a platform admin is `admin` in every group workspace,
 member or not, never in anyone else's personal one. The design is
 [design/workspace-roles.md](design/workspace-roles.md), and its §8 records what
-was built; Admin › People's part is §6.4 (5) and §6.5 below. Both of its
-refusal switches and `PLATFORM_ADMIN_REACH` are off.
+was built; Admin › People's part is §6.4 (5) and §6.5 below. In dev,
+`role_member_required` and `PLATFORM_ADMIN_REACH` are on (ROLES-ON-DEV,
+2026-10-19) and `role_admin_required` is off; in prod all three are off.
 
 The owner asked on 2026-10-08 for each person's personal space to be
 "onboarded at the time of onboarding a new user in swarmcloud", with "a way to create this via the UI and potentially via the
@@ -1903,9 +1904,9 @@ Q5). With `PLATFORM_ADMIN_REACH` on, their workspace switcher lists the group
 workspaces they are not in under "Other workspaces (platform admin)", and
 everything they do there is audited before it runs. They are never admin in
 anyone else's personal workspace and cannot select one, because it holds that
-person's own secrets and GitHub token. `PLATFORM_ADMIN_REACH` is off in every
-environment until the operator turns it on in dev, so today a platform admin
-enters only the group workspaces they are a member of.
+person's own secrets and GitHub token. `PLATFORM_ADMIN_REACH` is on in dev
+(`var.platform_admin_reach`, ROLES-ON-DEV, 2026-10-19) and off in prod, so in
+prod a platform admin enters only the group workspaces they are a member of.
 
 ---
 

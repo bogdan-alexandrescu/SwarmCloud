@@ -36,7 +36,9 @@ With `PLATFORM_ADMIN_REACH` on, a full admin may also select every registered
 group workspace as its `admin`, member or not, and never anyone else's
 personal workspace; every write there is audited before it runs
 ([Workspace roles and a platform admin's reach](#workspace-roles-and-a-platform-admins-reach)).
-It is off in every environment today.
+It is on in dev and off in prod: `var.platform_admin_reach` in
+`terraform/environments/<env>/<env>.tfvars` renders it into swarm-api's
+environment (lane ROLES-ON-DEV, owner decision 2026-10-19).
 
 There is one narrower way onto the admin surface, and it is not admin.
 A caller on **`ADMIN_POOL_USERS`** may call the routes in
@@ -330,10 +332,13 @@ the relay refuses private addresses and the pod policy drops them anyway.
 
 Each workspace's people are `viewer`, `member` or `admin`
 ([design](design/workspace-roles.md), part of #1518). Two properties carry
-the security weight, and both are dark today: the refusals
-`role_member_required` and `role_admin_required` are switches that ship off
-(Q10), and `PLATFORM_ADMIN_REACH` is off in every environment. What holds
-once they are on:
+the security weight. The refusals `role_member_required` and
+`role_admin_required` are switches that ship off (Q10), and
+`PLATFORM_ADMIN_REACH` ships off. Since ROLES-ON-DEV (owner decision
+2026-10-19) dev runs with `role_member_required` and the reach on, both from
+`dev.tfvars`; `role_admin_required` stays off in dev until every group
+workspace that manages secrets has a named admin, and prod has all three off.
+What holds once they are on:
 
 * **A role never admits anyone.** Membership is still Google's, checked per
   registered group with `checkTransitiveMembership` and
