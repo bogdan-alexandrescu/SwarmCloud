@@ -179,7 +179,14 @@ const BUDGET = {
   // 7, against 72 / 74 / 47 / 8 before the pass. The margin is about a quarter
   // -- enough that renaming a column does not fail the gate, far too little to
   // fit a sentence back in.
-  'Pool limits': 40,
+  // RAISED 40 -> 42, 2026-10-19, BY THE OWNER'S #1481 DECISION that model
+  // prices are a platform setting edited in the console's admin settings
+  // (PRICES-UI). Measured 40 before it, at the ceiling. The Model prices card
+  // costs two tokens here: its heading and the two-word "Not read" mark its
+  // failed read is drawn as in this file's offline fixtures, both run into
+  // their neighbours by `textContent`. The figures are a table and cost
+  // nothing; no sentence was added.
+  'Pool limits': 42,
   'Platform counts': 32,
   // THE PLATFORM TICKS, MOVED ONTO PLATFORM COUNTS BY THE OWNER'S DECISION OF
   // 2026-10-13 (SCHED-ONE-PAGE: Admin › Schedules folded into Automate ›
