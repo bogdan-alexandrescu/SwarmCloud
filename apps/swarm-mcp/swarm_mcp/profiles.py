@@ -115,6 +115,10 @@ def _declaring() -> str:
 #: reply in the session's transcript.
 _UNREPEATED_INPUTS = frozenset({"mcp_servers"})
 
+#: The key a step declares its lane's territory under: every profile takes it
+#: and no runner reads it (`swarm_api.laneterritory`, TERRITORY-WARN).
+TERRITORY_INPUT_KEY = "territory"
+
 
 def check_inputs(name: str, raw: Any, *, where: str = "") -> dict[str, Any]:
     """The declared inputs `raw` asks for, checked; refuses anything else. Returns them.
@@ -133,6 +137,21 @@ def check_inputs(name: str, raw: Any, *, where: str = "") -> dict[str, Any]:
             f"{prefix}`inputs` must be an object of the inputs {name} declares, not "
             f"{type(raw).__name__}"
         )
+    # THE LANE'S TERRITORY travels whatever the profile declares
+    # (TERRITORY-WARN, part of #1468): it is the platform's, like `prompt`,
+    # and the API checks each entry's shape and answers 422 for a malformed
+    # one. Refused here only when it is not a list of strings at all.
+    territory = raw.get(TERRITORY_INPUT_KEY)
+    if TERRITORY_INPUT_KEY in raw and not (
+        isinstance(territory, list) and territory
+        and all(isinstance(entry, str) and entry.strip() for entry in territory)
+    ):
+        raise SwarmError(
+            f"{prefix}input {TERRITORY_INPUT_KEY!r} is a non-empty list of repo-relative "
+            "paths and globs, the only files this step may edit"
+        )
+    raw = {key: value for key, value in raw.items() if key != TERRITORY_INPUT_KEY}
+    kept = {TERRITORY_INPUT_KEY: list(territory)} if territory is not None else {}
     profile = RUNNER_PROFILES[name]
     declared = declared_inputs(name)
     if raw and not declared:
@@ -144,7 +163,7 @@ def check_inputs(name: str, raw: Any, *, where: str = "") -> dict[str, Any]:
             f"{_declaring()} -- see `swarm_profiles`. A step's instructions go in `prompt`."
         )
     try:
-        return check_inputs_by_declaration(profile, raw)
+        return {**check_inputs_by_declaration(profile, raw), **kept}
     except InputRefused as refused:
         # A declared key out of its bounds, or a required key not sent: the
         # rule's own message names the key and says which.
@@ -186,6 +205,13 @@ def parse_input_flags(name: str, flags: list[str] | None, *, where: str = "") ->
         if not sep or not key:
             raise SwarmError(f"{prefix}--input takes KEY=VALUE, not {flag!r}")
         spec = declared.get(key)
+        if key == TERRITORY_INPUT_KEY:
+            # `--input 'territory=["apps/x/", "docs/x.md"]'`: a list, as JSON.
+            try:
+                raw[key] = json.loads(text)
+            except json.JSONDecodeError:
+                raw[key] = text
+            continue
         if spec is None or spec.kind in ("string", "filename", "url", "argument", "header"):
             raw[key] = text
             continue

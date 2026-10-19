@@ -27,6 +27,12 @@
 # `ready-on-green` job lists it, and swaps it for `ready` once the pull
 # request is green at its head (owner decision 2026-10-17; docs/ci.md).
 #
+# One is applied by the WORKER: `out-of-territory`, on a pull request whose diff
+# touches a path outside the step's declared `inputs.territory` (owner decision
+# 2026-10-19, lane TERRITORY-WARN, part of #1468). It warns; it gates nothing.
+# GitHub creates it on first use; declaring it keeps its colour and wording ours.
+# test_issue_forms.py accepts it as `agent_worker.territory.OUT_OF_TERRITORY_LABEL`.
+#
 # Colours are QUOTED: an all-digit colour left unquoted is a YAML integer and
 # loses its leading zeros.
 - name: bug
@@ -44,3 +50,6 @@
 - name: ready-on-green
   color: "0e8a16"
   description: "CI adds `ready` once every required check is green at the head (auto-merge.yml)"
+- name: out-of-territory
+  color: "fbca04"
+  description: "The diff touches paths outside the step's declared territory; listed first in the body"
