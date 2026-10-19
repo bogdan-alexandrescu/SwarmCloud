@@ -278,6 +278,27 @@ class CloudIdentityGroups:
         return tuple(found)
 
 
+def check_group_readable(resolver: MembershipResolver, member_email: str,
+                         group_email: str) -> bool:
+    """The directory check of a group workspace request
+    (docs/design/workspace-kinds.md §4.2.3, check 7): ask whether
+    `member_email` -- the requesting admin -- is in THAT ONE group, past the
+    cache. Any answer, true or false, proves the group exists and is readable
+    under swarm-api's delegation; the boolean itself decides nothing.
+
+    It is the same per-group question `groups_for` asks on every request, one
+    `checkTransitiveMembership` with `x-goog-user-project`, so no call lists
+    groups (`searchTransitiveGroups` 403s here). A lookup that fails raises
+    `GroupLookupError`: with one candidate, `groups_for` raises on a failure,
+    and anything else the transport throws is folded into the same error."""
+    try:
+        return bool(resolver.groups_for(member_email, (group_email,), fresh=True))
+    except GroupLookupError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - transport level, one answer
+        raise GroupLookupError(f"directory check errored: {type(exc).__name__}") from exc
+
+
 def _escape_query_literal(value: str) -> str:
     """Escape a value for embedding in a Cloud Identity query literal."""
     return value.replace("\\", "\\\\").replace("'", "\\'")
@@ -303,4 +324,5 @@ __all__ = [
     "GroupLookupError",
     "MembershipResolver",
     "StaticGroups",
+    "check_group_readable",
 ]

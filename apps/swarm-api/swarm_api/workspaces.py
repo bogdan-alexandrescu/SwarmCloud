@@ -15,6 +15,16 @@ that person can ever resolve to, and nobody can request one for anyone else.
 It is not a field on `Tenant`, because `Tenant` is frozen. The document id is
 derived from the email, so it is a name: it never appears in anything public.
 
+KINDS (docs/design/workspace-kinds.md §4.1, lane WK-RECORD). The record
+carries `kind`: `personal`, `group` (a Google group) or `service` (a service
+account of this project). ABSENT READS `personal` (`kind_of`), so every
+record written before kinds needs no backfill. A group's record is keyed by
+`tenant_id_for_group`, the others' by `tenant_id_for_user`, so each is still
+keyed by the only id its principal resolves to. Only an admin files a group
+or service record, or a person's record for them (`People.create`,
+`POST /v1/admin/workspaces`); `requested_by` says who, and like
+`decision.by` it never leaves Firestore.
+
 THE WORKSPACE ID, `w-` and six random hex digits (`secrets.token_hex(3)`), is
 the only id that does. It is RANDOM, never derived from the email, so nobody
 can recover it by hashing a guessed address. `workspace_ids/{w-...}` is a
@@ -50,6 +60,7 @@ import secrets
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable, Mapping
 
@@ -57,17 +68,28 @@ from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.admission import _snapshot
-from swarm_common.identity import SERVICE_ACCOUNT_EMAIL, tenant_id_for_user
+from swarm_common.identity import SERVICE_ACCOUNT_EMAIL, tenant_id_for_group, tenant_id_for_user
 from swarm_common.models import Tenant
 
 from .admins import AUDIT_COLLECTION
 from .errors import (
     Conflict,
     NoClaudeAccount,
+    ValidationFailed,
+    WorkspaceDomainNotAllowed,
     WorkspaceFailed,
+    WorkspaceGroupIdReserved,
+    WorkspaceGroupIsAdmin,
+    WorkspaceIdTaken,
+    WorkspaceIdTerraform,
+    WorkspaceNotForServiceAccounts,
     WorkspaceNotReady,
     WorkspaceNotRequested,
+    WorkspacePrincipalForbidden,
     WorkspaceRequestTooSoon,
+    WorkspaceServiceAlreadyResolves,
+    WorkspaceServiceNotInProject,
+    WorkspaceServicePlatform,
 )
 from .store import TENANTS
 from .validation import is_service_submitter
@@ -108,6 +130,21 @@ REREQUEST_WAIT = timedelta(hours=24)
 
 #: Where a request came from. A body naming anything else is refused.
 VIAS = ("console", "plugin", "api")
+#: `requested_via` of a record an admin filed in Admin › Tenants
+#: (`POST /v1/admin/workspaces`). Not one of VIAS: no person's body names it.
+ADMIN_VIA = "admin"
+
+#: The record's kinds (docs/design/workspace-kinds.md §4.1). A record with
+#: no `kind` is PERSONAL (`kind_of`), so every record written before kinds
+#: existed reads exactly as it did, with no backfill.
+PERSONAL = "personal"
+GROUP = "group"
+SERVICE = "service"
+KINDS = (PERSONAL, GROUP, SERVICE)
+
+#: `display_name` is a label for the switcher and Admin › Tenants, never an
+#: identity; nothing decides anything by it.
+MAX_DISPLAY_NAME = 60
 
 #: §8's limits for a new personal workspace (WD5). quota_pods and quota_cpu
 #: are 2 pods and 8 vCPU per agent, the ratio People keeps when an admin
@@ -115,6 +152,16 @@ VIAS = ("console", "plugin", "api")
 #: `requests == limits`, plus headroom for Jobs finishing inside their TTL.
 DEFAULT_LIMITS: Mapping[str, int] = {
     "max_active": 8, "capacity_units": 8, "quota_pods": 16, "quota_cpu": 64,
+}
+
+#: Each kind's limits when the request names none (§4.2.2). Personal and
+#: group are §8's 8/8. Service is 4/8, the pattern of the two Terraform
+#: service tenants (`u-sw-c90291`, `u-or-9a0792`); its quotas keep People's
+#: ratio of 2 pods and 8 vCPU per agent (`people.ceiling_limits`).
+DEFAULT_LIMITS_BY_KIND: Mapping[str, Mapping[str, int]] = {
+    PERSONAL: DEFAULT_LIMITS,
+    GROUP: DEFAULT_LIMITS,
+    SERVICE: {"max_active": 4, "capacity_units": 8, "quota_pods": 8, "quota_cpu": 32},
 }
 
 #: Draws of a workspace id before giving up. 16.7 million ids; a second draw
@@ -307,6 +354,25 @@ def personal_tenant_id(email: str) -> str:
     return tenant_id_for_user(email.strip().lower())
 
 
+def kind_of(record: Mapping[str, Any] | None) -> str:
+    """The record's kind. Absent, or anything this build does not know, reads
+    PERSONAL: every record before kinds existed is a person's."""
+    kind = str((record or {}).get("kind") or "")
+    return kind if kind in KINDS else PERSONAL
+
+
+def tenant_kind_for(kind: str) -> str:
+    """The frozen `Tenant.kind` a workspace of `kind` is filed under: a group
+    is `group`; a person and a service account are `user`, as
+    `u-sw-c90291` and `u-or-9a0792` are today (design §5)."""
+    return "group" if kind == GROUP else "user"
+
+
+def default_display_name(principal: str) -> str:
+    """The local part of the address, cut to MAX_DISPLAY_NAME."""
+    return principal.split("@", 1)[0][:MAX_DISPLAY_NAME]
+
+
 def _iso(value: Any) -> Any:
     return value.isoformat() if isinstance(value, datetime) else value
 
@@ -466,6 +532,7 @@ def view(record: Mapping[str, Any] | None, *, console_url: str = "",
     state = state_of(record)
     out: dict[str, Any] = {
         "state": state,
+        "kind": kind_of(record),
         "setup_url": setup_url(console_url, "workspace"),
         "setup_command": SETUP_COMMAND,
     }
@@ -479,6 +546,7 @@ def view(record: Mapping[str, Any] | None, *, console_url: str = "",
     out.update({
         "workspace_id": record.get("workspace_id"),
         "tenant_id": record.get("tenant_id"),
+        "display_name": record.get("display_name"),
         "request_id": record.get("request_id"),
         "requested_at": _iso(record.get("requested_at")),
         "requested_via": record.get("requested_via"),
@@ -505,6 +573,156 @@ def view(record: Mapping[str, Any] | None, *, console_url: str = "",
         "request_again_at": _iso(again),
     })
     return out
+
+
+# --------------------------------------------------------------------------
+# an admin's request, per kind (docs/design/workspace-kinds.md §4.2.3)
+# --------------------------------------------------------------------------
+
+#: Google-managed defaults that are never a tenant: the default compute and
+#: App Engine accounts and the Cloud Build agent (check 10). None is in this
+#: project's `iam.gserviceaccount.com` domain, so check 9 would refuse them
+#: too; naming them gives the refusal that says what they are.
+GOOGLE_MANAGED_SA_DOMAINS = frozenset({
+    "developer.gserviceaccount.com",
+    "appspot.gserviceaccount.com",
+    "cloudbuild.gserviceaccount.com",
+})
+
+#: The platform's own accounts all start with this (`swarm-api`,
+#: `swarm-scheduler`, `swarm-reconciler`, `swarm-workspace-deployer`,
+#: `swarm-workspace-dispatch`, every `swarm-agent-worker-*`, `swarm-verify`).
+PLATFORM_SA_PREFIX = "swarm-"
+
+
+@dataclass(frozen=True)
+class KindRules:
+    """What §4.2.3's checks read from the deployment's settings. Built once
+    per request from `ApiSettings` (`from_settings`); a test builds one by
+    hand. Holds no credential and no client."""
+
+    project_id: str
+    allowed_domains: tuple[str, ...]
+    allowed_users: tuple[str, ...] = ()
+    admin_groups: tuple[str, ...] = ()
+    tenant_groups: tuple[str, ...] = ()
+    secret_admins: tuple[str, ...] = ()
+    #: TENANT_SERVICE_ACCOUNTS' emails: accounts a tenant already lists.
+    listed_services: tuple[str, ...] = ()
+
+    @classmethod
+    def from_settings(cls, settings: Any) -> "KindRules":
+        def lower(values: Any) -> tuple[str, ...]:
+            return tuple(v.strip().lower() for v in (values or ()) if str(v).strip())
+
+        return cls(
+            project_id=settings.project_id,
+            allowed_domains=lower(settings.core.allowed_domains),
+            allowed_users=lower(getattr(settings, "allowed_users", ())),
+            admin_groups=lower(settings.admin_groups),
+            tenant_groups=lower(settings.tenant_groups),
+            secret_admins=lower(getattr(settings, "secret_admin_principals", ())),
+            listed_services=tuple(m.email for m in
+                                  getattr(settings, "tenant_service_accounts", ())),
+        )
+
+    def terraform_ids(self) -> frozenset[str]:
+        """The ids of the tenants Terraform owns, as swarm-api knows them: each
+        TENANT_GROUPS entry, and each service account ALLOWED_USERS admits
+        (the Terraform service tenants). A person in ALLOWED_USERS is not
+        here: their personal tenant is made on first sight, not by Terraform.
+        The tenant document's `managed_by` is the other half (`People`)."""
+        ids = {tenant_id_for_group(g) for g in self.tenant_groups}
+        ids |= {tenant_id_for_user(u) for u in self.allowed_users if is_service_identity(u)}
+        return frozenset(ids)
+
+
+def validate_kind_request(kind: str, principal: str, rules: KindRules) -> tuple[str, str]:
+    """§4.2.3's checks that read no stored state: the principal's shape for
+    its kind, and the Terraform ids swarm-api is configured with. Returns
+    (tenant id, normalised principal). Raises the refusal; writes nothing.
+
+    The shared deny-list is NOT restated here: the job's S1 enforces it
+    through `scripts/lib/common.sh`, the one place it lives (rule 2), and a
+    second copy is the copy that drifts."""
+    if kind not in KINDS:
+        raise ValueError(f"kind must be one of {KINDS}")
+    address = (principal or "").strip().lower()
+    local, _, domain = address.partition("@")
+    if not local or not domain or "@" in domain or any(c.isspace() for c in address):
+        raise ValidationFailed("principal must be one email address")
+    try:
+        tenant_id_for_user(address)
+    except ValueError:
+        raise ValidationFailed("no workspace name can be derived from that address") from None
+    allowed = set(rules.allowed_domains)
+    if kind == PERSONAL:
+        if is_service_identity(address):
+            raise WorkspaceNotForServiceAccounts(
+                "A personal workspace is a person's. A service account gets a service "
+                "workspace instead.")
+        if domain not in allowed and address not in rules.allowed_users:
+            raise WorkspaceDomainNotAllowed(
+                f"{domain or 'that address'} is not an allowed domain, so this person "
+                "cannot sign in, and a workspace would admit nobody.")
+        if address in rules.secret_admins:
+            raise WorkspacePrincipalForbidden(
+                "This identity administers every tenant's provider-key secrets, so it may "
+                "not own a tenant or a workspace of its own.")
+        tenant_id = tenant_id_for_user(address)
+    elif kind == GROUP:
+        if is_service_identity(address) or domain not in allowed:
+            raise WorkspaceDomainNotAllowed(
+                f"{domain or 'that address'} is not an allowed domain. A group workspace "
+                "is for a Google group in one.")
+        if address in rules.admin_groups:
+            raise WorkspaceGroupIsAdmin(
+                "That group is an admin group. As a tenant it would mix the admin lookup "
+                "with the tenant lookup, which are kept apart; use another group.")
+        tenant_id = tenant_id_for_group(address)
+        if tenant_id.startswith("u-"):
+            raise WorkspaceGroupIdReserved(
+                f"The group's workspace name would be {tenant_id!r}, and names starting "
+                "'u-' are people's own workspaces. Use a group whose address does not "
+                "start with 'u-'.")
+    else:
+        if domain in GOOGLE_MANAGED_SA_DOMAINS:
+            raise WorkspaceServicePlatform(
+                "That is a Google-managed default account, which is never a tenant.")
+        if not SERVICE_ACCOUNT_EMAIL.fullmatch(address) \
+                or domain != f"{rules.project_id}.iam.gserviceaccount.com":
+            raise WorkspaceServiceNotInProject(
+                f"A service workspace is for a service account of {rules.project_id}, "
+                "where the setup job can check it exists and holds no key. That address "
+                "is not one.")
+        if address.startswith(PLATFORM_SA_PREFIX):
+            raise WorkspaceServicePlatform(
+                "That is one of the platform's own accounts ('swarm-…'), which never "
+                "files work as a tenant.")
+        if address in rules.secret_admins:
+            raise WorkspacePrincipalForbidden(
+                "This identity administers every tenant's provider-key secrets, so it may "
+                "not own a tenant or a workspace of its own.")
+        if address in rules.allowed_users or address in rules.listed_services:
+            raise WorkspaceServiceAlreadyResolves(
+                "That account already resolves to a tenant (ALLOWED_USERS or a tenant's "
+                "service-account listing), so a workspace would give it a second one.")
+        tenant_id = tenant_id_for_user(address)
+    if tenant_id in rules.terraform_ids():
+        raise WorkspaceIdTerraform(
+            f"{tenant_id!r} is one of the tenants Terraform owns, and the setup job never "
+            "builds over those. Nothing was changed.")
+    return tenant_id, address
+
+
+def nested(new_id: str, existing_id: str) -> bool:
+    """Whether two tenant ids nest through `-git-`, so one tenant's forge
+    user-slot names (`swarm-tenant-<id>-git-u-…`) would start with the
+    other's (`forge_user_slots.tf::forge_nested_tenants`, applied here over
+    every stored id rather than `var.tenants` only)."""
+    if not new_id or not existing_id or new_id == existing_id:
+        return False
+    return new_id.startswith(existing_id + "-git-") or existing_id.startswith(new_id + "-git-")
 
 
 # --------------------------------------------------------------------------
@@ -641,6 +859,12 @@ class Workspaces:
         principal: str,
         via: str,
         approve: Callable[[Any, dict[str, Any]], dict[str, Any]] | None = None,
+        kind: str = PERSONAL,
+        requested_by: str | None = None,
+        display_name: str | None = None,
+        limits: Mapping[str, int] | None = None,
+        extra: Mapping[str, Any] | None = None,
+        on_create: Callable[[Any, dict[str, Any]], None] | None = None,
     ) -> tuple[int, dict[str, Any]]:
         """One Firestore transaction: read the record, then create, re-open or
         answer it. Returns (HTTP status, the record as stored).
@@ -654,9 +878,21 @@ class Workspaces:
         transaction, on the record as it stands `requested`. It writes its
         audit entry and returns the record's patch, which is written with the
         request in one write; a `MigrationHold` from it leaves the record
-        `requested` and `held` instead (§3.3)."""
-        if via not in VIAS:
-            raise ValueError(f"via must be one of {VIAS}")
+        `requested` and `held` instead (§3.3).
+
+        KINDS (docs/design/workspace-kinds.md §4.1). A person's own request
+        passes none of the kind arguments and is unchanged. An admin's request
+        (`People.create`) names the `kind`, who filed it (`requested_by`), a
+        `display_name`, the kind's `limits` and the kind's own fields
+        (`extra`: a group's `directory`). An existing record of another kind
+        or principal under the same tenant id is WORKSPACE_ID_TAKEN, read in
+        this transaction. `on_create` writes the audit entry of a request no
+        approval goes with, only when this call creates or re-opens the
+        record, so a repeated request writes nothing."""
+        if via not in (*VIAS, ADMIN_VIA):
+            raise ValueError(f"via must be one of {VIAS} or {ADMIN_VIA!r}")
+        if kind not in KINDS:
+            raise ValueError(f"kind must be one of {KINDS}")
         ref = self._db.collection(WORKSPACES).document(tenant_id)
         now = self._now()
         transaction = self._db.transaction()
@@ -676,12 +912,25 @@ class Workspaces:
             snap = _snapshot(txn.get(ref))
             data = snap.to_dict() if snap.exists else None
             state = state_of(data) if data is not None else None
+            if data is not None and (
+                    kind_of(data) != kind
+                    or str(data.get("principal") or "").strip().lower() != principal):
+                # Never the other principal or kind: the record is theirs.
+                raise WorkspaceIdTaken(
+                    "That workspace name is already recorded for a different identity or "
+                    "kind. Nothing was changed; this needs a person, not a retry.",
+                    detail={"workspace_id": data.get("workspace_id")})
             if data is None:
                 id_ref = self._draw_id(txn)
                 record = self._new_record(tenant_id=tenant_id, workspace_id=id_ref.id,
-                                          principal=principal, now=now, via=via)
+                                          principal=principal, now=now, via=via, kind=kind,
+                                          requested_by=requested_by,
+                                          display_name=display_name, limits=limits)
+                record.update(dict(extra or {}))
                 # Every read (the approval's included) before the first write.
                 record.update(_decide(txn, record))
+                if on_create is not None and record.get("state") == REQUESTED:
+                    on_create(txn, record)
                 txn.set(id_ref, {"tenant_id": tenant_id})
                 txn.set(ref, record)
                 return 202, record
@@ -716,7 +965,12 @@ class Workspaces:
                     "decision": None,
                     "history": [*(data.get("history") or []), previous],
                 }
+                if requested_by is not None:
+                    patch["requested_by"] = requested_by
+                patch.update(dict(extra or {}))
                 patch.update(_decide(txn, {**data, **patch}))
+                if on_create is not None and patch.get("state") == REQUESTED:
+                    on_create(txn, {**data, **patch})
                 txn.update(ref, patch)
                 return 202, {**data, **patch}
             if state == FAILED:
@@ -744,19 +998,27 @@ class Workspaces:
 
     @staticmethod
     def _new_record(*, tenant_id: str, workspace_id: str, principal: str,
-                    now: datetime, via: str) -> dict[str, Any]:
-        """§1.1's record as a request creates it, in `requested`."""
+                    now: datetime, via: str, kind: str = PERSONAL,
+                    requested_by: str | None = None, display_name: str | None = None,
+                    limits: Mapping[str, int] | None = None) -> dict[str, Any]:
+        """§1.1's record as a request creates it, in `requested`, with the
+        kind fields of docs/design/workspace-kinds.md §4.1. `requested_by` is
+        the person themselves for their own request; it never leaves
+        Firestore (`view` does not serve it)."""
         return {
             "tenant_id": tenant_id,
             "workspace_id": workspace_id,
+            "kind": kind,
             "principal": principal,
+            "requested_by": requested_by or principal,
+            "display_name": display_name or default_display_name(principal),
             "state": REQUESTED,
             "request_id": str(uuid.uuid4()),
             "requested_at": now,
             "requested_via": via,
             "decision": None,
             "history": [],
-            "limits": dict(DEFAULT_LIMITS),
+            "limits": dict(limits or DEFAULT_LIMITS_BY_KIND[kind]),
             "run": None,
             "steps": {},
             "failure": None,
