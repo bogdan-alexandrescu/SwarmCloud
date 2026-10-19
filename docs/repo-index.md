@@ -894,7 +894,7 @@ indexrun.py`):
 
 | phase | what | timeout, of a 1,800 s full run |
 |---|---|---|
-| `stage_base` *(incremental runs only, lane IX2, §3.4)* | the base's `repo-index.json` by the staged-input path, then `swarm-repo-graph read --commit <base_sha> --manifest-digest <recorded> --out $SWARM_WORK_DIR/repo-graph.base.json` | a quarter of the extractor's budget (90 s of an incremental run's 360) |
+| `stage_base` *(incremental runs only, lane IX2, §3.4)* | the base's `repo-index.json` by the staged-input path, then `swarm-repo-graph read --commit <base_sha> --manifest-digest <recorded> --out $SWARM_WORK_DIR/repo-graph.base.json` | sized from the base graph's size, which its index's `graph.symbols` and `graph.edges` give at 600 bytes each: 20 s + 1.5 s a MB, at most half the extractor's budget (180 s of an incremental run's 360), which is also what an index without counts gets (#1469) |
 | `extract` | `swarm-repo-index --repo <checkout> --out $SWARM_WORK_DIR/repo-index.extract.json --graph-out $SWARM_WORK_DIR/repo-graph.json --lsp-total-budget-seconds <extract - 180>` | 0.4 of the task's timeout, 720 s: twice the ~6 minutes measured |
 | `agent` | the runner, from the extractor's output | what is left, less the write's reserve |
 | `graph_write` | `swarm-repo-graph write --graph ... --index $SWARM_ARTIFACTS_DIR/repo-index.json --repo-id <r> --destination tenants/<t>/repos/<r>/graph` | 0.15 of the task's timeout, 270 s, reserved before the agent starts |

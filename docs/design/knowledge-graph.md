@@ -290,7 +290,11 @@ of every step pays that cost, before any answer (§7.7).
   * extract: 0.4 of the timeout (720 s);
   * LSP: the extract budget minus 180 s (540 s);
   * graph write: 0.15 of the timeout (270 s);
-  * base read: 0.25 of the extract budget.
+  * base read: sized from the base graph's size (`base_graph_bytes`, 600
+    bytes a symbol-or-edge of its index's counts): 20 s + 1.5 s a MB, at
+    most half the extract budget (180 s of an incremental run's 360), the
+    bound an index without counts also gets. The flat quarter it replaced,
+    90 s, was measured running past on a 63 MB base (#1469).
 
   The agent then writes the judgement fields: purposes, territory, notes
   and `test_layout`.
