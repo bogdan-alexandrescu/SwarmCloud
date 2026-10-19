@@ -316,11 +316,39 @@ def test_a_tenant_document_that_is_not_the_principals_refuses_it(api_context, cl
     for change in ({"kind": "group"}, {"principal": ""}, {"principal": VERIFY}):
         saved = dict(stored)
         stored.update(change)
-        with pytest.raises(awaitinput.Forbidden):
+        with pytest.raises(awaitinput.Forbidden) as refused:
             awaitinput.member_refusal(ctx, me, ORACLE_TENANT)
+        assert refused.value.detail["reason"] == "person_required", change
         stored.clear()
         stored.update(saved)
-    awaitinput.member_refusal(ctx, me, ORACLE_TENANT)
+    assert awaitinput.member_refusal(ctx, me, ORACLE_TENANT) == awaitinput.SERVICE
+
+
+def test_a_tenant_document_rewritten_to_name_another_principal_steers_nothing(
+    api_context, client, db, waiting
+):
+    # oracle's document names swarm-verify, and a context claims oracle's
+    # tenant for swarm-verify: the id is not the one swarm-verify's own
+    # address derives, so it is not swarm-verify's service tenant.
+    db.docs[f"tenants/{ORACLE_TENANT}"]["principal"] = VERIFY
+    with pytest.raises(awaitinput.Forbidden) as refused:
+        awaitinput.member_refusal(api_context, _auth(VERIFY, ORACLE_TENANT), ORACLE_TENANT)
+    assert refused.value.detail["reason"] == "person_required"
+
+
+@pytest.mark.parametrize("fields", [
+    {"tenant_id": "eng"},                                   # acting in another tenant
+    {"tenant_principal": "eng@saga.xyz"},                   # resolved to another principal
+    {"tenant_via": "platform_admin"},                       # reached, not owned
+])
+def test_a_context_that_is_not_the_principal_acting_in_its_own_tenant_is_refused(
+    api_context, client, waiting, fields
+):
+    me = _auth(ORACLE, ORACLE_TENANT)
+    forged = AuthContext(**{**{f: getattr(me, f) for f in me.__dataclass_fields__}, **fields})
+    with pytest.raises(awaitinput.Forbidden) as refused:
+        awaitinput.member_refusal(api_context, forged, ORACLE_TENANT)
+    assert refused.value.detail["reason"] == "person_required"
 
 
 def test_a_person_sending_on_behalf_of_is_422(client, db, objects, await_enabled):
