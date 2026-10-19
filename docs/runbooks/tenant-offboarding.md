@@ -1,7 +1,8 @@
 # Runbook: offboard a tenant
 
-**When to use this.** A tenant (a Google group, or a personal `u-<user>`
-tenant) is leaving the platform and everything provisioned for it has to go:
+**When to use this.** A tenant (a Google group, a personal `u-<user>`
+tenant, or a service account's own `u-` tenant, whether Terraform made it or
+the workspace job did) is leaving the platform and everything provisioned for it has to go:
 its identity, its keys, its jobs, its namespace, its records and its artifacts.
 
 **How long.** About an hour of commands, plus however long the tenant's running
@@ -93,8 +94,8 @@ namespace at a time.
 Derived from the code, not from memory: `terraform/modules/tenancy/main.tf`,
 `terraform/modules/secret_manager/main.tf`, `terraform/modules/firestore/bootstrap.tf`,
 `terraform/modules/cloud_run_jobs/main.tf`, `terraform/infra/main.tf` and
-`locals.tf` (every consumer of `var.tenants`), `kubernetes/render.py`
-(`TENANT_FILES`), `scripts/register-tenant.sh`,
+`locals.tf` (every consumer of `var.tenants`),
+`kubernetes/render.py::TENANT_FILES`, `scripts/register-tenant.sh`,
 `apps/scheduler/scheduler/dispatch.py` and `apps/quota-broker/`. The label
 filters and IAM shapes below were checked against the live dev project on
 2026-09-24.
@@ -1499,6 +1500,115 @@ own `w-` id: anything else is not this runbook's.
 workspace: the only job-made workspace, `w-7f9285`, is in use. The secret
 block was written against `scripts/lib/forge-slot.sh`'s labels and names,
 read 2026-10-13.
+
+---
+
+## A group or service workspace, made by the workspace job
+
+**When this applies.** The tenant has a `workspaces/<id>` record whose `kind`
+is `group` or `service`. An admin filed it from Admin › Tenants › New
+workspace, and the Cloud Run job `swarm-workspace-apply` made it
+([design/workspace-kinds.md](../design/workspace-kinds.md) §8). Read on
+2026-10-19 against `main`: **no tool removes one**, and none has been made in
+any environment yet. The deprovisioning run stays separate and unbuilt (owner
+answer Q9 (a), [workspaces.md §7](../workspaces.md#7-deprovisioning-a-follow-up-not-built-now)).
+The four Terraform tenants (`eng`, `smoke`, `u-sw-c90291`, `u-or-9a0792`)
+are not this section's. They have no such record and leave by the main path.
+
+**Stop it at once, before deleting anything.** Two writes, both reversible:
+
+1. Disable the tenant with [step 3](#3-stop-new-work). That is
+   `enabled = false` on `tenants/<id>`, after which every submission is a
+   403 and the scheduler parks what it would have admitted.
+2. Take the record off `ready`, so swarm-api stops resolving to it. The
+   registry counts only `ready` records
+   (`apps/swarm-api/swarm_api/registry.py::WorkspaceRegistry._read`), so
+   within its 60-second cache, on every instance, a group drops out of every
+   member's tenant choices and a service account is no longer admitted at
+   all. Write the reserved state `deprovisioned`. No code writes it, and
+   `apps/swarm-api/swarm_api/workspaces.py::state_of` reads it as no record,
+   so nothing (a retry, the sweep, the job's A1) can act on the record again:
+
+   ```bash
+   bash -s -- "${TENANT:?run step 1 in this shell}" <<'SH'
+   set -euo pipefail
+   source scripts/lib/common.sh
+   fs_get "workspaces/$1" | jq -e '.fields.kind.stringValue == "group" or .fields.kind.stringValue == "service"' >/dev/null \
+     || die "workspaces/$1 is not a group or service workspace; check the id"
+   fs_patch "workspaces/$1" "state" '{"state":{"stringValue":"deprovisioned"}}'
+   ok "workspaces/$1 deprovisioned"
+   SH
+   ```
+
+   **Why not delete the record now:** while it stands, an admin's
+   `POST /v1/admin/workspaces` for the same group or account is refused with
+   a 409 (the request transaction in `swarm_api.workspaces`), instead of
+   starting a new build over half-removed resources. It goes last, below.
+
+**Then remove it**, as for
+[a tenant never in terraform](#if-the-tenant-was-never-in-terraform): steps
+0 to 6, that section in place of step 7, then steps 8 to 11. That removes the
+worker account `swarm-agent-worker-<id>` and its project and bucket bindings,
+the namespace (step 9: the job labelled it `swarm.saga.xyz/workspace`, and
+deleting it is still a person's job), and `tenants/<id>/` with its `.tenant`
+marker. Before step 11, also remove the following.
+
+**The forge slot.** A group has the pair `swarm-tenant-<tenant>-git` and
+`swarm-tenant-<tenant>-git-refresh`. A service has `swarm-tenant-<tenant>-git`
+alone, with no twin. A group whose members stored their own credential
+through the broker also has `swarm-tenant-<tenant>-git-u-<hash>` slots. All
+carry swarm-api's labels, so step 10's filter does not list them:
+
+```bash
+( : "${TENANT:?run step 1 in this shell}" "${PROJECT_ID:?}"
+  gcloud secrets list --project "$PROJECT_ID" \
+    --filter="labels.tenant=${TENANT} AND labels.managed-by=swarm-api" \
+    --format='value(name.basename())' |
+  while read -r name; do
+    case "$name" in
+      "swarm-tenant-${TENANT}-git"|"swarm-tenant-${TENANT}-git-refresh"|"swarm-tenant-${TENANT}-git-u-"*)
+        gcloud secrets delete "$name" --project "$PROJECT_ID" ;;
+      *) echo "skipping ${name}: not this tenant's forge slot" ;;
+    esac
+  done
+)
+```
+
+**A service: its front-door member.** S2 made the account an accessor of the
+API backend (`roles/iap.httpsResourceAccessor`). The job's guard refuses every
+removal (C9), so the owner removes it with
+`gcloud iap web remove-iam-policy-binding`, reading the account and the
+backend from the record rather than typing them:
+
+```bash
+bash -s -- "${TENANT:?run step 1 in this shell}" "${PROJECT_ID:?}" <<'SH'
+set -euo pipefail
+source scripts/lib/common.sh
+fs_get "workspaces/$1" >"${TMPDIR:-/tmp}/ws.json"
+account="$(jq -r '.fields.principal.stringValue // ""' "${TMPDIR:-/tmp}/ws.json")"
+backend="$(jq -r '.fields.service.mapValue.fields.front_door.mapValue.fields.backend.stringValue // ""' "${TMPDIR:-/tmp}/ws.json")"
+[[ -n "${account}" && -n "${backend}" ]] || die "workspaces/$1 records no front-door admit; S2 never ran, so there is nothing to remove"
+gcloud iap web remove-iam-policy-binding --project "$2" \
+  --resource-type=backend-services --service="${backend}" \
+  --role=roles/iap.httpsResourceAccessor --member="serviceAccount:${account}" --condition=None
+SH
+```
+
+The service account itself is **not** deleted. It is the caller, not the
+worker: S1 only read it, and the job never wrote its IAM. It belongs to
+whoever runs it. The same goes for a group's Google group, which the
+platform never owned.
+
+**The records**, last: `workspace_ids/<w-id>` (the record's
+`workspace_id` field), then `workspaces/<id>`. Delete them in the console
+(Firestore, database `swarm`, never `(default)`), for the reason the
+personal section gives. The `admin_audit` rows of the request, the approval
+and the admit stay. They are the audit.
+
+**Not verified.** None of this section has been run: no group or service
+workspace exists yet. The commands were written against
+`scripts/register-tenant.sh`'s `ws_s2` and `scripts/lib/forge-slot.sh`'s
+labels and names, read 2026-10-19.
 
 ---
 
