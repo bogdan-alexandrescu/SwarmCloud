@@ -1,8 +1,16 @@
 # Workspace kinds: an admin creates a personal, group or service workspace from Admin › Tenants, and the in-cloud job builds it
 
-**Status: designed 2026-10-19 (lane WORKSPACE-KINDS-DESIGN, part of #847).**
-Nothing here is built. The owner approves or redirects this document, and
-answers §7, before any build lane starts.
+**Status: built 2026-10-19 (part of #847), switched off.** Designed by lane
+WORKSPACE-KINDS-DESIGN, with every §7 question answered (a) by the owner the
+same day. Every lane of §6 is on `main`, and §8 records what each landed and
+where the code departs from this text. Nothing of it reaches the cloud until
+the owner's one-time steps of §6 run: O1 (not yet recorded,
+`docs/workspaces.md` §0), then the bootstrap apply with
+`enable_workspace_kinds` set to true, then the policy apply. Until then an admin
+can file and approve a group or service record, but the deployer holds none
+of K1 to K3, so the job cannot finish one: a service whose S2 IAP refuses
+stops for the owner as `FRONT_DOOR_OWNER` (`ws_front_door_failed` in
+`scripts/register-tenant.sh`), and nothing half-made runs (§4.8).
 
 The owner asked for this on 2026-10-19, on #847:
 
@@ -1062,3 +1070,115 @@ Today's §1.3 rule 4 says nobody can request one for anyone else.
   admission). The deletions stay `docs/workspaces.md` §7's separate
   owner-approved run, which gains the IAP removal.
 * (b) Build the deprovisioning mode, with its own guard mode, in this build.
+
+---
+
+## 8. What was built
+
+Read on `main` at `eaeef95` on 2026-10-19, by lane WK-DOCS. One entry per
+lane of §6, then where the code departs from §4. Each entry names code, so a
+reader can check it rather than trust it.
+
+* **WK-RECORD (swarm-api, the record and the admin request).**
+  `POST /v1/admin/workspaces` files any kind
+  (`apps/swarm-api/swarm_api/routes/people.py::create_workspace`, through
+  `apps/swarm-api/swarm_api/people.py::People.create`), and
+  `GET /v1/admin/workspaces?kind=&state=` lists records for Admin › Tenants.
+  Every check of §4.2.3 is one function,
+  `apps/swarm-api/swarm_api/workspaces.py::validate_kind_request`, run before
+  any write. A record with no `kind` reads `personal`
+  (`apps/swarm-api/swarm_api/workspaces.py::kind_of`). The refusals are
+  `WORKSPACE_ID_NESTED`, `WORKSPACE_GROUP_ID_RESERVED`,
+  `WORKSPACE_GROUP_IS_ADMIN`, `WORKSPACE_GROUP_UNREADABLE`,
+  `WORKSPACE_SERVICE_NOT_IN_PROJECT`, `WORKSPACE_SERVICE_PLATFORM`,
+  `WORKSPACE_SERVICE_ALREADY_RESOLVES` and `WORKSPACE_APPROVAL_OWNER_ONLY`
+  (`apps/swarm-api/swarm_api/errors.py`). A service request by an admin who
+  is not the owner stays `requested`, with one `admin_audit` row.
+* **WK-IAM (bootstrap IAM, K1 to K4).** All behind `enable_workspace_kinds`,
+  off by default (`terraform/bootstrap/variables.tf`). K1 is
+  `google_project_iam_custom_role.front_door_admitter` and
+  `google_project_iam_member.front_door_admitter` in
+  `terraform/bootstrap/workspace_deployer.tf`, on an exact-equality condition
+  over the API backend's number-form name. It needs a second key too: the
+  role must also be added to `workspace_deployer_roles`, whose default does
+  not hold it. The `modifiedGrantsByRole` clause sits behind
+  `front_door_admit_role_bound`, off until O1's third read proves IAP
+  evaluates it. K2 is `workspace_team_slot_binder`, and K3 is
+  `forge_member_slots_any_tenant` in `terraform/bootstrap/forge_user_slots.tf`.
+  Tested by `tests/terraform/workspace_kinds_iam.tftest.hcl`.
+* **WK-CLUSTER (the admission policy and the label).**
+  `kubernetes/policies/workspace-provisioner-scope.yaml` admits a namespace
+  carrying `swarm.saga.xyz/workspace: w-<6 hex>` beside the
+  `swarm-tenant-u-*` arm, and refuses by name every namespace
+  `terraform/infra` declares, whatever its labels. Its
+  `swarm-workspace-deployer-namespaces` policy refuses an UPDATE that adds the
+  label to an unlabelled namespace. `kubernetes/render.py::label_workspace`
+  puts the label on the Namespace and nowhere else, and `kubernetes/apply.sh`
+  passes `--workspace-id`.
+* **WK-RESOLVE (tenant resolution and admission).**
+  `apps/swarm-api/swarm_api/registry.py::WorkspaceRegistry` reads the `ready`
+  group and service records, cached 60 s, and serves the last good read for
+  600 s with `registry_stale` before a 503 `registry_unavailable`.
+  `apps/swarm-api/swarm_api/auth.py::Authenticator._tenant_groups` puts its
+  groups after every `TENANT_GROUPS` entry (Q4 (a)), so membership is still
+  asked one registered group at a time. A failed lookup is a 503, as for any
+  registered group (Q5 (a)).
+* **WK-JOB (the job's steps and the guard).** A service runs
+  `scripts/register-tenant.sh` (`printf '%s\n' A1 S1 A2 A3 A4 A5 A6 A7 A8 S2 A9`);
+  personal and group run A1 to A9. S1 is `ws_s1`, S2 is `ws_s2`, and a
+  service's A6 makes one team slot with no twin
+  (`scripts/lib/forge-slot.sh` (`forge_slot_ensure_single() {`)). The guard
+  gained C10 in `scripts/lib/workspace-calls.json`, the one front-door call,
+  for a `service` expectation only. C9 still refuses every removal.
+* **WK-UI-DIALOG (the New workspace dialog).**
+  `apps/swarm-ui/src/NewWorkspace.tsx` posts `{kind, principal,
+  display_name}` once per tab, says on the service tab that the platform
+  owner approves, and polls the record's steps until it settles.
+* **WK-UI-TENANTS (Admin › Tenants).** `apps/swarm-ui/src/Activity.tsx`
+  draws New workspace and "Being created" for admins only. A row names its
+  kind and `w-` id, never an email, and Approve and Retry on a service row are
+  the owner's.
+* **WK-TF-FREEZE (Q8 (a)).** `terraform/infra/variables.tf` (`VAR.TENANTS IS FROZEN`)
+  holds `var.tenants` to each environment's keys today. In dev those are the
+  four of §4.7, and in prod `eng`, `research` and `smoke`. A fifth key fails
+  with a message naming this design (`tests/terraform/tenants_frozen.tftest.hcl`).
+* **WK-DOCS (this entry).** `docs/workspaces.md` §3.2 records WD3 reversed
+  for new workspaces, §4.3 the new codes, and §0 the owner's check O1, not yet
+  recorded. `docs/multi-tenancy.md` covers the three admission places a
+  job-made service passes, and
+  `docs/runbooks/tenant-offboarding.md` disabling and removing a group or
+  service workspace. Held by `tests/unit/scripts/test_docs_describe_what_was_built.py`.
+
+**Where the code departs from §4**, each found by reading it:
+
+1. **The platform owner A1 checks is read from the guard's rules, not from
+   `entry.py`.** §4.3 put `PLATFORM_OWNER` in the image's fixed environment.
+   The job reads `platform_owner` from `scripts/lib/workspace-calls.json`,
+   keyed by project, and A1 also requires that email to be `owner` in
+   `admin_roles/` now (`ws_platform_owner`, `ws_is_owner`). Both ship in the
+   image the release builds, and nothing a caller sends can change either.
+2. **A service account is admitted by the unique id S1 recorded, not by its
+   address alone.** GCP lets a deleted account be made again under the same
+   address, so `apps/swarm-api/swarm_api/auth.py::Authenticator._admits_service`
+   admits a token only when its subject is the record's `service.unique_id`.
+   A `ready` record without one admits nobody.
+3. **The registry re-checks each record.** A `ready` record must still pass
+   `validate_kind_request` under today's settings, and its derived id must be
+   its document id, or it is left out and logged by workspace id. The record
+   is the only thing between a Firestore document and a tenant boundary, so
+   the registry checks it again rather than trusting it.
+4. **The five new failure codes have no copy of their own.**
+   `SERVICE_ACCOUNT_REFUSED`, `DIRECTORY_CHECK_STALE`, `FRONT_DOOR_OWNER`,
+   `FRONT_DOOR_FAILED` and `NAMESPACE_LABEL_MISSING` are not keys of
+   `apps/swarm-api/swarm_api/workspaces.py::FAILURE_COPY`. A `failed` record
+   carrying one is served the fallback sentence, and a `needs_owner` one the
+   state's own line (`docs/workspaces.md` §4.3). It is filed as an
+   out-of-territory finding of this lane.
+5. **The tenants list serves `workspace_kind`, not `kind`.** `kind` on
+   `GET /v1/admin/tenants` is already the frozen `Tenant.kind`, so the
+   record's kind is served beside it
+   (`apps/swarm-api/swarm_api/routes/admin.py::list_tenants`).
+
+**What is not verified:** no group or service workspace has been made in any
+environment. The first of each is the owner's step 4 of §6, recorded with its
+date in `docs/workspaces.md` as the first personal approval was.
