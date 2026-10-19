@@ -410,6 +410,69 @@ resource "google_project_iam_member" "forge_personal_slots" {
 }
 
 # ---------------------------------------------------------------------------
+# EVERY TENANT'S MEMBER SLOTS: K3 (docs/design/workspace-kinds.md §4.5, lane
+# WK-IAM of #847), behind enable_workspace_kinds
+# ---------------------------------------------------------------------------
+#
+# A group workspace made by the workspace job is in neither list above: not
+# in local.forge_user_slot_tenants (Terraform's), and its id has no `u-`, so
+# forge_personal_any misses it. swarm-api still publishes, refreshes,
+# disables and re-enables its members' GitHub tokens,
+# `swarm-tenant-<g>-git-u-<hash>`, exactly as it does for `eng`'s. So the same
+# three grants once more, over ANY tenant: the `swarm-tenant-` prefix AND a
+# non-empty tenant before `-git-u-`, in either resource-name form, by
+# extract() and never matches() (refused on some services). A tenant's own
+# `-git` team slot, its provider keys and its workspace secrets carry no
+# `-git-u-`, so none is reached.
+#
+# swarm-api's only. No tenant worker gets a prefix read of its members' slots
+# here: a job-made group's members' slots are read through the credential
+# broker (Q6 (a)), because a group's worker is shared by every member. So no
+# nested-tenant precondition either: as with the repository slots below,
+# every binding is swarm-api's, which already reaches every Terraform and
+# personal tenant's -git-u- slots, and a wider match gives it nothing it can
+# hand to a worker.
+
+locals {
+  forge_member_slots_any = "resource.name.startsWith(\"projects/${local.forge_project_number}/secrets/swarm-tenant-\") && resource.name.extract(\"/secrets/swarm-tenant-{t}-git-u-\") != \"\""
+
+  forge_member_slot_grants = var.enable_workspace_kinds && var.enable_forge_user_slots ? {
+    version_adder = {
+      role        = "roles/secretmanager.secretVersionAdder"
+      title       = "swarm forge user slots any tenant"
+      description = "managed-by=swarm-terraform; K3: swarm-api publishes the GitHub user tokens of a job-made group's members (docs/design/workspace-kinds.md §4.5, §4.6)."
+    }
+    version_manager = {
+      role        = "projects/${var.project_id}/roles/${module.custom_role_ids.ids["forge_slot_version_manager"]}"
+      title       = "swarm forge user slot versions any tenant"
+      description = "managed-by=swarm-terraform; K3: swarm-api disables and re-enables a job-made group's members' GitHub user tokens (docs/design/workspace-kinds.md §4.5)."
+    }
+    slot_reader = {
+      role        = "roles/secretmanager.secretAccessor"
+      title       = "swarm forge user slots any tenant"
+      description = "managed-by=swarm-terraform; K3: swarm-api reads a job-made group's members' GitHub user slots, for refresh and for the broker (docs/design/workspace-kinds.md §4.5, Q6 (a))."
+    }
+  } : {}
+}
+
+resource "google_project_iam_member" "forge_member_slots_any_tenant" {
+  for_each = local.forge_member_slot_grants
+
+  project = var.project_id
+  role    = each.value.role
+  member  = local.forge_api_member
+
+  condition {
+    title       = each.value.title
+    description = each.value.description
+    expression  = local.forge_member_slots_any
+  }
+
+  # The version manager is this file's custom role.
+  depends_on = [google_project_iam_custom_role.forge_slot_version_manager]
+}
+
+# ---------------------------------------------------------------------------
 # REPOSITORY SLOTS, READ BY SWARM-API (docs/runner-git-tools.md §2.1, lane G4
 # of #1225)
 # ---------------------------------------------------------------------------

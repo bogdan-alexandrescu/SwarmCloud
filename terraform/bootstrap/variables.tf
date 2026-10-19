@@ -795,6 +795,14 @@ variable "workspace_deployer_roles" {
     "roles/logging.logWriter",
   ]
 
+  # K4 of docs/design/workspace-kinds.md §4.5: the reviewed list gains K1's
+  # role, swarmFrontDoorAdmitter, in the same change that defines it. It is
+  # NOT in the default above: K1 is granted only when the owner both turns on
+  # enable_workspace_kinds and adds it to this list, after O1 has shown IAP
+  # matches the number-form name. If O1 fails, the kinds go on without it and
+  # S2 stays an owner step (FRONT_DOOR_OWNER). K2 is a second grant of the
+  # already-reviewed swarmWorkspaceSecretBinder, and K3 is swarm-api's, so
+  # neither adds a name here.
   validation {
     condition = alltrue([for r in var.workspace_deployer_roles : contains([
       "swarmWorkspaceAccountAdmin",
@@ -807,6 +815,7 @@ variable "workspace_deployer_roles" {
       "swarmWorkspaceFirestore",
       "roles/container.clusterViewer",
       "roles/logging.logWriter",
+      "swarmFrontDoorAdmitter",
     ], r)])
     error_message = "workspace_deployer_roles names a role nobody reviewed for swarm-workspace-deployer. Its roles are docs/workspaces.md §2.3's list and nothing else; adding one means adding it to this validation's list too, in a change the owner reviews."
   }
@@ -830,7 +839,58 @@ variable "workspace_deployer_roles" {
       "roles/iam.workloadIdentityPoolAdmin",
       "roles/secretmanager.admin",
       "roles/storage.admin",
+      # §4.5 "Not granted": IAP admin reaches every backend, the console's
+      # and the other team's eight included. K1's custom role is the one
+      # IAP power this identity may hold.
+      "roles/iap.admin",
     ]))) == 0
-    error_message = "swarm-workspace-deployer may not hold owner, editor, serviceAccountAdmin, key admin, token creator, actAs, roleAdmin, WIF pool admin, secretmanager.admin or storage.admin: its account power is the custom swarmWorkspaceAccountAdmin, which has no key, token, actAs or delete permission."
+    error_message = "swarm-workspace-deployer may not hold owner, editor, serviceAccountAdmin, key admin, token creator, actAs, roleAdmin, WIF pool admin, secretmanager.admin, storage.admin or iap.admin: its account power is the custom swarmWorkspaceAccountAdmin, which has no key, token, actAs or delete permission, and its front-door power is swarmFrontDoorAdmitter on the API backend alone."
   }
+}
+
+variable "enable_workspace_kinds" {
+  description = <<-EOT
+    Make the bootstrap IAM rows that let swarm-workspace-apply build group and
+    service workspaces as well as personal ones (docs/design/workspace-kinds.md
+    §4.5, lane WK-IAM of #847):
+
+      K1  swarmFrontDoorAdmitter (iap.webServices.getIamPolicy and
+          setIamPolicy) to swarm-workspace-deployer, on the API backend alone,
+          by exact name (workspace_deployer.tf);
+      K2  a second swarmWorkspaceSecretBinder grant to the deployer, on any
+          tenant's -git team slot and its -git-refresh twin
+          (workspace_deployer.tf);
+      K3  swarm-api's three forge-slot grants over any tenant's members'
+          -git-u- slots (forge_user_slots.tf).
+
+    Off by default. K2 and K3 follow this switch alone. K1 also needs
+    swarmFrontDoorAdmitter on workspace_deployer_roles, which the owner adds
+    only once O1 (§4.5: IAP accepts the permission names and matches the
+    number-form name, read live on a throwaway binding) has passed; without
+    it a service workspace's front-door admit stays an owner step. It needs
+    the deployer and the user slots, which hold the roles K2 and K3 grant.
+  EOT
+  type        = bool
+  default     = false
+
+  validation {
+    condition     = !var.enable_workspace_kinds || (var.enable_workspace_deployer && var.enable_forge_user_slots)
+    error_message = "enable_workspace_kinds needs enable_workspace_deployer and enable_forge_user_slots: K1 and K2 are swarm-workspace-deployer's grants, and K3 grants swarmForgeSlotVersionManager, which exists only while the user slots are on."
+  }
+}
+
+variable "front_door_admit_role_bound" {
+  description = <<-EOT
+    Add `api.getAttribute("iam.googleapis.com/modifiedGrantsByRole",
+    []).hasOnly(["roles/iap.httpsResourceAccessor"])` to K1's condition, so
+    the deployer's setIamPolicy on the API backend may change members of the
+    accessor role and of no other (docs/design/workspace-kinds.md §4.5).
+
+    Off until the owner's O1 step 3 shows IAP evaluates modifiedGrantsByRole.
+    Before that it is not known to narrow anything: an attribute a service
+    does not supply reads as its default, [], whose hasOnly() is true, so
+    setting it on unproven would look like a bound and be none.
+  EOT
+  type        = bool
+  default     = false
 }
