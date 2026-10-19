@@ -218,9 +218,12 @@ run "a_person_cannot_be_a_terraform_tenant" {
     source = "../../terraform/infra"
   }
 
+  # Under a frozen id (var.tenants is frozen to dev's four keys,
+  # tenants_frozen.tftest.hcl), so the refusal is the person rule's and not
+  # the freeze's.
   variables {
     tenants = {
-      "u-fixture-person" = {
+      "u-sw-c90291" = {
         kind      = "user"
         principal = "fixture.person@saga.xyz"
       }

@@ -601,11 +601,47 @@ export interface PlatformSettings {
   max_additional_repositories: number
   /** The GiB one step's additional repositories may total. */
   additional_repositories_budget_gib: number
+  /**
+   * List prices by model (#1481), that swarm-api prices a stopped attempt's
+   * usage at. A model with no entry prices nothing: its cost is "not
+   * reported", never a guessed figure (`swarm_api.modelprices`).
+   */
+  model_prices: Record<string, ModelPrice>
   updated_at: string | null
   updated_by: string | null
   /** `missing`: every value above is a default nobody has set. */
   settings_document: 'present' | 'missing'
 }
+
+/**
+ * One model's entry in `PlatformSettings.model_prices` (`modelprices.entry`):
+ * USD per million tokens of each kind, where the figure was read, the day it
+ * was read, and the admin who last changed it (null for the seed, which the
+ * worker's code held before prices became data).
+ */
+export interface ModelPrice {
+  input: number
+  output: number
+  cache_read: number
+  cache_write: number
+  currency: 'USD'
+  /** `console` for an admin's edit, `pricing-page` for the weekly refresh, `code` for the seed. */
+  source: string
+  /** YYYY-MM-DD. */
+  as_of: string
+  updated_by: string | null
+}
+
+/** The four per-million-token rates of a `ModelPrice`, in the order the table draws them. */
+export const MODEL_PRICE_RATES = ['input', 'output', 'cache_read', 'cache_write'] as const
+export type ModelPriceRate = (typeof MODEL_PRICE_RATES)[number]
+
+/**
+ * What `PUT /v1/admin/settings` takes for one model (`schemas.ModelPriceRequest`).
+ * No `updated_by`, which swarm-api stamps from the token, and no `source` or
+ * `currency`, which default to `console` and `USD` there.
+ */
+export type ModelPriceChange = Record<ModelPriceRate, number> & { as_of: string }
 
 /** One entry of `Task.additional_repositories`, as `additional_repositories_to_api` serves it. */
 export interface TaskAdditionalRepository {
@@ -5426,11 +5462,21 @@ export interface WorkspaceJobStep {
   code?: string | null
 }
 
+/**
+ * `workspaces/{tenant_id}.kind` (docs/design/workspace-kinds.md §4.1): swarm-api's, not the frozen contract's
+ * `Tenant.kind`. A record with no `kind` is `personal`, as `workspaces.kind_of` reads it.
+ */
+export type WorkspaceKind = 'personal' | 'group' | 'service'
+
 /** `GET /v1/workspace`: the caller's own record (`workspaces.view`). Only `state`, `setup_url` and `setup_command` are sent with no record. */
 export interface WorkspaceView {
   state: WorkspaceState
   setup_url: string
   setup_command: string
+  /** Absent from an API older than WK-RECORD; the console reads absent as `personal`. */
+  kind?: WorkspaceKind
+  /** At most 60 characters (`workspaces.MAX_DISPLAY_NAME`); the API defaults it to the address's local part. */
+  display_name?: string | null
   workspace_id?: string | null
   tenant_id?: string | null
   request_id?: string | null
@@ -5473,6 +5519,8 @@ export interface LoanRequestAnswer {
 
 /** A record as an admin sees it (`people._admin_view`): the person's view, less the tenant id, with the dispatch. */
 export interface AdminWorkspaceView extends WorkspaceView {
+  /** The person's, the group's or the service account's address the record was filed for. Never `requested_by`, which stays in Firestore. */
+  principal?: string | null
   dispatch?: {
     attempts: number | null
     last_attempt_at: string | null
@@ -5484,6 +5532,18 @@ export interface AdminWorkspaceView extends WorkspaceView {
   retried_at?: string | null
   /** Only on a `needs_owner` record: the step the call guard stopped at. */
   needs_owner_step?: string | null
+}
+
+/**
+ * `POST /v1/admin/workspaces` (WK-RECORD, design §4.2.2): what Admin › Tenants › New workspace sends -- a kind, an
+ * address and a label, and nothing else. `limits` is the API's per-kind default when absent, so the dialog never
+ * sends it, and no image, command, resource spec or backend parameter is a field here (invariant 10).
+ */
+export interface NewWorkspaceBody {
+  kind: WorkspaceKind
+  principal: string
+  /** Null lets the API take the address's local part. */
+  display_name: string | null
 }
 
 /** `people._claude_account`: where the person's Claude account comes from. */

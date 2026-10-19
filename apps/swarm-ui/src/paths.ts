@@ -119,6 +119,10 @@ export const FIXED: Readonly<Record<string, string>> = {
   // connections, bell and Claude accounts (docs/design/user-profile.md). About
   // the person rather than a workspace, so beside API keys, for the same reason.
   'settings/profile': '/settings/profile',
+  // ROLES-UI-PEOPLE: Settings › People and roles, the selected workspace's
+  // default role, its people's own roles and its role events
+  // (docs/design/workspace-roles.md §4.8). Beside Workspace, for the same reason.
+  'settings/people': '/settings/people',
   [HELP_ROUTE]: '/help',
   reference: '/api-reads',
 }

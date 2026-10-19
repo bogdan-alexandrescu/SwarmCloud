@@ -76,7 +76,7 @@ run "dev_tfvars_names_no_u_bogdan_and_bootstrap_grants_it_nothing" {
 
   assert {
     condition     = toset(local.infra_tenant_ids) == toset(["eng", "smoke", "u-sw-c90291", "u-or-9a0792"])
-    error_message = "dev.tfvars' tenants are not eng, smoke, u-sw-c90291 and u-or-9a0792: update this run and the infra run below together, so the infra plan is still the one dev.tfvars makes"
+    error_message = "dev.tfvars' tenants are not eng, smoke, u-sw-c90291 and u-or-9a0792: update this run and the infra run below together, so the infra plan is still the one dev.tfvars makes (less u-or-9a0792, whose id the stand-in takes)"
   }
 
   assert {
@@ -255,7 +255,7 @@ run "infra_plans_nothing_for_u_bogdan_and_still_plans_eng" {
   }
 }
 
-# 3 and 4, infra: dev's tenants plus a stand-in for u-bogdan.
+# 3 and 4, infra: dev's tenants, with a stand-in for u-bogdan under u-or-9a0792's id.
 run "infra_forgets_every_instance_it_made_for_u_bogdan" {
   command = plan
 
@@ -293,15 +293,6 @@ run "infra_forgets_every_instance_it_made_for_u_bogdan" {
         max_active      = 4
         capacity_units  = 8
       }
-      u-or-9a0792 = {
-        kind            = "user"
-        principal       = "oracle-api@saga-agents-staging.iam.gserviceaccount.com"
-        display_name    = "Oracle API"
-        directory_group = false
-        providers       = []
-        max_active      = 4
-        capacity_units  = 8
-      }
       # u-bogdan as it was in dev.tfvars, under another id and with
       # kind = "group": terraform/infra refuses a person in this map
       # (variables.tf; docs/workspaces.md §3.2 rule 3), and a plan that
@@ -309,7 +300,12 @@ run "infra_forgets_every_instance_it_made_for_u_bogdan" {
       # ("Moved object still exists"). Every address the map makes is keyed by
       # the tenant id, so the stand-in's addresses with its id replaced are
       # u-bogdan's.
-      w9-stand-in = {
+      #
+      # The id is u-or-9a0792's, and that tenant is left out of this run:
+      # var.tenants is frozen to dev's four keys (tenants_frozen.tftest.hcl),
+      # so a fifth id is refused. u-or-9a0792 is a service tenant with no
+      # provider, shaped exactly like u-sw-c90291, which stays.
+      u-or-9a0792 = {
         kind           = "group"
         principal      = "w9-stand-in@saga.xyz"
         display_name   = "Bogdan (personal)"
@@ -339,12 +335,12 @@ run "infra_forgets_every_instance_it_made_for_u_bogdan" {
   # plan reading 0 to destroy is their proof (docs/workspaces.md §3.3).
   assert {
     condition = length(concat(
-      [for t in keys(output.tenant_service_accounts) : "module.tenancy.google_service_account.worker[\"u-bogdan\"]" if t == "w9-stand-in"],
-      [for t in keys(output.tenant_namespaces) : "module.firestore.google_firestore_document.tenant[\"u-bogdan\"]" if t == "w9-stand-in"],
-      [for p in output.pool_names : "module.firestore.google_firestore_document.pool[\"${replace(p, "w9-stand-in", "u-bogdan")}\"]" if strcontains(p, "w9-stand-in")],
-      [for id in values(output.tenant_secret_ids["w9-stand-in"]) : "module.secret_manager.google_secret_manager_secret.this[\"${replace(id, "w9-stand-in", "u-bogdan")}\"]"],
-      [for j in output.job_names : "module.cloud_run_jobs.google_cloud_run_v2_job.this[\"${replace(j, "w9-stand-in", "u-bogdan")}\"]" if strcontains(j, "w9-stand-in")],
-      [for n in output.scheduler_jobs : "module.scheduler.google_cloud_scheduler_job.${replace(trimsuffix(trimprefix(n, "swarm-"), "-w9-stand-in"), "-", "_")}[\"u-bogdan\"]" if strcontains(n, "w9-stand-in") && !contains(["swarm-stranded-pr-sweep-w9-stand-in"], n)],
+      [for t in keys(output.tenant_service_accounts) : "module.tenancy.google_service_account.worker[\"u-bogdan\"]" if t == "u-or-9a0792"],
+      [for t in keys(output.tenant_namespaces) : "module.firestore.google_firestore_document.tenant[\"u-bogdan\"]" if t == "u-or-9a0792"],
+      [for p in output.pool_names : "module.firestore.google_firestore_document.pool[\"${replace(p, "u-or-9a0792", "u-bogdan")}\"]" if strcontains(p, "u-or-9a0792")],
+      [for id in values(output.tenant_secret_ids["u-or-9a0792"]) : "module.secret_manager.google_secret_manager_secret.this[\"${replace(id, "u-or-9a0792", "u-bogdan")}\"]"],
+      [for j in output.job_names : "module.cloud_run_jobs.google_cloud_run_v2_job.this[\"${replace(j, "u-or-9a0792", "u-bogdan")}\"]" if strcontains(j, "u-or-9a0792")],
+      [for n in output.scheduler_jobs : "module.scheduler.google_cloud_scheduler_job.${replace(trimsuffix(trimprefix(n, "swarm-"), "-u-or-9a0792"), "-", "_")}[\"u-bogdan\"]" if strcontains(n, "u-or-9a0792") && !contains(["swarm-stranded-pr-sweep-u-or-9a0792"], n)],
     )) == 13
     error_message = "a tenant shaped like u-bogdan no longer gets the 13 output-visible instances (account, tenant document, 2 pools, 1 secret, 4 jobs, 4 scheduler jobs); a per-tenant resource changed, so re-read the set and terraform/infra/removed.tf together"
   }
@@ -352,12 +348,12 @@ run "infra_forgets_every_instance_it_made_for_u_bogdan" {
   assert {
     condition = alltrue([
       for a in concat(
-        [for t in keys(output.tenant_service_accounts) : "module.tenancy.google_service_account.worker[\"u-bogdan\"]" if t == "w9-stand-in"],
-        [for t in keys(output.tenant_namespaces) : "module.firestore.google_firestore_document.tenant[\"u-bogdan\"]" if t == "w9-stand-in"],
-        [for p in output.pool_names : "module.firestore.google_firestore_document.pool[\"${replace(p, "w9-stand-in", "u-bogdan")}\"]" if strcontains(p, "w9-stand-in")],
-        [for id in values(output.tenant_secret_ids["w9-stand-in"]) : "module.secret_manager.google_secret_manager_secret.this[\"${replace(id, "w9-stand-in", "u-bogdan")}\"]"],
-        [for j in output.job_names : "module.cloud_run_jobs.google_cloud_run_v2_job.this[\"${replace(j, "w9-stand-in", "u-bogdan")}\"]" if strcontains(j, "w9-stand-in")],
-        [for n in output.scheduler_jobs : "module.scheduler.google_cloud_scheduler_job.${replace(trimsuffix(trimprefix(n, "swarm-"), "-w9-stand-in"), "-", "_")}[\"u-bogdan\"]" if strcontains(n, "w9-stand-in") && !contains(["swarm-stranded-pr-sweep-w9-stand-in"], n)],
+        [for t in keys(output.tenant_service_accounts) : "module.tenancy.google_service_account.worker[\"u-bogdan\"]" if t == "u-or-9a0792"],
+        [for t in keys(output.tenant_namespaces) : "module.firestore.google_firestore_document.tenant[\"u-bogdan\"]" if t == "u-or-9a0792"],
+        [for p in output.pool_names : "module.firestore.google_firestore_document.pool[\"${replace(p, "u-or-9a0792", "u-bogdan")}\"]" if strcontains(p, "u-or-9a0792")],
+        [for id in values(output.tenant_secret_ids["u-or-9a0792"]) : "module.secret_manager.google_secret_manager_secret.this[\"${replace(id, "u-or-9a0792", "u-bogdan")}\"]"],
+        [for j in output.job_names : "module.cloud_run_jobs.google_cloud_run_v2_job.this[\"${replace(j, "u-or-9a0792", "u-bogdan")}\"]" if strcontains(j, "u-or-9a0792")],
+        [for n in output.scheduler_jobs : "module.scheduler.google_cloud_scheduler_job.${replace(trimsuffix(trimprefix(n, "swarm-"), "-u-or-9a0792"), "-", "_")}[\"u-bogdan\"]" if strcontains(n, "u-or-9a0792") && !contains(["swarm-stranded-pr-sweep-u-or-9a0792"], n)],
       ) : contains([for m in regexall("(?ms)^moved \\{\\s*from\\s*=\\s*(\\S+)", file("../../terraform/infra/removed.tf")) : m[0]], a)
     ])
     error_message = "an instance terraform/infra makes for a tenant shaped like u-bogdan is not the `from` of a `moved` in terraform/infra/removed.tf: the release would DESTROY it"
@@ -365,7 +361,7 @@ run "infra_forgets_every_instance_it_made_for_u_bogdan" {
 
   # Every `moved` is u-bogdan's, and there are as many as were planned for it.
   assert {
-    condition     = length([for m in regexall("(?ms)^moved \\{\\s*from\\s*=\\s*(\\S+)", file("../../terraform/infra/removed.tf")) : m[0]]) == 33 && alltrue([for a in [for m in regexall("(?ms)^moved \\{\\s*from\\s*=\\s*(\\S+)", file("../../terraform/infra/removed.tf")) : m[0]] : strcontains(a, "u-bogdan")]) && contains(keys(output.tenant_namespaces), "w9-stand-in")
+    condition     = length([for m in regexall("(?ms)^moved \\{\\s*from\\s*=\\s*(\\S+)", file("../../terraform/infra/removed.tf")) : m[0]]) == 33 && alltrue([for a in [for m in regexall("(?ms)^moved \\{\\s*from\\s*=\\s*(\\S+)", file("../../terraform/infra/removed.tf")) : m[0]] : strcontains(a, "u-bogdan")]) && contains(keys(output.tenant_namespaces), "u-or-9a0792")
     error_message = "terraform/infra/removed.tf does not move exactly u-bogdan's 33 instances: an extra one forgets another tenant's resource, a missing one is destroyed"
   }
 

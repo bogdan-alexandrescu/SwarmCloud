@@ -20,6 +20,7 @@ import { Mark } from './primitives'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead, usePoll } from './Shell'
 import { tableMode, usePhoneTables } from './capacityPoll'
+import { PersonWorkspaceRoles, WorkspaceRolesCard } from './WorkspaceRolesAdmin'
 import type { AdminAuditEntry, AdminHolder, LendableAccount, PeopleDoc, PersonClaudeAccount, PersonRow, WorkspaceState } from './types'
 import { timeAgo } from './types'
 import './styles/repositories.css'
@@ -51,6 +52,12 @@ import './styles/people.css'
  *   3. THE MANAGE DRAWER: Facts, the ceiling, the Claude account (Lend OR
  *      Reclaim, never both, and a reason when neither) and the Admin switch.
  *   4. Admins and Recent admin actions side by side, housekeeping folded.
+ *
+ * WORKSPACE ROLES (lane ROLES-UI-ADMIN; docs/design/workspace-roles.md §4.8):
+ * a Workspace roles card between the table and the side cards, and "Roles in
+ * workspaces" in the drawer, both in WorkspaceRolesAdmin.tsx. Role events and
+ * `platform_admin_*` rows are `admin_audit` rows, so Recent admin actions
+ * shows them as it shows every other.
  *
  * A PERSON IS ADDRESSED BY WORKSPACE ID in every URL this screen requests,
  * never by an email or a tenant id, so a URL in a history or a proxy log
@@ -1082,6 +1089,8 @@ function Drawer({ row, doc, reload, onClose }: { row: PersonRow; doc: PeopleDoc;
         </section>
         <ClaudeSection row={row} doc={doc} reload={reload} />
         <AdminSwitch row={row} doc={doc} reload={reload} />
+        {/* ROLES-UI-ADMIN (workspace-roles.md §4.8): every override this person holds. */}
+        <PersonWorkspaceRoles email={row.email} platformAdmin={holderOf(doc, row.email) !== undefined} />
       </aside>
     </div>
   )
@@ -1441,6 +1450,9 @@ function PeopleBody({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
           </div>
         )}
       </Card>
+      {/* ROLES-UI-ADMIN: each group workspace's default and admins, and how
+          its first admin is named (workspace-roles.md §4.8, Q2). */}
+      <WorkspaceRolesCard />
       <div className="pp-side">
         <Admins doc={doc} reload={reload} />
         <Audit entries={Array.isArray(doc.audit) ? doc.audit : []} />
