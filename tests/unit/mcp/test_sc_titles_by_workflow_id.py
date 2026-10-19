@@ -135,7 +135,7 @@ def test_an_empty_or_unexpanded_project_dir_falls_back_to_the_cwd_rule(where, mo
 
     assert launch.project_dir_given() is None
     script = launch.write_script("SC · t · 1 step", "d")
-    assert script.parent == tree / ".claude" / "sc-swarmcloud-runs"
+    assert script.parent == tree / launch.REPO_RUN_DIR
 
 
 def test_an_unexpanded_project_dir_and_no_work_tree_falls_back_to_temp(where, monkeypatch, tmp_path, capsys):

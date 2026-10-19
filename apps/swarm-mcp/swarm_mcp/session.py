@@ -50,7 +50,8 @@ THIS SESSION'S WORK, WITHIN THE PROJECT (SC-TITLES, #1511, owner decision
 2026-10-18). Every workflow submitted or attached and every single task
 dispatched from a project is appended to that project's `launched.jsonl`
 (`swarm_mcp.launch.record`, beside the run copies in
-`<project>/.claude/sc-swarmcloud-runs/`). `/sc check`, `/sc attach --all` and
+`<project>/.sc-swarmcloud-runs/`; one an older bridge left in
+`<project>/.claude/sc-swarmcloud-runs/` is read too, PLUGIN-RUNDIR). `/sc check`, `/sc attach --all` and
 the SessionStart attach keep work that is BOTH tagged with this session AND in
 that record (`ownership` with a `record`; a submission is recorded by the
 workflow id SwarmCloud answered with, SC-TITLES-B), so work this project launched
@@ -182,21 +183,40 @@ class Record:
 
 
 def project_record(path: Path | None = None) -> Record:
-    """The project's record (`launch.record_path()`, or `path`). A missing
+    """The project's record (`launch.record_paths()`, or `path`). A missing
     file is an empty record; a line that is not a JSON object is skipped and
-    counted, never fatal. Reading creates nothing."""
+    counted, never fatal. Reading creates nothing.
+
+    Without `path`, every file `launch.record_paths()` names is read and
+    their lines taken together (PLUGIN-RUNDIR): the record beside the copies
+    and the one a bridge of plugin 0.5.44 or older left under the project's
+    `.claude/`, so moving the folder loses no session's record. `path` is
+    the first of them that was read; one file under two names is read once."""
     if path is None:
         from . import launch
 
-        path = launch.record_path()
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+        paths = launch.record_paths()
+    else:
+        paths = [path]
+    texts: list[str] = []
+    read: Path | None = None
+    seen: set[tuple[int, int]] = set()
+    for candidate in paths:
+        try:
+            stat = candidate.stat()
+            if (stat.st_dev, stat.st_ino) in seen:
+                continue
+            texts.append(candidate.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+        seen.add((stat.st_dev, stat.st_ino))
+        read = read or candidate
+    if read is None:
         return Record()
     ids: set[str] = set()
     submitted: set[tuple[str, str]] = set()
     lines = unreadable = 0
-    for raw in text.splitlines():
+    for raw in "\n".join(texts).splitlines():
         if not raw.strip():
             continue
         lines += 1
@@ -214,7 +234,7 @@ def project_record(path: Path | None = None) -> Record:
         sid, name = _valid(entry.get(METADATA_KEY)), entry.get("name")
         if not entry.get("workflow_id") and sid and isinstance(name, str) and name:
             submitted.add((sid, name))
-    return Record(frozenset(ids), frozenset(submitted), path, lines, unreadable)
+    return Record(frozenset(ids), frozenset(submitted), read, lines, unreadable)
 
 
 def stored_name(envelope: Any, ident: Any) -> str:
