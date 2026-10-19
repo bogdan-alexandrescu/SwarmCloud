@@ -375,6 +375,28 @@ NOT_SWITCHABLE_CODES = frozenset({
     "default_role_not_allowed",
     "role_unchanged",
     "unknown_role",
+    # Workspace kinds (WK-RECORD, docs/design/workspace-kinds.md §4.2.3, part
+    # of #847): raised only by `POST /v1/admin/workspaces`, which that change
+    # introduces, so no existing caller can be refused by them (design §4.2.2
+    # says so). Continuing past any of them is the breach itself: a workspace
+    # for an address outside the allowed domains, built over a Terraform
+    # tenant, nesting another tenant's forge slots, a group taking a person's
+    # `u-` id, an admin group made a tenant, a service account the job cannot
+    # check, one of the platform's own accounts admitted as a tenant, or an
+    # account given a second tenant.
+    "WORKSPACE_DOMAIN_NOT_ALLOWED",
+    "WORKSPACE_ID_TERRAFORM",
+    "WORKSPACE_ID_NESTED",
+    "WORKSPACE_GROUP_ID_RESERVED",
+    "WORKSPACE_GROUP_IS_ADMIN",
+    "WORKSPACE_SERVICE_NOT_IN_PROJECT",
+    "WORKSPACE_SERVICE_PLATFORM",
+    "WORKSPACE_SERVICE_ALREADY_RESOLVES",
+    # Raised by the existing approve and retry routes, but only on a
+    # `service` record, which only the new route above creates: no record an
+    # existing caller acts on can meet it. Report-only would let an admin who
+    # is not the owner admit a new principal at the front door (Q2 (a)).
+    "WORKSPACE_APPROVAL_OWNER_ONLY",
 })
 
 #: What the guard lets through without a switch.

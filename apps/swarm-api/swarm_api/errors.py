@@ -166,6 +166,90 @@ class WorkspaceNotRequested(Conflict):
     code = "WORKSPACE_NOT_REQUESTED"
 
 
+# --------------------------------------------------------------------------
+# Workspace kinds: an admin's request for a personal, group or service
+# workspace (docs/design/workspace-kinds.md §4.2.3; lane WK-RECORD). Raised
+# by `POST /v1/admin/workspaces`, before any write, and the owner-only
+# approval by the approve and retry routes on a service record, which only
+# that route creates. None is a switch: no existing caller can meet one, and
+# continuing past any of them is the breach itself
+# (tests/unit/control_plane/test_new_refusals_ship_off.py, NOT_SWITCHABLE_CODES).
+# --------------------------------------------------------------------------
+
+
+class WorkspaceDomainNotAllowed(Forbidden):
+    """The person or group named is outside `allowed_domains`: the domain
+    check admits people at the front door, and a workspace admits nobody the
+    check does not."""
+
+    code = "WORKSPACE_DOMAIN_NOT_ALLOWED"
+
+
+class WorkspaceIdTerraform(Forbidden):
+    """The tenant id is one of Terraform's tenants (`var.tenants`, frozen to
+    four under Q8 (a)): the job never builds over what Terraform owns."""
+
+    code = "WORKSPACE_ID_TERRAFORM"
+
+
+class WorkspaceIdNested(Forbidden):
+    """The id and an existing tenant's id nest through `-git-`, so one
+    tenant's user-slot names would start with the other's
+    (`forge_user_slots.tf::forge_nested_tenants`)."""
+
+    code = "WORKSPACE_ID_NESTED"
+
+
+class WorkspaceGroupIdReserved(Forbidden):
+    """A group whose id starts `u-`: that is a person's id, and the group
+    would be handed their workspace (§2.1's collision)."""
+
+    code = "WORKSPACE_GROUP_ID_RESERVED"
+
+
+class WorkspaceGroupIsAdmin(Forbidden):
+    """An ADMIN_GROUPS entry as a tenant would mix the two lookups `auth.py`
+    keeps apart."""
+
+    code = "WORKSPACE_GROUP_IS_ADMIN"
+
+
+class WorkspaceGroupUnreadable(UpstreamUnavailable):
+    """Cloud Identity did not answer the one-group check, so swarm-api cannot
+    show the group exists and resolves. Retryable; nothing was written."""
+
+    code = "WORKSPACE_GROUP_UNREADABLE"
+
+
+class WorkspaceServiceNotInProject(Forbidden):
+    """Not a user-managed service account of this platform's project (Q7 (a)):
+    the job's S1 cannot read any other, so its checks would be the
+    requester's word."""
+
+    code = "WORKSPACE_SERVICE_NOT_IN_PROJECT"
+
+
+class WorkspaceServicePlatform(Forbidden):
+    """One of the platform's own accounts (`swarm-*`) or a Google-managed
+    default: admitting it would let it file work as a tenant."""
+
+    code = "WORKSPACE_SERVICE_PLATFORM"
+
+
+class WorkspaceServiceAlreadyResolves(Forbidden):
+    """The account already resolves somewhere: a tenant lists it
+    (TENANT_SERVICE_ACCOUNTS) or ALLOWED_USERS admits it."""
+
+    code = "WORKSPACE_SERVICE_ALREADY_RESOLVES"
+
+
+class WorkspaceApprovalOwnerOnly(Forbidden):
+    """Approving or retrying a service workspace: it admits a new principal
+    at the front door, so only the platform owner decides it (Q2 (a))."""
+
+    code = "WORKSPACE_APPROVAL_OWNER_ONLY"
+
+
 class BrowserToolUnavailable(ValidationFailed):
     """A `claude-code-browser` task that names `browser_tool: jev` when jev
     cannot run for it: no TypeSafe key resolves for its submitter or tenant
