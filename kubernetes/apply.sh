@@ -3,7 +3,14 @@
 #
 #   kubernetes/apply.sh --tenant eng                 # dry run, prints a diff
 #   kubernetes/apply.sh --tenant eng --confirm       # actually applies
-#   kubernetes/apply.sh --policies --confirm         # cluster-scoped policies
+#   kubernetes/apply.sh --tenant research --workspace-id w-1a2b3c --confirm
+#                         # a group or service workspace's namespace, as the
+#                         # workspace job's A7 applies it: the Namespace carries
+#                         # swarm.saga.xyz/workspace, which the deployer's scope
+#                         # policy admits it by (docs/design/workspace-kinds.md)
+#   kubernetes/apply.sh --policies --confirm         # cluster-scoped policies;
+#                         # refuses this environment's Terraform tenants'
+#                         # namespaces to the deployer, read from its tfvars
 #   kubernetes/apply.sh --swarm-system --confirm     # the live relay, then
 #                         # swarm-system's ingress: the relay's manifest from
 #                         # `terraform output -raw swarm_live_manifest` (which
@@ -136,6 +143,11 @@ CONFIRM=0
 SERVER_DRY_RUN=0
 CONTEXT=""
 SPEC_VERIFY_KEYS_FILE=""
+# The workspace a group or service namespace is built for (the job's step A7,
+# docs/design/workspace-kinds.md §4.3): rendered as swarm.saga.xyz/workspace on
+# the Namespace, which is what the deployer's scope policy admits a namespace
+# outside swarm-tenant-u-* by. Tenant mode only; empty for every other render.
+WORKSPACE_ID=""
 RENDER_ARGS=()
 # --swarm-system's tailnet egress manifest, when terraform renders one; read
 # in that mode, tested after the apply in every mode. The two secrets' names
@@ -212,6 +224,9 @@ while [[ $# -gt 0 ]]; do
     # without it no ConfigMap is rendered and an existing one is left alone.
     --spec-verify-keys)   SPEC_VERIFY_KEYS_FILE="$2"; shift 2 ;;
     --spec-verify-keys=*) SPEC_VERIFY_KEYS_FILE="${1#*=}"; shift ;;
+    --workspace-id)   [[ $# -ge 2 ]] || die "--workspace-id needs a value (w- and six hex digits)"
+                      WORKSPACE_ID="$2"; shift 2 ;;
+    --workspace-id=*) WORKSPACE_ID="${1#*=}"; shift ;;
     --tenant=*)   TENANT="${1#*=}"; shift ;;
     --context=*)  CONTEXT="${1#*=}"; shift ;;
     --cluster=*)  CLUSTER="${1#*=}"; shift ;;
@@ -240,6 +255,19 @@ while [[ $# -gt 0 ]]; do
       RENDER_ARGS+=("$1"); shift ;;
   esac
 done
+
+# --- 0. the workspace label, before anything is contacted ---------------------
+# Checked here as well as in render.py so a refused id costs no cluster read,
+# and so it can only ever reach the one render that labels a Namespace: never
+# the cluster-scoped policies or swarm-system, and never `render.py identity`.
+WORKSPACE_ARGS=()
+if [[ -n "${WORKSPACE_ID}" ]]; then
+  [[ "${MODE}" == "tenant" ]] \
+    || die "--workspace-id labels a tenant's Namespace (--tenant); --${MODE} renders none"
+  [[ "${WORKSPACE_ID}" =~ ^w-[0-9a-f]{6}$ ]] \
+    || die "--workspace-id '${WORKSPACE_ID}' is not a workspace id (w- and six hex digits)"
+  WORKSPACE_ARGS=(--workspace-id "${WORKSPACE_ID}")
+fi
 
 # --- 0. --swarm-system's preconditions, before anything is contacted -----------
 # Measured 2026-10-12: from a checkout whose terraform/infra was never
@@ -483,9 +511,19 @@ if [[ "${MODE}" == "policies" ]]; then
   fi
   info "rbac subjects  scheduler=${SCHEDULER_UID} reconciler=${RECONCILER_UID} workspace-deployer=${DEPLOYER_UID:-${DEPLOYER}}"
 
+  # THE TERRAFORM TENANTS' NAMESPACES, which the deployer's scope policy
+  # refuses by name (docs/design/workspace-kinds.md §3.1): read from this
+  # environment's tfvars, the file that declares var.tenants. Not from
+  # terraform state, which this mode never needed; and not every
+  # environment's, which would refuse a name another environment's Terraform
+  # owns (prod's `research`) and this environment's job may need. tf_var_file
+  # dies when the file is missing, and render.py refuses one naming no tenant.
+  TF_TFVARS="$(tf_var_file)"
+  info "terraform tenants  refused by name, from ${TF_TFVARS#"${REPO}/"}"
+
   MANIFEST="$("${PYTHON}" "${HERE}/render.py" policies --project "${PROJECT_ID}" \
     --scheduler-uid "${SCHEDULER_UID}" --reconciler-uid "${RECONCILER_UID}" \
-    --workspace-deployer-uid "${DEPLOYER_UID}")"
+    --workspace-deployer-uid "${DEPLOYER_UID}" --terraform-tfvars "${TF_TFVARS}")"
   info "rendering cluster-scoped admission policies and the workspace deployer's RBAC"
 elif [[ "${MODE}" == "swarm-system" ]]; then
   # --tenant, --spec-verify-keys and render arguments were refused at 0.
@@ -966,8 +1004,9 @@ else
     --node-local-dns-ip "${CLUSTER_NODE_LOCAL_DNS_IP}" \
     --network-source "${CLUSTER_NETWORK_SOURCE}" \
     ${BOUND_KSA_ARGS[@]+"${BOUND_KSA_ARGS[@]}"} \
+    ${WORKSPACE_ARGS[@]+"${WORKSPACE_ARGS[@]}"} \
     "${RENDER_ARGS[@]+"${RENDER_ARGS[@]}"}")"
-  info "rendering tenant ${TENANT}"
+  info "rendering tenant ${TENANT}${WORKSPACE_ID:+ (namespace labelled swarm.saga.xyz/workspace=${WORKSPACE_ID})}"
 fi
 
 # Belt and braces on the property above: a render marked offline carries
