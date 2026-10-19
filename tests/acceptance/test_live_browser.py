@@ -1330,6 +1330,27 @@ def run(cfg: Config) -> None:
         results.rest("FAIL", "not judged")
 
 
+def test_a_settle_that_stopped_short_is_judged_by_its_state_and_park_reason() -> None:
+    """pytest's entry (as test_caller_mcp.py's), offline and standard library
+    only: what the group writes when its wait stops short becomes a SKIP only
+    when the platform holds the task, and every FAIL names the state and the
+    park, never just "did not finish in time" (#1333). The full matrix is in
+    tests/unit/scripts/test_live_browser_acceptance.py."""
+    assert not_run_reason("PARKED:CREDENTIAL_MISSING")[0] == "SKIP"
+    assert not_run_reason("HELD:QUEUED:pool-gke MANUAL_PAUSE limit 0")[0] == "SKIP"
+    for state, words in (
+        ("PARKED:HUMAN_REQUIRED", ("PARKED", "HUMAN_REQUIRED", "nobody in control")),
+        ("PARKED:PROVIDER_COOLDOWN:eligible again at 2026-10-19T05:40:00Z",
+         ("park_reason PROVIDER_COOLDOWN", "eligible again at 2026-10-19T05:40:00Z")),
+        ("PARKED", ("PARKED", "no park_reason")),
+        ("RUNNING", ("still RUNNING", "not parked")),
+    ):
+        verdict, reason = not_run_reason(state)
+        assert verdict == "FAIL", state
+        assert "did not finish in time" not in reason, reason
+        assert all(word in reason for word in words), (state, reason)
+
+
 def _read_once(path: str | None) -> str | None:
     if not path:
         return None
