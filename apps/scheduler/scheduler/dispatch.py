@@ -103,7 +103,7 @@ from swarm_common.profiles import (
     tools_launched,
 )
 
-from .credentials import AccountPool, CredentialSource, credential_for
+from .credentials import AccountPool, CredentialSource, credential_for, needs_user_slot
 from .mcp_admission import names_mcp_servers
 from .judgment import BACKENDS as JUDGMENT_BACKENDS
 from .judgment import (
@@ -1309,6 +1309,13 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
         env["SWARM_CONSOLE_URL"] = console_url
     if getattr(settings, "pr_console_links", False) is True:
         env["SWARM_PR_CONSOLE_LINKS"] = "true"
+    # THE FORGE BROKER'S SWITCH (#1041, `settings.forge_broker`, terraform
+    # `forge_broker`). Passed through like SWARM_PR_CONSOLE_LINKS, and omitted
+    # when off, so an unswitched worker reads a person's slot with its own
+    # account exactly as before the broker (`agent_worker.forgebroker`).
+    forge_broker = getattr(settings, "forge_broker", False) is True
+    if forge_broker:
+        env["FORGE_BROKER"] = "true"
     # THE ATTEMPT KEY (docs/design/child-tasks.md §3.2). A one-use registration
     # nonce bound to this exact attempt, which its worker spends registering
     # the attempt key it generates BEFORE its agent exists; the agent can read
@@ -1338,14 +1345,49 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
     # naming a server needs one whatever else its profile offers: without it
     # the worker cannot attach, and the attempt fails before its agent runs.
     # A task naming none is keyed exactly as before.
+    # THE FORGE BROKER (#1041, docs/design/user-scoped-secrets.md) reuses the
+    # same registered attempt key: swarm-api releases a person's `git-u-` slot
+    # only to an attempt that signs with it. So WHILE THE BROKER IS SWITCHED ON
+    # (`forge_broker` above), an attempt whose signed `forge_credential` is a
+    # user slot gets the nonce too, child or not -- without it a child running
+    # on its submitter's slot could never prove itself and the broker would
+    # refuse it its own credential.
+    #
+    # THE SWITCH, NOT THE KEY, DECIDES. Dev has child tasks ON
+    # (terraform/environments/dev/dev.tfvars `enable_child_tasks`), so its
+    # scheduler holds the key and hands SWARM_API_URL to every root task. The
+    # broker is nonetheless off there until the owner sets `forge_broker`: off,
+    # no child is keyed for its slot (dispatch is what it was before #1041) and
+    # every worker reads the slot with its own account while
+    # `forge_slot_reader` allows it (`agent_worker.forgebroker.ForgeBroker.deployed`).
+    # That binding is removed only after the switch has been on in dev and a
+    # live run passed (docs/design/user-scoped-secrets.md §5, the rollout order).
+    #
+    # A CHILD KEYED ONLY FOR THE BROKER GETS NO CHILD PATH. SWARM_CHILD_PATH=false
+    # tells its worker to register the key and offer its agent nothing to
+    # submit children with. It is written only when the broker is the SOLE
+    # reason the child has a key: a child keyed for git tools, a workspace
+    # secret or an MCP server needs the key's child path (`ChildPath.available`)
+    # for those, and the flag would switch them off.
+    # That flag is a courtesy, not the guard, and neither is swarm-api's
+    # stored-`parent_task_id` check: an agent can rewrite its own task
+    # document, `parent_task_id` included. Depth is enforced by the CHILD'S
+    # WORKER from its verified spec -- `parent_task_id` is inside the signature
+    # (format 2), and `agent_worker.children` offers no child path to an
+    # attempt whose verified spec `is_child`, nor submits from one -- and
+    # since #1041 swarm-api builds a child only from a parent whose signature
+    # verifies (`children.ChildParentUnsigned`), so a child that erased its
+    # own `parent_task_id` fails its signature instead of passing as a root.
+    # A root task is written nothing: the child path is the worker's default.
     child_key = str(getattr(settings, "child_key", "") or "")
     api_url = str(getattr(settings, "swarm_api_url", "") or "").strip()
-    keyed = (
-        not task.parent_task_id
-        or offers_git_tools(task.runner_profile)
+    is_child = bool(task.parent_task_id)
+    other_key_use = (
+        offers_git_tools(task.runner_profile)
         or consumes_workspace_secrets(task.runner_profile, task.input)
         or names_mcp_servers(task.runner_profile, task.input)
     )
+    keyed = not is_child or (forge_broker and needs_user_slot(task)) or other_key_use
     if child_key and api_url and keyed:
         from .children import registration_nonce
 
@@ -1361,6 +1403,8 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
         api_audience = str(getattr(settings, "swarm_api_audience", "") or "").strip()
         if api_audience:
             env["SWARM_API_AUDIENCE"] = api_audience
+        if is_child and not other_key_use:
+            env["SWARM_CHILD_PATH"] = "false"
     return env
 
 

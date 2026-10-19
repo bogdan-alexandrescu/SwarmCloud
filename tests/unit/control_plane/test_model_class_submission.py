@@ -67,9 +67,11 @@ from .conftest import PROJECT, api_settings, auth_header, seed_tenant
 from .spec_signer import LocalSpecSigner
 from .test_child_tasks_api import (  # noqa: F401 -- `worker_tokens` is a fixture
     KEY,
+    SIGNER as CHILD_SIGNER,
     Attempt,
     _children,
     ready_parent,
+    spec_settings,
     submit,
     worker_tokens,
 )
@@ -473,7 +475,9 @@ def test_a_custom_prompt_spec_without_a_class_keeps_its_digest_and_one_with_a_cl
 
 def _child_client(db, worker_tokens, group_map, objects) -> TestClient:
     ctx = build_context(
-        settings=api_settings(child_key=KEY, worker_class_models=dict(CLASS_MODELS)),
+        settings=api_settings(child_key=KEY, worker_class_models=dict(CLASS_MODELS),
+                              **spec_settings()),
+        signer=CHILD_SIGNER,
         db=db,
         verifier=StaticTokenVerifier(worker_tokens),
         groups=StaticGroups(group_map),

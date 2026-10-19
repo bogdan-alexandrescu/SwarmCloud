@@ -653,6 +653,12 @@ enable_child_tasks = true
 # Read from Cloud Run (gcloud run services describe swarm-api), the value
 # `terraform output swarm_api_url` gives; swarm_api_url_is_wired checks it.
 swarm_api_url = "https://swarm-api-tonstldhta-uc.a.run.app"
+# THE FORGE BROKER STAYS OFF HERE (#1041, terraform/infra/child_tasks.tf
+# `forge_broker`), although child tasks are on: workers keep reading a
+# person's git-u- slot with their own account through forge_slot_reader.
+# Turning it on is the owner's step, and removing forge_slot_reader comes
+# only after it has been on here and a live run passed.
+forge_broker = false
 
 
 # Admin by email, because admin-by-group is unreachable here: swarm-api cannot

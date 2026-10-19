@@ -649,14 +649,25 @@ does).
    labelled `managed-by=swarm-api` and `swarm-tenant=<tenant>`; teardown
    (`docs/runbooks/tenant-offboarding.md`) gains a step that deletes them by
    label, since no Terraform plan will.
-4. **The tenant's worker account reads its own users' slots**:
-   `secretAccessor` at the project, conditioned on
-   `resource.name.startsWith("projects/<number>/secrets/swarm-tenant-<t>-git-u-")
-   && !resource.name.endsWith("-refresh")` (the full resource name, not the
-   bare secret name), one conditional
-   binding per tenant, from the tenancy module. This replaces the per-secret
-   authoritative binding for these slots only, and the review should weigh
-   exactly that.
+4. **The tenant's worker account reads its users' base slots -- until the
+   forge broker has been on.** `secretAccessor` at the project, conditioned
+   on the tenant's `-git-u-` prefix and never a `-refresh` twin, one
+   conditional binding per tenant (`forge_slot_reader`, decision D7/U1).
+   Every member of a group tenant runs agents as the same worker account, so
+   that binding lets Bob's agent read Alice's slot. The owner's 2026-10-11
+   decision that secrets are user-scoped (#1041) supersedes it: swarm-api's
+   broker, `POST /v1/attempts/forge-credential`, releases a person's slot
+   only to the current attempt of a task that person submitted
+   ([design/user-scoped-secrets.md](design/user-scoped-secrets.md)). It is
+   built behind the `forge_broker` switch (FORGE_BROKER,
+   `terraform/infra/child_tasks.tf`), off by default and off in dev, so the
+   binding STAYS in `terraform/bootstrap/forge_user_slots.tf`. Removing it is
+   a later, separate owner change and bootstrap apply, in the order design §5
+   and [runbooks/github-app.md](runbooks/github-app.md) step 2 give: after
+   the broker has been on in that environment and a live run passed. Only
+   then is swarm-api (item 5) the only reader. A personal tenant's worker
+   (`u-<user>`) reads its own slots through the workspace job's binding:
+   that account is one person's.
 5. **The refresher** (swarm-api in phase 2, decision D2) gets
    `secretAccessor` and `secretVersionAdder` on the tenant's user-slot prefix:
    the `-refresh` twins and the base slots alike. **Revised 2026-10-08 (owner

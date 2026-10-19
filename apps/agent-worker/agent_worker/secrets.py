@@ -255,6 +255,8 @@ def resolve_git_token(
     client: SecretManagerClient | None,
     logger: Any,
     provider: str = GIT_PROVIDER,
+    broker: Any | None = None,
+    write: bool = False,
 ) -> str | None:
     """The task's forge token, or None when the tenant has not registered one.
 
@@ -262,24 +264,64 @@ def resolve_git_token(
     `forge_credential` (contract request 54): `git`, the tenant's own token,
     by default; `git-u-<hex>`, a member's user slot, or `git-r-<hex>`, a
     repository's. Whichever it is, the name is `Tenant.secret_name` under this
-    worker's OWN tenant, and the read is the `latest` version, which swarm-api's
+    worker's OWN tenant, and the value is the `latest` version, which swarm-api's
     refresher keeps at least two hours from expiry (docs/onboarding.md §3.3
     step 3). Nothing caches it: a caller that reads again gets the version
     current at that moment, which is how an attempt outlives an 8-hour user
     token.
 
+    A PERSON'S SLOT IS NEVER READ FROM SECRET MANAGER (#1041,
+    docs/design/user-scoped-secrets.md §3.2). A group's workers share one
+    service account, so IAM cannot keep Alice's slot from Bob's attempt, and
+    that account no longer holds the read. A `git-u-` suffix is asked of
+    swarm-api's broker (`broker`, a `forgebroker.ForgeBroker`), which releases
+    it only to this task's current attempt, proven with its attempt key, when
+    the signed submitter owns the slot and still holds the grant -- `write`
+    asks for a push's grant. Without a broker, or refused by it, this raises
+    a `forgebroker.ForgeCredentialRefused` (a `SecretError`) naming the secret,
+    and NEVER falls back to the tenant token: that would run the task as
+    somebody it was not resolved to. The tenant token and a repository token
+    are team credentials, read directly as before.
+
+    WHERE THE BROKER IS SWITCHED OFF (`broker.deployed` is False: FORGE_BROKER
+    is off, the default and every environment's setting until the owner turns
+    it on), the slot is read with this worker's own account, exactly as
+    before #1041. That adds nothing an agent could not already do while
+    `forge_slot_reader` stands, and were that binding removed first the read
+    would be refused by IAM and raised as a `SecretError` naming the secret --
+    still never the tenant token. docs/design/user-scoped-secrets.md §5 is the
+    rollout order: the binding goes only after the switch has been on in dev
+    and a live run passed.
+
     None is not an error for the tenant token: a public repository clones
     without a credential, and a private one fails with git's own message, which
     is the right diagnosis. A user or repository slot is not listed in
-    `tenant.credentials` (swarm-api creates it, not the tenant document), so it
-    is read directly, and a read that fails is a `SecretError` naming the
-    secret, never its value. The value is registered with the logger before it
-    is returned so that every path that might echo it is already scrubbing it.
+    `tenant.credentials` (swarm-api creates it, not the tenant document), so a
+    repository slot is read directly, and a read that fails is a `SecretError`
+    naming the secret, never its value. The value is registered with the logger
+    before it is returned so that every path that might echo it is already
+    scrubbing it.
     """
-    if client is None:
-        return None
     if not FORGE_CREDENTIAL.fullmatch(provider or ""):
         raise SecretError(f"{provider!r} is not a forge credential suffix")
+    if user_slot_hash(provider) is not None:
+        from .forgebroker import ForgeCredentialRefused, NO_BROKER
+
+        if broker is None:
+            raise ForgeCredentialRefused(
+                NO_BROKER, tenant.secret_name(provider),
+                "this worker has no forge broker, and a person's slot is never read "
+                "from Secret Manager",
+            )
+        if broker.deployed:
+            return broker.fetch(tenant, provider, write=write)
+        if client is None:
+            raise SecretError(
+                f"secret {tenant.secret_name(provider)} could not be read (no client)")
+        logger.info("the forge broker is switched off (FORGE_BROKER); a person's slot "
+                    "is read with the worker's own account", secret=tenant.secret_name(provider))
+    if client is None:
+        return None
     if provider == GIT_PROVIDER and GIT_PROVIDER not in tenant.credentials:
         return None
     secret_name = tenant.secret_name(provider)
@@ -292,6 +334,21 @@ def resolve_git_token(
             raise SecretError(
                 f"secret {secret_name} could not be read ({type(exc).__name__})"
             ) from None
+    token = git_token_from_payload(payload, secret_name)
+    if not token:
+        return None
+    logger.register_secret(token)
+    logger.info("tenant git credential resolved", secret=secret_name)
+    return token
+
+
+def git_token_from_payload(payload: str, secret_name: str) -> str:
+    """A git secret's token: the payload, or its `GIT_TOKEN` when it is a JSON object.
+
+    `secret_name` is for the error only; neither the error nor anything else
+    here carries the value.
+    """
+    payload = (payload or "").strip()
     token = payload
     if payload.startswith("{"):
         try:
@@ -305,10 +362,6 @@ def resolve_git_token(
                     f"secret {secret_name} is a JSON object without a {GIT_TOKEN_ENV} string"
                 )
             token = str(value).strip()
-    if not token:
-        return None
-    logger.register_secret(token)
-    logger.info("tenant git credential resolved", secret=secret_name)
     return token
 
 

@@ -85,7 +85,6 @@ run "dev_tfvars_names_no_u_bogdan_and_bootstrap_grants_it_nothing" {
       [for k in keys(google_project_iam_member.forge_slot_version_adder) : "google_project_iam_member.forge_slot_version_adder[\"${k}\"]" if strcontains(k, "u-bogdan")],
       [for k in keys(google_project_iam_member.forge_slot_version_manager) : "google_project_iam_member.forge_slot_version_manager[\"${k}\"]" if strcontains(k, "u-bogdan")],
       [for k in keys(google_project_iam_member.forge_refresh_reader) : "google_project_iam_member.forge_refresh_reader[\"${k}\"]" if strcontains(k, "u-bogdan")],
-      [for k in keys(google_project_iam_member.forge_slot_reader) : "google_project_iam_member.forge_slot_reader[\"${k}\"]" if strcontains(k, "u-bogdan")],
     ])) == 0
     error_message = "the bootstrap plans a grant for u-bogdan; its grants are forgotten by terraform/bootstrap/removed.tf, never made again"
   }
@@ -97,7 +96,6 @@ run "dev_tfvars_names_no_u_bogdan_and_bootstrap_grants_it_nothing" {
       contains(keys(google_project_iam_member.forge_slot_version_adder), "eng"),
       contains(keys(google_project_iam_member.forge_slot_version_manager), "eng"),
       contains(keys(google_project_iam_member.forge_refresh_reader), "eng"),
-      contains(keys(google_project_iam_member.forge_slot_reader), "eng"),
     ])
     error_message = "the bootstrap no longer plans eng's grants, so the u-bogdan assertion above proves nothing"
   }

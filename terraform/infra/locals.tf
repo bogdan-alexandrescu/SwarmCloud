@@ -837,6 +837,11 @@ locals {
       # var.repository_grants_enforced; service submissions are never refused.
       REPOSITORY_GRANTS_ENFORCED = var.repository_grants_enforced ? "true" : "false"
 
+      # The forge broker's switch (child_tasks.tf `forge_broker`, #1041;
+      # swarm_api.settings `forge_broker`). Off, POST
+      # /v1/attempts/forge-credential answers 503 before reading anything.
+      FORGE_BROKER = var.forge_broker ? "true" : "false"
+
       # The live browser's search tool (swarm_api.settings
       # `search_tool_enabled`, `search_provider`; docs/search-tool.md, lane
       # SEARCH-TF, #1030). Off unless the environment's tfvars sets
@@ -1104,6 +1109,12 @@ locals {
       # check holds it to the deployed URL.
       SWARM_API_URL      = var.swarm_api_url
       SWARM_API_AUDIENCE = local.push_audiences["swarm-api"]
+
+      # The forge broker's switch (child_tasks.tf `forge_broker`, #1041),
+      # passed THROUGH to every worker by `scheduler.dispatch.worker_env` when
+      # on, and the reason a child on a person's slot is keyed. Off, dispatch
+      # is what it was before the broker.
+      FORGE_BROKER = var.forge_broker ? "true" : "false"
 
       # The live browser's display sidecar (scheduler.settings
       # `live_browser_sidecar`; docs/design/live-browser.md, LB-Lon). On, a
