@@ -536,6 +536,9 @@ def _installed_step(record: GitTokenRecord, via: str,
         "not_installed": list(found.get("not_installed") or []),
         "requested": [i["owner"] for i in pending],
         "install_url": found.get("install_url"),
+        # The App's configured display name (GITHUB_APP_NAME), or None: the
+        # console names the App by it in this step's line (#1647).
+        "app_name": found.get("app_name"),
     }
     if not found.get("read"):
         unreachable = bool(found.get("unreachable"))

@@ -6945,6 +6945,17 @@ export async function loadAccess(): Promise<Result<AccessOverview>> {
   return readAs(route('/v1/access'), (raw) => raw as AccessOverview)
 }
 
+/**
+ * The GitHub App's name as the console says it: the display name the API
+ * serves as `app_name` (the deployment's GITHUB_APP_NAME), or, when it serves
+ * none, "the SwarmCloud GitHub App". Never a hard-coded deployment's name
+ * (#1647).
+ */
+export function githubAppName(served: unknown): string {
+  const name = typeof served === 'string' ? served.trim() : ''
+  return name !== '' ? name : 'the SwarmCloud GitHub App'
+}
+
 /** `GET /v1/access/orgs`: every owner the caller's connection reaches, each with its install state. */
 export async function loadAccessOwners(): Promise<Result<AccessOwners>> {
   return readAs(route('/v1/access/orgs'), (raw) => raw as AccessOwners)

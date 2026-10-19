@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import {
-  disableAccessOwner, disconnectGitHub, enableAccessOwner, loadAccess, loadAccessMembers, loadAccessOwners,
+  disableAccessOwner, disconnectGitHub, enableAccessOwner, githubAppName, loadAccess, loadAccessMembers, loadAccessOwners,
   loadAccessRepositories, putAccessGrant, requestAccessInstall, revokeAccessGrant, typedRepoId, verifyAccessGrant,
 } from './api'
 import { BrowserLoginsPane } from './BrowserLogins'
@@ -1320,14 +1320,24 @@ function useRereadOnFocus(reload: () => void) {
  * Both buttons open the same install page: GitHub asks there which account,
  * and offers only the person's own account and the orgs they may install on
  * or ask for. Back from GitHub, the card's Refresh (or returning to the tab)
- * reads the owners again.
+ * reads the owners again. The App is named by the name the API serves
+ * (`app_name`, the deployment's GITHUB_APP_NAME), never a hard-coded one.
  */
-export function NotInstalledNotice({ login, installUrl }: { login: string | null; installUrl: string | null }) {
+export function NotInstalledNotice({
+  login,
+  installUrl,
+  appName,
+}: {
+  login: string | null
+  installUrl: string | null
+  appName?: string | null
+}) {
+  const app = githubAppName(appName)
   return (
-    <section className="ac-install" aria-label="SwarmCloud Saga is not installed">
+    <section className="ac-install" aria-label={`${app.charAt(0).toUpperCase()}${app.slice(1)} is not installed`}>
       <p className="ac-install-h">
         <b>
-          {login !== null ? `You're connected as @${login}` : "You're connected"}, but SwarmCloud Saga isn't installed anywhere yet.
+          {login !== null ? `You're connected as @${login}` : "You're connected"}, but {app} isn't installed anywhere yet.
         </b>{' '}
         Install it on the accounts and repositories you want SwarmCloud to use.
       </p>
@@ -1393,6 +1403,7 @@ function Choose({ overview, reloadOverview }: { overview: AccessOverview; reload
               <NotInstalledNotice
                 login={login ?? o.owners.find((x) => x.owner_type === 'User')?.owner ?? null}
                 installUrl={o.install_url}
+                appName={o.app_name}
               />
             )}
             <div className="ac-chooser">
@@ -1421,8 +1432,8 @@ function Choose({ overview, reloadOverview }: { overview: AccessOverview; reload
                 </EmptyState>
               ) : (
                 <EmptyState kind="empty" heading="Nothing to list until the App is installed">
-                  Install SwarmCloud Saga on an owner on the left; its repositories are listed here once it is, and you have
-                  enabled it.
+                  Install {githubAppName(o.app_name)} on an owner on the left; its repositories are listed here once it is, and
+                  you have enabled it.
                 </EmptyState>
               )}
             </div>
