@@ -865,3 +865,139 @@ recommendation is the first option. They are also in the run's
    publishes only its own outputs (the checkouts are excluded from the
    standalone upload).
 2. Refused: an additional repository needs a primary.
+
+---
+
+## 8. What was built
+
+Read on 2026-10-19 at `c464b1f`, after MR-CONTRACT, MR-WORKER, MR-API,
+MR-GRAPH, MR-BRIDGE and MR-UI had merged. This section records what holds
+and where it differs from §1-§7. The reasoning above is left as written,
+because it is the record of why. Where the two disagree, **this section
+describes the code**. The status line at the top ("Nothing here is built")
+predates the build and is outside this lane's territory.
+
+### 8.1 The behaviour, in one line each
+
+* **The gate is registered and `readable_by_tasks`** (owner's Q1, option 1).
+  A repository the tenant has not registered is refused
+  `repository_not_registered` (422). One registered but not readable by
+  tasks, or `archived`, is refused `repository_not_readable_by_tasks` (403).
+  Registered alone is not enough. Nothing is written for a refused
+  submission.
+* **Names, never URLs.** A caller sends `{repository: "owner/repo", ref?,
+  name?}` (`apps/swarm-api/swarm_api/schemas.py::AdditionalRepositoryCreate`).
+  The URL, the slot, the commit and the size are swarm-api's
+  (`apps/swarm-api/swarm_api/extrarepos.py::Resolver`), never the caller's
+  (invariant 10). The MCP bridge refuses a URL, a remote or any key but those
+  three before it sends anything
+  (`apps/swarm-mcp/swarm_mcp/client.py::check_additional_repositories`).
+* **No repository (`git-r-`) slot, ever** (Q2, option 1). The clone uses the
+  submitter's user slot for that repository's owner, or the service slot.
+  A repository that only a `git-r-` slot could read is refused
+  `additional_repository_unreadable` (422). The same code, and the same
+  sentence, cover a slot that cannot read it, a missing token, a forge
+  401/403/404 and a ref that names no commit. Which of them it was is not
+  the caller's to learn (`extrarepos.py::UNREADABLE`). The frozen contract
+  holds the same line from the other side: `ADDITIONAL_FORGE_CREDENTIAL`
+  matches `git` and `git-u-<16 hex>` only, so a stored entry cannot name
+  a `git-r-` slot.
+* **Pinned at submission to a signed 40-hex commit** (Q3, option 1).
+  swarm-api reads `commits?sha=<ref>&per_page=1` with the slot the worker
+  will clone with, so a ref that resolves at submission can be cloned at the
+  attempt. An absent ref is the registration's `default_branch`, else the
+  forge's. Each (repository, ref, slot) is resolved once per submission, so
+  every step of one workflow reads the same commit even if the branch moves
+  while it is being submitted. The list is inside the spec signature at
+  format 4 (contract request 96). A rewritten commit, an added entry or a
+  swapped slot fails the worker's check before the agent runs (invariant 5).
+* **GKE agent profiles only, on the cache volume** (Q4, option 1).
+  `extrarepos.py::takes_additional_repositories` admits an agent profile
+  whose backend is GKE Autopilot: on 2026-10-18 that was `generic`,
+  `claude-code`, `codex`, `browser` and `claude-code-browser`. It refuses
+  `mock` and `claude-code-review` (Cloud Run), `merge` and `post-verdict`
+  (worker actions), `await-input` and `indexer` with
+  `additional_repositories_unsupported_profile` (422). The worker refuses
+  the same thing again, terminally and under the same name, if an attempt
+  without a cache volume of its own ever gets one
+  (`apps/agent-worker/agent_worker/extrarepos.py::prepare`).
+* **The limit is a platform setting, not a constant.** See §8.2.
+* **Only `work/repo` comes back.** `collect`, `direct-pr` and `integrate`
+  are unchanged. A change made under `work/repos/<name>` is not in the
+  collected patch (`tests/unit/worker/test_additional_repositories_not_harvested.py`).
+
+### 8.2 The limit: `max_additional_repositories`, and the ceiling that is not it
+
+§4.1, §5 request A and §7 Q5 propose `MAX_ADDITIONAL_REPOSITORIES = 4`, a
+constant in the frozen contract. **That was not built.** The owner's
+decision of 2026-10-17 on PR 1461 made the count a setting an admin edits
+while the platform runs:
+
+* **`max_additional_repositories`** is a platform setting. Its default is
+  **5** and its accepted range is **1 to 10**. It lives in
+  `apps/swarm-api/swarm_api/store.py::PLATFORM_SETTINGS_DEFAULTS` and
+  `PLATFORM_SETTINGS_RANGES`, and an admin sets it with
+  `PUT /v1/admin/settings` or the console's Admin settings → "Additional
+  repositories" card. swarm-api reads it at **every submission**
+  (`extrarepos.py::Limits.from_settings`), so a change admits or refuses
+  the next submission without a deploy. A task already submitted keeps
+  what it was pinned with. A stored value outside the range, or of the wrong
+  type, reads as the default, so a typo written straight to Firestore cannot
+  lift the limit.
+* **A step over it is refused `too_many_additional_repositories` (422),
+  naming the limit.** The message says "a step may read at most <n>
+  additional repositories (the platform setting
+  max_additional_repositories)". The detail carries `limit`, `count` and
+  `setting`. The bridge does not check the count, because a copy of today's
+  value would refuse tomorrow's legal list. The plugin's delegate skill
+  tells an agent the same thing.
+* **`ADDITIONAL_REPOSITORIES_CEILING = 10`, in
+  `apps/common/swarm_common/models.py`, is a guard on the document's
+  shape, never the limit.** `check_additional_repositories` refuses a
+  stored list longer than 10, and the setting's upper bound is that ceiling,
+  so the setting can rise to 10 without a contract change. Nobody should
+  quote 10 as "how many a step may read". The request schema's own bound,
+  `schemas.py::MAX_ADDITIONAL_REPOSITORIES_IN_REQUEST` (40), only caps what
+  one body costs to parse. A list between the setting and 40 gets
+  `too_many_additional_repositories`, not pydantic's generic shape.
+* **The size budget is a setting too:** `additional_repositories_budget_gib`,
+  default 6, range 1-20 (the cache volume's size). swarm-api enforces it on
+  the forge's estimate at submission (`additional_repositories_too_large`,
+  422, naming the budget and the setting). The worker reads the same key
+  from `control/settings` at every clone
+  (`apps/agent-worker/agent_worker/extrarepos.py::budget_bytes`) and
+  enforces it on the measured checkouts, terminally.
+
+### 8.3 Where the build differs from §4
+
+| design said | built |
+|---|---|
+| At most 4, a contract constant (§4.1, §5 A, §7 Q5) | The setting `max_additional_repositories`, default 5, range 1-10; the contract's `ADDITIONAL_REPOSITORIES_CEILING` (10) is a shape guard (§8.2) |
+| A 6 GiB budget (§4.6) | The setting `additional_repositories_budget_gib`, default 6, range 1-20, read by swarm-api and by the worker |
+| Contract request `<n>`, spec format 4 | Requests 95 and 96 in `docs/contract-change-requests.md`, format 4. `SPEC_FORMAT` is now 5 (request 104, `model_class`, #1435). A task that names a model class and additional repositories signs at 5, which covers both |
+| `REPOSITORY_NOT_GRANTED` per additional repository | The same code, one refusal naming every ungranted entry, and only while `repository_grants_enforced` is on. With grants not enforced, a person's ungranted entry is cloned with the service slot, as for the primary |
+| The workflow's list applies to every step | It applies to every step that **runs an agent** (`extrarepos.py::runs_an_agent`). A worker action or an `await-input` step inherits none. A step's own list still replaces it, and `[]` means none (Q6) |
+| Refusal codes (§4.1 table) | All of them, plus `additional_repositories_disabled` (422) while `ADDITIONAL_REPOSITORIES_ENABLED` is off, and `validation_failed` when the deployment has no forge reader configured. An archived registration is `repository_not_readable_by_tasks` |
+| Checkouts at `<SWARM_CACHE_ROOT>/<attempt_id>/repos/<name>` (§4.4) | `<attempt cache>/repos/<name>`, the attempt's own cache directory on the pod's cache volume. `work/repos/<name>` links to it |
+| A revoked grant fails `additional_repository_not_granted` | It does, terminally, and every entry's grant is read before any clone starts. A grant that **cannot be read** is `additional_repository_grant_unreadable`, which is retryable |
+| `chmod -R a-w` and an invalid push URL | Both, with the push URL `read-only-additional-repository://no-push`. Still a signal, not a boundary (§4.5) |
+| The checkpoint always leaves `repos` out | Only for a task that has additional checkouts (`CheckpointManager.leaves_out_extra_repos`). A task without them whose agent made its own `repos/` folder keeps it, because that folder is the agent's work |
+| `standalone_outputs.scan` reserves `repos` | The worker's reserved names (`Worker._workdir_reserved`) add `repos` when the attempt has checkouts. `standalone_outputs.py` is unchanged |
+| The UI picker lists `GET /v1/repositories/readable` (§4.8) | It lists `GET /v1/repositories` (up to 20 pages), keeping `readable_by_tasks === true` and not archived. `/readable` lists what the token can see, including repositories nobody registered, and every one of those the API refuses. The read-back is on the task detail (`AgentDetail.tsx`) and on the submit form's created view, each row `name · owner/repo @ ref · commit[:12]` |
+| The graph for additional repositories, phase 2 (§4.9) | Built (MR-GRAPH). The ticket body's `repo_id` (`apps/swarm-api/swarm_api/graph_ticket.py::AdditionalGraphTicketRequest`, a subclass, so the primary's body is unchanged) is accepted only from the task's signed list; anything else is 404 `no_graph`. A served graph's shim takes a `repo` argument. A **staged** one is written under `work/.swarm-context/repos/<name>/snapshot/`, but the staged server reads only the step's own snapshot today. An entry never fails the attempt; one with no graph says `graph: false` in its stage record |
+| One `accept.yml` case after lanes 1-4 | **Not built.** `scripts/acceptance/` has no additional-repositories case, so the three #1434 checks are held offline only (§8.4) |
+
+### 8.4 How each #1434 check is held, and what is not
+
+* **Three checkouts at their pinned commits**:
+  `tests/unit/worker/test_additional_repositories_clone.py`.
+* **A change in an additional checkout is not in the collected patch**:
+  `tests/unit/worker/test_additional_repositories_not_harvested.py`.
+* **An unregistered repository is refused at submission**:
+  `tests/unit/control_plane/test_additional_repositories_submit.py`.
+* **Not held against a deployed environment.** No acceptance group submits a
+  multi-repository step. `ADDITIONAL_REPOSITORIES_ENABLED` defaults off and
+  nothing under `terraform/` sets it, so a deployed swarm-api refuses the
+  field `additional_repositories_disabled` until an operator turns it on.
+  The rollout order is the design's: workers with MR-WORKER first, then the
+  flag.
