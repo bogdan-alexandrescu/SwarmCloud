@@ -10,7 +10,9 @@
     GET    /v1/admin/workspaces/{tenant_id}/roles            a platform admin's, for any
     PUT    /v1/admin/workspaces/{tenant_id}/roles/person     registered group workspace,
     DELETE /v1/admin/workspaces/{tenant_id}/roles/person     without switching to it: how
-    PUT    /v1/admin/workspaces/{tenant_id}/roles/default    a first admin is named (Q2)
+    PUT    /v1/admin/workspaces/{tenant_id}/roles/default    a first admin is named (Q2);
+                                                             a Terraform group or a
+                                                             `ready` job-made group
     GET    /v1/admin/roles/person?email=…                    every override one email holds
 
 The email is in the body, not the path, so addresses do not land in request
@@ -233,10 +235,22 @@ def workspace_set_default(
 
 
 def _registered(ctx: AppContext, tenant_id: str) -> str:
-    """The group of a registered GROUP workspace, through the same collision
-    check a member's request makes; 404 for anything else -- a `u-` id
-    included, so no personal workspace is reachable here (§4.5)."""
+    """The group of a registered GROUP workspace -- a Terraform group or a
+    `ready` group the workspace job made (owner decision 2026-10-19) --
+    through the same collision check a member's request makes; 404 for
+    anything else: a `u-` id included, so no personal or service workspace
+    is reachable here (§4.5), and a job-made group whose record is not
+    `ready`.
+
+    An id a Terraform group selects is answered from `TENANT_GROUPS` alone,
+    as `Authenticator._registered_reach` answers it: the registry never
+    registers a group under a Terraform tenant's id and the first group per
+    id wins, so the answer is the same and never waits on a registry read.
+    Any other id reads `Authenticator.registered_group_workspaces`, the
+    authenticator's cached registry (503 when it cannot be read)."""
     group = roles.registered_group_tenants(ctx.settings).get(tenant_id)
+    if group is None and not tenant_id.startswith("u-"):
+        group = ctx.authenticator.registered_group_workspaces().get(tenant_id)
     if group is None:
         raise NotFound("no registered group workspace by that id")
     ctx.store.assert_tenant_scope(tenant_id, group)
@@ -296,14 +310,16 @@ def admin_person_roles(
     auth: AuthContext = Depends(admin_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    """Every override `email` holds, across the registered group workspaces,
-    with the key each grant was signed under (`key`), which is what a key
-    rotation is checked against (§4.13)."""
+    """Every override `email` holds, across the registered group workspaces
+    -- the Terraform groups and the `ready` job-made ones
+    (`Authenticator.registered_group_workspaces`) -- with the key each grant
+    was signed under (`key`), which is what a key rotation is checked
+    against (§4.13)."""
     subject = roles.clean_email(email)
     store = ctx.roles
     assert store is not None
     workspaces: list[dict[str, Any]] = []
-    for tenant_id, group in roles.registered_group_tenants(ctx.settings).items():
+    for tenant_id, group in ctx.authenticator.registered_group_workspaces().items():
         try:
             grant = store.newest_valid(tenant_id, subject, fresh=True)
         except RoleUnavailable:
