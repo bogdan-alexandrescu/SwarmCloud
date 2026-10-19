@@ -959,6 +959,16 @@ PR branch, lets CI run them red, then pushes the fix to `<branch>-fix`.
 
 ## 7. Owner questions
 
+**Answered by the owner, 2026-10-19 ~22:30Z (Claude Code session f050e91d):** design B, with scripted capture and Opus review, and QA-CAPTURE is built. Each question is answered with its recommendation:
+
+- Q1: Opus for review and report.
+- Q2: build QA-CAPTURE.
+- Q3: compare within one run for now.
+- Q4: design C not now, so requests A and B are not filed.
+- Q5: Jev only on the fixture build, and a QA identity without platform-admin.
+- Q6: on demand.
+- Q7: report only, with findings filed as one epic per run.
+
 Each has a recommendation, first. They are also in the task's
 `questions.json`.
 
