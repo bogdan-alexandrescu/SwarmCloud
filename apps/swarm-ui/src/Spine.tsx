@@ -26,7 +26,7 @@ import { AGENT_TABS, type AgentTab } from './agentlist'
 import { loadApprovals, loadCapacity, loadMe, loadMyTenants, loadStats, type TenantChoice } from './api'
 import { classifyEnvironment, envTreatment, servedEnvironment, SwarmMark } from './Brand'
 import { Banner, Button, NamedMark, Toaster, acknowledge, routedClick } from './components'
-import { chooseTenant, chosenTenant, clearTenantSwitch, errorHeading, noteTenantSwitch, probeSnapshot, subscribeProbes, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, type Result } from './fetch'
+import { chooseTenant, chosenTenant, clearTenantSwitch, errorHeading, noteTenantSwitch, preferencesUnavailableSnapshot, probeSnapshot, subscribePreferencesUnavailable, subscribeProbes, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, type Result } from './fetch'
 import { HELP_GROUPS, HELP, TOPIC_IDS, helpAnchor } from './help'
 import { STATE_MARK } from './marks'
 import { addressToPath } from './paths'
@@ -327,10 +327,20 @@ function learnTenantName(id: string, name: string): void {
 export interface NamedTenantChoice extends TenantChoice {
   /** The registered group's email: `/v1/tenants/mine`'s own `display_name`. */
   group: string
+  /** The person's default workspace (§4.5), as `/v1/tenants/mine` marks it. */
+  is_default: boolean
 }
 
 /** What the switcher calls the caller's own personal workspace (#1200), whatever its tenant document says. */
 export const OWN_WORKSPACE_LABEL = 'Your workspace'
+
+/**
+ * Settings › Profile (#1505, user-profile.md §4.7): the panel foot's link.
+ * The path is written out because `paths.ts` gains the address in its own
+ * lane (PROFILE-NAV); until then `addressToPath` would answer `/overview`.
+ */
+export const PROFILE_ADDRESS = 'settings/profile'
+export const PROFILE_PATH = '/settings/profile'
 
 /**
  * The one name the shell draws for a tenant: the current tenant's from `me`,
@@ -341,9 +351,10 @@ export const OWN_WORKSPACE_LABEL = 'Your workspace'
 export function nameTenants(choices: readonly TenantChoice[], me: Me | null): NamedTenantChoice[] {
   const known = knownTenantNames()
   return choices.map((c) => {
-    if (c.kind === 'user') return { tenant_id: c.tenant_id, display_name: OWN_WORKSPACE_LABEL, group: OWN_WORKSPACE_LABEL }
+    const is_default = defaultChoice(c)
+    if (c.kind === 'user') return { tenant_id: c.tenant_id, display_name: OWN_WORKSPACE_LABEL, group: OWN_WORKSPACE_LABEL, is_default }
     const current = me !== null && me.tenant.tenant_id === c.tenant_id ? me.tenant.display_name || null : null
-    return { tenant_id: c.tenant_id, display_name: current ?? known[c.tenant_id] ?? c.display_name, group: c.display_name }
+    return { tenant_id: c.tenant_id, display_name: current ?? known[c.tenant_id] ?? c.display_name, group: c.display_name, is_default }
   })
 }
 /** The Workflows panel's Recent (5) switcher, per browser. */
@@ -1052,6 +1063,9 @@ export function SkyShell({
   // A capped list re-reads the stats with each of its own reads (D27).
   const [stats] = useFrameRead(loadFrameStats, 30_000, `${tenant ?? ''}:${fromList !== null && !fromList.whole ? fromList.at : ''}`)
   const [mine, rereadMine] = useFrameRead(loadFrameTenants, null)
+  // A headerless request refused because the default is unknown (Q9): said
+  // beside the switcher, where naming a workspace is the next action.
+  const prefsDown = useSyncExternalStore(subscribePreferencesUnavailable, preferencesUnavailableSnapshot, preferencesUnavailableSnapshot)
   // Once a minute: the inbox route syncs the tenant's held firings as it reads.
   const [inbox] = useFrameRead(loadFrameApprovals, 60_000, tenant ?? '')
   const waiting = approvalsBadge(inbox)
@@ -1586,7 +1600,19 @@ export function SkyShell({
           </button>
         )}
       </div>
-      <TenantBlock me={me} mine={mine} onRetryList={rereadMine} open={picker === 'panel'} onOpen={() => setPicker(picker === 'panel' ? null : 'panel')} />
+      <TenantBlock
+        me={me}
+        mine={mine}
+        onRetryList={rereadMine}
+        open={picker === 'panel'}
+        onOpen={() => setPicker(picker === 'panel' ? null : 'panel')}
+        chosen={tenant}
+        onBackToDefault={() => {
+          setPicker(null)
+          chooseTenant(null)
+        }}
+        prefsDown={prefsDown}
+      />
       <div className="sk-pscroll">{pages}</div>
       <Meter meter={meter} read={cap.status === 'error' || fault !== null ? 'unread' : cap.status === 'loading' ? 'loading' : 'landed'} />
       <div className="sk-pfoot">
@@ -1638,6 +1664,21 @@ export function SkyShell({
           }}
         >
           Settings › MCP servers
+        </a>
+        {/* SETTINGS › PROFILE (PROFILE-SHELL; user-profile.md §4.7): who you
+            are, your workspaces and default, and what reaches your bell. The
+            person's own, so it sits by their name with API keys. */}
+        <a
+          className={`sk-pset${place === PROFILE_PATH ? ' is-on' : ''}`}
+          aria-current={place === PROFILE_PATH ? 'page' : undefined}
+          href={PROFILE_PATH}
+          onClick={(e) => {
+            if (!routedClick(e)) return
+            e.preventDefault()
+            nav(PROFILE_ADDRESS)
+          }}
+        >
+          Settings › Profile
         </a>
         <ThemeToggle />
       </div>
@@ -1892,12 +1933,21 @@ function TenantBlock({
   onRetryList,
   open,
   onOpen,
+  chosen = null,
+  onBackToDefault = () => chooseTenant(null),
+  prefsDown = null,
 }: {
   me: Result<Me>
   mine: Result<TenantChoice[]>
   onRetryList: () => void
   open: boolean
   onOpen: () => void
+  /** This tab's switch (`chosenTenant`), null when the default is in force. */
+  chosen?: string | null
+  /** "Back to default": forget this tab's switch. */
+  onBackToDefault?: () => void
+  /** The API's `preferences_unavailable` message, or null (Q9). */
+  prefsDown?: string | null
 }) {
   const [said, setSaid] = useState('')
   const who = dataOf(me)
@@ -1924,6 +1974,15 @@ function TenantBlock({
   const choices = dataOf(mine) ?? []
   const own = choices.some((c) => c.kind === 'user' && c.tenant_id === id)
   const name = own ? OWN_WORKSPACE_LABEL : (who.tenant.display_name ?? id)
+  // THE DEFAULT (§4.5): the workspace a request naming none acts in, the
+  // stored one or else today's rule, as `/v1/tenants/mine` marks it.
+  const isDefault = choices.some((c) => c.tenant_id === id && defaultChoice(c))
+  const back =
+    chosen === null ? null : (
+      <button type="button" className="sk-tretry sk-tback" onClick={onBackToDefault}>
+        Back to default
+      </button>
+    )
   const copyId = (
     <>
       <button type="button" className="sk-cp" aria-label={`Copy tenant id ${id}`} title={id} onClick={copy}>
@@ -1936,7 +1995,7 @@ function TenantBlock({
   )
   if (choices.length > 1) {
     const at = choices.findIndex((c) => c.tenant_id === id)
-    return (
+    return withPrefs(
       <div className={`sk-tenant is-sw${open ? ' is-open' : ''}`}>
         <button type="button" className="sk-tsw" aria-haspopup="dialog" aria-expanded={open} title={id} onClick={onOpen}>
           <span className="sk-tg" aria-hidden>
@@ -1944,15 +2003,22 @@ function TenantBlock({
           </span>
           <span className="sk-tt">
             <b>{name}</b>
-            <small>tenant · {at === -1 ? 'not in the list' : `${at + 1} of ${choices.length}`}</small>
+            <small>
+              tenant · {at === -1 ? 'not in the list' : `${at + 1} of ${choices.length}`}
+              {isDefault ? ' · default' : ''}
+            </small>
           </span>
           <Icon name="swap" className="sk-ic sk-car" />
         </button>
-        <span className="sk-tcopy">{copyId}</span>
-      </div>
+        <span className="sk-tcopy">
+          {copyId}
+          {back}
+        </span>
+      </div>,
+      prefsDown,
     )
   }
-  return (
+  return withPrefs(
     <div className="sk-tenant">
       <span className="sk-tg" aria-hidden>
         {initialOf(name)}
@@ -1968,12 +2034,39 @@ function TenantBlock({
               </button>
             </>
           ) : (
-            <>tenant </>
+            <>tenant {isDefault ? '· default ' : ''}</>
           )}
           {copyId}
+          {back}
         </small>
       </span>
-    </div>
+    </div>,
+    prefsDown,
+  )
+}
+
+/** `is_default` on a `/v1/tenants/mine` entry (PROFILE-DEFAULT); absent from an older API. */
+function defaultChoice(c: TenantChoice): boolean {
+  return (c as TenantChoice & { is_default?: unknown }).is_default === true
+}
+
+/**
+ * The block, and under it the API's own `preferences_unavailable` message: a
+ * request that named no workspace was refused, so nothing was done, and the
+ * way on is the switcher right above it (§4.5, Q9).
+ */
+function withPrefs(block: ReactNode, prefsDown: string | null) {
+  return (
+    <>
+      {block}
+      {prefsDown !== null && (
+        <div className="sk-tprefs">
+          <Banner tone="warn" role="alert" title="Your default workspace is not known">
+            {prefsDown}
+          </Banner>
+        </div>
+      )}
+    </>
   )
 }
 
@@ -2101,11 +2194,12 @@ function TenantPicker({
             </span>
             <b>{c.display_name}</b>
             {on && <span className="sk-ck">current</span>}
+            {c.is_default && <span className="sk-ck">default</span>}
             <small>{c.tenant_id}</small>
           </button>
         )
       })}
-      <span className="sk-tf">Remembered in this browser. Every request names it, and the API checks your membership each time; switching reloads this page&rsquo;s reads.</span>
+      <span className="sk-tf">Kept for this tab&rsquo;s session; a new tab opens in your default. Every request names it, and the API checks your membership each time; switching reloads this page&rsquo;s reads.</span>
     </div>
   )
   if (at !== 'sheet') return list

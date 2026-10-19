@@ -21,11 +21,12 @@
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { act, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { App, CAPACITY, INTERNAL_LINKS_MAY_NOT_USE_ALIASES, SECTIONS, WORK, canonical, fromHash } from '../App'
 import { HELP_ROUTE } from '../help'
+import { SkyShell } from '../Spine'
 
 /**
  * The props App hands the agent list, captured. The list itself is not what
@@ -257,5 +258,45 @@ describe('the links the frame draws itself', () => {
       close!.click()
     })
     expect(window.location.pathname + window.location.search, 'the drawer closed to a different list').toBe('/agents/recent?state=failed')
+  })
+})
+
+/**
+ * SETTINGS › PROFILE FROM THE PANEL FOOT (PROFILE-SHELL; user-profile.md
+ * §4.7, part of #1505). The page is the person's own, so it sits by their
+ * name with the other Settings links, at its own path, and a plain click
+ * routes there rather than reloading the console.
+ *
+ * MUTATION: drop the anchor, or point it at another address.
+ */
+describe('the panel foot', () => {
+  afterEach(() => {
+    cleanup()
+    window.history.pushState(null, '', '/')
+  })
+
+  function foot(place: string, go = vi.fn()) {
+    render(
+      <SkyShell section="work" tab="running" title="x" go={go} foot={null} place={place}>
+        {null}
+      </SkyShell>,
+    )
+    return [...document.querySelectorAll<HTMLAnchorElement>('.sk-pfoot a.sk-pset')].find((a) => a.textContent === 'Settings › Profile')
+  }
+
+  it('links to Settings › Profile at /settings/profile', () => {
+    const go = vi.fn()
+    const link = foot('/overview', go)
+    expect(link, 'the panel foot has no Settings › Profile link').toBeDefined()
+    expect(link!.getAttribute('href')).toBe('/settings/profile')
+    expect(link!.classList.contains('is-on')).toBe(false)
+    fireEvent.click(link!)
+    expect(go).toHaveBeenCalledWith('settings/profile')
+  })
+
+  it('lights the link when Settings › Profile is open', () => {
+    const link = foot('/settings/profile')
+    expect(link?.classList.contains('is-on')).toBe(true)
+    expect(link?.getAttribute('aria-current')).toBe('page')
   })
 })
