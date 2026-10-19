@@ -29,6 +29,18 @@
 # script that swallows a non-zero exit (`|| true`, `if gcloud ...`) cannot
 # carry on past the refusal as if the resource were simply absent.
 #
+# KINDS (docs/design/workspace-kinds.md §4.3, lane WK-JOB). The record's kind
+# -- absent is personal -- decides what `expect` fills in. A group's tenant is
+# its slug (tenant_id_for_group, never a `u-` id), its forge slot the team slot
+# `swarm-tenant-<g>-git` and twin, and its Namespace must carry the job's label
+# (namespace_label, C7). A service account's tenant is its personal id, its
+# slot the team slot with no twin, its Namespace labelled too, and it alone
+# gets the two values rule C10 is made of: the account (service_principal,
+# only when it is this project's, not swarm-*, not on the shared deny-list) and
+# the API backend (front_door_backend, from workspace-calls.json, never the
+# record or the environment). A shape naming a value the expectation does not
+# hold matches nothing, so C10 admits nothing for a person or a group.
+#
 # --report-only is for the OWNER, running the script with their own credentials
 # after a stop (§2.5, "What the owner does then"): it prints what it would
 # refuse and lets it run. The build file sets SWARM_CALL_GUARD_ENFORCE=1, and
@@ -68,8 +80,13 @@ GUARD_BIN_DIR="${SWARM_LIB_DIR}/guard-bin"
 GUARD_RULES_ACTIVE="${GUARD_RULES}"
 GUARD_REFUSED_RC=86
 GUARD_WORKSPACE_RE='^w-[0-9a-f]{6}$'
-# A personal tenant id as swarm_common.identity.tenant_id_for_user mints it.
+# A personal tenant id as swarm_common.identity.tenant_id_for_user mints it:
+# a personal and a service workspace's (docs/design/workspace-kinds.md §4.1).
 GUARD_TENANT_RE='^u-[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
+# A group workspace's, as tenant_id_for_group mints it: a slug with no `u-`,
+# which is a person's (§2.1: `u-eng@` would derive the id of eng@'s personal
+# workspace; swarm-api refuses it as WORKSPACE_GROUP_ID_RESERVED, and so does this).
+GUARD_GROUP_TENANT_RE='^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
 
 GUARD_STDIN=""
 GUARD_HAS_STDIN=0
@@ -173,12 +190,16 @@ def ctx_fail($c; $e; $p):
       "context \($ctx) is not the swarm cluster (\(($e.contexts // []) | join(" or ") | if . == "" then "<not in the expectation yet>" else . end))"
     else empty end;
 
-def obj_fail($ns; $flagns; $rules):
+def obj_fail($ns; $flagns; $rules; $label):
   . as $o
   | ($o.kind // "") as $k
   | if $k == "Namespace" then
-      (if $o.name == $ns and ($o.namespace // null) == null then empty
-       else "Namespace \(($o.name // "?") | tojson) is not \($ns)" end)
+      (if $o.name != $ns or ($o.namespace // null) != null then "Namespace \(($o.name // "?") | tojson) is not \($ns)"
+       # A group or service namespace is admitted by the deployer scope
+       # policy only with the job label (workspace-kinds §4.3, C7).
+       elif ($label // null) != null and ($o.workspace_label // null) != $label then
+         "Namespace \($ns) does not carry swarm.saga.xyz/workspace: \($label)"
+       else empty end)
     elif ($rules.kube_kinds | has_el($k)) | not then "kind \($k | tojson) is not one a tenant namespace holds"
     elif ($o.name // "") == "" then "a \($k) has no name"
     elif (($o.namespace // $flagns) // "") != $ns then
@@ -197,7 +218,7 @@ def objects_fail($c; $e; $rules; $p):
     elif ($c.objects | type) == "object" then ($c.objects.error // "the manifest could not be read")
     elif ($c.objects_error // null) != null then $c.objects_error
     elif ($c.objects | type) != "array" or ($c.objects | length) == 0 then "the manifest holds no object the guard could read"
-    else (first_of($c.objects[] | obj_fail($ns; $flagns; $rules)) // empty)
+    else (first_of($c.objects[] | obj_fail($ns; $flagns; $rules; $e.namespace_label)) // empty)
     end;
 
 def eval_cli($s; $c; $e; $rules):
@@ -500,8 +521,42 @@ def child_values(entry, what):
     return {k: plain(v) for k, v in found.items() if k in ("name", "namespace", "kind")}
 
 
-def obj(kind, meta, role_ref):
-    item = {"kind": kind, "name": meta.get("name"), "namespace": meta.get("namespace")}
+LABEL = "swarm.saga.xyz/workspace"
+LABEL_LINE = re.compile(r"^( +)([A-Za-z0-9][A-Za-z0-9_./-]*):(?:[ \t]+(.*))?$")
+
+
+def block_label(entry):
+    """The workspace label of a block-style metadata, or None. Read from the
+    labels block one level under metadata only; a label key twice is
+    refused, as any key twice is."""
+    inline, lines = entry
+    found = None
+    indent = min((len(l) - len(l.lstrip(" ")) for l in lines), default=0)
+    in_labels = False
+    label_indent = None
+    for line in lines:
+        depth = len(line) - len(line.lstrip(" "))
+        if depth == indent:
+            in_labels = line.strip().startswith("labels:")
+            label_indent = None
+            continue
+        if not in_labels:
+            continue
+        if label_indent is None:
+            label_indent = depth
+        if depth != label_indent:
+            continue
+        match = LABEL_LINE.match(line.rstrip())
+        if match and match.group(2) == LABEL:
+            if found is not None:
+                refuse("metadata.labels." + LABEL + " appears twice")
+            found = plain(match.group(3) or "")
+    return found
+
+
+def obj(kind, meta, role_ref, label=None):
+    item = {"kind": kind, "name": meta.get("name"), "namespace": meta.get("namespace"),
+            "workspace_label": label}
     if role_ref is not None:
         item["role_ref"] = {"kind": role_ref.get("kind"), "name": role_ref.get("name")}
     return item
@@ -528,7 +583,11 @@ if stripped.startswith("{") or stripped.startswith("["):
             values += [role_ref.get("kind"), role_ref.get("name")]
         if not all(v is None or (isinstance(v, str) and NAME.match(v)) for v in values):
             refuse("a manifest name or kind is not a plain value")
-        objects.append(obj(doc.get("kind"), meta, role_ref))
+        labels = meta.get("labels")
+        label = labels.get(LABEL) if isinstance(labels, dict) else None
+        if label is not None and not (isinstance(label, str) and NAME.match(label)):
+            refuse("a manifest label is not a plain value")
+        objects.append(obj(doc.get("kind"), meta, role_ref, label))
     out(objects)
 
 objects = []
@@ -571,7 +630,8 @@ for doc in re.split(r"(?m)^---[ \t]*$", text):
     kind = plain(top["kind"][0])
     meta = child_values(top["metadata"], "metadata") if "metadata" in top else {}
     role_ref = child_values(top["roleRef"], "roleRef") if "roleRef" in top else None
-    objects.append(obj(kind, meta, role_ref))
+    label = block_label(top["metadata"]) if "metadata" in top else None
+    objects.append(obj(kind, meta, role_ref, label))
 out(objects)
 '
 
@@ -588,15 +648,19 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(sys.argv[1]) / "apps" / "common"))
-from swarm_common.identity import tenant_id_for_user, worker_service_account_id
+from swarm_common.identity import tenant_id_for_group, tenant_id_for_user, worker_service_account_id
 
 principal = sys.argv[2]
-tenant = tenant_id_for_user(principal)
+kind = sys.argv[3] if len(sys.argv) > 3 else "personal"
+# A group is filed under its own slug; a person and a service account under
+# their personal id (docs/design/workspace-kinds.md §4.1). A person gets their
+# App slot; a group and a service the team slot, git (gittokens.Scope.TENANT).
+tenant = tenant_id_for_group(principal) if kind == "group" else tenant_id_for_user(principal)
 digest = hashlib.sha256(principal.strip().lower().encode("utf-8")).hexdigest()[:16]
 print(json.dumps({
     "tenant_id": tenant,
     "worker_id": worker_service_account_id(tenant),
-    "forge_suffix": "git-u-" + digest,
+    "forge_suffix": "git-u-" + digest if kind == "personal" else "git",
 }))
 '
 
@@ -1103,33 +1167,86 @@ cmd_expect() {
   local decoded
   decoded="$(jq -c "${FS_JQ} if has(\"fields\") then doc else . end" "${record}")" \
     || die "the record is not readable JSON"
-  local rec_workspace rec_tenant rec_principal rec_id
+  local rec_workspace rec_tenant rec_principal rec_id rec_kind
   rec_workspace="$(printf '%s' "${decoded}" | jq -r '.workspace_id // ""')"
   rec_tenant="$(printf '%s' "${decoded}" | jq -r '.tenant_id // ""')"
   rec_principal="$(printf '%s' "${decoded}" | jq -r '.principal // ""')"
   rec_id="$(printf '%s' "${decoded}" | jq -r '.id // ""')"
+  # The kind (docs/design/workspace-kinds.md §4.1): absent is personal, so
+  # every record written before kinds reads as it did. Anything else this
+  # build does not know is refused, never guessed at.
+  rec_kind="$(printf '%s' "${decoded}" | jq -r 'if (.kind // null) == null then "personal" else (.kind | tostring) end')"
   [[ "${rec_workspace}" == "${workspace}" ]] \
     || die "the record is workspace '${rec_workspace}', but this job guards ${workspace}"
-  [[ "${rec_tenant}" =~ ${GUARD_TENANT_RE} ]] \
-    || die "the record's tenant id is not a personal tenant id"
+  case "${rec_kind}" in
+    personal|service)
+      [[ "${rec_tenant}" =~ ${GUARD_TENANT_RE} ]] \
+        || die "the record's tenant id is not a personal tenant id" ;;
+    group)
+      [[ "${rec_tenant}" =~ ${GUARD_GROUP_TENANT_RE} && "${rec_tenant}" != u-* ]] \
+        || die "the record's tenant id is not a group tenant id (a slug with no u-, which is a person's)" ;;
+    *) die "the record's kind '${rec_kind}' is not personal, group or service" ;;
+  esac
   [[ -n "${rec_principal}" ]] || die "the record names no principal"
+  # A group's or a service's principal becomes an IAM member (C10) or a
+  # tenant document's principal: lower-cased as swarm-api stores it, and
+  # narrow enough to be safe in a member, a document path and a jq string.
+  # A personal record is judged exactly as before kinds existed.
+  if [[ "${rec_kind}" != "personal" ]]; then
+    [[ "${rec_principal}" =~ ^[a-z0-9._+-]+@[a-z0-9.-]+$ ]] || die "the record's principal is not a lower-cased email address"
+  fi
+  load_env
+  local service_principal=""
+  case "${rec_kind}" in
+    group)
+      [[ "${rec_principal}" != *.gserviceaccount.com ]] || die "a group record names a service account" ;;
+    service)
+      # Q7 (a): only an account of THIS project, never a platform one
+      # (swarm-*), never one on the shared deny-list, is ever named as the
+      # member C10 may admit or the account C1 may read. Any other is left out
+      # of the expectation, so the guard admits no call about it, and S1
+      # stops the run for the owner (needs_owner) before any write: refused
+      # here instead, A1 would end with the record still `approved` and nobody
+      # told (the 2026-10-10 incident, #847).
+      if [[ "${rec_principal}" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]@${PROJECT_ID}\.iam\.gserviceaccount\.com$ \
+            && "${rec_principal}" != swarm-* ]] && ! is_shared_resource "${rec_principal}"; then
+        service_principal="${rec_principal}"
+      fi
+      # The API backend, from the rules in the image (never the record or the
+      # environment), and never the console's: a service calls the API (§4.5).
+      [[ "$(jq -r '.front_door_backend // ""' "${GUARD_RULES}")" =~ ^swarm[a-z0-9-]*-backend$ \
+         && "$(jq -r '.front_door_backend // ""' "${GUARD_RULES}")" != *-ui-ui-backend ]] \
+        || die "workspace-calls.json names no API backend for the front door (front_door_backend)" ;;
+  esac
   [[ -z "${rec_id}" || "${rec_id}" == "${rec_tenant}" ]] \
     || die "the record is filed under '${rec_id}' but names tenant ${rec_tenant}"
 
   local derived tenant worker_id forge_suffix
-  derived="$(python3 -c "${GUARD_DERIVE_PY}" "${REPO_ROOT}" "${rec_principal}")" \
+  derived="$(python3 -c "${GUARD_DERIVE_PY}" "${REPO_ROOT}" "${rec_principal}" "${rec_kind}")" \
     || die "swarm_common.identity could not derive a tenant id from the record's principal"
   tenant="$(printf '%s' "${derived}" | jq -r .tenant_id)"
   worker_id="$(printf '%s' "${derived}" | jq -r .worker_id)"
   forge_suffix="$(printf '%s' "${derived}" | jq -r .forge_suffix)"
   [[ "${tenant}" == "${rec_tenant}" ]] \
     || die "the record says tenant ${rec_tenant}, but its principal derives ${tenant}; refusing (WORKSPACE_ID_TAKEN)"
+  # A group's or a service's tenant is never one this environment's Terraform
+  # declares (§4.7, Q8 (a)): swarm-api refuses the request
+  # (WORKSPACE_ID_TERRAFORM), and so does the guard, so a record that reaches
+  # the job anyway names nothing of theirs. An environment the rules do not
+  # list is refused rather than read as declaring nothing.
+  if [[ "${rec_kind}" != "personal" ]]; then
+    jq -e --arg env "${ENVIRONMENT}" '(.terraform_tenants // {}) | has($env)' "${GUARD_RULES}" >/dev/null \
+      || die "workspace-calls.json lists no Terraform tenants for environment '${ENVIRONMENT}'; refusing a ${rec_kind} workspace"
+    if jq -e --arg env "${ENVIRONMENT}" --arg t "${tenant}" '.terraform_tenants[$env] | index($t) != null' \
+         "${GUARD_RULES}" >/dev/null; then
+      die "the tenant ${tenant} is Terraform's in ${ENVIRONMENT}; refusing (WORKSPACE_ID_TERRAFORM)"
+    fi
+  fi
   if [[ "${phase}" == "ready" ]]; then
     [[ "$(jq -r '.tenant_id // ""' "${file}")" == "${tenant}" ]] \
       || die "${file} already names another tenant for ${workspace}"
   fi
 
-  load_env
   local scheduler reconciler
   scheduler="$(platform_account_email swarm-scheduler)" \
     || die "terraform/modules/service_account_ids lists no swarm-scheduler"
@@ -1162,10 +1279,13 @@ cmd_expect() {
     --arg read_expr "${READ_EXPR}" --arg write_expr "${WRITE_EXPR}" \
     --arg forge_slot "swarm-tenant-${tenant}-${forge_suffix}" \
     --arg fs_role_id "${FIRESTORE_ROLE_ID}" --arg meta_role_id "${BUCKET_METADATA_ROLE_ID}" \
-    --arg env "${ENVIRONMENT}" --arg cluster "${GKE_CLUSTER}" --arg location "${GKE_LOCATION}" '
+    --arg env "${ENVIRONMENT}" --arg cluster "${GKE_CLUSTER}" --arg location "${GKE_LOCATION}" \
+    --arg kind "${rec_kind}" --arg service_principal "${service_principal}" \
+    --arg front_door "$(jq -r '.front_door_backend // ""' "${GUARD_RULES}")" '
     ($base.project_id) as $p
     | $base + {
         phase: "ready",
+        kind: $kind,
         tenant_id: $tenant,
         environment: $env,
         worker_id: $worker_id,
@@ -1181,7 +1301,6 @@ cmd_expect() {
         read_expr: $read_expr,
         write_expr: $write_expr,
         forge_slot: $forge_slot,
-        forge_slot_twin: "\($forge_slot)-refresh",
         firestore_role_id: $fs_role_id,
         firestore_role: "projects/\($p)/roles/\($fs_role_id)",
         bucket_metadata_role_id: $meta_role_id,
@@ -1192,7 +1311,17 @@ cmd_expect() {
         tenant_doc: "tenants/\($tenant)",
         pool_doc: "pools/tenant:\($tenant)",
         workspace_doc: "workspaces/\($tenant)"
-      }' | guard_write_private "${file}"
+      }
+      # A service account is a caller, not a person: its team slot has no
+      # refresh twin (an App refresh token belongs to a person, §4.6).
+      + (if $kind == "service" then {} else {forge_slot_twin: "\($forge_slot)-refresh"} end)
+      # The label the deployer scope policy admits a job-made namespace by
+      # (§4.3 A7); C7 requires it on the Namespace.
+      + (if $kind == "personal" then {} else {namespace_label: $base.workspace_id} end)
+      # The two values C10 is made of, only for the kind that is admitted.
+      + (if $kind == "service" then {front_door_backend: $front_door} else {} end)
+      + (if $kind == "service" and $service_principal != "" then {service_principal: $service_principal} else {} end)
+      ' | guard_write_private "${file}"
   ok "expectation for ${workspace}: every name derived from the approved record"
 }
 
@@ -1205,7 +1334,9 @@ cmd_expect() {
 # scans a command substitution's body for quotes and parentheses.
 # shellcheck disable=SC2016  # jq programs: their $names are jq's
 GUARD_CASE_JQ='
-      ($e[0] + {casedir: $casedir, fake_token: $tok, auth_config: $auth}) as $v
+      (.cases[$i].kind // "personal") as $kind
+      | ((if $kind == "group" then $eg elif $kind == "service" then $es else $e end)[0]
+       + {casedir: $casedir, fake_token: $tok, auth_config: $auth}) as $v
       | def fill: if type == "string" then gsub("\\{(?<k>[a-z_]+)\\}"; (($v[.k]) as $x | if ($x | type) == "string" then $x else "{" + .k + "}" end))
                   elif type == "array" then map(fill)
                   elif type == "object" then with_entries(.value |= fill)
@@ -1216,6 +1347,7 @@ GUARD_CASE_JQ='
         "CASE_EXPECT=\(.expect | @sh)",
         "CASE_BY=\((.by // .rule) | @sh)",
         "CASE_PHASE=\((.phase // "ready") | @sh)",
+        "CASE_KIND=\($kind | @sh)",
         "CASE_TOOL=\(.tool | @sh)",
         "CASE_FALLBACK=\((.wd9_fallback // false) | tostring | @sh)",
         "CASE_HAS_STDIN=\((has("stdin")) | if . then "1" else "0" end | @sh)",
@@ -1315,6 +1447,16 @@ cmd_self_test() {
   jq '.record' "${GUARD_CASES}" >"${tmp}/record.json"
   cmd_expect --record "${tmp}/record.json" 2>/dev/null
   cp "${SWARM_CALL_GUARD}" "${tmp}/ready.json"
+  # A group's and a service's expectation (docs/design/workspace-kinds.md
+  # §4.3), for the cases that name a `kind`: the same init, their own record.
+  local kind
+  for kind in group service; do
+    rm -f "${SWARM_CALL_GUARD}"
+    cmd_init --workspace-id "${workspace}" 2>/dev/null
+    jq --arg k "${kind}" '.kind_records[$k]' "${GUARD_CASES}" >"${tmp}/record-${kind}.json"
+    cmd_expect --record "${tmp}/record-${kind}.json" 2>/dev/null
+    cp "${SWARM_CALL_GUARD}" "${tmp}/ready-${kind}.json"
+  done
   jq '.wd9_fallback = true' "${GUARD_RULES}" >"${tmp}/rules-fallback.json"
   jq '.wd9_fallback = false' "${GUARD_RULES}" >"${tmp}/rules-principal-set.json"
 
@@ -1328,13 +1470,14 @@ cmd_self_test() {
   total="$(jq '.cases | length' "${GUARD_CASES}")"
   [[ "${total}" -gt 0 ]] || die "workspace-guard-cases.json holds no case"
 
-  local CASE_NAME CASE_RULE CASE_EXPECT CASE_BY CASE_PHASE CASE_TOOL CASE_FALLBACK
+  local CASE_NAME CASE_RULE CASE_EXPECT CASE_BY CASE_PHASE CASE_KIND CASE_TOOL CASE_FALLBACK
   local CASE_HAS_STDIN CASE_STDIN CASE_CONTEXT CASE_FILES
   local -a CASE_ARGV=()
   for ((i = 0; i < total; i++)); do
     local casedir="${tmp}/case-${i}" assignments
     mkdir -p "${casedir}"
     assignments="$(jq -r --argjson i "${i}" --slurpfile e "${tmp}/ready.json" \
+        --slurpfile eg "${tmp}/ready-group.json" --slurpfile es "${tmp}/ready-service.json" \
         --arg casedir "${casedir}" --arg tok "${fake_token}" --arg auth "${auth_line}" \
         "${GUARD_CASE_JQ}" "${GUARD_CASES}")"
     eval "${assignments}"
@@ -1354,7 +1497,12 @@ cmd_self_test() {
 
     case "${CASE_PHASE}" in
       bootstrap) cp "${tmp}/bootstrap.json" "${SWARM_CALL_GUARD}" ;;
-      ready|stopped) cp "${tmp}/ready.json" "${SWARM_CALL_GUARD}" ;;
+      ready|stopped)
+        if [[ "${CASE_KIND}" == "personal" ]]; then
+          cp "${tmp}/ready.json" "${SWARM_CALL_GUARD}"
+        else
+          cp "${tmp}/ready-${CASE_KIND}.json" "${SWARM_CALL_GUARD}"
+        fi ;;
       *) die "case ${CASE_NAME}: unknown phase ${CASE_PHASE}" ;;
     esac
     chmod 600 "${SWARM_CALL_GUARD}"
@@ -1398,7 +1546,9 @@ cmd_self_test() {
   if [[ -z "${only}" ]]; then
     for ((j = 0; j < n_ref; j++)); do
       name="$(jq -r --argjson j "${j}" '.expect_refusals[$j].name' "${GUARD_CASES}")"
-      jq --argjson j "${j}" '.record * .expect_refusals[$j].change' "${GUARD_CASES}" >"${tmp}/bad-record.json"
+      jq --argjson j "${j}" '(.expect_refusals[$j].kind // null) as $k
+        | (if $k == null then .record else .kind_records[$k] end) * .expect_refusals[$j].change' \
+        "${GUARD_CASES}" >"${tmp}/bad-record.json"
       cp "${tmp}/bootstrap.json" "${SWARM_CALL_GUARD}"
       visited=$((visited + 1))
       local verdict="refuse" pass=true
