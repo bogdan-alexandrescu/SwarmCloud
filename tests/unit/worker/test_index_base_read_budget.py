@@ -298,3 +298,18 @@ def test_a_base_read_that_runs_out_is_named_and_the_run_is_full(
     assert "index base graph read ran out of its budget" in logged
     assert "downloaded 120/744 blobs" in logged
     assert db.doc("tasks/task_1")["state"] == "SUCCEEDED"
+
+
+def test_the_docs_describe_the_size_based_budget_not_the_flat_share():
+    """repo-index.md §3.6 and knowledge-graph.md state the rule `budgets` keeps."""
+    incremental = indexrun.budgets(repoindex.INCREMENTAL_TIMEOUT_SECONDS)
+    ceiling = incremental.extract // 2
+    fixed = f"{indexrun.BASE_READ_FIXED_SECONDS} s"
+    per_mb = f"{indexrun.BASE_READ_SECONDS_PER_MB:g} s a MB"
+    for name in ("repo-index.md", "design/knowledge-graph.md"):
+        text = " ".join((REPO_ROOT / "docs" / name).read_text(encoding="utf-8").split())
+        assert "quarter of the extractor" not in text, name
+        assert "0.25 of the extract" not in text, name
+        assert fixed in text and per_mb in text, (name, fixed, per_mb)
+        assert "half the extract" in text, name
+        assert f"{ceiling} s of an incremental run's {incremental.extract}" in text, name
