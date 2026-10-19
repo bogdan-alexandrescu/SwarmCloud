@@ -748,3 +748,174 @@ def test_security_doc_credential_theft_names_every_route_that_serves_one():
 @pytest.mark.parametrize("doc", (MCP_DESIGN, SECURITY), ids=lambda p: p.name)
 def test_mcp_docs_cite_only_what_resolves(doc: Path):
     _assert_cites_resolve(doc)
+
+
+# --------------------------------------------------------------------------
+# MODEL-DOCS (part of #1435): a workflow step picks its model class by name
+# --------------------------------------------------------------------------
+#
+# docs/design/model-per-step.md was written before any lane built it. Its §8
+# records what each build-plan lane landed and where the code departs from
+# the design (format 5, not 4; no `model_classes_enabled` flag, owner decision
+# R4). docs/agent-output.md, docs/workflows.md and docs/quota-management.md
+# describe the built feature. Every class, pin, refusal code and format they
+# state is read from the code here.
+
+MODEL_DESIGN = DOCS / "design" / "model-per-step.md"
+AGENT_OUTPUT = DOCS / "agent-output.md"
+QUOTA = DOCS / "quota-management.md"
+LOCALS_TF = REPO / "terraform" / "infra" / "locals.tf"
+MODEL_BUILT = "## 8. What was built"
+MODEL_ENV = "## A step's environment: where the agent starts, HOME, and the model"
+MODEL_STEP = "## Choosing a step's model: `model_class`"
+MODEL_QUOTA = "## 4. Park reasons"
+
+
+def _runner_models() -> dict[str, str]:
+    """`local.runner_models` in terraform/infra/locals.tf: class -> pinned ID."""
+    block = re.search(r"^  runner_models = \{\n(.*?)^  \}", _text(LOCALS_TF), flags=re.M | re.S)
+    assert block, "terraform/infra/locals.tf has no runner_models block"
+    return dict(re.findall(r'^\s+(\w+)\s+=\s+"([^"]+)"', block.group(1), flags=re.M))
+
+
+def _model_lanes() -> list[str]:
+    plan = _section(_text(MODEL_DESIGN), "## 6. Build plan")
+    lanes = re.findall(r"^\|[^|\n]*\| \*\*(MODEL-[A-Z-]+)\*\*", plan, flags=re.M)
+    assert len(lanes) >= 10 and "MODEL-DOCS" in lanes, lanes
+    return lanes
+
+
+def test_runner_models_are_keyed_by_exactly_the_frozen_classes():
+    """The pin map every model test below reads, held to the vocabulary."""
+    from swarm_common.profiles import MODEL_CLASSES
+
+    models = _runner_models()
+    assert set(models) == set(MODEL_CLASSES)
+    for name, model_id in models.items():
+        assert MODEL_CLASSES[name].admits(model_id), (name, model_id)
+
+
+def test_model_design_no_longer_says_nothing_is_built():
+    head = _flat(_text(MODEL_DESIGN).split("\n---\n", 1)[0])
+    assert "Nothing is built" not in head
+    assert "§8" in head and "built" in head
+
+
+def test_model_design_records_what_every_lane_built():
+    from swarm_common.specsign import SPEC_FORMAT, signing_format
+
+    raw = _section(_text(MODEL_DESIGN), MODEL_BUILT)
+    body = _flat(raw)
+    for lane in _model_lanes() + ["MODEL-ACCOUNTS"]:
+        assert f"**{lane} (" in raw, f"§8 has no entry for {lane}"
+    # The class is signed at format 5: request 96 took 4 first.
+    assert signing_format({"model_class": "haiku"}) == 5 == SPEC_FORMAT
+    assert "format 5" in body and "request 96" in body and "request 104" in body
+    # R4: no flag. Nothing in the code or the Terraform reads one.
+    for root in ("apps", "terraform"):
+        for path in (REPO / root).rglob("*"):
+            if path.suffix in (".py", ".tf", ".ts", ".tsx") and "node_modules" not in path.parts:
+                assert "MODEL_CLASSES_ENABLED" not in path.read_text(encoding="utf-8"), path
+    assert "R4" in body and "no flag" in body
+    # What `model_class_not_yet_available` means now that there is no flag.
+    from swarm_api.validation import ModelClassNotYetAvailable
+
+    assert f"`{ModelClassNotYetAvailable.code}`" in body and "`WORKER_CLASS_MODELS`" in body
+    # The derived WORKER_MODELS is a follow-up while terraform still writes it.
+    if "WORKER_MODELS = jsonencode(local.profile_default_models)" in _text(LOCALS_TF):
+        assert "`WORKER_MODELS`" in body and "follow-up" in body
+
+
+def test_model_design_4_3_and_6_say_what_replaced_the_flag():
+    text = _text(MODEL_DESIGN)
+    signed = _flat(_section(text, _heading(text, "### 4.3 ")))
+    assert "Amended 2026-10-19" in signed and "format 5" in signed and "no flag" in signed
+    plan = _flat(_section(text, "## 6. Build plan"))
+    assert "MODEL-ENABLE was dropped" in plan
+
+
+def test_agent_output_describes_the_step_model_from_the_code():
+    from agent_worker.specverify import MODEL_CLASS_MISMATCH, MODEL_NOT_PINNED
+    from swarm_common.models import Attempt
+    from swarm_common.profiles import MODEL_CLASSES
+
+    raw = _section(_text(AGENT_OUTPUT), MODEL_ENV)
+    body = _flat(raw)
+    assert "has no model field" not in body
+    assert "| the Job's `MODEL`: `claude-opus-5-5` |" not in raw
+    for name, model_id in _runner_models().items():
+        assert f"`{name}`" in body and f"`{model_id}`" in body, name
+    assert len(MODEL_CLASSES) == 4 and "four classes" in body
+    step = "apps/scheduler/scheduler/dispatch.py::step_model"
+    assert f"`{step}`" in raw and "step_model_class(" in _cited_symbol(*step.split("::"))
+    assert "`terraform/infra/locals.tf` (`WORKER_CLASS_MODELS = jsonencode(local.runner_models)`)" in raw
+    check = "apps/agent-worker/agent_worker/specverify.py::check_model"
+    assert f"`{check}`" in raw and ".admits(" in _cited_symbol(*check.split("::"))
+    assert f"`{MODEL_NOT_PINNED}`" in body and f"`{MODEL_CLASS_MISMATCH}`" in body
+    note = "apps/agent-worker/agent_worker/lifecycle.py::Worker._note_model_mismatch"
+    assert f"`{note}`" in raw and '"model_mismatch' in _cited_symbol(*note.split("::"))
+    assert "model" in {f.name for f in dataclasses.fields(Attempt)}
+    start = "apps/agent-worker/agent_worker/control.py::ControlPlane.record_attempt_start"
+    assert f"`{start}`" in raw and 'record["model"]' in _cited_symbol(*start.split("::"))
+    assert "`Attempt.model`" in body
+
+
+def test_workflows_step_fields_table_names_model_class():
+    table = _section(_text(WORKFLOWS), "## Step fields")
+    row = next((ln for ln in table.splitlines() if ln.startswith("| `model_class` |")), None)
+    assert row, "the step fields table has no model_class row"
+    assert "#choosing-a-steps-model-model_class" in row
+
+
+def test_workflows_model_class_section_states_what_the_code_holds():
+    from swarm_api import refusals
+    from swarm_api.validation import (
+        ModelClassNotAccepted,
+        ModelClassNotYetAvailable,
+        ModelIsChosenByModelClass,
+        UnknownModelClass,
+    )
+    from swarm_common.profiles import MODEL_CLASSES
+
+    raw = _section(_text(WORKFLOWS), MODEL_STEP)
+    body = _flat(raw)
+    for name, model_id in _runner_models().items():
+        assert f"`{name}`" in body and f"`{model_id}`" in body, name
+    default = RUNNER_PROFILES["claude-code"].default_model_class
+    assert f"`{default}` is the default" in body
+    every = [p.name for p in RUNNER_PROFILES.values() if p.model_classes == tuple(MODEL_CLASSES)]
+    assert sorted(every) == ["claude-code", "claude-code-browser", "indexer"], every
+    for name in every:
+        assert f"`{name}`" in body, name
+    for error in (UnknownModelClass, ModelClassNotAccepted, ModelClassNotYetAvailable,
+                  ModelIsChosenByModelClass):
+        assert f"`{error.code}`" in body, error.code
+    switch = refusals.SWITCHES[ModelIsChosenByModelClass.code]
+    assert switch.default is False and "report-only" in body and f"`{switch.env}`" in body
+    # R3, R1 (a), R6: the child's own default, the plan's digest, the pin at dispatch.
+    assert "its own profile's default, never the parent's" in body
+    assert "inside `plan_digest`" in body
+    assert "the class's pin at dispatch" in body
+    assert "`input.model`" in body and "never a model ID" in body
+
+
+def test_quota_doc_says_every_window_binds_every_class():
+    from quota_broker import accounts
+    from scheduler.credentials import PoolAnswer
+
+    raw = _section(_text(QUOTA), MODEL_QUOTA)
+    body = _flat(raw)
+    assert "Every quota window binds every attempt, whatever its model class" in body
+    binding = "apps/quota-broker/quota_broker/accounts.py::Account._binding_remaining"
+    source = _cited_symbol(*binding.split("::"))
+    assert f"`{binding}`" in raw and "self.windows.values()" in source and "class" not in source
+    assert "model_class" not in accounts.Account.headroom.__code__.co_varnames
+    assert "`seven_day_opus`" in body
+    serves = "apps/quota-broker/quota_broker/accounts.py::Account.serves_class"
+    assert f"`{serves}`" in raw and f"`{PoolAnswer.NO_ACCOUNT_SERVES_CLASS.value}`" in body
+    assert "model-per-step.md" in body
+
+
+@pytest.mark.parametrize("doc", (MODEL_DESIGN, AGENT_OUTPUT, QUOTA), ids=lambda p: p.name)
+def test_model_docs_cite_only_what_resolves(doc: Path):
+    _assert_cites_resolve(doc)
