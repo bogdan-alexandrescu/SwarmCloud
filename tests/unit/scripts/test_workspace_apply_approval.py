@@ -7,7 +7,14 @@ to the platform owner. swarm-api now signs every approval and retry with the
 step-spec KMS key (`swarm_api.workspaces.sign_approval`), and
 images/workspace-apply/entry.py checks that signature for every group and
 service record before step 1 -- before S2, the front-door admit, and before
-the group and service steps. What these tests hold, against the REAL entry.py
+the group and service steps.
+
+Lane WK-APPROVAL-KEYS (owner decision 2026-10-19: no new IAM for approval
+verification): the job verifies against the public keys in its own
+environment, `SPEC_VERIFY_KEYS` as the bootstrap renders it, never against
+Cloud KMS at run time, and that value counts only when its SHA-256 is the one
+the job's fixed command carries -- an override may set an environment
+variable, never the command. What these tests hold, against the REAL entry.py
 and the REAL swarm-api signing code:
 
 * an approval swarm-api signed verifies in the job, which then runs step 1
@@ -17,7 +24,11 @@ and the REAL swarm-api signing code:
   to `needs_owner` with a `front_door_audit` entry, and step 1 never runs, so
   nothing is granted;
 * a group or service record with no signature, a signature by any other key,
-  or a key version the image does not trust is refused the same way;
+  a key version the image does not trust, or a version absent from
+  SPEC_VERIFY_KEYS is refused the same way;
+* no Cloud KMS client is built or called: the fakes fail if one is;
+* a SPEC_VERIFY_KEYS an override replaced, or none at all, runs nothing and
+  writes nothing, whatever the record;
 * a personal record with no signature keeps working (the lane's
   questions.json recommendation: personal steps never touch the front door);
 * a cloud that does not answer writes nothing and runs nothing;
@@ -61,6 +72,7 @@ WORKSPACE = "w-3f9a2c"
 EXECUTION = "swarm-workspace-apply-x7k2p"
 PROJECT = "fixture-project-1"
 REGION = "us-central1"
+PIN_PREFIX = "--spec-verify-keys-sha256="
 KEY = f"projects/{PROJECT}/locations/{REGION}/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
 VERSION = KEY + "/cryptoKeyVersions/1"
 OWNER = "owner@saga.xyz"
@@ -84,7 +96,8 @@ def entry(monkeypatch):
 
 
 class KmsKey:
-    """The step-spec key as Cloud KMS holds it: signs digests, serves its PEM."""
+    """The step-spec key as Cloud KMS holds it: signs digests; its PEM is what
+    the bootstrap renders into the job's SPEC_VERIFY_KEYS."""
 
     def __init__(self, version: str = VERSION) -> None:
         self.private = ec.generate_private_key(ec.SECP256R1())
@@ -148,17 +161,17 @@ def _rest(value: Any) -> dict[str, Any]:
 
 
 class FakeCloud:
-    """Firestore and Cloud KMS as the job's identity reaches them: the REAL
-    `Cloud.record` / `public_key` / `commit` code over a fake transport."""
+    """Firestore as the job's identity reaches it: the REAL `Cloud.record` /
+    `commit` code over a fake transport. Cloud KMS is not reachable from it:
+    a request to it, or a `public_key` lookup, fails the test."""
 
-    def __init__(self, entry, records: list[dict[str, Any]], pem: str, *,
-                 down: bool = False, kms_name: str | None = None) -> None:
+    def __init__(self, entry, records: list[dict[str, Any]], *, down: bool = False) -> None:
         self.cloud = entry.Cloud(PROJECT)
         self.cloud.call = self.call  # the transport, nothing else
+        # A KMS client the job must never build or ask: it fails if called.
+        self.cloud.public_key = self.kms
         self.records = records
-        self.pem = pem
         self.down = down
-        self.kms_name = kms_name
         self.calls: list[tuple[str, str]] = []
         self.commits: list[dict[str, Any]] = []
 
@@ -166,8 +179,12 @@ class FakeCloud:
         assert project == PROJECT
         return self.cloud
 
+    def kms(self, *args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("the job asked Cloud KMS for a public key; it must read SPEC_VERIFY_KEYS")
+
     def call(self, method: str, url: str, body: Any = None) -> Any:
         self.calls.append((method, url))
+        assert "cloudkms" not in url, f"the job called Cloud KMS: {method} {url}"
         if self.down:
             raise OSError("the cloud did not answer")
         if url.endswith("/documents:runQuery"):
@@ -175,9 +192,6 @@ class FakeCloud:
             return [{"readTime": "2026-10-19T10:00:00Z"}] + [
                 {"document": {"name": DOC_NAME, "updateTime": "2026-10-19T09:31:00.000001Z",
                               "fields": {k: _rest(v) for k, v in r.items()}}} for r in self.records]
-        if url.endswith("/publicKey"):
-            version = url.removeprefix("https://cloudkms.googleapis.com/v1/").removesuffix("/publicKey")
-            return {"name": self.kms_name or version, "algorithm": "EC_SIGN_P256_SHA256", "pem": self.pem}
         if url.endswith("/documents:commit"):
             self.commits.append(body)
             return {"writeResults": [{}]}
@@ -192,15 +206,30 @@ class Run:
         self.execs.append((program, args, env))
 
 
-def _main(entry, tmp_path: Path, cloud: FakeCloud, mode: str = "create") -> tuple[int, Run]:
+def _keys(*keys: KmsKey) -> str:
+    """SPEC_VERIFY_KEYS as the bootstrap renders it: {full version name: PEM}."""
+    return json.dumps({key.version: key.pem for key in keys})
+
+
+def _pin(raw: str) -> str:
+    """The job command's last element: the SHA-256 of the SPEC_VERIFY_KEYS it sets."""
+    return PIN_PREFIX + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _main(entry, tmp_path: Path, cloud: FakeCloud, keys: str, mode: str = "create", *,
+          pinned: str | None = None, environ: dict[str, str] | None = None) -> tuple[int, Run]:
+    """One execution: the command's pin of PINNED (default KEYS), then the
+    two arguments; SPEC_VERIFY_KEYS=KEYS in its environment."""
     run = Run()
     scratch = tmp_path / "scratch"
     scratch.mkdir(exist_ok=True)
-    environ = {"CLOUD_RUN_EXECUTION": EXECUTION, "CLOUD_RUN_TASK_COUNT": "1", "CLOUD_RUN_TASK_INDEX": "0"}
+    if environ is None:
+        environ = {"CLOUD_RUN_EXECUTION": EXECUTION, "CLOUD_RUN_TASK_COUNT": "1",
+                   "CLOUD_RUN_TASK_INDEX": "0", "SPEC_VERIFY_KEYS": keys}
     answers = {"project/project-id": PROJECT, "instance/region": f"projects/1/regions/{REGION}"}
-    rc = entry.main([WORKSPACE, mode], environ, metadata=answers.__getitem__,
-                    scratch_root=str(scratch), target=Path("/opt/swarm/scripts/workspace-apply.sh"),
-                    execve=run.execve, cloud=cloud)
+    rc = entry.main([_pin(keys if pinned is None else pinned), WORKSPACE, mode], environ,
+                    metadata=answers.__getitem__, scratch_root=str(scratch),
+                    target=Path("/opt/swarm/scripts/workspace-apply.sh"), execve=run.execve, cloud=cloud)
     return rc, run
 
 
@@ -239,15 +268,25 @@ def _refused_unsigned(rc: int, run: Run, cloud: FakeCloud) -> dict[str, Any]:
 def test_an_approval_signed_by_swarm_api_verifies_in_the_job(entry, tmp_path, kind, principal, tenant):
     key = KmsKey()
     record = _signed(key, _record(kind, principal, tenant))
-    cloud = FakeCloud(entry, [record], key.pem)
-    rc, run = _main(entry, tmp_path, cloud)
+    cloud = FakeCloud(entry, [record])
+    rc, run = _main(entry, tmp_path, cloud, _keys(key))
     assert rc == 0 and cloud.commits == []
     [(_, args, env)] = run.execs
     assert args[-2:] == [WORKSPACE, "create"]
     assert json.loads(env["SWARM_APPROVAL_PIN"]) == {
         "workspace_id": WORKSPACE, "tenant_id": tenant, "kind": kind, "principal": principal,
         "verified": True}
-    assert ("GET", f"https://cloudkms.googleapis.com/v1/{VERSION}/publicKey") in cloud.calls
+    # The keys were the job's own; nothing but Firestore was asked.
+    assert all(url.startswith("https://firestore.googleapis.com/") for _, url in cloud.calls)
+    assert "SPEC_VERIFY_KEYS" not in env, "the keys are step 0's, not the child's"
+
+
+def test_a_version_among_several_in_spec_verify_keys_verifies(entry, tmp_path):
+    """Mid-rotation the job holds versions 1 and 2; swarm-api signs with 2."""
+    old, new = KmsKey(), KmsKey(version=KEY + "/cryptoKeyVersions/2")
+    cloud = FakeCloud(entry, [_signed(new, _record())])
+    rc, run = _main(entry, tmp_path, cloud, _keys(old, new))
+    assert rc == 0 and len(run.execs) == 1 and cloud.commits == []
 
 
 def test_a_retry_signed_by_swarm_api_verifies_in_the_job(entry, tmp_path):
@@ -262,8 +301,8 @@ def test_a_retry_signed_by_swarm_api_verifies_in_the_job(entry, tmp_path):
     record["approval"] = ws.sign_approval(key, record, decided_by=OWNER,
                                           decided_at=record["retry"]["at"],
                                           request_id=record["request_id"])
-    cloud = FakeCloud(entry, [record], key.pem)
-    rc, run = _main(entry, tmp_path, cloud)
+    cloud = FakeCloud(entry, [record])
+    rc, run = _main(entry, tmp_path, cloud, _keys(key))
     assert rc == 0 and len(run.execs) == 1 and cloud.commits == []
 
 
@@ -293,16 +332,16 @@ def test_a_record_edited_after_signing_is_refused_and_nothing_is_granted(entry, 
     key = KmsKey()
     record = _signed(key, _record())
     edit(record)
-    cloud = FakeCloud(entry, [record], key.pem)
-    rc, run = _main(entry, tmp_path, cloud)
+    cloud = FakeCloud(entry, [record])
+    rc, run = _main(entry, tmp_path, cloud, _keys(key))
     _refused_unsigned(rc, run, cloud)
 
 
 def test_the_control_the_unedited_record_runs(entry, tmp_path):
     """The positive control for every edit above: the same record, unedited."""
     key = KmsKey()
-    cloud = FakeCloud(entry, [_signed(key, _record())], key.pem)
-    rc, run = _main(entry, tmp_path, cloud)
+    cloud = FakeCloud(entry, [_signed(key, _record())])
+    rc, run = _main(entry, tmp_path, cloud, _keys(key))
     assert rc == 0 and len(run.execs) == 1 and cloud.commits == []
 
 
@@ -312,26 +351,52 @@ def test_the_control_the_unedited_record_runs(entry, tmp_path):
 ])
 def test_a_group_or_service_record_with_no_signature_is_refused(entry, tmp_path, kind, principal, tenant):
     """What a worker can write: the decision naming the owner, and no signature."""
-    cloud = FakeCloud(entry, [_record(kind, principal, tenant)], KmsKey().pem)
-    rc, run = _main(entry, tmp_path, cloud)
+    cloud = FakeCloud(entry, [_record(kind, principal, tenant)])
+    rc, run = _main(entry, tmp_path, cloud, _keys(KmsKey()))
     _refused_unsigned(rc, run, cloud)
 
 
 @pytest.mark.parametrize("mode", ["create", "limits"])
 def test_every_mode_is_checked(entry, tmp_path, mode):
-    cloud = FakeCloud(entry, [_record()], KmsKey().pem)
-    rc, run = _main(entry, tmp_path, cloud, mode=mode)
+    cloud = FakeCloud(entry, [_record()])
+    rc, run = _main(entry, tmp_path, cloud, _keys(KmsKey()), mode=mode)
     _refused_unsigned(rc, run, cloud)
 
 
 def test_a_signature_by_any_key_but_the_trusted_one_is_refused(entry, tmp_path):
     """A worker can make its own P-256 key and name the trusted key's version:
-    the job reads the public key from Cloud KMS, never from the record."""
+    the job takes the public key from its own SPEC_VERIFY_KEYS, never from
+    the record."""
     trusted, forger = KmsKey(), KmsKey()
     record = _signed(forger, _record())
-    cloud = FakeCloud(entry, [record], trusted.pem)
-    rc, run = _main(entry, tmp_path, cloud)
+    cloud = FakeCloud(entry, [record])
+    rc, run = _main(entry, tmp_path, cloud, _keys(trusted))
     _refused_unsigned(rc, run, cloud)
+
+
+@pytest.mark.parametrize("held", [
+    pytest.param(("1",), id="the-job-holds-only-version-1"),
+    pytest.param((), id="the-job-holds-no-version"),
+])
+def test_a_version_absent_from_spec_verify_keys_is_refused_and_nothing_is_granted(entry, tmp_path, held):
+    """swarm-api signed with version 2, a real version of the trusted key, but
+    the bootstrap has not been re-applied since it was enabled: the job does
+    not hold it, so the record stops for the owner (fail closed) -- the
+    rotation runbook's re-apply step is what prevents this."""
+    signer = KmsKey(version=KEY + "/cryptoKeyVersions/2")
+    others = [KmsKey(version=KEY + "/cryptoKeyVersions/" + n) for n in held]
+    cloud = FakeCloud(entry, [_signed(signer, _record())])
+    rc, run = _main(entry, tmp_path, cloud, _keys(*others))
+    audit = _refused_unsigned(rc, run, cloud)
+    assert audit["reason"] == {"stringValue": "the approval names a key version this job was not given"}
+
+
+def test_the_control_the_same_version_held_verifies(entry, tmp_path):
+    """The positive control for the refusal above: the job holds version 2."""
+    signer = KmsKey(version=KEY + "/cryptoKeyVersions/2")
+    cloud = FakeCloud(entry, [_signed(signer, _record())])
+    rc, run = _main(entry, tmp_path, cloud, _keys(KmsKey(), signer))
+    assert rc == 0 and len(run.execs) == 1 and cloud.commits == []
 
 
 @pytest.mark.parametrize("version", [
@@ -342,41 +407,102 @@ def test_a_signature_by_any_key_but_the_trusted_one_is_refused(entry, tmp_path):
     pytest.param(KEY + "/cryptoKeyVersions/1/../../x", id="path"),
     pytest.param(KEY, id="no-version"),
 ])
-def test_a_key_version_the_image_does_not_trust_is_refused_before_kms_is_asked(entry, tmp_path, version):
+def test_a_key_version_the_image_does_not_trust_is_refused_even_when_held(entry, tmp_path, version):
+    """SIGNING_KEYS still bounds which key's versions count: a version of
+    another key is refused even if SPEC_VERIFY_KEYS carried it."""
     key = KmsKey(version=version)
-    cloud = FakeCloud(entry, [_signed(key, _record())], key.pem)
-    rc, run = _main(entry, tmp_path, cloud)
+    cloud = FakeCloud(entry, [_signed(key, _record())])
+    rc, run = _main(entry, tmp_path, cloud, _keys(key))
     _refused_unsigned(rc, run, cloud)
-    assert not any(url.endswith("/publicKey") for _, url in cloud.calls)
 
 
-def test_kms_answering_for_another_version_is_not_a_verification(entry, tmp_path):
+def test_a_held_key_that_is_not_p256_stops_for_the_owner(entry, tmp_path):
+    """A malformed PEM in the job's keys verifies nothing: fail closed."""
     key = KmsKey()
-    cloud = FakeCloud(entry, [_signed(key, _record())], key.pem, kms_name=KEY + "/cryptoKeyVersions/2")
-    rc, run = _main(entry, tmp_path, cloud)
-    assert rc == 1 and run.execs == [] and cloud.commits == []
+    other = ec.generate_private_key(ec.SECP384R1()).public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode()
+    cloud = FakeCloud(entry, [_signed(key, _record())])
+    rc, run = _main(entry, tmp_path, cloud, json.dumps({VERSION: other}))
+    _refused_unsigned(rc, run, cloud)
+
+
+# ---------------------------------------------------------------------------
+# The keys are the job spec's: an override cannot choose them.
+# ---------------------------------------------------------------------------
+def test_spec_verify_keys_an_override_replaced_runs_nothing_and_writes_nothing(entry, tmp_path):
+    """Anyone holding runWithOverrides may set SPEC_VERIFY_KEYS on an
+    execution -- here to a forger's key, over a record the forger signed. Its
+    SHA-256 is not the one the fixed command carries, so the execution ends
+    before it reads the record."""
+    trusted, forger = KmsKey(), KmsKey()
+    cloud = FakeCloud(entry, [_signed(forger, _record())])
+    rc, run = _main(entry, tmp_path, cloud, _keys(forger), pinned=_keys(trusted))
+    assert rc == 1 and run.execs == [] and cloud.commits == [] and cloud.calls == []
+
+
+def test_no_spec_verify_keys_runs_nothing(entry, tmp_path):
+    key = KmsKey()
+    cloud = FakeCloud(entry, [_signed(key, _record())])
+    environ = {"CLOUD_RUN_EXECUTION": EXECUTION, "CLOUD_RUN_TASK_COUNT": "1", "CLOUD_RUN_TASK_INDEX": "0"}
+    rc, run = _main(entry, tmp_path, cloud, _keys(key), environ=environ)
+    assert rc == 1 and run.execs == [] and cloud.commits == [] and cloud.calls == []
+
+
+@pytest.mark.parametrize("raw", ["not json", "[]", '{"v": 1}', '"x"'])
+def test_spec_verify_keys_that_are_not_a_map_of_pems_run_nothing(entry, tmp_path, raw):
+    """Pinned or not, a value of the wrong shape trusts nothing and runs nothing."""
+    cloud = FakeCloud(entry, [_record()])
+    rc, run = _main(entry, tmp_path, cloud, raw)
+    assert rc == 1 and run.execs == [] and cloud.commits == [] and cloud.calls == []
+
+
+def test_no_cloud_kms_client_is_left_in_the_job():
+    """Nothing reads Cloud KMS at run time, so the deployer needs no grant on
+    the key (owner decision 2026-10-19): no endpoint, no lookup."""
+    module = _load()
+    text = ENTRY.read_text()
+    assert "cloudkms" not in text and "publicKey" not in text
+    assert not hasattr(module, "KMS")
+    assert not hasattr(module.Cloud, "public_key")
 
 
 def test_a_cloud_that_does_not_answer_writes_nothing_and_runs_nothing(entry, tmp_path):
-    cloud = FakeCloud(entry, [_record()], KmsKey().pem, down=True)
-    rc, run = _main(entry, tmp_path, cloud)
+    key = KmsKey()
+    cloud = FakeCloud(entry, [_signed(key, _record())], down=True)
+    rc, run = _main(entry, tmp_path, cloud, _keys(key))
     assert rc == 1 and run.execs == [] and cloud.commits == []
 
 
 @pytest.mark.parametrize("count", [0, 2])
 def test_no_single_record_runs_nothing(entry, tmp_path, count):
     key = KmsKey()
-    cloud = FakeCloud(entry, [_signed(key, _record())] * count, key.pem)
-    rc, run = _main(entry, tmp_path, cloud)
+    cloud = FakeCloud(entry, [_signed(key, _record())] * count)
+    rc, run = _main(entry, tmp_path, cloud, _keys(key))
     assert rc == 1 and run.execs == [] and cloud.commits == []
 
 
 def test_an_unknown_project_trusts_no_key(entry, tmp_path, monkeypatch):
     monkeypatch.setattr(entry, "SIGNING_KEYS", {"another-project-1": (KEY,)})
     key = KmsKey()
-    cloud = FakeCloud(entry, [_signed(key, _record())], key.pem)
-    rc, run = _main(entry, tmp_path, cloud)
+    cloud = FakeCloud(entry, [_signed(key, _record())])
+    rc, run = _main(entry, tmp_path, cloud, _keys(key))
     _refused_unsigned(rc, run, cloud)
+
+
+def test_no_kms_grant_in_terraform_names_the_workspace_deployer():
+    """Every Cloud KMS IAM resource in terraform/, by type, not by name: a
+    grant added under a new resource name is found too. The deployer verifies
+    with SPEC_VERIFY_KEYS and holds nothing on any key."""
+    blocks = []
+    for path in sorted((REPO / "terraform").rglob("*.tf")):
+        text = path.read_text()
+        for found in re.finditer(r'^resource "(google_kms_[a-z_]*iam[a-z_]*)" "([^"]+)" \{\n(.*?)^\}', text,
+                                 re.M | re.S):
+            blocks.append((path, found.group(1), found.group(2), found.group(3)))
+    assert blocks, "the control: terraform/ grants on the step-spec key, so this looked at something"
+    for path, kind, name, body in blocks:
+        assert "workspace_deployer" not in body and "swarm-workspace-deployer" not in body, (
+            f"{path.relative_to(REPO)}: {kind}.{name} names the workspace deployer")
 
 
 # ---------------------------------------------------------------------------
@@ -385,8 +511,8 @@ def test_an_unknown_project_trusts_no_key(entry, tmp_path, monkeypatch):
 def test_a_personal_record_with_no_signature_keeps_working(entry, tmp_path):
     record = _record("personal", "alice@saga.xyz", "u-alice")
     record["decision"]["by"] = "admin@saga.xyz"
-    cloud = FakeCloud(entry, [record], KmsKey().pem)
-    rc, run = _main(entry, tmp_path, cloud)
+    cloud = FakeCloud(entry, [record])
+    rc, run = _main(entry, tmp_path, cloud, _keys(KmsKey()))
     assert rc == 0 and cloud.commits == []
     [(_, _, env)] = run.execs
     assert json.loads(env["SWARM_APPROVAL_PIN"]) == {
@@ -400,8 +526,8 @@ def test_an_unapproved_record_is_left_to_a1_and_pinned_unverified(entry, tmp_pat
     record = _record()
     record["decision"] = None
     record["state"] = "requested"
-    cloud = FakeCloud(entry, [record], KmsKey().pem)
-    rc, run = _main(entry, tmp_path, cloud)
+    cloud = FakeCloud(entry, [record])
+    rc, run = _main(entry, tmp_path, cloud, _keys(KmsKey()))
     assert rc == 0 and cloud.commits == []
     [(_, _, env)] = run.execs
     assert json.loads(env["SWARM_APPROVAL_PIN"])["verified"] is False
@@ -468,11 +594,27 @@ def test_the_trusted_key_is_the_one_terraform_names():
         "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec",)}
 
 
-def test_entry_still_imports_only_the_standard_library():
-    imported = set(re.findall(r"^(?:from|import) ([a-z0-9_.]+)", ENTRY.read_text(), re.M))
+def test_entry_imports_the_standard_library_and_the_frozen_specsign_only():
+    """The canonical bytes and the digest are the frozen contract's, as the
+    workers' are (swarm_common.specsign.jcs, spec_digest): one spelling of
+    RFC 8785 for signer and verifier. Nothing else outside the standard
+    library: the image's Debian python3 has nothing installed."""
+    text = ENTRY.read_text()
+    imported = set(re.findall(r"^(?:from|import) ([a-z0-9_.]+)", text, re.M))
     assert {name.split(".")[0] for name in imported} <= {
         "__future__", "base64", "hashlib", "json", "os", "re", "sys", "tempfile", "urllib",
-        "collections", "datetime", "pathlib", "typing"}
+        "collections", "datetime", "pathlib", "typing", "swarm_common"}
+    assert re.search(r"^from swarm_common import specsign\b", text, re.M)
+    assert "specsign.jcs(" in text and "specsign.spec_digest(" in text
+    assert "json.dumps(payload" not in text, "a second RFC 8785 spelling beside the frozen one"
+
+
+def test_the_image_carries_the_frozen_package_where_entry_looks():
+    """`python3 -I` puts nothing of /opt/swarm on sys.path; entry.py adds the
+    one directory the Dockerfile copies the frozen package into."""
+    dockerfile = (REPO / "images" / "workspace-apply" / "Dockerfile").read_text()
+    assert "COPY apps/common/swarm_common/ /opt/swarm/apps/common/swarm_common/" in dockerfile
+    assert str(_load().CONTRACT_PATH) == "/opt/swarm/apps/common"
 
 
 # ---------------------------------------------------------------------------
@@ -581,7 +723,7 @@ def test_the_cloud_sends_the_metadata_token_to_google_and_reads_json(entry):
     cloud = entry.Cloud(PROJECT)
     cloud._open = opened
     assert cloud.call("POST", cloud.documents() + ":runQuery", {"q": 1}) == {"ok": True}
-    assert cloud.call("GET", entry.KMS + VERSION + "/publicKey") == {"ok": True}
+    assert cloud.call("POST", cloud.documents() + ":commit", {"writes": []}) == {"ok": True}
     metadata, first, second = seen
     assert metadata.full_url == entry.METADATA + "instance/service-accounts/default/token"
     for request in (first, second):

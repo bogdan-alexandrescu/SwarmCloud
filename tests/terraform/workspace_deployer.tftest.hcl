@@ -11,9 +11,10 @@
 #   * the identity has no key resource and an EMPTY account-level policy, so
 #     nobody may act as it or mint its token there;
 #   * the job runs as that identity, runs the pinned image by digest with the
-#     fixed command `python3 -I /opt/swarm/entry.py` and no argument or
-#     environment of its own, one task, no retries, 1800 seconds, egress
-#     ALL_TRAFFIC into the swarm subnet with the worker tag;
+#     fixed command `python3 -I /opt/swarm/entry.py` and the pin of its
+#     verify keys, no argument and no environment but SPEC_VERIFY_KEYS, one
+#     task, no retries, 1800 seconds, egress ALL_TRAFFIC into the swarm
+#     subnet with the worker tag;
 #   * the job's IAM policy is authoritative and names swarm-workspace-dispatch
 #     alone, with the run-with-overrides role and nothing else;
 #   * Cloud Run's audit config is DATA_WRITE, and only DATA_WRITE: no
@@ -196,13 +197,15 @@ run "the_identity_is_usable_only_by_its_job" {
   assert {
     condition = alltrue([
       google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].image == var.workspace_apply_image,
-      google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].command == tolist(["python3", "-I", "/opt/swarm/entry.py"]),
+      slice(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].command, 0, 3) == tolist(["python3", "-I", "/opt/swarm/entry.py"]),
+      length(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].command) == 4,
+      try(startswith(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].command[3], "--spec-verify-keys-sha256="), false),
       try(length(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].args), 0) == 0,
-      try(length(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].env), 0) == 0,
+      [for e in google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].env : e.name] == ["SPEC_VERIFY_KEYS"],
       length(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers) == 1,
       try(length(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].volumes), 0) == 0,
     ])
-    error_message = "the job runs one container: the pinned image by digest, with the command `python3 -I /opt/swarm/entry.py` (the scrub, §2.2 step 0), and no argument, environment or volume of its own"
+    error_message = "the job runs one container: the pinned image by digest, with the command `python3 -I /opt/swarm/entry.py --spec-verify-keys-sha256=<hex>` (the scrub, §2.2 step 0, and the pin of its keys), no argument or volume of its own, and SPEC_VERIFY_KEYS as its only variable (tests/terraform/workspace_approval_keys.tftest.hcl)"
   }
 
   assert {

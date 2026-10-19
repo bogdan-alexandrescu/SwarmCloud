@@ -1,7 +1,8 @@
 """Step 0 of the personal-workspace job: the scrub (docs/workspaces.md §2.2).
 
 The Cloud Run job `swarm-workspace-apply` runs this file as its fixed command,
-`python3 -I /opt/swarm/entry.py <w-id> <mode>`, as swarm-workspace-deployer:
+`python3 -I /opt/swarm/entry.py --spec-verify-keys-sha256=<hex>`, with
+`<w-id> <mode>` as each execution's arguments, as swarm-workspace-deployer:
 the identity with project-wide account-IAM power Google cannot narrow (§2.4).
 Lane W6b of #847.
 
@@ -21,9 +22,11 @@ the job spec, so the boundary is what THIS file lets an override reach:
     `-I` keeps Python itself from reading `PYTHON*`. What `-I` cannot stop is
     the dynamic loader reading `LD_*` before Python starts: §2.4 R6 states
     that residual risk and what would close it.
-  * THE ARGUMENTS, EXACTLY TWO. `[<w-id>, <mode>]`, the id `w-<6 hex>` and the
-    mode `create` or `limits`, or the execution ends here, having run nothing.
-    Step 1 (scripts/workspace-apply.sh) checks the same again; neither check
+  * THE ARGUMENTS, EXACTLY TWO, after the command's own. `[<pin>, <w-id>,
+    <mode>]`: the pin of the verify keys (below), which the command carries
+    and no override can move, then the id `w-<6 hex>` and the mode `create`
+    or `limits`, or the execution ends here, having run nothing. Step 1
+    (scripts/workspace-apply.sh) checks the id and mode again; neither check
     alone is load-bearing.
   * THE TASK COUNT, ONE. `CLOUD_RUN_TASK_COUNT` must be `1` and this task must
     be index `0`. A1's claim would stop a second task anyway; this stops it
@@ -31,9 +34,11 @@ the job spec, so the boundary is what THIS file lets an override reach:
   * THE TIMEOUT, OURS. Step 1 runs under coreutils `timeout` with this file's
     1800-second deadline, whatever timeout the execution was given.
 
-What survives from the execution is one value: `CLOUD_RUN_EXECUTION`, checked
+What survives from the execution is two values. `CLOUD_RUN_EXECUTION`, checked
 against register-tenant.sh's `WS_BUILD_RE` and passed on as `BUILD_ID`, which
-the script uses for nothing but the record and the log. The project and the
+the script uses for nothing but the record and the log. And `SPEC_VERIFY_KEYS`,
+which step 0 reads itself and never passes on, and which counts only when its
+SHA-256 is the one the fixed command carries (below). The project and the
 region come from the metadata server, never from the environment, and the
 metadata request goes direct: no proxy, whatever was set.
 
@@ -47,19 +52,32 @@ approval and retry with the step-spec KMS key -- the key only swarm-api may
 sign with -- over a canonical payload, and this file checks that signature
 for every `group` and `service` record before step 1 runs:
 
-  * THE KEY IS THE IMAGE'S AND CLOUD KMS'S, NEVER THE CALLER'S. Which key is
-    trusted is `SIGNING_KEYS` below, keyed by the metadata server's project;
-    its public key is read from Cloud KMS at run time, for the exact version
-    the record names, which must be a version of that key. Nothing in the
-    environment (an override sets it) and nothing on the record (a worker
-    writes it) chooses the key.
+  * THE KEY IS THE IMAGE'S AND THE JOB SPEC'S, NEVER THE CALLER'S. Which key
+    is trusted is `SIGNING_KEYS` below, keyed by the metadata server's
+    project; the public key is the one `SPEC_VERIFY_KEYS` holds for the exact
+    version the record names, which must be a version of that key (lane
+    WK-APPROVAL-KEYS; owner decision 2026-10-19: no Cloud KMS grant for this
+    identity, so nothing reads KMS at run time). `SPEC_VERIFY_KEYS` is the
+    `{full version name: PEM}` map workers get, which the owner's bootstrap
+    apply reads from Cloud KMS at plan and writes into the job spec
+    (terraform/bootstrap/workspace_deployer.tf). An override CAN set an
+    environment variable, so the value counts only when its SHA-256 is the
+    `--spec-verify-keys-sha256=` the job's fixed command carries -- the
+    command is the one part of an execution no override reaches. Any other
+    value (or none) ends the execution here, having read nothing. Nothing on
+    the record (a worker writes it) chooses the key.
+  * A VERSION THE JOB WAS NOT GIVEN IS AN UNSIGNED APPROVAL. The keys refresh
+    only when the bootstrap is applied, unlike workers', which refresh on
+    every release; a version enabled since stops every group and service run
+    at `APPROVAL_UNSIGNED` (fail closed) until it is
+    (docs/runbooks/spec-signing-rollout.md, "Rotation").
   * A MISSING OR BAD SIGNATURE, OR A PAYLOAD THAT IS NOT THE RECORD, STOPS
     THE RUN FOR THE OWNER: `needs_owner` with failure code
     `APPROVAL_UNSIGNED` and a `front_door_audit` entry saying nothing was
     admitted, and step 1 never runs, so nothing is granted. Not retryable:
     swarm-api's retry re-signs only an approval that already verifies, so the
     remedy is a fresh decision -- deny, then approve the record as shown.
-  * A CLOUD THAT DID NOT ANSWER (no token, Firestore or KMS down) is not a bad
+  * A CLOUD THAT DID NOT ANSWER (no token, Firestore down) is not a bad
     signature: the execution ends here having written nothing, as any refusal
     above does.
   * WHAT WAS VERIFIED IS PINNED. `SWARM_APPROVAL_PIN` in the fixed
@@ -73,9 +91,12 @@ door, and a personal approval written before signatures existed keeps working
 (questions.json of the lane; new personal approvals are signed all the same,
 so verifying them later is one entry in `VERIFIED_KINDS`).
 
-The standard library only: this runs on the image's Debian python3, before
-anything is installed or trusted -- so the P-256 ECDSA check below is written
-out here rather than imported, and checks public values only. Nothing here may
+The standard library, and the frozen contract's `swarm_common.specsign` for
+the canonical bytes and their digest, as workers use it (swarm-api signs over
+`specsign.jcs` too): this runs on the image's Debian python3, before anything
+is installed or trusted, and both are stdlib-only. The P-256 ECDSA check below
+is written out here rather than imported (workers verify with `cryptography`,
+which the image does not carry), and checks public values only. Nothing here may
 print a credential: the access token it holds is sent to Google's APIs and
 nowhere else, and is never printed.
 """
@@ -89,12 +110,21 @@ import os
 import re
 import sys
 import tempfile
-import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping, MutableMapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+#: Where the image puts the frozen contract (images/workspace-apply/Dockerfile,
+#: `COPY apps/common/swarm_common/`). `python3 -I` puts nothing of /opt/swarm
+#: on sys.path, so this one root-owned directory goes first; elsewhere (the
+#: unit tests) it does not exist and the installed package is found.
+CONTRACT_PATH = Path("/opt/swarm/apps/common")
+if str(CONTRACT_PATH) not in sys.path:
+    sys.path.insert(0, str(CONTRACT_PATH))
+
+from swarm_common import specsign  # noqa: E402  (after the path it is found on)
 
 #: Where the image puts the code, read-only and root-owned
 #: (images/workspace-apply/Dockerfile).
@@ -142,7 +172,6 @@ METADATA_TIMEOUT_SECONDS = 5
 #: (FIRESTORE_DATABASE is not in the fixed environment, so its default holds).
 FIRESTORE_DATABASE = "swarm"
 FIRESTORE = "https://firestore.googleapis.com/v1/"
-KMS = "https://cloudkms.googleapis.com/v1/"
 API_TIMEOUT_SECONDS = 15
 
 #: The key whose signatures this job trusts, per project: the step-spec key of
@@ -159,8 +188,13 @@ SIGNING_KEYS: Mapping[str, tuple[str, ...]] = {
         "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec",
     ),
 }
-#: The key's algorithm (terraform/bootstrap/spec_signing.tf version_template).
-SIGNING_ALGORITHM = "EC_SIGN_P256_SHA256"
+#: The public keys of the step-spec key's ENABLED versions, `{full version
+#: name: PEM}`, as the bootstrap writes them into the job spec
+#: (terraform/bootstrap/workspace_deployer.tf), and the fixed command's last
+#: element, which carries the SHA-256 of exactly that value. P-256
+#: (terraform/bootstrap/spec_signing.tf version_template), as p256_verify reads.
+VERIFY_KEYS_ENV = "SPEC_VERIFY_KEYS"
+VERIFY_KEYS_PIN_RE = re.compile(r"--spec-verify-keys-sha256=([0-9a-f]{64})", re.ASCII)
 
 #: The kinds whose approval is verified: the two whose steps grant beyond a
 #: person's own (a group's team slot and label, a service's front door).
@@ -296,21 +330,21 @@ def p256_verify(public_key: tuple[int, int], digest: bytes, signature: bytes) ->
 # --- the approval -----------------------------------------------------------
 
 def canonical_approval(fields: Mapping[str, Any]) -> bytes:
-    """The bytes swarm-api signs: RFC 8785 of {purpose, APPROVAL_FIELDS}.
+    """The bytes swarm-api signs: RFC 8785 of {purpose, APPROVAL_FIELDS}, by
+    the frozen contract's own encoder (`specsign.jcs`, as swarm-api's
+    `canonical_approval` calls it).
 
-    Every value is a non-empty string, so RFC 8785 is exactly sorted keys, no
-    whitespace and json's own escaping (swarm_common.specsign._string says
-    why); a value that is anything else has no canonical form here, and the
-    approval is refused rather than encoded some other way.
+    A value that is not a non-empty string has no canonical form here, and the
+    approval is refused rather than encoded some other way; a lone surrogate
+    is `specsign.SpecNotCanonical`, a ValueError.
     """
     payload = {"purpose": APPROVAL_PURPOSE}
     for key in APPROVAL_FIELDS:
         value = fields.get(key)
         if not isinstance(value, str) or not value:
             raise ValueError(f"the approval's {key} is not a non-empty string")
-        value.encode("utf-8")  # a lone surrogate raises here
         payload[key] = value
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return specsign.jcs(payload)
 
 
 def firestore_value(value: Mapping[str, Any]) -> Any:
@@ -395,33 +429,55 @@ def trusted_version(project: str, key_version: str) -> bool:
     )
 
 
+def parse_verify_keys(raw: str) -> dict[str, str]:
+    """SPEC_VERIFY_KEYS -> {full version name: PEM}, the shape workers parse
+    (agent_worker.specverify.parse_verify_keys); anything else is ValueError."""
+    value = json.loads(raw)
+    if not isinstance(value, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in value.items()):
+        raise ValueError("SPEC_VERIFY_KEYS is not a JSON object of version name -> PEM")
+    return dict(value)
+
+
+def verify_keys_pin(raw: str) -> str:
+    """The fixed command's element that pins RAW: its SHA-256, as Terraform's
+    `sha256()` spells it over the same string."""
+    return "--spec-verify-keys-sha256=" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 def verify_approval(record: Mapping[str, Any], *, project: str,
-                    public_key: Callable[[str], str]) -> None:
+                    verify_keys: Mapping[str, str]) -> None:
     """Returns when the record's approval is swarm-api's; raises Unsigned when not.
 
-    `public_key(version)` is the PEM Cloud KMS holds for that version; an
-    OSError from it is the cloud not answering, and passes through.
+    `verify_keys` is the job spec's SPEC_VERIFY_KEYS, already held to the
+    command's pin: the PEM for each version this job may verify with. A
+    version absent from it -- one enabled since the bootstrap was last
+    applied -- is refused like a bad signature, and so is a PEM that is not a
+    P-256 public key: nothing here asks anyone else for one.
     """
     payload, key_version, der = approval_payload(record)
     if not trusted_version(project, key_version):
         raise Unsigned("the approval names a key this job does not trust")
+    pem = verify_keys.get(key_version)
+    if pem is None:
+        raise Unsigned("the approval names a key version this job was not given")
     try:
         canonical = canonical_approval(payload)
     except (ValueError, UnicodeEncodeError):
         raise Unsigned("the approval has no canonical form") from None
-    pem = public_key(key_version)
     try:
         point = p256_public_key(pem)
     except ValueError:
-        raise OSError("Cloud KMS returned no usable P-256 public key") from None
-    if not p256_verify(point, hashlib.sha256(canonical).digest(), der):
+        raise Unsigned("the job's key for that version is not a P-256 public key") from None
+    if not p256_verify(point, specsign.spec_digest(canonical), der):
         raise Unsigned("the approval's signature does not verify over the record")
 
 
 class Cloud:
-    """The three Google APIs the approval check reads and writes, as the job's
-    own identity: the token from the metadata server, every request direct (no
-    proxy, whatever was set). Every failure is an OSError."""
+    """Firestore, which the approval check reads and writes, as the job's own
+    identity: the token from the metadata server, every request direct (no
+    proxy, whatever was set). Every failure is an OSError. No Cloud KMS: the
+    public keys are the job spec's (SPEC_VERIFY_KEYS)."""
 
     def __init__(self, project: str) -> None:
         self.project = project
@@ -471,13 +527,6 @@ class Cloud:
         record = {k: firestore_value(v) for k, v in (doc.get("fields") or {}).items()}
         return str(doc.get("name") or ""), str(doc.get("updateTime") or ""), record
 
-    def public_key(self, key_version: str) -> str:
-        answer = self.call("GET", KMS + urllib.parse.quote(key_version, safe="/") + "/publicKey")
-        if not isinstance(answer, dict) or answer.get("name") != key_version \
-                or answer.get("algorithm") != SIGNING_ALGORITHM or not isinstance(answer.get("pem"), str):
-            raise OSError("Cloud KMS answered for another key version or algorithm")
-        return answer["pem"]
-
     def commit(self, write: Mapping[str, Any]) -> None:
         self.call("POST", self.documents() + ":commit", {"writes": [write]})
 
@@ -521,7 +570,8 @@ def unsigned_write(name: str, update_time: str, record: Mapping[str, Any], *,
     }
 
 
-def approval_gate(workspace_id: str, mode: str, project: str, execution: str, cloud: Any) -> str | None:
+def approval_gate(workspace_id: str, mode: str, project: str, execution: str, cloud: Any,
+                  verify_keys: Mapping[str, str]) -> str | None:
     """The pin for step 1's environment, or None when the run stopped for the owner.
 
     Raises Refused when the cloud did not answer or the record is not one.
@@ -537,7 +587,7 @@ def approval_gate(workspace_id: str, mode: str, project: str, execution: str, cl
         if kind not in VERIFIED_KINDS or decision.get("verdict") != "approved":
             return pin_of(record, verified=False)
         try:
-            verify_approval(record, project=project, public_key=cloud.public_key)
+            verify_approval(record, project=project, verify_keys=verify_keys)
         except Unsigned as why:
             at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
             cloud.commit(unsigned_write(name, update_time, record, execution=execution,
@@ -566,21 +616,25 @@ def plan(
     metadata: Callable[[str], str] = read_metadata,
     scratch_root: str = "/tmp",
     target: Path = APPLY_SCRIPT,
-) -> tuple[str, list[str], dict[str, str]]:
-    """The program, its arguments and its environment, or Refused.
+) -> tuple[str, list[str], dict[str, str], dict[str, str]]:
+    """The program, its arguments, its environment and the verify keys, or Refused.
 
     `environ` is EMPTIED first, whatever happens after: given `os.environ`, that
     is this process's own environment, so nothing later in it reads a value a
-    caller chose.
+    caller chose. ARGV is the command's pin, then the execution's two.
     """
     execution = environ.get("CLOUD_RUN_EXECUTION")
     task_count = environ.get("CLOUD_RUN_TASK_COUNT")
     task_index = environ.get("CLOUD_RUN_TASK_INDEX")
+    raw_keys = environ.get(VERIFY_KEYS_ENV)
     environ.clear()
 
-    if len(argv) != 2:
-        raise Refused(f"the job takes exactly two arguments, <w-id> <mode>; it was given {len(argv)}")
-    workspace_id, mode = argv
+    if len(argv) != 3:
+        raise Refused("the job takes exactly two arguments, <w-id> <mode>, after its command's "
+                      f"verify-key pin; it was given {len(argv) - 1}")
+    keys_pin, workspace_id, mode = argv
+    if not VERIFY_KEYS_PIN_RE.fullmatch(keys_pin):
+        raise Refused("the first argument is not the command's --spec-verify-keys-sha256 pin")
     if not WORKSPACE_RE.fullmatch(workspace_id):
         raise Refused("the first argument is not a workspace id of the form w-<6 hex digits>")
     if mode not in MODES:
@@ -591,6 +645,14 @@ def plan(
         raise Refused("this is not the execution's first task")
     if execution is None or not re.fullmatch(BUILD_RE, execution):
         raise Refused("CLOUD_RUN_EXECUTION is missing or is not an execution name")
+    # The job spec's keys, or an override's: only the command can tell. Public
+    # values, so a plain comparison.
+    if raw_keys is None or verify_keys_pin(raw_keys) != keys_pin:
+        raise Refused(f"{VERIFY_KEYS_ENV} is missing or is not the one the job's command pins")
+    try:
+        verify_keys = parse_verify_keys(raw_keys)
+    except ValueError:
+        raise Refused(f"{VERIFY_KEYS_ENV} is not a JSON object of version name -> PEM") from None
 
     try:
         project = metadata("project/project-id")
@@ -637,7 +699,7 @@ def plan(
         workspace_id,
         mode,
     ]
-    return TIMEOUT, args, env
+    return TIMEOUT, args, env, verify_keys
 
 
 def main(
@@ -651,7 +713,7 @@ def main(
     cloud: Callable[[str], Any] = Cloud,
 ) -> int:
     try:
-        program, args, env = plan(
+        program, args, env, verify_keys = plan(
             sys.argv[1:] if argv is None else argv,
             os.environ if environ is None else environ,
             metadata=metadata,
@@ -661,7 +723,7 @@ def main(
         # The approval, before step 1: nothing past here grants for a group
         # or service record whose approval swarm-api did not sign.
         pin = approval_gate(args[-2], args[-1], env["PROJECT_ID"], env["BUILD_ID"],
-                            cloud(env["PROJECT_ID"]))
+                            cloud(env["PROJECT_ID"]), verify_keys)
     except Refused as exc:
         print(f"refused: {exc}", file=sys.stderr, flush=True)
         return 1
