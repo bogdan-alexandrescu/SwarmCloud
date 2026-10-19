@@ -21,7 +21,7 @@ from typing import Any
 
 import pytest
 
-from swarm_mcp import checkout, server, workflows
+from swarm_mcp import checkout, cli, server, workflows
 from swarm_mcp.client import SwarmError, task_payload
 
 WEB = {"repository": "acme/web", "ref": "main", "name": "web"}
@@ -173,6 +173,27 @@ def test_a_whole_spec_carries_both_lists():
     assert body["additional_repositories"] == [WEB]
     assert body["steps"][1]["additional_repositories"] == []
     assert workflows.read_spec(spec)["additional_repositories"] == [WEB]
+
+
+def test_a_spec_file_through_the_terminal_carries_both_lists(tmp_path):
+    """`swarm workflow <spec.json>` reads the same spec through `read_spec`; its
+    top-level list is the default every step without its own list reads, so the
+    terminal must send it, not accept it and drop it."""
+    spec = {"additional_repositories": [WEB], "steps": [
+        {"step_id": "a", "prompt": "a"},
+        {"step_id": "b", "prompt": "b", "additional_repositories": [SDK]},
+    ]}
+    path = tmp_path / "spec.json"
+    path.write_text(json.dumps(spec))
+    api = RecordingApi()
+    args = cli.build_parser().parse_args(["workflow", str(path)])
+
+    assert cli.cmd_workflow(api, args) == cli.EXIT_OK
+
+    (body,) = _posted(api, "/v1/workflows")
+    assert body["additional_repositories"] == [WEB]
+    assert "additional_repositories" not in body["steps"][0]
+    assert body["steps"][1]["additional_repositories"] == [SDK]
 
 
 def test_a_list_beside_a_spec_is_two_answers_and_is_refused():
