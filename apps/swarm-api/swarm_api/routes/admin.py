@@ -19,6 +19,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import logging
 from typing import Any, Mapping
 
 from fastapi import APIRouter, Body, Depends, Query
@@ -67,11 +68,14 @@ from ..schemas import (
 from ..task_accounts import accounts_for
 from ..task_input import masking_for
 from ..validation import known_providers
+from ..workspaces import WORKSPACES, kind_of
 from .accounts import account_pool
 from .browser_logins import browser_vault
 from .runs import advance_tenant_runs
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
+
+log = logging.getLogger(__name__)
 
 #: The grace now lives in `swarm_api.heartbeats`, which the task routes read
 #: too (#179). The old name stays bound to the SAME function, not a copy, for
@@ -886,12 +890,52 @@ def _provider_pools(ctx: AppContext, pairs: set[tuple[str, str]]) -> dict[str, d
     return {name: pool_to_api(by_name[name]) for name in wanted if name in by_name}
 
 
+def _workspace_records(ctx: AppContext, tenant_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """Each tenant's `workspaces/{tenant_id}` record, by tenant id, from ONE
+    `get_all` over the page: never one read per tenant. A tenant Terraform
+    made has no record and is absent from the answer. Raises when the batch
+    fails; the caller then serves the page without the fields."""
+    if not tenant_ids:
+        return {}
+    collection = ctx.db.collection(WORKSPACES)
+    return {
+        snap.id: snap.to_dict() or {}
+        for snap in ctx.db.get_all([collection.document(t) for t in tenant_ids])
+        if snap.exists
+    }
+
+
 @router.get("/tenants")
 def list_tenants(
     auth: AuthContext = Depends(admin_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    return {"tenants": [tenant_to_api(t) for t in ctx.store.list_tenants()]}
+    """Every tenant, and the workspace the in-cloud job made for it (WK-ADMIN-LIST).
+
+    `workspace_kind` (personal, group or service) and `workspace_id` (the
+    record's `w-` id) tell the job's tenants from Terraform's, whose two fields
+    are null (docs/design/workspace-kinds.md §4.2.2). The design names the
+    first `kind`, but `kind` is already the frozen `Tenant.kind` (user or
+    group) that the console reads, and a service workspace is a `user` tenant,
+    so the record's kind is served beside it rather than over it. Nothing
+    else of the record is served: not its principal, not its state.
+
+    A failed read of the records serves the tenants without the two fields
+    and `workspaces_unread: true`, never a 500: the tenant list is what this
+    page is for.
+    """
+    tenants = ctx.store.list_tenants()
+    rows = [tenant_to_api(t) for t in tenants]
+    try:
+        records = _workspace_records(ctx, [t.tenant_id for t in tenants])
+    except Exception as exc:  # noqa: BLE001 - the list is served without the fields
+        log.warning("admin tenants: workspace records unread (%s)", type(exc).__name__)
+        return {"tenants": rows, "workspaces_unread": True}
+    for row in rows:
+        record = records.get(row["tenant_id"])
+        row["workspace_kind"] = kind_of(record) if record is not None else None
+        row["workspace_id"] = (record or {}).get("workspace_id")
+    return {"tenants": rows, "workspaces_unread": False}
 
 
 @router.post("/workflows/rollup")

@@ -345,6 +345,15 @@ UNDECLARED_BY_DESIGN: dict[str, dict[str, str]] = {
         "heartbeats": "declared as LeaseHeartbeat[], checked as LeaseHeartbeat",
     },
     "ProvidersPage": {"providers": "declared as ProviderEntry[], checked as ProviderEntry"},
+    # Served ahead of the client (docs/design/workspace-kinds.md §4.2.2, lane
+    # WK-ADMIN-LIST, part of #847); types.ts and Admin › Tenants are the
+    # console lane's (§4.9). Remove when types.ts declares them.
+    "Tenant": {
+        "workspace_kind": "the workspace record's kind, null for a Terraform tenant (WK-ADMIN-LIST); "
+        "declared by the console lane",
+        "workspace_id": "the workspace record's w- id, null for a Terraform tenant (WK-ADMIN-LIST); "
+        "declared by the console lane",
+    },
 }
 
 
