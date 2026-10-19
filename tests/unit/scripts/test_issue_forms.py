@@ -447,6 +447,11 @@ def _nav_options() -> dict[str, str]:
     # §4.11). The same constants, for the same reason.
     mcp = f"{_const(app, 'SETTINGS')}/{_const(app, 'MCP_TAB')}"
     out[paths[mcp]] = f"{UI}{_const(app, 'SETTINGS_LABEL')} › {_const(app, 'MCP_LABEL')} ({paths[mcp]})"
+    # Settings › Profile (PROFILE-NAV; docs/design/user-profile.md §2.1): the
+    # person's own identity, workspaces, connections, bell and Claude accounts.
+    # The same constants, for the same reason.
+    profile = f"{_const(app, 'SETTINGS')}/{_const(app, 'PROFILE_TAB')}"
+    out[paths[profile]] = f"{UI}{_const(app, 'SETTINGS_LABEL')} › {_const(app, 'PROFILE_LABEL')} ({paths[profile]})"
     return out
 
 
