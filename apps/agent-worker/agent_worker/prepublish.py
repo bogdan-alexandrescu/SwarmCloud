@@ -84,7 +84,13 @@ one, and no merge path reads either.
 A CHECK THAT CANNOT RUN IS NOT A FAILURE. A tool missing from the image,
 `tflint --init` that cannot reach its plugin source, an unknown base: the check
 is `skipped` (or `error`) with the reason, recorded, and never sent to the
-agent as something to fix. tflint is the expected case: agent-runtime-base
+agent as something to fix. So is graph-pytest when the container lacks a
+service the tests need (#1605: product-oracle's fixtures migrate into a
+Postgres at 127.0.0.1:5432, and every test errored at setup): read from
+pytest's junitxml report, when no test passed or failed on its own and every
+error is a setup or collection error naming a refused connection to a local
+address (`unreachable_services`). Anything else -- one assertion failure, one
+pass, an ImportError, a fixture bug -- stays failed. tflint is the expected case: agent-runtime-base
 installs it only with `INSTALL_TFLINT=1`, which is off because no tflint
 release passes the image promote gate (images/agent-runtime-base/Dockerfile).
 
@@ -107,6 +113,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
+from xml.etree import ElementTree
 
 from swarm_redaction import redact as redact_text
 
@@ -585,6 +592,69 @@ def _guards_selection(runner: Runner, repo: Path, env: Mapping[str, str], base: 
             if line.strip().endswith(_PY_SUFFIX) and " " not in line.strip()}
 
 
+#: What a refused or unreachable connection says, in asyncio
+#: (`Connect call failed`), the OS (`Connection refused`, errno 111), psycopg2
+#: (`could not connect to server`) and node (`ECONNREFUSED`).
+_UNREACHABLE = re.compile(r"Connect call failed|Connection refused|ECONNREFUSED|"
+                          r"could not connect to server|\[Errno 111\]", re.IGNORECASE)
+#: The address beside it: `('127.0.0.1', 5432)`, `127.0.0.1:5432`, and
+#: psycopg's `"localhost" (::1), port 5432` / `host "localhost" (127.0.0.1)
+#: and accepting TCP/IP connections on port 5432`.
+_ADDRESSES = (
+    re.compile(r"\(\s*'(?P<host>[^']+)',\s*(?P<port>\d+)"),
+    re.compile(r"(?P<host>localhost|127(?:\.\d+){3}|\[::1\]|0\.0\.0\.0):(?P<port>\d+)"),
+    re.compile(r'"(?P<host>[^"]+)"(?:\s*\([^)]*\))?[\s,]+(?:and accepting\s+TCP/IP '
+               r"connections on\s+)?port (?P<port>\d+)"),
+)
+#: How pytest's junitxml labels an error at setup and at collection; an error
+#: at teardown follows a test that already ran, so it never counts.
+_SETUP_ERROR = ("failed on setup", "collection failure")
+
+
+def _local(host: str) -> bool:
+    return host.strip("[]") in ("localhost", "::1", "0.0.0.0") or host.startswith("127.")
+
+
+def unreachable_services(report: str) -> list[str] | None:
+    """The local addresses a pytest junitxml `report` says every test failed
+    to reach, or None when the run says anything else.
+
+    Conservative (#1605): None unless at least one test errored, NO test
+    passed or failed on its own, and EVERY error is at setup or collection
+    and names a refused connection to localhost. A single assertion failure,
+    pass, ImportError or fixture bug, an address that is not local, or a
+    report that does not parse, keeps the check failed. Skipped tests are
+    neither a pass nor a failure.
+    """
+    try:
+        root = ElementTree.fromstring(report)
+    except ElementTree.ParseError:
+        return None
+    addresses: set[str] = set()
+    errors = 0
+    for case in root.iter("testcase"):
+        if case.find("failure") is not None:
+            return None
+        found = case.findall("error")
+        if not found:
+            if case.find("skipped") is not None:
+                continue
+            return None
+        for error in found:
+            message = error.get("message") or ""
+            text = f"{message}\n{error.text or ''}"
+            if not message.startswith(_SETUP_ERROR) or not _UNREACHABLE.search(text):
+                return None
+            here = {f"{m.group('host')}:{m.group('port')}"
+                    for pattern in _ADDRESSES for m in pattern.finditer(text)
+                    if _local(m.group("host"))}
+            if not here:
+                return None
+            addresses |= here
+            errors += 1
+    return sorted(addresses) if errors else None
+
+
 def _graph_pytest(tests: Sequence[str], base: str
                   ) -> Callable[[Runner, Path, Mapping[str, str], float], tuple[str, str]]:
     def run(runner: Runner, repo: Path, env: Mapping[str, str], timeout: float) -> tuple[str, str]:
@@ -592,9 +662,25 @@ def _graph_pytest(tests: Sequence[str], base: str
         rest = [t for t in tests if t not in already]
         if not rest:
             return PASSED, "every selected test file is already run by changed-guards"
-        argv = ["uv", "run", "--quiet", "pytest", "-q", "-n", "auto", "-p", "no:cacheprovider",
-                *rest]
-        return _verdict(runner(argv, repo, env, timeout))
+        # pytest's own report, outside the checkout: the console text is a
+        # summary the repository's config can reshape (#1605).
+        with tempfile.TemporaryDirectory(prefix="prepublish-pytest-") as tmp:
+            report = Path(tmp) / "junit.xml"
+            argv = ["uv", "run", "--quiet", "pytest", "-q", "-n", "auto", "-p",
+                    "no:cacheprovider", f"--junitxml={report}", *rest]
+            ran = runner(argv, repo, env, timeout)
+            status, output = _verdict(ran)
+            if status != FAILED or ran.timed_out:
+                return status, output
+            try:
+                services = unreachable_services(report.read_text(errors="replace"))
+            except OSError:
+                services = None
+        if services:
+            shown = ", ".join(services[:3]) + (" and more" if len(services) > 3 else "")
+            return SKIPPED, (f"a service the tests need is unreachable ({shown}); every "
+                             "selected test errored at setup connecting to it; CI runs it")
+        return status, output
     return run
 
 
@@ -1001,9 +1087,11 @@ def run_checks(repo: Path, checks: Sequence[Check], *, env: Mapping[str, str],
             status, output = check.run(runner, repo, env, timeout)
         except OSError as exc:
             status, output = ERROR, f"{type(exc).__name__}: the check could not run"
+        # A check that finds at run time it cannot run (graph-pytest's
+        # unreachable service) returns SKIPPED with its reason as the output.
+        reason = {ERROR: "the check could not run", SKIPPED: output.strip() or None}.get(status)
         outcomes.append(Outcome(check.name, status, clock() - started, check.files,
-                                check.command, output=output,
-                                reason=None if status != ERROR else "the check could not run"))
+                                check.command, output=output, reason=reason))
     return outcomes
 
 
