@@ -162,6 +162,9 @@ def api_settings(spec_key: SpecKey) -> ApiSettings:
         default_page_size=50,
         rate_limit_burst=200,
         child_key=CHILD_KEY,
+        # FORGE_BROKER on: the route these tests are about. Off is the default,
+        # and the unit suite holds what the broker does while off.
+        forge_broker=True,
         spec_signing_key_version=KEY_VERSION,
         spec_verify_keys=json.dumps({KEY_VERSION: spec_key.pem()}),
     )
