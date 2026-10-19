@@ -391,7 +391,9 @@ def test_a_crashed_page_fails_closed_then_comes_back(tmp_path):
         await _until(rig.showing)
         assert rig.gate.pages.state == "following"
         assert len(chromium.methods_on("PAGE1", "Page.addScriptToEvaluateOnNewDocument")) > before
-        assert "page_reconnected" in rig.events()
+        # Said from a task the gate spawns as the follower comes back, so it can
+        # land a loop turn after the screen does: waited for, not read once.
+        await _until(lambda: "page_reconnected" in rig.events())
 
     _run(body, tmp_path)
 
