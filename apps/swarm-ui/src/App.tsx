@@ -49,6 +49,7 @@ import { AccessScreen } from './Access'
 import { PeopleScreen } from './People'
 import { PlatformCountsScreen } from './PlatformCounts'
 import { ProfilesScreen } from './Profiles'
+import { ProfileScreen } from './Profile'
 import { QuotaDetailScreen } from './QuotaDetail'
 import { RuntimesScreen } from './Runtimes'
 import { CountNote, FrameAge, HeadAge, PageHead, RoutedPage, SectionHelp, timeAgo, useHeadRowClaimed, usePageAgeClaimed } from './Shell'
@@ -567,6 +568,17 @@ const WORKSPACE_LABEL = 'Workspace'
 const MCP_TAB = 'mcp-servers'
 /** The page's `<h1>` and the head's crumb. */
 const MCP_LABEL = 'MCP servers'
+/**
+ * SETTINGS › PROFILE (PROFILE-NAV; docs/design/user-profile.md §2.1, §6):
+ * everything about the signed-in person in one place -- who they are, their
+ * workspaces and roles, their connections, their bell and their Claude
+ * accounts. Beside API keys and not a section, for the reason API keys is not
+ * one. One exact address: `#settings/<anything else>` still lands on Pool
+ * limits.
+ */
+const PROFILE_TAB = 'profile'
+/** The page's `<h1>` and the second half of its name in the issue forms. */
+const PROFILE_LABEL = 'Profile'
 
 /**
  * The utility button's label AND the heading of the screen it opens. One
@@ -926,6 +938,7 @@ export function fromAddress(full: string): Route {
   if (hash === `${SETTINGS}/${KEYS_TAB}`) return { sectionId: SETTINGS, tab: KEYS_TAB, ...blank }
   if (hash === `${SETTINGS}/${WORKSPACE_TAB}`) return { sectionId: SETTINGS, tab: WORKSPACE_TAB, ...blank }
   if (hash === `${SETTINGS}/${MCP_TAB}`) return { sectionId: SETTINGS, tab: MCP_TAB, ...blank }
+  if (hash === `${SETTINGS}/${PROFILE_TAB}`) return { sectionId: SETTINGS, tab: PROFILE_TAB, ...blank }
   if (hash === KEY_LINK_ADDRESS) {
     const scope = keyLinkScope(query)
     return { sectionId: SETTINGS, tab: KEY_LINK_TAB, ...blank, ...(scope === null ? {} : { view: `scope=${scope}` }) }
@@ -1339,7 +1352,9 @@ export function App() {
                 ? WORKSPACE_LABEL
                 : at.tab === MCP_TAB
                   ? MCP_LABEL
-                  : KEYS_LABEL
+                  : at.tab === PROFILE_TAB
+                    ? PROFILE_LABEL
+                    : KEYS_LABEL
               : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
   const object = at.missing ? null : documentObjectOf(at)
   useEffect(() => {
@@ -1439,6 +1454,8 @@ export function App() {
                   <WorkspaceSettingsScreen />
                 ) : at.sectionId === SETTINGS && at.tab === MCP_TAB ? (
                   <McpServersScreen />
+                ) : at.sectionId === SETTINGS && at.tab === PROFILE_TAB ? (
+                  <ProfileScreen />
                 ) : at.sectionId === SETTINGS ? (
                   <ProviderKeysScreen link={at.tab === KEY_LINK_TAB ? { scope: keyLinkScope(at.view ?? ''), token: keyLink.current } : null} />
                 ) : (
