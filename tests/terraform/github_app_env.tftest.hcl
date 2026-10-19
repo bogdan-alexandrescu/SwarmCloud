@@ -5,6 +5,8 @@
 # GITHUB_APP_CLIENT_ID and GITHUB_APP_SLUG from its environment, so the App
 # registered that day answered 503 "not configured" on every onboarding call
 # until the owner's live test 1 found it. These runs hold the wiring.
+# GITHUB_APP_NAME joined them on 2026-10-19 (#1647): the console names the
+# App by the name the deployment is configured with, never a hard-coded one.
 
 
 mock_provider "google" {
@@ -41,6 +43,7 @@ run "the_app_settings_reach_swarm_api" {
     github_app_id        = "5229127"
     github_app_client_id = "Iv23lipzgYrbQvuJdmZg"
     github_app_slug      = "swarmcloud-saga"
+    github_app_name      = "SwarmCloud Saga"
   }
 
   assert {
@@ -55,6 +58,10 @@ run "the_app_settings_reach_swarm_api" {
     condition     = local.service_env["swarm-api"].GITHUB_APP_SLUG == "swarmcloud-saga"
     error_message = "swarm-api reads GITHUB_APP_SLUG for the install link"
   }
+  assert {
+    condition     = local.service_env["swarm-api"].GITHUB_APP_NAME == "SwarmCloud Saga"
+    error_message = "swarm-api reads GITHUB_APP_NAME and serves it as app_name: the console names the App by it, never by a hard-coded name"
+  }
 }
 
 run "no_app_renders_empty_settings" {
@@ -68,8 +75,9 @@ run "no_app_renders_empty_settings" {
     condition = (
       local.service_env["swarm-api"].GITHUB_APP_ID == "" &&
       local.service_env["swarm-api"].GITHUB_APP_CLIENT_ID == "" &&
-      local.service_env["swarm-api"].GITHUB_APP_SLUG == ""
+      local.service_env["swarm-api"].GITHUB_APP_SLUG == "" &&
+      local.service_env["swarm-api"].GITHUB_APP_NAME == ""
     )
-    error_message = "with no App registered the three settings are empty, which forgeapp reads as not configured"
+    error_message = "with no App registered the four settings are empty, which forgeapp reads as not configured"
   }
 }

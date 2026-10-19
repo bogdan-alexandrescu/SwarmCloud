@@ -881,3 +881,47 @@ def test_a_refused_check_on_access_fails_setup_naming_the_repository(api, github
     assert {(i["repository"], i["code"]) for i in failed["issues"]} == {
         (repository, "PERMISSION_MISSING")}
     assert failed["issues"][0]["capabilities"] == ["push", "open_pull_requests"]
+
+
+# -- the App's name, from config (SAGA-APP-NAME; part of #1647) ----------------------
+
+
+@pytest.fixture
+def named_api(db, tokens, group_map, objects, clock, github, slots, tenant_tokens,
+              issues_transport) -> TestClient:
+    """`api`, with the App's display name configured as GITHUB_APP_NAME sets it."""
+    seed_tenant(db, "eng", credentials=("git",))
+    ctx = build_context(
+        settings=api_settings(), db=db, verifier=StaticTokenVerifier(tokens),
+        groups=StaticGroups(group_map), credentials=InMemoryCredentials(), waker=NullWaker(),
+        metrics=ApiMetrics(), objects=objects, forge_tokens=tenant_tokens,
+        forge=forge.GitHubIssues(send=issues_transport), now=clock,
+    )
+    config = forgeapp.AppConfig.from_env({"GITHUB_APP_CLIENT_ID": CLIENT_ID,
+                                          "GITHUB_APP_ID": "12345",
+                                          "GITHUB_APP_SLUG": "swarmcloud",
+                                          "GITHUB_APP_NAME": " SwarmCloud "})
+    app = forgeapp.ForgeApp(db, config=config, secrets=FakeAppSecret("s" + "x" * 39),
+                            slots=slots, send=github, now=clock)
+    service = access.AccessService(db, app, send=github, now=clock)
+    return TestClient(create_app(ctx, forge_app=app, access_service=service),
+                      raise_server_exceptions=False)
+
+
+def test_the_owners_and_the_install_step_serve_the_configured_app_name(named_api, github):
+    github.installs = []
+    _connect(named_api, github)
+    owners = named_api.get("/v1/access/orgs", headers=auth_header("alice"))
+    assert owners.status_code == 200, owners.text
+    assert owners.json()["app_name"] == "SwarmCloud"
+    installed = _install_step(named_api)
+    assert installed["evidence"]["app_name"] == "SwarmCloud"
+
+
+def test_without_a_configured_name_the_app_name_is_null(api, github):
+    github.installs = []
+    _connect(api, github)
+    owners = api.get("/v1/access/orgs", headers=auth_header("alice"))
+    assert owners.status_code == 200, owners.text
+    assert owners.json()["app_name"] is None
+    assert _install_step(api)["evidence"]["app_name"] is None
