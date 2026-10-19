@@ -8,10 +8,10 @@ import './styles/keys.css'
 /**
  * SETTINGS › API KEYS › JEV BACKEND (lane JUDGE-SELECT, owner decisions
  * 2026-10-14; swarm_api/judgment.py). Where this workspace's Jev judgments
- * go: Internal Jev (THE DEFAULT) or Internal Laya -- Saga's own decision API,
- * reached through the cluster's tailnet egress, so page text stays inside
- * Saga and no TypeSafe key is needed -- or TypeSafe, which receives page text
- * and needs a key (the card below this one).
+ * go: Internal Jev (THE DEFAULT) or Internal Laya -- your internal decision
+ * API, reached through the cluster's tailnet egress, so page text stays
+ * inside your network and no TypeSafe key is needed -- or TypeSafe, which
+ * receives page text and needs a key (the card below this one).
  *
  * An option the platform cannot serve now is disabled with the API's reason:
  * the internal ones while the tailnet egress is off, TypeSafe while no key
@@ -24,8 +24,8 @@ const ROUTE = 'GET /v1/judgment'
 
 /** What each option says about where page text goes. */
 const OPTIONS: ReadonlyArray<{ backend: JevBackend; name: string; note: string }> = [
-  { backend: 'internal-jev', name: 'Internal Jev', note: 'Stays inside Saga.' },
-  { backend: 'internal-laya', name: 'Internal Laya', note: 'Stays inside Saga.' },
+  { backend: 'internal-jev', name: 'Internal Jev', note: 'Stays inside your network.' },
+  { backend: 'internal-laya', name: 'Internal Laya', note: 'Stays inside your network.' },
   { backend: 'typesafe', name: 'TypeSafe', note: 'Sends page text to TypeSafe; needs a key.' },
 ]
 

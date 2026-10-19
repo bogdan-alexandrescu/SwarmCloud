@@ -24,7 +24,8 @@ import type { RunnerProfile } from './types'
  * WHETHER JEV CAN RUN IS THE WORKSPACE'S JUDGMENT BACKEND'S QUESTION (lane
  * JEV-OFF, part of #1345). `GET /v1/judgment` says which backend this
  * workspace judges with and whether it can run: an internal backend needs
- * the tailnet route to Saga's decision API and no key; TypeSafe needs a key.
+ * the tailnet route to your internal decision API and no key; TypeSafe needs
+ * a key.
  * Measured 2026-10-15: with the route off, this picker offered Jev, and the
  * task silently ran on Playwright. So Jev is disabled, with the API's own
  * reason, whenever the backend cannot run -- and before the read answers, or
@@ -222,7 +223,7 @@ function JevOff({ typesafe, judgment }: { typesafe: TypesafeKey; judgment: JevJu
   return <p className="btp-jev-off">Add a TypeSafe key in <KeysLink /></p>
 }
 
-const JEV_INTERNAL_HINT = 'goal-driven clicks and reading long pages — judged inside Saga'
+const JEV_INTERNAL_HINT = 'goal-driven clicks and reading long pages — judged inside your network'
 
 export function BrowserToolPicker({ tools, value, onChange, typesafe, judgment, egress }: {
   tools: readonly string[]
@@ -263,7 +264,7 @@ export function BrowserToolPicker({ tools, value, onChange, typesafe, judgment, 
       {tools.includes(JEV) && !jevOn && <JevOff typesafe={typesafe} judgment={judgment} />}
       {value === JEV && jevOn && judgment.kind === 'read' && (
         internal
-          ? <p className="btp-notice">Jev judges pages with {judgment.jev.label}: their text stays inside Saga.</p>
+          ? <p className="btp-notice">Jev judges pages with {judgment.jev.label}: their text stays inside your network.</p>
           : <p className="btp-notice">Jev sends the text of the pages it reads to TypeSafe, using {whose}.</p>
       )}
       {egress !== null && (

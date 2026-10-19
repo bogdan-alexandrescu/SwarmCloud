@@ -445,7 +445,7 @@ JEV_UNAVAILABLE_NOTE = {
     ),
     browser_tools.NO_ROUTE: (
         "jev was chosen for this task but is unavailable: this workspace judges "
-        "with Saga's internal decision API, and this attempt has no route to it "
+        "with your internal decision API, and this attempt has no route to it "
         "(the tailnet egress is off), so it is not registered: use the browser_* "
         "tools."
     ),
