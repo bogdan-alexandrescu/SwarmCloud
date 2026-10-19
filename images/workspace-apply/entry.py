@@ -56,8 +56,9 @@ for every `group` and `service` record before step 1 runs:
   * A MISSING OR BAD SIGNATURE, OR A PAYLOAD THAT IS NOT THE RECORD, STOPS
     THE RUN FOR THE OWNER: `needs_owner` with failure code
     `APPROVAL_UNSIGNED` and a `front_door_audit` entry saying nothing was
-    admitted, and step 1 never runs, so nothing is granted. An owner's retry
-    from People signs the record afresh.
+    admitted, and step 1 never runs, so nothing is granted. Not retryable:
+    swarm-api's retry re-signs only an approval that already verifies, so the
+    remedy is a fresh decision -- deny, then approve the record as shown.
   * A CLOUD THAT DID NOT ANSWER (no token, Firestore or KMS down) is not a bad
     signature: the execution ends here having written nothing, as any refusal
     above does.
@@ -508,7 +509,8 @@ def unsigned_write(name: str, update_time: str, record: Mapping[str, Any], *,
             "failure": {"mapValue": {"fields": {
                 "step": text("A1"),
                 "code": text(APPROVAL_UNSIGNED),
-                "retryable": {"booleanValue": True},
+                # A retry re-signs only a verified approval (People.retry).
+                "retryable": {"booleanValue": False},
                 "at": {"timestampValue": at},
             }}},
         }},

@@ -213,6 +213,8 @@ def _refused_unsigned(rc: int, run: Run, cloud: FakeCloud) -> dict[str, Any]:
     assert fields["state"] == {"stringValue": "needs_owner"}
     failure = fields["failure"]["mapValue"]["fields"]
     assert failure["code"] == {"stringValue": "APPROVAL_UNSIGNED"}
+    # A retry will not re-sign it (People.retry): the remedy is deny, then approve.
+    assert failure["retryable"] == {"booleanValue": False}
     [transform] = write["updateTransforms"]
     assert transform["fieldPath"] == "front_door_audit"
     [audit] = transform["appendMissingElements"]["values"]

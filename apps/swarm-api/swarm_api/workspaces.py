@@ -814,6 +814,56 @@ def sign_approval(signer: Any, record: Mapping[str, Any], *, decided_by: str,
     }
 
 
+def approval_refusal(record: Mapping[str, Any], settings: Any) -> str | None:
+    """Why the record's stored `approval` is not swarm-api's, or None when it is.
+
+    entry.py's `approval_payload` and `verify_approval`, over the platform's
+    SPEC_VERIFY_KEYS (`verdictpublish`'s reading of them) instead of a Cloud
+    KMS read: swarm-api holds `signer` on the key, never `publicKeyViewer`.
+    `People.retry` asks this before it signs a group or service record
+    afresh, so a retry re-signs only a decision swarm-api signed before and
+    never one a worker wrote (R8). Unset or malformed keys verify nothing:
+    every such retry is refused. The reason names the check, never a value.
+    """
+    from .verdictpublish import _VERSION_SUFFIX, _signature_matches, _verify_keys
+
+    approval = record.get(APPROVAL)
+    if not isinstance(approval, Mapping):
+        return "the record carries no approval signature"
+    decision = record.get("decision") if isinstance(record.get("decision"), Mapping) else {}
+    retry = record.get("retry") if isinstance(record.get("retry"), Mapping) else {}
+    decided_by = approval.get("decided_by")
+    deciders = {str(who).strip().lower() for who in (decision.get("by"), retry.get("by")) if who}
+    if not isinstance(decided_by, str) or decided_by not in deciders:
+        return "the signed approver is not the record's approver"
+    if approval.get("request_id") != record.get("request_id"):
+        return "the signature is for another request than the record's"
+    signing = str(getattr(settings, "spec_signing_key_version", "") or "")
+    matched = _VERSION_SUFFIX.search(signing)
+    crypto_key = signing[:matched.start()] if matched and matched.end() == len(signing) else ""
+    keys = _verify_keys(settings)
+    version = approval.get("key_version")
+    if (not crypto_key or not isinstance(version, str) or not version.startswith(crypto_key)
+            or not _VERSION_SUFFIX.fullmatch(version[len(crypto_key):]) or version not in keys):
+        return "the approval is signed by a key version this platform does not trust"
+    try:
+        canonical = canonical_approval({
+            "workspace_id": record.get("workspace_id"),
+            "tenant_id": record.get("tenant_id"),
+            "kind": kind_of(record),
+            "principal": record.get("principal"),
+            "decided_by": decided_by,
+            "decided_at": approval.get("decided_at"),
+            "request_id": record.get("request_id"),
+        })
+    except (ValueError, UnicodeEncodeError):
+        return "the approval has no canonical form"
+    if not _signature_matches(keys[version], approval.get("signature"),
+                              specsign.spec_digest(canonical)):
+        return "the approval's signature does not verify over the record"
+    return None
+
+
 # --------------------------------------------------------------------------
 # the store of records
 # --------------------------------------------------------------------------

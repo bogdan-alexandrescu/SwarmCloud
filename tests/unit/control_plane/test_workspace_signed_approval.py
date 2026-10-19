@@ -16,9 +16,11 @@ loaded from the image's source. No cloud, no credentials.
 
 from __future__ import annotations
 
+import base64
 import copy
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
 from typing import Any
 
@@ -97,9 +99,14 @@ def kms() -> KmsKey:
     return KmsKey()
 
 
-def _client(db, tokens, group_map, objects, publisher, signer: Any) -> TestClient:
+def _client(db, tokens, group_map, objects, publisher, signer: Any, *,
+            verify_keys: bool = True) -> TestClient:
+    # SPEC_VERIFY_KEYS as terraform/infra gives swarm-api: the public half of
+    # the key this test signs with, which a retry verifies a stored approval by.
+    keys = {VERSION: signer.public_key(VERSION)} if verify_keys and signer is not None else {}
     context = build_context(
-        settings=api_settings(platform_owner=ROOT),
+        settings=api_settings(platform_owner=ROOT, spec_signing_key_version=VERSION,
+                              spec_verify_keys=json.dumps(keys) if keys else ""),
         db=db, verifier=StaticTokenVerifier(tokens), groups=StaticGroups(group_map),
         credentials=InMemoryCredentials(), waker=NullWaker(), metrics=ApiMetrics(),
         objects=objects, forge_tokens=NoForgeTokens())
@@ -235,3 +242,114 @@ def test_a_denial_drops_the_approval_signature(client, db, kms, entry) -> None:
     record["decision"] = {**record["decision"], "verdict": ws.APPROVED}
     with pytest.raises(entry.Unsigned):
         _verifies(entry, kms, record)
+
+
+# -- a retry signs only what swarm-api signed before (R8, the review's major) --
+#
+# A tenant worker can write workspaces/{id}. Without these checks it could
+# write a group or service record "approved by" the owner and waiting for a
+# retry, and one admin's Retry would make swarm-api sign that forged decision.
+
+
+def _forged(db, tenant_id: str, **fields: Any) -> dict[str, Any]:
+    """The record as a worker rewrites it: failed, its decision the owner's."""
+    doc = db.docs[f"workspaces/{tenant_id}"]
+    doc.update(state=ws.FAILED, failure={"code": "STEP_FAILED"},
+               decision={**(doc.get("decision") or {}), "by": ROOT, "verdict": ws.APPROVED},
+               **fields)
+    return _record(db, tenant_id)
+
+
+def _refused_retry(client, db, publisher, tenant_id: str, workspace_id: str, who: str,
+                   before: dict[str, Any], why: str) -> None:
+    sent = len(publisher.messages)
+    response = client.post(f"{ROUTE}/{workspace_id}/retry", headers=auth_header(who))
+    assert response.status_code == 409, response.text
+    body = response.json()
+    assert body["code"] == "WORKSPACE_WRONG_STATE", body
+    assert body["detail"]["reason"] == "approval_unverified", body
+    assert why in body["message"], body
+    assert _record(db, tenant_id) == before, "a refused retry changed the record"
+    assert len(publisher.messages) == sent, "a refused retry published a build"
+
+
+def test_a_retry_of_a_group_record_with_a_forged_decision_is_not_signed(
+        client, db, kms, publisher, entry) -> None:
+    filed = client.post(ROUTE, json={"kind": "group", "principal": "reports@saga.xyz"},
+                        headers=auth_header("dana"))
+    assert filed.status_code == 202, filed.text
+    workspace_id = filed.json()["workspace_id"]
+    # The worker's record: no signature at all, a decision naming the owner.
+    before = _forged(db, "reports", approval=None)
+    _refused_retry(client, db, publisher, "reports", workspace_id, "dana", before,
+                   "carries no approval signature")
+    with pytest.raises(entry.Unsigned):
+        _verifies(entry, kms, _record(db, "reports"))
+
+
+def test_a_retry_of_a_service_record_with_a_made_up_signature_is_not_signed(
+        client, db, kms, publisher, entry) -> None:
+    filed = client.post(ROUTE, json={"kind": "service", "principal": REPORTS_BOT},
+                        headers=auth_header("dana"))
+    workspace_id = filed.json()["workspace_id"]
+    tenant_id = ws.personal_tenant_id(REPORTS_BOT)
+    record = _record(db, tenant_id)
+    # Everything the job compares is right, and the signature is the worker's own key's.
+    canonical = ws.canonical_approval({
+        "workspace_id": record["workspace_id"], "tenant_id": tenant_id, "kind": "service",
+        "principal": REPORTS_BOT, "decided_by": ROOT, "decided_at": "2026-10-19T00:00:00+00:00",
+        "request_id": record["request_id"]})
+    worker_key = KmsKey()
+    own = worker_key.sign(hashlib.sha256(canonical).digest())
+    before = _forged(db, tenant_id, request_id=record["request_id"], approval={
+        "decided_by": ROOT, "decided_at": "2026-10-19T00:00:00+00:00",
+        "request_id": record["request_id"], "key_version": VERSION,
+        "signature": base64.b64encode(own.signature).decode("ascii")})
+    _refused_retry(client, db, publisher, tenant_id, workspace_id, "root", before,
+                   "does not verify over the record")
+    with pytest.raises(entry.Unsigned):
+        _verifies(entry, kms, _record(db, tenant_id))
+
+
+def test_a_retry_of_a_signed_record_whose_principal_was_rewritten_is_not_signed(
+        client, db, kms, publisher) -> None:
+    filed = client.post(ROUTE, json={"kind": "service", "principal": REPORTS_BOT},
+                        headers=auth_header("root"))
+    workspace_id = filed.json()["workspace_id"]
+    tenant_id = ws.personal_tenant_id(REPORTS_BOT)
+    other = f"payroll-bot@{PROJECT}.iam.gserviceaccount.com"
+    before = _forged(db, tenant_id, principal=other)
+    _refused_retry(client, db, publisher, tenant_id, workspace_id, "root", before,
+                   "does not verify over the record")
+
+
+def test_a_retry_with_no_verify_keys_signs_no_group_or_service_record(
+        db, tokens, group_map, objects, publisher, kms) -> None:
+    client = _client(db, tokens, group_map, objects, publisher, kms, verify_keys=False)
+    filed = client.post(ROUTE, json={"kind": "service", "principal": REPORTS_BOT},
+                        headers=auth_header("root"))
+    tenant_id = ws.personal_tenant_id(REPORTS_BOT)
+    db.docs[f"workspaces/{tenant_id}"].update(state=ws.FAILED, failure={"code": "STEP_FAILED"})
+    before = _record(db, tenant_id)
+    _refused_retry(client, db, publisher, tenant_id, filed.json()["workspace_id"], "root", before,
+                   "a key version this platform does not trust")
+
+
+def test_an_unsigned_stop_is_cleared_by_deny_then_approve_which_verifies(
+        client, db, kms, entry) -> None:
+    filed = client.post(ROUTE, json={"kind": "group", "principal": "reports@saga.xyz"},
+                        headers=auth_header("dana"))
+    workspace_id = filed.json()["workspace_id"]
+    # What entry.py leaves on a record whose approval did not verify.
+    db.docs["workspaces/reports"].update(
+        state=ws.NEEDS_OWNER, approval=None,
+        failure={"code": "APPROVAL_UNSIGNED", "step": "approval"},
+        decision={"by": ROOT, "verdict": ws.APPROVED})
+    denied = client.post(f"{ROUTE}/{workspace_id}/deny", json={"reason": "not approved here"},
+                         headers=auth_header("dana"))
+    assert denied.status_code == 200, denied.text
+    approved = client.post(f"{ROUTE}/{workspace_id}/approve", headers=auth_header("dana"))
+    assert approved.status_code == 200, approved.text
+    record = _record(db, "reports")
+    assert record["decision"]["by"] == record["approval"]["decided_by"] == DANA
+    _verifies(entry, kms, record)

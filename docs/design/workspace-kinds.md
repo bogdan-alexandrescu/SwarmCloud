@@ -764,7 +764,15 @@ in the flow still holds. This is Q3's fallback for the front door alone.
     (`People._approve_in`, `People.retry`). A KMS failure is a 503, and the
     record is not approved.
   * **A retry.** It runs a new request id, so it is signed afresh by whoever
-    retried it.
+    retried it. But a retry of a group or service record first verifies the
+    record's stored `approval` against the platform's `SPEC_VERIFY_KEYS`
+    (`workspaces.approval_refusal`, the job's own checks). It re-signs only a
+    decision swarm-api signed before, over the record as it stands now. A
+    worker can write `decision.by` and a waiting state, so a record "approved
+    by" the owner that carries no valid signature is refused, as
+    `WORKSPACE_WRONG_STATE` with `detail.reason: approval_unverified`. A
+    retry is never how a forged decision gets signed (review of this lane,
+    2026-10-19).
 * **What the job checks.** `images/workspace-apply/entry.py` runs before step
   1, so before A1, S2 and every group or service step. It reads the record
   and rebuilds the payload from the record's own fields. It requires three
@@ -780,8 +788,11 @@ in the flow still holds. This is Q3's fallback for the front door alone.
   stops the run as `needs_owner` with `APPROVAL_UNSIGNED`. It also appends a
   `front_door_audit` entry with `admitted: false`. Both are one write,
   conditional on the record being the one read. Nothing is granted, because
-  step 1 never runs. The owner's Retry re-signs. A cloud that does not answer
-  writes nothing and runs nothing.
+  step 1 never runs. The remedy is a fresh decision, not a Retry: an admin
+  (the owner, for a service) denies the stopped record, which `deny` accepts
+  for a `needs_owner` record whose code is `APPROVAL_UNSIGNED`. They then
+  approve it as the console shows it, and that approval is signed. A cloud that
+  does not answer writes nothing and runs nothing.
 * **What closes the race.** entry.py pins what it verified (workspace id,
   tenant id, kind, principal) in `SWARM_APPROVAL_PIN`, which is in its fixed
   environment. The guard's `expect` (`scripts/lib/workspace-guard.sh`)
@@ -800,8 +811,13 @@ in the flow still holds. This is Q3's fallback for the front door alone.
   fails closed, and the lane's questions to the owner carry the Terraform.
 * **Residual, stated so it is not mistaken for zero.** The signature proves
   that swarm-api approved the record as it stood at the click. A worker that
-  rewrites a `requested` or `failed` record's principal *before* an admin
-  approves or retries it changes what gets signed. The console shows the
+  rewrites a `requested` or `denied` record's principal *before* an admin
+  approves it changes what gets signed. A retry no longer carries this risk:
+  a principal rewritten after signing no longer verifies, and the retry is
+  refused. The signature also does not cover `limits`, `directory` or
+  `service.unique_id`, which `scripts/register-tenant.sh` reads. A worker can
+  still edit those on a signed record before the job reads them. That risk
+  predates this change and is not closed here. The console shows the
   principal on the row being approved, and the guard's S1 account rules and
   the page on every IAP `SetIamPolicy` still hold. A signature also carries no
   revocation. A denial drops the record's `approval`, but a worker that read

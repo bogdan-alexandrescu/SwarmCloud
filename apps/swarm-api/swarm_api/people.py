@@ -187,6 +187,9 @@ AUDIT_SHOWN = 50
 APPROVABLE = frozenset({ws.REQUESTED, ws.DENIED})
 DENIABLE = frozenset({ws.REQUESTED, ws.FAILED})
 RETRYABLE = frozenset({ws.FAILED, ws.NEEDS_OWNER})
+#: The code entry.py stops a record with when its approval does not verify
+#: (images/workspace-apply/entry.py, lane WK-SIGNED-APPROVAL).
+APPROVAL_UNSIGNED = "APPROVAL_UNSIGNED"
 
 #: The value Terraform writes in `managed_by` on every tenant document it owns
 #: (terraform/modules/firestore/bootstrap.tf). `ensure_tenant` and the
@@ -345,6 +348,15 @@ class LoanGrantFailed(ValidationFailed):
     code = "LOAN_GRANT_FAILED"
 
 
+def _stopped_unsigned(record: Mapping[str, Any]) -> bool:
+    """A record the job stopped before any grant because its approval did not
+    verify (entry.py's APPROVAL_UNSIGNED). Deniable, so the remedy is a
+    fresh decision -- deny, then approve the record as shown -- since a retry
+    will not sign an approval swarm-api never made (`retry`, R8)."""
+    return (ws.state_of(record) == ws.NEEDS_OWNER
+            and (record.get("failure") or {}).get("code") == APPROVAL_UNSIGNED)
+
+
 def _owner_only(workspace_id: str, state: str) -> WorkspaceApprovalOwnerOnly:
     return WorkspaceApprovalOwnerOnly(
         f"workspace {workspace_id} is a service workspace: it admits a new account at the "
@@ -416,6 +428,7 @@ class People:
         groups: MembershipResolver | None = None,
         rules: ws.KindRules | None = None,
         signer: Any = None,
+        verify_settings: Any = None,
     ) -> None:
         self._db = db
         # Signs every approval and retry (`ws.sign_approval`, lane
@@ -423,6 +436,10 @@ class People:
         # `specsigning.signer_from_settings` allows it (local development and
         # tests); the job then refuses a group or service approval.
         self._signer = signer
+        # SPEC_SIGNING_KEY_VERSION and SPEC_VERIFY_KEYS, which a retry of a
+        # group or service record verifies its stored approval with before it
+        # signs anew (`ws.approval_refusal`). None: no such retry is signed.
+        self._verify_settings = verify_settings
         self._publisher = publisher
         self._now = now
         self._console_url = console_url
@@ -751,10 +768,12 @@ class People:
         def _apply(txn: Any) -> dict[str, Any]:
             ref, record = self._resolve(txn, workspace_id)
             state = ws.state_of(record)
-            if state not in DENIABLE and not ws.never_dispatched(record):
+            if (state not in DENIABLE and not ws.never_dispatched(record)
+                    and not _stopped_unsigned(record)):
                 raise WorkspaceWrongState(
                     f"workspace {workspace_id} is {state}; only a requested or failed "
-                    "workspace, or an approved one no build was ever sent for, can be denied",
+                    "workspace, an approved one no build was ever sent for, or one the job "
+                    "stopped as APPROVAL_UNSIGNED, can be denied",
                     detail={"workspace_id": workspace_id, "state": state})
             patch: dict[str, Any] = {"state": ws.DENIED, "decision": {
                 "by": by, "at": self._now(), "verdict": ws.DENIED, "reason": reason},
@@ -816,6 +835,19 @@ class People:
                 raise WorkspaceWrongState(
                     f"workspace {workspace_id} has no approval to retry",
                     detail={"workspace_id": workspace_id, "state": state})
+            if ws.kind_of(record) in (ws.GROUP, ws.SERVICE):
+                # A worker can write `decision` (R8): a group or service record
+                # "approved by" anyone, waiting for a retry. A retry signs only
+                # an approval swarm-api signed before; anything else is a fresh
+                # decision, deny and then approve, on the record as shown.
+                why = ws.approval_refusal(record, self._verify_settings)
+                if why is not None:
+                    raise WorkspaceWrongState(
+                        f"workspace {workspace_id} carries no approval swarm-api signed ({why}); "
+                        "a retry would sign a decision nobody made here. Deny it, then approve "
+                        "the record as shown",
+                        detail={"workspace_id": workspace_id, "state": state,
+                                "reason": "approval_unverified"})
             now = self._now()
             request_id = str(uuid.uuid4())
             patch = {

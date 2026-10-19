@@ -206,7 +206,8 @@ def people_service(
                   names=name_lookup(ctx),
                   groups=directory,
                   rules=ws.KindRules.from_settings(ctx.settings),
-                  signer=signer)
+                  signer=signer,
+                  verify_settings=ctx.settings)
 
 
 @router.get("/people")

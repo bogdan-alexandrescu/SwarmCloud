@@ -20,11 +20,14 @@ is not the owner, `carol` is nobody's admin.
 from __future__ import annotations
 
 import copy
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 import pytest
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec, utils
 from fastapi.testclient import TestClient
 
 from swarm_api import publish_workspace as pw
@@ -36,6 +39,7 @@ from swarm_api.deps import build_context
 from swarm_api.groups import CloudIdentityGroups, StaticGroups
 from swarm_api.main import create_app
 from swarm_api.metrics import ApiMetrics
+from swarm_api.specsigning import SpecSignature
 from swarm_api.waker import NullWaker
 
 from .conftest import (
@@ -122,10 +126,34 @@ def directory() -> RecordingDirectory:
     return RecordingDirectory()
 
 
+#: The step-spec key version every approval here is signed with, in process.
+SIGNING_VERSION = (f"projects/{PROJECT}/locations/us-central1/keyRings/swarm-dev-specs/"
+                   "cryptoKeys/step-spec/cryptoKeyVersions/1")
+
+
+class InProcessSigner:
+    """Cloud KMS's AsymmetricSign, in process: a retry of a group or service
+    record re-signs only an approval that verifies (`ws.approval_refusal`)."""
+
+    def __init__(self) -> None:
+        self.private = ec.generate_private_key(ec.SECP256R1())
+
+    def sign(self, digest: bytes) -> SpecSignature:
+        der = self.private.sign(digest, ec.ECDSA(utils.Prehashed(hashes.SHA256())))
+        return SpecSignature(signature=der, key_version=SIGNING_VERSION)
+
+    def verify_keys(self) -> str:
+        return json.dumps({SIGNING_VERSION: self.private.public_key().public_bytes(
+            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode()})
+
+
 @pytest.fixture
 def client(db, tokens, group_map, objects, publisher, directory) -> TestClient:
+    signer = InProcessSigner()
     context = build_context(
-        settings=api_settings(platform_owner=ROOT, allowed_users=(LISTED_BOT,)),
+        settings=api_settings(platform_owner=ROOT, allowed_users=(LISTED_BOT,),
+                              spec_signing_key_version=SIGNING_VERSION,
+                              spec_verify_keys=signer.verify_keys()),
         db=db,
         verifier=StaticTokenVerifier(tokens),
         groups=StaticGroups(group_map),
@@ -138,6 +166,7 @@ def client(db, tokens, group_map, objects, publisher, directory) -> TestClient:
     app = create_app(context)
     app.state.workspace_publisher = publisher
     app.state.workspace_directory = CloudIdentityGroups(PROJECT, session=directory)
+    app.state.workspace_approval_signer = signer
     return TestClient(app, raise_server_exceptions=False)
 
 
