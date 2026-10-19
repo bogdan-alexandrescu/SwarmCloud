@@ -574,9 +574,9 @@ function nowCard(markup: string): string {
  * where the line ends.
  */
 function submittedLine(markup: string): string {
-  const m = /<p class="dt-note"[^>]*>(submitted [\s\S]*?)<\/p>/.exec(markup)
-  assert.ok(m, 'the submitted line is gone')
-  return `<p class="dt-note">${m[1].replace(/<[^>]*>/g, '')}</p>`
+  const line = /<p class="dt-note"[^>]*>(submitted [\s\S]*?)<\/p>/.exec(markup)?.[1]
+  assert.ok(line !== undefined, 'the submitted line is gone')
+  return `<p class="dt-note">${line.replace(/<[^>]*>/g, '')}</p>`
 }
 
 /**
