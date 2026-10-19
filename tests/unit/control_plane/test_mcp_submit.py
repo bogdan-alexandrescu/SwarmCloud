@@ -535,14 +535,17 @@ def test_a_child_cannot_add_a_server_its_parent_did_not_name(client, db, sm):
 
 def test_a_child_whose_parent_rewrote_its_own_server_list_cannot_add_one(client, db, sm):
     """The parent's list is read from its SIGNED spec: an agent that edits its
-    own task document to name another server fails the parent's signature."""
+    own task document to name another server fails the parent's signature.
+    Since #1041 the child route refuses such a parent outright, before the
+    list is read (`child_parent_unsigned`); `_mcp_inheritance`'s own check
+    stays behind it."""
     registered(db)
     registered(db, "other", mode="none")
     parent = _running_parent(client, db, ["kb"])
     db.docs[f"tasks/{parent.tuple.task_id}"]["input"]["mcp_servers"] = ["kb", "other"]
     response = submit(client, parent, child=_child(["other"]))
-    assert response.status_code == 422, response.text
-    assert response.json()["code"] == "mcp_server_not_inherited"
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == "child_parent_unsigned"
     assert [t for t in tasks(db) if t.get("parent_task_id")] == []
 
 

@@ -29,6 +29,7 @@ from swarm_api.metrics import ApiMetrics
 from swarm_api.waker import NullWaker
 
 from .conftest import PROJECT, api_settings, auth_header, seed_task, seed_tenant
+from .spec_signer import KEY_VERSION, LocalSpecSigner
 
 KEY = "test-child-key-not-a-real-secret"
 WORKER_TOKEN = "token-worker-eng"
@@ -36,6 +37,20 @@ OTHER_WORKER_TOKEN = "token-worker-research"
 PARENT = "task_parent"
 ATTEMPT = "att_parent_1"
 LEASE = "lease_parent_1"
+
+#: The step-spec key every parent here is signed with, as submission signs it.
+#: The child route builds a child only from a parent whose signature verifies
+#: (`children.ChildParentUnsigned`, #1041), so a client that submits children
+#: trusts this key (`spec_settings`) and `seed_parent` signs with it.
+SIGNER = LocalSpecSigner()
+
+
+def spec_settings(signer: LocalSpecSigner = SIGNER) -> dict[str, Any]:
+    """The settings under which swarm-api verifies `signer`'s signatures."""
+    return {
+        "spec_signing_key_version": KEY_VERSION,
+        "spec_verify_keys": json.dumps({KEY_VERSION: signer.public_pem()}),
+    }
 
 
 def _b64url(raw: bytes) -> str:
@@ -88,8 +103,9 @@ def worker_tokens(tokens) -> dict[str, dict[str, Any]]:
 
 def _client(db, worker_tokens, group_map, objects, **settings: Any) -> TestClient:
     ctx = build_context(
-        settings=api_settings(**{"child_key": KEY, **settings}),
+        settings=api_settings(**{"child_key": KEY, **spec_settings(), **settings}),
         db=db,
+        signer=SIGNER,
         verifier=StaticTokenVerifier(worker_tokens),
         groups=StaticGroups(group_map),
         credentials=InMemoryCredentials(),
@@ -105,7 +121,11 @@ def child_client(db, worker_tokens, group_map, objects) -> TestClient:
     return _client(db, worker_tokens, group_map, objects)
 
 
-def seed_parent(db, attempt: Attempt, *, state: str = "RUNNING", **extra: Any) -> dict[str, Any]:
+def seed_parent(db, attempt: Attempt, *, state: str = "RUNNING",
+                signer: LocalSpecSigner | None = SIGNER, **extra: Any) -> dict[str, Any]:
+    """The parent as submission stored it: signed by `signer` (None: unsigned)
+    over every field set here, so a test that rewrites one afterwards is
+    rewriting a signed field."""
     t = attempt.tuple
     doc = seed_task(db, task_id=t.task_id, tenant_id=t.tenant_id, state=state)
     doc.update(
@@ -135,6 +155,8 @@ def seed_parent(db, attempt: Attempt, *, state: str = "RUNNING", **extra: Any) -
         "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
         "released_at": None,
     }
+    if signer is not None:
+        signer.sign_document(doc, t.task_id)
     return doc
 
 
@@ -384,11 +406,9 @@ def test_a_signed_request_creates_a_child_the_platform_shapes(child_client, db):
 def test_a_child_is_signed_at_format_2_over_its_parent_fields(db, worker_tokens, group_map, objects):
     """Contract request 42: the child's parent is inside its signed bytes; a
     task that names no parent stays at format 1 for workers built before it."""
-    from .spec_signer import LocalSpecSigner
-
-    signer = LocalSpecSigner()
+    signer = SIGNER
     ctx = build_context(
-        settings=api_settings(child_key=KEY), db=db,
+        settings=api_settings(child_key=KEY, **spec_settings()), db=db,
         verifier=StaticTokenVerifier(worker_tokens), groups=StaticGroups(group_map),
         credentials=InMemoryCredentials(), waker=NullWaker(), metrics=ApiMetrics(),
         objects=objects, signer=signer,
@@ -416,11 +436,9 @@ def test_a_child_inherits_its_parents_github_credential_inside_its_signature(
     never a wider one, signed at format 3 so a rewrite fails."""
     from swarm_api.gittokens import Scope, provider_suffix
 
-    from .spec_signer import LocalSpecSigner
-
-    signer = LocalSpecSigner()
+    signer = SIGNER
     ctx = build_context(
-        settings=api_settings(child_key=KEY), db=db,
+        settings=api_settings(child_key=KEY, **spec_settings()), db=db,
         verifier=StaticTokenVerifier(worker_tokens), groups=StaticGroups(group_map),
         credentials=InMemoryCredentials(), waker=NullWaker(), metrics=ApiMetrics(),
         objects=objects, signer=signer,
@@ -445,9 +463,10 @@ def test_a_created_child_is_counted_as_a_submitted_task_and_a_dedupe_is_not(
 ):
     metrics = ApiMetrics()
     ctx = build_context(
-        settings=api_settings(child_key=KEY), db=db,
+        settings=api_settings(child_key=KEY, **spec_settings()), db=db,
         verifier=StaticTokenVerifier(worker_tokens), groups=StaticGroups(group_map),
         credentials=InMemoryCredentials(), waker=NullWaker(), metrics=metrics, objects=objects,
+        signer=SIGNER,
     )
     client = TestClient(create_app(ctx), raise_server_exceptions=False)
     seed_tenant(db, "eng")

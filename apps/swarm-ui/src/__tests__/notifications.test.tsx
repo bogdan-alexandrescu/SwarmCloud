@@ -13,7 +13,10 @@
  *   * an empty feed says "Nothing needs you";
  *   * a route that answers 404 (an API without NOTIF-API) hides the bell
  *     rather than drawing an error in every page's header;
- *   * the Admin rail item carries `admin_pending` as a pill, for admins only.
+ *   * the Admin rail item carries `admin_pending` as a pill, for admins only;
+ *   * a muted item that needs you is quiet, never invisible: "1 muted item
+ *     needs you" under the list when `muted.needs_you` is 1, and nothing when
+ *     it is 0 (user-profile.md §4.6, Q3).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
@@ -209,6 +212,42 @@ describe('the drop-down', () => {
     await waitFor(() => expect(panel()).not.toBeNull(), WAIT)
     fireEvent.mouseDown(document.body)
     await waitFor(() => expect(panel()).toBeNull(), WAIT)
+  })
+})
+
+describe('the muted line (Q3)', () => {
+  const mutedLine = () => document.querySelector<HTMLElement>('.nt-panel .nt-muted')
+
+  it('says "1 muted item needs you" when muted.needs_you is 1, and leads to Settings › Profile', async () => {
+    // MUTATION: drop the line, or count muted updates in it.
+    const { go } = await mountBell(notifications(() => feed([note('d')], { muted: { needs_you: 1, updates: 4 } })))
+    const p = await openPanel()
+    const line = mutedLine()
+    expect(line, 'a muted item that needs you is invisible').not.toBeNull()
+    expect(line!.textContent).toBe('1 muted item needs you · change in Settings › Profile')
+    const link = within(p).getByRole('link', { name: 'change in Settings › Profile' })
+    expect(link.getAttribute('href')).toBe('/settings/profile')
+    fireEvent.click(link)
+    expect(go).toHaveBeenCalledWith('/settings/profile')
+  })
+
+  it('counts several in the plural, and still says it over an empty list', async () => {
+    await mountBell(notifications(() => feed([], { muted: { needs_you: 2, updates: 0 } })))
+    await openPanel()
+    expect(mutedLine()?.textContent).toContain('2 muted items need you')
+  })
+
+  it('says nothing when muted.needs_you is 0, or when the API sends no muted counts', async () => {
+    await mountBell(notifications(() => feed([note('d')], { muted: { needs_you: 0, updates: 12 } })))
+    const p = await openPanel()
+    expect(mutedLine()).toBeNull()
+    expect(p.textContent).not.toContain('muted')
+  })
+
+  it('says nothing for an API that predates muting', async () => {
+    await mountBell(notifications(() => feed([note('d')])))
+    await openPanel()
+    expect(mutedLine()).toBeNull()
   })
 })
 

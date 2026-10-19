@@ -54,6 +54,7 @@ costs nothing while it waits.
 | `builds_on` | an upstream `step_id` whose pushed branch this step's checkout starts from, instead of `repository_ref` |
 | `allow_empty_diff` | `true`: an empty diff is this step's result, not its failure; see [an empty diff can succeed](#an-empty-diff-can-succeed-allow_empty_diff) |
 | `await_input` | only on the `await-input` profile, which requires it: the step waits for a tenant member's answer; see [waiting for a person](#waiting-for-a-person-await-input) |
+| `additional_repositories` | registered repositories this step **reads** beside its own, by `owner/repo`, each pinned to a commit at submission and checked out read-only at `../repos/<name>`. Replaces the workflow's list; `[]` means none. See [reading other repositories](#reading-other-repositories-additional_repositories) |
 
 `max_workflow_steps` (default 50) bounds the whole thing.
 
@@ -308,6 +309,115 @@ its `result_summary.staged_inputs` names `notes.md` with a `uri` under A's
 holds the same run offline. accept.yml's `workflow` group runs this recipe
 against dev after every release, as `workflow: carry`
 (scripts/acceptance/groups/workflow.sh `_wf_check_carry`).
+
+## Reading other repositories: `additional_repositories`
+
+**A step may read several registered repositories at pinned commits, and it
+writes only its own.** #1434: a question like "which service owns the
+endpoint the web app calls?" needs the code of more than one repository.
+Before this, the only answer was one indexer task per repository and a step
+that read their summaries. The design and its record of what was built are
+in [multi-repository-steps.md](design/multi-repository-steps.md#8-what-was-built).
+
+```bash
+./scripts/api.sh POST /workflows '{
+  "repository_url": "https://github.com/acme/api",
+  "additional_repositories": [
+    {"repository": "acme/web", "ref": "main"},
+    {"repository": "acme/sdk", "name": "sdk"}
+  ],
+  "steps": [
+    {"step_id": "trace",  "runner_profile": "claude-code",
+     "input": {"prompt": "Which endpoints in ../repos/web does this API serve?"}},
+    {"step_id": "report", "runner_profile": "claude-code",
+     "depends_on": ["trace"], "additional_repositories": [],
+     "input": {"prompt": "Write the report from trace's notes"}}
+  ]
+}'
+```
+
+**What a caller sends.** Each entry is `repository` (`owner/repo`, never a
+URL), plus an optional `ref` (a branch, a tag or a full 40-hex sha; absent,
+the registration's default branch) and an optional `name` (the directory;
+absent, the repository part, lower-cased). Nothing else is accepted. The
+URL, the forge slot that clones it, the commit and the size are swarm-api's
+to resolve (invariant 10). The field is on a task (`POST /v1/tasks`), on a
+workflow, and on a step. A workflow's list is the default for every step
+that runs an agent. A step's own list **replaces** it, never merges with
+it, and `[]` means none. A worker action (`merge`, `post-verdict`) or an
+`await-input` step inherits nothing.
+
+**What is checked at submission**, before anything is written. Each refusal
+is a typed error in the usual envelope, and on a workflow it names the step:
+
+| code | status | when |
+|---|---|---|
+| `repository_not_registered` | 422 | the tenant has no registration for that `owner/repo` |
+| `repository_not_readable_by_tasks` | 403 | registered, but an admin has not turned on `readable_by_tasks` for it, or it is archived. **The gate is registered and readable by tasks**, the same admin-set flag `read_private` uses ([runner-git-tools.md §2.3](runner-git-tools.md#23-the-private-read-allowlist)) |
+| `REPOSITORY_NOT_GRANTED` | 403 | while repository grants are enforced, the submitting person has no grant on it; one refusal names every such entry |
+| `additional_repository_unreadable` | 422 | the slot the clone would use cannot read it at that ref, or the ref names no commit (one sentence for both). **This includes every repository that only its own `git-r-` token can read**: that slot is swarm-api's alone (#1225), the worker never reads it, so the platform refuses the repository rather than clone it with one |
+| `additional_repository_duplicate` | 422 | two entries name one repository or one `name`, or an entry names the step's own repository |
+| `too_many_additional_repositories` | 422 | more entries than the platform setting `max_additional_repositories`; the message and `detail.limit` name the current value |
+| `additional_repositories_too_large` | 422 | the forge's size estimates total more than the setting `additional_repositories_budget_gib` |
+| `additional_repositories_unsupported_profile` | 422 | the profile is not a GKE agent profile (below) |
+| `additional_repositories_disabled` | 422 | the deployment has `ADDITIONAL_REPOSITORIES_ENABLED` off, which is the default |
+
+**Pinned at submission.** swarm-api resolves each ref to a 40-hex commit
+with the same slot the worker will clone with, so a ref that resolves at
+submission can be cloned later. It stores the entry on the task and signs it
+(spec format 4). Each (repository, ref) is resolved once per submission, so
+every step of one workflow, and every retry of every step, reads the same
+commit even if the branch moves. A rewritten list fails the worker's
+signature check before the agent runs. This is stronger than the primary
+repository's pinning on purpose: an additional repository has no upstream
+step whose base the worker could pin it to (see
+[the base pin](#the-base-pin-a-downstream-step-starts-where-its-parents-started)).
+The task's read-back (`GET /v1/tasks/{id}`, and the console's task detail)
+lists each entry's `name`, `repository`, `repo_id`, `ref`, `commit`, `path`
+and `forge_credential_source`. It never shows the URL or the slot.
+
+**GKE agent profiles only, on the cache volume.** The worker clones the
+extra checkouts onto the pod's cache volume, not the workspace, and a Cloud
+Run attempt has no such volume. On 2026-10-18 that admitted `generic`,
+`claude-code`, `codex`, `browser` and `claude-code-browser`, and refused
+`mock`, `claude-code-review`, `merge`, `post-verdict`, `await-input` and
+`indexer`. The rule is read from the catalogue's backend, never from the
+caller.
+
+**The limit is a platform setting.** `max_additional_repositories` defaults
+to **5**. An admin edits it while the platform runs (`PUT
+/v1/admin/settings`, or Admin settings → Additional repositories), anywhere
+from 1 to 10. swarm-api reads it at every submission, so the change applies
+to the next submission with no deploy. A step over it gets 422
+`too_many_additional_repositories`, naming the limit. The frozen contract's
+`ADDITIONAL_REPOSITORIES_CEILING` (10) is a **guard on the stored
+document's shape**, the most a task document can hold. It is not the limit,
+and it is why the setting can rise to 10 without a contract change. The
+size budget `additional_repositories_budget_gib` (default 6, 1-20) works the
+same way, and the worker enforces it again on the measured checkouts.
+
+**What the agent sees.** Before the agent starts, the worker clones every
+entry at its signed commit, depth 1. It re-reads a person's grant first and
+fails the attempt `additional_repository_not_granted` if it was revoked. It
+links each checkout at `work/repos/<name>` (`../repos/<name>` from the
+agent's checkout), points its push URL nowhere and takes write permission
+off the tree. It lists them in `work/.swarm-context/repositories.json` and
+exports `SWARM_REPOS_DIR`. A clone that fails fails the attempt
+`clone_failed`, naming the entry's `name` and never its URL, and the agent
+never starts with a partial set. A resumed attempt clones the same commits
+again. Checkpoints leave the checkouts out.
+
+**What comes back is the primary only.** `collect`'s patch, `direct-pr`'s
+push and `integrate`'s merge all read `work/repo`, and `work/repos/` is
+not under it. A change the agent makes in an additional checkout is
+discarded with the pod. The runner git tools act on the task's own
+repository only (`other_repository`). The read-only marks are a signal to
+the agent, not the boundary; this is the boundary.
+
+**When a repository is indexed,** its code graph is delivered beside the
+step's own, under `work/.swarm-context/repos/<name>/`, from a version proven
+an ancestor of the pinned commit. A served graph's tools take a `repo`
+argument. A repository with no graph still has its checkout and `rg`.
 
 ## Artifacts pass by reference
 
@@ -586,12 +696,14 @@ design, with the owner's decisions of 2026-10-17, is
 [docs/design/human-steps.md](design/human-steps.md); this section says what
 was built from it.
 
-While the catalogue lists `await-input` as unavailable
-(`apps/common/swarm_common/profiles.py::RUNNER_PROFILES`, contract request C),
-a submission that names it is refused like any disabled profile, the expiry
-sweep reads nothing, and nothing below changes how any workflow runs. The
-owner makes it available with request D, after the acceptance lane
-(HW-ACCEPT) has run it on dev.
+The catalogue lists `await-input` as available
+(`apps/common/swarm_common/profiles.py::RUNNER_PROFILES`) since request D
+(contract request 105, HW-ENABLE), which the owner applies once the
+acceptance lane (HW-ACCEPT) has run it on dev. It shipped unavailable
+(contract request C, entry 94). While a catalogue lists it as unavailable, a
+submission that names it is refused like any disabled profile, the expiry
+sweep reads nothing, and nothing below changes how any workflow runs; setting
+`available=False` again is the way back to exactly that.
 
 ```json
 {"step_id": "review",
@@ -698,19 +810,45 @@ member is 403 `not_a_member`; a lookup failure is 503
 are answered only by its owner. There is no admin bypass. Another tenant's
 step is a 404.
 
+**One exception, for a service tenant (owner decision, 2026-10-18).** A
+service tenant is a `kind: "user"` tenant whose principal is a service
+account (`u-or-9a0792` for oracle-api, `u-sw-c90291` for swarm-verify), so
+its only member is that account. **That principal may answer the steps of
+its own tenant's workflows.** Nothing else widens: any other service
+account, the principal in any other tenant (group or service), a tenant's
+worker identity (which is what its agents run as, and is a different account
+from the principal), a listed continuation-scoped account and the
+platform's own jobs are all still 403 `person_required`. The tenant must be
+the one the frozen `tenant_id_for_user` derives from the caller's own
+address, and its document, read for the request, must name that address as
+its principal. The full rule and its threat model are
+[human-steps.md §4.2.1](design/human-steps.md#421-amendment-2026-10-18-a-service-tenants-own-principal-hw-service-answer).
+
+The principal may say whom it answers for with `on_behalf_of`, one email
+address of at most 254 printable ASCII characters. **It is a label, not a verified
+identity:** only its shape is checked, and the platform does not know that
+person asked for the answer. `answered_by` is always the principal that
+answered; `on_behalf_of` is recorded beside it, and every response that
+reads the answer back carries `on_behalf_of_verified: false`. A person
+sending `on_behalf_of` is 422 `invalid_payload` (`position:
+"on_behalf_of"`): a person answers as themselves.
+
 ```
 POST /v1/workflows/{workflow_id}/steps/{step_id}/input   the answer
 GET  /v1/workflows/{workflow_id}/steps/{step_id}/input   what a card shows
 GET  /v1/inputs?status=waiting                           the tenant's open waits
 ```
 
-The answer is `{"answer_id": "r1-owner", "payload": {...}}` as
+The answer is `{"answer_id": "r1-owner", "payload": {...}}` (and, from a
+service tenant's principal only, `"on_behalf_of": "<email>"`) as
 `application/json`, or the same object as the `answer` part of a
 `multipart/form-data` body whose `file` parts carry the files. `answer_id`
 (`[a-z0-9-]{1,64}`) is the idempotency key: a retry with the same digests gets
-the original 200 with `replayed: true`. The answer is recorded with
-`answered_by`, `answered_at` and `via` (`"console"` or `"mcp"`), on the task,
-its `succeeded` event and the response.
+the original 200 with `replayed: true`; a replay must carry the same
+`on_behalf_of`. The answer is recorded with `answered_by`, `on_behalf_of`
+(null unless a service principal sent one), `answered_at` and `via`
+(`"console"` or `"mcp"`), on the task, its `succeeded` event and the
+response, and `GET .../input` serves them back.
 
 **The first answer is final.** A second is 409 `already_answered`, naming who
 answered and when; a correction is a new round. An answer before the step has

@@ -1742,8 +1742,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secrets=(),
         timeout_seconds=300,          # unused; the wait is await_input's (at most 24 h)
         inputs={},
-        available=False,
-        disabled_reason="await-input steps are being built (docs/design/human-steps.md)",
+        available=True,
     ),
 }
 

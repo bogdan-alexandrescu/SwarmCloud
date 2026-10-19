@@ -845,6 +845,11 @@ locals {
       # platform settings in Firestore, not environment.
       ADDITIONAL_REPOSITORIES_ENABLED = var.additional_repositories_enabled ? "true" : "false"
 
+      # The forge broker's switch (child_tasks.tf `forge_broker`, #1041;
+      # swarm_api.settings `forge_broker`). Off, POST
+      # /v1/attempts/forge-credential answers 503 before reading anything.
+      FORGE_BROKER = var.forge_broker ? "true" : "false"
+
       # The live browser's search tool (swarm_api.settings
       # `search_tool_enabled`, `search_provider`; docs/search-tool.md, lane
       # SEARCH-TF, #1030). Off unless the environment's tfvars sets
@@ -855,6 +860,15 @@ locals {
       # (scripts/create-secrets.sh --search-api-key --stdin).
       SEARCH_TOOL_ENABLED = var.search_tool_enabled ? "true" : "false"
       SEARCH_PROVIDER     = var.search_provider
+
+      # Registered MCP servers (swarm_api.mcp_servers FLAG,
+      # docs/design/registered-mcp-servers.md §6, #1433). "on" is the only
+      # value mcp_servers_enabled() reads as on; anything else keeps the
+      # feature dark. Off unless the environment's tfvars sets
+      # var.mcp_servers_enabled. swarm-api alone reads it: the scheduler and
+      # the worker act only on a task whose signed input names a server, and
+      # swarm-api refuses every such submission while this is off.
+      SWARM_MCP_SERVERS = var.mcp_servers_enabled ? "on" : "off"
 
       # The personal-workspace job's trigger (docs/workspaces.md §2.1-2.2,
       # #847): approve, retry and the dispatch sweep publish a workspace id to
@@ -867,6 +881,13 @@ locals {
       # workspace-stuck alert, rather than nothing saying so (2026-10-09).
       WORKSPACE_APPLY_TOPIC   = "swarm-workspace-apply"
       WORKSPACE_APPLY_PUBLISH = var.workspace_apply_publish ? "true" : "false"
+
+      # The submission gate (swarm_api.workspaces.gate_from_env, WD8). "on" and
+      # "off" are its words; anything else stops swarm-api at start rather than
+      # being guessed at. Off unless the environment's tfvars sets
+      # var.workspace_gate (W10: dev, 2026-10-13). Before W10 it reached
+      # swarm-api only by hand, and the next apply would have put it back off.
+      WORKSPACE_GATE = var.workspace_gate ? "on" : "off"
 
       # The step-spec key version every submission is signed with (contract
       # request 34). A full version name, because an asymmetric key has no
@@ -897,7 +918,17 @@ locals {
       # This widens WHICH verified identities are admitted, never whether an
       # identity was verified: auth.py:331 consults this only after the token
       # has been checked, and the address it compares comes from that token.
-      ALLOWED_USERS = google_service_account.verify.email
+      #
+      # oracle-api, by owner decision 2026-10-18 (#1568), signed off at merge:
+      # the orchestrating client application submits workflows as its own
+      # tenant, u-or-9a0792 (dev.tfvars), and never as a member of eng. It is
+      # in no registered group, so once admitted here it resolves to that
+      # tenant alone. A literal, not derived: the account is not this root's,
+      # and the owner's decision names this exact address.
+      ALLOWED_USERS = join(",", [
+        google_service_account.verify.email,
+        "oracle-api@saga-agents-staging.iam.gserviceaccount.com",
+      ])
 
       # The same principals terraform already refuses to let own a DECLARED
       # tenant, handed to the runtime so it can refuse the ones terraform
@@ -1086,6 +1117,12 @@ locals {
       # check holds it to the deployed URL.
       SWARM_API_URL      = var.swarm_api_url
       SWARM_API_AUDIENCE = local.push_audiences["swarm-api"]
+
+      # The forge broker's switch (child_tasks.tf `forge_broker`, #1041),
+      # passed THROUGH to every worker by `scheduler.dispatch.worker_env` when
+      # on, and the reason a child on a person's slot is keyed. Off, dispatch
+      # is what it was before the broker.
+      FORGE_BROKER = var.forge_broker ? "true" : "false"
 
       # The live browser's display sidecar (scheduler.settings
       # `live_browser_sidecar`; docs/design/live-browser.md, LB-Lon). On, a

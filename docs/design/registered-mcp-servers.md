@@ -1,11 +1,14 @@
 # Registered MCP servers: a task's agent queries its caller's own MCP server
 
-**Status: PROPOSED 2026-10-17, design only (lane CALLER-MCP-DESIGN, part of
-#1433).** Nothing described here is built. The owner reads this document and
-approves or redirects it before any build lane starts. Every choice below is
-this lane's and is marked **(proposed)** where it is the owner's to change;
-the questions that are genuinely the owner's are in §7 and in the lane's
-`questions.json`.
+**Status: PROPOSED 2026-10-17 (lane CALLER-MCP-DESIGN, part of #1433);
+approved by the owner on 2026-10-17 with the answers to §7 in PR 1466's
+comments; BUILT, dark, by 2026-10-18.** §8 says what each build-plan lane
+landed and where the build differs from this text. The feature ships dark:
+every `mcp_servers` submission is refused `mcp_unavailable` until
+`SWARM_MCP_SERVERS=on` (off by default). The body below is the design as
+approved, amended in place only where the owner decided after approval
+(§1.2 and §4.8, each dated); every choice in it that was this lane's is still
+marked **(proposed)**.
 
 It builds on [workspace-secrets.md](workspace-secrets.md) (#1347): long-lived
 credentials come from that store, through its grants, and the attempt-signed,
@@ -112,10 +115,26 @@ A side note, recorded because someone will think of it: a repository's own
 `.mcp.json` might be loaded by the CLI, because the claude-code runner does
 not pass `--strict-mcp-config` (it appears nowhere in the repository). That is
 not a route for this feature: the file is in a public-or-shared checkout, so it
-can never carry a credential, and nobody has verified what the pinned CLI
-(`CLAUDE_CODE_VERSION=2.1.283`, `images/agent-runtime-base/Dockerfile`) does
-with it under `--print`. The build lane MCP-RUNNERS (§6) decides it with a
-test, because it bears on which servers an agent is actually given.
+can never carry a credential, and when this was written nobody had verified
+what the pinned CLI (`CLAUDE_CODE_VERSION=2.1.283`,
+`images/agent-runtime-base/Dockerfile`) does with it under `--print`. The
+design delegated the question to the build lane MCP-RUNNERS (§6), to be
+decided with a test, because it bears on which servers an agent is actually
+given.
+
+**Decided by MCP-RUNNERS, with a test, as the design delegated (recorded
+2026-10-18).** claude-code runs without `--strict-mcp-config`. A repository's
+own `.mcp.json` stays available to the agent, as it is to a developer who
+checks the repository out; an attached server wins a name the repository also
+declares; and the caller's credential is never within reach of a
+repository-declared server, because it is never in the CLI's config at all:
+only the relay holds it, and the relay sends it only to the registered URL
+(§4.8). Measured against the pinned 2.1.283 by
+`tests/unit/worker/test_mcp_runner_config.py::test_the_pinned_claude_code_loads_the_repositorys_mcp_json_and_ours_wins_a_name`
+(in the image, where the binary exists): a server named only in the checkout's
+`.mcp.json` reaches the model, and a checkout server under the attached
+server's name is never contacted. The runner's own account is in the
+`apps/agent-worker/agent_worker/runners/claude_code.py` module docstring.
 
 ### 1.3 What "done" lets someone do that they cannot today
 
@@ -667,7 +686,7 @@ with JSON or an SSE stream), `GET` (the server-to-client SSE stream) and
 | `Content-Length` present (no chunked request), at most `max_request_bytes` | 413 |
 | the body parses as JSON-RPC 2.0 (a single message or a batch) | 400 |
 | every `tools/call` names a tool in `allowed_tools` (when the list is set) | a JSON-RPC error `tool_not_allowed`, nothing forwarded |
-| the body contains no value registered with the logger (provider keys, released secrets, ticket values, this or another server's credential) and matches no `swarm_redaction` credential rule | a JSON-RPC error `credential_in_request`, nothing forwarded, logged with the rule name only |
+| the body contains no value registered with the logger (provider keys, released secrets, ticket values, this or another server's credential) and matches no `swarm_redaction` credential rule outside `SHAPE_EXEMPT` (amended 2026-10-18, below) | a JSON-RPC error `credential_in_request`, nothing forwarded, logged with the rule name only |
 | the per-attempt, per-server sliding-minute rate is under `calls_per_minute` | a JSON-RPC error `rate_limited` |
 
 Then it forwards:
@@ -709,6 +728,28 @@ tenant's work to it is the tenant's decision (Q4 is about narrowing it).
 What it **may not** send: a credential the platform knows (refused by value
 and by shape), a call to a tool not on the list, more than the size and rate
 caps, anything to any host but the registered one.
+
+**Amended 2026-10-18, as the owner approved.** The `credential_in_request`
+check does not apply two of the `swarm_redaction` rules: the key/value rule
+(`key_value_assignment`) and the bare `Bearer|Basic <12+ chars>` rule
+(`http_authorization`). Both fire on ordinary prose an agent legitimately
+sends a knowledge server: the first on `token: 4000` or `password: field`,
+the second on the word basic or bearer followed by any word of twelve
+letters or more, which English about authentication is full of (the relay's
+own test sends one such sentence and sees it forwarded). Masking a false
+positive in a log costs a word where refusing one costs the agent its write.
+The owner's note gave `token_budget: 4000` as its example; measured at main
+on 2026-10-18 neither rule fires on that line, but they fire on the examples
+above. What stays refused: every registered secret value, by value, whatever
+its shape; and every token-shaped string by the remaining rules, including a
+value after an `Authorization` header's scheme word
+(`http_authorization_scheme`). The exemption is the relay's alone:
+`swarm_redaction.RULES` is unchanged, so every reader that masks with it, the
+API's log routes among them
+(`apps/swarm-api/swarm_api/redaction.py::redact_lines`), still masks what the
+two rules match, where a false positive costs one masked word. The list is
+`apps/agent-worker/agent_worker/mcp_relay.py::SHAPE_EXEMPT`, and the relay's
+check is `apps/agent-worker/agent_worker/mcp_relay.py::credential_rule`.
 
 What the relay does **not** protect against, said once: a malicious or
 compromised registered server can return text that tries to steer the agent
@@ -1067,3 +1108,137 @@ instead, re-opening that reviewed route.
 `managed-by=swarm-terraform`** (recommended: costs nothing idle, reachable
 through public HTTPS as a caller's would be); (b) an external endpoint the
 owner provides; (c) no live acceptance; unit and integration tests only.
+
+---
+
+## 8. What was built
+
+Read on main at `3fbf123` on 2026-10-18, by lane MCP-DOCS. One entry per
+build-plan lane of §6, plus the follow-up lanes the build needed. Everything
+below ships dark: `apps/swarm-api/swarm_api/mcp_servers.py::FLAG` names
+`SWARM_MCP_SERVERS`, off unless it is exactly `on`, and while it is off a
+registration write, a submission naming a server or carrying a credential,
+and an attach are each refused `mcp_unavailable`. No task can name a server,
+so the scheduler, worker and runner halves below never run.
+
+**MCP-CONTRACT (part of #1433; the owner accepted it on 2026-10-17).** Contract requests 88-91 in
+[contract-change-requests.md](../contract-change-requests.md), the §5
+requests M1-M4 as written: `_MCP_SERVER_INPUTS` in
+`apps/common/swarm_common/profiles.py`, spread into `claude-code`, `codex`
+and `claude-code-browser` only; `mcp` as the fourth
+`SECRET_CONSUMER_KINDS` member with its one slot, `auth`; `MCP_SERVER_NAME`
+with `RESERVED_MCP_SERVER_NAMES` and `RESERVED_MCP_SERVER_PREFIX`; and no new
+spec format, park reason or event type. Held by
+`tests/unit/common/test_mcp_contract.py`.
+
+**MCP-IAM (part of #1433; the owner applies bootstrap).**
+`terraform/bootstrap/mcp_credentials.tf` grants swarm-api the conditioned
+read on `swarm-tenant-<t>-mcpc-` secrets and nothing to a tenant worker
+(`tests/terraform/mcp_credentials.tftest.hcl`); the 10-minute sweep job is in
+`terraform/modules/scheduler/jobs.tf`, as the rollup sweeper
+(`tests/terraform/mcp_sweep.tftest.hcl`); the NAT addresses are the
+`mcp_egress_addresses` output of `terraform/infra/outputs.tf`, rendered into
+swarm-api's `MCP_EGRESS_ADDRESSES`.
+
+**MCP-API (part of #1433), and MCP-API-B.** The registration and its
+routes (`apps/swarm-api/swarm_api/mcp_servers.py`,
+`apps/swarm-api/swarm_api/routes/mcp_servers.py`: `GET`, `POST`, `PATCH`, no
+`DELETE`), the per-run credential at rest and its sweep
+(`apps/swarm-api/swarm_api/mcp_credentials.py::McpCredentials`, behind
+`POST /v1/admin/mcp-credentials/sweep`), and the attach
+(`apps/swarm-api/swarm_api/routes/attempts_mcp.py`, purpose
+`swarm-mcp-attach/v1`), named as the second carve-out in
+`tests/unit/control_plane/test_no_route_serves_credentials.py`.
+`apps/swarm-api/swarm_api/workspace_secrets.py::attempt_consumers` still
+never derives an `mcp:` consumer, so `secrets:release` never hands one out.
+MCP-API-B added the list's `egress_addresses` and each server's
+`last_attached_at`. Where the build goes beyond §4.4: every
+`mcp_dispatch_credentials` row carries an HMAC under `swarm-child-key` with
+its own purpose (`RowKeys`), because a tenant's agent can write Firestore
+documents and a forged row could otherwise point its task at a colleague's
+per-run secret; a row that does not verify is no row, for the attach and the
+sweep alike.
+
+**MCP-SUBMIT (part of #1433).** `SubmissionService.check_mcp_servers`
+(`apps/swarm-api/swarm_api/service.py::SubmissionService.check_mcp_servers`)
+applies §4.3's table in its order, before anything is stored:
+`mcp_server_unregistered`, `mcp_server_profile_refused`,
+`mcp_credential_missing`, `mcp_credential_unexpected`,
+`mcp_credential_shape`. A deployment with no `swarm-child-key` refuses
+`mcp_unavailable`, as §4.6 says. A child may name only its parent's servers
+and uses the parent's rows (`children.py`); a schedule naming a `dispatch`
+server is refused at creation and on edit (`schedules.py`). Held by
+`tests/unit/control_plane/test_mcp_submit.py`.
+
+**MCP-SCHED (part of #1433), and MCP-FAILED-EDGE.**
+`apps/scheduler/scheduler/mcp_admission.py` answers before the lease: a
+disabled, absent or profile-refused registration parks `CREDENTIAL_MISSING`
+with `mcp_server_unavailable`, and the credential sweep promotes it when the
+registration is enabled again; `dispatch.worker_env` issues the attempt-key
+nonce to a task that names a server. §4.10's `FAILED` for an expired or
+destroyed credential needed edges the frozen state machine did not have:
+contract request 98 added `QUEUED` -> `FAILED`, and request 99 added
+`READY` -> `FAILED` and `PARKED` -> `FAILED`, the two states admission and
+the sweep actually hold a task in. Admission writes them, with no lease and
+no reservation, in
+`apps/scheduler/scheduler/loop.py::Scheduler._fail_unrunnable`. The
+`McpAnswer.terminal` docstring in `mcp_admission.py` still describes the
+park that preceded request 99; the code does not.
+
+**MCP-WORKER (part of #1433).** `apps/agent-worker/agent_worker/mcp_attach.py`
+calls the attach once per attempt, after the secrets release and before the
+runner's environment, registers every credential for redaction the moment
+the answer is parsed, validates each server again, fails the attempt before
+the agent on a withheld server (`mcp_server_withheld`, retryable only for
+`unreadable`) and stands down on a 409. The relay
+(`apps/agent-worker/agent_worker/mcp_relay.py::Relay`) applies §4.8's checks
+as amended there; the runner is handed only the path of a 0600 file under
+`private/` holding the relay's loopback URLs and the local token. The
+lifecycle's cleanup closes it (`close_mcp_relay` in
+`apps/agent-worker/agent_worker/lifecycle.py::Worker._cleanup`). Held by
+`tests/unit/worker/test_mcp_relay.py` and
+`tests/unit/worker/test_mcp_attach.py`.
+
+**MCP-RUNNERS (part of #1433).** claude-code writes each server into its one
+`--mcp-config` as an `http` entry at the relay with the local token
+(`apps/agent-worker/agent_worker/runners/claude_code.py::write_mcp_config`)
+and adds one prompt line per server
+(`apps/agent-worker/agent_worker/runners/claude_code.py::mcp_servers_note`);
+codex passes `-c mcp_servers.<name>.url` and `bearer_token_env_var`
+(`apps/agent-worker/agent_worker/runners/codex.py::relay_tools_args`). §4.7's
+"not verified" is answered: both pinned binaries list the fake server's tools
+through the relay, in the image test. The `.mcp.json` question is answered in
+§1.2. Held by `tests/unit/worker/test_mcp_runner_config.py`.
+
+**MCP-SC (part of #1433).** `swarm_dispatch` and each `swarm_workflow` step
+pass `inputs.mcp_servers` and a top-level `mcp_credentials` through; the
+read-only `swarm_mcp_servers` tool lists the workspace's registrations; no
+tool registers a server or takes a store value
+(`apps/swarm-mcp/swarm_mcp/server.py`; held by
+`tests/unit/mcp/test_mcp_servers_tool.py`).
+
+**MCP-UI (part of #1433).** Settings › MCP servers
+(`apps/swarm-ui/src/McpServers.tsx`, route `/settings/mcp-servers`): every
+member reads the list, a manager registers, edits, enables and disables, the
+NAT addresses and "last used" are shown. Submit offers the enabled
+registrations through `McpServerPicker` and a credential field per
+`dispatch` server that is cleared after submit and never rendered back.
+
+**MCP-ACCEPT (part of #1433), and MCP-ACCEPT-B.** The acceptance group
+`scripts/acceptance/groups/mcp.sh` and its judge
+`tests/acceptance/test_caller_mcp.py` run the issue's four checks against
+the dev-only echo server (`tests/acceptance/mcp_echo_server/server.py`,
+deployed by `terraform/infra/mcp_test_server.tf`, Q10). MCP-ACCEPT-B made
+nothing public: the echo server's one invoker is the acceptance identity,
+whose own Google ID token is the run's per-run credential. An operator
+registers the server once in the smoke tenant; no registration, a disabled
+one, or the switch off is a skip naming the reason, never a pass.
+
+**MCP-DOCS (2026-10-18, part of #1433).** This section; the two amendments
+the owner decided after approval, §1.2 (claude-code runs without
+`--strict-mcp-config`) and §4.8 (the relay's `credential_in_request` check
+does not apply `key_value_assignment` or `http_authorization`); and the
+threat model in [security.md](../security.md#registered-mcp-servers-the-callers-credential-is-never-in-the-agents-reach).
+`tests/unit/scripts/test_docs_describe_what_was_built.py` reads the switch,
+the exempt rules, the attach purpose, the state edges and the runner's
+answer from the code, and fails when a lane of §6 has no entry here.

@@ -767,7 +767,7 @@ def test_a_creator_removed_from_the_tenant_fails_the_run_instead_of_a_fix_round(
     writes.check(SHA_A, "unit", "failure", output={"summary": "test_a"})
     asked: list[tuple[str, str]] = []
 
-    def removed(email, tenant):
+    def removed(email, tenant, **_):
         asked.append((email, tenant.tenant_id))
         return False
 
@@ -789,7 +789,7 @@ def test_an_unresolved_membership_spends_no_round_and_the_next_read_does(
     running = _to_checking(client, db, objects, writes, clock)
     writes.check(SHA_A, "unit", "failure")
 
-    def unresolved(email, tenant):
+    def unresolved(email, tenant, **_):
         raise UpstreamUnavailable("group membership could not be resolved; retry shortly")
 
     monkeypatch.setattr(api_context.authenticator, "is_tenant_member", unresolved)

@@ -42,6 +42,7 @@ from .routes import (
     browser_slots,
     checkpoints,
     children,
+    credentials,
     codeintel,
     forgeapp,
     forgeperms,
@@ -269,6 +270,7 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # authenticate the tenant's worker service account and an attempt proof
     # rather than a person.
     app.include_router(children.router)
+    app.include_router(credentials.router)
     # The runner git tools (docs/runner-git-tools.md, lane G5): worker-only,
     # authenticated as the child routes are, plus the audit's tenant read.
     app.include_router(gittools.router)

@@ -200,8 +200,15 @@ Covered in depth in [multi-tenancy.md](multi-tenancy.md#secrets). In short:
    caller input;
 2. the secret's own IAM policy names exactly one accessor — the tenant's service
    account — so a cross-tenant read is denied by Google, not by our code;
-3. **there is no read path in the API.** No function returns payload bytes, so no
-   future route can accidentally expose one;
+3. **no route a person can call reads a payload.** Exactly two routes serve
+   credential material, both worker-only, attempt-key-signed,
+   generation-fenced and once per attempt, each by an owner's decision:
+   `POST /v1/attempts/{attempt_id}/secrets:release` (workspace secrets, Q2 of
+   #1347) and `POST /v1/attempts/{attempt_id}/mcp:attach` (a registered MCP
+   server's credential, Q9 of #1433, [below](#registered-mcp-servers-the-callers-credential-is-never-in-the-agents-reach)).
+   `tests/unit/control_plane/test_no_route_serves_credentials.py` fails on a
+   third. (Amended 2026-10-18: this line used to say there was no read path
+   at all, which stopped being true when the release shipped.)
 4. keys reach the agent through the child's environment only — never argv, never
    the workspace, never an artifact.
 
@@ -251,6 +258,66 @@ and this document used to claim it was.
 tokens by construction — it reads control-plane documents and resource listings
 only. It is the command an operator runs while sharing a screen, so its
 `--tenant` flag scopes the snapshot it collects, not merely what it prints.
+
+---
+
+## Registered MCP servers: the caller's credential is never in the agent's reach
+
+A task may name MCP servers its workspace registered, and a caller may send a
+per-run credential for one ([design](design/registered-mcp-servers.md), part
+of #1433). The whole feature is dark until `SWARM_MCP_SERVERS` is `on`: off, every
+registration write, submission naming a server and attach is refused
+`mcp_unavailable`. What holds once it is on:
+
+* **A step names a server, never addresses one** (invariant 10). The URL,
+  header, allowed tools and limits come from a registration only a workspace
+  manager writes; a registration holds no credential, and swarm-api never
+  calls a registered URL, so a tenant-typed URL is never an SSRF from a
+  platform identity.
+* **The per-run credential at rest** is one Secret Manager secret per
+  submission and server, `swarm-tenant-<tenant>-mcpc-<16 hex>`, with Secret
+  Manager's own TTL as the backstop and a 10-minute sweep that destroys it
+  once its task ends. Only swarm-api may read `-mcpc-`; the tenant's worker
+  account holds no grant on it, so an agent that mints the pod's token reads
+  nothing. The Firestore row that names the secret holds no value and is
+  HMAC-attested, so a row an agent forges points at nothing.
+* **The worker gets it once**, from
+  `POST /v1/attempts/{attempt_id}/mcp:attach`, signed with the attempt key
+  under its own purpose, `swarm-mcp-attach/v1`
+  (`apps/swarm-api/swarm_api/routes/attempts_mcp.py::ATTACH_PURPOSE`), so a
+  release, child, egress or live signature never verifies there. The agent
+  shares the worker's uid and ID token but not its non-dumpable heap, so it
+  can neither ask nor choose what is attached; a stale generation gets 409
+  and nothing.
+* **The agent talks to a loopback relay**
+  (`apps/agent-worker/agent_worker/mcp_relay.py::Relay`), never the server.
+  The CLI's config, which checkpoints carry, holds the relay's URL and a
+  per-attempt local token that nothing outside the pod can reach and nothing
+  after the attempt accepts; the credential stays in the worker's heap and
+  is added only to the request the relay sends to the registered URL. The
+  relay refuses a non-loopback peer, a wrong local token, a tool not allowed,
+  oversize and over-rate calls, a non-public or non-443 address, and a
+  redirect; it scrubs registered values from answers; and it logs the tool
+  and status, never arguments, results or headers.
+* **What the agent may not send out**: any value registered with the logger
+  (provider keys, released secrets, any server's credential), refused by
+  value; and any string that matches a `swarm_redaction` credential rule,
+  refused by shape, except `key_value_assignment` and `http_authorization`,
+  which fire on ordinary prose and are exempt from this one check by the
+  owner's decision of 2026-10-18 (`SHAPE_EXEMPT`; they still mask logs). A
+  repository's own `.mcp.json` is loaded too (claude-code runs without
+  `--strict-mcp-config`), but no server it declares can reach the credential:
+  only the relay holds it.
+* **After the attempt** the relay closes and drops every reference; a Python
+  string cannot be zeroed, so the bytes go when the worker process exits,
+  which it does at the end of every attempt.
+
+What it does **not** protect against: a malicious or compromised registered
+server can answer with text that steers the agent, which is prompt injection
+by another door (see [Prompt injection](#prompt-injection)), and anything the
+agent sends to an allowed tool is the tenant's work going to the tenant's own
+server, by its manager's choice. A private endpoint is out of reach by design:
+the relay refuses private addresses and the pod policy drops them anyway.
 
 ---
 

@@ -25,6 +25,8 @@ import {
   type WorkflowUsage,
 } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
+import { AwaitInputCard } from './AwaitInputCard'
+import { AWAIT_INPUT_PROFILE, WAITING_WORD, expiresAtOf, expiresWords, isWaitingForMember, waitingTitle } from './awaitInput'
 import {
   LIVE_CARD_H,
   autoTier,
@@ -172,6 +174,7 @@ import {
 } from './WorkflowViews'
 import { gateVerdictOf, isReviewedBy, mergeOf, skippedByVerdict, verdictFor, type MergeRead, type VerdictRead } from './wfreview'
 import { WorkflowChangesTab, changesAtOf, changesCount, withChangesAt, type ChangesAt } from './WorkflowChanges'
+import { PersonName } from './PersonName'
 import { Mark } from './primitives'
 import './styles/workflows.css'
 import './styles/names.css'
@@ -478,18 +481,30 @@ function useRecentName(id: string | null): string | null {
   return name
 }
 
-/** `4 steps · 1 → 2 → 1 · 1 of 4 done · by priya · started 8m ago`: one workflow's count note (#138). */
-function pageSummary(d: WorkflowBoard, id: string): string {
+/**
+ * `4 steps · 1 → 2 → 1 · 1 of 4 done · by Priya Rao · priya@example.com ·
+ * started 8m ago`: one workflow's count note (#138).
+ *
+ * THE OWNER IS A PERSON, SO IT PRINTS THROUGH `PersonName` (user-profile.md
+ * §4.4): their name when they set one, always beside the whole email. The
+ * list's narrow Owner column keeps the name before the @ (QA G3-14); this
+ * note is the workflow page's, where the design names the owner. It is
+ * called, not mounted, so the note's element tree carries the name and the
+ * email as text, and `CountNote`'s title (`textOf`) keeps them.
+ */
+function pageSummary(d: WorkflowBoard, id: string): ReactNode {
   const w = d.workflows.find((x) => x.workflow_id === id)
   if (w === undefined) return 'not in this read'
   const shape = shapeOf(w.steps)
   const started = workflowStartText(w, d.taskById)
-  return [
-    `${shape.steps} step${shape.steps === 1 ? '' : 's'} · ${shape.text}`,
-    rollupLine(w, d.taskById).text,
-    `by ${ownerShort(w.submitted_by)}`,
-    startedPhrase(started),
-  ].join(' · ')
+  const owner = w.submitted_by === null || w.submitted_by === '' ? ownerShort(w.submitted_by) : PersonName({ email: w.submitted_by, name: w.submitted_by_name })
+  return (
+    <>
+      {`${shape.steps} step${shape.steps === 1 ? '' : 's'} · ${shape.text} · ${rollupLine(w, d.taskById).text} · by `}
+      {owner}
+      {` · ${startedPhrase(started)}`}
+    </>
+  )
 }
 
 /**
@@ -2369,6 +2384,11 @@ function StepCardExtras({
       )}
       {mergeCard !== null && <MergeStepCard card={mergeCard} now={now} />}
       {merge !== null && <MergeCard merge={merge} />}
+      {/* AN `await-input` STEP'S CARD (human-steps.md §4.5): what it shows,
+          its form, and once it has ended who answered, when and how. */}
+      {step.runner_profile === AWAIT_INPUT_PROFILE && step.task_id && (
+        <AwaitInputCard workflowId={workflow.workflow_id} stepId={step.step_id} onAnswered={reload} />
+      )}
     </>
   )
 }
@@ -3953,7 +3973,7 @@ function stageCause(steps: readonly WorkflowStep[], notes: ReadonlyMap<string, S
  *  in the read is an absence of information, not a state nobody computed --
  *  the distinction that needs the second mark exists one level up, on the
  *  workflow header, where an API without `rollup.py` derives nothing at all. */
-function present(state: StepState): {
+function present(state: StepState, now: number = Date.now()): {
   tone: Tone | 'unknown'
   glyph: string
   word: string
@@ -3988,6 +4008,20 @@ function present(state: StepState): {
           glyph: stateGlyph(state.state),
           word: SKIPPED_WORD,
           title: `Task ${state.task.id} SUCCEEDED without running its agent: the review verdict was ${verdict ?? 'not recorded'}, which this step's gate does not run on. The step still published the reviewed work.`,
+          derived: true,
+        }
+      }
+      // A STEP WAITING FOR A PERSON (human-steps.md §4.5) reads as what it
+      // waits for, not as a bare `parked`: any member of its tenant may
+      // answer (Q2), so the word is never "you", and the tooltip names the
+      // tenant and the deadline the scheduler wrote at the park.
+      if (isWaitingForMember(state.task)) {
+        const expires = expiresWords(expiresAtOf(state.task), now)
+        return {
+          tone: stateTone(state.state),
+          glyph: stateGlyph(state.state),
+          word: WAITING_WORD,
+          title: `${waitingTitle(state.task.tenant_id)}${expires === null ? '' : ` Now: ${expires}.`}`,
           derived: true,
         }
       }
@@ -4091,7 +4125,7 @@ function StepNode({
   /** The live card's socket (`WorkflowCard`'s `openLive`); undefined is the real one. */
   openLive?: OpenLive
 }) {
-  const p = present(state)
+  const p = present(state, now)
   // THE BRAND LOOK (rebrand 2026-10-01): the node's mark and its tint, from
   // marks.tsx through `stepLook`, the one place a step's state becomes a hue.
   const look = stepLook(state)
@@ -4194,6 +4228,10 @@ function StepNode({
       <div className="node-line">
         <LookMark look={look} />
         <span className="node-state">{p.word}</span>
+        {/* A waiting-for-a-member step's deadline, on its row (§4.5). */}
+        {state.kind === 'state' && isWaitingForMember(state.task) && expiresAtOf(state.task) !== null && (
+          <span className="node-until">{expiresWords(expiresAtOf(state.task), now)}</span>
+        )}
         {showFigures && (dur.kind === 'queued' || dur.kind === 'parked' || dur.kind === 'held') && <StepTime dur={dur} />}
       </div>
       {/* WHY, ON ONE LINE, AT EVERY TIER (#105, #106). A failed node's cause
@@ -5973,13 +6011,17 @@ function WfTabs({
 /** The step the card opens on: the first failure, else the first live step, else none. */
 function firstStepToShow(workflow: Workflow, taskById: ReadonlyMap<string, Task> | null): string | null {
   let live: string | null = null
+  let waiting: string | null = null
   for (const s of workflow.steps) {
     const st = stepState(s, taskById)
     if (st.kind !== 'state') continue
     if (st.state === 'FAILED' || st.state === 'DEAD_LETTERED') return s.step_id
+    // A step waiting for a member is opened next: its card is where the
+    // answer is given, and the inbox's Answer lands on this page (§4.5).
+    if (waiting === null && isWaitingForMember(st.task)) waiting = s.step_id
     if (live === null && STATE_MARK[st.state].hue === 'live') live = s.step_id
   }
-  return live
+  return waiting ?? live
 }
 
 function WorkflowHead({

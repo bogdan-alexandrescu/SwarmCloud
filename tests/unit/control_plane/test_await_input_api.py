@@ -69,6 +69,15 @@ def await_enabled(monkeypatch):
 
 
 @pytest.fixture
+def await_dark(monkeypatch):
+    """`await-input` unavailable, as it shipped before request D (entry 105):
+    the dark path stays tested now that the catalogue makes it available."""
+    monkeypatch.setitem(RUNNER_PROFILES, PROFILE, replace(
+        RUNNER_PROFILES[PROFILE], available=False,
+        disabled_reason="await-input is switched off for this test"))
+
+
+@pytest.fixture
 def group_map(group_map):
     return {**group_map, BOT: (ENG_GROUP,)}
 
@@ -727,7 +736,7 @@ def test_the_schedule_tick_runs_the_expiry(client, db, waiting):
 
 
 def test_while_the_profile_is_dark_the_tick_reads_nothing_and_says_nothing(
-    client, db, api_context, writer
+    await_dark, client, db, api_context, writer
 ):
     assert not RUNNER_PROFILES[PROFILE].available
     assert awaitinput.expire_due(api_context, writer) is None

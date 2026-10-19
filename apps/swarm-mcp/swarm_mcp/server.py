@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from swarm_common.profiles import RESOURCE_CLASSES
+from swarm_common.profiles import MODEL_CLASSES, RESOURCE_CLASSES
 
 from . import checkout, compact, config, keys, progress
 from . import profiles as catalogue
@@ -52,6 +52,7 @@ from .client import (
     TERMINAL,
     SwarmClient,
     SwarmError,
+    check_additional_repositories,
     chosen_tenant,
     enter_hold_lane,
     outputs_of,
@@ -92,7 +93,7 @@ _DISPATCH_STRATEGIES = tuple(s for s in workflows.STRATEGIES if s != "integrate"
 #: them beside a spec is two answers to one question.
 _SPEC_EXCLUSIVE = (
     "steps", "repo", "ref", "strategy", "carrier", "on_step_failure", "priority", "label",
-    "title",
+    "title", "additional_repositories",
 )
 
 #: A runner's DECLARED inputs, for `swarm_dispatch` and a `swarm_workflow` step
@@ -168,6 +169,51 @@ _NEEDS_LOCAL_SCHEMA: dict[str, Any] = {
         "developer's own credentials), `interactive` (the developer answering as "
         "it runs). Under target `hybrid` any entry keeps the work local and "
         "nothing is sent. Under `cloud` it is not consulted, and the reply says so."
+    ),
+}
+
+#: The model class a task, a step or a run's planner runs (#1435,
+#: docs/design/model-per-step.md §4.8). A NAME from the frozen `MODEL_CLASSES`,
+#: checked against the profile by `profiles.check_model_class` before anything
+#: is sent; the platform runs the class's pinned model. Never a model ID.
+_MODEL_CLASS_SCHEMA: dict[str, Any] = {
+    "type": "string",
+    "enum": list(MODEL_CLASSES),
+    "description": (
+        "The model class to run, BY NAME; omit it for the profile's default (`opus`: "
+        "coding and implementation). `fable` for planning, `sonnet` for summarising "
+        "and reformatting, `haiku` for classifying and extracting. The platform runs "
+        "the class's pinned model (swarm_profiles lists them); a model ID is not "
+        "accepted here. Only profiles that run a Claude model take one."
+    ),
+}
+
+#: The registered repositories a task or step reads beside its own (#1434,
+#: docs/design/multi-repository-steps.md). NAMES, checked for shape by
+#: `client.check_additional_repositories` before anything is sent; swarm-api
+#: resolves each from the workspace's registration and pins its ref. `infer`
+#: never touches this list: it only ever picks the primary repository.
+_ADDITIONAL_REPOSITORIES_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "repository": {"type": "string", "description": "owner/repo, registered by your workspace. Never a URL."},
+            "ref": {"type": "string", "description": "Branch, tag or full sha; default the registration's branch."},
+            "name": {"type": "string", "description": "The directory under ../repos/; default the repo part, lower-cased."},
+        },
+        "required": ["repository"],
+        "additionalProperties": False,
+    },
+    "description": (
+        "Repositories your workspace registered that the agent READS beside its own, "
+        "each `{repository: \"owner/repo\", ref?, name?}`. "
+        "SwarmCloud pins each ref to a commit at submission and checks it out read-only "
+        "at ../repos/<name>, beside the agent's repository; a change made there is never "
+        "collected or pushed. Names only: a URL is refused before anything is sent. "
+        "SwarmCloud refuses a repository not registered or not readable by tasks, a "
+        "list over the platform's current limit, and a profile that does not take them "
+        "(GKE agent profiles do). Off until the deployment enables it."
     ),
 }
 
@@ -250,13 +296,15 @@ _BATCH_TASK_SCHEMA: dict[str, Any] = {
         "inputs": _INPUTS_SCHEMA,
         "files": _FILES_SCHEMA,
         "mcp_credentials": _MCP_CREDENTIALS_SCHEMA,
+        "additional_repositories": _ADDITIONAL_REPOSITORIES_SCHEMA,
+        "model_class": _MODEL_CLASS_SCHEMA,
     },
     "required": ["prompt"],
 }
 
 #: The `swarm_dispatch` arguments that describe ONE task, refused beside `tasks`.
 _SINGLE_TASK_ARGS = ("prompt", "profile", "repo", "ref", "infer", "strategy", "label", "inputs", "files",
-                     "mcp_credentials")
+                     "mcp_credentials", "additional_repositories", "model_class")
 
 #: `swarm_account_pause`/`resume`/`drain` share one shape.
 _ACCOUNT_STATE_SCHEMA: dict[str, Any] = {
@@ -292,7 +340,7 @@ TOOLS: list[dict[str, Any]] = [
             "\n"
             "SEVERAL INDEPENDENT TASKS ARE ONE CALL: pass `tasks` -- a list of "
             "{prompt, runner_profile, repo, ref, infer, strategy, label, inputs, files, "
-            "mcp_credentials} "
+            "mcp_credentials, additional_repositories} "
             "-- instead of `prompt` and the fields beside it. They are sent as ONE "
             "request, every task id comes back in the order given, and a list "
             "longer than the API's max_batch_size is refused before anything is "
@@ -323,7 +371,11 @@ TOOLS: list[dict[str, Any]] = [
             "for it, a credential your application minted for this run; it goes to "
             "SwarmCloud and nowhere else, and the agent never sees it. Until the "
             "deployment turns the feature on, SwarmCloud refuses any `mcp_servers` "
-            "with `mcp_unavailable`."
+            "with `mcp_unavailable`.\n"
+            "\n"
+            "MORE THAN ONE REPOSITORY: `additional_repositories` names registered "
+            "repositories the agent reads, read-only, at ../repos/<name> beside its own; "
+            "only its own repository's changes come back."
         ),
         "inputSchema": {
             "type": "object",
@@ -381,6 +433,8 @@ TOOLS: list[dict[str, Any]] = [
                 "inputs": _INPUTS_SCHEMA,
                 "files": _FILES_SCHEMA,
                 "mcp_credentials": _MCP_CREDENTIALS_SCHEMA,
+                "additional_repositories": _ADDITIONAL_REPOSITORIES_SCHEMA,
+                "model_class": _MODEL_CLASS_SCHEMA,
                 "tasks": {
                     "type": "array",
                     "minItems": 1,
@@ -408,8 +462,11 @@ TOOLS: list[dict[str, Any]] = [
             "The runner profiles this platform will accept BY NAME, with what "
             "each one is: whether it can be dispatched at all and, when it "
             "cannot, why; which backend it lands on; its cpu, memory and "
-            "workspace size; its timeout; and whether it needs a provider "
-            "credential. Read this before dispatching rather than guessing a "
+            "workspace size; its timeout; whether it needs a provider "
+            "credential; and the model classes a step on it may name "
+            "(`model_classes`, its `default_model_class`, and `models`, each "
+            "class's pinned model ID as the platform serves it). Read this "
+            "before dispatching rather than guessing a "
             "name -- a name the catalogue does not hold is refused, and a "
             "profile that is `available: false` is refused WITH a reason that "
             "names the remedy, so it is never a typo to go hunting for.\n"
@@ -433,9 +490,37 @@ TOOLS: list[dict[str, Any]] = [
             "SWARM_TENANT in the bridge's environment, read once at start, and "
             "applies to every call this session makes; there is no per-call "
             "tenant. An empty list means your tenant is personal and there is "
-            "nothing to choose. Read-only."
+            "nothing to choose. Each entry carries your `role` there "
+            "(`{name, source}`: viewer, member or admin, and whether it came from "
+            "an override, the workspace's default, your personal workspace or "
+            "being a platform admin) and `via` (`member`, `personal`, or "
+            "`platform_admin` for a group workspace you reach as a platform admin "
+            "without being in it, where every action is audited); both are null "
+            "when the API did not send them. Read-only."
         ),
         "inputSchema": {"type": "object", "properties": {}},
+    },
+    # ROLES-MCP (docs/design/workspace-roles.md §4.8, owner answer Q11): the
+    # roster is READ here and nowhere written. No tool grants or revokes a
+    # role -- an agent driving a person's own session must not be able to
+    # raise anyone -- so the schema takes nothing, and a change is the
+    # person's own, typed at their terminal (sc roles set).
+    # tests/unit/mcp/test_roles_bridge.py.
+    {
+        "name": "swarm_roles",
+        "description": (
+            "The roles of the workspace this bridge acts in (GET /v1/workspace/roles): "
+            "its default role, the people with an override and their role, your own "
+            "role with its source and `via`, what each role permits (viewer sees and "
+            "changes nothing; member submits, approves, answers and cancels; admin "
+            "also manages secrets, MCP servers, provider keys, settings and roles), "
+            "whether you may change roles here (`can_manage`), and the recent role "
+            "and platform-admin events. Read-only: no tool changes a role. A "
+            "workspace admin does that in the console (Settings > People) or in "
+            "their own terminal with the sc roles set, clear or default command, "
+            "which asks them to type the change back; never run it for them. `text` is what to show."
+        ),
+        "inputSchema": {"type": "object", "additionalProperties": False, "properties": {}},
     },
     {
         "name": "swarm_wait",
@@ -878,7 +963,8 @@ TOOLS: list[dict[str, Any]] = [
             "Pass the DAG either as `steps` with the parameters beside it, or as "
             "`spec`: a whole workflow spec object exactly as the terminal's "
             "workflow command reads it (`steps`, `strategy`, `carrier`, `repository_url`, "
-            "`repository_ref`, `on_step_failure`, `priority`, `label`), nothing "
+            "`repository_ref`, `on_step_failure`, `priority`, `label`, "
+            "`additional_repositories`), nothing "
             "else beside it but `infer` and `mcp_credentials` -- or, so no model has to retype a long "
             "spec, as `spec_path` (a JSON spec file this bridge reads itself) or "
             "`spec_ref` (the id `swarm_workflow_spec` handed back for a file it "
@@ -900,7 +986,13 @@ TOOLS: list[dict[str, Any]] = [
             "server; it is never part of a spec, because a spec is written, held and "
             "copied into a run script. So a workflow that needs a credential is "
             "submitted with this tool, `mcp_credentials` beside `steps` or the spec, "
-            "and not through /sc:swarmcloud's launch."
+            "and not through /sc:swarmcloud's launch.\n"
+            "\n"
+            "MORE THAN ONE REPOSITORY: top-level `additional_repositories` names the "
+            "registered repositories every step reads at ../repos/<name>; a step's own "
+            "`additional_repositories` REPLACES that list, and `[]` means none. Every "
+            "step of one submission reads each at the same pinned commit. `infer` never "
+            "changes them."
         ),
         "inputSchema": {
             "type": "object",
@@ -1033,6 +1125,7 @@ TOOLS: list[dict[str, Any]] = [
                                     "than the profile's own. Not a resource spec."
                                 ),
                             },
+                            "model_class": _MODEL_CLASS_SCHEMA,
                             "timeout_seconds": {"type": "integer"},
                             "when": {
                                 "type": "object",
@@ -1074,6 +1167,14 @@ TOOLS: list[dict[str, Any]] = [
                             },
                             "inputs": _INPUTS_SCHEMA,
                             "files": _FILES_SCHEMA,
+                            "additional_repositories": {
+                                **_ADDITIONAL_REPOSITORIES_SCHEMA,
+                                "description": (
+                                    "This step's own list, REPLACING the workflow's "
+                                    "`additional_repositories`; `[]` reads none. "
+                                    + _ADDITIONAL_REPOSITORIES_SCHEMA["description"]
+                                ),
+                            },
                             "stage": {
                                 "type": "string",
                                 "description": (
@@ -1136,6 +1237,13 @@ TOOLS: list[dict[str, Any]] = [
                     "description": (
                         "The workflow's short name, sent as `metadata.title`: what "
                         "Claude Code titles its /sc:swarmcloud run with."
+                    ),
+                },
+                "additional_repositories": {
+                    **_ADDITIONAL_REPOSITORIES_SCHEMA,
+                    "description": (
+                        "Every step's default list; a step's own replaces it. "
+                        + _ADDITIONAL_REPOSITORIES_SCHEMA["description"]
                     ),
                 },
                 "target": _TARGET_SCHEMA,
@@ -1519,6 +1627,13 @@ TOOLS: list[dict[str, Any]] = [
                 "plan_approval": {"type": "string", "enum": ["required", "auto"], "default": "required"},
                 "auto_merge": {"type": "boolean", "default": False},
                 "fix_rounds": {"type": "integer", "minimum": 1, "maximum": 5},
+                "model_class": {
+                    **_MODEL_CLASS_SCHEMA,
+                    "description": (
+                        "The PLANNER's model class, by name; omit it for the default. "
+                        "Each plan step's class is the planner's to write."
+                    ),
+                },
             },
             "required": ["issue"],
         },
@@ -2425,10 +2540,18 @@ def _step_servers(steps: list[dict[str, Any]]) -> set[str]:
     return named
 
 
-def _dispatch_signature(profile: str, prompt: str, strategy: str | None, repository, inputs: Any) -> tuple:
+def _dispatch_signature(profile: str, prompt: str, strategy: str | None, repository, inputs: Any,
+                        additional: list[dict[str, str]] | None = None,
+                        model_class: str | None = None) -> tuple:
+    # The repositories it reads are part of what the task IS: the same prompt
+    # over another set of repositories is a different question, not a repeat.
+    # So is the model class it runs (#1435): one prompt on `haiku` and on
+    # `opus` is a comparison, not a double dispatch.
     return (
         profile, prompt, strategy or "collect", repository.url, repository.ref,
         json.dumps(inputs or {}, sort_keys=True, default=str),
+        json.dumps(additional, sort_keys=True),
+        model_class,
     )
 
 
@@ -2688,12 +2811,19 @@ def _declared_files(value: Any, where: str) -> list[str] | None:
     return files or None
 
 
+#: Step keys `workflows.build_steps` never sees: `files` (above), read here
+#: and never sent, and `model_class` (#1435), checked and put back on the
+#: built step by `profiles.with_model_classes`.
+_STEP_KEYS_HELD_HERE = frozenset({"files", "model_class"})
+
+
 def _without_files(steps: Any) -> Any:
-    """Workflow steps with the bridge-only `files` key removed (see above)."""
+    """Workflow steps with the keys this module holds removed (see above)."""
     if not isinstance(steps, list):
         return steps
     return [
-        {k: v for k, v in step.items() if k != "files"} if isinstance(step, dict) else step
+        {k: v for k, v in step.items() if k not in _STEP_KEYS_HELD_HERE}
+        if isinstance(step, dict) else step
         for step in steps
     ]
 
@@ -3167,13 +3297,16 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
             item.get("mcp_credentials"), (inputs or {}).get("mcp_servers"), where=where
         )
         strategy = _dispatch_strategy(item.get("strategy"))
+        additional = check_additional_repositories(item.get("additional_repositories"), where=where)
+        model_class = catalogue.check_model_class(profile, item.get("model_class"), where=where)
         repository = checkout.resolve(repo=item.get("repo"), ref=item.get("ref"), infer=_flag(item, "infer"))
         if strategy == "direct-pr" and not repository.url:
             raise SwarmError(
                 f"{where}: strategy 'direct-pr' needs a repository, and this task has "
                 "none: " + "; ".join(repository.notes) + ". Nothing was sent"
             )
-        signature = _dispatch_signature(profile, prompt, strategy, repository, inputs)
+        signature = _dispatch_signature(profile, prompt, strategy, repository, inputs, additional,
+                                        model_class)
         try:
             _refuse_a_repeat_dispatch(client, signature)
         except SwarmError as exc:
@@ -3198,6 +3331,8 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
             metadata={"unit": item["label"]} if item.get("label") else None,
             inputs=inputs or None,
             strategy=strategy,
+            additional_repositories=additional,
+            model_class=model_class,
         )
         if credentials:
             payload["mcp_credentials"] = credentials
@@ -3565,7 +3700,10 @@ def _read_spec_file(path: str, *, base: Path) -> dict[str, Any]:
                 f"accepted: {sorted(workflows.SPEC_KEYS)}"
             )
     try:
-        workflows.read_spec(_spec_without_files(document), where=str(target))
+        catalogue.with_model_classes(
+            workflows.read_spec(_spec_without_files(document), where=str(target))["steps"],
+            document.get("steps") if isinstance(document, dict) else None,
+        )
     except SwarmError as exc:
         raise SwarmError(f"{target} is not a workflow spec: {exc}") from None
     except (TypeError, ValueError):
@@ -3702,11 +3840,15 @@ def _run_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
         fix_rounds = args.get("fix_rounds")
         if fix_rounds is not None and (isinstance(fix_rounds, bool) or not isinstance(fix_rounds, int)):
             raise SwarmError("fix_rounds is an integer. Nothing was sent")
+        # The planner runs `claude-code` (`issueruns.PLANNER_PROFILE`), so its
+        # class is checked against that profile before the run is created.
+        model_class = catalogue.check_model_class("claude-code", args.get("model_class"), where=name)
         run = client.create_run(
             issue=_text_arg(args, "issue", name),
             plan_approval=approval,
             auto_merge=_flag(args, "auto_merge"),
             fix_rounds=fix_rounds,
+            **({"model_class": model_class} if model_class is not None else {}),
         )
         return json.dumps(_run_summary(client, run), indent=2, default=str)
     if name == "swarm_runs":
@@ -4179,6 +4321,15 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             args.get("mcp_credentials"), (inputs or {}).get("mcp_servers"), where="swarm_dispatch"
         )
         strategy = _dispatch_strategy(args.get("strategy"))
+        # WHAT IS READ BESIDE IT: names, checked for shape and sent as given. A
+        # URL is refused here, before any request (#1434).
+        additional = check_additional_repositories(
+            args.get("additional_repositories"), where="swarm_dispatch")
+        # THE MODEL CLASS, by name, refused here when the profile cannot run
+        # it (#1435). The API stays the authority, and its 422 -- a gate not
+        # open yet, say -- comes back as it was answered.
+        model_class = catalogue.check_model_class(
+            profile, args.get("model_class"), where="swarm_dispatch")
         # WHAT IS CLONED, decided before anything travels: the caller's repo,
         # or -- only with `infer: true` -- the checkout this bridge runs in,
         # refused when its branch is not pushed, because a remote agent on an
@@ -4189,7 +4340,8 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             ref=args.get("ref"),
             infer=_flag(args, "infer"),
         )
-        signature = _dispatch_signature(profile, args["prompt"], strategy, repository, inputs)
+        signature = _dispatch_signature(profile, args["prompt"], strategy, repository, inputs, additional,
+                                        model_class)
         _refuse_a_repeat_dispatch(client, signature)
         if strategy == "direct-pr" and not repository.url:
             raise SwarmError(
@@ -4212,6 +4364,9 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             metadata={"unit": args["label"]} if args.get("label") else None,
             inputs=inputs or None,
             strategy=strategy,
+            # Only when named, so a dispatch naming none calls exactly as before.
+            **({"additional_repositories": additional} if additional is not None else {}),
+            **({"model_class": model_class} if model_class is not None else {}),
         ))
         task_id = task_id_of(task)
         if not task_id:
@@ -4428,6 +4583,15 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             keys.key_set_link(client, args.get("provider"), args.get("scope", "user")), indent=2
         )
 
+    if name == "swarm_roles":
+        # One GET. A refusal (a deployment predating roles, a 403 for a tenant
+        # the caller is not in) is the API's, through `_tool_error_text`.
+        from . import render
+        from .sc import workspace_roles, workspace_roles_lines
+
+        view = workspace_roles(client)
+        return json.dumps({**view, "text": render.join(workspace_roles_lines(view))}, indent=2)
+
     if name == "swarm_tenants":
         # Two GETs. A `tenant` setting the caller is not a member of comes back
         # as the API's 403, unchanged, through `_tool_error_text`.
@@ -4503,7 +4667,14 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             if args.get("spec_path") is not None
             else args["spec"]
         )
-        return json.dumps({**launch.for_spec(document, client), **watch.arm_fields(True)}, indent=2)
+        # The steps' model classes are checked here and the launch reads the
+        # rest (#1435): `workflows.read_spec`, which it calls, holds no
+        # `model_class` key, and the titled copy needs none.
+        catalogue.check_spec_model_classes(document)
+        return json.dumps({
+            **launch.for_spec(catalogue.spec_without_model_classes(document), client),
+            **watch.arm_fields(True),
+        }, indent=2)
 
     if name == "swarm_apply":
         repo = Path(args.get("repo") or ".").resolve()
@@ -4589,6 +4760,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
                     "submitted. Pass the spec exactly as given, character for character"
                 )
             fields = workflows.read_spec(_spec_without_files(args["spec"]), where="swarm_workflow's `spec`")
+            catalogue.with_model_classes(fields["steps"], args["spec"].get("steps"))
             repo, ref = fields["repository_url"], fields["repository_ref"]
         else:
             if expected_digest not in (None, ""):
@@ -4599,13 +4771,16 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             if args.get("steps") is None:
                 raise SwarmError("swarm_workflow needs `steps`, or a whole `spec` (inline, `spec_path` or `spec_ref`)")
             fields = {
-                "steps": workflows.build_steps(_without_files(args.get("steps"))),
+                "steps": catalogue.with_model_classes(
+                    workflows.build_steps(_without_files(args.get("steps"))), args.get("steps")),
                 "strategy": args.get("strategy"),
                 "carrier": args.get("carrier"),
                 "on_step_failure": args.get("on_step_failure"),
                 "priority": args.get("priority"),
                 "label": args.get("label"),
                 "title": workflows.check_title(args.get("title"), where="swarm_workflow"),
+                "additional_repositories": check_additional_repositories(
+                    args.get("additional_repositories"), where="swarm_workflow"),
             }
             repo, ref = args.get("repo"), args.get("ref")
         credentials = check_mcp_credentials(
@@ -4637,6 +4812,8 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             # Nor `after` (SPEED-D3).
             after=fields.get("after"),
             mcp_credentials=credentials,
+            # As named: `infer` above chose only the primary repository.
+            additional_repositories=fields["additional_repositories"],
         )
         reply = _workflow_created(without_credentials(envelope), placed=placed, repository=repository.as_dict(),
                                   digest=digest, expected_digest=expected_digest,

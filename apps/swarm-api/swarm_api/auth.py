@@ -1316,6 +1316,11 @@ def person_refusal(auth: AuthContext) -> str | None:
     jobs and listed accounts, whatever their address: the schedule tick, the
     rollup sweeper, a listed service account (contract request 30). Admin
     status is not read: it is about the caller, and confers no exemption.
+
+    The answer route makes ONE exception after this refuses, and decides it
+    itself: a service tenant's own principal answering in that tenant
+    (`awaitinput.service_principal`, owner decision 2026-10-18). This
+    function's answer is unchanged by it.
     """
     email = auth.email
     if auth.is_schedule_tick or auth.is_rollup_sweeper:

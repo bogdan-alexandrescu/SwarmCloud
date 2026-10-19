@@ -967,9 +967,10 @@ never lists it: five lanes dispatched that day ran with no row at all. So:
 
 docs/design/human-steps.md §4.2, §4.5 and §4.8. An `await-input` step parks
 `AWAITING_INPUT`, holds no lease and no capacity, and waits up to 24 hours
-for any member of its tenant to answer. Ships dark: until the owner makes the
-`await-input` profile available (contract request D), no such step can be
-submitted and these tools find nothing.
+for any member of its tenant to answer. It shipped dark; the owner made the
+`await-input` profile available with contract request D (entry 105). While a
+deployment's catalogue lists it as unavailable, no such step can be submitted
+and these tools find nothing.
 
 * **`swarm_inputs`** (`/sc inputs`) lists the tenant's waiting steps
   (`GET /v1/inputs?status=waiting`), each with the call that answers it.

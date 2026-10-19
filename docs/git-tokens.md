@@ -62,14 +62,62 @@ S2, not S1):
 Both names fall under the one prefix-conditioned grant per tenant in
 `terraform/bootstrap/forge_user_slots.tf`. A second slot per person needed no
 IAM change and no frozen-contract change: `Task.forge_credential` already
-accepts `git-u-<hex>`. Readers are as §2 says under U1 (D7): the tenant's
-worker account and swarm-api. The resolver hands a task only its submitter's
-slot.
+accepts `git-u-<hex>`.
+
+**Readers: the tenant's worker account and swarm-api, until the broker is
+on (#1041).** The owner decided on 2026-10-11 that secrets are user-scoped,
+not tenant-scoped, superseding U1 (D7). Under U1 the tenant's worker account
+reads every member's slot, so an agent in Bob's task can mint its worker's
+token and read Alice's slot by name, and only the worker's code keeps the two
+apart. **That is still how every environment runs:** the fix below is built
+behind `forge_broker` (FORGE_BROKER, `terraform/infra/child_tasks.tf`), which
+is off by default and off in dev, and the worker's binding stays until it has
+been on in dev and a live run passed
+([design/user-scoped-secrets.md](design/user-scoped-secrets.md), built,
+switched off). With the switch on:
+
+* swarm-api releases a user slot only to the current attempt of a task that
+  slot's owner submitted, through `POST /v1/attempts/forge-credential`
+  (`apps/swarm-api/swarm_api/credbroker.py::ForgeCredentialBroker.release`).
+  The attempt proves itself with the attempt key that child tasks already
+  register, the task's spec signature must verify, and the slot is
+  recomputed from the signed `submitted_by`
+  (`apps/swarm-api/swarm_api/credbroker.py::decide_slot`);
+* the scheduler issues the key's nonce to every attempt whose signed
+  `forge_credential` is a user slot, children included
+  (`apps/scheduler/scheduler/dispatch.py::worker_env`), and a child's slot is
+  its parent's only when the parent's signature verifies
+  (`apps/swarm-api/swarm_api/children.py::ChildService._read_parent`);
+* the worker reads a `git-u-` slot only through that broker
+  (`apps/agent-worker/agent_worker/forgebroker.py::ForgeBroker.fetch`, called
+  from `apps/agent-worker/agent_worker/secrets.py::resolve_git_token`), and
+  fails closed, never falling back to the tenant token;
+* then, as a later and separate owner step, the worker's own read,
+  `forge_slot_reader`, is removed from
+  `terraform/bootstrap/forge_user_slots.tf`, so swarm-api's
+  `forge_refresh_reader` is the slot's only reader and IAM, not the resolver,
+  keeps Alice's slot from Bob's attempt. Not done: it stays while the switch
+  is off.
+
+The tests that hold each of these are listed in
+[design/user-scoped-secrets.md §9](design/user-scoped-secrets.md#9-as-built-where-each-guarantee-lives);
+Bob's refusal is
+`tests/unit/control_plane/test_forge_credential_broker.py::test_bobs_attempt_is_refused_alices_slot_and_reads_no_secret`,
+and, until the removal, `tests/terraform/forge_app.tftest.hcl`, run
+`the_tenant_worker_reads_only_its_tenants_base_user_slots`, holds the
+worker's read to its tenant's base slots. The IAM removal reaches a project
+by the owner's bootstrap apply, made only once the broker has been on in
+that environment and a live run passed (`forge_broker`, which needs
+`enable_child_tasks`, after the nonce measurement
+the guarantee rests on; design §5,
+[runbooks/github-app.md](runbooks/github-app.md), step 2). Until the broker is
+on, the worker reads a person's slot with the read it still holds.
 
 **Which token a task uses, as built.** Submission resolves it
 (`apps/swarm-api/swarm_api/service.py::SubmissionService._resolve_forge`) and
-signs it into the task. The worker reads that slot at runtime and nothing
-else.
+signs it into the task. The worker obtains that slot at runtime and nothing
+else: a user slot from the broker, the tenant token or a repository token by
+its own direct read.
 
 | submitted by | grant on the repository | `REPOSITORY_GRANTS_ENFORCED` | credential |
 |---|---|---|---|
@@ -220,6 +268,17 @@ protection `-git` has, and no stronger. Three options, for the owner:
   the only accessor of `-git-u-<hex>`, used by a credential step the way
   `swarm-<tenant>-merge` (history: retired with the #295 design, docs/merge-step.md §3; the account no longer exists) is used for `-git-merge`). Strongest; one more
   identity per user and a step that runs no agent.
+
+The owner picked U1 on 2026-10-07 (D7). **On 2026-10-11 the owner superseded
+it: secrets are user-scoped (#1041).** None of U1-U3 is the answer. U1 is
+what the decision rules out. U2 fails "a task Alice submits in `eng` pushes as
+Alice". U3, and per-person worker identities generally, multiply identities
+per person per tenant and still need a per-attempt switch at dispatch. What
+was built is a fourth option, a broker in swarm-api that releases a slot only
+to its submitter's current attempt, with the worker's read removed. It is
+written, with that comparison, in
+[design/user-scoped-secrets.md](design/user-scoped-secrets.md) (built
+2026-10-11).
 
 **Creating the secret.** Today every tenant secret is declared by Terraform
 (`terraform/modules/secret_manager/`) from the tenancy module's provider list,

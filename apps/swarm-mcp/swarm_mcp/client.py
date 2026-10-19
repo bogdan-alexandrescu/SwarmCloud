@@ -621,6 +621,73 @@ def _refused_field(exc: SwarmError, field: str) -> bool:
     return exc.status == 422 and field in str(exc)
 
 
+#: The keys one `additional_repositories` entry may carry: `TaskCreate`'s
+#: `AdditionalRepositoryCreate` (docs/design/multi-repository-steps.md §4.1).
+#: Names only. A URL, a slot, a commit or a path is swarm-api's to resolve
+#: from the tenant's registration, and pins, signs and stores (invariant 10).
+ADDITIONAL_REPOSITORY_KEYS = ("repository", "ref", "name")
+
+#: `owner/repo`, as GitHub spells it. A SHAPE check, so a URL or an ssh
+#: remote is refused before anything travels; whether the tenant registered
+#: it, and whether its tasks may read it, is swarm-api's (`extrarepos`).
+_OWNER_REPO = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$")
+
+
+def check_additional_repositories(value: Any, *, where: str) -> list[dict[str, str]] | None:
+    """The repositories a task or step reads beside its own (#1434), checked
+    for shape and returned as the API's entries, or None when not given.
+
+    `[]` is returned as `[]`, never as None: on a workflow step it means
+    "none", replacing the workflow's list, which absence does not (§7 Q6).
+
+    THE COUNT IS NOT CHECKED HERE. The limit is the platform setting
+    `max_additional_repositories`, which an admin edits live and swarm-api
+    reads at each submission; a copy of today's value here would refuse
+    tomorrow's legal list. Nor are the registration, the grant, the ref or
+    the name's spelling: swarm-api refuses each with its own code.
+
+    A refused value is never repeated: a URL can carry a credential.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise SwarmError(
+            f"{where}: additional_repositories must be a list of repositories your "
+            'workspace registered, e.g. [{"repository": "acme/web", "ref": "main"}]. '
+            "Nothing was sent"
+        )
+    entries: list[dict[str, str]] = []
+    for index, entry in enumerate(value):
+        at = f"{where}: additional_repositories[{index}]"
+        if not isinstance(entry, dict):
+            raise SwarmError(
+                f'{at} is not an object; an entry is {{"repository": "owner/repo", "ref": ..., '
+                '"name": ...}. Nothing was sent'
+            )
+        unknown = sorted(str(key) for key in entry if key not in ADDITIONAL_REPOSITORY_KEYS)
+        if unknown:
+            raise SwarmError(
+                f"{at} carries {unknown}; an entry takes {list(ADDITIONAL_REPOSITORY_KEYS)}. "
+                "SwarmCloud resolves the URL, the commit and the credential from your "
+                "workspace's registration. Nothing was sent"
+            )
+        repository = entry.get("repository")
+        if not isinstance(repository, str) or not _OWNER_REPO.fullmatch(repository):
+            raise SwarmError(
+                f"{at}: repository must be owner/repo, a repository your workspace "
+                "registered, as GitHub spells it -- never a URL or a remote. Nothing was sent"
+            )
+        checked = {"repository": repository}
+        for key in ("ref", "name"):
+            if entry.get(key) is None:
+                continue
+            if not isinstance(entry[key], str) or not entry[key].strip():
+                raise SwarmError(f"{at}: {key} must be a non-empty string. Nothing was sent")
+            checked[key] = entry[key]
+        entries.append(checked)
+    return entries
+
+
 def task_payload(
     *,
     prompt: str,
@@ -632,6 +699,8 @@ def task_payload(
     model: str | None = None,
     inputs: dict[str, Any] | None = None,
     strategy: str | None = None,
+    additional_repositories: list[dict[str, str]] | None = None,
+    model_class: str | None = None,
 ) -> dict[str, Any]:
     """One task's `TaskCreate` body, for `POST /v1/tasks` and each entry of
     `POST /v1/tasks/batch` alike.
@@ -661,6 +730,14 @@ def task_payload(
         payload["model"] = model
     if strategy:
         payload["strategy"] = strategy
+    if model_class:
+        # The class BY NAME (#1435), top-level as `TaskCreate.model_class`,
+        # never in `input`. Absent when not named: the profile's default runs.
+        payload["model_class"] = model_class
+    if additional_repositories is not None:
+        # As checked by `check_additional_repositories`: names, sent as given.
+        # Absent when not given, so a task naming none sends what it always did.
+        payload["additional_repositories"] = additional_repositories
     return payload
 
 
@@ -1600,6 +1677,8 @@ class SwarmClient:
         model: str | None = None,
         inputs: dict[str, Any] | None = None,
         strategy: str | None = None,
+        additional_repositories: list[dict[str, str]] | None = None,
+        model_class: str | None = None,
     ) -> dict[str, Any]:
         """Submit one task.
 
@@ -1620,9 +1699,14 @@ class SwarmClient:
         identifiers and endpoints only, and the runner reads only the Job's own
         MODEL, set per profile in Terraform (#226), which this does not set
         either. Sending it changes what
-        the task record says and never what runs. That is deliberate rather than
-        unfinished; choosing a model per task is an execution parameter from a
-        caller, which invariant 10 forbids without a contract change.
+        the task record says and never what runs. swarm-api fills it from the
+        pin of the task's class and refuses any other value (Q4 of #1435).
+
+        `model_class` IS SELECTION, BY NAME: `opus`, `fable`, `sonnet` or
+        `haiku` (the frozen `MODEL_CLASSES`), and the platform runs that
+        class's pinned model -- the caller names a class and never a model ID,
+        so invariant 10 holds as it does for `runner_profile`. Sent only when
+        named; a task naming none runs its profile's default.
 
         `strategy` is how the work comes back -- `collect` (the API's default:
         the patch is harvested, nothing is pushed) or `direct-pr` (the agent's
@@ -1630,6 +1714,11 @@ class SwarmClient:
         not an execution parameter: it selects no image, command, resource or
         model. Sent only when given, so a caller that names none gets exactly
         the payload it got before the field existed.
+
+        `additional_repositories` are the registered repositories the task
+        reads beside its own (#1434), by NAME (`check_additional_repositories`):
+        swarm-api resolves each to its registration and pins its ref to a
+        commit. Never cloned from a URL given here, and never written back.
         """
         payload = task_payload(
             prompt=prompt,
@@ -1641,6 +1730,8 @@ class SwarmClient:
             model=model,
             inputs=inputs,
             strategy=strategy,
+            additional_repositories=additional_repositories,
+            model_class=model_class,
         )
         # UNWRAPPED HERE, not by each caller. `cmd_dispatch` printed
         # `task.get("task_id", "")` off the envelope and printed an empty line,
@@ -1901,11 +1992,17 @@ class SwarmClient:
         plan_approval: str = "required",
         auto_merge: bool = False,
         fix_rounds: int | None = None,
+        model_class: str | None = None,
     ) -> dict[str, Any]:
         """Plan `issue` (`owner/repo#N` or its URL). DATA only (invariant 10):
         no profile, image or command -- the planner and every step are the
         API's choice. `auto_merge` is sent as asked; the API refuses it until
-        #295, and that refusal is passed back in words, not swallowed."""
+        #295, and that refusal is passed back in words, not swallowed.
+
+        `model_class` is the PLANNER's class, by name (#1435); each plan step's
+        class is the planner's to write (R1). Sent only when named, and a
+        deployment that does not take it yet refuses it with a 422 that is
+        passed back as it came."""
         payload: dict[str, Any] = {
             "issue": issue,
             "plan_approval": plan_approval,
@@ -1913,6 +2010,8 @@ class SwarmClient:
         }
         if fix_rounds is not None:
             payload["fix_rounds"] = fix_rounds
+        if model_class:
+            payload["model_class"] = model_class
         # The session that asked (SC-SESSION-SCOPE). swarm-api copies it onto
         # the planner task and every workflow the run starts, CI-fix rounds
         # included, so the whole run counts as this session's own.
@@ -2102,6 +2201,12 @@ def tenant_listing(client: Any) -> dict[str, Any]:
     (docs/design/user-profile.md §4.5). An API older than that marks no
     entry; its first entry is the headerless one by the route's documented
     order, so that one is marked and `default_source` is None, not a guess.
+
+    `role` (`{name, source}`) and `via` (`member`, `personal`, or
+    `platform_admin` for a group workspace a platform admin reaches without
+    being in it) are each entry's, as the API sent them
+    (docs/design/workspace-roles.md §4.3). None from an API older than roles,
+    or when the API could not read the role: the listing never guesses one.
     """
     from .render import tenant_of
 
@@ -2124,6 +2229,8 @@ def tenant_listing(client: Any) -> dict[str, Any]:
                 "display_name": entry.get("display_name"),
                 "current": entry.get("tenant_id") == current,
                 "is_default": entry is default,
+                "role": entry.get("role") if isinstance(entry.get("role"), dict) else None,
+                "via": entry.get("via") if isinstance(entry.get("via"), str) else None,
             }
             for entry in mine
         ],

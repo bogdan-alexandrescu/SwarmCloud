@@ -52,7 +52,7 @@ from typing import Any, Callable
 
 from . import awaitinput
 from . import profiles as catalogue
-from .client import SwarmClient, SwarmError, session_tag
+from .client import SwarmClient, SwarmError, check_additional_repositories, session_tag
 from .follow import follow_command
 from .patches import masked_counts
 from .progress import questions_count
@@ -99,6 +99,9 @@ _STEP_KEYS = frozenset(
         # sent as given; swarm-api checks the block and its profile, and
         # refuses it while `await-input` is unavailable.
         "await_input",
+        # The registered repositories this step reads beside its own (#1434),
+        # by name. It REPLACES the spec's top-level list, and `[]` means none.
+        "additional_repositories",
     }
 )
 
@@ -150,6 +153,10 @@ SPEC_KEYS = frozenset(
         # Sent as the top-level `after` WorkflowCreate takes; checked for
         # shape by `check_after`, and for everything else by swarm-api.
         "after",
+        # The registered repositories every step reads beside its own (#1434),
+        # by name: sent as the top-level `additional_repositories`
+        # WorkflowCreate takes, the default a step's own list replaces.
+        "additional_repositories",
     }
 )
 
@@ -373,6 +380,11 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
                     'e.g. {"form": "verdict", "expires_after_seconds": 86400, "on_expire": "fail"}'
                 )
             step["await_input"] = dict(raw["await_input"])
+        if raw.get("additional_repositories") is not None:
+            # Sent even when `[]`: a step's empty list replaces the workflow's
+            # with none, which leaving the key out would not (§7 Q6).
+            step["additional_repositories"] = check_additional_repositories(
+                raw["additional_repositories"], where=where)
         if raw.get("stage") is not None and not isinstance(raw.get("stage"), str):
             raise SwarmError(f"{where}: stage must be a string -- a note for the spec's reader, never sent")
         steps.append(step)
@@ -452,7 +464,8 @@ def read_spec(document: Any, *, where: str = "the workflow spec") -> dict[str, A
 
     Returns `steps` built by `build_steps`, and the spec's `strategy`,
     `carrier`, `repository_url`, `repository_ref`, `on_step_failure`,
-    `priority`, `label`, `title` and `merge` as given (None when absent). The caller decides what
+    `priority`, `label`, `title` and `merge` as given, and
+    `additional_repositories` checked for shape (None when absent). The caller decides what
     overrides them -- the terminal's flags, or the repository the bridge infers
     from a checkout.
     """
@@ -491,6 +504,8 @@ def read_spec(document: Any, *, where: str = "the workflow spec") -> dict[str, A
         "title": title,
         "merge": document.get("merge"),
         "after": check_after(document.get("after"), where=where),
+        "additional_repositories": check_additional_repositories(
+            document.get("additional_repositories"), where=where),
     }
 
 
@@ -510,6 +525,7 @@ def submit(
     merge: str | None = None,
     after: list[dict[str, int]] | None = None,
     mcp_credentials: dict[str, Any] | None = None,
+    additional_repositories: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """`POST /v1/workflows`. Returns the route's envelope, not just the workflow.
 
@@ -525,6 +541,11 @@ def submit(
     were ACCEPTED -- a submission that named neither gets the defaults back --
     and names which step will open the one pull request under `integrate`.
     Dropping it would make the tool's answer smaller than the server's.
+
+    `additional_repositories` is the workflow's default list (#1434), names
+    as `check_additional_repositories` returned them; a step's own list,
+    already in `steps`, replaces it. Neither is touched by `infer`, which
+    only ever chooses the primary `repository_url`.
     """
     body: dict[str, Any] = {
         "steps": steps,
@@ -554,6 +575,8 @@ def submit(
         body["merge_pr"] = merge_pr
     if after:
         body["after"] = after
+    if additional_repositories is not None:
+        body["additional_repositories"] = additional_repositories
     if mcp_credentials:
         body[PER_RUN_FIELD] = mcp_credentials
     envelope = _envelope(client.request("POST", "/v1/workflows", payload=body), "submitting")

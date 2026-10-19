@@ -547,11 +547,18 @@ def test_await_input_section_names_the_forms_and_their_artifacts():
     assert "`apps/agent-worker/agent_worker/inputs.py::attachments_dir`" in body
 
 
-def test_await_input_section_says_the_step_ships_dark_while_unavailable():
+def test_await_input_section_says_whether_the_catalogue_offers_the_step():
+    """The section states the catalogue's answer, read from the catalogue: before
+    request D it said the step ships dark; since request D (entry 105) it says
+    the step is available, and still what unavailable means."""
     body = _await_section()
     assert "request D" in body
     assert "`apps/common/swarm_common/profiles.py::RUNNER_PROFILES`" in body
-    assert "While the catalogue lists `await-input` as unavailable" in body
+    assert "lists it as unavailable, a submission that names it is refused" in body
+    if RUNNER_PROFILES["await-input"].available:
+        assert "The catalogue lists `await-input` as available" in body
+    else:
+        assert "The catalogue lists `await-input` as available" not in body
 
 
 def test_step_fields_table_names_await_input():
@@ -593,4 +600,151 @@ def test_human_steps_design_records_what_hw_docs_built():
 
 @pytest.mark.parametrize("doc", (WORKFLOWS, NOTIFICATIONS), ids=lambda p: p.name)
 def test_await_input_docs_cite_only_what_resolves(doc: Path):
+    _assert_cites_resolve(doc)
+
+
+# --------------------------------------------------------------------------
+# MCP-DOCS (part of #1433): a task's agent queries its caller's MCP server
+# --------------------------------------------------------------------------
+#
+# docs/design/registered-mcp-servers.md was written before any lane built it.
+# Its §8 records what each build-plan lane landed, §4.8 the owner's amendment
+# of 2026-10-18 to the relay's `credential_in_request` check, and §1.2 the
+# `.mcp.json` question MCP-RUNNERS answered with a test. docs/security.md
+# carries the threat model. Every rule name, route, purpose and flag they
+# state is read from the code here.
+
+MCP_DESIGN = DOCS / "design" / "registered-mcp-servers.md"
+SECURITY = DOCS / "security.md"
+MCP_RELAY_PY = "apps/agent-worker/agent_worker/mcp_relay.py"
+MCP_RUNNER_TEST = "tests/unit/worker/test_mcp_runner_config.py"
+MCP_RUNNER_CASE = "test_the_pinned_claude_code_loads_the_repositorys_mcp_json_and_ours_wins_a_name"
+MCP_BUILT = "## 8. What was built"
+MCP_SECURITY = "## Registered MCP servers: the caller's credential is never in the agent's reach"
+MCP_STAMP = "2026-10-18"
+
+
+def _rule_fires(rule, text: str) -> bool:
+    if rule.apply is not None:
+        return bool(rule.apply(text, True, False)[1])
+    return bool(rule.pattern.search(text))
+
+
+def _mcp_lanes() -> list[str]:
+    plan = _section(_text(MCP_DESIGN), "## 6. Build plan")
+    lanes = re.findall(r"^\|[^|\n]*\| \*\*(MCP-[A-Z-]+)\*\*", plan, flags=re.M)
+    assert len(lanes) >= 10 and "MCP-DOCS" in lanes, lanes
+    return lanes
+
+
+def test_mcp_design_no_longer_says_nothing_is_built():
+    head = _flat(_text(MCP_DESIGN).split("\n---\n", 1)[0])
+    assert "Nothing described here is built" not in head
+    assert "§8" in head and "SWARM_MCP_SERVERS" in head
+
+
+def test_mcp_design_records_what_every_lane_built():
+    raw = _section(_text(MCP_DESIGN), MCP_BUILT)
+    body = _flat(raw)
+    for lane in _mcp_lanes():
+        assert f"**{lane} (" in raw, f"§8 has no entry for {lane}"
+    # Dark until the switch, read from the code that reads it.
+    assert '"SWARM_MCP_SERVERS"' in _cited_symbol("apps/swarm-api/swarm_api/mcp_servers.py", "FLAG")
+    assert "`apps/swarm-api/swarm_api/mcp_servers.py::FLAG`" in raw
+    assert "`mcp_unavailable`" in body
+    # §4.10's FAILED needed edges the frozen state machine lacked: contract
+    # request 99 added READY -> FAILED and PARKED -> FAILED, and admission
+    # writes them with no lease.
+    from swarm_common.states import TaskState, can_transition
+
+    fail = "apps/scheduler/scheduler/loop.py::Scheduler._fail_unrunnable"
+    assert f"`{fail}`" in raw
+    assert "self._store.fail_before_lease(" in _cited_symbol(*fail.split("::"))
+    assert can_transition(TaskState.READY, TaskState.FAILED)
+    assert can_transition(TaskState.PARKED, TaskState.FAILED)
+    assert "`READY` -> `FAILED`" in body and "`PARKED` -> `FAILED`" in body and "request 99" in body
+
+
+def test_mcp_design_4_8_records_the_owners_shape_exemption():
+    from agent_worker import mcp_relay
+    from swarm_redaction import RULES
+
+    raw = _section(_text(MCP_DESIGN), "### 4.8 The relay: what the agent may and may not send")
+    body = _flat(raw)
+    assert f"Amended {MCP_STAMP}" in body and "the owner approved" in body
+    assert f"`{MCP_RELAY_PY}::SHAPE_EXEMPT`" in raw
+    by_name = {rule.name: rule for rule in RULES}
+    assert len(mcp_relay.SHAPE_EXEMPT) == 2 and "two of" in body
+    for name in mcp_relay.SHAPE_EXEMPT:
+        assert name in by_name, f"{name} is not a swarm_redaction rule"
+        assert f"`{name}`" in body, name
+    # The examples the amendment gives fire an exempt rule in a log's
+    # redaction and pass the relay's check; `token_budget: 4000` fires neither.
+    # The `http_authorization` example is described, not quoted: a literal
+    # one is a line the publish scan refuses (scripts/publish-scan.sh).
+    prose = " ".join(("a", "basic", "configuration", "with", "a", "bearer", "authentication", "step"))
+    for example, rule, quoted in (("token: 4000", "key_value_assignment", True),
+                                  ("password: field", "key_value_assignment", True),
+                                  (prose, "http_authorization", False)):
+        if quoted:
+            assert f"`{example}`" in body, example
+        assert _rule_fires(by_name[rule], example), (example, rule)
+        assert mcp_relay.credential_rule(example) is None, example
+    assert "basic or bearer followed by any word of twelve letters or more" in body
+    assert "`token_budget: 4000`" in body
+    assert not any(_rule_fires(rule, "token_budget: 4000") for rule in RULES)
+    # What stays refused: a registered value by value, a token by its shape,
+    # a value after an `Authorization` header's scheme.
+    assert mcp_relay.credential_rule("ghp_" + "a" * 36) == "github_token"
+    assert "`http_authorization_scheme`" in body
+    assert mcp_relay.credential_rule("Authorization: token " + "b" * 8) == "http_authorization_scheme"
+    row = next(ln for ln in raw.splitlines() if "`credential_in_request`" in ln and ln.startswith("|"))
+    assert "`SHAPE_EXEMPT`" in row
+
+
+def test_mcp_design_1_2_records_that_claude_code_runs_without_strict_mcp_config():
+    raw = _section(_text(MCP_DESIGN), "### 1.2 What the code allows today (read 2026-10-17 at `35f2a61`)")
+    body = _flat(raw)
+    assert "Decided by MCP-RUNNERS" in body
+    assert "without `--strict-mcp-config`" in body
+    assert "nobody has verified" not in body
+    assert "an attached server wins a name the repository also declares" in body
+    assert "never within reach of a repository-declared server" in body
+    assert f"`{MCP_RUNNER_TEST}::{MCP_RUNNER_CASE}`" in raw
+    assert "--strict-mcp-config" in _cited_symbol(MCP_RUNNER_TEST, MCP_RUNNER_CASE)
+    runner = _text(REPO / "apps" / "agent-worker" / "agent_worker" / "runners" / "claude_code.py")
+    assert '"--strict-mcp-config"' not in runner
+
+
+def test_security_doc_describes_the_mcp_relay_from_the_code():
+    from agent_worker import mcp_relay
+
+    raw = _section(_text(SECURITY), MCP_SECURITY)
+    body = _flat(raw)
+    attach = "apps/swarm-api/swarm_api/routes/attempts_mcp.py::ATTACH_PURPOSE"
+    assert '"swarm-mcp-attach/v1"' in _cited_symbol(*attach.split("::"))
+    assert "`swarm-mcp-attach/v1`" in body and f"`{attach}`" in raw
+    assert "`POST /v1/attempts/{attempt_id}/mcp:attach`" in body
+    assert "`swarm-tenant-<tenant>-mcpc-<16 hex>`" in body
+    assert "`SWARM_MCP_SERVERS`" in body
+    for name in mcp_relay.SHAPE_EXEMPT:
+        assert f"`{name}`" in body, name
+    assert f"`{MCP_RELAY_PY}::Relay`" in raw
+    assert "prompt injection" in body
+    assert "registered-mcp-servers.md" in body
+
+
+def test_security_doc_credential_theft_names_every_route_that_serves_one():
+    routes = _cited_symbol("tests/unit/control_plane/test_no_route_serves_credentials.py",
+                           "CREDENTIAL_SERVING_ROUTES")
+    paths = re.findall(r'\("POST", "([^"]+)"\)', routes)
+    assert len(paths) == 2, paths
+    theft = _flat(_section(_text(SECURITY), "## Credential theft"))
+    for path in paths:
+        assert f"`POST {path}`" in theft, path
+    assert "there is no read path in the API" not in theft
+
+
+@pytest.mark.parametrize("doc", (MCP_DESIGN, SECURITY), ids=lambda p: p.name)
+def test_mcp_docs_cite_only_what_resolves(doc: Path):
     _assert_cites_resolve(doc)

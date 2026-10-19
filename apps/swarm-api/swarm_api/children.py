@@ -105,6 +105,11 @@ AWAIT_EXPIRED = "await_expired"
 #: `parent_task_id` a tenant rewrote to point here (§5 F11).
 _LIST_CAP = 200
 
+#: The lowest spec format whose signature covers `forge_credential` and
+#: `forge_access` (`swarm_common.specsign._FORMAT_3_FIELDS`; the broker's
+#: `credbroker.MIN_SPEC_FORMAT`, which imports this module).
+_FORGE_SPEC_FORMAT = 3
+
 
 # --------------------------------------------------------------------------
 # Refusals: a stable code for each answer in §6.1 and §6.1a
@@ -139,6 +144,18 @@ class ChildDepthExceeded(ApiError):
 class ChildFanOutExceeded(ApiError):
     status_code = 409
     code = "child_fan_out_exceeded"
+
+
+class ChildParentUnsigned(ApiError):
+    """The stored parent's spec signature does not verify (#1041).
+
+    Not a switch (tests/unit/control_plane/test_new_refusals_ship_off.py):
+    continuing past it is the breach -- a child signed by swarm-api over a
+    submitter and forge slot the agent wrote into its own task.
+    """
+
+    status_code = 403
+    code = "child_parent_unsigned"
 
 
 class ChildKeyUnproven(ApiError):
@@ -679,8 +696,29 @@ class ChildService:
         return answer
 
     def _read_parent(self, attempt: AttemptTuple) -> Task:
-        """The parent as stored, for building the child. The fence is checked
-        again inside the creating transaction; this read only shapes the child."""
+        """The parent as stored AND AS SIGNED, for building the child. The fence
+        is checked again inside the creating transaction; this read only shapes
+        the child.
+
+        `_build_child` copies the parent's `submitted_by`, `repository_url`,
+        `forge_credential` and `forge_access` into a child that swarm-api then
+        signs with its own key. A worker may update any task document
+        (terraform/bootstrap/platform_roles.tf, datastore.entities.update), so
+        an agent can rewrite its own task as another member's; read unchecked,
+        its child would carry a fresh signature over that member's `git-u-`
+        slot, and the forge broker (`credbroker`) would release that member's
+        token to it (#1041, security review of PR 1070). So the signature is
+        verified here, on the exact dict the child is built from, and anything
+        else is `ChildParentUnsigned` -- never a switch, and nothing created.
+
+        Any signed format is enough, not only 3 and up: below format 3 the
+        canonical form refuses a document that sets `forge_credential` or
+        `forge_access` (`swarm_common.specsign`), so a verified format-1 or 2
+        parent carries neither and its child runs on the tenant token, as
+        today. The explicit check below says so rather than leaning on that.
+        """
+        from .verdictpublish import spec_refusal
+
         snap = self._db.collection(TASKS).document(attempt.task_id).get()
         data = snap.to_dict() if snap.exists else None
         if data is None or data.get("tenant_id") != attempt.tenant_id:
@@ -688,6 +726,20 @@ class ChildService:
         if data.get("parent_task_id"):
             raise ChildDepthExceeded(
                 f"a child may not submit children: the depth limit is {MAX_CHILD_DEPTH}"
+            )
+        refusal = spec_refusal(self._settings, data, attempt.task_id)
+        spec_format = data.get("spec_format")
+        if refusal is None and (data.get("forge_credential") is not None
+                                or data.get("forge_access") is not None) and (
+                isinstance(spec_format, bool) or not isinstance(spec_format, int)
+                or spec_format < _FORGE_SPEC_FORMAT):
+            refusal = "the step's spec is signed at a format that does not cover its forge fields"
+        if refusal is not None:
+            log.warning("child refused: the parent's spec does not verify tenant=%s task=%s "
+                        "reason=%s", attempt.tenant_id, attempt.task_id, refusal)
+            raise ChildParentUnsigned(
+                f"{refusal}; a child is built only from a parent whose signature verifies, "
+                "so nothing was created"
             )
         return task_from_dict(data)
 

@@ -82,7 +82,7 @@ beforeEach(() => {
 
 afterEach(() => {
   try {
-    localStorage.removeItem(TENANT_PREF)
+    sessionStorage.removeItem(TENANT_PREF)
   } catch {
     /* storage refused */
   }
@@ -381,7 +381,8 @@ describe('replay', () => {
   })
 
   it('reads the listing through the tenant-scoped task route and plays only the tenant segments', async () => {
-    localStorage.setItem(TENANT_PREF, TENANT)
+    // The switch lives in sessionStorage (Q2); a localStorage choice is cleared, not honoured.
+    sessionStorage.setItem(TENANT_PREF, TENANT)
     const calls = stubFetch((url) => {
       if (url.includes('/live/actions')) return json({ attempt_id: ATTEMPT, actions: [] })
       if (url.startsWith(`/v1/tasks/${TASK}/live/recordings`))

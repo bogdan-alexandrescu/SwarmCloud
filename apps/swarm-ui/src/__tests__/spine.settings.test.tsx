@@ -4,7 +4,8 @@
  * MCP-UI routed `/settings/mcp-servers`, and the only way in was the Submit
  * picker's link. The design files it under Settings beside Workspace
  * (docs/design/registered-mcp-servers.md §4.11), so the panel's foot carries
- * it with API keys and Workspace, in the same style.
+ * it with API keys and Workspace, in the same style. Settings › Profile
+ * (#1505, user-profile.md) follows it as the foot's fourth link.
  *
  * MUTATION: drop the MCP servers anchor from Spine.tsx and the first two
  * cases go red; light it on any other place and the third does.
@@ -29,12 +30,13 @@ function shell(place: string, go = vi.fn()) {
 }
 
 describe('the Settings links (MCP-UI-NAV)', () => {
-  it('lists API keys, Workspace and MCP servers, in that order, each at its own path', () => {
+  it('lists API keys, Workspace, MCP servers and Profile, in that order, each at its own path', () => {
     const links = shell('/overview')
     expect(links.map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
       ['Settings › API keys', '/settings/keys'],
       ['Settings › Workspace', '/settings/workspace'],
       ['Settings › MCP servers', '/settings/mcp-servers'],
+      ['Settings › Profile', '/settings/profile'],
     ])
   })
 
