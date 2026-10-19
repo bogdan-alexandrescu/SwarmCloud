@@ -182,6 +182,13 @@ def put_platform_settings(
     change refuses or admits the next one with no deploy; the worker reads
     the budget at every clone. A task already submitted keeps what it was
     pinned with. Ranges: `store.PLATFORM_SETTINGS_RANGES`.
+
+    `model_prices` (#1481): list prices by model, each named entry replacing
+    that model's; every other model keeps its figure. Each figure is a
+    non-negative number (a string, a bool or a null is refused, never
+    coerced), and each changed entry is stamped with the admin who made it.
+    Read at every stopped-attempt estimate (`spendestimate`), so a change
+    prices the next one with no deploy.
     """
     changes = body.model_dump(exclude_none=True)
     if not changes:

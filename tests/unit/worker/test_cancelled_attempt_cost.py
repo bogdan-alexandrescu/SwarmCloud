@@ -252,3 +252,74 @@ def test_a_sigterm_on_a_cancelled_task_ends_it_cancelled_with_its_spend(db, work
     assert attempt.get("cost_usd") == pytest.approx(COST)
     assert attempt.get("completed_at") is not None
     assert db.doc("leases/lease_1")["released_at"] is not None
+
+
+class _Children:
+    """`ChildPath` as `SpendPricer` reads it: an API client and an attempt key."""
+
+    def __init__(self, answer: Any, *, can_sign: bool = True, api: bool = True) -> None:
+        self.answer = answer
+        self.can_sign = can_sign
+        self.api = self if api else None
+        self.calls: list[tuple[str, str, dict[str, Any], dict[str, str]]] = []
+
+    def sign_request(self, method: str, path: str, body: bytes) -> dict[str, str]:
+        return {"X-Swarm-Attempt-Proof": "signed:" + str(len(body))}
+
+    def retrying(self, fn):
+        return fn()
+
+    def call(self, method, path, *, body=None, headers=None):
+        self.calls.append((method, path, json.loads(body), dict(headers or {})))
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        return 200, self.answer
+
+
+class _Log:
+    def warning(self, *_a, **_k) -> None:
+        pass
+
+    info = warning
+
+
+class _Cfg:
+    tenant_id, task_id, attempt_id, lease_id, generation = "eng", "task_1", "att_1", "lease_1", 3
+
+
+def test_the_pricer_sends_usage_per_model_and_records_swarm_apis_figure():
+    from agent_worker.spendprice import SpendPricer
+
+    children = _Children({"cost_usd": 0.5, "currency": "USD", "unpriced_models": []})
+    pricer = SpendPricer(_Cfg(), children=children, logger=_Log())
+
+    assert pricer.price({"claude-opus-5-5": USAGE}) == 0.5
+    (method, path, body, headers), = children.calls
+    assert (method, path) == ("POST", "/v1/attempts/att_1/spend-estimate")
+    assert body == {"tenant_id": "eng", "task_id": "task_1", "attempt_id": "att_1",
+                    "lease_id": "lease_1", "generation": 3,
+                    "usage_by_model": {"claude-opus-5-5": USAGE}}
+    assert "X-Swarm-Attempt-Proof" in headers
+
+
+@pytest.mark.parametrize("children", [
+    _Children({"cost_usd": None, "unpriced_models": ["x"]}),
+    _Children({"cost_usd": "0.5"}),
+    _Children({"cost_usd": 0.5}, can_sign=False),
+    _Children({"cost_usd": 0.5}, api=False),
+], ids=["unpriced", "not-a-number", "no-key", "no-api"])
+def test_the_pricer_reports_nothing_when_swarm_api_gave_no_figure(children):
+    from agent_worker.spendprice import SpendPricer
+
+    assert SpendPricer(_Cfg(), children=children, logger=_Log()).price(
+        {"claude-opus-5-5": USAGE}) is None
+
+
+def test_a_refusal_prices_nothing():
+    from agent_worker.children import ChildApiError
+    from agent_worker.spendprice import SpendPricer
+
+    children = _Children(ChildApiError(403, "child_submit_unproven", "", retryable=False))
+
+    assert SpendPricer(_Cfg(), children=children, logger=_Log()).price(
+        {"claude-opus-5-5": USAGE}) is None

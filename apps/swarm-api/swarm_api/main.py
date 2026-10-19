@@ -68,6 +68,7 @@ from .routes import (
     runs,
     schedule_tick,
     search,
+    spendestimate,
     strandedprs,
     schedules,
     tasks,
@@ -280,6 +281,10 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # Layer I, in-flight work (docs/design/context-quality.md §4.2, lane CTXQ-I):
     # worker-only, authenticated and fenced as the git tools are.
     app.include_router(attemptcontext.router)
+    # The stopped-run estimate (#1481): worker-only, proven as the in-flight
+    # route is, NOT fenced -- it is asked as an attempt stops, and it reads
+    # only the platform's price table and writes nothing.
+    app.include_router(spendestimate.router)
     # The worker's state (docs/design/tenant-settings-integrity.md §4, lane
     # ISO-STATE-API, part of #1457): worker-only, token for the tenant, attempt
     # key for the worker, fenced in one transaction. Mounted and unused until a

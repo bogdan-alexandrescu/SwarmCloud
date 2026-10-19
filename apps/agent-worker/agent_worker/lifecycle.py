@@ -150,6 +150,7 @@ from . import egress as egress_mod
 from . import expected_outputs as expected_mod
 from . import gitops as gitops_mod
 from . import forgebroker as forgebroker_mod
+from . import spendprice as spendprice_mod
 from . import graph_ticket as graph_ticket_mod
 from . import graphstage as graphstage_mod
 from . import handoff as handoff_mod
@@ -1056,6 +1057,13 @@ class Worker:
         # with the attempt key `children` registered (#1041,
         # docs/design/user-scoped-secrets.md §3.2). Inert for a team token.
         self.forge_broker = forgebroker_mod.ForgeBroker(
+            config, children=self.children, logger=deps.logger
+        )
+        # A stopped run's cost is priced by swarm-api from the platform's
+        # `model_prices` setting (#1481), proven with the same attempt key.
+        # The worker holds no price table. Without an API or a key, the cost
+        # is not reported.
+        self.spend_pricer = spendprice_mod.SpendPricer(
             config, children=self.children, logger=deps.logger
         )
         # The shared graph service's attempt ticket (docs/design/graph-service.md
@@ -12816,10 +12824,18 @@ class Worker:
         if "total_cost_usd" not in usage:
             # A RUN STOPPED BEFORE IT COULD SAY (#627): a CLI killed on a
             # cancel, a SIGTERM, a fence or a timeout prints no result event.
-            # What its stream showed is estimated, and only the keys the run
-            # did not report itself are taken, so nothing is counted twice.
-            estimate = self._stopped_run_estimate()
+            # What its stream showed is summed per model, and only the keys
+            # the run did not report itself are taken, so nothing is counted
+            # twice. SWARM-API PRICES IT (#1481): the worker sends the usage
+            # per model and takes back a figure or None -- "cost not
+            # reported" -- never one of its own.
+            estimate = self._stopped_run_usage()
+            by_model = estimate.pop("usage_by_model", None) or {}
             more = {k: v for k, v in estimate.items() if k not in usage}
+            if by_model:
+                cost = self.spend_pricer.price(by_model)
+                if cost is not None:
+                    more["total_cost_usd"] = cost
             if more:
                 usage = {**usage, **more}
                 if "total_cost_usd" in more:
@@ -12870,13 +12886,13 @@ class Worker:
         if not resumed or self._session_spend_base is None:
             self._session_spend_base = dict(self._spend)
 
-    def _stopped_run_estimate(self) -> dict[str, Any]:
-        """`_stream_spend_estimate` over this profile's agent capture, or {}."""
+    def _stopped_run_usage(self) -> dict[str, Any]:
+        """`_stream_usage` over this profile's agent capture, or {}."""
         files = agent_stream_files(self.cfg.runner_profile)
         if files is None or self.ws is None:
             return {}
         try:
-            return _stream_spend_estimate(self.ws.artifacts / files.stdout)
+            return _stream_usage(self.ws.artifacts / files.stdout)
         except Exception as exc:  # pragma: no cover - defensive; teardown path
             self.log.warning("could not estimate the stopped run's spend", error=str(exc))
             return {}
@@ -15749,53 +15765,18 @@ def _add_spend(
     return out
 
 
-#: LIST PRICES, USD per million tokens: (input, output, cache read), for the
-#: one use below -- estimating what a CLI run cost when it was stopped before
-#: it could say (#627). A cache WRITE is priced at 1.25x input, the five-minute
-#: write rate. Input and output are Anthropic's first-party API rates as the
-#: Claude API reference's model table gives them (cached 2026-06-24, checked
-#: 2026-10-05). Two that look wrong are not: `claude-mythos-5-1` is the
-#: Project Glasswing counterpart of Fable 5.1, at Fable 5.1's price, and
-#: `claude-opus-5-5` is priced BELOW Opus 5 ($4/$20). Cache reads are that
-#: table's where it gives one (Fable 5.1 $0.25, Opus 5.5 $0.20) and 0.1x input
-#: elsewhere. A model missing here prices NOTHING (see `_stream_spend_estimate`): an unreported
-#: cost is honest, a guessed one is a wrong figure. Add a model when the
-#: platform starts running it; change a price only with the date it changed.
-_LIST_PRICES: dict[str, tuple[float, float, float]] = {
-    "claude-fable-5-1": (10.0, 50.0, 0.25),
-    "claude-mythos-5-1": (10.0, 50.0, 0.25),
-    "claude-fable-5": (10.0, 50.0, 1.0),
-    "claude-opus-5-5": (4.0, 20.0, 0.20),
-    "claude-opus-5": (5.0, 25.0, 0.50),
-    "claude-opus-4-8": (5.0, 25.0, 0.50),
-    "claude-opus-4-7": (5.0, 25.0, 0.50),
-    "claude-opus-4-6": (5.0, 25.0, 0.50),
-    "claude-sonnet-5": (2.0, 10.0, 0.20),
-    "claude-sonnet-4-6": (3.0, 15.0, 0.30),
-    "claude-haiku-4-5": (1.0, 5.0, 0.10),
-}
-_CACHE_WRITE_FACTOR = 1.25
-
-#: `claude-haiku-4-5-20251001`, `claude-opus-4-8[1m]`: the priced name, then
-#: at most a date and a context marker. Anything else is not that model.
-_MODEL_SUFFIX = re.compile(r"(?:-\d{8})?(?:\[[a-z0-9]+\])?")
+#: The `usage_by_model` key of a stream message that named no model. Not a
+#: model name swarm-api can price (`modelprices.MODEL_NAME` refuses `<`), so
+#: a run with one is "cost not reported", as it was when the worker priced.
+_UNNAMED_MODEL = "<unnamed>"
 
 #: The most of a capture file read for an estimate. The capture is itself
 #: capped (`max_stdout_bytes`), so this only bounds a misconfigured cap.
 _ESTIMATE_READ_LIMIT = 64 * 1024 * 1024
 
 
-def _list_price(model: Any) -> tuple[float, float, float] | None:
-    if not isinstance(model, str):
-        return None
-    for name, price in _LIST_PRICES.items():
-        if model.startswith(name) and _MODEL_SUFFIX.fullmatch(model[len(name):]):
-            return price
-    return None
-
-
-def _stream_spend_estimate(path: Path) -> dict[str, Any]:
-    """What a stopped CLI run spent, from the per-message usage its stream carried.
+def _stream_usage(path: Path) -> dict[str, Any]:
+    """What a stopped CLI run used, from the per-message usage its stream carried.
 
     A CLI stopped on SIGTERM -- a cancel, a SIGTERM to the worker, a fence, a
     timeout -- prints no `result` event, and that event is the only place it
@@ -15804,12 +15785,15 @@ def _stream_spend_estimate(path: Path) -> dict[str, Any]:
     `assistant` event carries its message's `usage` and `model`, so the tokens
     are summed per message -- the LAST copy of each message id, because the
     stream repeats a message once per content block with the output count
-    growing -- and priced at `_LIST_PRICES`.
+    growing. The totals come back as the attempt's token counts, and
+    `usage_by_model` holds the same counts per model the stream named, for
+    swarm-api to price (`spendprice`, #1481): the worker prices nothing, so
+    no `total_cost_usd` comes back from here.
 
     A FLOOR, not an exact figure: a capture past its cap keeps its head and
-    tail, so a long run's middle is not counted. The caller marks the figure
-    as an estimate. `total_cost_usd` is left out when any message's model has
-    no price, and {} comes back when the stream carried no usage at all.
+    tail, so a long run's middle is not counted. The caller marks a figure
+    priced from it as an estimate. {} comes back when the stream carried no
+    usage at all.
 
     The capture is in `artifacts/`, which the agent can write, so a link put
     in its place is refused at the open, not followed (as `_publish_tail`
@@ -15853,35 +15837,28 @@ def _stream_spend_estimate(path: Path) -> dict[str, Any]:
         "cache_read_input_tokens",
     )
     totals = dict.fromkeys(fields, 0)
-    cost = 0.0
-    priced = True
-    models: set[str] = set()
+    by_model: dict[str, dict[str, int]] = {}
     for model, usage in messages.values():
         counts = {
-            k: usage[k] if isinstance(usage.get(k), int) and not isinstance(usage.get(k), bool)
+            k: usage[k]
+            if isinstance(usage.get(k), int) and not isinstance(usage.get(k), bool) and usage[k] >= 0
             else 0
             for k in fields
         }
         for k in fields:
             totals[k] += counts[k]
-        if isinstance(model, str):
-            models.add(model)
-        price = _list_price(model)
-        if price is None:
-            priced = False
-            continue
-        inp, out, read = price
-        cost += (
-            counts["input_tokens"] * inp
-            + counts["output_tokens"] * out
-            + counts["cache_creation_input_tokens"] * inp * _CACHE_WRITE_FACTOR
-            + counts["cache_read_input_tokens"] * read
-        ) / 1_000_000
+        # A message with no model name is counted in the totals and in a
+        # model nobody prices, so swarm-api answers "not reported" for the
+        # whole run rather than a figure that left those tokens out.
+        name = model if isinstance(model, str) and model else _UNNAMED_MODEL
+        mine = by_model.setdefault(name, dict.fromkeys(fields, 0))
+        for k in fields:
+            mine[k] += counts[k]
     estimate: dict[str, Any] = dict(totals)
-    if priced:
-        estimate["total_cost_usd"] = round(cost, 10)
+    models = sorted(m for m in by_model if m != _UNNAMED_MODEL)
     if models:
-        estimate["models"] = sorted(models)
+        estimate["models"] = models
+    estimate["usage_by_model"] = by_model
     return estimate
 
 
