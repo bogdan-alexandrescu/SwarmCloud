@@ -355,9 +355,28 @@ export function nameTenants(choices: readonly TenantChoice[], me: Me | null): Na
     const is_default = defaultChoice(c)
     if (c.kind === 'user') return { tenant_id: c.tenant_id, display_name: OWN_WORKSPACE_LABEL, group: OWN_WORKSPACE_LABEL, is_default }
     const current = me !== null && me.tenant.tenant_id === c.tenant_id ? me.tenant.display_name || null : null
-    return { tenant_id: c.tenant_id, display_name: current ?? known[c.tenant_id] ?? c.display_name, group: c.display_name, is_default }
+    // `via` rides along: the list draws a platform admin's reach entries under
+    // their own heading, and the shell its banner (`isReach`).
+    const via = c.via === undefined ? {} : { via: c.via }
+    return { tenant_id: c.tenant_id, display_name: current ?? known[c.tenant_id] ?? c.display_name, group: c.display_name, is_default, ...via }
   })
 }
+
+/**
+ * A PLATFORM ADMIN'S REACH (docs/design/workspace-roles.md §4.2.2 step 5,
+ * §4.8; owner answer Q5; lane ROLES-UI-ADMIN). `/v1/tenants/mine` lists a
+ * platform admin's memberships, then each registered group workspace they
+ * reach only as a platform admin, marked `via: "platform_admin"`. Only the
+ * server's mark makes an entry one: a group workspace the caller is a member
+ * of is never one, whatever their platform role, and anyone who is not a
+ * platform admin is served no such entry, so their list is drawn as before.
+ */
+export function isReach(c: TenantChoice): boolean {
+  return c.via === 'platform_admin'
+}
+
+/** The heading the switcher draws a platform admin's reach entries under (§4.8). */
+export const REACH_HEADING = 'Other workspaces (platform admin)'
 /** The Workflows panel's Recent (5) switcher, per browser. */
 export const RECENT_WORKFLOWS_KEY = 'swarm.workflows.recent'
 
@@ -1769,6 +1788,22 @@ export function SkyShell({
       </div>
     ) : null
 
+  // ACTING THROUGH THE REACH IS SAID ON EVERY SCREEN (§4.8, Q12): a platform
+  // admin in a group workspace they are not a member of is recorded on every
+  // write and hourly on reads, and the banner is how they know it. Drawn from
+  // the server's `via` for the tenant `/v1/tenants/me` says is in force, so it
+  // never claims a reach the API did not answer as.
+  const reachName =
+    who !== null && choices.some((c) => c.tenant_id === who.tenant.tenant_id && isReach(c)) ? who.tenant.display_name || who.tenant.tenant_id : null
+  const reachBanner =
+    reachName === null ? null : (
+      <div className="sk-kept" data-banner="platform-admin">
+        <Banner tone="warn" title={`You are acting in ${reachName} as a platform admin.`}>
+          Every action is recorded in its audit log.
+        </Banner>
+      </div>
+    )
+
   return (
     <div
       ref={appRef}
@@ -1911,6 +1946,7 @@ export function SkyShell({
             />
           ) : (
             <>
+              {reachBanner}
               {keptBanner}
               {who !== null && <SignedBackIn key={who.principal.email} email={who.principal.email} />}
               {/* Keyed on the chosen tenant: a switch is a fresh screen, every
@@ -2232,36 +2268,49 @@ function TenantPicker({
     const next = e.key === 'Home' ? 0 : e.key === 'End' ? n - 1 : (at + (e.key === 'ArrowDown' ? 1 : n - 1) + n) % n
     items[next]?.focus()
   }
+  // A platform admin's reach entries under their own heading, after the
+  // memberships (§4.8); for anyone else `reach` is empty and the list is as before.
+  const members = choices.filter((c) => !isReach(c))
+  const reach = choices.filter(isReach)
+  const row = (c: NamedTenantChoice) => {
+    const on = c.tenant_id === current
+    // ONE LABEL, IN THE GRID'S THIRD COLUMN (PICKER-LABELS): two `.sk-ck`
+    // spans wrapped the second into the next grid row's 24px column, over
+    // the tenant id -- "defaultu-bogdan" (live, 2026-10-19).
+    const marks = [on ? 'current' : null, c.is_default ? 'default' : null].filter((m) => m !== null)
+    return (
+      <button
+        key={c.tenant_id}
+        type="button"
+        className={`sk-to${on ? ' is-on' : ''}`}
+        aria-current={on ? 'true' : undefined}
+        title={c.group === c.display_name ? undefined : `registered as ${c.group}`}
+        onClick={() => onChoose(c)}
+      >
+        <span className="sk-tg" aria-hidden>
+          {initialOf(c.display_name)}
+        </span>
+        <b>{c.display_name}</b>
+        {marks.length > 0 && <span className="sk-ck">{marks.join(' · ')}</span>}
+        <small>{c.tenant_id}</small>
+      </button>
+    )
+  }
   const list = (
     <div className={`sk-tpop is-${at}`} role="dialog" aria-modal={at === 'sheet' ? true : undefined} aria-label="Act as" ref={box} onBlur={onBlur} onKeyDown={onKeyDown}>
       {at === 'sheet' && <span className="sk-grab" aria-hidden />}
       <span className="sk-th">
-        Act as · {choices.length} tenants you are a member of
+        Act as · {members.length} tenants you are a member of
       </span>
-      {choices.map((c) => {
-        const on = c.tenant_id === current
-        // ONE LABEL, IN THE GRID'S THIRD COLUMN (PICKER-LABELS): two `.sk-ck`
-        // spans wrapped the second into the next grid row's 24px column, over
-        // the tenant id -- "defaultu-bogdan" (live, 2026-10-19).
-        const marks = [on ? 'current' : null, c.is_default ? 'default' : null].filter((m) => m !== null)
-        return (
-          <button
-            key={c.tenant_id}
-            type="button"
-            className={`sk-to${on ? ' is-on' : ''}`}
-            aria-current={on ? 'true' : undefined}
-            title={c.group === c.display_name ? undefined : `registered as ${c.group}`}
-            onClick={() => onChoose(c)}
-          >
-            <span className="sk-tg" aria-hidden>
-              {initialOf(c.display_name)}
-            </span>
-            <b>{c.display_name}</b>
-            {marks.length > 0 && <span className="sk-ck">{marks.join(' · ')}</span>}
-            <small>{c.tenant_id}</small>
-          </button>
-        )
-      })}
+      {members.map(row)}
+      {reach.length > 0 && (
+        // `display: contents`: the group names the rows for a screen reader
+        // and leaves them in the list's own column, spaced as the others.
+        <div role="group" aria-label={REACH_HEADING} className="sk-treach" style={{ display: 'contents' }}>
+          <span className="sk-th">{REACH_HEADING}</span>
+          {reach.map(row)}
+        </div>
+      )}
       <span className="sk-tf">Kept for this tab&rsquo;s session; a new tab opens in your default. Every request names it, and the API checks your membership each time; switching reloads this page&rsquo;s reads.</span>
     </div>
   )

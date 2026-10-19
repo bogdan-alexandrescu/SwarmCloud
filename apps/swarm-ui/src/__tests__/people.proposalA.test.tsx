@@ -16,7 +16,8 @@
 //   * the table has no Actions column: Person, Teams, Workspace, Claude
 //     account, Ceiling, Last active and a Manage button, a row with an open
 //     request marked, and no column that breaks a word;
-//   * Manage opens a drawer with Facts, Ceiling, Claude account and Admin;
+//   * Manage opens a drawer with Facts, Ceiling, Claude account, Admin and
+//     Roles in workspaces (ROLES-UI-ADMIN);
 //   * the drawer offers Lend OR Reclaim, never both, and says why when it
 //     offers neither; the owner's Admin switch is locked and says why;
 //   * the audit folds housekeeping (history_purged) into one line behind a
@@ -348,7 +349,8 @@ describe('the Manage drawer', () => {
     await mount(people(ROWS))
     const drawer = await manage('bob@example.com')
     const heads = [...drawer.querySelectorAll('h3')].map((h) => h.textContent)
-    expect(heads).toEqual(['Facts', 'Ceiling', 'Claude account', 'Admin'])
+    // ROLES-UI-ADMIN added "Roles in workspaces" (workspace-roles.md §4.8).
+    expect(heads).toEqual(['Facts', 'Ceiling', 'Claude account', 'Admin', 'Roles in workspaces'])
     expect(visible(drawer)).toContain('w-91c0de')
     fireEvent.keyDown(document, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Manage bob@example.com' })).toBeNull(), WAIT)
