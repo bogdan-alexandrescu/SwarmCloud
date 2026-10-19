@@ -1,7 +1,7 @@
 // LANE JEV-OFF (part of #1345): JEV'S UNAVAILABILITY IS VISIBLE, NOT SILENT.
 //
 // Measured 2026-10-15 on u-bogdan, whose judgment backend is internal-jev:
-// the tailnet egress to Saga's decision API is off, so the dispatcher sends no
+// the tailnet egress to your internal decision API is off, so the dispatcher sends no
 // JEV_API_URL, the jev wrapper refuses, and the agent drove Playwright. The
 // Submit picker had offered Jev and the live chip read "Jev". Measured here:
 //
@@ -124,8 +124,12 @@ describe('the Submit picker reads whether Jev can run', () => {
     await waitFor(() => expect((tool(/^Jev/) as HTMLInputElement).disabled).toBe(false), WAIT)
     expect(c.querySelector('.btp-jev-off')).toBeNull()
     fireEvent.click(tool(/^Jev/))
-    // Page text stays inside Saga: no TypeSafe notice.
+    // Page text stays inside your network: no TypeSafe notice.
     expect(visible(c.querySelector('.btp-notice'))).not.toContain('TypeSafe')
+    expect(visible(c.querySelector('.btp-notice'))).toContain('their text stays inside your network.')
+    expect(c.querySelector('.btp-hint')?.textContent).toContain('judged inside your network')
+    // The company is not named by the picker (#1647, SAGA-COPY).
+    expect(c.textContent).not.toMatch(/\bSaga\b/i)
   })
 
   it('keeps Jev off while the backend read is unanswered or failed, never on a guess', () => {
@@ -178,7 +182,9 @@ describe('the live chip says when the attempt fell back', () => {
     const b = container.querySelector<HTMLElement>('[data-testid="browser-badge-tool"]')!
     fireEvent.focus(b)
     const card = document.getElementById(b.getAttribute('aria-describedby') ?? '')!
-    expect(card.textContent).toMatch(/no route to Saga’s decision API/)
+    expect(card.textContent).toMatch(/judges with your internal decision API, and this task has no route to it/)
+    // The company is not named on the chip (#1647, SAGA-COPY).
+    expect(card.textContent).not.toMatch(/\bSaga\b/i)
     expect(card.textContent).toMatch(/tailnet egress is off/)
   })
 

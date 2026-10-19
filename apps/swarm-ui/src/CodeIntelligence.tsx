@@ -29,9 +29,9 @@ const ROUTE = 'GET /v1/code-intelligence'
 
 /** Where Jev's judgments go, per backend: what the card says leaves the platform to. */
 const DESTINATION: Readonly<Record<JevBackend, string>> = {
-  'internal-jev': 'Internal Jev, which stays inside Saga',
-  'internal-laya': 'Internal Laya, which stays inside Saga',
-  typesafe: 'TypeSafe, a service outside Saga',
+  'internal-jev': 'Internal Jev, which stays inside your network',
+  'internal-laya': 'Internal Laya, which stays inside your network',
+  typesafe: 'TypeSafe, a service outside your network',
 }
 
 /** §5.4, in the reader's words: what is sent when the switch is on. */

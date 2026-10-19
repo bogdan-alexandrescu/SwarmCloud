@@ -270,6 +270,9 @@ def test_an_internal_backend_without_the_tailnet_registers_no_jev_and_says_why(m
     note = claude_code.JEV_UNAVAILABLE_NOTE[browser_tools.NO_ROUTE]
     assert note in seen["prompt"]
     assert "tailnet" in note and "decision API" in note
+    # The company is not named (#1647, SAGA-COPY).
+    assert "with your internal decision API, and this attempt has no route to it" in note
+    assert "saga" not in note.lower()
     # Auto registers no jev either, and names no jev strength.
     seen = _run_body(monkeypatch, tmp_path / "auto", payload={"browser_tool": "auto"}, jev_key=False,
                      backend=backend, route=False)

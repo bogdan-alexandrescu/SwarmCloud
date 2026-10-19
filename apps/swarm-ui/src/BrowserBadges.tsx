@@ -176,7 +176,7 @@ const JEV_WHY: Record<NonNullable<LiveBrowserTools['jev']['reason']>, string> = 
   not_installed: 'Jev is off: this runner image does not carry it.',
   not_selected: 'Jev is off: it was not chosen for this task.',
   no_route:
-    'Jev is off: this workspace judges with Saga’s internal decision API, and this task has no route to Saga’s decision API (the tailnet egress is off). The agent uses Playwright.',
+    'Jev is off: this workspace judges with your internal decision API, and this task has no route to it (the tailnet egress is off). The agent uses Playwright.',
 }
 
 const CHANGE_TOOL = 'The tool is chosen with Browser tool on Submit when a task starts; it does not change while the task runs.'
