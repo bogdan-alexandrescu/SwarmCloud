@@ -90,13 +90,15 @@ def test_the_profile_is_claude_code_on_the_browser_image():
         if getattr(profile, f.name) != getattr(claude, f.name)
     )
     # `live_browser` is contract request 71 (LB-D, #1030): the one live profile.
-    # `inputs` is contract request 77 (BSTATUS-API): claude-code's plus `browser_tool`.
+    # `inputs` is contract request 77 (BSTATUS-API): claude-code's plus `browser_tool`,
+    # and `qa_identity` by contract request 106 (QI-CONTRACT).
     assert differ == ["image", "inputs", "live_browser", "name", "resource_class"], (
         f"the owner's decision was claude-code with its name, image and class changed, "
         f"live_browser set (request 71) and browser_tool declared (request 77); {differ} differ"
     )
     extra = dict(profile.inputs)
     assert extra.pop("browser_tool").choices == ("auto", "playwright", "dev-browser", "jev")
+    assert extra.pop("qa_identity").choices == ("console",)
     assert extra == dict(claude.inputs)
     assert profile.live_browser is True
     assert profile.image == "agent-runtime-browser"
@@ -127,8 +129,9 @@ def test_it_is_selectable_by_name():
 
 def test_it_accepts_the_issue_input_like_claude_code():
     # And `browser_tool` besides, by contract request 77 (BSTATUS-API), and
-    # `mcp_servers`, by contract request 88 (MCP-CONTRACT).
-    assert set(RUNNER_PROFILES[PROFILE].inputs) == {"issue", "browser_tool", "mcp_servers"}
+    # `mcp_servers`, by contract request 88 (MCP-CONTRACT), and `qa_identity`,
+    # by contract request 106 (QI-CONTRACT).
+    assert set(RUNNER_PROFILES[PROFILE].inputs) == {"issue", "browser_tool", "mcp_servers", "qa_identity"}
     assert RUNNER_PROFILES[PROFILE].inputs["issue"] == RUNNER_PROFILES["claude-code"].inputs["issue"]
     assert check_inputs(RUNNER_PROFILES[PROFILE], {"issue": 42}) == {"issue": 42}
     assert check_inputs(RUNNER_PROFILES[PROFILE], {"issue": 42.0}) == {"issue": 42}

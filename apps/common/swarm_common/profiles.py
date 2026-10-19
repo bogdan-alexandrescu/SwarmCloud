@@ -1455,6 +1455,23 @@ _CLAUDE_CODE_BROWSER_INPUTS: dict[str, RunnerInput] = {
             "page text to TypeSafe and need a TypeSafe key; Playwright as fallback)"
         ),
     ),
+    # CONTRACT REQUEST 106 (QI-1), accepted by the owner 2026-10-19 with
+    # option B (docs/design/qa-identity.md §5, part of #1649): the live
+    # browser signed in to this deployment's console as its QA identity. A
+    # NAME from a closed list, never an account, a host or a token (invariant
+    # 10). The name grants nothing by itself: swarm-api's per-tenant grant
+    # decides, at submission and again at signing (invariant 9). Absent is
+    # no QA identity. Only here, because only this profile has a live gate.
+    "qa_identity": RunnerInput(
+        "string",
+        choices=("console",),
+        means=(
+            "sign the live browser in to this deployment's console as its QA "
+            "identity, a service account with its own workspace; the platform "
+            "adds the credential, the agent never holds it, and a tenant may "
+            "name it only when a platform admin has granted it"
+        ),
+    ),
 }
 
 
