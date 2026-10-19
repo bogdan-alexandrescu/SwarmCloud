@@ -815,7 +815,23 @@ def not_run_reason(state: str) -> tuple[str, str]:
     if state.startswith("HELD:"):
         return "SKIP", (f"not measured: admission held the task without leasing it ({state[5:]}) "
                         "-- a closed pool or a limit, not a result")
-    return "FAIL", f"the task did not finish in time (last state {state})"
+    # The group writes `<state>[:<park_reason>[:eligible again at <when>]]`
+    # (live_browser_stuck in live-browser.sh), so the verdict says which park.
+    name, _, why = state.partition(":")
+    park_reason, _, when = why.partition(":")
+    if name == "PARKED" and park_reason == "HUMAN_REQUIRED":
+        # swarm_api.handoff: the hold ended with nobody in control (unwatched
+        # for human_unwatched_seconds, or the gate's channel dropped), the
+        # worker parked, and only a person's "I'm ready" promotes it.
+        return "FAIL", ("the task was PARKED on HUMAN_REQUIRED when the wait ended: its hand-off hold "
+                        "ran out with nobody in control and the worker parked it, which only a "
+                        "person's \"I'm ready\" undoes")
+    detail = f"park_reason {park_reason}" if park_reason else "no park_reason"
+    if when:
+        detail += f", {when}"
+    if name != "PARKED":
+        detail = "not parked"
+    return "FAIL", f"the task was still {name} when the wait ended ({detail})"
 
 
 class Viewer:
@@ -934,9 +950,11 @@ def check_isolation(api: Api, cfg: Config, session: dict, results: Results) -> N
                 f"answered 404, and a ticket re-pointed at {other} was refused on the socket ({code})")
 
 
-def drive_viewer(api: Api, cfg: Config, session: dict, password: str,
-                 results: Results) -> FrameTally | None:
-    """Watch, take control, click the field, type, submit, return control."""
+def drive_viewer(api: Api, cfg: Config, session: dict, password: str, results: Results,
+                 while_watching: Callable[[], None] | None = None) -> FrameTally | None:
+    """Watch, take control, click the field, type, submit, return control.
+    `while_watching` runs once the page is on screen, before control is
+    taken, with this viewer's socket open (so the hold is held)."""
     t = cfg.task
     status, minted = api.call("POST", f"/v1/tasks/{t}/live/ticket", {})
     if status != 200 or not isinstance(minted, dict) or not minted.get("ticket"):
@@ -963,6 +981,9 @@ def drive_viewer(api: Api, cfg: Config, session: dict, password: str,
                         f"90 s ({viewer.rfb.updates} updates; {watching.no_page} without the page; leaks "
                         f"{watching.leaks or 'none'}; socket close code {ws.close_code})")
             return watching
+        if while_watching is not None:
+            while_watching()
+            viewer.pump(1)  # what arrived meanwhile
         status, taken = api.call("POST", f"/v1/tasks/{t}/live/control", {})
         if status != 200:
             results.put("frames", "FAIL", f"take control answered {status}: "
@@ -1279,8 +1300,21 @@ def run(cfg: Config) -> None:
         results.put("handoff", "PASS", f"the agent asked for help ({wait.get('reason')!r}); session "
                     f"{session.get('session_id')} is open and this submitter may take control: "
                     f"{bool((session.get('you') or {}).get('can_control'))}")
-        check_isolation(api, cfg, session, results)
-        tally = drive_viewer(api, cfg, session, password, results)
+        # The viewer joins first and the probes run while it watches: the
+        # socket's join is what swarm-api counts as someone watching
+        # (LiveService.watched), and an unwatched hold ends after 60 s
+        # (human_unwatched_seconds). Probed first, the minute went on six API
+        # calls and a socket that may wait 20 s, and the task parked on
+        # HUMAN_REQUIRED (LIVEBROWSER-SCHED, #1333).
+        probed: list[bool] = []
+
+        def probe() -> None:
+            probed.append(True)
+            check_isolation(api, cfg, session, results)
+
+        tally = drive_viewer(api, cfg, session, password, results, while_watching=probe)
+        if not probed:  # the viewer stopped before the page was on screen
+            check_isolation(api, cfg, session, results)
         state = wait_settled(cfg, cfg.timeout + 120)
         if state is None or state not in TERMINAL:
             verdict, reason = not_run_reason(state or "RUNNING")
@@ -1294,6 +1328,27 @@ def run(cfg: Config) -> None:
         raise
     finally:
         results.rest("FAIL", "not judged")
+
+
+def test_a_settle_that_stopped_short_is_judged_by_its_state_and_park_reason() -> None:
+    """pytest's entry (as test_caller_mcp.py's), offline and standard library
+    only: what the group writes when its wait stops short becomes a SKIP only
+    when the platform holds the task, and every FAIL names the state and the
+    park, never just "did not finish in time" (#1333). The full matrix is in
+    tests/unit/scripts/test_live_browser_acceptance.py."""
+    assert not_run_reason("PARKED:CREDENTIAL_MISSING")[0] == "SKIP"
+    assert not_run_reason("HELD:QUEUED:pool-gke MANUAL_PAUSE limit 0")[0] == "SKIP"
+    for state, words in (
+        ("PARKED:HUMAN_REQUIRED", ("PARKED", "HUMAN_REQUIRED", "nobody in control")),
+        ("PARKED:PROVIDER_COOLDOWN:eligible again at 2026-10-19T05:40:00Z",
+         ("park_reason PROVIDER_COOLDOWN", "eligible again at 2026-10-19T05:40:00Z")),
+        ("PARKED", ("PARKED", "no park_reason")),
+        ("RUNNING", ("still RUNNING", "not parked")),
+    ):
+        verdict, reason = not_run_reason(state)
+        assert verdict == "FAIL", state
+        assert "did not finish in time" not in reason, reason
+        assert all(word in reason for word in words), (state, reason)
 
 
 def _read_once(path: str | None) -> str | None:
