@@ -1141,6 +1141,8 @@ the script's `--workspace` mode and live outside Terraform state** (owner
 decision WD3, 2026-10-08, which supersedes the WD4 wording "Terraform owns
 personal workspaces through the private list"; §9 keeps that for history).
 
+**2026-10-19, owner decision on #847: for NEW workspaces this split is reversed;** group and service workspaces are to be made by the same job from Admin › Tenants, as designed (not yet built) in [design/workspace-kinds.md](design/workspace-kinds.md).
+
 | | group and service tenants | personal workspaces |
 |---|---|---|
 | defined in | `terraform/environments/dev/dev.tfvars` (`var.tenants`) | `workspaces/{tenant_id}` in Firestore |
