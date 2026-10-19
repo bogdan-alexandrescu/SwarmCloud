@@ -560,3 +560,72 @@ def test_no_sighting_is_recorded_for_a_service_account(api_context, db) -> None:
                              member_scope="", is_rollup_sweeper=False, tenant_choices=())
     api_context.submissions.workspaces.touch_person(caller)
     assert not _top(db, "people")
+
+
+# --- the failure copy covers every code the job stops with (WK-FAILCOPY) ------
+
+_REPO = __import__("pathlib").Path(__file__).resolve().parents[3]
+
+#: The codes workspace kinds added (docs/design/workspace-kinds.md §4.8) and
+#: the signed approval's (WK-SIGNED-APPROVAL), and who acts on each: a
+#: service's front door is the platform owner's, the rest an admin's.
+_KINDS_ACTORS = {
+    "DIRECTORY_CHECK_STALE": "An admin",
+    "NAMESPACE_LABEL_MISSING": "an admin",
+    "SERVICE_ACCOUNT_REFUSED": "The platform owner",
+    "FRONT_DOOR_OWNER": "The platform owner",
+    "FRONT_DOOR_FAILED": "The platform owner",
+    "APPROVAL_UNSIGNED": "the platform owner",
+}
+
+
+def _job_codes() -> set[str]:
+    """Every code the job can leave on a record, read from its source: what a
+    step records (`ws_code`), stops for the owner with (`ws_hold`) or falls
+    back to (`ws_default_code`), and what entry.py writes before step 1.
+    A guard stop's rule (C0...) and a refusal that writes nothing are not
+    record codes."""
+    register = (_REPO / "scripts" / "register-tenant.sh").read_text()
+    codes = set(re.findall(r"\bws_(?:code|hold) ([A-Z][A-Z0-9_]+)\b", register))
+    default = re.search(r"^ws_default_code\(\) \{\n(.*?)^\}", register, flags=re.S | re.M)
+    assert default, "register-tenant.sh has no ws_default_code"
+    codes |= set(re.findall(r"printf '([A-Z][A-Z0-9_]+)'", default.group(1)))
+    entry = (_REPO / "images" / "workspace-apply" / "entry.py").read_text()
+    for name in set(re.findall(r'"code": text\(([A-Z][A-Z0-9_]+)\)', entry)):
+        value = re.search(rf'^{name} = "([A-Z][A-Z0-9_]+)"', entry, flags=re.M)
+        assert value, f"entry.py writes {name} but does not define it"
+        codes.add(value.group(1))
+    return codes
+
+
+def test_every_code_the_job_stops_with_has_copy_of_its_own() -> None:
+    codes = _job_codes()
+    # The read ran: the codes before kinds, the kinds' and the signed approval's.
+    assert {"APPLY_FAILED", "IDENTITY_NOT_OURS", "WORKSPACE_ID_TAKEN"} <= codes, codes
+    assert set(_KINDS_ACTORS) <= codes, set(_KINDS_ACTORS) - codes
+    missing = sorted(codes - set(ws.FAILURE_COPY))
+    assert not missing, f"codes the job writes without copy in FAILURE_COPY: {missing}"
+
+
+@pytest.mark.parametrize("code", sorted(_KINDS_ACTORS))
+def test_a_kinds_code_has_its_own_sentence_and_names_who_acts(code: str) -> None:
+    copy = ws.failure_copy({"step": "A1", "code": code}, "req-9")
+    assert copy != ws._RETRY_COPY.format(step="Approved", request_id="req-9")
+    assert copy != ws._UNKNOWN_FAILURE_COPY.format(step="Approved", request_id="req-9")
+    assert "Nothing half-made can run" in copy, copy
+    assert _KINDS_ACTORS[code] in copy, copy
+    assert "req-9" in copy, copy
+
+
+_COMMANDISH = re.compile(
+    r"`|\$|--|/sc|\bsc setup\b|\b(?:gcloud|kubectl|curl|jq|bash|terraform|gsutil|make)\b"
+    r"|\b(?:HTTP|stderr|stdout|exit code|ERROR)\b|\.sh\b|\.json\b|\.py\b")
+
+
+@pytest.mark.parametrize("code", sorted(ws.FAILURE_COPY))
+def test_no_failure_copy_names_a_command_or_shows_its_output(code: str) -> None:
+    template = ws.FAILURE_COPY[code]
+    assert set(re.findall(r"\{([^}]*)\}", template)) <= {"step", "request_id"}, template
+    assert not _COMMANDISH.search(template), template
+    copy = ws.failure_copy({"step": "S2", "code": code}, "req-9")
+    assert copy.endswith(".") and "{" not in copy, copy
