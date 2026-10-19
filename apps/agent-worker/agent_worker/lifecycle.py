@@ -1693,9 +1693,23 @@ class Worker:
         base: indexrun_mod.BaseVersion, base_sha: str, started: float,
         skipped: Callable[[str], None], *, source: str,
     ) -> str | None | Outcome:
-        """`swarm-repo-graph read` of the base, once its index is staged from `source`."""
+        """`swarm-repo-graph read` of the base, once its index is staged from `source`.
+
+        Its budget is sized from the base graph's size, which the staged
+        index's graph counts give (`indexrun.base_graph_bytes`, #1469). A
+        read that runs out is named, with the last step the tool said it
+        finished, in the log and the `stage_base` record; `skipped` removes
+        whatever it left, so the run is FULL, never built on part of a base.
+        """
         cfg, ws = self.cfg, self.ws
         assert ws is not None
+        try:
+            staged_index = json.loads(
+                (ws.work / indexrun_mod.BASE_INDEX_FILE).read_text("utf-8"))
+        except (OSError, ValueError):
+            staged_index = None
+        size = indexrun_mod.base_graph_bytes(staged_index)
+        budget = indexrun_mod.budgets(cfg.timeout_seconds, base_graph_bytes=size).base_read
         ran = self._run_index_phase(
             "stage_base",
             indexrun_mod.graph_read_argv(
@@ -1703,10 +1717,24 @@ class Worker:
             ),
             cwd=ws.work,
             env=env,
-            timeout=indexrun_mod.budgets(cfg.timeout_seconds).base_read,
+            timeout=budget,
         )
         if isinstance(ran, Outcome):
             return ran
+        if ran.status == "timed_out":
+            said = indexrun_mod.last_line(ws.logs / "repo-index.stage_base.stderr.log")
+            got = self._scrub(said) if said else "it said nothing before it was stopped"
+            sized = f"{size} bytes" if size is not None else "an unknown size"
+            self.log.warning(
+                "index base graph read ran out of its budget",
+                read=f"{indexrun_mod.GRAPH_WRITER_COMMAND} read", base=base_sha[:12],
+                budget_seconds=budget, base_graph_bytes=size, seconds=ran.seconds,
+                last_progress=got,
+            )
+            skipped(f"{indexrun_mod.GRAPH_WRITER_COMMAND} read of base {base_sha[:12]}'s "
+                    f"graph ran out of its {budget}-second budget (sized for {sized}) "
+                    f"after {ran.seconds} s; the last it said: {got}")
+            return None
         if ran.status != "ok" or not (ws.work / indexrun_mod.BASE_GRAPH_FILE).is_file():
             skipped(f"the base graph was not read ({ran.status}: {ran.reason or 'no file'})")
             return None

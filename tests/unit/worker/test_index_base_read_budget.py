@@ -13,9 +13,11 @@ back takes about 4 s of CPU. The rest is the download: every blob went through
 was per object and serial. What is held here:
 
 * the download runs its batches side by side (`GET_PROCESSES` gcloud
-  processes), so a 60 MB graph -- shaped like the real one, its blob count
-  included -- is read inside the budget its size gives, against a gcloud that
-  charges per call and per object (scaled down by `SCALE`, CPU not scaled);
+  processes), so a 60 MB graph shaped like the real one -- with more blobs
+  a MB than it has, ~1,070 to read against 7.6 a MB -- is read inside the
+  budget its size gives, against a gcloud that charges per call and per
+  object (scaled down by `SCALE`, CPU not scaled). Read in the old serial
+  batches, the same charges come to 49 s scaled (measured), over its 25 s;
 * the budget is sized from the base graph's size (`indexrun.budgets(...,
   base_graph_bytes=...)`), which the base index's graph counts give;
 * a read that runs out of its budget is named in the phase record and the
@@ -57,7 +59,7 @@ TENANT, REPO_ID, BUCKET = "eng", "repo_" + "1" * 16, "swarm-artifacts-test"
 #: Production's per-call and per-object gcloud cost, divided by this so the
 #: test runs in seconds; the budget is divided by it too. The CPU the read
 #: spends decoding is NOT scaled, which only makes the bound harder to meet.
-SCALE = 10.0
+SCALE = 5.0
 #: About 4 s to start `gcloud storage` (the writer's ~3.9 s a process, measured
 #: on the serial upload), and at least 0.16 s an object: 63 MB is ~480 blobs at
 #: the 7.6 blobs/MB measured here, and their two serial batches and the
@@ -87,12 +89,12 @@ FILES_PER_DIRECTORY = 16
 
 
 def _synthetic_graph(target_bytes: int) -> dict:
-    files = target_bytes // 31_000 + 1
+    files = target_bytes // 29_000 + 1
     symbols, edges, tests, rows, signatures, terms, flows = [], [], [], [], [], [], []
-    paths = [f"apps/component_{n // FILES_PER_DIRECTORY:03d}/package/"
-             f"module_with_a_descriptive_name_{n:05d}.py" for n in range(files)]
+    paths = [f"apps/component_{n // FILES_PER_DIRECTORY:03d}/package/module_{n:05d}.py"
+             for n in range(files)]
     for n, path in enumerate(paths):
-        ids = [f"{path}#function_with_a_long_descriptive_name_number_{s:02d}"
+        ids = [f"{path}#function_with_a_name_{s:02d}"
                for s in range(18)]
         for s, sid in enumerate(ids):
             symbols.append({"end_line": s * 12 + 10, "exported": True, "id": sid,
@@ -103,7 +105,7 @@ def _synthetic_graph(target_bytes: int) -> dict:
             edges.append({"also_evidence": [], "confidence": 0.6, "evidence": "ast",
                           "from": ids[e % 18], "kind": "call", "line": e * 3 + 2,
                           "path": path, "sites": 1,
-                          "to": f"{other}#function_with_a_long_descriptive_name_number_"
+                          "to": f"{other}#function_with_a_name_"
                                 f"{(e * 5) % 18:02d}"})
         for t in range(53):
             tests.append({"confidence": 0.36, "depth": 2, "symbol": ids[t % 18],
