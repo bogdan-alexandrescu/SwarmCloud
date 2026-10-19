@@ -469,6 +469,12 @@ _DEVELOPER_STATE = frozenset(
         # KEYS-PLUGIN: storing a TypeSafe key reads it at a hidden prompt.
         # The key never passes through a model, so no skill may run it.
         "sc.cmd_key_set",
+        # ROLES-MCP (part of #1518, workspace-roles.md §4.8): changing who may
+        # act in a workspace is typed back at the person's own terminal, never
+        # granted -- a grant for the `sc roles` view must not reach these.
+        "sc.cmd_roles_set",
+        "sc.cmd_roles_clear",
+        "sc.cmd_roles_default",
     }
 )
 
