@@ -1,13 +1,15 @@
-import { useEffect, useId, useState, type FormEvent, type MouseEvent, type ReactNode } from 'react'
-import { loadProfile, putPreferences, NOTIFICATION_TOPICS, REMINDER_CADENCES } from './api'
+import { useEffect, useId, useState, useSyncExternalStore, type FormEvent, type MouseEvent, type ReactNode } from 'react'
+import { loadMe, loadMyTenants, loadProfile, putPreferences, NOTIFICATION_TOPICS, REMINDER_CADENCES, type TenantChoice } from './api'
 import { Banner, Button, Card, CardLink, acknowledge } from './components'
-import { chooseTenant, type ApiError } from './fetch'
+import { chooseTenant, chosenTenant, subscribeTenant, type ApiError } from './fetch'
+import { atLeast, roleOf, type RoleName } from './roles'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
 import { noteOwnName } from './Spine'
 import { humaniseUntil, timeAgo } from './types'
 import './styles/keys.css'
 import type {
+  Me,
   NotificationTopic,
   Preferences,
   Profile,
@@ -47,12 +49,125 @@ import type {
  * `workspace_role.py::role_in`, and the roles build (#1518) may serve any
  * name; nothing here branches on it, so a new role needs no page change.
  *
+ * AND THE STORED ROLE WINS WHERE THERE IS ONE (docs/design/workspace-roles.md
+ * §4.11, lane ROLES-UI-GATES; part of #1518). `GET /v1/tenants/mine` carries
+ * each workspace's stored `role: {name, source}`; this page draws it with its
+ * source, "member (workspace default)", and a platform admin's reach entry --
+ * a group workspace they are not in, so absent from `GET /v1/profile` -- as
+ * "admin (platform admin)". Where the entry carries no `role` (an older API,
+ * or a role the server could not read) the derived role above is drawn, never
+ * a guessed stored one. `storedRoleWords` is that one seam.
+ *
  * A SAVE REPLACES THE WHOLE SET AT THE REVISION READ. Each editor sends its
  * own change with the other fields as last read, and `revision`; a 409 means
  * another tab saved first, and the page reads again rather than guessing.
  */
 
 const PROFILE_ROUTE = 'GET /v1/profile'
+
+/** Where a stored role came from, in the words §4.11 shows beside it. */
+const ROLE_SOURCE_WORDS: Readonly<Record<string, string>> = {
+  override: 'set for you by name',
+  default: 'workspace default',
+  personal: 'your personal workspace',
+  platform_admin: 'platform admin',
+}
+
+/**
+ * THE ROLE SEAM (§4.11): "member (workspace default)" for a `/v1/tenants/mine`
+ * entry that carries a stored role, or null when it carries none, which is
+ * the caller's cue to draw the derived role instead. A source this build has
+ * no words for is drawn as given.
+ */
+export function storedRoleWords(choice: TenantChoice | undefined): string | null {
+  if (choice === undefined) return null
+  const name = roleOf(choice)
+  if (name === null) return null
+  const source = choice.role?.source ?? ''
+  if (source === '') return name
+  return `${name} (${ROLE_SOURCE_WORDS[source] ?? source})`
+}
+
+/**
+ * Every workspace's `/v1/tenants/mine` entry, read once beside the profile.
+ * Empty while it is read and when it failed: every row then draws its derived
+ * role, which is what this page drew before the stored roles existed.
+ */
+function useStoredRoles(): TenantChoice[] {
+  const [choices, setChoices] = useState<TenantChoice[]>([])
+  useEffect(() => {
+    let live = true
+    void Promise.resolve(loadMyTenants()).then((r) => {
+      if (live && (r.status === 'ok' || r.status === 'stale') && Array.isArray(r.data)) setChoices(r.data)
+    })
+    return () => {
+      live = false
+    }
+  }, [])
+  return choices
+}
+
+/** `GET /v1/tenants/me` as this build reads it: the selected workspace's stored role, absent from an older API. */
+type MeWithRole = Me & { role?: { name?: unknown; source?: unknown } }
+
+/**
+ * THE CALLER'S STORED ROLE IN THE SELECTED WORKSPACE, from `GET
+ * /v1/tenants/me` (§4.3), read again on every workspace switch. Null while it
+ * is read, when the read failed, and when the answer carries no `role`: each
+ * is "not known", and an unknown role disables nothing -- the server decides,
+ * as it did before the roles build. A known role is never widened.
+ */
+export function useWorkspaceRole(): { tenant: string; role: string } | null {
+  const chosen = useSyncExternalStore(subscribeTenant, chosenTenant, chosenTenant)
+  const [known, setKnown] = useState<{ tenant: string; role: string } | null>(null)
+  useEffect(() => {
+    let live = true
+    setKnown(null)
+    void sharedRoleRead(chosen).then((next) => {
+      if (live) setKnown(next)
+    })
+    return () => {
+      live = false
+    }
+  }, [chosen])
+  return known
+}
+
+/**
+ * How long one `GET /v1/tenants/me` answers every gate on the page. A
+ * schedule list draws a gate per row, and each asking alone was a read per
+ * row; a role an admin changes is drawn within this, and the server decides
+ * meanwhile.
+ */
+const ROLE_READ_REUSE_MS = 30_000
+
+let roleRead: { tenant: string | null; at: number; answer: Promise<{ tenant: string; role: string } | null> } | null = null
+
+function sharedRoleRead(chosen: string | null): Promise<{ tenant: string; role: string } | null> {
+  const now = Date.now()
+  if (roleRead !== null && roleRead.tenant === chosen && now - roleRead.at < ROLE_READ_REUSE_MS) return roleRead.answer
+  const answer = Promise.resolve(loadMe({ frame: true })).then((r) => {
+    if (r.status !== 'ok' && r.status !== 'stale') return null
+    const me = r.data as MeWithRole
+    const name = me.role?.name
+    if (typeof name !== 'string' || name === '') return null
+    return { tenant: me.tenant?.tenant_id ?? chosen ?? 'this workspace', role: name }
+  }, () => null)
+  roleRead = { tenant: chosen, at: now, answer }
+  return answer
+}
+
+/**
+ * THE ROLE SENTENCE (§4.8): "Your role in eng is viewer; members decide here"
+ * when the caller's stored role is below `floor`, else null. A screen
+ * disables the action and draws this beside it. The API is the gate; this
+ * only stops offering a click it would refuse (`role_member_required`).
+ */
+export function useRoleGate(floor: RoleName, verb: string): string | null {
+  const known = useWorkspaceRole()
+  if (known === null || atLeast(known.role, floor)) return null
+  return `Your role in ${known.tenant} is ${known.role}; ${floor}s ${verb} here.`
+}
 
 const TOPIC_WORDS: Readonly<Record<NotificationTopic, string>> = {
   approval: 'Approvals waiting for you',
@@ -254,6 +369,10 @@ function nameHint(value: string): string | null {
 }
 
 function YouCard({ p, disabled, save }: { p: Profile; disabled: boolean; save: Save }) {
+  const choices = useStoredRoles()
+  // A platform admin's reach entries (§4.2.2): group workspaces they are not
+  // in, so `GET /v1/profile` does not list them. Admin there by rule.
+  const reach = choices.filter((c) => c.via === 'platform_admin' && !p.workspaces.some((w) => w.tenant_id === c.tenant_id))
   const id = useId()
   const initial = p.identity.display_name ?? p.identity.display_name_suggested ?? ''
   const [name, setName] = useState(initial)
@@ -312,15 +431,26 @@ function YouCard({ p, disabled, save }: { p: Profile; disabled: boolean; save: S
       {failed !== null && <Banner tone="bad" title={failed} role="alert" />}
       <h3>Workspaces</h3>
       <ul className="pf-list" aria-label="Your workspaces">
-        {p.workspaces.map((w) => (
-          <li key={w.tenant_id} data-tenant={w.tenant_id}>
-            <b>{w.display_name}</b>
+        {p.workspaces.map((w) => {
+          const stored = storedRoleWords(choices.find((c) => c.tenant_id === w.tenant_id))
+          return (
+            <li key={w.tenant_id} data-tenant={w.tenant_id}>
+              <b>{w.display_name}</b>
+              {' · '}
+              <span className="pf-role">{stored ?? w.role.name}</span>
+              {w.role.via !== null && <span className="ur-small">{` via ${w.role.via}`}</span>}
+              {w.kind === 'user' && w.state !== null && w.state !== 'ready' && <span className="ur-small">{` · ${w.state}`}</span>}
+              {w.is_acting && <span className="ur-small"> · you are here</span>}
+              {w.is_default && <span className="ur-small"> · default</span>}
+            </li>
+          )
+        })}
+        {reach.map((c) => (
+          <li key={c.tenant_id} data-tenant={c.tenant_id} data-via="platform_admin">
+            <b>{c.display_name}</b>
             {' · '}
-            <span className="pf-role">{w.role.name}</span>
-            {w.role.via !== null && <span className="ur-small">{` via ${w.role.via}`}</span>}
-            {w.kind === 'user' && w.state !== null && w.state !== 'ready' && <span className="ur-small">{` · ${w.state}`}</span>}
-            {w.is_acting && <span className="ur-small"> · you are here</span>}
-            {w.is_default && <span className="ur-small"> · default</span>}
+            <span className="pf-role">{storedRoleWords(c) ?? 'admin (platform admin)'}</span>
+            <span className="ur-small"> · not a member; reached as a platform admin</span>
           </li>
         ))}
       </ul>

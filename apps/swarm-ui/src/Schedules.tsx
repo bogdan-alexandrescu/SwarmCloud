@@ -39,6 +39,7 @@ import { scheduleWords, type RepoRecord } from './RepositoriesData'
 import { Button, Dialog, Segmented, buttonClass } from './components'
 import { ScheduleDetail, detailTabOf } from './ScheduleDetail'
 import { NewSchedule } from './ScheduleEdit'
+import { useRoleGate } from './Profile'
 import { PageHead, Screen, timeAgo } from './Shell'
 import { pluralise } from './types'
 import { useNow } from './useNow'
@@ -348,7 +349,10 @@ export function ScheduleActions({
   const [typed, setTyped] = useState('')
   const [refused, setRefused] = useState<string | null>(null)
   const size = where === 'row' ? 'sm' : 'md'
-  const disabled = s.state === 'disabled' ? 'An admin disabled this schedule.' : undefined
+  // A VIEWER CHANGES NO SCHEDULE (docs/design/workspace-roles.md §4.8): every
+  // write in routes/schedules.py needs `member`. The server still decides.
+  const roleGate = useRoleGate('member', 'run and change schedules')
+  const disabled = roleGate ?? (s.state === 'disabled' ? 'An admin disabled this schedule.' : undefined)
 
   const act = async (kind: ActKind) => {
     setBusy(kind)
@@ -398,17 +402,17 @@ export function ScheduleActions({
         </Button>
       )}
       {where === 'head' && s.state === 'enabled' && (
-        <Button size={size} busy={busy === 'pause' ? 'Pausing…' : false} onClick={() => void act('pause')}>
+        <Button size={size} busy={busy === 'pause' ? 'Pausing…' : false} disabled={roleGate !== null} onClick={() => void act('pause')}>
           Pause
         </Button>
       )}
       {resumable && (
-        <Button size={size} busy={busy === 'resume' ? 'Resuming…' : false} onClick={() => void act('resume')}>
+        <Button size={size} busy={busy === 'resume' ? 'Resuming…' : false} disabled={roleGate !== null} onClick={() => void act('resume')}>
           Resume
         </Button>
       )}
       {where === 'head' && (
-        <Button size={size} kind="danger" onClick={() => { setTyped(''); setRefused(null); setAsking('delete') }}>
+        <Button size={size} kind="danger" disabled={roleGate !== null} onClick={() => { setTyped(''); setRefused(null); setAsking('delete') }}>
           Delete…
         </Button>
       )}
@@ -677,13 +681,20 @@ function SchedulesBody({
   scopeSwitch: ReactNode
 }) {
   const names = repos.status === 'ok' || repos.status === 'stale' ? new Map(repos.data.map((r) => [r.repo_id, `${r.owner}/${r.repo}`])) : null
+  const roleGate = useRoleGate('member', 'create schedules')
   return (
     <div className="sc-list">
       <div className="c-acts sc-acts">
         {scopeSwitch}
-        <InApp go={go} to={scheduleAddress(NEW_SCHEDULE)} className={buttonClass({ kind: 'primary', size: 'sm' })}>
-          New schedule
-        </InApp>
+        {roleGate === null ? (
+          <InApp go={go} to={scheduleAddress(NEW_SCHEDULE)} className={buttonClass({ kind: 'primary', size: 'sm' })}>
+            New schedule
+          </InApp>
+        ) : (
+          <Button kind="primary" size="sm" disabledReason={roleGate}>
+            New schedule
+          </Button>
+        )}
       </div>
       <Said notice={notice} />
       {rows.length === 0 ? (

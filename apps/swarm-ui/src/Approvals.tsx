@@ -27,6 +27,7 @@ import { Button } from './components'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { Absent } from './primitives'
 import { PersonName } from './PersonName'
+import { useRoleGate } from './Profile'
 import { InApp, scheduleAddress, untilWords } from './Schedules'
 import { Screen, timeAgo } from './Shell'
 import { pluralise } from './types'
@@ -344,6 +345,10 @@ function Decide({ d, onDecided }: { d: ApprovalDetail; onDecided: (word: string)
   const [confirm, setConfirm] = useState<{ expected: string; typed: string } | null>(null)
   const [rejecting, setRejecting] = useState(false)
   const [reason, setReason] = useState('')
+  // A VIEWER DECIDES NOTHING (docs/design/workspace-roles.md §4.8): both verbs
+  // are drawn disabled with the role sentence. The server still decides --
+  // `role_member_required`, and every narrower rule on top of it.
+  const roleGate = useRoleGate('member', 'decide')
   // WHERE FOCUS GOES (visual QA V249). Reject… opened the form with focus on
   // "Keep it waiting" instead of the reason it requires; Escape did nothing;
   // and a `hold_approver_required` refusal disabled Approve under the cursor,
@@ -428,20 +433,25 @@ function Decide({ d, onDecided }: { d: ApprovalDetail; onDecided: (word: string)
           {refusalWords(refused)}
         </p>
       )}
+      {roleGate !== null && (
+        <p className="sb-note" data-role-gate="member">
+          {roleGate}
+        </p>
+      )}
       <div className="c-acts">
         {rejecting ? (
           <>
             <Button kind="ghost" onClick={stopRejecting}>
               Keep it waiting
             </Button>
-            <Button kind="danger" busy={busy === 'reject' ? 'Rejecting…' : false} disabledReason={reason.trim() === '' ? 'Say why it is rejected.' : undefined} onClick={() => void reject()}>
+            <Button kind="danger" busy={busy === 'reject' ? 'Rejecting…' : false} disabled={roleGate !== null} disabledReason={reason.trim() === '' ? 'Say why it is rejected.' : undefined} onClick={() => void reject()}>
               Reject
             </Button>
           </>
         ) : (
           <>
-            <Button data-ap-reject-open onClick={() => { setRejecting(true); setRefused(null) }}>Reject…</Button>
-            <Button kind="primary" busy={busy === 'approve' ? 'Approving…' : false} disabledReason={confirmOk ? undefined : 'Type the words shown exactly.'} onClick={() => void approve()}>
+            <Button data-ap-reject-open disabled={roleGate !== null} onClick={() => { setRejecting(true); setRefused(null) }}>Reject…</Button>
+            <Button kind="primary" busy={busy === 'approve' ? 'Approving…' : false} disabled={roleGate !== null} disabledReason={confirmOk ? undefined : 'Type the words shown exactly.'} onClick={() => void approve()}>
               {approveWord}
             </Button>
           </>
