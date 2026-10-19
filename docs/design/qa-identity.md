@@ -949,6 +949,18 @@ required by this design.
 
 ## 7. Owner questions
 
+**Answered by the owner, 2026-10-19 ~22:30Z (Claude Code session f050e91d):** Q1 (a), option B: the QA service account with a gate-added IAP JWT, and C stays the default for layout sweeps. Q2 through Q8 are (a) each, the recommendations:
+
+- Q2: eng only, granted by a platform admin with a reason.
+- Q3: member rights, with no account lent.
+- Q4: a service workspace through Admin › Tenants once workspace kinds is on.
+- Q5: 15-minute tokens, renewed at 10.
+- Q6: if M1 shows IAP refuses the JWT, stop and ask.
+- Q7: no hand-off on the console host.
+- Q8: dev first.
+
+QI-1 is accepted with option B and is filed at the next free number by lane QI-CONTRACT.
+
 Also in this lane's `questions.json`. The recommended option is listed first.
 
 **Q1. Which identity option is built?**
