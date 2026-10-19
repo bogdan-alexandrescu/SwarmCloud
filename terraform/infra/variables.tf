@@ -381,6 +381,29 @@ variable "tenants" {
     ])
     error_message = "a `kind = \"user\"` tenant whose principal is a person is a personal workspace, and personal workspaces are made by the workspace job, never by Terraform (docs/workspaces.md §3.2). Ask for it in the console's setup checklist; only a service account's tenant belongs here."
   }
+
+  # VAR.TENANTS IS FROZEN to the tenants each environment has today
+  # (docs/design/workspace-kinds.md §4.7, Q8 (a), answered by the owner
+  # 2026-10-19). A NEW workspace of any kind -- personal, group or service --
+  # is made by the in-cloud job swarm-workspace-apply from an admin's request
+  # in Admin › Tenants (§4.11), and lives outside Terraform state, so no plan
+  # can change or destroy it. These tenants stay here because they carry
+  # what the job never makes: authoritative per-provider secret bindings and
+  # Terraform-made Cloud Run and scheduler jobs. Moving one out is §4.7's
+  # option (b), a plan that destroys nothing, one tenant per pull request; it
+  # shrinks its list here. Nothing may add to one.
+  #
+  # Per environment, because the environments differ: dev holds §4.7's four;
+  # prod.tfvars holds eng, research and smoke. An environment with no tfvars
+  # file (staging) has no Terraform tenants, so it may declare none.
+  # tests/terraform/tenants_frozen.tftest.hcl holds this.
+  validation {
+    condition = length(setsubtract(keys(var.tenants), lookup({
+      dev  = ["eng", "smoke", "u-sw-c90291", "u-or-9a0792"]
+      prod = ["eng", "research", "smoke"]
+    }, var.environment, []))) == 0
+    error_message = "var.tenants is frozen to the tenants this environment already has (dev: eng, smoke, u-sw-c90291, u-or-9a0792; prod: eng, research, smoke). A new workspace, personal, group or service, is made by the in-cloud job swarm-workspace-apply from Admin › Tenants › New workspace, never by Terraform (docs/design/workspace-kinds.md §4.7, Q8 (a))."
+  }
 }
 
 variable "enable_safety_tick_alert" {
