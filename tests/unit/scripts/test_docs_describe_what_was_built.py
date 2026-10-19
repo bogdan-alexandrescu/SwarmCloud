@@ -919,3 +919,181 @@ def test_quota_doc_says_every_window_binds_every_class():
 @pytest.mark.parametrize("doc", (MODEL_DESIGN, AGENT_OUTPUT, QUOTA), ids=lambda p: p.name)
 def test_model_docs_cite_only_what_resolves(doc: Path):
     _assert_cites_resolve(doc)
+
+
+# --------------------------------------------------------------------------
+# WK-DOCS (part of #847): an admin creates a personal, group or service
+# workspace from Admin › Tenants, and the in-cloud job builds it
+# --------------------------------------------------------------------------
+#
+# docs/design/workspace-kinds.md was written before any lane built it. Its §8
+# records what each build-plan lane landed and where the code departs from the
+# design. docs/workspaces.md records WD3's reversal, the new failure codes and
+# the owner's check O1 in §0; docs/multi-tenancy.md the three admission places
+# a job-made service account now passes without Terraform;
+# docs/runbooks/tenant-offboarding.md what disabling and removing a group or
+# service workspace takes while no deprovisioning run exists (Q9 (a)). Every
+# step, code, route and name they state is read from the code here.
+
+KINDS_DESIGN = DOCS / "design" / "workspace-kinds.md"
+WORKSPACES_DOC = DOCS / "workspaces.md"
+OFFBOARDING = DOCS / "runbooks" / "tenant-offboarding.md"
+REGISTER = "scripts/register-tenant.sh"
+KINDS_BUILT = "## 8. What was built"
+KINDS_O1 = "### O1, the owner's three live reads of the front door (workspace-kinds §4.5)"
+KINDS_OFFBOARD = "## A group or service workspace, made by the workspace job"
+#: The failure codes §4.8 of the design added, each written by the job.
+KINDS_CODES = ("SERVICE_ACCOUNT_REFUSED", "DIRECTORY_CHECK_STALE", "FRONT_DOOR_OWNER",
+               "FRONT_DOOR_FAILED", "NAMESPACE_LABEL_MISSING")
+
+
+def _kinds_lanes() -> list[str]:
+    plan = _section(_text(KINDS_DESIGN), "## 6. Build plan")
+    lanes = re.findall(r"^\|[^|\n]*\| \*\*(WK-[A-Z-]+)\*\*", plan, flags=re.M)
+    assert len(lanes) >= 9 and "WK-DOCS" in lanes, lanes
+    return lanes
+
+
+def _whole_section(text: str, heading: str) -> str:
+    """The body under a `## ` heading with every subsection, up to the next `## `."""
+    start = text.index(heading)
+    rest = text[start + len(heading):]
+    nxt = re.search(r"^## ", rest, flags=re.M)
+    return rest[: nxt.start()] if nxt else rest
+
+
+def test_kinds_design_no_longer_says_nothing_is_built():
+    head = _flat(_text(KINDS_DESIGN).split("\n---\n", 1)[0])
+    assert "Nothing here is built" not in head
+    assert "**Status: built" in head and "§8" in head
+    assert "`enable_workspace_kinds`" in head
+
+
+def test_kinds_design_records_what_every_lane_built():
+    raw = _section(_text(KINDS_DESIGN), KINDS_BUILT)
+    body = _flat(raw)
+    for lane in _kinds_lanes():
+        assert f"**{lane} (" in raw, f"§8 has no entry for {lane}"
+    # The service kind's steps, in the order the job runs them.
+    order = "printf '%s\\n' A1 S1 A2 A3 A4 A5 A6 A7 A8 S2 A9"
+    assert f"`{REGISTER}` (`{order}`)" in raw
+    _cited_anchor(REGISTER, order)
+    # Departure 1: the platform owner A1 checks is read from the guard's
+    # rules, keyed by project, not from entry.py's environment.
+    entry = _text(REPO / "images" / "workspace-apply" / "entry.py")
+    assert "PLATFORM_OWNER" not in entry
+    assert ".platform_owner" in _cited_anchor(REGISTER, "jq -r --arg p \"${PROJECT_ID}\" '(.platform_owner // {})[$p]")
+    assert "`scripts/lib/workspace-calls.json`" in body and "`platform_owner`" in body
+    assert "not from `entry.py`" in body
+    # Departure 2: a service is admitted by the unique id S1 recorded, not
+    # by its address alone.
+    admits = "apps/swarm-api/swarm_api/auth.py::Authenticator._admits_service"
+    assert f"`{admits}`" in raw and "subject != pinned" in _cited_symbol(*admits.split("::"))
+    assert "`service.unique_id`" in body
+    # Departure 3: the registry re-checks every ready record against the
+    # request's own rules.
+    snap = "apps/swarm-api/swarm_api/registry.py::WorkspaceRegistry"
+    assert f"`{snap}`" in raw and "validate_kind_request" in _cited_symbol(*snap.split("::"))
+    # Departure 4: the five new codes have no copy of their own yet.
+    from swarm_api.workspaces import FAILURE_COPY
+
+    for code in KINDS_CODES:
+        assert code not in FAILURE_COPY, f"{code} now has copy: say so in §8 and workspaces.md §4.3"
+        assert f"`{code}`" in body, code
+    # The switch every new IAM row sits behind, and the frozen tenants map.
+    assert "`enable_workspace_kinds`" in body and "`front_door_admit_role_bound`" in body
+    assert "`terraform/infra/variables.tf` (`VAR.TENANTS IS FROZEN`)" in raw
+    _cited_anchor("terraform/infra/variables.tf", "VAR.TENANTS IS FROZEN")
+
+
+def test_workspaces_doc_records_wd3_reversed_as_built():
+    text = _text(WORKSPACES_DOC)
+    head = _flat(text.split("\n---\n", 1)[0])
+    assert "workspace-kinds.md" in head and "Admin › Tenants" in head
+    split = _flat(_section(text, "### 3.2 The split (decided, WD3 with WD4)"))
+    assert "not yet built" not in split
+    assert "`POST /v1/admin/workspaces`" in split
+    assert "frozen" in split and "`var.tenants`" in split
+    from swarm_api.routes.people import create_workspace
+
+    assert create_workspace.__doc__ and "workspace-kinds.md §4.2" in create_workspace.__doc__
+
+
+def test_workspaces_doc_section_0_holds_the_owners_check_o1():
+    """O1 is the owner's, not an agent's: §0 says what it reads, what each
+    answer turns on, and, while the switches it gates are still off, that
+    it is not yet recorded."""
+    text = _text(WORKSPACES_DOC)
+    section0 = _whole_section(text, "## 0. Today")
+    assert KINDS_O1 in section0
+    body = _flat(_section(text, KINDS_O1))
+    for read in ("`gcloud iam roles describe roles/iap.admin`", "`-ui-backend`", "`modifiedGrantsByRole`"):
+        assert read in body, read
+    variables = _text(REPO / "terraform" / "bootstrap" / "variables.tf")
+    bound = re.search(r'variable "front_door_admit_role_bound" \{.*?default\s+=\s+(\w+)', variables, flags=re.S)
+    assert bound, "terraform/bootstrap/variables.tf has no front_door_admit_role_bound"
+    assert "`front_door_admit_role_bound`" in body and "`FRONT_DOOR_OWNER`" in body
+    if bound.group(1) == "false":
+        assert "Not yet recorded" in body
+
+
+def test_workspaces_doc_failure_copy_is_the_codes():
+    from swarm_api.workspaces import _UNKNOWN_FAILURE_COPY, FAILURE_COPY
+
+    raw = _section(_text(WORKSPACES_DOC), "### 4.3 Failure copy, word for word")
+    rows = [ln for ln in raw.splitlines() if ln.startswith("| `")]
+    quoted = {}
+    for row in rows:
+        codes = re.findall(r"`([A-Z_]+)`", row.split("|")[1])
+        copy = re.search(r"“(.+)”", row)
+        for code in codes:
+            quoted[code] = copy.group(1) if copy else None
+    for code, copy in FAILURE_COPY.items():
+        assert quoted.get(code) == copy, code
+    body = _flat(raw)
+    assert f"“{_UNKNOWN_FAILURE_COPY}”" in body
+    for code in KINDS_CODES:
+        assert f"`{code}`" in body, code
+        assert code not in FAILURE_COPY or quoted.get(code) == FAILURE_COPY[code], code
+
+
+def test_multi_tenancy_admits_a_job_made_service_without_terraform():
+    text = _text(TENANCY)
+    service = _flat(_section(text, "### Service tenants: a service account's own `u-` tenant"))
+    assert "admitted in three places" in service
+    assert f"`{REGISTER}` (`ws_s2() {{`)" in _section(text, "### Service tenants: a service account's own `u-` tenant")
+    _cited_anchor(REGISTER, "ws_s2() {")
+    registry = "apps/swarm-api/swarm_api/registry.py::WorkspaceRegistry.admitted_services"
+    assert f"`{registry}`" in service
+    _cited_symbol(*registry.split("::"))
+    assert "Admin › Tenants" in service and "platform owner" in service
+    workspace = _flat(_whole_section(text, "## 7. A person's personal workspace"))
+    assert "Terraform owns group and service tenants only" not in workspace
+    steps = _section(text, "### 7.1 Request, approve, apply")
+    for step in ("S1", "S2"):
+        assert f"| {step} |" in steps, step
+    groups = _flat(_section(text, "### Priority order matters"))
+    assert "`apps/swarm-api/swarm_api/auth.py::Authenticator._tenant_groups`" in groups
+    assert "configured + tuple(" in _cited_symbol("apps/swarm-api/swarm_api/auth.py", "Authenticator._tenant_groups")
+
+
+def test_offboarding_runbook_covers_group_and_service_workspaces():
+    text = _text(OFFBOARDING)
+    raw = _section(text, KINDS_OFFBOARD)
+    body = _flat(raw)
+    assert "`enabled = false`" in body and "`deprovisioned`" in body
+    assert "`gcloud iap web remove-iam-policy-binding`" in body
+    assert "roles/iap.httpsResourceAccessor" in body
+    # The registry counts only `ready`, which is why moving the record off
+    # `ready` is the immediate stop.
+    assert "READY" in _cited_symbol("apps/swarm-api/swarm_api/registry.py", "WorkspaceRegistry._read")
+    assert "`apps/swarm-api/swarm_api/registry.py::WorkspaceRegistry._read`" in raw
+    assert "swarm-tenant-<tenant>-git" in body
+    assert "Not verified" in body
+    first = _flat(text.split("\n## ", 1)[0])
+    assert "service" in first and "workspace" in first
+
+
+@pytest.mark.parametrize("doc", (KINDS_DESIGN, WORKSPACES_DOC, TENANCY, OFFBOARDING), ids=lambda p: p.name)
+def test_workspace_kinds_docs_cite_only_what_resolves(doc: Path):
+    _assert_cites_resolve(doc)
