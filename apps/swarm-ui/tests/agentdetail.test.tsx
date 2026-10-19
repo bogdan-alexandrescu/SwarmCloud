@@ -568,10 +568,15 @@ function nowCard(markup: string): string {
   return markup.slice(at, markup.indexOf('</section>', at))
 }
 
+/**
+ * The submitter prints through `PersonName`, so the line holds nested spans;
+ * they are stripped and the paragraph's own tags kept, so a caller still reads
+ * where the line ends.
+ */
 function submittedLine(markup: string): string {
-  const m = /<p class="dt-note"[^>]*>submitted [^<]*<\/p>/.exec(markup)
+  const m = /<p class="dt-note"[^>]*>(submitted [\s\S]*?)<\/p>/.exec(markup)
   assert.ok(m, 'the submitted line is gone')
-  return m[0]
+  return `<p class="dt-note">${m[1].replace(/<[^>]*>/g, '')}</p>`
 }
 
 /**
