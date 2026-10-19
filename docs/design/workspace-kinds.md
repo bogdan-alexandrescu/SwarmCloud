@@ -990,9 +990,11 @@ CI.
 
 ## 7. Owner questions
 
+**All nine answered by the owner on 2026-10-19, each with its recommended option (a)**, in Claude Code after the design was opened as PR 1600. The answers are marked on each question below. They bind the build plan in §6, including WK-TF-FREEZE (Q8 (a)). Where the provisioner runs was decided the same day (§4.11).
+
 Also in this lane's `questions.json`. The recommended option is listed first.
 
-**Q1. May an admin create a personal workspace for a named person?**
+**Q1. May an admin create a personal workspace for a named person?** **Answered 2026-10-19 by the owner: (a).**
 Today's §1.3 rule 4 says nobody can request one for anyone else.
 * **(a) Yes (recommended).** An admin names an allowed-domain email in
   Admin › Tenants. The record is `approved` at once, and the person's first
@@ -1001,14 +1003,14 @@ Today's §1.3 rule 4 says nobody can request one for anyone else.
 * (b) No. Admin › Tenants' Personal tab only explains that people request
   their own, and links to People.
 
-**Q2. Who approves each kind?**
+**Q2. Who approves each kind?** **Answered 2026-10-19 by the owner: (a).**
 * **(a) Recommended.** Personal and group: any admin, automatic when the
   requester is an admin. Service: the platform owner only, because it admits
   a new principal at the front door.
 * (b) Any admin for every kind.
 * (c) A second admin, never the requester, for group and service.
 
-**Q3. How a group's id meets the deployer's `u-` bounds.**
+**Q3. How a group's id meets the deployer's `u-` bounds.** **Answered 2026-10-19 by the owner: (a).**
 * **(a) Design A (recommended).** Widen the namespace policy behind a
   job-only label, the secret binder to team-slot suffixes, and swarm-api's
   user-slot grants to any tenant. Each is narrowed again and alerted on.
@@ -1017,21 +1019,21 @@ Today's §1.3 rule 4 says nobody can request one for anyone else.
 * (c) Design C. Job-made groups get `g-` ids. This is a frozen-contract change
   (WK-C).
 
-**Q4. Does a job-made group become its members' default tenant?**
+**Q4. Does a job-made group become its members' default tenant?** **Answered 2026-10-19 by the owner: (a).**
 * **(a) Yes, as any registered group does today (recommended).** It sorts
   after every `TENANT_GROUPS` entry, and a default the person chose still
   wins.
 * (b) No. It is selectable in the switcher only, and headerless requests keep
   their current default.
 
-**Q5. A failed lookup of a job-made group.**
+**Q5. A failed lookup of a job-made group.** **Answered 2026-10-19 by the owner: (a).**
 * **(a) Fatal, as for every registered group (recommended).** 503 for a
   caller it could have changed the answer for. A misfiled task cannot be
   recovered.
 * (b) Non-fatal for job-made groups. The caller lands in their next tenant.
   This risks filing work under the wrong tenant.
 
-**Q6. Members' own forge slots in a job-made group.**
+**Q6. Members' own forge slots in a job-made group.** **Answered 2026-10-19 by the owner: (a).**
 * **(a) Served only through the credential broker (recommended).** Until
   `FORGE_BROKER` is on, members use the team token, and a request for their
   own credential is refused `FORGE_USER_SLOT_NEEDS_BROKER` (report-only at
@@ -1040,21 +1042,21 @@ Today's §1.3 rule 4 says nobody can request one for anyone else.
   environment.
 * (c) Team token only, never per-member slots, in job-made groups.
 
-**Q7. Which service accounts may get a service workspace?**
+**Q7. Which service accounts may get a service workspace?** **Answered 2026-10-19 by the owner: (a).**
 * **(a) Only accounts in the platform's project (recommended),** with no
   `swarm-` account and none on the shared deny-list.
 * (b) Any project's service account. S1 cannot read an account in another
   project with the deployer's grants, so its existence and key checks become
   the requester's word.
 
-**Q8. Today's four Terraform tenants.**
+**Q8. Today's four Terraform tenants.** **Answered 2026-10-19 by the owner: (a).**
 * **(a) They stay in Terraform (recommended),** and `var.tenants` is frozen to
   those four keys.
 * (b) Migrate all four with W9's plan that destroys nothing (§4.7), one per
   pull request.
 * (c) Migrate only the two service tenants, `u-sw-c90291` and `u-or-9a0792`.
 
-**Q9. Teardown for the new kinds.**
+**Q9. Teardown for the new kinds.** **Answered 2026-10-19 by the owner: (a).**
 * **(a) Not in this build (recommended).** Disable is immediate (tenant
   `enabled = false`; a service record set `deprovisioned` drops its
   admission). The deletions stay `docs/workspaces.md` §7's separate
