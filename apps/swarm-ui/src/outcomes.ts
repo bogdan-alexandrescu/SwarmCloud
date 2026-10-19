@@ -146,7 +146,9 @@ export type GroupBy = 'runner_profile' | 'submitted_by' | 'tenant_id' | 'model' 
 export interface GroupRow {
   /** Grouped by person, `''` is the tasks with no submitter recorded: a row, but not a name. */
   key: string
-  submitted: number
+  /** Null for the `model` group: arrivals are counted per task, before an
+   * attempt has run on any model, so no model can be credited with them. */
+  submitted: number | null
   ended: number
   succeeded: number
   failed: number
