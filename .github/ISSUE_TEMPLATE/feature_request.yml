@@ -73,6 +73,7 @@ body:
         - "Web UI · Settings › API keys (/settings/keys)"
         - "Web UI · Settings › Workspace (/settings/workspace)"
         - "Web UI · Settings › MCP servers (/settings/mcp-servers)"
+        - "Web UI · Settings › Profile (/settings/profile)"
         - "Web UI · API reads (/api-reads)"
         - "Web UI · Help (/help)"
         - "Web UI · Navigation, layout or theme — every page"
