@@ -327,3 +327,48 @@ def test_the_terminal_refuses_a_model_id_as_a_class():
     with pytest.raises(SwarmError, match=r"no model class called 'claude-opus-5-5'"):
         cli.cmd_dispatch(api, args)
     assert not api.sent
+
+
+def test_the_launch_reads_a_spec_whose_steps_name_classes(monkeypatch):
+    """`/sc run <spec>` titles the run with `swarm_workflow_launch` first, and
+    `launch.for_spec` reads the spec with `workflows.read_spec`, which holds no
+    `model_class`: a spec naming a class must reach it without the key, and
+    one naming a class its profile cannot run must be refused before it."""
+    from swarm_mcp import launch
+
+    seen: list[Any] = []
+
+    def for_spec(document: Any, client: Any = None) -> dict[str, Any]:
+        workflows.read_spec(document)  # what the real one calls first
+        seen.append(document)
+        return {"steps": len(document["steps"])}
+
+    monkeypatch.setattr(launch, "for_spec", for_spec)
+    spec = {"steps": [{"step_id": "a", "prompt": "a", "model_class": "haiku"}]}
+    server._call(RecordingApi(), "swarm_workflow_launch", {"spec": spec})
+    assert seen and "model_class" not in seen[0]["steps"][0]
+    assert spec["steps"][0]["model_class"] == "haiku", "the caller's spec is not edited"
+    bad = {"steps": [{"step_id": "a", "prompt": "a", "runner_profile": "mock",
+                      "model_class": "haiku"}]}
+    with pytest.raises(SwarmError, match=r"mock runs no Claude model"):
+        server._call(RecordingApi(), "swarm_workflow_launch", {"spec": bad})
+    assert len(seen) == 1
+
+
+def test_a_spec_file_through_the_terminal_carries_its_steps_classes(tmp_path):
+    import json
+
+    spec = {"steps": [
+        {"step_id": "a", "prompt": "a", "model_class": "fable"},
+        {"step_id": "b", "prompt": "b", "depends_on": ["a"]},
+    ]}
+    path = tmp_path / "spec.json"
+    path.write_text(json.dumps(spec))
+    api = RecordingApi()
+    args = cli.build_parser().parse_args(["workflow", str(path)])
+
+    assert cli.cmd_workflow(api, args) == cli.EXIT_OK
+
+    (body,) = _posted(api, "/v1/workflows")
+    assert body["steps"][0]["model_class"] == "fable"
+    assert "model_class" not in body["steps"][1]
