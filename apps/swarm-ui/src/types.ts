@@ -5426,11 +5426,21 @@ export interface WorkspaceJobStep {
   code?: string | null
 }
 
+/**
+ * `workspaces/{tenant_id}.kind` (docs/design/workspace-kinds.md §4.1): swarm-api's, not the frozen contract's
+ * `Tenant.kind`. A record with no `kind` is `personal`, as `workspaces.kind_of` reads it.
+ */
+export type WorkspaceKind = 'personal' | 'group' | 'service'
+
 /** `GET /v1/workspace`: the caller's own record (`workspaces.view`). Only `state`, `setup_url` and `setup_command` are sent with no record. */
 export interface WorkspaceView {
   state: WorkspaceState
   setup_url: string
   setup_command: string
+  /** Absent from an API older than WK-RECORD; the console reads absent as `personal`. */
+  kind?: WorkspaceKind
+  /** At most 60 characters (`workspaces.MAX_DISPLAY_NAME`); the API defaults it to the address's local part. */
+  display_name?: string | null
   workspace_id?: string | null
   tenant_id?: string | null
   request_id?: string | null
@@ -5473,6 +5483,8 @@ export interface LoanRequestAnswer {
 
 /** A record as an admin sees it (`people._admin_view`): the person's view, less the tenant id, with the dispatch. */
 export interface AdminWorkspaceView extends WorkspaceView {
+  /** The person's, the group's or the service account's address the record was filed for. Never `requested_by`, which stays in Firestore. */
+  principal?: string | null
   dispatch?: {
     attempts: number | null
     last_attempt_at: string | null
@@ -5484,6 +5496,18 @@ export interface AdminWorkspaceView extends WorkspaceView {
   retried_at?: string | null
   /** Only on a `needs_owner` record: the step the call guard stopped at. */
   needs_owner_step?: string | null
+}
+
+/**
+ * `POST /v1/admin/workspaces` (WK-RECORD, design §4.2.2): what Admin › Tenants › New workspace sends -- a kind, an
+ * address and a label, and nothing else. `limits` is the API's per-kind default when absent, so the dialog never
+ * sends it, and no image, command, resource spec or backend parameter is a field here (invariant 10).
+ */
+export interface NewWorkspaceBody {
+  kind: WorkspaceKind
+  principal: string
+  /** Null lets the API take the address's local part. */
+  display_name: string | null
 }
 
 /** `people._claude_account`: where the person's Claude account comes from. */
