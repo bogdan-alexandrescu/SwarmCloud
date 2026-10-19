@@ -13,10 +13,13 @@ The 2026-10-05 history analysis: cancelled attempts recorded no cost at all
 Pinned here:
 
   * a stopped CLI run's cost is estimated from the per-message usage its stream
-    carried, at list prices, and recorded as `cost_usd` with the summary saying
-    it is an estimate;
-  * an unknown model prices nothing: tokens are recorded, cost stays unreported
-    rather than wrong;
+    carried and recorded as `cost_usd` with the summary saying it is an
+    estimate. SWARM-API PRICES IT (#1481, owner decision 2026-10-17): the
+    worker sends the usage per model to `spend-estimate` and records the
+    figure it gets back; it holds no price table of its own;
+  * a model swarm-api has no price for prices nothing: tokens are recorded,
+    cost stays unreported rather than wrong -- and so does a run whose
+    estimate could not be asked for;
   * a SIGTERM on a task whose cancel was requested ends it CANCELLED, with the
     runner's spend and the attempt's end on its document.
 """
@@ -32,7 +35,8 @@ from typing import Any
 import pytest
 
 from agent_worker.errors import ExitCode
-from agent_worker.lifecycle import _stream_spend_estimate
+from agent_worker import lifecycle
+from agent_worker.lifecycle import _stream_usage
 from swarm_common.states import EventType, TaskState
 
 from worker_seeds import TENANT, seed_attempt
@@ -72,9 +76,25 @@ time.sleep(60)
 sys.exit(0)
 '''
 
-#: claude-sonnet-4-6 at $3 in / $15 out / $3.75 cache write / $0.30 cache read
-#: per million: 1200 in, 800 out, 2000 written, 22000 read.
-EXPECTED_COST = (1200 * 3 + 800 * 15 + 2000 * 3.75 + 22000 * 0.30) / 1_000_000
+#: What the stand-in run used: 1200 in, 800 out, 2000 written, 22000 read.
+USAGE = {"input_tokens": 1200, "output_tokens": 800,
+         "cache_creation_input_tokens": 2000, "cache_read_input_tokens": 22000}
+#: What swarm-api answers for it. Any figure: the worker records the answer,
+#: it does not compute one (tests/unit/control_plane/test_model_prices.py
+#: pins swarm-api's arithmetic).
+EXPECTED_COST = 0.0371
+
+
+class Pricer:
+    """swarm-api's `spend-estimate`, as the worker's `SpendPricer` asks it."""
+
+    def __init__(self, answer: float | None) -> None:
+        self.answer = answer
+        self.asked: list[dict[str, Any]] = []
+
+    def price(self, usage_by_model: dict[str, Any]) -> float | None:
+        self.asked.append(usage_by_model)
+        return self.answer
 
 
 @pytest.fixture
@@ -117,12 +137,14 @@ def test_a_cancelled_cli_run_records_its_estimated_cost(db, worker_factory, stop
     worker, _, _ = worker_factory(
         runner_profile="claude-code", control_poll_seconds=1, timeout_seconds=60
     )
+    worker.spend_pricer = pricer = Pricer(EXPECTED_COST)
 
     thread = _cancel_once(db, marker)
     code = worker.run()
     thread.join()
 
     assert code == ExitCode.CANCELLED
+    assert pricer.asked == [{"claude-sonnet-4-6": USAGE}]
     attempt = db.doc("attempts/att_1")
     assert attempt.get("cost_usd") == pytest.approx(EXPECTED_COST)
     assert attempt.get("input_tokens") == 1200
@@ -133,8 +155,29 @@ def test_a_cancelled_cli_run_records_its_estimated_cost(db, worker_factory, stop
     assert db.doc("tasks/task_1")["result_summary"].get("cost_estimated") is True
 
 
-def test_an_unknown_model_records_tokens_and_no_cost(db, worker_factory, stopped_claude):
+def test_an_unpriced_model_records_tokens_and_no_cost(db, worker_factory, stopped_claude):
     marker = stopped_claude("some-model-nobody-priced")
+    _seed_claude(db)
+    worker, _, _ = worker_factory(
+        runner_profile="claude-code", control_poll_seconds=1, timeout_seconds=60
+    )
+    worker.spend_pricer = pricer = Pricer(None)
+
+    thread = _cancel_once(db, marker)
+    assert worker.run() == ExitCode.CANCELLED
+    thread.join()
+
+    assert pricer.asked == [{"some-model-nobody-priced": USAGE}]
+    attempt = db.doc("attempts/att_1")
+    assert attempt.get("cost_usd") is None, "a guessed price is a wrong figure"
+    assert attempt.get("output_tokens") == 800
+    assert not db.doc("tasks/task_1")["result_summary"].get("cost_estimated")
+
+
+def test_with_no_way_to_ask_swarm_api_the_cost_is_not_reported(db, worker_factory,
+                                                                stopped_claude):
+    """No SWARM_API_URL, no attempt key: nothing is priced here instead."""
+    marker = stopped_claude("claude-opus-5-5")
     _seed_claude(db)
     worker, _, _ = worker_factory(
         runner_profile="claude-code", control_poll_seconds=1, timeout_seconds=60
@@ -145,8 +188,14 @@ def test_an_unknown_model_records_tokens_and_no_cost(db, worker_factory, stopped
     thread.join()
 
     attempt = db.doc("attempts/att_1")
-    assert attempt.get("cost_usd") is None, "a guessed price is a wrong figure"
-    assert attempt.get("output_tokens") == 800
+    assert attempt.get("cost_usd") is None
+    assert attempt.get("input_tokens") == 1200
+
+
+def test_the_worker_holds_no_price_table():
+    """#1481: prices are data in swarm-api, not code in the worker."""
+    assert not hasattr(lifecycle, "_LIST_PRICES")
+    assert not hasattr(lifecycle, "_list_price")
 
 
 def test_the_estimate_reads_the_last_copy_of_each_message(tmp_path):
@@ -160,11 +209,14 @@ def test_the_estimate_reads_the_last_copy_of_each_message(tmp_path):
     path = tmp_path / "claude-code.stdout.log"
     path.write_text("\n".join(json.dumps(x) for x in lines) + "\n")
 
-    estimate = _stream_spend_estimate(path)
+    usage = _stream_usage(path)
 
-    assert estimate["input_tokens"] == 10
-    assert estimate["output_tokens"] == 40
-    assert estimate["total_cost_usd"] == pytest.approx((10 * 1 + 40 * 5) / 1_000_000)
+    assert usage["input_tokens"] == 10
+    assert usage["output_tokens"] == 40
+    assert "total_cost_usd" not in usage, "the worker prices nothing"
+    assert usage["usage_by_model"] == {"claude-haiku-4-5-20251001": {
+        "input_tokens": 10, "output_tokens": 40,
+        "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}}
 
 
 def test_a_link_in_place_of_the_capture_is_not_read(tmp_path):
@@ -174,7 +226,7 @@ def test_a_link_in_place_of_the_capture_is_not_read(tmp_path):
     link = tmp_path / "claude-code.stdout.log"
     link.symlink_to(target)
 
-    assert _stream_spend_estimate(link) == {}
+    assert _stream_usage(link) == {}
 
 
 def test_a_sigterm_on_a_cancelled_task_ends_it_cancelled_with_its_spend(db, worker_factory):
