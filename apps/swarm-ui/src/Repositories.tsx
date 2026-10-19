@@ -8,6 +8,7 @@ import { RepositoryDetail } from './RepositoriesDetail'
 import { GitTokensPage, PermissionsPage } from './GitTokens'
 import { RepoDot, useRepoStatuses } from './PermissionCards'
 import type { ForgeRepoStatus } from './api'
+import { useRoleGate } from './Profile'
 import { CountNote, PageHead } from './Shell'
 import { timeAgo } from './types'
 import './styles/repositories.css'
@@ -77,6 +78,9 @@ function RepositoryList({
   const [busy, setBusy] = useState<string | null>(null)
   // The card whose Index now is waiting for its confirmation (RSA-15): one at a time.
   const [confirm, setConfirm] = useState<string | null>(null)
+  // A VIEWER REGISTERS AND INDEXES NOTHING (docs/design/workspace-roles.md
+  // §4.8): register and index:run need `member`. The server still decides.
+  const roleGate = useRoleGate('member', 'register and index repositories')
   const count = state.status === 'ok' || state.status === 'stale' ? state.data.length : state.status === 'empty' ? 0 : null
 
   async function indexNow(r: RepoRecord) {
@@ -116,10 +120,21 @@ function RepositoryList({
           <UrNavButton to={GT_PAGE} go={go} size="sm">
             Git tokens
           </UrNavButton>
-          <UrNavButton to={REGISTER} go={go} kind="primary" size="sm">
-            Register repository
-          </UrNavButton>
+          {roleGate === null ? (
+            <UrNavButton to={REGISTER} go={go} kind="primary" size="sm">
+              Register repository
+            </UrNavButton>
+          ) : (
+            <Button kind="primary" size="sm" disabled>
+              Register repository
+            </Button>
+          )}
         </span>,
+      )}
+      {roleGate !== null && (
+        <p className="ur-small" data-role-gate="member">
+          {roleGate}
+        </p>
       )}
       {failed !== null && (
         <Banner tone="bad" title="Index now was refused">
@@ -137,9 +152,15 @@ function RepositoryList({
             kind="empty"
             heading="No repositories registered"
             action={
-              <UrNavButton to={REGISTER} go={go} kind="primary">
-                Register repository
-              </UrNavButton>
+              roleGate === null ? (
+                <UrNavButton to={REGISTER} go={go} kind="primary">
+                  Register repository
+                </UrNavButton>
+              ) : (
+                <Button kind="primary" disabled>
+                  Register repository
+                </Button>
+              )
             }
           >
             A registered repository is indexed on a schedule so planners and agents start from its map. Pick one the
@@ -160,6 +181,7 @@ function RepositoryList({
                 onCancel={() => setConfirm(null)}
                 onIndex={() => void indexNow(r)}
                 perm={perms.get(r.repo_id)}
+                viewerOnly={roleGate !== null}
               />
             ))}
           </div>
@@ -305,6 +327,7 @@ function RepoCard({
   onCancel,
   onIndex,
   perm,
+  viewerOnly = false,
 }: {
   r: RepoRecord
   go: (to: string) => void
@@ -315,6 +338,8 @@ function RepoCard({
   onCancel: () => void
   onIndex: () => void
   perm?: ForgeRepoStatus
+  /** The caller's role is below `member`: Index now is drawn disabled, the list says why. */
+  viewerOnly?: boolean
 }) {
   const f = freshness(r.index)
   const head = r.index.head_sha
@@ -369,7 +394,7 @@ function RepoCard({
         {r.index.in_flight_task_id !== null ? (
           <NamedMark mark="running" hue="live" word="indexing now" title={r.index.in_flight_task_id} />
         ) : (
-          <Button size="sm" busy={busy} disabled={confirming} onClick={onAsk} data-index-now="">
+          <Button size="sm" busy={busy} disabled={confirming || viewerOnly} onClick={onAsk} data-index-now="">
             Index now
           </Button>
         )}

@@ -38,6 +38,7 @@ import { answerQuestion, loadQuestions, type AgentQuestion, type OwnerAnswer, ty
 import { Button } from './components'
 import { errorHeading, type ApiError } from './fetch'
 import { feedData, markRead, notificationsSnapshot, subscribeNotifications } from './notificationFeed'
+import { useRoleGate } from './Profile'
 import { useRead } from './RunFiles'
 import { timeAgo, type Task } from './types'
 
@@ -255,8 +256,12 @@ function AskedCard({ task, count }: { task: Task; count: number }) {
   const [fresh, setFresh] = useState<TaskQuestions | null>(null)
   const read = state.status === 'ok' || state.status === 'stale' ? state.data : null
   const data = fresh ?? read
+  // A VIEWER ANSWERS NOTHING (docs/design/workspace-roles.md §4.8): the
+  // submitter's own rule stays, and `member` is required on top of it. The
+  // server still decides (`role_member_required`).
+  const roleGate = useRoleGate('member', 'answer')
   // Absent from an API older than answers: nobody may answer there.
-  const mayAnswer = data?.may_answer === true
+  const mayAnswer = data?.may_answer === true && roleGate === null
   const questions = data?.status === 'ok' ? data.questions : []
   useReadsNotification(task.id, questions.length > 0)
   const who = task.step_id ? `This agent (step ${task.step_id})` : 'This agent'
@@ -273,7 +278,12 @@ function AskedCard({ task, count }: { task: Task; count: number }) {
         {who} asked you {count === 1 ? 'this' : 'these'} instead of guessing. Pick an option or write your own: the
         answer is stored on this task, where {launcher(task)} reads it with swarm_result.
       </p>
-      {data !== null && data.status === 'ok' && !mayAnswer && (
+      {data !== null && data.status === 'ok' && roleGate !== null && (
+        <p className="dt-note qc-why-not" data-role-gate="member">
+          {roleGate}
+        </p>
+      )}
+      {data !== null && data.status === 'ok' && data.may_answer !== true && (
         <p className="dt-note qc-why-not">
           You can read these but not answer them: {data.may_answer_because ?? 'the API did not say you may answer'}.
         </p>

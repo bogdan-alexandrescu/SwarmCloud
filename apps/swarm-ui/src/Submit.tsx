@@ -33,6 +33,7 @@ import { clearTaskPrefill, peekTaskPrefill } from './submitPrefill'
 import { Mark } from './primitives'
 import { ModelClassSelect, RoomFact, RunnerPicker, sentModelClass, useProviderKeys } from './RunnerPicker'
 import { AUTO, BROWSER_TOOL_KEY, BrowserToolPicker, declaredBrowserTools, jevAllowed, profileEgress, useJevJudgment, useTypesafeKey, withBrowserTool } from './BrowserToolPicker'
+import { useRoleGate } from './Profile'
 import { MCP_SERVERS_KEY, McpServerPicker, clearCredentials, declaredMcpServers, loadMcpServers, offeredMcpServers, readCredentials, withMcpServers, type McpServerList } from './McpServers'
 import { FailedPanel, Screen, useSubmitAs } from './Shell'
 import {
@@ -992,6 +993,10 @@ function Form({ capacity }: { capacity: Capacity }) {
   // A tenant switch made with this form open keeps it, and its button then
   // names the tenant it will submit as (intake-tenants.html 2A).
   const submitAs = useSubmitAs()
+  // A VIEWER SUBMITS NOTHING (docs/design/workspace-roles.md §4.8): the button
+  // is disabled with the role sentence beside it. The API still decides
+  // (`role_member_required`); this only stops offering a click it refuses.
+  const roleGate = useRoleGate('member', 'submit')
   // EMPTY, AND IT STAYS EMPTY UNTIL SOMEBODY PICKS (#118/#119, submit.html
   // decided 2026-10-01). No runner is preselected: `blocked` below holds the
   // button while this is '', so an untouched form cannot send anything.
@@ -1218,7 +1223,7 @@ function Form({ capacity }: { capacity: Capacity }) {
     // still an implicit submission, and it posted the same task again. The
     // guard is here, not on the button: a request in flight, or the one that
     // was just created and is still what the form says, is never sent twice.
-    if (inFlight.current || outcome.kind === 'sending' || justSent || refusedAsIs) return
+    if (inFlight.current || outcome.kind === 'sending' || justSent || refusedAsIs || roleGate !== null) return
     // The button is disabled with no runner; this holds the same rule for any
     // other way a form can be submitted, so nothing is posted without a name.
     if (chosen === '') {
@@ -1461,9 +1466,14 @@ function Form({ capacity }: { capacity: Capacity }) {
           {justSent ? (
             <Button key="another" type="button" kind="primary" full onClick={another}>Submit another</Button>
           ) : (
-            <Button key="submit" type="submit" kind="primary" full disabled={outcome.kind === 'sending' || blocked || refusedAsIs}>
+            <Button key="submit" type="submit" kind="primary" full disabled={outcome.kind === 'sending' || blocked || refusedAsIs || roleGate !== null}>
               {outcome.kind === 'sending' ? 'Submitting…' : submitAs === null ? 'Submit one task' : `Submit as ${submitAs}`}
             </Button>
+          )}
+          {roleGate !== null && (
+            <p className="sb-note" data-role-gate="member">
+              {roleGate}
+            </p>
           )}
           <p className="sb-note">Nothing runs until the scheduler admits it into every pool it needs.</p>
           {/* THE OUTCOME IS DRAWN BESIDE THE BUTTON THAT CAUSED IT (VQA V002,
