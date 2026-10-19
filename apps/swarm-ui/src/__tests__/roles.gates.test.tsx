@@ -6,6 +6,8 @@
 //     viewer; members decide here", and a `member` sees both live;
 //   * Submit is disabled for a `viewer`, with the role sentence, and posts
 //     nothing; it is live for a `member`;
+//   * Cancel (StopRun) is disabled for a `viewer`, with the role sentence,
+//     and opens no dialog; it is live for a `member`;
 //   * an agent's questions, a schedule's writes and a repository's register
 //     and Index now are disabled for a `viewer`, each with its sentence;
 //   * a `GET /v1/tenants/me` that carries no `role` (an older API) disables
@@ -167,6 +169,51 @@ describe('Submit, by role', () => {
     const { container, go } = await submitAs(MEMBER)
     await new Promise((r) => setTimeout(r, 50))
     expect(go.disabled).toBe(false)
+    expect(container.querySelector('[data-role-gate]')).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Cancel (StopRun), the control on an agent, a workflow step and a graph node
+// ---------------------------------------------------------------------------
+
+const THEN = '2026-09-24T03:55:07.000Z'
+
+/** A task StopRun offers to stop: admitted and dispatched, holding a lease. */
+function stoppable(): Record<string, unknown> {
+  return {
+    id: 'task_2a417cb24edb4d2cb59e', tenant_id: 'eng', state: 'DISPATCHED', runner_profile: 'browser',
+    resource_class: 'browser', provider: 'anthropic', priority: 0, created_at: THEN, updated_at: THEN,
+    started_at: null, completed_at: null, submitted_by: 'ada@eng.test', attempt_count: 1, max_attempts: 3,
+    park_reason: null, blocked_by: null, workflow_id: null, step_id: null, depends_on: null,
+    cancel_requested: false, repository_url: null, model: null, timeout_seconds: 600, next_eligible_at: null,
+    metadata: null, repository_ref: null, input: {}, last_error: null, result_summary: null,
+    latest_checkpoint: null, current_generation: 1, current_lease_id: 'lease_c388c25e50c5421f840d',
+  }
+}
+
+async function stopAs(role: { name: string; source: string } | null) {
+  live(() => null, role)
+  const { StopRun } = await import('../StopRun')
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { container } = render(<StopRun task={stoppable() as any} what="agent" reload={vi.fn()} />)
+  const stop = (await screen.findByRole('button', { name: 'stop' }, WAIT)) as HTMLButtonElement
+  return { container, stop }
+}
+
+describe('Cancel, by role', () => {
+  it('disables stop for a viewer, with the role sentence, and opens no dialog', async () => {
+    const { container, stop } = await stopAs(VIEWER)
+    await waitFor(() => expect(stop.disabled).toBe(true), WAIT)
+    expect(container.textContent).toContain('Your role in eng is viewer; members cancel here.')
+    fireEvent.click(stop)
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('leaves stop live for a member', async () => {
+    const { container, stop } = await stopAs(MEMBER)
+    await new Promise((r) => setTimeout(r, 50))
+    expect(stop.disabled).toBe(false)
     expect(container.querySelector('[data-role-gate]')).toBeNull()
   })
 })
