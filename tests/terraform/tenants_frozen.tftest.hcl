@@ -136,6 +136,32 @@ run "prod_s_three_tenants_still_plan" {
   }
 }
 
+# What the refusal SAYS. `expect_failures` below only proves that var.tenants
+# failed, not with which message, so the message is read from variables.tf
+# itself: it must send whoever meets it to the design and to the job that
+# makes a workspace now, or a tfvars author is told "no" and not where to go.
+run "the_refusal_names_the_design_and_the_job" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    tenants = {
+      eng = { kind = "group", principal = "eng@saga.xyz", providers = ["anthropic"] }
+    }
+  }
+
+  assert {
+    condition = length([
+      for m in regexall("error_message\\s*=\\s*\"(var\\.tenants is frozen[^\"]*)\"", file("../../terraform/infra/variables.tf")) : m[0]
+      if strcontains(m[0], "docs/design/workspace-kinds.md §4.7") && strcontains(m[0], "swarm-workspace-apply")
+    ]) == 1 && contains(keys(output.tenant_namespaces), "eng")
+    error_message = "the freeze's error_message in terraform/infra/variables.tf must name docs/design/workspace-kinds.md §4.7 and the job swarm-workspace-apply"
+  }
+}
+
 # The refusals are last: a run that errors skips every run after it.
 run "a_fifth_dev_tenant_is_refused" {
   command = plan

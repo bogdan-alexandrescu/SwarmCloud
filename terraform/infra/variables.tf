@@ -390,8 +390,11 @@ variable "tenants" {
   # can change or destroy it. These tenants stay here because they carry
   # what the job never makes: authoritative per-provider secret bindings and
   # Terraform-made Cloud Run and scheduler jobs. Moving one out is §4.7's
-  # option (b), a plan that destroys nothing, one tenant per pull request; it
-  # shrinks its list here. Nothing may add to one.
+  # option (b), a plan that destroys nothing, one tenant per pull request.
+  # The lists below are a deliberate second copy of dev.tfvars' and
+  # prod.tfvars' keys: that pull request removes the tenant from its tfvars
+  # file AND from its list here, or the freeze would still admit the id the
+  # job now owns. Nothing may add to either.
   #
   # Per environment, because the environments differ: dev holds §4.7's four;
   # prod.tfvars holds eng, research and smoke. An environment with no tfvars
