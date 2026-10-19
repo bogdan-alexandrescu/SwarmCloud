@@ -362,7 +362,8 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
   { name: 'setup', routes: ['work/repositories', 'work/setup', 'work/access', 'automate/schedules', 'automate/approvals'], floor: 90 },
   { name: 'capacity', routes: ['capacity/pools', 'capacity/catalogue', 'capacity/profiles'], floor: 140 },
   { name: 'accounts', routes: ['capacity/holders', 'capacity/accounts', 'capacity/quota'], floor: 160 },
-  { name: 'admin', routes: ['admin/limits', 'admin/tenants', 'admin/counts', 'admin/people'], floor: 120 },
+  // Workspaces you admin (NAV-ADMIN-ROLE; part of #1633) is Admin's fifth tab.
+  { name: 'admin', routes: ['admin/limits', 'admin/tenants', 'admin/counts', 'admin/people', 'admin/workspaces'], floor: 120 },
 ]
 
 /** The old single sweep's floor, which the slices' floors must add up to. */

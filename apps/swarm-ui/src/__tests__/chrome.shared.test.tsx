@@ -479,11 +479,12 @@ describe('CH-21: a position in the navigation means one thing, at every width', 
       window.history.replaceState(null, '', `/${hash}`)
       const { container, unmount } = render(<App />)
       // Links since #503 (`a.sk-ri`): Profile (NAV-PROFILE, #1633), Submit,
-      // the five sections, Help, API reads -- each by its label, as Profile's
-      // icon is the person's initials.
+      // four sections, Help, API reads -- each by its label, as Profile's
+      // icon is the person's initials. No Admin (NAV-ADMIN-ROLE; part of
+      // #1633): nobody read here is known to administer anything.
       const items = [...container.querySelectorAll('.sk-spine .sk-ri')].map((b) => ((b.querySelector('small') ?? b).textContent ?? '').trim())
       unmount()
-      expect(items.length, `${hash}: the spine holds fewer than Profile, Submit, five sections and two utilities`).toBe(9)
+      expect(items.length, `${hash}: the spine holds fewer than Profile, Submit, four sections and two utilities`).toBe(8)
       if (first === null) first = items
       expect(items, `${hash}: the spine is not the one every other route draws`).toEqual(first)
     }
