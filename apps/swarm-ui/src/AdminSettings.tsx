@@ -1,5 +1,7 @@
 import { Fragment, useEffect, useId, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react'
-import { loadAdminPools, loadCapacity, loadMe, setPoolLimit, storeOwnerToken } from './api'
+import {
+  loadAdminPools, loadCapacity, loadMe, loadModelClasses, loadPlatformSettings, priceRefusals, saveModelPrices, setPoolLimit, storeOwnerToken,
+} from './api'
 import { Button, Card } from './components'
 import { errorHeading, isPaused, read, route, write, type ApiError, type Result } from './fetch'
 import { Refusal } from './GitHubConnect'
@@ -17,6 +19,9 @@ import {
   type AdminPool,
   type Capacity,
   type Me,
+  type ModelPrice,
+  type ModelPriceChange,
+  type ModelPriceRate,
   type OwnerTokenResponse,
   type PlatformSettings,
   type Pool,
@@ -171,6 +176,7 @@ export function AdminSettingsScreen() {
         )}
       </Screen>
       <AdditionalRepositoryLimitsCard />
+      <ModelPricesCard admin={admin} />
       <FallbackTokenCard />
     </>
   )
@@ -1778,6 +1784,261 @@ export function AdditionalRepositoryLimitsCard() {
           Saved: at most {savedAt.max_additional_repositories} additional{' '}
           {savedAt.max_additional_repositories === 1 ? 'repository' : 'repositories'} per step,{' '}
           {savedAt.additional_repositories_budget_gib} GiB in total.
+        </p>
+      )}
+    </Card>
+  )
+}
+
+/** The four rates the price table edits, in the order it draws them. Per million tokens. */
+const PRICE_COLUMNS: ReadonlyArray<{ key: ModelPriceRate; head: string }> = [
+  { key: 'input', head: 'Input' },
+  { key: 'output', head: 'Output' },
+  { key: 'cache_read', head: 'Cache read' },
+  { key: 'cache_write', head: 'Cache write' },
+]
+type PriceField = ModelPriceRate | 'as_of'
+type TypedPrices = Record<string, Partial<Record<PriceField, string>>>
+
+/** `claude-haiku-4-5-20251001`, `claude-opus-4-8[1m]`: what may follow a priced
+ *  name and still be that model, as `modelprices.price_for` reads it. */
+const PRICED_SUFFIX = /^(?:-\d{8})?(?:\[[a-z0-9]+\])?$/
+const AS_OF = /^\d{4}-\d{2}-\d{2}$/
+
+/** Whether `model` is priced by an entry of `prices`: its own, or a dated or
+ *  context-marked spelling of one. A pinned model that is not reads "cost not reported". */
+function isPriced(model: string, prices: Record<string, ModelPrice>): boolean {
+  return Object.keys(prices).some((name) => model.startsWith(name) && PRICED_SUFFIX.test(model.slice(name.length)))
+}
+
+/** A typed rate as a number of 0 or more, or null. The ceiling is the API's to
+ *  name (`modelprices.MAX_RATE`): it refuses a figure past it with 422. */
+function rateOf(typed: string | undefined): number | null {
+  const t = (typed ?? '').trim()
+  if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(t)) return null
+  const n = Number(t)
+  return Number.isFinite(n) ? n : null
+}
+
+function typedOf(prices: Record<string, ModelPrice>): TypedPrices {
+  const out: TypedPrices = {}
+  for (const [name, p] of Object.entries(prices)) {
+    out[name] = { input: String(p.input), output: String(p.output), cache_read: String(p.cache_read), cache_write: String(p.cache_write), as_of: p.as_of }
+  }
+  return out
+}
+
+/** A loader that a test's partial mock of `./api` may lack, as a failed read rather than a thrown render. */
+function settle<T>(load: () => Promise<Result<T>>): Promise<Result<T>> {
+  return Promise.resolve()
+    .then(load)
+    .catch((e: unknown): Result<T> => ({
+      status: 'error',
+      error: { kind: 'unreachable', httpStatus: null, code: null, message: e instanceof Error ? e.message : String(e) },
+    }))
+}
+
+/**
+ * MODEL LIST PRICES (#1481, owner 2026-10-17): the per-million-token figures
+ * swarm-api prices a stopped attempt's usage at. PRICES ARE DATA, NOT CODE:
+ * the `model_prices` platform setting, edited here beside the other platform
+ * settings and read afresh at every estimate, so a save prices the next
+ * stopped attempt with no deploy.
+ *
+ * ONE ROW PER MODEL: every model the table prices, and every model a runner
+ * pins (`/v1/runtimes`, `loadModelClasses`) that it does not. NOTHING IS
+ * INVENTED: a pinned model with no entry reads "cost not reported" -- what
+ * its stopped attempts read -- and an admin may give it a figure here. A
+ * figure is never filled in for it.
+ *
+ * Admins edit; anyone else reads the figures with no field to type in. The
+ * GET is admin-gated, so a non-admin is told "Platform admins only.", as the
+ * card above tells them. A save PUTs `model_prices` with only the rows that
+ * changed, each a whole entry (`schemas.ModelPriceRequest`); swarm-api stamps
+ * each with the admin who made it and keeps every model not named. A
+ * changed figure's `as_of` becomes today unless the admin typed another day.
+ *
+ * What the save did is read off its RESPONSE -- the table as stored, with who
+ * saved it and when -- not off the form. A refusal that names a figure
+ * (`detail.errors[].loc`, `priceRefusals`) is printed at that figure.
+ */
+export function ModelPricesCard({ admin }: { admin: boolean | null }) {
+  const id = useId()
+  const inFlight = useRef(false)
+  const phone = usePhoneTables()
+  const [settings, setSettings] = useState<Result<PlatformSettings> | null>(null)
+  /** Every model a runner pins, or null when `/v1/runtimes` was not read. */
+  const [pinned, setPinned] = useState<string[] | null>(null)
+  const [typed, setTyped] = useState<TypedPrices>({})
+  const [busy, setBusy] = useState(false)
+  const [refused, setRefused] = useState<ApiError | null>(null)
+  const [atField, setAtField] = useState<Record<string, string>>({})
+  const [saved, setSaved] = useState<{ settings: PlatformSettings; models: string[] } | null>(null)
+
+  useEffect(() => {
+    let live = true
+    void settle(() => loadPlatformSettings()).then((r) => {
+      if (!live) return
+      setSettings(r)
+      if (r.status === 'ok' || r.status === 'stale') setTyped(typedOf(r.data.model_prices))
+    })
+    void settle(() => loadModelClasses()).then((r) => {
+      if (!live || (r.status !== 'ok' && r.status !== 'stale')) return
+      setPinned([...new Set(Object.values(r.data).flatMap((o) => Object.values(o.models)))])
+    })
+    return () => {
+      live = false
+    }
+  }, [])
+
+  const data = settings !== null && (settings.status === 'ok' || settings.status === 'stale') ? settings.data : null
+  const prices = data?.model_prices ?? {}
+  const models = [...new Set([...Object.keys(prices), ...(pinned ?? []).filter((m) => !isPriced(m, prices))])].sort()
+  const editable = data !== null && admin !== false
+
+  const changes: Record<string, ModelPriceChange> = {}
+  let invalid = false
+  for (const m of models) {
+    const t = typed[m] ?? {}
+    const price = prices[m]
+    const rates = PRICE_COLUMNS.map((c) => rateOf(t[c.key]))
+    const asOf = (t.as_of ?? '').trim()
+    const touched = price === undefined
+      ? PRICE_COLUMNS.some((c) => (t[c.key] ?? '').trim() !== '') || asOf !== ''
+      : PRICE_COLUMNS.some((c, i) => rates[i] !== price[c.key]) || asOf !== price.as_of
+    if (!touched) continue
+    if (rates.some((r) => r === null) || !AS_OF.test(asOf)) {
+      invalid = true
+      continue
+    }
+    changes[m] = { input: rates[0]!, output: rates[1]!, cache_read: rates[2]!, cache_write: rates[3]!, as_of: asOf }
+  }
+  const nothing = Object.keys(changes).length === 0
+
+  const type = (model: string, field: PriceField, value: string) => {
+    setSaved(null)
+    setTyped((was) => {
+      const row = was[model] ?? {}
+      const stored = prices[model]?.as_of ?? ''
+      // A changed figure was read today, unless the admin has said otherwise.
+      const asOf = field !== 'as_of' && (row.as_of ?? '') === stored ? new Date().toISOString().slice(0, 10) : row.as_of
+      return { ...was, [model]: { ...row, as_of: asOf, [field]: value } }
+    })
+  }
+
+  async function save(e: FormEvent) {
+    e.preventDefault()
+    if (inFlight.current || invalid || nothing) return
+    inFlight.current = true
+    setBusy(true)
+    setRefused(null)
+    setAtField({})
+    setSaved(null)
+    const sent = Object.keys(changes).sort()
+    const r = await saveModelPrices(changes)
+    inFlight.current = false
+    setBusy(false)
+    if (r.status === 'error') {
+      const { fields, unattributed } = priceRefusals(r.error)
+      setAtField(fields)
+      setRefused(unattributed === null ? null : r.error)
+      return
+    }
+    if (r.status === 'ok' || r.status === 'stale') {
+      setSettings(r)
+      setTyped(typedOf(r.data.model_prices))
+      setSaved({ settings: r.data, models: sent })
+    }
+  }
+
+  const said = (key: string) => atField[key]
+  const cell = (m: string, field: PriceField, label: string) => {
+    const msg = said(`${m}/${field}`)
+    return (
+      <>
+        <input id={`${id}-${m}-${field}`} type="text" inputMode={field === 'as_of' ? 'numeric' : 'decimal'} className="mono"
+          aria-label={`${label}, ${m}`} value={typed[m]?.[field] ?? ''} disabled={busy}
+          placeholder={field === 'as_of' ? 'YYYY-MM-DD' : undefined}
+          aria-invalid={msg !== undefined || undefined}
+          aria-describedby={msg !== undefined ? `${id}-${m}-${field}-why` : undefined}
+          onChange={(e) => type(m, field, e.target.value)} />
+        {msg !== undefined && <span id={`${id}-${m}-${field}-why`} className="warn-text" role="alert">{msg}</span>}
+      </>
+    )
+  }
+
+  return (
+    <Card className="adm-prices" title="Model prices" level={2}>
+      {settings === null || settings.status === 'loading' ? (
+        <p className="ur-small">Reading…</p>
+      ) : data === null ? (
+        settings.status === 'error' && settings.error.httpStatus === 403 ? (
+          <p className="ur-small">Platform admins only.</p>
+        ) : (
+          // Two words, the console's mark for a failed read, with what failed
+          // one hover away: Pool limits is held to a word budget
+          // (prose.operator.test.tsx), as the card above says.
+          <p className="warn-text" role="alert"
+            title={settings.status === 'error' ? `${errorHeading(settings.error)}: ${settings.error.message}` : undefined}>
+            Not read
+          </p>
+        )
+      ) : (
+        <form onSubmit={(e) => void save(e)}>
+          <div className={`ctl-table ${tableMode(phone)}`}>
+            <table role="table" className="adm-price-table">
+              <thead role="rowgroup">
+                <tr role="row">
+                  <th role="columnheader" scope="col">Model</th>
+                  {PRICE_COLUMNS.map((c) => (
+                    <th key={c.key} role="columnheader" scope="col" className="is-num">{c.head} /M</th>
+                  ))}
+                  <th role="columnheader" scope="col">Currency</th>
+                  <th role="columnheader" scope="col">Source</th>
+                  <th role="columnheader" scope="col">As of</th>
+                  <th role="columnheader" scope="col">Set by</th>
+                </tr>
+              </thead>
+              <tbody role="rowgroup">
+                {models.map((m) => {
+                  const p = prices[m]
+                  const rowMsg = said(m)
+                  return (
+                    <tr key={m} role="row" data-model={m}>
+                      <th role="rowheader" scope="row" className="mono" data-label="Model">
+                        {m}
+                        {rowMsg !== undefined && <span className="warn-text" role="alert"> {rowMsg}</span>}
+                      </th>
+                      {PRICE_COLUMNS.map((c) => (
+                        <td key={c.key} className="is-num mono" data-label={`${c.head} /M`}>
+                          {editable ? cell(m, c.key, c.head) : p === undefined ? '—' : String(p[c.key])}
+                        </td>
+                      ))}
+                      <td data-label="Currency">{p === undefined ? '—' : p.currency}</td>
+                      <td data-label="Source">{p === undefined ? <span className="is-absent">cost not reported</span> : p.source}</td>
+                      <td className="mono" data-label="As of">{editable ? cell(m, 'as_of', 'As of') : p === undefined ? '—' : p.as_of}</td>
+                      <td data-label="Set by">{p?.updated_by ?? '—'}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          {editable && (
+            <Button type="submit" kind="primary" size="sm" busy={busy} disabled={invalid || nothing}>
+              Save prices
+            </Button>
+          )}
+        </form>
+      )}
+      {data !== null && models.length === 0 && <p className="ur-small">No model is priced, and no runner pins one.</p>}
+      {editable && invalid && <p className="warn-text">Each figure is a number, 0 or more, with its day as YYYY-MM-DD.</p>}
+      {refused !== null && <Refusal error={refused} title="The prices were not saved" />}
+      {saved !== null && (
+        <p className="ur-small" role="status">
+          Saved {saved.models.join(', ')}
+          {saved.settings.updated_by !== null ? ` · ${saved.settings.updated_by}` : ''}
+          {saved.settings.updated_at !== null ? ` · ${timeAgo(saved.settings.updated_at)}` : ''}
         </p>
       )}
     </Card>

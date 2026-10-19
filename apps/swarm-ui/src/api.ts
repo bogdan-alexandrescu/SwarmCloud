@@ -1,9 +1,9 @@
-import { noteFixtureProbe, read, route, tenantQuery, write, type ApiRoute, type Result } from './fetch'
+import { noteFixtureProbe, read, route, tenantQuery, write, type ApiError, type ApiRoute, type Result } from './fetch'
 // A VALUE import, not a type: the attempt fixture needs the terminal-state set
 // so a live task's newest attempt is rendered as live, and the task fixture
 // needs the concurrency set to decide which rows hold a lease -- invariant 1's
 // four states, not a second list written out here.
-import { CONCURRENCY_STATES, TERMINAL_STATES } from './types'
+import { CONCURRENCY_STATES, MODEL_PRICE_RATES, TERMINAL_STATES } from './types'
 // The one rule for summing a nullable measurement: null until something
 // actually reported it, so an unmeasured sample never becomes a confident zero.
 import { sumReported } from './measure'
@@ -24,6 +24,7 @@ import type {
   CheckpointsPage, TaskLogs,
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
   AdminPool, AttemptRow, AttemptsPage, TaskEventsPage, TaskAccount, LeaseHeartbeat, LeaseHeartbeatPage, LeasePage, LeaseRow, Pool, ProfileAdmission, QuotaState, ResourceClassSpec,
+  ModelPrice, ModelPriceChange, ModelPriceRate, PlatformSettings,
   RunnerInputContract, Runtime, TaskState,
   TaskWindow, Tenant,
   Workflow, WorkflowPage,
@@ -3135,6 +3136,101 @@ export async function setPoolLimit(poolName: string, limit: number): Promise<Res
   }
 
   return write(path, 'PUT', { limit })
+}
+
+// --------------------------------------------------------------------------
+// Platform settings: the model price table (#1481)
+// --------------------------------------------------------------------------
+// `GET/PUT /v1/admin/settings` (`Store.get_platform_settings`). Both are
+// admin-gated, so a non-admin's 403 is information, not a failure. No fixture
+// branch, as Admin › Pool limits' other settings card has none: the fixture
+// build serves no platform settings.
+//
+// NORMALISE OR DROP, NEVER GUESS. An entry with a rate that is not a finite
+// number of 0 or more, or with no `as_of`, is dropped here exactly as
+// `modelprices.entry` drops it on the server: its model then reads "cost not
+// reported", which is what swarm-api prices it at. A zero in its place would
+// be a figure nobody set.
+
+function normModelPrice(raw: unknown): ModelPrice | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
+  const r = raw as Record<string, unknown>
+  const rates: Partial<Record<ModelPriceRate, number>> = {}
+  for (const k of MODEL_PRICE_RATES) {
+    const v = r[k]
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return null
+    rates[k] = v
+  }
+  if (r.currency !== 'USD' || typeof r.source !== 'string' || typeof r.as_of !== 'string') return null
+  return {
+    ...(rates as Record<ModelPriceRate, number>),
+    currency: 'USD',
+    source: r.source,
+    as_of: r.as_of,
+    updated_by: typeof r.updated_by === 'string' ? r.updated_by : null,
+  }
+}
+
+/** `model_prices` as served, each malformed entry dropped (see above). */
+export function normModelPrices(raw: unknown): Record<string, ModelPrice> {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return {}
+  const out: Record<string, ModelPrice> = {}
+  for (const [name, entry] of Object.entries(raw as Record<string, unknown>)) {
+    const price = normModelPrice(entry)
+    if (price !== null) out[name] = price
+  }
+  return out
+}
+
+function normPlatformSettings(raw: unknown): PlatformSettings {
+  const s = raw as PlatformSettings
+  return { ...s, model_prices: normModelPrices((raw as { model_prices?: unknown } | null)?.model_prices) }
+}
+
+/** `GET /v1/admin/settings`, with its price table normalised. */
+export async function loadPlatformSettings(): Promise<Result<PlatformSettings>> {
+  const r = await read<unknown>(route('/v1/admin/settings'), () => false)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normPlatformSettings(r.data) }
+  return r as Result<PlatformSettings>
+}
+
+/**
+ * `PUT /v1/admin/settings` with `model_prices` and nothing else, so a save
+ * never rewrites a setting the price table did not touch. Each named entry
+ * replaces that model's whole entry; every model not named keeps its own
+ * (`Store._model_prices_after`). The response is the settings AS STORED, which
+ * is what the table draws next, and carries who saved and when.
+ */
+export async function saveModelPrices(changes: Record<string, ModelPriceChange>): Promise<Result<PlatformSettings>> {
+  const r = await write(route('/v1/admin/settings'), 'PUT', { model_prices: changes })
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normPlatformSettings(r.data) }
+  return r as Result<PlatformSettings>
+}
+
+/**
+ * Which price a refused save is about. FastAPI's RequestValidationError is
+ * wrapped into `detail.errors[].loc`, here `["body", "model_prices", <model>,
+ * <rate>]`: the message is kept under `<model>/<rate>`, or under `<model>`
+ * when the loc names the entry and no rate (a missing `as_of`, an unknown
+ * key). A model name never holds a `/` (`modelprices.MODEL_NAME`). What names
+ * no model is returned as `unattributed`, to be shown above the table, never
+ * pinned to a guess: a message under the wrong cell sends someone editing a
+ * figure that was never the problem.
+ */
+export function priceRefusals(error: ApiError): { fields: Record<string, string>; unattributed: string | null } {
+  const detail = typeof error.detail === 'object' && error.detail !== null ? (error.detail as Record<string, unknown>) : {}
+  const fields: Record<string, string> = {}
+  for (const e of Array.isArray(detail.errors) ? detail.errors : []) {
+    if (typeof e !== 'object' || e === null) continue
+    const loc = Array.isArray((e as { loc?: unknown }).loc) ? ((e as { loc: unknown[] }).loc).map(String) : []
+    const path = loc[0] === 'body' ? loc.slice(1) : loc
+    if (path[0] !== 'model_prices' || path[1] === undefined) continue
+    const msg = typeof (e as { msg?: unknown }).msg === 'string' ? (e as { msg: string }).msg : error.message
+    const rate = MODEL_PRICE_RATES.find((k) => k === path[2]) ?? (path[2] === 'as_of' ? 'as_of' : undefined)
+    const key = rate === undefined ? path[1] : `${path[1]}/${rate}`
+    fields[key] = fields[key] === undefined ? msg : `${fields[key]}; ${msg}`
+  }
+  return { fields, unattributed: Object.keys(fields).length === 0 ? error.message : null }
 }
 
 // --------------------------------------------------------------------------
