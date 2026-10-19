@@ -552,12 +552,19 @@ _wf_post_answer() {
 #     each with the sha256 the answer recorded, and the file's equal to the
 #     bytes sent.
 #
-# THE ANSWERING IDENTITY. The answer is posted as this suite's own caller in
-# ACC_TENANT. swarm-api takes an answer from a person who is a member, or
-# from a service tenant's own principal in that tenant (§4.2.1); any other
-# service account is 403 `person_required`. That refusal is reported as
-# itself, naming the rule, because it says the suite cannot answer here --
-# not that the wait or the resume is broken.
+# THE ANSWERING IDENTITY IS AN OPEN QUESTION TO THE OWNER (HW-ACCEPT review,
+# 2026-10-19). The answer is posted as this suite's own caller, swarm-verify,
+# in ACC_TENANT (`smoke`, a group tenant). swarm-api takes an answer from a
+# person who is a member, or from a service tenant's own principal acting in
+# that tenant (awaitinput.py `service_principal`, §4.2.1); any other service
+# account is 403 `person_required`. swarm-verify cannot act in its own
+# service tenant `u-sw-c90291` either: it is in eng's and smoke's groups, so
+# it resolves to `eng`, `_tenant_choices` offers only those groups, and
+# `_with_own_workspace` never offers a service identity its `u-` id. So until
+# the owner picks the answering identity, every run on dev is that 403, and
+# the check FAILS on it, as a defect and not as a gap: the resume within one
+# drain and the staged form and file are three of the four behaviours this
+# group exists to prove, and HW-ENABLE waits on them.
 _wf_check_await() {
   local wf="$1" wid draft review revise state doc window leases docs attempts
   local answer_id answer attachment out reason answered_at sent recorded form_sha
@@ -606,7 +613,7 @@ _wf_check_await() {
   if ! _wf_post_answer "${wid}" review "${answer}" "${attachment}" "${out}"; then
     reason="$(jq -r 'if type == "object" then (.detail.reason // .code // "") else "" end' "${out}" 2>/dev/null || true)"
     if [[ "${WF_ANSWER_STATUS}" == "403" && "${reason}" == "person_required" ]]; then
-      acc_fail "swarm-api refused the answer, 403 person_required: this suite's caller is a service account and ${ACC_TENANT} is not its own service tenant, so it may not answer there (docs/design/human-steps.md §4.2.1). The wait and the resume are unmeasured, not broken" "${review}"
+      acc_fail "swarm-api refused the answer, 403 person_required: this suite's caller is a service account in group tenant ${ACC_TENANT}, which §4.2.1 refuses, and it cannot select its own service tenant. The resume and the staged form and file are not proven until the owner picks the answering identity (HW-ACCEPT's questions.json)" "${review}"
     else
       acc_fail "swarm-api did not take the answer: HTTP ${WF_ANSWER_STATUS} ${reason:-}" "${review}"
       [[ ! -s "${out}" ]] || _api_error_body "${out}"
@@ -641,10 +648,20 @@ _wf_check_await() {
       acc_fail "revise was leased ${delay} s after the answer, more than one drain (${WF_DRAIN_SECONDS} s)" "${revise}"
     fi
   fi
-  if [[ -n "${running_at}" && -n "${answered_at}" ]]; then
-    acc_pass "revise was RUNNING $(( ${running_at%.*} - ${answered_at%.*} )) s after the answer" "${revise}"
-  else
+  # RUNNING is held to the same drain, as the brief states it: the lease
+  # bound says the scheduler admitted revise on the answer's own wake, and
+  # this one that the job it dispatched started inside that drain too.
+  if [[ -z "${running_at}" ]]; then
     acc_fail "revise has no running event: it never reached RUNNING" "${revise}"
+  elif [[ -z "${answered_at}" ]]; then
+    acc_fail "cannot time revise's RUNNING: the answer recorded no answered_at" "${revise}"
+  else
+    delay=$(( ${running_at%.*} - ${answered_at%.*} ))
+    if [[ "${delay}" -le "${WF_DRAIN_SECONDS}" ]]; then
+      acc_pass "revise was RUNNING ${delay} s after the answer, within one drain (${WF_DRAIN_SECONDS} s)" "${revise}"
+    else
+      acc_fail "revise was RUNNING ${delay} s after the answer, more than one drain (${WF_DRAIN_SECONDS} s)" "${revise}"
+    fi
   fi
 
   # The wait never took a lease, answered as well as parked.
@@ -701,12 +718,19 @@ _wf_check_expire() {
   # It waited its window: expires_at is opened_at + 300, and it ended no
   # earlier than expires_at, by the step's own succeeded event.
   times="$(jq -r "${WF_JQ_EPOCH}"' .metadata.await_input // {} | "\((.opened_at | epoch) // 0) \((.expires_at | epoch) // 0)"' <<<"${doc}")"
-  acc_assert_eq "${WF_EXPIRE_SECONDS}" "$(( ${times#* } - ${times% *} ))" "the wait's window, expires_at - opened_at, in seconds" "${ask}"
-  ended="$(acc_events "${ask}" | jq -sr "${WF_JQ_EPOCH}"' [.[] | select(.type == "succeeded") | (.at | epoch) | select(. != null)] | min // empty')"
-  if [[ -n "${ended}" && "${ended%.*}" -ge "${times#* }" ]]; then
-    acc_pass "ended $(( ${ended%.*} - ${times% *} )) s after the park, not before expires_at" "${ask}"
+  # A missing or unreadable block reads as "0 0": say that, rather than let
+  # the window report it as a wrong window of 0 s. The checks after the
+  # timing still run; they do not read it.
+  if [[ "${times% *}" == "0" || "${times#* }" == "0" ]]; then
+    acc_fail "metadata.await_input has no readable opened_at and expires_at, so the window cannot be timed: $(jq -c '.metadata.await_input // "missing"' <<<"${doc}")" "${ask}"
   else
-    acc_fail "its succeeded event (${ended:-none}) is before expires_at (${times#* }): the default landed before the wait ran out" "${ask}"
+    acc_assert_eq "${WF_EXPIRE_SECONDS}" "$(( ${times#* } - ${times% *} ))" "the wait's window, expires_at - opened_at, in seconds" "${ask}"
+    ended="$(acc_events "${ask}" | jq -sr "${WF_JQ_EPOCH}"' [.[] | select(.type == "succeeded") | (.at | epoch) | select(. != null)] | min // empty')"
+    if [[ -n "${ended}" && "${ended%.*}" -ge "${times#* }" ]]; then
+      acc_pass "ended $(( ${ended%.*} - ${times% *} )) s after the park, not before expires_at" "${ask}"
+    else
+      acc_fail "its succeeded event (${ended:-none}) is before expires_at (${times#* }): the default landed before the wait ran out" "${ask}"
+    fi
   fi
   if leases="$(task_lease_ids "${ask}")"; then
     acc_assert_eq "none" "${leases:-none}" "lease ids in the expired step's events" "${ask}"
