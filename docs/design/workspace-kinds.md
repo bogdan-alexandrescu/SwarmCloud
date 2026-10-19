@@ -1258,13 +1258,14 @@ reader can check it rather than trust it.
    its document id, or it is left out and logged by workspace id. The record
    is the only thing between a Firestore document and a tenant boundary, so
    the registry checks it again rather than trusting it.
-4. **The five new failure codes have no copy of their own.**
+4. **The five new failure codes got their copy after this section's lanes.**
    `SERVICE_ACCOUNT_REFUSED`, `DIRECTORY_CHECK_STALE`, `FRONT_DOOR_OWNER`,
-   `FRONT_DOOR_FAILED` and `NAMESPACE_LABEL_MISSING` are not keys of
-   `apps/swarm-api/swarm_api/workspaces.py::FAILURE_COPY`. A `failed` record
-   carrying one is served the fallback sentence, and a `needs_owner` one the
-   state's own line (`docs/workspaces.md` §4.3). It is filed as an
-   out-of-territory finding of this lane.
+   `FRONT_DOOR_FAILED` and `NAMESPACE_LABEL_MISSING` were first served the
+   fallback sentence. Lane WK-FAILCOPY gave each, and `APPROVAL_UNSIGNED`, a
+   sentence of its own in
+   `apps/swarm-api/swarm_api/workspaces.py::FAILURE_COPY`, quoted in
+   `docs/workspaces.md` §4.3, and a test fails on any code the job writes
+   without one.
 5. **The tenants list serves `workspace_kind`, not `kind`.** `kind` on
    `GET /v1/admin/tenants` is already the frozen `Tenant.kind`, so the
    record's kind is served beside it

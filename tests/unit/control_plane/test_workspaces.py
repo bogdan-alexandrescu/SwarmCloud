@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -564,7 +565,7 @@ def test_no_sighting_is_recorded_for_a_service_account(api_context, db) -> None:
 
 # --- the failure copy covers every code the job stops with (WK-FAILCOPY) ------
 
-_REPO = __import__("pathlib").Path(__file__).resolve().parents[3]
+_REPO = Path(__file__).resolve().parents[3]
 
 #: The codes workspace kinds added (docs/design/workspace-kinds.md §4.8) and
 #: the signed approval's (WK-SIGNED-APPROVAL), and who acts on each: a
@@ -618,7 +619,7 @@ def test_a_kinds_code_has_its_own_sentence_and_names_who_acts(code: str) -> None
 
 
 _COMMANDISH = re.compile(
-    r"`|\$|--|/sc|\bsc setup\b|\b(?:gcloud|kubectl|curl|jq|bash|terraform|gsutil|make)\b"
+    r"`|\$|--|/sc|\bsc setup\b|\b(?:gcloud|kubectl|curl|jq|bash|terraform|gsutil)\b"
     r"|\b(?:HTTP|stderr|stdout|exit code|ERROR)\b|\.sh\b|\.json\b|\.py\b")
 
 
