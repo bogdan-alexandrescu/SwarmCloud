@@ -10,14 +10,20 @@
 #   swarm-workspace-deployer-scope        every kind the deployer may write,
 #                                         listed (Autopilot refuses "*"). The
 #                                         write is a CREATE or an UPDATE
-#                                         (never a DELETE), of a
-#                                         Namespace named swarm-tenant-u-*, or
-#                                         of an object inside one -- and only
-#                                         of a kind and name the tenant render
-#                                         produces.
+#                                         (never a DELETE), of a Namespace
+#                                         named swarm-tenant-u-* or
+#                                         swarm-tenant-<id>, or of an object
+#                                         inside a swarm-tenant-u-* namespace or
+#                                         inside one carrying the workspace
+#                                         label -- never in a Terraform
+#                                         tenant's -- and only of a kind and
+#                                         name the tenant render produces.
 #   swarm-workspace-deployer-namespaces   the Namespace carries the labels the
 #                                         worker policies and the scheduler
-#                                         select on, and enforces `restricted`.
+#                                         select on, and enforces `restricted`;
+#                                         one outside swarm-tenant-u-* is
+#                                         created only with the workspace label
+#                                         and updated only if it already has it.
 #   swarm-workspace-deployer-roles        a Role's rules are EXACTLY the
 #                                         render's, so `escalate` (which RBAC
 #                                         cannot narrow on create) writes
@@ -50,6 +56,35 @@
 # by creating a namespace WITHOUT the label, or by writing into one that lacks
 # it. What scopes these is `matchConditions` on the caller: a request by anyone
 # but the deployer is not evaluated at all.
+#
+# THE WORKSPACE LABEL, AND WHY IT IS THE BOUND FOR A GROUP OR SERVICE
+# WORKSPACE (docs/design/workspace-kinds.md §3.1 and §4.3, owner's answer
+# Q3 (a), 2026-10-19). A group tenant's id is the bare slug of the group
+# (`eng`, `research`), so the `swarm-tenant-u-*` name bound cannot hold it.
+# The bound is widened to `swarm-tenant-<id>`, and narrowed again by
+# `swarm.saga.xyz/workspace: w-<6 hex>`, which only the job writes and only on
+# CREATE (render.py --workspace-id, the job's step A7):
+#
+#   * a Namespace outside `swarm-tenant-u-*` is CREATED only with the label,
+#     and UPDATED only when the namespace already has it, unchanged -- so
+#     labelling an existing hand-made namespace is refused, and nothing the
+#     deployer did not create becomes its;
+#   * an object inside such a namespace is written only when the namespace
+#     (`namespaceObject`) carries the label. `eng`'s, `smoke`'s and every
+#     hand-made namespace lack it, so the deployer still cannot write into any
+#     of them;
+#   * the namespaces of the tenants terraform/infra declares are refused BY
+#     NAME, whatever their labels, so a missing `swarm-tenant-eng` cannot be
+#     created with the label either. The list is rendered from the
+#     environment's tfvars (render.py --terraform-tfvars; kubernetes/apply.sh
+#     passes its environment's). It includes Terraform's `u-` tenants, which
+#     the deployer never had any business writing;
+#   * the `swarm-tenant-u-*` arm is as it was, for the personal namespaces
+#     made before the label existed (w-752763's, w-7f9285's). Once written,
+#     the label never changes and never goes, on any namespace.
+#
+# The label is a string in this file and in render.py, not a constant in the
+# frozen contract: neither imports the contract for labels (design §5).
 #
 # Fail closed throughout: a policy that cannot be evaluated refuses the write.
 apiVersion: admissionregistration.k8s.io/v1
@@ -103,6 +138,24 @@ spec:
         variables.resource == '/namespaces'
           ? (has(request.name) ? request.name : '')
           : (has(request.namespace) ? request.namespace : '')
+    # A person's namespace: the arm that predates the workspace label.
+    - name: personal
+      expression: >-
+        variables.target.matches('^swarm-tenant-u-[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+    # The namespaces of the tenants terraform/infra declares, refused by name
+    # whatever they carry: kubernetes/render.py --terraform-tfvars.
+    - name: terraform
+      expression: >-
+        __TERRAFORM_NAMESPACES__
+    # Whether the namespace a namespaced object is written into carries the
+    # workspace label. Read only for a namespaced object: `namespaceObject` is
+    # null for a Namespace itself (cluster-scoped), and that request is judged
+    # by swarm-workspace-deployer-namespaces, which reads the object.
+    - name: labelled
+      expression: >-
+        has(namespaceObject.metadata.labels) &&
+        'swarm.saga.xyz/workspace' in namespaceObject.metadata.labels &&
+        namespaceObject.metadata.labels['swarm.saga.xyz/workspace'].matches('^w-[0-9a-f]{6}$')
     # What the tenant render produces, by `group/resource`: render.py's
     # TENANT_FILES and LEGACY_KSA_FILES. Not the spec-verify-keys ConfigMap:
     # the workspace job renders without it, and the ClusterRole grants none.
@@ -129,10 +182,22 @@ spec:
       reason: Forbidden
 
     - expression: >-
-        variables.target.matches('^swarm-tenant-u-[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+        !(variables.target in variables.terraform)
       message: >-
-        the workspace deployer writes only a Namespace named swarm-tenant-u-<person>
-        or an object inside one. Every other namespace, and every other
+        the workspace deployer never writes the namespace of a tenant
+        terraform/infra declares, or anything inside one, whatever its labels.
+        Those are the release's.
+      reason: Forbidden
+
+    - expression: >-
+        variables.personal ||
+        (variables.target.matches('^swarm-tenant-[a-z0-9]([-a-z0-9]*[a-z0-9])?$') &&
+          (variables.resource == '/namespaces' || variables.labelled))
+      message: >-
+        the workspace deployer writes only a Namespace named swarm-tenant-<tenant>,
+        an object inside a swarm-tenant-u-<person> namespace, or an object inside
+        a namespace carrying swarm.saga.xyz/workspace, which only the deployer
+        writes and only on create. Every other namespace, and every other
         cluster-scoped object, belongs to someone else.
       reason: Forbidden
 
@@ -179,6 +244,18 @@ spec:
     - name: workspace-deployer
       expression: >-
         request.userInfo.username in ["__WORKSPACE_DEPLOYER_GSA__", "__WORKSPACE_DEPLOYER_UID__"]
+  variables:
+    # The workspace label on the namespace as written, and as it was ('' when
+    # absent). oldObject is read only on UPDATE: it is null on CREATE.
+    - name: label
+      expression: >-
+        has(object.metadata.labels) && 'swarm.saga.xyz/workspace' in object.metadata.labels
+          ? object.metadata.labels['swarm.saga.xyz/workspace'] : ''
+    - name: old_label
+      expression: >-
+        request.operation == 'UPDATE' && has(oldObject.metadata.labels) &&
+        'swarm.saga.xyz/workspace' in oldObject.metadata.labels
+          ? oldObject.metadata.labels['swarm.saga.xyz/workspace'] : ''
   validations:
     # The worker pod and Job policies in pod-security.yaml bind by this label.
     # A namespace without it is a namespace where Spot, bursting and
@@ -188,7 +265,7 @@ spec:
         'app.kubernetes.io/part-of' in object.metadata.labels &&
         object.metadata.labels['app.kubernetes.io/part-of'] == 'swarm'
       message: >-
-        a personal namespace must carry app.kubernetes.io/part-of=swarm, which
+        a workspace namespace must carry app.kubernetes.io/part-of=swarm, which
         is what the worker admission policies select on.
       reason: Forbidden
 
@@ -197,7 +274,7 @@ spec:
         'swarm-tenant' in object.metadata.labels &&
         'swarm-tenant-' + object.metadata.labels['swarm-tenant'] == object.metadata.name
       message: >-
-        a personal namespace's swarm-tenant label must name the tenant the
+        a workspace namespace's swarm-tenant label must name the tenant the
         namespace is for (swarm-tenant-<tenant>).
       reason: Forbidden
 
@@ -209,8 +286,34 @@ spec:
         'pod-security.kubernetes.io/enforce' in object.metadata.labels &&
         object.metadata.labels['pod-security.kubernetes.io/enforce'] == 'restricted'
       message: >-
-        a personal namespace enforces Pod Security `restricted`; only the owner
+        a workspace namespace enforces Pod Security `restricted`; only the owner
         may lower it.
+      reason: Forbidden
+
+    # The workspace label (header): a w- id when present; outside the
+    # personal arm, present on CREATE and already present on UPDATE; and once
+    # written, never changed or removed.
+    - expression: >-
+        variables.label == '' || variables.label.matches('^w-[0-9a-f]{6}$')
+      message: >-
+        swarm.saga.xyz/workspace names the workspace that created the namespace,
+        w- and six hex digits.
+      reason: Forbidden
+
+    - expression: >-
+        object.metadata.name.matches('^swarm-tenant-u-[a-z0-9]([-a-z0-9]*[a-z0-9])?$') ||
+        (variables.label != '' && (request.operation == 'CREATE' || variables.old_label != ''))
+      message: >-
+        a namespace outside swarm-tenant-u-* is created by the workspace deployer
+        only with swarm.saga.xyz/workspace, and updated only when it already
+        carries it. Labelling an existing namespace does not make it the
+        deployer's.
+      reason: Forbidden
+
+    - expression: >-
+        variables.old_label == '' || variables.label == variables.old_label
+      message: >-
+        swarm.saga.xyz/workspace never changes and never goes once written.
       reason: Forbidden
 ---
 apiVersion: admissionregistration.k8s.io/v1

@@ -351,7 +351,9 @@ def test_the_deployer_policies_fail_closed_deny_and_are_scoped_by_caller(policy_
 
 def test_the_scope_policy_reads_the_request_alone(policy_docs):
     """It matches every kind the deployer writes, which is safe only because no
-    expression in it reads `object`, whose schema differs per kind."""
+    expression in it reads `object`, whose schema differs per kind. It does read
+    `namespaceObject` (the workspace label), which is a Namespace whatever kind
+    the request is for, so there is still no schema to disagree about."""
     policy = _one(policy_docs, "ValidatingAdmissionPolicy", "swarm-workspace-deployer-scope")
     for expression in _expressions(policy):
         assert not re.search(r"\b(object|oldObject)\b", expression), expression
@@ -404,15 +406,15 @@ def test_the_scope_policy_refuses_every_operation_but_create_and_update(policy_d
 
 
 def _target_pattern(policy_docs: list[dict[str, Any]]) -> re.Pattern[str]:
+    """The personal arm: the one `swarm-tenant-u-*` pattern, unchanged by the
+    workspace label (its own tests are below)."""
     policy = _one(policy_docs, "ValidatingAdmissionPolicy", "swarm-workspace-deployer-scope")
-    found = [
-        m.group(1)
-        for e in _expressions(policy)
-        for m in [re.search(r"variables\.target\.matches\('([^']+)'\)", e)]
-        if m
-    ]
-    assert len(found) == 1, found
-    return re.compile(found[0])
+    personal = [v["expression"] for v in policy["spec"]["variables"] if v["name"] == "personal"]
+    assert len(personal) == 1, personal
+    found = re.fullmatch(r"variables\.target\.matches\('([^']+)'\)", personal[0].strip())
+    assert found, personal[0]
+    assert "variables.personal" in " ".join(_expressions(policy))
+    return re.compile(found.group(1))
 
 
 @pytest.mark.parametrize(

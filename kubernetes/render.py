@@ -273,6 +273,13 @@ _VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
     "WORKSPACE_DEPLOYER_UID": re.compile(
         r"^([0-9]{15,25}|swarm-workspace-deployer@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com)$"
     ),
+    # The namespaces of the tenants terraform/infra declares, as the JSON list
+    # the deployer's scope policy refuses by name (terraform_namespaces). One
+    # namespace name per item, quoted, comma-and-space separated: nothing else
+    # can reach the CEL.
+    "TERRAFORM_NAMESPACES": re.compile(
+        r'^\[("swarm-tenant-[a-z0-9]([-a-z0-9]{0,47}[a-z0-9])?"(, "swarm-tenant-[a-z0-9]([-a-z0-9]{0,47}[a-z0-9])?")*)?\]$'
+    ),
     "PROJECT_ID": re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$"),
     "REGION": re.compile(r"^[a-z]+-[a-z]+[0-9]$"),
     "PSS_ENFORCE": re.compile(r"^(privileged|baseline|restricted)$"),
@@ -789,6 +796,18 @@ def add_policy_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--scheduler-uid", default="")
     parser.add_argument("--reconciler-uid", default="")
     parser.add_argument("--workspace-deployer-uid", default="")
+    parser.add_argument(
+        "--terraform-tfvars",
+        action="append",
+        default=[],
+        metavar="FILE",
+        help=(
+            "an environment's terraform/environments/<env>/<env>.tfvars: the workspace "
+            "deployer's scope policy refuses its tenants' namespaces by name. Repeat for "
+            "more than one. Omitted, every environment's (refuses more, never fewer); "
+            "kubernetes/apply.sh --policies passes its own environment's."
+        ),
+    )
 
 
 def policy_values(args: argparse.Namespace) -> dict[str, str]:
@@ -815,8 +834,100 @@ def policy_values(args: argparse.Namespace) -> dict[str, str]:
             # The dispatcher's own name for the cache's class, so the
             # StorageClass applied and the claim every pod makes cannot differ.
             "CACHE_STORAGE_CLASS": CACHE_STORAGE_CLASS,
+            # The Terraform tenants' namespaces, which the deployer's scope
+            # policy refuses by name (workspace-kinds §3.1).
+            "TERRAFORM_NAMESPACES": terraform_namespaces(args.terraform_tfvars),
         }
     )
+
+
+#: The label that marks a namespace the workspace job created
+#: (docs/design/workspace-kinds.md §3.1, §4.3 step A7). The deployer's scope
+#: policy admits a Namespace outside `swarm-tenant-u-*`, and objects inside one,
+#: only when it carries this label; policies/workspace-provisioner-scope.yaml
+#: spells it too, and test_workspace_provisioner_scope.py runs that policy
+#: against this render.
+WORKSPACE_LABEL = "swarm.saga.xyz/workspace"
+
+#: A workspace id, as the job's entry point admits it (images/workspace-apply).
+_WORKSPACE_ID = re.compile(r"w-[0-9a-f]{6}")
+
+
+def label_workspace(manifest: str, workspace_id: str) -> str:
+    """The tenant render with WORKSPACE_LABEL on its Namespace, and nowhere else.
+
+    The Namespace is the render's first document (TENANT_FILES), and its
+    `labels:` is the one two-space-indented mapping in it. Inserted as text,
+    after `substitute()`: the label is not a placeholder in the template,
+    because a personal namespace -- applied by the job and by register-tenant.sh
+    the same way -- must render exactly as it did before the label existed.
+    """
+    if not _WORKSPACE_ID.fullmatch(workspace_id):
+        raise RenderError(
+            f"render: --workspace-id {workspace_id!r} is not a workspace id (w- and six hex "
+            "digits). It becomes the label the deployer's scope policy admits a workspace "
+            "namespace by, so nothing else may reach it."
+        )
+    first, separator, rest = manifest.partition("\n---\n")
+    anchor = "\n  labels:\n"
+    if "\nkind: Namespace\n" not in first or first.count(anchor) != 1:
+        raise RenderError("render: the tenant render's first document is not one labelled Namespace")
+    first = first.replace(anchor, f"{anchor}    {WORKSPACE_LABEL}: {workspace_id}\n")
+    return first + separator + rest
+
+
+#: Where every environment's tfvars lives; one root, parameterised by these.
+TFVARS_GLOB = "terraform/environments/*/*.tfvars"
+
+_TFVARS_TENANTS_OPEN = re.compile(r"tenants\s*=\s*\{")
+_TFVARS_TENANT_KEY = re.compile(r"  ([a-z0-9][-a-z0-9]*)\s*=\s*\{")
+
+
+def terraform_tenants(path: Path) -> list[str]:
+    """The keys of `tenants = { ... }` in a tfvars file: the tenants
+    terraform/infra declares, whose namespaces module.tenancy names
+    `swarm-tenant-<key>`.
+
+    Read from the file as `terraform fmt` lays it out -- the block opens at
+    column 0 and each tenant is a `  <key> = {` line two spaces in -- because
+    `make lint` holds every tfvars file to that layout. A file that declares
+    no tenant is refused: an empty list here would let the deployer create
+    `swarm-tenant-eng` with the label, which is the one thing the list is for.
+    """
+    keys: list[str] = []
+    inside = False
+    for line in path.read_text().splitlines():
+        if not inside:
+            inside = not line.startswith((" ", "\t")) and bool(_TFVARS_TENANTS_OPEN.fullmatch(line.strip()))
+            continue
+        if line.startswith("}"):
+            break
+        match = _TFVARS_TENANT_KEY.fullmatch(line.rstrip())
+        if match:
+            keys.append(match.group(1))
+    if not keys:
+        raise RenderError(
+            f"render: {path} declares no `tenants`; the deployer's scope policy refuses the "
+            "Terraform tenants' namespaces by name, and an empty list refuses none."
+        )
+    return keys
+
+
+def terraform_namespaces(tfvars: Iterable[str]) -> str:
+    """The TERRAFORM_NAMESPACES value: the namespaces of the tenants the given
+    tfvars files declare, as a JSON list.
+
+    With no file -- an offline render: lint, CI, the Makefile -- every
+    environment's, so a render made without knowing the environment refuses
+    more names than any one environment's, never fewer. kubernetes/apply.sh
+    passes its own environment's file, because a name another environment's
+    Terraform owns (prod's `research`) is one this environment's job may need.
+    """
+    paths = [Path(p) for p in tfvars] or sorted(REPO.glob(TFVARS_GLOB))
+    if not paths:
+        raise RenderError(f"render: no tfvars under {TFVARS_GLOB}")
+    names = sorted({f"{NAMESPACE_PREFIX}{key}" for path in paths for key in terraform_tenants(path)})
+    return "[" + ", ".join(f'"{name}"' for name in names) + "]"
 
 
 def render_files(files: tuple[str, ...], values: dict[str, str]) -> str:
@@ -1147,6 +1258,17 @@ def add_tenant_arguments(parser: argparse.ArgumentParser) -> None:
             "render against an identity neither of them made."
         ),
     )
+    parser.add_argument(
+        "--workspace-id",
+        default="",
+        help=(
+            f"the workspace the job is building (w- and six hex digits): rendered as "
+            f"{WORKSPACE_LABEL} on the Namespace and nowhere else. The workspace deployer's "
+            "scope policy admits a namespace outside swarm-tenant-u-* only with it "
+            "(docs/design/workspace-kinds.md §4.3, A7). Omitted for a personal namespace "
+            "and for a Terraform tenant's, which render as they always have."
+        ),
+    )
     parser.add_argument("--project", default="saga-agents-staging")
     parser.add_argument("--region", default="us-central1")
     parser.add_argument(
@@ -1402,6 +1524,8 @@ def main(argv: list[str] | None = None) -> int:
             else None
         )
         manifest = render_files(tenant_files(bound_ksas(args)), values)
+        if args.workspace_id:
+            manifest = label_workspace(manifest, args.workspace_id)
         if spec_data is not None:
             manifest += "---\n" + render_spec_verify_keys(spec_data, values)
         sys.stdout.write(manifest)
