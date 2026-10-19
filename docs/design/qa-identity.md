@@ -48,8 +48,8 @@ What the design settles, one line each:
   That list only ever names the platform's own `swarm*` backends
   (`terraform/bootstrap/variables.tf`, `frontend_iap_backends`' validation),
   so no IAM row touches the other team's resources in `saga-agents-staging`.
-* **Four things are unmeasured, and the build cannot start until each is
-  measured** (M1 to M4, §4.9). The most important is M1: whether this front
+* **Five things are unmeasured, and the build cannot start until each is
+  measured** (M1 to M5, §4.9). The most important is M1: whether this front
   door accepts a service-account JWT at all. It refuses a service account's
   ID token, as measured on 2026-09-22 (`scripts/lib/common.sh`, `The bearer
   THIS address expects`).
@@ -295,8 +295,21 @@ anything leaks:
 2. *By where the gate sends it.* The gate adds it only to a request whose URL
    is `https`, whose host equals the console host exactly (parsed, not
    pattern-matched), and whose initiating frame's top-level origin is that
-   same host, or which is a top-level navigation to it (§4.4). A redirect to
-   any other host is a new request, which matches nothing.
+   same host, or which is a top-level navigation to it (§4.4).
+
+   An HTTP redirect is the case that rule alone does not cover, and it is
+   **unmeasured** (M5). A header added by `Fetch.continueRequest` is written
+   into the request Chromium's network service holds, and Chromium normally
+   carries a request's headers onto the request a 3xx produces. Its
+   cross-origin redirect rule strips `Authorization`, not other headers. The
+   gate's `https://<host>/*` pattern does not match the redirected request,
+   so without more the gate would never see it, and a 302 from the console
+   host to another origin would deliver the JWT there. That origin could be
+   an open redirect, IAP's own `/_gcp_iap/` redirect parameter, or an OAuth
+   or setup hand-off such as the GitHub connect flow. So the gate does not
+   rely on the redirect rule: it stops an off-host redirect from a request
+   it added the header to, and it strips the header from every request whose
+   host is not the console's (§4.4, two guards).
 
 **Rotated.** Lifetime 15 minutes (Q5). The worker renews at 10 minutes, as it
 renews the egress ticket. Nothing to revoke per token. Revoking the
@@ -361,7 +374,7 @@ JWT already issued remains valid until it expires, at most 15 minutes.
 | any `swarm-agent-worker-*` | *nothing new* | — | fact 1: a worker grant would be the agent's |
 
 **Cost.** An estimated 1,000 lines of code and tests (not counted from a build) across six lanes (§6), one
-frozen-contract line (QI-1), and four measurements (M1 to M4). **Migration:**
+frozen-contract line (QI-1), and five measurements (M1 to M5). **Migration:**
 none, because nothing exists to migrate. **Latency:** one swarm-api call per
 attempt plus one every 10 minutes, and one CDP round trip on each console
 request, which the gate already handles for paused requests. **Money:** one
@@ -443,11 +456,19 @@ see the deployed console.
 4. **`signJwt` cannot be narrowed by IAM** to an audience or a lifetime.
    swarm-api's code is the only bound. The audit row per issue (`jti`,
    attempt, generation, expiry) makes any use outside that code visible.
-5. **M1 may fail.** If IAP here refuses a service-account JWT, the fallback
+5. **A redirect off the console host could carry the header** until M5 is
+   measured and QI-GATE's two redirect guards (§4.4) are built and tested.
+   If Chromium carries an added header onto a cross-origin redirect, any
+   3xx from the console host to another origin (an open redirect, an IAP
+   redirect parameter, the GitHub connect hand-off) would hand that origin
+   the QA account's JWT, usable at this front door for up to 15 minutes.
+   The guards close it by construction; M5 shows whether they had to, and
+   that the strip guard actually removes a header Chromium carried.
+6. **M1 may fail.** If IAP here refuses a service-account JWT, the fallback
    is an OAuth access token (Q6). It is not host-bound, and other Google APIs
    accept it within its scopes. Narrowing it to `userinfo.email` would also
    need measuring. The design does not silently fall back: Q6 asks.
-6. **Platform admins** with project-level IAM can grant themselves `signJwt`
+7. **Platform admins** with project-level IAM can grant themselves `signJwt`
    on the account, as they can for every account in the project.
 
 ---
@@ -580,6 +601,23 @@ configured QA account, with a method other than GET, HEAD or OPTIONS, whose
 cross-site request forgery (§3.2), and it costs the console nothing: its own
 fetches carry that origin.
 
+**Member read of the tenant's own grant** (`swarm_api.routes.qa_identity`,
+any workspace role). The submit form must know whether to offer the
+option, and the admin `GET` is `require_admin`:
+
+`GET /v1/qa-identities/mine` → `{"identities": [{"identity": "console",
+"configured": true, "granted": true}]}` for the caller's current tenant.
+No account, host, reason or other tenant's grant is in it.
+
+**Standing rule: swarm-api never echoes a request header.** No route, error
+page or debug answer reflects any request header's value, the
+`Proxy-Authorization` or `Authorization` header least of all. If IAP
+forwards the header to the backend (M2), a reflected value would reach
+page script in a console frame, which the agent can drive with
+`Runtime.evaluate` and re-encode past the CDP value scrub. M2's audit
+checks today's routes once; this rule holds every later route to it, and
+QI-API's tests assert it for the error handlers.
+
 ### 4.4 The live gate
 
 New module `apps/agent-worker/agent_worker/livegate/qaidentity.py`:
@@ -590,8 +628,11 @@ New module `apps/agent-worker/agent_worker/livegate/qaidentity.py`:
   `egress_ticket` is. Refused once the attempt's `wipe` has run.
 * **Injection on the gate's own sessions.** For every target the gate
   auto-attaches to (pages, out-of-process iframes, dedicated and service
-  workers), the gate sends `Fetch.enable` with one pattern,
-  `https://<host>/*`, at the `Request` stage. On `Fetch.requestPaused`:
+  workers), the gate sends `Fetch.enable` with three patterns:
+  `https://<host>/*` at the `Request` stage (injection),
+  `https://<host>/*` at the `Response` stage (redirect guard 1), and `*` at
+  the `Request` stage (redirect guard 2). On a `Request`-stage
+  `Fetch.requestPaused` whose URL is on the console host:
   1. Parse the URL. Its scheme must be `https`, its host must equal `<host>`
      exactly, and it must have no userinfo.
   2. The request is a main-frame navigation (`resourceType == "Document"` in
@@ -604,6 +645,41 @@ New module `apps/agent-worker/agent_worker/livegate/qaidentity.py`:
   `<header>: <scheme> <credential>`. Otherwise `Fetch.continueRequest`
   unchanged. Never `failRequest`: a missing credential must look like being
   signed out, not like a broken site.
+
+  A worker target has no frame, so rule 2 never holds for a request a
+  dedicated or service worker makes. **Worker-originated console fetches are
+  unauthenticated by design**, and fail closed: IAP answers them as it
+  answers a signed-out caller. The console registers no service worker
+  today; if it ever does, that is a change to this design, not a gap to
+  widen rule 2 for.
+* **Redirect guard 1, at the `Response` stage** (`https://<host>/*`). For a
+  request the gate added the header to (it keeps the set of those
+  `requestId`s), a 3xx whose `Location` resolves to any origin other than
+  `https://<host>` is not followed: the gate answers it with
+  `Fetch.fulfillRequest`, a 200 and a short gate-made page saying the
+  redirect to `<origin>` was stopped because the browser holds the QA
+  identity, and records `qa_identity_redirect_stopped` with the target
+  origin and no value. A redirect that stays on `https://<host>` is
+  continued (`Fetch.continueResponse`). This breaks flows that leave the
+  console by an HTTP redirect, the GitHub connect hand-off among them,
+  while an identity is held; that is the price of not sending the JWT
+  there, and such flows are person-only or admin-only anyway (fact 9).
+* **Redirect guard 2, at the `Request` stage** (`*`). On any paused request
+  whose parsed host is not exactly `<host>`, if its `request.headers` holds
+  `<header>` (case-insensitive), the gate continues it with that header
+  removed and records `qa_identity_header_stripped`. Otherwise it continues
+  it unchanged. This is the second guard, for a redirect guard 1 did not
+  see (a response the `Response` stage was not offered, for example). It
+  costs one gate round trip on every request the browser makes while an
+  identity is held; with no identity held the gate does not enable the `*`
+  pattern.
+
+  Both guards are needed because both rest on unmeasured Chromium
+  behaviour (M5): whether an added header survives a cross-origin
+  redirect, and whether `continueRequest` with a header removed actually
+  removes one Chromium carried. Redirects started by script or markup
+  (`location.href`, `<meta http-equiv=refresh>`) are new navigations, so
+  the `Request`-stage rules above already judge them.
 * **Scrubbing** (`livegate/cdpproxy.py`, on the path every agent-bound
   message already takes, `_strip`'s neighbour). Remove any header named
   `proxy-authorization` (case-insensitive) from `request.headers`,
@@ -617,6 +693,26 @@ New module `apps/agent-worker/agent_worker/livegate/qaidentity.py`:
   `requestId` the proxy saw paused on `<host>` (`qa_identity_redirect`,
   `qa_identity_headers`). The proxy keeps the requestId→host map it needs from
   the agent's own `Fetch.requestPaused` events.
+
+  The agent also holds the rest of the `Fetch` domain
+  (`cdppolicy.ALLOWED_METHODS`: `continueResponse`, `fulfillRequest`,
+  `failRequest`, `continueWithAuth`, `getResponseBody`) and
+  `Network.getResponseBody`. Why none of them exposes the added header:
+  `continueResponse` and `fulfillRequest` change or replace the
+  **response**; neither returns or re-sends the request's headers, and the
+  agent cannot use them to follow a redirect somewhere else, because
+  redirect guards 1 and 2 run on the gate's sessions whatever the agent
+  answers on its own. `failRequest` sends nothing. `continueWithAuth`
+  answers a 401 challenge with the agent's own credentials, not the gate's.
+  The one way in is a **response body** that reflects the request: the
+  body of an echo route or an error page that prints the header. That is
+  why the value scrub runs over `getResponseBody` results too, decoding a
+  `base64Encoded: true` body before matching (a body the agent receives
+  base64-encoded would otherwise carry the JWT past a byte match), and why
+  swarm-api keeps the standing rule in §4.3 never to echo a request header.
+  While a credential is held, `Fetch.getResponseBody` and
+  `Network.getResponseBody` for a console-host `requestId` whose body the
+  gate cannot decode are refused (`qa_identity_body`).
 * **Hand-off on the console host is refused** while the task named
   `qa_identity` (`handoff_refused`, cause `qa_identity_host`, Q7). A person
   would otherwise type their own sign-in into a page meant to run as the QA
@@ -694,9 +790,9 @@ New module `apps/agent-worker/agent_worker/qa_identity.py`, modelled on
 `terraform/infra/locals.tf` renders `QA_IDENTITY_CONSOLE_ACCOUNT` for
 swarm-api from a bootstrap output, or empty.
 
-### 4.9 Measurements before the build (M1–M4) and the owner's steps
+### 4.9 Measurements before the build (M1–M5) and the owner's steps
 
-No lane past QI-CONTRACT starts until M1 to M3 are recorded, dated, in
+No lane past QI-CONTRACT starts until M1 to M3 and M5 are recorded, dated, in
 `docs/design/qa-identity-measurements.md` (new, §8). Each is run by the owner, or by a lane the owner authorises,
 **with the QA account after step O2**:
 
@@ -719,6 +815,15 @@ No lane past QI-CONTRACT starts until M1 to M3 are recorded, dated, in
   Read from `swarm_api.auth.Authenticator._with_own_service_tenant`, a
   service tenant is **appended only when named**, so this may need the
   console to name it. That is QI-API's to decide from the measurement.
+* **M5.** A console-host URL that answers 302 to another origin the lane
+  controls (an `https` echo it runs), requested in the image's Chromium
+  with the header added by `Fetch.continueRequest` and no guard enabled:
+  does the second request carry it? The control is the same request with
+  `Authorization` added instead, which Chromium's cross-origin rule should
+  strip; if that one arrives too, the harness is wrong. Then, with redirect
+  guard 2 alone enabled: does the echo still see the header? It must not.
+  The result decides nothing about whether the guards are built (they are,
+  either way); it records which one is load-bearing.
 
 The owner's one-time steps, in order. No agent runs them:
 
@@ -821,17 +926,17 @@ parts, never written as one literal.
 
 | order | lane | files | red-first tests (each fails before the change) |
 |---|---|---|---|
-| 0 | **M1–M4** (owner or an authorised lane, after O2) | `docs/design/qa-identity-measurements.md` (new) | none; each measurement dated, with the control that shows it could have come out the other way |
+| 0 | **M1–M5** (owner or an authorised lane, after O2) | `docs/design/qa-identity-measurements.md` (new) | none; each measurement dated, with the control that shows it could have come out the other way |
 | 1 | **QI-CONTRACT** (after owner approval of QI-1) | `apps/common/swarm_common/profiles.py`, `docs/contract-change-requests.md`, `tests/unit/common/test_qa_identity_contract.py` (new), and any mirror `scripts/lib/check-contract-parity.sh` names | the three in §5's request; `check-contract-parity.sh` passes |
 | 1 | **QI-IAM** (Track C) | `terraform/bootstrap/qa_identity.tf` (new), `terraform/bootstrap/platform_roles.tf`, `terraform/bootstrap/variables.tf`, `terraform/bootstrap/outputs.tf`, `tests/terraform/qa_identity.tftest.hcl` (new) | with `enable_qa_identity = false` nothing is planned; with it true: one service account and no key resource; `swarmQaJwtSigner` holds exactly `iam.serviceAccounts.signJwt`; its only binding is on the QA account, to swarm-api's account; no project-level binding names the QA account; the precondition fails when `frontend_iap_members` lacks it |
-| 2 | **QI-API** (after CONTRACT and M1–M4) | `apps/swarm-api/swarm_api/qa_identity.py` (new), `apps/swarm-api/swarm_api/routes/qa_identity.py` (new), `apps/swarm-api/swarm_api/main.py`, `apps/swarm-api/swarm_api/settings.py`, `apps/swarm-api/swarm_api/service.py`, `apps/swarm-api/swarm_api/auth.py`, `apps/swarm-api/swarm_api/refusals.py`, `terraform/infra/locals.tf`, `tests/unit/control_plane/test_qa_identity.py` (new), `tests/unit/control_plane/test_new_refusals_ship_off.py` (entries only) | an ungranted tenant's submission is 403 `qa_identity_not_granted`, and a revoked one likewise; signing for a stale generation is 409 and calls the signer fake zero times; a revoke between issue and renewal refuses the renewal; the signed payload's `aud` is exactly `https://<host>/*` and `exp − iat` is the configured lifetime, clamped; the response carries `no-store`, and the access-log fake never sees the credential; grant and its `admin_audit` row commit together (an injected failure leaves neither); a POST as the QA account with `Origin: https://evil.example` is 403 `qa_identity_origin` and with the console origin passes |
-| 2 | **QI-GATE** (after CONTRACT and M1–M3) | `apps/agent-worker/agent_worker/livegate/qaidentity.py` (new), `livegate/cdpproxy.py`, `livegate/cdppolicy.py`, `livegate/ctl.py`, `livegate/session.py`, `livegate/__main__.py`, `tests/unit/worker/test_livegate_qa_identity.py` (new) | with a fake Chromium: a console-host request from a console frame gets the header and one from an `evil.example` frame does not; `https://swarm.saga.xyz.evil.example/` and `http://swarm.saga.xyz/` do not; an agent-bound `Network.requestWillBeSentExtraInfo` carrying the header arrives without it, and a frame carrying the credential's bytes anywhere arrives with `[qa-identity]`; the agent's `Fetch.continueRequest` with `url` is refused; a hand-off on the console host is refused with `qa_identity_host`; `session_export` omits the host's cookies; after `wipe` the verb is refused |
+| 2 | **QI-API** (after CONTRACT and M1–M4) | `apps/swarm-api/swarm_api/qa_identity.py` (new), `apps/swarm-api/swarm_api/routes/qa_identity.py` (new), `apps/swarm-api/swarm_api/main.py`, `apps/swarm-api/swarm_api/settings.py`, `apps/swarm-api/swarm_api/service.py`, `apps/swarm-api/swarm_api/auth.py`, `apps/swarm-api/swarm_api/refusals.py`, `apps/swarm-api/swarm_api/roles.py` (the member `GET /v1/qa-identities/mine`'s role row), `terraform/infra/locals.tf`, `tests/unit/control_plane/test_qa_identity.py` (new), `tests/unit/control_plane/test_new_refusals_ship_off.py` (entries only) | an ungranted tenant's submission is 403 `qa_identity_not_granted`, and a revoked one likewise; signing for a stale generation is 409 and calls the signer fake zero times; a revoke between issue and renewal refuses the renewal; the signed payload's `aud` is exactly `https://<host>/*` and `exp − iat` is the configured lifetime, clamped; the response carries `no-store`, and the access-log fake never sees the credential; grant and its `admin_audit` row commit together (an injected failure leaves neither); a POST as the QA account with `Origin: https://evil.example` is 403 `qa_identity_origin` and with the console origin passes; `GET /v1/qa-identities/mine` as a non-admin member answers its own tenant's `granted` and no other tenant's; no error handler's body contains a request header's value |
+| 2 | **QI-GATE** (after CONTRACT, M1–M3 and M5) | `apps/agent-worker/agent_worker/livegate/qaidentity.py` (new), `livegate/cdpproxy.py`, `livegate/cdppolicy.py`, `livegate/ctl.py`, `livegate/session.py`, `livegate/__main__.py`, `tests/unit/worker/test_livegate_qa_identity.py` (new) | with a fake Chromium: a console-host request from a console frame gets the header and one from an `evil.example` frame does not; `https://swarm.saga.xyz.evil.example/` and `http://swarm.saga.xyz/` do not; an agent-bound `Network.requestWillBeSentExtraInfo` carrying the header arrives without it, and a frame carrying the credential's bytes anywhere arrives with `[qa-identity]`; the agent's `Fetch.continueRequest` with `url` is refused; a console-host request the gate added the header to that answers 302 to `https://evil.example/` is fulfilled with the gate's stopped-redirect page and the fake never sees a request to `evil.example`, while a 302 to another console path is continued; a request to `evil.example` arriving with the header in `request.headers` is continued without it; a request from a dedicated-worker target gets no header; a base64-encoded `getResponseBody` result containing the credential's bytes arrives with `[qa-identity]`; a hand-off on the console host is refused with `qa_identity_host`; `session_export` omits the host's cookies; after `wipe` the verb is refused |
 | 3 | **QI-WORKER** (after GATE and API) | `apps/agent-worker/agent_worker/qa_identity.py` (new), `apps/agent-worker/agent_worker/handoff.py`, `tests/unit/worker/test_qa_identity_worker.py` (new) | no `qa_identity` input means no call is made; a first refusal `qa_identity_not_granted` fails the attempt before the runner starts; renewal happens at two-thirds of the life; a refusal at renewal sends `failed` to the gate and writes `qa-identity.md`; no log record contains the credential (captured-log scan) |
-| 3 | **QI-UI** (after API) | `apps/swarm-ui/src/QaIdentityGrants.tsx` (new), `apps/swarm-ui/src/Activity.tsx`, `apps/swarm-ui/src/api.ts`, `apps/swarm-ui/src/types.ts`, `apps/swarm-ui/src/__tests__/qa-identity.test.tsx` (new) | a non-admin sees no panel; Grant without a reason is disabled; a 403 renders the API's message word for word; the task-page badge shows only for a task that named the identity |
+| 3 | **QI-UI** (after API) | `apps/swarm-ui/src/QaIdentityGrants.tsx` (new), `apps/swarm-ui/src/Activity.tsx`, `apps/swarm-ui/src/Submit.tsx` (the option, beside `BrowserToolPicker`), `apps/swarm-ui/src/BrowserBadges.tsx` (the badge, drawn by `LiveBrowser.tsx`'s existing `<BrowserBadges>`), `apps/swarm-ui/src/api.ts`, `apps/swarm-ui/src/types.ts`, `apps/swarm-ui/src/__tests__/qa-identity.test.tsx` (new) | a non-admin sees no panel; Grant without a reason is disabled; a 403 renders the API's message word for word; the submit form offers the option only when `GET /v1/qa-identities/mine` says `granted`; the task-page badge shows only for a task that named the identity |
 | 3 | **QI-MCP** (after CONTRACT) | `apps/swarm-mcp/swarm_mcp/details.py`, `tests/unit/mcp/test_qa_identity_details.py` (new) | a step naming `qa_identity` shows `QA identity: console`; one without does not |
 | 4 | **QI-INSTRUCT** (after QA-KIT merges; or folded into QA-KIT) | `images/agent-runtime-browser/swarm_browser.py` | the instruction text names the console as signed in and forbids a hand-off there; QA-KIT's own tests still pass |
 | 5 | **QI-DOCS** (after WORKER) | `docs/design/live-browser.md` (a §5.5.1 note on the excluded host), `docs/workspaces.md` (the QA workspace) | `test_docs_describe_what_was_built` where it reads these files |
-| 6 | **QI-ACCEPT** (after O3, O4 and every lane) | `tests/acceptance/test_live_browser.py` (new cases only) | on dev: a granted tenant's `claude-code-browser` task with `qa_identity: "console"` screenshots the Overview showing the QA workspace; the same task from an ungranted tenant is refused at submission; the attempt's events, logs and artifacts contain no header named `Proxy-Authorization`, and its `qa_identity_scrubbed` records carry counts only |
+| 6 | **QI-ACCEPT** (after O3, O4 and every lane) | `tests/acceptance/test_live_browser.py` (new cases only) | on dev: a granted tenant's `claude-code-browser` task with `qa_identity: "console"` screenshots the Overview showing the QA workspace; the same task from an ungranted tenant is refused at submission; the attempt's events, logs and artifacts contain no header named `Proxy-Authorization`, and its `qa_identity_scrubbed` records carry counts only; a navigation to a console-host URL that 302s to an external echo the test controls ends on the gate's stopped-redirect page, and the echo records no request carrying the header |
 
 A release that ships QI-API runs `make smoke` against dev in CI. It changes
 authentication, not admission, so `concurrency-test` and `race-test` are not
@@ -908,7 +1013,7 @@ identity?**
 
 ## 8. Measurements and what was built
 
-Nothing yet. M1–M4 are recorded in `docs/design/qa-identity-measurements.md`
+Nothing yet. M1–M5 are recorded in `docs/design/qa-identity-measurements.md`
 by lane 0, each with a date, the command, its result and the control. What
 each build lane lands is recorded by QI-DOCS in the documents its row names,
 and in each lane's pull request.
