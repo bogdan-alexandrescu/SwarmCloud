@@ -566,3 +566,38 @@ def test_a_display_name_that_breaks_a_rule_is_422_with_its_code(client, seeded) 
     assert r.status_code == 422, r.text
     assert r.json()["code"] == "display_name_reserved"
     assert stored(seeded) == []
+
+
+# -- the saved default is what a request naming no workspace acts in -----------
+#
+# Measured 2026-10-19 on SwarmCloud: GET /v1/profile served default_workspace
+# {"tenant_id": "eng", "source": "profile"}, yet a request with no X-Swarm-Tenant
+# acted in u-bogdan, so a console link to an eng task opened in the personal
+# workspace and the task was "not found". The production context (build_context)
+# never handed the Authenticator its preferences, so `_with_default` returned at
+# its first line. These go through build_context, as production does.
+
+
+def test_a_request_naming_no_workspace_acts_in_the_saved_default(client, seeded) -> None:
+    before = client.get("/v1/tenants/me", headers=as_("alice")).json()
+    assert before["tenant"]["tenant_id"] == "u-alice"
+    r = client.put("/v1/profile/preferences", headers=as_("alice"),
+                   json=body(default_workspace="eng"))
+    assert r.status_code == 200, r.text
+    after = client.get("/v1/tenants/me", headers=as_("alice")).json()
+    assert after["tenant"]["tenant_id"] == "eng"
+
+
+def test_a_named_workspace_still_wins_over_the_saved_default(client, seeded) -> None:
+    client.put("/v1/profile/preferences", headers=as_("alice"), json=body(default_workspace="eng"))
+    got = client.get("/v1/tenants/me", headers=as_("alice", tenant="u-alice")).json()
+    assert got["tenant"]["tenant_id"] == "u-alice"
+
+
+def test_clearing_the_saved_default_returns_to_the_personal_workspace(client, seeded) -> None:
+    client.put("/v1/profile/preferences", headers=as_("alice"), json=body(default_workspace="eng"))
+    r = client.put("/v1/profile/preferences", headers=as_("alice"),
+                   json=body(default_workspace=None, revision=1))
+    assert r.status_code == 200, r.text
+    got = client.get("/v1/tenants/me", headers=as_("alice")).json()
+    assert got["tenant"]["tenant_id"] == "u-alice"
