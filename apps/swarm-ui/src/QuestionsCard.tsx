@@ -21,6 +21,7 @@
  * (`swarm_result`'s `owner_answers`), and once every question is answered the
  * bell stops asking. A saved answer is drawn with who gave it and when, and
  * "Change" reopens the options with it picked; the API keeps the replaced one.
+ * An answer given in Claude Code says so: see `AnsweredInClaudeCode`.
  * Only the task's submitter or an admin may answer: the API says whether this
  * viewer may (`may_answer`) and why not, and the card draws the buttons
  * disabled with that reason rather than guessing the rule itself.
@@ -98,23 +99,50 @@ function OptionBody({ q, label, description }: { q: AgentQuestion; label: string
 /** The saved answer: what, who and when, and "Change" for a viewer who may answer. */
 function SavedAnswer({ a, n, onChange }: { a: OwnerAnswer; n: number; onChange: (() => void) | null }) {
   return (
-    <div className="qc-saved" role="group" aria-label={`Your answer to question ${n}`}>
-      <span className="qc-saved-what">
-        Answered: {a.choice && <b>{a.choice}</b>}
-        {a.choice && a.text && ' — '}
-        {a.text && <span className="qc-saved-text">{a.text}</span>}
-      </span>
-      <span className="dt-note qc-saved-who">
-        {a.by ?? 'someone'}
-        {a.at ? `, ${timeAgo(a.at)}` : ''}
-        {a.history.length > 0 ? ` · changed ${a.history.length}×` : ''}
-      </span>
-      {onChange && (
-        <Button size="sm" kind="ghost" onClick={onChange}>
-          Change
-        </Button>
-      )}
-    </div>
+    <>
+      <div className="qc-saved" role="group" aria-label={`Your answer to question ${n}`}>
+        <span className="qc-saved-what">
+          Answered: {a.choice && <b>{a.choice}</b>}
+          {a.choice && a.text && ' — '}
+          {a.text && <span className="qc-saved-text">{a.text}</span>}
+        </span>
+        <span className="dt-note qc-saved-who">
+          {a.by ?? 'someone'}
+          {a.at ? `, ${timeAgo(a.at)}` : ''}
+          {a.history.length > 0 ? ` · changed ${a.history.length}×` : ''}
+        </span>
+        {onChange && (
+          <Button size="sm" kind="ghost" onClick={onChange}>
+            Change
+          </Button>
+        )}
+      </div>
+      {a.via === 'claude-code' && <AnsweredInClaudeCode a={a} />}
+    </>
+  )
+}
+
+/**
+ * AN ANSWER GIVEN IN CLAUDE CODE SAYS SO (ANSWER-SYNC-UI, part of #1644; owner
+ * decision 2026-10-19, "Plugin records it, marked as from Claude Code"). The
+ * plugin's swarm_task_answer posts the person's own pick from a question the
+ * orchestrating session asked them, with `via: 'claude-code'` and the session
+ * id; under that answer the card writes "answered in Claude Code (session
+ * ce05454f), 3h ago", so whoever reads it here can find the conversation it
+ * was settled in. A console answer, or one stored before `via` was, has no
+ * line and looks as it did.
+ *
+ * It sits in the question's column (`qc-q`, `min-width: 0`), and
+ * `qc-saved-text` is the saved answer's own wrapping rule (`overflow-wrap:
+ * anywhere`), so nothing in it runs past the card at 390 px.
+ */
+function AnsweredInClaudeCode({ a }: { a: OwnerAnswer }) {
+  const session = a.session ? ` (session ${a.session.slice(0, 8)})` : ''
+  return (
+    <p className="dt-note qc-saved-text qc-via">
+      answered in Claude Code{session}
+      {a.at ? `, ${timeAgo(a.at)}` : ''}
+    </p>
   )
 }
 
