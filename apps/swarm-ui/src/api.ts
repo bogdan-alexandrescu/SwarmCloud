@@ -6582,7 +6582,7 @@ export async function removeAdmin(email: string): Promise<Result<AdminRemoveAnsw
 // The routes are swarm_api/routes/roles.py. THE EMAIL IS IN THE BODY, never
 // the path, so an address lands in no request log -- `DELETE` included. The
 // workspace's own routes act in the tenant `X-Swarm-Tenant` selects; the
-// admin's (`/v1/admin/...`, Admin › People) name a group workspace in the
+// admin's, under the admin prefix (Admin › People), name a group workspace in the
 // path and act without switching to it. Every write carries `via: "console"`,
 // which the server shows beside it and never acts on (a platform admin's is
 // recorded `platform_admin` whatever it says). The fixture build answers each
