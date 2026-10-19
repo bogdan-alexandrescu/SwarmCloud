@@ -700,6 +700,7 @@ def task_payload(
     inputs: dict[str, Any] | None = None,
     strategy: str | None = None,
     additional_repositories: list[dict[str, str]] | None = None,
+    model_class: str | None = None,
 ) -> dict[str, Any]:
     """One task's `TaskCreate` body, for `POST /v1/tasks` and each entry of
     `POST /v1/tasks/batch` alike.
@@ -729,6 +730,10 @@ def task_payload(
         payload["model"] = model
     if strategy:
         payload["strategy"] = strategy
+    if model_class:
+        # The class BY NAME (#1435), top-level as `TaskCreate.model_class`,
+        # never in `input`. Absent when not named: the profile's default runs.
+        payload["model_class"] = model_class
     if additional_repositories is not None:
         # As checked by `check_additional_repositories`: names, sent as given.
         # Absent when not given, so a task naming none sends what it always did.
@@ -1673,6 +1678,7 @@ class SwarmClient:
         inputs: dict[str, Any] | None = None,
         strategy: str | None = None,
         additional_repositories: list[dict[str, str]] | None = None,
+        model_class: str | None = None,
     ) -> dict[str, Any]:
         """Submit one task.
 
@@ -1693,9 +1699,14 @@ class SwarmClient:
         identifiers and endpoints only, and the runner reads only the Job's own
         MODEL, set per profile in Terraform (#226), which this does not set
         either. Sending it changes what
-        the task record says and never what runs. That is deliberate rather than
-        unfinished; choosing a model per task is an execution parameter from a
-        caller, which invariant 10 forbids without a contract change.
+        the task record says and never what runs. swarm-api fills it from the
+        pin of the task's class and refuses any other value (Q4 of #1435).
+
+        `model_class` IS SELECTION, BY NAME: `opus`, `fable`, `sonnet` or
+        `haiku` (the frozen `MODEL_CLASSES`), and the platform runs that
+        class's pinned model -- the caller names a class and never a model ID,
+        so invariant 10 holds as it does for `runner_profile`. Sent only when
+        named; a task naming none runs its profile's default.
 
         `strategy` is how the work comes back -- `collect` (the API's default:
         the patch is harvested, nothing is pushed) or `direct-pr` (the agent's
@@ -1720,6 +1731,7 @@ class SwarmClient:
             inputs=inputs,
             strategy=strategy,
             additional_repositories=additional_repositories,
+            model_class=model_class,
         )
         # UNWRAPPED HERE, not by each caller. `cmd_dispatch` printed
         # `task.get("task_id", "")` off the envelope and printed an empty line,
@@ -1980,11 +1992,17 @@ class SwarmClient:
         plan_approval: str = "required",
         auto_merge: bool = False,
         fix_rounds: int | None = None,
+        model_class: str | None = None,
     ) -> dict[str, Any]:
         """Plan `issue` (`owner/repo#N` or its URL). DATA only (invariant 10):
         no profile, image or command -- the planner and every step are the
         API's choice. `auto_merge` is sent as asked; the API refuses it until
-        #295, and that refusal is passed back in words, not swallowed."""
+        #295, and that refusal is passed back in words, not swallowed.
+
+        `model_class` is the PLANNER's class, by name (#1435); each plan step's
+        class is the planner's to write (R1). Sent only when named, and a
+        deployment that does not take it yet refuses it with a 422 that is
+        passed back as it came."""
         payload: dict[str, Any] = {
             "issue": issue,
             "plan_approval": plan_approval,
@@ -1992,6 +2010,8 @@ class SwarmClient:
         }
         if fix_rounds is not None:
             payload["fix_rounds"] = fix_rounds
+        if model_class:
+            payload["model_class"] = model_class
         # The session that asked (SC-SESSION-SCOPE). swarm-api copies it onto
         # the planner task and every workflow the run starts, CI-fix rounds
         # included, so the whole run counts as this session's own.

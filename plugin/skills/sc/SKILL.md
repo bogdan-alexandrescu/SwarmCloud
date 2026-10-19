@@ -461,8 +461,10 @@ this session supplies.
 1. Say, before anything is submitted: "about to plan SwarmCloud issue run for
    `<owner/repo#N>`: one planner task, no capacity held by the plan until it is
    approved". Then call `swarm_run_issue` with `issue`, and `plan_approval:
-   "auto"`, `auto_merge: true` or `fix_rounds` only when the developer gave
-   `--plan auto`, `--auto-merge` or `--fix-rounds`. The terminal equivalent,
+   "auto"`, `auto_merge: true`, `fix_rounds` or `model_class` only when the
+   developer gave `--plan auto`, `--auto-merge`, `--fix-rounds` or
+   `--model-class <class>` (the planner's model class; see "Model classes"
+   below). The terminal equivalent,
    `uv run sc run --issue <owner/repo#N> --follow`, is the developer's to run
    (this skill is not granted it); it prints one row per step as it moves.
 2. `--auto-merge` merges the run's pull request with the `merge` step (#295,
@@ -476,6 +478,22 @@ this session supplies.
    Once a workflow exists, the reply's `arm_watch` is set too: end with
    [Arming the watch](#arming-the-watch) (the attach would arm it anyway, and
    step 1 there makes sure only once).
+
+### Model classes
+
+A step picks the model it runs by **class**, by name (#1435): `opus` (the
+default of every Claude profile: coding and implementation), `fable`
+(planning), `sonnet` (summarising, reformatting) or `haiku` (classifying,
+extracting). A spec's step names it as `model_class`, beside
+`runner_profile`; a step that names none runs `opus`, so implementation stays
+on the default and only the mechanical steps need the field. The platform runs
+the class's pinned model, which `swarm_profiles` lists under `models`. A
+model ID in `model_class`, or a class on a profile that runs no Claude model,
+is refused before anything is submitted; a 422 from the API
+(`model_class_not_yet_available` until the deployment offers the classes) is
+reported in its own words, with the offer of the same spec without the
+field. Never choose a class the spec did not: it is the operator's decision,
+made in the spec or on the command line.
 
 ### `runs`
 
