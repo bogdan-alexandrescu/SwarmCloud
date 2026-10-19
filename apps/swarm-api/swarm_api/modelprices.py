@@ -19,6 +19,19 @@ Owner decisions, 2026-10-17:
   own four rates are its FIRST tier's, so every reader that knows nothing of
   tiers -- an older console, the observed-rate check's issue text -- still
   reads a figure the provider lists. A model without `tiers` is unchanged.
+* **A tier is picked per REQUEST, by its own prompt** (PRICES-TIER-PROMPT,
+  owner 2026-10-19). The provider prices each request by its own prompt, so
+  a long attempt of short requests is the lower tier for every one of them.
+  A worker sends each model's counts split into `prompt_buckets` -- rows of
+  `[bucket, input, output, cache written, cache read]`, a request whose
+  prompt is `p` tokens in bucket `ceil(p / PROMPT_BUCKET_TOKENS)` -- and each
+  row is priced at its tier (`bucket_rates`). The worker holds no price table
+  and so cannot split at the ceiling itself; a bucket grid every listed
+  ceiling sits on prices exactly with no ceiling known to the worker, in
+  rows bounded by the context window rather than by the number of requests.
+  Usage with no buckets -- a worker from before this, or one whose body
+  would have passed the limit -- keeps the summed rule and is marked
+  `tier_estimated`, as is a bucket a ceiling off the grid cuts through.
 * **swarm-api owns the estimate.** Workers are moving off direct Firestore
   access (#1457, design B), so a worker whose CLI was stopped before it
   reported a cost sends the per-model usage its stream showed to
@@ -60,6 +73,19 @@ MAX_TIERS = 8
 #: The highest tier ceiling accepted, in prompt tokens: far past any context
 #: window, so a typo of a few orders of magnitude is refused.
 MAX_TIER_CEILING = 100_000_000
+#: The width, in prompt tokens, of a `prompt_buckets` row: bucket `b` holds
+#: the requests whose own prompt was over `(b - 1) * width` and at most
+#: `b * width` tokens. Every request in a row is on the same side of a ceiling
+#: that is a multiple of it, and every ceiling the pricing page listed on
+#: 2026-10-19 (100,000; and 128,000, 200,000, 272,000 elsewhere) is. MUST
+#: equal `agent_worker.lifecycle._PROMPT_BUCKET_TOKENS`; a test holds it.
+PROMPT_BUCKET_TOKENS = 1_000
+#: The most `prompt_buckets` rows one model's usage carries: a million-token
+#: context at one row per 1,000 tokens, with room.
+MAX_PROMPT_BUCKETS = 1_024
+#: The counts of a `prompt_buckets` row after its bucket, in this order.
+BUCKET_COUNTS = ("input_tokens", "output_tokens", "cache_creation_input_tokens",
+                 "cache_read_input_tokens")
 #: The key of a tier's ceiling: the largest prompt, in tokens, it prices.
 #: None on the last tier, which has no ceiling.
 UP_TO = "up_to_prompt_tokens"
@@ -238,11 +264,12 @@ def prompt_tokens(usage: Mapping[str, Any]) -> int:
 
     The provider counts a request's prompt as all of its input tokens,
     including cache reads and cache writes (pricing page, "Long context
-    pricing"). An estimate is given each model's counts summed over the
-    attempt, not per request, so this is the ATTEMPT's prompt size -- never
-    smaller than its largest single request's. A tier picked by it is never
-    cheaper than the dearest tier any of its requests paid: an estimate of a
-    long attempt on a tiered model leans high, never low.
+    pricing"). Given one request's counts, it is that request's prompt.
+    Given counts summed over an attempt -- usage with no `prompt_buckets` --
+    it is the ATTEMPT's prompt size, never smaller than its largest single
+    request's, so a tier picked by it is never cheaper than the dearest tier
+    any of its requests paid: that estimate leans high, never low, and is
+    marked `tier_estimated`.
     """
     return (_count(usage, "input_tokens") + _count(usage, "cache_creation_input_tokens")
             + _count(usage, "cache_read_input_tokens"))
@@ -258,27 +285,84 @@ def rates_for(price: Mapping[str, Any], prompt: int) -> Mapping[str, Any]:
     return price
 
 
-def estimate_cost(
+def bucket_rates(price: Mapping[str, Any], bucket: int) -> tuple[Mapping[str, Any], bool]:
+    """`(rates, exact)` for the requests of `prompt_buckets` row `bucket`.
+
+    The row holds prompts over `(bucket - 1) * PROMPT_BUCKET_TOKENS` and at
+    most `bucket * PROMPT_BUCKET_TOKENS` tokens (bucket 0: an empty prompt).
+    When its smallest and largest prompt are in one tier, every request in
+    it is, and the rates are exact. When a ceiling off the grid falls inside
+    it, the row is priced at its LARGEST prompt's tier -- high, never low,
+    as the summed rule leans -- and is not exact.
+    """
+    top = max(bucket, 0) * PROMPT_BUCKET_TOKENS
+    low = max(top - PROMPT_BUCKET_TOKENS + 1, 0)
+    rates = rates_for(price, top)
+    return rates, rates is rates_for(price, low)
+
+
+def _priced(counts: Mapping[str, Any], rates: Mapping[str, Any]) -> float:
+    return (
+        _count(counts, "input_tokens") * rates["input"]
+        + _count(counts, "output_tokens") * rates["output"]
+        + _count(counts, "cache_creation_input_tokens") * rates["cache_write"]
+        + _count(counts, "cache_read_input_tokens") * rates["cache_read"]
+    ) / 1_000_000
+
+
+def _rows(usage: Mapping[str, Any]) -> list[tuple[int, dict[str, Any]]] | None:
+    """`usage`'s `prompt_buckets` as `(bucket, counts)`, or None when it has none."""
+    raw = usage.get("prompt_buckets")
+    if not isinstance(raw, (list, tuple)):
+        return None
+    rows: list[tuple[int, dict[str, Any]]] = []
+    for row in raw:
+        if not isinstance(row, (list, tuple)) or len(row) != 1 + len(BUCKET_COUNTS):
+            return None
+        rows.append((row[0], dict(zip(BUCKET_COUNTS, row[1:]))))
+    return rows
+
+
+def estimate(
     by_model: Mapping[str, Mapping[str, Any]], prices: Mapping[str, Mapping[str, Any]]
-) -> float | None:
-    """USD for the usage of each model, or None when ANY model has no price.
+) -> tuple[float | None, bool]:
+    """`(USD, tier_estimated)` for the usage of each model; USD is None when
+    ANY model has no price.
 
     None is "cost not reported": a sum that left out a model's tokens would be
     a wrong figure presented as a right one, and a guessed price is invented.
     An empty usage map is None too -- nothing was reported to price.
+
+    A model priced in tiers is priced per `prompt_buckets` row at that row's
+    tier. Without rows it is priced by the summed rule (`prompt_tokens`), and
+    `tier_estimated` is True; so it is when a row straddled a ceiling
+    (`bucket_rates`). A model with no tiers has one rate at every prompt
+    size, so its sums price it exactly whatever was sent.
     """
     if not by_model:
-        return None
+        return None, False
     cost = 0.0
+    tier_estimated = False
     for model, usage in by_model.items():
         price = price_for(model, prices)
         if price is None:
-            return None
-        rates = rates_for(price, prompt_tokens(usage))
-        cost += (
-            _count(usage, "input_tokens") * rates["input"]
-            + _count(usage, "output_tokens") * rates["output"]
-            + _count(usage, "cache_creation_input_tokens") * rates["cache_write"]
-            + _count(usage, "cache_read_input_tokens") * rates["cache_read"]
-        ) / 1_000_000
-    return round(cost, 10)
+            return None, False
+        rows = _rows(usage) if price.get("tiers") else None
+        if not price.get("tiers"):
+            cost += _priced(usage, price)
+        elif rows is None:
+            cost += _priced(usage, rates_for(price, prompt_tokens(usage)))
+            tier_estimated = True
+        else:
+            for bucket, counts in rows:
+                rates, exact = bucket_rates(price, bucket)
+                cost += _priced(counts, rates)
+                tier_estimated = tier_estimated or not exact
+    return round(cost, 10), tier_estimated
+
+
+def estimate_cost(
+    by_model: Mapping[str, Mapping[str, Any]], prices: Mapping[str, Mapping[str, Any]]
+) -> float | None:
+    """`estimate`'s USD alone."""
+    return estimate(by_model, prices)[0]
