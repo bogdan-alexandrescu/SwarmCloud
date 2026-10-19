@@ -621,6 +621,73 @@ def _refused_field(exc: SwarmError, field: str) -> bool:
     return exc.status == 422 and field in str(exc)
 
 
+#: The keys one `additional_repositories` entry may carry: `TaskCreate`'s
+#: `AdditionalRepositoryCreate` (docs/design/multi-repository-steps.md §4.1).
+#: Names only. A URL, a slot, a commit or a path is swarm-api's to resolve
+#: from the tenant's registration, and pins, signs and stores (invariant 10).
+ADDITIONAL_REPOSITORY_KEYS = ("repository", "ref", "name")
+
+#: `owner/repo`, as GitHub spells it. A SHAPE check, so a URL or an ssh
+#: remote is refused before anything travels; whether the tenant registered
+#: it, and whether its tasks may read it, is swarm-api's (`extrarepos`).
+_OWNER_REPO = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$")
+
+
+def check_additional_repositories(value: Any, *, where: str) -> list[dict[str, str]] | None:
+    """The repositories a task or step reads beside its own (#1434), checked
+    for shape and returned as the API's entries, or None when not given.
+
+    `[]` is returned as `[]`, never as None: on a workflow step it means
+    "none", replacing the workflow's list, which absence does not (§7 Q6).
+
+    THE COUNT IS NOT CHECKED HERE. The limit is the platform setting
+    `max_additional_repositories`, which an admin edits live and swarm-api
+    reads at each submission; a copy of today's value here would refuse
+    tomorrow's legal list. Nor are the registration, the grant, the ref or
+    the name's spelling: swarm-api refuses each with its own code.
+
+    A refused value is never repeated: a URL can carry a credential.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise SwarmError(
+            f"{where}: additional_repositories must be a list of repositories your "
+            'workspace registered, e.g. [{"repository": "acme/web", "ref": "main"}]. '
+            "Nothing was sent"
+        )
+    entries: list[dict[str, str]] = []
+    for index, entry in enumerate(value):
+        at = f"{where}: additional_repositories[{index}]"
+        if not isinstance(entry, dict):
+            raise SwarmError(
+                f'{at} is not an object; an entry is {{"repository": "owner/repo", "ref": ..., '
+                '"name": ...}. Nothing was sent'
+            )
+        unknown = sorted(str(key) for key in entry if key not in ADDITIONAL_REPOSITORY_KEYS)
+        if unknown:
+            raise SwarmError(
+                f"{at} carries {unknown}; an entry takes {list(ADDITIONAL_REPOSITORY_KEYS)}. "
+                "SwarmCloud resolves the URL, the commit and the credential from your "
+                "workspace's registration. Nothing was sent"
+            )
+        repository = entry.get("repository")
+        if not isinstance(repository, str) or not _OWNER_REPO.fullmatch(repository):
+            raise SwarmError(
+                f"{at}: repository must be owner/repo, a repository your workspace "
+                "registered, as GitHub spells it -- never a URL or a remote. Nothing was sent"
+            )
+        checked = {"repository": repository}
+        for key in ("ref", "name"):
+            if entry.get(key) is None:
+                continue
+            if not isinstance(entry[key], str) or not entry[key].strip():
+                raise SwarmError(f"{at}: {key} must be a non-empty string. Nothing was sent")
+            checked[key] = entry[key]
+        entries.append(checked)
+    return entries
+
+
 def task_payload(
     *,
     prompt: str,
@@ -632,6 +699,7 @@ def task_payload(
     model: str | None = None,
     inputs: dict[str, Any] | None = None,
     strategy: str | None = None,
+    additional_repositories: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """One task's `TaskCreate` body, for `POST /v1/tasks` and each entry of
     `POST /v1/tasks/batch` alike.
@@ -661,6 +729,10 @@ def task_payload(
         payload["model"] = model
     if strategy:
         payload["strategy"] = strategy
+    if additional_repositories is not None:
+        # As checked by `check_additional_repositories`: names, sent as given.
+        # Absent when not given, so a task naming none sends what it always did.
+        payload["additional_repositories"] = additional_repositories
     return payload
 
 
@@ -1600,6 +1672,7 @@ class SwarmClient:
         model: str | None = None,
         inputs: dict[str, Any] | None = None,
         strategy: str | None = None,
+        additional_repositories: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         """Submit one task.
 
@@ -1630,6 +1703,11 @@ class SwarmClient:
         not an execution parameter: it selects no image, command, resource or
         model. Sent only when given, so a caller that names none gets exactly
         the payload it got before the field existed.
+
+        `additional_repositories` are the registered repositories the task
+        reads beside its own (#1434), by NAME (`check_additional_repositories`):
+        swarm-api resolves each to its registration and pins its ref to a
+        commit. Never cloned from a URL given here, and never written back.
         """
         payload = task_payload(
             prompt=prompt,
@@ -1641,6 +1719,7 @@ class SwarmClient:
             model=model,
             inputs=inputs,
             strategy=strategy,
+            additional_repositories=additional_repositories,
         )
         # UNWRAPPED HERE, not by each caller. `cmd_dispatch` printed
         # `task.get("task_id", "")` off the envelope and printed an empty line,

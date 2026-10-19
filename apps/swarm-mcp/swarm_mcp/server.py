@@ -52,6 +52,7 @@ from .client import (
     TERMINAL,
     SwarmClient,
     SwarmError,
+    check_additional_repositories,
     chosen_tenant,
     enter_hold_lane,
     outputs_of,
@@ -92,7 +93,7 @@ _DISPATCH_STRATEGIES = tuple(s for s in workflows.STRATEGIES if s != "integrate"
 #: them beside a spec is two answers to one question.
 _SPEC_EXCLUSIVE = (
     "steps", "repo", "ref", "strategy", "carrier", "on_step_failure", "priority", "label",
-    "title",
+    "title", "additional_repositories",
 )
 
 #: A runner's DECLARED inputs, for `swarm_dispatch` and a `swarm_workflow` step
@@ -168,6 +169,35 @@ _NEEDS_LOCAL_SCHEMA: dict[str, Any] = {
         "developer's own credentials), `interactive` (the developer answering as "
         "it runs). Under target `hybrid` any entry keeps the work local and "
         "nothing is sent. Under `cloud` it is not consulted, and the reply says so."
+    ),
+}
+
+#: The registered repositories a task or step reads beside its own (#1434,
+#: docs/design/multi-repository-steps.md). NAMES, checked for shape by
+#: `client.check_additional_repositories` before anything is sent; swarm-api
+#: resolves each from the workspace's registration and pins its ref. `infer`
+#: never touches this list: it only ever picks the primary repository.
+_ADDITIONAL_REPOSITORIES_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "repository": {"type": "string", "description": "owner/repo, registered by your workspace. Never a URL."},
+            "ref": {"type": "string", "description": "Branch, tag or full sha; default the registration's branch."},
+            "name": {"type": "string", "description": "The directory under ../repos/; default the repo part, lower-cased."},
+        },
+        "required": ["repository"],
+        "additionalProperties": False,
+    },
+    "description": (
+        "Repositories your workspace registered that the agent READS beside its own, "
+        "each `{repository: \"owner/repo\", ref?, name?}`. "
+        "SwarmCloud pins each ref to a commit at submission and checks it out read-only "
+        "at ../repos/<name>, beside the agent's repository; a change made there is never "
+        "collected or pushed. Names only: a URL is refused before anything is sent. "
+        "SwarmCloud refuses a repository not registered or not readable by tasks, a "
+        "list over the platform's current limit, and a profile that does not take them "
+        "(GKE agent profiles do). Off until the deployment enables it."
     ),
 }
 
@@ -250,13 +280,14 @@ _BATCH_TASK_SCHEMA: dict[str, Any] = {
         "inputs": _INPUTS_SCHEMA,
         "files": _FILES_SCHEMA,
         "mcp_credentials": _MCP_CREDENTIALS_SCHEMA,
+        "additional_repositories": _ADDITIONAL_REPOSITORIES_SCHEMA,
     },
     "required": ["prompt"],
 }
 
 #: The `swarm_dispatch` arguments that describe ONE task, refused beside `tasks`.
 _SINGLE_TASK_ARGS = ("prompt", "profile", "repo", "ref", "infer", "strategy", "label", "inputs", "files",
-                     "mcp_credentials")
+                     "mcp_credentials", "additional_repositories")
 
 #: `swarm_account_pause`/`resume`/`drain` share one shape.
 _ACCOUNT_STATE_SCHEMA: dict[str, Any] = {
@@ -292,7 +323,7 @@ TOOLS: list[dict[str, Any]] = [
             "\n"
             "SEVERAL INDEPENDENT TASKS ARE ONE CALL: pass `tasks` -- a list of "
             "{prompt, runner_profile, repo, ref, infer, strategy, label, inputs, files, "
-            "mcp_credentials} "
+            "mcp_credentials, additional_repositories} "
             "-- instead of `prompt` and the fields beside it. They are sent as ONE "
             "request, every task id comes back in the order given, and a list "
             "longer than the API's max_batch_size is refused before anything is "
@@ -323,7 +354,11 @@ TOOLS: list[dict[str, Any]] = [
             "for it, a credential your application minted for this run; it goes to "
             "SwarmCloud and nowhere else, and the agent never sees it. Until the "
             "deployment turns the feature on, SwarmCloud refuses any `mcp_servers` "
-            "with `mcp_unavailable`."
+            "with `mcp_unavailable`.\n"
+            "\n"
+            "MORE THAN ONE REPOSITORY: `additional_repositories` names registered "
+            "repositories the agent reads, read-only, at ../repos/<name> beside its own; "
+            "only its own repository's changes come back."
         ),
         "inputSchema": {
             "type": "object",
@@ -381,6 +416,7 @@ TOOLS: list[dict[str, Any]] = [
                 "inputs": _INPUTS_SCHEMA,
                 "files": _FILES_SCHEMA,
                 "mcp_credentials": _MCP_CREDENTIALS_SCHEMA,
+                "additional_repositories": _ADDITIONAL_REPOSITORIES_SCHEMA,
                 "tasks": {
                     "type": "array",
                     "minItems": 1,
@@ -878,7 +914,8 @@ TOOLS: list[dict[str, Any]] = [
             "Pass the DAG either as `steps` with the parameters beside it, or as "
             "`spec`: a whole workflow spec object exactly as the terminal's "
             "workflow command reads it (`steps`, `strategy`, `carrier`, `repository_url`, "
-            "`repository_ref`, `on_step_failure`, `priority`, `label`), nothing "
+            "`repository_ref`, `on_step_failure`, `priority`, `label`, "
+            "`additional_repositories`), nothing "
             "else beside it but `infer` and `mcp_credentials` -- or, so no model has to retype a long "
             "spec, as `spec_path` (a JSON spec file this bridge reads itself) or "
             "`spec_ref` (the id `swarm_workflow_spec` handed back for a file it "
@@ -900,7 +937,13 @@ TOOLS: list[dict[str, Any]] = [
             "server; it is never part of a spec, because a spec is written, held and "
             "copied into a run script. So a workflow that needs a credential is "
             "submitted with this tool, `mcp_credentials` beside `steps` or the spec, "
-            "and not through /sc:swarmcloud's launch."
+            "and not through /sc:swarmcloud's launch.\n"
+            "\n"
+            "MORE THAN ONE REPOSITORY: top-level `additional_repositories` names the "
+            "registered repositories every step reads at ../repos/<name>; a step's own "
+            "`additional_repositories` REPLACES that list, and `[]` means none. Every "
+            "step of one submission reads each at the same pinned commit. `infer` never "
+            "changes them."
         ),
         "inputSchema": {
             "type": "object",
@@ -1074,6 +1117,14 @@ TOOLS: list[dict[str, Any]] = [
                             },
                             "inputs": _INPUTS_SCHEMA,
                             "files": _FILES_SCHEMA,
+                            "additional_repositories": {
+                                **_ADDITIONAL_REPOSITORIES_SCHEMA,
+                                "description": (
+                                    "This step's own list, REPLACING the workflow's "
+                                    "`additional_repositories`; `[]` reads none. "
+                                    + _ADDITIONAL_REPOSITORIES_SCHEMA["description"]
+                                ),
+                            },
                             "stage": {
                                 "type": "string",
                                 "description": (
@@ -1136,6 +1187,13 @@ TOOLS: list[dict[str, Any]] = [
                     "description": (
                         "The workflow's short name, sent as `metadata.title`: what "
                         "Claude Code titles its /sc:swarmcloud run with."
+                    ),
+                },
+                "additional_repositories": {
+                    **_ADDITIONAL_REPOSITORIES_SCHEMA,
+                    "description": (
+                        "Every step's default list; a step's own replaces it. "
+                        + _ADDITIONAL_REPOSITORIES_SCHEMA["description"]
                     ),
                 },
                 "target": _TARGET_SCHEMA,
@@ -2425,10 +2483,14 @@ def _step_servers(steps: list[dict[str, Any]]) -> set[str]:
     return named
 
 
-def _dispatch_signature(profile: str, prompt: str, strategy: str | None, repository, inputs: Any) -> tuple:
+def _dispatch_signature(profile: str, prompt: str, strategy: str | None, repository, inputs: Any,
+                        additional: list[dict[str, str]] | None = None) -> tuple:
+    # The repositories it reads are part of what the task IS: the same prompt
+    # over another set of repositories is a different question, not a repeat.
     return (
         profile, prompt, strategy or "collect", repository.url, repository.ref,
         json.dumps(inputs or {}, sort_keys=True, default=str),
+        json.dumps(additional, sort_keys=True),
     )
 
 
@@ -3167,13 +3229,14 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
             item.get("mcp_credentials"), (inputs or {}).get("mcp_servers"), where=where
         )
         strategy = _dispatch_strategy(item.get("strategy"))
+        additional = check_additional_repositories(item.get("additional_repositories"), where=where)
         repository = checkout.resolve(repo=item.get("repo"), ref=item.get("ref"), infer=_flag(item, "infer"))
         if strategy == "direct-pr" and not repository.url:
             raise SwarmError(
                 f"{where}: strategy 'direct-pr' needs a repository, and this task has "
                 "none: " + "; ".join(repository.notes) + ". Nothing was sent"
             )
-        signature = _dispatch_signature(profile, prompt, strategy, repository, inputs)
+        signature = _dispatch_signature(profile, prompt, strategy, repository, inputs, additional)
         try:
             _refuse_a_repeat_dispatch(client, signature)
         except SwarmError as exc:
@@ -3198,6 +3261,7 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
             metadata={"unit": item["label"]} if item.get("label") else None,
             inputs=inputs or None,
             strategy=strategy,
+            additional_repositories=additional,
         )
         if credentials:
             payload["mcp_credentials"] = credentials
@@ -4179,6 +4243,10 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             args.get("mcp_credentials"), (inputs or {}).get("mcp_servers"), where="swarm_dispatch"
         )
         strategy = _dispatch_strategy(args.get("strategy"))
+        # WHAT IS READ BESIDE IT: names, checked for shape and sent as given. A
+        # URL is refused here, before any request (#1434).
+        additional = check_additional_repositories(
+            args.get("additional_repositories"), where="swarm_dispatch")
         # WHAT IS CLONED, decided before anything travels: the caller's repo,
         # or -- only with `infer: true` -- the checkout this bridge runs in,
         # refused when its branch is not pushed, because a remote agent on an
@@ -4189,7 +4257,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             ref=args.get("ref"),
             infer=_flag(args, "infer"),
         )
-        signature = _dispatch_signature(profile, args["prompt"], strategy, repository, inputs)
+        signature = _dispatch_signature(profile, args["prompt"], strategy, repository, inputs, additional)
         _refuse_a_repeat_dispatch(client, signature)
         if strategy == "direct-pr" and not repository.url:
             raise SwarmError(
@@ -4212,6 +4280,8 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             metadata={"unit": args["label"]} if args.get("label") else None,
             inputs=inputs or None,
             strategy=strategy,
+            # Only when named, so a dispatch naming none calls exactly as before.
+            **({"additional_repositories": additional} if additional is not None else {}),
         ))
         task_id = task_id_of(task)
         if not task_id:
@@ -4606,6 +4676,8 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
                 "priority": args.get("priority"),
                 "label": args.get("label"),
                 "title": workflows.check_title(args.get("title"), where="swarm_workflow"),
+                "additional_repositories": check_additional_repositories(
+                    args.get("additional_repositories"), where="swarm_workflow"),
             }
             repo, ref = args.get("repo"), args.get("ref")
         credentials = check_mcp_credentials(
@@ -4637,6 +4709,8 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             # Nor `after` (SPEED-D3).
             after=fields.get("after"),
             mcp_credentials=credentials,
+            # As named: `infer` above chose only the primary repository.
+            additional_repositories=fields["additional_repositories"],
         )
         reply = _workflow_created(without_credentials(envelope), placed=placed, repository=repository.as_dict(),
                                   digest=digest, expected_digest=expected_digest,

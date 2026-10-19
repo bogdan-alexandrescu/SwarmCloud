@@ -1039,6 +1039,9 @@ def cmd_workflow(client: SwarmClient, args) -> int:
         title=workflows.check_title(getattr(args, "title", None), where="--title") or spec["title"],
         merge=spec["merge"],
         after=spec["after"],
+        # The workflow's default list (#1434): a spec that names one and is
+        # accepted must send it, or every step without its own list reads none.
+        additional_repositories=spec["additional_repositories"],
     )
     workflow = envelope["workflow"]
     workflow_id = workflow.get("workflow_id")

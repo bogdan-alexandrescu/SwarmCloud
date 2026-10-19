@@ -169,6 +169,37 @@ at the ref the dispatch names. Everything follows from that:
 So: before dispatching anything that touches code, say out loud which ref the
 agents will see, and check that the work they depend on is on it.
 
+### When the agent must read more than one repository
+
+Name the others in `additional_repositories` when the question spans
+repositories and the answer needs their CODE, not a summary — "which service
+owns the endpoint the web app calls", a change in the API checked against the
+SDK that consumes it. Each entry is `{"repository": "owner/repo", "ref":
+"main", "name": "web"}`: `ref` defaults to the registration's default branch,
+`name` to the repository part, lower-cased. Do not name them for a task that
+only edits its own repository: each one is a clone that takes disk and time.
+
+* **Names, never URLs.** Only repositories your workspace registered and lets
+  tasks read. A URL, an ssh remote, a commit or a credential is refused by the
+  bridge before anything is sent; SwarmCloud resolves the rest.
+* **The agent reads them at `../repos/<name>`**, beside its own checkout, each
+  pinned to the commit its ref named at submission. Say that path in the
+  prompt. They are read-only: a change made there is never collected, pushed
+  or opened as a pull request. Only the task's own repository comes back.
+* **`infer` never touches them.** It picks the task's own repository and
+  nothing else; the list is sent as you wrote it.
+* **In a workflow,** the top-level list is every step's default; a step's own
+  list REPLACES it, and `[]` means none. Every step reads one repository at
+  the same commit.
+* **SwarmCloud decides the rest, and says so.** It refuses a repository that
+  is not registered (`repository_not_registered`), not readable by tasks, or
+  not granted to you; more repositories than the platform's current limit
+  (`too_many_additional_repositories`, which names it — the limit is an
+  admin setting, not a number to remember); too large a total; a profile
+  that does not take them (GKE agent profiles do; Cloud Run ones refuse); and
+  the whole field while the deployment has it switched off
+  (`additional_repositories_disabled`). Report the refusal as given.
+
 ## Dispatching
 
 **Anything with `depends_on` or `input_from` goes through `swarm_workflow`**,
@@ -231,9 +262,10 @@ time, and one call is one window — when `truncated` is true, call again with
 `offset` set to `next_offset`.
 
 `swarm_dispatch` takes `prompt`, `profile`, `repo`, `ref`, `infer`,
-`strategy`, `label` and `inputs` — or, for several independent units at once,
-`tasks`: a list of `{prompt, runner_profile, repo, ref, infer, strategy,
-label, inputs}`, sent as ONE request and answered with every `task_ids` in the
+`strategy`, `label`, `inputs` and `additional_repositories` (above) — or, for
+several independent units at once, `tasks`: a list of `{prompt,
+runner_profile, repo, ref, infer, strategy, label, inputs,
+additional_repositories}`, sent as ONE request and answered with every `task_ids` in the
 order given. A list longer than the API's `max_batch_size` (its `/v1/stats`
 limits) is refused before anything is sent, and so is a list holding the same
 task twice. Both forms take `target` and `needs_local` (above). The profile is
