@@ -1097,3 +1097,160 @@ def test_offboarding_runbook_covers_group_and_service_workspaces():
 @pytest.mark.parametrize("doc", (KINDS_DESIGN, WORKSPACES_DOC, TENANCY, OFFBOARDING), ids=lambda p: p.name)
 def test_workspace_kinds_docs_cite_only_what_resolves(doc: Path):
     _assert_cites_resolve(doc)
+
+
+# --------------------------------------------------------------------------
+# ROLES-DOCS (part of #1518): a workspace's people are viewers, members or
+# admins, and a platform admin reaches every group workspace
+# --------------------------------------------------------------------------
+#
+# docs/design/workspace-roles.md was written before any lane built it. Its §8
+# records what each build-plan lane landed, the two lanes the owner added on
+# 2026-10-19 (WK-REACH, ROLES-ADMIN-LIST), where the code departs from the
+# design and what is still to do. human-steps.md §4.2 and workspace-secrets.md
+# Q4 are the two decisions Q5 and Q6 superseded (workspace-roles.md §4.2.3,
+# §4.1); docs/security.md carries the threat model and docs/workspaces.md the
+# Admin › People card. Every code, switch, constant and name they state is
+# read from the code here, so a switch turned on, a gap closed or a probe
+# added fails until the documents follow.
+
+ROLES_DESIGN = DOCS / "design" / "workspace-roles.md"
+SECRETS_DESIGN = DOCS / "design" / "workspace-secrets.md"
+ROLES_BUILT = "## 8. What was built"
+ROLES_SECURITY = "## Workspace roles and a platform admin's reach"
+ROLES_PY = "apps/swarm-api/swarm_api/roles.py"
+SETTINGS_PY = "apps/swarm-api/swarm_api/settings.py"
+ANSWER_GATE = "apps/swarm-api/swarm_api/awaitinput.py::member_refusal"
+SECRETS_GATE = "apps/swarm-api/swarm_api/workspace_secrets.py::require_manager"
+#: The two refusal codes on existing routes, one switch each (§4.9, Q10).
+ROLE_CODES = ("role_member_required", "role_admin_required")
+#: Lanes the owner added after §6 was written (#1518, comment of 2026-10-19).
+ROLES_ADDED_LANES = ("WK-REACH", "ROLES-ADMIN-LIST")
+
+
+def _roles_lanes() -> list[str]:
+    plan = _section(_text(ROLES_DESIGN), "## 6. Build plan")
+    lanes = re.findall(r"^\|[^|\n]*\| \*\*(ROLES-[A-Z-]+)\*\*", plan, flags=re.M)
+    assert len(lanes) >= 13 and "ROLES-DOCS" in lanes, lanes
+    return lanes + list(ROLES_ADDED_LANES)
+
+
+def _mentions(root: Path, needle: str, pattern: str) -> bool:
+    return any(needle in p.read_text(encoding="utf-8", errors="ignore") for p in root.rglob(pattern))
+
+
+def test_roles_design_no_longer_says_nothing_is_built():
+    head = _flat(_text(ROLES_DESIGN).split("\n---\n", 1)[0])
+    assert "Nothing here is built" not in head
+    assert "**Status: built" in head and "§8" in head
+    assert "`PLATFORM_ADMIN_REACH`" in head
+
+
+def test_roles_design_records_what_every_lane_built():
+    from swarm_api import refusals, roles
+
+    raw = _section(_text(ROLES_DESIGN), ROLES_BUILT)
+    body = _flat(raw)
+    for lane in _roles_lanes():
+        assert f"**{lane} (" in raw, f"§8 has no entry for {lane}"
+    # Both switches ship off, and the environment variable each reads.
+    for code in ROLE_CODES:
+        assert refusals.SWITCHES[code].default is False, code
+        assert f"`{code}`" in body and f"`{refusals.env_name(code)}`" in body, code
+    dev = _text(REPO / "terraform" / "environments" / "dev" / "dev.tfvars")
+    if not any(code in dev for code in ROLE_CODES):
+        assert "neither switch is on in dev" in body
+    # The reach ships off, and while no Terraform sets it, it is off everywhere.
+    reach = f"{SETTINGS_PY}::ApiSettings.platform_admin_reach"
+    assert f"`{reach}`" in raw and "= False" in _cited_symbol(*reach.split("::"))
+    if not _mentions(REPO / "terraform", "PLATFORM_ADMIN_REACH", "*.tf*"):
+        assert "no Terraform variable sets `PLATFORM_ADMIN_REACH`" in body
+    # The acceptance probe: until one asserts the code, its lane is not built.
+    if not _mentions(REPO / "tests" / "acceptance", "role_member_required", "*.py"):
+        assert "**ROLES-ACCEPT (not built" in raw
+    # Storage, read from roles.py.
+    assert roles._MAC_DOMAIN == b"swarm-workspace-role-grant/v1\n"
+    assert f"`{ROLES_PY}::_MAC_DOMAIN`" in raw and "`swarm-workspace-role-grant/v1`" in body
+    assert f"{roles.SCAN_LIMIT} grants" in body and roles.SCAN_LIMIT == roles.PAGE_SIZE * roles.PAGES
+    write = f"{ROLES_PY}::RoleStore.write"
+    assert f"`{write}`" in raw and ".batch()" in _cited_symbol(*write.split("::"))
+    # Departure: the fallback code was never needed; the role routes raise.
+    for path in (ROLES_PY, "apps/swarm-api/swarm_api/routes/roles.py"):
+        assert "role_grant_required" not in _text(REPO / path)
+    assert "`role_grant_required`" in body and "was not needed" in body
+    # Departure: the admin role routes see Terraform's groups only, while a
+    # job-made group is in the reach. Say so until the code reads the registry.
+    groups = f"{ROLES_PY}::registered_group_tenants"
+    assert f"`{groups}`" in raw
+    if "registry" not in _cited_symbol(*groups.split("::")).split('"""')[-1]:
+        assert "a group workspace the workspace job made" in body and "404" in body
+    # The human-step answer route is built and asks the role.
+    assert f"`{ANSWER_GATE}`" in raw
+    whole = _flat(_text(ROLES_DESIGN))
+    assert "`human-steps.md` §4.2, not built yet" not in whole
+    assert "(`human-steps.md` §4.2, not built)" not in whole
+
+
+def test_human_steps_4_2_lets_a_platform_admin_answer_in_a_group_workspace():
+    raw = _section(_text(HUMAN_STEPS), "### 4.2 Who may answer")
+    body = _flat(raw)
+    assert "Amended 2026-10-19" in body and "workspace-roles.md" in body
+    assert "superseded for group workspaces" in body
+    assert f"`{ANSWER_GATE}`" in raw
+    gate = _cited_symbol(*ANSWER_GATE.split("::"))
+    assert "may_act_in(" in gate and "roles.MEMBER" in gate and "fresh=True" in gate
+    assert "`role_member_required`" in body and "personal workspace" in body
+    built = _flat(_section(_text(HUMAN_STEPS), "## 8. What was built"))
+    assert "ROLES-DOCS" in built
+
+
+def test_secrets_design_q4_is_the_workspace_admin_now():
+    text = _text(SECRETS_DESIGN)
+    head = _flat(text.split("\n---\n", 1)[0])
+    assert "workspace-roles.md" in head and "Q4" in head
+    console = _section(text, "## 5. Console: Settings › Workspace › Secrets")
+    assert f"`{SECRETS_GATE}`" in console
+    gate = _cited_symbol(*SECRETS_GATE.split("::"))
+    assert "workspace_admin(" in gate and "is_personal(" in gate
+    admin = "apps/swarm-api/swarm_api/workspace_secrets.py::workspace_admin"
+    assert f"`{admin}`" in console and "fresh=True" in _cited_symbol(*admin.split("::"))
+    assert "`role_admin_required`" in _flat(console)
+    q4 = next(ln for ln in _section(text, "## 10. Owner decisions (2026-10-14, ~22:40–23:05 PDT)").splitlines()
+              if ln.startswith("| Q4"))
+    assert "superseded" in q4 and "Q6" in q4
+
+
+def test_security_doc_describes_workspace_roles_from_the_code():
+    text = _text(SECURITY)
+    raw = _section(text, ROLES_SECURITY)
+    body = _flat(raw)
+    assert "workspace-roles.md" in body
+    reach = "apps/swarm-api/swarm_api/auth.py::Authenticator._reachable_groups"
+    assert f"`{reach}`" in raw and 'startswith("u-")' in _cited_symbol(*reach.split("::"))
+    audit = "apps/swarm-api/swarm_api/deps.py::current_auth"
+    assert f"`{audit}`" in raw and "audit_platform_admin(" in _cited_symbol(*audit.split("::"))
+    assert "`platform_admin_audit_unavailable`" in body and "fail closed" in body
+    assert "`swarm-workspace-role-grant/v1`" in body
+    for code in ROLE_CODES:
+        assert f"`{code}`" in body, code
+    assert "`PLATFORM_ADMIN_REACH`" in body
+    auth = _flat(_section(text, "## Authentication"))
+    assert "`PLATFORM_ADMIN_REACH`" in auth and "never anyone else's personal workspace" in auth
+
+
+def test_workspaces_doc_names_the_workspace_roles_card():
+    text = _text(WORKSPACES_DOC)
+    head = _flat(text.split("\n---\n", 1)[0])
+    assert "design/workspace-roles.md" in head
+    people = _section(text, "### 6.4 Admin → People")
+    assert "**5. Workspace roles.**" in people
+    assert "`apps/swarm-ui/src/WorkspaceRolesAdmin.tsx` (`Name an admin`)" in people
+    assert "`GET /v1/admin/workspaces/roles`" in _flat(people)
+    admins = _flat(_section(text, "### 6.5 Admin roles move to Firestore"))
+    assert "`PLATFORM_ADMIN_REACH`" in admins and "personal workspace" in admins
+
+
+@pytest.mark.parametrize("doc", (ROLES_DESIGN, HUMAN_STEPS, SECRETS_DESIGN, SECURITY, WORKSPACES_DOC),
+                         ids=lambda p: p.name)
+def test_workspace_roles_docs_cite_only_what_resolves(doc: Path):
+    _assert_cites_resolve(doc)

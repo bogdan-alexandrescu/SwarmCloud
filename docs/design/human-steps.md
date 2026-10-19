@@ -620,6 +620,25 @@ model that has to hold without it.
    tenant, as with approvals. `is_admin` is about the caller, not the tenant
    (`auth.py::_select_tenant`), and the route never reads it.
 
+   > **Amended 2026-10-19 (ROLES-DOCS, part of #1518): step 3 is
+   > superseded for group workspaces** by
+   > [workspace-roles.md](workspace-roles.md) §4.2.3, owner answer Q5. A
+   > platform admin is `admin` in every registered group workspace, member
+   > or not, so they answer there as its admin; every write they make in a
+   > group workspace they are not in is audited before it runs. Step 2's
+   > fresh check is now `Authenticator.may_act_in`, which answers
+   > `"platform_admin"` for them only in a group workspace and only while
+   > `PLATFORM_ADMIN_REACH` is on. A personal workspace is unchanged: only
+   > its person answers, and a platform admin cannot even select another
+   > person's. Roles add one check after step 2: the answerer must hold
+   > `member` or above, read fresh, or the answer is 403
+   > `role_member_required` (behind that code's switch, off at ship). The
+   > route runs all of it in
+   > `apps/swarm-api/swarm_api/awaitinput.py::member_refusal`: a person,
+   > then `may_act_in` fresh (`not_a_member` when it answers `""`), then
+   > the role. Step 1 and the gate rules elsewhere in this section are
+   > unchanged and still apply to a platform admin.
+
 **What replaces the per-assignee check in the threat model.** The first draft
 relied on `assignees` for one property: that the person whose judgement the
 author wanted is the person who answered. Q2 drops that property on purpose,
@@ -1549,7 +1568,7 @@ reports blockers and majors on the PR; minors go to the wave epic.
 | phase | lane | territory | red-first tests (each fails before the change) |
 |---|---|---|---|
 | 0 | **HW-CONTRACT** (owner applies) | `apps/common/swarm_common/states.py`, `profiles.py`, `docs/contract-change-requests.md` (entries 85-87 from §5 A-C), `terraform/infra/locals.tf`, `tests/terraform/catalogue.tftest.hcl`, `apps/swarm-ui/src/types.ts`, `apps/swarm-ui/src/components/StatePill.tsx`, `apps/swarm-mcp/swarm_mcp/progress.py`, `apps/swarm-mcp/swarm_mcp/compact.py`, `tests/unit/common/test_await_input_contract.py` (new), `tests/unit/common/test_awaiting_input_readers.py` (new) | `AWAITING_INPUT` is a `ParkReason` and not in any capacity set; the readers test fails on a file that names `HUMAN_REQUIRED` and not `AWAITING_INPUT` and is not on its list, and its three behavioural cases (25-hour sweep, `human-ready` 409, no `handoffs` item) hold; a `control_plane` profile with `runner_argv`, `worker_action`, `provider`, `secrets`, `inputs` or `live_browser` raises; `await-input` is `control_plane`, unavailable, and in `profiles_without_a_job`; the parity script passes |
-| 1 | **HW-IAM** (Track C; waits at `dev-iam`) | `terraform/infra/await_input.tf` (new: `google_storage_bucket_iam_member.api_input_writer`, local `await_input_object_condition`), `terraform/modules/firestore/indexes.tf` (`google_firestore_index.await_input_expiry`), `tests/terraform/await_input.tftest.hcl` (new) | the condition admits `tenants/a/tasks/t/attempts/input-0123456789ab/artifacts/review.json` and `…/artifacts/review.files/draft.md`; refuses `attempts/att_x/artifacts/…`, `attempts/input-0123456789ab/checkpoints/…`, `attempts/input-0123456789ab/live/…`, a key outside `tenants/`; the role is `objectCreator` only, bucket-scoped; `api_reader` is unchanged |
+| 1 | **HW-IAM** (Track C; waits at `dev-iam`) | `terraform/infra/await_input.tf` (new: `google_storage_bucket_iam_member.api_input_writer`, local `await_input_object_condition`), `terraform/modules/firestore/indexes.tf` (`resource "google_firestore_index" "await_input_expiry" {`), `tests/terraform/await_input.tftest.hcl` (new) | the condition admits `tenants/a/tasks/t/attempts/input-0123456789ab/artifacts/review.json` and `…/artifacts/review.files/draft.md`; refuses `attempts/att_x/artifacts/…`, `attempts/input-0123456789ab/checkpoints/…`, `attempts/input-0123456789ab/live/…`, a key outside `tenants/`; the role is `objectCreator` only, bucket-scoped; `api_reader` is unchanged |
 | 1 | **HW-SCHED** | `apps/scheduler/scheduler/awaitinput.py` (new), `loop.py`, `store.py`, `tests/unit/control_plane/test_await_input_scheduler.py` (new) | draft -> await -> revise: when `draft` succeeds the await step is `PARKED(AWAITING_INPUT)` with **zero leases** in the store; a READY `await-input` task is parked by `_admit_one` and never leased whatever the pool headroom; `_expire_human_waits` does not touch it at 25 hours; under `fail_workflow` a failed sibling cancels it; its `task_finished` promotes `revise` within the same drain; `expires_at` is `opened_at` plus the declared seconds |
 | 1 | **HW-API-SUBMIT** | `apps/swarm-api/swarm_api/schemas.py`, `validation.py`, `service.py`, `tests/unit/control_plane/test_await_input_submission.py` (new) | each refusal of §4.1 is a 422 naming its field, `assignees` included; `expires_after_seconds` of 86,401 is refused and 86,400 accepted; the API's bound equals the scheduler's `HUMAN_PARK_MAX_SECONDS` (both imported); `max_files` of 11 is refused; `await_input` lands in `metadata.dispatch` and changes the spec digest; a caller-sent `metadata.await_input` is refused as reserved; an await step is never in `integrates`; `form: "answers"` without a `questions.json` source is refused |
 | 1 | **HW-WORKER** (Track B) | `apps/agent-worker/agent_worker/inputs.py`, `tests/unit/worker/test_input_attachments.py` (new) | an entry with two attachments stages them under `review.files/`; an attachment whose URI is in another tenant, another task or outside `artifacts/` fails with `InputUnavailable` and stages nothing; an attachment with no `bytes` is refused; attachments count toward `max_total_bytes`; a resumed attempt with them in its checkpoint does not re-fetch; an entry without `attachments` stages exactly as today |
@@ -1671,3 +1690,10 @@ the profile refused while the catalogue serves it unavailable.
 Where the build differs from §4.5: the `answers` form is drawn from the
 questions the step's own route serves, not through `QuestionsCard.tsx`,
 whose Answer posts to the task's answers route rather than the step's.
+
+**ROLES-DOCS (2026-10-19, part of #1518).** §4.2's step 3 carries the
+amendment above: workspace roles (`docs/design/workspace-roles.md`) let a
+platform admin answer in a group workspace and require `member` of every
+answerer. ROLES-GATES-DECIDE built it in the answer route, held by
+`tests/unit/control_plane/test_roles_gates_answer.py`. The console's answer
+card has no role gate of its own; the server decides.
