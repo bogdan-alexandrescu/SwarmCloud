@@ -97,17 +97,20 @@ describe('the Code intelligence switch', () => {
     expect(text).toMatch(/credential/i)
     expect(text).toMatch(/transcript/i)
     // Where it goes: the workspace's judgment backend, by name.
-    await waitFor(() => expect(visible(document.body)).toMatch(/Internal Jev.*stays inside Saga/i))
+    await waitFor(() => expect(visible(document.body)).toMatch(/Internal Jev.*stays inside your network/i))
+    // The company is not named on the card (#1647, SAGA-COPY).
+    expect(document.body.textContent).not.toMatch(/\bSaga\b/i)
     // Local context is a separate switch and sends nothing.
     expect(text).toMatch(/repository context.*nothing leaves the platform/i)
   })
 
-  it('names TypeSafe as leaving Saga when that is the judgment backend', async () => {
+  it('names TypeSafe as leaving your network when that is the judgment backend', async () => {
     api(codeIntel(), { backend: 'typesafe' })
     const { CodeIntelligenceCard } = await load()
     render(<CodeIntelligenceCard />)
     await toggle()
-    await waitFor(() => expect(visible(document.body)).toMatch(/TypeSafe.*outside Saga/i))
+    await waitFor(() => expect(visible(document.body)).toMatch(/TypeSafe.*outside your network/i))
+    expect(document.body.textContent).not.toMatch(/\bSaga\b/i)
   })
 
   it('is enabled for the owner or an admin, and turning it on is one PUT to the workspace', async () => {
