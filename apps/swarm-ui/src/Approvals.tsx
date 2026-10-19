@@ -26,6 +26,7 @@ import { usePhoneTables } from './capacityPoll'
 import { Button } from './components'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { Absent } from './primitives'
+import { PersonName } from './PersonName'
 import { InApp, scheduleAddress, untilWords } from './Schedules'
 import { Screen, timeAgo } from './Shell'
 import { pluralise } from './types'
@@ -308,23 +309,38 @@ function Evidence({ d }: { d: ApprovalDetail }) {
 }
 
 /**
+ * An item as `routes/approvals.py` serves it since PROFILE-NAMES-API: the
+ * decider's display name beside `decided_by` (`people.add_names`), null when
+ * they set none or the value is not a person. Declared here until `api.ts`'s
+ * `ApprovalDetail` carries it; an older API omits it and the email prints alone.
+ */
+type Decided = ApprovalDetail['approval'] & { decided_by_name?: string | null }
+
+/**
  * What became of an item that is no longer waiting (AUT-6): a link from a
  * notification to an item someone else decided, or one that expired, says so.
  */
-function decidedWords(a: ApprovalDetail['approval']): string {
-  const by = a.decided_by ? ` by ${a.decided_by}` : ''
+function decidedWords(a: Decided): ReactNode {
+  // Who decided, through `PersonName` (user-profile.md §4.4): their name, when
+  // they set one, always beside the email that decided.
+  const by = a.decided_by ? (
+    <>
+      {' by '}
+      <PersonName email={a.decided_by} name={a.decided_by_name} />
+    </>
+  ) : null
   const at = a.decided_at ? ` ${new Date(a.decided_at).toLocaleString()}` : ''
   switch (a.state) {
     case 'approved':
-      return `Approved${by}${at}.`
+      return <>Approved{by}{at}.</>
     case 'rejected':
-      return `Rejected${by}${at}${a.reason ? `: ${a.reason}` : ''}.`
+      return <>Rejected{by}{at}{a.reason ? `: ${a.reason}` : ''}.</>
     case 'expired':
       return `Expired${a.expires_at ? ` ${new Date(a.expires_at).toLocaleString()}` : ''}: nobody decided it in time, so it did not go ahead.`
     case 'superseded':
       return 'Superseded: a newer request replaced it.'
     default:
-      return `${a.state}${by}${a.reason ? `: ${a.reason}` : ''}.`
+      return <>{a.state}{by}{a.reason ? `: ${a.reason}` : ''}.</>
   }
 }
 

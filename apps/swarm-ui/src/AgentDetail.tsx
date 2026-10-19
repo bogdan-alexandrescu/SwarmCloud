@@ -21,6 +21,7 @@ import { agentName, workflowHref } from './agentlist'
 import { resultIsNewest, stepCostOf, totalCostOf } from './dag'
 import { DecisionCard } from './DecisionCard'
 import { AdditionalRepositoryRows } from './Dispatch'
+import { PersonName } from './PersonName'
 import { QuestionsCard } from './QuestionsCard'
 import { handoffOf } from './Handoff'
 import { pullRequestOf } from './decision'
@@ -1508,7 +1509,17 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
         </>
       )}
       <p className="dt-note" title={start.submittedTitle}>
-        submitted {start.submitted} · {task.submitted_by === null ? 'by — not recorded' : `by ${task.submitted_by}`} · {timeAgo(task.created_at, now)}
+        {/* The submitter through `PersonName` (user-profile.md §4.4): their
+            name when they set one, always beside the email. */}
+        submitted {start.submitted} ·{' '}
+        {task.submitted_by === null ? (
+          'by — not recorded'
+        ) : (
+          <>
+            by <PersonName email={task.submitted_by} name={task.submitted_by_name} />
+          </>
+        )}{' '}
+        · {timeAgo(task.created_at, now)}
       </p>
     </section>
   )

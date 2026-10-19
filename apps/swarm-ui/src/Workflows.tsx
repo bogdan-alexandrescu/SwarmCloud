@@ -174,6 +174,7 @@ import {
 } from './WorkflowViews'
 import { gateVerdictOf, isReviewedBy, mergeOf, skippedByVerdict, verdictFor, type MergeRead, type VerdictRead } from './wfreview'
 import { WorkflowChangesTab, changesAtOf, changesCount, withChangesAt, type ChangesAt } from './WorkflowChanges'
+import { PersonName } from './PersonName'
 import { Mark } from './primitives'
 import './styles/workflows.css'
 import './styles/names.css'
@@ -480,18 +481,30 @@ function useRecentName(id: string | null): string | null {
   return name
 }
 
-/** `4 steps · 1 → 2 → 1 · 1 of 4 done · by priya · started 8m ago`: one workflow's count note (#138). */
-function pageSummary(d: WorkflowBoard, id: string): string {
+/**
+ * `4 steps · 1 → 2 → 1 · 1 of 4 done · by Priya Rao · priya@example.com ·
+ * started 8m ago`: one workflow's count note (#138).
+ *
+ * THE OWNER IS A PERSON, SO IT PRINTS THROUGH `PersonName` (user-profile.md
+ * §4.4): their name when they set one, always beside the whole email. The
+ * list's narrow Owner column keeps the name before the @ (QA G3-14); this
+ * note is the workflow page's, where the design names the owner. It is
+ * called, not mounted, so the note's element tree carries the name and the
+ * email as text, and `CountNote`'s title (`textOf`) keeps them.
+ */
+function pageSummary(d: WorkflowBoard, id: string): ReactNode {
   const w = d.workflows.find((x) => x.workflow_id === id)
   if (w === undefined) return 'not in this read'
   const shape = shapeOf(w.steps)
   const started = workflowStartText(w, d.taskById)
-  return [
-    `${shape.steps} step${shape.steps === 1 ? '' : 's'} · ${shape.text}`,
-    rollupLine(w, d.taskById).text,
-    `by ${ownerShort(w.submitted_by)}`,
-    startedPhrase(started),
-  ].join(' · ')
+  const owner = w.submitted_by === null || w.submitted_by === '' ? ownerShort(w.submitted_by) : PersonName({ email: w.submitted_by, name: w.submitted_by_name })
+  return (
+    <>
+      {`${shape.steps} step${shape.steps === 1 ? '' : 's'} · ${shape.text} · ${rollupLine(w, d.taskById).text} · by `}
+      {owner}
+      {` · ${startedPhrase(started)}`}
+    </>
+  )
 }
 
 /**
