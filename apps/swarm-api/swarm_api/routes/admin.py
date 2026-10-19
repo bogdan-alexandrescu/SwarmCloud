@@ -20,7 +20,6 @@ import base64
 import binascii
 import json
 import logging
-from types import SimpleNamespace
 from typing import Any, Mapping
 
 from fastapi import APIRouter, Body, Depends, Query
@@ -55,7 +54,6 @@ from ..mergetrain import tick_tenant as tick_merge_trains
 from ..purge import HistoryPurge, parse_query
 from ..verdictpublish import on_task_finished
 from ..waker import TASK_FINISHED
-from ..registry import WorkspaceRegistry
 from ..repoindex import RepoIndex
 from ..repositories import RepositoryPush
 from ..brokerclient import AccountPool
@@ -1356,15 +1354,12 @@ def _role_workspaces(ctx: AppContext) -> list[tuple[str, str, str]]:
     `TENANT_GROUPS`, then the `ready` job-made group records, in the order and
     under the rule a platform admin's reach walks them (`Authenticator.
     _tenant_groups` then `_reachable_groups`: the first group per id, every
-    `u-` id dropped). The registry is the same public reader the authenticator
-    holds; a registry that cannot be read is its 503, never a list without the
+    `u-` id dropped), read through `Authenticator.registered_group_workspaces`:
+    the authenticator's own cached registry, never one built per request. A
+    registry that cannot be read is its 503, never a list without the
     job-made groups."""
-    configured = tuple(ctx.settings.tenant_groups or ())
     terraform = roles.registered_group_tenants(ctx.settings)
-    known = {g.lower() for g in configured}
-    made = WorkspaceRegistry.from_settings(ctx.db, ctx.settings).registered_groups()
-    walk = configured + tuple(g for g in made if g.lower() not in known)
-    every = roles.registered_group_tenants(SimpleNamespace(tenant_groups=walk))
+    every = ctx.authenticator.registered_group_workspaces()
     return [(tenant_id, group, "terraform" if tenant_id in terraform else "workspace_job")
             for tenant_id, group in every.items()]
 

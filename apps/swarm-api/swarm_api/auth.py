@@ -1361,6 +1361,23 @@ class Authenticator:
             return ""
         return "platform_admin" if self.holds_platform_admin(email, fresh=True) else ""
 
+    def registered_group_workspaces(self) -> dict[str, str]:
+        """tenant_id -> group for every registered group workspace a platform
+        admin may administer: `_reachable_groups` over `_tenant_groups`, the
+        walk every request's reach makes -- `TENANT_GROUPS` in admin order,
+        then the registry's `ready` job-made groups in `ready_at` order, the
+        first group per id, every `u-` id dropped. Never a personal or service
+        workspace, never a group whose record is not `ready` (registry.py).
+
+        Read from the registry this authenticator already holds, so it is
+        cached exactly as a request's own read is (`RegistryUnavailable`, a
+        503, when it has not been read within its stale window). The admin
+        role routes (`routes/roles.py`, `routes/admin.py`) read it here
+        instead of each building a `WorkspaceRegistry`, whose first read per
+        request would be uncached."""
+        registry = self._registry.snapshot() if self._registry is not None else EMPTY_REGISTRY
+        return dict(self._reachable_groups(self._tenant_groups(registry)))
+
     def _registered_reach(self, tenant_id: str, principal: str) -> bool:
         """Whether (tenant_id, principal) is an entry of the reach a request
         would build now: `_reachable_groups` over `_tenant_groups`, the same
