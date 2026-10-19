@@ -14,6 +14,13 @@ a refusal, an unreachable API. Nothing is priced here instead -- a guessed
 figure is a wrong one. Signed with the attempt key the child path registered
 (`children.ChildPath.sign_request`), as the forge broker's request is.
 
+A MODEL PRICED IN TIERS by prompt length is priced per request by that
+request's own prompt (PRICES-TIER-PROMPT), so each model's counts go with
+their `prompt_buckets` (`lifecycle._stream_usage`). A body that would pass
+swarm-api's limit with them is sent as the sums alone instead: swarm-api
+prices those by the summed rule and answers `tier_estimated: true`, which the
+attempt's summary carries. A figure, marked, rather than a refusal and none.
+
 Never raises: this runs on the teardown path, where the lease is about to be
 released either way.
 """
@@ -25,6 +32,10 @@ from typing import Any, Mapping
 from urllib.parse import quote
 
 from .children import ChildApiError, ChildPath
+
+#: The largest body `spend-estimate` accepts
+#: (`swarm_api.spendestimate.MAX_BODY_BYTES`; a test holds the two equal).
+MAX_BODY_BYTES = 256 * 1024
 
 
 class SpendPricer:
@@ -38,24 +49,41 @@ class SpendPricer:
     def _path(self) -> str:
         return f"/v1/attempts/{quote(self.cfg.attempt_id, safe='')}/spend-estimate"
 
-    def price(self, usage_by_model: Mapping[str, Mapping[str, int]]) -> float | None:
+    def price(self, usage_by_model: Mapping[str, Mapping[str, Any]]) -> float | None:
         """USD for `usage_by_model` at swarm-api's list prices, or None."""
-        if not usage_by_model:
-            return None
-        api = self._children.api
-        if api is None or not self._children.can_sign:
-            self.log.warning("stopped run's cost not reported: no way to ask swarm-api for it",
-                             reason="no_api" if api is None else "no_attempt_key")
-            return None
-        path = self._path()
-        body = json.dumps({
+        return self.estimate(usage_by_model)[0]
+
+    def _body(self, usage_by_model: Mapping[str, Mapping[str, Any]], *, buckets: bool) -> bytes:
+        return json.dumps({
             "tenant_id": self.cfg.tenant_id,
             "task_id": self.cfg.task_id,
             "attempt_id": self.cfg.attempt_id,
             "lease_id": self.cfg.lease_id,
             "generation": self.cfg.generation,
-            "usage_by_model": {model: dict(counts) for model, counts in usage_by_model.items()},
+            "usage_by_model": {
+                model: {k: v for k, v in counts.items() if buckets or k != "prompt_buckets"}
+                for model, counts in usage_by_model.items()
+            },
         }).encode("utf-8")
+
+    def estimate(self, usage_by_model: Mapping[str, Mapping[str, Any]]) -> tuple[float | None, bool]:
+        """`(USD or None, tier_estimated)` for `usage_by_model` at swarm-api's list prices.
+
+        `tier_estimated` is swarm-api's word that a tiered model's tier was
+        picked from summed counts rather than per request."""
+        if not usage_by_model:
+            return None, False
+        api = self._children.api
+        if api is None or not self._children.can_sign:
+            self.log.warning("stopped run's cost not reported: no way to ask swarm-api for it",
+                             reason="no_api" if api is None else "no_attempt_key")
+            return None, False
+        path = self._path()
+        body = self._body(usage_by_model, buckets=True)
+        if len(body) > MAX_BODY_BYTES:
+            self.log.info("stopped run's usage sent without its prompt buckets: too large",
+                          bytes=len(body))
+            body = self._body(usage_by_model, buckets=False)
 
         def ask() -> tuple[int, dict[str, Any]]:
             # Signed per try: the proof carries a timestamp swarm-api bounds.
@@ -67,14 +95,14 @@ class SpendPricer:
         except (ChildApiError, LookupError) as exc:
             self.log.warning("stopped run's cost not reported: swarm-api did not price it",
                              decision=getattr(exc, "code", type(exc).__name__))
-            return None
+            return None, False
         except Exception as exc:  # pragma: no cover - defensive; teardown path
             self.log.warning("stopped run's cost not reported", error=type(exc).__name__)
-            return None
+            return None, False
         cost = answer.get("cost_usd")
         if isinstance(cost, bool) or not isinstance(cost, (int, float)) or cost < 0:
             unpriced = answer.get("unpriced_models")
             self.log.info("stopped run's cost not reported: no list price",
                           unpriced_models=unpriced if isinstance(unpriced, list) else None)
-            return None
-        return float(cost)
+            return None, False
+        return float(cost), answer.get("tier_estimated") is True

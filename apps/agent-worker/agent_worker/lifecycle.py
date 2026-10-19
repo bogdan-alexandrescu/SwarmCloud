@@ -4063,6 +4063,8 @@ class Worker:
             # CLI runner stopped on SIGTERM may leave no result for the block
             # below to be written from.
             summary["cost_estimated"] = True
+            if self._spend.get("tier_estimated"):
+                summary["tier_estimated"] = True
         runner_result = _read_json(ws.result_path)
         if runner_result:
             # The SAME figure `_record_spend` wrote onto the attempt (it ran
@@ -12935,14 +12937,19 @@ class Worker:
             estimate = self._stopped_run_usage()
             by_model = estimate.pop("usage_by_model", None) or {}
             more = {k: v for k, v in estimate.items() if k not in usage}
+            tier_estimated = False
             if by_model:
-                cost = self.spend_pricer.price(by_model)
+                cost, tier_estimated = self.spend_pricer.estimate(by_model)
                 if cost is not None:
                     more["total_cost_usd"] = cost
             if more:
                 usage = {**usage, **more}
                 if "total_cost_usd" in more:
                     self._spend["cost_estimated"] = True
+                    if tier_estimated:
+                        # A tiered model's tier was picked from summed counts,
+                        # not per request (PRICES-TIER-PROMPT).
+                        self._spend["tier_estimated"] = True
         self._note_model_mismatch(usage.get("models"))
         if usage:
             self._spend = _add_spend(
@@ -15873,6 +15880,24 @@ def _add_spend(
 #: a run with one is "cost not reported", as it was when the worker priced.
 _UNNAMED_MODEL = "<unnamed>"
 
+#: The width, in prompt tokens, of the buckets a stopped run's requests are
+#: counted in per model (`prompt_buckets`, PRICES-TIER-PROMPT, #1481). A model
+#: priced in tiers is priced per REQUEST by that request's own prompt, and
+#: the worker holds no price table, so it cannot split the counts at the tier
+#: ceiling itself. It counts each request in bucket `ceil(prompt / width)`
+#: instead: every request in one bucket falls on the same side of any ceiling
+#: that is a multiple of the width, and swarm-api maps each bucket to its
+#: tier (`modelprices.bucket_rates`). Every ceiling a provider lists today --
+#: 100,000, 128,000, 200,000, 272,000 -- is a multiple of 1,000. MUST equal
+#: `swarm_api.modelprices.PROMPT_BUCKET_TOKENS`; a test holds the two equal.
+_PROMPT_BUCKET_TOKENS = 1_000
+
+#: The most buckets one model's usage is sent in: a prompt sweep over a
+#: million-token context, at one bucket per 1,000 tokens. A model past it is
+#: sent as its sums alone, which swarm-api prices by the summed rule and marks
+#: `tier_estimated` -- the body stays bounded, never refused.
+_MAX_PROMPT_BUCKETS = 1_024
+
 #: The most of a capture file read for an estimate. The capture is itself
 #: capped (`max_stdout_bytes`), so this only bounds a misconfigured cap.
 _ESTIMATE_READ_LIMIT = 64 * 1024 * 1024
@@ -15892,6 +15917,15 @@ def _stream_usage(path: Path) -> dict[str, Any]:
     `usage_by_model` holds the same counts per model the stream named, for
     swarm-api to price (`spendprice`, #1481): the worker prices nothing, so
     no `total_cost_usd` comes back from here.
+
+    Each model's counts also carry `prompt_buckets` (PRICES-TIER-PROMPT): the
+    same counts split by each request's OWN prompt size -- its input, cache
+    written and cache read -- as `[bucket, input, output, cache written,
+    cache read]` rows in rising bucket order, a request whose prompt is `p`
+    tokens in bucket `ceil(p / _PROMPT_BUCKET_TOKENS)`. A provider prices a
+    tiered model per request, so a long attempt of short requests is the
+    lower tier for every one of them; the attempt's summed prompt is not the
+    size any request had. The rows add up to the model's sums exactly.
 
     A FLOOR, not an exact figure: a capture past its cap keeps its head and
     tail, so a long run's middle is not counted. The caller marks a figure
@@ -15941,6 +15975,7 @@ def _stream_usage(path: Path) -> dict[str, Any]:
     )
     totals = dict.fromkeys(fields, 0)
     by_model: dict[str, dict[str, int]] = {}
+    buckets: dict[str, dict[int, list[int]]] = {}
     for model, usage in messages.values():
         counts = {
             k: usage[k]
@@ -15957,12 +15992,33 @@ def _stream_usage(path: Path) -> dict[str, Any]:
         mine = by_model.setdefault(name, dict.fromkeys(fields, 0))
         for k in fields:
             mine[k] += counts[k]
+        prompt = (counts["input_tokens"] + counts["cache_creation_input_tokens"]
+                  + counts["cache_read_input_tokens"])
+        bucket = -(-prompt // _PROMPT_BUCKET_TOKENS)
+        row = buckets.setdefault(name, {}).setdefault(bucket, [0, 0, 0, 0])
+        for at, k in enumerate(_BUCKET_FIELDS):
+            row[at] += counts[k]
     estimate: dict[str, Any] = dict(totals)
     models = sorted(m for m in by_model if m != _UNNAMED_MODEL)
     if models:
         estimate["models"] = models
-    estimate["usage_by_model"] = by_model
+    out: dict[str, dict[str, Any]] = {}
+    for name, sums in by_model.items():
+        out[name] = dict(sums)
+        rows = buckets.get(name) or {}
+        if len(rows) <= _MAX_PROMPT_BUCKETS:
+            out[name]["prompt_buckets"] = [[b, *rows[b]] for b in sorted(rows)]
+    estimate["usage_by_model"] = out
     return estimate
+
+
+#: The counts of a `prompt_buckets` row, after its bucket, in this order.
+_BUCKET_FIELDS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+)
 
 
 def _workspace_label(ws: workspace_mod.Workspace, path: Path) -> str:
