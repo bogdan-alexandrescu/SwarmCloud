@@ -146,7 +146,10 @@ let roleRead: { tenant: string | null; at: number; answer: Promise<{ tenant: str
 function sharedRoleRead(chosen: string | null): Promise<{ tenant: string; role: string } | null> {
   const now = Date.now()
   if (roleRead !== null && roleRead.tenant === chosen && now - roleRead.at < ROLE_READ_REUSE_MS) return roleRead.answer
-  const answer = Promise.resolve(loadMe({ frame: true })).then((r) => {
+  // Called inside a promise, so a read that throws before it returns (not only
+  // one that rejects) leaves the role unknown -- no gate, the server decides --
+  // instead of an error thrown out of every screen that draws a gate.
+  const answer = Promise.resolve().then(() => loadMe({ frame: true })).then((r) => {
     if (r.status !== 'ok' && r.status !== 'stale') return null
     const me = r.data as MeWithRole
     const name = me.role?.name
