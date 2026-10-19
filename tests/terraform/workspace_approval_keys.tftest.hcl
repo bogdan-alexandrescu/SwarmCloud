@@ -151,18 +151,27 @@ run "the_job_carries_spec_verify_keys_from_the_module" {
   }
 
   assert {
-    condition     = output.workspace_deployer.command == google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].command
+    condition     = tolist(output.workspace_deployer.command) == google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].command
     error_message = "the output the owner reads a plan against shows the command the job runs"
   }
 }
 
 run "no_kms_grant_names_the_workspace_deployer" {
-  # apply, against the mock: the deployer readers' member is computed from an
-  # account's email, unknown at plan, and an unknown condition cannot pass.
-  command = apply
+  command = plan
 
   module {
     source = "../../terraform/bootstrap"
+  }
+
+  # The deployer readers' member is the CI deployer's email, computed and so
+  # unknown at plan; an unknown condition cannot pass. Its real value, then.
+  override_resource {
+    target          = google_service_account.deployer
+    override_during = plan
+    values = {
+      email = "swarm-tf-deployer@saga-agents-staging.iam.gserviceaccount.com"
+      name  = "projects/saga-agents-staging/serviceAccounts/swarm-tf-deployer@saga-agents-staging.iam.gserviceaccount.com"
+    }
   }
 
   # The control: there are KMS grants to look through, both kinds.
@@ -177,5 +186,17 @@ run "no_kms_grant_names_the_workspace_deployer" {
       m.member != "serviceAccount:swarm-workspace-deployer@saga-agents-staging.iam.gserviceaccount.com"
     ])
     error_message = "a Cloud KMS grant names swarm-workspace-deployer: the job verifies against SPEC_VERIFY_KEYS and must hold no role on the key (owner decision 2026-10-19)"
+  }
+
+  # The control for the check above: it can see a member, and the members it
+  # sees are the two identities that should be there.
+  assert {
+    condition = toset([
+      for m in concat(values(google_kms_crypto_key_iam_member.swarm_api_signer), values(google_kms_crypto_key_iam_member.deployer_key_readers)) : m.member
+      ]) == toset([
+      "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com",
+      "serviceAccount:swarm-tf-deployer@saga-agents-staging.iam.gserviceaccount.com",
+    ])
+    error_message = "the step-spec key's grants go to swarm-api (signer) and the CI deployer (readers), and to nobody else"
   }
 }

@@ -95,12 +95,33 @@ locals {
   workspace_deployer_email      = "${local.workspace_deployer_account_id}@${var.project_id}.iam.gserviceaccount.com"
   workspace_deployer_member     = "serviceAccount:${local.workspace_deployer_email}"
 
+  # The public keys the job verifies approval signatures with (lane
+  # WK-APPROVAL-KEYS of #847; owner decision 2026-10-19: no new IAM for
+  # approval verification, so the job never reads Cloud KMS). SPEC_VERIFY_KEYS
+  # in the shape workers get, {full version name: PEM}, over the ENABLED
+  # versions of the key swarm-api signs approvals with: dev's step-spec key,
+  # the one images/workspace-apply/entry.py's SIGNING_KEYS trusts. Read below,
+  # at the owner's plan, with the owner's credentials. Public keys, not
+  # secrets; nothing private is ever read or written here.
+  workspace_spec_environment = "dev"
+  workspace_spec_verify_keys = jsonencode(var.enable_workspace_deployer ? module.workspace_spec_keys[0].verify_keys : {})
+
   # The job's command: isolated-mode Python running the scrub (§2.2 step 0),
   # which the image puts root-owned under /opt/swarm (images/workspace-apply,
-  # W6b). A literal held by tests/terraform/workspace_deployer.tftest.hcl: the
-  # command is the one part of an execution no caller can override, so it is
-  # what makes the scrub run first.
-  workspace_apply_command = ["python3", "-I", "/opt/swarm/entry.py"]
+  # W6b). Held by tests/terraform/workspace_deployer.tftest.hcl: the command
+  # is the one part of an execution no caller can override, so it is what
+  # makes the scrub run first.
+  #
+  # ITS LAST ELEMENT PINS THE KEYS. A caller holding runWithOverrides may set
+  # any environment variable on an execution, SPEC_VERIFY_KEYS included, and
+  # would then choose which key "verifies" a record it wrote. It cannot touch
+  # the command, so the command carries the SHA-256 of the value set below,
+  # and entry.py refuses an execution whose SPEC_VERIFY_KEYS hashes to
+  # anything else.
+  workspace_apply_command = [
+    "python3", "-I", "/opt/swarm/entry.py",
+    "--spec-verify-keys-sha256=${sha256(local.workspace_spec_verify_keys)}",
+  ]
 
   # The swarm subnet and the network it is in, as terraform/modules/network
   # names them (this root cannot read infra's state). The worker tag is that
@@ -178,6 +199,49 @@ locals {
 data "google_project" "workspace_deployer" {
   count      = local.workspace_deployer_on
   project_id = var.project_id
+}
+
+# ---------------------------------------------------------------------------
+# The job's verify keys: read at the owner's plan, never at run time
+# ---------------------------------------------------------------------------
+#
+# The step-spec key's ENABLED versions and each one's public key, read by
+# NAME -- bootstrap's own module.spec_signing_key["dev"] spells it -- with the
+# owner's credentials, exactly as terraform/infra reads them for workers. So
+# the job's identity holds no role on the key (owner decision 2026-10-19).
+#
+# WHY THIS DOES NOT HIT #360. spec_signing.tf explains why this root reads no
+# versions for the key it creates: a list that depends on the key RESOURCE is
+# unknown on the plan that creates it, and the module's for_each over it
+# fails. This data source depends on no resource -- the name is a string the
+# module derives from variables -- so it is read at plan. What that costs: the
+# key must already exist when enable_workspace_deployer is switched on. It has
+# since #342's bootstrap apply, and the job needs the platform's network and
+# image from infra's release anyway, so the deployer is never part of a
+# project's first apply. With the switch off, nothing here is read.
+#
+# THE KEYS ARE AS FRESH AS THE LAST BOOTSTRAP APPLY. Workers' keys refresh on
+# every release; these only when the owner applies this root. A version
+# enabled since stops every group and service run at APPROVAL_UNSIGNED (fail
+# closed) until it is applied: re-apply bootstrap after enabling a version and
+# before swarm-api signs with it (docs/runbooks/spec-signing-rollout.md,
+# "Rotation").
+data "google_kms_crypto_key_versions" "workspace_spec_versions" {
+  count = local.workspace_deployer_on
+
+  crypto_key = module.spec_signing_key[local.workspace_spec_environment].crypto_key_id
+  filter     = "state=ENABLED"
+}
+
+module "workspace_spec_keys" {
+  source = "../modules/spec_signing_key"
+  count  = local.workspace_deployer_on
+
+  project_id  = var.project_id
+  region      = var.region
+  name_prefix = var.name_prefix
+  environment = local.workspace_spec_environment
+  versions    = data.google_kms_crypto_key_versions.workspace_spec_versions[0].versions
 }
 
 # ---------------------------------------------------------------------------
@@ -527,6 +591,13 @@ resource "google_cloud_run_v2_job" "workspace_apply" {
         # Fixed here, and not overridable by jobs.run (W0b (2)). No args: the
         # two arguments arrive with each execution, from the workflow.
         command = local.workspace_apply_command
+
+        # The job's one variable: the public keys the command pins (above).
+        # entry.py reads it in step 0 and passes it to nothing.
+        env {
+          name  = "SPEC_VERIFY_KEYS"
+          value = local.workspace_spec_verify_keys
+        }
 
         resources {
           # Invariant 7: a Cloud Run job states limits only, and they are what

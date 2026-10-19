@@ -782,9 +782,15 @@ in the flow still holds. This is Q3's fallback for the front door alone.
   * the key version is a version of the key the image pins for the project
     (`SIGNING_KEYS`: dev's step-spec key).
 
-  It then fetches that version's public key from Cloud KMS, never from the
-  environment or the record, and verifies P-256 ECDSA with the standard
-  library. A missing or bad signature, or a payload that is not the record,
+  It then takes that version's public key from the job's own
+  `SPEC_VERIFY_KEYS`, never from the record, and verifies P-256 ECDSA with
+  the standard library over the frozen `swarm_common.specsign` encoding.
+  `SPEC_VERIFY_KEYS` is the map workers get, read from Cloud KMS at the
+  owner's bootstrap plan, and it counts only when its SHA-256 is the one the
+  job's fixed command carries. An execution override can set an environment
+  variable but not the command, so an override's keys run nothing (lane
+  WK-APPROVAL-KEYS). A version the job was not given is refused as an
+  unsigned approval. A missing or bad signature, or a payload that is not the record,
   stops the run as `needs_owner` with `APPROVAL_UNSIGNED`. It also appends a
   `front_door_audit` entry with `admitted: false`. Both are one write,
   conditional on the record being the one read. Nothing is granted, because
@@ -804,11 +810,14 @@ in the flow still holds. This is Q3's fallback for the front door alone.
   working. New personal approvals are signed all the same, so verifying them
   later is one entry in `VERIFIED_KINDS`. This is the lane's recommended
   answer in its questions to the owner.
-* **The one grant this needs (owner, not agent work).** The job's identity,
-  `swarm-workspace-deployer`, must hold `roles/cloudkms.publicKeyViewer` on
-  dev's step-spec key (`terraform/bootstrap/spec_signing.tf`). Without it,
-  every group or service run stops at the KMS read and writes nothing. That
-  fails closed, and the lane's questions to the owner carry the Terraform.
+* **No grant on the key.** The owner decided on 2026-10-19 that approval
+  verification gets no new IAM. So `swarm-workspace-deployer` holds no role
+  on the step-spec key, and nothing reads Cloud KMS at run time. The cost is
+  rotation: the job's keys refresh only when bootstrap is applied, not on
+  every release. A version swarm-api signs with before that apply stops
+  every group and service run at `APPROVAL_UNSIGNED`, failing closed.
+  `docs/runbooks/spec-signing-rollout.md`, "Rotation", orders the re-apply
+  before the switch.
 * **Residual, stated so it is not mistaken for zero.** The signature proves
   that swarm-api approved the record as it stood at the click. A worker that
   rewrites a `requested` or `denied` record's principal *before* an admin
