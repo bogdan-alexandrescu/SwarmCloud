@@ -108,7 +108,7 @@ else in this file would be a copy nothing compares, so none is.
 | `actions` `click` | `selector` (required) string 0..4096 | `selector`: the element to click |
 | `actions` `fill` | `selector` (required) string 0..4096, `text` string 0..4096 | `selector`: the field to fill; `text`: what to type into it; default empty |
 | `actions` `press` | `selector` (required) string 0..4096, `key` string 0..4096 | `selector`: the element to press a key in; `key`: the key; default Enter |
-| `actions` `wait_for` | `selector` (required) string 0..4096, `timeout_ms` integer 1..300000 | `selector`: the element to wait for; `timeout_ms`: how long to wait; default the agent's timeout_ms |
+| `actions` `wait_for` | `selector` (required) string 0..4096, `timeout_ms` integer 1..300000 | `selector`: the element to wait for; `timeout_ms`: how long to wait; default the task's timeout_ms |
 | `actions` `wait` | `seconds` number 0..60 | `seconds`: how long to pause; default 1 |
 | `actions` `screenshot` | `name` filename, `full_page` boolean | `name`: the artifact's file name; default by position; `full_page`: the whole page, not the viewport; default true |
 | `actions` `extract` | `selector` string 0..4096, `name` filename | `selector`: the element whose text is kept; default body; `name`: the artifact's file name; default by position |
@@ -139,15 +139,15 @@ What `claude-code` and `codex` declare (contract request 28, #265):
 <!-- runner-inputs:claude-code generated from RUNNER_PROFILES["claude-code"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
 | input | kind and bounds | what the claude-code runner does with it |
 |---|---|---|
-| `issue` | integer 1..999999 | an issue in the agent's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
-| `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the agent's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
 <!-- /runner-inputs:claude-code -->
 
 <!-- runner-inputs:codex generated from RUNNER_PROFILES["codex"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
 | input | kind and bounds | what the codex runner does with it |
 |---|---|---|
-| `issue` | integer 1..999999 | an issue in the agent's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
-| `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the agent's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
 <!-- /runner-inputs:codex -->
 
 `claude-code-review` is `claude-code` under its own Job and service account,
@@ -157,7 +157,7 @@ disabled until #295 is enabled, and declares what `claude-code` does:
 <!-- runner-inputs:claude-code-review generated from RUNNER_PROFILES["claude-code-review"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
 | input | kind and bounds | what the claude-code-review runner does with it |
 |---|---|---|
-| `issue` | integer 1..999999 | an issue in the agent's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
 <!-- /runner-inputs:claude-code-review -->
 
 `indexer` is `claude-code` on `agent-runtime-indexer`, the image that carries
@@ -167,7 +167,7 @@ index runs on it; it declares what `claude-code` does:
 <!-- runner-inputs:indexer generated from RUNNER_PROFILES["indexer"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
 | input | kind and bounds | what the indexer runner does with it |
 |---|---|---|
-| `issue` | integer 1..999999 | an issue in the agent's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
 <!-- /runner-inputs:indexer -->
 
 `claude-code-browser` is `claude-code` on `agent-runtime-browser`, Playwright
@@ -178,8 +178,8 @@ class and runs on GKE Autopilot; it declares what `claude-code` does:
 <!-- runner-inputs:claude-code-browser generated from RUNNER_PROFILES["claude-code-browser"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
 | input | kind and bounds | what the claude-code-browser runner does with it |
 |---|---|---|
-| `issue` | integer 1..999999 | an issue in the agent's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
-| `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the agent's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
 | `browser_tool` | string, one of auto \| playwright \| dev-browser \| jev | the live browser's tool: auto (every tool available; the default), playwright (the Playwright MCP tools only), dev-browser (the dev-browser CLI first, Playwright as fallback) or jev (the jev MCP tools, which send page text to TypeSafe and need a TypeSafe key; Playwright as fallback) |
 | `qa_identity` | string, one of console | sign the live browser in to this deployment's console as its QA identity, a service account with its own workspace; the platform adds the credential, the agent never holds it, and a tenant may name it only when a platform admin has granted it |
 <!-- /runner-inputs:claude-code-browser -->

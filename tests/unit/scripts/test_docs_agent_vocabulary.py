@@ -27,6 +27,9 @@ WHAT IS KEPT ON PURPOSE (API_OBJECT, OTHER_PRODUCT, KEPT_FILES):
   * docs/contract-change-requests.md history rows (its `|` index table and the
     `##` headings each row mirrors): records of what was requested, frozen as
     written;
+  * the runner-input tables between `<!-- runner-inputs:<profile> -->`
+    markers: generated from swarm_common.profiles.RUNNER_PROFILES (frozen) and
+    held equal to it by tests/unit/mcp/test_runner_input_prose.py;
   * two blockquotes that quote a source comment and a measured screen word
     for word (KEPT_LINES);
   * docs/child-tasks-for-agents.md: a verbatim copy of
@@ -86,6 +89,8 @@ def _masked(text: str) -> list[tuple[int, int]]:
     for pat, flags in (
         (r"(`+)(?:(?!\1).)+?\1", re.S),
         (r"<!--.*?-->", re.S),
+        # the runner-input tables generated from the frozen RUNNER_PROFILES
+        (r"<!-- runner-inputs:([a-z0-9-]+) .*?<!-- /runner-inputs:\1 -->", re.S),
         (r"\]\([^)]*\)", 0),
         (r"^\s*\[[^\]]+\]:\s*\S+.*$", re.M),
         (r"https?://\S+", 0),
@@ -270,3 +275,14 @@ def test_the_kept_quotations_are_still_there():
     for rel, kept in KEPT_LINES:
         lines = (REPO / rel).read_text(encoding="utf-8").splitlines()
         assert any(line.startswith(kept) for line in lines), (rel, kept)
+
+
+def test_the_scanner_keeps_a_generated_runner_inputs_table():
+    text = (
+        "<!-- runner-inputs:codex generated from RUNNER_PROFILES -->\n"
+        "| `issue` | integer | written to the task's workspace |\n"
+        "<!-- /runner-inputs:codex -->\n"
+    )
+    # MUTATION: drop the runner-inputs mask -> red (and the generated table
+    # could only be "fixed" by breaking test_runner_input_prose.py).
+    assert prose_tasks(text) == []
