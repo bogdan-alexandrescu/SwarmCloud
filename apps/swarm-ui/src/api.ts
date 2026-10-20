@@ -6406,6 +6406,17 @@ export async function patchRepositoryTrigger(repoId: string, onChange: 'poll' | 
   return write(target, 'PATCH', { index: { on_change: onChange } })
 }
 
+/**
+ * `PATCH /v1/repositories/{repo_id}` with `index.keep_versions` alone
+ * (INDEX-RETENTION): how many past index versions the repository keeps,
+ * 1-100. The same merge and the same members as the change trigger.
+ */
+export async function patchRepositoryKeepVersions(repoId: string, keepVersions: number): Promise<Result<unknown>> {
+  const target = route('/v1/repositories/{repo_id}', { repo_id: repoId })
+  if (USE_FIXTURES) return repoNotServed<unknown>(target)
+  return write(target, 'PATCH', { index: { keep_versions: keepVersions } })
+}
+
 // ---------------------------------------------------------------------------
 // Connect GitHub (#780, OB3): the SwarmCloud GitHub App's user authorisation.
 //

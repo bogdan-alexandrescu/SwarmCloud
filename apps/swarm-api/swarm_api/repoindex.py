@@ -87,7 +87,7 @@ import secrets
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Any, Callable, Literal, Mapping, Sequence
+from typing import Annotated, Any, Callable, Iterable, Literal, Mapping, Sequence
 from urllib.parse import quote
 
 from google.cloud import firestore
@@ -137,11 +137,13 @@ from .repositories import COLLECTION as REPOSITORIES
 from .repositories import (
     FULL_EVERY_DAYS_DEFAULT,
     INTERVAL_HOURS_DEFAULT,
+    KEEP_VERSIONS_DEFAULT,
     MIN_CHANGE_INTERVAL_DEFAULT,
     ON_CHANGE_DEFAULT,
     ON_CHANGE_POLLED,
     ON_CHANGE_PUSHED,
     Repositories,
+    keep_versions_of,
     settle_relation,
 )
 from .schemas import TaskCreate
@@ -209,6 +211,14 @@ BASE_INDEX_FILE = "$SWARM_WORK_DIR/repo-index.base.json"
 #: frozen (contract request 34). `metadata.index_kind` and `base_sha` are
 #: this service's own record, read back by `_run_from_task`.
 BASE_LINE = "swarm-index-base: "
+#: The prompt line that names, to the WORKER, every commit whose objects under
+#: repos/ its sweep must keep (`agent_worker.indexrun.KEEP_LINE`; lane
+#: INDEX-RETENTION, part of #1693): a line of its own, the prefix and the
+#: 40-hex shas, space-separated (`kept_commits`). In the signed prompt for
+#: BASE_LINE's reason. Until 2026-10-20 the worker read the versions from
+#: Firestore itself, which a tenant not switched to the state routes was
+#: refused on every run, so nothing was ever retired.
+KEEP_LINE = "swarm-index-keep: "
 
 #: §3.4: incremental only when the diff touches fewer than this many files.
 #: GitHub's compare lists at most 300 changed files, so a diff of 300 or more
@@ -259,8 +269,11 @@ RUNS_COLLECTION = "repo_index_runs"
 VERSIONS_COLLECTION = "index_versions"
 #: §2.3: the last 20 versions are kept; older entries are deleted here, and
 #: their manifest and index copy under repos/ by the next index run's sweep
-#: (lane IX3), which then sweeps the blobs no kept manifest names.
-KEPT_VERSIONS = 20
+#: (lane IX3), which then sweeps the blobs no kept manifest names. A
+#: repository sets its own number since lane INDEX-RETENTION
+#: (`index.keep_versions`, `repositories.keep_versions_of`); this is the
+#: default, for one that never did.
+KEPT_VERSIONS = KEEP_VERSIONS_DEFAULT
 #: Run documents kept per registration. The Index runs tab reads a page of
 #: them by `repo_id` alone, which Firestore's automatic single-field index
 #: serves; pruning keeps that read bounded without a composite index.
@@ -711,9 +724,34 @@ def _incremental_paragraph(base_sha: str) -> str:
     )
 
 
+def kept_commits(
+    rows: Iterable[Mapping[str, Any]], *, keep_versions: int, current_sha: str | None,
+    own: str,
+) -> list[str] | None:
+    """The commits an index run's sweep must keep, or None when they cannot be named.
+
+    The newest `keep_versions` versions by `recorded_at` -- what
+    `_prune_versions` keeps -- plus the promoted `current_sha` and the run's
+    own commit, sorted. None when any version names no commit: the sweep would
+    then delete objects a version still points at, so it is given no keep set
+    and retires nothing.
+    """
+    listed = list(rows)
+    if any(not isinstance(row.get("commit_sha"), str) or not _SHA.match(row["commit_sha"])
+           for row in listed):
+        return None
+    listed.sort(key=lambda r: _parse_time(r.get("recorded_at")) or datetime.min.replace(
+        tzinfo=timezone.utc), reverse=True)
+    kept = {row["commit_sha"] for row in listed[:max(0, keep_versions)]}
+    for commit in (current_sha, own):
+        if isinstance(commit, str) and _SHA.match(commit):
+            kept.add(commit)
+    return sorted(kept)
+
+
 def indexer_prompt(
     repository: str, commit_sha: str, branch: str, *, tenant_id: str, repo_id: str,
-    base_sha: str | None = None,
+    base_sha: str | None = None, keep: Sequence[str] | None = None,
 ) -> str:
     """The indexer's instructions. Composed here from the registration; never a caller's text.
 
@@ -780,18 +818,22 @@ def indexer_prompt(
         "which promotion checks against the manifest it wrote. Finish the index and exit; "
         "never write graph.manifest_digest yourself, and never write anything under that "
         "prefix."
+        # The worker's, not the agent's: the commits its sweep keeps (KEEP_LINE).
+        + (f"\n\n{KEEP_LINE}{' '.join(keep)}\n" if keep else "")
     )
 
 
 def indexer_task(record: Mapping[str, Any], commit_sha: str, kind: str = "full", *,
-                 base_sha: str | None = None) -> TaskCreate:
+                 base_sha: str | None = None, keep: Sequence[str] | None = None) -> TaskCreate:
     """The index run: an ordinary task, signed by `submit_tasks` like any other.
 
     An incremental run names its base in the prompt's `BASE_LINE`, inside
     the signed `input`, which is what the worker reads and stages by
     reference (`agent_worker.indexrun.resolve_base`), checking what it
     stages against the digests promotion recorded. `metadata.base_sha`,
-    beside `index_kind`, is this service's own record.
+    beside `index_kind`, is this service's own record. `keep` is named the
+    same way, in the prompt's `KEEP_LINE` (`kept_commits`); without it the
+    worker's sweep retires nothing and says so.
     """
     if kind == "incremental" and base_sha is None:
         raise ValueError("an incremental index run names its base")
@@ -804,7 +846,7 @@ def indexer_task(record: Mapping[str, Any], commit_sha: str, kind: str = "full",
         input={"prompt": indexer_prompt(
             repository, commit_sha, record["default_branch"],
             tenant_id=record["tenant_id"], repo_id=record["repo_id"],
-            base_sha=base_sha if kind == "incremental" else None,
+            base_sha=base_sha if kind == "incremental" else None, keep=keep,
         )},
         priority=INDEX_PRIORITY,
         repository_url=record["repository_url"],
@@ -1989,6 +2031,45 @@ def check_run_kind(kind: str) -> str:
 # the service: runs, settling, promotion, reads
 # --------------------------------------------------------------------------
 
+#: The worker's sweep phase (`agent_worker.indexrun.SWEEP_PHASE`), whose
+#: record says what retention deleted and holds, or why it did not run.
+SWEEP_PHASE = "index_sweep"
+#: The counts a sweep record may carry (`repo_graph_shards.sweep`'s report, as
+#: the worker keeps it): served as integers, nothing else of the record is.
+RETENTION_COUNTS = ("kept_commits", "deleted_copies", "deleted_indexes", "deleted_blobs",
+                    "deleted_bytes", "held_copies", "held_bytes")
+
+
+def retention_of(summary: Any) -> dict[str, Any] | None:
+    """What an index run's sweep did, from its task's `result_summary`; None
+    when the run recorded no sweep phase (every run before lane INDEX-RETENTION).
+
+    The status and the reason in words, the counts as integers, `truncated`
+    as a bool; any other key of the worker's record is dropped, so nothing
+    but these reaches the run or the registration.
+    """
+    phases = summary.get("repo_index_phases") if isinstance(summary, Mapping) else None
+    found = [row for row in phases if isinstance(row, Mapping)
+             and row.get("phase") == SWEEP_PHASE] if isinstance(phases, list) else []
+    if not found:
+        return None
+    record = found[-1]
+    status = record.get("status")
+    reason = record.get("reason")
+    out: dict[str, Any] = {
+        "status": status if status in ("ok", "failed", "timed_out", "skipped") else "unknown",
+        "reason": neutral_line(reason, 300) if isinstance(reason, str) and reason else None,
+    }
+    counts = record.get("retention") if isinstance(record.get("retention"), Mapping) else {}
+    for key in RETENTION_COUNTS:
+        value = counts.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            out[key] = value
+    if isinstance(counts.get("truncated"), bool):
+        out["truncated"] = counts["truncated"]
+    return out
+
+
 def run_to_api(run: Mapping[str, Any] | None) -> dict[str, Any] | None:
     if run is None:
         return None
@@ -2006,6 +2087,8 @@ def run_to_api(run: Mapping[str, Any] | None) -> dict[str, Any] | None:
         "ended_at": _iso(run.get("ended_at")),
         "end_cause": run.get("end_cause"),
         "promotion": dict(run.get("promotion") or {}) or None,
+        # What its sweep deleted and kept, or why it did not run (INDEX-RETENTION).
+        "retention": dict(run.get("retention") or {}) or None,
     }
 
 
@@ -2100,13 +2183,20 @@ class RepoIndex:
         for row in ended:
             self._run_ref(row["task_id"]).delete()
 
-    def _prune_versions(self, repo_id: str, keep: str | None) -> None:
+    def _prune_versions(self, repo_id: str, keep: str | None,
+                        keep_versions: int = KEPT_VERSIONS) -> None:
+        """Delete every version but the newest `keep_versions` and `keep`.
+
+        `keep_versions` is the registration's own (`keep_versions_of`). Their
+        objects under repos/ go at the next index run's sweep, which this
+        service cannot run: it reads the bucket and may not delete in it.
+        """
         coll = self._repo_ref(repo_id).collection(VERSIONS_COLLECTION)
         rows = [snap.to_dict() for snap in coll.stream()]
         rows = [row for row in rows if row]
         rows.sort(key=lambda r: _parse_time(r.get("recorded_at")) or datetime.min.replace(
             tzinfo=timezone.utc), reverse=True)
-        for row in rows[KEPT_VERSIONS:]:
+        for row in rows[max(1, keep_versions):]:
             if row.get("commit_sha") != keep:
                 self._version_ref(repo_id, row["commit_sha"]).delete()
 
@@ -2216,6 +2306,26 @@ class RepoIndex:
                         tenant_id, repo_id, type(failed).__name__)
             return KindChoice("full", reason="the incremental conditions could not be read")
 
+    def _kept_for_run(self, tenant_id: str, record: Mapping[str, Any],
+                      sha: str) -> list[str] | None:
+        """The commits the run of `sha` keeps under repos/ (`kept_commits`), read
+        here because the worker may not read them (lane INDEX-RETENTION).
+
+        None -- and so no `KEEP_LINE`, and nothing retired -- when the versions
+        cannot be read: retention waits a run, the run itself never does.
+        """
+        repo_id = record["repo_id"]
+        index = record.get("index") or {}
+        try:
+            rows = [{"commit_sha": snap.id, **(snap.to_dict() or {})} for snap in
+                    self._repo_ref(repo_id).collection(VERSIONS_COLLECTION).stream()]
+        except Exception as failed:  # retention never stops a run
+            log.warning("repo index keep set tenant=%s repo_id=%s error=%s",
+                        tenant_id, repo_id, type(failed).__name__)
+            return None
+        return kept_commits(rows, keep_versions=keep_versions_of(index),
+                            current_sha=index.get("current_sha"), own=sha)
+
     def _start(
         self, auth: AuthContext, tenant_id: str, record: Mapping[str, Any], sha: str, *,
         kind: str, trigger: str, requested_by: str, head_read: bool, from_pending: bool,
@@ -2239,13 +2349,15 @@ class RepoIndex:
             return run, True
         try:
             choice = self._choose(tenant_id, repo_id, sha, kind)
+            keep = self._kept_for_run(tenant_id, record, sha)
             # A service submission (owner's D4 for automation, 2026-10-07): the
             # index runs with the tenant's own slot whoever registered the
             # repository, so it does not stop when they hold no grant (#780
             # OB7) -- its `-git` token, or in a personal workspace with none
             # its owner's GitHub connection (`forge.service_slot`, INDEX-CRED).
             submission = self._submissions.submit_tasks(
-                auth, [indexer_task(record, sha, choice.kind, base_sha=choice.base_sha)],
+                auth, [indexer_task(record, sha, choice.kind, base_sha=choice.base_sha,
+                                    keep=keep)],
                 service_submission=True,
             )
         except Exception:
@@ -2410,6 +2522,8 @@ class RepoIndex:
             self._end_run(tenant_id, repo_id, run, state=RUN_MISSING, end_cause="task_missing")
             return
         state = task.state.value
+        if state == TaskState.SUCCEEDED.value or state in _TERMINAL:
+            self._note_retention(tenant_id, repo_id, run, task)
         if state == TaskState.SUCCEEDED.value:
             self._promote_from(tenant_id, record, run, task, tenant)
         elif state in _TERMINAL:
@@ -2426,6 +2540,18 @@ class RepoIndex:
                      tenant_id, repo_id, task.id, state)
         elif run.get("state") != state:
             self._run_ref(run["task_id"]).update({"state": state})
+
+    def _note_retention(self, tenant_id: str, repo_id: str, run: Mapping[str, Any],
+                        task: Any) -> None:
+        """What the run's sweep did (`retention_of`), on the run and, as the
+        latest reading, on the registration's `index.retention`, where the
+        Settings tab reads what is held now. Nothing when it recorded none."""
+        retention = retention_of(getattr(task, "result_summary", None))
+        if retention is None or run.get("retention") == retention:
+            return
+        self._run_ref(run["task_id"]).update({"retention": retention})
+        latest = {**retention, "task_id": run["task_id"], "at": self._now()}
+        self._update_index(tenant_id, repo_id, lambda index: {**index, "retention": latest})
 
     def _refuse(self, tenant_id: str, repo_id: str, run: Mapping[str, Any], reason: str) -> None:
         log.info("repo index run tenant=%s repo_id=%s task=%s promotion=refused",
@@ -2609,7 +2735,8 @@ class RepoIndex:
                     f"for {int(PROMOTION_RETRY_WINDOW.total_seconds() // 60)} minutes",
                 )
             return
-        self._prune_versions(repo_id, keep=None if outcome != "promoted" else new)
+        self._prune_versions(repo_id, keep=None if outcome != "promoted" else new,
+                             keep_versions=keep_versions_of(record.get("index")))
         log.info("repo index run tenant=%s repo_id=%s task=%s sha=%s promotion=%s",
                  tenant_id, repo_id, task.id, new[:12], outcome)
 
@@ -3198,7 +3325,8 @@ def _claim_expired(index: Mapping[str, Any], now: datetime) -> bool:
 
 
 __all__ = [
-    "BASE_INDEX_FILE", "BASE_LINE", "CONFIG_DIRECTORIES", "CONFIG_FILENAMES", "CONFIG_GLOBS",
+    "BASE_INDEX_FILE", "BASE_LINE", "KEEP_LINE", "SWEEP_PHASE", "kept_commits", "retention_of",
+    "CONFIG_DIRECTORIES", "CONFIG_FILENAMES", "CONFIG_GLOBS",
     "EXTRACTOR_COMMAND", "GRAPH_WRITER_COMMAND", "HeadRead", "INDEXER_PROFILE", "INDEX_FILE",
     "INDEXER_EXTRACTOR_VERSION", "KindChoice", "MAX_INCREMENTAL_CHANGES", "PHASES_FILE", "RUN_KINDS",
     "VERSIONS_COLLECTION", "choose_kind", "graph_carry_refusal", "graph_extractor_record",

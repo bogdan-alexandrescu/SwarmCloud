@@ -168,6 +168,15 @@ MIN_CHANGE_INTERVAL_DEFAULT = 30
 MIN_CHANGE_INTERVAL_RANGE = (10, 1440)
 FULL_EVERY_DAYS_DEFAULT = 7
 FULL_EVERY_DAYS_RANGE = (1, 30)
+#: How many past index versions a repository keeps (§2.3; lane
+#: INDEX-RETENTION, owner 2026-10-20: "Retention should be set from repository
+#: settings section for each repository"). The promoted one and the run's own
+#: are always kept on top. 20 is the value every repository had as the
+#: constant `repoindex.KEPT_VERSIONS`, so one that never sets it keeps what it
+#: kept. 100 is the most: the kept commits go in the index task's signed prompt,
+#: one 41-byte line each, and every kept manifest is read by every sweep.
+KEEP_VERSIONS_DEFAULT = 20
+KEEP_VERSIONS_RANGE = (1, 100)
 
 # The graph settings (repo-index.md §6.2, revised 2026-10-04). Stored with
 # their defaults so lane RI9 reads a value rather than a gap; not patchable
@@ -374,6 +383,17 @@ def hard_stop_paths_of(data: Mapping[str, Any]) -> list[str]:
     return list(dict.fromkeys([*paths, *HARD_STOP_PATHS_DEFAULT]))
 
 
+def keep_versions_of(index: Mapping[str, Any] | None) -> int:
+    """The registration's `index.keep_versions`, or the default for one that
+    never set it (every registration before lane INDEX-RETENTION) or holds a
+    value outside the range."""
+    value = (index or {}).get("keep_versions")
+    low, high = KEEP_VERSIONS_RANGE
+    if isinstance(value, int) and not isinstance(value, bool) and low <= value <= high:
+        return value
+    return KEEP_VERSIONS_DEFAULT
+
+
 def platform_of(data: Mapping[str, Any]) -> bool:
     """Whether a registration is the platform's own. Only a stored `True` is:
     a missing or malformed value is the default, false."""
@@ -509,6 +529,11 @@ class IndexSettings(_Body):
     full_every_days: StrictInt | None = Field(
         default=None, ge=FULL_EVERY_DAYS_RANGE[0], le=FULL_EVERY_DAYS_RANGE[1]
     )
+    #: Lowering it prunes on the next promotion and frees the objects on the
+    #: next index run's sweep; raising it never resurrects what was deleted.
+    keep_versions: StrictInt | None = Field(
+        default=None, ge=KEEP_VERSIONS_RANGE[0], le=KEEP_VERSIONS_RANGE[1]
+    )
     paused: StrictBool | None = None
 
     @field_validator("interval_hours")
@@ -559,7 +584,8 @@ class RepositoryCreate(_Body):
 
 
 class RepositoryPatch(_Body):
-    """What repo-index.md §6.1 lets a PATCH change: schedule, trigger,
+    """What repo-index.md §6.1 lets a PATCH change: schedule, trigger, the
+    index history kept (`index.keep_versions`),
     `allowed_profiles`, `default_branch`, `paused`; and the hard stops'
     `platform` (a platform admin's only) and `hard_stop_paths`
     (docs/schedules.md §4.4); `merge_policy` (a platform admin's only); and
@@ -640,6 +666,7 @@ def _index_defaults() -> dict[str, Any]:
         "on_change": ON_CHANGE_DEFAULT,
         "min_change_interval_minutes": MIN_CHANGE_INTERVAL_DEFAULT,
         "full_every_days": FULL_EVERY_DAYS_DEFAULT,
+        "keep_versions": KEEP_VERSIONS_DEFAULT,
         "paused": False,
         # Written by index runs and the poll (RI2, RI4); None until then.
         "current_sha": None,
@@ -706,6 +733,12 @@ def to_api(data: Mapping[str, Any]) -> dict[str, Any]:
     for key in ("last_indexed_at", "head_read_at"):
         if key in index:
             index[key] = _iso(index[key])
+    # Served as what retention uses, so a registration from before the
+    # setting reads 20, not a gap (lane INDEX-RETENTION).
+    index["keep_versions"] = keep_versions_of(index)
+    retention = index.get("retention")
+    if isinstance(retention, Mapping) and "at" in retention:
+        index["retention"] = {**retention, "at": _iso(retention["at"])}
     last_poll = index.get("last_poll")
     if isinstance(last_poll, Mapping) and "at" in last_poll:
         index["last_poll"] = {**last_poll, "at": _iso(last_poll["at"])}
@@ -1285,7 +1318,8 @@ def readable(
 __all__ = [
     "COLLECTION", "DEFAULT_ALLOWED_PROFILES", "FORGE", "MAX_READABLE_PAGES",
     "SCOPE_TENANT", "SCOPE_USER", "CredentialSource", "HeldCredential",
-    "IndexSettings", "Repositories", "RepositoryCreate", "RepositoryNoAccess",
+    "IndexSettings", "KEEP_VERSIONS_DEFAULT", "KEEP_VERSIONS_RANGE", "Repositories",
+    "RepositoryCreate", "RepositoryNoAccess", "keep_versions_of",
     "RepositoryPatch", "check_branch", "check_profiles", "parse_repository",
     "read_repository", "read_repository_as", "readable", "register",
     "registration_record", "repo_id_for", "repository_url", "tenant_credential",
