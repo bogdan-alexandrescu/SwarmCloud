@@ -57,6 +57,17 @@ run "verify_views_the_swarm_cluster_and_no_other" {
     }
   }
 
+  # The mock provider computes an account's email after apply; the address the
+  # real provider gives swarm-verify, so the member is known at plan.
+  override_resource {
+    target          = google_service_account.verify
+    override_during = plan
+    values = {
+      email = "swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
+      name  = "projects/saga-agents-staging/serviceAccounts/swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
+    }
+  }
+
   # MUTATION: grant roles/container.viewer (which reads every Kubernetes object
   # in every cluster, Secrets' metadata and Pods' env included) and this fails.
   assert {
@@ -185,19 +196,19 @@ run "verify_holds_no_other_project_level_container_role" {
   # MUTATION: delete the condition block from verify_views_swarm_cluster and
   # this list is empty.
   assert {
-    condition = flatten([
+    condition = tolist(flatten([
       for f in setunion(fileset(var.tf_root, "infra/**/*.tf"), fileset(var.tf_root, "modules/**/*.tf"), fileset(var.tf_root, "bootstrap/**/*.tf")) : [
         for m in regexall(var.grant_re, file("${var.tf_root}/${f}")) : "${m[1]} ${length(regexall("(?m)^\\s*condition \\{", m[2])) > 0 ? "conditioned" : "unconditioned"}"
         if length(regexall(var.verify_re, m[2])) > 0 && length(regexall("roles/container\\.", m[2])) > 0
       ]
-    ]) == tolist(["verify_views_swarm_cluster conditioned"])
+    ])) == tolist(["verify_views_swarm_cluster conditioned"])
     error_message = "swarm-verify's only container role must be verify_views_swarm_cluster's clusterViewer, conditioned to the swarm cluster"
   }
 
   # THE CONTROL: the scan reports an unconditioned container role to
   # swarm-verify in a file built to hold one, so the check above could fail.
   assert {
-    condition = [
+    condition = tolist([
       for m in regexall(var.grant_re, join("\n", [
         "resource \"google_project_iam_member\" \"verify_views_swarm_cluster\" {",
         "  role   = \"roles/container.clusterViewer\"",
@@ -219,10 +230,10 @@ run "verify_holds_no_other_project_level_container_role" {
         "",
       ])) : "${m[1]} ${length(regexall("(?m)^\\s*condition \\{", m[2])) > 0 ? "conditioned" : "unconditioned"}"
       if length(regexall(var.verify_re, m[2])) > 0 && length(regexall("roles/container\\.", m[2])) > 0
-      ] == [
+      ]) == tolist([
       "verify_views_swarm_cluster conditioned",
       "verify_reads_everything unconditioned",
-    ]
+    ])
     error_message = "the scan does not report an unconditioned container role to swarm-verify in a file built to hold one; the check above could not fail"
   }
 }
