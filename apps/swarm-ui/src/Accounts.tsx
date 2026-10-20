@@ -266,12 +266,18 @@ export function AccountsScreen() {
        */
     >
       {(b) => (
-        <Body
-          board={b}
-          ui={ui}
-          patch={patch}
-          reload={() => setNonce((n) => n + 1)}
-        />
+        // `acct-page`: the Accounts section's own scope, which draws no box
+        // (styles/capacity.css). The squared dashed side of the `partial`
+        // mark is written against it, so it applies here and on Provider
+        // quota and nowhere else (QA-049, owner 2026-10-20).
+        <div className="acct-page">
+          <Body
+            board={b}
+            ui={ui}
+            patch={patch}
+            reload={() => setNonce((n) => n + 1)}
+          />
+        </div>
       )}
     </Screen>
   )

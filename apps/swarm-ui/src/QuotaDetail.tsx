@@ -77,7 +77,13 @@ export function QuotaDetailScreen() {
         body: 'A document is written the first time a worker reports on a provider.',
       }}
     >
-      {(d) => <Grouped rows={d.quota} />}
+      {/* `quota-page`: this view's scope for the squared `partial` mark it
+          shares with Accounts (styles/capacity.css; QA-049, owner 2026-10-20). */}
+      {(d) => (
+        <div className="quota-page">
+          <Grouped rows={d.quota} />
+        </div>
+      )}
     </Screen>
   )
 }

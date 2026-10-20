@@ -4786,14 +4786,9 @@ a.ctl-metric:focus-visible .ctl-metric-label,
   color: var(--warn);
   border-right-style: dashed;
   border-right-width: 2px;
-  /* A STRAIGHT DASHED EDGE, NOT A DASHED CURVE (QA-049, 2026-10-20). The
-     rounded right corners carried the dashes round the curve, and on a mark
-     one line tall the dashes and the corners met as a broken edge: the outline
-     read as clipped beside `unread docs` and `last read 3d ago`, not as the
-     hole it is. Square on the dashed side only, so the dashes run the full
-     height and the solid side keeps the mark's radius. */
-  border-top-right-radius: 0;
-  border-bottom-right-radius: 0;
+  /* ROUND ON BOTH SIDES HERE. The squared dashed side (QA-049) is the
+     Accounts section's alone -- `.acct-page` / `.quota-page` in
+     styles/capacity.css -- by the owner's choice of 2026-10-20. */
 }
 /* NOT ENTITLED IS NOT BROKEN. Blue, solid, no dashes: a non-admin genuinely
    cannot read /v1/admin/*, and painting that as a failure tells someone their
@@ -6628,15 +6623,17 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
    single final step -- so it has no headline and no `.is-none` variant. */
 
 .dsp-repo { width: 100%; max-width: 520px; }
-.dsp-repo, .dsp select {
+.dsp-repo {
   background: var(--surface-2); color: var(--text);
   border: 1px solid var(--ctl-bd); border-radius: 6px; padding: 6px 8px;
 }
-.dsp-repo:focus-visible, .dsp select:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
-/* THE FIXED CARRIER (QA G4-28). A disabled select takes the UA's grey text,
-   which is below contrast in both themes; it is set in the muted token at
-   full strength, and the arrow cursor's "not allowed" says it cannot move. */
-.dsp select:disabled { color: var(--text-dim); opacity: 1; cursor: not-allowed; }
+.dsp-repo:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+/* THE FIXED CARRIER IS A VALUE, NOT A CONTROL (QA G4-28; QA-074, the owner's
+   choice of 2026-10-20). It was a disabled select, then one restyled to look
+   like text; now it is text: no fill, no edge, no chevron to explain away,
+   and no disabled combobox for a screen reader to announce. Body ink, as any
+   value; flush under its label, with no paragraph margin of its own. */
+.dsp-fixed { margin: 0; color: var(--text); }
 
 .dsp-facts { margin: 0; }
 /* The gap above each of the dispatch control's two labelled fields. It was an

@@ -762,9 +762,14 @@ export function LogLastLine({ task, onOpen }: { task: Task; onOpen: () => void }
         : TERMINAL_STATES.has(task.state)
           ? 'no log lines in this read'
           : 'no log lines yet')
+  // NOT THE CAUSE (QA-115 follow-up, the owner's choice of 2026-10-20). On a
+  // failed task this line sits under the Failed card's error, and `Last log
+  // line: result ## Summary` read as why it failed. It is only the newest
+  // line, so there it says so; on any other task the label is unchanged.
+  const label = task.state === 'FAILED' ? 'Last log line (not the error)' : 'Last log line'
   return (
     <button type="button" className="ag-loglast" onClick={onOpen}>
-      <b>Last log line</b>
+      <b>{label}</b>
       <span className={`ag-loglast-line${line === null ? ' is-absent' : ' mono'}`} title={line ?? undefined}>
         {/* A transcript line is the agent's markdown: its code spans are
             drawn as code, never as raw backticks (owner QA R9). */}
