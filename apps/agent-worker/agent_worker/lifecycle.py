@@ -163,6 +163,7 @@ from . import secretrelease as secretrelease_mod
 from . import territory as territory_mod
 from . import typesafe_shim as typesafe_shim_mod
 from . import questions as questions_mod
+from . import qa_identity as qa_identity_mod
 from . import redact as redact_mod
 from . import extrarepos as extrarepos_mod
 from . import standalone_outputs as standalone_mod
@@ -2749,6 +2750,17 @@ class Worker:
         # second read of a document that cannot have changed. It is the
         # VERIFIED document: nothing later reads a covered field from Firestore.
         self._task = task
+
+        # ---- STEP 4b: the QA identity's first credential (QI-WORKER) -------
+        # docs/design/qa-identity.md §4.5. From the VERIFIED task, once the
+        # gate is registered (STEP 2b) and before the agent exists; a task
+        # whose input names no identity asks nothing. A first refusal as not
+        # granted or unconfigured ends the attempt here: nothing the agent
+        # could do would be signed in. Any other failure runs it signed out
+        # and told why (`handoff.QA_IDENTITY_NOTICE_NAME`).
+        qa_refused = self.handoff.start_qa_identity(task)
+        if qa_refused is not None:
+            return functools.partial(self._end_qa_identity_refused_before_start, qa_refused)
 
         # ---- STEP 4b': the submitter's grant still stands (OB5) -----------
         # docs/onboarding.md §3.3 step 4. A task signed for a person's user
@@ -7725,6 +7737,33 @@ class Worker:
         if forge_read_only(self._task or {}):
             return FORGE_READ_GRANT, "this task's grant on its repository is read-only"
         return self._forge_grant_refusal(write=True)
+
+    def _end_qa_identity_refused_before_start(self, cause: str) -> Outcome:
+        """End the attempt before the agent ran: its QA identity was refused (QI-WORKER).
+
+        docs/design/qa-identity.md §4.5: the first ask was refused as not
+        granted or unconfigured (`qa_identity.FAILS_THE_ATTEMPT`). FAILED, not
+        retried: the next attempt would read the same grant and the same
+        deployment. The gate was already told `failed` and holds nothing.
+        """
+        error = (
+            f"{cause}: the task asked for the console's QA identity and it was refused "
+            f"({qa_identity_mod.reason(cause)}), so the agent was not started."
+        )
+        self.log.error(
+            "the task's qa identity was refused; ending before the agent runs", cause=cause
+        )
+        summary = self._upload_outputs()
+        summary["qa_identity"] = {"cause": cause}
+        with self._metrics_after_the_record():
+            self.control.finish(
+                state=TaskState.FAILED,
+                exit_code=None,
+                error=error,
+                result_summary=summary,
+                end_cause=EndCause.CANNOT_START,
+            )
+        return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
 
     def _end_forge_refused_before_start(self, cause: str, reason: str) -> Outcome:
         """End the attempt before the agent ran: the grant does not allow the work.
