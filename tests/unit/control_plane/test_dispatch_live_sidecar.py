@@ -9,9 +9,13 @@ platform's Chromium and the live gate under a uid of its own. These hold:
   * the sidecar is native, runs the same image under a different, non-root
     uid, with the gate's entrypoint, every capability dropped and a read-only
     root;
-  * requests == limits on EVERY container (invariant 7), and the containers
-    sum to the task's resource class, so admission's unit arithmetic is
-    untouched -- for `browser`, and for a smaller class a step may shrink to;
+  * memory and ephemeral-storage requests == limits on EVERY container
+    (invariant 7, as amended for CPU by contract request RS-1), each CPU
+    limit between its request and `CPU_BURST_MAX_RATIO` x it, and the
+    containers' REQUESTS sum to the task's resource class, so admission's
+    unit arithmetic and the bill are untouched -- for `browser`, and for a
+    smaller class a step may shrink to (SIZES-SCHED-1 bursts the CPU:
+    tests/unit/scheduler/test_dispatch_cpu_burst.py);
   * /dev/shm moves to the sidecar, where Chromium runs;
   * the sidecar's own volumes (its /tmp, where the X socket lives, and the
     browser profile) are never mounted into the worker container, and the
@@ -42,7 +46,13 @@ from typing import Any
 import pytest
 
 from swarm_common.models import Tenant
-from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend, resolve_backend
+from swarm_common.profiles import (
+    CPU_BURST_MAX_RATIO,
+    RESOURCE_CLASSES,
+    RUNNER_PROFILES,
+    Backend,
+    resolve_backend,
+)
 
 from scheduler import dispatch
 from scheduler.dispatch import WORKER_UID, GkeJobDispatcher, GkeTarget
@@ -168,12 +178,21 @@ def test_the_sidecar_waits_to_be_ready_before_the_worker_starts(tenant):
     assert "-S" in command
 
 
-def test_every_container_has_requests_equal_to_limits(tenant):
+def test_every_container_keeps_memory_and_disk_request_equal_to_limit(tenant):
+    """Invariant 7 as amended (RS-1): memory and disk never burst; CPU may,
+    up to CPU_BURST_MAX_RATIO x its request."""
     spec = _spec(_job(tenant))
     for c in spec["containers"] + spec["initContainers"]:
         r = c["resources"]
-        assert r["requests"] == r["limits"], f"{c['name']}: invariant 7, no bursting"
-        assert set(r["limits"]) == {"cpu", "memory", "ephemeral-storage"}, c["name"]
+        # MUTATION: give either container a memory limit above its request in
+        # with_live_display and this fails.
+        assert r["requests"]["memory"] == r["limits"]["memory"], f"{c['name']}: invariant 7"
+        assert r["requests"]["ephemeral-storage"] == r["limits"]["ephemeral-storage"], c["name"]
+        cpu_request, cpu_limit = _cpu(r["requests"]["cpu"]), _cpu(r["limits"]["cpu"])
+        # MUTATION: render a CPU limit past twice the request and this fails.
+        assert cpu_request <= cpu_limit <= CPU_BURST_MAX_RATIO * cpu_request, c["name"]
+        assert set(r["requests"]) == set(r["limits"]) == {
+            "cpu", "memory", "ephemeral-storage"}, c["name"]
 
 
 @pytest.mark.parametrize("resource_class", [None, "standard"])
@@ -184,7 +203,9 @@ def test_the_containers_sum_to_the_resource_class(tenant, resource_class):
     containers = spec["containers"] + spec["initContainers"]
     assert len(containers) == 2
 
-    cpu = sum(_cpu(c["resources"]["limits"]["cpu"]) for c in containers)
+    # The REQUESTS sum to the class: they are what admission charged and
+    # Autopilot bills. The CPU limits are free (RS-1).
+    cpu = sum(_cpu(c["resources"]["requests"]["cpu"]) for c in containers)
     mem = sum(_gib(c["resources"]["limits"]["memory"]) for c in containers)
     eph = sum(_gib(c["resources"]["limits"]["ephemeral-storage"]) for c in containers)
     assert cpu == rc.cpu
@@ -205,23 +226,27 @@ def test_the_browser_split_follows_the_measurement(tenant):
     about 1.05x. The memory split did not move."""
     spec = _spec(_job(tenant))
     worker, display = _worker(spec), _display(spec)
-    assert (_cpu(worker["resources"]["limits"]["cpu"]),
+    assert (_cpu(worker["resources"]["requests"]["cpu"]),
             _gib(worker["resources"]["limits"]["memory"])) == (2, 3)
-    assert (_cpu(display["resources"]["limits"]["cpu"]),
+    assert (_cpu(display["resources"]["requests"]["cpu"]),
             _gib(display["resources"]["limits"]["memory"])) == (2, 5)
 
 
-def test_a_live_browser_pod_renders_two_cores_each_with_requests_equal_to_limits(tenant):
+def test_a_live_browser_pod_requests_two_cores_each_and_bursts_worker_4_display_3(tenant):
     """The rendered quantities themselves, as the API server receives them:
-    cpu "2" on the worker and "2" on the display, both directions equal."""
+    a "2000m" request on each container; the worker bursts to "4000m" (the
+    class's 2x), the display to "3000m", its pre-BROWSER-SPLIT size
+    (docs/design/runner-sizes.md §4.1). Memory is equal in both directions."""
     spec = _spec(_job(tenant))
-    for container in (_worker(spec), _display(spec)):
-        r = container["resources"]
-        assert r["limits"]["cpu"] == "2", container["name"]
-        assert r["requests"]["cpu"] == "2", container["name"]
-        assert r["requests"] == r["limits"], f"{container['name']}: invariant 7"
-    assert _worker(spec)["resources"]["limits"]["memory"] == "3Gi"
-    assert _display(spec)["resources"]["limits"]["memory"] == "5Gi"
+    worker, display = _worker(spec)["resources"], _display(spec)["resources"]
+    # MUTATION: render `"limits": dict(worker_resources)` in with_live_display
+    # and the worker's limit reads "2000m".
+    assert (worker["requests"]["cpu"], worker["limits"]["cpu"]) == ("2000m", "4000m")
+    # MUTATION: drop `cpu_limit=3` from LIVE_DISPLAY_SHARE["browser"] and the
+    # display's limit reads "4000m".
+    assert (display["requests"]["cpu"], display["limits"]["cpu"]) == ("2000m", "3000m")
+    assert worker["requests"]["memory"] == worker["limits"]["memory"] == "3Gi"
+    assert display["requests"]["memory"] == display["limits"]["memory"] == "5Gi"
 
 
 def test_the_non_live_browser_pod_is_byte_for_byte_what_the_old_split_rendered(
@@ -235,8 +260,11 @@ def test_the_non_live_browser_pod_is_byte_for_byte_what_the_old_split_rendered(
     old = json.dumps(_job(tenant, live=False), sort_keys=True)
     assert new == old
     worker = _worker(_spec(json.loads(new)))
-    assert worker["resources"]["requests"] == worker["resources"]["limits"]
-    assert worker["resources"]["limits"]["cpu"] == "4"
+    # MUTATION: render the GKE worker's CPU as `str(int(rc.cpu))` in both
+    # directions (no burst) and these read "4".
+    assert worker["resources"]["requests"]["cpu"] == "4000m"
+    assert worker["resources"]["limits"]["cpu"] == "8000m"
+    assert worker["resources"]["requests"]["memory"] == worker["resources"]["limits"]["memory"]
     assert worker["resources"]["limits"]["memory"] == "8Gi"
 
 
@@ -363,7 +391,8 @@ def test_with_the_switch_off_the_live_profile_is_the_pod_it_was(tenant):
     assert "initContainers" not in spec
     assert "swarm-live" not in job["spec"]["template"]["metadata"]["labels"]
     worker = _worker(spec)
-    assert _cpu(worker["resources"]["limits"]["cpu"]) == RESOURCE_CLASSES["browser"].cpu
+    assert _cpu(worker["resources"]["requests"]["cpu"]) == RESOURCE_CLASSES["browser"].cpu
+    assert _cpu(worker["resources"]["limits"]["cpu"]) == RESOURCE_CLASSES["browser"].cpu_limit_cores
     assert "dshm" in _mounts(worker)
     names = {e["name"] for e in worker["env"]}
     assert not names & {"SWARM_GATE_CTL", "SWARM_CDP_ENDPOINT"}

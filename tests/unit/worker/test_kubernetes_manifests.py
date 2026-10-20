@@ -26,11 +26,11 @@ import pytest
 import yaml
 
 from quota_broker.accounts import AccountError, validate_label
-from scheduler.dispatch import gke_disk, gke_ephemeral_storage_gib
+from scheduler.dispatch import LIVE_DISPLAY_SHARE, gke_disk, gke_ephemeral_storage_gib, with_live_display
 from scheduler.dispatch import sanitize_name as dispatcher_sanitize_name
 from swarm_common.identity import _TENANT_SAFE
 from swarm_common.models import Tenant, utcnow
-from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES
+from swarm_common.profiles import CPU_BURST_MAX_RATIO, RESOURCE_CLASSES, RUNNER_PROFILES
 
 REPO = Path(__file__).resolve().parents[3]
 KUBERNETES = REPO / "kubernetes"
@@ -297,13 +297,97 @@ def test_every_tenant_namespace_gets_the_owners_flat_quota(tenant_docs):
     assert hard["pods"] == expected["pods"]
     for resource in ("cpu", "memory", "ephemeral-storage"):
         assert hard[f"requests.{resource}"] == expected[resource], resource
+    for resource in ("memory", "ephemeral-storage"):
         assert hard[f"limits.{resource}"] == expected[resource], resource
+    # MUTATION: render `limits.cpu` from __QUOTA_CPU__ again in
+    # tenant-namespace.yaml and this reads 400, not 800.
+    assert hard["limits.cpu"] == "800"
 
 
-def test_quota_requests_and_limits_are_the_same_numbers(tenant_docs):
+def _cores(quantity: str) -> float:
+    """A Kubernetes CPU quantity ("8000m", "8", 8) in cores."""
+    text = str(quantity)
+    return int(text[:-1]) / 1000 if text.endswith("m") else float(text)
+
+
+def _live_pod(rc: Any) -> list[dict[str, Any]]:
+    """Every container of a live-browser pod of class `rc`, as the dispatcher renders it."""
+    job = {"spec": {"template": {"metadata": {"labels": {}}, "spec": {
+        "containers": [{"name": "worker", "image": "agent-runtime-browser@sha256:" + "0" * 64,
+                        "volumeMounts": [], "env": []}],
+        "volumes": [],
+    }}}}
+    spec = with_live_display(job, rc=rc)["spec"]["template"]["spec"]
+    return spec["containers"] + spec.get("initContainers", [])
+
+
+def _pod_cpu_shapes() -> list[tuple[str, float, float]]:
+    """(what, CPU request, CPU limit) of every GKE pod shape the dispatcher renders:
+    each class's plain worker pod and each class's live-browser pod, summed
+    over its containers (the display is a native sidecar, so it runs beside
+    the worker and the quota and the LimitRange count both)."""
+    shapes = [(f"{name} worker", rc.cpu, rc.cpu_limit_cores) for name, rc in RESOURCE_CLASSES.items()]
+    for name in LIVE_DISPLAY_SHARE:
+        containers = _live_pod(RESOURCE_CLASSES[name])
+        shapes.append((
+            f"{name} live",
+            sum(_cores(c["resources"]["requests"]["cpu"]) for c in containers),
+            sum(_cores(c["resources"]["limits"]["cpu"]) for c in containers),
+        ))
+    return shapes
+
+
+def test_quota_memory_and_disk_limits_equal_requests_and_cpu_limits_are_the_burst_ratio(tenant_docs):
+    """Memory and disk are request == limit on every container (invariant 7),
+    so their quota lines are the same number. CPU bursts to at most
+    CPU_BURST_MAX_RATIO x its request (contract request RS-1), so limits.cpu
+    must be that multiple of requests.cpu: at limits.cpu == requests.cpu a
+    namespace ran out of limits.cpu at half the pods its requests admitted,
+    and a leased task's pod was refused with 'exceeded quota: limits.cpu'.
+
+    MUTATION: render `limits.cpu` from __QUOTA_CPU__ in tenant-namespace.yaml
+    and the CPU assertion fails, 400 against 800.
+    """
     hard = one(tenant_docs, "ResourceQuota")["spec"]["hard"]
-    for resource in ("cpu", "memory", "ephemeral-storage"):
+    for resource in ("memory", "ephemeral-storage"):
         assert hard[f"requests.{resource}"] == hard[f"limits.{resource}"], resource
+    assert _cores(hard["limits.cpu"]) == CPU_BURST_MAX_RATIO * _cores(hard["requests.cpu"])
+
+
+def test_the_quota_never_runs_out_of_cpu_limits_before_cpu_requests(tenant_docs):
+    """The requests line is the one sized to the pods ceiling. For every pod
+    shape the dispatcher renders, the number of pods limits.cpu admits is at
+    least the number requests.cpu admits, so the limit is never what refuses
+    a pod a lease already paid for.
+
+    MUTATION: render `limits.cpu` from __QUOTA_CPU__ in tenant-namespace.yaml
+    and every bursting shape fails (standard worker: 50 pods by limits, 100
+    by requests).
+    """
+    hard = one(tenant_docs, "ResourceQuota")["spec"]["hard"]
+    requests_cpu, limits_cpu = _cores(hard["requests.cpu"]), _cores(hard["limits.cpu"])
+    shapes = _pod_cpu_shapes()
+    assert len(shapes) == len(RESOURCE_CLASSES) + len(LIVE_DISPLAY_SHARE), shapes
+    for what, request, limit in shapes:
+        assert limits_cpu / limit >= requests_cpu / request, (what, request, limit, hard)
+
+
+def test_the_quota_fits_the_pod_ceiling_of_every_gke_profile(tenant_docs):
+    """100 pods (the GKE_AUTOPILOT ceiling, owner 2026-10-07) of every GKE
+    profile's class fit both CPU lines: the request at 4 cores, the limit at
+    8 (claude-code, the canary's profile, is `standard`).
+
+    MUTATION: render `limits.cpu` from __QUOTA_CPU__ in tenant-namespace.yaml
+    and claude-code's 100 pods need 800 cores of a 400-core limits line.
+    """
+    hard = one(tenant_docs, "ResourceQuota")["spec"]["hard"]
+    pods = int(hard["pods"])
+    gke = {p.resource_class for p in RUNNER_PROFILES.values() if p.backend.value == "GKE_AUTOPILOT"}
+    assert "standard" in gke, gke
+    for name in sorted(gke):
+        rc = RESOURCE_CLASSES[name]
+        assert pods * rc.cpu <= _cores(hard["requests.cpu"]), name
+        assert pods * rc.cpu_limit_cores <= _cores(hard["limits.cpu"]), name
 
 
 def test_the_limit_range_default_cannot_produce_a_burstable_pod(tenant_docs):
@@ -331,6 +415,29 @@ def test_the_limit_range_ceiling_fits_the_frozen_resource_classes(tenant_docs):
     largest_memory = max(rc.memory_gib for rc in RESOURCE_CLASSES.values())
     assert float(container["max"]["cpu"]) >= largest_cpu
     assert int(container["max"]["memory"].removesuffix("Gi")) >= largest_memory
+
+
+def test_the_limit_range_ceiling_admits_every_rendered_cpu_limit(tenant_docs):
+    """LimitRange `max` binds the LIMIT, and a CPU limit is now up to
+    CPU_BURST_MAX_RATIO x the request (RS-1): `large` renders 16 cores. A
+    ceiling sized to the requests (8) has the API server refuse that pod.
+
+    MUTATION: put Container `max.cpu` back to "8" in tenant-namespace.yaml and
+    the container assertion fails for `large` (16); put Pod `max.cpu` back to
+    "8" and the pod assertion fails for the large worker pod (16).
+    """
+    limits = one(tenant_docs, "LimitRange")["spec"]["limits"]
+    container = next(item for item in limits if item["type"] == "Container")
+    pod = next(item for item in limits if item["type"] == "Pod")
+
+    container_limits = [("worker " + name, rc.cpu_limit_cores) for name, rc in RESOURCE_CLASSES.items()]
+    for name in LIVE_DISPLAY_SHARE:
+        container_limits += [(f"{name} live {c['name']}", _cores(c["resources"]["limits"]["cpu"]))
+                             for c in _live_pod(RESOURCE_CLASSES[name])]
+    for what, limit in container_limits:
+        assert _cores(container["max"]["cpu"]) >= limit, (what, limit)
+    for what, _request, limit in _pod_cpu_shapes():
+        assert _cores(pod["max"]["cpu"]) >= limit, (what, limit)
 
 
 # ---------------------------------------------------------------------------
@@ -916,13 +1023,19 @@ def test_a_rendered_job_never_asks_for_spot_capacity(profile):
 
 
 @pytest.mark.parametrize("profile", ["mock", "claude-code", "browser"])
-def test_a_rendered_job_sets_requests_equal_to_limits(profile):
+def test_a_rendered_job_sets_memory_and_disk_requests_equal_to_limits(profile):
     job = render_job(profile)
     rc = RESOURCE_CLASSES[RUNNER_PROFILES[profile].resource_class]
     container = job["spec"]["template"]["spec"]["containers"][0]
-    assert container["resources"]["requests"] == container["resources"]["limits"]
+    requests, limits = container["resources"]["requests"], container["resources"]["limits"]
+    # Invariant 7 as amended by contract request RS-1 (SIZES-SCHED-1): memory
+    # and disk never burst; CPU requests the class and bursts to its limit.
+    assert requests["memory"] == limits["memory"]
+    assert requests["ephemeral-storage"] == limits["ephemeral-storage"]
     # ...and the numbers come from the frozen catalogue, not from this file.
-    assert container["resources"]["limits"]["cpu"] == str(int(rc.cpu))
+    # MUTATION: render `__CPU__` on the templates' limits line and this reads "4000m".
+    assert requests["cpu"] == f"{int(rc.cpu * 1000)}m"
+    assert limits["cpu"] == f"{int(rc.cpu_limit_cores * 1000)}m"
     assert container["resources"]["limits"]["memory"] == f"{rc.memory_gib}Gi"
     # The pod's whole local disk -- workspace, /tmp and HOME -- is the
     # dispatcher's number, not disk_gib (contract request 53).

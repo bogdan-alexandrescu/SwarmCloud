@@ -306,8 +306,11 @@ WS_EMAIL_RE='^[a-z0-9._+-]+@[a-z0-9.-]+$'
 WS_BUILD_RE='^[A-Za-z0-9._:-]{1,80}$'
 # §8, decided by the owner 2026-10-08 (WD5): 8 agents and 8 capacity units (a
 # pool of 8), and a namespace of 16 pods and 64 vCPU. 8 people at the ceiling
-# hold 64 of claude-code's 80; with requests == limits, 16 pods / 64 vCPU is 8
-# claude-code pods at 4 vCPU plus headroom for jobs finishing inside their TTL.
+# hold 64 of claude-code's 80; 16 pods / 64 vCPU of requests is 8 claude-code
+# pods at 4 vCPU plus headroom for jobs finishing inside their TTL. The CPU
+# LIMIT line is not set here: kubernetes/render.py derives it as
+# CPU_BURST_MAX_RATIO x the requests line (contract request RS-1), because a
+# claude-code pod's CPU limit is 8, twice its request.
 WS_DEFAULT_MAX_ACTIVE=8
 WS_DEFAULT_CAPACITY_UNITS=8
 # The quota scales with the ceiling, 2 pods and 8 vCPU per agent (§6.4); the
@@ -1485,6 +1488,14 @@ ws_cluster_connect() {
     || { ws_show_err; ws_code CLUSTER_UNREACHABLE; return 1; }
 }
 
+# ws_quota_cpu_limit CPU: the quota's limits.cpu for a requests.cpu of CPU, as
+# kubernetes/render.py renders it. The ratio is imported from the frozen
+# contract, never restated here.
+ws_quota_cpu_limit() {
+  python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); from swarm_common.profiles import CPU_BURST_MAX_RATIO; print(int(sys.argv[2]) * CPU_BURST_MAX_RATIO)' \
+    "${REPO_ROOT}/apps/common" "$1"
+}
+
 ws_quota_args() {
   printf '%s\n' --quota-pods "${WS_QUOTA_PODS}" --quota-cpu "${WS_QUOTA_CPU}" \
     --quota-memory "$((WS_QUOTA_CPU * WS_MEMORY_GI_PER_CPU))Gi" \
@@ -1812,8 +1823,13 @@ ws_a9() {
       ws_call "${WS_WORK}/object.json" "${WS_KUBECTL}" --context "${WS_CONTEXT}" get "${word}" "${name}" \
         -n "${WS_NAMESPACE}" -o json || { ws_object "${kind}"; return 1; }
       if [[ "${kind}" == "ResourceQuota" ]]; then
+        # limits.cpu too: a namespace applied before CPU burst holds it equal
+        # to requests.cpu and fits half its pods, and `--mode limits` is what
+        # re-applies it.
         jq -e --arg p "${WS_QUOTA_PODS}" --arg c "${WS_QUOTA_CPU}" \
-          '(.spec.hard.pods // "") == $p and (.spec.hard["requests.cpu"] // "") == $c' \
+          --arg l "$(ws_quota_cpu_limit "${WS_QUOTA_CPU}")" \
+          '(.spec.hard.pods // "") == $p and (.spec.hard["requests.cpu"] // "") == $c
+           and (.spec.hard["limits.cpu"] // "") == $l' \
           "${WS_WORK}/object.json" >/dev/null 2>&1 || { ws_object "ResourceQuota"; return 1; }
       fi
     fi

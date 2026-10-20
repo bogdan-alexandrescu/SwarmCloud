@@ -75,9 +75,14 @@ metadata:
 # blast radius of such a bug is the whole cluster's capacity; with it, the
 # tenant's own ceiling.
 #
-# `requests.*` and `limits.*` are set to the same numbers because the platform
-# sets requests == limits on every container, so any divergence between these
-# two lines would be unreachable configuration.
+# `requests.*` and `limits.*` are the same numbers for memory and ephemeral
+# storage, because the platform sets request == limit for both on every
+# container (invariant 7). CPU is the exception (contract request RS-1,
+# docs/design/runner-sizes.md §4.1): a GKE container's CPU limit is up to
+# CPU_BURST_MAX_RATIO x its request, so `limits.cpu` is rendered as that
+# multiple of `requests.cpu` (render.py tenant_values). Equal, the limits line
+# ran out at half the pods the requests line admits, and the API server refused
+# a leased task's pod with "exceeded quota: limits.cpu".
 apiVersion: v1
 kind: ResourceQuota
 metadata:
@@ -92,7 +97,7 @@ spec:
     requests.cpu: "__QUOTA_CPU__"
     requests.memory: __QUOTA_MEMORY__
     requests.ephemeral-storage: __QUOTA_EPHEMERAL__
-    limits.cpu: "__QUOTA_CPU__"
+    limits.cpu: "__QUOTA_CPU_LIMIT__"
     limits.memory: __QUOTA_MEMORY__
     limits.ephemeral-storage: __QUOTA_EPHEMERAL__
     count/jobs.batch: "__QUOTA_JOBS__"
@@ -127,7 +132,8 @@ spec:
 # omits its resources entirely still ends up with requests == limits, which is
 # invariant 7 holding even for a pod this repository did not write. A default
 # request lower than the limit is exactly the burstable configuration that gets
-# OOM-killed under node pressure.
+# OOM-killed under node pressure. Only the dispatcher's own containers burst,
+# and only CPU (contract request RS-1).
 apiVersion: v1
 kind: LimitRange
 metadata:
@@ -148,8 +154,10 @@ spec:
         memory: 8Gi
         ephemeral-storage: 20Gi
       # The ceiling is the largest resource class in the frozen catalogue.
+      # `max` binds the LIMIT: CPU is `large`'s cpu_limit_cores, 16, twice its
+      # 8-core request (RS-1); memory and disk are request == limit.
       max:
-        cpu: "8"
+        cpu: "16"
         memory: 32Gi
         ephemeral-storage: 100Gi
       # Below this a runner cannot start its toolchain, and a pod that requests
@@ -158,8 +166,10 @@ spec:
         cpu: 250m
         memory: 512Mi
         ephemeral-storage: 1Gi
+    # The pod's containers summed, the display sidecar included: the largest
+    # is the plain `large` worker pod, limited to 16 cores.
     - type: Pod
       max:
-        cpu: "8"
+        cpu: "16"
         memory: 32Gi
         ephemeral-storage: 100Gi

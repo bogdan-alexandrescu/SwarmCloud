@@ -77,7 +77,7 @@ def test_the_catalogue_browser_class_is_4_8_4_and_1_unit():
 
 
 @pytest.mark.parametrize("live", [False, True], ids=["no-sidecar", "live-sidecar"])
-def test_the_claude_code_browser_pod_requests_4_vcpu_8_gib_with_requests_equal_to_limits(
+def test_the_claude_code_browser_pod_requests_4_vcpu_8_gib_with_memory_requests_equal_to_limits(
         tenant, live):
     spec = _spec(tenant, live=live)
     containers = spec["containers"] + spec.get("initContainers", [])
@@ -85,7 +85,10 @@ def test_the_claude_code_browser_pod_requests_4_vcpu_8_gib_with_requests_equal_t
 
     for c in containers:
         r = c["resources"]
-        assert r["requests"] == r["limits"], f"{c['name']}: invariant 7, no bursting"
+        # Invariant 7 as amended by RS-1 (SIZES-SCHED-1): memory and disk
+        # never burst; CPU may, so the 4 vCPU is the requests' sum.
+        assert r["requests"]["memory"] == r["limits"]["memory"], f"{c['name']}: invariant 7"
+        assert r["requests"]["ephemeral-storage"] == r["limits"]["ephemeral-storage"], c["name"]
     assert sum(_cpu(c["resources"]["requests"]["cpu"]) for c in containers) == 4
     assert sum(_gib(c["resources"]["requests"]["memory"]) for c in containers) == 8
 

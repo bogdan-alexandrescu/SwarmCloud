@@ -216,7 +216,9 @@ PRE_L6_DIGESTS = {
 }
 #: Re-read for CACHE-PVC (2026-10-15): the tenant ResourceQuota admits one cache
 #: PVC per Job on the cache's StorageClass, where it held PVCs at 0.
-PRE_L6_TENANT_RENDER = "6619902dc7ca4e4ca2b94d16bfd9334b225864f24b11789e00bb803ac73de23f"
+#: Re-read for SIZES-SCHED-1 (2026-10-20): the quota's limits.cpu is
+#: CPU_BURST_MAX_RATIO x requests.cpu and the LimitRange's CPU max is 16.
+PRE_L6_TENANT_RENDER = "9af68c41dfc58eb545d35045496c20b2f584eb5749e6c580613d8b5d03df1156"
 
 
 def _tenant_values() -> dict[str, str]:
