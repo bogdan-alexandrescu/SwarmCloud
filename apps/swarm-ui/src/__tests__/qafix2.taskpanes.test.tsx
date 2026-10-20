@@ -124,7 +124,7 @@ describe('QA-113: the Attempts tab’s counts agree and what ran comes first', (
     expect(notes).toEqual(['3 events · Cloud Run', 'no events on this page · Cloud Run', 'no events on this page · Cloud Run'])
     // MUTATION: restore the card's `partial · none on this page` line -- two words that contradict.
     expect(el.querySelector('.att-card .ctl-mark.is-partial')).toBeNull()
-    expect(el.textContent).not.toMatch(/none on this page/)
+    for (const card of el.querySelectorAll('.att-card')) expect(card.textContent).not.toMatch(/none on this page/)
     // The toolbar keeps its one tally of what the page cannot prove, and it agrees with the cards.
     const toolbar = el.querySelector<HTMLElement>('.ctl-toolbar .is-end')!
     // MUTATION: drop the toolbar's tally -- nothing says two attempts are without events.
@@ -306,6 +306,8 @@ describe('QA-115: a failed task’s success line is not offered as its cause', (
     await waitFor(() => expect(dock.textContent).toContain('Summary'))
     // MUTATION: restore the narrow label `Errors 0` -- on a FAILED task it reads as "no errors".
     expect(dock.textContent).not.toMatch(/Errors 0/)
-    expect(within(dock).getByRole('button', { name: /^No error line matched/ })).toBeTruthy()
+    const button = within(dock).getByRole('button', { name: /^No error matched/ })
+    // MUTATION: put `Errors 0` back as the narrow label -- the phone's bar says "no errors" on a failed task.
+    expect(button.querySelector('.ag-logs-short')?.textContent).toBe('No match')
   })
 })

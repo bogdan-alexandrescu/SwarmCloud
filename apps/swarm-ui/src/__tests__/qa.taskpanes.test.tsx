@@ -189,7 +189,8 @@ describe('QA-113: the Attempts tab says its figures in words', () => {
     const notes = Array.from(el.querySelectorAll('.att-card .ctl-card-note')).map((n) => n.textContent)
     // MUTATION: card note back to `${n} ev · Cloud Run`.
     expect(notes).toContain('1 event · Cloud Run')
-    expect(notes).toContain('0 events · Cloud Run')
+    // QA-113 run 2: an empty card says so in words rather than `0 events`.
+    expect(notes).toContain('no events on this page · Cloud Run')
     // MUTATION: the event row back to `gen 2`.
     expect(el.querySelector('.ev-gen')?.textContent).toBe('generation 2')
   })

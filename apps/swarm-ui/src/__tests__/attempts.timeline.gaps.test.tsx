@@ -43,6 +43,13 @@ async function mount(t: Task, attempts: AttemptRow[], events: TaskEvent[]): Prom
   return container as HTMLElement
 }
 
+/** Every event's `<time>`, in the order the events happened rather than the order the cards are drawn. */
+function inTimeOrder(el: HTMLElement): HTMLElement[] {
+  return [...el.querySelectorAll<HTMLElement>('ol.timeline time.ev-at')].sort((x, y) =>
+    (x.getAttribute('dateTime') ?? '').localeCompare(y.getAttribute('dateTime') ?? ''),
+  )
+}
+
 describe('gapText', () => {
   it('pads the seconds under a minute and keeps a sub-second gap measured', () => {
     expect(gapText(189_000)).toBe('+3m 09s')
@@ -62,14 +69,16 @@ describe('the Attempts pane timeline', () => {
 
   it('shows each event’s gap from the one before it, across attempt groups', async () => {
     const el = await mount(task({ state: 'RUNNING', started_at: at(1) }), [attempt(1, { completed_at: null })], events)
-    const gaps = [...el.querySelectorAll('ol.timeline time.ev-at')].map((t) => t.textContent)
+    // In the order they happened: the cards are drawn newest first (QA-113,
+    // run 2), so the preface's `submitted` is under attempt 1's card.
+    const gaps = inTimeOrder(el).map((t) => t.textContent)
     expect(gaps[1]).toContain('+3m 09s')
     expect(gaps[2]).toContain('+12s')
   })
 
   it('puts the absolute time in the title and on focus', async () => {
     const el = await mount(task({ state: 'RUNNING', started_at: at(1) }), [attempt(1, { completed_at: null })], events)
-    const t = el.querySelectorAll<HTMLElement>('ol.timeline time.ev-at')[1]!
+    const t = inTimeOrder(el)[1]!
     expect(t.getAttribute('title')).toBe('2026-09-22 10:02:09 UTC')
     expect(t.getAttribute('dateTime')).toBe(events[1]!.at)
     expect(t.tabIndex).toBe(0)
