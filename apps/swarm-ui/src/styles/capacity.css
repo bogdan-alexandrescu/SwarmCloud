@@ -362,6 +362,25 @@
 }
 .acct-link:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 2px; }
 
+/* THE ACCOUNTS SECTION'S OWN SCOPE: Accounts (Subscription accounts) and
+   Provider quota. It draws no box -- `display: contents` -- so wrapping a
+   screen's body in it moves nothing; it only gives a rule somewhere to stop. */
+.acct-page, .quota-page { display: contents; }
+/* A STRAIGHT DASHED EDGE, NOT A DASHED CURVE (QA-049, 2026-10-20), ON THESE
+   SCREENS ONLY. The rounded right corners carried the dashes round the curve,
+   and on a mark one line tall the dashes and the corners met as a broken
+   edge: the outline read as clipped beside `unread docs` and `last read 3d
+   ago`, not as the hole it is. Square on the dashed side only, so the dashes
+   run the full height and the solid side keeps the mark's radius.
+   SCOPED, NOT SHARED (the owner's choice, 2026-10-20). QAFIX-CAPACITY wrote
+   it into the shared `.ctl-mark.is-partial` rule, which squared every partial
+   mark on every screen; everywhere else the mark is as it was before. */
+.acct-page .ctl-mark.is-partial,
+.quota-page .ctl-mark.is-partial {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
 .acct-split {
   display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; align-items: start;
   border: 1px solid var(--line); border-radius: 10px;

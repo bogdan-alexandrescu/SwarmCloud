@@ -11,7 +11,8 @@
  *           its long value right-aligned beside the key.
  *   QA-074  the workflow form's fixed carrier was a disabled select still
  *           drawn as one -- filled, edged and chevroned -- so it looked
- *           choosable.
+ *           choosable. The owner chose (2026-10-20, lane QAFIX-OWNER-PICKS)
+ *           plain text over the restyled select: no control at all.
  *   QA-068  the task form's runner cards did not fill their grid row, so the
  *           bottoms of two cards side by side stepped.
  *   QA-069  "room unknown · 7 of 7 pools could not be read" broke so that
@@ -23,7 +24,7 @@
  * Layout and colour are read off the shipped sheets through `painted()`, as
  * access.page.test.tsx does; copy and counts off the rendered text.
  */
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { RunnerPicker, type ProviderKeys } from '../RunnerPicker'
@@ -130,21 +131,28 @@ describe('QA-073: the issue form\'s summary is one type treatment', () => {
   })
 })
 
-describe('QA-074: the fixed carrier does not look choosable', () => {
-  it('is drawn as a value, with no fill, no edge and no chevron, and stays disabled', async () => {
+describe('QA-074: the fixed carrier is a value, not a control (owner 2026-10-20)', () => {
+  it('draws the label and `checkpoints (fixed)` as plain text, with its note, and no select', async () => {
     const { SubmitWorkflowScreen } = await import('../SubmitWorkflow')
-    render(<SubmitWorkflowScreen />)
+    const { container } = render(<SubmitWorkflowScreen />)
     await screen.findByRole('button', { name: 'Submit this workflow' }, WAIT)
-    const select = screen.getByRole('combobox', { name: 'what carries work between steps' }) as HTMLSelectElement
-    expect(select.disabled).toBe(true)
-    expect(within(select).getByRole('option').textContent).toBe('checkpoints (fixed)')
+    // MUTATION: put the disabled `<select id="dsp-carrier">` back -- a screen
+    // reader announces a disabled combobox again.
+    expect(screen.queryByRole('combobox', { name: 'what carries work between steps' })).toBeNull()
+    expect(container.querySelector('#dsp-carrier select, select#dsp-carrier')).toBeNull()
+    const value = container.querySelector<HTMLElement>('#dsp-carrier')!
+    // MUTATION: drop the plain-text value -- the form no longer says what it sends.
+    expect(visible(value)).toBe('checkpoints (fixed)')
+    // MUTATION: keep the label as a `<label for>` with no control to name.
+    expect(container.querySelector('label[for="dsp-carrier"]')).toBeNull()
+    const label = value.previousElementSibling!
+    expect(visible(label)).toBe('what carries work between steps')
+    // The note still follows the value, unchanged.
+    expect(visible(value.nextElementSibling)).toMatch(/^not acted on yet/)
     for (const [w, env] of ENVS) {
-      // MUTATION: drop `appearance: none` from `.sbf .dsp select:disabled` -> the native chevron returns.
-      expect(painted(select, 'appearance', env), `${w}: the chevron is drawn`).toBe('none')
-      // MUTATION: drop `background: transparent` -> the control's `--surface-2` fill.
-      expect(painted(select, ['background-color', 'background'], env), `${w}: the select is filled`).toBe('transparent')
-      // MUTATION: drop `border-color: transparent` -> the control's 3:1 edge.
-      expect(painted(select, ['border-color', 'border'], env), `${w}: the select is edged`).toBe('transparent')
+      // MUTATION: drop `.dsp-fixed { margin: 0 }` -- the UA paragraph margin
+      // pushes the value off its label.
+      expect(painted(value, ['margin', 'margin-top'], env), `${w}: the value floats off its label`).toBe('0')
     }
   })
 })

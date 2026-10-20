@@ -257,3 +257,29 @@ describe('QA-057: the Feeds pool column takes the quota table\'s slack', () => {
     }
   })
 })
+
+describe('QA-049 on Provider quota: a partial mark there has the squared dashed side (owner 2026-10-20)', () => {
+  it('carries the Accounts-section scope, so a partial mark inside it is drawn as on Accounts', async () => {
+    const row = {
+      provider: 'anthropic', tenant_id: 'u-bogdan', state: 'AVAILABLE', updated_at: new Date().toISOString(),
+      configured_hard_max: 50, adaptive_target: null, quota_derived_limit: null, requests_remaining: 120,
+      tokens_remaining: null, reset_at: null, cooldown_until: null, last_429_at: null,
+      retry_after_seconds: null, success_count: 10, rate_limit_count: 0, effective_limit: 50,
+    } as QuotaState
+    api.loadAdminQuota.mockResolvedValue(ok({ quota: [row] }))
+    render(<QuotaDetailScreen />)
+    await screen.findAllByRole('rowheader', { name: 'u-bogdan' }, WAIT)
+    // MUTATION: drop the `quota-page` wrapper from QuotaDetail.tsx -- the
+    // view loses the scope the squared rule is written against.
+    const page = document.querySelector<HTMLElement>('.quota-page')
+    expect(page, 'Provider quota carries no local scope').not.toBeNull()
+    // Provider quota draws no partial mark of its own today; one placed in the
+    // view is what any future one would be.
+    const mark = document.createElement('span')
+    mark.className = 'ctl-mark is-partial'
+    page!.appendChild(mark)
+    // MUTATION: drop `.quota-page` from the scoped rule in styles/capacity.css.
+    expect(painted(mark, ['border-top-right-radius', 'border-radius'], WIDE)).toBe('0')
+    expect(painted(mark, ['border-bottom-right-radius', 'border-radius'], WIDE)).toBe('0')
+  })
+})

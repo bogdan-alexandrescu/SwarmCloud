@@ -51,20 +51,6 @@
   background: var(--sk-acs); color: var(--sk-ac);
 }
 
-/* ---- the fixed carrier: a value, not a control (QA-074) --------------
-   "what carries work between steps" is a disabled select (QA G4-28) so the
-   form still says what it sends; styles.css gives it `--text-dim` at full
-   opacity, which kept its fill, its 3:1 edge and the native chevron -- it
-   looked choosable and was not. On the workflow form it is drawn as the
-   value it is: no chevron, no fill, no edge, flush with its label. One class
-   more specific than `.dsp select:disabled`, which loads after this sheet. */
-.sbf .dsp select:disabled {
-  appearance: none; -webkit-appearance: none;
-  background: transparent;
-  border-color: transparent;
-  padding-left: 0; padding-right: 0;
-}
-
 /* ---- the task form's runners: two columns of cards (F1) ---------------- */
 .sbf-runners.is-cards {
   list-style: none; margin: 0 0 12px; padding: 0;
