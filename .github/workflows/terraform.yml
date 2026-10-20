@@ -17,8 +17,16 @@ on:
   # Also on main, so a direct push is tested too. Without this the suite only
   # ever ran on pull requests, and a repository whose history landed straight
   # on main had never run its own tests once.
+  #
+  # AND ON A LANE BRANCH (LANE CI-EARLY, part of #1694, owner decision
+  # 2026-10-20). application.yml runs on a push to `swarm/**` so CI starts
+  # when the implement step pushes, and its ci-gate waits for this
+  # workflow's run at the same commit: a push has no path filter here, so
+  # without this trigger ci-gate would wait ten minutes for a run that never
+  # starts. A lane push runs fmt/validate, the tests and checkov; never the
+  # plan (its `if:`), which says so in `plan-not-run`.
   push:
-    branches: [main]
+    branches: [main, "swarm/**"]
   pull_request:
     paths:
       - "terraform/**"
@@ -160,7 +168,8 @@ jobs:
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # A merge queue entry cannot plan either (its ref is not main), so it
     # says so there too.
-    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    # A lane push cannot plan either (the plan's `if:`), and says so too.
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref != 'refs/heads/main')
     steps:
       - name: say what was not checked
         run: |
@@ -233,7 +242,9 @@ jobs:
     # `refs/heads/gh-readonly-queue/main/...`, which the pool rejects, and a
     # red plan would fail ci-gate on every entry (docs/ci.md "Merging
     # through the merge queue").
-    if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
+    # Nor on a lane push (`swarm/**`, LANE CI-EARLY): main's push and a
+    # dispatch are the only plans, as before lane branches ran this workflow.
+    if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     environment: ${{ github.event.inputs.environment || 'dev' }}-plan
     # Authenticates to Google through workload identity: the only reason this
     # job holds id-token (the workflow grants it to no one by default).
