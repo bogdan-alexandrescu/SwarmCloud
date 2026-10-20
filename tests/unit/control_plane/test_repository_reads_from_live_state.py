@@ -15,12 +15,15 @@ are recomputed from the registration's own shas, and a capped count says so.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from swarm_api import impact, repoindex, repositories
 
 from .conftest import auth_header
 from .repo_fakes import GitHubRepos, TenantTokens, make_client, repo_entry
+from .repo_index_fakes import fixture_index
 
 A = "a" * 40
 B = "b" * 40
@@ -172,3 +175,46 @@ def test_the_languages_table_says_whose_status_and_whose_counters():
     assert "language server ran past its budget" in python["reason"]
     # A reason the extractor gave is kept.
     assert rows["javascript"]["reason"] == "the server ran past its 300-second budget"
+
+
+# --------------------------------------------------------------------------
+# #1693: a language-server pass cut by its budget keeps the files it finished
+# --------------------------------------------------------------------------
+
+PARTIAL = {"language": "python", "files": 1447, "status": "partial", "server": "pyright",
+           "files_covered": 702,
+           "reason": "pyright reached 702 of 1447 files (40210 of 86805 sites) in its "
+                     "270-second budget"}
+
+
+def test_a_partial_language_is_degraded_and_says_how_much_it_covered():
+    """MUTATION: leave `partial` out of DEGRADED_LANGUAGE_STATUSES and the
+    list card and the Overview say nothing about 745 uncovered files."""
+    block = repoindex.coverage({"modules": [], "languages": [PARTIAL, *LANGUAGES]})
+    rows = {r["language"]: r for r in block["degraded_languages"]}
+    assert rows["python"]["status"] == "partial"
+    # MUTATION: drop `files_covered` from `degraded_languages()`'s rows and
+    # this is a KeyError.
+    assert rows["python"]["files_covered"] == 702
+    assert rows["javascript"]["files_covered"] is None
+
+
+def test_the_languages_table_serves_a_partial_rows_coverage():
+    """MUTATION: leave `files_covered` out of `languages_table`'s kept keys
+    and the banner cannot say "covered 702 of 1,447 files"."""
+    rows = {r["language"]: r for r in impact.languages_table(None, {"languages": [PARTIAL]})}
+    assert (rows["python"]["status"], rows["python"]["files_covered"]) == ("partial", 702)
+    assert rows["python"]["reason"] == PARTIAL["reason"]
+
+
+def test_an_index_document_may_mark_a_language_partial():
+    """The agent copies the extractor's rows into repo-index.json.
+
+    MUTATION: leave `partial` out of `LanguageRow.status`'s Literal (or
+    `files_covered` out of its fields) and every run whose server was cut is
+    refused at promotion."""
+    row = {"language": "python", "files": 1447, "grammar": "tree-sitter-python 0.23.6",
+           "server": "pyright", "status": "partial", "files_covered": 702, "fallback": "ast"}
+    parsed = repoindex.parse_index(json.dumps(fixture_index("a" * 40, languages=[row])))
+    assert parsed["languages"][0]["status"] == "partial"
+    assert parsed["languages"][0]["files_covered"] == 702
