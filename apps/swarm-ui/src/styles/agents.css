@@ -208,10 +208,9 @@
    button. It was a hover title and a tooltip, so an id had to be hovered to
    be read. 12px (--t-micro) is the floor; every colour is a theme token, so
    light and dark both carry it.
-   ONE LINE AT EVERY WIDTH, CUT IN THE MIDDLE: the head gives way with an
-   ellipsis and the last characters never shrink, because ids share their
-   `task_` prefix and differ along their length -- an end-ellipsis would hide
-   the part that tells two apart. The copy is always the whole id.
+   ONE LINE AT EVERY WIDTH, CUT AT ITS START (`.tid-text`, below): ids share
+   their `task_` prefix and differ along their length, so an end-ellipsis
+   would hide the part that tells two apart. The copy is always the whole id.
    NOT `.id`, and weight 400 at line two's size: styles.css's `.row .id`
    (500 at --t-body) drew a row's id bold and larger than the line it sits
    in (owner QA R13, 2026-10-04). */
@@ -225,18 +224,28 @@
   font-size: var(--t-micro);
   line-height: var(--lh-micro);
 }
+/* ONE TEXT NODE, CUT AT ITS START (visual QA run 2, task-017). The middle
+   cut was two flex items, so the halves were two blocks: read as two words,
+   copied with a break. One run of text can only be cut at an end, and the
+   end that tells two ids apart is the last, so the line runs right-to-left
+   for the ellipsis alone: it lands on the `task_` every id shares. An id is
+   `task_` and hex, all strong left-to-right characters, so `rtl` moves the
+   ellipsis and not one character; `text-align: left` keeps a short id where
+   it was. */
 .tid-text {
-  display: flex;
+  display: block;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
+  direction: rtl;
+  text-align: left;
   font-family: var(--mono);
   font-size: var(--t-micro);
   font-weight: 400;
   color: var(--text-dim);
   user-select: text;
 }
-.tid-head { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tid-tail { flex: none; white-space: nowrap; }
 .tid-copy {
   display: inline-flex;
   align-items: center;
