@@ -143,7 +143,7 @@ export function IssueSubmitScreen({ go }: { go: (to: string) => void }) {
       summary={(c) => `${Object.keys(c.runner_profiles).length} runner profiles · ${c.pools.length} pools you are admitted against`}
       empty={{
         heading: 'No pools came back',
-        body: 'The read of the pools this tenant is admitted against succeeded and returned none. The planner is a task like any other and needs them, and the runner profiles arrive in that same response, so this page cannot submit.',
+        body: 'The read of the pools this tenant is admitted against succeeded and returned none. The planner is an agent like any other and needs them, and the runner profiles arrive in that same response, so this page cannot submit.',
       }}
     >
       {(c) => <IssueForm capacity={c} go={go} />}
@@ -462,8 +462,8 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
           </Button>
           <p className="sb-note">
             {approval === 'required'
-              ? 'A planner task reads the issue and the repository and writes a plan; nothing else runs until the plan is approved.'
-              : 'A planner task reads the issue and the repository and writes a plan; the plan is approved the moment it is written and the work starts without anyone being asked.'}
+              ? 'A planner agent reads the issue and the repository and writes a plan; nothing else runs until the plan is approved.'
+              : 'A planner agent reads the issue and the repository and writes a plan; the plan is approved the moment it is written and the work starts without anyone being asked.'}
           </p>
           {/* IN THE SLOT THE TASK AND WORKFLOW FORMS DRAW THEIRS IN (VQA V175):
               at 400 a POST 500 was drawn under the button at y 714-944 with
@@ -646,10 +646,10 @@ function Refusal({ error, typed, tenant, onAgain, onTask }: {
       words = (
         <>
           <b>{n === null ? 'That' : `#${n}`} is a pull request.</b> This form plans issues; a pull request that needs
-          finishing is a task on its branch.
+          finishing is an agent on its branch.
         </>
       )
-      action = <Button onClick={onTask}>Submit a task instead</Button>
+      action = <Button onClick={onTask}>Start an agent instead</Button>
       break
     case 'no_forge_credential':
       words = (

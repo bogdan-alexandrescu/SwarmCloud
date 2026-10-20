@@ -418,7 +418,7 @@ function EmptyListing({
       <Absent
         kind="failed"
         heading="Listing incomplete"
-        say="The listing did not complete, so whether this task has checkpoints is unknown."
+        say="The listing did not complete, so whether this agent has checkpoints is unknown."
       />
     )
   }
@@ -446,7 +446,7 @@ function EmptyListing({
     <Absent
       kind="zero"
       heading="None written"
-      say="The listing succeeded, was read to its end, and no attempt record names a checkpoint: this task has written none."
+      say="The listing succeeded, was read to its end, and no attempt record names a checkpoint: this agent has written none."
     />
   )
 }
@@ -659,14 +659,14 @@ function PointerFinding({ page, finished }: { page: CheckpointsPage; finished: b
       if (finished) {
         return (
           <p className="rollup" data-pointer="reclaimed">
-            The task points at <code>{p.pointer}</code> and the listing did not find it{tail} Reclaimed after the task
+            The agent points at <code>{p.pointer}</code> and the listing did not find it{tail} Reclaimed after the agent
             finished.
           </p>
         )
       }
       return (
         <p className="rollup untrusted">
-          The task points at <code>{p.pointer}</code> and the listing did not find it{tail}
+          The agent points at <code>{p.pointer}</code> and the listing did not find it{tail}
         </p>
       )
     case 'outside_this_task':
@@ -674,12 +674,12 @@ function PointerFinding({ page, finished }: { page: CheckpointsPage; finished: b
       // the pointer is ours only when it is not, so it is never said twice.
       return (
         <p className="rollup untrusted">
-          The task points at <code>{p.pointer}</code>
+          The agent points at <code>{p.pointer}</code>
           {p.detail ? (
             tail
           ) : (
             <>
-              , which is not under this task&apos;s prefix, so a resuming worker refuses it and starts from an empty
+              , which is not under this agent&apos;s prefix, so a resuming worker refuses it and starts from an empty
               workspace.
             </>
           )}
@@ -963,9 +963,9 @@ export function attemptLine(logs: Pick<TaskLogs, 'attempt' | 'attempt_id'>): str
     case 'requested':
       return `Attempt ${logs.attempt_id ?? 'as requested'}`
     case 'unknown_attempt':
-      return 'The attempt asked for is not one this task has'
+      return 'The attempt asked for is not one this agent has'
     case 'no_attempt_yet':
-      return 'This task has no attempt yet, so there is nothing to have written a log'
+      return 'This agent has no attempt yet, so there is nothing to have written a log'
   }
 }
 

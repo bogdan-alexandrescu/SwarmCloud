@@ -246,17 +246,17 @@ export function StepMark({ row }: { row: StepRow }) {
   const skip = stepSkip(row.task)
   if (skip !== null) {
     return <NamedMark mark="skipped" hue="neu" dataMark="skipped" word={`skipped · ${skip}`}
-      title="The step's task ended without running an agent: nothing ran, so nothing passed." />
+      title="The step's agent ended without ever running: nothing ran, so nothing passed." />
   }
   if (row.task !== null) return <StateMark state={row.task.state} />
   if (row.taskId !== null) {
     return <NamedMark mark={null} hue="unknown" dataMark="unknown" word="state not read"
-      title="The workflow read did not carry this step's task." />
+      title="The workflow read did not carry this step's agent." />
   }
   return (
     <NamedMark mark="queued" hue="neu" dataMark="waiting"
-      word={row.dependsOn.length === 0 ? 'no task yet' : `waiting on ${row.dependsOn.join(', ')}`}
-      title="Holds nothing: the step's task is created when what it waits on has finished." />
+      word={row.dependsOn.length === 0 ? 'no agent yet' : `waiting on ${row.dependsOn.join(', ')}`}
+      title="Holds nothing: the step's agent is created when what it waits on has finished." />
   )
 }
 
@@ -577,8 +577,8 @@ export function CostFact({ read, ended = false }: { read: RunWorkflows; ended?: 
   let absent = true
   if (read.ids.length === 0) {
     body = <Dash why={ended
-      ? 'No workflow: the run ended before one was created, so no step task recorded a cost.'
-      : "No workflow yet: cost is recorded by the workflow's step tasks, and the workflow is created on approval."} />
+      ? 'No workflow: the run ended before one was created, so no step agent recorded a cost.'
+      : "No workflow yet: cost is recorded by the workflow's step agents, and the workflow is created on approval."} />
   } else if (read.loads === null) {
     body = <Dash why="The workflow is being read for its steps' cost." />
   } else {

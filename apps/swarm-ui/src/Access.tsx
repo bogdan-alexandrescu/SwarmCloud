@@ -276,7 +276,7 @@ const POLICY_RULES: ReadonlyArray<{ rule: string; head: string; body: ReactNode 
     head: 'Read means read, and SwarmCloud enforces it.',
     body: (
       <>
-        A repository granted Read is cloned and never pushed: submission refuses a task that would push to it, and the
+        A repository granted Read is cloned and never pushed: submission refuses an agent that would push to it, and the
         worker refuses the push. GitHub itself would let the push through if your account can write there, so the line
         is held by SwarmCloud, not by GitHub.
       </>
@@ -420,7 +420,7 @@ function Connection({ connection, onChange }: { connection: GitHubConnection | n
             >
               <p className="ur-small">
                 SwarmCloud revokes its authorisation at GitHub, disables the token it stored for you and forgets every
-                org and repository you granted. Tasks you submit afterwards wait until you connect again.
+                org and repository you granted. Agents you submit afterwards wait until you connect again.
               </p>
             </AskFirst>
           ) : (
@@ -571,7 +571,7 @@ function Owners({
                       onKeep={() => setRemoving(null)}
                     >
                       <p className="ur-small">
-                        Deletes your {granted} grant{granted === 1 ? '' : 's'} under {o.owner} at once; tasks naming its
+                        Deletes your {granted} grant{granted === 1 ? '' : 's'} under {o.owner} at once; agents naming its
                         repositories are refused from then on.
                       </p>
                     </AskFirst>
@@ -694,8 +694,8 @@ function LossAsk({ repository, from, to, busy, onAct, onKeep }: { repository: st
     >
       <p className="ur-small">
         {removing
-          ? `SwarmCloud deletes your ${from} grant on ${repository} now, and a task naming it is refused at submission until you choose it again.`
-          : `SwarmCloud stops pushing to ${repository} and opening pull requests there as you; a task that needs to write to it is refused at submission.`}
+          ? `SwarmCloud deletes your ${from} grant on ${repository} now, and an agent naming it is refused at submission until you choose it again.`
+          : `SwarmCloud stops pushing to ${repository} and opening pull requests there as you; an agent that needs to write to it is refused at submission.`}
       </p>
     </AskFirst>
   )
@@ -1122,7 +1122,7 @@ function Grants({ grants, onChange }: { grants: AccessGrant[]; onChange: () => v
           </Button>
         </span>
       }
-      foot={<>Last verified {newest !== null ? timeAgo(newest) : <Dash why="No grant has been verified yet" />}. A task for a repository not on this list is refused at submission.</>}
+      foot={<>Last verified {newest !== null ? timeAgo(newest) : <Dash why="No grant has been verified yet" />}. An agent for a repository not on this list is refused at submission.</>}
     >
       {grants.length === 0 ? (
         <EmptyState kind="empty" heading="No repository chosen yet">
@@ -1269,7 +1269,7 @@ function Grants({ grants, onChange }: { grants: AccessGrant[]; onChange: () => v
         </>
       )}
       <p className="ur-hint">
-        Removing an org deletes its grants at once, and tasks naming its repositories are refused from then on. GitHub
+        Removing an org deletes its grants at once, and agents naming its repositories are refused from then on. GitHub
         still lets your token reach an installed org until an org owner uninstalls the App or you disconnect.
       </p>
     </Card>
@@ -1619,7 +1619,7 @@ function accessLede(view: View, tenant: string | null): string {
     return `Every member${inTenant}: whether they connected GitHub, the owners they enabled and how many repositories they chose. States and names, never a value.`
   }
   if (view === 'logins') {
-    return 'The browser sessions you saved from a live browser in your workspace, by name and site, with when each expires. A task names one to start signed in.'
+    return 'The browser sessions you saved from a live browser in your workspace, by name and site, with when each expires. An agent names one to start signed in.'
   }
   return `The orgs and repositories SwarmCloud may reach as you${inTenant}, each Read or Write, and whether it can.`
 }

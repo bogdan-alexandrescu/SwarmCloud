@@ -400,7 +400,7 @@ function Family({
  */
 const LEASED = 'Leased (units)'
 const CEILING = 'Ceiling (units)'
-const UNITS_TITLE = 'Weighted units, not agents: a task holds its resource class’s units in every pool it clears.'
+const UNITS_TITLE = 'Weighted units, not agents: each agent holds its resource class’s units in every pool it clears.'
 
 /**
  * ONE COLGROUP FOR EVERY FAMILY TABLE (#503). The tables are fixed-layout so
@@ -713,7 +713,7 @@ function classifyPool(pool: Pool, weight: { name: string; units: number | null }
     chips.push({
       cls: 'is-paused',
       word: 'too small',
-      title: `This pool's limit is ${limit} unit${limit === 1 ? '' : 's'}, below the ${units} units one ${weight?.name} task weighs, so it admits no ${weight?.name} task at this limit. Waiting cannot clear it: somebody has to raise the limit to at least ${units}.`,
+      title: `This pool's limit is ${limit} unit${limit === 1 ? '' : 's'}, below the ${units} units one ${weight?.name} agent weighs, so it admits no ${weight?.name} agent at this limit. Waiting cannot clear it: somebody has to raise the limit to at least ${units}.`,
     })
   }
   if (full) {

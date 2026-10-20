@@ -94,7 +94,7 @@ export function paneTabs({
       id: 'attempts',
       label: PANE_LABELS.attempts,
       count: runs,
-      say: task === null ? 'The task has not been read yet.' : null,
+      say: task === null ? 'The agent has not been read yet.' : null,
       to: `${base}/attempts`,
     },
     {
@@ -103,7 +103,7 @@ export function paneTabs({
       count: artifactCount(task),
       say:
         artifactCount(task) === null
-          ? 'Files are listed when an attempt ends: this task has no result summary yet, so the count is not known.'
+          ? 'Files are listed when an attempt ends: this agent has no result summary yet, so the count is not known.'
           : null,
       to: `${base}/artifacts`,
     },

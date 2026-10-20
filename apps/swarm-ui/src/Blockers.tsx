@@ -200,7 +200,7 @@ const CEILING_TAG: Readonly<Record<Verdict, { cls: string; word: string; title: 
     // The paused tone, for the reason `set-to-zero` has it: a person acts.
     cls: 'paused',
     word: 'too small',
-    title: "This pool's limit is below what one task of this profile weighs, so it can never admit one at this limit. Waiting changes nothing — somebody has to raise it.",
+    title: "This pool's limit is below what one agent of this profile weighs, so it can never admit one at this limit. Waiting changes nothing — somebody has to raise it.",
   },
   'limit-unset': {
     // The paused tone: a person acts, as for a pool set to zero (#374).
@@ -211,7 +211,7 @@ const CEILING_TAG: Readonly<Record<Verdict, { cls: string; word: string; title: 
   'below-units-quota': {
     cls: 'capped',
     word: 'too small',
-    title: "This pool's limit is below what one task of this profile weighs, so it can never admit one at this limit. A provider pool's quota state lowers it as well as an operator does, so this does not say who set it.",
+    title: "This pool's limit is below what one agent of this profile weighs, so it can never admit one at this limit. A provider pool's quota state lowers it as well as an operator does, so this does not say who set it.",
   },
 }
 
@@ -251,7 +251,7 @@ export function ceilingFigure(blocker: ProfileBlocker, units: number | null = nu
   const held = `${blocker.active} unit${blocker.active === 1 ? '' : 's'} held`
   if (ceiling === 'full') return `${blocker.active} of ${blocker.limit} units in use`
   if (ceiling === 'below-units' || ceiling === 'below-units-quota') {
-    return `limit ${blocker.limit} · one task is ${units} units · ${held}`
+    return `limit ${blocker.limit} · one agent is ${units} units · ${held}`
   }
   if (ceiling === 'limit-unset') return `no limit set · ${held}`
   return ceiling === 'paused' ? held : `limit 0 · ${held}`

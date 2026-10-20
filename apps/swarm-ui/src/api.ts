@@ -232,7 +232,7 @@ export async function loadOlderWorkflows(token: string): Promise<Result<Workflow
 }
 
 function emptyBoard(workflows: Workflow[]): WorkflowBoard {
-  return { workflows, taskById: null, statesDetail: 'The task read did not complete.' }
+  return { workflows, taskById: null, statesDetail: 'The agent read did not complete.' }
 }
 
 /**
@@ -347,7 +347,7 @@ export async function loadAgentDetail(taskId: string): Promise<Result<AgentDetai
         kind: 'not_found',
         httpStatus: 404,
         code: 'not_found',
-        message: 'This task does not exist, or it belongs to another tenant.',
+        message: 'This agent does not exist, or it belongs to another tenant.',
       },
     }
   }
@@ -450,7 +450,7 @@ async function fixtureAgentDetail(taskId: string): Promise<Result<AgentDetail>> 
         kind: 'not_found',
         httpStatus: 404,
         code: 'not_found',
-        message: 'This task does not exist, or it belongs to another tenant.',
+        message: 'This agent does not exist, or it belongs to another tenant.',
       },
     }
   }
@@ -938,7 +938,7 @@ export async function loadTask(taskId: string): Promise<Result<Task>> {
         kind: 'not_found',
         httpStatus: 404,
         code: 'not_found',
-        message: 'This task does not exist, or it belongs to another tenant.',
+        message: 'This agent does not exist, or it belongs to another tenant.',
       },
     }
   }
@@ -2187,7 +2187,7 @@ export async function loadAgentRun(taskId: string): Promise<Result<AgentRun>> {
         kind: 'not_found',
         httpStatus: 404,
         code: 'not_found',
-        message: 'This task does not exist, or it belongs to another tenant.',
+        message: 'This agent does not exist, or it belongs to another tenant.',
       },
     }
   }

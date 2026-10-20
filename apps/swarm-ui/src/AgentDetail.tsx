@@ -528,7 +528,7 @@ const END_CAUSE_SAY: Readonly<Record<EndCause, string>> = {
   verdict_refused: 'the verdict was refused',
   verdict_failed: 'the verdict failed',
   publish_refused: 'publishing was refused',
-  child_cascade: 'a child task ended it',
+  child_cascade: 'a child agent ended it',
 }
 
 function endCauseOf(task: Task): EndCause | null {
@@ -864,7 +864,7 @@ function DtFailure({ run, lastLine }: { run: AgentRun; lastLine: ReactNode }) {
           // THE ABSENCE SAYS WHERE TO LOOK (QA-115). `end cause — not
           // recorded` named the gap and stopped; what the task did write
           // is the reason below it, when there is one.
-          <span className="dt-nf is-absent" title="This API wrote no end cause on the task, so why it ended is only what the text below says.">
+          <span className="dt-nf is-absent" title="This API wrote no end cause on the agent, so why it ended is only what the text below says.">
             {requested
               ? 'no end cause recorded · the stop request below is why'
               : text
@@ -885,7 +885,7 @@ function DtFailure({ run, lastLine }: { run: AgentRun; lastLine: ReactNode }) {
           <span className="dt-nf">
             <Mark
               kind="zero"
-              say="No attempt of this task ever started, so there is no result summary."
+              say="No attempt of this agent ever started, so there is no result summary."
             />{' '}
             nothing ran · {stateWord(task.state)}
           </span>
@@ -914,7 +914,7 @@ function DtFailure({ run, lastLine }: { run: AgentRun; lastLine: ReactNode }) {
           <pre className={`err full dt-err${task.state === 'CANCELLED' ? ' is-neu' : ''}`}>{text}</pre>
         </>
       ) : (
-        <p className="dt-nf is-absent">No error text was written on the task.</p>
+        <p className="dt-nf is-absent">No error text was written on the agent.</p>
       )}
       {lastLine}
     </section>
@@ -1118,7 +1118,7 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
 
   if (attempts === null) {
     cells.push(
-      { label: 'Attempt', value: `${task.attempt_count}`, unit: `of ${task.max_attempts}`, sub: 'task counter' },
+      { label: 'Attempt', value: `${task.attempt_count}`, unit: `of ${task.max_attempts}`, sub: 'agent counter' },
       { label: 'Peak memory', value: '— read failed', tone: 'unread', bar: null, sub: 'attempt query', help: 'read-failed' },
       { label: 'CPU', value: '— read failed', tone: 'unread', bar: null, sub: 'attempt query' },
       { label: 'Cost', value: '— read failed', tone: 'unread', sub: 'attempt query' },
@@ -1142,7 +1142,7 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
       attempts.length > task.attempt_count
         ? `${task.attempt_count} counted against the cap`
         : attempts.length !== task.attempt_count
-        ? `task counts ${task.attempt_count}`
+        ? `agent counts ${task.attempt_count}`
         : attempts.length === 0
           ? 'none admitted yet'
           : retries === 0
@@ -1398,7 +1398,7 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
       {attempts === null ? (
         <p className="dt-empty is-err">
           <b>The attempt history could not be read</b>
-          <span>This is a failed read, not a task with no attempts.{run.attemptsDetail ? ` ${run.attemptsDetail}` : ''}</span>
+          <span>This is a failed read, not an agent with no attempts.{run.attemptsDetail ? ` ${run.attemptsDetail}` : ''}</span>
         </p>
       ) : attempts.length === 0 ? (
         task.attempt_count > 0 ? (
@@ -1407,7 +1407,7 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
               counts {task.attempt_count} · returned 0{' '}
               <Mark
                 kind="partial"
-                say={`This task counts ${task.attempt_count} attempts and the query returned none, so there is a hole in the record.`}
+                say={`This agent counts ${task.attempt_count} attempts and the query returned none, so there is a hole in the record.`}
               />
             </b>
             <span>The attempt documents are missing, not absent.</span>
@@ -1422,8 +1422,8 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
                 kind="zero"
                 say={
                   TERMINAL_STATES.has(task.state)
-                    ? 'This task ended before anything was admitted, so it has no attempts.'
-                    : 'Nothing has been admitted for this task yet, so it has no attempts.'
+                    ? 'This agent ended before anything was admitted, so it has no attempts.'
+                    : 'Nothing has been admitted for this agent yet, so it has no attempts.'
                 }
               />{' '}
               {TERMINAL_STATES.has(task.state) ? 'no attempt' : 'no attempt yet'} · {stateWord(task.state)}
@@ -1472,8 +1472,8 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
         </p>
       ) : events.length === 0 ? (
         <p className="dt-empty is-err">
-          <b>0 events · a task always has one</b>
-          <span>A submitted event is written with the task itself, and the query returned none. This is a failed read.</span>
+          <b>0 events · an agent always has one</b>
+          <span>A submitted event is written with the agent itself, and the query returned none. This is a failed read.</span>
         </p>
       ) : (
         <>
@@ -1490,7 +1490,7 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
             <p className="dt-note">
               <Mark
                 kind="partial"
-                say={`The task is ${stateWord(task.state)} and a terminal task writes a terminal event — none is on this page. This screen reads one page of events, oldest-first, and does not follow the page token the events route returns, so the newest events are not on it. The end of this task's history is missing, not absent.`}
+                say={`The agent is ${stateWord(task.state)} and a terminal agent writes a terminal event — none is on this page. This screen reads one page of events, oldest-first, and does not follow the page token the events route returns, so the newest events are not on it. The end of this agent's history is missing, not absent.`}
               />{' '}
               {newest[0] === undefined
                 ? 'the end of this history is not on this page'
@@ -2491,7 +2491,7 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
         <Absent
           kind="failed"
           heading="Attempt history"
-          say="The attempt history could not be read. This is a failed read, not a task with no attempts."
+          say="The attempt history could not be read. This is a failed read, not an agent with no attempts."
           explain="read-failed"
         >
           {/* The DETAIL is the fact -- which read failed and how -- and §8.4
@@ -2525,7 +2525,7 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
           <Absent
             kind="partial"
             heading={`counts ${task.attempt_count} · returned 0`}
-            say={`This task counts ${task.attempt_count} attempts and the query returned none, so there is a hole in the record.${finished ? '' : ` The task is ${stateWord(task.state)}.`}`}
+            say={`This agent counts ${task.attempt_count} attempts and the query returned none, so there is a hole in the record.${finished ? '' : ` The agent is ${stateWord(task.state)}.`}`}
             foot={finished ? undefined : stateWord(task.state)}
             explain="attempt-documents"
           />
@@ -2536,7 +2536,7 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
           <Absent
             kind="zero"
             heading={`no attempt yet · ${stateWord(task.state)}`}
-            say="Nothing has been admitted for this task yet, so it has no attempts."
+            say="Nothing has been admitted for this agent yet, so it has no attempts."
             explain="attempt-documents"
           />
         )}
@@ -2563,7 +2563,7 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
           // shown") is what the mark means.
           <Mark
             kind="partial"
-            say={`The task records ${task.attempt_count} attempts and ${ordered.length} documents came back. The rest are missing, not absent, so every figure below describes only the attempts shown.`}
+            say={`The agent records ${task.attempt_count} attempts and ${ordered.length} documents came back. The rest are missing, not absent, so every figure below describes only the attempts shown.`}
           />
         )}
       </h2>
@@ -2639,7 +2639,7 @@ export function AttemptModel({ a, task, isLatest }: { a: AttemptRow; task: Task 
           <span className="mono">{model}</span>
         )}
         {modelClass !== null && (
-          <span className="att-model-class" title={task?.model_class_defaulted ? 'The task named no class, so it runs its runner’s default.' : 'The class the task named.'}>
+          <span className="att-model-class" title={task?.model_class_defaulted ? 'The agent named no class, so it runs its runner’s default.' : 'The class the agent named.'}>
             {' · '}
             <span className="mono">{modelClass}</span>
             {task?.model_class_defaulted && ' (default)'}
@@ -2911,8 +2911,8 @@ function AttemptResources({
         : end.by === 'superseded'
           ? 'A later attempt has replaced it, so nothing writes to this document again.'
           : end.by === 'released'
-            ? `The task is ${stateWord(task.state)} and no longer holds this attempt’s lease, and this attempt was never marked finished — the shape a quota park, a failed dispatch or a reconciler reclaim leaves behind.`
-            : `The task is ${stateWord(task.state)} and this attempt was never marked finished — the shape a kill, or a reconciler reclaim of a stale generation, leaves behind.`
+            ? `The agent is ${stateWord(task.state)} and no longer holds this attempt’s lease, and this attempt was never marked finished — the shape a quota park, a failed dispatch or a reconciler reclaim leaves behind.`
+            : `The agent is ${stateWord(task.state)} and this attempt was never marked finished — the shape a kill, or a reconciler reclaim of a stale generation, leaves behind.`
   const liveRss = a.peak_rss_bytes === null ? (hb?.peakRssBytes ?? null) : null
   const rss = a.peak_rss_bytes ?? liveRss
   const rssBy =
@@ -2958,7 +2958,7 @@ function AttemptResources({
                   ? 'The deployment answering this UI predates GET /v1/resource-classes, so the ceiling these measurements were taken under is unknown to this page. The measured side is unaffected and is real.'
                   : classes === null
                     ? `The resource-class catalogue could not be read, so only the ceiling is missing; the measurements are real. ${classesDetail ?? ''}`
-                    : `The catalogue has no class called ${task.resource_class}. It was renamed or retired after this task was submitted, so there is nothing to compare against.`
+                    : `The catalogue has no class called ${task.resource_class}. It was renamed or retired after this agent was submitted, so there is nothing to compare against.`
               }
             />
           </span>
@@ -3352,7 +3352,7 @@ function cpuReading(from: CpuFrom, a: AttemptRow, end: AttemptEnd): CpuReading {
       by: 'events not read',
       strip: 'events not read',
       mark: 'unread',
-      say: 'No CPU figures were written on this attempt, and the task’s events could not be read, so whether one of its heartbeat events carries a reading is unknown. This is neither a zero nor a missing measurement.',
+      say: 'No CPU figures were written on this attempt, and the agent’s events could not be read, so whether one of its heartbeat events carries a reading is unknown. This is neither a zero nor a missing measurement.',
     }
   }
   // A FULL PAGE, AND A READING THAT IS NOT THE ONE AT EXIT: the route has
@@ -3361,8 +3361,8 @@ function cpuReading(from: CpuFrom, a: AttemptRow, end: AttemptEnd): CpuReading {
   // is the attempt's last whatever else is off the page.
   const pageFull = from.kind === 'heartbeat' && from.pageFull && !from.final
   const pageFullSay = pageFull
-    ? ` This page is full — the task has more events than it holds — so newer readings of this attempt may exist that this one does not include.`
-    : ' The page is the task’s first events, so on a long attempt this reading can be an early one, not the total at exit.'
+    ? ` This page is full — the agent has more events than it holds — so newer readings of this attempt may exist that this one does not include.`
+    : ' The page is the agent’s first events, so on a long attempt this reading can be an early one, not the total at exit.'
   if (from.kind === 'heartbeat' && from.secondsOnly) {
     // Before #188 a heartbeat carried the cumulative cpu-seconds and nothing
     // else about CPU. The cores it never carried are em dashes, not zeros.
@@ -3392,7 +3392,7 @@ function cpuReading(from: CpuFrom, a: AttemptRow, end: AttemptEnd): CpuReading {
           by: 'never measured',
           strip: 'never measured',
           mark: 'absent',
-          say: 'No CPU figures were written on this attempt, and none of its heartbeat events on this page carries one. The page is the task’s first events, so a later heartbeat is not read here. What the attempt used is unknown, which is why the figure is an em dash and not a zero.',
+          say: 'No CPU figures were written on this attempt, and none of its heartbeat events on this page carries one. The page is the agent’s first events, so a later heartbeat is not read here. What the attempt used is unknown, which is why the figure is an em dash and not a zero.',
         }
       : {
           measured: false,
@@ -3736,7 +3736,7 @@ function Output({
           <span className="is-end ctl-card-note">
             <Mark
               kind="partial"
-              say={`Everything in this panel describes the LAST attempt only. The result summary is written once, at terminal state; the earlier attempts' output was never summarised anywhere.${attempts === null ? ` The attempt read failed, so the ${task.attempt_count} attempts are the task's own count rather than a document each.` : ''}`}
+              say={`Everything in this panel describes the LAST attempt only. The result summary is written once, at terminal state; the earlier attempts' output was never summarised anywhere.${attempts === null ? ` The attempt read failed, so the ${task.attempt_count} attempts are the agent's own count rather than a document each.` : ''}`}
             />{' '}
             last attempt of {attempts !== null ? attempts.length : task.attempt_count}
           </span>
@@ -3776,7 +3776,7 @@ function Output({
         <Absent
           kind="zero"
           heading={`nothing ran · ${stateWord(task.state)}`}
-          say="No attempt of this task ever started, so there is no result summary."
+          say="No attempt of this agent ever started, so there is no result summary."
           explain="attempt-documents"
         />
       ) : summary === null ? (
@@ -4611,7 +4611,7 @@ function PublishOutcome({ git, task }: { git: GitSummary; task: Task }) {
       <Absent
         kind="zero"
         heading="nothing pushed · collect"
-        say="collect is the default strategy: the agent's work is harvested into this task's patch and artifacts and the repository is never written to. Nothing failed, and no token or forge setting changes this."
+        say="collect is the default strategy: the agent's work is harvested into this agent's patch and artifacts and the repository is never written to. Nothing failed, and no token or forge setting changes this."
         foot={reason ?? undefined}
         explain="dispatch-strategies"
       />
@@ -4690,7 +4690,7 @@ function PublishOutcome({ git, task }: { git: GitSummary; task: Task }) {
     {
       match: 'repository url is unknown',
       heading: 'not published · repository url unknown',
-      say: 'The attempt had no repository to publish to. If the task was meant to have one, it was submitted without repository_url.',
+      say: 'The attempt had no repository to publish to. If the agent was meant to have one, it was submitted without repository_url.',
       kind: 'zero' as const,
     },
   ].find((c) => lower.includes(c.match))
@@ -4818,8 +4818,8 @@ function Input({ run, readAt }: { run: AgentRun; readAt: number | null }) {
             kind="zero"
             say={
               served.prompt_key === 'other'
-                ? "This task's input has a prompt key whose value is not text, so there is no prompt to show. The full input is under Metadata."
-                : "This task's input has no prompt string. That is legitimate — the field is a convention of the CLI and mock runners, not part of the submission schema. The full input is under Metadata."
+                ? "This agent's input has a prompt key whose value is not text, so there is no prompt to show. The full input is under Metadata."
+                : "This agent's input has no prompt string. That is legitimate — the field is a convention of the CLI and mock runners, not part of the submission schema. The full input is under Metadata."
             }
           />{' '}
           {served.prompt_key === 'other' ? 'prompt is not text' : 'no prompt key'}
@@ -4881,7 +4881,7 @@ function MaskedMetadataBlock({ served, copy }: { served: TaskInputCopy | null; c
         <p className="att-none">
           <Mark
             kind="absent"
-            say="The deployment answering this UI does not serve the masked copy of a task's metadata yet. The metadata is not drawn unmasked in its place."
+            say="The deployment answering this UI does not serve the masked copy of an agent's metadata yet. The metadata is not drawn unmasked in its place."
           />{' '}
           masked metadata not served by this API
         </p>
@@ -4889,7 +4889,7 @@ function MaskedMetadataBlock({ served, copy }: { served: TaskInputCopy | null; c
         <p className="att-none">
           <Mark
             kind="zero"
-            say="This task was submitted with no metadata."
+            say="This agent was submitted with no metadata."
           />{' '}
           no metadata submitted
         </p>
@@ -4963,7 +4963,7 @@ function RestOfInput({ served }: { served: TaskInputCopy }) {
       </div>
       {served.rest === null ? (
         <p className="att-none">
-          <Mark kind="zero" say="The prompt is the whole of this task's input: nothing else was submitted with it." />{' '}
+          <Mark kind="zero" say="The prompt is the whole of this agent's input: nothing else was submitted with it." />{' '}
           nothing else submitted
         </p>
       ) : (
@@ -4998,7 +4998,7 @@ function InputNotRead({ copy }: { copy: Result<TaskInputCopy> }) {
   if (copy.status === 'loading') {
     return (
       <p className="att-none">
-        <Mark kind="pending" say="Reading the masked copy of this task's input. The read is in flight." /> reading
+        <Mark kind="pending" say="Reading the masked copy of this agent's input. The read is in flight." /> reading
       </p>
     )
   }
@@ -5007,7 +5007,7 @@ function InputNotRead({ copy }: { copy: Result<TaskInputCopy> }) {
       <p className="att-none">
         <Mark
           kind="absent"
-          say="The deployment answering this UI does not serve the masked copy of a task's input yet. The input is not drawn unmasked in its place."
+          say="The deployment answering this UI does not serve the masked copy of an agent's input yet. The input is not drawn unmasked in its place."
         />{' '}
         not served by this API
       </p>
@@ -5018,7 +5018,7 @@ function InputNotRead({ copy }: { copy: Result<TaskInputCopy> }) {
     <p className="att-none">
       <Mark
         kind="unread"
-        say="The masked copy of this task's input could not be read, so it is not shown — and it is not drawn unmasked instead. Nothing may be concluded about the input: it is not empty and it is not missing."
+        say="The masked copy of this agent's input could not be read, so it is not shown — and it is not drawn unmasked instead. Nothing may be concluded about the input: it is not empty and it is not missing."
       />{' '}
       input not read
       {/* A SEPARATOR BEFORE THE SERVER'S WORDS. `.att-none` is a flex row, so

@@ -588,7 +588,7 @@ function HolderTable({
           <table role="table">
             <thead role="rowgroup">
               <tr role="row">
-                <th role="columnheader" scope="col">Task</th>
+                <th role="columnheader" scope="col">Agent</th>
                 <th role="columnheader" scope="col">Tenant</th>
                 {/* §8.4(3): THE CAVEAT ATTACHES TO THE COLUMN. "units are
                     weighted, not agent counts" was a footnote under the table

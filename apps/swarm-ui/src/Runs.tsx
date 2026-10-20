@@ -738,7 +738,7 @@ export function RunOutcome({ run }: { run: IssueRun }) {
 export function runStateLine(run: IssueRun, merge: MergeCard | null = null): string {
   switch (run.state) {
     case 'PLANNING':
-      return 'A planner task is reading the issue and the repository. It changes nothing.'
+      return 'A planner agent is reading the issue and the repository. It changes nothing.'
     case 'PLANNED':
       return run.plan_approval === 'auto'
         ? 'Holds no capacity. Approval is automatic: the next read approves this plan.'
@@ -1009,7 +1009,7 @@ function RunPage({ run: served, reread, go, onHeading }: {
           {run.plan === null ? (
             <p className="sb-note">
               {run.state === 'PLANNING'
-                ? 'No plan yet: the planner task is still working.'
+                ? 'No plan yet: the planner agent is still working.'
                 : 'No plan: the planner did not produce one this run could read.'}
             </p>
           ) : open.kind === 'edit' && canAct ? (
@@ -1089,7 +1089,7 @@ function RunPage({ run: served, reread, go, onHeading }: {
             <li className="ctl-fact">
               <b>Planner</b>
               {run.planner_task_id === ''
-                ? <i className="ctl-em" title="The run records no planner task.">&mdash; not recorded</i>
+                ? <i className="ctl-em" title="The run records no planner agent.">&mdash; not recorded</i>
                 : <InApp go={go} cut to={`work/task/${encodeURIComponent(run.planner_task_id)}`}
                   href={`/agents/recent/${encodeURIComponent(run.planner_task_id)}`}>{run.planner_task_id}</InApp>}
             </li>

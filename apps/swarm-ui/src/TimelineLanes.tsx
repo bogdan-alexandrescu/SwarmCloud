@@ -1632,10 +1632,10 @@ function laneNote(lane: Lane, events: EventsRead | null, single: Task | string |
         ? `its read answered ${single}`
         : single === null
           ? taskPageFailed
-            ? 'the task list read failed'
-            : `older than the task read reached, and over the ${MISSING_TASK_READS}-read cap or still reading`
+            ? 'the agent list read failed'
+            : `older than the agent read reached, and over the ${MISSING_TASK_READS}-read cap or still reading`
           : 'not read'
-    return `profile —, task not read (${why})`
+    return `profile —, agent not read (${why})`
   }
   // THE ID IS THE LABEL'S TOOLTIP, not the note's first word (walkthrough G).
   const parts = [t.runner_profile]
@@ -2050,7 +2050,7 @@ function LaneDetail({
       <div className="tl-card">
         <div className="tl-card-head">
           <h2>{name}</h2>
-          {t !== null ? <StateMark state={t.state} /> : <span className="tl-q">state — task not read</span>}
+          {t !== null ? <StateMark state={t.state} /> : <span className="tl-q">state — agent not read</span>}
           <button type="button" className="tl-close" aria-label="Close" onClick={onClose}>
             ×
           </button>
@@ -2090,7 +2090,7 @@ function LaneDetail({
           <dt>Wall time</dt>
           <dd>
             {created === null
-              ? '— task not read'
+              ? '— agent not read'
               : ended === null
                 ? `${clock(created, true)} → not finished`
                 : `${clock(created, true)} → ${clock(ended, true)} · ${formatDuration(ended - created)}`}
@@ -2126,7 +2126,7 @@ function LaneDetail({
         ) : events.status === 'error' ? (
           <p className="tl-q">{`Events not read: the read answered ${events.httpStatus ?? 'nothing'} (${events.message}).`}</p>
         ) : events.events.length === 0 ? (
-          <p className="tl-q">This task has no events.</p>
+          <p className="tl-q">This agent has no events.</p>
         ) : (
           <ol className="tl-evl">
             {events.events.map((e) => (

@@ -1133,9 +1133,9 @@ function IdLookup({
         <h3>
           <Mark
             kind="zero"
-            say={`The server has no task ${id} in this tenant (HTTP 404). This is an answer for the whole tenant, not only for the loaded rows; it could be another tenant's task.`}
+            say={`The server has no agent ${id} in this tenant (HTTP 404). This is an answer for the whole tenant, not only for the loaded rows; it could be another tenant's agent.`}
           />{' '}
-          no task {id} in this tenant
+          no agent {id} in this tenant
         </h3>
       </div>
     )

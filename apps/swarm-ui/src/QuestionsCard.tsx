@@ -304,7 +304,7 @@ function AskedCard({ task, count }: { task: Task; count: number }) {
       </div>
       <p className="dt-note">
         {who} asked you {count === 1 ? 'this' : 'these'} instead of guessing. Pick an option or write your own: the
-        answer is stored on this task, where {launcher(task)} reads it with swarm_result.
+        answer is stored on this agent, where {launcher(task)} reads it with swarm_result.
       </p>
       {data !== null && data.status === 'ok' && roleGate !== null && (
         <p className="dt-note qc-why-not" data-role-gate="member">

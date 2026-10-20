@@ -172,7 +172,7 @@ export function shortTaskId(id: string): string {
  * asked to be.
  */
 export function agentKind(profile: string): string {
-  return profile === 'browser' ? 'browser check' : `${profile} task`
+  return profile === 'browser' ? 'browser check' : `${profile} agent`
 }
 
 /**

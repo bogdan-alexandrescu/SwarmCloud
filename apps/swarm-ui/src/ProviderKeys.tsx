@@ -136,9 +136,9 @@ export function ProviderKeysScreen({ link }: { link: KeyLink | null }) {
               </p>
             ) : (
               <>
-                <p className="pk-uses">{`Your tasks in ${d.resolution.tenant_id} would use: ${USES[d.resolution.uses]}`}</p>
+                <p className="pk-uses">{`Your agents in ${d.resolution.tenant_id} would use: ${USES[d.resolution.uses]}`}</p>
                 {d.consumed_by.length === 0 && (
-                  <p className="ur-small">Nothing reads TypeSafe keys yet: this is the key a task would use once something does.</p>
+                  <p className="ur-small">Nothing reads TypeSafe keys yet: this is the key an agent would use once something does.</p>
                 )}
                 <KeyRow
                   scope="user"
@@ -406,7 +406,7 @@ function TypedRemove({
           </>
         }
       >
-        Every saved version is destroyed. {scope === 'user' ? 'Your tasks fall back to the tenant key, if one is set.' : 'Tasks here then use each person’s own key, or none.'}
+        Every saved version is destroyed. {scope === 'user' ? 'Your agents fall back to the tenant key, if one is set.' : 'Agents here then use each person’s own key, or none.'}
       </Banner>
       <label htmlFor={`${id}-c`}>{`Type ${word} to remove`}</label>
       <input

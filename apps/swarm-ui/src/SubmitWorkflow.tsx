@@ -1298,7 +1298,7 @@ function Accepted({ echo, steps }: { echo: DispatchEcho | null; steps: number })
     return (
       <p
         className="ctl-panel-note"
-        aria-label="The 201 carried no dispatch block, so this screen cannot say what strategy was stored. That is an API older than the field. Open the workflow to read it off its tasks."
+        aria-label="The 201 carried no dispatch block, so this screen cannot say what strategy was stored. That is an API older than the field. Open the workflow to read it off its agents."
       >
         <i className="ctl-mark is-absent">not measured</i>
         strategy not echoed by the API

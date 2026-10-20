@@ -94,7 +94,7 @@ function sourceOf(task: Task, git: GitSummary | null): Source {
  * never a 0 for a count nobody measured.
  */
 export function changesCount(task: Task | null): { count: number | string | null; say: string | null } {
-  if (task === null) return { count: null, say: 'The task has not been read yet.' }
+  if (task === null) return { count: null, say: 'The agent has not been read yet.' }
   const git = gitOf(task)
   if (git === null) {
     return {
@@ -315,7 +315,7 @@ export function PatchChanges({
       <State
         mark="absent"
         heading="patch not in the bucket"
-        say="This task's manifest names the patch and the object is not there: a missing object, not a run that changed nothing."
+        say="This agent's manifest names the patch and the object is not there: a missing object, not a run that changed nothing."
       >
         {data.detail}
       </State>
@@ -678,7 +678,7 @@ export type MatrixCell =
 
 const UNKNOWN_WHY: Readonly<Record<'not-started' | 'not-in-read' | 'checking', string>> = {
   'not-started': 'This step has not started, so it has changed nothing yet.',
-  'not-in-read': 'This step’s task was not in this read, so what it changed is not known.',
+  'not-in-read': 'This step’s agent was not in this read, so what it changed is not known.',
   checking: 'Reading this step’s attempts, for a publish refusal that would withhold its patch.',
 }
 

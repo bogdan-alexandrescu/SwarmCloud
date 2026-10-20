@@ -1385,11 +1385,11 @@ export function taskInputsOf(task: Task): TaskInputs {
 export const DECLARED_WORDS: Readonly<Record<DeclaredWhy, { text: string; note: string }>> = {
   'not-started': {
     text: 'not staged yet',
-    note: 'The step has no task yet, so nothing has been staged into it.',
+    note: 'The step has no agent yet, so nothing has been staged into it.',
   },
   unread: {
     text: 'staging unread',
-    note: 'The step’s task was not in the task read, so whether the file arrived is unknown.',
+    note: 'The step’s agent was not in the agent read, so whether the file arrived is unknown.',
   },
   'in-flight': {
     text: 'reported at finish',
@@ -2851,7 +2851,7 @@ export function stepDuration(state: StepState, now: number, enteredAt: number | 
     return {
       kind: 'none',
       text: 'duration unread',
-      note: `Task ${state.taskId} was not in the task read, so its timings were never looked at. Unknown, not zero.`,
+      note: `Agent ${state.taskId} was not in the agent read, so its timings were never looked at. Unknown, not zero.`,
     }
   }
 

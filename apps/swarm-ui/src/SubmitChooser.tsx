@@ -126,13 +126,13 @@ export function SubmitChooser({ go }: { go: (to: string) => void }) {
       </PageHead>
       <div className="sb-choices">
         <div className="sb-card sb-choice">
-          <h2><TaskGlyph />Submit a task</h2>
+          <h2><TaskGlyph />Start an agent</h2>
           <p className="sb-note">
             One agent, one runner. It lands READY or PARKED and costs nothing until the scheduler admits it.
           </p>
           <span className="sb-row">
             <Button kind="primary" aria-keyshortcuts={CAP[TASK_FORM]} onClick={() => go(TASK_FORM)}>
-              Start a task
+              Start an agent
             </Button>
             {CAP[TASK_FORM] !== undefined && <kbd className="sb-kbd">{CAP[TASK_FORM]}</kbd>}
           </span>
@@ -266,7 +266,7 @@ function useRecentRead(): { read: RecentRead; readAt: number | null; reading: bo
       if (!live) return
       setReading(false)
       const who = okData(me)
-      const unread = [unreadWhy('Tasks', tasks), unreadWhy('Workflows', workflows), unreadWhy('Issue runs', runs)]
+      const unread = [unreadWhy('Agents', tasks), unreadWhy('Workflows', workflows), unreadWhy('Issue runs', runs)]
         .filter((x): x is string => x !== null)
       if (who === null) {
         setReadAt(null)
@@ -282,7 +282,7 @@ function useRecentRead(): { read: RecentRead; readAt: number | null; reading: bo
       // newest 0 tasks, 0 workflows, 0 issue runs" under "None of yours yet."
       // said nothing twice. Only a window that held something is named.
       const looked = [
-        t === null || t.length === 0 ? null : `your newest ${t.length} task${t.length === 1 ? '' : 's'}`,
+        t === null || t.length === 0 ? null : `your newest ${t.length} agent${t.length === 1 ? '' : 's'}`,
         // Whose window each is, said per window: the tasks are yours, the
         // workflows and runs the tenant's (live QA SUB-6).
         w === null || w.length === 0 ? null : `the tenant\u2019s newest ${w.length} workflow${w.length === 1 ? '' : 's'}`,

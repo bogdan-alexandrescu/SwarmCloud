@@ -263,7 +263,7 @@ function FailureLine({ r, go }: { r: RepoRecord; go: (to: string) => void }) {
           {f.cause}
         </span>{' '}
         (<UrLink to={`work/task/${f.task_id}`} go={go}>
-          task
+          agent
         </UrLink>
         )
       </span>

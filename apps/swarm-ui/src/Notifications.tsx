@@ -83,7 +83,7 @@ const GROUP_ICON: Readonly<Record<NotificationItem['group'], string>> = {
 const GROUP_LABEL: Readonly<Record<NotificationItem['group'], string>> = {
   admin: 'Waiting for you',
   approval: 'Approval',
-  task: 'In a task',
+  task: 'In an agent',
   account: 'Account and access',
   finished: 'Finished',
 }

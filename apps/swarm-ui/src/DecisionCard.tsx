@@ -124,7 +124,7 @@ function GatedDecision({ task, gate, readAt }: { task: Task; gate: GateDecision;
   const tasks = tasksOf(useWorkflow(task, readAt))
   const review = gate.reviewTaskId
   const reviewLink =
-    review === null ? <Dash why="Neither the step's dispatch nor its result names the review task its gate reads." /> : <TaskLink id={review} tasks={tasks} />
+    review === null ? <Dash why="Neither the step's dispatch nor its result names the review agent its gate reads." /> : <TaskLink id={review} tasks={tasks} />
   const runsOn =
     gate.verdictIn.length > 0 ? (
       gate.verdictIn.join(' or ')
@@ -163,7 +163,7 @@ function VerdictRow({ task, gate, reviewLink }: { task: Task; gate: GateDecision
         from {reviewLink}
         {' · '}
         {review === null ? (
-          <Dash why="No review task is named, so there is no verdict file to open." />
+          <Dash why="No review agent is named, so there is no verdict file to open." />
         ) : gate.file !== null ? (
           <a className="ctl-link mono" href={artifactHref(review, gate.file)}>
             {gate.file}

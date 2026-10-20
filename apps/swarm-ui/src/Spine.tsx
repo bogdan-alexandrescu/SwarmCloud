@@ -174,7 +174,7 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
  */
 const SUBMIT_PAGES: readonly { tab: string; label: string; icon: string; to: string }[] = [
   { tab: '', label: 'Choose what to submit', icon: 'submit', to: 'submit' },
-  { tab: 'new', label: 'A task', icon: 'work', to: 'work/new' },
+  { tab: 'new', label: 'An agent', icon: 'work', to: 'work/new' },
   { tab: 'new-workflow', label: 'A workflow', icon: 'workflows', to: 'work/new-workflow' },
   { tab: 'new-issue', label: 'From a GitHub issue', icon: 'runs', to: 'work/new-issue' },
 ]

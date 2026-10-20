@@ -624,7 +624,7 @@ export function PermissionsPage({ go }: { go: (to: string) => void }) {
                 <UrCap label="ok" cell={{ state: 'ok', reason: 'measured' }} word="ok" /> measured ·{' '}
                 <UrCap label="missing" cell={{ state: 'missing', reason: 'refused, with the reason' }} word="missing" /> refused, with the
                 reason · <UrCap label="unknown" cell={{ state: 'unknown', reason: 'not readable without trying' }} word="unknown" /> not
-                readable without trying (fine-grained grants), never shown as ok. "resolves" marks the token a task in that repository would
+                readable without trying (fine-grained grants), never shown as ok. "resolves" marks the token an agent in that repository would
                 use.
               </p>
             </>

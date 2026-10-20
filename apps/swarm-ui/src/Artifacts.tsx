@@ -231,7 +231,7 @@ async function loadView(taskId: string, prev: ArtifactsView | null): Promise<Res
   if (task.status !== 'ok' && task.status !== 'stale') {
     return {
       status: 'error',
-      error: { kind: 'unreachable', httpStatus: null, code: null, message: 'The task read did not complete.' },
+      error: { kind: 'unreachable', httpStatus: null, code: null, message: 'The agent read did not complete.' },
     }
   }
   const t = task.data
@@ -395,7 +395,7 @@ export function Prompt({ taskId, readAt }: { taskId: string; readAt: number }) {
         </>
       ) : copy.prompt_key === 'missing' && copy.full.text === '{}' ? (
         <p className="att-none">
-          <Mark kind="zero" say="This task was submitted with no input at all. Nothing is missing: nothing was sent." /> no
+          <Mark kind="zero" say="This agent was submitted with no input at all. Nothing is missing: nothing was sent." /> no
           input
         </p>
       ) : (
@@ -442,7 +442,7 @@ function Repository({ task }: { task: Task }) {
           <b>ref</b>
           {task.repository_ref === null ? (
             <>
-              <Em /> <Mark kind="zero" say="No ref was submitted with this task." />
+              <Em /> <Mark kind="zero" say="No ref was submitted with this agent." />
             </>
           ) : (
             <span className="mono">{task.repository_ref}</span>
@@ -778,7 +778,7 @@ function OverCap({ v }: { v: ArtifactsView }) {
         <Count n={over.count} label="not uploaded" bare />
       </div>
       <InWorkerLog
-        say={`The worker uploads at most ${over.cap === null ? 'a fixed number of' : over.cap} files from $SWARM_ARTIFACTS_DIR per attempt, because each is an entry in the task's record, which has a size limit. ${over.count} more ${over.count === 1 ? 'was' : 'were'} there and ${over.count === 1 ? 'was' : 'were'} not uploaded. The worker's log names every one.`}
+        say={`The worker uploads at most ${over.cap === null ? 'a fixed number of' : over.cap} files from $SWARM_ARTIFACTS_DIR per attempt, because each is an entry in the agent's record, which has a size limit. ${over.count} more ${over.count === 1 ? 'was' : 'were'} there and ${over.count === 1 ? 'was' : 'were'} not uploaded. The worker's log names every one.`}
       >
         {over.count} over the {cap}, named in the worker log
       </InWorkerLog>
@@ -1010,14 +1010,14 @@ function Files({ v }: { v: ArtifactsView }) {
       </p>
     ) : task.started_at === null ? (
       <p className="att-none">
-        <Mark kind="zero" say="No attempt of this task ever started, so no file was ever going to be uploaded." /> nothing
+        <Mark kind="zero" say="No attempt of this agent ever started, so no file was ever going to be uploaded." /> nothing
         ran
       </p>
     ) : (
       <p className="att-none">
         <Mark
           kind="partial"
-          say="This task finished without a result summary, which is where the file list is written. The attempt may well have produced files; this is a missing record, not an empty one."
+          say="This agent finished without a result summary, which is where the file list is written. The attempt may well have produced files; this is a missing record, not an empty one."
         />{' '}
         finished with no summary
       </p>
@@ -1058,7 +1058,7 @@ function Files({ v }: { v: ArtifactsView }) {
       <span key="cut">
         <Mark
           kind="partial"
-          say={`The listing route returned ${cut.listed} of this run's ${cut.total} files: it answers one page and cannot be paged past it. The other ${cut.total - cut.listed} are listed from the task's own manifest, the record the route serves. The server named no kind for them, so each opens by its name, and open full lets the raw route decide what the bytes are.`}
+          say={`The listing route returned ${cut.listed} of this run's ${cut.total} files: it answers one page and cannot be paged past it. The other ${cut.total - cut.listed} are listed from the agent's own manifest, the record the route serves. The server named no kind for them, so each opens by its name, and open full lets the raw route decide what the bytes are.`}
         />{' '}
         {cut.listed} of {cut.total} listed
       </span>,
@@ -1068,7 +1068,7 @@ function Files({ v }: { v: ArtifactsView }) {
       <span key="full">
         <Mark
           kind="partial"
-          say={`The listing route returned a full page of ${cut.listed} files, and this task's summary carries no manifest to check it against, so the run may have more files than are shown.`}
+          say={`The listing route returned a full page of ${cut.listed} files, and this agent's summary carries no manifest to check it against, so the run may have more files than are shown.`}
         />{' '}
         first {cut.listed} listed
       </span>,
@@ -1213,7 +1213,7 @@ function FileRow({
           </button>
         )}
         {unlisted ? (
-          <span className="ctl-sub">from the task’s manifest · kind not served</span>
+          <span className="ctl-sub">from the agent’s manifest · kind not served</span>
         ) : (
           (kind !== null || role !== null) && (
             <span className="ctl-sub">
@@ -1444,14 +1444,14 @@ export function StreamsFrom({
   if (logs.status === 'empty') return <ReadFailed error={null} what="the log" />
   const data = logs.data
   if (data.attempt.status === 'no_attempt_yet') {
-    return <Absent kind="zero" heading="No attempt yet" say="This task has no attempt yet, so nothing has written a log." />
+    return <Absent kind="zero" heading="No attempt yet" say="This agent has no attempt yet, so nothing has written a log." />
   }
   if (data.attempt.status === 'unknown_attempt') {
     return (
       <Absent
         kind="failed"
         heading="No such attempt"
-        say="The attempt asked for is not one this task has, so there is no log of it to read."
+        say="The attempt asked for is not one this agent has, so there is no log of it to read."
       />
     )
   }
