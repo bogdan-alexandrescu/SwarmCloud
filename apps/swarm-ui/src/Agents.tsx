@@ -18,6 +18,8 @@ import { presetLabel } from './LiveBrowser'
 import { theaterPath } from './LiveThumb'
 import { HelpCard, phoneWidth } from './HelpCard'
 import { toggleListSnap, useListSnap } from './listSnap'
+import { focusSplitOnOpen } from './agent-split/focus'
+import { tabStep } from './agent-split/tabs'
 import './styles/agents.css'
 import { PARK_WORD, Segmented, StateMark, ToneMark } from './components'
 import { Id, Screen } from './Shell'
@@ -762,6 +764,16 @@ function AgentsBody({
   // beyond` and `Load 200 more` sat under five live rows. More pages exist,
   // but none of them holds a live agent, so Live does not offer them.
   const liveAll = shown === 'live' && liveWhole
+  // The sort button's word and name (QA-111): the order the list is in, then what a press sets.
+  const ownWord = shown === 'recent' ? 'Ended' : 'Submitted'
+  const ownOrder = shown === 'recent' ? 'newest end first' : 'newest submitted first'
+  const sortWord = sort.started === null ? ownWord : 'Started'
+  const sortSay =
+    sort.started === null
+      ? `${ownWord}: ${ownOrder}; press to sort by start, newest first`
+      : sort.started === 'desc'
+        ? 'Started: newest start first; press for oldest start first'
+        : `Started: oldest start first; press for the list’s own order, ${ownOrder}`
   const liveSay = `Every agent holding a pool slot is listed: the live states are read in full, not only from the ${page.tasks.length} newest rows.`
 
   return (
@@ -770,13 +782,33 @@ function AgentsBody({
           Waiting and Recent with their counts, underlined rather than boxed.
           On a phone it sticks under the header, so the reader can change tab
           from anywhere down the list. */}
-      <div className="ag-list-tabs" role="tablist" aria-label="Agents">
+      {/* THE TABS PATTERN (visual QA run 2, a11y-keyboard-001): role=tab
+          with none of it -- every tab its own Tab stop, the arrows dead. The
+          shown tab is the strip's one Tab stop; Left / Right / Home / End
+          move focus and show the tab they land on (automatic activation:
+          the rows are already loaded, so showing a tab is instant). */}
+      <div
+        className="ag-list-tabs"
+        role="tablist"
+        aria-label="Agents"
+        onKeyDown={(e) => {
+          if (e.altKey || e.ctrlKey || e.metaKey) return
+          const drawn = [...e.currentTarget.querySelectorAll<HTMLElement>(':scope > [role="tab"]')]
+          const at = drawn.indexOf(e.target as HTMLElement)
+          const to = at === -1 ? null : tabStep(e.key, at, TABS.length)
+          if (to === null) return
+          e.preventDefault()
+          drawn[to]?.focus()
+          if (TABS[to]!.id !== shown) chooseTab(TABS[to]!.id)
+        }}
+      >
         {TABS.map((t) => (
           <button
             key={t.id}
             type="button"
             role="tab"
             aria-selected={shown === t.id}
+            tabIndex={shown === t.id ? 0 : -1}
             aria-label={`${t.label} ${countText(counts[t.id], tabBounded(t.id))}: ${t.say}${tabBounded(t.id) ? ` — ${countSay(counts[t.id])}` : ''}`}
             onClick={() => chooseTab(t.id)}
           >
@@ -932,6 +964,13 @@ function AgentsBody({
               </label>
             )}
 
+            {/* IT SAYS THE ORDER THE LIST IS IN (visual QA QA-111, run 2). Off,
+                it read `Started ⇅` over a Recent list ordered by the newest
+                END, so its word named the one order the list was not in.
+                It now reads as a column head reads its sort: `Ended ↓` on
+                Recent (`Submitted ↓` on Live and Waiting) for the list's own
+                order, `Started ↓` and `Started ↑` sorted. Its name and title
+                start with that word and say what a press does next. */}
             {/* SORTED BY START (#376): newest start, oldest start, then the
                 list's own order. It was the Started column's head; the compact
                 list has no columns, so it is a control of the list.
@@ -940,22 +979,18 @@ function AgentsBody({
                 start time` beside a visible `Started` (axe
                 label-content-name-mismatch), and off it drew no glyph, so the
                 list's own order -- on Recent the newest END first -- read as
-                an unexplained `Started`. Off is `⇅`, and the name says which
-                order the list is in instead. */}
+                an unexplained `Started`. PR 1688 drew `⇅` there; run 2 still
+                read `Started` as the opposite of the order, so off it now
+                says the list's own order in words (QA-111, above). */}
             <button
               type="button"
               className="ag-sort"
               aria-pressed={sort.started !== null}
-              aria-label={
-                sort.started === null
-                  ? `Started: off, ${shown === 'recent' ? 'newest end first' : 'newest submitted first'}; press to sort by start`
-                  : sort.started === 'desc'
-                    ? 'Started: newest start first'
-                    : 'Started: oldest start first'
-              }
+              aria-label={sortSay}
+              title={sortSay}
               onClick={sort.onStarted}
             >
-              Started <span aria-hidden="true">{sort.started === 'desc' ? '↓' : sort.started === 'asc' ? '↑' : '⇅'}</span>
+              {sortWord} <span aria-hidden="true">{sort.started === 'asc' ? '↑' : '↓'}</span>
             </button>
           </div>
         </div>
@@ -1828,7 +1863,13 @@ function CompactRow({
       className={`row clickable is-compact${waitsForYou ? ' is-needs-you' : ''}`}
       tabIndex={-1}
       data-task-id={task.id}
-      onClick={() => onOpen(task.id)}
+      onClick={(e) => {
+        // OPENED BY A KEY, FOCUS GOES INTO THE AGENT (a11y-keyboard-002):
+        // Enter on the opener is a click with `detail` 0; a pointer's is 1+.
+        const from = e.currentTarget.querySelector<HTMLElement>(':scope > .cr-open')
+        if (e.detail === 0 && from !== null && e.target === from) focusSplitOnOpen(task.id, from)
+        onOpen(task.id)
+      }}
       onFocus={(e) => {
         if (e.target === e.currentTarget) e.currentTarget.querySelector<HTMLElement>(':scope > .cr-open')?.focus()
       }}
