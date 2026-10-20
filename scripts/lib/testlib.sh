@@ -836,6 +836,46 @@ active_leases() {
   printf '%s' "${n}"
 }
 
+# pool_lease_holders POOL -> the unreleased leases that name POOL, as a JSON
+# array of {lease, task, units}.
+#
+# WHOSE LEASES, NOT HOW MANY. A pool's `active` is every unit leased against it,
+# by anyone. race-test narrowed runner:mock on 2026-10-20 (#1754) and read
+# active=40 where its own 12 tasks held none: concurrency-test's backlog, leased
+# at the normal ceiling before the narrow, which narrowing does not evict. Only
+# the leases say whose units they are.
+#
+# Fails on a read that did not answer, and on a read AT the query limit: a
+# truncated list would undercount exactly the leases a caller is asking about.
+POOL_LEASE_QUERY_LIMIT=1000
+pool_lease_holders() {
+  local pool="$1" rows n
+  rows="$(fs_query leases "$(fs_null_filter released_at IS_NULL)" "${POOL_LEASE_QUERY_LIMIT}")" || return 1
+  n="$(printf '%s' "${rows}" | grep -c . || true)"
+  if [[ "${n}" -ge "${POOL_LEASE_QUERY_LIMIT}" ]]; then
+    err "leases: ${n} unreleased rows at the query limit; a truncated list cannot say whose leases hold ${pool}"
+    return 1
+  fi
+  printf '%s' "${rows}" | jq -sc --arg p "${pool}" "${FS_JQ}"'
+    [ .[] | doc | select(any((.pools // [])[]; . == $p))
+      | {lease: .id, task: (.task_id // ""), units: (.units // 1)} ]' || return 1
+}
+
+# leases_by_owner HOLDERS_JSON [OWN_TASK_ID...] -> {own, own_units, foreign,
+# foreign_tasks}: HOLDERS_JSON (pool_lease_holders' answer) split into the
+# leases held by the tasks named and everybody else's. foreign_tasks is the
+# first five foreign task ids, for a message. Everything reaches jq on stdin.
+leases_by_owner() {
+  local holders="$1"; shift
+  { printf '%s\n' "${holders}"; printf '%s\n' "$@" | jq -Rsc 'split("\n") | map(select(. != ""))'; } \
+    | jq -sc '.[0] as $h | .[1] as $own
+        | [ $h[] | select(.task as $t | $own | index([$t])) ] as $mine
+        | [ $h[] | select(.task as $t | ($own | index([$t])) | not) ] as $theirs
+        | { own: ($mine | length), own_units: ([ $mine[].units ] | add // 0),
+            foreign: ($theirs | length),
+            foreign_tasks: ([ $theirs[].task ] | unique | .[0:5]) }'
+}
+
 # Predicates, so wait_until can be given a condition rather than a shell string.
 #
 # Each captures the read FIRST and fails the predicate when the read failed,
@@ -1078,4 +1118,40 @@ cancel_all() {
     [[ -n "${id}" ]] || continue
     cancel_task "${id}" >/dev/null 2>&1 || true
   done
+}
+
+# cancel_submitted TASK_ID... -- cancel_all that SAYS what it did.
+#
+# For a suite's EXIT trap. cancel_all is silent by design, and silence is how
+# the 2026-10-20 baseline (#1754) left nobody able to tell whether
+# concurrency-test's 300 mock tasks had been cancelled when it died: the next
+# target found their leases. This prints one line, how many cancel requests
+# were accepted out of how many tasks, and the HTTP statuses of any refused.
+#
+# Each request runs in a subshell that prints its own API_STATUS: api_request
+# EXITS when it has no credential, and inside an EXIT trap that would end the
+# cleanup at the first task. A request that could not be made reads as status 0.
+# Never fails: it reports, the caller's exit status stays the caller's.
+cancel_submitted() {
+  local id status total=0 accepted=0 refused=0 statuses=""
+  for id in "$@"; do
+    [[ -n "${id}" ]] || continue
+    total=$(( total + 1 ))
+    status="$(if cancel_task "${id}" >/dev/null 2>&1; then printf 'ok'; else printf '%s' "${API_STATUS:-0}"; fi)"
+    if [[ "${status}" == "ok" ]]; then
+      accepted=$(( accepted + 1 ))
+    else
+      refused=$(( refused + 1 ))
+      case " ${statuses} " in
+        *" ${status:-0} "*) ;;
+        *) statuses="${statuses:+${statuses} }${status:-0}" ;;
+      esac
+    fi
+  done
+  if [[ "${refused}" -eq 0 ]]; then
+    info "cleanup: cancelled ${accepted} of ${total} submitted task(s)"
+  else
+    warn "cleanup: cancelled ${accepted} of ${total} submitted task(s); ${refused} cancel request(s) refused (HTTP ${statuses})"
+  fi
+  return 0
 }

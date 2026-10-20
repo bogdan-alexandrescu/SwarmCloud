@@ -89,6 +89,7 @@
 # PUT's response body.
 #
 # Usage: scripts/race-test.sh [--parallel 12] [--limit 1] [--timeout 300]
+#                             [--idle-wait 300]
 #        --profile is still accepted, and anything but `mock` is refused.
 
 set -euo pipefail
@@ -104,6 +105,12 @@ PROFILE="mock"
 PARALLEL=12
 TIMEOUT=300
 SLOT_LIMIT=1
+# How long the pool may take to shed leases this run did not make before the
+# run refuses to start (#1754). Five minutes: long enough for a cancelled
+# backlog's leases to come back (the gate's own concurrency-test leaves one),
+# short enough that a pool busy with somebody's real work fails the gate in
+# minutes with a reason instead of holding it for the job's whole timeout.
+IDLE_WAIT=300
 
 # The largest ceiling PUT /v1/admin/limits/* accepts: `LimitRequest.limit` is
 # `Field(ge=0, le=100_000)` in apps/swarm-api/swarm_api/schemas.py. A MIRRORED
@@ -118,6 +125,7 @@ while [[ $# -gt 0 ]]; do
     --parallel) PARALLEL="$2"; shift 2 ;;
     --limit)    SLOT_LIMIT="$2"; shift 2 ;;
     --timeout)  TIMEOUT="$2"; shift 2 ;;
+    --idle-wait) IDLE_WAIT="$2"; shift 2 ;;
     # Through the permission section: an operator running --help needs to read
     # HOW this suite is allowed to change a live ceiling, not just its flags.
     # Up to `set -euo pipefail` rather than a line number: the header has grown
@@ -144,6 +152,7 @@ done
 [[ "${PARALLEL}" =~ ^[0-9]+$ ]] || die "--parallel must be a whole number, not '${PARALLEL}'"
 [[ "${PARALLEL}" -ge 2 ]] || die "--parallel must be at least 2: ${PARALLEL} task(s) cannot race for a slot"
 [[ "${SLOT_LIMIT}" =~ ^[0-9]+$ ]] || die "--limit must be a whole number, not '${SLOT_LIMIT}'"
+[[ "${IDLE_WAIT}" =~ ^[0-9]+$ ]] || die "--idle-wait must be a whole number of seconds, not '${IDLE_WAIT}'"
 [[ "${SLOT_LIMIT}" -lt "${PARALLEL}" ]] || die "--limit ${SLOT_LIMIT} is not below --parallel ${PARALLEL}: every task would be admitted and nothing would contend"
 
 # Before require_platform, so a refused profile costs no request at all. See the
@@ -160,6 +169,64 @@ POOL_NAME="runner:${PROFILE}"
 # scripts/api.sh takes, so the fix printed below can be pasted as it stands.
 LIMIT_ROUTE="/admin/limits/runner/${PROFILE}"
 TASK_IDS=()
+
+# ---------------------------------------------------------------------------
+# THIS RUN'S LEASES, NOT THE POOL'S `active` (#1754).
+#
+# The 2026-10-20 baseline (execution swarm-verify-7pkc9) narrowed runner:mock
+# to one slot and reported `OVER LIMIT: runner:mock active=40 limit=1` with
+# none of its own 12 tasks leased: the 40 were concurrency-test's leftover
+# backlog, leased at the pool's normal ceiling before the narrow. Narrowing
+# does not evict a lease, so `active` after a narrow says nothing about
+# whether admission respected the new ceiling. What does is the units held by
+# leases on THIS run's tasks, which is all the sampling below counts -- and
+# the run starts only on a pool that holds no lease it did not make, so there
+# is nothing else in the slot to confuse it.
+# ---------------------------------------------------------------------------
+
+# sample_own_leases -> sets OWN_UNITS, OWN_LEASES and FOREIGN_LEASES from ONE
+# read of the unreleased leases naming POOL_NAME, and FOREIGN_TASKS to a few of
+# the other tasks holding them. Called directly, never in $(), so the globals
+# land in this shell. Fails on a read that did not answer: that is not zero.
+OWN_UNITS=0
+OWN_LEASES=0
+FOREIGN_LEASES=0
+FOREIGN_TASKS=""
+sample_own_leases() {
+  local holders split
+  holders="$(pool_lease_holders "${POOL_NAME}")" || return 1
+  split="$(leases_by_owner "${holders}" ${TASK_IDS[@]+"${TASK_IDS[@]}"})" || return 1
+  OWN_UNITS="$(jq -r '.own_units' <<<"${split}")"
+  OWN_LEASES="$(jq -r '.own' <<<"${split}")"
+  FOREIGN_LEASES="$(jq -r '.foreign' <<<"${split}")"
+  FOREIGN_TASKS="$(jq -r '.foreign_tasks | join(" ")' <<<"${split}")"
+}
+
+# require_idle_pool POOL WAIT_SECONDS -- returns once POOL holds no lease this
+# run did not make, waiting up to WAIT_SECONDS for other work to drain. Ends
+# the run (t_fatal) when it does not drain, or when the leases cannot be read:
+# measuring someone else's leases is what made the baseline red.
+require_idle_pool() {
+  local pool="$1" wait_s="$2" deadline said=0
+  deadline=$(( $(date -u +%s) + wait_s ))
+  while :; do
+    if ! sample_own_leases; then
+      t_fatal "could not read the unreleased leases on ${pool}; the error is above. An unread pool is not an idle one."
+    fi
+    if [[ "${FOREIGN_LEASES}" -eq 0 ]]; then
+      t_pass "${pool} holds no lease this run did not make"
+      return 0
+    fi
+    if [[ "$(date -u +%s)" -ge "${deadline}" ]]; then
+      t_fatal "pool not idle: ${FOREIGN_LEASES} leases held by other work on ${pool} after waiting ${wait_s}s (tasks ${FOREIGN_TASKS}...). This run would be measuring their leases, not admission into its own narrowed slot; re-run once they drain, or raise --idle-wait."
+    fi
+    if [[ "${said}" -eq 0 ]]; then
+      t_info "${pool} holds ${FOREIGN_LEASES} lease(s) this run did not make (tasks ${FOREIGN_TASKS}); waiting up to ${wait_s}s for them to drain"
+      said=1
+    fi
+    sleep "${SWARM_POLL_INTERVAL_SECONDS:-2}"
+  done
+}
 
 # ---------------------------------------------------------------------------
 # What the pool is BEFORE anything changes, and whether the API could put it
@@ -320,7 +387,7 @@ restore() {
       fi
     fi
   fi
-  [[ "${#TASK_IDS[@]}" -eq 0 ]] || cancel_all ${TASK_IDS[@]+"${TASK_IDS[@]}"}
+  [[ "${#TASK_IDS[@]}" -eq 0 ]] || cancel_submitted ${TASK_IDS[@]+"${TASK_IDS[@]}"}
   return "${RESTORE_RC}"
 }
 
@@ -348,6 +415,12 @@ _on_exit() {
 trap _on_exit EXIT
 trap 'restore || true; exit 130' INT
 trap 'restore || true; exit 143' TERM
+
+# ---------------------------------------------------------------------------
+t_case "${POOL_NAME} is idle before it is narrowed"
+# Before the write, so a busy pool costs nothing to refuse: NARROWED is still 0
+# and the trap has nothing to restore.
+require_idle_pool "${POOL_NAME}" "${IDLE_WAIT}"
 
 # ---------------------------------------------------------------------------
 t_case "Narrow ${POOL_NAME} to ${SLOT_LIMIT} slot(s) through the admin API"
@@ -489,15 +562,23 @@ fi
 
 # ---------------------------------------------------------------------------
 t_case "The narrowed pool is never over its limit, at any sample"
+# WORST is the units held by THIS run's leases (see sample_own_leases). Leases
+# other work took after the run started are counted apart and reported: they
+# were admitted through the same narrowed slot, so they can only have held it
+# while this run's tasks waited.
 DEADLINE=$(( $(date -u +%s) + TIMEOUT ))
 WORST=0
+WORST_FOREIGN=0
 SAMPLES=0
 while [[ "$(date -u +%s)" -lt "${DEADLINE}" ]]; do
-  active="$(pool_active "${POOL_NAME}")"
-  [[ "${active}" -gt "${WORST}" ]] && WORST="${active}"
+  if ! sample_own_leases; then
+    t_fatal "could not read the unreleased leases on ${POOL_NAME}; the error is above. A failed read is not a sample of zero."
+  fi
+  [[ "${OWN_UNITS}" -gt "${WORST}" ]] && WORST="${OWN_UNITS}"
+  [[ "${FOREIGN_LEASES}" -gt "${WORST_FOREIGN}" ]] && WORST_FOREIGN="${FOREIGN_LEASES}"
   SAMPLES=$(( SAMPLES + 1 ))
-  if [[ "${active}" -gt "${SLOT_LIMIT}" ]]; then
-    t_info "OVER LIMIT: ${POOL_NAME} active=${active} limit=${SLOT_LIMIT}"
+  if [[ "${OWN_UNITS}" -gt "${SLOT_LIMIT}" ]]; then
+    t_info "OVER LIMIT: ${POOL_NAME} this run's leases hold ${OWN_UNITS} unit(s) (${OWN_LEASES} lease(s)), limit=${SLOT_LIMIT}"
     break
   fi
   done_count=0
@@ -507,12 +588,13 @@ while [[ "$(date -u +%s)" -lt "${DEADLINE}" ]]; do
   [[ "${done_count}" -eq "${#TASK_IDS[@]}" ]] && break
   sleep 1
 done
-t_info "${SAMPLES} samples, worst observed active=${WORST}"
-assert_le "${WORST}" "${SLOT_LIMIT}" "peak concurrent leases on ${POOL_NAME}"
+t_info "${SAMPLES} samples, worst observed units held by this run's leases=${WORST}"
+t_info "peak leases on ${POOL_NAME} held by other work during the run (not counted): ${WORST_FOREIGN}"
+assert_le "${WORST}" "${SLOT_LIMIT}" "peak concurrent leases on ${POOL_NAME} held by this run's tasks"
 # The assertion above is satisfied by a platform that admitted nothing at all,
 # and a race test that never contended is worse than one that fails: it
-# certifies the property it was unable to test. `WORST` is the peak `active`
-# this run actually observed on the narrowed pool, so requiring at least one is
+# certifies the property it was unable to test. `WORST` is the peak units this
+# run's own leases held on the narrowed pool, so requiring at least one is
 # requiring that some task really did hold the slot the others were queued
 # behind.
 #
@@ -567,10 +649,14 @@ t_pass "cancellation requested for ${#TASK_IDS[@]} task(s) in parallel"
 
 # ---------------------------------------------------------------------------
 t_case "No lease survived the cancellation storm"
-if wait_until "the ${POOL_NAME} pool to drain" 240 pool_drained "${POOL_NAME}"; then
-  t_pass "${POOL_NAME} active is 0"
+# This run's leases, for the reason the sampling counts only them: other work
+# may hold the pool now that the narrow is about to be put back, and its
+# leases are not this storm's to release.
+own_leases_released() { sample_own_leases && [[ "${OWN_LEASES}" -eq 0 ]]; }
+if wait_until "this run's leases on ${POOL_NAME} to be released" 240 own_leases_released; then
+  t_pass "no lease of this run's ${#TASK_IDS[@]} task(s) on ${POOL_NAME} is unreleased"
 else
-  t_fail "${POOL_NAME} still shows $(pool_active "${POOL_NAME}") active lease(s)"
+  t_fail "this run's tasks still hold ${OWN_LEASES} unreleased lease(s) on ${POOL_NAME}"
 fi
 
 STUCK=0

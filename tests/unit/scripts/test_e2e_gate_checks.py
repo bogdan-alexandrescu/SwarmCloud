@@ -1,0 +1,325 @@
+"""e2e-test.sh's checks [6], [7] and [10] judge the platform, not the test.
+
+The 2026-10-20 baseline of `make verify-remote` (execution swarm-verify-cltfv)
+failed three e2e checks, each on a test defect (#1754, items 3-5):
+
+  [7]  it scanned EVERY tenant's attempts and failed on the API's 404 for the
+       smoke tenant's tasks, while the gate runs as eng. That 404 is tenant
+       isolation working. The scan is now scoped to the tenant this run's API
+       calls act as, and a control asserts another tenant's task IS refused.
+  [10] it compared every capacity holder with Cloud Run executions only, and
+       flagged ten eng claude-code agents running on GKE Autopilot. It now reads
+       the newest attempt's backend and asks GKE for GKE work; with no GKE read
+       it says "not checked" instead of failing.
+  [6]  it expected the producer that never wrote its promised file to SUCCEED.
+       The platform now fails that producer (`expected outputs missing`,
+       end_cause outputs_missing) and its dependant never runs.
+
+The functions are lifted from the shipped script and run with every read stubbed.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+from pathlib import Path
+
+import pytest
+
+from .gate_script_functions import SCRIPTS, firestore_document, functions, lines, run_bash
+
+SUITE = SCRIPTS / "e2e-test.sh"
+
+pytestmark = pytest.mark.skipif(shutil.which("jq") is None, reason="jq is required")
+
+
+def attempt_doc(aid: str, task: str, tenant: str, **extra) -> dict:
+    return firestore_document("attempts", aid, {"attempt_id": aid, "task_id": task, "tenant_id": tenant, **extra})
+
+
+# --- [7] the spend scan is the caller's tenant's ----------------------------
+
+
+def test_the_spend_scan_keeps_only_the_calling_tenants_attempts(tmp_path: Path) -> None:
+    """The baseline's three smoke tasks must never reach the API comparison."""
+    rows = [
+        attempt_doc("att_0128e390edcc468d9be0", "task_dcedd511e54345349960", "smoke", input_tokens=10),
+        attempt_doc("att_a", "task_19c440f8627f44548f8c", "smoke", input_tokens=11),
+        attempt_doc("att_b", "task_eng_1", "eng", input_tokens=12),
+        attempt_doc("att_c", "task_25633ce0bd874d619819", "smoke", input_tokens=13),
+        attempt_doc("att_d", "task_eng_2", "eng", input_tokens=14),
+    ]
+    feed = tmp_path / "rows.jsonl"
+    feed.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    r = run_bash(functions(SUITE, "own_tenant_rows") + f'\nown_tenant_rows eng 25 <"{feed}"\n')
+    assert r.returncode == 0, r.stderr
+    got = [json.loads(line) for line in r.stdout.splitlines() if line.strip()]
+    # MUTATION: drop the tenant filter and the smoke tenant's three attempts come back.
+    assert [g["task_id"] for g in got] == ["task_eng_1", "task_eng_2"]
+
+
+def test_the_spend_scan_honours_its_cap(tmp_path: Path) -> None:
+    rows = [attempt_doc(f"att_{i}", f"task_{i}", "eng", input_tokens=i) for i in range(40)]
+    feed = tmp_path / "rows.jsonl"
+    feed.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    r = run_bash(functions(SUITE, "own_tenant_rows") + f'\nown_tenant_rows eng 25 <"{feed}"\n')
+    # MUTATION: ignore MAX and every one of the 40 is compared.
+    assert len(r.stdout.splitlines()) == 25
+
+
+ISOLATION_STUB = r'''
+fs_query() { [[ -s "${FOREIGN_ROW}" ]] && cat "${FOREIGN_ROW}"; return 0; }
+api_get() {
+  printf '%s\n' "$1" >>"${API_LOG}"
+  API_STATUS="${FOREIGN_STATUS}"
+  printf '{"detail":"x"}'
+  [[ "${API_STATUS}" -ge 200 && "${API_STATUS}" -lt 300 ]]
+}
+'''
+
+
+def _isolation(tmp: Path, status: str, *, foreign: bool = True):
+    row = tmp / "foreign.jsonl"
+    row.write_text(json.dumps(attempt_doc("att_s", "task_dcedd511e54345349960", "smoke")) + "\n" if foreign else "")
+    log = tmp / "api.log"
+    r = run_bash(
+        ISOLATION_STUB + functions(SUITE, "foreign_tenant_refused") + "\nforeign_tenant_refused eng\n",
+        env={"FOREIGN_ROW": str(row), "FOREIGN_STATUS": status, "API_LOG": str(log), "TMPDIR": str(tmp)},
+    )
+    asked = log.read_text().split() if log.exists() else []
+    return r, asked
+
+
+def test_another_tenants_task_is_refused_with_404(tmp_path: Path) -> None:
+    r, asked = _isolation(tmp_path, "404")
+    assert r.returncode == 0, r.stderr
+    assert asked == ["/tasks/task_dcedd511e54345349960/attempts"]
+    # MUTATION: never ask about another tenant's task and no PASS for isolation is printed.
+    assert any("404" in p for p in lines(r, "PASS")), r.stderr
+    assert lines(r, "FAIL") == []
+
+
+def test_another_tenants_task_served_to_this_caller_is_a_failure(tmp_path: Path) -> None:
+    r, _ = _isolation(tmp_path, "200")
+    # MUTATION: accept any answer for the foreign task and broken isolation passes.
+    fails = lines(r, "FAIL")
+    assert any("isolation" in f for f in fails), r.stderr
+
+
+def test_a_refusal_other_than_404_is_reported_as_what_it_is(tmp_path: Path) -> None:
+    r, _ = _isolation(tmp_path, "500")
+    # MUTATION: treat every non-2xx as "refused" and a 500 reads as isolation.
+    assert any("HTTP 500" in f for f in lines(r, "FAIL")), r.stderr
+
+
+def test_no_other_tenant_to_test_against_is_not_measured_not_passed(tmp_path: Path) -> None:
+    r, asked = _isolation(tmp_path, "404", foreign=False)
+    assert asked == []
+    assert lines(r, "PASS") == []
+    # MUTATION: print PASS when there was nothing to refuse.
+    assert len(lines(r, "SKIP")) == 1, r.stderr
+
+
+# --- [10] a GKE-backed holder is asked of GKE, or reported not checked ------
+
+GKE_EXEC = "swarm-tenant-eng/swarm-cf154a98da3f42bfae36-1"
+
+VERDICT_STUB = r'''
+gke_job_status() { printf '%s %s\n' "$1" "$2" >>"${GKE_LOG}"; printf '%s' "${GKE_ANSWER}"; }
+gke_cluster_access() { [[ -n "${GKE_ACCESS}" ]] || GKE_ACCESS="${GKE_ACCESS_ANSWER}"; }
+'''
+
+
+def _verdict(tmp: Path, attempt: dict, *, access: str = "ok", answer: str = "running", running: str = ""):
+    log = tmp / "gke.log"
+    body = (
+        functions(SUITE, "capacity_holder_verdict")
+        + VERDICT_STUB
+        + "\nGKE_ACCESS=''\n"
+        + f"capacity_holder_verdict '{json.dumps(attempt)}' eng '{running}'\n"
+        + 'printf "%s|%s\\n" "${VERDICT}" "${VERDICT_DETAIL}"\n'
+    )
+    r = run_bash(body, env={"GKE_LOG": str(log), "GKE_ANSWER": answer, "GKE_ACCESS_ANSWER": access, "TMPDIR": str(tmp)})
+    asked = log.read_text().splitlines() if log.exists() else []
+    verdict, _, detail = r.stdout.strip().partition("|")
+    return r, verdict, detail, asked
+
+
+GKE_ATTEMPT = {"attempt_id": "att_g", "task_id": "task_cf154a98da3f42bfae36", "tenant_id": "eng",
+               "generation": 1, "backend": "GKE_AUTOPILOT", "execution_name": GKE_EXEC}
+
+
+def test_a_gke_holder_with_no_gke_read_is_not_checked_rather_than_failed(tmp_path: Path) -> None:
+    """The baseline's ten eng claude-code agents, with swarm-verify holding no GKE read."""
+    r, verdict, detail, asked = _verdict(
+        tmp_path, GKE_ATTEMPT, access="no:no GKE read (container.clusters.get answered HTTP 403)")
+    assert r.returncode == 0, r.stderr
+    # MUTATION: compare it with Cloud Run executions again and it is "gone".
+    assert verdict == "unchecked", (verdict, detail)
+    assert "not checked: no GKE read" in detail
+    assert asked == []
+
+
+def test_a_gke_holder_whose_job_runs_is_fine(tmp_path: Path) -> None:
+    r, verdict, _, asked = _verdict(tmp_path, GKE_ATTEMPT, answer="running")
+    assert verdict == "ok", r.stderr
+    # MUTATION: derive the namespace from the tenant and ignore the attempt's,
+    # or split the name wrongly, and the job asked for is not the one dispatched.
+    assert asked == ["swarm-tenant-eng swarm-cf154a98da3f42bfae36-1"]
+
+
+@pytest.mark.parametrize("answer", ["gone", "finished"])
+def test_a_gke_holder_whose_job_is_gone_or_finished_is_a_mismatch(tmp_path: Path, answer: str) -> None:
+    _, verdict, detail, _ = _verdict(tmp_path, GKE_ATTEMPT, answer=answer)
+    # MUTATION: treat every GKE answer as fine and a dead GKE Job holds capacity unseen.
+    assert verdict == "gone", detail
+    assert answer in detail
+
+
+def test_a_gke_job_named_without_a_namespace_is_looked_up_in_the_tenants(tmp_path: Path) -> None:
+    attempt = dict(GKE_ATTEMPT, execution_name="swarm-cf154a98da3f42bfae36-1")
+    _, verdict, _, asked = _verdict(tmp_path, attempt, answer="running")
+    assert verdict == "ok"
+    # MUTATION: hard-code a namespace instead of tenant_namespace(eng).
+    assert asked == ["swarm-tenant-eng swarm-cf154a98da3f42bfae36-1"]
+
+
+def test_a_cloud_run_holder_is_still_compared_with_cloud_run(tmp_path: Path) -> None:
+    attempt = {"attempt_id": "att_c", "task_id": "t", "tenant_id": "eng", "generation": 1,
+               "backend": "CLOUD_RUN_JOB",
+               "execution_name": "projects/p/locations/r/jobs/swarm-eng-mock/executions/exec-1"}
+    _, verdict, _, asked = _verdict(tmp_path, attempt, running="exec-0 exec-1")
+    assert verdict == "ok"
+    assert asked == []
+    _, verdict, detail, _ = _verdict(tmp_path, attempt, running="exec-0")
+    # MUTATION: drop the Cloud Run comparison and a dead execution passes.
+    assert verdict == "gone", detail
+
+
+def test_an_attempt_naming_no_execution_is_still_a_mismatch(tmp_path: Path) -> None:
+    attempt = dict(GKE_ATTEMPT, execution_name=None)
+    _, verdict, _, _ = _verdict(tmp_path, attempt)
+    assert verdict == "gone"
+
+
+CURL_403 = r'''
+curl() {
+  local out="" fmt="" a
+  printf 'curl' >>"${CURL_LOG}"; printf ' %s' "$@" >>"${CURL_LOG}"; printf '\n' >>"${CURL_LOG}"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in -o) out="$2"; shift 2 ;; -w) fmt="$2"; shift 2 ;; *) shift ;; esac
+  done
+  cat >/dev/null
+  printf '{"error":{"code":403,"message":"Required container.clusters.get permission"}}' >"${out}"
+  printf '403'
+}
+access_token() { printf 'fake'; }
+'''
+
+
+def test_a_refused_cluster_read_means_no_gke_read(tmp_path: Path) -> None:
+    log = tmp_path / "curl.log"
+    r = run_bash(
+        CURL_403 + functions(SUITE, "gke_cluster_access")
+        + '\nGKE_ACCESS=""\nPROJECT_ID=p\nGKE_LOCATION=us-central1\nGKE_CLUSTER=swarm-autopilot\n'
+        + 'gke_cluster_access\nprintf "%s\\n" "${GKE_ACCESS}"\n',
+        env={"CURL_LOG": str(log), "TMPDIR": str(tmp_path)},
+    )
+    assert r.returncode == 0, r.stderr
+    # MUTATION: read a 403 as "no job running" and every GKE holder fails.
+    assert r.stdout.strip().startswith("no:"), r.stdout
+    assert "no GKE read" in r.stdout
+    assert "clusters/swarm-autopilot" in log.read_text()
+
+
+def test_the_shared_cluster_is_never_read(tmp_path: Path) -> None:
+    log = tmp_path / "curl.log"
+    r = run_bash(
+        CURL_403 + functions(SUITE, "gke_cluster_access")
+        + '\nGKE_ACCESS=""\nPROJECT_ID=p\nGKE_LOCATION=us-central1\nGKE_CLUSTER=agents-staging\n'
+        + 'gke_cluster_access\nprintf "%s\\n" "${GKE_ACCESS}"\n',
+        env={"CURL_LOG": str(log), "TMPDIR": str(tmp_path)},
+    )
+    # MUTATION: drop the is_shared_resource guard and the other team's cluster is queried.
+    assert not log.exists(), log.read_text()
+    assert r.stdout.strip().startswith("no:")
+
+
+# --- [6] the negative control expects the producer to fail -----------------
+
+NEG_STUB = r'''
+lookup() {
+  local key="$1" table="$2" pair
+  for pair in ${table}; do
+    if [[ "${pair%%=*}" == "${key}" ]]; then printf '%s' "${pair#*=}"; return 0; fi
+  done
+  return 1
+}
+wait_for_state() { lookup "$1" "${STATES}"; }
+task_field() { jq -r "$2" "${DOCS}/$1.json"; }
+task_lease_ids() { local v; v="$(lookup "$1" "${LEASES}")" || return 1; [[ "${v}" == "-" ]] || printf '%s\n' "${v}"; }
+TERMINAL="SUCCEEDED|FAILED|CANCELLED|DEAD_LETTERED"
+TIMEOUT=5
+MISSING_NAME="never-written-20261020.txt"
+'''
+
+NEW_ERROR = (
+    "expected outputs missing (not written: never-written-20261020.txt). A later step of this "
+    "workflow stages them from this task, so the attempt failed; it is retried while the task "
+    "has attempts left, and the retry must write every expected output again."
+)
+
+
+def _negative(tmp: Path, *, produce: str, consume: str, produce_error: str, consume_leases: str = "-"):
+    docs = tmp / "docs"
+    docs.mkdir(exist_ok=True)
+    (docs / "p.json").write_text(json.dumps({"state": produce, "last_error": produce_error, "end_cause": "outputs_missing"}))
+    (docs / "c.json").write_text(json.dumps({"state": consume, "last_error": None}))
+    return run_bash(
+        NEG_STUB + functions(SUITE, "check_negative_control") + "\ncheck_negative_control p c\n",
+        env={"STATES": f"p={produce} c={consume}", "LEASES": f"p=lp c={consume_leases}",
+             "DOCS": str(docs), "TMPDIR": str(tmp)},
+    )
+
+
+def test_the_producer_failing_for_its_missing_output_passes(tmp_path: Path) -> None:
+    r = _negative(tmp_path, produce="FAILED", consume="CANCELLED", produce_error=NEW_ERROR)
+    assert r.returncode == 0, r.stderr
+    # MUTATION: expect SUCCEEDED from the producer again and this FAILs, as on 2026-10-20.
+    assert lines(r, "FAIL") == [], r.stderr
+    passes = " ".join(lines(r, "PASS"))
+    assert "names the file that was missing" in passes
+    assert "never ran" in passes
+
+
+def test_the_old_behaviour_is_now_the_failure(tmp_path: Path) -> None:
+    """A producer that SUCCEEDS without its promised file is the defect now."""
+    r = _negative(tmp_path, produce="SUCCEEDED", consume="FAILED",
+                  produce_error="", consume_leases="lc")
+    # MUTATION: accept any terminal producer state and this passes.
+    assert any("FAILED" in f for f in lines(r, "FAIL")), r.stderr
+
+
+def test_a_consumer_that_was_leased_ran_on_a_missing_input(tmp_path: Path) -> None:
+    r = _negative(tmp_path, produce="FAILED", consume="CANCELLED", produce_error=NEW_ERROR, consume_leases="lc")
+    # MUTATION: check only the consumer's state and a child that started reads as never run.
+    assert any("leased" in f for f in lines(r, "FAIL")), r.stderr
+
+
+def test_a_consumer_that_succeeded_is_caught(tmp_path: Path) -> None:
+    r = _negative(tmp_path, produce="FAILED", consume="SUCCEEDED", produce_error=NEW_ERROR)
+    assert any("reported SUCCEEDED" in f for f in lines(r, "FAIL")), r.stderr
+
+
+def test_an_error_that_does_not_name_the_file_is_caught(tmp_path: Path) -> None:
+    r = _negative(tmp_path, produce="FAILED", consume="CANCELLED",
+                  produce_error="expected outputs missing (not written). Retried.")
+    # MUTATION: drop the filename check (kept from the old control) and this passes.
+    assert any("does not name" in f for f in lines(r, "FAIL")), r.stderr
+
+
+def test_a_producer_failed_for_another_reason_is_caught(tmp_path: Path) -> None:
+    r = _negative(tmp_path, produce="FAILED", consume="CANCELLED",
+                  produce_error="the runner exited 1 before writing never-written-20261020.txt")
+    # MUTATION: accept any FAILED producer and a crash reads as the missing-output refusal.
+    assert any("expected outputs missing" in f for f in lines(r, "FAIL")), r.stderr

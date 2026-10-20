@@ -251,6 +251,17 @@ case "${url}" in
     # below failed on that floor rather than on what they test, which is how the
     # merge of #25 into this branch first showed up. One attempt per task, at
     # generation 1: distinct, so the duplicate check has nothing to report.
+    # race-test counts the leases held by ITS OWN tasks, not the pool's
+    # `active` (#1754), so the slot a settled platform holds is a lease on the
+    # first task this run submitted, until the suite cancels. Before anything is
+    # submitted there is none: the pool is idle when the suite looks.
+    if [[ -n "${FAKE_SETTLE:-}" && "${url}" == *:runQuery && ! -f "${CANCELLED}" && -s "${FAKE_STATE_DIR}/ids" ]] \
+      && [[ "$(printf '%s' "${data}" | jq -r '.structuredQuery.from[0].collectionId // empty' 2>/dev/null)" == "leases" ]]; then
+      body="$(jq -nc --arg p "${FAKE_PROJECT}" --arg t "$(head -n 1 "${FAKE_STATE_DIR}/ids")" '
+        [{document: {name: ("projects/" + $p + "/databases/swarm/documents/leases/lease-fake-1"),
+                     fields: {task_id: {stringValue: $t}, units: {integerValue: "1"},
+                              pools: {arrayValue: {values: [{stringValue: "global"}, {stringValue: "runner:mock"}]}}}}}]')"
+    fi
     if [[ -n "${FAKE_SETTLE:-}" && "${url}" == *:runQuery ]] \
       && [[ "$(printf '%s' "${data}" | jq -r '.structuredQuery.from[0].collectionId // empty' 2>/dev/null)" == "attempts" ]]; then
       body="$(jq -nc --arg p "${FAKE_PROJECT}" '
@@ -319,6 +330,7 @@ case "${url}" in
       # three times and looked exactly like a restore running twice. The pid is
       # unique per invocation by construction.
       body="$(jq -nc --arg id "task-fake-$$-${RANDOM}" '{id:$id}')"
+      jq -r '.id' <<<"${body}" >>"${FAKE_STATE_DIR}/ids"
     else
       body='{"code":"unavailable","message":"the fake platform refused this submission"}'
     fi

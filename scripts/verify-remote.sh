@@ -53,7 +53,17 @@ TARGETS=("$@")
 # at all. The seam checks are the ones that would have caught the last three
 # days of defects, so they belong in what runs by default rather than in what
 # somebody remembers to type.
-[[ "${#TARGETS[@]}" -gt 0 ]] || TARGETS=(smoke-test concurrency-test race-test e2e-test)
+#
+# CONCURRENCY-TEST RUNS LAST, because it is the one target that leaves work
+# behind. It submits three times the global limit of mock tasks and cancels
+# them on exit, and cancelled leases come back over the following seconds to
+# minutes. Run second, as it was until 2026-10-20 (#1754), its backlog was still
+# leased when race-test narrowed runner:mock (`active=40`, none of race-test's
+# own tasks admitted) and when e2e read every task holding capacity. race-test
+# now refuses a pool held by other work and counts only its own leases, and
+# every target cancels what it submitted on exit; this order is what keeps the
+# gate from leaning on that refusal to sequence its own targets.
+[[ "${#TARGETS[@]}" -gt 0 ]] || TARGETS=(smoke-test race-test e2e-test concurrency-test)
 
 step "Verification gate, inside the VPC"
 info "job     ${JOB} (${REGION}/${PROJECT_ID})"
