@@ -1776,8 +1776,8 @@ team's `agents-staging` cluster:
 
 * **clusterViewer, not container.viewer.** clusterViewer is
   `container.clusters.get` and `.list`, which read the cluster's endpoint and
-  CA and no Kubernetes object. container.viewer would read every object in
-  every cluster: Secrets' metadata, Pods' env, ConfigMaps.
+  CA and no Kubernetes object. container.viewer would read objects in every
+  cluster: Pods and their env, ConfigMaps, Secrets' metadata.
 * **Conditioned to our cluster.** GKE has no per-cluster IAM resource, so a
   project binding with a condition on the cluster's resource name is the only
   scope there is, as for the dispatchers' grants in `modules/iam`. The
@@ -1787,8 +1787,13 @@ team's `agents-staging` cluster:
   expression, and that no other project-level container role reaches
   swarm-verify.
 * **The Job read is Kubernetes RBAC, in our cluster only.** `get` and `list`
-  on `jobs.batch`: no pods (a Pod's spec carries its env), no logs, no
-  secrets, no `watch`, no write. The Role and its binding exist only inside
+  on `jobs.batch`: no pods, no logs, no secrets, no ConfigMaps, no `watch`, no
+  write. RBAC cannot narrow a read to fields, so a Job read returns the Job's
+  pod template too, env included. That env holds task metadata, the public
+  step-spec keys and a KMS key name, and never a credential: the worker
+  templates carry no `secretKeyRef`, and provider keys and forge tokens are
+  read from Secret Manager at run time. swarm-verify can already read the task
+  documents behind that metadata through `datastore.viewer`. The Role and its binding exist only inside
   swarm-autopilot, so they cannot reach `agents-staging`. The binding names
   swarm-verify by email **and by numeric uniqueId**, because the gate
   authenticates with an OAuth access token and GKE presents a service account

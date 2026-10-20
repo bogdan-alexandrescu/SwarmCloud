@@ -11,11 +11,18 @@
 # WHAT IT IS. `get` and `list` on jobs.batch, in this namespace. The gate reads
 # one Job by name (`GET /apis/batch/v1/namespaces/<ns>/jobs/<name>`) and its
 # status conditions. It is NOT given:
-#   * pods -- a Pod's spec carries its env, which is where a worker's
-#     configuration lives;
-#   * pods/log -- whatever the agent printed;
-#   * secrets, configmaps, events, or `watch`;
+#   * secrets, configmaps, pods, pods/log (whatever the agent printed),
+#     events, or `watch`;
 #   * any write.
+# WHAT A JOB DOES SHOW. RBAC cannot narrow a read to fields, so `get` returns
+# the whole Job, its pod template included -- env and all. What the dispatcher
+# puts there is task metadata, the public step-spec keys and a KMS key name
+# (dispatch.py spec_job_env), and never a credential: the worker templates
+# carry no secretKeyRef by design, provider keys are read from Secret Manager at
+# run time, and a forge token never reaches a Job environment (CLAUDE.md). The
+# task documents that metadata comes from are already readable by swarm-verify
+# through roles/datastore.viewer, so this read adds no class of data the gate
+# could not already see.
 # The IAM half -- roles/container.clusterViewer, conditioned to this cluster's
 # resource name -- is terraform/infra/verify.tf, and reads no Kubernetes object
 # either. Between them the gate can find the cluster and read a Job; it cannot
@@ -50,7 +57,7 @@ metadata:
       The verification gate (swarm-verify) reads a Job's status to tell a task
       holding capacity against a live Job from one holding it against a Job
       that is gone or finished (scripts/e2e-test.sh [10]). Jobs only: no pod,
-      log, secret or write.
+      log, secret, configmap or write.
 rules:
   - apiGroups: ["batch"]
     resources: ["jobs"]

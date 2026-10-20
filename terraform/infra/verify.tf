@@ -132,7 +132,7 @@ resource "google_storage_bucket_iam_member" "verify_reads_artifacts" {
 #
 # clusterViewer, NOT container.viewer: clusterViewer is container.clusters.get
 # and .list and no Kubernetes object at all, so it cannot read a Secret, a
-# Pod's env or a log. The Job read is Kubernetes RBAC --
+# Pod or a log. The Job read is Kubernetes RBAC --
 # kubernetes/rbac/verify-rbac.yaml, `get` and `list` on jobs.batch in each
 # tenant namespace and nothing else -- applied by kubernetes/apply.sh.
 #
