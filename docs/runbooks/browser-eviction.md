@@ -1,7 +1,7 @@
 # Runbook: browser pods the reconciler evicts
 
-**When to use this.** A browser task was re-queued or failed with
-`stuck_no_progress`, a task's timeline shows a `generation_fenced` event with
+**When to use this.** A browser agent was re-queued or failed with
+`stuck_no_progress`, an agent's timeline shows a `generation_fenced` event with
 `finding: left_running`, or you want to know whether the reconciler is evicting
 browser pods, and why.
 
@@ -30,14 +30,14 @@ The reconciler does that with two rules. Both act only on GKE Jobs, which since
 
 | Rule | Finding | What the reconciler does |
 |---|---|---|
-| Stuck | `stuck_no_progress` | Fences the generation and records why, in that pass and nothing more. The worker stops the agent at its next control poll, about 10s later, and exits. On a later pass, the lease is superseded and silent, and the existing rules release it: they delete the Job first if it is still active, then set the task to READY. The task goes to FAILED instead once its attempts are spent, or to CANCELLED if a cancel was requested. |
-| Left running | `left_running` | Once `LEFT_RUNNING_GRACE_SECONDS` have passed since the task finished, deletes the Job. Releases a lease only if the Job's own lease (same attempt, same generation) was never released, and only after the delete succeeded. The task stays in the terminal state it had. |
+| Stuck | `stuck_no_progress` | Fences the generation and records why, in that pass and nothing more. The worker stops the agent at its next control poll, about 10s later, and exits. On a later pass, the lease is superseded and silent, and the existing rules release it: they delete the Job first if it is still active, then set the agent to READY. The agent goes to FAILED instead once its attempts are spent, or to CANCELLED if a cancel was requested. |
+| Left running | `left_running` | Once `LEFT_RUNNING_GRACE_SECONDS` have passed since the agent finished, deletes the Job. Releases a lease only if the Job's own lease (same attempt, same generation) was never released, and only after the delete succeeded. The agent stays in the terminal state it had. |
 
 **A lease is never released while its own Job is still running.** This holds
 inside the grace too, before any rule has tried to delete the Job. The worker
 writes the terminal state first and releases its lease in a separate write
 (`ControlPlane.finish`). A worker that wedges between the two leaves a finished
-task, an unreleased lease and a pod that is still up. The reconciler runs every
+agent, an unreleased lease and a pod that is still up. The reconciler runs every
 minute, so its first several passes after that land inside the 300s grace. On
 those passes, nothing is deleted and nothing is released. The
 lease's 2 units on each of the seven pools stay held, because the pod is still
@@ -46,21 +46,21 @@ is the lease released. If the delete is refused, the lease stays held and the
 next pass tries again.
 
 The same hold applies when the Job's task could not be read this pass, and when
-the task was re-admitted between the reconciler's snapshot and its read. Both
+the agent was re-admitted between the reconciler's snapshot and its read. Both
 Job and lease are left for the next pass.
 
 **Why the stuck rule does not delete the Job in the pass that fences it.** The
 worker under a stuck browser is alive, and deleting its Job sends it SIGTERM.
 The worker's SIGTERM path (`lifecycle._handle_interruption`) checkpoints and
-parks the task `SCHEDULED_RETRY` without checking whether it was fenced.
+parks the agent `SCHEDULED_RETRY` without checking whether it was fenced.
 Nothing in the platform promotes that park. Racing the reconciler's own READY,
-it would leave the task parked forever, or FAILED if the scheduler had already
+it would leave the agent parked forever, or FAILED if the scheduler had already
 leased it again. The fence has no such race: the worker's fenced exit writes
 only its own attempt document. This comes from reading the code. It has not
 been observed, because no browser attempt has run here yet.
 
 The outer bound on every browser pod is unchanged: the Job's
-`activeDeadlineSeconds`, which is the task timeout plus the dispatch timeout
+`activeDeadlineSeconds`, which is the agent timeout plus the dispatch timeout
 plus the finalise budget (`backend_deadline_seconds` in
 `apps/scheduler/scheduler/dispatch.py`), counted from Job creation. These rules
 exist to end a pod long before that.
@@ -76,7 +76,7 @@ means), `detect.py` (`detect_stuck_executions`, `detect_left_running`) and
 **A heartbeat is not progress.** The worker heartbeats from its own supervision
 loop, which keeps running whatever the agent is doing. A Chromium stuck on a
 page that never answers heartbeats just as well as one that is working. So a
-stuck browser task looks healthy to every older rule: its lease is fresh, its
+stuck browser agent looks healthy to every older rule: its lease is fresh, its
 Job is active, and its generation is current.
 
 Here is what the worker writes while an attempt runs, and whether it counts as
@@ -85,9 +85,9 @@ progress:
 | Written | Where | Progress? |
 |---|---|---|
 | `heartbeat_at`, every 30s | the lease | No. It only shows the worker is alive. |
-| `heartbeat` event, every 150s, carrying cumulative `cpu_seconds` | the task's events | **Yes, if CPU moved.** An interval that averages at least `STUCK_CPU_FLOOR_CORES` counts. |
-| `checkpoint_completed` event, every 120s, carrying `size_bytes` | the task's events | **Yes, if the size changed.** A checkpoint runs on a timer, so the event alone proves nothing. A different archive size means `work/` changed. |
-| `task.updated_at`, `task.latest_checkpoint` | the task | No. Every checkpoint updates these. |
+| `heartbeat` event, every 150s, carrying cumulative `cpu_seconds` | the agent's events | **Yes, if CPU moved.** An interval that averages at least `STUCK_CPU_FLOOR_CORES` counts. |
+| `checkpoint_completed` event, every 120s, carrying `size_bytes` | the agent's events | **Yes, if the size changed.** A checkpoint runs on a timer, so the event alone proves nothing. A different archive size means `work/` changed. |
+| `task.updated_at`, `task.latest_checkpoint` | the agent | No. Every checkpoint updates these. |
 | anything per browser action | nowhere | The browser runner reports its actions only in `result.json`, when it exits. |
 | stdout and stderr | GCS live tail only | Not read. The browser runner prints nothing until it exits. |
 
@@ -132,11 +132,11 @@ so the defaults apply.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `RECONCILER_ENABLE_GKE_EVICTION` | `true` | Turns both rules on or off, together with their input: the by-id read of tasks outside the concurrency states. With it off, no task is read by id, and a Job left running falls back to the orphan-execution rule, as before this change: it is deleted at once, and its lease is released only after the delete succeeds. It does not turn off the lease hold described above. That hold is not part of eviction, and turning it off would only bring back a release before the delete. |
+| `RECONCILER_ENABLE_GKE_EVICTION` | `true` | Turns both rules on or off, together with their input: the by-id read of agents outside the concurrency states. With it off, no agent is read by id, and a Job left running falls back to the orphan-execution rule, as before this change: it is deleted at once, and its lease is released only after the delete succeeds. It does not turn off the lease hold described above. That hold is not part of eviction, and turning it off would only bring back a release before the delete. |
 | `STUCK_AFTER_SECONDS` | `1800` | How long an attempt may go without progress before the reconciler evicts it. |
 | `STUCK_CPU_FLOOR_CORES` | `0.05` | The mean CPU below which a heartbeat interval counts as quiet. |
 | `STUCK_EVIDENCE_MAX_GAP_SECONDS` | `600` | The longest gap allowed between measurements inside a quiet span. |
-| `LEFT_RUNNING_GRACE_SECONDS` | `300` | How long after the task finished its Job may still be active. |
+| `LEFT_RUNNING_GRACE_SECONDS` | `300` | How long after the agent finished its Job may still be active. |
 
 `RECONCILER_DRY_RUN=true` still does what it always did. Both rules report what
 they would evict, under `skipped: dry_run`, and write nothing.
@@ -165,7 +165,7 @@ The same outcome is stored on the persisted pass. Each `reconciler_passes`
 document lists it under `outcomes`, with `kind` set to `stuck_no_progress` or
 `left_running`.
 
-The task's own events also say what happened:
+The agent's own events also say what happened:
 
 - **Stuck:**
   - From the reconciler: `generation_fenced` with `detail.finding:
@@ -191,13 +191,13 @@ The task's own events also say what happened:
 - **A lease that stopped heartbeating.** That is `dead_worker` or `stale_lease`,
   and those rules act much sooner. When both rules match, the stuck rule gives
   way.
-- **A finished task whose lease is still unreleased.** If its Job is still
+- **A finished agent whose lease is still unreleased.** If its Job is still
   active, this is the lease hold described above, not a leak. The lease is
   released once the Job is gone. If a pass tried to delete the Job and failed,
   every other finding about that lease in that pass is recorded with
   `skipped: execution_not_stopped`.
 - **A Job of an older generation.** That is `obsolete_generation`.
-- **A Job that claims a generation above its task's.** No admission ever issued
+- **A Job that claims a generation above its agent's.** No admission ever issued
   that generation. Admission raises `current_generation` in the same transaction
   that writes the lease, before any dispatch. So this is an `orphan_execution`,
   and the reason says so.
@@ -218,7 +218,7 @@ real reconciler, store and `GkeBackend` against a fake Kubernetes API and an
 in-memory Firestore. The following have **not** been observed on a real cluster:
 
 - **The CPU floor.** No browser attempt on this platform has reached RUNNING
-  yet. None of the 21 browser tasks in staging on 2026-09-24 has a
+  yet. None of the 21 browser agents in staging on 2026-09-24 has a
   `started_at`, so there is no real heartbeat series to calibrate against. The
   floor was chosen so that an error in it fails safe. Too low, and a wedged
   browser is left for the worker's timeout. Only a value that is too high

@@ -3,7 +3,7 @@
 Contract request 34 ([`docs/contract-change-requests.md`](../contract-change-requests.md),
 issue #342). swarm-api signs every step's canonical spec with a Cloud KMS key
 at submission; every worker verifies the signature before it reads anything
-the spec decides, and refuses a task that does not verify as
+the spec decides, and refuses an agent that does not verify as
 `spec_signature_invalid`.
 
 **Why it exists.** A tenant's agent writes its own task documents -- it has to,
@@ -13,10 +13,10 @@ inputs. The later step then ran whatever the earlier agent chose. The
 signature binds what the caller submitted, so a rewritten step is refused
 instead of run.
 
-**Why it rolls out in stages.** Every task already queued or parked when the
+**Why it rolls out in stages.** Every agent already queued or parked when the
 verifying worker ships is unsigned, and signing cannot be retrofitted: signing
 a document as it stands now would sign whatever an agent already wrote into
-it. So the worker starts in `legacy`, which admits an unsigned task created
+it. So the worker starts in `legacy`, which admits an unsigned agent created
 before a cutover, and moves to `enforce`, which admits none. The code enforces
 after **2026-10-20T00:00:00Z** whatever the configuration says
 (`SPEC_LEGACY_UNTIL`, in the worker), so a forgotten flag stops working anyway.
@@ -48,8 +48,8 @@ through it. It does hold against tenant agents, which is who #342 is about.
 ## The rollout
 
 Each step is its own change, in this order. Never skip to `enforce` before
-signed tasks are confirmed: a worker that enforces before swarm-api signs
-refuses every task.
+signed agents are confirmed: a worker that enforces before swarm-api signs
+refuses every agent.
 
 ### 1. The key (owner, bootstrap), then the Terraform half (release)
 
@@ -94,7 +94,7 @@ hardened swarm-api **refuses to start without it**.
 
 dev ships `spec_signature_mode = "legacy"` with the cutover at
 `2026-10-20T00:00:00Z` -- the end of the window -- so that when the verifying
-worker ships in step 2 every unsigned task is admitted, and none of the tasks
+worker ships in step 2 every unsigned agent is admitted, and none of the agents
 parked at that moment fails.
 
 **Check** (read-only): the worker Jobs carry the keys.
@@ -107,8 +107,8 @@ gcloud run jobs describe swarm-job-eng-claude-code --region us-central1 \
 
 ### 2. Signing and verifying (#353's release)
 
-swarm-api signs every new task; every worker verifies. In `legacy`, an unsigned
-task created before the cutover runs with a WARNING
+swarm-api signs every new agent; every worker verifies. In `legacy`, an unsigned
+agent created before the cutover runs with a WARNING
 (`unsigned task admitted by the legacy window`) and a RUNNING event whose
 detail has `phase: verify_spec` and `spec_check.reason: legacy_unsigned`.
 
@@ -134,7 +134,7 @@ gcloud run revisions describe <that revision> --region us-central1 \
   --format='value(metadata.creationTimestamp)'
 ```
 
-From that release on, a task created after the cutover with its signature
+From that release on, an agent created after the cutover with its signature
 stripped is refused instead of admitted. `create_time` is Firestore's and no
 client can write it.
 
@@ -156,15 +156,15 @@ In dev that was `swarm-api-00119-lcs`, created 2026-09-30T21:24:36.572669Z by
 
 ### 4. Enforce (a pull request, before 2026-10-20)
 
-Count the non-terminal tasks without a signature (read-only), and let them
+Count the non-terminal agents without a signature (read-only), and let them
 finish or cancel and resubmit them. Resubmitting signs them. When none is
 left, a pull request sets `spec_signature_mode = "enforce"` and removes
 `spec_legacy_cutover`. After 2026-10-20 the worker enforces regardless, and any
-unsigned task left fails `spec_signature_invalid` with reason `unsigned`.
+unsigned agent left fails `spec_signature_invalid` with reason `unsigned`.
 
 ### Prod
 
-Prod enforces from its first release and never had a legacy window (owner decision 2026-10-06 on #355): no unsigned task was ever parked there, which is the only thing a window protects. `prod.tfvars` states `spec_signature_mode = "enforce"` explicitly rather than inheriting the default, and sets no `spec_legacy_cutover`. The worker's code cap (#739) refuses an unsigned task created after 2026-09-30T21:24:36Z on every platform, so even a prod `legacy` setting could not re-open the window.
+Prod enforces from its first release and never had a legacy window (owner decision 2026-10-06 on #355): no unsigned agent was ever parked there, which is the only thing a window protects. `prod.tfvars` states `spec_signature_mode = "enforce"` explicitly rather than inheriting the default, and sets no `spec_legacy_cutover`. The worker's code cap (#739) refuses an unsigned agent created after 2026-09-30T21:24:36Z on every platform, so even a prod `legacy` setting could not re-open the window.
 
 ## GKE
 
@@ -173,7 +173,7 @@ creation** (owner decision 2026-10-08). `GkeJobDispatcher._manifest` puts the
 scheduler's own `SPEC_VERIFY_KEYS`, `SPEC_SIGNING_KEY`, `SPEC_SIGNATURE_MODE`
 and `SPEC_LEGACY_CUTOVER` (`spec_job_env`, the values Terraform sets on the
 scheduler) on the worker container's `env:`, exactly as on a Cloud Run Job the
-scheduler creates. Never through `worker_env`, which a task shapes:
+scheduler creates. Never through `worker_env`, which an agent shapes:
 `tests/unit/control_plane/test_spec_signing_dispatch_env.py` holds both. They
 are public keys, a KMS key name, a mode and a timestamp; no private material
 exists to put there.
@@ -182,7 +182,7 @@ This reverses the original GKE design, which delivered them only through the
 ConfigMap. That was enough while GKE ran browser alone in namespaces the
 release applied. Once claude-code moved to GKE (PR 866) and onboarding (#847)
 began creating a namespace per person, a namespace with no ConfigMap ended
-every task `CANNOT_START`.
+every agent `CANNOT_START`.
 
 **The `swarm-spec-verify-keys` ConfigMap is the fallback**, mounted read-only
 at `/etc/swarm/spec-verify-keys`. The worker reads it only when its
@@ -206,7 +206,7 @@ the shared project, is refused before anything is applied. Set `ENVIRONMENT`
 
 The mount is `optional`: a namespace without the ConfigMap still starts its
 pods and verifies with the keys in `env:`. Only a pod with keys in neither
-place exits `CANNOT_START` for every task, signed or not, rather than run one
+place exits `CANNOT_START` for every agent, signed or not, rather than run one
 unverified. With keys, verification is unchanged: an unsigned spec outside the
 legacy window, a bad signature or an unknown key version is still refused.
 Nothing in the tenant namespace may write a ConfigMap. The worker Role is
@@ -230,7 +230,7 @@ Cloud KMS does not rotate asymmetric keys; rotate by hand, in this order:
    the job's command, hold N and N+1. Check the plan shows the job's `env`
    and `command` changing and nothing else you did not expect;
 4. set `spec_signing_key_version = N+1` in `dev.tfvars` and release;
-5. once no non-terminal task names version N, disable it
+5. once no non-terminal agent names version N, disable it
    (`gcloud kms keys versions disable N ...`), release, and re-apply
    bootstrap.
 
@@ -265,7 +265,7 @@ Disable the version, then release **and re-apply bootstrap** (the workspace
 job's copy follows only the bootstrap apply; see [Rotation](#rotation)).
 From the next release on it is absent from every
 worker's `SPEC_VERIFY_KEYS` (the Cloud Run Jobs, and the scheduler, which puts
-its copy on every GKE Job it creates from then on), and every task signed by
+its copy on every GKE Job it creates from then on), and every agent signed by
 it is refused as `foreign_key_version`. The GKE ConfigMap is the fallback and
 drops the version only when that release's `deploy` job runs with
 `vars.APPLY_TENANT_NAMESPACES=true`. Otherwise re-apply it by hand (see
@@ -292,7 +292,7 @@ in a JSON payload is the worker's alone (#346, #354 security review). So an
 agent cannot page in another tenant's name, and no other job or pod in the
 shared project can page at all. It **can** still page from its own worker
 container, under its own job or namespace: a page whose tenant ran an agent at
-that moment, with no refused task in its history, is that agent, not a forged
+that moment, with no refused agent in its history, is that agent, not a forged
 spec. The half that covers contract
 request 33's worker actions refusing an **upstream** spec (`MERGE_REFUSED` /
 `VERDICT_REFUSED` with a reason starting `upstream:`) is added when CR 33 is
@@ -302,7 +302,7 @@ built.
 
 * Which KMS quota bucket an `AsymmetricSign` on a SOFTWARE EC P-256 key
   draws from, and its headroom against the other team's use of KMS. Every
-  task and workflow step is one sign call; a `RESOURCE_EXHAUSTED` is a 503 on
+  agent and workflow step is one sign call; a `RESOURCE_EXHAUSTED` is a 503 on
   every submission. `gcloud services quota list` does not exist in GA gcloud
   (586.0.0 answers `Invalid choice: 'quota'`); read the limits with
 

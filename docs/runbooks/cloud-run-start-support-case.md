@@ -59,7 +59,7 @@ names a project, an account or a credential.
    If you can, include two executions created 10-60 s apart that reached
    `Started` in the same second.
 
-3. **Severity.** The draft says S3 / degraded: no task fails, every start is
+3. **Severity.** The draft says S3 / degraded: no agent fails, every start is
    slower. Change it if your support plan words severities differently.
 
 Do not paste a token, a key, a log line with an `Authorization` header or a
@@ -81,7 +81,7 @@ on 2026-10-06. A 27.6 MB, 1 CPU control job moved the same way.
 
 ### The symptom
 
-We run short-lived Cloud Run Job executions, one per agent task. We measured
+We run short-lived Cloud Run Job executions, one per agent. We measured
 874 executions of one job class between 2026-09-30 and 2026-10-07 (497 of them
 with readable execution conditions), against controls of 811, 446 and 313
 executions of other workloads.

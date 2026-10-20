@@ -93,7 +93,7 @@ uv run sc run --issue sagaxyz/<repo>#<n> --follow
 * the issue run's pull request open on GitHub, **authored by `<login>`**,
   that person's own account. Through the App, GitHub shows `<login>` with the
   App's name beside it;
-* the run's tasks cloned and pushed: the branch is on GitHub, and the pull
+* the run's agents cloned and pushed: the branch is on GitHub, and the pull
   request's commits are there;
 * the task record the API serves, `GET /v1/tasks/<task_id>`, answering
   `forge_credential_source: "the submitter's GitHub credential"`;
@@ -101,9 +101,9 @@ uv run sc run --issue sagaxyz/<repo>#<n> --follow
   `swarmcloud/onboarding-check-*` branch left in the repository afterwards.
 
 **It failed if** a pull request is authored by any account other than the
-submitter's (the tenant token's account means the task ran as the tenant).
+submitter's (the tenant token's account means the agent ran as the tenant).
 It also failed if `forge_credential_source` reads "tenant token, service
-submission" for a person's task. Other failures: a clone, push or pull
+submission" for a person's agent. Other failures: a clone, push or pull
 request that only one of the two owners allows; the `sagaxyz` leg refused
 with `SSO_NOT_AUTHORISED`, `CLASSIC_PAT_BLOCKED` or `FINE_GRAINED_PAT_PENDING`
 after its recovery copy was followed; and a `swarmcloud/onboarding-check-*`
