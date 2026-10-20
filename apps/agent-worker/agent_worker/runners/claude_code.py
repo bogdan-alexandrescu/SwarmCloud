@@ -226,6 +226,19 @@ the CLI adds `< /dev/null` itself only to a command with no heredoc and no `<`
 redirect. A second PreToolUse hook in the same settings file
 (`stdin_hook.py`, shipped in this package) wraps each Bash command so its
 outer stdin is /dev/null, leaving pipes and redirects inside it alone.
+
+WHY A RELATED-TESTS NOTE (RELATED-TESTS, part of #1694, owner decision
+2026-10-20). Agents ran whole test suites and lost hours: measured 2026-10-19
+to 20, 36 vitest runs with no file filter at about 22 min each (2.05 h), 8
+pytest runs over whole tests/unit directories (0.73 h), and both out-of-memory
+kills came from four vitest shards started in the background. So when the
+checkout carries `scripts/related-tests.sh` the prompt gains the standing rule
+(`RELATED_TESTS_NOTE`): run the related tests through that script, never
+vitest without file arguments, never pytest over a whole directory or with
+`-n auto` across the suite, never parallel shards or background batches
+polled with sleep, and `scripts/changed-guards.sh` once at the end. Keyed on
+the script being in the checkout, so another tenant's repository is never
+told to run a script it does not have.
 """
 
 from __future__ import annotations
@@ -297,6 +310,23 @@ BROWSER_NOTE = (
     "Chromium only, and its own sandbox cannot start in this "
     "container, which is itself the sandbox. Save screenshots and other "
     "captures under $SWARM_ARTIFACTS_DIR so they are uploaded."
+)
+
+#: The helper whose presence in the checkout turns the note below on.
+RELATED_TESTS_SCRIPT = "scripts/related-tests.sh"
+
+#: The standing test rule, once, after the prompt (module docstring).
+RELATED_TESTS_NOTE = (
+    "Run tests narrowly: only the tests related to what you change. "
+    "`scripts/related-tests.sh` prints the related test files and the runs of "
+    "named files that test them; `scripts/related-tests.sh --run` runs those "
+    "one after another in the foreground. You must never run vitest without "
+    "file arguments, never run pytest over a whole directory or with `-n auto` "
+    "across the suite, and never start parallel shards or background test "
+    "batches polled with sleep: whole-suite runs cost lanes hours and parallel "
+    "shards are what ran containers out of memory. Run "
+    "scripts/changed-guards.sh once at the end and fix what it reports; CI "
+    "runs everything else."
 )
 
 #: Set by the dispatcher on the worker container only with the live browser's
@@ -562,6 +592,13 @@ def _spool_text(spool: str, name: str) -> str | None:
     except (OSError, UnicodeDecodeError):
         return None
     return text or None
+
+
+def related_tests_note(repo_dir: Path | str | None) -> str | None:
+    """RELATED_TESTS_NOTE when the checkout carries its script, else None."""
+    if repo_dir is None or not (Path(repo_dir) / RELATED_TESTS_SCRIPT).is_file():
+        return None
+    return RELATED_TESTS_NOTE
 
 
 def egress_notice(spool: str) -> str | None:
@@ -1047,6 +1084,11 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     unstaged = graphstage.unstaged_note(os.environ)
     if unstaged and isinstance(prompt, str) and prompt.strip():
         prompt = f"{prompt.rstrip()}\n\n{unstaged}"
+        ctx.payload = {**ctx.payload, "prompt": prompt}
+    # The standing test rule, where the checkout has its helper (RELATED-TESTS).
+    narrow = related_tests_note(ctx.repo_dir)
+    if narrow and isinstance(prompt, str) and prompt.strip():
+        prompt = f"{prompt.rstrip()}\n\n{narrow}"
         ctx.payload = {**ctx.payload, "prompt": prompt}
     # The caller's registered MCP servers, through the worker's relay
     # (MCP-RUNNERS): the local token and loopback URLs only, and a line each

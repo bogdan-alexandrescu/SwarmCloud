@@ -275,6 +275,17 @@ as n commands, which the script's warning spells out. A narrowed
 area run never reaches those guards, and they were most of the 25% of lane PRs
 red on their first CI run (#642). Any brief, wherever it is written, names it.
 
+**While it works, that agent runs only the tests related to its change**,
+through **`scripts/related-tests.sh`** (`--run` to run them): it names the
+pytest files that import or name a changed path and the vitest files that
+import a changed UI module, as a few runs of named files. Never vitest without
+file arguments; never pytest over a whole directory or with `-n auto` across
+the suite; never parallel shards or background test batches polled with
+`sleep`; `scripts/changed-guards.sh` once at the end. Owner decision
+2026-10-20 (#1694): 36 unfiltered vitest runs cost 2.05 h, 8 whole-directory
+pytest runs 0.73 h, and both out-of-memory kills came from four vitest shards
+started with `&` ([docs/ci.md](docs/ci.md#while-it-works-a-swarmcloud-agent-runs-only-the-related-tests)).
+
 What the CI jobs cover, so you know what you are waiting for:
 
 | workflow | jobs |
