@@ -164,8 +164,10 @@ describe('QA-011: `Sets it apart` agrees with the cred row above it', () => {
   it('tells nothing apart for two runtimes of one provider that mount different secrets', async () => {
     await shown()
     // MUTATION: key the credential on its secret names again and each of
-    // these reads `the only runtime that needs this credential`.
-    expect(apartCred('scribe')).toBeNull()
+    // these reads `the only runtime that needs this credential`. (scribe is
+    // told apart by its any-one-of form instead -- capacity-006, run 2 --
+    // which is about how it takes its secrets, not whose they are.)
+    expect(apartCred('scribe')).toBe('the only runtime that takes any one of its secrets')
     expect(apartCred('viewport')).toBeNull()
   })
 

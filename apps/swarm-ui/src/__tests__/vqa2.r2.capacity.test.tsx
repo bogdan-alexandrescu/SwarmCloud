@@ -187,12 +187,17 @@ describe('V068/V157: neither half of the card stretches; the pane sticks in view
     expect(painted(build('div.acct-split > section.acct-list', hosts), 'border-right', WIDE)).toBe('1px solid var(--line)')
   })
 
-  it('sticks the desktop pane under the page head and scrolls a long detail inside it', () => {
+  it('sticks the desktop pane under the page head and lets the page scroll a long detail', () => {
     const pane = build('div.acct-split > div.acct-pane', hosts)
     expect(painted(pane, 'position', WIDE)).toBe('sticky')
     expect(painted(pane, 'top', WIDE)).toBe('0')
-    expect(painted(pane, 'overflow-y', WIDE)).toBe('auto')
-    expect(painted(pane, 'max-height', WIDE)).toBe('calc(100vh - 48px)')
+    // capacity-010 (visual QA run 2): a pane that scrolled itself stood a
+    // second scrollbar beside the page's and cut `save classes` at an inner
+    // fold. The page is the one scroller.
+    // MUTATION: put `overflow-y: auto` back on the pane and this reads `auto`.
+    expect(painted(pane, ['overflow', 'overflow-y'], WIDE)).toBeNull()
+    // MUTATION: put the `max-height` cap back and this reads its calc().
+    expect(painted(pane, 'max-height', WIDE)).toBeNull()
     // A phone's pane is the page: it neither sticks nor scrolls itself.
     expect(painted(pane, 'position', PHONE)).not.toBe('sticky')
   })
