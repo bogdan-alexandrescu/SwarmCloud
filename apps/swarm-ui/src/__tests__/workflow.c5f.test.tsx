@@ -1,5 +1,5 @@
 /**
- * WORKFLOWS LIST, FUNCTIONALITY WAVE 16 LANE C5F (QA pass on swarm.saga.xyz,
+ * WORKFLOWS LIST, FUNCTIONALITY WAVE 16 LANE C5F (QA pass on swarm.example.com,
  * 2026-10-07: G3-06, G3-09, G3-14, G3-20, G3-21).
  *
  * Each `describe` names the finding it holds; each failed against main at
@@ -96,7 +96,7 @@ function workflow(id: string, state: TaskState, owner: string, steps: WorkflowSt
 /** One workflow whose step task is in the board's task window, one whose is not. */
 function board(): { workflows: Workflow[]; taskById: Map<string, Task>; oldTask: Task } {
   const fresh = workflow('wf_fresh', 'SUCCEEDED', 'priya@example.com', [step('a', { task_id: 't_fresh' })], 600)
-  const old = workflow('wf_old', 'CANCELLED', 'swarm-ci-fix@saga-swarm.iam.gserviceaccount.com', [step('a', { task_id: 't_old' })], 7200)
+  const old = workflow('wf_old', 'CANCELLED', 'swarm-ci-fix@example-project.iam.gserviceaccount.com', [step('a', { task_id: 't_old' })], 7200)
   const taskById = new Map<string, Task>([
     ['t_fresh', task('t_fresh', 'SUCCEEDED', { metadata: { unit: 'fresh-title' }, started_at: iso(-500), completed_at: iso(-400) })],
   ])
@@ -300,9 +300,9 @@ describe('G3-14: at 390 the owner select fits its column', () => {
     expect(opts.map((o) => o.textContent)).toEqual(['priya', 'swarm-ci-fix'])
     expect(opts.map((o) => o.getAttribute('title'))).toEqual([
       'priya@example.com',
-      'swarm-ci-fix@saga-swarm.iam.gserviceaccount.com',
+      'swarm-ci-fix@example-project.iam.gserviceaccount.com',
     ])
-    expect(opts.map((o) => o.value)).toEqual(['priya@example.com', 'swarm-ci-fix@saga-swarm.iam.gserviceaccount.com'])
+    expect(opts.map((o) => o.value)).toEqual(['priya@example.com', 'swarm-ci-fix@example-project.iam.gserviceaccount.com'])
   })
 })
 

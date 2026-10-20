@@ -32,7 +32,7 @@ import {
 } from '../signoutState'
 import { painted } from './marks'
 
-const EMAIL = 'bogdan@saga.xyz' // the fixture `GET /v1/tenants/me` principal (api.ts fixtureMe)
+const EMAIL = 'alice@example.com' // the fixture `GET /v1/tenants/me` principal (api.ts fixtureMe)
 
 beforeEach(() => {
   window.localStorage.clear()
@@ -175,7 +175,7 @@ describe('the way back in', () => {
   it('tells the same account coming back from a different one', () => {
     window.sessionStorage.setItem(SIGNED_OUT_KEY, EMAIL)
     expect(returnedAs(EMAIL)).toBe('same')
-    expect(returnedAs('someone@saga.xyz')).toBe('other')
+    expect(returnedAs('someone@example.com')).toBe('other')
     // A different account is the sign-out working: nothing more to say.
     expect(window.sessionStorage.getItem(SIGNED_OUT_KEY)).toBeNull()
     expect(returnedAs(EMAIL)).toBeNull()
@@ -228,6 +228,6 @@ describe('the storage this console owns', () => {
 describe('iapFronted', () => {
   it('is false for this machine and bare addresses, true for a named host', () => {
     for (const h of ['localhost', '127.0.0.1', '0.0.0.0', '[::1]', 'box.local', 'ui.localhost', '192.168.1.20']) expect(iapFronted(h), h).toBe(false)
-    for (const h of ['swarm.saga.xyz', 'swarm.example.test']) expect(iapFronted(h), h).toBe(true)
+    for (const h of ['swarm.example.com', 'swarm.example.test']) expect(iapFronted(h), h).toBe(true)
   })
 })

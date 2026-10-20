@@ -184,6 +184,9 @@ class and runs on GKE Autopilot; it declares what `claude-code` does:
 | `qa_identity` | string, one of console | sign the live browser in to this deployment's console as its QA identity, a service account with its own workspace; the platform adds the credential, the agent never holds it, and a tenant may name it only when a platform admin has granted it |
 <!-- /runner-inputs:claude-code-browser -->
 
+Which browser task type serves which kind of visual QA, and a workflow that
+sweeps the console at 1440 and 390, light and dark: [browser-qa.md](browser-qa.md).
+
 `issue` points a step at a GitHub issue, so its prompt need not restate one.
 It names an issue in the task's own `repository_url` (a workflow's, for a
 step), and a submission that sends it without a repository is refused with

@@ -23,18 +23,18 @@ const said = (li: Element | null) => visible(li).slice(visible(li?.querySelector
 // Built at runtime: a long hex literal reads as a key to a credential scan.
 const DIGEST = 'sha256:' + 'ab'.repeat(32)
 const HEAD = '4e1f0aa' + '3c'.repeat(16) + '7'
-const REF = 'sagaxyz/ai-studio#258'
-const ISSUE_URL = 'https://github.com/sagaxyz/ai-studio/issues/258'
-const PR_URL = 'https://github.com/sagaxyz/ai-studio/pull/261'
+const REF = 'example-org/ai-studio#258'
+const ISSUE_URL = 'https://github.com/example-org/ai-studio/issues/258'
+const PR_URL = 'https://github.com/example-org/ai-studio/pull/261'
 const RUN_ID = 'run_e525710be66e4d4fbb29'
 const WF = 'wf_0a1b2c3d4e5f60718293'
 const READ_ERROR = 'checks_forbidden: GitHub refused the tenant\'s forge credential for the commit statuses at '
-  + 'sagaxyz/ai-studio@4e1f0aa3c3c3 (HTTP 403): the credential needs `statuses: read` on the repository'
+  + 'example-org/ai-studio@4e1f0aa3c3c3 (HTTP 403): the credential needs `statuses: read` on the repository'
 
 const SUMMARY_ROW = {
   id: RUN_ID, tenant_id: 'eng', state: 'CHECKING', terminal: false,
-  issue: { ref: REF, owner: 'sagaxyz', repo: 'ai-studio', number: 258, url: ISSUE_URL,
-    repository_url: 'https://github.com/sagaxyz/ai-studio' },
+  issue: { ref: REF, owner: 'example-org', repo: 'ai-studio', number: 258, url: ISSUE_URL,
+    repository_url: 'https://github.com/example-org/ai-studio' },
   plan_approval: 'auto', auto_merge: false, fix_rounds: 3, planner_task_id: 'task_planner258',
   plan_digest: DIGEST, plan_shape: '1 step in 1 stage, then review and fix', plan_revision: 1, plan_edited_by: null,
   workflow_id: WF, created_by: 'operator@example.com', created_at: '2026-10-10T18:00:00Z', updated_at: '2026-10-11T09:00:00Z',

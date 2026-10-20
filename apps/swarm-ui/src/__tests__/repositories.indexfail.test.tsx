@@ -1,7 +1,7 @@
 // WORK › REPOSITORIES, a repository whose index runs fail (lane INDEX-FAIL,
 // operator QA p14, 2026-10-13).
 //
-// In tenant u-bogdan every index run of sagaxyz/ai-studio failed on its clone
+// In tenant u-bogdan every index run of example-org/ai-studio failed on its clone
 // ("Repository not found ... Authentication failed") while its card said only
 // "no index" or "indexing now". WHAT EACH CASE HOLDS:
 //   * the card names the last failed run: its cause, short, when, and a link

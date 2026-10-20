@@ -2,7 +2,7 @@
 // 2026-10-12 17:40 PDT).
 //
 // Measured 2026-10-12 at 1260px: the seven-column table's Actions column took
-// 653px, so `devops@saga.xyz` wrapped as `devops@saga. xyz`, every row crammed
+// 653px, so `devops@example.com` wrapped as `devops@example. com`, every row crammed
 // up to seven controls, and a pending request was one small green dot. A
 // workspace request (w-7f9285) sat unseen from 15:31 PDT.
 //
@@ -318,7 +318,7 @@ describe('the lean table', () => {
   })
 
   it('wraps no column mid-word: an address is one line, cut with an ellipsis, never broken', async () => {
-    // MUTATION: `.pp-who` back to `overflow-wrap: anywhere` (devops@saga. xyz).
+    // MUTATION: `.pp-who` back to `overflow-wrap: anywhere` (devops@example. com).
     await mount(people(ROWS))
     const who = rowOf('devops@example.com').querySelector<HTMLElement>('.pp-who')!
     expect(who.getAttribute('title')).toBe('devops@example.com')

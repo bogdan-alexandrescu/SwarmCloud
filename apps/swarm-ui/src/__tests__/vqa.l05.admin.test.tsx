@@ -245,7 +245,7 @@ describe('V076: Last changed and the pool id wrap only where they should', () =>
     const at = new Date(Date.now() - 3 * 3_600_000).toISOString()
     await limits([
       pool('provider:anthropic:tenant:u-bogdan', {
-        admin_changed_by: 'ops@saga.xyz',
+        admin_changed_by: 'ops@example.com',
         admin_changed_at: at,
       } as Partial<Pool>),
     ])
@@ -338,7 +338,7 @@ function tenant(over: Partial<Tenant>): Tenant {
   return {
     tenant_id: 'eng',
     kind: 'group',
-    principal: 'eng@saga.xyz',
+    principal: 'eng@example.com',
     display_name: null,
     created_at: '2026-09-24T09:00:00Z',
     max_active: 45,
@@ -346,7 +346,7 @@ function tenant(over: Partial<Tenant>): Tenant {
     monthly_budget_usd: null,
     enabled: true,
     credentials: ['anthropic', 'openai'],
-    service_account: 'swarm-agent-worker-eng@saga-agents.iam.gserviceaccount.com',
+    service_account: 'swarm-agent-worker-eng@example-project.iam.gserviceaccount.com',
     gcs_prefix: null,
     namespace: null,
     ...over,

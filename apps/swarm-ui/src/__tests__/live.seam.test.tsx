@@ -70,6 +70,13 @@ function fixture<T = unknown>(file: string): T {
   return JSON.parse(readFileSync(join(FIXTURES, file), 'utf8')) as T
 }
 
+// The session a fixture serves, read straight from the file. The addresses in
+// tests/fixtures/live are shared with the API's pytest, so this file compares
+// what the console read against what was served rather than restating them.
+function servedSession(file: string): NonNullable<LiveRead['session']> {
+  return fixture<LiveRead>(file).session!
+}
+
 function okJson(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 }
@@ -127,7 +134,8 @@ describe('the session read, as the API serves it, draws a Browser tab', () => {
     expect(s.you.can_open).toBe(true)
     // Nobody is in control, so nobody switches the device (LB-DEV-B).
     expect(s.you.can_switch_device).toBe(false)
-    expect(s.you.email).toBe('alice@saga.xyz')
+    expect(s.you.email).toMatch(/@/)
+    expect(s.you.email).toBe(servedSession('session.open.json').you.email)
     expect(s.controller).toBeNull()
     expect(s.human_wait?.expect).toBe('github.com')
     // Not reported to swarm-api yet: null, and the console must draw that.
@@ -148,7 +156,8 @@ describe('the session read, as the API serves it, draws a Browser tab', () => {
     const s = data(await loadLiveSession(TASK)).session!
     expect(s.origin?.registrable_domain).toBe('github.com')
     expect(s.device).toEqual({ preset: 'iphone-15', orientation: 'portrait', touch: true })
-    expect(s.controller?.email).toBe('dave@saga.xyz')
+    expect(s.controller?.email).toMatch(/@/)
+    expect(s.controller?.email).toBe(servedSession('session.reported.json').controller?.email)
     expect(s.you.can_preempt).toBe(true)
     // dave holds control, not alice: her device bar stays disabled.
     expect(s.you.can_switch_device).toBe(false)
@@ -207,7 +216,8 @@ describe('the control and ticket routes', () => {
     const init = fetchMock.mock.calls[0]![1]!
     expect(JSON.parse(String(init.body))).toEqual(fixture('control.take.request.json'))
     const taken = data(r) as LiveRead
-    expect(taken.session?.controller?.email).toBe('alice@saga.xyz')
+    expect(taken.session?.controller?.email).toMatch(/@/)
+    expect(taken.session?.controller?.email).toBe(servedSession('control.taken.json').controller?.email)
   })
 
   it('device.request.json: setLiveDevice sends exactly the body the API model accepts, a preset by name', async () => {
@@ -227,7 +237,8 @@ describe('the control and ticket routes', () => {
   it('device.switched.json: the controller may switch, and the device is what the gate reported', async () => {
     serve(fixture('device.switched.json'))
     const s = data(await loadLiveSession(TASK)).session!
-    expect(s.controller?.email).toBe('alice@saga.xyz')
+    expect(s.controller?.email).toMatch(/@/)
+    expect(s.controller?.email).toBe(servedSession('device.switched.json').controller?.email)
     expect(s.you.can_switch_device).toBe(true)
     expect(s.device).toEqual({ preset: 'iphone-15', orientation: 'landscape', touch: false })
   })

@@ -52,7 +52,7 @@
 // And when none of them answers, the badge says ENVIRONMENT UNKNOWN and prints
 // the host, LOUDLY -- the same treatment production gets. Not knowing which
 // environment you are in is not permission to relax; it is the one case where
-// a quiet badge would be actively dangerous. A `swarm.saga.xyz -> dev` table
+// a quiet badge would be actively dangerous. A `swarm.example.com -> dev` table
 // in this file was the obvious fourth option and is deliberately NOT here: it
 // would be a TypeScript restatement of
 // terraform/environments/dev/dev.tfvars:339, in a file nothing checks against

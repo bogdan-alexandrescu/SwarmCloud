@@ -1,4 +1,4 @@
-// LIVE QA, CAPACITY › POOLS, PROFILES AND RUNTIMES (2026-10-11, swarm.saga.xyz).
+// LIVE QA, CAPACITY › POOLS, PROFILES AND RUNTIMES (2026-10-11, swarm.example.com).
 //
 //   CAP-7   Runtimes' "Pools it must clear" chips linked to the top of Pools.
 //           Each existing pool's chip now carries `?pool=`, which Pools

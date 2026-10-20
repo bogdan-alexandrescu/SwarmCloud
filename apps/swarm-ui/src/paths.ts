@@ -38,7 +38,7 @@ const OLD_API_READS_PATHS: readonly string[] = ['/reference', '/api-reads']
 
 /**
  * THE GITHUB APP'S CALLBACK (#780, OB3): the URL registered on the App,
- * https://swarm.saga.xyz/onboarding/github/callback. Not a section and not in
+ * https://swarm.example.com/onboarding/github/callback. Not a section and not in
  * FIXED -- nothing links to it, and the not-found page must never offer it.
  * ITS QUERY IS NEVER PART OF THE ADDRESS: GitHub's `code` and `state` ride on
  * it, and an address is what the router writes back into the bar.

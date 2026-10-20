@@ -1682,7 +1682,7 @@ function BeingCreated({ owner }: { owner: boolean }) {
   usePoll(WORKSPACE_POLL_MS, reload, rows === null || !rows.some((w) => BUILDING.has(w.state)))
   return (
     <section className="section" data-testid="being-created" aria-labelledby="ten-being-created">
-      <div className="ob-acts">
+      <div className="ten-bc-head">
         <h2 id="ten-being-created">Being created</h2>
         <Button kind="primary" onClick={() => setFiling(true)}>
           New workspace
@@ -1979,7 +1979,7 @@ const COPY_SAID_MS = 4000
 /**
  * AN IDENTITY IN THREE PIECES, SO THE CUT FALLS IN THE MIDDLE (G5-12, QA
  * 2026-10-07). Cut at its end, every Identity read "swarm-agent-work…" and
- * every Principal "…@saga.x…": the part that tells one tenant's identity from
+ * every Principal "…@example.c…": the part that tells one tenant's identity from
  * the next is the part an end-ellipsis removes. The KEY is the tenant's own
  * part of the local part -- the tenant id where the local part ends in it,
  * the whole local part when it is short, otherwise its last 12 characters --

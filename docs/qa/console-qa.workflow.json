@@ -1,0 +1,237 @@
+{
+  "title": "Console visual QA: every page at 1440 and 390, light and dark",
+  "label": "console-qa",
+  "repository_url": "https://github.com/bogdan-alexandrescu/SwarmCloud",
+  "repository_ref": "main",
+  "strategy": "collect",
+  "merge": "off",
+  "on_step_failure": "continue",
+  "steps": [
+    {
+      "step_id": "capture-overview-automate",
+      "runner_profile": "claude-code-browser",
+      "model_class": "haiku",
+      "inputs": {
+        "browser_tool": "playwright"
+      },
+      "allow_empty_diff": true,
+      "timeout_seconds": 1800,
+      "prompt": "Capture, do not review. In apps/swarm-ui run `npm ci` and start `npm run dev` in the background (the fixture build, no network). When http://localhost:5173 answers, run `python -m swarm_qa capture --routes apps/swarm-ui/qa/routes.json --group overview-automate --base http://localhost:5173 --presets desktop,phone-390 --themes light,dark --out $SWARM_ARTIFACTS_DIR/capture-overview-automate --bundle $SWARM_ARTIFACTS_DIR/capture-overview-automate.tar`. It writes the tarball whatever happens: a route that failed is listed in its manifest's `failed`, not a reason to stop. If it exits non-zero, put its last 40 lines in your answer and still make sure capture-overview-automate.tar exists under $SWARM_ARTIFACTS_DIR. Change no file in the repository."
+    },
+    {
+      "step_id": "capture-work-a",
+      "runner_profile": "claude-code-browser",
+      "model_class": "haiku",
+      "inputs": {
+        "browser_tool": "playwright"
+      },
+      "allow_empty_diff": true,
+      "timeout_seconds": 1800,
+      "prompt": "Capture, do not review. In apps/swarm-ui run `npm ci` and start `npm run dev` in the background (the fixture build, no network). When http://localhost:5173 answers, run `python -m swarm_qa capture --routes apps/swarm-ui/qa/routes.json --group work-a --base http://localhost:5173 --presets desktop,phone-390 --themes light,dark --out $SWARM_ARTIFACTS_DIR/capture-work-a --bundle $SWARM_ARTIFACTS_DIR/capture-work-a.tar`. It writes the tarball whatever happens: a route that failed is listed in its manifest's `failed`, not a reason to stop. If it exits non-zero, put its last 40 lines in your answer and still make sure capture-work-a.tar exists under $SWARM_ARTIFACTS_DIR. Change no file in the repository."
+    },
+    {
+      "step_id": "capture-work-b",
+      "runner_profile": "claude-code-browser",
+      "model_class": "haiku",
+      "inputs": {
+        "browser_tool": "playwright"
+      },
+      "allow_empty_diff": true,
+      "timeout_seconds": 1800,
+      "prompt": "Capture, do not review. In apps/swarm-ui run `npm ci` and start `npm run dev` in the background (the fixture build, no network). When http://localhost:5173 answers, run `python -m swarm_qa capture --routes apps/swarm-ui/qa/routes.json --group work-b --base http://localhost:5173 --presets desktop,phone-390 --themes light,dark --out $SWARM_ARTIFACTS_DIR/capture-work-b --bundle $SWARM_ARTIFACTS_DIR/capture-work-b.tar`. It writes the tarball whatever happens: a route that failed is listed in its manifest's `failed`, not a reason to stop. If it exits non-zero, put its last 40 lines in your answer and still make sure capture-work-b.tar exists under $SWARM_ARTIFACTS_DIR. Change no file in the repository."
+    },
+    {
+      "step_id": "capture-capacity",
+      "runner_profile": "claude-code-browser",
+      "model_class": "haiku",
+      "inputs": {
+        "browser_tool": "playwright"
+      },
+      "allow_empty_diff": true,
+      "timeout_seconds": 1800,
+      "prompt": "Capture, do not review. In apps/swarm-ui run `npm ci` and start `npm run dev` in the background (the fixture build, no network). When http://localhost:5173 answers, run `python -m swarm_qa capture --routes apps/swarm-ui/qa/routes.json --group capacity --base http://localhost:5173 --presets desktop,phone-390 --themes light,dark --out $SWARM_ARTIFACTS_DIR/capture-capacity --bundle $SWARM_ARTIFACTS_DIR/capture-capacity.tar`. It writes the tarball whatever happens: a route that failed is listed in its manifest's `failed`, not a reason to stop. If it exits non-zero, put its last 40 lines in your answer and still make sure capture-capacity.tar exists under $SWARM_ARTIFACTS_DIR. Change no file in the repository."
+    },
+    {
+      "step_id": "capture-admin",
+      "runner_profile": "claude-code-browser",
+      "model_class": "haiku",
+      "inputs": {
+        "browser_tool": "playwright"
+      },
+      "allow_empty_diff": true,
+      "timeout_seconds": 1800,
+      "prompt": "Capture, do not review. In apps/swarm-ui run `npm ci` and start `npm run dev` in the background (the fixture build, no network). When http://localhost:5173 answers, run `python -m swarm_qa capture --routes apps/swarm-ui/qa/routes.json --group admin --base http://localhost:5173 --presets desktop,phone-390 --themes light,dark --out $SWARM_ARTIFACTS_DIR/capture-admin --bundle $SWARM_ARTIFACTS_DIR/capture-admin.tar`. It writes the tarball whatever happens: a route that failed is listed in its manifest's `failed`, not a reason to stop. If it exits non-zero, put its last 40 lines in your answer and still make sure capture-admin.tar exists under $SWARM_ARTIFACTS_DIR. Change no file in the repository."
+    },
+    {
+      "step_id": "capture-task",
+      "runner_profile": "claude-code-browser",
+      "model_class": "haiku",
+      "inputs": {
+        "browser_tool": "playwright"
+      },
+      "allow_empty_diff": true,
+      "timeout_seconds": 1800,
+      "prompt": "Capture, do not review. In apps/swarm-ui run `npm ci` and start `npm run dev` in the background (the fixture build, no network). When http://localhost:5173 answers, run `python -m swarm_qa capture --routes apps/swarm-ui/qa/routes.json --group task --base http://localhost:5173 --presets desktop,phone-390 --themes light,dark --axe --out $SWARM_ARTIFACTS_DIR/capture-task --bundle $SWARM_ARTIFACTS_DIR/capture-task.tar`. It writes the tarball whatever happens: a route that failed is listed in its manifest's `failed`, not a reason to stop. If it exits non-zero, put its last 40 lines in your answer and still make sure capture-task.tar exists under $SWARM_ARTIFACTS_DIR. Change no file in the repository."
+    },
+    {
+      "step_id": "review-overview-automate",
+      "runner_profile": "claude-code",
+      "model_class": "opus",
+      "depends_on": [
+        "capture-overview-automate"
+      ],
+      "input_from": {
+        "capture-overview-automate": "capture-overview-automate.tar"
+      },
+      "allow_empty_diff": true,
+      "timeout_seconds": 3600,
+      "prompt": "Visual QA review of the console's fixture build. Unpack capture-overview-automate.tar. For every PNG its manifest.json lists, open the image with the Read tool and look at it: layout, overflow and clipping, alignment, spacing, truncation, contrast in dark mode, anything that differs between desktop (1440) and phone-390 that should not, and anything that contradicts the page's own text file. Each route its manifest lists as failed is itself a finding. For each finding write a crop PNG named <id>.png showing it, and an entry in findings-overview-automate.json in the shape of docs/design/visual-qa.md section 4.4, with reviewed set to the number of images you opened. Bundle findings-overview-automate.json and the crops into review-overview-automate.tar under $SWARM_ARTIFACTS_DIR. Change no file in the repository."
+    },
+    {
+      "step_id": "review-work-a",
+      "runner_profile": "claude-code",
+      "model_class": "opus",
+      "depends_on": [
+        "capture-work-a"
+      ],
+      "input_from": {
+        "capture-work-a": "capture-work-a.tar"
+      },
+      "allow_empty_diff": true,
+      "timeout_seconds": 3600,
+      "prompt": "Visual QA review of the console's fixture build. Unpack capture-work-a.tar. For every PNG its manifest.json lists, open the image with the Read tool and look at it: layout, overflow and clipping, alignment, spacing, truncation, contrast in dark mode, anything that differs between desktop (1440) and phone-390 that should not, and anything that contradicts the page's own text file. Each route its manifest lists as failed is itself a finding. For each finding write a crop PNG named <id>.png showing it, and an entry in findings-work-a.json in the shape of docs/design/visual-qa.md section 4.4, with reviewed set to the number of images you opened. Bundle findings-work-a.json and the crops into review-work-a.tar under $SWARM_ARTIFACTS_DIR. Change no file in the repository."
+    },
+    {
+      "step_id": "review-work-b",
+      "runner_profile": "claude-code",
+      "model_class": "opus",
+      "depends_on": [
+        "capture-work-b"
+      ],
+      "input_from": {
+        "capture-work-b": "capture-work-b.tar"
+      },
+      "allow_empty_diff": true,
+      "timeout_seconds": 3600,
+      "prompt": "Visual QA review of the console's fixture build. Unpack capture-work-b.tar. For every PNG its manifest.json lists, open the image with the Read tool and look at it: layout, overflow and clipping, alignment, spacing, truncation, contrast in dark mode, anything that differs between desktop (1440) and phone-390 that should not, and anything that contradicts the page's own text file. Each route its manifest lists as failed is itself a finding. For each finding write a crop PNG named <id>.png showing it, and an entry in findings-work-b.json in the shape of docs/design/visual-qa.md section 4.4, with reviewed set to the number of images you opened. Bundle findings-work-b.json and the crops into review-work-b.tar under $SWARM_ARTIFACTS_DIR. Change no file in the repository."
+    },
+    {
+      "step_id": "review-capacity",
+      "runner_profile": "claude-code",
+      "model_class": "opus",
+      "depends_on": [
+        "capture-capacity"
+      ],
+      "input_from": {
+        "capture-capacity": "capture-capacity.tar"
+      },
+      "allow_empty_diff": true,
+      "timeout_seconds": 3600,
+      "prompt": "Visual QA review of the console's fixture build. Unpack capture-capacity.tar. For every PNG its manifest.json lists, open the image with the Read tool and look at it: layout, overflow and clipping, alignment, spacing, truncation, contrast in dark mode, anything that differs between desktop (1440) and phone-390 that should not, and anything that contradicts the page's own text file. Each route its manifest lists as failed is itself a finding. For each finding write a crop PNG named <id>.png showing it, and an entry in findings-capacity.json in the shape of docs/design/visual-qa.md section 4.4, with reviewed set to the number of images you opened. Bundle findings-capacity.json and the crops into review-capacity.tar under $SWARM_ARTIFACTS_DIR. Change no file in the repository."
+    },
+    {
+      "step_id": "review-admin",
+      "runner_profile": "claude-code",
+      "model_class": "opus",
+      "depends_on": [
+        "capture-admin"
+      ],
+      "input_from": {
+        "capture-admin": "capture-admin.tar"
+      },
+      "allow_empty_diff": true,
+      "timeout_seconds": 3600,
+      "prompt": "Visual QA review of the console's fixture build. Unpack capture-admin.tar. For every PNG its manifest.json lists, open the image with the Read tool and look at it: layout, overflow and clipping, alignment, spacing, truncation, contrast in dark mode, anything that differs between desktop (1440) and phone-390 that should not, and anything that contradicts the page's own text file. Each route its manifest lists as failed is itself a finding. For each finding write a crop PNG named <id>.png showing it, and an entry in findings-admin.json in the shape of docs/design/visual-qa.md section 4.4, with reviewed set to the number of images you opened. Bundle findings-admin.json and the crops into review-admin.tar under $SWARM_ARTIFACTS_DIR. Change no file in the repository."
+    },
+    {
+      "step_id": "review-task",
+      "runner_profile": "claude-code",
+      "model_class": "opus",
+      "depends_on": [
+        "capture-task"
+      ],
+      "input_from": {
+        "capture-task": "capture-task.tar"
+      },
+      "allow_empty_diff": true,
+      "timeout_seconds": 3600,
+      "prompt": "Visual and accessibility QA review of the console's task panes (fixture build). Unpack capture-task.tar. For every PNG its manifest.json lists, open the image with the Read tool and look at it: layout, overflow and clipping, alignment, spacing, truncation, contrast in dark mode, anything that differs between desktop (1440) and phone-390 that should not, and anything that contradicts the page's own text file. Also read every axe.json and ARIA snapshot file: each axe violation of impact serious or critical is a finding. Each route its manifest lists as failed is itself a finding. For each finding write a crop PNG named <id>.png showing it, and an entry in findings-task.json in the shape of docs/design/visual-qa.md section 4.4, with reviewed set to the number of images you opened. Bundle findings-task.json and the crops into review-task.tar under $SWARM_ARTIFACTS_DIR. Change no file in the repository."
+    },
+    {
+      "step_id": "flow-find-failure",
+      "runner_profile": "claude-code-browser",
+      "model_class": "sonnet",
+      "inputs": {
+        "browser_tool": "jev"
+      },
+      "allow_empty_diff": true,
+      "timeout_seconds": 2700,
+      "prompt": "Goal-driven flow test of the console's fixture build. In apps/swarm-ui run `npm ci` and start `npm run dev` in the background; open http://localhost:5173 in the live browser at the desktop preset. Run `swarm-handoff record start flow-find-failure`. Using the jev browser tools, reach this goal as a person would, without typing addresses: find the most recently failed task and open its logs, then its attempts. Run `swarm-handoff record stop`. Then switch to the phone (`swarm-handoff device phone-390`) and do it again, recorded as flow-find-failure-phone. For each run write in flow-find-failure.json: whether the goal was reached, the steps taken, and every point where a label was missing, ambiguous or misleading, each with a screenshot taken with browser_take_screenshot and no filename (it is saved under $SWARM_ARTIFACTS_DIR/screenshots). Bundle flow-find-failure.json, flows/flow-find-failure.gif, flows/flow-find-failure-phone.gif and the screenshots into flow-find-failure.tar under $SWARM_ARTIFACTS_DIR. Change no file in the repository."
+    },
+    {
+      "step_id": "flow-workflow-graph",
+      "runner_profile": "claude-code-browser",
+      "model_class": "sonnet",
+      "inputs": {
+        "browser_tool": "jev"
+      },
+      "allow_empty_diff": true,
+      "timeout_seconds": 2700,
+      "prompt": "Goal-driven flow test of the console's fixture build. In apps/swarm-ui run `npm ci` and start `npm run dev` in the background; open http://localhost:5173 in the live browser at the desktop preset. Run `swarm-handoff record start flow-workflow-graph`. Using the jev browser tools, reach this goal as a person would, without typing addresses: open a workflow that has a failed step, find which step failed and why, and open that step's changes. Run `swarm-handoff record stop`. Then switch to dark mode (`swarm-handoff theme dark`) and do it again, recorded as flow-workflow-graph-dark; run `swarm-handoff theme system` when it is done. For each run write in flow-workflow-graph.json: whether the goal was reached, the steps taken, and every point where a label was missing, ambiguous or misleading, each with a screenshot taken with browser_take_screenshot and no filename (it is saved under $SWARM_ARTIFACTS_DIR/screenshots). Bundle flow-workflow-graph.json, flows/flow-workflow-graph.gif, flows/flow-workflow-graph-dark.gif and the screenshots into flow-workflow-graph.tar under $SWARM_ARTIFACTS_DIR. Change no file in the repository."
+    },
+    {
+      "step_id": "flow-submit-form",
+      "runner_profile": "claude-code-browser",
+      "model_class": "sonnet",
+      "inputs": {
+        "browser_tool": "playwright"
+      },
+      "allow_empty_diff": true,
+      "timeout_seconds": 2700,
+      "prompt": "Scripted flow test of the console's fixture build with the Playwright browser tools. In apps/swarm-ui run `npm ci` and start `npm run dev` in the background; open http://localhost:5173 in the live browser. At the desktop preset and then at the phone (`swarm-handoff device phone-390`), record a flow with `swarm-handoff record start flow-submit-form-<preset>` and `swarm-handoff record stop`: open the task form, `/submit/task` in apps/swarm-ui/qa/routes.json (route `new`), the way a person reaches it: the rail's Submit item, then Start a task; try to submit it empty, read every validation message, fill each field, choose each runner profile in turn and note what the form shows for it, and stop before the final submit. Take a browser_take_screenshot with no filename at each step (it comes back to you as an image and is saved under $SWARM_ARTIFACTS_DIR/screenshots) and say in flow-submit-form.json what each screenshot showed you, by its file name, so the report can tell whether you saw the image. Note every message that is missing, wrong or clipped, with its screenshot. Bundle flow-submit-form.json, flows/flow-submit-form-desktop.gif, flows/flow-submit-form-phone-390.gif and the screenshots into flow-submit-form.tar under $SWARM_ARTIFACTS_DIR. Change no file in the repository."
+    },
+    {
+      "step_id": "a11y-keyboard",
+      "runner_profile": "claude-code-browser",
+      "model_class": "sonnet",
+      "inputs": {
+        "browser_tool": "playwright"
+      },
+      "allow_empty_diff": true,
+      "timeout_seconds": 2700,
+      "prompt": "Accessibility pass of the console's fixture build. In apps/swarm-ui run `npm ci` and start `npm run dev` in the background; open http://localhost:5173 in the live browser at the desktop preset. For each top-level section, using only the keyboard (Tab, Shift+Tab, Enter, Escape, arrows): reach every control, open and close every dialog and inspector, and note where focus is lost, invisible or trapped. Then take browser_snapshot of each page and note controls with no accessible name. Then, through swarm_browser.live(), repeat one page per section with emulate_media(reduced_motion='reduce') and with Emulation.setEmulatedVisionDeficiency set to deuteranopia, and screenshot each. Write a11y-keyboard.json in the findings shape of docs/design/visual-qa.md section 4.4, with a screenshot per finding, and bundle it with the screenshots into a11y-keyboard.tar under $SWARM_ARTIFACTS_DIR. Change no file in the repository."
+    },
+    {
+      "step_id": "report",
+      "runner_profile": "claude-code",
+      "model_class": "opus",
+      "depends_on": [
+        "review-overview-automate",
+        "review-work-a",
+        "review-work-b",
+        "review-capacity",
+        "review-admin",
+        "review-task",
+        "flow-find-failure",
+        "flow-workflow-graph",
+        "flow-submit-form",
+        "a11y-keyboard"
+      ],
+      "input_from": {
+        "review-overview-automate": "review-overview-automate.tar",
+        "review-work-a": "review-work-a.tar",
+        "review-work-b": "review-work-b.tar",
+        "review-capacity": "review-capacity.tar",
+        "review-admin": "review-admin.tar",
+        "review-task": "review-task.tar",
+        "flow-find-failure": "flow-find-failure.tar",
+        "flow-workflow-graph": "flow-workflow-graph.tar",
+        "flow-submit-form": "flow-submit-form.tar",
+        "a11y-keyboard": "a11y-keyboard.tar"
+      },
+      "allow_empty_diff": true,
+      "timeout_seconds": 3600,
+      "prompt": "Write the console visual QA report. Unpack every staged tar. Check each review's reviewed count against the images its group's routes should have produced (two presets, two themes, each route's segments) and report any shortfall, and any staged tar that is missing, as a finding about the run itself: a review that looked at nothing is not a clean review. Merge every finding into findings.json, de-duplicating the same defect seen at several sizes into one finding that lists each. Write report.md: a summary table (findings by severity and by page), then each finding, severity first, with its crop PNG embedded by relative link, then one section per flow with its GIFs embedded and whether its goal was reached, then what the model said it saw in each flow-submit-form screenshot beside that screenshot. Copy every crop PNG, every screenshot a finding cites and every GIF to $SWARM_ARTIFACTS_DIR next to report.md and findings.json so the console shows them. Change no file in the repository."
+    }
+  ]
+}

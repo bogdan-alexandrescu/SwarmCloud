@@ -359,7 +359,7 @@ function focusInChrome(): boolean {
  * THE TENANT NAMES `/v1/tenants/me` HAS GIVEN IN THIS BROWSER, by tenant id
  * (QA G1-06, 2026-10-07). `/v1/tenants/mine` names each tenant by its
  * registered group's email -- it reads nothing, by design -- so the shell
- * called one tenant "Engineering" in the panel and "eng@saga.xyz" in the list
+ * called one tenant "Engineering" in the panel and "eng@example.com" in the list
  * under it. The list draws the name `me` gave where one is known: the current
  * tenant's always, another's once it has been acted as here.
  */

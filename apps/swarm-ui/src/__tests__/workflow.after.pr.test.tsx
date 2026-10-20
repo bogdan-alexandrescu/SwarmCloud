@@ -26,7 +26,7 @@ function workflow(after: Workflow['after_pull_requests']): Workflow {
     state_source: 'derived',
     created_at: '2026-10-14T12:00:00Z',
     updated_at: '2026-10-14T12:00:00Z',
-    submitted_by: 'alice@saga.xyz',
+    submitted_by: 'alice@example.com',
     priority: 0,
     on_step_failure: 'fail_workflow',
     cancel_requested: false,

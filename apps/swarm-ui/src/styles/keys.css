@@ -16,6 +16,16 @@
 .pk-form label, .pk-ask label { font-size: var(--t-micro); color: var(--text-dim); }
 .pk-form-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); min-width: 0; }
 .pk-input { flex: 1 1 260px; width: auto; min-width: 0; max-width: 520px; }
+/* A FIELD STRAIGHT IN THE FORM, NOT IN A ROW (#1667). The 260px basis above
+   is a WIDTH only in a `.pk-form-row`; `.pk-form` is a column, where the same
+   basis is the field's HEIGHT, and MCP servers' Name, URL, Description and
+   Tools and People's Reason were drawn 260px tall. Here a field takes no
+   basis and is one control high (`.ur-search`'s `--h-ctl`); a textarea is as
+   tall as its `rows`, with padding for more than one line. The selector
+   outranks the phone rule's `.pk-input { flex-basis: 100% }`, which in a
+   column would be a height too. */
+.pk-form > .pk-input { flex: none; }
+.pk-form > textarea.pk-input { height: auto; padding: 6px 10px; resize: vertical; }
 .pk-saved { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }
 .pk-ask { display: flex; flex-direction: column; gap: var(--ctl-s1); min-width: 0; max-width: 520px; }
 

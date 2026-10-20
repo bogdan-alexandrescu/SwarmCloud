@@ -34,7 +34,7 @@ function me(environment: unknown, declared: unknown): Me {
     tenant: {
       tenant_id: 'u-bogdan',
       kind: 'user',
-      principal: 'someone@saga.xyz',
+      principal: 'someone@example.com',
       display_name: 'Bogdan',
       created_at: new Date().toISOString(),
       max_active: 4,
@@ -46,7 +46,7 @@ function me(environment: unknown, declared: unknown): Me {
       gcs_prefix: 'tenants/u-bogdan',
       namespace: 'swarm-tenant-u-bogdan',
     },
-    principal: { email: 'someone@saga.xyz', domain: 'saga.xyz', groups: [], is_admin: false },
+    principal: { email: 'someone@example.com', domain: 'example.com', groups: [], is_admin: false },
   }
   // An older API sends neither key; `undefined` here leaves them out.
   const env: Record<string, unknown> = {}
@@ -109,7 +109,7 @@ async function shell(answer: Response, build: string, host: string) {
 
 describe('the environment pill follows the API when the API declared one', () => {
   it('says PROD, loudly, when a dev-built console is talking to a production API', async () => {
-    const h = await shell(json(200, me('prod', true)), 'dev', 'swarm.saga.xyz')
+    const h = await shell(json(200, me('prod', true)), 'dev', 'swarm.example.com')
     // The panel's tenant is drawn from the same read, so once it is there the
     // pill has had its chance to follow the API.
     await screen.findAllByText('Bogdan', undefined, { timeout: 5000 })
@@ -135,7 +135,7 @@ describe('the environment pill follows the API when the API declared one', () =>
 
 describe('and does not over-correct', () => {
   it('treats a DEFAULTED dev as no answer: an undeclared API keeps ENVIRONMENT UNKNOWN', async () => {
-    const h = await shell(json(200, me('dev', false)), '', 'swarm.saga.xyz')
+    const h = await shell(json(200, me('dev', false)), '', 'swarm.example.com')
     await screen.findAllByText('Bogdan', undefined, { timeout: 5000 })
     expect(h.name()).toBe('ENVIRONMENT UNKNOWN')
     expect(h.mini()).toBe('ENVIRONMENT UNKNOWN')
@@ -144,11 +144,11 @@ describe('and does not over-correct', () => {
     expect(h.pill().className).toContain('is-prod')
     expect(h.explain()).toContain('treat it as production')
     // The host it could not classify is named, so the reader can act on it.
-    expect(h.explain()).toContain('swarm.saga.xyz')
+    expect(h.explain()).toContain('swarm.example.com')
   })
 
   it('falls back to the build when the API is older than the fields', async () => {
-    const h = await shell(json(200, me(undefined, undefined)), 'staging', 'swarm.saga.xyz')
+    const h = await shell(json(200, me(undefined, undefined)), 'staging', 'swarm.example.com')
     await screen.findAllByText('Bogdan', undefined, { timeout: 5000 })
     expect(h.name()).toBe('Staging')
     expect(h.explain()).toMatch(/declared by the build/)

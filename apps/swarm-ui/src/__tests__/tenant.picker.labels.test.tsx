@@ -1,7 +1,7 @@
 /**
  * THE PICKER'S LABEL COLUMN (PICKER-LABELS; part of #1505).
  *
- * Measured 2026-10-19 in Chrome on swarm.saga.xyz: the row for "Your
+ * Measured 2026-10-19 in Chrome on swarm.example.com: the row for "Your
  * workspace" read "defaultu-bogdan". A row that was both current and the
  * default drew two `.sk-ck` labels into `.sk-to`'s three-column grid
  * (`24px 1fr auto`); the second wrapped into the next grid row's 24px first

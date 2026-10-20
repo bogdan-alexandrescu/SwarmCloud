@@ -31,6 +31,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { leakedValue, serve, tokenShapedIn, visible } from './repofixture'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
+import { COMPANY_NAME } from '../../test/companyName'
 
 const ID = (n: number) => `repo_${String(n).padStart(16, '0')}`
 
@@ -438,7 +439,7 @@ describe('not connected', () => {
   })
 })
 
-const APP_INSTALL = 'https://github.com/apps/swarmcloud-saga/installations/new'
+const APP_INSTALL = 'https://github.com/apps/swarmcloud-example/installations/new'
 
 /** What GET /v1/access/orgs answered live on 2026-10-08: the account, installed nowhere. */
 const NOWHERE = {
@@ -511,7 +512,7 @@ describe('connected but not installed (#780)', () => {
     expect(visible(document.querySelector('.ac-chooser'))).toContain(
       'Install the SwarmCloud GitHub App on an owner on the left',
     )
-    expect(visible(document.body)).not.toMatch(/saga/i)
+    expect(visible(document.body)).not.toMatch(COMPANY_NAME)
   })
 
   it('draws mixed rows: Enable for the installed owner, Install for the other, and no notice', async () => {
@@ -628,7 +629,7 @@ describe('no value reaches the page', () => {
 })
 
 // ---------------------------------------------------------------------------
-// QA of https://swarm.saga.xyz/access, 2026-10-08: four defects.
+// QA of https://swarm.example.com/access, 2026-10-08: four defects.
 // ---------------------------------------------------------------------------
 
 /**

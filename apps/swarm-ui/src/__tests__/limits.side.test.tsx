@@ -77,7 +77,7 @@ function capacity(): Capacity {
 function session(isAdmin: boolean): Result<Me> {
   return ok({
     tenant: { tenant_id: 'eng' },
-    principal: { email: 'a@saga.xyz', domain: 'saga.xyz', groups: [], is_admin: isAdmin },
+    principal: { email: 'a@example.com', domain: 'example.com', groups: [], is_admin: isAdmin },
     environment: 'dev',
     environment_declared: false,
   } as unknown as Me)

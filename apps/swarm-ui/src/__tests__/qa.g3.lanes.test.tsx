@@ -1,5 +1,5 @@
 /**
- * BROWSER QA G3 (2026-10-07, swarm.saga.xyz at 1440 and 390): Timeline › Lanes.
+ * BROWSER QA G3 (2026-10-07, swarm.example.com at 1440 and 390): Timeline › Lanes.
  *
  *   G3-07  15 of 49 workflow reads answered 429, all asked at once, and the
  *          group subtitle printed the raw route: `steps — (/v1/workflows/
