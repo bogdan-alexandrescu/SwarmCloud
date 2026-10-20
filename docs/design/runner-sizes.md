@@ -217,7 +217,7 @@ tenant's pod requested and left idle. It can never take CPU that pod is
 using: the kernel's CFS weights are proportional to requests, and under
 contention every container gets its request (§2.2.3). That is a performance
 coupling above the request, never below it, and never a data path. §2.4
-records it as a fairness property, and §7 Q1 lets the owner refuse it.
+records it as a fairness property, and §7 Q8 lets the owner refuse it.
 
 **10 — callers pick a runner_profile by name.** Preserved, and it is the
 reason sizes are an **admin** setting and never a request field. A caller
@@ -241,8 +241,11 @@ and this container has no kubeconfig context at all (`kubectl config
 get-contexts` lists none), so the pinned kubectl (`kubectl_bin`, v1.36.5
 here) had nothing to read through. That is a real block: the task's
 identity is the `eng` worker account, which correctly cannot read the
-cluster. **The cluster's version and bursting state are therefore taken from
-the repository's last dated reading, not measured today:**
+cluster. The fix round of the same day retried both reads with the same
+result (403 on the describe; `kubectl_bin` resolved, `get-contexts` empty).
+**The cluster's version and bursting state are therefore taken from
+the repository's last dated reading, not measured today**, and stay
+unverified until the SIZES-SCHED-1 canary (§6) reads them:
 
 * `docs/DEPLOY_STATE.md` (measured 2026-09-24, `gcloud container clusters
   describe swarm-autopilot`): Autopilot, control plane `1.36.4-gke.1082000`,
@@ -365,8 +368,9 @@ hour** before and after the recommended change.
   CPU is shared by the kernel in proportion to requests between whichever
   pods happen to share a node, so a tenant with more bursty pods running
   gets more unbilled CPU than one with fewer. That is the property the owner
-  chose ("agents may burst when they need it"); §7 Q1 option C is the way to
-  turn it off for a class.
+  chose ("agents may burst when they need it"); §7 Q8 B is the way to
+  refuse it between tenants. (Q1 C is a different knob: it turns bursting
+  off for a whole class, for every tenant alike.)
 * **Invariant 7 as amended** (RS-1): memory and ephemeral storage request ==
   limit everywhere; CPU request ≤ limit ≤ `CPU_BURST_MAX_RATIO` × request on
   GKE Autopilot; Cloud Run renders the request as its only number.
@@ -493,15 +497,28 @@ phase 1 is wasted.
   silently raised by Autopilot and billed, so the validator refuses it.
 
 **The gain expected.** The share of time pinned at the limit is the most
-bursting can help: 22% overall, 30% on long runs. If, in those intervals, a
-pinned agent gets the full 2× (an idle neighbour), the CPU-bound part of the
-run halves, which is an upper bound of about **11% less wall time overall
-and 15% on long runs** (22% / 2, 30% / 2). The real figure is lower: a
-cgroup cannot measure demand above its limit, so we do not know how many of
-those intervals wanted 8 rather than 4.5, and an agent alone on its node
-gets nothing. The figures that will say, once LIVE-UTIL ships: the share of
-time at the **request** (4) against the share at the **limit** (8), and
-`throttled_usec` per attempt. The issue's own success measure — "the share
+bursting can help: 22% overall, 30% on long runs. A pinned interval that
+runs at s times today's CPU takes 1/s of its time, so the wall-time saving
+is (pinned share) × (1 − 1/s):
+
+| case | speed-up s in a pinned interval | overall (22% pinned) | long runs (30% pinned) |
+|---|---|---|---|
+| lower bound | 1 (alone on its node, or demand barely above 4) | 0% | 0% |
+| **expected** | **1.5** (bursts to about 6 cores on average) | **≈ 7%** | **≈ 10%** |
+| upper bound | 2 (the full limit, every pinned interval) | ≈ 11% | ≈ 15% |
+
+The expected row's 1.5 is an assumption, stated so it can be checked, not a
+measurement: a cgroup cannot see demand above its limit, so nobody yet knows
+how many pinned intervals wanted 8 rather than 4.5. It is chosen between the
+bounds for two reasons. A pinned agent's neighbours on a node average 1.74
+of their 4 requested cores, so about 2.3 cores of idle request per
+neighbour are there to borrow, which is enough for 1.5× with one neighbour
+and more with several. But those neighbours are themselves pinned 22% of
+the time, and when two pinned agents meet they split the idle CPU between
+them, so the full 2× is the exception. The figures that will replace the
+assumption, once LIVE-UTIL ships and phase 1 is live, are the ones §4.9
+reads: the share of time above the **request** (4), the share at the
+**limit** (8), and `throttled_usec` per attempt. The issue's own success measure — "the share
 of time pinned at the CPU limit drops on long runs" — is read from the same
 attempts' records before and after phase 1.
 
@@ -523,7 +540,7 @@ In `apps/common/swarm_common/profiles.py` (RS-1, RS-2):
   | bound | value | why |
   |---|---|---|
   | `cpu_request` | 0.5 … 8, in steps of 0.25 | 0.5: Autopilot extended run time's minimum. 8: Cloud Run's ceiling, which binds every class because every class can be reached by a Cloud Run profile's step or fallback Job. 0.25: Autopilot's own granularity on non-bursting clusters, so the number is valid on both. |
-  | `cpu_limit` | `cpu_request` … `CPU_BURST_MAX_RATIO` × `cpu_request`, and ≤ 16 | the owner's "limit may be higher than request"; 2× per §4.1; 16 so a class can never ask for more than a general-purpose node's useful burst. |
+  | `cpu_limit` | `cpu_request` … `CPU_BURST_MAX_RATIO` × `cpu_request` | the owner's "limit may be higher than request"; 2× per §4.1. No separate absolute cap: the request's maximum of 8 already bounds the limit at 16, and a second constant would only be one more number to keep in step with the ratio. |
   | `memory_gib` | 2 … 32, integer | 32: Cloud Run's ceiling. 2: below it the worker and an agent CLI do not start (measured reference 2.5 GiB, `profiles.py` "Sizing note"). |
   | `memory_gib / cpu_request` | 1 … 6.5 | Autopilot's ratio; outside it Autopilot raises a resource and bills it. |
   | `disk_gib` | 1 … `memory_gib` − 2 | it is a tmpfs slice of memory; at least 2 GiB stays for processes. |
@@ -595,8 +612,16 @@ route and read by the scheduler and swarm-api:
 * Terraform: `terraform/modules/firestore` needs no new index. The
   scheduler's and swarm-api's accounts already read `control/*`; the
   scheduler needs `runner_size_versions/*` read, which the existing
-  database-level `datastore.user` grant covers (to be confirmed by the
-  SIZES-SCHED lane against `terraform/modules/iam`).
+  database-level `datastore.user` grant should cover. That is not taken on
+  trust: lane SIZES-SCHED-2 carries it as a red-first check (§6), a test
+  that reads the scheduler's Firestore role bindings out of
+  `terraform/modules/iam` and fails unless the scheduler's account holds a
+  role that reads every collection of database `swarm`, not only
+  `control/*`. Today `terraform/modules/iam/bindings.tf` grants
+  `roles/datastore.user` to each of `local.firestore_accounts` (every
+  platform account) under a condition scoped to the database, so the check is expected to pass at
+  once; it exists so that a later narrowing of that condition to named
+  collections fails a test instead of failing admission.
 
 ### 4.4 Admission and dispatch: the size is pinned
 
@@ -662,7 +687,7 @@ All under `/v1/admin`, `admin_auth`, in a new router section of
   "defaults": { "...the code's RESOURCE_CLASSES, same shape..." },
   "bounds": {
     "cpu_request": {"min": 0.5, "max": 8, "step": 0.25},
-    "cpu_burst_max_ratio": 2, "cpu_limit_max": 16,
+    "cpu_burst_max_ratio": 2,
     "memory_gib": {"min": 2, "max": 32},
     "memory_per_cpu": {"min": 1, "max": 6.5},
     "live_split": {"worker_min_cpu": 1, "worker_min_memory_gib": 2,
@@ -695,8 +720,14 @@ written →
                            "cost_hour_before": 0.217, "cost_hour_after": 0.217}},
   "pools": [{"pool": "global", "hard_limit": 40,
              "admits_before": {"standard": 40}, "admits_after": {"standard": 40}}],
-  "recent_use": {"standard": {"attempts": 41, "memory_peak_gib_max": 6.0,
-                              "memory_peak_gib_p95": 5.4, "since": "..."}}
+  "recent_use": {"standard": {"attempts": 41, "since": "...",
+                              "memory_peak_gib_max": 6.0, "memory_peak_gib_p95": 5.4,
+                              "cpu_mean_cores_median": 1.74,
+                              "share_idle": 0.15, "share_above_request": null,
+                              "share_at_limit": 0.22, "share_at_limit_long": 0.30,
+                              "throttled_share": null, "oom_near_miss": 0,
+                              "by_size_version": [{"size_version": 0, "attempts": 41,
+                                                   "wall_minutes_median": 31.0}]}}
 }
 ```
 
@@ -704,7 +735,12 @@ written →
 many tasks of each class they admit before and after. `recent_use` reads the
 last 7 days of attempts of that class (the LIVE-UTIL records once they ship,
 the attempt summary fields until then) so a cut below what was used is
-visible before it is saved.
+visible before it is saved. Its CPU shares are §4.9's readings, `null` where
+the records that feed them do not exist yet (`share_above_request` and
+`throttled_share` need LIVE-UTIL's samples); `by_size_version` groups the
+same attempts by the `size_version` they were admitted at (RS-4), which is
+how a change is confirmed (§4.9). The `wall_minutes_median` shown is
+illustrative.
 
 **`PUT /v1/admin/runner-sizes`** — body:
 
@@ -812,6 +848,80 @@ resizes `standard` and wonders why `claude-code-review` did not change.
 | Terraform | `terraform/infra/locals.tf` | the mirror's comment says it is the Cloud Run default; values unchanged |
 | docs | `docs/architecture.md`, `kubernetes/README.md`, `docs/web-ui/` admin page doc | invariant 7 as amended; where sizes live |
 
+### 4.9 How an admin sizes a class from the utilisation charts
+
+LIVE-UTIL gives every attempt close-to-real-time CPU and memory with
+throttling: per sample, cores used (from `cpu.stat` `usage_usec`), the
+enforced limit (`cpu.max`), `nr_throttled` / `nr_periods` and
+`throttled_usec`, memory in use and `memory.peak`. Agent detail charts one
+attempt; the Runner sizes page's preview (`recent_use`, §4.5) aggregates the
+same records per class over 7 days. An admin sizes a class from the
+aggregate and uses single-attempt charts to see why. The readings, per
+class:
+
+| reading | what it is | what it says |
+|---|---|---|
+| mean cores, idle share | median of attempts' mean use; share of samples under 0.5 core | how much of the **request** is used; today 1.74 of 4, idle 15% |
+| share above request | samples using more than the request | how often bursting is doing work; 0 before phase 1 |
+| share at limit | samples within 5% of the enforced limit, overall and for runs ≥ 40 min | demand the class still does not meet; today 22%, 30% on long runs |
+| throttled share | `throttled_usec` ÷ the attempt's wall time; `nr_throttled` ÷ `nr_periods` | time the kernel held the agent at its limit |
+| memory peak | max and p95 of `memory.peak`, `oom_near_miss` count | headroom under the one memory number; today max 6.0 of 8 GiB |
+
+What each pattern means and the change it leads to:
+
+* **Pinned at the limit on long runs, and throttled.** The class wants more
+  CPU than its limit. If the limit is below 2 × request, raise the limit:
+  Autopilot bills requests, so the preview shows $0.00 and units
+  unchanged. If it is already at 2 ×, the only lever is the request, which
+  costs money and may change units; the preview prices it, and §7 Q2 is the
+  owner's.
+* **Often above the request, rarely at the limit.** Bursting is doing what
+  it is for. No change.
+* **Above the request but neither at the limit nor throttled, yet runs got
+  no faster.** The node had nothing idle to lend: a burst past the request
+  is shared by the kernel between the pods on a node, and contention below
+  the limit is **not counted** by `nr_throttled`, which only counts the
+  `cpu.max` quota. The charts cannot show that demand, so the evidence is
+  run time (below), not the CPU panels. Raising the limit does not help;
+  only a larger request does.
+* **Mean far under the request, idle often, rarely at the limit.** The
+  class is over-requested: a candidate to lower the request, which cuts
+  cost and may free units. Lowering the guarantee makes contended runs
+  slower than today, so it is §7 Q2's decision, not an admin's alone.
+* **Memory max peak within about 15% of the class, or any OOM or
+  `oom_near_miss`.** Raise memory; the preview shows units (memory over
+  8 GiB moves `standard` to 2) and the Autopilot ratio bound. Memory never
+  bursts, so a peak above it is a kill and costs the attempt back to its
+  last checkpoint.
+* **Memory max peak under half the class over 30 or more attempts.** It
+  may come down; the page asks for the class name typed when the cut is
+  under the 7-day max (§7 Q6), because one rare large run is exactly what
+  the max records.
+
+**Enough data first.** At least 30 attempts of the class in the window, and
+long runs read separately: today they sit at the limit 30% of the time
+against 7% for short runs, so a mix shifted toward short runs would look
+like a fix. Below 30 attempts the page shows the readings without the
+pattern hints.
+
+**Confirming a change, before and after.** Every attempt records the size
+version it was admitted at (RS-4), so the preview's `by_size_version` puts
+the version before a change beside the version after it, over attempts of
+the same class: median wall time overall and on long runs, share at the
+limit, throttled share, memory max peak, dollars an hour. A change has
+worked when the at-limit share on long runs and their median wall time both
+drop with no rise in memory near-misses; it has not when they do not move
+after 30 attempts on the new version, and History's "Restore this version"
+(§4.6) takes the class back, as a new version, through the same preview.
+Phase 1 predates size versions, so its measurement is the same comparison
+split by date instead, attempts before the release (limit 4) against
+attempts after it (limit 8), each attempt's `cpu_limit_cores` saying which
+side it is on.
+
+The thresholds above (5% of the limit, 15% memory headroom, half, 30
+attempts) are the page's hints, held in the UI, not frozen bounds: they
+guide an admin and refuse nothing. The bounds that refuse are §4.2's.
+
 ---
 
 ## 5. FROZEN CONTRACT: change requests
@@ -861,8 +971,8 @@ class ResourceClass:
         return self.cpu if self.cpu_limit is None else self.cpu_limit
 ```
 
-`__post_init__` adds: `cpu <= cpu_limit_cores <= CPU_BURST_MAX_RATIO * cpu`
-and `cpu_limit_cores <= CPU_LIMIT_MAX`; the Cloud Run ceiling keeps binding
+`__post_init__` adds: `cpu <= cpu_limit_cores <= CPU_BURST_MAX_RATIO * cpu`;
+the Cloud Run ceiling keeps binding
 `cpu` and `memory_gib` (not the limit). `RESOURCE_CLASSES` gains
 `cpu_limit=8`, `8`, `16` on `standard`, `browser`, `large`. The module
 docstring's "Two hard rules" becomes: memory and disk requests == limits;
@@ -910,7 +1020,6 @@ which reads the cgroup first.
 
 ```python
 CPU_BURST_MAX_RATIO = 2
-CPU_LIMIT_MAX = 16
 CPU_REQUEST_MIN, CPU_REQUEST_MAX, CPU_REQUEST_STEP = 0.5, 8, 0.25
 MEMORY_GIB_MIN, MEMORY_GIB_MAX = 2, 32
 MEMORY_PER_CPU_MIN, MEMORY_PER_CPU_MAX = 1.0, 6.5
@@ -1020,15 +1129,26 @@ the catalogue no longer says what an older attempt ran at.
     sized_cpu_limit: float | None = None
     sized_memory_gib: int | None = None
     sized_disk_gib: int | None = None
+    sized_live_split: dict[str, dict[str, float]] | None = None
+    # {"worker":  {"cpu_request": 2, "cpu_limit": 4, "memory_gib": 3},
+    #  "display": {"cpu_request": 2, "cpu_limit": 3, "memory_gib": 5}}
+    # set only on a live-browser attempt; RS-3's LiveShare pair as a mapping
 ```
 
 Written by the scheduler's `create_attempt`, never by the worker or a
 caller. All optional: attempts written before the change have none, and
 readers fall back to the class's code default as they do now.
+`sized_live_split` is `None` on every attempt that is not a live pod, so a
+live attempt's two containers are as checkable after the fact as a plain
+attempt's one. It is a mapping keyed `worker` / `display` rather than RS-3's
+`LiveShare` tuple because the attempt document is Firestore JSON and a
+named key survives a reader that does not know the tuple's order.
 
 **Tests:** `tests/unit/common/test_attempt_sized_fields.py`: the fields
-default to `None`, round-trip through the codec, and are not in the signed
-step spec (`test_specsign_covers` — the worker does not act on them; it
+default to `None`, round-trip through the codec (including
+`sized_live_split` with both keys, and a field validator refusing a
+mapping missing either key or carrying anything but the three numbers), and are not in the
+signed step spec (`test_specsign_covers` — the worker does not act on them; it
 acts on its cgroup).
 
 #### What it would break
@@ -1111,19 +1231,31 @@ a successful PUT creates version N+1 and never updates version N; restore
 writes a new version; `/v1/resource-classes` serves the new version; a
 non-admin gets 403 on every route; a memory cut below the recent max
 without the confirmation is 422 `below_recent_peak`; a malformed stored
-version reads as the code defaults.
+version reads as the code defaults; the preview's `recent_use` reports
+§4.9's shares, `null` (never 0) where the LIVE-UTIL records are missing,
+and `by_size_version` splits the window's attempts by the version they
+were admitted at.
 
 **SIZES-SCHED-2** (after SIZES-CONTRACT-2; parallel with SIZES-API).
 Files: `apps/scheduler/scheduler/sizes.py` (new),
 `apps/scheduler/scheduler/loop.py`, `apps/scheduler/scheduler/store.py`,
 `apps/scheduler/scheduler/dispatch.py`,
-`tests/unit/scheduler/test_admission_follows_size.py` (new). Red first:
-with version 2 making `standard` 6/12, a READY claude-code task is leased
-with `units == 2` and its manifest requests 6 / 12 GiB; the attempt
-document records `size_version: 2` and the sized fields; a version change
+`tests/unit/scheduler/test_admission_follows_size.py` (new),
+`tests/unit/scheduler/test_scheduler_reads_size_versions.py` (new). Red
+first: with version 2 making `standard` 6/12, a READY claude-code task is
+leased with `units == 2` and its manifest requests 6 / 12 GiB; the attempt
+document records `size_version: 2` and the sized fields; a live-browser
+attempt records `sized_live_split` equal to the two containers its manifest
+renders, and a non-live attempt records it as `None`; a version change
 **after** the lease and before dispatch does not change the manifest; a
 `mock` task (Cloud Run) still gets the default and units 1 whatever the
-version says; a malformed version leases at the default and logs at ERROR.
+version says; a malformed version leases at the default and logs at ERROR;
+`test_scheduler_reads_size_versions.py` (§4.3) parses
+`terraform/modules/iam/bindings.tf` and fails unless the scheduler's
+account is a key of `local.platform_accounts` (which
+`local.firestore_accounts` is built from) and the Firestore grant's
+`firestore_condition`, when set, names the database, not a collection
+under it.
 Then `make smoke concurrency-test race-test` against dev (CLAUDE.md: this
 lane touches admission).
 
@@ -1135,7 +1267,9 @@ lane touches admission).
 tab is listed under Admin for an admin only; a limit above 2× the request
 shows the bound and disables Save; the preview's units and pools are drawn;
 a 409 reloads; a memory cut below the recent max asks for the class name
-typed; history lists versions and Restore calls the restore route;
+typed; history lists versions and Restore calls the restore route; §4.9's pattern
+hints appear with 30 or more attempts and not with 29, and a `null` share
+renders as "no data", not 0%;
 `tests/unit/scripts/test_issue_forms.py` passes with the new tab.
 
 **SIZES-DETAIL** (after LIVE-UTIL-UI and SIZES-API). Files:
