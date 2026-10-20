@@ -2829,6 +2829,18 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
    a card per attempt, sub-blocks inside it. `--ctl-s3` between cards is the
    region step; nothing here changes the card's own chrome. */
 .att-card + .att-card { margin-top: var(--ctl-s3); }
+/* THE ATTEMPTS KEEP A GUTTER OFF THE PANE'S SCROLLBAR (task-015, visual QA
+   run 2, #1680). From 561px up the split's pane is the one vertical scroller
+   (agents.css; details.v3.test.tsx holds it to one), so its scrollbar is the
+   pane's right edge, and at 1440 the toolbar's right-aligned `3 events · first
+   page` and the head's read age ran into it. The pane keeps scrolling -- the
+   owner's walkthrough B decision -- and the attempts sit `--ctl-s3` off it.
+   Not on a phone: there the column scrolls with the page, the pane draws no
+   scrollbar, and the drawer's own padding is the edge. Held by
+   attempts.pane.gutter.test.tsx. */
+@media (min-width: 561px) {
+  .att-pane { padding-right: var(--ctl-s3); }
+}
 /* AN ATTEMPT CARD AT 390 (QA-113, visual QA 2026-10-20). The facts strip
    wrapped as one ragged line -- `attempt att_… lease lse_… execution …` with
    each key at the far end of the line its value started on -- and an event
